@@ -19,6 +19,8 @@ export interface MsTeamsGraphMessage {
   modifiedMs: number
   /** A person's Entra object ID, or a bot's `28:<appId>`. */
   sender: string
+  /** The display name Graph gave the sender. */
+  senderName?: string
   isBot: boolean
   appId?: string
   text: string
@@ -95,8 +97,13 @@ export function msTeamsGraphMessage(raw: unknown): MsTeamsGraphMessage | undefin
   if (!id || Number.isNaN(createdMs)) return undefined
   const modified = typeof m.lastModifiedDateTime === 'string' ? Date.parse(m.lastModifiedDateTime) : NaN
   const modifiedMs = Number.isNaN(modified) ? createdMs : Math.max(modified, createdMs)
-  const from = (m.from ?? {}) as { user?: { id?: unknown }; application?: { id?: unknown } }
+  const from = (m.from ?? {}) as {
+    user?: { id?: unknown; displayName?: unknown }
+    application?: { id?: unknown; displayName?: unknown }
+  }
   const userId = typeof from.user?.id === 'string' && from.user.id ? from.user.id : undefined
+  const shown = userId ? from.user?.displayName : from.application?.displayName
+  const senderName = typeof shown === 'string' && shown.trim() ? shown.trim() : undefined
   const appId = typeof from.application?.id === 'string' && from.application.id ? from.application.id : undefined
   if (!userId && !appId) return undefined
   const body = (m.body ?? {}) as { contentType?: unknown; content?: unknown }
@@ -108,6 +115,7 @@ export function msTeamsGraphMessage(raw: unknown): MsTeamsGraphMessage | undefin
     createdMs,
     modifiedMs,
     sender: userId ?? `28:${appId!.toLowerCase()}`,
+    ...(senderName ? { senderName } : {}),
     isBot: !userId,
     ...(!userId && appId ? { appId: appId.toLowerCase() } : {}),
     text: body.contentType === 'html' ? msTeamsHtmlText(content) : content.trim(),
