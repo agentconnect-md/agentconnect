@@ -134,6 +134,31 @@ describe('Teams history', () => {
     expect(graphToken?.url).toBe(msTeamsTokenEndpoint(TENANT))
   })
 
+  it('fills a page past the system events Graph counts toward $top, asking only for what is missing', async () => {
+    const event = (id: number) => ({
+      id: String(id),
+      messageType: 'unknownFutureValue',
+      createdDateTime: new Date(id).toISOString()
+    })
+    const { conn, graphCalls } = connection((url) => {
+      const more = (token: string) => `https://graph.microsoft.com/v1.0/x?$skiptoken=${token}`
+      return url.searchParams.get('$skiptoken') === 'second'
+        ? Response.json({ value: [message(1700000000100)], '@odata.nextLink': more('third') })
+        : Response.json({
+            value: [message(1700000000300), event(1700000000250), message(1700000000200)],
+            '@odata.nextLink': more('second')
+          })
+    })
+    seen(conn, DESIGN, 'channel')
+    const page = await conn.getChannelHistory(DESIGN, { limit: 3 })
+    expect(page.messages.map((m) => m.ts)).toEqual(['1700000000300', '1700000000200', '1700000000100'])
+    expect(page.nextCursor).toBe('third')
+    expect(graphCalls().map((c) => c.url)).toEqual([
+      msTeamsGraphMessagesUrl(CHANNEL, { top: 3 }),
+      msTeamsGraphMessagesUrl(CHANNEL, { top: 1, skiptoken: 'second' })
+    ])
+  })
+
   it('continues from a cursor, caps a page at 50, and reads the team’s group once', async () => {
     const { conn, calls, graphCalls } = connection(() => Response.json({ value: [] }))
     seen(conn, DESIGN, 'channel')
