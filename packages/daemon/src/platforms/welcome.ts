@@ -6,13 +6,13 @@ export const CHAT_PLATFORMS_GUIDE_URL = 'https://www.agentconnect.md/docs/connec
 /** Where a person without console access reaches us. */
 export const SUPPORT_EMAIL = 'contact@agentconnect.md'
 
-/** The welcome for one install; `name` is what the platform shows the bot as, so the greeting matches the app's listed name. */
-export function buildWelcome(opts: { name: string; isDm: boolean; enabled: boolean; consoleUrl: string }): Welcome {
+/** The welcome for one install; it names no app, since no event tells the name a listing shows and a store requires the two to match. */
+export function buildWelcome(opts: { isDm: boolean; enabled: boolean; consoleUrl: string }): Welcome {
   const where = opts.isDm ? 'chat' : 'conversation'
   return {
-    title: `Hi, I’m ${opts.name}`,
+    title: 'Hi! I’m an AI agent powered by AgentConnect',
     lines: [
-      'I’m an AI agent powered by AgentConnect. Give me a task and I work on it with the tools and access your organization connected.',
+      'Give me a task and I work on it with the tools and access your organization connected.',
       opts.isDm
         ? 'Send me a task here. In a channel or group chat I’m in, @mention me and I answer in that thread.'
         : '@mention me with a task and I answer in that thread. Message me directly for work that is just yours.',

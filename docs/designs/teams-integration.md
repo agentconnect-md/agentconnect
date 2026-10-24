@@ -492,12 +492,15 @@ answer `help`, so a first contact never dead-ends.
 
 - **Welcome.** A `conversationUpdate` that adds the bot itself is forwarded to
   the bot's agent as a `platform_action` (`bot-added`: the conversation, its
-  scope, the bot's manifest name, and who added it). Core composes one welcome
-  and Teams posts it as an Adaptive Card: the bot's name, what it does, how to
-  reach it in that scope, a line that an admin turns it on in the console when
-  the conversation is not enabled yet, how to ask for help, and links to the
-  console, the guide and support. Outside a 1:1 chat the card mentions the
-  person who added the bot. The relay's dedup key is the conversation and the
+  scope, and who added it). Core composes one welcome and Teams posts it as an
+  Adaptive Card: what it does, how to reach it in that scope, a line that an
+  admin turns it on in the console when the conversation is not enabled yet,
+  how to ask for help, and links to the console, the guide and support. The
+  greeting names no app: the activity's recipient name is the bot
+  registration's, not the app's (**measured**), and the Store requires a name
+  in the welcome to match the manifest. Outside a 1:1 chat the card mentions
+  the person who added the bot; a team install names them by ID only, so the
+  name is looked up in the conversation's roster first. The relay's dedup key is the conversation and the
   activity, so a redelivery welcomes once and a later reinstall again.
   `installationUpdate` starts nothing.
 - **Help.** A message that is exactly `help` (the bot's mention removed) is
@@ -757,8 +760,9 @@ reply, signed with the home tenant's token, appeared in the channel.
 
 ### 8.4 A tenant no organization connected
 
-Status: **implemented**, not yet measured in a tenant that installed from the
-Store. Once the app is listed in the Teams Store, anyone can add
+Status: **implemented and measured** in a tenant that added the app from its
+organization catalog (not yet from the Store). Once the app is listed in the
+Teams Store, anyone can add
 it to a tenant that no organization has connected, a Store reviewer included.
 The Store requires the bot to welcome that install and to answer every message,
 signed in or not, with a way forward
@@ -812,10 +816,20 @@ account of that tenant, not an administrator, and the first organization to
 connect it holds it, as §8.3 already does. A Store row's package status always
 reads current, since the Store listing, not the Console, updates the app.
 
+**Measured** in a second tenant no organization had connected, with the
+app added from its organization catalog: a personal install got the welcome
+card within seconds, a DM and a channel @mention each got the Connect card in
+place, and re-adding the app to a team posted the welcome in its channel. That
+tenant had been connected through §8.3 before, so its admin had consented to
+the app.
+The Connect button opened the pinned page; Entra asked the signed-in account for user
+consent to sign-in and profile only, and the page finished without a team
+step. The row was written with `source: store` and a DM then ran a turn.
+
 **Unverified.** Whether a Store install and an organization-catalog copy of the
-same app ID conflict; whether the welcome reaches a personal install before the
-tenant's admin approves the app; the token the relay mints for a tenant whose
-admin has not consented.
+same app ID conflict; whether the welcome reaches a personal install from the
+Store before the tenant's admin approves the app; whether the relay's token
+posts into a tenant whose admin never consented to the app.
 
 ### 8.5 Open
 

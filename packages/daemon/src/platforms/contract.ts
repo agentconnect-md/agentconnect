@@ -485,11 +485,10 @@ export interface RelayBotAdds {
   decode(msg: RdMsgPlatformAction): BotAdded | null
 }
 
-/** One relayed install: where it happened, the name the platform shows the bot by, and how to post core's welcome there. */
+/** One relayed install: where it happened, and how to post core's welcome there. */
 export interface BotAdded {
   channel: string
   isDm: boolean
-  botName?: string
   post(welcome: Welcome): Promise<void>
 }
 

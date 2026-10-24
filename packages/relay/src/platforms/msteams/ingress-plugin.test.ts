@@ -461,7 +461,6 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
         conversationId: CHANNEL,
         serviceUrl: SERVICE_URL,
         scope: 'channel',
-        botName: 'Example Bot',
         addedBy: { id: USER, name: 'Example Person' }
       },
       {
@@ -469,7 +468,6 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
         conversationId: PERSONAL,
         serviceUrl: SERVICE_URL,
         scope: 'personal',
-        botName: 'Example Bot',
         addedBy: { id: USER, name: 'Example Person' }
       }
     ])
