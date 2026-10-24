@@ -88,16 +88,18 @@ describe('AgentComputersCard', () => {
     expect(mocks.removeComputerAgent).toHaveBeenCalledWith('c1', 'a1')
   })
 
-  it('shows a computer granted to all agents without a remove, and never offers it', () => {
+  it('shows a computer granted to all agents, never offers it again, and takes it away from this agent', async () => {
     mocks.computers = [
       computerFixture({ agentAccess: { mode: 'all', agents: [] } }),
       computerFixture({ id: 'c2', name: 'shared-all', agentAccess: { mode: 'all', agents: [] } })
     ]
     const el = render()
     expect(el.textContent).toContain('all agents')
-    expect(el.querySelector('button[title="Take away this agent\'s access"]')).toBeNull()
     openMenu(el)
-    expect(document.body.textContent).toContain('No more computers you can give it')
+    expect(document.body.textContent).toContain('No more computers to give it')
+    const remove = el.querySelector<HTMLButtonElement>('button[title="Take away this agent\'s access"]')!
+    await act(async () => remove.click())
+    expect(mocks.removeComputerAgent).toHaveBeenCalledWith('c1', 'a1')
   })
 
   it('offers no change on a computer the caller cannot edit, and names one they cannot see', () => {

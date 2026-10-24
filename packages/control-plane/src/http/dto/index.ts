@@ -4579,7 +4579,7 @@ export const ComputerDto = z.object({
   canEditPolicy: z.boolean(),
   /** Which agents may use it (computer-use.md §4.1): none, the selected agents, or every agent of the organization. */
   agentAccess: ComputerAgentAccess,
-  /** The caller may change its agent access: any editor, except of a per-agent or ephemeral computer, which follows its agent. */
+  /** The caller may give it to an agent or take it away: any editor, except of a per-agent or ephemeral computer, which follows its agent. */
   canEditAgentAccess: z.boolean(),
   /** A managed computer's allocation mode (computer-use.md §15.1); null for a self-hosted one. */
   allocation: z.enum(COMPUTER_ALLOCATIONS).nullable(),
@@ -4607,7 +4607,10 @@ export const CreatePoolComputerBody = z
     /** How it is used; omitted fields take the managed defaults. */
     policy: ComputerPolicySchema.optional(),
     /** Which agents may use it; absent means none until someone grants them. */
-    agentAccess: ComputerAgentAccess.optional()
+    agentAccess: ComputerAgentAccess.optional(),
+    /** Who sees it, and so who may give it to their agents; everyone in the organization when omitted. */
+    visibility: ResourceVisibilityEnum.optional(),
+    sharedWith: z.array(z.string()).optional()
   })
   .strict()
 
@@ -4776,7 +4779,10 @@ export const ComputerScreenshotUsageQuery = z
 export const CreateComputerRegistrationBody = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
-    ttlMinutes: z.number().int().min(5).max(COMPUTER_REGISTRATION_MAX_TTL_MINUTES).optional()
+    ttlMinutes: z.number().int().min(5).max(COMPUTER_REGISTRATION_MAX_TTL_MINUTES).optional(),
+    /** Who sees the new Computer; Selected with only the registrant when omitted, who always stays in a Selected audience. */
+    visibility: ResourceVisibilityEnum.optional(),
+    sharedWith: z.array(z.string()).optional()
   })
   .strict()
 

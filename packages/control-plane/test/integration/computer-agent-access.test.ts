@@ -184,7 +184,7 @@ describe('agent access to a Computer (computer-use.md §4.1)', () => {
     expect((await add(randomUUID())).statusCode).toBe(400)
   })
 
-  it('All agents gives every agent the tools and is changed only on the Computer', async () => {
+  it('All agents gives every agent the tools, and an agent’s removal narrows it to every other agent', async () => {
     const [a, b] = await placedAgents('access-a', 'access-b')
     const { app, spy } = appAs()
     const computerId = await register(app)
@@ -205,8 +205,15 @@ describe('agent access to a Computer (computer-use.md §4.1)', () => {
       computers: [computerId]
     })
     const one = `${ORG}/computers/${computerId}/agent-access/agents/${a}`
-    expect((await app.app.inject({ method: 'PUT', url: one })).statusCode).toBe(409)
-    expect((await app.app.inject({ method: 'DELETE', url: one })).statusCode).toBe(409)
+    const added = await app.app.inject({ method: 'PUT', url: one })
+    expect(added.statusCode).toBe(200)
+    expect(added.json().agentAccess).toEqual({ mode: 'all', agents: [] })
+    const removed = await app.app.inject({ method: 'DELETE', url: one })
+    expect(removed.statusCode).toBe(200)
+    expect(removed.json().agentAccess.mode).toBe('selected')
+    expect([...removed.json().agentAccess.agents].sort()).toEqual([b!, c!].sort())
+    expect(spy.specOf(a!)?.computerUse ?? null).toBeNull()
+    expect(spy.specOf(b!)?.computerUse).toEqual({ enabled: true, computers: [computerId] })
 
     // Revoking the Computer takes it off every agent's list.
     await app.app.inject({ method: 'POST', url: `${ORG}/computers/${computerId}/revoke` })
@@ -214,7 +221,7 @@ describe('agent access to a Computer (computer-use.md §4.1)', () => {
     expect((await app.app.inject({ method: 'GET', url: `${ORG}/agents/${a}` })).json().computerUse).toBeNull()
   })
 
-  it('only the registrant changes a self-hosted desktop’s access, and any editor a manual one’s, from either side', async () => {
+  it('any editor it is visible to gives a desktop to an agent, and only its registrant sets the whole access', async () => {
     const [a] = await placedAgents('access-a')
     const viewer = await makeUser('access-viewer', 'viewer')
     const carol = await makeUser('access-carol', 'collaborator')
@@ -242,12 +249,14 @@ describe('agent access to a Computer (computer-use.md §4.1)', () => {
     expect((await add(appAs(viewer).app)).statusCode).toBe(403)
     const read = await appAs(viewer).app.app.inject({ method: 'GET', url: `${ORG}/computers/${computerId}` })
     expect(read.json().canEditAgentAccess).toBe(false)
-    // Sharing a desktop to watch lets no collaborator point agents at it: only its registrant decides.
+    // A desktop shared with a collaborator is theirs to give their agents, one at a time; All agents stays the registrant's.
     expect((await put(appAs(carol).app)).statusCode).toBe(403)
-    expect((await add(appAs(carol).app)).statusCode).toBe(403)
     const seen = await appAs(carol).app.app.inject({ method: 'GET', url: `${ORG}/computers/${computerId}` })
-    expect(seen.json().canEditAgentAccess).toBe(false)
-    expect((await add(owner)).statusCode).toBe(200)
+    expect(seen.json().canEditAgentAccess).toBe(true)
+    const carolGives = await add(appAs(carol).app)
+    expect(carolGives.statusCode).toBe(200)
+    expect(carolGives.json().agentAccess).toEqual({ mode: 'selected', agents: [a] })
+    expect((await put(owner)).statusCode).toBe(200)
     // A manual pool computer takes any editor's change, as with visibility.
     const manual = await manualComputer()
     const carolAdds = await appAs(carol).app.app.inject({

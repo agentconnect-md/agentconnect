@@ -4664,6 +4664,9 @@ model ComputerRegistration {
   displayTail     String
   // Optional console-chosen name; the desktop daemon's hostname is used otherwise.
   name            String?
+  // The console visibility the new Computer takes at the exchange, intersected with current members then.
+  visibility      ResourceVisibility @default(restricted)
+  sharedWith      String[]           @default([])
   expiresAt       DateTime  @db.Timestamptz(6)
   consumedAt      DateTime? @db.Timestamptz(6)
   computerId      String?   @db.Uuid

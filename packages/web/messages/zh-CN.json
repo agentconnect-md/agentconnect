@@ -3432,10 +3432,10 @@
       "computers": {
         "title": "电脑",
         "add": "添加电脑",
-        "available": "你可以编辑的电脑",
+        "available": "你可以看到的电脑",
         "noMore": "没有更多可以授予它的电脑",
         "empty": "还没有电脑",
-        "emptyHint": "在这里或电脑页面上，把你可以编辑的电脑授予此 Agent。",
+        "emptyHint": "把你可以看到的电脑授予此 Agent。电脑的可见范围决定谁可以把它授予 Agent。",
         "unavailable": "你看不到的电脑",
         "open": "打开电脑",
         "remove": "撤销此 Agent 的访问权限",
@@ -6490,7 +6490,7 @@
   },
   "Computers": {
     "title": "电脑",
-    "description": "Agent 可以查看和操作的桌面。每台电脑在已登录的图形会话或桌面容器中运行桌面守护进程。",
+    "description": "成员为 Agent 注册的桌面，Agent 可以查看和操作。每台电脑在已登录的图形会话或桌面容器中运行桌面守护进程。",
     "addComputer": "添加电脑",
     "add": {
       "title": "添加电脑",
@@ -6537,12 +6537,12 @@
       "poolDescription": "从本部署的资源池创建一台带 Firefox 的 Linux 桌面，运行在独立的容器中，有自己的磁盘。获得访问权的智能体轮流使用它。空闲时休眠并保留文件和登录状态，直到你删除它。你将是它的所有者。",
       "poolName": "名称",
       "poolNamePlaceholder": "共享浏览器",
-      "poolAccess": "可使用的智能体",
-      "poolAccessHint": "智能体轮流使用：同一时间只有一个控制桌面，其他的排队等待。",
+      "poolAccessHint": "能看到它的成员可以在 Agent 的“工具”页把它授予自己的 Agent。智能体轮流使用：同一时间只有一个控制桌面，其他的排队等待。",
       "poolUnavailable": "当前没有连接的资源池成员，无法启动托管计算机。请稍后再试。",
       "poolCreate": "创建计算机",
       "poolCreating": "正在创建…",
-      "poolError": "无法创建计算机：{message}"
+      "poolError": "无法创建计算机：{message}",
+      "visibilityHint": "能看到它的成员可以在 Agent 的“工具”页把它授予自己的 Agent。除非你共享，否则只有你能看到它。"
     },
     "loadError": "无法加载电脑：{message}",
     "empty": {
@@ -6555,7 +6555,9 @@
       "none": "还没有托管电脑",
       "countLabel": "台托管电脑",
       "available": "可用",
-      "unavailable": "不可用"
+      "unavailable": "不可用",
+      "add": "添加托管电脑",
+      "description": "此部署为你的 Agent 运行的隔离 Linux 桌面。空闲时休眠，下次使用时唤醒。"
     },
     "poolPage": {
       "description": "在本部署的集群中为 Agent 启动的桌面。空闲时休眠，下次使用时唤醒。",
@@ -6687,28 +6689,18 @@
     },
     "agentAccess": {
       "title": "Agent 访问",
-      "readOnly": "只有这台电脑的编辑者可以修改",
       "ownAgentOnly": "只供创建它的 Agent 使用",
       "none": "不允许 Agent",
-      "noneDescription": "任何 Agent 都不能使用。默认设置。",
+      "noneDescription": "目前没有 Agent 可以使用。",
       "selected": "指定 Agent",
-      "selectedDescription": "只有你选中的 Agent 能使用。",
       "all": "所有 Agent",
       "allDescription": "组织内的每个 Agent 都能使用。",
       "allNoIsolation": "这包括其他成员的 Agent，你的桌面与它们的操作之间没有任何隔离。",
-      "selectedTitle": "可以使用这台电脑的 Agent",
-      "agents": "Agents",
-      "addAgent": "添加 Agent",
-      "noMoreAgents": "没有更多可添加的 Agent",
-      "pickAgent": "至少选择一个 Agent",
-      "pickAgentHint": "添加可以使用这台电脑的 Agent，或选择“不允许 Agent”。",
       "unknownAgent": "你不可见的 Agent",
       "noIsolation": "不是你的 Agent",
       "noIsolationHint": "这个 Agent 属于其他成员。你的桌面与它的操作之间没有任何隔离。",
-      "removeAgent": "撤销此 Agent 的访问权限",
-      "reset": "重置",
-      "save": "保存",
-      "saving": "保存中…"
+      "changeOnAgent": "哪些 Agent 使用这台电脑，在每个 Agent 的“工具”页的“电脑”中设置。从 <agents>Agents</agents> 打开一个 Agent，即可授予或撤销这台电脑。",
+      "openAgentTools": "打开 Agent 的工具"
     },
     "policy": {
       "title": "使用策略",
@@ -6844,6 +6836,14 @@
       "proxyHint": "填写带端口的 http:// 或 https:// 代理。运行中的托管电脑会立即切换；密码加密保存，之后不再显示。",
       "save": "保存",
       "cancel": "取消"
+    },
+    "visibilityEdit": {
+      "open": "修改可见范围",
+      "title": "电脑可见范围",
+      "description": "谁可以看到这台电脑。能看到它的成员也可以在 Agent 的“工具”页把它授予自己的 Agent。",
+      "cancel": "取消",
+      "save": "保存",
+      "saving": "保存中…"
     }
   }
 }

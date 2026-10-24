@@ -101,6 +101,10 @@ function toRegistrationRecord(r: ComputerRegistration): ComputerRegistrationReco
 
 const policyJson = (p: ComputerPolicy) => p as unknown as Prisma.InputJsonValue
 
+// A self-hosted desktop's Selected audience always holds its registrant.
+const registrantAudience = (visibility: ResourceVisibility, owner: string, sharedWith: readonly string[]): string[] =>
+  visibility === 'restricted' ? [owner, ...sharedWith.filter((id) => id !== owner)] : [...sharedWith]
+
 const NO_ACCESS: ComputerAgentAccess = { mode: 'none', agents: [] }
 
 // Agents whose derived Computer list moved take a new revision, or a daemon refuses the changed spec at the old one.
@@ -147,12 +151,16 @@ export class PgComputerRepo implements ComputerRepo {
   async createRegistration(input: CreateComputerRegistrationInput): Promise<ComputerRegistrationRecord> {
     return withAmbientTx(this.db, async (tx) => {
       // The registrant must still be a member when the token is minted, and again when it is spent; the pool mints its own.
+      let sharing: { visibility: ResourceVisibility; sharedWith: string[] } | undefined
       if (!input.computerId) {
-        await lockResourceWriteMemberships(tx, {
+        const visibility = input.sharing?.visibility ?? 'restricted'
+        const memberships = await lockResourceWriteMemberships(tx, {
           orgId: input.orgId,
-          visibility: 'org',
-          actorUserId: input.createdByUserId
+          visibility,
+          actorUserId: input.createdByUserId,
+          sharedWith: registrantAudience(visibility, input.createdByUserId, input.sharing?.sharedWith ?? [])
         })
+        sharing = { visibility, sharedWith: memberships.sharedWith ?? [] }
       }
       const row = await tx.computerRegistration.create({
         data: {
@@ -162,6 +170,7 @@ export class PgComputerRepo implements ComputerRepo {
           displayTail: input.displayTail,
           name: input.name ?? null,
           expiresAt: input.expiresAt,
+          ...(sharing ?? {}),
           ...(input.computerId ? { computerId: input.computerId } : {})
         }
       })
@@ -179,9 +188,9 @@ export class PgComputerRepo implements ComputerRepo {
         // Lock the org and membership before the token row, the same order member removal takes them.
         const memberships = await lockResourceWriteMemberships(tx, {
           orgId: registration.orgId,
-          visibility: 'restricted',
+          visibility: registration.visibility,
           actorUserId: owner,
-          sharedWith: [owner]
+          sharedWith: registrantAudience(registration.visibility, owner, registration.sharedWith)
         })
         // The role is rechecked at the exchange: a registrant demoted to viewer since minting may no longer register.
         const role = await tx.membership.findUnique({
@@ -211,8 +220,8 @@ export class PgComputerRepo implements ComputerRepo {
             desktopDaemonVersion: p.desktopDaemonVersion,
             driverVersion: p.driverVersion,
             policy: policyJson(defaultComputerPolicy(owner)),
-            visibility: 'restricted',
-            sharedWith: memberships.sharedWith ?? [owner]
+            visibility: registration.visibility,
+            sharedWith: memberships.sharedWith ?? []
           }
         })
         await tx.computerRegistration.update({ where: { id: registration.id }, data: { computerId: computer.id } })
@@ -383,8 +392,8 @@ export class PgComputerRepo implements ComputerRepo {
       })
       // A self-hosted desktop's registrant stays in a Selected audience while still a member (the lock drops a departed one).
       const requested =
-        sharing.visibility === 'restricted' && existing.kind === 'self_hosted'
-          ? [existing.ownerUserId, ...sharing.sharedWith]
+        existing.kind === 'self_hosted'
+          ? registrantAudience(sharing.visibility, existing.ownerUserId, sharing.sharedWith)
           : sharing.sharedWith
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId,
@@ -495,6 +504,18 @@ export class PgComputerRepo implements ComputerRepo {
     const access = cappedAgentAccess(input.agentAccess)
     try {
       return await withAmbientTx(this.db, async (tx) => {
+        const visibility = input.sharing?.visibility ?? 'org'
+        // Only a member's own choice needs the lock: the pool's own computers are seen by everyone.
+        const sharedWith = input.sharing
+          ? ((
+              await lockResourceWriteMemberships(tx, {
+                orgId: input.orgId,
+                visibility,
+                actorUserId: input.ownerUserId,
+                sharedWith: input.sharing.sharedWith
+              })
+            ).sharedWith ?? [])
+          : []
         const row = await tx.computer.create({
           data: {
             id: input.id,
@@ -512,8 +533,8 @@ export class PgComputerRepo implements ComputerRepo {
             policy: policyJson(input.policy),
             agentAccess: access.mode,
             accessAgentIds: access.agents,
-            visibility: 'org',
-            sharedWith: [],
+            visibility,
+            sharedWith,
             allocation: toDbAllocation(input.allocation),
             ownerAgentId: input.ownerAgentId ?? null,
             poolSessionId: input.poolSessionId ?? null,

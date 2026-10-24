@@ -852,6 +852,17 @@ describe('managed computers in the pool', () => {
     )
     expect(created!.policy.approvals).toEqual(defaultComputerPolicy(DEFAULT_OWNER_ID).approvals)
     expect(created!.policy.approvals.firstInputPerSession).toBe(true)
+    // Everyone sees a managed computer unless its creator narrows it, keeping themselves in the audience.
+    expect(created).toMatchObject({ visibility: 'org', sharedWith: [] })
+    const dana = await makeUser('pool-visibility', 'collaborator')
+    const narrowed = computerOf(
+      await h.pool.createManual(OrgId(DEFAULT_ORG_ID), {
+        name: 'Private desk',
+        ownerUserId: DEFAULT_OWNER_ID,
+        sharing: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID, dana, 'not-a-member'] }
+      })
+    )
+    expect(narrowed).toMatchObject({ visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID, dana] })
   })
 
   it('keeps an idle computer that a session acquired while the sweep was running', async () => {

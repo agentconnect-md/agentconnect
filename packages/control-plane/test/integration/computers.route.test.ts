@@ -147,6 +147,23 @@ describe('registration exchange', () => {
     expect(read.json().policy).not.toHaveProperty('allowedAgents')
   })
 
+  it('gives the new Computer the visibility chosen when the token was minted', async () => {
+    const dana = await makeUser('cmp-visibility', 'collaborator')
+    const app = appAs()
+    const everyone = await issueToken(app, { visibility: 'org' })
+    const open = await app.app.inject({ method: 'POST', url: REGISTER, payload: { token: everyone.token, ...profile } })
+    const openRow = await prisma.computer.findUniqueOrThrow({ where: { id: open.json().computerId } })
+    expect(openRow).toMatchObject({ visibility: 'org', sharedWith: [] })
+    // A Selected audience keeps the registrant and drops anyone who is not a member.
+    const selected = await issueToken(app, { visibility: 'restricted', sharedWith: [dana, 'not-a-member'] })
+    const shut = await app.app.inject({ method: 'POST', url: REGISTER, payload: { token: selected.token, ...profile } })
+    const shutRow = await prisma.computer.findUniqueOrThrow({ where: { id: shut.json().computerId } })
+    expect(shutRow).toMatchObject({ visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID, dana] })
+    expect((await appAs(dana).app.inject({ method: 'GET', url: `${ORG}/computers/${shutRow.id}` })).statusCode).toBe(
+      200
+    )
+  })
+
   it('spends a token once, even under concurrent exchanges', async () => {
     const app = appAs()
     const { token } = await issueToken(app)

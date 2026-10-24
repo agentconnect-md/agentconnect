@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
   revokeComputer: vi.fn(),
   deleteComputer: vi.fn(),
   setComputerPolicy: vi.fn(),
-  setComputerAgentAccess: vi.fn(),
+  setComputerSharing: vi.fn(),
   refresh: vi.fn(),
   fetchComputerAudit: vi.fn(),
   wakeComputer: vi.fn(),
@@ -64,7 +64,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   revokeComputer: mocks.revokeComputer,
   deleteComputer: mocks.deleteComputer,
   setComputerPolicy: mocks.setComputerPolicy,
-  setComputerAgentAccess: mocks.setComputerAgentAccess,
+  setComputerSharing: mocks.setComputerSharing,
   fetchComputerAudit: mocks.fetchComputerAudit,
   wakeComputer: mocks.wakeComputer,
   sleepComputer: mocks.sleepComputer,
@@ -97,7 +97,7 @@ beforeEach(() => {
     mocks.revokeComputer,
     mocks.deleteComputer,
     mocks.setComputerPolicy,
-    mocks.setComputerAgentAccess,
+    mocks.setComputerSharing,
     mocks.refresh,
     mocks.fetchComputerAudit,
     mocks.wakeComputer,
@@ -173,45 +173,18 @@ describe('ComputerDetailView', () => {
     expect(mocks.revokeComputer).toHaveBeenCalledWith('c1')
   })
 
-  it('starts with no agents, then selects agents, warns about another member’s agent, and saves the access', async () => {
-    mocks.setComputerAgentAccess.mockImplementation(async (_id: string, agentAccess: unknown) =>
-      computer({ agentAccess } as never)
-    )
-    const el = render(computer())
-    const tile = (title: string) =>
-      [...el.querySelectorAll<HTMLElement>('[role="radio"]')].find((t) => t.textContent?.includes(title))!
-    expect(tile('No agents').getAttribute('aria-checked')).toBe('true')
-    act(() => tile('Selected agents').click())
-    expect(el.textContent).toContain('Pick at least one agent')
-    // An empty selection cannot be saved.
-    expect(button(el, 'Save')[0]!.disabled).toBe(true)
-    const add = [...el.querySelectorAll('button')].find((b) => b.getAttribute('aria-haspopup') === 'menu')!
-    act(() => add.click())
-    act(() =>
-      [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
-        .find((b) => b.textContent?.includes('peer'))!
-        .click()
-    )
+  it('shows which agents may use it without changing it, and points to each agent’s Tools tab', () => {
+    const el = render(computer({ agentAccess: { mode: 'selected', agents: ['a2'] } }))
     expect(el.textContent).toContain('Not your agent')
-    await act(async () => button(el, 'Save')[0]!.click())
-    await settle()
-    expect(mocks.setComputerAgentAccess).toHaveBeenCalledWith('c1', { mode: 'selected', agents: ['a2'] })
-    expect(mocks.refresh).toHaveBeenCalled()
-  })
+    const tools = el.querySelector<HTMLAnchorElement>('a[aria-label="Open the agent’s tools"]')!
+    expect(tools.getAttribute('href')).toBe('/acme/agents/a2?tab=tools')
+    expect(el.textContent).toContain('set on each agent’s Tools tab')
+    expect([...el.querySelectorAll('[role="radio"]')].some((r) => r.textContent?.includes('All agents'))).toBe(false)
+    expect(button(el, 'Save')).toHaveLength(1) // only the policy form saves
 
-  it('switches to All agents and keeps a per-agent computer read-only', async () => {
-    mocks.setComputerAgentAccess.mockImplementation(async (_id: string, agentAccess: unknown) =>
-      computer({ agentAccess } as never)
-    )
-    const el = render(computer())
-    const all = [...el.querySelectorAll<HTMLElement>('[role="radio"]')].find((t) =>
-      t.textContent?.includes('All agents')
-    )!
-    act(() => all.click())
-    expect(el.textContent).toContain('no isolation')
-    await act(async () => button(el, 'Save')[0]!.click())
-    await settle()
-    expect(mocks.setComputerAgentAccess).toHaveBeenCalledWith('c1', { mode: 'all', agents: [] })
+    const all = render(computer({ agentAccess: { mode: 'all', agents: [] } }))
+    expect(all.textContent).toContain('Every agent in the organization can use it.')
+    expect(all.textContent).toContain('no isolation')
 
     const fixed = render(
       computer({
@@ -222,6 +195,25 @@ describe('ComputerDetailView', () => {
       })
     )
     expect(fixed.textContent).toContain('Used only by the agent it was made for')
+  })
+
+  it('changes who sees the computer from its details', async () => {
+    mocks.setComputerSharing.mockImplementation(async (_id: string, sharing: object) => computer(sharing as never))
+    const el = render(computer())
+    act(() => el.querySelector<HTMLButtonElement>('button[aria-label="Change visibility"]')!.click())
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+    const everyone = [...dialog.querySelectorAll<HTMLElement>('[role="radio"]')].find((r) =>
+      r.textContent?.includes('Everyone')
+    )!
+    act(() => everyone.click())
+    await act(async () => button(dialog, 'Save')[0]!.click())
+    await settle()
+    expect(mocks.setComputerSharing).toHaveBeenCalledWith('c1', { visibility: 'org', sharedWith: ['u1'] })
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+
+    // A viewer cannot change it.
+    const viewer = render(computer({ canEdit: false }))
+    expect(viewer.querySelector('button[aria-label="Change visibility"]')).toBeNull()
   })
 
   it('edits the usage policy and saves', async () => {
@@ -241,7 +233,6 @@ describe('ComputerDetailView', () => {
   it('keeps the policy read-only for someone who is not the owner and hides the audit', () => {
     const el = render(computer({ canEditPolicy: false, canEditAgentAccess: false }))
     expect(el.textContent).toContain('Only the owner can change this')
-    expect(el.textContent).toContain('Only editors of this computer can change this')
     expect(button(el, 'Save')).toHaveLength(0)
     expect(el.textContent).not.toContain('Recent activity')
   })

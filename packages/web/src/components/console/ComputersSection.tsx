@@ -1,6 +1,6 @@
 'use client'
 
-// Computers (computer-use.md §10): the organization's registered desktops, a section of the Infra page.
+// Computers (computer-use.md §10): the deployment's managed computers and the organization's registered desktops, two sections of the Infra page.
 import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
@@ -31,18 +31,20 @@ export function ComputersSection() {
   const { data: pool } = useComputerPool()
   const { openModal } = useModal()
   const computers = useMemo(() => data ?? [], [data])
-  // Managed computers are one pool entry, like the daemon pool; self-hosted ones are listed each.
+  // Managed computers are one pool entry in a section of their own, like the daemon pool; self-hosted ones are listed each.
   const managed = useMemo(() => computers.filter((c) => c.kind === 'managed'), [computers])
   const own = useMemo(() => computers.filter((c) => c.kind !== 'managed'), [computers])
   // Kept while managed computers remain, so a deployment that turned the pool off still reaches them.
   const showPool = pool?.enabled === true || managed.length > 0
+  const loading = isLoading && computers.length === 0
 
   return (
     <>
+      {showPool && <ManagedComputersSection managed={managed} available={pool?.available === true} />}
       <SectionHeader
         id="computers"
         label={t('title')}
-        count={isLoading && computers.length === 0 ? undefined : computers.length}
+        count={loading ? undefined : own.length}
         action={
           <button
             className="inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand)"
@@ -64,20 +66,50 @@ export function ComputersSection() {
           {t('loadError', { message: error instanceof Error ? error.message : String(error) })}
         </div>
       )}
-      {isLoading && computers.length === 0 ? (
+      {loading ? (
         <LoadingState padding={24} />
-      ) : own.length === 0 && !showPool ? (
+      ) : own.length === 0 ? (
         <div className="card px-4 py-[18px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
           {t('empty.description')}
         </div>
       ) : (
         <div className={FLEET_GRID}>
-          {showPool && <ComputerPoolEntry managed={managed} available={pool?.available === true} />}
           {own.map((c) => (
             <ComputerRow key={c.id} computer={c} />
           ))}
         </div>
       )}
+    </>
+  )
+}
+
+/** The deployment's managed computers, apart from the desktops members register themselves. */
+function ManagedComputersSection({ managed, available }: { managed: ComputerDto[]; available: boolean }) {
+  const t = useTranslations('Computers.poolEntry')
+  const { openModal } = useModal()
+  const title = useComputerPoolTitle()
+  return (
+    <>
+      <SectionHeader
+        id="managed-computers"
+        label={title}
+        count={managed.length}
+        action={
+          <button
+            className="inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand)"
+            onClick={() => openModal('computer', undefined, { computerSource: 'pool' })}
+          >
+            <Icon name="plus" size={13} />
+            {t('add')}
+          </button>
+        }
+      />
+      <p className="mt-0 mb-[10px] max-w-[720px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-tertiary)">
+        {t('description')}
+      </p>
+      <div className={FLEET_GRID}>
+        <ComputerPoolEntry managed={managed} available={available} />
+      </div>
     </>
   )
 }

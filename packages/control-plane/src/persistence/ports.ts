@@ -623,6 +623,8 @@ export interface CreateComputerRegistrationInput {
   expiresAt: Date
   /** A managed computer's own row: spending the token keys that row instead of creating one. */
   computerId?: ComputerId
+  /** The console visibility the new Computer takes; absent means Selected with only its registrant. */
+  sharing?: { visibility: ResourceVisibility; sharedWith: string[] }
 }
 
 export interface CreateManagedComputerInput {
@@ -635,6 +637,8 @@ export interface CreateManagedComputerInput {
   poolSessionId?: string
   policy: ComputerPolicy
   agentAccess: ComputerAgentAccess
+  /** Who sees it; everyone in the organization when absent. */
+  sharing?: { visibility: ResourceVisibility; sharedWith: string[] }
   now: Date
 }
 

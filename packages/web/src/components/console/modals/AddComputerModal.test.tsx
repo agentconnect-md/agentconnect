@@ -36,6 +36,10 @@ vi.mock('@/lib/data-context', () => ({
       { id: 'a1', name: 'ops', runtime: 'claude', icon: { kind: 'glyph', glyph: 'agentconnect' } },
       { id: 'a2', name: 'review', runtime: 'claude', icon: { kind: 'glyph', glyph: 'agentconnect' } }
     ],
+    members: [
+      { userId: 'u-me', name: 'Me', email: 'me@example.test', role: 'owner', isCurrentUser: true },
+      { userId: 'u-dana', name: 'Dana', email: 'dana@example.test', role: 'collaborator', isCurrentUser: false }
+    ],
     refresh: mocks.refresh
   })
 }))
@@ -85,7 +89,8 @@ describe('AddComputerModal', () => {
     expect(mocks.createComputerRegistration).not.toHaveBeenCalled()
 
     await act(async () => button('Create command').click())
-    expect(mocks.createComputerRegistration).toHaveBeenCalledWith({})
+    // Someone's desktop starts seen by its registrant alone.
+    expect(mocks.createComputerRegistration).toHaveBeenCalledWith({ visibility: 'restricted', sharedWith: ['u-me'] })
     const command = host.querySelector('[data-install-command]')!.textContent!
     expect(command).toContain(
       "npx -y @agentconnect.md/cli@rc computer install --channel rc --register 'ac_secret' --cp-url 'https://cp.example.com/v1/computers/register'"
@@ -187,7 +192,19 @@ describe('AddComputerModal', () => {
     expect(host.textContent).not.toContain('Where it runs')
   })
 
-  it('creates a pool computer shared by two agents and opens it', async () => {
+  it('registers the desktop with the visibility picked before minting', async () => {
+    mocks.createComputerRegistration.mockResolvedValue(registration)
+    mocks.fetchComputerRegistration.mockResolvedValue({ registrationId: 'r1', computerId: null })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    act(() => createRoot(host).render(<AddComputerModal onClose={() => {}} />))
+    const everyone = [...host.querySelectorAll('[role="radio"]')].find((b) => b.textContent?.includes('Everyone'))!
+    act(() => (everyone as HTMLElement).click())
+    await act(async () => button('Create command').click())
+    expect(mocks.createComputerRegistration).toHaveBeenCalledWith({ visibility: 'org', sharedWith: ['u-me'] })
+  })
+
+  it('creates a pool computer everyone can see and opens it', async () => {
     mocks.pool = { enabled: true, available: true }
     mocks.createPoolComputer.mockResolvedValue(computerFixture({ id: 'p1', kind: 'managed', allocation: 'manual' }))
     const onClose = vi.fn()
@@ -196,22 +213,16 @@ describe('AddComputerModal', () => {
     act(() => createRoot(host).render(<AddComputerModal onClose={onClose} />))
     act(() => button('Managed').click())
     expect(host.textContent).toContain('isolated in its own container')
-    // A name and at least one selected agent are needed.
+    // A name is needed; agents get it on their own Tools tab.
     expect(button('Create computer').disabled).toBe(true)
+    expect(host.querySelector('[data-pool-agent]')).toBeNull()
     const input = host.querySelector<HTMLInputElement>('input.inp')!
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'Shared browser')
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    expect(button('Create computer').disabled).toBe(true)
-    act(() => host.querySelector<HTMLInputElement>('[data-pool-agent="a1"]')!.click())
-    act(() => host.querySelector<HTMLInputElement>('[data-pool-agent="a2"]')!.click())
     await act(async () => button('Create computer').click())
-    expect(mocks.createPoolComputer).toHaveBeenCalledWith({
-      name: 'Shared browser',
-      agentAccess: { mode: 'selected', agents: ['a1', 'a2'] }
-    })
-    expect(mocks.refresh).toHaveBeenCalled()
+    expect(mocks.createPoolComputer).toHaveBeenCalledWith({ name: 'Shared browser', visibility: 'org', sharedWith: [] })
     expect(onClose).toHaveBeenCalled()
     expect(mocks.push).toHaveBeenCalledWith('/acme/computers/p1')
   })
