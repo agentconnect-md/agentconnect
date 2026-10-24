@@ -59,7 +59,8 @@ function bot(over: Partial<BotDto> = {}): BotDto {
     lastUsedAt: null,
     freedFromAgent: null,
     externalAppId: APP_ID,
-    platformConfig: { tenantId: TENANT_ID },
+    externalTenantId: TENANT_ID,
+    platformConfig: null,
     createdAt: '2026-10-22T00:00:00.000Z',
     ...over
   }
@@ -164,6 +165,12 @@ describe('MsTeamsBotSettings', () => {
 
     await render(bot({ prebuilt: true }), false)
     expect(buttonWith('Update in Teams')).toBeUndefined()
+  })
+
+  it('offers no secret rotation for the deployment’s own Teams app, whose secret the Setup Server keeps', async () => {
+    await render(bot({ prebuilt: true }))
+    expect(text()).toContain(TENANT_ID)
+    expect(secretInput()).toBeNull()
   })
 
   it('offers no download for a freed bot and no rotation to a viewer', async () => {

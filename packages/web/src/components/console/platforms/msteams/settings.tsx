@@ -50,14 +50,15 @@ export function MsTeamsBotSettings({ bot, canWrite }: { bot: BotDto; canWrite: b
     <div className="mb-3 flex flex-col gap-3 rounded-lg border border-(--border-subtle) bg-(--surface-card) px-3 py-3">
       <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
         <Value label={t('credentials.appId')}>{bot.externalAppId ?? '—'}</Value>
-        <Value label={t('credentials.tenantId')}>{bot.platformConfig?.tenantId ?? '—'}</Value>
+        <Value label={t('credentials.tenantId')}>{bot.externalTenantId ?? '—'}</Value>
         {endpoint && (
           <div className="desktop:col-span-2">
             <CopyField label={t('register.endpoint')} value={endpoint} />
           </div>
         )}
       </div>
-      {canWrite && (
+      {/* A deployment app's secret is the Setup Server's, so its row offers no rotation. */}
+      {canWrite && !bot.prebuilt && (
         <form
           className="flex flex-col gap-2 desktop:flex-row desktop:items-end"
           onSubmit={(event) => {

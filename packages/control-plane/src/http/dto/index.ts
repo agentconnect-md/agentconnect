@@ -2090,6 +2090,8 @@ export const BotDto = z.object({
   credentialRejectedCode: z.string().nullable(),
   /** The platform's public app identity (D6), such as a Google Chat app's project number; null on legacy rows. */
   externalAppId: z.string().nullable(),
+  /** The tenant half of that identity, such as a Teams bot's Microsoft 365 tenant; null on a tenantless platform or a legacy row. */
+  externalTenantId: z.string().nullable(),
   /** The platform's public row metadata (string values only), such as a Google Chat app's project ID. */
   platformConfig: z.record(z.string(), z.string()).nullable(),
   createdAt: z.string() // ISO-8601
