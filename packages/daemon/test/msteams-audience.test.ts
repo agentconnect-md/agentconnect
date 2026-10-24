@@ -320,4 +320,17 @@ describe('Teams audience through Graph', () => {
     expect(await conn.isFullMember(GUEST)).toBe(false)
     expect(msTeamsGraphMember(graphMember(OUTSIDER))).toMatchObject({ id: OUTSIDER, userRole: 'user', tenantId: OTHER })
   })
+
+  it('lists a person Graph repeats through the team share once, and a guest copy keeps them a guest', async () => {
+    const twice = [
+      graphMember(ALICE, ['owner']),
+      graphMember(GUEST),
+      { ...graphMember(ALICE), userId: ALICE.toUpperCase() },
+      graphMember(GUEST, ['guest'])
+    ]
+    const { conn } = connection(graph('private', twice))
+    conn.noteMessage(post(SHARED))
+    expect(await conn.listMemberIds(SHARED)).toEqual([ALICE, GUEST])
+    expect(await conn.isFullMember(GUEST)).toBe(false)
+  })
 })
