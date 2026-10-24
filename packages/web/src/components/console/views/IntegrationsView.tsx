@@ -400,7 +400,7 @@ function BotsCard({
     <div className="card">
       <div className="cardhead gap-0 py-0">
         <div
-          className="flex min-w-0 flex-1 gap-0 overflow-x-auto [scrollbar-width:none] desktop:overflow-x-visible [&::-webkit-scrollbar]:hidden"
+          className="flex min-w-0 flex-1 gap-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           role="tablist"
           aria-label={t('botPlatform')}
         >
