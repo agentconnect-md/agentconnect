@@ -1145,8 +1145,12 @@ and every `computer/policy`.
   may Take control and Release, and a badge names the media path (Direct, TURN relay or Screenshots).
 - **Managed computers [implemented]** (#3232). Where the deployment runs the pool (`GET …/computers/pool` answers
   `enabled` and whether a member is `available`), **Add Computer** offers _Your machine_ or _Managed_: a name and the
-  agent access (No agents / Selected agents / All agents) create a `manual` computer with `POST …/computers/pool`. The
-  list marks a managed computer's allocation (Pool, Agent's own with its agent, Session desktop), shows `Asleep` and
+  agent access (No agents / Selected agents / All agents) create a `manual` computer with `POST …/computers/pool`.
+  Infra shows the pool as one entry, like the daemon pool: **AgentConnect Computers** on the managed install,
+  **Computer pool** on a self-hosted cluster, with how many run and sleep and whether a member is `available`; it stays
+  while managed computers remain after the pool is turned off. It opens `/computers/pool`, which lists the managed
+  computers and adds one on the _Managed_ source. The egress card is hidden for now. That list marks a managed
+  computer's allocation (Pool, Agent's own with its agent, Session desktop), shows `Asleep` and
   any pool phase in flight (Starting, Waking, Resetting, Failed, Removing), and names the agent in control and how many
   wait. The detail page has a **Control** card for every Computer (the lease holder with its session, and the queue in
   order, from the DTO's `lease` and `waiting`, read without a lock and leaving out lapsed rows), and, for a managed one,

@@ -81,6 +81,8 @@ interface ModalOpts {
   daemonId?: string
   /** Edit agent: fired once the save went through, so the opener can re-read what it shows. */
   onSaved?: () => void
+  /** Add computer: the source it opens on — the pool page asks for a managed one. */
+  computerSource?: 'own' | 'pool'
 }
 
 interface ModalData {
@@ -178,7 +180,7 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               <DeleteGroupModal group={open.target as MemberSetRow} onClose={close} />
             )}
             {open.kind === 'agent' && <AddAgentModal onClose={close} />}
-            {open.kind === 'computer' && <AddComputerModal onClose={close} />}
+            {open.kind === 'computer' && <AddComputerModal onClose={close} source={open.opts?.computerSource} />}
             {/* Opened from an agent's "Add daemon" affordance: once the daemon connects,
                 Continue chains back into that agent's edit dialog with the fresh daemon
                 selected in the placement picker. */}
