@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { QQConverger, applyQQAction, type QQTurnState } from '../src/platforms/qq/turn-output.js'
 
 const chunk = (text: string, phase?: string, messageId?: string): SessionUpdate => ({

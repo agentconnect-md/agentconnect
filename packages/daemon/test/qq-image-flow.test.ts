@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ApiClient, TokenManager } from '@tencent-connect/qqbot-nodejs/protocol'
-import type { ContentBlock } from '@agentclientprotocol/sdk'
+import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 import { Daemon } from '../src/daemon.js'
 import { QQConnection } from '../src/platforms/qq/connection.js'
 import { executeTool, type SessionContext } from '../src/mcp/ops.js'

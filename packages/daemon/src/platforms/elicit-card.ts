@@ -23,7 +23,7 @@
  * an ask that WAS opened and then cancelled. One method returning `undefined` for both could not
  * tell those apart.
  */
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import type { ElicitSurface, ElicitTarget } from '../slack/render.js'
 
 /** One elicitation card as core hands it to a surface: the ask, the words above it, and the

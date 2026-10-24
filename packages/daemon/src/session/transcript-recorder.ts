@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { computerScreenshotHashesIn, type PlanBody, type ToolBody } from '@agentconnect.md/protocol'
 import { isEphemeralBody, redactEphemeralBody } from './ephemeral-results.js'
 import { planEntriesOf, planSummary } from './plan-entries.js'

@@ -5,7 +5,7 @@ import { researchRunningLine } from '../assistant/research.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../runtime-defs/claude-runtime.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { memoryActivationContext } from '../memory/entries/activation.js'
-import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
+import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk/unstable'
 import {
   LocalStore,
   sessionKey,

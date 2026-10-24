@@ -1,7 +1,7 @@
 import { agentHostKey } from '../src/acp/host-key.js'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
-import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { PermissionCoordinator, type PermissionHost } from '../src/permissions/coordinator.js'
 import type { SlackConnection } from '../src/slack/connection.js'
 import { elicitOptionToken } from '../src/slack/render.js'

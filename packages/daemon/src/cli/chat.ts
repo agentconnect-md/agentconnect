@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline'
 import { join } from 'node:path'
-import type { ContentBlock, SessionUpdate } from '@agentclientprotocol/sdk'
+import type { ContentBlock, SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { loadConfig } from '../config/load-config.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from '../runtimes/registry.js'
 import { selectAgent } from '../agents/load-agents.js'

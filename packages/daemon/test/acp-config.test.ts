@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { SessionConfigOption } from '@agentclientprotocol/sdk'
+import type { SessionConfigOption } from '@agentclientprotocol/sdk/unstable'
 import {
   claudeSessionMeta,
   effortOptionsFrom,

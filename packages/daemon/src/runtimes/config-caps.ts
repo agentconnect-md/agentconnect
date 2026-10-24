@@ -1,4 +1,4 @@
-import type { SessionConfigOption } from '@agentclientprotocol/sdk'
+import type { SessionConfigOption } from '@agentclientprotocol/sdk/unstable'
 import type { EffortOption, PermissionModeOption } from '@agentconnect.md/protocol'
 import { augmentClaudeEfforts } from '../runtime-defs/claude-runtime.js'
 

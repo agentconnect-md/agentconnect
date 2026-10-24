@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { McpServer } from '@agentclientprotocol/sdk'
+import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import type {
   WebchatMcpGrantAccept,
   WebchatMcpGrantActivate,

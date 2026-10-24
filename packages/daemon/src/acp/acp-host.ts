@@ -14,7 +14,7 @@ import {
   type SessionUpdate,
   type StopReason,
   type Usage
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 import {
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
@@ -47,10 +47,12 @@ import type { SteeringIdleBehavior, SteeringOutcome } from './steering.js'
 import { RuntimeSessionFailure, SESSION_FAILURE_CAPABILITIES, sessionFailureFromMeta } from './session-failure.js'
 import { customInstructionsMeta, customInstructionsSupported } from './session-instructions.js'
 
-// The raw session config-option shapes (from the ACP SDK), re-exported so
-// sessionConfigOptions() consumers can type the option tree without importing
-// the SDK directly.
-export type { SessionConfigOption, SessionConfigSelectGroup, SessionConfigSelectOption } from '@agentclientprotocol/sdk'
+// Full ACP v1 preserves elicitation, usage, and session lifecycle extensions.
+export type {
+  SessionConfigOption,
+  SessionConfigSelectGroup,
+  SessionConfigSelectOption
+} from '@agentclientprotocol/sdk/unstable'
 
 const PROTOCOL_VERSION = 1
 

@@ -990,7 +990,7 @@ import { type ConfigApply } from './cp/config-apply.js'
 import { buildConfigApply, type ConfigApplyHost } from './cp/config-apply-handlers.js'
 import { SystemMetrics } from './metrics/system-metrics.js'
 import { estimateOpenAiTurnCost } from './usage/openai-public-pricing.js'
-import type { McpServer, SessionUpdate } from '@agentclientprotocol/sdk'
+import type { McpServer, SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
 import {
   appendTurnPrompt,
@@ -18321,7 +18321,7 @@ export class Daemon {
     // §11: this session's OWN isolation, learned here because the model-session host below claims its pod before `sessions.handle` records the row — its row, else this turn's explicit choice, else the agent's default, which is the order SessionManager decides it in.
     this.sessionIsolation.set(key, persisted?.workspaceIsolation ?? effectiveSessionIsolation(agent, webchatIsolation))
     // …and WHERE it runs, which the host key below reads: decided once at birth, recorded, and kept for the session's life (session-executors.md §7).
-    let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
+    let remoteMcpServer: import('@agentclientprotocol/sdk/unstable').McpServer | undefined
     try {
       // A recorded strategy is loaded first: model selection judges its targets in that strategy's catalog (session-executors.md §5).
       if (this.executorPlane) await this.loadBirthStrategy(agent, key)
@@ -19495,7 +19495,7 @@ export class Daemon {
     sessionId: string,
     handled: HandledTurnSession
   ): Promise<{
-    promptBlocks: import('@agentclientprotocol/sdk').ContentBlock[]
+    promptBlocks: import('@agentclientprotocol/sdk/unstable').ContentBlock[]
     finalCaptureInput: string
     baseRevision: number
     providerCheckpoint: string | undefined
@@ -19524,7 +19524,7 @@ export class Daemon {
         ...(handled.contextEvents ?? []).map((event) => [event.ts, event.text] as const),
         ...initialEvents.map((event) => [event.ts, event.text] as const)
       ])
-      const deltaBlocks: import('@agentclientprotocol/sdk').ContentBlock[] = []
+      const deltaBlocks: import('@agentclientprotocol/sdk/unstable').ContentBlock[] = []
       if (initialEvents.length > 0) {
         deltaBlocks.push({
           type: 'text',
@@ -19598,7 +19598,7 @@ export class Daemon {
     p: Pending,
     host: AcpHost,
     sessionId: string,
-    promptBlocks: import('@agentclientprotocol/sdk').ContentBlock[]
+    promptBlocks: import('@agentclientprotocol/sdk/unstable').ContentBlock[]
   ): ReturnType<AcpHost['prompt']> {
     for (let attempt = 0; ; attempt++) {
       p.promptInFlight = true
@@ -19638,7 +19638,7 @@ export class Daemon {
       sessionId: string
       turnModel: string | undefined
       settlement: TurnSettlement
-      promptBlocks: import('@agentclientprotocol/sdk').ContentBlock[]
+      promptBlocks: import('@agentclientprotocol/sdk/unstable').ContentBlock[]
       finalCaptureInput: string
       baseRevision: number
       providerCheckpoint: string | undefined

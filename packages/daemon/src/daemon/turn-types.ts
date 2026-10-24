@@ -389,7 +389,7 @@ export type ReplyConnection = SlackConnection | TelegramConnection | DiscordConn
 /** What `SessionManager.handle()` hands back to a dispatched turn. */
 export interface HandledTurnSession {
   sessionId: string
-  blocks: import('@agentclientprotocol/sdk').ContentBlock[]
+  blocks: import('@agentclientprotocol/sdk/unstable').ContentBlock[]
   created: boolean
   skipped?: boolean
   captureInput?: string

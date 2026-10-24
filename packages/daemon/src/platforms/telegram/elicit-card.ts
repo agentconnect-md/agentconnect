@@ -28,7 +28,7 @@
  * 2026-09-08 against the Bot API: an edit omitting `reply_markup`, and one sending an empty
  * `inline_keyboard`, both return a message with no markup).
  */
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import { elicitFormBlockId } from '@agentconnect.md/protocol'
 import type {
   ElicitCardAsk,

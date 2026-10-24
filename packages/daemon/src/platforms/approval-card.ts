@@ -1,5 +1,5 @@
 // The approval-card facet of Layer 2 (integration-plugin-architecture.md §7.3): how a chat surface offers a permission request as a card people in the conversation answer.
-import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import type { SubsessionNoticeOutcome } from '../slack/render.js'
 import type { ElicitCardHost, ElicitCardTurn } from './elicit-card.js'
 

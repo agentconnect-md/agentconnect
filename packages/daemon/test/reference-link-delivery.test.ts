@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { OutputConverger } from '../src/slack/render.js'
 import { TelegramConverger } from '../src/telegram/render.js'
 import { DiscordConverger } from '../src/discord/render.js'

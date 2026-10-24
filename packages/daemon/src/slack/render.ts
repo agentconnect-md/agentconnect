@@ -1,4 +1,8 @@
-import type { CreateElicitationRequest, RequestPermissionRequest, SessionUpdate } from '@agentclientprotocol/sdk'
+import type {
+  CreateElicitationRequest,
+  RequestPermissionRequest,
+  SessionUpdate
+} from '@agentclientprotocol/sdk/unstable'
 import {
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,

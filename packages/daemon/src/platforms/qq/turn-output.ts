@@ -1,4 +1,4 @@
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { flattenUnsafeLinks, referenceBufferStart } from '../../messages/agent-links.js'
 import { AgentMessageRun, WorkBoundary } from '../../messages/message-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../../session/no-response.js'

@@ -1,4 +1,4 @@
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { GithubReplyCollector } from '../../github/poster.js'
 import { flattenUnsafeLinks } from '../../messages/agent-links.js'
 import { AgentMessageRun, WorkBoundary } from '../../messages/message-boundary.js'

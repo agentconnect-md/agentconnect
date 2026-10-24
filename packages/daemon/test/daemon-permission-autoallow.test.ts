@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { Daemon, noneSuppressedApprovalSurface, isBuiltinSystemTool, isBuiltinSystemToolCall } from '../src/daemon.js'
 import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'

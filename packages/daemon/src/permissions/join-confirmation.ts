@@ -1,5 +1,5 @@
 // The confirmation asked before the bot joins a public channel (#2979): its card's request, its answers and how it reads settled.
-import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import type { ReadAsker } from '../assistant/place-access.js'
 
 /** How long a join confirmation waits: an API caller's answer window, the one fixed wait a live turn gives a person it asked. */

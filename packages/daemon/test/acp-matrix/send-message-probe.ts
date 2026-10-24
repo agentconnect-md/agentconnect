@@ -2,7 +2,7 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { execFileSync } from 'node:child_process'
-import type { McpServer } from '@agentclientprotocol/sdk'
+import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import { IntegrationSchema } from '../../src/agents/agent-schema.js'
 import type { AcpHost } from '../../src/acp/acp-host.js'
 import {

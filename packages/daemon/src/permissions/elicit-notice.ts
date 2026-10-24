@@ -1,6 +1,6 @@
 // The in-channel notice for an elicitation declined because this turn's surface cannot render it.
 // Without it the agent asks the reader a question and the reader never learns it was asked (#1794).
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import type { NoticeMarkup } from '../platforms/turn-chrome.js'
 import { clampTo } from '../slack/render.js'
 

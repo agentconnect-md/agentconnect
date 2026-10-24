@@ -23,7 +23,7 @@
  * a different component rather than a different bound — so choosing it would buy nicer pixels for
  * two more code paths and two more cliffs. One control, one bound, one read path.
  */
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import { elicitFormBlockId } from '@agentconnect.md/protocol'
 import type {
   ElicitCardAsk,

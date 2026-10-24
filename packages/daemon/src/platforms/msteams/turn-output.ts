@@ -1,5 +1,5 @@
 // Teams' Layer-2 turn output (teams-integration.md §4.3): one message per text block, posted once and edited in place as it streams.
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { flattenUnsafeLinks, referenceBufferStart } from '../../messages/agent-links.js'
 import { AgentMessageRun, WorkBoundary } from '../../messages/message-boundary.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'

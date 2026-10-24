@@ -1,4 +1,4 @@
-import type { McpServer } from '@agentclientprotocol/sdk'
+import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import { RESERVED_MCP_SERVER_NAME, type McpTransportCapabilities } from '@agentconnect.md/protocol'
 import type { McpServerDef } from '../config/config-schema.js'
 

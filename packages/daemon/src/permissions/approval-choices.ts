@@ -4,7 +4,7 @@ import type {
   CreateElicitationResponse,
   RequestPermissionRequest,
   RequestPermissionResponse
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 import {
   AGENT_PERMISSION_MAX_OPTIONS,
   AgentPermissionOption,

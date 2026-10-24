@@ -1,6 +1,6 @@
 // Google Chat's Layer-2 turn output (google-chat-integration.md §5): one Markdown message per text block, edited in place while it streams.
 import { createHash } from 'node:crypto'
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { flattenUnsafeLinks, referenceBufferStart } from '../../messages/agent-links.js'
 import { AgentMessageRun, WorkBoundary } from '../../messages/message-boundary.js'
 import { stableMessageId, type NormalizedMessage } from '../../messages/normalized.js'

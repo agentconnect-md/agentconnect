@@ -1,4 +1,4 @@
-import type { ContentBlock } from '@agentclientprotocol/sdk'
+import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 import {
   SessionImageAttachment as SessionImageAttachmentSchema,
   type SessionImageAttachment,

@@ -1,4 +1,4 @@
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
 import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'

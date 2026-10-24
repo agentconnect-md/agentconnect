@@ -1,6 +1,6 @@
 // An API turn's runtime approvals go to its caller first (shared-bot-relay.md §10.4): a refusal stands, and only an allow the caller may not make reaches an Agent editor.
 import { describe, expect, it, vi } from 'vitest'
-import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { API_CALLER_ANSWER_TIMEOUT_MS } from '@agentconnect.md/protocol'
 import { WEBCHAT_ELICIT_SURFACE } from '../src/slack/render.js'
 import type { ChatEvent } from '../src/session/chat-turn.js'

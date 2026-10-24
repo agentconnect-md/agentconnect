@@ -1,4 +1,4 @@
-import type { ContentBlock } from '@agentclientprotocol/sdk'
+import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 
 // Mid-turn steering over the `_session/steering` ACP extension shipped by codex-acp (#309) and
 // claude-agent-acp. Upstream is standardising the same behaviour as `session/inject`; when that

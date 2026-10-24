@@ -5,7 +5,7 @@
  * inputs and select menus, so everything but a one-tap question is answered in a modal.
  */
 import { describe, it, expect, vi } from 'vitest'
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import { elicitFormBlockId } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'

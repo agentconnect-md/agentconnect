@@ -1,4 +1,4 @@
-import type { McpServer } from '@agentclientprotocol/sdk'
+import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import { ModelSelectionError, type AcpHost } from '../../acp/acp-host.js'
 import type { Agent } from '../../agents/agent-schema.js'
 import type { LocalStore, SessionRecord } from '../../store/local-store.js'

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 
 import type { AcpHost } from '../../src/acp/acp-host.js'
 import { Daemon, type DaemonEvaluationTurnResult } from '../../src/daemon.js'

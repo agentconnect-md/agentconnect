@@ -1,7 +1,7 @@
 // Teams' approval and question cards (teams-integration.md §4.4): Adaptive Cards on the turn's conversation, answered by relay-forwarded clicks and replaced in place.
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
-import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
