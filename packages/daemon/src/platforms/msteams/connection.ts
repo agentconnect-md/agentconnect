@@ -146,6 +146,8 @@ const TEAM_CHANNELS_TTL_MS = 10 * 60_000
 const ROSTER_TTL_MS = 10 * 60_000
 /** The most members one read returns, five pages of the Bot Connector's hundred. */
 const ROSTER_MAX = 500
+/** The most Graph reads one history page makes to fill itself past dropped system events. */
+const HISTORY_FILL_READS = 5
 
 export interface MsTeamsDeps {
   group: MsTeamsConnectionGroup
@@ -437,26 +439,32 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     const top = Math.min(Math.max(Math.trunc(options.limit ?? MSTEAMS_GRAPH_PAGE_MAX), 1), MSTEAMS_GRAPH_PAGE_MAX)
     const oldest = historyBoundMs(options.oldest)
     const latest = historyBoundMs(options.latest)
-    const page = await this.graph.page(source, {
-      top,
-      ...(options.cursor ? { skiptoken: msTeamsSkiptoken(options.cursor) } : {})
-    })
-    // Only a chat lists by creation; a channel lists by its threads' last activity, so an old post never ends its pages.
-    const passedOldest =
-      source.kind === 'chat' && page.messages.some((m) => oldest !== undefined && m.createdMs < oldest)
-    const nextCursor = passedOldest ? undefined : page.skiptoken
-    const messages = page.messages
-      .filter((m) => (oldest === undefined || m.createdMs >= oldest) && (latest === undefined || m.createdMs <= latest))
-      .sort(newestFirst)
-      .map((m) => ({
-        sender: m.sender,
-        ts: m.id,
-        text: m.text,
-        isBot: m.isBot,
-        // Every channel post roots a thread named by its own ID; a group chat has no threads.
-        ...(source.kind === 'channel' ? { threadTs: m.id } : {}),
-        ...(m.link ? { link: m.link } : {})
-      }))
+    const kept: MsTeamsGraphMessage[] = []
+    let skiptoken = options.cursor ? msTeamsSkiptoken(options.cursor) : undefined
+    let passedOldest = false
+    // System events count toward Graph's `$top` but are dropped, so a short page reads on, asking only for what is still missing.
+    for (let read = 0; read < HISTORY_FILL_READS && kept.length < top; read += 1) {
+      const page = await this.graph.page(source, { top: top - kept.length, ...(skiptoken ? { skiptoken } : {}) })
+      // Only a chat lists by creation; a channel lists by its threads' last activity, so an old post never ends its pages.
+      passedOldest = source.kind === 'chat' && page.messages.some((m) => oldest !== undefined && m.createdMs < oldest)
+      kept.push(
+        ...page.messages.filter(
+          (m) => (oldest === undefined || m.createdMs >= oldest) && (latest === undefined || m.createdMs <= latest)
+        )
+      )
+      skiptoken = page.skiptoken
+      if (!skiptoken || passedOldest) break
+    }
+    const nextCursor = passedOldest ? undefined : skiptoken
+    const messages = kept.sort(newestFirst).map((m) => ({
+      sender: m.sender,
+      ts: m.id,
+      text: m.text,
+      isBot: m.isBot,
+      // Every channel post roots a thread named by its own ID; a group chat has no threads.
+      ...(source.kind === 'channel' ? { threadTs: m.id } : {}),
+      ...(m.link ? { link: m.link } : {})
+    }))
     return { messages, hasMore: nextCursor !== undefined, ...(nextCursor ? { nextCursor } : {}) }
   }
 
