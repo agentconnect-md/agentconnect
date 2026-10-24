@@ -529,6 +529,8 @@ interface PermissionApproval extends ApprovalEntry<RequestPermissionRequest, Req
   /** Original ACP object used by the host's final policy observer. */
   evaluationParams: RequestPermissionRequest
   chat?: ChatPermissionCard
+  /** The routed editor's card in their own chat, beside a conversation card only editors may answer; kept on the row's beside handle. */
+  beside?: ChatPermissionCard
   /** Set on the daemon's own confirmation before the bot joins a channel: only the people behind the turn answer it. */
   join?: JoinWait
 }
@@ -1488,7 +1490,7 @@ export class PermissionCoordinator {
     return undefined
   }
 
-  /** Where only editors may answer a card, an editor is also told in a DM unless the person who asked is one; the first answer decides. */
+  /** Where only editors may answer a card, an editor also gets it in their own chat unless the person who asked is one; the first answer decides. */
   private async dmEditorBeside(requestId: string, agentId: string, p: Pending, requesterName: string | null) {
     const asker = p.plan.requesterId
     // The asker as their own message named them, with the cross-app id a synced platform matches by.
@@ -1582,8 +1584,8 @@ export class PermissionCoordinator {
     if (!rec) return
     const conn = this.host.slackConnFor(target.integrationId)
     if (!conn) {
-      // Off Slack the chosen editor's card goes through their platform's own facet, unless another card holds the request.
-      if (!approver && !beside) await this.sendEditorCard(requestId, agentId, p, target, requesterName)
+      // Off Slack the chosen editor's card goes through their platform's own facet, beside the conversation's card if one is up.
+      if (!approver) await this.sendEditorCard(requestId, agentId, p, target, requesterName)
       return
     }
     const channel = approver?.channel ?? (await conn.openDirectMessage(target.userId))
@@ -1674,11 +1676,18 @@ export class PermissionCoordinator {
     requesterName: string | null
   ): Promise<boolean> {
     const rec = this.pendingApprovals.get(requestId)
-    if (rec?.kind !== 'permission' || rec.chat || rec.notify) return false
+    if (rec?.kind !== 'permission' || rec.notify || rec.beside || rec.chat?.editor || rec.chat?.askerId) return false
     const channel = await this.host.directMessageAt?.(target.integrationId, target.userId).catch(() => undefined)
     if (!channel) return false
     const dm = { integrationId: target.integrationId, channel }
-    return await this.sendDirectCard(requestId, agentId, p, dm, { editor: target, requesterName })
+    return await this.sendDirectCard(
+      requestId,
+      agentId,
+      p,
+      dm,
+      { editor: target, requesterName },
+      rec.chat !== undefined
+    )
   }
 
   /** Post a permission card into one person's own chat, answered by them alone as the asker or the routed editor; true once it is live. */
@@ -1687,10 +1696,11 @@ export class PermissionCoordinator {
     agentId: string,
     p: Pending,
     dm: { integrationId: string; channel: string },
-    who: { askerId: string } | { editor: DmTarget; requesterName: string | null }
+    who: { askerId: string } | { editor: DmTarget; requesterName: string | null },
+    beside = false
   ): Promise<boolean> {
     const rec = this.pendingApprovals.get(requestId)
-    if (rec?.kind !== 'permission' || rec.chat || rec.notify) return false
+    if (rec?.kind !== 'permission' || rec.notify || rec.beside || (rec.chat !== undefined) !== beside) return false
     const cards = this.host.chatCardsAt(dm.integrationId)
     if (!cards || rec.params.options.length > cards.facet.maxOptions) return false
     const { facet, conn } = cards
@@ -1723,7 +1733,9 @@ export class PermissionCoordinator {
     if (!ts) return false
     // Kept on the row as well, so the sweep after a restart retires a card no resolver answers any more.
     const store = this.host.store()
-    const stored = await store.setPermissionRequestNotify(agentId, requestId, dm.integrationId, landed.channel, ts)
+    const stored = beside
+      ? await store.setPermissionRequestBeside(agentId, requestId, dm.integrationId, landed.channel, ts)
+      : await store.setPermissionRequestNotify(agentId, requestId, dm.integrationId, landed.channel, ts)
     if (!stored || this.pendingApprovals.get(requestId) !== rec) {
       facet.rewrite(
         { ...landed, ts },
@@ -1734,18 +1746,19 @@ export class PermissionCoordinator {
           fallback: 'Permission resolved'
         })
       )
-      if (stored) void store.clearPermissionRequestNotify(agentId, requestId).catch(() => {})
+      if (stored) void this.clearDmHandle(agentId, requestId, beside)
       return true
     }
-    rec.chat = {
+    const card: ChatPermissionCard = {
       facet,
       ...landed,
       ts,
       place: { integrationId: p.plan.integrationId, channel: p.plan.channel },
       routedVia: dm.integrationId,
-      ...('editor' in who ? { editor: who.editor, ...(context ? { context } : {}) } : { askerId: who.askerId }),
-      stored: { agentId, requestId }
+      ...('editor' in who ? { editor: who.editor, ...(context ? { context } : {}) } : { askerId: who.askerId })
     }
+    if (beside) rec.beside = card
+    else rec.chat = { ...card, stored: { agentId, requestId } }
     return true
   }
 
@@ -1768,9 +1781,9 @@ export class PermissionCoordinator {
   ): Promise<ApprovalRouteTarget | undefined> {
     const cp = this.host.cpApprovalRoute()
     if (!cp) return undefined
-    // A permission request no card holds yet may also go to an editor's card off Slack; Slack's own integration stays first.
+    // A permission request may also go to an editor's card off Slack, alone or beside the conversation's; Slack's own integration stays first.
     const rec = this.pendingApprovals.get(requestId)
-    const cards = rec?.kind === 'permission' && !rec.chat && !rec.notify
+    const cards = rec?.kind === 'permission' && !rec.notify && !rec.beside && !rec.chat?.editor && !rec.chat?.askerId
     const preferred = this.host.slackConnFor(p.plan.integrationId ?? '') ? p.plan.integrationId : undefined
     const integrationIds = this.host.approvalDmIntegrations(agentId, preferred, cards)
     if (integrationIds.length === 0) return undefined
@@ -1978,7 +1991,7 @@ export class PermissionCoordinator {
     if (rec?.agentId !== agentId) return false
     return (
       rec.notify?.target.integrationId === integrationId ||
-      (rec.kind === 'permission' && rec.chat?.routedVia === integrationId)
+      (rec.kind === 'permission' && (rec.chat?.routedVia === integrationId || rec.beside?.routedVia === integrationId))
     )
   }
 
@@ -2115,20 +2128,21 @@ export class PermissionCoordinator {
         .catch(() => {})
     }
     const fallback = allowed === undefined ? 'Permission cancelled' : 'Permission resolved'
-    if (rec.kind === 'permission' && rec.chat) {
-      const chat = rec.chat
-      const settled = chat.facet.settled({
-        params: rec.params,
-        ...(chat.subsession ? { subsession: chat.subsession } : {}),
-        ...(chat.context ? { context: chat.context } : {}),
-        text: label,
-        ...(allowed !== undefined ? { allowed } : {}),
-        fallback
-      })
-      // A card whose post has not returned is rewritten by its posting path, in these words.
-      if (chat.ts === undefined) chat.settledFirst = settled
-      else chat.facet.rewrite(chat, settled)
-    }
+    if (rec.kind === 'permission')
+      for (const chat of [rec.chat, rec.beside]) {
+        if (!chat) continue
+        const settled = chat.facet.settled({
+          params: rec.params,
+          ...(chat.subsession ? { subsession: chat.subsession } : {}),
+          ...(chat.context ? { context: chat.context } : {}),
+          text: label,
+          ...(allowed !== undefined ? { allowed } : {}),
+          fallback
+        })
+        // A card whose post has not returned is rewritten by its posting path, in these words.
+        if (chat.ts === undefined) chat.settledFirst = settled
+        else chat.facet.rewrite(chat, settled)
+      }
     if (rec.kind === 'permission' && rec.chat?.ts) {
       if (rec.chat.stored)
         void this.host
@@ -2136,6 +2150,7 @@ export class PermissionCoordinator {
           .clearPermissionRequestNotify(rec.chat.stored.agentId, rec.chat.stored.requestId)
           .catch(() => {})
     }
+    if (rec.kind === 'permission' && rec.beside) void this.clearDmHandle(rec.agentId, id, true)
     if (!rec.notify) return
     const mark = allowed === undefined ? ':hourglass:' : allowed ? ':white_check_mark:' : ':no_entry_sign:'
     const blocks =
@@ -2398,8 +2413,12 @@ export class PermissionCoordinator {
       await this.settle(input.requestId, rec, picked, by, 'dm', input.actor, answeredBy)
       return
     }
+    // The routed editor's card beside the conversation's is told apart by the card clicked, else by who clicked.
+    const besideClicked =
+      rec.beside &&
+      (input.ts !== undefined ? input.ts === rec.beside.ts : input.actor?.userId === rec.beside.editor?.userId)
     // A request no card was posted for is the console's alone.
-    const chat = rec.chat
+    const chat = besideClicked ? rec.beside : rec.chat
     if (!chat) return
     if (chat.ts === undefined && input.ts !== undefined) chat.ts = input.ts
     // A bot never answers, and its click leaves the card for the people there.

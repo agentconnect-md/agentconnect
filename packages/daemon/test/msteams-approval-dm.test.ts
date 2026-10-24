@@ -1,4 +1,4 @@
-/** A Teams approval card in one person's own 1:1 chat: an external place's asker (assistant-mode.md §5.5), or the editor the control plane routes it to (teams-integration.md §4.4). */
+/** A Teams approval card in one person's own 1:1 chat: an external place's asker (assistant-mode.md §5.5), or the editor the control plane routes it to, alone or beside the channel's card (teams-integration.md §4.4). */
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
@@ -16,6 +16,7 @@ const SHARED = '19:example-shared@thread.tacv2'
 const ASKER = '11111111-1111-1111-1111-111111111111'
 const GUEST = '22222222-2222-2222-2222-222222222222'
 const EDITOR = '33333333-3333-3333-3333-333333333333'
+const MEMBER_EDITOR = '44444444-4444-4444-4444-444444444444'
 
 const permission = {
   sessionId: 's1',
@@ -38,8 +39,8 @@ const question = {
 
 const SLACK_INT = 'int-slack'
 
-/** A daemon holding one live Teams turn in a shared channel, asked by `asker`, with every card captured; `slack` also connects a Slack integration. */
-async function world(asker = ASKER, slack = false) {
+/** A daemon holding one live Teams turn in a shared channel, asked by `asker`, with every card captured; `slack` also connects a Slack integration, `editorsOnly` makes it an internal channel only editors answer in. */
+async function world(asker = ASKER, slack = false, editorsOnly = false) {
   const daemon: any = new Daemon({ sandboxMechanism: null })
   daemon.cfg = { ...(daemon.cfg ?? {}), webAppUrl: 'https://console.example.test' }
   const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
@@ -54,7 +55,8 @@ async function world(asker = ASKER, slack = false) {
       gated: false,
       sessionModes: [],
       externalChannels: [],
-      decisions: { bindings: [], definitions: [] }
+      decisions: { bindings: [], definitions: [] },
+      ...(editorsOnly ? { chatAuthority: 'editors' } : {})
     },
     config: { appId: ZERO, tenantId: ZERO, clientSecret: 'client-secret-example' }
   }
@@ -97,9 +99,15 @@ async function world(asker = ASKER, slack = false) {
       approvalSurfaceSuppressed: false
     },
     entry: {
-      msg: { source: 'user', text: 'please write it', sender: { id: asker, isBot: false }, externallyShared: true }
+      msg: {
+        source: 'user',
+        text: 'please write it',
+        sender: { id: asker, isBot: false },
+        externallyShared: !editorsOnly
+      }
     },
     conn,
+    turnState: { conn, target: conn.targetFor(SHARED) },
     hostKey: AGENT,
     outwardSessionId: 'sid-1',
     chrome: {},
@@ -250,6 +258,152 @@ describe('an approval on the editor path of an agent on both Slack and Teams', (
     const w = await world(GUEST, true)
     void w.permissions.onAcpElicit(AGENT, 's1', question)
     await vi.waitFor(() => expect(routedTo(w)).toEqual([[SLACK_INT]]))
+    await w.store.close()
+  })
+})
+
+describe('an approval card in a Teams channel only editors may answer', () => {
+  /** The control plane routes to EDITOR, verifies them on their card, and counts EDITOR and MEMBER_EDITOR as editors in the channel. */
+  function editorsWorld(asker = ASKER, slack = false) {
+    return world(asker, slack, true).then((w) => {
+      w.cp.mockImplementation(
+        async (payload: { requestId: string; verify?: unknown }): Promise<Record<string, unknown>> => {
+          const verify = payload.verify as { userId: string; consoleUserId?: string } | undefined
+          if (verify?.consoleUserId) return { requestId: payload.requestId, allowed: true, displayName: 'Edie' }
+          if (verify) {
+            const editor = verify.userId === EDITOR || verify.userId === MEMBER_EDITOR
+            return { requestId: payload.requestId, allowed: editor, linked: true }
+          }
+          return {
+            requestId: payload.requestId,
+            target: { integrationId: INT, teamId: 'global', userId: EDITOR, consoleUserId: 'user-editor' }
+          }
+        }
+      )
+      return w
+    })
+  }
+  const besideRow = async (w: Awaited<ReturnType<typeof world>>) =>
+    (await w.store.listPermissionRequests(AGENT))[0] as unknown as Record<string, unknown>
+  const replaced = (w: Awaited<ReturnType<typeof world>>): string[] =>
+    w.conn.replaceCard.mock.calls.map((call: [string]) => call[0])
+
+  it('also sends the routed editor the card in their own chat, which decides it there', async () => {
+    const w = await editorsWorld()
+    const decided = vi.fn()
+    void w.permissions.onAcpPermission(AGENT, 's1', permission).then(decided)
+    await vi.waitFor(() => expect(w.postedTo()).toHaveLength(2))
+    expect(w.postedTo()[1]).toBe(`a:${EDITOR}`)
+    // Its handle is the row's beside one, so a restart's sweep retires it.
+    await vi.waitFor(async () =>
+      expect(await besideRow(w)).toMatchObject({ besideIntegrationId: INT, besideTs: 'activity-2' })
+    )
+    await w.permissions.handlePermissionChoice({
+      requestId: w.onlyRequest(),
+      optionId: 'allow',
+      ts: 'activity-2',
+      actor: { userId: EDITOR }
+    })
+    await vi.waitFor(() =>
+      expect(decided).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    )
+    // Both cards say how it ended, and the beside handle is gone.
+    await vi.waitFor(() => expect(replaced(w).sort()).toEqual(['activity-1', 'activity-2']))
+    await vi.waitFor(async () => expect(await besideRow(w)).toMatchObject({ status: 'allowed', besideTs: null }))
+    await w.store.close()
+  })
+
+  it('settles the editor’s card too when an editor in the channel answers first', async () => {
+    const w = await editorsWorld()
+    const decided = vi.fn()
+    void w.permissions.onAcpPermission(AGENT, 's1', permission).then(decided)
+    await vi.waitFor(() => expect(w.postedTo()).toHaveLength(2))
+    const id = w.onlyRequest()
+    // A non-editor in the channel is refused; the cards stay live.
+    await w.permissions.handlePermissionChoice({
+      requestId: id,
+      optionId: 'allow',
+      ts: 'activity-1',
+      actor: { userId: ASKER }
+    })
+    expect(decided).not.toHaveBeenCalled()
+    await w.permissions.handlePermissionChoice({
+      requestId: id,
+      optionId: 'deny',
+      ts: 'activity-1',
+      actor: { userId: MEMBER_EDITOR }
+    })
+    await vi.waitFor(() => expect(decided).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'deny' } }))
+    await vi.waitFor(() => expect(replaced(w).sort()).toEqual(['activity-1', 'activity-2']))
+    await w.store.close()
+  })
+
+  it('retires only the editor’s card when they are no longer authorized', async () => {
+    const w = await editorsWorld()
+    w.cp.mockImplementation(
+      async (payload: { requestId: string; verify?: unknown }): Promise<Record<string, unknown>> =>
+        (payload.verify as { consoleUserId?: string } | undefined)?.consoleUserId
+          ? { requestId: payload.requestId, allowed: false }
+          : payload.verify
+            ? { requestId: payload.requestId, allowed: false, linked: true }
+            : {
+                requestId: payload.requestId,
+                target: { integrationId: INT, teamId: 'global', userId: EDITOR, consoleUserId: 'user-editor' }
+              }
+    )
+    const decided = vi.fn()
+    void w.permissions.onAcpPermission(AGENT, 's1', permission).then(decided)
+    await vi.waitFor(() => expect(w.postedTo()).toHaveLength(2))
+    await w.permissions.handlePermissionChoice({
+      requestId: w.onlyRequest(),
+      optionId: 'allow',
+      ts: 'activity-2',
+      actor: { userId: EDITOR }
+    })
+    await vi.waitFor(() => expect(replaced(w)).toEqual(['activity-2']))
+    expect(JSON.stringify(w.conn.replaceCard.mock.calls[0]![1])).toContain('No longer authorized')
+    expect(decided).not.toHaveBeenCalled()
+    await w.store.close()
+  })
+
+  it('sends no second card when the person who asked is an editor', async () => {
+    const w = await editorsWorld(MEMBER_EDITOR)
+    void w.permissions.onAcpPermission(AGENT, 's1', permission)
+    await vi.waitFor(() => expect(w.postedTo()).toHaveLength(1))
+    await vi.waitFor(() =>
+      expect(w.cp).toHaveBeenCalledWith(expect.objectContaining({ verify: expect.anything() }), undefined)
+    )
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(w.postedTo()).toHaveLength(1)
+    expect(w.cp.mock.calls.some((call) => !(call[0] as { verify?: unknown }).verify)).toBe(false)
+    await w.store.close()
+  })
+
+  it('offers Slack before Teams for the editor beside the card', async () => {
+    const w = await editorsWorld(ASKER, true)
+    void w.permissions.onAcpPermission(AGENT, 's1', permission)
+    await vi.waitFor(() =>
+      expect(
+        w.cp.mock.calls
+          .map((call) => call[0] as { verify?: unknown; integrationIds?: string[] })
+          .filter((payload) => !payload.verify)
+          .map((payload) => payload.integrationIds)
+      ).toEqual([[SLACK_INT, INT]])
+    )
+    await w.store.close()
+  })
+
+  it('retires the editor’s card after a restart settled its request', async () => {
+    const w = await editorsWorld()
+    void w.permissions.onAcpPermission(AGENT, 's1', permission)
+    await vi.waitFor(async () => expect(await besideRow(w)).toMatchObject({ besideTs: 'activity-2' }))
+    // As if the process died: the row settles with no live entry to rewrite the card.
+    const id = w.onlyRequest()
+    w.permissions.pendingApprovals.delete(id)
+    await w.store.resolvePermissionRequest(AGENT, id, 'expired', Date.now())
+    await w.permissions.retireOrphanedCards(INT)
+    expect(replaced(w)).toEqual(['activity-2'])
+    expect(await besideRow(w)).toMatchObject({ besideTs: null })
     await w.store.close()
   })
 })
