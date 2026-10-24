@@ -1,6 +1,6 @@
 'use client'
 
-// Managed computers' egress (computer-use.md §15.4): read by members, set by admins and owners.
+// Managed computers' egress (computer-use.md §15.4): read by members, set by admins and owners. Hidden from Infra for now.
 import { useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { setComputerEgress, type ComputerEgressDto } from '@/lib/api'

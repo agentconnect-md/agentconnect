@@ -225,4 +225,13 @@ describe('AddComputerModal', () => {
     expect(host.textContent).toContain('No pool member is connected right now')
     expect(button('Create computer').disabled).toBe(true)
   })
+
+  it('opens on the managed source when the pool page asks for one', () => {
+    mocks.pool = { enabled: true, available: true }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    act(() => createRoot(host).render(<AddComputerModal onClose={() => {}} source="pool" />))
+    expect(host.textContent).toContain('isolated in its own container')
+    expect(button('Managed').getAttribute('aria-checked')).toBe('true')
+  })
 })

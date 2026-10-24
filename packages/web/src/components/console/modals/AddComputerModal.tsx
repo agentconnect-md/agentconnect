@@ -23,7 +23,13 @@ export const REGISTRATION_POLL_MS = 3000
 
 const OSES: InstallOs[] = ['linux', 'macos', 'windows', 'docker']
 
-export default function AddComputerModal({ onClose }: { onClose: () => void }) {
+export default function AddComputerModal({
+  onClose,
+  source: initialSource = 'own'
+}: {
+  onClose: () => void
+  source?: 'own' | 'pool'
+}) {
   const t = useTranslations('Computers.add')
   const tc = useTranslations('Computers')
   const ago = useAgo()
@@ -40,7 +46,7 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
   const [expired, setExpired] = useState(false)
   const connected = computer !== null && computer.status !== 'offline' && computer.status !== 'revoked'
   const { data: pool } = useComputerPool()
-  const [source, setSource] = useState<'own' | 'pool'>('own')
+  const [source, setSource] = useState<'own' | 'pool'>(initialSource)
 
   // Wait for the token to be spent, then for the new Computer's channel to report in.
   useEffect(() => {
