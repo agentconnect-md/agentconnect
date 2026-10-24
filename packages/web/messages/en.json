@@ -6337,7 +6337,7 @@
         },
         "permissions": {
           "label": "Access",
-          "caption": "<action>Permissions</action> → enable Card.Instance.Write so members can answer questions with a tap, and Contact.Org.Read so the Console shows your organization's name.",
+          "caption": "<action>Permissions</action> → enable Card.Instance.Write so members can answer questions with a tap, and Contact.Org.Read and qyapi_get_microapp_list so the Console shows your organization's and robot's names.",
           "apply": "Enable"
         },
         "publish": {

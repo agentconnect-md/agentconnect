@@ -24,11 +24,13 @@ describe('DingTalk credential check', () => {
       ok: true,
       identity: {
         name: 'DingTalk · dingexampleclient',
+        // An app list naming no robot leaves the bot its bare Client ID.
+        botName: 'dingexampleclient',
         externalAppId: 'dingexampleclient',
         platformConfig: { edition: 'mainland' }
       }
     })
-    expect(fetchImpl).toHaveBeenCalledOnce()
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
     const [url, init] = fetchImpl.mock.calls[0]!
     expect(url).toBe(DINGTALK_TOKEN_URLS.mainland)
     expect(init?.method).toBe('POST')
@@ -41,7 +43,28 @@ describe('DingTalk credential check', () => {
       ok: true,
       identity: { platformConfig: { edition: 'international' } }
     })
-    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([DINGTALK_TOKEN_URLS.international])
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      DINGTALK_TOKEN_URLS.international,
+      'https://api.dingtalk.io/v1.0/microApp/allInnerApps'
+    ])
+  })
+
+  it("names the bot after the robot the organization's app list gives this Client ID", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, _init?: RequestInit) =>
+      String(input).endsWith('/oauth2/accessToken')
+        ? Response.json({ accessToken: 'example-token', expireIn: 7200 })
+        : Response.json({
+            appList: [
+              { name: 'OtherApp', robotInfo: { name: 'Other Robot', robotCode: 'dingotherclient' } },
+              { name: 'ExampleApp', robotInfo: { name: ' Example Robot ', robotCode: 'dingexampleclient' } }
+            ]
+          })
+    )
+    expect(await verifyDingTalkApp(credentials, fetchImpl)).toMatchObject({
+      ok: true,
+      identity: { name: 'DingTalk · dingexampleclient', botName: 'Example Robot' }
+    })
+    expect(fetchImpl.mock.calls[1]![1]?.headers).toEqual({ 'x-acs-dingtalk-access-token': 'example-token' })
   })
 
   it('names the other edition when the app belongs to it', async () => {
@@ -82,7 +105,7 @@ describe('DingTalk credential check', () => {
     const fetchImpl = respond(200, { accessToken: 'example-token', expireIn: 7200 })
     const result = await createDingTalkCpProvider({ fetch: fetchImpl }).validateConfig(credentials, 'socket')
     expect(result.ok).toBe(true)
-    expect(fetchImpl).toHaveBeenCalledOnce()
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 })
 

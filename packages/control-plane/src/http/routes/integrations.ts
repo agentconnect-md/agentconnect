@@ -509,6 +509,7 @@ export function integrationRoutes(deps: HttpDeps) {
               agent,
               platform: req.body.platform,
               name,
+              ...(validated.identity.botName ? { botName: validated.identity.botName } : {}),
               transport,
               ...(req.principal ? { createdByUserId: req.principal.userId } : {})
             })

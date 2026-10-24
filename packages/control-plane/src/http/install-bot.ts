@@ -37,6 +37,8 @@ export interface InstallNewBotArgs extends CpNewBotInstall {
   /** Registry platform id — the bot/integration rows' `platform` column. */
   platform: string
   name: string
+  /** The bot row's own name; absent ⇒ `name`. */
+  botName?: string
   /** Inbound transport. 'http' ⇒ relay-pool ingest (send-only daemon spec);
    *  'socket' ⇒ the daemon's own long-lived connection. Default 'socket'. */
   transport?: SlackTransport
@@ -90,7 +92,7 @@ export async function installNewBot(
     id: botId,
     orgId,
     platform,
-    name,
+    name: args.botName ?? name,
     transport,
     ...(args.prebuilt ? { prebuilt: true } : {}),
     shareable,

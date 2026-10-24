@@ -1,10 +1,10 @@
 // `integration/tenant`: record the tenant a daemon socket's traffic named on its bot, and name the bot's integrations after it (dingtalk-integration.md §2.2).
-import type { BotRecord, BotRepo, BotSecretStore, IntegrationRepo } from '../persistence/ports.js'
+import type { BotRecord, BotRepo, BotSecretMaterial, BotSecretStore, IntegrationRepo } from '../persistence/ports.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
 import type { SocketBotTenant } from '../ws/deps.js'
 
 export interface SocketBotTenantDeps {
-  bots: Pick<BotRepo, 'setWorkspaceMetadata'>
+  bots: Pick<BotRepo, 'setWorkspaceMetadata' | 'renameFrom'>
   secrets: Pick<BotSecretStore, 'get'>
   integrations: Pick<IntegrationRepo, 'renameForBot'>
   platforms: CpPlatformRegistry
@@ -21,9 +21,19 @@ export function createSocketBotTenant(deps: SocketBotTenantDeps): SocketBotTenan
         deps.log.warn({ botId: bot.id }, 'integration/tenant: reported tenant differs from the recorded one')
         return false
       }
+      let secrets: BotSecretMaterial | null | undefined
+      const secretsOf = async () =>
+        secrets === undefined ? (secrets = await deps.secrets.get(bot.orgId, bot.id)) : secrets
+      // A bot still named by its placeholder reads its own name again, so a permission granted later takes effect.
+      const placeholders = tenant.botName?.placeholders(bot) ?? []
+      if (tenant.botName && placeholders.includes(bot.name)) {
+        const material = await secretsOf()
+        const name = material ? await tenant.botName.read(bot, material) : bot.name
+        if (name !== bot.name) await deps.bots.renameFrom(bot.orgId, bot.id, placeholders, name)
+      }
       if (bot.workspaceId && bot.workspaceName) return true
-      const secrets = await deps.secrets.get(bot.orgId, bot.id)
-      const named = secrets ? await tenant.name(bot, secrets, reported.tenantId) : { unnamed: 'no stored credential' }
+      const material = await secretsOf()
+      const named = material ? await tenant.name(bot, material, reported.tenantId) : { unnamed: 'no stored credential' }
       // The id is kept without a name too, so the next report retries only the lookup.
       if ('unnamed' in named) {
         deps.log.warn({ botId: bot.id, reason: named.unnamed }, 'integration/tenant: tenant not named')

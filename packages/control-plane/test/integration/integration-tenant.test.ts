@@ -30,7 +30,7 @@ afterEach(async () => {
 })
 
 /** DingTalk's token endpoint and organization read; `orgName` null answers as an app without Contact.Org.Read does. */
-function fakeDingTalk(state: { orgName: string | null; reads: string[] }): typeof fetch {
+function fakeDingTalk(state: { orgName: string | null; robotName?: string | null; reads: string[] }): typeof fetch {
   return (async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = String(input)
     if (Object.values(DINGTALK_TOKEN_URLS).includes(url)) {
@@ -38,6 +38,11 @@ function fakeDingTalk(state: { orgName: string | null; reads: string[] }): typeo
       return body.appKey === CLIENT_ID && body.appSecret === SECRET
         ? Response.json({ accessToken: 'example-access-token', expireIn: 7200 })
         : Response.json({ code: 'invalidClientIdOrSecret' }, { status: 400 })
+    }
+    if (url.endsWith('/v1.0/microApp/allInnerApps')) {
+      return state.robotName
+        ? Response.json({ appList: [{ robotInfo: { name: state.robotName, robotCode: CLIENT_ID } }] })
+        : Response.json({ code: 'Forbidden.AccessDenied.AccessTokenPermissionDenied' }, { status: 403 })
     }
     if (url.startsWith(AUTH_INFOS)) {
       state.reads.push(new URL(url).searchParams.get('targetCorpId') ?? '')
@@ -54,7 +59,7 @@ async function install(orgName: string | null = ORG_NAME) {
     capabilities: { platforms: ['dingtalk'], runtimes: ['claude'], acp: true, features: [] }
   })
   await seedDaemon(prisma, OTHER_DAEMON)
-  const state = { orgName, reads: [] as string[] }
+  const state = { orgName, robotName: null as string | null, reads: [] as string[] }
   const control = { integrationUpsert: async () => {}, integrationRemove: async () => {} }
   const app = buildHttpApp(prisma, {}, undefined, control as unknown as ControlSender, {
     dingTalkFetch: fakeDingTalk(state)
@@ -149,6 +154,26 @@ describe('integration/tenant → DingTalk organization name', () => {
     await report(app, integrationId)
     expect(state.reads).toEqual([CORP, CORP])
     expect((await names(integrationId, botId)).integration).toBe(`DingTalk · ${ORG_NAME}`)
+  })
+
+  it('names a bot still called by its placeholder after its robot once the permission is granted', async () => {
+    const { app, state, integrationId, botId } = await install()
+    // Connected without qyapi_get_microapp_list: the bare Client ID; a bot from before the read: the old placeholder.
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).name).toBe(CLIENT_ID)
+    await prisma.bot.update({ where: { id: botId }, data: { name: `DingTalk · ${CLIENT_ID}` } })
+
+    await report(app, integrationId)
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).name).toBe(CLIENT_ID)
+
+    state.robotName = 'Example Robot'
+    await report(app, integrationId)
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).name).toBe('Example Robot')
+
+    // A name anyone gave the bot is never replaced.
+    await prisma.bot.update({ where: { id: botId }, data: { name: 'support-bot' } })
+    state.robotName = 'Renamed Robot'
+    await report(app, integrationId)
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).name).toBe('support-bot')
   })
 
   it('leaves a name someone changed', async () => {

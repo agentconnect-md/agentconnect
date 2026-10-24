@@ -4051,6 +4051,8 @@ export interface BotRepo {
    *  overwriting knowledge with silence. Org-fenced: a cross-org id writes
    *  nothing. */
   setGrantedScopes(orgId: OrgId, id: BotId, scopes: readonly string[]): Promise<void>
+  /** Rename a bot still named one of `from` (a provider's placeholder); a name anyone changed stays. Org-fenced; true when renamed. */
+  renameFrom(orgId: OrgId, id: BotId, from: readonly string[], to: string): Promise<boolean>
   /** Slack bots missing public app/workspace/member identity metadata.
    *  System-tier: the identity reconciler's worklist is deliberately fleet-wide. */
   listSlackMissingIdentity(): Promise<BotRecord[]>

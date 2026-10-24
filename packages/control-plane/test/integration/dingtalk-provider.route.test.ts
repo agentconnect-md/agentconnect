@@ -29,10 +29,12 @@ class SpyControl {
   async integrationRemove(_daemonId: string, _r: IntegrationRemove): Promise<void> {}
 }
 
-/** DingTalk's token endpoints, accepting only the secrets in `valid`; anything else fails the test. */
+/** DingTalk's token endpoints, accepting only the secrets in `valid`, and an app list naming the robot; anything else fails the test. */
 function fakeDingTalk(valid: Set<string>, calls: string[]): typeof fetch {
   return (async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = String(input)
+    if (url.endsWith('/v1.0/microApp/allInnerApps'))
+      return Response.json({ appList: [{ robotInfo: { name: 'Example Robot', robotCode: CLIENT_ID } }] })
     if (!Object.values(DINGTALK_TOKEN_URLS).includes(url)) throw new Error(`unexpected request to ${url}`)
     const body = JSON.parse(String(init.body)) as { appKey: string; appSecret: string }
     calls.push(body.appKey)
@@ -87,6 +89,7 @@ describe('a DingTalk app from POST /integrations', () => {
     expect(dto.name).toBe(`DingTalk · ${CLIENT_ID}`)
 
     expect(await prisma.bot.findUnique({ where: { id: dto.botId } })).toMatchObject({
+      name: 'Example Robot',
       platform: 'dingtalk',
       transport: 'socket',
       externalAppId: CLIENT_ID,
