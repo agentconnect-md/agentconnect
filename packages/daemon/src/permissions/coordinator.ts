@@ -2585,10 +2585,12 @@ export class PermissionCoordinator {
   /** Rewrite one in-chat permission card for everyone once approving in chat is turned off; its request stays pending for editors. */
   private retireChatApprovalsOffCard(rec: PendingApproval): void {
     // An editor's card is the editor path, which the chat level does not reach.
-    if (rec.kind !== 'permission' || !rec.chat?.ts || rec.chat.editor) return
+    if (!rec.chat?.ts || rec.chat.editor) return
     const chat = rec.chat
+    const params = cardRequest(rec)
+    if (!params) return
     const settled = chat.facet.settled({
-      params: rec.params,
+      params,
       ...(chat.subsession ? { subsession: chat.subsession } : {}),
       text: CHAT_APPROVALS_OFF,
       fallback: 'Approving in chat was turned off'

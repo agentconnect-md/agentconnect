@@ -176,6 +176,19 @@ describe('an approval in a Teams channel shared with another organization', () =
     await w.store.close()
   })
 
+  it('retires the asker’s MCP approval card when approving in chat is turned off', async () => {
+    const w = await world()
+    void w.permissions.onAcpElicit(AGENT, 's1', question)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${ASKER}`]))
+    await vi.waitFor(async () =>
+      expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ notifyTs: 'activity-1' })
+    )
+    w.permissions.disableChatPermissionSurfaces(AGENT)
+    expect(w.conn.replaceCard.mock.calls.map((call: [string]) => call[0])).toEqual(['activity-1'])
+    expect(JSON.stringify(w.conn.replaceCard.mock.calls[0]![1])).toContain('turned off')
+    await w.store.close()
+  })
+
   it('sends the asker no card for an MCP approval that reduces to no choices', async () => {
     const w = await world()
     void w.permissions.onAcpElicit(AGENT, 's1', yesNo)
