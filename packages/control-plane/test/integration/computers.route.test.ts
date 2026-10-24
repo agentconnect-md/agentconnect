@@ -14,6 +14,7 @@ import { PgRelayRepo } from '../../src/persistence/repositories/relay.repo.js'
 import { ComputerChannelKeys } from '../../src/registry/computerChannelKeys.js'
 import { PgComputerRepo } from '../../src/persistence/repositories/computer.repo.js'
 import { systemClock } from '../../src/domain/clock.js'
+import { coturnTurn } from '../../src/computer-viewer/turn.js'
 import { readComputerChannelToken } from '@agentconnect.md/protocol'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -44,7 +45,13 @@ function appAs(userId: string = DEFAULT_OWNER_ID, withRelay: boolean | 'relay-tu
               viewerRelays: async () => ['https://relay.example.com'],
               ...(withRelay === 'relay-turn'
                 ? { relayTurn: { secret: 'r'.repeat(43), ttlSec: 3600, servers: () => roster.turnServers() } }
-                : { turn: { urls: ['turn:turn.example.com:3478'], secret: 'turn-shared-secret-0123', ttlSec: 3600 } }),
+                : {
+                    turn: coturnTurn({
+                      urls: ['turn:turn.example.com:3478'],
+                      secret: 'turn-shared-secret-0123',
+                      ttlSec: 3600
+                    })
+                  }),
               stunUrls: () => roster.stunUrls()
             }
           )

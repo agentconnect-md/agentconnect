@@ -138,6 +138,9 @@ services:
       - COMPUTER_TURN_URLS
       - COMPUTER_TURN_SECRET
       - COMPUTER_TURN_TTL_SEC
+      # Or Cloudflare Realtime TURN instead of a coturn: a TURN key's ID and API token.
+      - COMPUTER_TURN_CLOUDFLARE_KEY_ID
+      - COMPUTER_TURN_CLOUDFLARE_API_TOKEN
       # Bootstrap root for DB-backed deployment secrets. These values cannot be
       # stored beside the ciphertext they unlock and therefore remain startup env.
       - SECRET_CIPHER

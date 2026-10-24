@@ -991,6 +991,14 @@ Control Plane, which only issues credentials:
   since a TURN allocation cannot refresh past it) turn it on, and it takes precedence over the relays' TURN; the CP
   mints coturn REST-API credentials per viewer (`<expiry>:viewer-<user>`) and per desktop (`<expiry>:computer-<id>`)
   and never sends the secret out. The chart sets them from `computerViewer.turn`.
+- **Cloudflare TURN.** Cloudflare Realtime TURN takes no shared secret: its credentials come from an API call with a
+  TURN key's ID and API token (`COMPUTER_TURN_CLOUDFLARE_KEY_ID`, `COMPUTER_TURN_CLOUDFLARE_API_TOKEN`, the chart's
+  `computerViewer.turn.cloudflare`), so the CP asks once per peer of each viewing, with `COMPUTER_TURN_TTL_SEC` as the
+  credential's TTL. It is an alternative to a coturn, not a second one, and takes the same precedence over the relays'
+  TURN. The CP keeps the answer's TURN entry and drops its STUN entry, port 53 (browsers block it) and port 80 (a
+  desktop has no plain-HTTP egress); a refused or failed call leaves that viewing without TURN rather than without a
+  grant. It needs no public address, DNS name or certificate of the deployment's own; Cloudflare bills relayed
+  egress, and relay-side metering (`relayed_bytes`, the viewer media quota) does not see it.
 - **Input.** Take control, the keyboard and mouse mapping and the IME text box are the prototype's (§7.3), over the
   DataChannel when one is open and through the relay otherwise. Leaving the page releases a takeover.
 
