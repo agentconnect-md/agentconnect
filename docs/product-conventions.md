@@ -876,7 +876,8 @@ membership, or conversation history. Console access remains subject to the conso
 normal authentication and authorization.
 
 An HTTP Slack installation keeps serving Home after its last agent is disconnected.
-Home then explains that no agent is connected and offers **Reconnect**, which opens
+Home then explains that no agent is connected and offers **Reconnect**, and every
+DM or mention is answered with the same Reconnect link instead of silence. **Reconnect** opens
 a focused dialog with the app and organization fixed. When the organization's
 editable built-in agent is available, a built-in app targets it automatically;
 other reconnections ask for an agent without preselecting the first one. Reconnecting
@@ -887,8 +888,9 @@ ingress; deleting the saved bot or its organization still deletes its credential
 
 The distributed app can also be installed before an AgentConnect organization is
 chosen. Its public install entry is `/v1/integrations/slack/install`. The unconnected
-installation serves Home with **Connect AgentConnect**, and DMs or mentions explain
-how to finish setup without starting a model turn. The installing Slack user signs
+installation serves Home with **Connect AgentConnect**, and every DM or mention is
+answered, without starting a model turn, with who installed the app and the same
+Connect link, since only that person can finish setup. The installing Slack user signs
 in, chooses an organization they can edit and an agent they can configure, and
 connects the workspace using the authorization already granted. This binding applies
 to the workspace, not to individual Slack accounts. It starts with one agent and

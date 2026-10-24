@@ -7,18 +7,40 @@ export interface SlackAppHomeContext {
   connected?: boolean | undefined
   botId?: string | undefined
   connectUrl?: string | undefined
+  /** The Slack user who installed a workspace not yet connected, the only one who can connect it. */
+  installerUserId?: string | undefined
+}
+
+function homeUrls(context: SlackAppHomeContext) {
+  const consoleUrl =
+    context.webAppUrl && /^https?:\/\//.test(context.webAppUrl) ? context.webAppUrl.replace(/\/+$/, '') : undefined
+  const orgUrl = consoleUrl && context.orgSlug ? `${consoleUrl}/${encodeURIComponent(context.orgSlug)}` : undefined
+  const connectUrl = context.connectUrl?.startsWith('https://') ? context.connectUrl : undefined
+  const reconnectUrl =
+    orgUrl && context.botId ? `${orgUrl}/integrations?reconnect=${encodeURIComponent(context.botId)}` : consoleUrl
+  return { consoleUrl, orgUrl, connectUrl, reconnectUrl }
+}
+
+/** The chat reply for an installation that cannot answer yet: one not connected to an organization, or one with no agent; undefined otherwise. */
+export function slackSetupReply(context: SlackAppHomeContext): string | undefined {
+  const { connectUrl, reconnectUrl } = homeUrls(context)
+  if (connectUrl) {
+    const who = context.installerUserId
+      ? `<@${context.installerUserId}>, who installed this app,`
+      : 'The person who installed this app'
+    return `This workspace isn’t connected to AgentConnect yet. ${who} can connect it from the app’s Home tab or here: <${connectUrl}|Connect AgentConnect>.`
+  }
+  if (context.connected !== false) return undefined
+  const link = reconnectUrl ? ` <${reconnectUrl}|Reconnect it in AgentConnect>.` : ' Reconnect it in AgentConnect.'
+  return `No agent is connected to this app yet.${link} If you can’t, ask an organization owner or the person who set up this app.`
 }
 
 // Links use normal console authorization; the view never includes private configuration or membership.
 export function buildSlackAppHomeView(botUserId: string, context: SlackAppHomeContext = {}) {
   const mention = botUserId ? `<@${botUserId}>` : 'this app'
-  const consoleUrl =
-    context.webAppUrl && /^https?:\/\//.test(context.webAppUrl) ? context.webAppUrl.replace(/\/+$/, '') : undefined
-  const orgUrl = consoleUrl && context.orgSlug ? `${consoleUrl}/${encodeURIComponent(context.orgSlug)}` : undefined
+  const { consoleUrl, orgUrl, connectUrl, reconnectUrl } = homeUrls(context)
   const disconnected = context.connected === false
-  const connectUrl = context.connectUrl?.startsWith('https://') ? context.connectUrl : undefined
-  const reconnectUrl =
-    orgUrl && context.botId ? `${orgUrl}/integrations?reconnect=${encodeURIComponent(context.botId)}` : consoleUrl
+  const installer = context.installerUserId ? `<@${context.installerUserId}>` : 'The person who installed this app'
   return {
     type: 'home' as const,
     blocks: [
@@ -51,7 +73,7 @@ export function buildSlackAppHomeView(botUserId: string, context: SlackAppHomeCo
         text: {
           type: 'mrkdwn' as const,
           text: connectUrl
-            ? '*Finish setup*\nThe person who installed this app can sign in to AgentConnect, choose an organization and agent, and connect this workspace.'
+            ? `*Finish setup*\n${installer} can sign in to AgentConnect, choose an organization and agent, and connect this workspace.`
             : disconnected
               ? '*Reconnect your agent*\nReconnect this Slack app in the AgentConnect console. If you do not have access, ask an organization owner or the person who set up this app.'
               : '*Manage your agents*\nUse the AgentConnect console to set up agents, choose models, and connect tools. For access or help completing setup, contact the person who connected this app.'
