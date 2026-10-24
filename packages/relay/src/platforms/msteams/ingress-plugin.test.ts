@@ -427,6 +427,12 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
       a.membersAdded = [{ id: BOT_ID }]
     })
     expect((await deliver(s, botOnly)).handled).toEqual({})
+    // A 1:1 chat's install names its person beside the bot, and a 1:1 chat is never external.
+    const personalInstall = edit(conversationUpdate, (a) => {
+      a.conversation = { id: PERSONAL, conversationType: 'personal', tenantId: TENANT }
+      a.membersAdded = [{ id: BOT_ID }, { id: USER, aadObjectId: AAD_USER }]
+    })
+    expect((await deliver(s, personalInstall)).handled).toEqual({})
     expect(s.h.forwardAction).toHaveBeenCalledOnce()
   })
 })
