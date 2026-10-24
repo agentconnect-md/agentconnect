@@ -21,6 +21,7 @@ import {
   msTeamsAppIcons,
   msTeamsAppPackage,
   msTeamsManifest,
+  msTeamsPackageFingerprint,
   msTeamsPackageId
 } from './app-package.js'
 import {
@@ -34,6 +35,7 @@ import {
   readMsTeamsOrganizationName,
   redeemMsTeamsCode,
   sealMsTeamsTicket,
+  upgradeMsTeamsInstalls,
   verifyMsTeamsConnectState,
   type MsTeamsConnectKeys
 } from './connect.js'
@@ -74,7 +76,19 @@ const CallbackBody = z.object({
 const CallbackDto = z.object({
   integrationId: z.string(),
   agentId: z.string(),
-  teams: z.array(z.object({ id: z.string(), name: z.string() })).describe('The signed-in administrator’s teams.'),
+  teams: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        app: z
+          .enum(['updated', 'none', 'failed'])
+          .describe(
+            'The app in this team: updated to the published package, not installed, or not updated because Microsoft refused or failed the read or upgrade; the package stays pending until no team fails.'
+          )
+      })
+    )
+    .describe('The signed-in administrator’s teams.'),
   ticket: z.string().describe('An opaque, short-lived handle for the install step.')
 })
 const InstallBody = z.object({
@@ -179,7 +193,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           tags: [Tag.Integrations],
           summary: 'Finish connecting a Microsoft 365 tenant',
           description:
-            'Redeem the code Microsoft returned, take the tenant from the ID token, and connect it: a tenant another organization holds answers 409 MSTEAMS_TENANT_TAKEN, and one this organization connects to another agent answers 409 MSTEAMS_TENANT_IN_USE. The tenant’s row is installed on the agent, the app is published to the tenant’s organization catalog, and the administrator’s teams are answered with a short-lived ticket for the install step.',
+            'Redeem the code Microsoft returned, take the tenant from the ID token, and connect it: a tenant another organization holds answers 409 MSTEAMS_TENANT_TAKEN, and one this organization connects to another agent answers 409 MSTEAMS_TENANT_IN_USE. The tenant’s row is installed on the agent, the app is published to the tenant’s organization catalog, each of the administrator’s teams that already has the app is upgraded to it with its resource-specific permissions re-consented, and the administrator’s teams are answered with a short-lived ticket for the install step. Running it again for the same agent is how the Console updates the app in Teams.',
           operationId: 'finishMsTeamsConnect',
           body: CallbackBody,
           response: { 200: CallbackDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 502: ErrorDto }
@@ -228,13 +242,14 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           }
 
           // Publishing without review is an administrator's act, so it proves the authority the claim needs before anything is written.
-          const manifest = msTeamsManifest({
+          const packageInput = {
             appId: live.app.appId,
             relayHost: new URL(relayBase).host,
             agentName: target.displayName ?? target.name,
-            accentColor: agentIconBackgroundColor(target.icon),
-            nowMs: deps.clock.now()
-          })
+            accentColor: agentIconBackgroundColor(target.icon)
+          }
+          const manifest = msTeamsManifest({ ...packageInput, nowMs: deps.clock.now() })
+          const appPackage = msTeamsPackageFingerprint(packageInput, target)
           const zip = msTeamsAppPackage(manifest, await msTeamsAppIcons(target, deps.iconStore))
           const catalogAppId = await publishMsTeamsPackage(
             fetchImpl,
@@ -244,6 +259,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
           )
 
           let integrationId: string
+          let botId = held?.id
           if (!held) {
             try {
               const installed = await installNewBot(deps, req.log, {
@@ -267,6 +283,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
                 createdByUserId: req.principal.userId
               })
               integrationId = installed.integration.id
+              botId = installed.bot.id
             } catch (err) {
               if (err instanceof BotExternalIdentityTaken)
                 return refuse(reply, 409, 'MSTEAMS_TENANT_TAKEN', TAKEN_MESSAGE)
@@ -297,11 +314,22 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             integrationId = admission.integration.id
           }
 
+          // A team that already has the app takes the new definition and re-consents its permissions here (§8.3).
           const teams = await listMsTeamsTeams(fetchImpl, accessToken)
+          const upgrades = await upgradeMsTeamsInstalls(
+            fetchImpl,
+            accessToken,
+            { teamIds: teams.map((team) => team.id), catalogAppId, permissions: MSTEAMS_RSC_PERMISSIONS },
+            req.log
+          )
+          // A team left on the old package keeps Update in Teams on offer (§5.1).
+          if (botId && ![...upgrades.values()].includes('failed')) {
+            await deps.repos.bot.mergeBotIdentity(orgId, botId, () => ({ platformConfig: { appPackage } }))
+          }
           return {
             integrationId,
             agentId: target.id,
-            teams,
+            teams: teams.map((team) => ({ ...team, app: upgrades.get(team.id) ?? 'failed' })),
             ticket: sealMsTeamsTicket(seams.keys, { accessToken, orgId, integrationId, catalogAppId }, deps.clock)
           }
         } catch (err) {

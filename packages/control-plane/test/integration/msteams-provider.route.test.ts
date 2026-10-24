@@ -229,6 +229,20 @@ describe('GET /integrations/:id/msteams/app-package', () => {
     expect(strFromU8(files['manifest.json']!)).not.toContain(SECRET)
   })
 
+  it('records an own bot’s download as the package Teams holds, until the agent changes', async () => {
+    const agentId = await placedAgent('Example Teams agent')
+    const { app } = harness()
+    const { id } = (await install(app, agentId)).json() as { id: string }
+    const status = async () =>
+      (await app.app.inject({ method: 'GET', url: `${ORG}/integrations/${id}/msteams/app-package/status` })).json()
+
+    expect(await status()).toEqual({ current: false })
+    await app.app.inject({ method: 'GET', url: `${ORG}/integrations/${id}/msteams/app-package` })
+    expect(await status()).toEqual({ current: true })
+    await prisma.agent.update({ where: { id: agentId }, data: { displayName: 'Renamed agent' } })
+    expect(await status()).toEqual({ current: false })
+  })
+
   it('needs the relay origin, and 404s an unknown integration', async () => {
     const agentId = await placedAgent()
     const { app } = harness()

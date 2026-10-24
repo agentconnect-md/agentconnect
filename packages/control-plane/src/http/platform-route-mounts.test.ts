@@ -98,7 +98,11 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
     googleChatKeyRoutesPlugin: ['PUT /bots/:id/googlechat/key'],
     googleChatClaimRoutesPlugin: ['POST /integrations/googlechat/claim'],
     dingTalkCredentialRoutesPlugin: ['PUT /bots/:id/dingtalk/credentials'],
-    msTeamsRoutesPlugin: ['PUT /bots/:id/msteams/credentials', 'GET /integrations/:id/msteams/app-package']
+    msTeamsRoutesPlugin: [
+      'PUT /bots/:id/msteams/credentials',
+      'GET /integrations/:id/msteams/app-package',
+      'GET /integrations/:id/msteams/app-package/status'
+    ]
   },
   'public-callback': {
     slackOauthCallbackRoutesPlugin: ['GET /integrations/slack/oauth/callback'],

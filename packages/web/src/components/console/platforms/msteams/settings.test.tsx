@@ -9,6 +9,8 @@ import type { IntegrationRow } from '@/lib/data'
 const mocks = vi.hoisted(() => ({
   replaceSecret: vi.fn(),
   appPackage: vi.fn(),
+  appPackageStatus: vi.fn(),
+  connect: vi.fn(),
   saveBlob: vi.fn(),
   refresh: vi.fn(),
   integrations: [] as Partial<IntegrationRow>[]
@@ -21,7 +23,15 @@ vi.mock('../deployment-config', () => ({
     apply: vi.fn()
   })
 }))
-vi.mock('./api', () => ({ msTeamsApi: { replaceSecret: mocks.replaceSecret, appPackage: mocks.appPackage } }))
+vi.mock('./api', () => ({
+  msTeamsApi: {
+    replaceSecret: mocks.replaceSecret,
+    appPackage: mocks.appPackage,
+    appPackageStatus: mocks.appPackageStatus,
+    connect: mocks.connect
+  }
+}))
+vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-1' } }) }))
 vi.mock('@/lib/shared-file', () => ({ saveBlob: mocks.saveBlob }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({ integrations: mocks.integrations, refresh: mocks.refresh })
@@ -79,7 +89,10 @@ beforeEach(() => {
   mocks.appPackage.mockReset()
   mocks.saveBlob.mockReset()
   mocks.refresh.mockReset()
-  mocks.integrations = [{ id: 'int-1', botId: 'bot-1', platform: 'msteams' }]
+  mocks.connect.mockReset()
+  mocks.appPackageStatus.mockReset()
+  mocks.appPackageStatus.mockResolvedValue({ current: true })
+  mocks.integrations = [{ id: 'int-1', agentId: 'agent-a', botId: 'bot-1', platform: 'msteams' }]
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -125,6 +138,32 @@ describe('MsTeamsBotSettings', () => {
     await act(async () => buttonWith('Download app package')?.click())
     expect(mocks.appPackage).toHaveBeenCalledWith('int-1')
     expect(mocks.saveBlob).toHaveBeenCalledWith(blob, 'agentconnect-teams.zip')
+  })
+
+  it('says Teams has an older package until an own bot’s fresh download', async () => {
+    mocks.appPackageStatus.mockResolvedValueOnce({ current: false })
+    mocks.appPackage.mockResolvedValue(new Blob(['zip']))
+    await render(bot())
+    expect(text()).toContain('Teams has an older version of this app.')
+    expect(buttonWith('Update in Teams')).toBeUndefined()
+    await act(async () => buttonWith('Download app package')?.click())
+    expect(mocks.appPackageStatus).toHaveBeenCalledTimes(2)
+    expect(text()).not.toContain('Teams has an older version of this app.')
+  })
+
+  it('updates a connected tenant’s app through Microsoft’s sign-in, for an editor only', async () => {
+    mocks.appPackageStatus.mockResolvedValue({ current: false })
+    mocks.connect.mockResolvedValue({ authorizeUrl: 'https://login.example.test/authorize' })
+    const assign = vi.fn()
+    vi.stubGlobal('location', { ...window.location, assign })
+    await render(bot({ prebuilt: true }))
+    await act(async () => buttonWith('Update in Teams')?.click())
+    expect(mocks.connect).toHaveBeenCalledWith('org-1', 'agent-a')
+    expect(assign).toHaveBeenCalledWith('https://login.example.test/authorize')
+    vi.unstubAllGlobals()
+
+    await render(bot({ prebuilt: true }), false)
+    expect(buttonWith('Update in Teams')).toBeUndefined()
   })
 
   it('offers no download for a freed bot and no rotation to a viewer', async () => {
