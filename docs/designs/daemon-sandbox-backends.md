@@ -494,7 +494,7 @@ records the existing login requirement. For sandbox execution, the console shows
 image contains that runtime. The underlying authentication status is retained.
 
 File and database discovery currently covers Claude, Codex, Qoder, OMP, Grok, pi,
-OpenCode, DSH, Hermes, Auggie, Cline, Amp, Gemini/Qwen/Kimi OAuth, Qwen saved API
+OpenCode, DSH, Hermes, Auggie, Cline, Amp, Antigravity/Qwen/Kimi OAuth, Qwen saved API
 keys, Antigravity ACP file logins, Devin, and Copilot's stored token map. These
 descriptors also prepare the corresponding files in the private runtime HOME.
 Keyring-only logins are not detected by file discovery. Credential formats without

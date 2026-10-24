@@ -443,60 +443,11 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer)) as Promise<T>
 }
 
-/** The API lists every model on the key, all marked generateContent: keep the `gemini-` family minus non-text members. */
-const GEMINI_AGENT_MODEL = /^gemini-/
-const GEMINI_NON_AGENT_MODEL =
-  /(?:^|-)(?:tts|embedding|transcribe|image|computer-use|robotics[a-z-]*|omni|live|native-audio|dialog)(?:-|$)/
-const GEMINI_MODELS_URL = 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000'
-
-/** Pure parser for `GET /v1beta/models`: generateContent-capable agent models with the `models/` prefix stripped. */
-export function geminiModelsFromList(payload: unknown): DriverCatalog {
-  const models: DriverCatalog['models'] = []
-  const list =
-    payload && typeof payload === 'object' && Array.isArray((payload as Record<string, unknown>).models)
-      ? ((payload as Record<string, unknown>).models as unknown[])
-      : []
-  for (const raw of list) {
-    if (!raw || typeof raw !== 'object') continue
-    const rec = raw as Record<string, unknown>
-    const methods = Array.isArray(rec.supportedGenerationMethods) ? rec.supportedGenerationMethods : []
-    if (!methods.includes('generateContent')) continue
-    const id = typeof rec.name === 'string' ? rec.name.replace(/^models\//, '') : ''
-    if (!id || !GEMINI_AGENT_MODEL.test(id) || GEMINI_NON_AGENT_MODEL.test(id)) continue
-    const name = typeof rec.displayName === 'string' && rec.displayName ? rec.displayName : undefined
-    models.push({ id, ...(name ? { name } : {}) })
-  }
-  return { models }
-}
-
-/** gemini native catalog: the CLI advertises no ACP model selector, so its catalog is the API's own model list. */
-class GeminiCatalogDriver implements ModelCatalogDriver {
-  supports(runtimeId: string): boolean {
-    return runtimeId === 'gemini'
-  }
-
-  async discover(_runtimeId: string, _rt: RuntimeDef, opts: DriverDiscoverOptions): Promise<DriverCatalog> {
-    // The same key the runtime authenticates with; GOOGLE_API_KEY is Vertex-only for gemini-cli.
-    const key = opts.env.GEMINI_API_KEY
-    if (!key) throw new Error('gemini catalog requires GEMINI_API_KEY in the daemon environment')
-    const signal = AbortSignal.any([AbortSignal.timeout(opts.timeoutMs), ...(opts.signal ? [opts.signal] : [])])
-    const res = await fetch(GEMINI_MODELS_URL, { headers: { 'x-goog-api-key': key }, signal })
-    // Never surface the body: a Google error envelope can echo request context.
-    if (!res.ok) throw new Error(`gemini model list returned HTTP ${res.status}`)
-    return geminiModelsFromList(await res.json())
-  }
-}
-
 // ── built-in drivers (design §3.1) ──────────────────────────────────────────
-// codex + opencode + kilo + gemini; claude has none — the generic enumerator covers its handful of models.
+// Codex, OpenCode and Kilo have native drivers; other runtimes use the generic enumerator.
 
 function builtInCatalogDrivers(): ModelCatalogDriver[] {
-  return [
-    new CodexAppServerDriver(),
-    new LocalServeCatalogDriver('opencode'),
-    new LocalServeCatalogDriver('kilo'),
-    new GeminiCatalogDriver()
-  ]
+  return [new CodexAppServerDriver(), new LocalServeCatalogDriver('opencode'), new LocalServeCatalogDriver('kilo')]
 }
 
 function pickString(rec: Record<string, unknown>, camel: string, snake: string): string | undefined {

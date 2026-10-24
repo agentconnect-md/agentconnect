@@ -11,7 +11,6 @@ const REG: Record<string, RuntimeDef> = {
   'grok-build': runtime('npx', ['-y', '@xai-official/grok@0.2.112', 'agent', 'stdio']),
   'github-copilot-cli': runtime('npx', ['-y', '@github/copilot@1.0.75', '--acp']),
   'open-interpreter': runtime('interpreter', ['acp']),
-  gemini: runtime('npx', ['-y', '@google/gemini-cli@0.52.0', '--acp']),
   'qwen-code': runtime('npx', ['-y', '@qwen-code/qwen-code@0.21.0', '--acp']),
   cursor: runtime('./dist-package/cursor-agent', ['acp']),
   auggie: runtime('npx', ['-y', '@augmentcode/auggie@0.33.0', '--acp']),
@@ -68,7 +67,6 @@ describe('accountAppIsolation — not-applicable (clean machine inherits nothing
   // Includes cursor + opencode: their only account-bound path is enterprise-team /
   // org-scoped, never present on a clean personal machine, so they no-op here.
   it.each([
-    'gemini',
     'qwen-code',
     'goose',
     'amp-acp',

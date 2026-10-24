@@ -765,7 +765,7 @@ describe('AcpHost — account-bound app isolation', () => {
 
   it('does not warn for a runtime with no account-connector concept', async () => {
     const warns: string[] = []
-    await runIsolatedFixture('gemini', 'AC_ECHO_VAR', 'ok', {
+    await runIsolatedFixture('qwen-code', 'AC_ECHO_VAR', 'ok', {
       info: () => {},
       warn: (message) => warns.push(message)
     })

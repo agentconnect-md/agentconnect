@@ -195,7 +195,7 @@ describe('a runtime’s auto, else full-access, permission mode', () => {
   })
 
   it('leaves out every runtime with no reported mode that approves on its own', () => {
-    for (const runtime of ['opencode', 'cline', 'cursor', 'kilo', 'omp', 'hermes-agent', 'kiro-cli', 'gemini']) {
+    for (const runtime of ['opencode', 'cline', 'cursor', 'kilo', 'omp', 'hermes-agent', 'kiro-cli']) {
       expect(ASSISTANT_MODE_PERMISSION_MODES[runtime]).toBeUndefined()
     }
   })

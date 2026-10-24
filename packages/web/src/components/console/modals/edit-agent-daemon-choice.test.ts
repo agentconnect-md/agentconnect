@@ -159,7 +159,10 @@ describe('preselectPlacementReset', () => {
   })
 
   it('switches to the machine’s first runtime when it does not run the saved one', () => {
-    expect(preselectPlacementReset(profiles, 'gemini', 'gemini-3-pro')).toEqual({ kind: 'runtime', runtime: 'claude' })
+    expect(preselectPlacementReset(profiles, 'unavailable-runtime', 'unavailable-model')).toEqual({
+      kind: 'runtime',
+      runtime: 'claude'
+    })
   })
 
   it('falls the model back to the runtime default when only the model is unknown', () => {
