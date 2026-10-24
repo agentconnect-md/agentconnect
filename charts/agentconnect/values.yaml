@@ -990,6 +990,12 @@ computerViewer:
     secretKey: COMPUTER_TURN_SECRET
     # Lifetime of minted credentials; a TURN allocation cannot refresh past it, so it bounds one viewing.
     ttlSeconds: 21600
+    # Cloudflare Realtime TURN instead of a coturn (leave `urls` empty): the Control Plane asks Cloudflare per viewer.
+    cloudflare:
+      # The TURN key's ID; empty leaves Cloudflare TURN off.
+      keyId: ''
+      # Key in secrets.existingSecret holding that TURN key's API token.
+      apiTokenKey: COMPUTER_TURN_CLOUDFLARE_API_TOKEN
 
 # Bootstrap/runtime roots are read from an existing Secret you create in the
 # namespace (the chart never holds their values). Provider credentials are not

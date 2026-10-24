@@ -95,6 +95,9 @@ const CoreConfigShape = {
   COMPUTER_TURN_URLS: z.string().optional(),
   // coturn's `static-auth-secret` (use-auth-secret); the CP mints per-viewer credentials from it and never sends it out.
   COMPUTER_TURN_SECRET: z.string().min(16).optional(),
+  // Cloudflare Realtime TURN instead of a coturn: the TURN key's ID and its API token; the CP asks Cloudflare per viewer.
+  COMPUTER_TURN_CLOUDFLARE_KEY_ID: z.string().optional(),
+  COMPUTER_TURN_CLOUDFLARE_API_TOKEN: z.string().optional(),
   // How long minted TURN credentials stay valid; an allocation refresh after this fails, so it bounds one viewing.
   COMPUTER_TURN_TTL_SEC: z.coerce.number().int().min(300).max(86_400).default(21_600),
   // Managed computers in the Kubernetes pool (computer-use.md §15.1); 'true' needs pool members that serve desktop claims.
