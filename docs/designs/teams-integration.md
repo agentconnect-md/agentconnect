@@ -412,6 +412,14 @@ private. Private and shared channels are their members' and report private. A
 chat is shared with no organization; a person from another one in it is a
 member's reason, found when they join.
 
+A place that turns external this way starts Off for every agent until an
+editor enables it, as a Slack Connect channel does. Teams gives the relay no
+egress, so a mention there is handed to the bot's agent's daemon, which posts
+the one-time notice and starts no turn. The relay-ingress `observe` step has
+already recorded the conversation's `serviceUrl` by then, so the notice can
+answer even the conversation's first activity (**measured** before this:
+silence, with no notice).
+
 ## 5. Console setup
 
 The wizard walks the admin through both registrations and then:

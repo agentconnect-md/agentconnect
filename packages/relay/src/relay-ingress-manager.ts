@@ -1329,13 +1329,9 @@ export class RelayIngressManager {
       if (!msg.sender.isBot && speaks) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
-          // §8 relayOwnsEgress, derived from the egress FACET: an ingest without
-          // one (Feishu — its callback credentials are receive-only) hands the
-          // addressed Off-conversation event to the owning daemon, which reports
-          // discovery, posts through its API client, and drops before agent
-          // dispatch. An ingest WITH the facet (Slack) keeps the relay-owned
-          // notice path below.
-          if (!this.ingestFor(botId)?.egress) tgt = this.router.soleGatedTarget(botId) ?? null
+          // Without an egress facet (Feishu, Teams) the owning daemon posts the notice and drops: the sole gated install, or the sole install where the Off is undecided (§14.9).
+          if (!this.ingestFor(botId)?.egress)
+            tgt = this.router.soleGatedTarget(botId) ?? (gatedOff ? this.router.soleTarget(botId) : undefined) ?? null
           if (!tgt) {
             await this.noticeGatedUnrouted(botId, msg)
             return rejected('off')

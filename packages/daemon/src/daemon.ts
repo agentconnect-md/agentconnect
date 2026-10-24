@@ -13448,6 +13448,7 @@ export class Daemon {
     if (feishuConn) this.channelNameResolver?.noteMessage(feishuConn, normalized)
     // As on direct ingress, above the record: a relay-ingress module may place the message by its reply chain.
     await this.canonicalizeThread(normalized)
+    this.platformModules.get(normalized.platform)?.relayIngress?.observe?.(msg, normalized)
     // Before the turn this message starts reads the place's trust level (assistant-mode.md §5.3).
     this.placeTrust.observe(normalized, [msg.integrationId])
     // Step 1 (§5/§6): a relay-forwarded IM records exactly like direct ingress. Pre-addressed, so

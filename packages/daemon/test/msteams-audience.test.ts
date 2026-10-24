@@ -210,8 +210,11 @@ describe('Teams audience', () => {
     const ingress = msTeamsRelayIngress(host)
     const shared = { ...post(SHARED), msgId: 'msteams:x:1' } as NormalizedMessage
     const standard = { ...post(STANDARD), msgId: 'msteams:x:2' } as NormalizedMessage
-    await ingress.prepare({ integrationId: 'i' } as never, shared, { stage: '' })
-    await ingress.prepare({ integrationId: 'i' } as never, standard, { stage: '' })
+    for (const message of [shared, standard]) {
+      // Core notes the delivery before any gate, then prepares it.
+      ingress.observe?.({ integrationId: 'i' } as never, message)
+      await ingress.prepare({ integrationId: 'i' } as never, message, { stage: '' })
+    }
     expect(shared.externallyShared).toBe(true)
     expect(standard.externallyShared).toBeUndefined()
     expect(placeExternal).toHaveBeenCalledExactlyOnceWith(['i'], SHARED, 'externallyShared')
