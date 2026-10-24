@@ -44,19 +44,23 @@ export async function verifyDingTalkApp(
   fetchImpl: typeof fetch = fetch
 ): Promise<DingTalkValidation> {
   const answer = await exchange(DINGTALK_TOKEN_URLS[credentials.edition], credentials, fetchImpl)
-  if (answer === 'ok')
+  if (typeof answer === 'object') {
+    const origin = DINGTALK_API_ORIGINS[credentials.edition]
+    const robotName = await readDingTalkRobotName(origin, answer.token, credentials.clientId, fetchImpl)
     return {
       ok: true,
       identity: {
         name: dingTalkPlaceholderName(credentials.clientId),
+        botName: robotName ?? credentials.clientId,
         externalAppId: credentials.clientId,
         platformConfig: { edition: credentials.edition }
       }
     }
+  }
   if (answer === 'unavailable') return unavailable()
   // A refusal may be the other edition's app, which the console names so the member switches instead of copying again.
   const other: DingTalkEdition = credentials.edition === 'mainland' ? 'international' : 'mainland'
-  if ((await exchange(DINGTALK_TOKEN_URLS[other], credentials, fetchImpl)) === 'ok')
+  if (typeof (await exchange(DINGTALK_TOKEN_URLS[other], credentials, fetchImpl)) === 'object')
     return {
       ok: false,
       status: 400,
@@ -77,9 +81,9 @@ export async function verifyDingTalkApp(
 
 async function exchange(
   url: string,
-  credentials: DingTalkCreateCredentials,
+  credentials: Omit<DingTalkCreateCredentials, 'edition'>,
   fetchImpl: typeof fetch
-): Promise<'ok' | 'refused' | 'unavailable'> {
+): Promise<{ token: string } | 'refused' | 'unavailable'> {
   try {
     const response = await fetchImpl(url, {
       method: 'POST',
@@ -89,9 +93,34 @@ async function exchange(
     })
     if (response.status >= 500 || response.status === 429) return 'unavailable'
     const data = (await response.json()) as { accessToken?: unknown }
-    return response.ok && typeof data.accessToken === 'string' && data.accessToken ? 'ok' : 'refused'
+    return response.ok && typeof data.accessToken === 'string' && data.accessToken
+      ? { token: data.accessToken }
+      : 'refused'
   } catch {
     return 'unavailable'
+  }
+}
+
+/** The robot's own name from the organization's app list (`qyapi_get_microapp_list`, §2.2); null when the app lacks it or lists no robot for this Client ID. */
+export async function readDingTalkRobotName(
+  origin: string,
+  token: string,
+  clientId: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<string | null> {
+  try {
+    const response = await fetchImpl(`${origin}/v1.0/microApp/allInnerApps`, {
+      headers: { 'x-acs-dingtalk-access-token': token },
+      signal: AbortSignal.timeout(10_000)
+    })
+    if (!response.ok) return null
+    const { appList } = (await response.json()) as {
+      appList?: { robotInfo?: { name?: unknown; robotCode?: unknown } }[]
+    }
+    const name = appList?.find((app) => app.robotInfo?.robotCode === clientId)?.robotInfo?.name
+    return typeof name === 'string' && name.trim() ? name.trim().slice(0, 200) : null
+  } catch {
+    return null
   }
 }
 
@@ -197,6 +226,25 @@ export function createDingTalkCpProvider(
         return {
           workspaceName: read.orgName,
           integrationName: { placeholder: dingTalkPlaceholderName(clientId), name: `DingTalk · ${read.orgName}` }
+        }
+      },
+      botName: {
+        // The name a connect gave before this read existed, and the bare Client ID a connect without the permission gives.
+        placeholders: (bot) =>
+          bot.externalAppId ? [dingTalkPlaceholderName(bot.externalAppId), bot.externalAppId] : [],
+        async read(bot, secrets) {
+          const clientId = secrets.appToken ?? bot.externalAppId ?? ''
+          const edition = dingTalkEditionOf(bot)
+          const answer = await exchange(
+            DINGTALK_TOKEN_URLS[edition],
+            { clientId, clientSecret: secrets.botToken },
+            fetchImpl
+          )
+          const name =
+            typeof answer === 'object'
+              ? await readDingTalkRobotName(DINGTALK_API_ORIGINS[edition], answer.token, clientId, fetchImpl)
+              : null
+          return name ?? clientId
         }
       }
     },

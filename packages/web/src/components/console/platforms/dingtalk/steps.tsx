@@ -124,7 +124,7 @@ export function dingTalkWalkthroughSteps(t: DingTalkStepsTranslator, edition: Di
               <MiniScreen frameClass="border-[#e5e6eb] bg-white" bar={<BrowserBar url={`${host}/fe/app/…`} />}>
                 <AppPage nav={nav} active={t('nav.permissions')}>
                   {title(t('nav.permissions'))}
-                  {['Card.Instance.Write', 'Contact.Org.Read'].map((scope) => (
+                  {['Card.Instance.Write', 'Contact.Org.Read', 'qyapi_get_microapp_list'].map((scope) => (
                     <div
                       key={scope}
                       className="mt-1.5 flex items-center justify-between gap-1.5 border-b border-[#f0f1f2] pb-1.5"

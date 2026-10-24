@@ -93,7 +93,7 @@ The international console lists no card permission (**measured**), so its
 walkthrough leaves that step out and the daemon sends its questions as the
 numbered text card without trying a card (§4.6).
 
-### 2.2 Organization name
+### 2.2 Organization and robot names
 
 The Console names a DingTalk integration after its organization, as a Slack
 one shows its workspace. Neither the token exchange nor any API reachable with
@@ -116,9 +116,23 @@ it as `workspaceName`, and renames the bot's integrations still carrying the
 placeholder `DingTalk · <Client ID>` to `DingTalk · <organization>`; a name
 anyone changed stays. Without the permission the ID is kept unnamed, the
 Control Plane logs DingTalk's error code, and the next report retries only the
-read. Until the first message the placeholder
-stands. Whether the international edition grants `Contact.Org.Read` is
-unmeasured, so its walkthrough does not list it.
+read. Until the first message the placeholder stands. Whether the international
+edition grants `Contact.Org.Read` is unmeasured, so its walkthrough does not
+list it.
+
+The bot row shows the robot's own name, as a Slack bot row does, under the
+organization heading that already names the workspace. The organization's app
+list (`GET /v1.0/microApp/allInnerApps`, which needs `qyapi_get_microapp_list`,
+read-only and granted without approval) carries each app's
+`robotInfo { name, robotCode }`, so the robot whose `robotCode` is the Client
+ID names the bot with no group or message needed (**measured** on mainland; the
+app's own name can differ from its robot's). The connect reads it once; without
+the permission the bot is named by its bare Client ID, while the integration
+keeps the `DingTalk · <Client ID>` placeholder the organization rename replaces.
+A bot still named by either placeholder reads its name again on each tenant
+report, so a permission granted later takes effect within the hour of a message.
+A group's robot list names the robot too, but needs `qyapi_chat_manage`, whose
+write APIs make it too broad for a name.
 
 ## 3. Architecture
 
@@ -376,8 +390,9 @@ the facts the probe hit (**measured**):
 - `Card.Instance.Write` lets questions be answered with a tap (§4.6); without
   it every question is the numbered text card. The international console has
   no such permission, so its walkthrough leaves the step out (§2.1).
-- `Contact.Org.Read` lets the Console show the organization's name (§2.2); the
-  mainland walkthrough lists it beside `Card.Instance.Write`.
+- `Contact.Org.Read` and `qyapi_get_microapp_list` let the Console show the
+  organization's and the robot's names (§2.2); the mainland walkthrough lists
+  them beside `Card.Instance.Write`.
 - An internal app version publishes without review, and **every later
   configuration change takes effect only after a new version**; until then
   DingTalk keeps the previous behavior.

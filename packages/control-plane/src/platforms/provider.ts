@@ -135,6 +135,8 @@ export type CpRouteScope = 'org' | 'public-callback'
  */
 export interface CpValidatedIdentity {
   name?: string
+  /** The bot row's own name where the platform tells it apart from the integration's (a DingTalk robot's); absent ⇒ `name`. */
+  botName?: string
   externalAppId?: string
   workspaceId?: string
   workspaceName?: string
@@ -554,6 +556,11 @@ export interface CpPlatformProvider<TCredentials = unknown> {
     matches(bot: BotRecord, botUserId: string): boolean
     /** The tenant's name read with the bot's own credential, or the platform's short reason (an error code) for answering none. */
     name(bot: BotRecord, secrets: BotSecretMaterial, tenantId: string): Promise<CpTenantName | { unnamed: string }>
+    /** The bot row's own name, read while its stored one is still a placeholder; absent ⇒ never renamed. */
+    botName?: {
+      placeholders(bot: BotRecord): string[]
+      read(bot: BotRecord, secrets: BotSecretMaterial): Promise<string>
+    }
   }
 
   /** Whether a daemon socket's `integration/revoked` is about this bot's CURRENT credential: the socket identity it reports must match the stored one; absent ⇒ every report refused. */

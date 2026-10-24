@@ -243,6 +243,12 @@ export class PgBotRepo implements BotRepo {
     })
   }
 
+  async renameFrom(orgId: OrgId, id: BotId, from: readonly string[], to: string): Promise<boolean> {
+    return (
+      (await this.db.bot.updateMany({ where: { id, orgId, name: { in: [...from] } }, data: { name: to } })).count > 0
+    )
+  }
+
   async setGrantedScopes(orgId: OrgId, id: BotId, scopes: readonly string[]): Promise<void> {
     // Advisory capability metadata: a cross-org (or vanished) id writes nothing
     // rather than throwing — no caller has a recovery beyond "keep going".
