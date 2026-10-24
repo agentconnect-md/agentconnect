@@ -43,7 +43,7 @@ updates:
   - package-ecosystem: docker
     directories:
       - /docker
-      - /packages/desktop/docker
+      - /packages/computer/docker
     schedule:
       interval: weekly
     commit-message:

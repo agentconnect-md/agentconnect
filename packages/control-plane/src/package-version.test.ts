@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { cliChannel, desktopImage, readPackageVersion, releaseTag } from './package-version.js'
+import { cliChannel, computerImage, readPackageVersion, releaseTag } from './package-version.js'
 
 describe('releaseTag', () => {
   it('names the release an image was built from, formal or candidate', () => {
@@ -22,10 +22,10 @@ describe('cliChannel', () => {
   })
 })
 
-describe('desktopImage', () => {
+describe('computerImage', () => {
   it('pins the desktop image to the release this CP was built from, and to latest from a checkout', () => {
-    expect(desktopImage(undefined, 'v2.6.0')).toBe('ghcr.io/agentconnect-md/desktop:v2.6.0')
-    expect(desktopImage(undefined)).toBe('ghcr.io/agentconnect-md/desktop:latest')
-    expect(desktopImage('registry.example.com/desktop:v2.6.0', 'v2.7.0')).toBe('registry.example.com/desktop:v2.6.0')
+    expect(computerImage(undefined, 'v2.6.0')).toBe('ghcr.io/agentconnect-md/computer:v2.6.0')
+    expect(computerImage(undefined)).toBe('ghcr.io/agentconnect-md/computer:latest')
+    expect(computerImage('registry.example.com/computer:v2.6.0', 'v2.7.0')).toBe('registry.example.com/computer:v2.6.0')
   })
 })

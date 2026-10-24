@@ -417,7 +417,7 @@ daemonPool:
 # Managed computers (computer-use.md §15.1): desktop pods the daemon pool claims; needs daemonPool and apiHost or publicUrl.
 computerPool:
   enabled: false
-  # `<image.registry>/desktop:<tag>` unless `image` pins a full reference.
+  # `<image.registry>/computer:<tag>` unless `image` pins a full reference.
   repository: ''
   tag: ''
   image: ''

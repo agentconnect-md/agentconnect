@@ -132,6 +132,58 @@ importers:
         specifier: ^5.0.5
         version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(happy-dom@21.0.3)(vite@8.1.3(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
+  packages/computer:
+    dependencies:
+      '@agentconnect.md/connection':
+        specifier: workspace:*
+        version: link:../connection
+      '@agentconnect.md/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@modelcontextprotocol/client':
+        specifier: 2.3.1
+        version: 2.3.1
+      '@modelcontextprotocol/node':
+        specifier: 2.1.1
+        version: 2.1.1(@modelcontextprotocol/server@2.3.1)
+      '@modelcontextprotocol/server':
+        specifier: 2.3.1
+        version: 2.3.1
+      werift:
+        specifier: 0.25.1
+        version: 0.25.1(supports-color@7.2.0)
+      ws:
+        specifier: ^8.22.0
+        version: 8.22.0
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      '@types/ws':
+        specifier: ^8.18.2
+        version: 8.18.2
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      json:
+        specifier: ^11.0.0
+        version: 11.0.0
+      postject:
+        specifier: 1.0.0-alpha.6
+        version: 1.0.0-alpha.6
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(happy-dom@21.0.3)(vite@8.1.3(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
   packages/connection:
     dependencies:
       '@agentconnect.md/protocol':
@@ -446,58 +498,6 @@ importers:
       tsdown:
         specifier: ^0.23.1
         version: 0.23.1(tsx@4.23.15)(typescript@6.0.3)
-      tsx:
-        specifier: ^4.23.15
-        version: 4.23.15
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^5.0.5
-        version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(happy-dom@21.0.3)(vite@8.1.3(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-
-  packages/desktop:
-    dependencies:
-      '@agentconnect.md/connection':
-        specifier: workspace:*
-        version: link:../connection
-      '@agentconnect.md/protocol':
-        specifier: workspace:*
-        version: link:../protocol
-      '@modelcontextprotocol/client':
-        specifier: 2.3.1
-        version: 2.3.1
-      '@modelcontextprotocol/node':
-        specifier: 2.1.1
-        version: 2.1.1(@modelcontextprotocol/server@2.3.1)
-      '@modelcontextprotocol/server':
-        specifier: 2.3.1
-        version: 2.3.1
-      werift:
-        specifier: 0.25.1
-        version: 0.25.1(supports-color@7.2.0)
-      ws:
-        specifier: ^8.22.0
-        version: 8.22.0
-      zod:
-        specifier: ^4.6.7
-        version: 4.6.7
-    devDependencies:
-      '@types/node':
-        specifier: ^24.19.2
-        version: 24.19.2
-      '@types/ws':
-        specifier: ^8.18.2
-        version: 8.18.2
-      esbuild:
-        specifier: 0.28.2
-        version: 0.28.2
-      json:
-        specifier: ^11.0.0
-        version: 11.0.0
-      postject:
-        specifier: 1.0.0-alpha.6
-        version: 1.0.0-alpha.6
       tsx:
         specifier: ^4.23.15
         version: 4.23.15

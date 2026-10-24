@@ -252,18 +252,18 @@ app.kubernetes.io/component: {{ .component }}
 {{- end }}
 {{- end }}
 
-{{/* Managed computers (computer-use.md §15.1): the desktop image, template and warm pool, release-prefixed and derived. */}}
-{{- define "agentconnect.desktopImage" -}}
-{{- $repository := .Values.computerPool.repository | default (printf "%s/desktop" .Values.image.registry) -}}
+{{/* Managed computers (computer-use.md §15.1): the computer image, template and warm pool, release-prefixed and derived. */}}
+{{- define "agentconnect.computerImage" -}}
+{{- $repository := .Values.computerPool.repository | default (printf "%s/computer" .Values.image.registry) -}}
 {{- .Values.computerPool.image | default (printf "%s:%s" $repository (.Values.computerPool.tag | default (include "agentconnect.imageTag" .))) -}}
 {{- end -}}
 
-{{- define "agentconnect.desktopTemplateName" -}}
-{{- printf "%s-desktop" (include "agentconnect.fullname" .) -}}
+{{- define "agentconnect.computerTemplateName" -}}
+{{- printf "%s-computer" (include "agentconnect.fullname" .) -}}
 {{- end -}}
 
-{{- define "agentconnect.desktopWarmPoolName" -}}
-{{- printf "%s-desktop-pool" (include "agentconnect.fullname" .) -}}
+{{- define "agentconnect.computerWarmPoolName" -}}
+{{- printf "%s-computer-pool" (include "agentconnect.fullname" .) -}}
 {{- end -}}
 
 {{/* The Control Plane's public origin, as daemons and desktops reach it: the api host, else `<publicUrl>/cp`. */}}
@@ -289,7 +289,7 @@ AC_COMPUTER_PLAN (computer-use.md §15.4, §15.5): quotas, egress choices, and t
 {{/*
 Viewer media egress ports (computer-use.md §7.2): relay TURN/STUN public and container ports (in-cluster LB traffic is DNATed first), and external TURN URLs.
 */}}
-{{- define "agentconnect.desktopMediaPorts" -}}
+{{- define "agentconnect.computerMediaPorts" -}}
 {{- $ports := list -}}
 {{- $turn := .Values.relay.turn -}}
 {{- if $turn.enabled -}}

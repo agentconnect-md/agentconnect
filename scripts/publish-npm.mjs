@@ -28,7 +28,7 @@ export async function publishPackages(tag, { readVersion = readPublishedVersion,
   if (!version) throw new Error('Expected a release tag such as v1.2.3 or v1.2.3-rc.1')
   const channel = semver.prerelease(version) ? 'rc' : 'latest'
 
-  for (const component of ['daemon', 'cli', 'setup', 'desktop']) {
+  for (const component of ['daemon', 'cli', 'setup', 'computer']) {
     const { name } = JSON.parse(readFileSync(new URL(`../packages/${component}/package.json`, import.meta.url)))
     const [current, existing] = await Promise.all([readVersion(name, channel), readVersion(name, version)])
     if (existing || (current && semver.gte(current, version))) {

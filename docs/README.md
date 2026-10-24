@@ -14,7 +14,7 @@ cross-references inside it.
 - [capability-matrices.md](capability-matrices.md) — Integration ingress and sharing boundaries, and daemon-reported ACP runtime capabilities.
 - [config-file-secrets.md](config-file-secrets.md) — The `*_DATA` secret convention for file-shaped credentials (Docker config, kubeconfig).
 - [self-host-caddy-https.md](self-host-caddy-https.md) — Publishing a self-hosted stack behind Caddy HTTPS.
-- [self-host-desktop-container.md](self-host-desktop-container.md) — Running the desktop image on your own server as a Computer, and TURN for its viewer.
+- [self-host-computer-container.md](self-host-computer-container.md) — Running the desktop image on your own server as a Computer, and TURN for its viewer.
 
 ## Designs
 

@@ -14,7 +14,7 @@
 #
 # Usage: component-versions.sh <release-tag vX.Y.Z | vX.Y.Z-rc.N>
 # Stdout (GITHUB_OUTPUT-ready): `<component>=<effective tag>` for controlPlane, web,
-# relay, mem0, mem0Backend, setup, daemon and desktop, plus `previousTag=<tag>` — the channel's
+# relay, mem0, mem0Backend, setup, daemon and computer, plus `previousTag=<tag>` — the channel's
 # previous release ('' on its first) that build.yaml's runtime-image legs compare their
 # content fingerprints against; the runtime images have no path closure here.
 # Requires the full tag list and history (CI: actions/checkout fetch-depth: 0);
@@ -51,8 +51,8 @@ WEB_PATHS="packages/web packages/protocol $COMMON"
 RELAY_PATHS="packages/relay packages/activation-policy packages/message packages/protocol packages/connection packages/observability $COMMON"
 MEM0_PATHS="packages/memory-plugin-mem0 packages/protocol $COMMON"
 DAEMON_PATHS="packages/daemon packages/activation-policy packages/message packages/protocol packages/connection packages/observability packages/k8s-client packages/object-store $COMMON"
-# The desktop image has its own Dockerfile under packages/desktop; COMMON still covers the install inputs it copies.
-DESKTOP_PATHS="packages/desktop packages/protocol packages/connection $COMMON"
+# The computer image has its own Dockerfile under packages/computer; COMMON still covers the install inputs it copies.
+COMPUTER_PATHS="packages/computer packages/protocol packages/connection $COMMON"
 # The backend's application source is the immutable external context declared in
 # docker-bake.hcl. Changes to that pin, its owned Dockerfile, or this resolver
 # rebuild the image; unrelated app/package changes leave it on its effective tag.
@@ -104,7 +104,7 @@ printf 'mem0=%s\n' "$(effective "$MEM0_PATHS")"
 printf 'mem0Backend=%s\n' "$(effective "$MEM0_BACKEND_PATHS")"
 printf 'setup=%s\n' "$(effective "$SETUP_PATHS")"
 printf 'daemon=%s\n' "$(effective "$DAEMON_PATHS")"
-printf 'desktop=%s\n' "$(effective "$DESKTOP_PATHS")"
+printf 'computer=%s\n' "$(effective "$COMPUTER_PATHS")"
 
 # The runtime images are decided by content in their build legs, which need only the channel's previous release.
 PREVIOUS=""

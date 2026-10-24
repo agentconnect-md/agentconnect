@@ -6,10 +6,10 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DESKTOP_SERVICE_ENTRY_ENV, storeEntry, versionEntry, type DesktopLaunch } from '../src/computer/launch.js'
+import { COMPUTER_SERVICE_ENTRY_ENV, storeEntry, versionEntry, type ComputerLaunch } from '../src/computer/launch.js'
 import { childEnv, type EntryRunner } from '../src/computer/run.js'
 import {
-  DESKTOP_STORE,
+  COMPUTER_STORE,
   installComputer,
   realComputerOps,
   upgradeComputer,
@@ -17,13 +17,13 @@ import {
 } from '../src/computer/store.js'
 import { runComputer, setupArgs, targetOpts, uninstall, type ComputerContext } from '../src/computer/commands.js'
 import { installTarget, resolveTarget } from '../src/install.js'
-import { DESKTOP_PKG, type ResolvedTarget } from '../src/registry.js'
+import { COMPUTER_PKG, type ResolvedTarget } from '../src/registry.js'
 import { useVersion } from '../src/version-ops.js'
 import { currentVersion, listInstalled, readMeta } from '../src/version-store.js'
 
 const tmp = (prefix: string): string => mkdtempSync(join(tmpdir(), prefix))
 
-// A fake npm registry serving only @agentconnect.md/desktop, with tarballs packed like `npm pack` (`package/` prefix).
+// A fake npm registry serving only @agentconnect.md/computer, with tarballs packed like `npm pack` (`package/` prefix).
 interface FakeVersion {
   version: string
   entry?: boolean
@@ -38,13 +38,13 @@ const tarballs = new Map<string, Buffer>()
 let packument: Record<string, unknown> = {}
 
 function pack(v: FakeVersion): Buffer {
-  const dir = tmp('ac-desktop-pkg-')
+  const dir = tmp('ac-computer-pkg-')
   mkdirSync(join(dir, 'package', 'dist'), { recursive: true })
   writeFileSync(
     join(dir, 'package', 'package.json'),
-    JSON.stringify({ name: DESKTOP_PKG, version: v.version, engines: { node: v.engines ?? '>=24.12.0' } })
+    JSON.stringify({ name: COMPUTER_PKG, version: v.version, engines: { node: v.engines ?? '>=24.12.0' } })
   )
-  if (v.entry !== false) writeFileSync(join(dir, 'package', 'dist', 'agentconnect-desktop.mjs'), `// ${v.version}\n`)
+  if (v.entry !== false) writeFileSync(join(dir, 'package', 'dist', 'agentconnect-computer.mjs'), `// ${v.version}\n`)
   const buf = execFileSync('tar', ['-czf', '-', '-C', dir, 'package'])
   rmSync(dir, { recursive: true, force: true })
   return buf
@@ -64,13 +64,13 @@ function publish(versions: FakeVersion[], tags: Record<string, string>): void {
       dist: { tarball: `${base}/tarballs/${v.version}.tgz`, integrity }
     }
   }
-  packument = { name: DESKTOP_PKG, 'dist-tags': tags, versions: entries }
+  packument = { name: COMPUTER_PKG, 'dist-tags': tags, versions: entries }
 }
 
 beforeAll(async () => {
   server = createServer((req, res) => {
     requested.push(req.url ?? '')
-    if (req.url === '/@agentconnect.md%2Fdesktop') {
+    if (req.url === '/@agentconnect.md%2Fcomputer') {
       res.setHeader('content-type', 'application/json')
       return res.end(JSON.stringify(packument))
     }
@@ -107,22 +107,22 @@ beforeEach(() => {
 })
 
 describe('computer package: resolve', () => {
-  it('resolves the channel dist-tag or an explicit version of the desktop package only', async () => {
-    expect((await resolveTarget({ channel: 'stable' }, DESKTOP_PKG)).version).toBe('2.6.0')
-    expect((await resolveTarget({ channel: 'rc' }, DESKTOP_PKG)).version).toBe('2.7.0-rc.1')
-    expect((await resolveTarget({ to: '2.5.0', channel: 'rc' }, DESKTOP_PKG)).version).toBe('2.5.0')
-    await expect(resolveTarget({ to: '1.0.0', channel: 'stable' }, DESKTOP_PKG)).rejects.toThrow(
-      /@agentconnect\.md\/desktop@1\.0\.0 does not exist/
+  it('resolves the channel dist-tag or an explicit version of the computer package only', async () => {
+    expect((await resolveTarget({ channel: 'stable' }, COMPUTER_PKG)).version).toBe('2.6.0')
+    expect((await resolveTarget({ channel: 'rc' }, COMPUTER_PKG)).version).toBe('2.7.0-rc.1')
+    expect((await resolveTarget({ to: '2.5.0', channel: 'rc' }, COMPUTER_PKG)).version).toBe('2.5.0')
+    await expect(resolveTarget({ to: '1.0.0', channel: 'stable' }, COMPUTER_PKG)).rejects.toThrow(
+      /@agentconnect\.md\/computer@1\.0\.0 does not exist/
     )
-    await expect(resolveTarget({ to: '--root=/x', channel: 'stable' }, DESKTOP_PKG)).rejects.toThrow(/invalid version/)
-    expect(requested.every((url) => url === '/@agentconnect.md%2Fdesktop')).toBe(true)
+    await expect(resolveTarget({ to: '--root=/x', channel: 'stable' }, COMPUTER_PKG)).rejects.toThrow(/invalid version/)
+    expect(requested.every((url) => url === '/@agentconnect.md%2Fcomputer')).toBe(true)
   })
 })
 
 describe('computer package: download, verify, install', () => {
   const install = async (root: string, version: string): Promise<string> =>
-    installTarget(root, await resolveTarget({ to: version, channel: 'stable' }, DESKTOP_PKG), () => {}, {
-      pkg: DESKTOP_STORE
+    installTarget(root, await resolveTarget({ to: version, channel: 'stable' }, COMPUTER_PKG), () => {}, {
+      pkg: COMPUTER_STORE
     })
 
   it('extracts a verified tarball into versions/<v> with its entry', async () => {
@@ -141,7 +141,7 @@ describe('computer package: download, verify, install', () => {
   it('refuses a tarball without the daemon bundle', async () => {
     const root = tmp('ac-computer-')
     await expect(install(root, '9.9.9-noentry')).rejects.toThrow(
-      /computer daemon 9\.9\.9-noentry tarball has no dist\/agentconnect-desktop\.mjs/
+      /computer daemon 9\.9\.9-noentry tarball has no dist\/agentconnect-computer\.mjs/
     )
     expect(listInstalled(root)).toEqual([])
   })
@@ -197,7 +197,7 @@ describe('upgradeComputer', () => {
       serviceRunsStore: true,
       status: async (v) => {
         calls.push(`status ${v}`)
-        return { installed: true, running: true, pid: 10, label: 'agentconnect-desktop.service' }
+        return { installed: true, running: true, pid: 10, label: 'agentconnect-computer.service' }
       },
       refresh: async (v) => void calls.push(`refresh ${v}`),
       restart: async (v) => void calls.push(`restart ${v}`),
@@ -303,7 +303,7 @@ describe('upgradeComputer', () => {
 describe('realComputerOps against the installed daemon', () => {
   // A scripted daemon: `service status` reports a pid per call, `status` answers with a version.
   function scripted(root: string, script: { pids: number[]; answers: (string | undefined)[] }) {
-    const seen: DesktopLaunch[] = []
+    const seen: ComputerLaunch[] = []
     const run: EntryRunner = async (launch) => {
       seen.push(launch)
       const args = launch.args.slice(1).join(' ')
@@ -330,8 +330,8 @@ describe('realComputerOps against the installed daemon', () => {
       args: [versionEntry(root, '2.0.0', 'linux'), 'service', 'restart'],
       serviceEntry: storeEntry(root, 'linux')
     })
-    expect(childEnv(seen[0]!, 'ac computer')[DESKTOP_SERVICE_ENTRY_ENV]).toBe(storeEntry(root, 'linux'))
-    expect(childEnv({ command: '/app', args: [] }, 'ac computer')[DESKTOP_SERVICE_ENTRY_ENV]).toBeUndefined()
+    expect(childEnv(seen[0]!, 'ac computer')[COMPUTER_SERVICE_ENTRY_ENV]).toBe(storeEntry(root, 'linux'))
+    expect(childEnv({ command: '/app', args: [] }, 'ac computer')[COMPUTER_SERVICE_ENTRY_ENV]).toBeUndefined()
   })
 
   it('is healthy only with a stable pid and the daemon answering as the new version', async () => {
@@ -402,14 +402,19 @@ describe('computer command arguments', () => {
 })
 
 describe('agentconnect computer install / uninstall', () => {
-  function context(): ComputerContext & { launches: DesktopLaunch[]; lines: string[] } {
+  function context(): ComputerContext & { launches: ComputerLaunch[]; lines: string[] } {
     const home = tmp('ac-computer-home-')
-    const launches: DesktopLaunch[] = []
+    const launches: ComputerLaunch[] = []
     const lines: string[] = []
     return {
       self: 'ac computer',
-      host: { env: { AGENTCONNECT_DESKTOP_HOME: join(home, 'desktop') }, platform: 'linux', home, exists: existsSync },
-      root: join(home, 'desktop'),
+      host: {
+        env: { AGENTCONNECT_COMPUTER_HOME: join(home, 'computer') },
+        platform: 'linux',
+        home,
+        exists: existsSync
+      },
+      root: join(home, 'computer'),
       node: '/n',
       run: async (launch) => {
         launches.push(launch)

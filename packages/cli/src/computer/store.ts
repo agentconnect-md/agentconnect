@@ -1,13 +1,13 @@
 // The computer daemon's version store and its upgrade (computer-use.md §3.5), on the agent daemon's store primitives.
 import { checkServiceHealthy, type HealthResult } from '../health.js'
 import { installTarget, resolveTarget, type StorePackage } from '../install.js'
-import { DESKTOP_PKG, type ResolvedTarget } from '../registry.js'
+import { COMPUTER_PKG, type ResolvedTarget } from '../registry.js'
 import { autoPrune, DEFAULT_KEEP_VERSIONS, useVersion, type AutoPruneOpts } from '../version-ops.js'
 import { currentVersion, readMeta, writeMeta, type Channel } from '../version-store.js'
-import { DESKTOP_PACKAGE_ENTRY, storeEntry, versionEntry, type DesktopLaunch } from './launch.js'
+import { COMPUTER_PACKAGE_ENTRY, storeEntry, versionEntry, type ComputerLaunch } from './launch.js'
 import type { EntryRunner } from './run.js'
 
-export const DESKTOP_STORE: StorePackage = { label: 'computer daemon', entry: DESKTOP_PACKAGE_ENTRY }
+export const COMPUTER_STORE: StorePackage = { label: 'computer daemon', entry: COMPUTER_PACKAGE_ENTRY }
 
 export interface ComputerServiceState {
   installed: boolean
@@ -166,7 +166,7 @@ export interface RealOpsOptions {
 export function realComputerOps(root: string, o: RealOpsOptions): ComputerOps {
   const platform = o.platform ?? process.platform
   const node = o.node ?? process.execPath
-  const launch = (version: string, args: string[]): DesktopLaunch => ({
+  const launch = (version: string, args: string[]): ComputerLaunch => ({
     command: node,
     args: [versionEntry(root, version, platform), ...args],
     serviceEntry: storeEntry(root, platform)
@@ -198,12 +198,12 @@ export function realComputerOps(root: string, o: RealOpsOptions): ComputerOps {
     }
   }
   return {
-    resolve: (opts) => resolveTarget(opts, DESKTOP_PKG),
-    install: (r, target, log) => installTarget(r, target, log, { pkg: DESKTOP_STORE }),
+    resolve: (opts) => resolveTarget(opts, COMPUTER_PKG),
+    install: (r, target, log) => installTarget(r, target, log, { pkg: COMPUTER_STORE }),
     serviceRunsStore: platform === 'linux',
     status,
     refresh: (version) => service(version, 'install'),
-    // Mirrors `inGraphicalSession` in packages/desktop/src/service-linux.ts, which the child inherits this env for.
+    // Mirrors `inGraphicalSession` in packages/computer/src/service-linux.ts, which the child inherits this env for.
     refreshStarts:
       platform === 'linux' && Boolean((o.env ?? process.env).DISPLAY || (o.env ?? process.env).WAYLAND_DISPLAY),
     restart: (version) => service(version, 'restart'),

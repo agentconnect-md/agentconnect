@@ -9,12 +9,12 @@ import { currentVersion, listInstalled, readMeta, type Channel } from '../versio
 import { currentLink, versionsDir, versionsJsonPath } from '../paths.js'
 import {
   computerArgv,
-  DESKTOP_BUNDLE,
-  desktopDataDir,
+  COMPUTER_BUNDLE,
+  computerDataDir,
   hostDefaults,
-  resolveDesktopLaunch,
-  type DesktopHost,
-  type DesktopLaunch
+  resolveComputerLaunch,
+  type ComputerHost,
+  type ComputerLaunch
 } from './launch.js'
 import { entryRunner, execComputer, type EntryRunner } from './run.js'
 import { installComputer, realComputerOps, upgradeComputer, type ComputerTargetOpts } from './store.js'
@@ -36,29 +36,29 @@ const HELP_FLAGS = new Set(['-h', '--help', 'help'])
 
 export interface ComputerContext {
   self: string
-  host: DesktopHost
+  host: ComputerHost
   root: string
   node: string
   run: EntryRunner
   log: (m: string) => void
 }
 
-export function computerContext(cli: string, host: DesktopHost = hostDefaults()): ComputerContext {
+export function computerContext(cli: string, host: ComputerHost = hostDefaults()): ComputerContext {
   const self = `${cli} computer`
   return {
     self,
     host,
-    root: desktopDataDir(host),
+    root: computerDataDir(host),
     node: process.execPath,
     run: entryRunner(self),
     log: (m) => console.log(m)
   }
 }
 
-const launchFor = (ctx: ComputerContext, args: string[]): DesktopLaunch =>
-  resolveDesktopLaunch(args, ctx.host, ctx.node, ctx.self)
+const launchFor = (ctx: ComputerContext, args: string[]): ComputerLaunch =>
+  resolveComputerLaunch(args, ctx.host, ctx.node, ctx.self)
 
-const tryLaunch = (ctx: ComputerContext, args: string[]): DesktopLaunch | undefined => {
+const tryLaunch = (ctx: ComputerContext, args: string[]): ComputerLaunch | undefined => {
   try {
     return launchFor(ctx, args)
   } catch {
@@ -135,7 +135,7 @@ function printVersions(ctx: ComputerContext): void {
   }
 }
 
-const describeLaunch = (launch: DesktopLaunch): string =>
+const describeLaunch = (launch: ComputerLaunch): string =>
   /\.(c|m)?js$/i.test(launch.args[0] ?? '') ? launch.args[0]! : launch.command
 
 async function status(ctx: ComputerContext): Promise<void> {
@@ -173,12 +173,12 @@ async function status(ctx: ComputerContext): Promise<void> {
   console.log(`daemon:   ${daemon}`)
 }
 
-// The legacy one-line installer's launcher (~/.local/bin/agentconnect-desktop), removed only when it runs this data dir's bundle.
+// The legacy one-line installer's launcher (~/.local/bin/agentconnect-computer), removed only when it runs this data dir's bundle.
 function removeLegacyLauncher(root: string, log: (m: string) => void): void {
   if (process.platform === 'win32') return
-  const launcher = join(homedir(), '.local', 'bin', 'agentconnect-desktop')
+  const launcher = join(homedir(), '.local', 'bin', 'agentconnect-computer')
   try {
-    if (readFileSync(launcher, 'utf8').includes(join(root, 'app', DESKTOP_BUNDLE))) {
+    if (readFileSync(launcher, 'utf8').includes(join(root, 'app', COMPUTER_BUNDLE))) {
       rmSync(launcher, { force: true })
       log(`removed ${launcher}`)
     }
@@ -242,7 +242,7 @@ function program(ctx: ComputerContext): Command {
     process.exit(1)
   }
   const p = new Command(ctx.self)
-    .description('Install, upgrade and diagnose the AgentConnect computer daemon (the desktop computer-use daemon)')
+    .description('Install, upgrade and diagnose the AgentConnect computer daemon (the computer-use daemon)')
     .helpOption('-h, --help', 'show this help')
     .addHelpText(
       'after',

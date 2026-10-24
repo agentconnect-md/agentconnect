@@ -125,14 +125,14 @@ describe('ComputerDetailView', () => {
           checkedAt: new Date().toISOString(),
           checks: [
             { name: 'config', status: 'ok', detail: 'fine' },
-            { name: 'driver', status: 'fail', detail: 'cua-driver missing', fix: 'agentconnect desktop setup' }
+            { name: 'driver', status: 'fail', detail: 'cua-driver missing', fix: 'agentconnect computer setup' }
           ]
         }
       })
     )
     const checks = [...el.querySelectorAll('[data-doctor-check]')].map((n) => n.getAttribute('data-doctor-check'))
     expect(checks).toEqual(['driver', 'config'])
-    expect(el.querySelector('[data-doctor-check="driver"]')!.textContent).toContain('agentconnect desktop setup')
+    expect(el.querySelector('[data-doctor-check="driver"]')!.textContent).toContain('agentconnect computer setup')
   })
 
   it('stops from the console on both layouts and applies the returned row', async () => {

@@ -150,7 +150,7 @@ describe('Computer channel', () => {
       checkedAt: new Date().toISOString(),
       checks: [
         { name: 'session', status: 'ok', detail: 'X11 display :0' },
-        { name: 'ffmpeg', status: 'fail', detail: 'not found', fix: 'run: agentconnect desktop install-ffmpeg' }
+        { name: 'ffmpeg', status: 'fail', detail: 'not found', fix: 'run: agentconnect computer install-ffmpeg' }
       ]
     }
     const capabilities = {

@@ -158,14 +158,14 @@ export type Route = 'run' | 'computer' | 'delegate' | 'cli'
 /**
  * Classify an invocation (argv after the node+script prefix):
  * - `run`      → the foreground respawn shell
- * - `computer` → the computer daemon (computer-use.md §3.1), not the agent daemon; `desktop` is its hidden alias
+ * - `computer` → the computer daemon (computer-use.md §3.1), not the agent daemon
  * - `delegate` → any daemon-owned or unknown command → exec the active daemon
  * - `cli`      → a CLI-owned command, or none (help/version/bare) → commander
  */
 export function classifyInvocation(argv: string[]): Route {
   const cmd = firstPositional(argv)
   if (cmd === 'run') return 'run'
-  if (cmd === 'computer' || cmd === 'desktop') return 'computer'
+  if (cmd === 'computer') return 'computer'
   if (cmd !== undefined && !CLI_OWNED_COMMANDS.has(cmd)) return 'delegate'
   return 'cli'
 }

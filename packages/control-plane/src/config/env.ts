@@ -89,8 +89,8 @@ const CoreConfigShape = {
   COMPUTER_WS_PATH: z.string().default('/api/v1/computers/ws'),
   // Lifetime of the channel key the CP renews; bounds how long a desktop cut off from the CP keeps working (§8.2).
   COMPUTER_CREDENTIAL_TTL_SEC: z.coerce.number().int().min(60).max(3600).default(300),
-  // The desktop image the console's Docker command runs (computer-use.md §3.8); unset ⇒ GHCR's image at this CP's release.
-  COMPUTER_DESKTOP_IMAGE: z.string().min(1).optional(),
+  // The computer image the console's Docker command runs (computer-use.md §3.8); unset ⇒ GHCR's image at this CP's release.
+  COMPUTER_IMAGE: z.string().min(1).optional(),
   // TURN for the console viewer when no direct UDP path exists (computer-use.md §7.2): comma-separated turn:/turns: URLs.
   COMPUTER_TURN_URLS: z.string().optional(),
   // coturn's `static-auth-secret` (use-auth-secret); the CP mints per-viewer credentials from it and never sends it out.

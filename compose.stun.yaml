@@ -1,5 +1,5 @@
 # Optional STUN on the relay for the console's Computer viewer: browser and desktop hole-punch and send video peer to peer.
-# docker compose -f compose.yaml -f compose.stun.yaml up -d; guide: docs/self-host-desktop-container.md.
+# docker compose -f compose.yaml -f compose.stun.yaml up -d; guide: docs/self-host-computer-container.md.
 services:
   relay:
     environment:

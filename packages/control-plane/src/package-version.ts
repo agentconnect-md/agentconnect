@@ -21,7 +21,7 @@ export function cliChannel(release: string | undefined = releaseTag()): 'stable'
   return release && !release.includes('-') ? 'stable' : 'rc'
 }
 
-/** The desktop image matching this CP's release, so the console never pairs a CP with a newer or older desktop. */
-export function desktopImage(override: string | undefined, release: string | undefined = releaseTag()): string {
-  return override ?? `ghcr.io/agentconnect-md/desktop:${release ?? 'latest'}`
+/** The computer image matching this CP's release, so the console never pairs a CP with a newer or older computer daemon. */
+export function computerImage(override: string | undefined, release: string | undefined = releaseTag()): string {
+  return override ?? `ghcr.io/agentconnect-md/computer:${release ?? 'latest'}`
 }

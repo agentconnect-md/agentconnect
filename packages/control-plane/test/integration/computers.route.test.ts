@@ -678,7 +678,7 @@ describe('Computer registration', () => {
     const res = await appAs().app.inject({ method: 'POST', url: `${ORG}/computers/registrations`, payload: {} })
     expect(res.json()).not.toHaveProperty('linuxInstallerUrl')
     // A checkout carries the dev version, so the console's Docker command falls back to latest.
-    expect(res.json().desktopImage).toBe('ghcr.io/agentconnect-md/desktop:latest')
+    expect(res.json().computerImage).toBe('ghcr.io/agentconnect-md/computer:latest')
     // A checkout runs ahead of stable, so its console pins the rc CLI.
     expect(res.json().cliChannel).toBe('rc')
     expect((await appAs().app.inject({ method: 'GET', url: '/v1/computers/install.sh' })).statusCode).toBe(404)

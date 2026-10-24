@@ -141,18 +141,18 @@ export function computerGrantsAgent(computer: Pick<ComputerDto, 'agentAccess'>, 
 export type InstallOs = 'linux' | 'macos' | 'windows' | 'docker'
 
 const CLI = '@agentconnect.md/cli'
-const DEFAULT_DESKTOP_IMAGE = 'ghcr.io/agentconnect-md/desktop:latest'
+const DEFAULT_COMPUTER_IMAGE = 'ghcr.io/agentconnect-md/computer:latest'
 
 /** The one-line command that installs the computer daemon and registers this desktop (computer-use.md §3.5, §3.6). */
 export function computerInstallCommand(
   os: InstallOs,
-  registration: Pick<ComputerRegistrationDto, 'token' | 'exchangeUrl' | 'desktopImage' | 'cliChannel'>
+  registration: Pick<ComputerRegistrationDto, 'token' | 'exchangeUrl' | 'computerImage' | 'cliChannel'>
 ): string {
   // PowerShell takes double quotes; POSIX shells single quotes, which keep the token literal.
   const q = (value: string) => (os === 'windows' ? `"${value}"` : `'${value}'`)
   // The desktop image on a server (computer-use.md §3.8); the volume keeps the key the token buys.
   if (os === 'docker') {
-    return `docker run -d --name agentconnect-desktop --hostname agentconnect-desktop --restart unless-stopped --shm-size=1g -v agentconnect-desktop:/home/desktop -e LISTEN_HOST=127.0.0.1 -e AGENTCONNECT_CP_URL=${q(registration.exchangeUrl)} -e AGENTCONNECT_REGISTER_TOKEN=${q(registration.token)} ${registration.desktopImage ?? DEFAULT_DESKTOP_IMAGE}`
+    return `docker run -d --name agentconnect-computer --hostname agentconnect-computer --restart unless-stopped --shm-size=1g -v agentconnect-computer:/home/computer -e LISTEN_HOST=127.0.0.1 -e AGENTCONNECT_CP_URL=${q(registration.exchangeUrl)} -e AGENTCONNECT_REGISTER_TOKEN=${q(registration.token)} ${registration.computerImage ?? DEFAULT_COMPUTER_IMAGE}`
   }
   const register = `--register ${q(registration.token)} --cp-url ${q(registration.exchangeUrl)}`
   // Always a dist-tag: an untagged npx runs npm latest, which can predate `computer install` while this CP is an rc.

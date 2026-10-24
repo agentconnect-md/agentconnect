@@ -69,12 +69,11 @@ when it starts.
 ### 1.2 Computer (desktop) daemon
 
 `agentconnect computer <command>` manages and runs the computer daemon of
-[computer-use.md](computer-use.md) §3.1 (`@agentconnect.md/desktop`, bin
-`agentconnect-desktop`) instead of the agent daemon; `desktop` is a hidden alias
-kept while installs from before the rename migrate. The CLI routes it before
+[computer-use.md](computer-use.md) §3.1 (`@agentconnect.md/computer`, bin
+`agentconnect-computer`) instead of the agent daemon. The CLI routes it before
 resolving `--root` or `--instance`, because the computer daemon keeps its own
-data directory (`$AGENTCONNECT_DESKTOP_HOME`, `%LOCALAPPDATA%\AgentConnect\desktop`
-on Windows, otherwise `~/.agentconnect/desktop`).
+data directory (`$AGENTCONNECT_COMPUTER_HOME`, `%LOCALAPPDATA%\AgentConnect\computer`
+on Windows, otherwise `~/.agentconnect/computer`).
 
 The CLI owns these subcommands; the [version store](#2-version-store) primitives
 are shared with the agent daemon, under a separate root (the data directory):
@@ -93,19 +92,19 @@ Every other command (`setup`, `register`, `run`, `pause`, `resume`, `token`,
 inherited standard I/O, forwarded `SIGTERM`, and the exit status or terminating
 signal propagated, exactly as delegation does:
 
-1. `AGENTCONNECT_DESKTOP_ENTRY`, a development override; a missing file is an
+1. `AGENTCONNECT_COMPUTER_ENTRY`, a development override; a missing file is an
    error rather than a fallback;
-2. on macOS, `AgentConnect Desktop.app` in `~/Applications`, then
+2. on macOS, `AgentConnect Computer.app` in `~/Applications`, then
    `/Applications`, whose binary runs directly so the app keeps its own TCC
    grants;
-3. the version store's `current/dist/agentconnect-desktop.mjs`;
-4. `app/agentconnect-desktop.mjs`, where the earlier bundle install scripts put it.
+3. the version store's `current/dist/agentconnect-computer.mjs`;
+4. `app/agentconnect-computer.mjs`, where the earlier bundle install scripts put it.
 
 A `.js`, `.mjs` or `.cjs` entry runs under the CLI's own Node; any other entry
-runs as an executable. The CLI sets `AGENTCONNECT_DESKTOP_COMMAND` to its own
+runs as an executable. The CLI sets `AGENTCONNECT_COMPUTER_COMMAND` to its own
 invocation plus `computer`, so the daemon's help and fix hints name the command
 the user typed. When it runs the store's entry it also sets
-`AGENTCONNECT_DESKTOP_SERVICE_ENTRY` to `current/dist/agentconnect-desktop.mjs`,
+`AGENTCONNECT_COMPUTER_SERVICE_ENTRY` to `current/dist/agentconnect-computer.mjs`,
 and the daemon's systemd unit (or Windows Run-key launcher) runs that path, so an
 upgrade only moves `current`. On macOS the LaunchAgent still runs the `.app`, so
 `upgrade` switches `current` without touching the service until the signed app
