@@ -11,5 +11,11 @@ export const QQCommandChrome: CommandChromeSurface<NormalizedMessage, unknown> =
   },
   status(conn, msg, ctx, _info, link) {
     this.reply(conn, msg, ctx, link ? `View this session: ${link}` : 'View this session in the AgentConnect console.')
+  },
+  // QQ only answers passively, so the notice replies to the message that raised it.
+  async notice(conn, channel, _thread, text, msg) {
+    const replyId = QQReplyId(msg)
+    if (!replyId) throw new Error('QQ notice has no message to reply to')
+    await (conn as QQConnection).sendText(channel, replyId, text)
   }
 }

@@ -13,5 +13,10 @@ export const dingTalkCommandChrome: CommandChromeSurface<NormalizedMessage, unkn
   },
   status(conn, msg, ctx, _info, link) {
     this.reply(conn, msg, ctx, link ? `View this session: ${link}` : 'View this session in the AgentConnect console.')
+  },
+  // A reply chain has no thread to post into, so core's notice is a plain message in the conversation.
+  async notice(conn, channel, _thread, text) {
+    if ((await (conn as DingTalkReplyPort).sendText(channel, text)) === undefined)
+      throw new Error('DingTalk did not accept the notice')
   }
 }
