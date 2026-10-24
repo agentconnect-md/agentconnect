@@ -98,7 +98,7 @@
     "@types/pngjs": "^6.0.5",
     "@types/ws": "^8.18.2",
     "json": "^11.0.0",
-    "microsandbox": "0.7.8",
+    "microsandbox": "0.7.10",
     "testcontainers": "^12.2.1",
     "tsdown": "^0.23.1",
     "tsx": "^4.23.15",
