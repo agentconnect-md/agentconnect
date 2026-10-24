@@ -16,10 +16,11 @@ export const msTeamsCommandChrome: CommandChromeSurface<NormalizedMessage, unkno
   status(conn, msg, ctx, _info, link) {
     this.reply(conn, msg, ctx, link ? `[View this session](${link})` : 'View this session in the AgentConnect console.')
   },
-  // Out of a turn there is no activity to read, so the conversation's recorded target is used; none recorded posts nothing.
+  // Out of a turn there is no activity to read, so the conversation's recorded target is used; none recorded cannot post.
   async notice(conn, channel, thread, text) {
     const port = conn as MsTeamsReplyPort
     const target = port.targetFor(channel, thread)
-    if (target) await port.postText(target, text)
+    if (!target) throw new Error('no recorded Teams target for the notice')
+    await port.postText(target, text)
   }
 }
