@@ -285,10 +285,24 @@ asker's `29:` ID, read from a conversation the bot shares with them. Only the
 asker may answer that card, judged as the asker of the external place, so an
 approval switched off there or a conversation closed since refuses them too.
 An asker who is not a full member, or whose chat cannot be opened, leaves the
-notice and the console; an agent with a Slack integration also gets Slack's
-editor DM. The card is the module's `ApprovalCardFacet` card, posted through
-core's platform-neutral asker path, which any platform whose connection offers
-`isFullMember` and `openDirectMessage` shares; Slack keeps its own DM card.
+request on the editor path. The card is the module's `ApprovalCardFacet` card,
+posted through core's platform-neutral asker path, which any platform whose
+connection offers `isFullMember` and `openDirectMessage` shares; Slack keeps its
+own DM card.
+
+On the editor path (an external place with sync on, an asker who is not a full
+member, or no asker card) the editor DM reaches Teams too
+([approval surfaces](slack-approval-dm.md) §3). The Control Plane walks the same
+preference chain with each editor's linked Microsoft account (§4.5), and the
+daemon posts the same card into the chosen editor's 1:1 chat, under a line that
+names the agent and the person who asked and links the session. The connection
+opens that chat by the `29:` ID from a conversation it shares with the editor,
+else from the roster of a team it knows, which lists every team member. Only that
+editor answers the card, rechecked by the Control Plane on each click as Slack's
+DM is; the chat approval level does not reach it. A Slack integration of the same
+agent is tried first, so an editor linked on both gets Slack's DM. Questions
+(elicitations) and the DM beside a card that only editors may answer stay
+Slack-only; on Teams they are answered in the console.
 
 ### 4.5 Sign-in, linking, and session access sync
 
@@ -722,6 +736,8 @@ tenant:
 - Without session access sync, a permission request shows as a card that anyone
   in the conversation can settle. With sync on, a click by a linked editor settles
   it, and a click by an unlinked person or a non-editor is refused privately.
+- On the editor path, the chosen editor gets the approval card in their 1:1 chat
+  and their click settles it.
 - A person links Microsoft in the Profile; with sync on, a channel session is
   visible to a linked member of its team and hidden from a linked non-member.
 - A redelivered activity does not start a second turn.

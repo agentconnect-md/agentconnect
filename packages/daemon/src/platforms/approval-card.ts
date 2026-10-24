@@ -18,6 +18,13 @@ export interface SubsessionNoticeView {
   readonly sessionUrl?: string
 }
 
+/** What an editor's card in their own chat says it is for: the agent, who asked, and the session's page. */
+export interface ApprovalCardContext {
+  readonly agentName: string
+  readonly requesterName: string | null
+  readonly sessionUrl: string
+}
+
 /** One permission request as core hands it to a surface. */
 export interface ApprovalCardAsk {
   /** The unguessable id every button on the card carries back. */
@@ -30,12 +37,15 @@ export interface ApprovalCardAsk {
   readonly via?: { readonly agentId: string; readonly integrationId: string }
   /** Set when a background sub-session asks: the card names and links it above the request. */
   readonly subsession?: SubsessionAsker
+  /** Set on a card sent to an editor outside the conversation: it names and links what it is for. */
+  readonly context?: ApprovalCardContext
 }
 
 /** How a card reads once it takes no answer. */
 export interface ApprovalCardSettlement {
   readonly params: RequestPermissionRequest
   readonly subsession?: SubsessionAsker
+  readonly context?: ApprovalCardContext
   /** What happened, with who answered where someone did: "Allow — Ada", "Cancelled". */
   readonly text: string
   /** Undefined when nothing was decided: cancelled, expired, or approving in chat turned off. */

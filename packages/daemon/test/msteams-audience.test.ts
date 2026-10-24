@@ -298,6 +298,19 @@ describe('a Teams 1:1 chat the bot opens', () => {
       conversationId: 'a:example-alice-chat'
     })
   })
+
+  it('finds a team member it never saw in the roster of a team it knows', async () => {
+    const opened: unknown[] = []
+    const { conn, reads } = connection((url, init) => {
+      if (url !== msTeamsConversationsUrl(SERVICE_URL)) return undefined
+      opened.push(JSON.parse(String(init?.body)))
+      return Response.json({ id: 'a:example-guest-chat' }, { status: 201 })
+    })
+    conn.noteMessage(post(STANDARD))
+    expect(await conn.openDirectMessage(GUEST)).toBe('a:example-guest-chat')
+    expect(reads).toContain(msTeamsConversationMemberUrl(SERVICE_URL, TEAM, GUEST))
+    expect(opened).toEqual([expect.objectContaining({ members: [{ id: '29:guest' }] })])
+  })
 })
 
 describe('Teams audience through Graph', () => {
