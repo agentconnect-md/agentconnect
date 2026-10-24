@@ -19,7 +19,6 @@ export const AUDITED_RUNTIME_SKILLS_AGENTS: Readonly<Record<string, string>> = O
   deepagents: 'deepagents',
   devin: 'devin',
   'factory-droid': 'droid',
-  gemini: 'gemini-cli',
   'github-copilot-cli': 'github-copilot',
   goose: 'goose',
   'grok-build': 'grok',

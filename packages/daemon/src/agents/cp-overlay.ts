@@ -1,35 +1,10 @@
-/**
- * CP runtime env. The Control Plane owns the editable agent spec (prompt, model,
- * reasoning/execution knobs, env, workspace) and ships it over `agent/upsert` +
- * the `register/ok` reconcile roster. Those specs remain in daemon memory and
- * are combined with separately pushed integrations/crons in `effectiveAgents`.
- *
- * This module maps the effective agent fields to the `AGENTCONNECT_*`
- * environment the daemon surfaces to the ACP child.
- */
+// Maps the Control Plane agent spec to the ACP child's AgentConnect environment.
 import type { Agent } from './agent-schema.js'
-import { runtimeModelEnv } from '../runtimes/model-env.js'
 
-/**
- * Runtime config surfaced to the ACP child as environment variables, under
- * `AGENTCONNECT_*` for runtimes that read them. ACP `session/new`/`initialize`
- * carry no model / effort field (SDK v1); model + reasoning effort are
- * additionally applied per session via ACP session config options
- * (`session/set_config_option`) when the runtime advertises the selectors —
- * see AcpHost.applySessionConfig — which is how claude-acp actually honors
- * them. The env stays the fallback for runtimes without config options.
- *
- * The system prompt is NOT here: the agent meta object (identity + description +
- * channel source) rides `_meta.systemPrompt` on session/new|load for Claude runtimes
- * (see claudeSessionMeta), and for other runtimes SessionManager inlines it as the
- * first prompt text block. (`runtimeOverrides.env` is applied separately by
- * `agentChildEnv`.) Only emits a key when the value is set.
- */
+// ACP selectors also receive these settings; standing context and user environment travel separately.
 export function cpRuntimeEnv(agent: Agent): Record<string, string> {
   const out: Record<string, string> = {}
   if (agent.runtimeOverrides?.model) out.AGENTCONNECT_MODEL = agent.runtimeOverrides.model
-  // Runtimes with no ACP model selector read their own variable instead (applied at launch only).
-  Object.assign(out, runtimeModelEnv(agent.runtime, agent.runtimeOverrides?.model))
   if (agent.reasoningEffort) out.AGENTCONNECT_REASONING_EFFORT = agent.reasoningEffort
   if (agent.executionMode) out.AGENTCONNECT_EXECUTION_MODE = agent.executionMode
   return out

@@ -391,9 +391,9 @@ describe('permissionModeChoicesFor', () => {
   })
 
   it('offers nothing when a REPORTED catalog carries no modes (the runtime has no mode selector)', () => {
-    // Gemini CLI's shape: the static table would offer Claude's modes, which the daemon silently drops.
-    expect(permissionModeChoicesFor('gemini', catalog({ permissionModes: [] }))).toEqual([])
-    expect(permissionModeChoicesFor('gemini', catalog({}))).toEqual([])
+    // A runtime without permission modes must not inherit another runtime's choices.
+    expect(permissionModeChoicesFor('example-runtime', catalog({ permissionModes: [] }))).toEqual([])
+    expect(permissionModeChoicesFor('example-runtime', catalog({}))).toEqual([])
   })
 
   it('labels catalog modes by name → static table → capitalized value', () => {

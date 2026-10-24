@@ -24,7 +24,7 @@ const grok: RuntimeDef = {
   args: ['-y', '@xai-official/grok@0.2.112', 'agent', 'stdio'],
   env: []
 } as unknown as RuntimeDef
-const other: RuntimeDef = { command: 'npx', args: ['gemini-acp'], env: [] } as unknown as RuntimeDef
+const other: RuntimeDef = { command: 'npx', args: ['example-acp'], env: [] } as unknown as RuntimeDef
 
 describe('memoryProviderFor (spawn-time provider + env)', () => {
   const agent = (provider: MemoryProviderKind | undefined, runtime = 'claude') => ({
@@ -101,12 +101,12 @@ describe('memoryProviderFor (spawn-time provider + env)', () => {
     expect(memoryProviderFor(on('managed'), claude).runtimeEnv()).toEqual(off)
     expect(memoryProviderFor(on(undefined), claude).runtimeEnv()).toEqual(off)
     expect(memoryProviderFor(on('none'), claude).runtimeEnv()).toEqual(off)
-    expect(() => memoryProviderFor(on('managed', 'gemini'), other).runtimeEnv()).toThrow(
+    expect(() => memoryProviderFor(on('managed', 'example-runtime'), other).runtimeEnv()).toThrow(
       "assistant mode needs the runtime's own memory turned off"
     )
     expect(() => memoryProviderFor(on('native'), claude)).toThrow(MemoryProviderUnavailableError)
     // Outside assistant mode, managed still tolerates a runtime whose off-switch is unverified.
-    const plain = { ...agent('managed', 'gemini'), assistantMode: { enabled: false } }
+    const plain = { ...agent('managed', 'example-runtime'), assistantMode: { enabled: false } }
     expect(memoryProviderFor(plain, other).runtimeEnv()).toEqual({})
     expect(memoryProviderFor({ ...agent('native'), assistantMode: { enabled: false } }, claude).runtimeEnv()).toEqual(
       {}

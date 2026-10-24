@@ -20,7 +20,6 @@ import { runtimeSandboxReadRoots } from '../launch/compose.js'
 import { capsFromConfigOptions, augmentEffortOptions } from './config-caps.js'
 import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { catalogFingerprint } from './model-catalog.js'
-import { RUNTIME_MODEL_ENV } from './model-env.js'
 import { parseArchiveLaunch } from './archive-store.js'
 import { mcpSocketPath } from '../paths.js'
 import { formatErr } from '../daemon/text.js'
@@ -115,7 +114,7 @@ export class RuntimeFactsRegistry {
   // at boot (a live probe has not confirmed it this process) — the activation model
   // gate treats it as permissive; 'probed' = live result.
   private modelsSource = new Map<string, 'cached' | 'probed'>()
-  // Runtimes whose last successful probe advertised no models (gemini): a native catalog is their advertisement.
+  // A native catalog supplies the models when a successful probe advertises no selector.
   private selectorless = new Set<string>()
   // Runtimes whose last probe was rejected with the ACP auth-required error
   // (-32000): installed but needing an interactive login on this host. Feeds the
@@ -175,7 +174,7 @@ export class RuntimeFactsRegistry {
 
   canSwitchModels(runtimeId: string): boolean {
     const id = this.canonicalId(runtimeId)
-    return !RUNTIME_MODEL_ENV[id] && !this.selectorless.has(id) && (this.models.get(id)?.length ?? 0) > 0
+    return !this.selectorless.has(id) && (this.models.get(id)?.length ?? 0) > 0
   }
 
   /** Report the current runtime profile, preserving both host and image versions. */

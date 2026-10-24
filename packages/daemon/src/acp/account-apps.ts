@@ -170,21 +170,9 @@ const DISABLE: DisableSpec[] = [
   }
 ]
 
-/**
- * Runtimes a clean machine inherits NO account connectors from: every tool comes
- * from local config files (or explicitly-installed extensions) plus AgentConnect's
- * own ACP-injected servers. Sign-in grants model/provider access only. There is
- * nothing account-bound to disable, and any broad MCP-off switch would wrongly
- * strip the local/injected servers — so we deliberately do nothing.
- *
- * `cursor` and `opencode` DO have a server-side path, but only when signed into a
- * corporate Cursor team (behind a default-off server flag) or an opencode org —
- * never on a clean personal machine. AgentConnect assumes clean machines and does
- * not manage the enterprise/org case, so they live here (no per-spawn warning).
- */
+// These runtimes inherit no account connectors on a clean machine; keep local and ACP-injected MCP servers.
 const NOT_APPLICABLE = new Set<string>([
-  'gemini', // @google/gemini-cli — MCP from settings.json only
-  'qwen-code', // Gemini-CLI fork — MCP from settings.json only
+  'qwen-code', // MCP from settings.json only
   'goose', // Block goose — extensions from local config files only
   'amp-acp', // Sourcegraph Amp — amp.mcpServers from local settings only
   'cline', // Cline — cline_mcp_settings.json + ACP-injected only (enterprise remoteMCPServers schema is inert)

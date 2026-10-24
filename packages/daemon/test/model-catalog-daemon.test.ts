@@ -205,7 +205,7 @@ describe('daemon model-catalog cache hydrate', () => {
 })
 
 describe('daemon native catalog for a runtime with no ACP model selector', () => {
-  // gemini-cli's shape: the probe succeeds but advertises no models, so only a native catalog can fill the picker.
+  // A successful probe without models needs a native catalog to fill the picker.
   const noSelector: RuntimeProbeResult = { runtime: 'fake', ok: true, models: [], probedVersion: '1.0.0' }
   const loggedOut: RuntimeProbeResult = {
     runtime: 'fake',
@@ -396,7 +396,7 @@ describe('microsandbox runtime facts', () => {
       vi.stubEnv('XDG_DATA_HOME', join(hostHome, '.local/share'))
       const available = { command: process.execPath, args: [], env: [] }
       const missing = { command: join(dir, 'missing-binary'), args: [], env: [] }
-      catalog = catalogOf({ 'grok-build': available, opencode: available, 'pi-acp': missing, gemini: missing })
+      catalog = catalogOf({ 'grok-build': available, opencode: available, 'pi-acp': missing, unknown: missing })
       const d = daemon as any
       if (backend === 'microsandbox') {
         d.microsandboxTable = {

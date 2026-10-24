@@ -30,9 +30,12 @@ export type RegistryEntry = z.infer<typeof RegistryEntrySchema>
 // Root tolerates both an id-keyed object and an {agents:[...]} array; normalizes to {agents: Record}.
 export const RegistryDocSchema = z
   .object({ agents: z.union([z.array(RegistryEntrySchema), z.record(z.string(), RegistryEntrySchema)]) })
-  .transform((d) => ({
-    agents: Array.isArray(d.agents) ? Object.fromEntries(d.agents.map((a) => [a.id, a])) : d.agents
-  }))
+  .transform((d) => {
+    const agents = Array.isArray(d.agents) ? Object.fromEntries(d.agents.map((a) => [a.id, a])) : d.agents
+    // Retire Gemini CLI from the automatic catalog; Antigravity has its own ACP entry.
+    delete agents.gemini
+    return { agents }
+  })
 export type RegistryDoc = { agents: Record<string, RegistryEntry> }
 
 // `image` is only ever stamped by the --k8s declared-table projection: a runtime the sandbox image
