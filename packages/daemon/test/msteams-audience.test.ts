@@ -134,6 +134,19 @@ describe('Teams audience', () => {
     ])
   })
 
+  it('leaves a 1:1 chat a guest installed the bot in trusting its person', async () => {
+    const { conn, reads } = connection()
+    const reasons = await conn.joinedMemberReasons({
+      kind: 'members-added',
+      conversationId: 'a:example-personal',
+      serviceUrl: SERVICE_URL,
+      teamWide: false,
+      members: [{ id: '29:guest', aadObjectId: GUEST }]
+    })
+    expect(reasons).toEqual([])
+    expect(reads).toEqual([])
+  })
+
   it('carries a guest who joined the team into every standard channel', async () => {
     const { conn } = connection()
     const reasons = await conn.joinedMemberReasons({

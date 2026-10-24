@@ -72,9 +72,10 @@ export function msTeamsCardClick(activity: Obj): WireMsTeamsCardAction | undefin
   }
 }
 
-/** People a `conversationUpdate` added, the bot itself left out; undefined when it added nobody else (assistant-mode.md §5.3). */
+/** People a `conversationUpdate` added, the bot itself left out; undefined when it added nobody else, or to a 1:1 chat, which is never external (assistant-mode.md §5.3). */
 export function msTeamsMembersAdded(activity: Obj, appId: string): WireMsTeamsMembersAdded | undefined {
   if (activity.type !== 'conversationUpdate' || !Array.isArray(activity.membersAdded)) return undefined
+  if (obj(activity.conversation)?.conversationType === 'personal') return undefined
   const bot = `28:${appId}`.toLowerCase()
   const members = activity.membersAdded.flatMap((entry) => {
     const id = str(obj(entry)?.id)

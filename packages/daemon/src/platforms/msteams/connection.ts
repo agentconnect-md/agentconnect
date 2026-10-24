@@ -522,6 +522,9 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   async joinedMemberReasons(
     join: WireMsTeamsMembersAdded
   ): Promise<{ channel: string; reason: PlaceExternalReason }[]> {
+    // A 1:1 chat is trusting its person, whoever they are (assistant-mode.md §5.3).
+    const known = this.conversations.get(join.conversationId)
+    if (known?.kind === 'personal' || join.conversationId.startsWith('a:')) return []
     const reasons = new Set<PlaceExternalReason>()
     for (const { id, aadObjectId } of join.members) {
       const member = await this.api
