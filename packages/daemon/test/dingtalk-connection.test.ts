@@ -359,6 +359,19 @@ describe('DingTalk question cards', () => {
     refusing.conn.normalize({ ...groupMention, sessionWebhook: WEBHOOK, sessionWebhookExpiredTime: until })
     expect(await refusing.conn.postMentioning('cid-example-group', 'x', ['user-0001'])).toMatch(/^acm-/)
 
+    // An answer it cannot read may follow a delivered message, so no card follows it.
+    const unreadable = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+      String(url) === WEBHOOK
+        ? new Response('<html>gateway timeout</html>', { status: 200 })
+        : fakeFetch().fetchImpl(url, init)
+    )
+    const unsure = connect(unreadable as unknown as typeof fetch, () => {}, { questionTemplate: TEMPLATE })
+    unsure.conn.normalize({ ...groupMention, sessionWebhook: WEBHOOK, sessionWebhookExpiredTime: until })
+    await expect(unsure.conn.postMentioning('cid-example-group', 'x', ['user-0001'])).rejects.toThrow(
+      'may have arrived'
+    )
+    expect(unreadable.mock.calls.map(([url]) => String(url))).toEqual([WEBHOOK])
+
     // Without cards, a fresh reply address alone still mentions people.
     const plain = connect(fakeFetch().fetchImpl)
     plain.conn.normalize({ ...groupMention, sessionWebhook: WEBHOOK, sessionWebhookExpiredTime: until })

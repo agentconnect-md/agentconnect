@@ -335,7 +335,7 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     return outTrackId
   }
 
-  // True once DingTalk took the message; false when it refused it, so the card may follow. A transport failure throws: the message may have landed.
+  // True once DingTalk took the message; false only on its explicit refusal, so the card may follow. Anything uncertain throws: the message may have landed.
   private async mentionByWebhook(url: string, text: string, ids: string[]): Promise<boolean> {
     const markdown = {
       title: dingTalkMarkdownTitle(text),
@@ -352,11 +352,16 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
       body: JSON.stringify({ msgtype: 'markdown', markdown, at: { atUserIds: ids } }),
       signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(10_000)])
     })
-    const answer = (await response.json().catch(() => ({}))) as { errcode?: unknown }
-    if (response.ok && answer.errcode === 0) return true
-    this.deps.log.warn(
-      `dingtalk: the reply address refused a mention (${String(answer.errcode ?? response.status)}); trying a card`
-    )
+    const uncertain = `dingtalk: the reply address gave no readable answer (HTTP ${response.status}), so the mention may have arrived; check the group before sending it again`
+    let answer: { errcode?: unknown }
+    try {
+      answer = (await response.json()) as { errcode?: unknown }
+    } catch {
+      throw new Error(uncertain)
+    }
+    if (answer.errcode === 0) return true
+    if (typeof answer.errcode !== 'number') throw new Error(uncertain)
+    this.deps.log.warn(`dingtalk: the reply address refused a mention (${answer.errcode}); trying a card`)
     return false
   }
 
