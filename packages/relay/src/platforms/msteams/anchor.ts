@@ -16,7 +16,7 @@ const str = (value: unknown): string | undefined => (typeof value === 'string' &
 
 /** What the anchor does with one activity: a welcome on the bot's own install, a Connect reply to an address, or nothing. */
 export type MsTeamsAnchorAnswer =
-  | { kind: 'welcome'; target: AnchorTarget; botName?: string; addedBy?: { id: string; name: string } }
+  | { kind: 'welcome'; target: AnchorTarget; addedBy?: { id: string; name?: string } }
   | { kind: 'connect'; target: AnchorTarget }
   | undefined
 
@@ -39,7 +39,6 @@ export function msTeamsAnchorAnswer(activity: Obj, appId: string, tenantId: stri
   if (activity.type === 'conversationUpdate') {
     const added = Array.isArray(activity.membersAdded) ? activity.membersAdded : []
     if (!added.some((entry) => str(obj(entry)?.id)?.toLowerCase() === bot)) return undefined
-    const botName = str(obj(activity.recipient)?.name)?.trim()
     const fromId = str(from?.id)
     const fromName = str(from?.name)?.replace(/[<>]/g, '').trim()
     const personal = conversation?.conversationType === 'personal'
@@ -47,8 +46,8 @@ export function msTeamsAnchorAnswer(activity: Obj, appId: string, tenantId: stri
       kind: 'welcome',
       // An install's welcome starts the conversation rather than replying in a thread.
       target: { ...target, conversationId: conversationId.split(';')[0]! },
-      ...(botName ? { botName } : {}),
-      ...(!personal && fromId && fromName ? { addedBy: { id: fromId, name: fromName } } : {})
+      // A team install names its installer by ID only; the post looks the name up.
+      ...(!personal && fromId ? { addedBy: { id: fromId, ...(fromName ? { name: fromName } : {}) } } : {})
     }
   }
   if (activity.type !== 'message' || str(from?.id)?.toLowerCase() === bot) return undefined
@@ -67,15 +66,15 @@ function textBlock(text: string, extra: Obj = {}): Obj {
 /** The welcome or Connect card; the Connect button carries the tenant the Console pins the sign-in to. */
 export function msTeamsAnchorCard(answer: NonNullable<MsTeamsAnchorAnswer>, connectUrl: string): Obj {
   const connect = `${connectUrl}?tenant=${encodeURIComponent(answer.target.tenantId)}`
-  const mention = answer.kind === 'welcome' && answer.addedBy ? `<at>${answer.addedBy.name}</at>` : undefined
+  const name = answer.kind === 'welcome' ? answer.addedBy?.name?.replace(/[<>]/g, '').trim() : undefined
+  const mention = name ? `<at>${name}</at>` : undefined
   const body: Obj[] =
     answer.kind === 'welcome'
       ? [
-          textBlock(`Hi, I’m ${answer.botName ?? 'your AgentConnect agent'}`, { weight: 'Bolder', size: 'Medium' }),
+          // No event tells the name the listing shows, and a store requires the two to match, so the greeting names no app.
+          textBlock('Hi! I’m an AI agent powered by AgentConnect', { weight: 'Bolder', size: 'Medium' }),
           ...(mention ? [textBlock(`Thanks for adding me, ${mention}.`)] : []),
-          textBlock(
-            'I’m an AI agent powered by AgentConnect. Give me a task and I work on it with the tools and access your organization connects.'
-          ),
+          textBlock('Give me a task and I work on it with the tools and access your organization connects.'),
           textBlock(
             'Before I can answer here, an AgentConnect organization connects this Microsoft 365 organization: anyone who can edit an agent in AgentConnect signs in, picks the agent, and confirms with a work account of this organization.'
           )
@@ -91,8 +90,8 @@ export function msTeamsAnchorCard(answer: NonNullable<MsTeamsAnchorAnswer>, conn
     version: '1.5',
     msteams: {
       width: 'Full',
-      ...(mention && answer.kind === 'welcome' && answer.addedBy
-        ? { entities: [{ type: 'mention', text: mention, mentioned: answer.addedBy }] }
+      ...(mention && name && answer.kind === 'welcome' && answer.addedBy
+        ? { entities: [{ type: 'mention', text: mention, mentioned: { id: answer.addedBy.id, name } }] }
         : {})
     },
     body: [
@@ -129,6 +128,18 @@ export class MsTeamsAnchorEgress {
     )
       this.token = undefined
     this.anchor = anchor
+  }
+
+  /** A conversation member's display name from the Bot Connector; undefined when the lookup tells none. */
+  async memberName(target: AnchorTarget, user: string): Promise<string | undefined> {
+    const base = new URL(target.serviceUrl.endsWith('/') ? target.serviceUrl : `${target.serviceUrl}/`)
+    const path = `v3/conversations/${encodeURIComponent(target.conversationId)}/members/${encodeURIComponent(user)}`
+    const response = await this.fetchImpl(new URL(path, base).toString(), {
+      headers: { authorization: `Bearer ${await this.accessToken()}` },
+      signal: AbortSignal.timeout(TIMEOUT_MS)
+    })
+    if (!response.ok) return undefined
+    return str(obj(await response.json().catch(() => undefined))?.name)?.trim()
   }
 
   /** Post one card into the target conversation; rejects when Entra or the Bot Connector refuses. */
@@ -179,8 +190,13 @@ export async function answerMsTeamsAnchor(
   tenantId: string | undefined,
   log: Logger
 ): Promise<void> {
-  const answer = msTeamsAnchorAnswer(activity, egress.anchor.appId, tenantId)
+  let answer = msTeamsAnchorAnswer(activity, egress.anchor.appId, tenantId)
   if (!answer) return
+  // A nameless installer is looked up so the welcome still mentions them; a failed lookup only drops the mention.
+  if (answer.kind === 'welcome' && answer.addedBy && !answer.addedBy.name) {
+    const name = await egress.memberName(answer.target, answer.addedBy.id).catch(() => undefined)
+    if (name) answer = { ...answer, addedBy: { ...answer.addedBy, name } }
+  }
   try {
     await egress.post(answer.target, msTeamsAnchorCard(answer, egress.anchor.connectUrl))
   } catch (err) {

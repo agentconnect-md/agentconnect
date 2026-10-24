@@ -740,8 +740,6 @@ export const WireMsTeamsBotAdded = z.object({
   /** The regional Bot Connector origin the token vouched for, where the welcome is posted. */
   serviceUrl: z.string().url(),
   scope: z.enum(['personal', 'groupChat', 'channel']),
-  /** The bot's own name as the manifest gives it, which the welcome names it by. */
-  botName: z.string().min(1).max(256).optional(),
   /** The person who added the bot, whom a group or channel welcome mentions. */
   addedBy: z.object({ id: z.string().min(1), name: z.string().min(1).max(256).optional() }).optional()
 })

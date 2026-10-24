@@ -13934,7 +13934,6 @@ export class Daemon {
     const int = agent?.integrations.find((i) => i.id === msg.integrationId && i.platform === msg.platformId)
     if (!agent || !int) return { msgId: msg.msgId, accepted: false, reason: 'not_found' }
     const welcome = buildWelcome({
-      name: added.botName ?? agent.name,
       isDm: added.isDm,
       enabled: conversationAdmitted(integrationRouting(int), added.channel),
       consoleUrl: this.agentLink(agent.id)

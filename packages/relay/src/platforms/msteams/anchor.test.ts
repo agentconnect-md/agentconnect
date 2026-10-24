@@ -7,6 +7,7 @@ import type { RelayIngressHost } from '../contract.js'
 import { NOW, bearer, fakeBotFramework } from '../../../test/fixtures/msteams-token.js'
 import {
   APP_ID,
+  AAD_USER,
   BOT_ID,
   CHANNEL,
   PERSONAL,
@@ -38,6 +39,9 @@ function setup() {
       tokens.push(url)
       return new Response(JSON.stringify({ access_token: 'bf-token', expires_in: 3600 }), { status: 200 })
     }
+    // The roster names a member a team install left nameless.
+    if (url.startsWith(SERVICE_URL) && url.includes('/members/'))
+      return new Response(JSON.stringify({ id: USER, name: 'Looked-up Person' }), { status: 200 })
     if (url.startsWith(SERVICE_URL)) {
       posts.push({ url, body: JSON.parse(String(init?.body)) })
       return new Response(JSON.stringify({ id: 'posted' }), { status: 201 })
@@ -87,10 +91,23 @@ describe('the Teams anchor', () => {
     expect(s.tokens).toEqual([`https://login.microsoftonline.com/${HOME_TENANT}/oauth2/v2.0/token`])
     expect(s.posts).toHaveLength(1)
     expect(s.posts[0]!.url).toBe(`${SERVICE_URL}v3/conversations/${encodeURIComponent(CHANNEL)}/activities`)
-    expect(texts(s.posts[0]!)).toContain('Hi, I’m Example Bot')
+    // The registration's name (the recipient) is not the app's, so the greeting names no app.
+    expect(texts(s.posts[0]!)).toContain('Hi! I’m an AI agent powered by AgentConnect')
+    expect(texts(s.posts[0]!)).not.toContain('Example Bot')
     expect(texts(s.posts[0]!)).toContain('Thanks for adding me, <at>Example Person</at>.')
     expect(JSON.stringify(s.posts[0]!.body)).toContain(`${CONNECT_URL}?tenant=${TENANT}`)
     expect(s.h.forwardAction).not.toHaveBeenCalled()
+  })
+
+  it('looks a team install’s nameless installer up in the roster to mention them', async () => {
+    const s = setup()
+    const install = edit(conversationUpdate, (a) => {
+      a.membersAdded = [{ id: BOT_ID }]
+      a.from = { id: USER, aadObjectId: AAD_USER }
+    })
+    await s.deliver(install)
+    expect(texts(s.posts[0]!)).toContain('Thanks for adding me, <at>Looked-up Person</at>.')
+    expect(JSON.stringify(s.posts[0]!.body)).toContain('"mentioned":{"id":"' + USER + '","name":"Looked-up Person"}')
   })
 
   it('answers every DM and mention with the Connect card in place, and nothing else', async () => {

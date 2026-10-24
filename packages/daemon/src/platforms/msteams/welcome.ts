@@ -35,7 +35,6 @@ export function msTeamsBotAdds(host: MsTeamsRelayIngressHost): RelayBotAdds {
       return {
         channel: added.conversationId,
         isDm: added.scope === 'personal',
-        ...(added.botName ? { botName: added.botName } : {}),
         post: async (welcome) => {
           const conn = host.connection(msg.integrationId)
           if (!conn) throw new Error('msteams: the integration has no live connection')

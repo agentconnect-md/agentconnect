@@ -122,7 +122,6 @@ const install = (
       conversationId,
       serviceUrl: SERVICE_URL,
       scope,
-      botName: 'Example Bot',
       addedBy
     }
   })
@@ -149,13 +148,13 @@ const cardText = (post: Post) =>
   (post.card?.body ?? []).map((b) => b.text ?? (b.inlines ?? []).map((i) => i.text).join('')).join('\n')
 
 describe('the Teams welcome', () => {
-  it('welcomes a 1:1 install by the app’s name, with how to use it and no mention', async () => {
+  it('welcomes a 1:1 install with how to use it, naming no app and mentioning no one', async () => {
     daemon = await boot()
     expect(await install(daemon, PERSONAL, 'personal', 'install-1')).toMatchObject({ accepted: true })
     expect(posts).toHaveLength(1)
     const text = cardText(posts[0]!)
     expect(posts[0]!.conversation).toBe(PERSONAL)
-    expect(text).toContain('Hi, I’m Example Bot')
+    expect(text).toContain('Hi! I’m an AI agent powered by AgentConnect')
     expect(text).toContain('Send me a task here')
     expect(text).toContain('Send help')
     expect(text).not.toContain('not enabled')
@@ -223,7 +222,7 @@ describe('Teams help', () => {
 
 describe('the shared welcome', () => {
   it('calls out an admin only where the agent is not enabled', () => {
-    const base = { name: 'Bot', isDm: false, consoleUrl: 'https://console.example.test' }
+    const base = { isDm: false, consoleUrl: 'https://console.example.test' }
     expect(buildWelcome({ ...base, enabled: true }).lines.join(' ')).not.toContain('admin')
     expect(buildWelcome({ ...base, enabled: false }).lines.join(' ')).toContain('An admin')
     expect(buildWelcome({ ...base, enabled: true }).links.map((l) => l.title)).toEqual([

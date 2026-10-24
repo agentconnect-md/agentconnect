@@ -111,7 +111,6 @@ export function msTeamsBotAdded(activity: Obj, appId: string): WireMsTeamsBotAdd
   const type = str(conversation?.conversationType)
   const scope = type === 'personal' || type === 'groupChat' || type === 'channel' ? type : undefined
   if (!conversationId || !serviceUrl || !scope) return undefined
-  const botName = str(obj(activity.recipient)?.name)?.trim().slice(0, 256)
   const from = obj(activity.from)
   const fromId = str(from?.id)
   const fromName = str(from?.name)?.trim().slice(0, 256)
@@ -120,7 +119,6 @@ export function msTeamsBotAdded(activity: Obj, appId: string): WireMsTeamsBotAdd
     conversationId,
     serviceUrl,
     scope,
-    ...(botName ? { botName } : {}),
     ...(fromId && fromId.toLowerCase() !== bot
       ? { addedBy: { id: fromId, ...(fromName ? { name: fromName } : {}) } }
       : {})
