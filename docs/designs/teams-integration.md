@@ -162,13 +162,15 @@ The manifest therefore leaves `addressedByConstruction` unset. If a tenant
 blocks RSC consent, the bot receives mentions only; `auto` and unmentioned
 follow-ups then do nothing, and how the bot can detect that is **unverified**.
 
-The package also requests the grants later features read through Microsoft
+The package also requests the grants other features read through Microsoft
 Graph, so that an installed app does not have to ask its installers again:
 `ChannelSettings.Read.Group` and `ChannelMember.Read.Group` for a team's channel
-names and members, and `OnlineMeeting.ReadBasic.Chat` and
-`OnlineMeetingTranscript.Read.Chat` for a meeting chat's meeting details and
-transcripts. Nothing reads them yet. An organization that installed an earlier
-package grants them when it uploads a re-downloaded one.
+names and members, `TeamSettings.Read.Group` for a team's visibility (§4.6),
+and `OnlineMeeting.ReadBasic.Chat` and `OnlineMeetingTranscript.Read.Chat` for
+a meeting chat's meeting details and transcripts. A shared channel's members
+and a team's visibility are read (§4.6); the rest are not yet. An organization
+that installed an earlier package grants them when it uploads a re-downloaded
+one.
 
 A mention arrives as a `mention` entity whose `mentioned.id` is the bot
 (`28:<appId>`) and whose `text` is the `<at>…</at>` span in the activity text
@@ -380,11 +382,14 @@ Plane and bind them to their tenant in the daemon's store.
 A Teams place is judged external by the same three signals as any platform
 ([assistant-mode.md §5.3](assistant-mode.md)), read with the bot's own token:
 
-- **Shared.** A shared channel can reach people outside its team and its
-  organization, so its posts carry the share, and `getChannelInfo` reports it,
-  from the team's channel list (`type`: `standard`, `private` or `shared`). A
-  channel whose list cannot be read is unknown, never unshared. The share lifts
-  when the channel stops being shared.
+- **Shared.** A shared channel (the team's channel list's `type`: `standard`,
+  `private` or `shared`) is shared with another organization when one of its
+  members, read through Graph's `allMembers` under `ChannelMember.Read.Group`,
+  belongs to another tenant; its posts then carry the share and
+  `getChannelInfo` reports it. A shared channel whose members cannot be read,
+  or are more than one listing reads, is taken to reach another organization; a
+  channel whose type cannot be read is unknown, never unshared. The share lifts
+  when no member from another tenant remains.
 - **A guest.** A person added to a channel, chat or team (`conversationUpdate`
   with `membersAdded`, forwarded by the relay) is looked up in that
   conversation. `userRole: guest` makes the place external, and it stays so.
@@ -396,14 +401,16 @@ A Teams place is judged external by the same three signals as any platform
 A person is a full member, who may approve a draft, when a lookup in a
 conversation the bot shares with them answers `userRole: user` in the bot's
 tenant; no conversation to ask means no answer, never yes. A conversation's
-member list (`pagedmembers`) is authoritative for standard and private
-channels and chats; a shared channel refuses the bot that read, so its
-membership is not decided from it.
+member list is authoritative: `pagedmembers` for standard and private channels
+and chats, and Graph's `allMembers` for a shared channel, whose Bot Connector
+read refuses the bot (**measured**, HTTP 403).
 
-Every channel reports private for now: a standard channel is public only to
-its team, and whether that team is public needs a read this package does not
-yet ask for. A chat is shared with no organization; a person from another one
-in it is a member's reason, found when they join.
+A standard channel is open to its whole team, so it reports public only when
+Graph reads its team's `visibility` as `public` under `TeamSettings.Read.Group`;
+a private or hidden team, or one whose visibility cannot be read, keeps it
+private. Private and shared channels are their members' and report private. A
+chat is shared with no organization; a person from another one in it is a
+member's reason, found when they join.
 
 ## 5. Console setup
 

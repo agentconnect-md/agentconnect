@@ -38,6 +38,7 @@ import {
   MSTEAMS_GRAPH_PAGE_MAX,
   MsTeamsGraph,
   msTeamsSkiptoken,
+  type MsTeamsTeamVisibility,
   type MsTeamsGraphMessage,
   type MsTeamsHistorySource
 } from './graph.js'
@@ -230,6 +231,13 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   private readonly teamChannels = new Map<string, { at: number; channels: Promise<Map<string, TeamChannel>> }>()
   /** Person, by `29:` and Entra object ID → their standing as a lookup or a member listing last answered. */
   private readonly standings = new Map<string, { at: number; member: MsTeamsMember }>()
+  /** Team → its visibility and when it was read; a failed read answers undefined until the TTL passes. */
+  private readonly teamVisibilities = new Map<
+    string,
+    { at: number; visibility: Promise<MsTeamsTeamVisibility | undefined> }
+  >()
+  /** Shared channel → whether it reaches another organization and when that was read. */
+  private readonly sharedReaches = new Map<string, { at: number; reason: Promise<PlaceExternalReason | null> }>()
   /** Conversation + card activity ID → where it landed; an activity ID is unique only within its conversation (§4.2). */
   private readonly cards = new Map<string, MsTeamsTarget>()
   private readonly writeGate: (() => Promise<void>) | undefined
@@ -403,20 +411,82 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     // A channel's name and type follow its team's list, refreshed after the TTL; the last name read stands while a refresh fails.
     const listed = await this.teamChannel(channel, known)
     const name = listed?.name ?? known.name
+    // A standard channel is open to its whole team, which is public only when Graph says so; any other channel is its members'.
+    const isPrivate = listed?.kind === 'standard' ? !(await this.teamPublic(known)) : true
+    // A channel whose type is unread is unknown, never unshared.
+    const externalReason = listed?.kind ? await this.channelShare(channel, known, listed.kind) : undefined
     return {
       id: channel,
       ...(name ? { name } : {}),
       isIm,
-      isPrivate: true,
-      // A shared channel reaches beyond the team; a channel whose type is unread is unknown, never unshared.
-      ...(listed?.kind ? { externalReason: listed.kind === 'shared' ? 'externallyShared' : null } : {})
+      isPrivate,
+      ...(externalReason !== undefined ? { externalReason } : {})
     }
   }
 
-  /** Whether a delivered message's channel is a shared one, so the message carries the share as Slack's envelope does. */
+  /** Whether a delivered message's channel is shared with another organization, so the message carries it as Slack's envelope does. */
   async sharedChannel(channel: string): Promise<boolean> {
     const known = this.conversations.get(channel)
-    return known?.kind === 'channel' && (await this.teamChannel(channel, known))?.kind === 'shared'
+    const kind = known?.kind === 'channel' ? (await this.teamChannel(channel, known))?.kind : undefined
+    return kind !== undefined && (await this.channelShare(channel, known!, kind)) === 'externallyShared'
+  }
+
+  // A shared channel reaches another organization when a member is from another tenant; one whose members cannot be read is taken to.
+  private async channelShare(
+    channel: string,
+    known: KnownConversation,
+    kind: MsTeamsChannelKind
+  ): Promise<PlaceExternalReason | null> {
+    if (kind !== 'shared') return null
+    let entry = this.sharedReaches.get(channel)
+    if (!entry || this.now() - entry.at > ROSTER_TTL_MS) {
+      const reason = this.memberList(channel, known, MEMBER_IDS_MAX).then(
+        ({ members, complete }) =>
+          !complete || members.some((m) => m.tenantId && m.tenantId.toLowerCase() !== this.tenantId)
+            ? ('externallyShared' as const)
+            : null,
+        (err: unknown) => {
+          this.deps.log?.debug(`msteams: reading a shared channel's members failed: ${(err as Error).message}`)
+          return 'externallyShared' as const
+        }
+      )
+      entry = { at: this.now(), reason }
+      remember(this.sharedReaches, channel, entry, CONVERSATIONS_MAX)
+    }
+    return await entry.reason
+  }
+
+  // Whether a channel's team is public, read at most once per TTL per team; a failed read is not public.
+  private async teamPublic(known: KnownConversation): Promise<boolean> {
+    if (!known.teamId) return false
+    const teamId = known.teamId
+    let entry = this.teamVisibilities.get(teamId)
+    if (!entry || this.now() - entry.at > TEAM_CHANNELS_TTL_MS) {
+      const visibility = this.groupIdOf(known)
+        .then((groupId) => this.graph.teamVisibility(groupId))
+        .catch((err: unknown) => {
+          this.deps.log?.debug(`msteams: reading a team's visibility failed: ${(err as Error).message}`)
+          return undefined
+        })
+      entry = { at: this.now(), visibility }
+      remember(this.teamVisibilities, teamId, entry, CONVERSATIONS_MAX)
+    }
+    return (await entry.visibility) === 'public'
+  }
+
+  // A conversation's members from the read that answers them: Graph for a shared channel, which refuses the Bot Connector's.
+  private async memberList(
+    channel: string,
+    known: KnownConversation,
+    max: number
+  ): Promise<{ members: MsTeamsMember[]; complete: boolean }> {
+    const kind = known.kind === 'channel' ? (await this.teamChannel(channel, known))?.kind : undefined
+    const result =
+      kind === 'shared'
+        ? await this.graph.channelMembers(await this.groupIdOf(known), channel, max)
+        : await this.api.conversationMembers(known.serviceUrl, channel, max)
+    for (const m of result.members) this.noteStanding(m)
+    return result
   }
 
   // A channel's name and type from its team's channel list; a failed read names nothing.
@@ -511,10 +581,9 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   async listMemberIds(channel: string): Promise<string[]> {
     const known = this.conversations.get(channel)
     if (!known) throw new MsTeamsApiError('msteams: the conversation is unknown to this bot', 'not_found')
-    const { members, complete } = await this.api.conversationMembers(known.serviceUrl, channel, MEMBER_IDS_MAX)
+    const { members, complete } = await this.memberList(channel, known, MEMBER_IDS_MAX)
     if (!complete)
       throw new MsTeamsApiError('msteams: the conversation has more members than one listing reads', 'invalid')
-    for (const m of members) this.noteStanding(m)
     return members.filter((m) => !m.id.startsWith('28:')).map((m) => m.aadObjectId ?? m.id)
   }
 
@@ -530,9 +599,8 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   private async roster(channel: string, known: KnownConversation): Promise<PlatformMemberRef[] | undefined> {
     let entry = this.rosters.get(channel)
     if (!entry || this.now() - entry.at > ROSTER_TTL_MS) {
-      const members = this.api.conversationMembers(known.serviceUrl, channel, ROSTER_MAX).then(
+      const members = this.memberList(channel, known, ROSTER_MAX).then(
         ({ members: list }) => {
-          for (const m of list) this.noteStanding(m)
           return list.map(({ id, aadObjectId, name }) => ({
             id: aadObjectId ?? id,
             ...(name ? { name } : {}),
@@ -681,15 +749,20 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     if (!known) throw new MsTeamsApiError('msteams: the conversation is unknown to this bot', 'not_found')
     if (known.kind === 'chat') return { kind: 'chat', chatId: channel }
     if (known.kind === 'personal') throw new MsTeamsApiError('msteams: a 1:1 chat’s history cannot be read', 'invalid')
+    return { kind: 'channel', groupId: await this.groupIdOf(known), channelId: channel }
+  }
+
+  // A channel's team as Graph addresses it, its Microsoft 365 group ID, read once per team; a failed read is forgotten.
+  private async groupIdOf(known: KnownConversation): Promise<string> {
     if (!known.teamId) throw new MsTeamsApiError('msteams: the channel’s team is unknown', 'not_found')
-    let groupId = this.teamGroups.get(known.teamId)
+    const teamId = known.teamId
+    let groupId = this.teamGroups.get(teamId)
     if (!groupId) {
-      const teamId = known.teamId
       groupId = this.api.teamGroupId(known.serviceUrl, teamId)
       groupId.catch(() => this.teamGroups.delete(teamId))
       remember(this.teamGroups, teamId, groupId, CONVERSATIONS_MAX)
     }
-    return { kind: 'channel', groupId: await groupId, channelId: channel }
+    return await groupId
   }
 }
 

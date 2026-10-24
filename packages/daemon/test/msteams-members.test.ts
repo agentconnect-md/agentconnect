@@ -61,7 +61,7 @@ describe('Teams conversation members', () => {
       { id: '28:example-bot', name: 'Bot', isBot: true }
     ])
     await conn.listMembers(CHANNEL)
-    expect(reads).toEqual([
+    expect(reads.filter((url) => url.includes('/pagedmembers'))).toEqual([
       msTeamsPagedMembersUrl(SERVICE_URL, CHANNEL),
       msTeamsPagedMembersUrl(SERVICE_URL, CHANNEL, 'next-page')
     ])
@@ -74,7 +74,7 @@ describe('Teams conversation members', () => {
     conn.noteMessage(post())
     expect(await conn.listMembers(CHANNEL)).toEqual([{ id: ALICE, name: 'Alice', isBot: false }])
     await conn.listMembers(CHANNEL)
-    expect(reads).toHaveLength(1)
+    expect(reads.filter((url) => url.includes('/pagedmembers'))).toHaveLength(1)
     answer = () => Response.json({ members: [{ id: '29:bob', aadObjectId: BOB, name: 'Bob' }] })
     advance(10 * 60_000 + 1)
     expect(await conn.listMembers(CHANNEL)).toEqual([{ id: BOB, name: 'Bob', isBot: false }])

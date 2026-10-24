@@ -80,6 +80,7 @@ describe('Teams manifest', () => {
             { name: 'ChatMessage.Read.Chat', type: 'Application' },
             { name: 'ChannelSettings.Read.Group', type: 'Application' },
             { name: 'ChannelMember.Read.Group', type: 'Application' },
+            { name: 'TeamSettings.Read.Group', type: 'Application' },
             { name: 'OnlineMeeting.ReadBasic.Chat', type: 'Application' },
             { name: 'OnlineMeetingTranscript.Read.Chat', type: 'Application' }
           ]

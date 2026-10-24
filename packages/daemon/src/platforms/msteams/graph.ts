@@ -1,6 +1,6 @@
 // The Microsoft Graph history reads a Teams bot makes with an app-only token under the resource-specific consent its package asks for (teams-integration.md §4.1).
 import { MSTEAMS_ADAPTIVE_CARD_TYPE } from './connection.js'
-import { MsTeamsApiError, type MsTeamsApi } from './api.js'
+import { MsTeamsApiError, type MsTeamsApi, type MsTeamsMember } from './api.js'
 
 const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0/'
 /** Graph's largest `$top` for channel messages, replies and chat messages; a larger one answers 400. */
@@ -58,6 +58,38 @@ export function msTeamsGraphMessagesUrl(
 /** The URL of one message in a conversation. */
 export function msTeamsGraphMessageUrl(source: MsTeamsHistorySource, id: string): string {
   return new URL(`${sourcePath(source)}/${encodeURIComponent(id)}`, GRAPH_ROOT).toString()
+}
+
+/** A team's visibility as Graph reads it under `TeamSettings.Read.Group`. */
+export type MsTeamsTeamVisibility = 'public' | 'private' | 'hiddenMembership'
+
+/** The URL of one team, by its Microsoft 365 group ID. */
+export function msTeamsGraphTeamUrl(groupId: string): string {
+  return new URL(`teams/${encodeURIComponent(groupId)}`, GRAPH_ROOT).toString()
+}
+
+/** The URL of every member of a channel, a shared channel's people from other teams and organizations included. */
+export function msTeamsGraphChannelMembersUrl(groupId: string, channelId: string): string {
+  const path = `teams/${encodeURIComponent(groupId)}/channels/${encodeURIComponent(channelId)}/allMembers`
+  return new URL(path, GRAPH_ROOT).toString()
+}
+
+/** A Graph conversation member as a Bot Connector one reads: its Entra object ID, a guest by role, and its home tenant. */
+export function msTeamsGraphMember(raw: unknown): MsTeamsMember | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const m = raw as Record<string, unknown>
+  const userId = typeof m.userId === 'string' && m.userId ? m.userId : undefined
+  if (!userId) return undefined
+  const roles = Array.isArray(m.roles) ? m.roles.filter((r): r is string => typeof r === 'string') : []
+  const name = typeof m.displayName === 'string' && m.displayName.trim() ? m.displayName.trim() : undefined
+  const tenantId = typeof m.tenantId === 'string' && m.tenantId ? m.tenantId : undefined
+  return {
+    id: userId,
+    aadObjectId: userId,
+    ...(name ? { name } : {}),
+    userRole: roles.some((r) => r.toLowerCase() === 'guest') ? 'guest' : 'user',
+    ...(tenantId ? { tenantId } : {})
+  }
 }
 
 /** A history cursor as the skip token it carries; anything else is refused rather than sent on. */
@@ -169,6 +201,34 @@ export class MsTeamsGraph {
       messages: list.flatMap((raw) => msTeamsGraphMessage(raw) ?? []),
       ...(skiptoken ? { skiptoken } : {})
     }
+  }
+
+  /** A team's visibility; a refusal propagates, since a missing consent is no answer. */
+  async teamVisibility(groupId: string): Promise<MsTeamsTeamVisibility | undefined> {
+    const visibility = (await this.api.read(msTeamsGraphTeamUrl(groupId))).visibility
+    return visibility === 'public' || visibility === 'private' || visibility === 'hiddenMembership'
+      ? visibility
+      : undefined
+  }
+
+  /** Every member of a channel, up to `max`, following Graph's next links; `complete` is false when more remain. */
+  async channelMembers(
+    groupId: string,
+    channelId: string,
+    max: number
+  ): Promise<{ members: MsTeamsMember[]; complete: boolean }> {
+    const members: MsTeamsMember[] = []
+    let url: string | undefined = msTeamsGraphChannelMembersUrl(groupId, channelId)
+    while (url && members.length < max) {
+      const body = await this.api.read(url)
+      for (const raw of Array.isArray(body.value) ? (body.value as unknown[]) : []) {
+        const member = msTeamsGraphMember(raw)
+        if (member) members.push(member)
+      }
+      const next = body['@odata.nextLink']
+      url = typeof next === 'string' && next.startsWith(GRAPH_ROOT) ? next : undefined
+    }
+    return { members: members.slice(0, max), complete: !url && members.length <= max }
   }
 
   async message(source: MsTeamsHistorySource, id: string): Promise<MsTeamsGraphMessage | undefined> {
