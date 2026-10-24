@@ -377,6 +377,12 @@ member lookup (enabled when the deployment offers Microsoft sign-in), the
 row, and the migrations that fence earlier Teams conversations on the Control
 Plane and bind them to their tenant in the daemon's store.
 
+With sync on, a linked member's channel @mention settled its session under the
+bot's tenant and that channel, and the member could open it in the Console;
+sessions from before sync stayed hidden until their conversation spoke again,
+and a session of another tenant stayed hidden from a member of this one
+(**measured**).
+
 ### 4.6 Audience
 
 A Teams place is judged external by the same three signals as any platform
@@ -417,8 +423,16 @@ editor enables it, as a Slack Connect channel does. Teams gives the relay no
 egress, so a mention there is handed to the bot's agent's daemon, which posts
 the one-time notice and starts no turn. The relay-ingress `observe` step has
 already recorded the conversation's `serviceUrl` by then, so the notice can
-answer even the conversation's first activity (**measured** before this:
-silence, with no notice).
+answer even the conversation's first activity.
+
+Measured in a shared channel once a member from another tenant joined: the
+join wrote the channel's row Off and undecided with `externalMember` as its
+reason, and a mention was dropped. Before the fix there was nothing; after it
+the thread got the notice once. Enabled from the Console, the next mention ran
+a turn whose session took `external` visibility, synced to the conversation's
+members, while the row kept its reason. Graph's `allMembers` listed the
+requester twice there, once directly and once through the team the channel is
+shared with; the read keeps one entry per user ID (**measured**).
 
 ## 5. Console setup
 
@@ -476,6 +490,15 @@ resource-specific permission is part of the manifest, so it surfaces the same
 way, and the connect flow's team upgrade re-consents it without removing the
 app from the team (§8.3 step 5).
 
+Measured on a connected tenant whose catalog app carried another agent's name
+and icon: **Update in Teams** took the administrator through Microsoft's
+account picker with no new consent, and the connect page reported the one team
+that had the app as updated. The admin center showed the new version with this
+agent's icon, accent color and description after about two minutes, and the
+team's app list showed the new icon without the app being removed. Reads that
+need the team's resource-specific grants kept answering, and the Console then
+counted the package current (**measured**).
+
 ## 6. Platform module work
 
 The integration implements the four host contracts of the
@@ -504,14 +527,16 @@ relay route is added to the chart's HTTPRoute in the same change.
 - Extended Markdown on mobile clients (§4.3).
 - Private and shared channels: Microsoft's pages disagree on whether bots may
   post there.
-- That the upgrade of §8.3 step 5 takes a new resource-specific permission and
-  the new icon without the team removing the app, and how soon a personal
-  install shows the new icon, which the Control Plane does not upgrade (§5.1).
+- That the upgrade of §8.3 step 5 takes a resource-specific permission the team
+  has not granted before (the measured upgrade re-consented grants it already
+  held), and how soon a personal install shows a new icon, which the Control
+  Plane does not upgrade (§5.1).
 
 ## 8. The deployment's Teams app
 
-Status: **implemented**; the Console offers it once Setup configures the app, and the path in a second tenant is still to be measured (§8.4). Each organization can
-still register its own bot (§2); this
+Status: **implemented and measured** in a second tenant (§8.3); the Console
+offers it once Setup configures the app. Each organization can still register
+its own bot (§2); this
 section adds one app the deployment operates, so an organization connects its
 Microsoft 365 tenant from the Console with an administrator's sign-in and no
 registration, package download or upload of its own.
@@ -646,10 +671,15 @@ the catalog app stays until the tenant's admin removes it. Entra labels the
 app **unverified** until publisher verification, which tenants that only allow
 verified publishers require.
 
+Measured end to end from a second, new tenant (**measured**): its
+administrator's sign-in and consent, the catalog publish, and the install into
+the chosen team all succeeded from the connect page; the Control Plane wrote the
+tenant's prebuilt row with the home tenant as its token tenant; Teams sent the
+bot its installation events; and a channel @mention there ran a turn whose
+reply, signed with the home tenant's token, appeared in the channel.
+
 ### 8.4 Open
 
-- The whole path in a second tenant: consent, the catalog publish, the team
-  install, and the first reply signed with the home tenant's token.
 - Whether members of a tenant that connected through §8.3 can sign in with
   Microsoft without their own consent prompt (§4.5).
 - What the bot receives when the tenant's admin removes the catalog app or the
