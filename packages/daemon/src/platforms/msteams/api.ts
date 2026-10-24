@@ -88,6 +88,43 @@ export function msTeamsTeamUrl(serviceUrl: string, teamId: string): string {
   return new URL(`v3/teams/${encodeURIComponent(teamId)}`, serviceBase(serviceUrl)).toString()
 }
 
+/** A Teams channel's membership type as its team's channel list reports it. */
+export const MSTEAMS_CHANNEL_KINDS = ['standard', 'private', 'shared'] as const
+export type MsTeamsChannelKind = (typeof MSTEAMS_CHANNEL_KINDS)[number]
+
+/** One conversation member as the Bot Connector answers: `userRole` tells a guest, `tenantId` another organization. */
+export interface MsTeamsMember {
+  id: string
+  aadObjectId?: string
+  name?: string
+  userRole?: string
+  tenantId?: string
+}
+
+function memberOf(entry: unknown): MsTeamsMember | undefined {
+  const raw = (entry ?? {}) as Record<string, unknown>
+  const text = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
+  const id = text(raw.id)
+  if (!id) return undefined
+  const aadObjectId = text(raw.aadObjectId)
+  const name = text(raw.name)
+  const userRole = text(raw.userRole)
+  const tenantId = text(raw.tenantId)
+  return {
+    id,
+    ...(aadObjectId ? { aadObjectId } : {}),
+    ...(name ? { name } : {}),
+    ...(userRole ? { userRole } : {}),
+    ...(tenantId ? { tenantId } : {})
+  }
+}
+
+/** One member of a conversation under a recorded serviceUrl. */
+export function msTeamsConversationMemberUrl(serviceUrl: string, conversationId: string, memberId: string): string {
+  const path = `v3/conversations/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(memberId)}`
+  return new URL(path, serviceBase(serviceUrl)).toString()
+}
+
 /** One page of a conversation's members under a recorded serviceUrl, read with the bot's own token. */
 export function msTeamsPagedMembersUrl(serviceUrl: string, conversationId: string, continuationToken?: string): string {
   const url = new URL(`v3/conversations/${encodeURIComponent(conversationId)}/pagedmembers`, serviceBase(serviceUrl))
@@ -241,13 +278,17 @@ export class MsTeamsApi {
   }
 
   /** A team's channels by ID; Teams names every channel but the default one, which it answers unnamed. */
-  async teamChannels(serviceUrl: string, teamId: string): Promise<{ id: string; name?: string }[]> {
+  async teamChannels(
+    serviceUrl: string,
+    teamId: string
+  ): Promise<{ id: string; name?: string; kind?: MsTeamsChannelKind }[]> {
     const body = await this.request('GET', msTeamsTeamChannelsUrl(serviceUrl, teamId))
     const list = Array.isArray(body.conversations) ? (body.conversations as unknown[]) : []
     return list.flatMap((entry) => {
-      const { id, name } = (entry ?? {}) as { id?: unknown; name?: unknown }
+      const { id, name, type } = (entry ?? {}) as { id?: unknown; name?: unknown; type?: unknown }
       if (typeof id !== 'string' || !id) return []
-      return [{ id, ...(typeof name === 'string' && name ? { name } : {}) }]
+      const kind = MSTEAMS_CHANNEL_KINDS.find((k) => k === type)
+      return [{ id, ...(typeof name === 'string' && name ? { name } : {}), ...(kind ? { kind } : {}) }]
     })
   }
 
@@ -270,23 +311,32 @@ export class MsTeamsApi {
     serviceUrl: string,
     conversationId: string,
     max: number
-  ): Promise<{ id: string; aadObjectId?: string; name?: string }[]> {
-    const out: { id: string; aadObjectId?: string; name?: string }[] = []
+  ): Promise<{ members: MsTeamsMember[]; complete: boolean }> {
+    const members: MsTeamsMember[] = []
     let token: string | undefined
     do {
       const body = await this.request('GET', msTeamsPagedMembersUrl(serviceUrl, conversationId, token))
       for (const entry of Array.isArray(body.members) ? (body.members as unknown[]) : []) {
-        const { id, aadObjectId, name } = (entry ?? {}) as { id?: unknown; aadObjectId?: unknown; name?: unknown }
-        if (typeof id !== 'string' || !id) continue
-        out.push({
-          id,
-          ...(typeof aadObjectId === 'string' && aadObjectId ? { aadObjectId } : {}),
-          ...(typeof name === 'string' && name ? { name } : {})
-        })
+        const member = memberOf(entry)
+        if (member) members.push(member)
       }
       token = typeof body.continuationToken === 'string' && body.continuationToken ? body.continuationToken : undefined
-    } while (token && out.length < max)
-    return out.slice(0, max)
+    } while (token && members.length < max)
+    return { members: members.slice(0, max), complete: !token && members.length <= max }
+  }
+
+  /** One person's membership of a conversation, by `29:` or Entra object ID; undefined when they are not a member. */
+  async conversationMember(
+    serviceUrl: string,
+    conversationId: string,
+    memberId: string
+  ): Promise<MsTeamsMember | undefined> {
+    try {
+      return memberOf(await this.request('GET', msTeamsConversationMemberUrl(serviceUrl, conversationId, memberId)))
+    } catch (err) {
+      if (err instanceof MsTeamsApiError && err.kind === 'not_found') return undefined
+      throw err
+    }
   }
 
   /** Delete a posted activity; one already gone counts as deleted. */

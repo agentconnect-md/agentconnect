@@ -524,6 +524,7 @@ import type {
   ChatCardClick,
   ChatRefusal,
   InteractionActor,
+  MemberJoin,
   PlatformChannelInfo,
   RelayCardClicks
 } from './platforms/contract.js'
@@ -13743,7 +13744,8 @@ export class Daemon {
       agent: (agentId) => this.agents.get(agentId),
       noteMessage: (conn, msg) => this.channelNameResolver?.noteMessage(conn, msg),
       observePlatformChat: (platform, chat, integrationIds) =>
-        this.observedChannelsSync.observePlatformChat(platform, chat, integrationIds)
+        this.observedChannelsSync.observePlatformChat(platform, chat, integrationIds),
+      placeExternal: (integrationIds, channel, reason) => this.placeTrust.detected(integrationIds, channel, reason)
     }
   }
 
@@ -13899,10 +13901,23 @@ export class Daemon {
   private async handleRelayPlatformAction(msg: RdMsgPlatformAction): Promise<RdAck> {
     const decode = this.platformActionDecoders.get(msg.platformId)
     if (decode) return await decode(msg)
+    const join = this.platformModules.get(msg.platformId)?.memberJoins?.decode(msg)
+    if (join) return await this.handleRelayMemberJoin(msg, join)
     const cards = this.platformModules.get(msg.platformId)?.cardClicks
     return cards
       ? await this.handleRelayCardClick(msg, cards)
       : { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+  }
+
+  /** A relayed member join (assistant-mode.md §5.3), looked up for every agent: each place a guest or an outsider joined is detected external. */
+  private async handleRelayMemberJoin(msg: RdMsgPlatformAction, join: MemberJoin): Promise<RdAck> {
+    const agent = this.agents.get(msg.agentId)
+    if (!agent?.integrations.some((i) => i.id === msg.integrationId && i.platform === msg.platformId))
+      return { msgId: msg.msgId, accepted: false, reason: 'not_found' }
+    if (this.placeTrust.watches([msg.integrationId]))
+      for (const { channel, reason } of await join.reasons())
+        this.placeTrust.detected([msg.integrationId], channel, reason)
+    return { msgId: msg.msgId, accepted: true }
   }
 
   /** A relayed click on a platform module's approval or question card: re-check the agent and integration, then core re-derives the answer; a refusal only the clicker hears rides the ack. */

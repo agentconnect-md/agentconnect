@@ -1,4 +1,5 @@
 // The daemon internals a platform's §7.4 relay-ingress strategy reaches: one port, parameterized by the platform's connection.
+import type { PlaceExternalReason } from '@agentconnect.md/protocol'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { Logger } from '../log.js'
 import type { ChannelInfoSource } from '../messages/channel-name-resolver.js'
@@ -18,4 +19,6 @@ export interface RelayIngressHost<TConnection extends ChannelInfoSource> {
   noteMessage(conn: TConnection, msg: NormalizedMessage): void
   /** Report one conversation the delivery proves the bot reaches, ahead of any session row. */
   observePlatformChat(platform: string, chat: ObservedChat, integrationIds: readonly string[]): Promise<void>
+  /** A place the delivery proves external, read before the turn it starts (assistant-mode.md §5.3). */
+  placeExternal(integrationIds: readonly string[], channel: string, reason: PlaceExternalReason): void
 }

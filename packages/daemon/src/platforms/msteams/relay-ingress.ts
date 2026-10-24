@@ -23,6 +23,11 @@ export function msTeamsRelayIngress(host: MsTeamsRelayIngressHost): RelayIngress
         // The activity's serviceUrl is the one every later write into this conversation uses (§3).
         conn.noteMessage(normalized)
         host.noteMessage(conn, normalized)
+        // A post in a shared channel carries the share, as Slack's envelope does, before the turn it starts reads it.
+        if (!normalized.isDm && (await conn.sharedChannel(normalized.channel))) {
+          normalized.externallyShared = true
+          host.placeExternal([msg.integrationId], normalized.channel, 'externallyShared')
+        }
       }
       trace.stage = 'msteams:dispatch'
       return 'dispatch'

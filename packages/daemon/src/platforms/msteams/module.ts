@@ -3,10 +3,17 @@ import {
   MSTEAMS_CARD_NOTE_MAX,
   MSTEAMS_PLATFORM,
   WireMsTeamsCardAction,
+  WireMsTeamsMembersAdded,
   type RdMsgPlatformAction,
   type WireMsTeamsCardActionResponse
 } from '@agentconnect.md/protocol'
-import type { ChatCardClick, DaemonPlatformModule, InteractionActor, RelayCardClicks } from '../contract.js'
+import type {
+  ChatCardClick,
+  DaemonPlatformModule,
+  InteractionActor,
+  RelayCardClicks,
+  RelayMemberJoins
+} from '../contract.js'
 import { parseMsTeamsApprovalClick } from './approval-card.js'
 import { parseMsTeamsElicitClick } from './elicit-card.js'
 import { msTeamsRelayIngress, type MsTeamsRelayIngressHost } from './relay-ingress.js'
@@ -44,6 +51,17 @@ export const msTeamsCardClicks: RelayCardClicks = {
     ({ note: privateText.slice(0, MSTEAMS_CARD_NOTE_MAX) }) satisfies WireMsTeamsCardActionResponse
 }
 
+/** People a roster change added, looked up through the integration's live connection; none while it is unbound. */
+export function msTeamsMemberJoins(host: MsTeamsRelayIngressHost): RelayMemberJoins {
+  return {
+    decode: (msg) => {
+      const parsed = WireMsTeamsMembersAdded.safeParse(msg.payload)
+      if (!parsed.success) return null
+      return { reasons: async () => (await host.connection(msg.integrationId)?.joinedMemberReasons(parsed.data)) ?? [] }
+    }
+  }
+}
+
 /** Teams' daemon platform module, bound to one daemon's host. */
 export function msTeamsPlatformModule(host: MsTeamsRelayIngressHost): DaemonPlatformModule {
   return {
@@ -51,6 +69,7 @@ export function msTeamsPlatformModule(host: MsTeamsRelayIngressHost): DaemonPlat
     relayIngress: msTeamsRelayIngress(host),
     canonicalizeThread: canonicalizeMsTeamsThread,
     chatMemberKey: msTeamsChatMemberKey,
-    cardClicks: msTeamsCardClicks
+    cardClicks: msTeamsCardClicks,
+    memberJoins: msTeamsMemberJoins(host)
   }
 }

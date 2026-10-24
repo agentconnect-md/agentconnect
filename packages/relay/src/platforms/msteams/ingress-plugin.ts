@@ -5,7 +5,8 @@ import {
   MSTEAMS_PLATFORM,
   WireMsTeamsCardActionResponse,
   type RdMsgPlatformAction,
-  type WireMsTeamsCardAction
+  type WireMsTeamsCardAction,
+  type WireMsTeamsMembersAdded
 } from '@agentconnect.md/protocol'
 import {
   MSTEAMS_CARD_ACTION_INVOKE,
@@ -15,6 +16,8 @@ import {
   msTeamsCardClick,
   msTeamsDedupKey,
   msTeamsInvokeNote,
+  msTeamsMembersAdded,
+  msTeamsMembersAddedMsgId,
   type VerifiedMsTeamsDelivery
 } from './http-ingest.js'
 import { registerMsTeamsHttpIngress } from './http-ingress.js'
@@ -87,6 +90,41 @@ async function forwardCardClick(host: RelayIngressHost, botId: string, click: Wi
   return note
 }
 
+// Forward the people a roster change added for the daemon to look up; bounded like a click, since Teams waits on the answer and the lookup is the daemon's.
+async function forwardMembersAdded(
+  host: RelayIngressHost,
+  botId: string,
+  activity: Record<string, unknown>,
+  joined: WireMsTeamsMembersAdded
+): Promise<void> {
+  const route = host.directory.soleTarget(botId)
+  if (!route) return
+  const rd: RdMsgPlatformAction = {
+    source: 'platform_action',
+    platformId: MSTEAMS_PLATFORM,
+    agentId: route.agentId,
+    integrationId: route.integrationId,
+    sessionKey: `msteams-members:${joined.conversationId}`,
+    msgId: msTeamsMembersAddedMsgId(botId, activity),
+    botId,
+    payload: joined
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  const forwarded = host.forwardAction(rd, route).then(
+    (ack) => {
+      if (!ack.accepted)
+        host.log.debug(`relay-ingress(${botId}): daemon declined a Teams member join (${ack.reason ?? 'unknown'})`)
+    },
+    (err: unknown) =>
+      host.log.warn(`relay-ingress(${botId}): Teams member join forward failed: ${(err as Error).message}`)
+  )
+  await Promise.race([
+    forwarded,
+    new Promise<void>((resolve) => (timeout = setTimeout(resolve, MSTEAMS_CARD_ACTION_FORWARD_TIMEOUT_MS)))
+  ])
+  if (timeout) clearTimeout(timeout)
+}
+
 // Teams' 1:1 chats are addressed by nature and a mention of the bot is an address; anything else is the activation policy's call, as on Slack.
 function triggerOf(isDm: boolean, mentionedBots: readonly string[], appId: string): 'dm' | 'mention' | undefined {
   if (isDm) return 'dm'
@@ -147,7 +185,13 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
         }
         return { syncResponse: msTeamsInvokeNote(await forwardCardClick(host, botId, click)) }
       }
-      // Typing, reactions, edits, deletes, installs and roster changes start nothing on the relay (§4.2).
+      // People added to a conversation are looked up for a guest or another organization (assistant-mode.md §5.3).
+      const joined = msTeamsMembersAdded(activity, ingest.appId)
+      if (joined) {
+        await forwardMembersAdded(host, botId, activity, joined)
+        return {}
+      }
+      // Typing, reactions, edits, deletes, installs and other roster changes start nothing on the relay (§4.2).
       if (activity.type !== 'message') return {}
       const result = normalizeMsTeamsActivity(activity, {
         appId: ingest.appId,

@@ -235,8 +235,20 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       label: 'Google Chat'
     }
   ],
-  // History is read through Graph under the package's consent; no attachments or reactions (teams-integration.md §1).
-  ['msteams', { platform: 'msteams', label: 'Microsoft Teams', channelHistory: true, threadHistory: true }]
+  // History is read through Graph under the package's consent; no attachments or reactions (teams-integration.md §1). The audience is judged as Slack's.
+  [
+    'msteams',
+    {
+      platform: 'msteams',
+      label: 'Microsoft Teams',
+      channelHistory: true,
+      threadHistory: true,
+      authoritativeMembers: true,
+      channelPrivacy: true,
+      workspaceMembers: true,
+      sharedConversations: true
+    }
+  ]
 ])
 
 /** `platform`'s declaration, or undefined when it declares no read ports. */

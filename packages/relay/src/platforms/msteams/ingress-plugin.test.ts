@@ -13,6 +13,7 @@ import type { BotAssignment } from '../../bot-arbitration.js'
 import { JWK, KEYS_URL, NOW, OTHER_KEYS, bearer, fakeBotFramework } from '../../../test/fixtures/msteams-token.js'
 import {
   AAD_USER,
+  BOT_ID,
   APP_ID,
   CARD_ACTIVITY,
   CHANNEL,
@@ -21,6 +22,7 @@ import {
   PERSONAL,
   ROOT,
   SERVICE_URL,
+  TEAM,
   TENANT,
   USER,
   cardClick,
@@ -398,6 +400,40 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
     }
     expect(s.h.forwardStrict).not.toHaveBeenCalled()
     expect(s.h.forwardAction).not.toHaveBeenCalled()
+  })
+
+  it('forwards the people a roster change added, the bot left out, for the daemon to look up', async () => {
+    const s = setup()
+    const added = edit(conversationUpdate, (a) => {
+      a.membersAdded = [{ id: BOT_ID }, { id: USER, aadObjectId: AAD_USER }]
+    })
+    expect((await deliver(s, added)).handled).toEqual({})
+    expect(s.h.forwardAction).toHaveBeenCalledOnce()
+    const [rd] = vi.mocked(s.h.forwardAction).mock.calls[0]!
+    expect(rd).toMatchObject({
+      source: 'platform_action',
+      platformId: 'msteams',
+      integrationId: TARGET.integrationId,
+      payload: {
+        kind: 'members-added',
+        conversationId: CHANNEL,
+        serviceUrl: SERVICE_URL,
+        teamId: TEAM,
+        teamWide: true,
+        members: [{ id: USER, aadObjectId: AAD_USER }]
+      }
+    })
+    const botOnly = edit(conversationUpdate, (a) => {
+      a.membersAdded = [{ id: BOT_ID }]
+    })
+    expect((await deliver(s, botOnly)).handled).toEqual({})
+    // A 1:1 chat's install names its person beside the bot, and a 1:1 chat is never external.
+    const personalInstall = edit(conversationUpdate, (a) => {
+      a.conversation = { id: PERSONAL, conversationType: 'personal', tenantId: TENANT }
+      a.membersAdded = [{ id: BOT_ID }, { id: USER, aadObjectId: AAD_USER }]
+    })
+    expect((await deliver(s, personalInstall)).handled).toEqual({})
+    expect(s.h.forwardAction).toHaveBeenCalledOnce()
   })
 })
 

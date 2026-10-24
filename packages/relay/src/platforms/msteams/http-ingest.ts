@@ -1,6 +1,10 @@
 // Microsoft Teams' per-bot relay ingest (teams-integration.md §3, §4): a pure decoder holding the bot's app and tenant IDs, and no secret.
 import { createHash } from 'node:crypto'
-import type { WireMsTeamsCardAction } from '@agentconnect.md/protocol'
+import {
+  MSTEAMS_MEMBERS_ADDED_MAX,
+  type WireMsTeamsCardAction,
+  type WireMsTeamsMembersAdded
+} from '@agentconnect.md/protocol'
 import type { MsTeamsTokenVerifier } from './token.js'
 
 /** Hard cap on one activity's raw body; Teams caps a message at 100 KB, and its HTML twin rides beside the text. */
@@ -66,6 +70,40 @@ export function msTeamsCardClick(activity: Obj): WireMsTeamsCardAction | undefin
     userId,
     ...(userName ? { userName } : {})
   }
+}
+
+/** People a `conversationUpdate` added, the bot itself left out; undefined when it added nobody else, or to a 1:1 chat, which is never external (assistant-mode.md §5.3). */
+export function msTeamsMembersAdded(activity: Obj, appId: string): WireMsTeamsMembersAdded | undefined {
+  if (activity.type !== 'conversationUpdate' || !Array.isArray(activity.membersAdded)) return undefined
+  if (obj(activity.conversation)?.conversationType === 'personal') return undefined
+  const bot = `28:${appId}`.toLowerCase()
+  const members = activity.membersAdded.flatMap((entry) => {
+    const id = str(obj(entry)?.id)
+    if (!id || id.toLowerCase() === bot) return []
+    const aadObjectId = str(obj(entry)?.aadObjectId)
+    return [{ id, ...(aadObjectId ? { aadObjectId } : {}) }]
+  })
+  const conversationId = str(obj(activity.conversation)?.id)?.split(';')[0]
+  const serviceUrl = str(activity.serviceUrl)
+  if (members.length === 0 || !conversationId || !serviceUrl) return undefined
+  const channelData = obj(activity.channelData)
+  const teamId = str(obj(channelData?.team)?.id)
+  return {
+    kind: 'members-added',
+    conversationId,
+    serviceUrl,
+    ...(teamId ? { teamId } : {}),
+    teamWide: channelData?.eventType === 'teamMemberAdded',
+    members: members.slice(0, MSTEAMS_MEMBERS_ADDED_MAX)
+  }
+}
+
+/** A member join's dedup identity: the conversation and the activity, unique together. */
+export function msTeamsMembersAddedMsgId(botId: string, activity: Obj): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ v: 1, botId, conversationId: obj(activity.conversation)?.id, id: activity.id }))
+    .digest('hex')
+  return `msteams-members:${digest.slice(0, 32)}`
 }
 
 /** A click's dedup identity: one click is one event, so its content is its identity, and a client retry of it collapses. */
