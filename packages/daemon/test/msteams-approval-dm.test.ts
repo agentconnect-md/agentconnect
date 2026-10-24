@@ -1,4 +1,4 @@
-/** A Teams approval card in one person's own 1:1 chat: an external place's asker (assistant-mode.md §5.5), or the editor the control plane routes it to, alone or beside the channel's card (teams-integration.md §4.4). */
+/** A Teams approval card in one person's own 1:1 chat: an external place's asker (assistant-mode.md §5.5), or the editor the control plane routes a permission request or MCP approval to, alone or beside the channel's card (teams-integration.md §4.4). */
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
@@ -27,7 +27,7 @@ const permission = {
   toolCall: { toolCallId: 'tc-1', title: 'Write example.txt' }
 } as unknown as RequestPermissionRequest
 
-/** An MCP-tool approval asked as a question, which no Teams card in a 1:1 chat answers. */
+/** An MCP-tool approval asked as a question: one single-select field, so a card offers its options and Deny. */
 const question = {
   sessionId: 's1',
   toolCallId: 'call-e',
@@ -35,6 +35,12 @@ const question = {
   message: 'Which one?',
   requestedSchema: { type: 'object', properties: { pick: { type: 'string', enum: ['a', 'b'] } }, required: ['pick'] },
   _meta: { codex_approval_kind: 'mcp_tool_call' }
+} as unknown as CreateElicitationRequest
+
+/** An MCP-tool approval whose one field is a yes/no, which reduces to no choices a card could offer. */
+const yesNo = {
+  ...question,
+  requestedSchema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] }
 } as unknown as CreateElicitationRequest
 
 const SLACK_INT = 'int-slack'
@@ -232,6 +238,92 @@ describe('an approval on the editor path of a Teams turn', () => {
     await w.store.close()
   })
 
+  const row = async (w: Awaited<ReturnType<typeof world>>) =>
+    (await w.store.listPermissionRequests(AGENT))[0] as unknown as Record<string, unknown>
+
+  it('sends an MCP approval to the routed editor’s own chat as a card of its choices, which only they decide', async () => {
+    const w = await world(GUEST)
+    routeToEditor(w)
+    const decided = vi.fn()
+    void w.permissions.onAcpElicit(AGENT, 's1', question).then(decided)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${EDITOR}`]))
+    const card = cardText(w.conn.postCard.mock.calls[0]![1])
+    expect(card).toContain('Butler is waiting on an approval')
+    expect(card).toContain('Which one?')
+    expect(card).toContain('"Deny"')
+    // Its handle is on the row, so a restart's sweep retires it.
+    await vi.waitFor(async () =>
+      expect(await row(w)).toMatchObject({ notifyIntegrationId: INT, notifyTs: 'activity-1' })
+    )
+    const id = w.onlyRequest()
+
+    await w.permissions.handlePermissionChoice({ requestId: id, option: 1, ts: 'activity-1', actor: { userId: GUEST } })
+    expect(decided).not.toHaveBeenCalled()
+    await w.permissions.handlePermissionChoice({
+      requestId: id,
+      option: 1,
+      ts: 'activity-1',
+      actor: { userId: EDITOR }
+    })
+    await vi.waitFor(() => expect(decided).toHaveBeenCalledWith({ action: 'accept', content: { pick: 'b' } }))
+    expect(await row(w)).toMatchObject({ status: 'allowed', notifyTs: null })
+    await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
+    expect(cardText(w.conn.replaceCard.mock.calls.at(-1)![1])).toContain('b — Edie')
+    await w.store.close()
+  })
+
+  it('declines an MCP approval from its card’s Deny', async () => {
+    const w = await world(GUEST)
+    routeToEditor(w)
+    const decided = vi.fn()
+    void w.permissions.onAcpElicit(AGENT, 's1', question).then(decided)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${EDITOR}`]))
+    await w.permissions.handlePermissionChoice({ requestId: w.onlyRequest(), option: 2, actor: { userId: EDITOR } })
+    await vi.waitFor(() => expect(decided).toHaveBeenCalledWith({ action: 'decline' }))
+    expect(await row(w)).toMatchObject({ status: 'denied' })
+    await w.store.close()
+  })
+
+  it('retires an MCP approval’s card without deciding when the editor is no longer authorized', async () => {
+    const w = await world(GUEST)
+    routeToEditor(w, false)
+    const decided = vi.fn()
+    void w.permissions.onAcpElicit(AGENT, 's1', question).then(decided)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${EDITOR}`]))
+    await w.permissions.handlePermissionChoice({ requestId: w.onlyRequest(), option: 0, actor: { userId: EDITOR } })
+    await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
+    expect(cardText(w.conn.replaceCard.mock.calls[0]![1])).toContain('No longer authorized')
+    expect(decided).not.toHaveBeenCalled()
+    expect(await row(w)).toMatchObject({ status: 'pending' })
+    await w.store.close()
+  })
+
+  it('retires an MCP approval’s card after a restart settled its request', async () => {
+    const w = await world(GUEST)
+    routeToEditor(w)
+    void w.permissions.onAcpElicit(AGENT, 's1', question)
+    await vi.waitFor(async () => expect(await row(w)).toMatchObject({ notifyTs: 'activity-1' }))
+    // As if the process died: the row settles with no live entry to rewrite the card.
+    const id = w.onlyRequest()
+    w.permissions.pendingApprovals.delete(id)
+    await w.store.resolvePermissionRequest(AGENT, id, 'expired', Date.now())
+    await w.permissions.retireOrphanedCards(INT)
+    expect(w.conn.replaceCard.mock.calls.map((call: [string]) => call[0])).toEqual(['activity-1'])
+    expect(await row(w)).toMatchObject({ notifyTs: null })
+    await w.store.close()
+  })
+
+  it('sends no card for an MCP approval that reduces to no choices', async () => {
+    const w = await world(GUEST)
+    routeToEditor(w)
+    void w.permissions.onAcpElicit(AGENT, 's1', yesNo)
+    await vi.waitFor(() => expect(w.permissions.pendingApprovals.size).toBe(1))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(w.postedTo()).toEqual([])
+    expect(w.cp).not.toHaveBeenCalled()
+    await w.store.close()
+  })
+
   it('keeps the editor’s card when approving in chat is turned off', async () => {
     const w = await world(GUEST)
     routeToEditor(w)
@@ -254,9 +346,16 @@ describe('an approval on the editor path of an agent on both Slack and Teams', (
     await w.store.close()
   })
 
-  it('offers only Slack for a question, which no Teams card in a 1:1 chat answers', async () => {
+  it('offers Slack before Teams for an MCP approval with choices', async () => {
     const w = await world(GUEST, true)
     void w.permissions.onAcpElicit(AGENT, 's1', question)
+    await vi.waitFor(() => expect(routedTo(w)).toEqual([[SLACK_INT, INT]]))
+    await w.store.close()
+  })
+
+  it('offers only Slack for an MCP approval no Teams card answers', async () => {
+    const w = await world(GUEST, true)
+    void w.permissions.onAcpElicit(AGENT, 's1', yesNo)
     await vi.waitFor(() => expect(routedTo(w)).toEqual([[SLACK_INT]]))
     await w.store.close()
   })

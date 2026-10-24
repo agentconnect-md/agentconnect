@@ -485,9 +485,9 @@ Console notifications (§7) followed as their own change (#1704).
   `union_id` while its messages carry an app-scoped `open_id` — matching
   needs a resolution step `linkedMemberIds` deliberately refuses to guess
   at. Telegram/Discord have no linked-identity assertion at all. Microsoft
-  Teams ships the permission card only: the daemon posts its own approval card
-  into the editor's 1:1 chat, and the click is verified as §6.3 says
-  ([Teams](teams-integration.md) §4.4).
+  Teams posts its own approval card into the editor's 1:1 chat, for a
+  permission request or an MCP approval with choices, and the click is
+  verified as §6.3 says ([Teams](teams-integration.md) §4.4).
 - **Multi-recipient fan-out / escalation.** One target per request. If the
   chosen human is away, the console queue is the backstop, as today.
 - **Approval timeouts and reminders.** Orthogonal; nothing here precludes
