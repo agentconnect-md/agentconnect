@@ -110,6 +110,7 @@ describe('Teams history', () => {
       messages: [
         {
           sender: PERSON,
+          senderName: 'Example Person',
           ts: '1700000000300',
           text: 'post 1700000000300',
           isBot: false,
@@ -118,6 +119,7 @@ describe('Teams history', () => {
         },
         {
           sender: `28:${APP}`,
+          senderName: 'Example Bot',
           ts: '1700000000200',
           text: 'bot 1700000000200',
           isBot: true,
@@ -128,6 +130,7 @@ describe('Teams history', () => {
       hasMore: true,
       nextCursor: 'next-page'
     })
+    expect((await conn.getUserProfile(PERSON)).name).toBe('Example Person')
     expect(graphCalls().map((c) => c.url)).toEqual([msTeamsGraphMessagesUrl(CHANNEL, { top: 2 })])
     expect(graphCalls()[0]!.auth).toBe('Bearer graph-token')
     const graphToken = calls.find((c) => c.scope === 'https://graph.microsoft.com/.default')

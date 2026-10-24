@@ -456,8 +456,10 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
       if (!skiptoken || passedOldest) break
     }
     const nextCursor = passedOldest ? undefined : skiptoken
+    this.rememberSenders(kept)
     const messages = kept.sort(newestFirst).map((m) => ({
       sender: m.sender,
+      ...(m.senderName ? { senderName: m.senderName } : {}),
       ts: m.id,
       text: m.text,
       isBot: m.isBot,
@@ -505,7 +507,9 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
         if (!skiptoken || passedOldest || replies.length > cap) break
       }
       if (window?.readState && replies.length > cap) window.readState.truncated = true
-      return [root, ...replies.sort(newestFirst).slice(0, cap).reverse()].map((m) => this.threadMessage(m))
+      const rows = [root, ...replies.sort(newestFirst).slice(0, cap).reverse()]
+      this.rememberSenders(rows)
+      return rows.map((m) => this.threadMessage(m))
     } catch (err) {
       this.deps.log?.debug(`msteams: reading a thread failed: ${(err as Error).message}`)
       if (window?.throwOnError) throw err
@@ -517,6 +521,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   private threadMessage(m: MsTeamsGraphMessage): PlatformThreadMessage {
     return {
       sender: m.sender,
+      ...(m.senderName ? { senderName: m.senderName } : {}),
       ts: m.id,
       text: m.text,
       isBot: m.isBot,
@@ -525,6 +530,11 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
       attachments: [],
       ...(m.link ? { link: m.link } : {})
     }
+  }
+
+  // A person's name a history read carried also answers `getUserProfile`.
+  private rememberSenders(rows: readonly MsTeamsGraphMessage[]): void {
+    for (const m of rows) if (!m.isBot && m.senderName) remember(this.names, m.sender, m.senderName, NAMES_MAX)
   }
 
   // Where a seen conversation's messages are read; a 1:1 chat has no history this consent reaches.

@@ -1763,6 +1763,15 @@ describe('executeTool: getThreadHistory', () => {
     ])
   })
 
+  it('names a sender where the platform’s read carries the name', async () => {
+    const getThreadReplies = vi.fn(async () => [reply({ senderName: 'Example Person' }), reply({ ts: '100.2' })])
+    const { deps: d } = deps(fakeGateway({ getThreadReplies }))
+    const res = (await executeTool(ctx, 'getThreadHistory', { thread: '99.9' }, d)) as {
+      messages: Record<string, unknown>[]
+    }
+    expect(res.messages.map((m) => m.senderName)).toEqual(['Example Person', undefined])
+  })
+
   it('needs an explicit channel on another bot, and refuses a connection without the port', async () => {
     const otherBot = fakeGateway()
     const { deps: base } = deps(fakeGateway({ getThreadReplies: vi.fn(async () => []) }))

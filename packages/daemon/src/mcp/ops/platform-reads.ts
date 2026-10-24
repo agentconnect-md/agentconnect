@@ -474,6 +474,7 @@ function projectThreadMessage(m: PlatformThreadMessage): unknown {
   })
   return {
     sender: m.sender,
+    ...(m.senderName ? { senderName: m.senderName } : {}),
     ts: m.ts,
     text: m.text,
     isBot: m.isBot,

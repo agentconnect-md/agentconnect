@@ -134,6 +134,8 @@ export interface PlatformUserProfile {
  *  model, and Layer 1 only needs the contract to agree on arity/order. */
 export interface PlatformThreadMessage {
   sender: string
+  /** The sender's display name, where the platform's read carries one. */
+  senderName?: string
   ts: string
   text: string
   isBot: boolean
@@ -158,6 +160,8 @@ export interface PlatformThreadWindow {
 /** One bounded page of channel messages from a provider history read. */
 export interface PlatformChannelHistoryMessage {
   sender: string
+  /** The sender's display name, where the platform's read carries one. */
+  senderName?: string
   ts: string
   text: string
   isBot: boolean
