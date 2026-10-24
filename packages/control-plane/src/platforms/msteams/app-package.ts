@@ -72,6 +72,22 @@ export interface MsTeamsManifestInput {
 }
 
 /** The manifest Teams validates on upload; every field below is required for a bot with the `team` scope (§5). */
+/** The commands the compose box offers (teams-integration.md §4.7): `help`, which the daemon answers itself, and two prompts the agent answers. */
+export const MSTEAMS_COMMANDS: readonly { title: string; description: string }[] = [
+  { title: 'help', description: 'Show what I can do and the commands I understand' },
+  { title: 'Summarize this conversation', description: 'Summarize the recent discussion here' },
+  { title: 'Draft a plan for a task', description: 'Turn a task into a step-by-step plan' }
+]
+
+/** The listing's long description, which names the organization an admin connects first and where to sign up or ask, as the Teams Store asks. */
+export function msTeamsFullDescription(name: string): string {
+  return [
+    `${name} is an ${PLATFORM_APP_DESCRIPTION}`,
+    'It works for an AgentConnect organization: an admin connects this app to the organization in the AgentConnect console before people can use it.',
+    'Sign up or learn more at https://www.agentconnect.md, or contact contact@agentconnect.md.'
+  ].join(' ')
+}
+
 export function msTeamsManifest(input: MsTeamsManifestInput): Record<string, unknown> {
   const name = input.agentName.trim() || 'AgentConnect agent'
   return {
@@ -81,7 +97,7 @@ export function msTeamsManifest(input: MsTeamsManifestInput): Record<string, unk
     id: msTeamsPackageId(input.appId),
     developer: { ...MSTEAMS_DEVELOPER },
     name: { short: clip(name, 30), full: clip(name, 100) },
-    description: { short: PLATFORM_APP_DESCRIPTION, full: clip(`${name} is an ${PLATFORM_APP_DESCRIPTION}`, 4000) },
+    description: { short: PLATFORM_APP_DESCRIPTION, full: clip(msTeamsFullDescription(name), 4000) },
     icons: { color: 'color.png', outline: 'outline.png' },
     accentColor: input.accentColor,
     bots: [
@@ -89,7 +105,8 @@ export function msTeamsManifest(input: MsTeamsManifestInput): Record<string, unk
         botId: input.appId,
         scopes: ['personal', 'team', 'groupChat'],
         supportsFiles: false,
-        isNotificationOnly: false
+        isNotificationOnly: false,
+        commandLists: [{ scopes: ['personal', 'team', 'groupChat'], commands: MSTEAMS_COMMANDS.map((c) => ({ ...c })) }]
       }
     ],
     validDomains: [input.relayHost],

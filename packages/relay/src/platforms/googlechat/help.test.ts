@@ -1,7 +1,7 @@
 // The `/help` reply and the welcome (google-chat-integration.md §11.4): the command list must match the daemon's grammar.
 import { describe, expect, it } from 'vitest'
 import * as grammar from '@agentconnect.md/activation-policy'
-import { GOOGLE_CHAT_COMMAND_HELP, googleChatHelp, googleChatHelpText, googleChatWelcomeText } from './help.js'
+import { googleChatHelp, googleChatHelpText, googleChatWelcomeText } from './help.js'
 
 // Every `!word` the help text names.
 const namedWords = (text: string): string[] => [...text.matchAll(/!([A-Za-z]+)/g)].map((m) => m[1]!)
@@ -18,14 +18,14 @@ describe('Google Chat /help', () => {
     const words = namedWords(text)
     expect(words.length).toBeGreaterThan(0)
     for (const word of words) expect(grammar.parseCommand(`!${word}`), word).not.toBeNull()
-    for (const [kind, { usage }] of Object.entries(GOOGLE_CHAT_COMMAND_HELP)) {
+    for (const [kind, { usage }] of Object.entries(grammar.COMMAND_HELP)) {
       expect(grammar.parseCommand(usage)?.kind, usage).toBe(kind)
       expect(text).toContain(usage)
     }
   })
 
   it('lists every command the grammar accepts', () => {
-    const listed = new Set(Object.keys(GOOGLE_CHAT_COMMAND_HELP))
+    const listed = new Set(Object.keys(grammar.COMMAND_HELP))
     const words = grammarWords()
     expect(words.length).toBeGreaterThan(0)
     for (const word of words) {

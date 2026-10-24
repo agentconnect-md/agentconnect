@@ -590,6 +590,10 @@ once-per-conversation latch is held only while its post is in flight, and a
 failed post leaves the notice owed to the next addressed message. A surface
 without the member posts nothing.
 
+`DaemonPlatformModule.botAdds?` decodes a relayed install of the bot into a
+conversation; core composes the platform-neutral welcome (`platforms/welcome.ts`)
+and the module posts it in its own form, as Teams does with a card.
+
 `DaemonPlatformModule.chatMemberKey?` is the same kind of member: the id a
 synced organization matches a platform's chat member to a console account by,
 which only Feishu/Lark's module overrides (§7.3).

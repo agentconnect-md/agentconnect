@@ -479,6 +479,27 @@ export interface MemberJoin {
   reasons(): Promise<{ channel: string; reason: PlaceExternalReason }[]>
 }
 
+/** §7.4 relayed installs: the bot itself added to a conversation, which core welcomes once (a chat app store's first-run message). */
+export interface RelayBotAdds {
+  /** The install a payload carries; null for a payload that is no install of this platform's. */
+  decode(msg: RdMsgPlatformAction): BotAdded | null
+}
+
+/** One relayed install: where it happened, the name the platform shows the bot by, and how to post core's welcome there. */
+export interface BotAdded {
+  channel: string
+  isDm: boolean
+  botName?: string
+  post(welcome: Welcome): Promise<void>
+}
+
+/** Core's welcome, which the platform renders: what the bot does, how to use it here, whether it is enabled here, and where to go next. */
+export interface Welcome {
+  title: string
+  lines: string[]
+  links: { title: string; url: string }[]
+}
+
 /** The host lookup a thread strategy places a reply with: the thread a recorded message id was filed under. */
 export interface ThreadingHost {
   threadForMessage(transcriptChannel: string, messageId: string): Promise<string | undefined>
@@ -497,4 +518,6 @@ export interface DaemonPlatformModule {
   readonly cardClicks?: RelayCardClicks
   /** People added to a conversation, arriving as relayed `platform_action`s; absent ⇒ none do. */
   readonly memberJoins?: RelayMemberJoins
+  /** The bot's own installs, arriving as relayed `platform_action`s; absent ⇒ none do. */
+  readonly botAdds?: RelayBotAdds
 }
