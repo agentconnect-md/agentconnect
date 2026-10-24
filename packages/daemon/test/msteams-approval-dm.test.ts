@@ -1,4 +1,4 @@
-/** An external Teams place's approval goes to the asker's own 1:1 chat as a Teams card, where only they decide (assistant-mode.md §5.5, teams-integration.md §4.4). */
+/** A Teams approval card in one person's own 1:1 chat: an external place's asker (assistant-mode.md §5.5), or the editor the control plane routes it to (teams-integration.md §4.4). */
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
@@ -15,6 +15,7 @@ const ZERO = '00000000-0000-0000-0000-000000000000'
 const SHARED = '19:example-shared@thread.tacv2'
 const ASKER = '11111111-1111-1111-1111-111111111111'
 const GUEST = '22222222-2222-2222-2222-222222222222'
+const EDITOR = '33333333-3333-3333-3333-333333333333'
 
 const permission = {
   sessionId: 's1',
@@ -54,7 +55,9 @@ async function world(asker = ASKER) {
   conn.postCard = vi.fn(async () => `activity-${++posted}`)
   conn.replaceCard = vi.fn(async () => {})
   daemon.msTeamsConnByIntegration.set(INT, conn)
-  const cp = vi.fn(async (payload: { requestId: string }) => ({ requestId: payload.requestId }))
+  const cp = vi.fn(async (payload: { requestId: string; verify?: unknown }): Promise<Record<string, unknown>> => ({
+    requestId: payload.requestId
+  }))
   daemon.cpClient = { supportsServerFeature: () => true, approvalRoute: cp }
   const applied: any[] = []
   daemon.enqueueApply = (_p: unknown, action: unknown) => void applied.push(action)
@@ -127,6 +130,88 @@ describe('an approval in a Teams channel shared with another organization', () =
     await vi.waitFor(() => expect(w.conn.isFullMember).toHaveBeenCalledWith(GUEST))
     expect(w.conn.openDirectMessage).not.toHaveBeenCalled()
     expect(w.postedTo()).toEqual([])
+    await w.store.close()
+  })
+})
+
+describe('an approval on the editor path of a Teams turn', () => {
+  /** The control plane routes the request to EDITOR, and its verify answers `allowed` for their account. */
+  function routeToEditor(w: Awaited<ReturnType<typeof world>>, allowed = true) {
+    w.cp.mockImplementation(async (payload: { requestId: string; verify?: unknown }) =>
+      payload.verify
+        ? { requestId: payload.requestId, allowed, displayName: 'Edie' }
+        : {
+            requestId: payload.requestId,
+            target: {
+              integrationId: INT,
+              teamId: 'global',
+              userId: EDITOR,
+              consoleUserId: 'user-editor',
+              displayName: 'Edie'
+            }
+          }
+    )
+  }
+  const cardText = (card: unknown): string => JSON.stringify(card)
+
+  it('goes to the routed editor’s own 1:1 chat as a card, which only they decide', async () => {
+    const w = await world(GUEST)
+    routeToEditor(w)
+    const decided = vi.fn()
+    void w.permissions.onAcpPermission(AGENT, 's1', permission).then(decided)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${EDITOR}`]))
+    expect(w.cp.mock.calls[0]![0]).toMatchObject({ integrationIds: [INT], requesterId: GUEST, sessionId: 'sid-1' })
+    expect(w.conn.openDirectMessage).toHaveBeenCalledWith(EDITOR)
+    // The card says which agent asks and links its session.
+    const card = cardText(w.conn.postCard.mock.calls[0]![1])
+    expect(card).toContain('Butler is waiting on an approval')
+    expect(card).toContain('Open session')
+    const id = w.onlyRequest()
+
+    await w.permissions.handlePermissionChoice({ requestId: id, optionId: 'allow', actor: { userId: GUEST } })
+    expect(decided).not.toHaveBeenCalled()
+    await w.permissions.handlePermissionChoice({ requestId: id, optionId: 'allow', actor: { userId: EDITOR } })
+    await vi.waitFor(() =>
+      expect(decided).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    )
+    // The click was rechecked against the control plane for the routed console user.
+    expect(w.cp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        verify: { integrationId: INT, teamId: 'global', userId: EDITOR, consoleUserId: 'user-editor' }
+      }),
+      undefined
+    )
+    expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ status: 'allowed' })
+    await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
+    expect(cardText(w.conn.replaceCard.mock.calls.at(-1)![1])).toContain('Butler is waiting on an approval')
+    await w.store.close()
+  })
+
+  it('retires the card without deciding when the editor is no longer authorized', async () => {
+    const w = await world(GUEST)
+    routeToEditor(w, false)
+    const decided = vi.fn()
+    void w.permissions.onAcpPermission(AGENT, 's1', permission).then(decided)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${EDITOR}`]))
+    await w.permissions.handlePermissionChoice({
+      requestId: w.onlyRequest(),
+      optionId: 'allow',
+      actor: { userId: EDITOR }
+    })
+    await vi.waitFor(() => expect(w.conn.replaceCard).toHaveBeenCalled())
+    expect(cardText(w.conn.replaceCard.mock.calls[0]![1])).toContain('No longer authorized')
+    expect(decided).not.toHaveBeenCalled()
+    expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({ status: 'pending' })
+    await w.store.close()
+  })
+
+  it('keeps the editor’s card when approving in chat is turned off', async () => {
+    const w = await world(GUEST)
+    routeToEditor(w)
+    void w.permissions.onAcpPermission(AGENT, 's1', permission)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${EDITOR}`]))
+    w.permissions.disableChatPermissionSurfaces(AGENT)
+    expect(w.conn.replaceCard).not.toHaveBeenCalled()
     await w.store.close()
   })
 })

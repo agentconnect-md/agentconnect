@@ -2,6 +2,7 @@
 import { MSTEAMS_CARD_NOTE_MAX, MSTEAMS_PLATFORM, type WireMsTeamsCardAction } from '@agentconnect.md/protocol'
 import type {
   ApprovalCardAsk,
+  ApprovalCardContext,
   ApprovalCardDraft,
   ApprovalCardFacet,
   ApprovalCardHandle,
@@ -52,6 +53,14 @@ function intro(asker: SubsessionAsker): AdaptiveElement[] {
   ]
 }
 
+function contextIntro(context: ApprovalCardContext): AdaptiveElement[] {
+  const requester = context.requesterName ? ` for ${clampTo(context.requesterName, 60)}` : ''
+  return [
+    ...plainText(`${clampTo(context.agentName, 60)} is waiting on an approval${requester}.`),
+    openUrlRow('Open session', context.sessionUrl)
+  ]
+}
+
 function optionStyle(kind: string): 'positive' | 'destructive' | undefined {
   if (kind === 'allow_once' || kind === 'allow_always') return 'positive'
   if (kind === 'reject_once' || kind === 'reject_always') return 'destructive'
@@ -71,6 +80,7 @@ export function buildMsTeamsApprovalCard(ask: ApprovalCardAsk): Record<string, u
   })
   return adaptiveCard([
     ...(ask.subsession ? intro(ask.subsession) : []),
+    ...(ask.context ? contextIntro(ask.context) : []),
     ...plainText(`🔒 Permission requested — ${permToolLabel(ask.params)}`, { bold: true }),
     ...buttonRows(buttons)
   ])
@@ -130,6 +140,7 @@ export const msTeamsApprovalCards: ApprovalCardFacet = {
     const decision = `${approvalMark(settled.allowed)} ${clampTo(settled.text, MSTEAMS_DECISION_CAP)}`
     const card = adaptiveCard([
       ...(settled.subsession ? intro(settled.subsession) : []),
+      ...(settled.context ? contextIntro(settled.context) : []),
       ...plainText(`🔒 Permission — ${permToolLabel(settled.params)}`, { bold: true }),
       ...plainText(decision)
     ])

@@ -552,18 +552,35 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     return fullMember(await this.standingOf(user), this.tenantId)
   }
 
-  /** The bot's 1:1 chat with a person it shares a conversation with, opened by the `29:` ID their roster entry carries (§4.4); it becomes a known chat, so a card posts into it. */
+  /** The bot's 1:1 chat with a person it shares a conversation or team with, opened by the `29:` ID their roster entry carries (§4.4); it becomes a known chat, so a card posts into it. */
   async openDirectMessage(user: string): Promise<string> {
-    const seen = this.seenIn(user)
-    const member = seen ? await this.api.conversationMember(seen.known.serviceUrl, seen.channel, user) : undefined
-    if (!seen || !member?.id.startsWith('29:'))
+    const entry = await this.rosterEntry(user)
+    const member = entry?.member
+    if (!entry || !member?.id.startsWith('29:'))
       throw new MsTeamsApiError('msteams: no conversation this bot shares with the person names them', 'not_found')
     this.noteStanding(member)
-    const { serviceUrl } = seen.known
+    const { serviceUrl } = entry
     const chat = await this.api.openDirectConversation(serviceUrl, member.id, this.tenantId, this.botUserId)
     const name = member.name ?? this.names.get(user)
     remember(this.conversations, chat, { serviceUrl, kind: 'personal', ...(name ? { name } : {}) }, CONVERSATIONS_MAX)
     return chat
+  }
+
+  // The person's roster entry where they were seen, else in each team the bot knows, whose roster lists every member of it.
+  private async rosterEntry(user: string): Promise<{ serviceUrl: string; member: MsTeamsMember } | undefined> {
+    const seen = this.seenIn(user)
+    if (seen) {
+      const member = await this.api.conversationMember(seen.known.serviceUrl, seen.channel, user)
+      return member ? { serviceUrl: seen.known.serviceUrl, member } : undefined
+    }
+    const teams = new Set<string>()
+    for (const known of this.conversations.values()) {
+      if (known.kind !== 'channel' || !known.teamId || teams.has(known.teamId)) continue
+      teams.add(known.teamId)
+      const member = await this.api.conversationMember(known.serviceUrl, known.teamId, user).catch(() => undefined)
+      if (member) return { serviceUrl: known.serviceUrl, member }
+    }
+    return undefined
   }
 
   // The first conversation the person was seen in that the bot can still write to.

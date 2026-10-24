@@ -15923,10 +15923,13 @@ export class Daemon {
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
       sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
       slackConnFor: (integrationId) => this.connByIntegration.get(integrationId),
-      approvalDmIntegrations: (agentId, preferred) => {
-        const live = (this.agents.get(agentId)?.integrations ?? [])
-          .filter((i) => i.platform === 'slack' && this.connByIntegration.has(i.id))
-          .map((i) => i.id)
+      approvalDmIntegrations: (agentId, preferred, cards = false) => {
+        const integrations = this.agents.get(agentId)?.integrations ?? []
+        const live = [
+          ...integrations.filter((i) => i.platform === 'slack' && this.connByIntegration.has(i.id)),
+          // After Slack's DM cards, a platform whose connection opens a 1:1 chat takes the editor's card through its facet.
+          ...(cards ? integrations.filter((i) => !this.connByIntegration.has(i.id) && this.directCardsAt(i.id)) : [])
+        ].map((i) => i.id)
         return preferred && live.includes(preferred) ? [preferred, ...live.filter((id) => id !== preferred)] : live
       },
       // Unconditional (§5.3): a card outside the session's conversation routes its click home only by this block_id.
@@ -15962,7 +15965,8 @@ export class Daemon {
         if (!(await conn.isFullMember(msg.sender.id).catch(() => false))) return undefined
         const channel = await conn.openDirectMessage(msg.sender.id).catch(() => undefined)
         return channel ? { integrationId, userId: msg.sender.id, channel } : undefined
-      }
+      },
+      directMessageAt: async (integrationId, userId) => await this.directCardsAt(integrationId)?.(userId)
     }
   }
 
@@ -23278,6 +23282,12 @@ export class Daemon {
    *  host — the session arrives later, from the daemon's own ingress — so the
    *  provenance has to be parked here and consumed once. */
   private readonly pendingLaunchCorrelation = new Map<string, string>()
+
+  /** How an integration whose approval cards can go to a person's own 1:1 chat opens one; undefined where they cannot. */
+  private directCardsAt(integrationId: string): ((user: string) => Promise<string>) | undefined {
+    const conn = this.chatCardsAt(integrationId)?.conn as Partial<ContractConnection> | undefined
+    return conn?.openDirectMessage?.bind(conn)
+  }
 
   /** One integration's approval-card facet and live connection, for a card or notice posted outside a turn. */
   private chatCardsAt(integrationId: string): { facet: ApprovalCardFacet; conn: unknown } | undefined {
