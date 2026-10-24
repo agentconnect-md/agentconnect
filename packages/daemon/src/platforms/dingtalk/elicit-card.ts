@@ -31,7 +31,7 @@ const DINGTALK_ELICIT_MAX_OPTIONS = 12
 const DINGTALK_ELICIT_DECISION_CAP = 300
 // Up to four options fit as buttons; more go in the card's select.
 const DINGTALK_CARD_MAX_BUTTONS = 4
-const DINGTALK_CARD_PROMPT_CAP = 2000
+export const DINGTALK_CARD_PROMPT_CAP = 2000
 const DINGTALK_CARD_LABEL_CAP = 60
 const DINGTALK_CARD_BUTTON_CAP = 40
 

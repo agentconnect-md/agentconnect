@@ -24,7 +24,7 @@ import {
   type DingTalkApiOptions
 } from './api.js'
 import { DingTalkCardClient, type DingTalkCardPort } from './card.js'
-import { dingTalkCardTap, dingTalkMentionCard } from './elicit-card.js'
+import { DINGTALK_CARD_PROMPT_CAP, dingTalkCardTap, dingTalkMentionCard } from './elicit-card.js'
 import { DingTalkReactionClient, type DingTalkReactionPort } from './reaction.js'
 import { rewriteDingTalkMarkdown } from './markdown.js'
 import { DingTalkStream, type DingTalkSocket, type DingTalkStreamTiming } from './stream.js'
@@ -291,6 +291,11 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     if (!ids.every((id) => /^[^\s:$]{1,64}$/.test(id))) throw new Error("dingtalk: a mention needs a member's staff ID")
     const names = Object.fromEntries(ids.map((id) => [id, this.names.get(id) ?? id]))
     const shown = `${ids.map((id) => `@${names[id]}`).join(' ')} ${text}`
+    // A card body has a hard cap; a mention post that would not fit whole is refused rather than cut.
+    if (shown.length > DINGTALK_CARD_PROMPT_CAP)
+      throw new Error(
+        `dingtalk: a mention card holds ${DINGTALK_CARD_PROMPT_CAP} characters with its names, and this one has ${shown.length}; shorten it or send it without toUser`
+      )
     const outTrackId = `acm-${randomUUID()}`
     const params = dingTalkMentionCard(identity?.username ?? '', shown)
     if (!(await this.cards.deliver(channel, outTrackId, params, names)))

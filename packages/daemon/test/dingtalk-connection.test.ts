@@ -305,6 +305,12 @@ describe('DingTalk question cards', () => {
     })
     await expect(conn.postMentioning('dm:user-0001', 'x', ['user-0001'])).rejects.toThrow('mentions no one')
     await expect(conn.postMentioning('cid-example-group', 'x', ['$:LWCP_v1:$outsider'])).rejects.toThrow('staff ID')
+    // The names count against the card's cap, so a message just under it is refused whole, never cut.
+    const before = calls.length
+    await expect(
+      conn.postMentioning('cid-example-group', `${'x'.repeat(1980)} DO NOT DEPLOY`, ['user-0001'])
+    ).rejects.toThrow('holds 2000 characters')
+    expect(calls.length).toBe(before)
   })
 
   it('refuses a mention where it sends no cards, and when the card is not delivered', async () => {
