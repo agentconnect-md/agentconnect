@@ -6,9 +6,15 @@ import {
   msTeamsConversationMemberUrl,
   msTeamsPagedMembersUrl,
   msTeamsTeamChannelsUrl,
+  msTeamsTeamUrl,
   msTeamsTokenEndpoint
 } from '../src/platforms/msteams/api.js'
 import { MsTeamsConnection, msTeamsConnKey } from '../src/platforms/msteams/connection.js'
+import {
+  msTeamsGraphChannelMembersUrl,
+  msTeamsGraphMember,
+  msTeamsGraphTeamUrl
+} from '../src/platforms/msteams/graph.js'
 import { msTeamsMemberJoins } from '../src/platforms/msteams/module.js'
 import { msTeamsRelayIngress, type MsTeamsRelayIngressHost } from '../src/platforms/msteams/relay-ingress.js'
 import { confirmsInternalAudience, membersAuthoritative } from '../src/platforms/read-ports.js'
@@ -248,5 +254,54 @@ describe('Teams audience', () => {
     expect(detected).toHaveBeenCalledExactlyOnceWith([integrationId], CHAT, 'externalMember')
     const other = '88888888-8888-4888-8888-888888888888'
     expect(await daemon.handleRelayPlatformAction(relayed(other))).toMatchObject({ accepted: false })
+  })
+})
+
+describe('Teams audience through Graph', () => {
+  const GROUP = '00000000-0000-0000-0000-00000000000d'
+  const graphMember = (aad: string, roles: string[] = []) => ({
+    '@odata.type': '#microsoft.graph.aadUserConversationMember',
+    userId: aad,
+    displayName: people[aad]!.name,
+    roles,
+    tenantId: people[aad]!.tenantId
+  })
+  // The team's group, its visibility, and a shared channel's members as Graph answers them.
+  const graph =
+    (visibility: string, sharedMembers: unknown[]): Answer =>
+    (url) => {
+      if (url === msTeamsTeamUrl(SERVICE_URL, TEAM)) return Response.json({ id: TEAM, aadGroupId: GROUP })
+      if (url === msTeamsGraphTeamUrl(GROUP)) return Response.json({ id: GROUP, visibility })
+      if (url === msTeamsGraphChannelMembersUrl(GROUP, SHARED)) return Response.json({ value: sharedMembers })
+      return undefined
+    }
+
+  it('keeps a shared channel used only inside the organization internal, and shares one with another tenant’s member', async () => {
+    const inside = connection(graph('private', [graphMember(ALICE, ['owner'])])).conn
+    inside.noteMessage(post(SHARED))
+    expect(await inside.getChannelInfo(SHARED)).toMatchObject({ isPrivate: true, externalReason: null })
+    expect(await inside.sharedChannel(SHARED)).toBe(false)
+    const reaching = connection(graph('private', [graphMember(ALICE, ['owner']), graphMember(OUTSIDER)])).conn
+    reaching.noteMessage(post(SHARED))
+    expect(await reaching.getChannelInfo(SHARED)).toMatchObject({ externalReason: 'externallyShared' })
+    expect(await reaching.sharedChannel(SHARED)).toBe(true)
+  })
+
+  it('reports a standard channel public only in a public team, and every other channel private', async () => {
+    const open = connection(graph('public', [])).conn
+    for (const channel of [STANDARD, PRIVATE]) open.noteMessage(post(channel))
+    expect(await open.getChannelInfo(STANDARD)).toMatchObject({ isPrivate: false, externalReason: null })
+    expect(await open.getChannelInfo(PRIVATE)).toMatchObject({ isPrivate: true })
+    const closed = connection(graph('private', [])).conn
+    closed.noteMessage(post(STANDARD))
+    expect(await closed.getChannelInfo(STANDARD)).toMatchObject({ isPrivate: true })
+  })
+
+  it('lists a shared channel’s members through Graph, a guest by role', async () => {
+    const { conn } = connection(graph('private', [graphMember(ALICE, ['owner']), graphMember(GUEST, ['guest'])]))
+    conn.noteMessage(post(SHARED))
+    expect(await conn.listMemberIds(SHARED)).toEqual([ALICE, GUEST])
+    expect(await conn.isFullMember(GUEST)).toBe(false)
+    expect(msTeamsGraphMember(graphMember(OUTSIDER))).toMatchObject({ id: OUTSIDER, userRole: 'user', tenantId: OTHER })
   })
 })

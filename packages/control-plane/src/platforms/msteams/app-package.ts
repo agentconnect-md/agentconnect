@@ -19,12 +19,13 @@ export const MSTEAMS_DEVELOPER = {
   termsOfUseUrl: 'https://www.agentconnect.md/terms/'
 } as const
 
-// The RSC grants: every message without a mention, channel names and members, and a meeting's details and transcripts (§4.1).
+// The RSC grants: every message without a mention, channel names and members, the team's visibility, and a meeting's details and transcripts (§4.1, §4.6).
 export const MSTEAMS_RSC_PERMISSIONS = [
   { name: 'ChannelMessage.Read.Group', type: 'Application' },
   { name: 'ChatMessage.Read.Chat', type: 'Application' },
   { name: 'ChannelSettings.Read.Group', type: 'Application' },
   { name: 'ChannelMember.Read.Group', type: 'Application' },
+  { name: 'TeamSettings.Read.Group', type: 'Application' },
   { name: 'OnlineMeeting.ReadBasic.Chat', type: 'Application' },
   { name: 'OnlineMeetingTranscript.Read.Chat', type: 'Application' }
 ] as const
