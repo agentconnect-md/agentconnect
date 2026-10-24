@@ -783,7 +783,8 @@ function summarize(
   const details = identity.details ?? {}
   const raw = (details.rawData ?? {}) as Record<string, unknown>
   const name = firstString(details.name)
-  const email = firstString(details.email)
+  // The Microsoft connector stores Graph's `mail` only in the raw profile, not as the normalized email.
+  const email = firstString(details.email, raw.mail)
   // Not every connector fills the normalized `avatar`: Logto stores it for
   // github and google but not for slack, whose picture survives only as the
   // `picture` claim inside the raw payload. Falling back to it costs nothing
