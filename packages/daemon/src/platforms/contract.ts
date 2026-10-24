@@ -428,8 +428,10 @@ export interface PlatformConnection {
   documentReach?(documentId: string): Promise<PlatformDocumentReach>
 }
 
-/** §7.4 relay-ingress strategy: how one platform shapes a relay-delivered `im` once core's gates have passed it. */
+/** §7.4 relay-ingress strategy: how one platform notes a relay-delivered `im` before core's gates and shapes it once they pass. */
 export interface RelayIngressStrategy {
+  /** Note what the delivery says about its conversation before any gate, so a message the gate drops still leaves a reply target for its notice. */
+  observe?(msg: RdMsgIm, normalized: NormalizedMessage): void
   /** Shape the delivery: `settled` ⇒ answered by the platform, no turn; `refused` ⇒ unrecorded, so redelivered. */
   prepare(
     msg: RdMsgIm,

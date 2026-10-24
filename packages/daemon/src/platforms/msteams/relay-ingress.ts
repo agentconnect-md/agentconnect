@@ -16,18 +16,20 @@ export function msTeamsDeliveryReceiptId(normalized: NormalizedMessage): string 
 
 export function msTeamsRelayIngress(host: MsTeamsRelayIngressHost): RelayIngressStrategy {
   return {
+    // The activity's serviceUrl is the one every later write into this conversation uses (§3), a gate notice's included.
+    observe: (msg: RdMsgIm, normalized: NormalizedMessage) => {
+      const conn = host.connection(msg.integrationId)
+      if (!conn) return
+      conn.noteMessage(normalized)
+      host.noteMessage(conn, normalized)
+    },
     // Chat platforms post no startup message (product-conventions.md), so the delivery goes straight to dispatch.
     prepare: async (msg: RdMsgIm, normalized: NormalizedMessage, trace: { stage: string }) => {
       const conn = host.connection(msg.integrationId)
-      if (conn) {
-        // The activity's serviceUrl is the one every later write into this conversation uses (§3).
-        conn.noteMessage(normalized)
-        host.noteMessage(conn, normalized)
-        // A post in a shared channel carries the share, as Slack's envelope does, before the turn it starts reads it.
-        if (!normalized.isDm && (await conn.sharedChannel(normalized.channel))) {
-          normalized.externallyShared = true
-          host.placeExternal([msg.integrationId], normalized.channel, 'externallyShared')
-        }
+      // A post in a shared channel carries the share, as Slack's envelope does, before the turn it starts reads it.
+      if (conn && !normalized.isDm && (await conn.sharedChannel(normalized.channel))) {
+        normalized.externallyShared = true
+        host.placeExternal([msg.integrationId], normalized.channel, 'externallyShared')
       }
       trace.stage = 'msteams:dispatch'
       return 'dispatch'

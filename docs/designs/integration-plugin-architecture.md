@@ -595,7 +595,9 @@ than a core table keyed by platform name: `DaemonPlatformModule.relayIngress?`
 (`platforms/contract.ts`), which core reads through `PlatformModuleRegistry`
 (`platforms/registry.ts`) by `normalized.platform` once its own gates on the
 relay `im` path (arbitration echo, conversation gating, control commands, the
-`!stop` mute) have passed. `prepare` shapes the delivery and may answer it
+`!stop` mute) have passed. `observe?` runs before those gates and only notes
+what the delivery says about its conversation, so a message a gate drops still
+leaves the reply target its gate notice needs. `prepare` shapes the delivery and may answer it
 itself (`settled`) or refuse it as unrecorded (`refused`); `onAdmitted?` runs
 once inside dispatch's durable admission fence; `requireDurable?` and
 `receiptId?` bind the delivery to a permanent receipt minted with its admission
