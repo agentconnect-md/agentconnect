@@ -165,9 +165,10 @@ That holds in a team's standard channels only. In a private or a shared
 channel, where the app is added to the channel itself, Teams delivered a
 mention and the bot's replies posted there, but an unmentioned thread reply
 never reached the relay (**measured** in both, with the team holding the
-grant). The layout is not the cause: a standard channel switched to the
-threads layout still delivered the unmentioned reply. A thread there
-continues only through a mention. Whether an
+grant). Neither the layout nor the channel's own install is the cause: a
+standard channel switched to the threads layout still delivered the
+unmentioned reply, and removing the app from the private channel and adding
+it back changed nothing. A thread there continues only through a mention. Whether an
 unmentioned top-level post there reaches an `auto` trigger is **unverified**.
 
 The manifest therefore leaves `addressedByConstruction` unset. If a tenant
@@ -564,9 +565,6 @@ relay route is added to the chart's HTTPRoute in the same change.
   linking (§4.5).
 - The member list of a group chat and of private and shared channels (§4.5).
 - Extended Markdown on mobile clients (§4.3).
-- Whether a private or shared channel delivers unmentioned messages once the
-  app is installed there with its resource-specific permissions consented
-  (§4.1 measured mentions only).
 - That the upgrade of §8.3 step 5 takes a resource-specific permission the team
   has not granted before (the measured upgrade re-consented grants it already
   held), and how soon a personal install shows a new icon, which the Control
