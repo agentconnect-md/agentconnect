@@ -174,6 +174,8 @@ export interface PermissionCoreHost {
     channel: string,
     externallyShared?: boolean
   ): ChatSurface
+  /** Whether a conversation is held external (a share or a guest detected), whatever its chat surface; one it cannot place counts as such. */
+  placeExternal(agentId: string, integrationId: string | undefined, channel: string): boolean
   /** Whether chat actions on this integration are taken only from the agent's editors (its platform's permissions are synced). */
   chatEditorsOnly(agentId: string, integrationId: string | undefined): boolean
   /** Whether this person may act in chat past the level and the conversation; fails closed where permissions are synced. */
@@ -777,8 +779,9 @@ export class PermissionCoordinator {
       channel: facet.cardChannel?.({ channel: p.plan.channel, ...thread }) ?? p.plan.channel,
       ...thread
     }
-    const external = p.entry.msg.externallyShared === true
-    const anonymous = this.host.chatSurface(agentId, integrationId, p.plan.channel, external) === 'external'
+    // Read from the audience, not the chat surface: a closed surface outranks external there.
+    const anonymous =
+      p.entry.msg.externallyShared === true || this.host.placeExternal(agentId, integrationId, p.plan.channel)
     void facet
       .send(this.elicitCardHost, p, facet.turnNotice())
       .catch(() => undefined)

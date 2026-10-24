@@ -397,8 +397,12 @@ describe('the editor path’s notice in the conversation', () => {
     await w.store.close()
   })
 
-  it('names nobody in a conversation shared with another organization', async () => {
-    const w = await world({ level: 'talk', core: { externalChannels: ['C1'] } })
+  it.each([
+    ['listed external', { core: { externalChannels: ['C1'] } }],
+    ['listed external and closed by a Decision', { core: { externalChannels: ['C1'], ...CLOSED[2]![1] } }],
+    ['shared by its message and closed by a Decision', { shared: true, core: CLOSED[2]![1] }]
+  ] as const)('names nobody in a conversation %s', async (_how, over) => {
+    const w = await world({ level: 'approve', ...over })
     const decided = w.permissions.onAcpPermission(AGENT, 's1', permission)
     await vi.waitFor(() => expect(notice(w).ts).toBeDefined())
     const id = w.onlyRequest()
