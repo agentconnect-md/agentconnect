@@ -58,16 +58,17 @@ describe('TURN for the console viewer', () => {
 })
 
 describe('Cloudflare TURN', () => {
+  // Cloudflare's answer as it comes back today: an alternate UDP 443 and plain TCP 80 beside the four we keep.
   const answer = {
     iceServers: [
-      { urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.cloudflare.com:53'] },
+      { urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.cloudflare.com:443'] },
       {
         urls: [
           'turn:turn.cloudflare.com:3478?transport=udp',
-          'turn:turn.cloudflare.com:53?transport=udp',
           'turn:turn.cloudflare.com:3478?transport=tcp',
-          'turn:turn.cloudflare.com:80?transport=tcp',
           'turns:turn.cloudflare.com:5349?transport=tcp',
+          'turn:turn.cloudflare.com:443?transport=udp',
+          'turn:turn.cloudflare.com:80?transport=tcp',
           'turns:turn.cloudflare.com:443?transport=tcp'
         ],
         username: 'cf-user',
@@ -81,14 +82,19 @@ describe('Cloudflare TURN', () => {
       {
         urls: [
           'turn:turn.cloudflare.com:3478?transport=udp',
+          'turns:turn.cloudflare.com:443?transport=tcp',
           'turn:turn.cloudflare.com:3478?transport=tcp',
-          'turns:turn.cloudflare.com:5349?transport=tcp',
-          'turns:turn.cloudflare.com:443?transport=tcp'
+          'turns:turn.cloudflare.com:5349?transport=tcp'
         ],
         username: 'cf-user',
         credential: 'cf-credential'
       }
     ])
+    // Browsers block 53.
+    const withDns = {
+      iceServers: [{ urls: ['turn:t:53?transport=udp', 'turn:t:3478'], username: 'u', credential: 'c' }]
+    }
+    expect(cloudflareIceServers(withDns)[0]?.urls).toEqual(['turn:t:3478'])
     expect(cloudflareIceServers({ iceServers: [{ urls: 'turn:t:3478' }] })).toEqual([])
     expect(cloudflareIceServers({ nope: true })).toEqual([])
   })

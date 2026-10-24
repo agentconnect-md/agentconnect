@@ -119,6 +119,16 @@ const CloudflareAnswer = z.object({
 // Browsers block TURN on 53, and the desktop is given no plain-HTTP egress for 80.
 const SKIPPED_PORTS = new Set(['53', '80'])
 
+const portOf = (url: string) => /:(\d+)(\?|$)/.exec(url)?.[1] ?? ''
+
+// Within the URL cap: UDP first, then TLS on 443 for networks that only let 443 out, then TCP; UDP on 443 last, as the desktop cannot send it.
+function urlRank(url: string): number {
+  const port = portOf(url)
+  if (url.startsWith('turns:')) return port === '443' ? 1 : 3
+  if (url.endsWith('?transport=tcp')) return 2
+  return port === '443' ? 4 : 0
+}
+
 /** The TURN entries of Cloudflare's answer both peers can use: its STUN entry and the ports above dropped. */
 export function cloudflareIceServers(body: unknown): ComputerIceServer[] {
   const answer = CloudflareAnswer.safeParse(body)
@@ -127,7 +137,8 @@ export function cloudflareIceServers(body: unknown): ComputerIceServer[] {
     .flatMap((server) => {
       const urls = (typeof server.urls === 'string' ? [server.urls] : server.urls)
         .filter((url) => ComputerTurnUrl.safeParse(url).success)
-        .filter((url) => !SKIPPED_PORTS.has(/:(\d+)(\?|$)/.exec(url)?.[1] ?? ''))
+        .filter((url) => !SKIPPED_PORTS.has(portOf(url)))
+        .sort((a, b) => urlRank(a) - urlRank(b))
         .slice(0, COMPUTER_TURN_URLS_MAX)
       const parsed = ComputerIceServer.safeParse({ urls, username: server.username, credential: server.credential })
       return parsed.success ? [parsed.data] : []
