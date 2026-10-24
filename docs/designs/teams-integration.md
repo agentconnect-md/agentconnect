@@ -161,6 +161,13 @@ activation policy does the filtering, unchanged:
   through `canonicalizeThread`;
 - anything else is dropped after admission and starts nothing.
 
+That holds in a team's standard channels only. In a private or a shared
+channel, where the app is added to the channel itself, Teams delivered a
+mention and the bot's replies posted there, but an unmentioned thread reply
+never reached the relay (**measured** in both, with the team holding the
+grant). A thread there continues only through a mention. Whether an
+unmentioned top-level post there reaches an `auto` trigger is **unverified**.
+
 The manifest therefore leaves `addressedByConstruction` unset. If a tenant
 blocks RSC consent, the bot receives mentions only; `auto` and unmentioned
 follow-ups then do nothing, and how the bot can detect that is **unverified**.
@@ -555,8 +562,9 @@ relay route is added to the chart's HTTPRoute in the same change.
   linking (§4.5).
 - The member list of a group chat and of private and shared channels (§4.5).
 - Extended Markdown on mobile clients (§4.3).
-- Private and shared channels: Microsoft's pages disagree on whether bots may
-  post there.
+- Whether a private or shared channel delivers unmentioned messages once the
+  app is installed there with its resource-specific permissions consented
+  (§4.1 measured mentions only).
 - That the upgrade of §8.3 step 5 takes a resource-specific permission the team
   has not granted before (the measured upgrade re-consented grants it already
   held), and how soon a personal install shows a new icon, which the Control
