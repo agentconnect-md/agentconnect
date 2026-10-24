@@ -1066,6 +1066,7 @@ export interface BotDto {
   credentialRejectedAt?: string | null // an ambiguous check rejected the current credential (first seen); the bot stays live
   credentialRejectedCode?: string | null // the platform's own code behind that rejection
   externalAppId?: string | null // the platform's public app identity, such as a Google Chat project number
+  externalTenantId?: string | null // the tenant half of that identity, such as a Teams bot's Microsoft 365 tenant
   platformConfig?: Record<string, string> | null // public row metadata, such as a Google Chat project ID
   createdAt: string // ISO-8601
 }
