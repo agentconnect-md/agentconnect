@@ -23274,7 +23274,7 @@ export class Daemon {
 
   // ── Conversation gating (resource-visibility.md §14) ────────────────────────
 
-  /** Messages the §14.3 notice answered, by message id, so a message's second event copy posts nothing more; bounded. */
+  /** Messages the §14.3 notice answered, by integration and message id, so a message's second event copy posts nothing more; bounded. */
   private readonly gatedNoticesSent = new Set<string>()
 
   /** agentId → the CP launch correlation awaiting the next session this agent
@@ -24257,7 +24257,8 @@ export class Daemon {
       // A trusted mention cause is an address even before the bot's own identity is known.
       const addressed = isDm || msg.trigger === 'mention' || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
       if (!addressed) continue
-      const latch = msg.msgId
+      // A message id is unique only per bot connection: two bots' DMs can share one.
+      const latch = `${integrationId}:${msg.msgId}`
       if (this.gatedNoticesSent.has(latch)) return
       const text =
         '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.'
