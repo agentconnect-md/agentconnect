@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { exitAsChild, type ChildResult } from '../delegate.js'
-import { DESKTOP_COMMAND_ENV, DESKTOP_SERVICE_ENTRY_ENV, type DesktopLaunch } from './launch.js'
+import { COMPUTER_COMMAND_ENV, COMPUTER_SERVICE_ENTRY_ENV, type ComputerLaunch } from './launch.js'
 
 export interface EntryResult {
   code: number
@@ -9,15 +9,15 @@ export interface EntryResult {
 
 /** Runs one computer daemon command to completion; `capture` collects stdout instead of sharing the terminal. */
 export type EntryRunner = (
-  launch: DesktopLaunch,
+  launch: ComputerLaunch,
   opts?: { capture?: boolean; timeoutMs?: number }
 ) => Promise<EntryResult>
 
 // The daemon names this CLI's command in help and fix hints, and installs its service on the store's stable entry.
-export function childEnv(launch: DesktopLaunch, selfCommand: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, [DESKTOP_COMMAND_ENV]: selfCommand }
-  if (launch.serviceEntry) env[DESKTOP_SERVICE_ENTRY_ENV] = launch.serviceEntry
-  else delete env[DESKTOP_SERVICE_ENTRY_ENV]
+export function childEnv(launch: ComputerLaunch, selfCommand: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, [COMPUTER_COMMAND_ENV]: selfCommand }
+  if (launch.serviceEntry) env[COMPUTER_SERVICE_ENTRY_ENV] = launch.serviceEntry
+  else delete env[COMPUTER_SERVICE_ENTRY_ENV]
   return env
 }
 
@@ -38,7 +38,7 @@ export function entryRunner(selfCommand: string): EntryRunner {
 }
 
 // Runs the daemon with inherited stdio and exits as it did; SIGTERM is forwarded, terminal SIGINT already reaches it.
-export async function execComputer(launch: DesktopLaunch, selfCommand: string): Promise<never> {
+export async function execComputer(launch: ComputerLaunch, selfCommand: string): Promise<never> {
   const child = spawn(launch.command, launch.args, { stdio: 'inherit', env: childEnv(launch, selfCommand) })
   const done = new Promise<ChildResult>((resolve) => {
     child.on('exit', (code, signal) => resolve({ code, signal }))

@@ -35,7 +35,7 @@ variable "MEM0_BACKEND_VERSION" {
 }
 
 group "default" {
-  targets = ["control-plane", "relay", "web", "mem0", "mem0-backend", "daemon", "runtime-sandbox", "runtime-sandbox-full", "desktop"]
+  targets = ["control-plane", "relay", "web", "mem0", "mem0-backend", "daemon", "runtime-sandbox", "runtime-sandbox-full", "computer"]
 }
 
 target "_release" {
@@ -97,17 +97,17 @@ target "daemon" {
 }
 
 // A Linux desktop Computer (Xvfb, Xfce, Firefox ESR, the desktop daemon), for amd64 and arm64 hosts (computer-use.md §3.8).
-target "desktop" {
+target "computer" {
   context    = "."
-  dockerfile = "packages/desktop/docker/Dockerfile"
+  dockerfile = "packages/computer/docker/Dockerfile"
   platforms  = ["linux/amd64", "linux/arm64"]
-  target     = "desktop"
+  target     = "computer"
   args = {
     VERSION = VERSION
   }
   tags = concat(
-    ["${REGISTRY}/${OWNER}/desktop:${VERSION}"],
-    LATEST ? ["${REGISTRY}/${OWNER}/desktop:latest"] : []
+    ["${REGISTRY}/${OWNER}/computer:${VERSION}"],
+    LATEST ? ["${REGISTRY}/${OWNER}/computer:latest"] : []
   )
 }
 

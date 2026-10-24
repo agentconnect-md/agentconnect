@@ -26,12 +26,12 @@ describe('computer console helpers', () => {
     )
     expect(computerInstallCommand('windows', registration)).toContain(`--register "ac_tok" --cp-url "${url}"`)
     expect(computerInstallCommand('docker', registration)).toBe(
-      `docker run -d --name agentconnect-desktop --hostname agentconnect-desktop --restart unless-stopped --shm-size=1g -v agentconnect-desktop:/home/desktop -e LISTEN_HOST=127.0.0.1 -e AGENTCONNECT_CP_URL='${url}' -e AGENTCONNECT_REGISTER_TOKEN='ac_tok' ghcr.io/agentconnect-md/desktop:latest`
+      `docker run -d --name agentconnect-computer --hostname agentconnect-computer --restart unless-stopped --shm-size=1g -v agentconnect-computer:/home/computer -e LISTEN_HOST=127.0.0.1 -e AGENTCONNECT_CP_URL='${url}' -e AGENTCONNECT_REGISTER_TOKEN='ac_tok' ghcr.io/agentconnect-md/computer:latest`
     )
     // The CP names the image at its own release, so the desktop speaks its protocol version.
     expect(
-      computerInstallCommand('docker', { ...registration, desktopImage: 'ghcr.io/agentconnect-md/desktop:v2.6.0' })
-    ).toMatch(/ ghcr\.io\/agentconnect-md\/desktop:v2\.6\.0$/)
+      computerInstallCommand('docker', { ...registration, computerImage: 'ghcr.io/agentconnect-md/computer:v2.6.0' })
+    ).toMatch(/ ghcr\.io\/agentconnect-md\/computer:v2\.6\.0$/)
   })
 
   it('puts failing checks first, then warnings, keeping the reported order', () => {

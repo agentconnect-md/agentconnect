@@ -273,7 +273,7 @@ async function main(): Promise<void> {
       }
     })
 
-  // Listed for help only: `computer` (and its hidden `desktop` alias) is routed to the computer module before commander parses.
+  // Listed for help only: `computer` is routed to the computer module before commander parses.
   program
     .command('computer')
     .description(

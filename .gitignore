@@ -90,7 +90,7 @@ next-env.d.ts
 # Nuxt.js build / generate output
 .nuxt
 dist
-packages/desktop/bundle
+packages/computer/bundle
 .output
 
 # Gatsby files

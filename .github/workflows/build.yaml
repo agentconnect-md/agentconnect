@@ -1,6 +1,6 @@
 name: Build & Publish Artifacts
 
-# Publishes service, pool-runtime, full daemon-runtime and desktop images to GHCR at each release tag.
+# Publishes service, pool-runtime, full daemon-runtime and computer images to GHCR at each release tag.
 # Stable releases also move `:latest`, release candidates `:rc`.
 #
 # Release versioning and preparation share one job, followed by parallel npm, image, and chart publication.
@@ -103,7 +103,7 @@ jobs:
       mem0: ${{ steps.build-matrix.outputs.mem0 }}
       mem0Backend: ${{ steps.build-matrix.outputs.mem0Backend }}
       daemon: ${{ steps.build-matrix.outputs.daemon }}
-      desktop: ${{ steps.build-matrix.outputs.desktop }}
+      computer: ${{ steps.build-matrix.outputs.computer }}
     steps:
       - name: Mint GitHub App token
         if: inputs.create_release
@@ -223,7 +223,7 @@ jobs:
           MEM0_EFFECTIVE: ${{ steps.components.outputs.mem0 }}
           MEM0_BACKEND_EFFECTIVE: ${{ steps.components.outputs.mem0Backend }}
           DAEMON_EFFECTIVE: ${{ steps.components.outputs.daemon }}
-          DESKTOP_EFFECTIVE: ${{ steps.components.outputs.desktop }}
+          COMPUTER_EFFECTIVE: ${{ steps.components.outputs.computer }}
           SETUP_VERSION: ${{ steps.components.outputs.setup }}
         run: |
           set -euo pipefail
@@ -264,8 +264,8 @@ jobs:
           # The daemon pod image. Separate from the runtime sandbox: this runs the daemon, that
           # one is what an agent runtime executes inside.
           resolve_effective daemon daemon daemon "$DAEMON_EFFECTIVE"
-          # The desktop Computer image (amd64 + arm64): a Linux desktop the desktop daemon registers as a Computer.
-          resolve_effective desktop desktop desktop "$DESKTOP_EFFECTIVE"
+          # The Computer image (amd64 + arm64): a Linux desktop the desktop daemon registers as a Computer.
+          resolve_effective computer computer computer "$COMPUTER_EFFECTIVE"
 
           # Render the existing Bake definition so image-specific configuration
           # stays centralized even though each target builds in its own job.
@@ -388,7 +388,7 @@ jobs:
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v4
 
-      # Multi-arch targets (the desktop image) run their arm64 install steps under emulation on this amd64 runner.
+      # Multi-arch targets (the computer image) run their arm64 install steps under emulation on this amd64 runner.
       - name: Set up QEMU
         if: contains(matrix.platforms, 'linux/arm64')
         uses: docker/setup-qemu-action@v4
@@ -584,7 +584,7 @@ jobs:
       runtimeSandbox: ${{ steps.runtime.outputs.runtimeSandbox }}
       runtimeSandboxFull: ${{ steps.runtime.outputs.runtimeSandboxFull }}
       daemon: ${{ needs.prepare.outputs.daemon }}
-      desktop: ${{ needs.prepare.outputs.desktop }}
+      computer: ${{ needs.prepare.outputs.computer }}
     steps:
       # The runtime legs' decisions (see the header). Naming both files makes a missing one fail here, loudly,
       # instead of aliasing blind.
@@ -644,7 +644,7 @@ jobs:
           RUNTIME_SANDBOX_EFFECTIVE: ${{ steps.runtime.outputs.runtimeSandbox }}
           RUNTIME_SANDBOX_FULL_EFFECTIVE: ${{ steps.runtime.outputs.runtimeSandboxFull }}
           DAEMON_EFFECTIVE: ${{ needs.prepare.outputs.daemon }}
-          DESKTOP_EFFECTIVE: ${{ needs.prepare.outputs.desktop }}
+          COMPUTER_EFFECTIVE: ${{ needs.prepare.outputs.computer }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -eu
@@ -672,7 +672,7 @@ jobs:
           alias_unchanged runtime-sandbox "$RUNTIME_SANDBOX_EFFECTIVE"
           alias_unchanged runtime-sandbox-full "$RUNTIME_SANDBOX_FULL_EFFECTIVE"
           alias_unchanged daemon "$DAEMON_EFFECTIVE"
-          alias_unchanged desktop "$DESKTOP_EFFECTIVE"
+          alias_unchanged computer "$COMPUTER_EFFECTIVE"
 
       # Every component resolves at this release's tag by now, so `:rc` moves for all of them together, after every leg passed.
       - name: Point rc at this release
@@ -688,7 +688,7 @@ jobs:
             echo "${newest} is newer than ${VERSION}; leaving :rc to it"
             exit 0
           fi
-          for comp in control-plane web relay memory-plugin-mem0 mem0-server runtime-sandbox runtime-sandbox-full daemon desktop; do
+          for comp in control-plane web relay memory-plugin-mem0 mem0-server runtime-sandbox runtime-sandbox-full daemon computer; do
             docker buildx imagetools create -t "${REGISTRY}/${OWNER}/${comp}:rc" "${REGISTRY}/${OWNER}/${comp}:${VERSION}"
           done
 
@@ -782,11 +782,11 @@ jobs:
           RUNTIME_SANDBOX: ${{ needs.finalize.outputs.runtimeSandbox }}
           RUNTIME_SANDBOX_FULL: ${{ needs.finalize.outputs.runtimeSandboxFull }}
           DAEMON: ${{ needs.finalize.outputs.daemon }}
-          DESKTOP: ${{ needs.finalize.outputs.desktop }}
+          COMPUTER: ${{ needs.finalize.outputs.computer }}
         run: |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${WORKFLOW_REPOSITORY}/dispatches" \
-            -d "{\"event_type\":\"images-pushed\",\"client_payload\":{\"version\":\"${VERSION}\",\"sha\":\"${SHA}\",\"components\":{\"controlPlane\":\"${CP}\",\"web\":\"${WEB}\",\"relay\":\"${RELAY}\",\"mem0\":\"${MEM0}\",\"mem0Backend\":\"${MEM0_BACKEND}\",\"runtimeSandbox\":\"${RUNTIME_SANDBOX}\",\"runtimeSandboxFull\":\"${RUNTIME_SANDBOX_FULL}\",\"daemon\":\"${DAEMON}\",\"desktop\":\"${DESKTOP}\"}}}"
+            -d "{\"event_type\":\"images-pushed\",\"client_payload\":{\"version\":\"${VERSION}\",\"sha\":\"${SHA}\",\"components\":{\"controlPlane\":\"${CP}\",\"web\":\"${WEB}\",\"relay\":\"${RELAY}\",\"mem0\":\"${MEM0}\",\"mem0Backend\":\"${MEM0_BACKEND}\",\"runtimeSandbox\":\"${RUNTIME_SANDBOX}\",\"runtimeSandboxFull\":\"${RUNTIME_SANDBOX_FULL}\",\"daemon\":\"${DAEMON}\",\"computer\":\"${COMPUTER}\"}}}"

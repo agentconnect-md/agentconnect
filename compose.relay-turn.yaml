@@ -1,5 +1,5 @@
 # Optional TURN on the relay for the console's Computer viewer: video goes through the relay when hole punching fails.
-# docker compose -f compose.yaml -f compose.relay-turn.yaml up -d; guide: docs/self-host-desktop-container.md.
+# docker compose -f compose.yaml -f compose.relay-turn.yaml up -d; guide: docs/self-host-computer-container.md.
 services:
   relay:
     environment:

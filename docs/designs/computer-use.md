@@ -23,7 +23,7 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 2   | First source                       | **Self-hosted computer**: a desktop daemon runs on the user's desktop (§3)                                                                                                                     | Validated                                         |
 | 3   | Driver                             | Embed **Cua Driver (MIT, pinned 0.35.2)** as a `cua-driver mcp --direct` stdio child; never `cua-spacesd` or the Cua viewer (FSL) (§3.1)                                                       | Validated                                         |
 | 4   | Process shape                      | A background service **inside the user's logged-in graphical session**: on macOS our own signed app plus a LaunchAgent, on Windows the user Run key, on Linux a systemd user unit (§3.2, §3.3) | Validated (except the Windows install flow)       |
-| 5   | macOS grant owner                  | macOS grants must belong to AgentConnect's own app (`md.agentconnect.desktop`), not the terminal (§3.2.1)                                                                                      | Validated                                         |
+| 5   | macOS grant owner                  | macOS grants must belong to AgentConnect's own app (`md.agentconnect.computer`), not the terminal (§3.2.1)                                                                                     | Validated                                         |
 | 6   | Connection                         | Outbound WebSocket to the CP with a Computer key; tool calls ride the desktop's outbound relay link with per-session CP tokens; no screen bytes reach the CP (§3.6, §3.7)                      | Implemented (the agent's direct path is design)   |
 | 7   | Permissions                        | Per-Computer visibility; agent access as one relation (No agents / Selected / All agents) set from either side; `view` / `control` modes; approvals; hard refusals (§4)                        | Refusals validated; approvals, access implemented |
 | 8   | Concurrency                        | **At most one control lease** per Computer at a time; screenshots run concurrently (§4.4)                                                                                                      | Validated                                         |
@@ -151,9 +151,9 @@ session. `sleeping` is a CP verdict like `offline`: the lease service and the ch
 ### 3.1 Components [validated]
 
 The desktop daemon is a Node program bundled into one `.mjs` (on macOS, a Node single executable application inside a
-signed `.app`, §3.2.1). The package is `packages/desktop`, published to npm as `@agentconnect.md/desktop` (bin
-`agentconnect-desktop`) like the agent daemon. `@agentconnect.md/cli` installs, upgrades and runs it as
-`agentconnect computer …` (`desktop` is a hidden alias), from its own version store in the desktop data directory
+signed `.app`, §3.2.1). The package is `packages/computer`, published to npm as `@agentconnect.md/computer` (bin
+`agentconnect-computer`) like the agent daemon. `@agentconnect.md/cli` installs, upgrades and runs it as
+`agentconnect computer …`, from its own version store in the computer data directory
 ([cli-daemon-split.md §1.2](cli-daemon-split.md#12-computer-desktop-daemon)).
 
 ```mermaid
@@ -198,7 +198,7 @@ recognizable identity.
 
 | Platform                 | Started by                                                                               | Required grants / limits                                                                              | Status                                                    |
 | ------------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| macOS                    | Our own `AgentConnect Desktop.app` plus a user LaunchAgent (§3.3)                        | Accessibility, Screen Recording, "bypass the private window picker"; granted to the app               | Validated (macOS 27 VM)                                   |
+| macOS                    | Our own `AgentConnect Computer.app` plus a user LaunchAgent (§3.3)                       | Accessibility, Screen Recording, "bypass the private window picker"; granted to the app               | Validated (macOS 27 VM)                                   |
 | Windows                  | User Run key at login, interactive session; **not a service** (Session 0 has no desktop) | No TCC; an inbound firewall rule; the UAC secure desktop and lock screen cannot be captured or driven | Tools and viewer validated; install and firewall flow not |
 | Linux X11                | systemd user unit plus XDG autostart                                                     | None                                                                                                  | Validated (Xfce on Xorg / Xvfb)                           |
 | Linux GNOME Wayland      | Same                                                                                     | The Cua GNOME Shell extension; RemoteDesktop and ScreenCast portal consent once each                  | Validated (GNOME 50); KDE unsupported                     |
@@ -210,9 +210,9 @@ TCC records a grant against the **responsible process**. Started from a terminal
 broad (anything run in that terminal inherits it), once per terminal app, and impossible over SSH. So the desktop
 daemon runs as its own app:
 
-- `AgentConnect Desktop.app`, bundle id `md.agentconnect.desktop`, containing a Node SEA, `LSUIElement` (no Dock icon),
+- `AgentConnect Computer.app`, bundle id `md.agentconnect.computer`, containing a Node SEA, `LSUIElement` (no Dock icon),
   launched by a per-user LaunchAgent in the Aqua session.
-- Cua Driver and ffmpeg inherit the app's grants as children; `TCC.db` held only `md.agentconnect.desktop`, never Terminal.
+- Cua Driver and ffmpeg inherit the app's grants as children; `TCC.db` held only `md.agentconnect.computer`, never Terminal.
 - Three grants: **Accessibility** (renamed "Device Control and Data Access" in macOS 27; being listed is not enough, the
   switch must be on, or clicks and keys are dropped silently while pointer moves still work, which is easy to miss);
   **Screen Recording** (takes effect only after the app restarts, so `setup` restarts the service while it waits); and
@@ -254,7 +254,7 @@ daemon runs as its own app:
 | Container | Entrypoint           | The daemon runs in the foreground; `docker stop` shuts it down cleanly (§3.8)                                                                                                                                                                                                                    |
 
 - **[implemented]** Linux session following: Xfce leaves `graphical-session.target` active after logout, so the
-  autostart entry also exports the logind session id (`AGENTCONNECT_DESKTOP_SESSION`) and resets the unit's start limit;
+  autostart entry also exports the logind session id (`AGENTCONNECT_COMPUTER_SESSION`) and resets the unit's start limit;
   the daemon polls that session and exits when it closes, dropping its display variables from the user manager (or
   exits 75 so systemd restarts it when a newer session already imported its own). Validated on Ubuntu 26.04 Xfce on
   Xorg across logout / login and reboot; GNOME Wayland is tracked in #3221.
@@ -290,7 +290,7 @@ Session 0 / RDP / Wayland / X11); driver; macOS grants; a real screenshot; displ
 capture; the Linux GNOME helper, portal, and PipeWire dependencies; the Windows firewall rule; whether the daemon runs.
 
 **[implemented]** Install, upgrade and diagnose through the CLI (#3239; Linux first, GNOME Wayland is #3221). A release
-publishes `@agentconnect.md/desktop` to npm with the other packages (`scripts/publish-desktop-if-changed.sh`: the same
+publishes `@agentconnect.md/computer` to npm with the other packages (`scripts/publish-computer-if-changed.sh`: the same
 channels and dist-tags, provenance through trusted publishing, a self-contained esbuild bundle in `dist/` with the
 release version baked in, and the §11 license scan run on exactly what ships). Cua Driver and ffmpeg are not in the
 package: they stay pinned, checksummed downloads at `setup` / first start. A Linux host is assumed to have Node.js
@@ -300,7 +300,7 @@ only Linux install path. The tag is never omitted: the registration names the CP
 emits `@latest` and an rc CP (or a checkout) `@rc --channel rc`, because npm `latest` can predate `computer install`. `install` resolves the
 package from the CLI-local registry (never a CP-supplied URL), verifies its integrity and `engines`, extracts it to
 `versions/<v>` in the data directory, points `current` at it and runs `setup --register`; the systemd user unit and the
-Windows Run-key launcher run `current/dist/agentconnect-desktop.mjs`. `upgrade` installs side by side, switches
+Windows Run-key launcher run `current/dist/agentconnect-computer.mjs`. `upgrade` installs side by side, switches
 `current`, rewrites and restarts the unit, and requires a stable pid plus the daemon answering as the new version on
 its loopback `/control/status`; otherwise it restores the previous version. Config, the Computer key and the grants
 live beside the store and are never touched, so an upgrade does not register again. `doctor` names the installed
@@ -436,14 +436,14 @@ image running **the same desktop daemon**. The prototype was built and run on a 
 
 - **Image**: Debian trixie-slim, Xvfb, a lean Xfce, Firefox ESR, Noto CJK fonts, pinned Node 24, and the desktop
   daemon; Cua Driver is downloaded and checksummed at build time. ffmpeg (GPL) is not in the published image: the
-  daemon downloads the pinned build on first start into the volume, as on desktops (§7.4, §11). It runs as the non-root user `desktop`,
-  without systemd. `/home/desktop` is a volume holding the token, config, audit log, and browser profile. The image is
+  daemon downloads the pinned build on first start into the volume, as on desktops (§7.4, §11). It runs as the non-root user `computer`,
+  without systemd. `/home/computer` is a volume holding the token, config, audit log, and browser profile. The image is
   1.26 GB and builds in about 100 s.
 - **Entrypoint**: starts Xvfb (`RESOLUTION`, default `1600x900x24`), a session D-Bus, and Xfce, then runs the daemon in
   the foreground. `docker stop` stops the daemon, closes Firefox gracefully (so no profile lock is left), then ends
   the session, with exit code 0 in under 0.9 s. Xvfb must keep its local socket (`-nolisten tcp`, never
   `-nolisten unix`).
-- **Published image [implemented]**: `ghcr.io/<owner>/desktop`, built from `packages/desktop/docker/Dockerfile`
+- **Published image [implemented]**: `ghcr.io/<owner>/computer`, built from `packages/computer/docker/Dockerfile`
   (context: the repository root) for `linux/amd64` and `linux/arm64` with every release, through the same
   `docker-bake.hcl` target, effective-version and alias steps as the other images. The bundle stage runs once on the
   build platform. The image leaves out Mesa's software GL stack (Xvfb runs without GLX and Firefox renders in
@@ -461,7 +461,7 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   to the daemon alone, the daemon drops it from its environment before starting anything, and no output names it. An
   unregistered daemon started without a terminal writes its first client token to `client-token` (0600) in the data
   directory rather than to the log.
-- **Profile [implemented]**: the image declares `AGENTCONNECT_DESKTOP_ISOLATION=container`, Xvfb reads as session
+- **Profile [implemented]**: the image declares `AGENTCONNECT_COMPUTER_ISOLATION=container`, Xvfb reads as session
   `xvfb`, and `computer_list` reports the name, OS release, session, isolation and the driver's startup screen size
   before the first capture. The Computers API the console lists from showed a `docker run` registered this way as
   online with `isolation: 'container'`, `session: 'xvfb'`, one 1600×900 display and all nine `doctor` checks ok.
@@ -484,9 +484,9 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   OrbStack lets the Mac reach container IPs directly, so "it works without them" on the Mac proves nothing.
 
 ```sh
-docker run -d --name desktop --hostname "$NAME" --shm-size=1g -v desktop-home:/home/desktop \
+docker run -d --name computer --hostname "$NAME" --shm-size=1g -v computer-home:/home/computer \
   -p 7681:7681 -p 7700-7709:7700-7709/udp -e PUBLIC_URL="http://$HOST_IP:7681" -e RTC_PORTS=7700-7709 \
-  -e AGENTCONNECT_CP_URL="$CP_URL" -e AGENTCONNECT_REGISTER_TOKEN="$TOKEN" ghcr.io/agentconnect-md/desktop
+  -e AGENTCONNECT_CP_URL="$CP_URL" -e AGENTCONNECT_REGISTER_TOKEN="$TOKEN" ghcr.io/agentconnect-md/computer
 ```
 
 | Measure                   | Result                                                                                                                                 |
@@ -503,9 +503,9 @@ empty `display`, an unmanaged browser, an unpublished 1.26 GB image) are closed 
 clipboard, no Chromium variant, and the source obligations of the Debian packages in the published image (§11). ffmpeg
 is downloaded on first start rather than preinstalled until counsel answers its distribution question (§14.8).
 
-**Self-hosted containers [implemented]**: `packages/desktop/docker/compose.yaml` (settings in `compose.env.example`
+**Self-hosted containers [implemented]**: `packages/computer/docker/compose.yaml` (settings in `compose.env.example`
 next to it) runs the image on a user's server, and the console's **Add Computer** offers **Docker** with the matching
-`docker run` line; the guide is [self-host-desktop-container.md](../self-host-desktop-container.md). The container
+`docker run` line; the guide is [self-host-computer-container.md](../self-host-computer-container.md). The container
 only dials out, so the console viewer's signaling and screenshots go through the relay, and its video is direct when
 `RTC_ADDRESS` and the published UDP range reach the browser, through TURN otherwise. The deployment stack's
 `compose.relay-turn.yaml` turns on the relay's own TURN (§7.2); its `compose.turn.yaml` instead adds coturn with `use-auth-secret` and sets `COMPUTER_TURN_URLS` / `COMPUTER_TURN_SECRET` (§7.2); since both peers
@@ -853,7 +853,7 @@ says this, and how to read each error, in the standing instructions of every ses
   XTEST device (Cua Driver, the viewer's input and xdotool all type through XTEST), and keeps only the time of the last
   press, never which key. Capabilities report `humanActivity: 'pointer+keyboard'`; a desktop without it reads as
   `pointer`. Wayland cannot listen globally and is #3221; macOS and Windows come with M3 and M4.
-- **Owner pause / emergency stop [validated]**: press `p` in the console window, or run `agentconnect-desktop pause`
+- **Owner pause / emergency stop [validated]**: press `p` in the console window, or run `agentconnect-computer pause`
   (over the loopback `/control`). While paused, input returns `human_in_control` and screenshots continue; `r` /
   `resume` resumes. The release adds a local global hotkey, a tray / menu bar Stop, and a console Stop; any of them
   revokes the lease and enters `paused` until the owner resumes [design].
@@ -1194,7 +1194,7 @@ an image with it needs counsel first [legal]; native capture plus OS hardware en
 
 ### 12.1 Code
 
-The prototype lived in `packages/desktop` (`@agentconnect.md/desktop`) on the
+The prototype lived in `packages/desktop` (`@agentconnect.md/desktop`, now `packages/computer`, `@agentconnect.md/computer`) on the
 `dev/yulong/cua-driver-daemon-mcp` branch and merged in M0 (§14.3); the package is now versioned and published with
 each release (§3.5). Main files: `src/computer.ts` (lease, arbitration, pause, `uncertain`),
 `src/tools.ts` (`computer_*` and the `cua_*` pass-through), `src/http-server.ts`, `src/viewer.ts` /
@@ -1220,7 +1220,7 @@ The MCP client was Claude Code.
 - Unit tests use a fake driver and need no desktop (`computer.test.ts`, `http-server.test.ts`, `setup.test.ts`, `rtc.test.ts`).
 - Viewer: 1080p / 1200p at 30 fps, first frame in 1–2 s, no loss; before keyframe pacing, cross-internet lost 20% and decoded zero frames.
 - Crash recovery: back within 3 s of `kill -9`, no orphans; on Linux, apps the agent launched survive a service restart.
-- macOS: `TCC.db` holds only `md.agentconnect.desktop`; with the Accessibility switch off, clicks are dropped silently.
+- macOS: `TCC.db` holds only `md.agentconnect.computer`; with the Accessibility switch off, clicks are dropped silently.
 - Browser tasks: Firefox navigation, typing, scrolling, and clicking completed; egress reputation is in §15.4.
 - Container: starts in seconds, `docker stop` under 0.9 s, state on the volume survives a new container, 2–3% idle CPU;
   bridge networking needs the public address and port range for WebRTC (§3.8).
@@ -1370,7 +1370,7 @@ alongside the second half of M1; managed computers depend on M1's CP integration
    providing corresponding source [legal]. Until counsel answers, the published image does not preinstall ffmpeg: the
    daemon downloads the pinned build on first start, as desktops do. The Debian packages' source obligations are open.
 
-5. **The computer daemon on npm** [#3239 implemented]: `@agentconnect.md/desktop` is published with each release and
+5. **The computer daemon on npm** [#3239 implemented]: `@agentconnect.md/computer` (formerly `@agentconnect.md/desktop`) is published with each release and
    managed by `agentconnect computer install / upgrade / doctor / status / uninstall` (§3.5), the only Linux install
    path; the CP-served Linux installer and the bundle in the CP image are removed. The desktop image still bundles the daemon from the workspace at the release commit rather than
    installing the published package; macOS (`.app`) and Windows packaging stay in M3 / M4.
@@ -1452,7 +1452,7 @@ cluster credentials ([k8s-daemon-pool.md](k8s-daemon-pool.md) D17):
   edited, and its own agent always stays granted.
 - **Claims.** The CP sends `computer-pool/op` (`ensure` with `running` and `create`, `delete`, `list`; install-wide) to
   a connected pool member that advertises `computer-pool-member-v1`, which a member does when the deployment sets
-  `AC_K8S_DESKTOP_WARM_POOL`. The member (`packages/daemon/src/k8s/desktop-pool.ts`) creates the claim
+  `AC_K8S_COMPUTER_WARM_POOL`. The member (`packages/daemon/src/k8s/computer-pool.ts`) creates the claim
   `desktop-<computerId>` against the desktop warm pool, so an `ephemeral` computer is usually a prewarmed pod; it
   labels the claim `agentconnect.md/computer`, never `agentconnect.md/agent`, so the agent orphan sweep leaves it alone.
   Sleep and wake switch the Sandbox's operating mode, guarded by its uid, and keep the claim and its home volume;

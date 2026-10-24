@@ -181,9 +181,9 @@ spec:
               value: {{ .Values.daemonPool.shimPort | quote }}
             {{- if .Values.computerPool.enabled }}
             # Managed computers (computer-use.md §15.1): claim desktops from this warm pool and push each its registration.
-            - name: AC_K8S_DESKTOP_WARM_POOL
-              value: {{ include "agentconnect.desktopWarmPoolName" . | quote }}
-            - name: AC_K8S_DESKTOP_BOOTSTRAP_PORT
+            - name: AC_K8S_COMPUTER_WARM_POOL
+              value: {{ include "agentconnect.computerWarmPoolName" . | quote }}
+            - name: AC_K8S_COMPUTER_BOOTSTRAP_PORT
               value: {{ .Values.computerPool.bootstrapPort | quote }}
             {{- end }}
             # The sink the readiness probe below reads: the daemon serves GET /readyz here and

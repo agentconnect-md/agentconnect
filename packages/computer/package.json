@@ -1,0 +1,65 @@
+{
+  "name": "@agentconnect.md/computer",
+  "version": "2.0.0-dev",
+  "description": "AgentConnect computer daemon: drives a desktop through Cua Driver and serves the computer_* tools over MCP; installed and upgraded by agentconnect computer",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentconnect-md/agentconnect.git",
+    "directory": "packages/computer"
+  },
+  "type": "module",
+  "bin": {
+    "agentconnect-computer": "dist/agentconnect-computer.mjs"
+  },
+  "files": [
+    "dist/agentconnect-computer.mjs",
+    "dist/agentconnect-computer.mjs.LEGAL.txt"
+  ],
+  "scripts": {
+    "build": "pnpm --filter \"{.}...\" build:package",
+    "build:package": "node scripts/bundle.mjs --dist",
+    "bundle": "node scripts/bundle.mjs",
+    "bundle:macos": "node scripts/build-macos-app.mjs",
+    "clean": "rm -rf dist bundle",
+    "dev": "tsx src/cli.ts run",
+    "license-scan": "tsx scripts/license-scan.ts",
+    "prepack": "pnpm run build",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:xvfb": "node scripts/bundle.mjs && vitest run -c vitest.xvfb.config.ts",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+  },
+  "dependencies": {
+    "@agentconnect.md/connection": "workspace:*",
+    "@agentconnect.md/protocol": "workspace:*",
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/node": "2.1.1",
+    "@modelcontextprotocol/server": "2.3.1",
+    "werift": "0.25.1",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/ws": "^8.18.2",
+    "esbuild": "0.28.2",
+    "json": "^11.0.0",
+    "postject": "1.0.0-alpha.6",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
+  },
+  "keywords": [
+    "agentconnect",
+    "computer-use",
+    "desktop",
+    "mcp"
+  ],
+  "engines": {
+    "node": ">=24.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

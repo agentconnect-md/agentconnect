@@ -8,7 +8,7 @@ test('a partial npm retry skips completed packages and compares against each pac
     ['daemon', '1.0.0'],
     ['cli', '1.0.0'],
     ['setup', '0.9.0'],
-    ['desktop', '1.0.0']
+    ['computer', '1.0.0']
   ])
   const calls = []
   let failSetup = true
@@ -41,8 +41,8 @@ test('a partial npm retry skips completed packages and compares against each pac
     ['setup', 'v0.9.0', 'latest', 'publish'],
     ['setup', 'v0.9.0', '1.0.1', 'prepare'],
     ['setup', 'v0.9.0', 'latest', 'publish'],
-    ['desktop', 'v1.0.0', '1.0.1', 'prepare'],
-    ['desktop', 'v1.0.0', 'latest', 'publish']
+    ['computer', 'v1.0.0', '1.0.1', 'prepare'],
+    ['computer', 'v1.0.0', 'latest', 'publish']
   ])
 })
 
@@ -68,14 +68,14 @@ test('registry errors fail publication instead of treating an unknown version as
 test('a package with no release on a channel publishes with no baseline, so its first release always builds', async () => {
   const calls = []
   await publishPackages('v2.6.0', {
-    readVersion: async (name, selector) => (name.endsWith('/desktop') || selector !== 'latest' ? undefined : '2.5.0'),
+    readVersion: async (name, selector) => (name.endsWith('/computer') || selector !== 'latest' ? undefined : '2.5.0'),
     execute: (script, args) => calls.push([/publish-(.+)-if-changed/.exec(script)[1], ...args])
   })
   assert.deepEqual(
-    calls.filter(([component]) => component === 'desktop'),
+    calls.filter(([component]) => component === 'computer'),
     [
-      ['desktop', '', '2.6.0', 'prepare'],
-      ['desktop', '', 'latest', 'publish']
+      ['computer', '', '2.6.0', 'prepare'],
+      ['computer', '', 'latest', 'publish']
     ]
   )
 })

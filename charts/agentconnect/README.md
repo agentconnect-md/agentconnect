@@ -424,17 +424,17 @@ only pool members to a desktop's bootstrap port, and turns the pool on in the me
 Control Plane. Desktops register at the public Control Plane URL, so `apiHost` or `publicUrl`
 is required.
 
-| Value                               | Default              | Meaning                                                       |
-| ----------------------------------- | -------------------- | ------------------------------------------------------------- |
-| `computerPool.warmReplicas`         | `1`                  | Prewarmed desktops, so an `ephemeral` computer starts at once |
-| `computerPool.home.size`            | `5Gi`                | A desktop's home volume, kept while it sleeps                 |
-| `computerPool.home.storageClass`    | `standard`           | Storage class of the home volume                              |
-| `computerPool.resources`            | 500m, 1Gi / 3Gi      | One desktop's requests and memory limit                       |
-| `computerPool.ephemeralIdleSeconds` | `600`                | Idle time before an `ephemeral` desktop is deleted            |
-| `computerPool.sleepIdleSeconds`     | `1800`               | Idle time before a `per-agent` or `manual` desktop sleeps     |
-| `computerPool.image` / `repository` | `<registry>/desktop` | The desktop image, tagged like the release by default         |
-| `computerPool.egressPorts`          | `[3128, 8080]`       | TCP ports besides 443 desktops may reach, for egress proxies  |
-| `computerPool.egressTo`             | public addresses     | Where `egressPorts` may lead; private ranges are excluded     |
+| Value                               | Default               | Meaning                                                       |
+| ----------------------------------- | --------------------- | ------------------------------------------------------------- |
+| `computerPool.warmReplicas`         | `1`                   | Prewarmed desktops, so an `ephemeral` computer starts at once |
+| `computerPool.home.size`            | `5Gi`                 | A desktop's home volume, kept while it sleeps                 |
+| `computerPool.home.storageClass`    | `standard`            | Storage class of the home volume                              |
+| `computerPool.resources`            | 500m, 1Gi / 3Gi       | One desktop's requests and memory limit                       |
+| `computerPool.ephemeralIdleSeconds` | `600`                 | Idle time before an `ephemeral` desktop is deleted            |
+| `computerPool.sleepIdleSeconds`     | `1800`                | Idle time before a `per-agent` or `manual` desktop sleeps     |
+| `computerPool.image` / `repository` | `<registry>/computer` | The desktop image, tagged like the release by default         |
+| `computerPool.egressPorts`          | `[3128, 8080]`        | TCP ports besides 443 desktops may reach, for egress proxies  |
+| `computerPool.egressTo`             | public addresses      | Where `egressPorts` may lead; private ranges are excluded     |
 
 A desktop pod may reach DNS, HTTPS, and the ports `egressPorts` lists on the addresses
 `egressTo` allows (public ones by default, so the browser cannot reach the cluster's own

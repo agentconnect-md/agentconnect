@@ -911,7 +911,7 @@ _, no_origin, no_origin_status = Open3.capture3(*command, '--set', 'sourceCache.
 abort('a store without publicUrl must be refused') if no_origin_status.success? || !no_origin.include?('publicUrl is required')
 
 # Managed computers (computer-use.md §15.1): off by default; on, the desktop template, warm pool, bootstrap policy and both env sides render.
-abort('the computer pool must be off by default') if documents.any? { |doc| doc.dig('metadata', 'name').to_s.include?('-desktop') }
+abort('the computer pool must be off by default') if documents.any? { |doc| doc.dig('metadata', 'name').to_s.include?('-computer') }
 _, no_cp_url, no_cp_url_status = Open3.capture3(*command, '--set', 'computerPool.enabled=true')
 abort('a computer pool without a public CP URL must be refused') if no_cp_url_status.success? || !no_cp_url.include?('apiHost or publicUrl')
 desktop_rendered, desktop_error, desktop_status = Open3.capture3(*command, '--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test')
@@ -920,7 +920,7 @@ desktop_docs = YAML.load_stream(desktop_rendered).compact
 desktop_find = lambda do |kind, name|
   desktop_docs.find { |doc| doc['kind'] == kind && doc.dig('metadata', 'name') == name } || abort("missing #{kind}/#{name}")
 end
-desktop_template = desktop_find.call('SandboxTemplate', 'example-agentconnect-desktop')
+desktop_template = desktop_find.call('SandboxTemplate', 'example-agentconnect-computer')
 desktop_pod = desktop_template.dig('spec', 'podTemplate', 'spec')
 desktop_container = desktop_pod.fetch('containers').first
 desktop_env = desktop_container.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
@@ -930,14 +930,18 @@ abort('desktops must never be handed a registration token through the template')
 abort('a desktop pod gets no Kubernetes credential') unless desktop_pod['automountServiceAccountToken'] == false
 abort('the desktop home must be the claim volume') unless desktop_template.dig('spec', 'volumeClaimTemplates', 0, 'metadata', 'name') == 'home'
 abort('the desktop warm pool must mint from the desktop template') unless
-  desktop_find.call('SandboxWarmPool', 'example-agentconnect-desktop-pool').dig('spec', 'sandboxTemplateRef', 'name') == 'example-agentconnect-desktop'
-bootstrap_policy = desktop_find.call('NetworkPolicy', 'example-agentconnect-desktop-bootstrap')
+  desktop_find.call('SandboxWarmPool', 'example-agentconnect-computer-pool').dig('spec', 'sandboxTemplateRef', 'name') == 'example-agentconnect-computer'
+bootstrap_policy = desktop_find.call('NetworkPolicy', 'example-agentconnect-computer-bootstrap')
 abort('only pool members may reach the desktop bootstrap') unless
   bootstrap_policy.dig('spec', 'ingress', 0, 'ports') == [{ 'protocol' => 'TCP', 'port' => 7690 }] &&
   bootstrap_policy.dig('spec', 'ingress', 0, 'from', 0, 'podSelector', 'matchLabels', 'app.kubernetes.io/component') == 'daemon-pool'
+# The daemon labels a claimed pod `agentconnect.md/computer=<id>`, so the policy must select on a key that label never overwrites.
+bootstrap_selector = bootstrap_policy.dig('spec', 'podSelector', 'matchLabels')
+abort("the bootstrap policy must select the template's pods: #{bootstrap_selector}") unless
+  bootstrap_selector == desktop_template.dig('spec', 'podTemplate', 'metadata', 'labels') && !bootstrap_selector.key?('agentconnect.md/computer')
 _, desktop_member = pool_member.call(desktop_docs)
 desktop_member_env = desktop_member.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
-abort('members must claim desktops against the desktop warm pool') unless desktop_member_env['AC_K8S_DESKTOP_WARM_POOL'] == 'example-agentconnect-desktop-pool'
+abort('members must claim desktops against the desktop warm pool') unless desktop_member_env['AC_K8S_COMPUTER_WARM_POOL'] == 'example-agentconnect-computer-pool'
 _, desktop_cp = control_plane_of.call(desktop_docs)
 abort('the Control Plane must run the computer pool') unless
   desktop_cp.fetch('env').any? { |item| item['name'] == 'COMPUTER_POOL_ENABLED' && item['value'] == 'true' }
@@ -968,7 +972,7 @@ turn_rendered, turn_error, turn_status = Open3.capture3(
 )
 abort("helm template (computer pool with relay TURN) failed:\n#{turn_error}") unless turn_status.success?
 turn_docs = YAML.load_stream(turn_rendered).compact
-turn_template = turn_docs.find { |doc| doc['kind'] == 'SandboxTemplate' && doc.dig('metadata', 'name') == 'example-agentconnect-desktop' }
+turn_template = turn_docs.find { |doc| doc['kind'] == 'SandboxTemplate' && doc.dig('metadata', 'name') == 'example-agentconnect-computer' }
 turn_egress = turn_template.dig('spec', 'networkPolicy', 'egress', 1, 'ports').map { |p| "#{p['protocol']}/#{p['port']}" }
 abort("unexpected desktop media egress: #{turn_egress}") unless
   turn_egress == %w[TCP/443 UDP/3478 TCP/3478 UDP/3480 TCP/3480 TCP/5349 UDP/3490 UDP/5350 TCP/5350]

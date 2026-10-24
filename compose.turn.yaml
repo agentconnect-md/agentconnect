@@ -1,5 +1,5 @@
 # Optional TURN server for the console's Computer viewer, when a browser cannot reach a desktop's UDP directly.
-# docker compose -f compose.yaml -f compose.turn.yaml up -d; guide: docs/self-host-desktop-container.md.
+# docker compose -f compose.yaml -f compose.turn.yaml up -d; guide: docs/self-host-computer-container.md.
 services:
   turn:
     image: coturn/coturn:${AGENTCONNECT_TURN_VERSION:-4.7.0}

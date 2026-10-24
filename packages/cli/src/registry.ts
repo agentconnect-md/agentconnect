@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto'
 import type { Channel } from './version-store.js'
 
 export const DAEMON_PKG = '@agentconnect.md/daemon'
-// The computer (desktop) daemon, managed by `agentconnect computer …` (computer-use.md §3.5).
-export const DESKTOP_PKG = '@agentconnect.md/desktop'
+// The computer daemon, managed by `agentconnect computer …` (computer-use.md §3.5).
+export const COMPUTER_PKG = '@agentconnect.md/computer'
 
 interface DistInfo {
   tarball: string
@@ -43,7 +43,7 @@ async function fetchPackument(pkg: string): Promise<Packument> {
   return (await res.json()) as Packument
 }
 
-export type ManagedPackage = typeof DAEMON_PKG | typeof DESKTOP_PKG
+export type ManagedPackage = typeof DAEMON_PKG | typeof COMPUTER_PKG
 
 // Resolves an explicit `--to <version>` (must exist), otherwise the channel's dist-tag (stable → `latest`, rc → `rc`).
 export async function resolveDaemonTarget(

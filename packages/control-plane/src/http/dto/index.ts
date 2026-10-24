@@ -4789,8 +4789,8 @@ export const ComputerRegistrationDto = z.object({
   expiresAt: z.string(),
   /** Where the desktop daemon exchanges the token for its Computer key. */
   exchangeUrl: z.string(),
-  /** The desktop image reference for a Docker Computer, at the version this CP runs. */
-  desktopImage: z.string(),
+  /** The computer image reference for a Docker Computer, at the version this CP runs. */
+  computerImage: z.string(),
   /** The npm channel of this CP's release, which the console's CLI command pins (`latest` for stable, `rc` otherwise). */
   cliChannel: z.enum(['stable', 'rc'])
 })

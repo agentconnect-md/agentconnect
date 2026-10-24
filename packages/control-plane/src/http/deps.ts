@@ -157,8 +157,8 @@ export interface HttpServerConfig extends HumanAuthConfig {
   /** npm dist-tag (or version) the onboarding command pins for `npx`, e.g. `rc`
    *  on the test CP ⇒ `npx @agentconnect.md/daemon@rc …`. Unset ⇒ `@latest`. */
   DAEMON_DIST_TAG?: string
-  /** The desktop image the console's Docker command runs; unset ⇒ GHCR's image at this CP's release. */
-  COMPUTER_DESKTOP_IMAGE?: string
+  /** The computer image the console's Docker command runs; unset ⇒ GHCR's image at this CP's release. */
+  COMPUTER_IMAGE?: string
   /** Daemon WebSocket path (mirrors `AppConfig.WS_PATH`); default `/daemon/ws`. */
   WS_PATH?: string
   /** Console origin the github setup callback 302s back to (resolveWebAppUrl input). */

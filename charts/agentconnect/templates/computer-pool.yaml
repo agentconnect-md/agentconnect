@@ -6,11 +6,11 @@
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
-  name: {{ include "agentconnect.desktopTemplateName" . }}
+  name: {{ include "agentconnect.computerTemplateName" . }}
   namespace: {{ $sandboxNamespace }}
   labels:
     {{- include "agentconnect.labels" . | nindent 4 }}
-    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "desktop") | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "computer") | nindent 4 }}
 spec:
   networkPolicyManagement: Managed
   networkPolicy:
@@ -24,7 +24,7 @@ spec:
       - ports:
           - protocol: TCP
             port: 443
-          {{- range (include "agentconnect.desktopMediaPorts" . | fromJsonArray) }}
+          {{- range (include "agentconnect.computerMediaPorts" . | fromJsonArray) }}
           - protocol: {{ .protocol }}
             port: {{ .port }}
           {{- end }}
@@ -44,7 +44,7 @@ spec:
     metadata:
       labels:
         # From birth, so a warm spare is already inside the bootstrap ingress policy.
-        agentconnect.md/desktop: 'true'
+        agentconnect.md/computer-pod: 'true'
     spec:
       automountServiceAccountToken: false
       {{- with $pool.imagePullSecrets }}
@@ -67,8 +67,8 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-        - name: desktop
-          image: {{ include "agentconnect.desktopImage" . | quote }}
+        - name: computer
+          image: {{ include "agentconnect.computerImage" . | quote }}
           env:
             - name: AGENTCONNECT_CP_URL
               value: {{ include "agentconnect.publicCpUrl" . | quote }}
@@ -93,7 +93,7 @@ spec:
             {{- toYaml $pool.resources | nindent 12 }}
           volumeMounts:
             - name: home
-              mountPath: /home/desktop
+              mountPath: /home/computer
             - name: shm
               mountPath: /dev/shm
       volumes:
@@ -116,15 +116,15 @@ spec:
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool
 metadata:
-  name: {{ include "agentconnect.desktopWarmPoolName" . }}
+  name: {{ include "agentconnect.computerWarmPoolName" . }}
   namespace: {{ $sandboxNamespace }}
   labels:
     {{- include "agentconnect.labels" . | nindent 4 }}
-    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "desktop") | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "computer") | nindent 4 }}
 spec:
   replicas: {{ $pool.warmReplicas }}
   sandboxTemplateRef:
-    name: {{ include "agentconnect.desktopTemplateName" . }}
+    name: {{ include "agentconnect.computerTemplateName" . }}
   updateStrategy:
     type: Recreate
 ---
@@ -132,14 +132,14 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "agentconnect.fullname" . }}-desktop-bootstrap
+  name: {{ include "agentconnect.fullname" . }}-computer-bootstrap
   namespace: {{ $sandboxNamespace }}
   labels:
     {{- include "agentconnect.labels" . | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
-      agentconnect.md/desktop: 'true'
+      agentconnect.md/computer-pod: 'true'
   policyTypes: ['Ingress']
   ingress:
     - from:

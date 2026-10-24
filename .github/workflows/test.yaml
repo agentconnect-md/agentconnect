@@ -40,8 +40,8 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       windows: ${{ steps.filter.outputs.windows }}
       microsandbox: ${{ steps.filter.outputs.microsandbox }}
-      desktop: ${{ steps.filter.outputs.desktop }}
-      desktopImage: ${{ steps.filter.outputs.desktopImage }}
+      computer: ${{ steps.filter.outputs.computer }}
+      computerImage: ${{ steps.filter.outputs.computerImage }}
     steps:
       # The files API instead of a checkout; release events run every leg.
       - name: Which suites can this diff reach?
@@ -50,7 +50,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          everything() { printf 'code=true\nwindows=true\nmicrosandbox=true\ndesktop=true\ndesktopImage=true\n' >> "$GITHUB_OUTPUT"; exit 0; }
+          everything() { printf 'code=true\nwindows=true\nmicrosandbox=true\ncomputer=true\ncomputerImage=true\n' >> "$GITHUB_OUTPUT"; exit 0; }
           [ "${{ github.event_name }}" = 'pull_request' ] || everything
           files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename') || exit 1
           [ -n "$files" ] || { echo 'PR file list is empty' >&2; exit 1; }
@@ -59,13 +59,13 @@ jobs:
           {
             echo "code=$(other '^docs/|\.md$')"
             # Lists what CANNOT reach the daemon/CLI closure, so a new root config, script or package stays in scope.
-            echo "windows=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability|desktop)/|charts/|docs/)|\.md$')"
+            echo "windows=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability|computer)/|charts/|docs/)|\.md$')"
             # The VM stages the built daemon shim, so its dependency and build inputs must run this leg too.
-            echo "microsandbox=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability|desktop)/|charts/|docs/)|\.md$')"
+            echo "microsandbox=$(other '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability|computer)/|charts/|docs/)|\.md$')"
             # No workspace deps, so only its own files and the root install, Node, tsconfig and reporter config reach it.
-            echo "desktop=$(any '^(packages/desktop/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.nvmrc$|tsconfig\.base\.json$|scripts/vitest-github-reporters\.ts$|\.github/workflows/test\.yaml$)')"
+            echo "computer=$(any '^(packages/computer/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.nvmrc$|tsconfig\.base\.json$|scripts/vitest-github-reporters\.ts$|\.github/workflows/test\.yaml$)')"
             # The image bundles protocol and connection from source and installs from the root manifests.
-            echo "desktopImage=$(any '^(packages/(desktop|protocol|connection)/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.pnpmfile\.mjs$|patches/|scripts/|\.dockerignore$|docker-bake\.hcl$|tsconfig\.base\.json$|\.github/workflows/test\.yaml$)')"
+            echo "computerImage=$(any '^(packages/(computer|protocol|connection)/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.pnpmfile\.mjs$|patches/|scripts/|\.dockerignore$|docker-bake\.hcl$|tsconfig\.base\.json$|\.github/workflows/test\.yaml$)')"
           } >> "$GITHUB_OUTPUT"
 
   # The static gate: lint, format, typecheck and the workspace build, in one job because they wanted
@@ -195,7 +195,7 @@ jobs:
             'web=@agentconnect.md/web' \
             'k8s-client=@agentconnect.md/k8s-client' \
             'object-store=@agentconnect.md/object-store' \
-            'desktop=@agentconnect.md/desktop'
+            'computer=@agentconnect.md/computer'
       - name: Publish unit test summary
         if: ${{ !cancelled() && !inputs.defer_summaries }}
         env:
@@ -614,11 +614,11 @@ jobs:
             echo '__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
 
-  # Desktop daemon end to end on Xvfb with the pinned Cua Driver and ffmpeg (computer-use.md §14.3).
-  desktop-xvfb:
-    name: Desktop (Xvfb)
+  # Computer daemon end to end on Xvfb with the pinned Cua Driver and ffmpeg (computer-use.md §14.3).
+  computer-xvfb:
+    name: Computer (Xvfb)
     needs: scope
-    if: ${{ needs.scope.outputs.desktop == 'true' }}
+    if: ${{ needs.scope.outputs.computer == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -634,12 +634,12 @@ jobs:
           # Its own primary key, for the reason the sandbox job gives.
           cache_dependency_path: |
             pnpm-lock.yaml
-            packages/desktop/package.json
+            packages/computer/package.json
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       - name: Install
-        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/desktop..."
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/computer..."
       # Xvfb is the display; xterm is the window the suite types into and xdotool reads X's own pointer.
       - name: Install Xvfb
         timeout-minutes: 5
@@ -655,21 +655,21 @@ jobs:
       - name: Xvfb integration suite
         env:
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-          DESKTOP_XVFB_LOG: '1'
+          COMPUTER_XVFB_LOG: '1'
         run: >
           xvfb-run --auto-servernum --server-args='-screen 0 1600x900x24 -nolisten tcp'
-          pnpm --filter @agentconnect.md/desktop test:xvfb
-      - name: Publish Desktop (Xvfb) summary
+          pnpm --filter @agentconnect.md/computer test:xvfb
+      - name: Publish Computer (Xvfb) summary
         if: ${{ !cancelled() }}
         run: |
-          summary="${{ runner.temp }}/desktop-xvfb.md"
+          summary="${{ runner.temp }}/computer-xvfb.md"
           if [ -f "$summary" ]; then cat "$summary" >> "$GITHUB_STEP_SUMMARY"; fi
 
-  # License scan of the desktop release artifacts; fails on AGPL / FSL / BSL / SSPL / GPL or an unknown license (§11).
-  desktop-licenses:
-    name: Desktop licenses
+  # License scan of the computer release artifacts; fails on AGPL / FSL / BSL / SSPL / GPL or an unknown license (§11).
+  computer-licenses:
+    name: Computer licenses
     needs: scope
-    if: ${{ needs.scope.outputs.desktop == 'true' }}
+    if: ${{ needs.scope.outputs.computer == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -685,30 +685,30 @@ jobs:
           # Its own primary key, for the reason the sandbox job gives.
           cache_dependency_path: |
             pnpm-lock.yaml
-            packages/desktop/package.json
+            packages/computer/package.json
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       - name: Install
-        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/desktop..."
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/computer..."
       # The scanner's own suite first, including a seeded AGPL dependency that must fail it.
       - name: Scanner self-test
-        run: pnpm --filter @agentconnect.md/desktop exec vitest run scripts/license-scan.test.ts
+        run: pnpm --filter @agentconnect.md/computer exec vitest run scripts/license-scan.test.ts
       - name: Build the release bundle
-        run: pnpm --filter @agentconnect.md/desktop bundle
+        run: pnpm --filter @agentconnect.md/computer bundle
       - name: Scan the release bundle
-        run: pnpm --filter @agentconnect.md/desktop license-scan
+        run: pnpm --filter @agentconnect.md/computer license-scan
       # The npm package (`agentconnect computer install`) ships its own bundle in dist/; scan exactly what publishes.
       - name: Build and scan the npm package
         run: |
-          pnpm --filter @agentconnect.md/desktop build:package
-          pnpm --filter @agentconnect.md/desktop license-scan dist
+          pnpm --filter @agentconnect.md/computer build:package
+          pnpm --filter @agentconnect.md/computer license-scan dist
 
-  # The published desktop image, built natively per arch and smoke-tested: size, health, doctor, browser, stop (§3.8).
-  desktop-image:
-    name: Desktop image (${{ matrix.arch }})
+  # The published computer image, built natively per arch and smoke-tested: size, health, doctor, browser, stop (§3.8).
+  computer-image:
+    name: Computer image (${{ matrix.arch }})
     needs: scope
-    if: ${{ needs.scope.outputs.desktopImage == 'true' }}
+    if: ${{ needs.scope.outputs.computerImage == 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -729,15 +729,15 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: packages/desktop/docker/Dockerfile
-          target: desktop
+          file: packages/computer/docker/Dockerfile
+          target: computer
           platforms: linux/${{ matrix.arch }}
           load: true
-          tags: agentconnect-desktop:ci
-          cache-from: type=gha,scope=desktop-image-${{ matrix.arch }}
-          cache-to: type=gha,scope=desktop-image-${{ matrix.arch }},mode=max
+          tags: agentconnect-computer:ci
+          cache-from: type=gha,scope=computer-image-${{ matrix.arch }}
+          cache-to: type=gha,scope=computer-image-${{ matrix.arch }},mode=max
       - name: Smoke test
-        run: packages/desktop/docker/smoke.sh agentconnect-desktop:ci
+        run: packages/computer/docker/smoke.sh agentconnect-computer:ci
 
   # The ruleset's only CI check must need every job; `always()` keeps failed needs from skipping it.
   ci-ok:
@@ -753,9 +753,9 @@ jobs:
         sandbox-microsandbox,
         daemon-store-postgres,
         integration,
-        desktop-xvfb,
-        desktop-licenses,
-        desktop-image
+        computer-xvfb,
+        computer-licenses,
+        computer-image
       ]
     if: ${{ always() }}
     runs-on: ubuntu-latest

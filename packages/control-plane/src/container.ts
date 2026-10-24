@@ -3602,7 +3602,7 @@ export function httpServerConfigFrom(
     ...(config.OPENAPI_PATH_PREFIX ? { OPENAPI_PATH_PREFIX: config.OPENAPI_PATH_PREFIX } : {}),
     ...(config.PUBLIC_MCP_URL ? { PUBLIC_MCP_URL: config.PUBLIC_MCP_URL } : {}),
     ...(config.DAEMON_DIST_TAG ? { DAEMON_DIST_TAG: config.DAEMON_DIST_TAG } : {}),
-    ...(config.COMPUTER_DESKTOP_IMAGE ? { COMPUTER_DESKTOP_IMAGE: config.COMPUTER_DESKTOP_IMAGE } : {}),
+    ...(config.COMPUTER_IMAGE ? { COMPUTER_IMAGE: config.COMPUTER_IMAGE } : {}),
     ...(config.OIDC_ISSUER ? { OIDC_ISSUER: config.OIDC_ISSUER } : {}),
     ...(config.LOGTO_MGMT_ENDPOINT ? { OIDC_UPSTREAM: config.LOGTO_MGMT_ENDPOINT } : {}),
     ...(config.OIDC_AUDIENCE ? { OIDC_AUDIENCE: config.OIDC_AUDIENCE } : {}),

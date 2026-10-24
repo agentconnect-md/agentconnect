@@ -138,7 +138,7 @@ describe('AddComputerModal', () => {
     await act(async () => button('Create command').click())
     const command = host.querySelector('[data-install-command]')!.textContent!
     expect(command).toContain("-e AGENTCONNECT_CP_URL='https://cp.example.com/v1/computers/register'")
-    expect(command).toContain("-e AGENTCONNECT_REGISTER_TOKEN='ac_secret' ghcr.io/agentconnect-md/desktop:latest")
+    expect(command).toContain("-e AGENTCONNECT_REGISTER_TOKEN='ac_secret' ghcr.io/agentconnect-md/computer:latest")
     expect(host.textContent).toContain('Run on the server')
   })
 

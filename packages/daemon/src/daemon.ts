@@ -674,7 +674,7 @@ import {
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { runtimeCredentialsConfigured } from './runtimes/runtime-credential-discovery.js'
 import { resolveK8sPlaneSettings, startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
-import { DesktopPool, desktopPoolSettings } from './k8s/desktop-pool.js'
+import { ComputerPool, computerPoolSettings } from './k8s/computer-pool.js'
 import { SandboxApi } from './k8s/sandbox-api.js'
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import type { ExecutionPlane, PlaneLaunch, PlaneScope } from './execution/plane.js'
@@ -1995,7 +1995,7 @@ export class Daemon {
   // The k8s execution plane: shim dialer + driver + workspace seam. Undefined outside --k8s.
   private k8sPlane?: K8sRuntimePlane
   /** Desktop claims for managed computers, on a member whose deployment configures a desktop warm pool. */
-  private desktopPool?: DesktopPool
+  private computerPool?: ComputerPool
   // An undefined entry awaits retry; a promise is the one takeover already in flight.
   private readonly k8sAdoptions = new Map<string, Promise<void> | undefined>()
   private microsandbox?: MicrosandboxManager
@@ -3670,17 +3670,17 @@ export class Daemon {
       // Workspace git, files, path clearing and session retirement then run where the workspace is; an agent with no bound channel answers undefined for those, yet its workspace still reads as off this disk, which decides what operations exist at all: an in-place conversion has no pod-side rollback.
       this.wirePlaneResolver(this.k8sPlane)
       this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
-      this.startDesktopPool()
+      this.startComputerPool()
     }
   }
 
   /** Managed computers (computer-use.md §15.1): a member with a desktop warm pool serves the CP's desktop claim ops. */
-  private startDesktopPool(): void {
+  private startComputerPool(): void {
     try {
-      const settings = desktopPoolSettings(process.env)
+      const settings = computerPoolSettings(process.env)
       if (!settings) return
       const namespace = resolveK8sPlaneSettings({ env: process.env }).sandboxNamespace
-      this.desktopPool = new DesktopPool({
+      this.computerPool = new ComputerPool({
         api: new SandboxApi(new K8sHttp(loadInClusterConfig()), namespace),
         settings,
         log: { info: (message) => this.log.info(message), warn: (message) => this.log.warn(message) }
@@ -8415,7 +8415,7 @@ export class Daemon {
       // A managed pool refreshes on its timer alone; only a deployment that opts in takes requests.
       ...(this.k8sProbeOnDemand ? [RUNTIME_PROBE_FEATURE] : []),
       // Only a member with a desktop warm pool creates desktop claims for managed computers.
-      ...(this.desktopPool ? [COMPUTER_POOL_MEMBER_FEATURE] : []),
+      ...(this.computerPool ? [COMPUTER_POOL_MEMBER_FEATURE] : []),
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
@@ -27528,7 +27528,7 @@ export class Daemon {
       agents: () => this.agents,
       workspaces: () => this.workspaces,
       k8sPlane: () => this.k8sPlane,
-      desktopPool: () => this.desktopPool,
+      computerPool: () => this.computerPool,
       // Before the start-up probe is scheduled a request has nothing to add: that probe is about to run.
       runtimeProbeRequest: () => (this.k8sProbeOnDemand ? () => this.k8sProbeSchedule?.request() : undefined),
       workspaceFilesFor: (id, scope) => this.workspaceFilesFor(id, scope),
