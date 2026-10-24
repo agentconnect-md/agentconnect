@@ -105,9 +105,12 @@ carried, which the daemon records per conversation; proactive sends need that
 recorded reference, since Teams offers no lookup by email or user principal
 name. The `serviceUrl` is regional and tenant-specific
 (`https://smba.trafficmanager.net/<region>/<tenantId>/`), so it is read, never
-built (**measured**). A proactive 1:1 with someone who has not installed the
-app in personal scope fails with 403 `BadArgument`, "Bot is not installed in
-user's personal scope" (**measured**).
+built (**measured**). A proactive 1:1 is opened by `POST v3/conversations`
+naming the person by the `29:` ID their roster entry carries; that works for a
+member of a team the app is installed in even if they never installed it
+themselves. Named by their Entra object ID instead, the same person is refused
+with 403 `BadArgument`, "Bot is not installed in user's personal scope"
+(**measured**, both).
 
 ## 4. Behavior and invariants
 
@@ -273,6 +276,19 @@ the agent's chat level. With sync on, a click settles an approval only when the
 clicker is linked to an editor of the agent (§4.5); an unlinked clicker or a
 non-editor is refused privately and the card stays live. The module's
 `chatMemberKey` is the clicker's `aadObjectId`, lower-cased.
+
+In an external place (§4.6) no approval card goes into the conversation, as on
+Slack ([assistant mode](assistant-mode.md) §5.5): a neutral notice does, and
+the card goes to the asker's own 1:1 chat when they are a full member of the
+home tenant. The connection opens that chat (`openDirectMessage`) by the
+asker's `29:` ID, read from a conversation the bot shares with them. Only the
+asker may answer that card, judged as the asker of the external place, so an
+approval switched off there or a conversation closed since refuses them too.
+An asker who is not a full member, or whose chat cannot be opened, leaves the
+notice and the console; an agent with a Slack integration also gets Slack's
+editor DM. The card is the module's `ApprovalCardFacet` card, posted through
+core's platform-neutral asker path, which any platform whose connection offers
+`isFullMember` and `openDirectMessage` shares; Slack keeps its own DM card.
 
 ### 4.5 Sign-in, linking, and session access sync
 

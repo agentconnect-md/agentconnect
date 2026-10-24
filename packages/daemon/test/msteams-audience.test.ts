@@ -4,6 +4,7 @@ import { Daemon } from '../src/daemon.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import {
   msTeamsConversationMemberUrl,
+  msTeamsConversationsUrl,
   msTeamsPagedMembersUrl,
   msTeamsTeamChannelsUrl,
   msTeamsTeamUrl,
@@ -39,15 +40,15 @@ const people: Record<string, Record<string, string>> = {
   [OUTSIDER]: { id: '29:outsider', aadObjectId: OUTSIDER, name: 'Outsider', userRole: 'user', tenantId: OTHER }
 }
 
-type Answer = (url: string) => Response | undefined
+type Answer = (url: string, init?: RequestInit) => Response | undefined
 
 function connection(answer: Answer = () => undefined) {
   const reads: string[] = []
-  const fetchImpl = (async (input: unknown) => {
+  const fetchImpl = (async (input: unknown, init?: RequestInit) => {
     const url = String(input)
     if (url === msTeamsTokenEndpoint(HOME)) return Response.json({ access_token: 'tok', expires_in: 3600 })
     reads.push(url)
-    const own = answer(url)
+    const own = answer(url, init)
     if (own) return own
     if (url === msTeamsTeamChannelsUrl(SERVICE_URL, TEAM))
       return Response.json({
@@ -270,6 +271,32 @@ describe('Teams audience', () => {
     expect(detected).toHaveBeenCalledExactlyOnceWith([integrationId], CHAT, 'externalMember')
     const other = '88888888-8888-4888-8888-888888888888'
     expect(await daemon.handleRelayPlatformAction(relayed(other))).toMatchObject({ accepted: false })
+  })
+})
+
+describe('a Teams 1:1 chat the bot opens', () => {
+  it('addresses the person by the roster ID a conversation they share answers, and can write into it', async () => {
+    const opened: unknown[] = []
+    const { conn } = connection((url, init) => {
+      if (url !== msTeamsConversationsUrl(SERVICE_URL)) return undefined
+      opened.push(JSON.parse(String(init?.body)))
+      return Response.json({ id: 'a:example-alice-chat' }, { status: 201 })
+    })
+    await expect(conn.openDirectMessage(ALICE)).rejects.toThrow()
+    conn.noteMessage(post(STANDARD))
+    expect(await conn.openDirectMessage(ALICE)).toBe('a:example-alice-chat')
+    expect(opened).toEqual([
+      expect.objectContaining({
+        isGroup: false,
+        bot: { id: `28:${APP}` },
+        members: [{ id: '29:alice' }],
+        tenantId: HOME
+      })
+    ])
+    expect(conn.targetFor('a:example-alice-chat')).toEqual({
+      serviceUrl: SERVICE_URL,
+      conversationId: 'a:example-alice-chat'
+    })
   })
 })
 
