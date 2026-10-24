@@ -6540,6 +6540,21 @@
     "empty": {
       "description": "Add a computer to let agents take screenshots, click and type on a desktop you choose. You stay in control: you grant agents, approve risky actions and can stop it at any time."
     },
+    "poolEntry": {
+      "managedTitle": "AgentConnect Computers",
+      "clusterTitle": "Computer pool",
+      "meta": "{running} running · {asleep} asleep",
+      "none": "No managed computers yet",
+      "countLabel": "managed computers",
+      "available": "Available",
+      "unavailable": "Unavailable"
+    },
+    "poolPage": {
+      "description": "Desktops started for your agents in this deployment's cluster. Each sleeps when idle and wakes on the next use.",
+      "add": "Add managed computer",
+      "empty": "No managed computers yet. Add one here, or set Managed computer on an agent's Tools tab to have one made for it.",
+      "notFound": "This deployment runs no managed computers"
+    },
     "never": "never",
     "you": "You",
     "unknownMember": "a former member",

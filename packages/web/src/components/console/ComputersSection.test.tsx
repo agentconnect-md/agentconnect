@@ -8,6 +8,8 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const mocks = vi.hoisted(() => ({
   computers: undefined as unknown,
+  pool: { enabled: false, available: false },
+  flags: new Set<string>(),
   openModal: vi.fn(),
   push: vi.fn()
 }))
@@ -27,8 +29,11 @@ vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openMo
 vi.mock('@/lib/computers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/computers')>()),
   useComputers: () => ({ data: mocks.computers, error: undefined, isLoading: mocks.computers === undefined }),
-  useComputerPool: () => ({ data: { enabled: true, available: true } }),
-  useComputerEgress: () => ({ data: null, mutate: vi.fn() })
+  useComputerPool: () => ({ data: mocks.pool })
+}))
+vi.mock('@/lib/feature-flags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/feature-flags')>()),
+  featureFlagEnabled: (id: string) => mocks.flags.has(id)
 }))
 
 const { ComputersSection } = await import('./ComputersSection')
@@ -46,6 +51,8 @@ function render(): HTMLDivElement {
 
 beforeEach(() => {
   mocks.computers = []
+  mocks.pool = { enabled: false, available: false }
+  mocks.flags = new Set()
   mocks.openModal.mockClear()
   mocks.push.mockClear()
   document.body.innerHTML = ''
@@ -101,37 +108,37 @@ describe('ComputersSection', () => {
     expect(el.textContent).toContain('Desktops your agents can see and operate')
   })
 
-  it('marks pool computers and names who has control and how many wait', () => {
+  it('shows the managed pool as one entry, named for a self-hosted cluster, and lists only self-hosted computers', () => {
+    mocks.pool = { enabled: true, available: true }
     mocks.computers = [
-      computer({
-        id: 'p1',
-        name: 'Shared browser',
-        kind: 'managed',
-        allocation: 'manual',
-        poolPhase: 'awake',
-        agentAccess: { mode: 'selected', agents: ['a1'] },
-        lease: { sessionId: 's1', agentId: 'a1', agentName: 'ops', acquiredAt: new Date().toISOString() },
-        waiting: [{ sessionId: 's2', agentId: 'a9', since: new Date().toISOString() }]
-      }),
-      computer({
-        id: 'p2',
-        name: 'ops desktop',
-        kind: 'managed',
-        allocation: 'per-agent',
-        ownerAgentId: 'a1',
-        status: 'sleeping',
-        poolPhase: 'sleeping'
-      }),
-      computer({ id: 'p3', name: 'starting', kind: 'managed', allocation: 'manual', poolPhase: 'resetting' })
+      computer(),
+      computer({ id: 'p1', name: 'Shared browser', kind: 'managed', allocation: 'manual' }),
+      computer({ id: 'p2', name: 'ops desktop', kind: 'managed', allocation: 'per-agent', status: 'sleeping' })
     ]
     const el = render()
-    const shared = el.querySelector('[data-computer-row="p1"]')!
-    expect(shared.textContent).toContain('Pool')
-    expect(shared.querySelector('[data-lease-holder="a1"]')!.textContent).toBe('In use by Ops bot · 1 waiting')
-    const own = el.querySelector('[data-computer-row="p2"]')!
-    expect(own.textContent).toContain('Asleep')
-    expect(own.textContent).toContain("Agent's own")
-    expect(own.textContent).toContain('for Ops bot')
-    expect(el.querySelector('[data-computer-row="p3"]')!.textContent).toContain('Resetting')
+    const entry = el.querySelector('[data-computer-pool]')!
+    expect(entry.textContent).toContain('Computer pool')
+    expect(entry.textContent).toContain('1 running · 1 asleep')
+    expect(entry.textContent).toContain('Available')
+    expect(el.querySelector('[data-computer-row="c1"]')).not.toBeNull()
+    expect(el.querySelector('[data-computer-row="p1"]')).toBeNull()
+    act(() => (entry as HTMLElement).click())
+    expect(mocks.push).toHaveBeenCalledWith('/acme/computers/pool')
+  })
+
+  it('names the pool AgentConnect Computers on the managed install, and shows it before the first managed computer', () => {
+    mocks.flags = new Set(['managed'])
+    mocks.pool = { enabled: true, available: false }
+    const el = render()
+    const entry = el.querySelector('[data-computer-pool]')!
+    expect(entry.textContent).toContain('AgentConnect Computers')
+    expect(entry.textContent).toContain('No managed computers yet')
+    expect(entry.textContent).toContain('Unavailable')
+    expect(el.textContent).not.toContain('Add a computer to let agents')
+  })
+
+  it('keeps the entry while managed computers remain on a deployment that turned the pool off', () => {
+    mocks.computers = [computer({ id: 'p1', kind: 'managed', allocation: 'manual' })]
+    expect(render().querySelector('[data-computer-pool]')).not.toBeNull()
   })
 })

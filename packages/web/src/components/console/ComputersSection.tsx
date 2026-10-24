@@ -5,7 +5,8 @@ import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import type { ComputerDto } from '@/lib/api'
-import { agentLabel } from '@/lib/data'
+import { agentLabel, status } from '@/lib/data'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useConsoleData } from '@/lib/data-context'
 import {
   agentAccessOf,
@@ -18,12 +19,11 @@ import {
 } from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
 import { useModal } from '@/components/console/ModalProvider'
-import { LoadingState } from '@/components/marks'
+import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { SectionHeader } from '@/components/console/SectionHeader'
 import { FLEET_GRID, FLEET_ROW } from '@/components/console/fleet-grid'
 import { useAgentName } from '@/components/console/ComputerPoolCards'
-import { ComputerEgressCard } from '@/components/console/ComputerPlanCards'
 
 export function ComputersSection() {
   const t = useTranslations('Computers')
@@ -31,6 +31,11 @@ export function ComputersSection() {
   const { data: pool } = useComputerPool()
   const { openModal } = useModal()
   const computers = useMemo(() => data ?? [], [data])
+  // Managed computers are one pool entry, like the daemon pool; self-hosted ones are listed each.
+  const managed = useMemo(() => computers.filter((c) => c.kind === 'managed'), [computers])
+  const own = useMemo(() => computers.filter((c) => c.kind !== 'managed'), [computers])
+  // Kept while managed computers remain, so a deployment that turned the pool off still reaches them.
+  const showPool = pool?.enabled === true || managed.length > 0
 
   return (
     <>
@@ -61,28 +66,99 @@ export function ComputersSection() {
       )}
       {isLoading && computers.length === 0 ? (
         <LoadingState padding={24} />
-      ) : computers.length === 0 ? (
+      ) : own.length === 0 && !showPool ? (
         <div className="card px-4 py-[18px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
           {t('empty.description')}
         </div>
       ) : (
         <div className={FLEET_GRID}>
-          {computers.map((c) => (
+          {showPool && <ComputerPoolEntry managed={managed} available={pool?.available === true} />}
+          {own.map((c) => (
             <ComputerRow key={c.id} computer={c} />
           ))}
-        </div>
-      )}
-      {/* Egress applies to every managed computer the organization adds, so it shows before the first one too. */}
-      {pool?.enabled && (
-        <div className="mt-[14px] grid grid-cols-1 items-start gap-[14px] desktop:grid-cols-2">
-          <ComputerEgressCard />
         </div>
       )}
     </>
   )
 }
 
-function ComputerRow({ computer }: { computer: ComputerDto }) {
+/** What the managed pool is called: AgentConnect's product on the managed install, the operator's cluster elsewhere. */
+export function useComputerPoolTitle(): string {
+  const t = useTranslations('Computers.poolEntry')
+  return featureFlagEnabled('managed') ? t('managedTitle') : t('clusterTitle')
+}
+
+/** Running and asleep managed computers; one starting, failed or being removed is in neither. */
+export function poolCounts(managed: ComputerDto[]): { running: number; asleep: number } {
+  const asleep = managed.filter((c) => c.status === 'sleeping').length
+  const running = managed.filter((c) => c.status !== 'sleeping' && c.status !== 'offline' && c.status !== 'revoked')
+  return { running: running.length, asleep }
+}
+
+/** The managed pool as one entry, drawn like the daemon pool's card; its computers are listed on its own page. */
+function ComputerPoolEntry({ managed, available }: { managed: ComputerDto[]; available: boolean }) {
+  const t = useTranslations('Computers.poolEntry')
+  const router = useRouter()
+  const { orgPath } = useOrgs()
+  const title = useComputerPoolTitle()
+  const managedInstall = featureFlagEnabled('managed')
+  const s = status(available ? 'online' : 'offline')
+  const { running, asleep } = poolCounts(managed)
+  const meta = managed.length === 0 ? t('none') : t('meta', { running, asleep })
+  const statusLabel = available ? t('available') : t('unavailable')
+  const open = () => router.push(orgPath('/computers/pool'))
+  return (
+    <div
+      role="link"
+      tabIndex={0}
+      data-computer-pool
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') open()
+      }}
+      className={`card click flex cursor-pointer items-center gap-3 p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[13px] ${FLEET_ROW}`}
+    >
+      <span
+        className={`relative flex h-10 w-10 flex-none items-center justify-center rounded-md desktop:h-[38px] desktop:w-[38px] desktop:rounded-[9px] ${
+          managedInstall ? 'bg-(--brand-soft)' : 'border border-(--border-subtle) bg-(--surface-sunken)'
+        }`}
+      >
+        {managedInstall ? (
+          <Icon name="cloud" size={19} color={available ? 'var(--brand)' : 'var(--text-tertiary)'} />
+        ) : (
+          <span className="flex h-[19px] w-[19px]">
+            <KubernetesMark />
+          </span>
+        )}
+        <span
+          className="absolute -right-[3px] -bottom-[3px] h-3 w-3 rounded-full border-2 border-(--surface-card)"
+          style={{ background: s.dot }}
+        />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-sans text-[14px] font-semibold leading-normal desktop:text-[13.5px]">{title}</div>
+        <div className="mt-[2px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11px]">
+          {meta}
+        </div>
+      </div>
+      <div className="hidden flex-none text-right desktop:block">
+        <div className="mono text-[14px] leading-normal font-semibold">{managed.length}</div>
+        <div className="font-sans text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
+          {t('countLabel')}
+        </div>
+      </div>
+      <span
+        className="badge flex-none max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]"
+        style={{ background: s.bg, color: s.text }}
+      >
+        {statusLabel}
+      </span>
+      <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
+    </div>
+  )
+}
+
+export function ComputerRow({ computer }: { computer: ComputerDto }) {
   const t = useTranslations('Computers')
   const ago = useAgo()
   const router = useRouter()

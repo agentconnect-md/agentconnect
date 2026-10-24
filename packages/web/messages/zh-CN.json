@@ -6540,6 +6540,21 @@
     "empty": {
       "description": "添加一台电脑后，Agent 可以在你选择的桌面上截图、点击和输入。控制权始终在你手中：由你授权 Agent、批准高风险操作，并可随时停止。"
     },
+    "poolEntry": {
+      "managedTitle": "AgentConnect Computers",
+      "clusterTitle": "电脑池",
+      "meta": "{running} 台运行中 · {asleep} 台休眠",
+      "none": "还没有托管电脑",
+      "countLabel": "台托管电脑",
+      "available": "可用",
+      "unavailable": "不可用"
+    },
+    "poolPage": {
+      "description": "在本部署的集群中为 Agent 启动的桌面。空闲时休眠，下次使用时唤醒。",
+      "add": "添加托管电脑",
+      "empty": "还没有托管电脑。可以在这里添加，或在 Agent 的工具页设置「托管计算机」，让系统为它创建一台。",
+      "notFound": "本部署没有运行托管电脑"
+    },
     "never": "从未",
     "you": "你",
     "unknownMember": "已离开的成员",
