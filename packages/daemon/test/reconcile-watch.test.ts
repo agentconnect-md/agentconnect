@@ -108,7 +108,7 @@ describe('Daemon agent config watcher', () => {
     const watcher = (daemon as any).watcher
     const errors: NodeJS.ErrnoException[] = []
     watcher.on('error', (err: NodeJS.ErrnoException) => errors.push(err))
-    if (!watcher._readyEmitted) {
+    if (!watcher.readyEmitted) {
       await new Promise<void>((resolve) => watcher.once('ready', resolve))
     }
 

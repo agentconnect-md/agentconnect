@@ -67,7 +67,7 @@
     "@slack/web-api": "^8.2.0",
     "@tencent-connect/qqbot-nodejs": "1.0.5",
     "cborg": "^6.1.4",
-    "chokidar": "^5.0.0",
+    "chokidar": "^6.0.0",
     "commander": "^15.0.0",
     "croner": "^10.0.1",
     "discord.js": "^14.27.0",
