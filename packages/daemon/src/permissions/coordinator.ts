@@ -413,6 +413,8 @@ export interface PermissionSurfaceHost {
   assistantApprover?(agentId: string, requestId: string): Promise<SubsessionApprover | undefined>
   /** The person whose message started the turn, in their own DM, when they are an internal member (§5.5). */
   externalAskerDm?(p: Pending): Promise<AskerApprover | undefined>
+  /** That asker's DM on a platform whose connection opens one, for a card through its facet; undefined where none reaches them. */
+  askerDirectMessage?(p: Pending): Promise<{ integrationId: string; userId: string; channel: string } | undefined>
   /** A join card a restart left pending was rewritten as expired: its session hears that the call did nothing. */
   joinCardExpired?(agentId: string, acpSessionId: string, ask: StoredJoinAsk): void
   /** One person behind a turn in their own direct message, routed as drafts route an approver; undefined when no card reaches them. */
@@ -462,6 +464,8 @@ interface ChatPermissionCard extends ApprovalCardHandle {
   stored?: { agentId: string; requestId: string }
   /** Posted outside the turn's own conversation through this integration, which its relayed click names. */
   routedVia?: string
+  /** Posted in this asker's own DM for an external place: only they answer, judged as the asker of `place` (§5.5). */
+  askerId?: string
   /** How the card must read once its post returns, when its request settled first. */
   settledFirst?: ApprovalCardDraft
 }
@@ -1549,7 +1553,7 @@ export class PermissionCoordinator {
         // An asker's DM that did not land leaves the request to the editor path.
         const rec = this.pendingApprovals.get(requestId)
         if (!rec || rec.notify) return
-      }
+      } else if (askerFirst && (await this.sendAskerCard(requestId, agentId, p).catch(() => false))) return
       await this.sendApprovalDm(requestId, agentId, p, requesterName)
     })().catch((err) => {
       this.host.log().warn(`approval DM for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
@@ -1640,6 +1644,55 @@ export class PermissionCoordinator {
       ...(approver?.asker ? { asker: approver.asker } : {}),
       ...(beside ? { beside: true as const } : {})
     }
+  }
+
+  /** The asker's card in their own DM through their platform's facet, where no Slack DM card reaches them (§5.5); true once it is live. */
+  private async sendAskerCard(requestId: string, agentId: string, p: Pending): Promise<boolean> {
+    const rec = this.pendingApprovals.get(requestId)
+    if (rec?.kind !== 'permission' || rec.chat || rec.notify) return false
+    const dm = await this.host.askerDirectMessage?.(p).catch(() => undefined)
+    const cards = dm ? this.host.chatCardsAt(dm.integrationId) : undefined
+    if (!dm || !cards || rec.params.options.length > cards.facet.maxOptions) return false
+    const { facet, conn } = cards
+    const draft = facet.build(
+      {
+        requestId,
+        params: rec.params,
+        sessionTarget: this.host.slackDmSessionTarget(p, dm.integrationId),
+        via: { agentId, integrationId: dm.integrationId }
+      },
+      conn
+    )
+    const where: ApprovalCardPlace = { channel: dm.channel }
+    const landed: ApprovalCardHandle = { conn, ...where, channel: facet.cardChannel?.(where) ?? dm.channel }
+    const ts = draft
+      ? await facet.post(conn, where, draft, p).catch((err: unknown) => {
+          this.host.log().warn(`asker approval card for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
+          return undefined
+        })
+      : undefined
+    if (!ts) return false
+    // Kept on the row as well, so the sweep after a restart retires a card no resolver answers any more.
+    const store = this.host.store()
+    const stored = await store.setPermissionRequestNotify(agentId, requestId, dm.integrationId, landed.channel, ts)
+    if (!stored || this.pendingApprovals.get(requestId) !== rec) {
+      facet.rewrite(
+        { ...landed, ts },
+        facet.settled({ params: rec.params, text: 'Already decided', fallback: 'Permission resolved' })
+      )
+      if (stored) void store.clearPermissionRequestNotify(agentId, requestId).catch(() => {})
+      return true
+    }
+    rec.chat = {
+      facet,
+      ...landed,
+      ts,
+      place: { integrationId: p.plan.integrationId, channel: p.plan.channel },
+      routedVia: dm.integrationId,
+      askerId: dm.userId,
+      stored: { agentId, requestId }
+    }
+    return true
   }
 
   /** Drop a DM card's stored handle once it says how its request ended; a DM beside a card keeps its own. */
@@ -2304,8 +2357,13 @@ export class PermissionCoordinator {
       await this.settle(input.requestId, rec, picked, answered.by, 'chat', input.actor, answered.asker)
       return
     }
-    // The level was lowered, the conversation closed, or only editors may answer here and this person is not one.
-    const verdict = await this.chatAnswerVerdict(rec.agentId, chat.place, input.actor)
+    // The level was lowered, the conversation closed, or only editors may answer here and this person is not one; an asker's card answers to them alone.
+    const verdict =
+      chat.askerId === undefined
+        ? await this.chatAnswerVerdict(rec.agentId, chat.place, input.actor)
+        : input.actor?.userId === chat.askerId
+          ? await this.chatAnswerVerdict(rec.agentId, chat.place, input.actor, true)
+          : 'closed'
     if (verdict !== 'allowed') {
       // Refused, so it decided nothing — recorded as an attempt, never as the decision.
       this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, input.actor)

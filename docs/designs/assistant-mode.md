@@ -606,7 +606,9 @@ member (below).
 - A draft is an approval record (§5.10) whose action is "post this text to this place"; the
   daemon executes it itself, with no task. It expires after 24 hours.
 - Any card that would land in an external place (a runtime permission request, a `propose`) goes
-  to the same DM instead: a card is output too.
+  to the same DM instead: a card is output too. On a platform without Slack's DM card, a runtime
+  permission request reaches the asker through the platform's own approval card in their 1:1 chat,
+  where its connection can tell a full member and open that chat (Teams, §4.4 of its design).
 
 **Posts from another place into an external one:**
 

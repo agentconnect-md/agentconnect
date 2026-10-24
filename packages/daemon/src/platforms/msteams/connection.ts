@@ -552,6 +552,29 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     return fullMember(await this.standingOf(user), this.tenantId)
   }
 
+  /** The bot's 1:1 chat with a person it shares a conversation with, opened by the `29:` ID their roster entry carries (§4.4); it becomes a known chat, so a card posts into it. */
+  async openDirectMessage(user: string): Promise<string> {
+    const seen = this.seenIn(user)
+    const member = seen ? await this.api.conversationMember(seen.known.serviceUrl, seen.channel, user) : undefined
+    if (!seen || !member?.id.startsWith('29:'))
+      throw new MsTeamsApiError('msteams: no conversation this bot shares with the person names them', 'not_found')
+    this.noteStanding(member)
+    const { serviceUrl } = seen.known
+    const chat = await this.api.openDirectConversation(serviceUrl, member.id, this.tenantId, this.botUserId)
+    const name = member.name ?? this.names.get(user)
+    remember(this.conversations, chat, { serviceUrl, kind: 'personal', ...(name ? { name } : {}) }, CONVERSATIONS_MAX)
+    return chat
+  }
+
+  // The first conversation the person was seen in that the bot can still write to.
+  private seenIn(user: string): { channel: string; known: KnownConversation } | undefined {
+    for (const [channel, seen] of this.members) {
+      const known = seen.has(user) ? this.conversations.get(channel) : undefined
+      if (known) return { channel, known }
+    }
+    return undefined
+  }
+
   // A person's standing within the TTL, else looked up in a conversation they were seen in; rejects when none can tell.
   private async standingOf(user: string): Promise<MsTeamsMember> {
     const hit = this.standings.get(user)

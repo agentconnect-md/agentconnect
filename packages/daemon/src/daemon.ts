@@ -526,6 +526,7 @@ import type {
   InteractionActor,
   MemberJoin,
   PlatformChannelInfo,
+  PlatformConnection as ContractConnection,
   RelayCardClicks
 } from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
@@ -15948,6 +15949,19 @@ export class Daemon {
         if (p.webchat || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id || !p.plan.integrationId)
           return undefined
         return await this.drafts.askerApprover({ integrationId: p.plan.integrationId, userId: msg.sender.id })
+      },
+      askerDirectMessage: async (p) => {
+        const msg = p.entry.msg
+        const integrationId = p.plan.integrationId
+        if (p.webchat || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id || !integrationId) return undefined
+        // A platform with draft cards reaches its asker through `externalAskerDm` and the DM card above.
+        if (this.draftCardPort(integrationId)) return undefined
+        const conn = this.anyConnForIntegration(integrationId) as Partial<ContractConnection> | undefined
+        if (!conn?.isFullMember || !conn.openDirectMessage) return undefined
+        // Only an internal member answers for an external place, as Slack's asker DM requires (assistant-mode.md §5.5).
+        if (!(await conn.isFullMember(msg.sender.id).catch(() => false))) return undefined
+        const channel = await conn.openDirectMessage(msg.sender.id).catch(() => undefined)
+        return channel ? { integrationId, userId: msg.sender.id, channel } : undefined
       }
     }
   }

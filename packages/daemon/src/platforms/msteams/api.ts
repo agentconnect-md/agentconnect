@@ -146,6 +146,11 @@ function serviceBase(serviceUrl: string): URL {
   return base
 }
 
+/** The URL that opens a conversation, a 1:1 chat with one member included. */
+export function msTeamsConversationsUrl(serviceUrl: string): string {
+  return new URL('v3/conversations', serviceBase(serviceUrl)).toString()
+}
+
 /** The activities URL under a recorded serviceUrl; the conversation ID is encoded because a channel's carries `;messageid=`. */
 export function msTeamsActivitiesUrl(serviceUrl: string, conversationId: string, activityId?: string): string {
   const base = serviceBase(serviceUrl)
@@ -337,6 +342,20 @@ export class MsTeamsApi {
       if (err instanceof MsTeamsApiError && err.kind === 'not_found') return undefined
       throw err
     }
+  }
+
+  /** The bot's 1:1 chat with a member by their `29:` ID, opened or found; by Entra object ID Teams refuses anyone who has not installed the app themselves (measured). */
+  async openDirectConversation(serviceUrl: string, memberId: string, tenantId: string, botId: string): Promise<string> {
+    const body = await this.request('POST', msTeamsConversationsUrl(serviceUrl), {
+      isGroup: false,
+      bot: { id: botId },
+      members: [{ id: memberId }],
+      tenantId,
+      channelData: { tenant: { id: tenantId } }
+    })
+    const id = typeof body.id === 'string' && body.id ? body.id : undefined
+    if (!id) throw new MsTeamsApiError('msteams: opening a chat answered without its conversation ID', 'ambiguous')
+    return id
   }
 
   /** Delete a posted activity; one already gone counts as deleted. */
