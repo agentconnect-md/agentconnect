@@ -69,12 +69,24 @@ export const RcGoogleChatAnchor = z.object({
 })
 export type RcGoogleChatAnchor = z.infer<typeof RcGoogleChatAnchor>
 
+// The deployment Teams app's anchor (teams-integration.md §8.4): it answers a tenant no organization connected, so it carries the app's secret.
+export const RcMsTeamsAnchor = z.object({
+  appId: z.string().uuid(),
+  /** The app's home tenant, which issues every Bot Framework token the anchor sends with. */
+  tenantId: z.string().uuid(),
+  /** Secret material, never logged. */
+  clientSecret: z.string().min(1),
+  connectUrl: z.string().url({ protocol: /^https$/ })
+})
+export type RcMsTeamsAnchor = z.infer<typeof RcMsTeamsAnchor>
+
 // C→R REP (corr = rc/auth id). Rejection is a `error` REP + close, not a reply.
 // The CP's deployment snapshot, sent on every authentication; the GitHub secret is applied once per relay process, the Google Chat anchor on every registration.
 export const RcDeploymentConfig = z.object({
   revision: z.number().int().nonnegative(),
   githubWebhookSecret: z.string().min(1).optional(),
   googleChatAnchor: RcGoogleChatAnchor.optional(),
+  msTeamsAnchor: RcMsTeamsAnchor.optional(),
   // Console links in provider-owned onboarding use the configured origin, without an organization path.
   webAppUrl: z
     .string()

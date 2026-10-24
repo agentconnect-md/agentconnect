@@ -12,7 +12,14 @@ export const MSTEAMS_CONNECT_SCOPES = [
   'openid'
 ] as const
 
+/** A Store install only proves its tenant (§8.4): the sign-in and the organization's name, no catalog or install scope. */
+export const MSTEAMS_STORE_CONNECT_SCOPES = ['https://graph.microsoft.com/User.Read', 'openid'] as const
+
 const AUTHORITY = 'https://login.microsoftonline.com/organizations/oauth2/v2.0'
+// A pinned tenant signs in at its own authority, so Entra offers only that tenant's accounts.
+const authorityOf = (tenant?: string) =>
+  tenant ? `https://login.microsoftonline.com/${tenant}/oauth2/v2.0` : AUTHORITY
+const scopesOf = (tenant?: string) => (tenant ? MSTEAMS_STORE_CONNECT_SCOPES : MSTEAMS_CONNECT_SCOPES).join(' ')
 const GRAPH = 'https://graph.microsoft.com/v1.0'
 const STATE_TTL_MS = 10 * 60_000
 const TIMEOUT_MS = 15_000
@@ -25,6 +32,8 @@ export interface MsTeamsConnectState {
   orgId: string
   agentId: string
   userId: string
+  /** The tenant a Store install's Connect card named (§8.4): the sign-in must be of it, and nothing is published. */
+  tenant?: string
 }
 
 /** Domain-separated keys from the pepper, one per purpose; the pepper itself never signs or encrypts. */
@@ -47,6 +56,7 @@ const StatePayload = z.object({
   orgId: z.string(),
   agentId: z.string(),
   userId: z.string(),
+  tenant: z.string().regex(GUID).optional(),
   e: z.number(),
   n: z.string()
 })
@@ -69,7 +79,12 @@ export function verifyMsTeamsConnectState(
     return null
   }
   if (parsed.e <= clock.now()) return null
-  return { orgId: parsed.orgId, agentId: parsed.agentId, userId: parsed.userId }
+  return {
+    orgId: parsed.orgId,
+    agentId: parsed.agentId,
+    userId: parsed.userId,
+    ...(parsed.tenant ? { tenant: parsed.tenant } : {})
+  }
 }
 
 // The PKCE verifier only the Control Plane can derive from a state it signed.
@@ -80,7 +95,7 @@ function pkceVerifier(keys: MsTeamsConnectKeys, state: string): string {
 /** Microsoft's authorize URL for the deployment app, any work or school tenant. */
 export function msTeamsAuthorizeUrl(
   keys: MsTeamsConnectKeys,
-  input: { clientId: string; redirectUri: string; state: string }
+  input: { clientId: string; redirectUri: string; state: string; tenant?: string }
 ): string {
   const challenge = createHash('sha256').update(pkceVerifier(keys, input.state)).digest('base64url')
   const params = new URLSearchParams({
@@ -88,13 +103,13 @@ export function msTeamsAuthorizeUrl(
     response_type: 'code',
     redirect_uri: input.redirectUri,
     response_mode: 'query',
-    scope: MSTEAMS_CONNECT_SCOPES.join(' '),
+    scope: scopesOf(input.tenant),
     state: input.state,
     code_challenge: challenge,
     code_challenge_method: 'S256',
     prompt: 'select_account'
   })
-  return `${AUTHORITY}/authorize?${params.toString()}`
+  return `${authorityOf(input.tenant)}/authorize?${params.toString()}`
 }
 
 /** Why a step failed, as the route reports it. */
@@ -104,7 +119,8 @@ export class MsTeamsConnectError extends Error {
       | 'MSTEAMS_CONNECT_DENIED'
       | 'MSTEAMS_CONNECT_PERSONAL_ACCOUNT'
       | 'MSTEAMS_CONNECT_NOT_ADMIN'
-      | 'MSTEAMS_CONNECT_UNAVAILABLE',
+      | 'MSTEAMS_CONNECT_UNAVAILABLE'
+      | 'MSTEAMS_TENANT_MISMATCH',
     message: string
   ) {
     super(message)
@@ -117,12 +133,12 @@ const IdClaims = z.object({ tid: z.string(), oid: z.string().optional() })
 /** The delegated token and the customer tenant, read from the ID token Entra's token endpoint answered directly. */
 export async function redeemMsTeamsCode(
   keys: MsTeamsConnectKeys,
-  input: { clientId: string; clientSecret: string; redirectUri: string; code: string; state: string },
+  input: { clientId: string; clientSecret: string; redirectUri: string; code: string; state: string; tenant?: string },
   fetchImpl: typeof fetch
 ): Promise<{ accessToken: string; tenantId: string }> {
   let response: Response
   try {
-    response = await fetchImpl(`${AUTHORITY}/token`, {
+    response = await fetchImpl(`${authorityOf(input.tenant)}/token`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -132,7 +148,7 @@ export async function redeemMsTeamsCode(
         redirect_uri: input.redirectUri,
         code: input.code,
         code_verifier: pkceVerifier(keys, input.state),
-        scope: MSTEAMS_CONNECT_SCOPES.join(' ')
+        scope: scopesOf(input.tenant)
       }).toString(),
       signal: AbortSignal.timeout(TIMEOUT_MS)
     })
@@ -155,6 +171,11 @@ export async function redeemMsTeamsCode(
     throw new MsTeamsConnectError(
       'MSTEAMS_CONNECT_PERSONAL_ACCOUNT',
       'Sign in with a work or school account that administers your Microsoft 365 organization.'
+    )
+  if (input.tenant && tenantId !== input.tenant)
+    throw new MsTeamsConnectError(
+      'MSTEAMS_TENANT_MISMATCH',
+      'Sign in with an account of the Microsoft 365 organization that added the app in Teams.'
     )
   return { accessToken: tokens.data.access_token, tenantId }
 }

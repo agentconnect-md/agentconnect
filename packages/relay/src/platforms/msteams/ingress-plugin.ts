@@ -4,6 +4,7 @@ import { msTeamsActivityTenantId, normalizeMsTeamsActivity } from '@agentconnect
 import {
   MSTEAMS_PLATFORM,
   WireMsTeamsCardActionResponse,
+  type RcDeploymentConfig,
   type RdMsgPlatformAction,
   type WireMsTeamsBotAdded,
   type WireMsTeamsCardAction,
@@ -24,6 +25,7 @@ import {
   type VerifiedMsTeamsDelivery
 } from './http-ingest.js'
 import { registerMsTeamsHttpIngress } from './http-ingress.js'
+import { MsTeamsAnchorEgress, answerMsTeamsAnchor } from './anchor.js'
 import { MsTeamsTokenVerifier, bearerToken, unverifiedAppId } from './token.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
 import type { DemuxHints, HandledDelivery, RelayIngressHost, RelayPlatformIngressPlugin } from '../contract.js'
@@ -133,8 +135,14 @@ function triggerOf(isDm: boolean, mentionedBots: readonly string[], appId: strin
   return mentionedBots.some((id) => id.toLowerCase() === `28:${appId}`) ? 'mention' : undefined
 }
 
+/** The deployment app's anchor id: not a UUID, so no CP row can ever carry it. */
+export const MSTEAMS_ANCHOR_BOT_ID = 'deployment:msteams:anchor'
+
 export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}): MsTeamsIngressPlugin {
-  const verifier = new MsTeamsTokenVerifier((input, init) => (deps.fetch ?? fetch)(input, init))
+  const fetchImpl: typeof fetch = (input, init) => (deps.fetch ?? fetch)(input, init)
+  const verifier = new MsTeamsTokenVerifier(fetchImpl)
+  // The latest snapshot's anchor, which carries the secret the anchor's ingest sends with; an assignment never does.
+  let anchor: MsTeamsAnchorEgress | undefined
   return {
     platformId: MSTEAMS_PLATFORM,
     verifier,
@@ -142,7 +150,35 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
     // `POST /msteams/messages`, the messaging endpoint the bot registration names; pinned by route-mounts.test.ts.
     installRoutes: registerMsTeamsHttpIngress,
 
+    // The anchor the CP's snapshot names (§8.4): an app-only entry that answers a tenant no customer row serves.
+    deploymentAssignments(snapshot: RcDeploymentConfig | undefined): BotAssignment[] {
+      const config = snapshot?.msTeamsAnchor
+      if (!config) {
+        anchor = undefined
+        return []
+      }
+      if (anchor) anchor.update(config)
+      else anchor = new MsTeamsAnchorEgress(config, fetchImpl)
+      return [
+        {
+          botId: MSTEAMS_ANCHOR_BOT_ID,
+          platform: MSTEAMS_PLATFORM,
+          secrets: {},
+          apiAppId: config.appId,
+          claimUrl: config.connectUrl,
+          members: [],
+          agents: [],
+          routes: []
+        }
+      ]
+    },
+
     buildIngest(a: BotAssignment, host: RelayIngressHost): MsTeamsHttpIngest | undefined {
+      if (a.botId === MSTEAMS_ANCHOR_BOT_ID) {
+        if (!anchor || !a.apiAppId) return undefined
+        verifier.log ??= host.log
+        return new MsTeamsHttpIngest(a.botId, a.apiAppId.toLowerCase(), '', verifier, undefined, anchor)
+      }
       // No Teams secret here, the signed token is the check; the tenant is the composite demux key and the strict fence.
       if (!a.apiAppId || !a.teamId || Object.keys(a.secrets).length !== 0) {
         host.log.warn(`relay-ingress(${a.botId}): incomplete Microsoft Teams assignment`)
@@ -177,6 +213,11 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
     async handle(ingest, verified, host): Promise<HandledDelivery> {
       const botId = ingest.botId
       const { activity } = verified
+      // A tenant no organization connected: the anchor answers it itself and forwards nothing (§8.4).
+      if (ingest.anchor) {
+        await answerMsTeamsAnchor(ingest.anchor, activity, msTeamsActivityTenantId(activity)?.toLowerCase(), host.log)
+        return {}
+      }
       if (activity.type === 'invoke') {
         // Every invoke is answered 200; only a card click carries a note, and an unknown invoke an empty body.
         if (activity.name !== MSTEAMS_CARD_ACTION_INVOKE) return {}

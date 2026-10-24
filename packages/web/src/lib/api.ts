@@ -5387,15 +5387,25 @@ export async function fetchMsTeamsDeploymentApp(orgId?: string): Promise<MsTeams
   return apiGet<MsTeamsDeploymentAppDto>(`${orgBase(orgId)}/integrations/msteams/app`)
 }
 /** Microsoft's sign-in page for connecting the organization's tenant to the deployment Teams app for `agentId`. */
-export async function startMsTeamsConnect(orgId: string, agentId: string): Promise<{ authorizeUrl: string }> {
-  return apiPost<{ authorizeUrl: string }>(`${orgBase(orgId)}/integrations/msteams/connect`, { agentId })
+/** Start connecting a tenant; `tenantId` pins a Teams Store install's tenant, so nothing is published or installed. */
+export async function startMsTeamsConnect(
+  orgId: string,
+  agentId: string,
+  tenantId?: string
+): Promise<{ authorizeUrl: string }> {
+  return apiPost<{ authorizeUrl: string }>(`${orgBase(orgId)}/integrations/msteams/connect`, {
+    agentId,
+    ...(tenantId ? { tenantId } : {})
+  })
 }
 export interface MsTeamsConnectResultDto {
   integrationId: string
   agentId: string
   /** `app`: updated to the published package, not installed, or not updated (the package stays pending). */
   teams: { id: string; name: string; app: 'updated' | 'none' | 'failed' }[]
-  ticket: string
+  /** Absent for a Teams Store install, which has no install step. */
+  ticket?: string
+  store: boolean
 }
 /** Redeem the code Microsoft returned: connects the tenant and answers the administrator's teams. */
 export async function finishMsTeamsConnect(

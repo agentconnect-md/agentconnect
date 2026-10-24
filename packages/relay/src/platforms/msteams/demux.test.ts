@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { RcThreadLookupOk } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
 import { RelayIngressManager, type RelayIngressManagerDeps } from '../../relay-ingress-manager.js'
-import { createMsTeamsIngressPlugin, type MsTeamsIngressPlugin } from './ingress-plugin.js'
+import { MSTEAMS_ANCHOR_BOT_ID, createMsTeamsIngressPlugin, type MsTeamsIngressPlugin } from './ingress-plugin.js'
 import type { DemuxIndex } from '../registry.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
 import { NOW, bearer, fakeBotFramework, type TokenOver } from '../../../test/fixtures/msteams-token.js'
@@ -119,6 +119,25 @@ describe('msteams demux (§3)', () => {
       await deliver(personalText, { serviceurl: 'https://smba.trafficmanager.net/emea/example/' })
     ]
     for (const result of unowned) expect(result).toEqual({ handled: undefined, by: undefined })
+  })
+
+  // teams-integration.md §8.4: the deployment app's anchor serves only a tenant no row holds.
+  it('hands a tenant no row holds to the deployment anchor, and a connected tenant to its row', async () => {
+    const { manager, deliver } = setup()
+    await manager.assign(row(ROW_A))
+    await manager.applyDeploymentSnapshot({
+      revision: 1,
+      msTeamsAnchor: {
+        appId: APP_ID,
+        tenantId: '00000000-0000-4000-8000-0000000000b1',
+        clientSecret: 'secret-example',
+        connectUrl: 'https://console.example.test/msteams/connect'
+      }
+    })
+    expect((await deliver(personalText)).by).toBe(ROW_A)
+    expect((await deliver(inTenant(personalText, OTHER_TENANT))).by).toBe(MSTEAMS_ANCHOR_BOT_ID)
+    // Another app's token never reaches the anchor.
+    expect((await deliver(inTenant(personalText, OTHER_TENANT), { aud: OTHER_APP_ID })).by).toBeUndefined()
   })
 
   it('stops serving a row once it is unassigned', async () => {

@@ -360,7 +360,7 @@ import { msTeamsRoutes } from './platforms/msteams/routes.js'
 import { msTeamsConnectRoutes } from './platforms/msteams/connect-routes.js'
 import { msTeamsConnectKeys } from './platforms/msteams/connect.js'
 import { MsTeamsCredentialReconciler } from './platforms/msteams/credential-reconciler.js'
-import { resolveMsTeamsPlatformApp } from './platforms/msteams/deployment-app.js'
+import { msTeamsConnectAnchor, resolveMsTeamsPlatformApp } from './platforms/msteams/deployment-app.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
 import { createSlackCpProvider, createSlackToolingCredentials } from './platforms/slack/provider.js'
@@ -3088,7 +3088,9 @@ export function buildContainer(
     opts.deploymentConfig,
     googleChatAnchor,
     relayPublicBase,
-    webAppUrl
+    webAppUrl,
+    // The relay answers a Teams tenant no organization connected with the deployment app's own card (teams-integration.md §8.4).
+    msTeamsConnectAnchor(msTeamsPlatformApp, webAppUrl)
   )
   const relayWsDeps: RelayWsServerDeps = {
     log: http.log,

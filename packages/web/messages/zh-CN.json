@@ -1342,6 +1342,7 @@
       "skip": "跳过",
       "doneTitle": "Teams 已连接",
       "doneBody": "在你选择的团队频道里 @ 这个 Agent，它会在那里回复。",
+      "storeDoneBody": "在 Teams 里给智能体发消息，或在添加了这个应用的频道、群聊里 @ 它，它会在那里回答。",
       "backToAgent": "返回 Agent",
       "errors": {
         "expired": "这次登录已过期。请从 Agent 的集成页面重新开始连接。",
@@ -1353,8 +1354,26 @@
         "inUse": "你的 Microsoft 365 组织已连接另一个 Agent。请先移除那个 Teams 集成。",
         "noAgent": "这个 Agent 现在无法添加 Teams 应用。",
         "unavailable": "无法连接 Microsoft，或本部署暂时不能连接 Teams。请稍后再试。",
-        "generic": "无法连接 Teams。"
+        "generic": "无法连接 Teams。",
+        "tenantMismatch": "请用在 Teams 里添加了这个应用的 Microsoft 365 组织的账号登录。"
       }
+    },
+    "msTeamsStoreConnect": {
+      "title": "连接你的 Microsoft 365 组织",
+      "description": "选择在 Teams 里回答的 AgentConnect 组织和智能体，然后用添加了这个应用的 Microsoft 365 组织的工作账号确认。",
+      "organization": "组织",
+      "agent": "智能体",
+      "noOrganizations": "先创建一个组织，然后回到这里刷新，完成 Teams 连接。",
+      "createOrganization": "创建组织",
+      "noAgents": "你在这个组织里没有可以连接的智能体。创建一个，或请组织所有者授予权限，然后刷新。",
+      "manageAgents": "管理智能体",
+      "connect": "用 Microsoft 继续",
+      "connecting": "正在打开 Microsoft…",
+      "refresh": "刷新",
+      "invalidLink": "这个连接链接无效。在 Teams 里打开应用，再选一次「Connect AgentConnect」。",
+      "storageBlocked": "请先允许本站存储浏览器数据再登录，然后刷新继续。",
+      "loadError": "无法加载连接选项。请刷新重试。",
+      "connectError": "无法开始连接 Teams，请重试。"
     }
   },
   "Home": {

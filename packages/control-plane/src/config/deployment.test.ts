@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DeploymentConfigRuntime } from '../persistence/deployment-config.js'
 import { googleChatClaimAnchor } from '../platforms/googlechat/provider.js'
+import { msTeamsConnectAnchor } from '../platforms/msteams/deployment-app.js'
 import { applyDeploymentEnvironment, relayDeploymentSnapshot } from './deployment.js'
 import { loadConfig } from './env.js'
 
@@ -227,6 +228,23 @@ describe('relayDeploymentSnapshot', () => {
       expect(relayDeploymentSnapshot(stored, missing)).toEqual({ revision: 7 })
       expect(relayDeploymentSnapshot(undefined, missing)).toBeUndefined()
     }
+  })
+
+  // teams-integration.md §8.4: the anchor carries the app's secret, so it rides only with an https Console.
+  it('carries the Teams anchor exactly when the deployment app and an https console URL are configured', () => {
+    const teams = {
+      appId: '33333333-3333-4333-8333-333333333333',
+      tenantId: '44444444-4444-4444-8444-444444444444',
+      clientSecret: 'synthetic-secret'
+    }
+    expect(
+      relayDeploymentSnapshot(undefined, undefined, undefined, undefined, msTeamsConnectAnchor(teams, consoleUrl))
+    ).toEqual({
+      revision: 0,
+      msTeamsAnchor: { ...teams, connectUrl: 'https://console.example.test/msteams/connect' }
+    })
+    expect(msTeamsConnectAnchor(teams, 'http://console.example.test')).toBeUndefined()
+    expect(msTeamsConnectAnchor(undefined, consoleUrl)).toBeUndefined()
   })
 
   it('carries the relay pool’s public origin whenever it is configured, with or without a stored document', () => {
