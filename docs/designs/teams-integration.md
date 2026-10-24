@@ -312,9 +312,18 @@ opens that chat by the `29:` ID from a conversation it shares with the editor,
 else from the roster of a team it knows, which lists every team member. Only that
 editor answers the card, rechecked by the Control Plane on each click as Slack's
 DM is; the chat approval level does not reach it. A Slack integration of the same
-agent is tried first, so an editor linked on both gets Slack's DM. Questions
-(elicitations) and the DM beside a card that only editors may answer stay
-Slack-only; on Teams they are answered in the console.
+agent is tried first, so an editor linked on both gets Slack's DM. The same card
+goes beside a card that only editors may answer (sync on, and the person who
+asked is not an editor): the routed editor gets it in their 1:1 chat while the
+conversation's card stays, and the first answer from either decides. Its handle
+is the row's `beside*` one, so the reconnect sweep retires it too.
+
+An MCP tool approval asked as a question (`elicitation/create`) takes the
+asker's and the editor's 1:1 chats as a permission request does when its one
+field reduces to choices: the card offers those choices and Deny, and a click
+settles it with the chosen value. One that reduces to no choices gets no Teams
+card on either path and is answered in the console. Other questions take
+neither path; they stay in their conversation.
 
 ### 4.5 Sign-in, linking, and session access sync
 

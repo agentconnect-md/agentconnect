@@ -101,6 +101,8 @@ async function world(
     database?: DatabaseSync
     /** Only the agent's editors may answer in chat: these members are its linked editors. */
     editors?: string[]
+    /** The editor is routed to a platform with no Slack DM, which takes their card in a 1:1 chat. */
+    cardsElsewhere?: true
   } = {}
 ) {
   const store = await LocalStore.open({
@@ -109,10 +111,12 @@ async function world(
   const clock = new FakeClock(1_000_000)
   const place = fakeSlack()
   const other = fakeSlack('D-other')
+  const cardsOnly = fakeSlack('D-cards')
+  const target = over.cardsElsewhere ? { ...EDITOR, integrationId: 'int-3' } : EDITOR
   const cp = vi.fn(async (payload: { requestId: string; verify?: unknown }) =>
     payload.verify
       ? { requestId: payload.requestId, allowed: true, displayName: 'Ada' }
-      : { requestId: payload.requestId, target: EDITOR }
+      : { requestId: payload.requestId, target }
   )
   const thread = over.thread ?? subsessionCoordinate('500.5')
   const pending = new Map<string, Pending>()
@@ -168,10 +172,12 @@ async function world(
     slackConnFor: (integrationId) => conns[integrationId] as unknown as SlackConnection | undefined,
     approvalCardFacet: () => slackApprovalCards,
     chatCardsAt: (integrationId) => {
-      const conn = conns[integrationId]
+      const conn = conns[integrationId] ?? (over.cardsElsewhere && integrationId === 'int-3' ? cardsOnly : undefined)
       return conn ? { facet: slackApprovalCards, conn } : undefined
     },
-    approvalDmIntegrations: () => ['int-1'],
+    directMessageAt: async () => 'D-cards',
+    approvalDmIntegrations: (_agentId, _preferred, cards) =>
+      cards && over.cardsElsewhere ? ['int-1', 'int-3'] : ['int-1'],
     slackDmSessionTarget: (_p, integrationId) => `target:${integrationId}`,
     subsessionApprovalRoute,
     assistantApprover,
@@ -187,7 +193,20 @@ async function world(
     await vi.waitFor(() => expect(coordinator.pendingSubsessionApprovals(AGENT)).toHaveLength(1))
     return coordinator.pendingSubsessionApprovals(AGENT)[0]!.requestId
   }
-  return { store, clock, place, other, cp, p, host, coordinator, cancelTurn, subsessionApprovalRoute, requestId }
+  return {
+    store,
+    clock,
+    place,
+    other,
+    cardsOnly,
+    cp,
+    p,
+    host,
+    coordinator,
+    cancelTurn,
+    subsessionApprovalRoute,
+    requestId
+  }
 }
 
 const blocksOf = (conn: FakeSlack, call = 0) => JSON.stringify((conn.postBlocks.mock.calls[call] as unknown[])[1])
@@ -466,6 +485,28 @@ describe('a sub-session’s permission request in the conversation it belongs to
     // The card and the DM both say how it settled.
     expect(rewritesOf(w.place, '200.1')).toHaveLength(1)
     expect(rewritesOf(w.place, '200.2')).toHaveLength(1)
+    await w.store.close()
+  })
+
+  it('where only editors may answer, sends the editor’s card beside it on a platform with no Slack DM', async () => {
+    const w = await world({ chatOn: true, editors: ['U-ed2'], cardsElsewhere: true })
+    const decided = vi.fn()
+    void w.coordinator.onAcpPermission(OWNER, ACP, params()).then(decided)
+    const id = await w.requestId()
+    await vi.waitFor(() => expect(w.cardsOnly.postBlocks).toHaveBeenCalledTimes(1))
+    expect(w.place.postBlocks).toHaveBeenCalledTimes(1)
+    expect((w.cardsOnly.postBlocks.mock.calls[0] as unknown[])[0]).toBe('D-cards')
+    // The conversation's card keeps the notify handle, the editor's the beside one, so a restart's sweep retires both.
+    expect((await rows(w.store))[0]).toMatchObject({ notifyIntegrationId: 'int-1', besideIntegrationId: 'int-3' })
+    expect(w.coordinator.dmNotifiedVia(id, AGENT, 'int-3')).toBe(true)
+
+    await w.coordinator.handlePermissionChoice({ requestId: id, optionId: 'o-allow', actor: { userId: 'U-ed' } })
+    await vi.waitFor(() =>
+      expect(decided).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'o-allow' } })
+    )
+    expect(rewritesOf(w.place, '200.1')).toHaveLength(1)
+    expect(rewritesOf(w.cardsOnly, '200.1')).toHaveLength(1)
+    await vi.waitFor(async () => expect(await w.store.takeOrphanedPermissionNotices('int-3')).toEqual([]))
     await w.store.close()
   })
 
