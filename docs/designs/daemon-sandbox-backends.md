@@ -307,7 +307,7 @@ composition point. Do not add speculative backend branches throughout ACP.
 The current microsandbox integration supports Linux with usable KVM. The startup
 probe is the cheap one of the [strategy table](#strategy-table-implemented-on-the-daemon):
 it opens `/dev/kvm` and, when the runtime store already holds the pinned
-`microsandbox@0.7.8` package, checks its msb and libkrunfw, then recovers the
+`microsandbox@0.7.10` package, checks its msb and libkrunfw, then recovers the
 state an earlier run left and collects the cached images no binding needs. It boots
 no VM; that rule is the availability probe's alone. Once it passes, a background task
 of the ready daemon, or a session that needs the image first, installs the package
