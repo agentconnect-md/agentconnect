@@ -1,10 +1,9 @@
 import { execFile } from 'node:child_process'
 import { resolve } from 'node:path'
-import { isSea } from 'node:sea'
 
 // Runs this CLI again as a child; children of the daemon share its macOS permission identity.
 export function runSelf(args: string[], timeoutMs: number): Promise<string> {
-  const argv = isSea() ? args : [process.argv[1]!, ...args]
+  const argv = [process.argv[1]!, ...args]
   return new Promise((resolve, reject) => {
     execFile(
       process.execPath,
@@ -17,7 +16,7 @@ export function runSelf(args: string[], timeoutMs: number): Promise<string> {
   })
 }
 
-// The executable is the main binary of a macOS .app bundle (the signed AgentConnect Computer.app).
+// The executable is the Node runtime inside the signed AgentConnect Computer.app, which holds the macOS grants.
 export const appBundlePath = (): string | undefined => /^(.*\.app)\/Contents\/MacOS\/[^/]+$/.exec(process.execPath)?.[1]
 
 // How the user runs this CLI: `agentconnect computer` sets AGENTCONNECT_COMPUTER_COMMAND; the standalone bin is the fallback.

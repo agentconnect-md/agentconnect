@@ -37,10 +37,14 @@ test('one release/prepare job starts npm, images, and chart in parallel and all 
   const jobs = workflows['build.yaml'].jobs
   assert.ok(jobs.prepare.steps.some((step) => step.id === 'release' && step.run === 'pnpm exec semantic-release'))
   assert.match(jobs.prepare.steps.find((step) => step.id === 'meta').if, /steps\.release\.outputs\.version != ''/)
-  for (const name of ['publish-npm', 'build-images', 'publish-chart']) {
+  for (const name of ['build-images', 'publish-chart', 'build-macos-app']) {
     assert.equal(jobs[name].needs, 'prepare')
     assert.match(jobs[name].if, /needs\.prepare\.outputs\.version != ''/)
   }
+  // npm publishes after the macOS app build, which may be switched off but must not have failed.
+  assert.deepEqual(jobs['publish-npm'].needs, ['prepare', 'build-macos-app'])
+  assert.match(jobs['publish-npm'].if, /needs\.prepare\.outputs\.version != ''/)
+  assert.match(jobs['publish-npm'].if, /needs\.build-macos-app\.result != 'failure'/)
   assert.deepEqual(jobs['notify-workflow'].needs, ['finalize', 'publish-chart', 'publish-npm'])
   assert.match(jobs['notify-workflow'].if, /needs\.publish-npm\.result == 'success'/)
   assert.equal(jobs['publish-npm'].permissions['id-token'], 'write')

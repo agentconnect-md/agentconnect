@@ -15,14 +15,17 @@ function launchctl(...args: string[]): { ok: boolean; output: string } {
   return { ok: result.status === 0, output: `${result.stdout ?? ''}${result.stderr ?? ''}`.trim() }
 }
 
-export function installService(executable: string, logPath: string): void {
-  mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true })
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+// Whether someone is logged in to this Mac's desktop: only then does the GUI launchd domain exist.
+export const guiSession = (): boolean => launchctl('print', domain()).ok
+
+// `program run` (the app's Node plus the store's stable entry); NODE_OPTIONS is cleared so `launchctl setenv` cannot inject code.
+export function servicePlist(program: string[], logPath: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key><string>${SERVICE_LABEL}</string>
-  <key>ProgramArguments</key><array><string>${xml(executable)}</string><string>run</string></array>
+  <key>ProgramArguments</key><array>${[...program, 'run'].map((arg) => `<string>${xml(arg)}</string>`).join('')}</array>
   <key>AssociatedBundleIdentifiers</key><array><string>${SERVICE_LABEL}</string></array>
   <key>LimitLoadToSessionType</key><string>Aqua</string>
   <key>ProcessType</key><string>Interactive</string>
@@ -30,16 +33,25 @@ export function installService(executable: string, logPath: string): void {
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>StandardOutPath</key><string>${xml(logPath)}</string>
   <key>StandardErrorPath</key><string>${xml(logPath)}</string>
+  <key>EnvironmentVariables</key><dict><key>NODE_OPTIONS</key><string></string></dict>
 </dict>
 </plist>
 `
+}
+
+// Returns whether the service started; without a desktop login it starts at the next one (RunAtLoad).
+export function installService(program: string[], logPath: string): boolean {
+  mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true })
   stopService()
-  writeFileSync(plistPath(), plist)
+  writeFileSync(plistPath(), servicePlist(program, logPath))
+  if (!guiSession()) return false
   startService()
+  return true
 }
 
 export function startService(): void {
   if (serviceStatus().loaded) return
+  if (!guiSession()) throw new Error("nobody is logged in to this Mac's desktop: the service starts at the next login")
   const result = launchctl('bootstrap', domain(), plistPath())
   if (!result.ok) throw new Error(`launchctl bootstrap failed: ${result.output}`)
 }

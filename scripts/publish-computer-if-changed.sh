@@ -1,11 +1,14 @@
 #!/bin/sh
-# publish-npm.mjs passes the last published npm tag, the next version or dist-tag, and prepare|publish.
+# publish-npm.mjs passes the last published npm tag, the next version or dist-tag, prepare|publish, and the app pins to prepare.
 # Unknown baseline tags rebuild; Git errors fail the job.
 set -eu
 
 LAST_TAG="${1:-}"
 VALUE="$2"
 MODE="${3:-publish}"
+# The exact macOS app versions this computer version runs in, as JSON optionalDependencies.
+APP_PINS="${4:-}"
+[ -n "$APP_PINS" ] || APP_PINS='{}'
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
 restore_manifest() {
@@ -47,6 +50,7 @@ if [ "$MODE" = prepare ]; then
   AGENTCONNECT_RELEASE_VERSION="$VALUE" pnpm run build
   pnpm run license-scan dist
   pnpm exec json -I -f package.json -e 'this.dependencies={}'
+  pnpm exec json -I -f package.json -e "this.optionalDependencies=$APP_PINS"
   exit 0
 fi
 

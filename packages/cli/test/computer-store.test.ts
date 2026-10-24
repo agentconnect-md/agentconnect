@@ -361,6 +361,28 @@ describe('realComputerOps against the installed daemon', () => {
     expect(ops('darwin', { DISPLAY: ':0' }).refreshStarts).toBe(false)
   })
 
+  it('runs macOS service commands inside the app and starts the LaunchAgent only with a desktop login', async () => {
+    const root = tmp('ac-computer-')
+    const seen: ComputerLaunch[] = []
+    const mac = (guiSession: boolean) =>
+      realComputerOps(root, {
+        run: async (launch) => (seen.push(launch), { code: 0, stdout: '' }),
+        log: () => {},
+        platform: 'darwin',
+        node: '/n',
+        appRunner: () => '/Users/ada/Applications/AgentConnect Computer.app/Contents/MacOS/agentconnect-computer',
+        guiSession
+      })
+    expect(mac(true)).toMatchObject({ serviceRunsStore: true, refreshStarts: true })
+    expect(mac(false).refreshStarts).toBe(false)
+    await mac(true).refresh('2.0.0')
+    expect(seen[0]).toEqual({
+      command: '/Users/ada/Applications/AgentConnect Computer.app/Contents/MacOS/agentconnect-computer',
+      args: [versionEntry(root, '2.0.0', 'darwin'), 'service', 'install'],
+      serviceEntry: storeEntry(root, 'darwin')
+    })
+  })
+
   it('upgrades end to end from the fake registry with the scripted daemon', async () => {
     const root = tmp('ac-computer-')
     const { ops } = scripted(root, { pids: [7], answers: ['2.6.0'] })
@@ -448,6 +470,25 @@ describe('agentconnect computer install / uninstall', () => {
       ],
       serviceEntry: storeEntry(ctx.root, 'linux')
     })
+  })
+
+  it('installs the pinned macOS app before setup and removes it on uninstall', async () => {
+    const ctx = context()
+    ctx.host.platform = 'darwin'
+    const pinned: string[] = []
+    ctx.appOps = {
+      resolve: async (name, version) => (pinned.push(`${name}@${version}`), { version, tarball: '' }),
+      download: async () => Buffer.alloc(0),
+      verifySignature: () => {},
+      log: ctx.log
+    }
+    await runComputer(['computer', 'install', '--no-setup'], 'ac', ctx)
+    // The fake registry's computer package pins no app, so the CLI says where the grants go instead.
+    expect(ctx.lines.some((line) => /pins no macOS app/.test(line))).toBe(true)
+    expect(pinned).toEqual([])
+    mkdirSync(join(ctx.host.home, 'Applications', 'AgentConnect Computer.app'), { recursive: true })
+    await uninstall(ctx, false)
+    expect(existsSync(join(ctx.host.home, 'Applications', 'AgentConnect Computer.app'))).toBe(false)
   })
 
   it('removes the service, versions and legacy bundle but keeps the key, unless purged', async () => {

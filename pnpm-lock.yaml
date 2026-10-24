@@ -171,9 +171,6 @@ importers:
       json:
         specifier: ^11.0.0
         version: 11.0.0
-      postject:
-        specifier: 1.0.0-alpha.6
-        version: 1.0.0-alpha.6
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -4981,10 +4978,6 @@ packages:
     resolution: {integrity: sha512-P0CysNDQ7rtVw4QIQtm+MRxV66vKFSvlsQvGYXZWR3qFU0jlMKHZZZgw8e+8DSah4UDKMqnknRDQz+xuQXQ/Zg==}
     engines: {node: '>= 6'}
 
-  commander@9.5.0:
-    resolution: {integrity: sha512-KRs7WVDKg86PWiuAqhDrAQnTXZKraVcCc6vFdL14qrZ/DcWwuRo7VoiYXalXO7S5GKpqYiVEwCbgFDfxNHKJBQ==}
-    engines: {node: ^12.20.0 || >=14}
-
   comment-parser@1.4.8:
     resolution: {integrity: sha512-rKZTGo4fzKYna8UcL0isTg5wkBNla7bxTypLwZQXjIdi++IdP1OJ41rI5Mti3/jltkPujbu4i9LIARYA+zpotQ==}
     engines: {node: '>= 12.0.0'}
@@ -7955,11 +7948,6 @@ packages:
   posthog-node@5.24.17:
     resolution: {integrity: sha512-mdb8TKt+YCRbGQdYar3AKNUPCyEiqcprScF4unYpGALF6HlBaEuO6wPuIqXXpCWkw4VclJYCKbb6lq6pH6bJeA==}
     engines: {node: ^20.20.0 || >=22.22.0}
-
-  postject@1.0.0-alpha.6:
-    resolution: {integrity: sha512-b9Eb8h2eVqNE8edvKdwqkrY6O7kAwmI8kcnBv1NScolYJbo59XUF0noFq+lxbC1yN20bmC0WBEbDC5H/7ASb0A==}
-    engines: {node: '>=14.0.0'}
-    hasBin: true
 
   powershell-utils@0.2.1:
     resolution: {integrity: sha512-C+y9x90UElAddDZmV4qOx9W53B61PO7cIqWz2dQsWlwswuq4mr8NEwytdGKboYbQlGZ3awrkTeNvcZiZNHnQ8A==}
@@ -13952,8 +13940,6 @@ snapshots:
 
   commander@5.1.0: {}
 
-  commander@9.5.0: {}
-
   comment-parser@1.4.8: {}
 
   compare-func@2.0.0:
@@ -17122,10 +17108,6 @@ snapshots:
   posthog-node@5.24.17:
     dependencies:
       '@posthog/core': 1.23.1
-
-  postject@1.0.0-alpha.6:
-    dependencies:
-      commander: 9.5.0
 
   powershell-utils@0.2.1:
     optional: true

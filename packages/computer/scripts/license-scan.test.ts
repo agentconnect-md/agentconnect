@@ -144,7 +144,6 @@ describe('scanArtifacts', () => {
     const macos = join(artifacts, 'AgentConnect Computer.app', 'Contents', 'MacOS')
     mkdirSync(macos, { recursive: true })
     writeFileSync(join(macos, 'agentconnect-computer'), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0]))
-    writeFileSync(join(artifacts, 'AgentConnect-Computer-macos-arm64.zip'), 'x')
     const result = scanArtifacts(artifacts, options)
     expect(result.violations).toEqual([])
     expect(result.components).toContainEqual(expect.objectContaining({ license: 'MIT', verdict: 'allowed' }))
@@ -156,5 +155,22 @@ describe('scanArtifacts', () => {
     expect(scanArtifacts(empty, { packageRoot: empty, workspaceRoot: empty }).violations[0]).toMatch(
       /no esbuild metafile/
     )
+  })
+
+  it('scans the macOS app package, which bundles no JavaScript, by its binaries alone', () => {
+    const pkg = mkdtempSync(join(tmpdir(), 'ac-license-scan-'))
+    roots.push(pkg)
+    const macos = join(pkg, 'AgentConnect Computer.app', 'Contents', 'MacOS')
+    mkdirSync(macos, { recursive: true })
+    writeFileSync(join(macos, 'agentconnect-computer'), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0]))
+    const options = { packageRoot: pkg, workspaceRoot: pkg, binariesOnly: true }
+    expect(scanArtifacts(pkg, options)).toEqual({
+      components: [expect.objectContaining({ license: 'MIT', verdict: 'allowed' })],
+      violations: []
+    })
+    writeFileSync(join(macos, 'helper'), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0]))
+    expect(scanArtifacts(pkg, options).violations).toEqual([
+      'AgentConnect Computer.app/Contents/MacOS/helper: undeclared executable; declare its component and license in license-scan.ts'
+    ])
   })
 })

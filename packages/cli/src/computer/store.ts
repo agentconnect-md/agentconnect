@@ -19,7 +19,9 @@ export interface ComputerServiceState {
 export interface ComputerOps {
   resolve: (o: { to?: string; channel: Channel }) => Promise<ResolvedTarget>
   install: (root: string, target: ResolvedTarget, log: (m: string) => void) => Promise<string>
-  /** Whether this platform's background service runs the store's entry (a systemd user unit); the macOS app and the Windows Run key do not yet. */
+  /** Brings the macOS app to the version this computer version pins; absent off macOS. */
+  app?: (version: string) => Promise<void>
+  /** Whether this platform's background service runs the store's entry (systemd user unit, macOS LaunchAgent); the Windows Run key does not yet. */
   serviceRunsStore: boolean
   status: (version: string) => Promise<ComputerServiceState>
   /** Rewrites the service from that version, so a changed unit or autostart entry reaches the host. */
@@ -45,12 +47,13 @@ const missing = (selfCommand: string) => (version: string) => (): string =>
 export async function installComputer(
   root: string,
   opts: ComputerTargetOpts,
-  ops: Pick<ComputerOps, 'resolve' | 'install' | 'prune' | 'log'>,
+  ops: Pick<ComputerOps, 'resolve' | 'install' | 'app' | 'prune' | 'log'>,
   selfCommand: string
 ): Promise<string> {
   const channel = opts.channel ?? readMeta(root).channel
   const target = await ops.resolve({ ...(opts.version ? { to: opts.version } : {}), channel })
   await ops.install(root, target, ops.log)
+  await ops.app?.(target.version)
   if (opts.channel && opts.channel !== readMeta(root).channel)
     writeMeta(root, { ...readMeta(root), channel: opts.channel })
   if (currentVersion(root) !== target.version) {
@@ -72,6 +75,8 @@ export async function upgradeComputer(
   const channel = opts.channel ?? meta.channel
   const target = await ops.resolve({ ...(opts.version ? { to: opts.version } : {}), channel })
   await ops.install(root, target, ops.log)
+  // An unchanged pin leaves the app and its grants alone; any other pin, a rollback's too, replaces it.
+  await ops.app?.(target.version)
   if (opts.channel && opts.channel !== meta.channel) writeMeta(root, { ...readMeta(root), channel: opts.channel })
   const prune = (): void => void ops.prune({ keep: opts.keep ?? DEFAULT_KEEP_VERSIONS, protect: [target.version] })
 
@@ -157,6 +162,12 @@ export interface RealOpsOptions {
   platform?: NodeJS.Platform
   env?: NodeJS.ProcessEnv
   node?: string
+  /** The installed macOS app's runtime, looked up per call because `app` installs it; scripts run inside it there. */
+  appRunner?: () => string | undefined
+  /** Installs the pinned macOS app for a computer version. */
+  app?: (version: string) => Promise<void>
+  /** Whether a macOS user is logged in to the desktop, where a LaunchAgent install also starts the service. */
+  guiSession?: boolean
   /** How long the restarted daemon has to answer with the new version on its loopback controls. */
   readyMs?: number
   settleMs?: number
@@ -167,7 +178,7 @@ export function realComputerOps(root: string, o: RealOpsOptions): ComputerOps {
   const platform = o.platform ?? process.platform
   const node = o.node ?? process.execPath
   const launch = (version: string, args: string[]): ComputerLaunch => ({
-    command: node,
+    command: o.appRunner?.() ?? node,
     args: [versionEntry(root, version, platform), ...args],
     serviceEntry: storeEntry(root, platform)
   })
@@ -200,12 +211,15 @@ export function realComputerOps(root: string, o: RealOpsOptions): ComputerOps {
   return {
     resolve: (opts) => resolveTarget(opts, COMPUTER_PKG),
     install: (r, target, log) => installTarget(r, target, log, { pkg: COMPUTER_STORE }),
-    serviceRunsStore: platform === 'linux',
+    ...(o.app ? { app: o.app } : {}),
+    serviceRunsStore: platform === 'linux' || platform === 'darwin',
     status,
     refresh: (version) => service(version, 'install'),
     // Mirrors `inGraphicalSession` in packages/computer/src/service-linux.ts, which the child inherits this env for.
     refreshStarts:
-      platform === 'linux' && Boolean((o.env ?? process.env).DISPLAY || (o.env ?? process.env).WAYLAND_DISPLAY),
+      platform === 'darwin'
+        ? Boolean(o.guiSession)
+        : platform === 'linux' && Boolean((o.env ?? process.env).DISPLAY || (o.env ?? process.env).WAYLAND_DISPLAY),
     restart: (version) => service(version, 'restart'),
     health: async (version) => {
       const settled = await checkServiceHealthy(
