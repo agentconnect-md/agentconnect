@@ -278,6 +278,13 @@ The international edition, or a deployment with no question template, has only
 the reply address. A post too long for its send is refused whole rather than
 cut.
 
+Replies stay on the group send. A message sent through the reply address
+answers with no key (only `errcode` and `errmsg`), while a quote of it carries
+an `originalProcessQueryKey` and `originalMsgId` the sender never learned
+(**measured**), so a quote of such a reply could not find its session. Nor can
+a robot message quote the one it answers: fields naming that message are
+ignored (**measured**).
+
 ### 4.3 Acknowledgement and Markdown
 
 A turn is acknowledged by a reaction on the message that started it: DingTalk's
