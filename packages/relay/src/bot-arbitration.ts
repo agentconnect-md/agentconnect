@@ -68,6 +68,8 @@ export interface BotAssignment {
   tenantIds?: string[]
   /** The console's claim page, present only on the deployment app's anchor: the plugin answers an event no sibling serves with it (§10.4). */
   claimUrl?: string
+  /** Who installed a Slack workspace not yet connected, whom its setup reply names. */
+  installerUserId?: string
   /** A single-tenant row's own tenant keys, recorded from its traffic (§10.3): the plugin fences with them by its platform's rules; core neither indexes nor fences on them. */
   ownTenantIds?: string[]
   /** Install GENERATION of `secrets` (CP-assigned). Echoed back on `rc/bot-revoked`
@@ -868,6 +870,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     appUserName?: unknown
     tenantIds?: unknown
     claimUrl?: unknown
+    installerUserId?: unknown
     ownTenantIds?: unknown
   }
   const apiAppId = typeof ingress.apiAppId === 'string' ? ingress.apiAppId : undefined
@@ -922,6 +925,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     ...(workspaceId ? { workspaceId } : {}),
     ...(tenantIds ? { tenantIds } : {}),
     ...(claimUrl ? { claimUrl } : {}),
+    ...(typeof ingress.installerUserId === 'string' ? { installerUserId: ingress.installerUserId } : {}),
     ...(ownTenantIds ? { ownTenantIds } : {}),
     ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
     ...(botUserId ? { botUserId } : {}),

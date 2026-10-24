@@ -10,6 +10,7 @@ import {
 } from '@agentconnect.md/message'
 import {
   buildSlackAppHomeView,
+  slackSetupReply,
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
@@ -639,11 +640,13 @@ export class SlackHttpIngest {
       const ownMessage = event.user === this.botUserId || event.bot_id === this.slackBotId
       if (ownMessage || !isRoutableEvent(event)) return
       if (event.type !== 'message' && event.type !== 'app_mention') return
-      if (this.deps.appHomeContext?.(event.channel)?.connectUrl) {
+      // An installation that cannot answer yet says what finishes setup to every DM and mention, and forwards nothing.
+      const setup = this.deps.appHomeContext ? slackSetupReply(this.deps.appHomeContext(event.channel)) : undefined
+      if (setup) {
         if (event.channel && (event.channel_type === 'im' || event.type === 'app_mention'))
           await this.web?.chat.postMessage({
             channel: event.channel,
-            text: 'This workspace is not connected yet. Ask the person who installed this app to open its Home tab and select Connect AgentConnect.',
+            text: setup,
             ...(event.thread_ts || event.type === 'app_mention' ? { thread_ts: event.thread_ts ?? event.ts } : {})
           })
         return

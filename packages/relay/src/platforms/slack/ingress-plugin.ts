@@ -417,6 +417,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
           webAppUrl: host.webAppUrl(),
           orgSlug: a.orgSlug,
           connectUrl: a.claimUrl,
+          ...(a.installerUserId ? { installerUserId: a.installerUserId } : {}),
           ...(a.installedAgentIds ? { connected: a.installedAgentIds.length > 0, botId } : {}),
           agentId:
             (channelId ? host.directory.resolveTarget(botId, { channelId }) : undefined)?.agentId ??

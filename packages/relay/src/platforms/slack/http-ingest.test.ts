@@ -638,7 +638,9 @@ describe('SlackHttpIngest events', () => {
       chat: { postMessage }
     }
     const connectUrl = 'https://console.example.test/slack/connect?installation=example'
-    const d = deps(web, { appHomeContext: () => ({ webAppUrl: 'https://console.example.test', connectUrl }) })
+    const d = deps(web, {
+      appHomeContext: () => ({ webAppUrl: 'https://console.example.test', connectUrl, installerUserId: 'U-INSTALLER' })
+    })
     const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
     await ingest.start()
     await ingest.handleEvent({ type: 'app_home_opened', tab: 'home', user: 'U-VISITOR' })
@@ -654,8 +656,14 @@ describe('SlackHttpIngest events', () => {
       text: 'hello'
     })
     expect(postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ channel: 'D1', text: expect.stringContaining('Home tab') })
+      expect.objectContaining({
+        channel: 'D1',
+        text: expect.stringContaining(
+          `<@U-INSTALLER>, who installed this app, can connect it from the app’s Home tab or here: <${connectUrl}|Connect AgentConnect>`
+        )
+      })
     )
+    expect(JSON.stringify(publish.mock.calls[0])).toContain('<@U-INSTALLER> can sign in')
     await ingest.handleEvent({
       type: 'app_mention',
       user: 'U-VISITOR',
@@ -666,6 +674,37 @@ describe('SlackHttpIngest events', () => {
     expect(postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ channel: 'C1', thread_ts: '2.1' }))
     await ingest.handleEvent({ type: 'message', user: 'U-VISITOR', channel: 'C1', ts: '3.1', text: 'chatter' })
     expect(postMessage).toHaveBeenCalledTimes(2)
+    expect(d.onMessage).not.toHaveBeenCalled()
+    await ingest.stop()
+  })
+
+  it('answers every DM and mention of an installation with no agent with how to reconnect, without forwarding chat', async () => {
+    const postMessage = vi.fn(async (_body: unknown) => ({}))
+    const web = { auth: { test: async () => ({ user_id: 'U-BOT', bot_id: 'B-BOT' }) }, chat: { postMessage } }
+    const d = deps(web, {
+      appHomeContext: () => ({
+        webAppUrl: 'https://console.example.test',
+        orgSlug: 'example-org',
+        botId: 'bot-1',
+        connected: false
+      })
+    })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    const dm = { type: 'message', user: 'U-VISITOR', channel: 'D1', channel_type: 'im', text: 'hello' }
+    await ingest.handleEvent({ ...dm, ts: '1.1' })
+    await ingest.handleEvent({ ...dm, ts: '1.2' })
+    await ingest.handleEvent({ type: 'app_mention', user: 'U-VISITOR', channel: 'C1', ts: '2.1', text: '<@U-BOT> hi' })
+    expect(postMessage).toHaveBeenCalledTimes(3)
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        channel: 'C1',
+        thread_ts: '2.1',
+        text: expect.stringContaining(
+          '<https://console.example.test/example-org/integrations?reconnect=bot-1|Reconnect it in AgentConnect>'
+        )
+      })
+    )
     expect(d.onMessage).not.toHaveBeenCalled()
     await ingest.stop()
   })

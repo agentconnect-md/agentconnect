@@ -22,7 +22,8 @@ export function slackWorkspaceIngress(
         teamId: row.teamId,
         workspaceId: row.teamId,
         botUserId: row.botUserId,
-        claimUrl: `${webAppUrl.replace(/\/+$/, '')}/slack/connect?installation=${encodeURIComponent(row.id)}`
+        claimUrl: `${webAppUrl.replace(/\/+$/, '')}/slack/connect?installation=${encodeURIComponent(row.id)}`,
+        installerUserId: row.installerUserId
       },
       members: [],
       agents: [],
