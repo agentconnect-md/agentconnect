@@ -5,8 +5,10 @@ import { AgentId } from '../../domain/ids.js'
 import type { IconStore } from '../../icons/icon-store.js'
 import {
   MSTEAMS_MANIFEST_SCHEMA,
+  MSTEAMS_COMMANDS,
   msTeamsAppIcons,
   msTeamsAppPackage,
+  msTeamsFullDescription,
   msTeamsManifest,
   msTeamsPackageFingerprint,
   msTeamsPackageId,
@@ -65,12 +67,18 @@ describe('Teams manifest', () => {
       name: { short: 'Example agent', full: 'Example agent' },
       description: {
         short: 'AI agent powered by AgentConnect.',
-        full: 'Example agent is an AI agent powered by AgentConnect.'
+        full: msTeamsFullDescription('Example agent')
       },
       icons: { color: 'color.png', outline: 'outline.png' },
       accentColor: '#1a212b',
       bots: [
-        { botId: APP_ID, scopes: ['personal', 'team', 'groupChat'], supportsFiles: false, isNotificationOnly: false }
+        {
+          botId: APP_ID,
+          scopes: ['personal', 'team', 'groupChat'],
+          supportsFiles: false,
+          isNotificationOnly: false,
+          commandLists: [{ scopes: ['personal', 'team', 'groupChat'], commands: [...MSTEAMS_COMMANDS] }]
+        }
       ],
       validDomains: ['relay.example.test'],
       webApplicationInfo: { id: APP_ID, resource: `api://relay.example.test/${APP_ID}` },

@@ -591,6 +591,10 @@ answers every addressed message once: its per-message latch collapses a
 message's duplicate event copies, and a failed post releases it so a
 redelivery is answered. A surface without the member posts nothing.
 
+`DaemonPlatformModule.botAdds?` decodes a relayed install of the bot into a
+conversation; core composes the platform-neutral welcome (`platforms/welcome.ts`)
+and the module posts it in its own form, as Teams does with a card.
+
 `DaemonPlatformModule.chatMemberKey?` is the same kind of member: the id a
 synced organization matches a platform's chat member to a console account by,
 which only Feishu/Lark's module overrides (§7.3).

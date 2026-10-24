@@ -521,6 +521,7 @@ import {
   platformIntegrationConfig
 } from './platforms/integration-config.js'
 import type {
+  BotAdded,
   ChatCardClick,
   ChatRefusal,
   InteractionActor,
@@ -530,6 +531,7 @@ import type {
   RelayCardClicks
 } from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
+import { buildWelcome } from './platforms/welcome.js'
 import {
   rootPostNeedsThreadMaterialization,
   rootPostThreadName,
@@ -13907,6 +13909,8 @@ export class Daemon {
     if (decode) return await decode(msg)
     const join = this.platformModules.get(msg.platformId)?.memberJoins?.decode(msg)
     if (join) return await this.handleRelayMemberJoin(msg, join)
+    const added = this.platformModules.get(msg.platformId)?.botAdds?.decode(msg)
+    if (added) return await this.handleRelayBotAdded(msg, added)
     const cards = this.platformModules.get(msg.platformId)?.cardClicks
     return cards
       ? await this.handleRelayCardClick(msg, cards)
@@ -13921,6 +13925,26 @@ export class Daemon {
     if (this.placeTrust.watches([msg.integrationId]))
       for (const { channel, reason } of await join.reasons())
         this.placeTrust.detected([msg.integrationId], channel, reason)
+    return { msgId: msg.msgId, accepted: true }
+  }
+
+  /** A relayed install of the bot: welcome the conversation once, saying whether the agent is enabled there. */
+  private async handleRelayBotAdded(msg: RdMsgPlatformAction, added: BotAdded): Promise<RdAck> {
+    const agent = this.agents.get(msg.agentId)
+    const int = agent?.integrations.find((i) => i.id === msg.integrationId && i.platform === msg.platformId)
+    if (!agent || !int) return { msgId: msg.msgId, accepted: false, reason: 'not_found' }
+    const welcome = buildWelcome({
+      name: added.botName ?? agent.name,
+      isDm: added.isDm,
+      enabled: conversationAdmitted(integrationRouting(int), added.channel),
+      consoleUrl: this.agentLink(agent.id)
+    })
+    try {
+      await added.post(welcome)
+    } catch (err) {
+      this.log.warn(`relay: ${msg.platformId} welcome not posted in ch=${added.channel}: ${formatErr(err)}`)
+      return { msgId: msg.msgId, accepted: false, reason: 'unavailable' }
+    }
     return { msgId: msg.msgId, accepted: true }
   }
 

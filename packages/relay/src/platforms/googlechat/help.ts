@@ -1,21 +1,7 @@
 // Google Chat's plain-text answers the relay posts itself (google-chat-integration.md §11.4): the welcome on an add and the `/help` reply.
-import type { AgentCommand } from '@agentconnect.md/activation-policy'
+import { COMMAND_HELP } from '@agentconnect.md/activation-policy'
 import { GOOGLE_CHAT_HELP_COMMAND } from '@agentconnect.md/message'
 import { googleChatCreatedMessage } from './http-ingest.js'
-
-/** Each text command the daemon understands, keyed by the grammar's kinds so a new command cannot go unlisted. */
-export const GOOGLE_CHAT_COMMAND_HELP: Readonly<Record<AgentCommand['kind'], { usage: string; does: string }>> = {
-  new: { usage: '!new', does: 'start over with a fresh session' },
-  stop: { usage: '!stop', does: 'stop the current answer and pause replies here' },
-  cancel: { usage: '!cancel', does: 'stop the current answer' },
-  resume: { usage: '!resume', does: 'lift a pause or loop protection' },
-  queue: { usage: '!queue your message', does: 'send your message once the current answer finishes' },
-  status: { usage: '!status', does: 'show the model, context, and token use' },
-  model: { usage: '!model', does: 'list or switch models' },
-  effort: { usage: '!effort', does: 'list or switch the reasoning effort' },
-  permission: { usage: '!permission', does: 'list or switch the permission mode' },
-  fast: { usage: '!fast on|off', does: 'turn fast mode on or off' }
-}
 
 const INTRO = 'I’m an AI agent powered by AgentConnect.'
 const UNCLAIMED =
@@ -23,7 +9,7 @@ const UNCLAIMED =
 
 /** The `/help` reply's text; an unclaimed tenant is first told to connect the app. */
 export function googleChatHelpText(opts: { unclaimed?: boolean } = {}): string {
-  const commands = Object.values(GOOGLE_CHAT_COMMAND_HELP).map(({ usage, does }) => `${usage} — ${does}`)
+  const commands = Object.values(COMMAND_HELP).map(({ usage, does }) => `${usage} — ${does}`)
   return [
     INTRO,
     ...(opts.unclaimed ? [UNCLAIMED] : []),

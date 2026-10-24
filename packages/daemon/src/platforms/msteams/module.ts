@@ -1,4 +1,4 @@
-// Teams' daemon platform module (§7.4): relay ingress, the reply-chain thread strategy, the chat-member key, and relayed card clicks.
+// Teams' daemon platform module (§7.4): relay ingress, the reply-chain thread strategy, the chat-member key, relayed card clicks and installs.
 import {
   MSTEAMS_CARD_NOTE_MAX,
   MSTEAMS_PLATFORM,
@@ -18,6 +18,7 @@ import { parseMsTeamsApprovalClick } from './approval-card.js'
 import { parseMsTeamsElicitClick } from './elicit-card.js'
 import { msTeamsRelayIngress, type MsTeamsRelayIngressHost } from './relay-ingress.js'
 import { canonicalizeMsTeamsThread } from './threading.js'
+import { msTeamsBotAdds } from './welcome.js'
 
 const ENTRA_OBJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -70,6 +71,7 @@ export function msTeamsPlatformModule(host: MsTeamsRelayIngressHost): DaemonPlat
     canonicalizeThread: canonicalizeMsTeamsThread,
     chatMemberKey: msTeamsChatMemberKey,
     cardClicks: msTeamsCardClicks,
-    memberJoins: msTeamsMemberJoins(host)
+    memberJoins: msTeamsMemberJoins(host),
+    botAdds: msTeamsBotAdds(host)
   }
 }
