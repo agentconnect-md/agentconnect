@@ -20809,8 +20809,7 @@ export class Daemon {
           chrome: true
         })
       else if (p.conn) await p.conn.postMessage(msg.channel, text, msg.thread)
-      else if (!p.plan.suppressReplyConn)
-        await this.chromeNotice(p.plan.platform, p.egress, msg.channel, msg.thread, text)
+      else if (!p.plan.suppressReplyConn) await this.chromeNotice(p.plan.platform, p.egress, msg, msg.thread, text)
       await this.store.appendTranscript({
         channel: p.plan.transcriptChannel,
         thread: p.plan.sessionThread,
@@ -24258,21 +24257,23 @@ export class Daemon {
       if (!addressed) continue
       const latch = `${integrationId}:${msg.channel}`
       if (this.gatedNoticesSent.has(latch)) return
-      this.gatedNoticesSent.add(latch)
       const text =
         '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.'
       const thread = isDm ? undefined : msg.thread
       const conn = this.connForIntegration(integrationId)
       // Chrome-marked so peer daemons' thread backfill never re-ingests the notice.
       const post = !conn
-        ? this.chromeNotice(msg.platform, this.anyConnForIntegration(integrationId), msg.channel, thread, text)
+        ? this.chromeNotice(msg.platform, this.anyConnForIntegration(integrationId), msg, thread, text)
         : conn instanceof SlackConnection
           ? conn.postMessage(msg.channel, text, thread, { chrome: true })
           : conn.postChrome(msg.channel, text, { threadTs: thread })
       if (!post) return
-      void post.catch((err: unknown) =>
+      // Held while the post is in flight so a burst posts once; a failed post releases it for the next message.
+      this.gatedNoticesSent.add(latch)
+      void post.catch((err: unknown) => {
+        this.gatedNoticesSent.delete(latch)
         this.log.warn(`gating: notice post failed in ch=${msg.channel}: ${(err as Error).message}`)
-      )
+      })
       return // one notice per message even when several integrations share the socket
     }
   }
@@ -24281,12 +24282,12 @@ export class Daemon {
   private chromeNotice(
     platform: string,
     conn: PlatformConnection | undefined,
-    channel: string,
+    msg: NormalizedMessage,
     thread: string | undefined,
     text: string
   ): Promise<void> | undefined {
     const surface = this.commandChrome.for(platform)
-    return conn && surface.notice ? surface.notice(conn, channel, thread, text) : undefined
+    return conn && surface.notice ? surface.notice(conn, msg.channel, thread, text, msg) : undefined
   }
 
   /** Surface an observed conversation as a configurable row. This is an incremental
