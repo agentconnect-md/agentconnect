@@ -2929,6 +2929,8 @@ export async function fetchComputerAudit(
 export async function createComputerRegistration(body: {
   name?: string
   ttlMinutes?: number
+  visibility?: SharingInput['visibility']
+  sharedWith?: string[]
 }): Promise<ComputerRegistrationDto> {
   return apiPost<ComputerRegistrationDto>(`${orgBase()}/computers/registrations`, body)
 }
@@ -2994,6 +2996,8 @@ export async function fetchComputerUsage(range: UsageRange, orgId?: string): Pro
 export async function createPoolComputer(body: {
   name: string
   agentAccess?: ComputerAgentAccess
+  visibility?: SharingInput['visibility']
+  sharedWith?: string[]
 }): Promise<ComputerDto> {
   return apiPost<ComputerDto>(`${orgBase()}/computers/pool`, body)
 }

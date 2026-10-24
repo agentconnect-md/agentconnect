@@ -1,6 +1,6 @@
 'use client'
 
-// The Computers an agent may use (computer-use.md §4.1), edited from the agent's side, and its managed computer mode (§15.1).
+// The Computers an agent may use (computer-use.md §4.1), given and taken away only here, and its managed computer mode (§15.1).
 import { useState } from 'react'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
@@ -46,9 +46,7 @@ export function AgentComputersCard({
   // A Computer the caller can see answers for itself; the agent's derived list adds the ones they cannot.
   const granting = live.filter((c) => computerGrantsAgent(c, agentId) && !own.has(c.id))
   const hidden = (getAgent(agentId)?.computerUse?.computers ?? []).filter((id) => !visible.has(id))
-  const addable = live.filter(
-    (c) => c.canEditAgentAccess === true && agentAccessOf(c).mode !== 'all' && !computerGrantsAgent(c, agentId)
-  )
+  const addable = live.filter((c) => c.canEditAgentAccess === true && !computerGrantsAgent(c, agentId))
 
   const change = async (run: () => Promise<ComputerDto>) => {
     if (saving || !canEdit) return
@@ -107,8 +105,8 @@ export function AgentComputersCard({
           {granting.map((computer) => {
             const tone = computerStatusTone(computer.status)
             const all = agentAccessOf(computer).mode === 'all'
-            // Only a Selected list the caller may edit is changed from here; All agents is changed on the Computer.
-            const removable = canEdit && !saving && !all && computer.canEditAgentAccess === true
+            // Taking an All agents Computer away leaves it with every other agent.
+            const removable = canEdit && !saving && computer.canEditAgentAccess === true
             return (
               <AttachedRow
                 key={computer.id}

@@ -6,7 +6,8 @@ import type {
   ComputerProfile,
   ComputerRecord,
   ComputerRegistrationRecord,
-  ComputerRepo
+  ComputerRepo,
+  ResourceVisibility
 } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
 import { ComputerId, OrgId } from '../domain/ids.js'
@@ -90,6 +91,8 @@ export class ComputerService {
     ttlMinutes?: number
     /** A managed computer's own row (§15.1): the token keys it rather than creating a Computer. */
     computerId?: ComputerId
+    /** The console visibility the new Computer takes (§4.1); Selected with only the registrant by default. */
+    sharing?: { visibility: ResourceVisibility; sharedWith: string[] }
   }): Promise<IssuedComputerRegistration> {
     const ttl = Math.min(
       Math.max(1, Math.floor(input.ttlMinutes ?? COMPUTER_REGISTRATION_DEFAULT_TTL_MINUTES)),
@@ -103,6 +106,7 @@ export class ComputerService {
       displayTail: minted.displayTail,
       ...(input.name ? { name: input.name } : {}),
       ...(input.computerId ? { computerId: input.computerId } : {}),
+      ...(input.sharing ? { sharing: input.sharing } : {}),
       expiresAt: new Date(this.clock.now() + ttl * 60_000)
     })
     this.record(input.orgId, input.createdByUserId, 'registration_create', {

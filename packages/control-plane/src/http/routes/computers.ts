@@ -69,9 +69,9 @@ function canEditPolicy(c: ComputerRecord, ctx: ViewCtx): boolean {
   return c.kind !== 'self-hosted' || c.ownerUserId === ctx.userId
 }
 
-/** Who may change which agents use a Computer (§4.1): its policy editors; a per-agent or ephemeral one follows its agent. */
+/** Who may give an agent a Computer or take it away (§4.1): any editor who can see it; a per-agent or ephemeral one follows its agent. */
 function canEditAgentAccess(c: ComputerRecord, ctx: ViewCtx): boolean {
-  return canEditPolicy(c, ctx) && c.status !== 'revoked' && !agentAccessIsFixed(c)
+  return canEdit(c, ctx) && c.status !== 'revoked' && !agentAccessIsFixed(c)
 }
 
 // An audit page cursor: the last entry's time and id, opaque to callers.
@@ -177,11 +177,6 @@ const fixedAccess = {
   message: 'a per-agent or ephemeral computer is used only by the agent it was made for'
 }
 const cannotChangeAccess = { error: 'Forbidden', statusCode: 403, message: 'cannot change who uses this computer' }
-const allAgents = {
-  error: 'Conflict',
-  statusCode: 409,
-  message: 'this computer is granted to all agents; change its agent access on the computer'
-}
 const unknownAgents = (ids: string[]) => ({
   error: 'Bad Request',
   statusCode: 400,
@@ -223,15 +218,16 @@ export function computerRoutes(deps: HttpDeps) {
       return ids.filter((id) => !visible.has(id))
     }
 
-    // The checks every agent access write shares: the Computer, or the refusal to send.
+    // The checks every agent access write shares: the Computer, or the refusal to send; the whole value is its policy editors'.
     const accessTarget = async (
       req: FastifyRequest,
-      id: string
+      id: string,
+      whole = false
     ): Promise<{ computer: ComputerRecord } | { status: 403 | 404 | 409; body: typeof notFound }> => {
       const c = await getOrgComputer(req, id)
       if (!c) return { status: 404, body: notFound }
       if (agentAccessIsFixed(c)) return { status: 409, body: fixedAccess }
-      if (!canEditPolicy(c, ctxOf(req))) return { status: 403, body: cannotChangeAccess }
+      if (!(whole ? canEditPolicy : canEdit)(c, ctxOf(req))) return { status: 403, body: cannotChangeAccess }
       if (c.status === 'revoked') return { status: 409, body: revokedConflict }
       return { computer: c }
     }
@@ -339,7 +335,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Create a computer registration',
           description:
-            'Mints a short-lived, one-time registration token the desktop daemon exchanges for its Computer key. The caller becomes the Computer’s owner.',
+            'Mints a short-lived, one-time registration token the desktop daemon exchanges for its Computer key. The caller becomes the Computer’s owner. `visibility` and `sharedWith` set who sees the new Computer, and so who may give it to their agents: Selected with only the caller when omitted, and the caller always stays in a Selected audience.',
           operationId: 'createComputerRegistration',
           body: CreateComputerRegistrationBody,
           response: { 201: ComputerRegistrationDto, 403: ErrorDto }
@@ -347,10 +343,17 @@ export function computerRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
+        const sharing = req.body.visibility
+          ? {
+              visibility: req.body.visibility,
+              sharedWith: await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith ?? [])
+            }
+          : undefined
         const issued = await deps.computers.createRegistration({
           orgId: orgOf(req),
           createdByUserId: ctxOf(req).userId,
           ...(req.body.name ? { name: req.body.name } : {}),
+          ...(sharing ? { sharing } : {}),
           ...(req.body.ttlMinutes !== undefined ? { ttlMinutes: req.body.ttlMinutes } : {})
         })
         return reply.code(201).send({
@@ -402,7 +405,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Create a pool computer',
           description:
-            'Creates a `manual` managed computer in the deployment’s Kubernetes pool: a Linux desktop pod with its own volume, which registers itself and appears with `kind: managed`. It is assigned to agents through its `agentAccess` (here or with `PUT /computers/{id}/agent-access`), none by default; agents with access share it one at a time under the control lease. It sleeps when idle, keeping its volume, wakes on the next use, and stays until it is deleted. The caller becomes its owner. 429 (`COMPUTER_QUOTA_EXCEEDED`) when the organization is at a managed computer quota (`GET /computers/quotas`); 503 when the deployment runs no pool or no pool member is connected.',
+            'Creates a `manual` managed computer in the deployment’s Kubernetes pool: a Linux desktop pod with its own volume, which registers itself and appears with `kind: managed`. It is assigned to agents through its `agentAccess` (here or with `PUT /computers/{id}/agent-access`), none by default; agents with access share it one at a time under the control lease. It is visible to everyone in the organization unless `visibility` is `restricted`, whose `sharedWith` audience always includes the caller. It sleeps when idle, keeping its volume, wakes on the next use, and stays until it is deleted. The caller becomes its owner. 429 (`COMPUTER_QUOTA_EXCEEDED`) when the organization is at a managed computer quota (`GET /computers/quotas`); 503 when the deployment runs no pool or no pool member is connected.',
           operationId: 'createPoolComputer',
           body: CreatePoolComputerBody,
           response: { 201: ComputerDto, 400: ErrorDto, 403: ErrorDto, 429: ErrorDto, 503: ErrorDto }
@@ -425,11 +428,23 @@ export function computerRoutes(deps: HttpDeps) {
         const agentAccess: ComputerAgentAccess | undefined = req.body.agentAccess
         const unknown = await invisibleAgents(req, agentAccess?.mode === 'selected' ? agentAccess.agents : [])
         if (unknown.length > 0) return reply.code(400).send(unknownAgents(unknown))
+        // A Selected audience always holds its creator, so the new computer is never out of their sight.
+        const sharing =
+          req.body.visibility === 'restricted'
+            ? {
+                visibility: 'restricted' as const,
+                sharedWith: await resolveShareSet(deps.repos.user, orgOf(req), [
+                  ctx.userId,
+                  ...(req.body.sharedWith ?? [])
+                ])
+              }
+            : undefined
         const created = await deps.computerPool.createManual(orgOf(req), {
           name: req.body.name,
           ownerUserId: ctx.userId,
           ...(policy ? { policy } : {}),
-          ...(agentAccess ? { agentAccess } : {})
+          ...(agentAccess ? { agentAccess } : {}),
+          ...(sharing ? { sharing } : {})
         })
         if (!created.ok && created.code === 'quota_exceeded')
           return reply.code(429).send(quotaExceeded(created.message))
@@ -667,7 +682,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Set computer agent access',
           description:
-            'Sets which agents may use a Computer: `none` (the default), `selected` with the listed `agents`, or `all` for every agent of the organization. This is the one relation an agent’s computer use derives from, so an agent granted here gets the `computer_*` tools in its next new session without any agent-side setting. Requires edit rights on the Computer, and on a self-hosted desktop only its registrant; agents newly listed must be visible to the caller, and a Selected list keeps the existing agents the caller cannot see. An empty selection reads as `none`, and a selection past 200 agents is refused (409). A `per-agent` or `ephemeral` managed computer is used only by its own agent (409). Every change is audited.',
+            'Sets which agents may use a Computer: `none` (the default), `selected` with the listed `agents`, or `all` for every agent of the organization. This is the one relation an agent’s computer use derives from, so an agent granted here gets the `computer_*` tools in its next new session without any agent-side setting. Requires edit rights on the Computer, and on a self-hosted desktop only its registrant, since it can widen access to All agents; agents newly listed must be visible to the caller, and a Selected list keeps the existing agents the caller cannot see. An empty selection reads as `none`, and a selection past 200 agents is refused (409). A `per-agent` or `ephemeral` managed computer is used only by its own agent (409). Every change is audited.',
           operationId: 'setComputerAgentAccess',
           params: IdParam,
           body: SetComputerAgentAccessBody,
@@ -676,7 +691,7 @@ export function computerRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const target = await accessTarget(req, req.params.id)
+        const target = await accessTarget(req, req.params.id, true)
         if (!('computer' in target)) return reply.code(target.status).send(target.body)
         const c = target.computer
         const wanted: ComputerAgentAccess = { mode: req.body.mode, agents: [...new Set(req.body.agents)] }
@@ -710,7 +725,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Give an agent access to a computer',
           description:
-            'Adds one agent to a Computer’s Selected agent access, switching it from `none` to `selected`; the same relation as `PUT /computers/{id}/agent-access`, for the agent’s own Computers list. Requires edit rights on the Computer (its registrant, for a self-hosted desktop) and a visible agent. Idempotent; a 201st agent is refused (409). A Computer granted to all agents is changed only as a whole (409), as is a `per-agent` or `ephemeral` one.',
+            'Adds one agent to a Computer’s Selected agent access, switching it from `none` to `selected`; the same relation as `PUT /computers/{id}/agent-access`, for the agent’s own Computers list. Requires edit rights on the Computer, which any member it is visible to has unless they are a viewer, and a visible agent. Idempotent, and a no-op on a Computer granted to all agents; a 201st agent is refused (409), as is a `per-agent` or `ephemeral` computer.',
           operationId: 'addComputerAgent',
           params: ComputerAgentParams,
           response: { 200: ComputerDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -721,26 +736,23 @@ export function computerRoutes(deps: HttpDeps) {
         const target = await accessTarget(req, req.params.id)
         if (!('computer' in target)) return reply.code(target.status).send(target.body)
         const c = target.computer
-        if (c.agentAccess.mode === 'all') return reply.code(409).send(allAgents)
         const { agentId } = req.params
-        const unknown = await invisibleAgents(req, c.agentAccess.agents.includes(agentId) ? [] : [agentId])
+        const unknown = await invisibleAgents(
+          req,
+          c.agentAccess.mode === 'all' || c.agentAccess.agents.includes(agentId) ? [] : [agentId]
+        )
         if (unknown.length > 0) return reply.code(400).send(unknownAgents(unknown))
-        let toAll = false
+        // All agents already grants it, so the write leaves that unchanged.
         const written = await writeAccess(reply, () =>
           deps.computers.setAgentAccess(
             orgOf(req),
             c.id,
-            (current) => {
-              // A switch to All that landed after the read keeps it; nothing here narrows it.
-              toAll = current.mode === 'all'
-              if (toAll) return current
-              return { mode: 'selected', agents: [...current.agents, agentId] }
-            },
+            (current) =>
+              current.mode === 'all' ? current : { mode: 'selected', agents: [...current.agents, agentId] },
             ctxOf(req).userId
           )
         )
         if ('sent' in written) return written.sent
-        if (toAll) return reply.code(409).send(allAgents)
         return accessReply(req, reply, written.updated)
       }
     )
@@ -752,7 +764,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Take an agent’s access to a computer away',
           description:
-            'Removes one agent from a Computer’s Selected agent access; removing the last one leaves it `none`. The agent itself is not changed. Requires edit rights on the Computer (its registrant, for a self-hosted desktop). Idempotent. A Computer granted to all agents is changed only as a whole (409), as is a `per-agent` or `ephemeral` one.',
+            'Removes one agent from a Computer’s Selected agent access; removing the last one leaves it `none`. A Computer granted to all agents becomes Selected with every other agent of the organization (409 past 200). The agent itself is not changed. Requires edit rights on the Computer, which any member it is visible to has unless they are a viewer. Idempotent; a `per-agent` or `ephemeral` computer is refused (409).',
           operationId: 'removeComputerAgent',
           params: ComputerAgentParams,
           response: { 200: ComputerDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -762,22 +774,24 @@ export function computerRoutes(deps: HttpDeps) {
         if (denyViewerWrite(req, reply)) return
         const target = await accessTarget(req, req.params.id)
         if (!('computer' in target)) return reply.code(target.status).send(target.body)
-        const c = target.computer
-        if (c.agentAccess.mode === 'all') return reply.code(409).send(allAgents)
         const { agentId } = req.params
-        let toAll = false
-        const updated = await deps.computers.setAgentAccess(
-          orgOf(req),
-          c.id,
-          (current) => {
-            toAll = current.mode === 'all'
-            if (toAll) return current
-            return { mode: current.mode, agents: current.agents.filter((id) => id !== agentId) }
-          },
-          ctxOf(req).userId
+        // All agents becomes Selected with every other agent, so only this one loses it.
+        const others = (await deps.repos.agent.list(orgOf(req)))
+          .map((a) => a.id as string)
+          .filter((id) => id !== agentId)
+        const written = await writeAccess(reply, () =>
+          deps.computers.setAgentAccess(
+            orgOf(req),
+            target.computer.id,
+            (current) =>
+              current.mode === 'all'
+                ? { mode: 'selected', agents: others }
+                : { mode: current.mode, agents: current.agents.filter((id) => id !== agentId) },
+            ctxOf(req).userId
+          )
         )
-        if (toAll) return reply.code(409).send(allAgents)
-        return accessReply(req, reply, updated)
+        if ('sent' in written) return written.sent
+        return accessReply(req, reply, written.updated)
       }
     )
 
@@ -788,7 +802,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Set computer sharing',
           description:
-            'Sets who can see a Computer in the console (Everyone vs Selected). Requires edit rights; Selected must retain at least one current organization member, and a self-hosted desktop’s registrant always stays in it. Sharing grants no agent access: the Computer’s agent access decides that.',
+            'Sets who can see a Computer in the console (Everyone vs Selected). Requires edit rights; Selected must retain at least one current organization member, and a self-hosted desktop’s registrant always stays in it. Sharing grants no agent access by itself, but every editor it is visible to may give it to their agents.',
           operationId: 'setComputerSharing',
           params: IdParam,
           body: SetSharingBody,

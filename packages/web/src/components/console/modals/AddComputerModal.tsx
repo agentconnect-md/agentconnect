@@ -14,9 +14,11 @@ import {
 } from '@/lib/api'
 import { computerInstallCommand, type InstallOs, useAgo, useComputerPool } from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
+import { useConsoleData } from '@/lib/data-context'
 import { Spinner } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import AddPoolComputer from '@/components/console/modals/AddPoolComputer'
+import { VisibilityField, type SharingValue } from '@/components/console/VisibilityField'
 
 /** How often the dialog asks whether the desktop has registered and connected. */
 export const REGISTRATION_POLL_MS = 3000
@@ -47,6 +49,11 @@ export default function AddComputerModal({
   const connected = computer !== null && computer.status !== 'offline' && computer.status !== 'revoked'
   const { data: pool } = useComputerPool()
   const [source, setSource] = useState<'own' | 'pool'>(initialSource)
+  // Someone's desktop starts seen by its registrant alone; the CP keeps them in any Selected audience.
+  const { members } = useConsoleData()
+  const me = members.find((m) => m.isCurrentUser)?.userId
+  const [sharing, setSharing] = useState<SharingValue | null>(null)
+  const shownSharing: SharingValue = sharing ?? { visibility: 'restricted', sharedWith: me ? [me] : [] }
 
   // Wait for the token to be spent, then for the new Computer's channel to report in.
   useEffect(() => {
@@ -88,7 +95,13 @@ export default function AddComputerModal({
     setErr(null)
     try {
       const trimmed = name.trim()
-      setRegistration(await createComputerRegistration(trimmed ? { name: trimmed } : {}))
+      setRegistration(
+        await createComputerRegistration({
+          ...(trimmed ? { name: trimmed } : {}),
+          visibility: shownSharing.visibility,
+          sharedWith: shownSharing.sharedWith
+        })
+      )
     } catch (cause) {
       setErr(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -182,6 +195,14 @@ export default function AddComputerModal({
               }}
             />
           </div>
+        )}
+        {!registration && (
+          <>
+            <VisibilityField value={shownSharing} onChange={setSharing} disabled={minting} />
+            <span className="mt-[6px] block font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+              {t('visibilityHint')}
+            </span>
+          </>
         )}
         {registration && command && (
           <>

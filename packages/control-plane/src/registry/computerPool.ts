@@ -32,7 +32,13 @@ import {
   type ComputerPoolPhase,
   type ComputerPoolTimings
 } from '../domain/computerPool.js'
-import type { AgentRecord, ComputerRecord, ComputerRepo, ManagedComputerKey } from '../persistence/ports.js'
+import type {
+  AgentRecord,
+  ComputerRecord,
+  ComputerRepo,
+  ManagedComputerKey,
+  ResourceVisibility
+} from '../persistence/ports.js'
 import type { ComputerService } from './computerService.js'
 import type { ComputerLeaseService } from './computerLeaseService.js'
 import type { ComputerPlan } from './computerPlan.js'
@@ -200,7 +206,13 @@ export class ComputerPool {
   /** A user's `manual` computer, created from the pool (§15.1), or why not: no pool member, or a quota. */
   async createManual(
     orgId: OrgId,
-    input: { name: string; ownerUserId: string; policy?: ComputerPolicy; agentAccess?: ComputerAgentAccess }
+    input: {
+      name: string
+      ownerUserId: string
+      policy?: ComputerPolicy
+      agentAccess?: ComputerAgentAccess
+      sharing?: { visibility: ResourceVisibility; sharedWith: string[] }
+    }
   ): Promise<ComputerPoolCreateResult> {
     const noPool = {
       ok: false,
@@ -218,6 +230,7 @@ export class ComputerPool {
       allocation: 'manual',
       policy: managedComputerPolicy(input.ownerUserId, input.policy ?? defaultComputerPolicy(input.ownerUserId)),
       agentAccess: input.agentAccess ?? { mode: 'none', agents: [] },
+      ...(input.sharing ? { sharing: input.sharing } : {}),
       now: new Date(this.deps.clock.now())
     })
     if (!row) return noPool

@@ -1,17 +1,25 @@
 'use client'
 
 // Computer detail (computer-use.md §10): viewer, status, doctor with fixes, agent access, policy, stop / resume, revoke, and activity.
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useFormatter, useTranslations } from 'next-intl'
-import { deleteComputer, resumeComputer, revokeComputer, stopComputer, type ComputerDto } from '@/lib/api'
+import {
+  deleteComputer,
+  resumeComputer,
+  revokeComputer,
+  setComputerSharing,
+  stopComputer,
+  type ComputerDto
+} from '@/lib/api'
 import { computerStatusTone, poolPhaseNote, useComputer, useAgo } from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { NotFound } from '@/components/console/NotFound'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
-import { VisibilityValue } from '@/components/console/VisibilityField'
+import { Scrim } from '@/components/console/Scrim'
+import { VisibilityField, VisibilityValue, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { useMemberName } from '@/components/console/computer-members'
 import { ComputerActivityCard, ComputerDoctorCard } from '@/components/console/ComputerCards'
 import { ComputerPolicyCard } from '@/components/console/ComputerPolicyCard'
@@ -87,6 +95,7 @@ function ComputerDetail({
   const [actionError, setActionError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [editingVisibility, setEditingVisibility] = useState(false)
   const tone = computerStatusTone(computer.status)
   const revoked = computer.status === 'revoked'
   const stopped = computer.stoppedAt !== null && !revoked
@@ -303,8 +312,19 @@ function ComputerDetail({
               {format.dateTime(new Date(computer.createdAt), { dateStyle: 'medium', timeStyle: 'short' })}
             </Row>
             <Row label={t('detail.visibility')}>
-              <span className="flex justify-end">
+              <span className="flex items-center justify-end gap-2">
                 <VisibilityValue visibility={computer.visibility} sharedWith={computer.sharedWith} />
+                {computer.canEdit && !revoked && (
+                  <button
+                    type="button"
+                    className="iconbtn flex-none"
+                    title={t('visibilityEdit.open')}
+                    aria-label={t('visibilityEdit.open')}
+                    onClick={() => setEditingVisibility(true)}
+                  >
+                    <Icon name="pencil" size={14} />
+                  </button>
+                )}
               </span>
             </Row>
           </div>
@@ -324,7 +344,7 @@ function ComputerDetail({
       </div>
 
       <div className="mt-4 desktop:mt-[18px]">
-        <ComputerAgentAccessCard computer={computer} onSaved={onChanged} />
+        <ComputerAgentAccessCard computer={computer} />
       </div>
 
       <div className="mt-4 desktop:mt-[18px]">
@@ -337,6 +357,16 @@ function ComputerDetail({
         </div>
       )}
 
+      {editingVisibility && (
+        <VisibilityDialog
+          computer={computer}
+          onSaved={(next) => {
+            onChanged(next)
+            setEditingVisibility(false)
+          }}
+          onClose={() => setEditingVisibility(false)}
+        />
+      )}
       {confirm === 'revoke' && (
         <ConfirmationDialog
           title={t('revoke.title')}
@@ -371,6 +401,73 @@ function ComputerDetail({
         </ConfirmationDialog>
       )}
     </div>
+  )
+}
+
+/** Who sees the Computer, and so who may give it to their agents (computer-use.md §4.1). */
+function VisibilityDialog({
+  computer,
+  onSaved,
+  onClose
+}: {
+  computer: ComputerDto
+  onSaved: (next: ComputerDto) => void
+  onClose: () => void
+}) {
+  const t = useTranslations('Computers.visibilityEdit')
+  const titleId = useId()
+  const initial: SharingValue = { visibility: computer.visibility, sharedWith: computer.sharedWith }
+  const [sharing, setSharing] = useState<SharingValue>(initial)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const save = async () => {
+    if (saving) return
+    if (sameSharing(sharing, initial)) return onClose()
+    setSaving(true)
+    setError(null)
+    try {
+      onSaved(await setComputerSharing(computer.id, sharing))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+      setSaving(false)
+    }
+  }
+  return (
+    <Scrim onEscape={saving ? undefined : onClose}>
+      <div className="modal max-w-[520px]" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <div className="modalhead">
+          <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
+            <Icon name="monitor" size={17} color="var(--brand)" />
+          </span>
+          <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">
+            {t('title')}
+          </span>
+          <button type="button" className="iconbtn" aria-label={t('cancel')} disabled={saving} onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+        <div className="modalbody">
+          <p className="m-0 font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
+            {t('description')}
+          </p>
+          <VisibilityField value={sharing} onChange={setSharing} disabled={saving} />
+          {error && (
+            <div role="alert" className="mt-[10px] font-sans text-[12px] leading-[1.5] text-(--status-error)">
+              {error}
+            </div>
+          )}
+        </div>
+        <div className="modalfoot">
+          <div className="flex-1" />
+          <Button variant="ghost" disabled={saving} onClick={onClose}>
+            {t('cancel')}
+          </Button>
+          <Button variant="primary" disabled={saving} onClick={() => void save()}>
+            {saving ? t('saving') : t('save')}
+          </Button>
+        </div>
+      </div>
+    </Scrim>
   )
 }
 

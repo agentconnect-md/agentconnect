@@ -2918,11 +2918,11 @@ function AgentDetail() {
           />
           <AgentSkillsCard agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
           <AgentDecisionsCard key={da.id} agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
-          {/* Access is the Computer's: each Computer's own edit right gates the change, not the agent's. */}
+          {/* Computers are given here: the agent's edit right and each Computer's visibility gate the change. */}
           {featureFlagEnabled('computer-use') && (
             <AgentComputersCard
               agentId={da.id}
-              canEdit={!da.name.startsWith(MOCK_PREFIX)}
+              canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
               canEditAgent={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
             />
           )}
