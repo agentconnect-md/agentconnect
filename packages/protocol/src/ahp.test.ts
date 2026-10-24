@@ -5,7 +5,8 @@ import {
   AhpSessionUri,
   AHP_MAX_MESSAGE_BYTES,
   RdAhpMessage,
-  RdAhpOpen
+  RdAhpOpen,
+  RdAhpAuthorize
 } from './ahp.js'
 import { buildRelayDaemonFrame, decodeRelayDaemonFrame } from './frames/relay-daemon.js'
 import { RcVerify } from './frames/relay-cp.js'
@@ -57,6 +58,10 @@ describe('AHP rollout and carrier boundaries', () => {
     expect(
       RdAhpOpen.safeParse({ attachmentId: id, authorization: { ...authorization, credential: 'raw-key' } }).success
     ).toBe(false)
+    const handshake = { clientId: 'client', root: true }
+    expect(RdAhpOpen.safeParse({ attachmentId: id, authorization, handshake }).success).toBe(true)
+    expect(RdAhpOpen.safeParse({ attachmentId: id, authorization, handshake, token: 'raw-key' }).success).toBe(false)
+    expect(RdAhpAuthorize.safeParse({ attachmentId: id, authorization, handshake }).success).toBe(false)
     expect(RcVerify.parse({ kind: 'ahp-client-key', credential: 'key', agentId: id }).kind).toBe('ahp-client-key')
     expect(RcVerify.safeParse({ kind: 'ahp-client-key', credential: 'key' }).success).toBe(false)
   })

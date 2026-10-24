@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import {
+  ActionType,
   AhpErrorCodes,
   JsonRpcErrorCodes,
   negotiateProtocolVersion,
@@ -15,7 +16,7 @@ import {
   type Snapshot,
   type StateAction
 } from '@microsoft/agent-host-protocol'
-import { AhpMessageText, AhpSessionUri, type RdAhpClose } from '@agentconnect.md/protocol'
+import { AhpMessageText, AhpSessionUri, type AhpHandshake, type RdAhpClose } from '@agentconnect.md/protocol'
 import type { AhpActionJournal } from './action-journal.js'
 
 export class AhpProtocolError extends Error {
@@ -171,6 +172,23 @@ export class AhpHostConnection {
       })
     this.pending = operation
     return operation
+  }
+
+  // The relay answered `initialize` before in-band authentication, so the real agent replaces its placeholder.
+  adopt(handshake: AhpHandshake): Promise<void> {
+    return this.port.serialized(async () => {
+      this.assertAuthorized()
+      this.assertFresh()
+      this.clientId = handshake.clientId
+      this.subscriptions = new Set(handshake.root ? [root] : [])
+      if (!handshake.root) return
+      const action = { type: ActionType.RootAgentsChanged, agents: [this.port.provider] } as StateAction
+      this.send({
+        jsonrpc: '2.0',
+        method: 'action',
+        params: { channel: root, action, serverSeq: this.port.journal.currentSequence }
+      })
+    })
   }
 
   dispose(): void {
