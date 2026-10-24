@@ -1,7 +1,7 @@
 /** A Teams approval card in one person's own 1:1 chat: an external place's asker (assistant-mode.md §5.5), or the editor the control plane routes it to (teams-integration.md §4.4). */
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
-import type { RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { Daemon } from '../src/daemon.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'
 import { MsTeamsConnection } from '../src/platforms/msteams/connection.js'
@@ -26,8 +26,20 @@ const permission = {
   toolCall: { toolCallId: 'tc-1', title: 'Write example.txt' }
 } as unknown as RequestPermissionRequest
 
-/** A daemon holding one live Teams turn in a shared channel, asked by `asker`, with every card captured. */
-async function world(asker = ASKER) {
+/** An MCP-tool approval asked as a question, which no Teams card in a 1:1 chat answers. */
+const question = {
+  sessionId: 's1',
+  toolCallId: 'call-e',
+  mode: 'form',
+  message: 'Which one?',
+  requestedSchema: { type: 'object', properties: { pick: { type: 'string', enum: ['a', 'b'] } }, required: ['pick'] },
+  _meta: { codex_approval_kind: 'mcp_tool_call' }
+} as unknown as CreateElicitationRequest
+
+const SLACK_INT = 'int-slack'
+
+/** A daemon holding one live Teams turn in a shared channel, asked by `asker`, with every card captured; `slack` also connects a Slack integration. */
+async function world(asker = ASKER, slack = false) {
   const daemon: any = new Daemon({ sandboxMechanism: null })
   daemon.cfg = { ...(daemon.cfg ?? {}), webAppUrl: 'https://console.example.test' }
   const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
@@ -46,7 +58,14 @@ async function world(asker = ASKER) {
     },
     config: { appId: ZERO, tenantId: ZERO, clientSecret: 'client-secret-example' }
   }
-  daemon.agents.set(AGENT, { id: AGENT, name: 'Butler', chatActions: 'approve', integrations: [integration] })
+  const slackIntegration = { ...integration, id: SLACK_INT, platform: 'slack', config: {} }
+  daemon.agents.set(AGENT, {
+    id: AGENT,
+    name: 'Butler',
+    chatActions: 'approve',
+    integrations: slack ? [integration, slackIntegration] : [integration]
+  })
+  if (slack) daemon.connByIntegration.set(SLACK_INT, { openDirectMessage: vi.fn(async () => 'D-example') })
   const conn = Object.create(MsTeamsConnection.prototype)
   let posted = 0
   conn.isFullMember = vi.fn(async (user: string) => user !== GUEST)
@@ -212,6 +231,25 @@ describe('an approval on the editor path of a Teams turn', () => {
     await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${EDITOR}`]))
     w.permissions.disableChatPermissionSurfaces(AGENT)
     expect(w.conn.replaceCard).not.toHaveBeenCalled()
+    await w.store.close()
+  })
+})
+
+describe('an approval on the editor path of an agent on both Slack and Teams', () => {
+  const routedTo = (w: Awaited<ReturnType<typeof world>>) =>
+    w.cp.mock.calls.map((call) => (call[0] as { integrationIds?: string[] }).integrationIds)
+
+  it('offers Slack before Teams for a permission request', async () => {
+    const w = await world(GUEST, true)
+    void w.permissions.onAcpPermission(AGENT, 's1', permission)
+    await vi.waitFor(() => expect(routedTo(w)).toEqual([[SLACK_INT, INT]]))
+    await w.store.close()
+  })
+
+  it('offers only Slack for a question, which no Teams card in a 1:1 chat answers', async () => {
+    const w = await world(GUEST, true)
+    void w.permissions.onAcpElicit(AGENT, 's1', question)
+    await vi.waitFor(() => expect(routedTo(w)).toEqual([[SLACK_INT]]))
     await w.store.close()
   })
 })

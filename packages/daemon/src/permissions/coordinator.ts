@@ -1768,7 +1768,11 @@ export class PermissionCoordinator {
   ): Promise<ApprovalRouteTarget | undefined> {
     const cp = this.host.cpApprovalRoute()
     if (!cp) return undefined
-    const integrationIds = this.host.approvalDmIntegrations(agentId, p.plan.integrationId, true)
+    // A permission request no card holds yet may also go to an editor's card off Slack; Slack's own integration stays first.
+    const rec = this.pendingApprovals.get(requestId)
+    const cards = rec?.kind === 'permission' && !rec.chat && !rec.notify
+    const preferred = this.host.slackConnFor(p.plan.integrationId ?? '') ? p.plan.integrationId : undefined
+    const integrationIds = this.host.approvalDmIntegrations(agentId, preferred, cards)
     if (integrationIds.length === 0) return undefined
     // A computer-use approval goes to the Computer's owner first (computer-use.md §4.2), else down the usual chain.
     const computerOwner = subsession ? undefined : this.computerOwnerOf(requestId)
