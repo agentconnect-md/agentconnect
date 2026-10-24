@@ -445,6 +445,29 @@ reach the Bot Connector, and the Teams client took hours to list the uploaded
 app. The wizard therefore leads with the admin center upload and "Add to team",
 and says that 1:1 chats may take hours to open.
 
+### 5.1 Keeping the app current
+
+The agent's name and icon, and the manifest itself, live in the package, so
+Teams shows what was last published until a new package reaches it. Microsoft
+lets only a Teams administrator's delegated token update a catalog app; no
+application permission can, so the Control Plane cannot push a change in the
+background as it does a Telegram or Discord avatar.
+
+The Control Plane records a fingerprint of each package that reaches Teams in
+the bot row's `platformConfig.appPackage`: a hash of the manifest without its
+version and of the agent's icon descriptor. A connected tenant records it on
+each catalog publish (§8.3); an own bot records it on each download, the last
+step the Control Plane sees before the admin uploads by hand.
+`GET /integrations/:id/msteams/app-package/status` compares it with the package
+the integration would build now, and a row with none counts as out of date.
+
+When they differ, the bot's row in the Console says Teams has an older version.
+A connected tenant gets **Update in Teams**, which runs the connect flow of §8.3
+again for the same agent; an own bot uploads a fresh download. A new
+resource-specific permission is part of the manifest, so it surfaces the same
+way, and the connect flow's team upgrade re-consents it without removing the
+app from the team (§8.3 step 5).
+
 ## 6. Platform module work
 
 The integration implements the four host contracts of the
@@ -473,6 +496,9 @@ relay route is added to the chart's HTTPRoute in the same change.
 - Extended Markdown on mobile clients (§4.3).
 - Private and shared channels: Microsoft's pages disagree on whether bots may
   post there.
+- That the upgrade of §8.3 step 5 takes a new resource-specific permission and
+  the new icon without the team removing the app, and how soon a personal
+  install shows the new icon, which the Control Plane does not upgrade (§5.1).
 
 ## 8. The deployment's Teams app
 
@@ -588,7 +614,15 @@ rather than a Console rotation.
    Control Plane in the clear. The page lists the teams; the admin picks one or
    more and the Control Plane installs the app into each with the package's
    resource-specific permissions
-   (`POST /orgs/:orgId/integrations/msteams/connect/install`). The page drops
+   (`POST /orgs/:orgId/integrations/msteams/connect/install`). Before answering,
+   the Control Plane upgrades the app to the published definition in each of
+   those teams that already has it
+   (`POST /teams/{id}/installedApps/{id}/upgrade`), consenting to the
+   package's resource-specific permissions again; the delegated
+   `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` scope covers both the
+   read and the upgrade. A team that only picks up a new grant after the app is
+   removed and added again (**measured** without this step) takes it here. The
+   page marks those teams as updated and preselects none of the others. The page drops
    the single-use code from the address bar before redeeming it.
    The app also appears under **Built for your org**, where people add it to a
    1:1 chat themselves where their app setup policy allows.

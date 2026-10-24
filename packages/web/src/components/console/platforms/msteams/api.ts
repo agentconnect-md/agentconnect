@@ -3,6 +3,7 @@
 import {
   createIntegration,
   downloadMsTeamsAppPackage,
+  fetchMsTeamsAppPackageStatus,
   fetchMsTeamsDeploymentApp,
   replaceMsTeamsSecret,
   startMsTeamsConnect
@@ -13,6 +14,7 @@ export const msTeamsApi = {
   create: createIntegration,
   replaceSecret: replaceMsTeamsSecret,
   appPackage: downloadMsTeamsAppPackage,
+  appPackageStatus: fetchMsTeamsAppPackageStatus,
   deploymentApp: fetchMsTeamsDeploymentApp,
   connect: startMsTeamsConnect
 }

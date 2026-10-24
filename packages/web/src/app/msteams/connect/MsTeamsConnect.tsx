@@ -77,7 +77,9 @@ export default function MsTeamsConnect() {
         if (cancelled) return
         setOrgId(org)
         setResult(connected)
-        setChosen(new Set(connected.teams.slice(0, 1).map((team) => team.id)))
+        // An update preselects nothing: the teams that had the app already run the new package.
+        const updated = connected.teams.some((team) => team.installed)
+        setChosen(new Set(updated ? [] : connected.teams.slice(0, 1).map((team) => team.id)))
         const slug = (await fetchOrgs().catch(() => [])).find((o) => o.id === org)?.slug
         if (slug) setAgentHref(`/${slug}/agents/${connected.agentId}`)
         setPhase('teams')
@@ -102,6 +104,8 @@ export default function MsTeamsConnect() {
       fail(e)
     }
   }
+
+  const updatedCount = result?.teams.filter((team) => team.installed).length ?? 0
 
   const toggle = (id: string) =>
     setChosen((current) => {
@@ -155,6 +159,11 @@ export default function MsTeamsConnect() {
             <div>
               <h1 className="text-[18px] font-semibold leading-normal text-(--text-primary)">{t('title')}</h1>
               <p className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">{t('description')}</p>
+              {updatedCount > 0 && (
+                <p role="status" className="mt-2 text-[13px] leading-[1.55] text-(--text-secondary)">
+                  {t('updated', { count: updatedCount })}
+                </p>
+              )}
             </div>
             {result.teams.length > 0 ? (
               <div className="flex max-h-[260px] flex-col gap-2 overflow-y-auto">
@@ -165,11 +174,12 @@ export default function MsTeamsConnect() {
                   >
                     <input
                       type="checkbox"
-                      checked={chosen.has(team.id)}
-                      disabled={phase === 'installing'}
+                      checked={team.installed || chosen.has(team.id)}
+                      disabled={team.installed || phase === 'installing'}
                       onChange={() => toggle(team.id)}
                     />
                     {team.name}
+                    {team.installed && <span className="text-[12px] text-(--text-tertiary)">{t('teamUpdated')}</span>}
                   </label>
                 ))}
               </div>
@@ -178,12 +188,18 @@ export default function MsTeamsConnect() {
             )}
             <p className="text-[12px] leading-[1.5] text-(--text-tertiary)">{t('personal')}</p>
             <div className="flex gap-[10px]">
-              <Button onClick={() => void install()} disabled={phase === 'installing' || chosen.size === 0}>
-                {phase === 'installing' ? t('installing') : t('install')}
-              </Button>
-              <Button variant="ghost" onClick={() => setPhase('done')} disabled={phase === 'installing'}>
-                {t('skip')}
-              </Button>
+              {updatedCount > 0 && chosen.size === 0 ? (
+                <Button onClick={() => setPhase('done')}>{t('finish')}</Button>
+              ) : (
+                <>
+                  <Button onClick={() => void install()} disabled={phase === 'installing' || chosen.size === 0}>
+                    {phase === 'installing' ? t('installing') : t('install')}
+                  </Button>
+                  <Button variant="ghost" onClick={() => setPhase('done')} disabled={phase === 'installing'}>
+                    {t('skip')}
+                  </Button>
+                </>
+              )}
             </div>
           </>
         )}

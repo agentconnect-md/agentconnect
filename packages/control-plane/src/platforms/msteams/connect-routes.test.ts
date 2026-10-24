@@ -40,6 +40,8 @@ async function harness(
     tid?: string
     publish?: number
     organization?: string | null
+    installedIn?: string[]
+    upgrade?: number
   } = {}
 ) {
   const graph: { method: string; url: string; body?: unknown }[] = []
@@ -50,6 +52,13 @@ async function harness(
     if (url.endsWith('/oauth2/v2.0/token'))
       return Response.json({ access_token: 'delegated', id_token: idToken(opts.tid ?? CUSTOMER) })
     graph.push({ method: init?.method ?? 'GET', url, body: init?.body })
+    const team = /\/teams\/([^/]+)\/installedApps/.exec(url)?.[1]
+    if (team && url.endsWith('/upgrade')) {
+      order.push(`upgrade ${team}`)
+      return new Response(null, { status: opts.upgrade ?? 204 })
+    }
+    if (team && url.includes('$filter'))
+      return Response.json({ value: opts.installedIn?.includes(team) ? [{ id: `install-${team}` }] : [] })
     if (url.includes('$filter')) return Response.json({ value: [] })
     if (url.includes('/appCatalogs/teamsApps')) {
       order.push('publish')
@@ -57,7 +66,13 @@ async function harness(
         ? new Response(null, { status: opts.publish })
         : Response.json({ id: 'catalog-1' }, { status: 201 })
     }
-    if (url.includes('/me/joinedTeams')) return Response.json({ value: [{ id: 'team-1', displayName: 'Engineering' }] })
+    if (url.includes('/me/joinedTeams'))
+      return Response.json({
+        value: [
+          { id: 'team-1', displayName: 'Engineering' },
+          { id: 'team-2', displayName: 'Support' }
+        ]
+      })
     if (url.includes('/organization'))
       return opts.organization === null
         ? new Response(null, { status: 403 })
@@ -80,6 +95,14 @@ async function harness(
   })
   const credentialInstall = vi.fn(async () => 2)
   const syncBot = vi.fn(async () => {})
+  const recorded: Record<string, string>[] = []
+  const mergeBotIdentity = vi.fn(
+    async (_org: OrgId, _id: BotId, merge: (current: unknown) => { platformConfig?: Record<string, string> }) => {
+      order.push('record')
+      recorded.push(merge({ platformConfig: {}, externalTenantId: null }).platformConfig ?? {})
+      return true
+    }
+  )
   const deps = {
     config: { PUBLIC_RELAY_URL: 'https://relay.example.test' },
     clock,
@@ -97,7 +120,7 @@ async function harness(
           visibility: 'org'
         })
       },
-      bot: { getByExternalIdentity: async () => held, create },
+      bot: { getByExternalIdentity: async () => held, create, mergeBotIdentity },
       botSecret: { put },
       botCredential: { install: credentialInstall },
       integration: { create: integrationCreate, addBotMembership }
@@ -133,6 +156,7 @@ async function harness(
     addBotMembership,
     credentialInstall,
     syncBot,
+    recorded,
     callback,
     state
   }
@@ -165,7 +189,13 @@ describe('the deployment Teams app routes', () => {
     const h = await harness()
     const res = await h.callback()
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ agentId: AGENT, teams: [{ id: 'team-1', name: 'Engineering' }] })
+    expect(res.json()).toMatchObject({
+      agentId: AGENT,
+      teams: [
+        { id: 'team-1', name: 'Engineering', installed: false },
+        { id: 'team-2', name: 'Support', installed: false }
+      ]
+    })
     expect(h.create).toHaveBeenCalledWith(
       expect.objectContaining({
         orgId: ORG,
@@ -174,7 +204,7 @@ describe('the deployment Teams app routes', () => {
         prebuilt: true,
         name: 'Microsoft Teams · Example Org',
         externalAppId: APP.appId,
-        platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId }
+        platformConfig: { tenantId: CUSTOMER, tokenTenantId: APP.tenantId, appPackage: expect.any(String) }
       })
     )
     expect(h.put).toHaveBeenCalledWith(ORG, expect.anything(), {
@@ -186,7 +216,9 @@ describe('the deployment Teams app routes', () => {
       'GET https://graph.microsoft.com/v1.0/appCatalogs/teamsApps',
       'POST https://graph.microsoft.com/v1.0/appCatalogs/teamsApps',
       'GET https://graph.microsoft.com/v1.0/organization',
-      'GET https://graph.microsoft.com/v1.0/me/joinedTeams'
+      'GET https://graph.microsoft.com/v1.0/me/joinedTeams',
+      'GET https://graph.microsoft.com/v1.0/teams/team-1/installedApps',
+      'GET https://graph.microsoft.com/v1.0/teams/team-2/installedApps'
     ])
     expect(JSON.stringify(res.json())).not.toContain('delegated')
 
@@ -240,6 +272,40 @@ describe('the deployment Teams app routes', () => {
     expect(h.addBotMembership).toHaveBeenCalledWith(expect.objectContaining({ agentId: AGENT, botId: BOT }))
     expect(h.credentialInstall).toHaveBeenCalled()
     expect(h.syncBot).toHaveBeenCalledWith(BOT)
+  })
+
+  it('updates a connected tenant: publishes, records the package, and upgrades each team that has the app with re-consent', async () => {
+    const h = await harness({ held: { agentIds: [AGENT] }, installedIn: ['team-2'] })
+    const res = await h.callback()
+    expect(res.statusCode).toBe(200)
+    expect(res.json<{ teams: unknown[] }>().teams).toEqual([
+      { id: 'team-1', name: 'Engineering', installed: false },
+      { id: 'team-2', name: 'Support', installed: true }
+    ])
+    expect(h.order).toEqual(['publish', 'membership', 'record', 'upgrade team-2'])
+    expect(h.recorded).toEqual([{ appPackage: expect.stringMatching(/^[\w-]{22}$/) }])
+    const upgrade = h.graph.find((call) => call.url.endsWith('/upgrade'))
+    expect(upgrade?.url).toBe('https://graph.microsoft.com/v1.0/teams/team-2/installedApps/install-team-2/upgrade')
+    const consented = JSON.parse(String(upgrade?.body)) as {
+      consentedPermissionSet: { resourceSpecificPermissions: { permissionValue: string; permissionType: string }[] }
+    }
+    expect(consented.consentedPermissionSet.resourceSpecificPermissions).toContainEqual({
+      permissionValue: 'TeamSettings.Read.Group',
+      permissionType: 'application'
+    })
+  })
+
+  it('keeps the connect when Microsoft refuses or fails a team’s upgrade, and leaves that team unmarked', async () => {
+    for (const upgrade of [403, 500]) {
+      const h = await harness({ held: { agentIds: [AGENT] }, installedIn: ['team-1'], upgrade })
+      const res = await h.callback()
+      expect(res.statusCode).toBe(200)
+      expect(res.json<{ teams: { installed: boolean }[] }>().teams.map((team) => team.installed)).toEqual([
+        false,
+        false
+      ])
+      expect(h.recorded).toHaveLength(1)
+    }
   })
 
   it('names the row after the tenant when Graph answers no organization name', async () => {

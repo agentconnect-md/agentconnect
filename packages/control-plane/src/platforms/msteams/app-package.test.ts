@@ -8,6 +8,7 @@ import {
   msTeamsAppIcons,
   msTeamsAppPackage,
   msTeamsManifest,
+  msTeamsPackageFingerprint,
   msTeamsPackageId,
   msTeamsPackageVersion,
   uuidV5
@@ -99,6 +100,28 @@ describe('Teams manifest', () => {
     expect(manifest.name.short.endsWith('…')).toBe(true)
     expect(manifest.name.full).toHaveLength(100)
     expect(manifest.description.short.length).toBeLessThanOrEqual(80)
+  })
+})
+
+describe('Teams package fingerprint', () => {
+  const { nowMs: _now, ...input } = manifestInput
+  const glyph = { ...AGENT, icon: { kind: 'glyph' as const, glyph: 'bot', color: 'blue' } } as never
+
+  it('ignores the version but follows the name, the icon, and the manifest', () => {
+    const fingerprint = msTeamsPackageFingerprint(input, glyph)
+    expect(fingerprint).toMatch(/^[\w-]{22}$/)
+    expect(msTeamsPackageFingerprint(input, glyph)).toBe(fingerprint)
+    expect(msTeamsPackageFingerprint({ ...input, agentName: 'Renamed' }, glyph)).not.toBe(fingerprint)
+    expect(msTeamsPackageFingerprint({ ...input, relayHost: 'relay2.example.test' }, glyph)).not.toBe(fingerprint)
+    const recolored = { ...AGENT, icon: { kind: 'glyph' as const, glyph: 'bot', color: 'green' } } as never
+    expect(msTeamsPackageFingerprint(input, recolored)).not.toBe(fingerprint)
+  })
+
+  it('follows the runtime mark only while the agent has no icon of its own', () => {
+    const codex = { ...AGENT, runtime: 'codex' }
+    expect(msTeamsPackageFingerprint(input, { ...AGENT, icon: null })).not.toBe(
+      msTeamsPackageFingerprint(input, { ...codex, icon: null })
+    )
   })
 })
 

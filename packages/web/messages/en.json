@@ -1334,6 +1334,9 @@
       "personal": "For 1:1 chats, people add the app from Apps → Built for your org where their app setup policy allows.",
       "install": "Add to teams",
       "installing": "Adding…",
+      "updated": "Updated the app in {count, plural, one {# team} other {# teams}} that already had it.",
+      "teamUpdated": "Updated",
+      "finish": "Done",
       "skip": "Skip",
       "doneTitle": "Teams is connected",
       "doneBody": "Mention the agent in a channel of the teams you chose; it answers there.",
@@ -6409,7 +6412,10 @@
       },
       "appPackage": {
         "download": "Download app package",
-        "downloading": "Downloading…"
+        "downloading": "Downloading…",
+        "outdated": "Teams has an older version of this app.",
+        "update": "Update in Teams",
+        "updating": "Opening Microsoft…"
       },
       "settings": {
         "newSecret": "New client secret",

@@ -72,8 +72,8 @@ describe('MsTeamsConnect', () => {
       integrationId: 'int-1',
       agentId: 'agent-a',
       teams: [
-        { id: 'team-1', name: 'Engineering' },
-        { id: 'team-2', name: 'Support' }
+        { id: 'team-1', name: 'Engineering', installed: false },
+        { id: 'team-2', name: 'Support', installed: false }
       ],
       ticket: 'sealed'
     })
@@ -86,6 +86,28 @@ describe('MsTeamsConnect', () => {
     expect(mocks.install).toHaveBeenCalledWith('org-a', 'sealed', ['team-1'])
     expect(host.textContent).toContain('Teams is connected')
     expect(host.querySelector('a')?.getAttribute('href')).toBe('/example/agents/agent-a')
+  })
+
+  it('shows an update: the teams that had the app are updated, and nothing more is preselected', async () => {
+    mocks.finish.mockResolvedValue({
+      integrationId: 'int-1',
+      agentId: 'agent-a',
+      teams: [
+        { id: 'team-1', name: 'Engineering', installed: true },
+        { id: 'team-2', name: 'Support', installed: false }
+      ],
+      ticket: 'sealed'
+    })
+    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('Updated the app in 1 team that already had it.')
+    const boxes = [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+    expect(boxes.map((box) => [box.checked, box.disabled])).toEqual([
+      [true, true],
+      [false, false]
+    ])
+    await act(async () => button('Done').click())
+    expect(mocks.install).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Teams is connected')
   })
 
   it('names a refusal, and a sign-in Microsoft sent back without a code', async () => {

@@ -5368,6 +5368,12 @@ export async function downloadMsTeamsAppPackage(integrationId: string): Promise<
   if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
   return await res.blob()
 }
+/** Whether Teams holds the package the integration would build now (teams-integration.md §5.1). */
+export async function fetchMsTeamsAppPackageStatus(integrationId: string): Promise<{ current: boolean }> {
+  return apiGet<{ current: boolean }>(
+    `${orgBase()}/integrations/${encodeURIComponent(integrationId)}/msteams/app-package/status`
+  )
+}
 /** `GET /integrations/msteams/app`: the deployment Teams app's ID, null when the deployment has none (teams-integration.md §8). */
 export interface MsTeamsDeploymentAppDto {
   appId: string | null
@@ -5382,7 +5388,8 @@ export async function startMsTeamsConnect(orgId: string, agentId: string): Promi
 export interface MsTeamsConnectResultDto {
   integrationId: string
   agentId: string
-  teams: { id: string; name: string }[]
+  /** `installed`: the team already had the app and now runs the published package. */
+  teams: { id: string; name: string; installed: boolean }[]
   ticket: string
 }
 /** Redeem the code Microsoft returned: connects the tenant and answers the administrator's teams. */

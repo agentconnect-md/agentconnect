@@ -7,7 +7,7 @@ import { useConsoleData } from '@/lib/data-context'
 import type { WebBotSettingsFragments } from '../contract'
 import { useDeploymentConfig } from '../deployment-config'
 import { msTeamsApi } from './api'
-import { AppPackageButton } from './app-package'
+import { AppPackageActions } from './app-package'
 import { CopyField } from './fields'
 import { msTeamsErrorMessage, msTeamsMessagesUrl } from './setup'
 
@@ -24,7 +24,7 @@ export function MsTeamsBotSettings({ bot, canWrite }: { bot: BotDto; canWrite: b
 
   const endpoint = msTeamsMessagesUrl(probe.config?.relayPublicUrl ?? null)
   // The package is built per integration; a freed bot has none to build it from.
-  const integrationId = integrations.find((row) => row.botId === bot.id)?.id
+  const integration = integrations.find((row) => row.botId === bot.id)
   const secretTrim = secret.trim()
 
   const replace = async () => {
@@ -90,10 +90,13 @@ export function MsTeamsBotSettings({ bot, canWrite }: { bot: BotDto; canWrite: b
           {result.text}
         </p>
       )}
-      {integrationId && (
-        <div className="flex">
-          <AppPackageButton integrationId={integrationId} className="dsbtn sm dsbtn-secondary" />
-        </div>
+      {integration?.id && integration.agentId && (
+        <AppPackageActions
+          integrationId={integration.id}
+          agentId={integration.agentId}
+          connected={bot.prebuilt}
+          canWrite={canWrite}
+        />
       )}
     </div>
   )
