@@ -583,9 +583,13 @@ The command-chrome surface (`platforms/command-chrome.ts`) also carries an
 optional `notice` member for core's notices outside a command or a turn's
 output: a gated conversation's one-time notice and a cut turn's notice. A
 platform with a shared reply connection keeps posting them through it; one
-whose connection is outside that set (Google Chat) posts them through
-`notice`, so core never branches on the platform. A surface without the member
-posts nothing, as before.
+whose connection is outside that set (Google Chat, Teams, DingTalk, QQ,
+Linear) posts them through `notice`, so core never branches on the platform.
+`notice` also receives the message that raised it, because QQ can only reply
+passively to a message. A send that did not land rejects; the gated notice's
+once-per-conversation latch is held only while its post is in flight, and a
+failed post leaves the notice owed to the next addressed message. A surface
+without the member posts nothing.
 
 `DaemonPlatformModule.chatMemberKey?` is the same kind of member: the id a
 synced organization matches a platform's chat member to a console account by,
