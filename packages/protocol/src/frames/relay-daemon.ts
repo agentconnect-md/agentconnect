@@ -710,6 +710,28 @@ export const WireMsTeamsCardAction = z.object({
 })
 export type WireMsTeamsCardAction = z.infer<typeof WireMsTeamsCardAction>
 
+/** The most people one forwarded Teams member join names; Teams batches a roster change into one activity. */
+export const MSTEAMS_MEMBERS_ADDED_MAX = 50
+
+/** R→D `platform_action` payload for people added to a Teams conversation, each looked up for a guest or another organization (assistant-mode.md §5.3). */
+export const WireMsTeamsMembersAdded = z.object({
+  kind: z.literal('members-added'),
+  /** The conversation the roster changed in, `;messageid=` stripped: a channel, a chat, or the team's General channel. */
+  conversationId: z.string().min(1),
+  /** The regional Bot Connector origin the token vouched for, where the member lookup goes. */
+  serviceUrl: z.string().url(),
+  /** The team, when the change was to a team or one of its channels. */
+  teamId: z.string().min(1).optional(),
+  /** Whether people joined the whole team, which reaches every standard channel, rather than one channel or chat. */
+  teamWide: z.boolean(),
+  /** Each added person's bot-specific `29:…` ID, and their Entra object ID where Teams sent one. */
+  members: z
+    .array(z.object({ id: z.string().min(1), aadObjectId: z.string().min(1).optional() }))
+    .min(1)
+    .max(MSTEAMS_MEMBERS_ADDED_MAX)
+})
+export type WireMsTeamsMembersAdded = z.infer<typeof WireMsTeamsMembersAdded>
+
 /** The longest note a Teams card click's ack may hand the relay to show the clicker. */
 export const MSTEAMS_CARD_NOTE_MAX = 500
 

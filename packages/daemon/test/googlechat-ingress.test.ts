@@ -172,7 +172,8 @@ describe('the strategy on the shared relay-ingress host', () => {
       connection: () => undefined,
       agent: () => undefined,
       noteMessage: () => {},
-      observePlatformChat: async () => {}
+      observePlatformChat: async () => {},
+      placeExternal: () => {}
     }
   }
 

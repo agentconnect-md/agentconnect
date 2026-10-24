@@ -466,6 +466,17 @@ export interface RelayCardClicks {
   response(privateText: string): unknown
 }
 
+/** §5.3 relayed member joins: people added to a conversation, each looked up for a guest or another organization. */
+export interface RelayMemberJoins {
+  /** The join a payload carries, its lookups not yet run; null for a payload that is no member join of this platform's. */
+  decode(msg: RdMsgPlatformAction): MemberJoin | null
+}
+
+/** One relayed member join: the places it made external and why, looked up only when asked. */
+export interface MemberJoin {
+  reasons(): Promise<{ channel: string; reason: PlaceExternalReason }[]>
+}
+
 /** The host lookup a thread strategy places a reply with: the thread a recorded message id was filed under. */
 export interface ThreadingHost {
   threadForMessage(transcriptChannel: string, messageId: string): Promise<string | undefined>
@@ -482,4 +493,6 @@ export interface DaemonPlatformModule {
   canonicalizeThread?(host: ThreadingHost, msg: NormalizedMessage, transcriptChannel: string): Promise<void>
   /** Clicks on this platform's approval and question cards that arrive as relayed `platform_action`s; absent ⇒ none do. */
   readonly cardClicks?: RelayCardClicks
+  /** People added to a conversation, arriving as relayed `platform_action`s; absent ⇒ none do. */
+  readonly memberJoins?: RelayMemberJoins
 }

@@ -375,6 +375,36 @@ member lookup (enabled when the deployment offers Microsoft sign-in), the
 row, and the migrations that fence earlier Teams conversations on the Control
 Plane and bind them to their tenant in the daemon's store.
 
+### 4.6 Audience
+
+A Teams place is judged external by the same three signals as any platform
+([assistant-mode.md §5.3](assistant-mode.md)), read with the bot's own token:
+
+- **Shared.** A shared channel can reach people outside its team and its
+  organization, so its posts carry the share, and `getChannelInfo` reports it,
+  from the team's channel list (`type`: `standard`, `private` or `shared`). A
+  channel whose list cannot be read is unknown, never unshared. The share lifts
+  when the channel stops being shared.
+- **A guest.** A person added to a channel, chat or team (`conversationUpdate`
+  with `membersAdded`, forwarded by the relay) is looked up in that
+  conversation. `userRole: guest` makes the place external, and it stays so.
+  A person added to a team reaches every standard channel the team's list
+  names.
+- **Another organization.** A looked-up `tenantId` other than the bot's tenant
+  makes the place external the same way.
+
+A person is a full member, who may approve a draft, when a lookup in a
+conversation the bot shares with them answers `userRole: user` in the bot's
+tenant; no conversation to ask means no answer, never yes. A conversation's
+member list (`pagedmembers`) is authoritative for standard and private
+channels and chats; a shared channel refuses the bot that read, so its
+membership is not decided from it.
+
+Every channel reports private for now: a standard channel is public only to
+its team, and whether that team is public needs a read this package does not
+yet ask for. A chat is shared with no organization; a person from another one
+in it is a member's reason, found when they join.
+
 ## 5. Console setup
 
 The wizard walks the admin through both registrations and then:

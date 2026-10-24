@@ -1,6 +1,11 @@
 // One Teams bot's daemon connection (teams-integration.md §3, §4.3): relay-terminated ingress, Bot Connector egress, no socket.
 import { createHash } from 'node:crypto'
-import { MSTEAMS_PLATFORM, type IntegrationMsTeamsConfig } from '@agentconnect.md/protocol'
+import {
+  MSTEAMS_PLATFORM,
+  type IntegrationMsTeamsConfig,
+  type PlaceExternalReason,
+  type WireMsTeamsMembersAdded
+} from '@agentconnect.md/protocol'
 import type { Agent } from '../../agents/agent-schema.js'
 import type { Logger } from '../../log.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
@@ -25,6 +30,8 @@ import {
   MSTEAMS_WRITE_TIMEOUT_MS,
   MsTeamsApi,
   MsTeamsApiError,
+  type MsTeamsChannelKind,
+  type MsTeamsMember,
   type MsTeamsTarget
 } from './api.js'
 import {
@@ -148,6 +155,31 @@ const ROSTER_TTL_MS = 10 * 60_000
 const ROSTER_MAX = 500
 /** The most Graph reads one history page makes to fill itself past dropped system events. */
 const HISTORY_FILL_READS = 5
+/** How long a person's standing is trusted before it is looked up again. */
+const STANDING_TTL_MS = 10 * 60_000
+/** The most members an authoritative listing reads before it refuses to answer a partial one. */
+const MEMBER_IDS_MAX = 2_000
+
+/** A channel as its team's list reports it. */
+interface TeamChannel {
+  name: string
+  kind?: MsTeamsChannelKind
+}
+
+/** A guest, or a member of another tenant, makes the place they joined external; null for a member of the bot's own tenant. */
+export function memberExternalReason(member: MsTeamsMember, homeTenantId: string): PlaceExternalReason | null {
+  if (member.userRole?.toLowerCase() === 'guest') return 'guestMember'
+  return member.tenantId && member.tenantId.toLowerCase() !== homeTenantId.toLowerCase() ? 'externalMember' : null
+}
+
+/** A full member of the bot's organization, who may approve a draft: stricter than the reason above, so an unknown role is not one. */
+export function fullMember(member: MsTeamsMember, homeTenantId: string): boolean {
+  return (
+    member.userRole?.toLowerCase() === 'user' &&
+    member.tenantId?.toLowerCase() === homeTenantId.toLowerCase() &&
+    !member.id.startsWith('28:')
+  )
+}
 
 export interface MsTeamsDeps {
   group: MsTeamsConnectionGroup
@@ -194,8 +226,10 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   private readonly names = new Map<string, string>()
   /** Conversation → its member list and when it was read; a read in flight is shared, a failed one answers undefined. */
   private readonly rosters = new Map<string, { at: number; members: Promise<PlatformMemberRef[] | undefined> }>()
-  /** Team → its channel names and when they were read; a read in flight is shared. */
-  private readonly teamChannels = new Map<string, { at: number; names: Promise<Map<string, string>> }>()
+  /** Team → its channels' names and types and when they were read; a read in flight is shared. */
+  private readonly teamChannels = new Map<string, { at: number; channels: Promise<Map<string, TeamChannel>> }>()
+  /** Person, by `29:` and Entra object ID → their standing as a lookup or a member listing last answered. */
+  private readonly standings = new Map<string, { at: number; member: MsTeamsMember }>()
   /** Conversation + card activity ID → where it landed; an activity ID is unique only within its conversation (§4.2). */
   private readonly cards = new Map<string, MsTeamsTarget>()
   private readonly writeGate: (() => Promise<void>) | undefined
@@ -350,36 +384,135 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     return queue
   }
 
-  // ── 3. read port: members from the Bot Connector, else observed from traffic ──
+  // ── 3. read port: members from the Bot Connector, else observed from traffic; the audience as Slack's is judged (assistant-mode.md §5.3) ──
 
   async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {
     const known = this.conversations.get(channel)
     const isIm = known ? known.kind === 'personal' : channel.startsWith('a:')
-    // A channel's name follows its team's list, refreshed after the TTL; the last one read stands while a refresh fails.
-    const name = known?.kind === 'channel' ? ((await this.channelName(channel, known)) ?? known.name) : known?.name
-    return { id: channel, ...(name ? { name } : {}), isIm, isPrivate: true }
+    if (known?.kind !== 'channel') {
+      // A chat is shared with no organization; a person from another one in it is a member's reason, as on Slack.
+      const name = known?.name
+      return {
+        id: channel,
+        ...(name ? { name } : {}),
+        isIm,
+        isPrivate: true,
+        ...(known ? { externalReason: null } : {})
+      }
+    }
+    // A channel's name and type follow its team's list, refreshed after the TTL; the last name read stands while a refresh fails.
+    const listed = await this.teamChannel(channel, known)
+    const name = listed?.name ?? known.name
+    return {
+      id: channel,
+      ...(name ? { name } : {}),
+      isIm,
+      isPrivate: true,
+      // A shared channel reaches beyond the team; a channel whose type is unread is unknown, never unshared.
+      ...(listed?.kind ? { externalReason: listed.kind === 'shared' ? 'externallyShared' : null } : {})
+    }
   }
 
-  // A channel's name from its team's channel list, read at most once per TTL per team; a failed read names nothing.
-  private async channelName(channel: string, known: KnownConversation): Promise<string | undefined> {
-    const { teamId, serviceUrl } = known
-    if (!teamId) return undefined
+  /** Whether a delivered message's channel is a shared one, so the message carries the share as Slack's envelope does. */
+  async sharedChannel(channel: string): Promise<boolean> {
+    const known = this.conversations.get(channel)
+    return known?.kind === 'channel' && (await this.teamChannel(channel, known))?.kind === 'shared'
+  }
+
+  // A channel's name and type from its team's channel list; a failed read names nothing.
+  private async teamChannel(channel: string, known: KnownConversation): Promise<TeamChannel | undefined> {
+    if (!known.teamId) return undefined
+    const listed = (await this.teamChannelList(known.teamId, known.serviceUrl)).get(channel)
+    const current = this.conversations.get(channel)
+    if (listed && current) remember(this.conversations, channel, { ...current, name: listed.name }, CONVERSATIONS_MAX)
+    return listed
+  }
+
+  // A team's channels, read at most once per TTL per team; a failed read answers none until the TTL passes.
+  private async teamChannelList(teamId: string, serviceUrl: string): Promise<Map<string, TeamChannel>> {
     let entry = this.teamChannels.get(teamId)
     if (!entry || this.now() - entry.at > TEAM_CHANNELS_TTL_MS) {
-      const names = this.api.teamChannels(serviceUrl, teamId).then(
-        (channels) => new Map(channels.map((c) => [c.id, c.name ?? DEFAULT_CHANNEL_NAME])),
+      const channels = this.api.teamChannels(serviceUrl, teamId).then(
+        (list) =>
+          new Map(
+            list.map((c) => [c.id, { name: c.name ?? DEFAULT_CHANNEL_NAME, ...(c.kind ? { kind: c.kind } : {}) }])
+          ),
         (err: unknown) => {
           this.deps.log?.debug(`msteams: reading a team's channels failed: ${(err as Error).message}`)
-          return new Map<string, string>()
+          return new Map<string, TeamChannel>()
         }
       )
-      entry = { at: this.now(), names }
+      entry = { at: this.now(), channels }
       remember(this.teamChannels, teamId, entry, CONVERSATIONS_MAX)
     }
-    const name = (await entry.names).get(channel)
-    const current = this.conversations.get(channel)
-    if (name && current) remember(this.conversations, channel, { ...current, name }, CONVERSATIONS_MAX)
-    return name
+    return await entry.channels
+  }
+
+  /** The places a roster change made external and why: each added person looked up for a guest or another organization. */
+  async joinedMemberReasons(
+    join: WireMsTeamsMembersAdded
+  ): Promise<{ channel: string; reason: PlaceExternalReason }[]> {
+    const reasons = new Set<PlaceExternalReason>()
+    for (const { id, aadObjectId } of join.members) {
+      const member = await this.api
+        .conversationMember(join.serviceUrl, join.conversationId, aadObjectId ?? id)
+        .catch((err: unknown) => {
+          this.deps.log?.warn(`msteams: looking up a member who joined failed: ${(err as Error).message}`)
+          return undefined
+        })
+      if (!member) continue
+      this.noteStanding(member)
+      const reason = memberExternalReason(member, this.tenantId)
+      if (reason) reasons.add(reason)
+    }
+    if (reasons.size === 0) return []
+    // A person who joined the team reaches every standard channel; a channel or chat join reaches that one.
+    const channels = new Set([join.conversationId])
+    if (join.teamWide && join.teamId)
+      for (const [id, c] of await this.teamChannelList(join.teamId, join.serviceUrl))
+        if (c.kind === 'standard') channels.add(id)
+    return [...channels].flatMap((channel) => [...reasons].map((reason) => ({ channel, reason })))
+  }
+
+  /** A full member of the bot's organization: a `user` of its tenant, never a guest, someone from another tenant, or a bot. */
+  async isFullMember(user: string): Promise<boolean> {
+    return fullMember(await this.standingOf(user), this.tenantId)
+  }
+
+  // A person's standing within the TTL, else looked up in a conversation they were seen in; rejects when none can tell.
+  private async standingOf(user: string): Promise<MsTeamsMember> {
+    const hit = this.standings.get(user)
+    if (hit && this.now() - hit.at < STANDING_TTL_MS) return hit.member
+    for (const [channel, seen] of this.members) {
+      const known = seen.has(user) ? this.conversations.get(channel) : undefined
+      if (!known) continue
+      const member = await this.api.conversationMember(known.serviceUrl, channel, user).catch(() => undefined)
+      if (member) {
+        this.noteStanding(member)
+        return member
+      }
+    }
+    throw new MsTeamsApiError(
+      'msteams: no conversation this bot shares with the person tells their standing',
+      'not_found'
+    )
+  }
+
+  private noteStanding(member: MsTeamsMember): void {
+    const entry = { at: this.now(), member }
+    remember(this.standings, member.id, entry, NAMES_MAX)
+    if (member.aadObjectId) remember(this.standings, member.aadObjectId, entry, NAMES_MAX)
+  }
+
+  /** Every current member of a conversation, keyed as a sender is; rejects when the listing is refused or longer than one read. */
+  async listMemberIds(channel: string): Promise<string[]> {
+    const known = this.conversations.get(channel)
+    if (!known) throw new MsTeamsApiError('msteams: the conversation is unknown to this bot', 'not_found')
+    const { members, complete } = await this.api.conversationMembers(known.serviceUrl, channel, MEMBER_IDS_MAX)
+    if (!complete)
+      throw new MsTeamsApiError('msteams: the conversation has more members than one listing reads', 'invalid')
+    for (const m of members) this.noteStanding(m)
+    return members.filter((m) => !m.id.startsWith('28:')).map((m) => m.aadObjectId ?? m.id)
   }
 
   // The conversation's member list read through the Bot Connector, else the people seen speaking there.
@@ -395,12 +528,14 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     let entry = this.rosters.get(channel)
     if (!entry || this.now() - entry.at > ROSTER_TTL_MS) {
       const members = this.api.conversationMembers(known.serviceUrl, channel, ROSTER_MAX).then(
-        (list) =>
-          list.map(({ id, aadObjectId, name }) => ({
+        ({ members: list }) => {
+          for (const m of list) this.noteStanding(m)
+          return list.map(({ id, aadObjectId, name }) => ({
             id: aadObjectId ?? id,
             ...(name ? { name } : {}),
             isBot: id.startsWith('28:')
-          })),
+          }))
+        },
         (err: unknown) => {
           this.deps.log?.debug(`msteams: reading a conversation's members failed: ${(err as Error).message}`)
           return undefined
