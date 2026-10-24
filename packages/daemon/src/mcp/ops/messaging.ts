@@ -18,7 +18,8 @@ import {
   directMessagePlatformFor,
   directMessagePlatformList,
   offersDirectMessages,
-  platformLabel
+  platformLabel,
+  rendersBodyMentions
 } from '../../platforms/read-ports.js'
 
 /** The repair every pre-effect `sendMessage` rejection ends with: the action's guide, then a retry. */
@@ -679,6 +680,18 @@ export async function deliverSendMessage(
     // preferring this session's when it qualifies — the generalization of the literal
     // `'slack'` that used to sit here.
     const wantPlatform = namedPlatform ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
+    // A platform whose mention is not body text would show the `<@id>` raw and notify nobody; refused before anything is read.
+    if (
+      toUsers !== undefined &&
+      channel !== undefined &&
+      offersDirectMessages(wantPlatform) &&
+      !rendersBodyMentions(wantPlatform)
+    ) {
+      throw new Error(
+        `sendMessage: toUser with channel (an @-mention in a channel) is not supported on ${platformLabel(wantPlatform)}; ` +
+          'send toUser alone for a direct message, or post to the channel without toUser'
+      )
+    }
     if (toAgent === undefined) {
       const named = [...(toUsers ?? []), ...[...message.matchAll(MENTION)].map((match) => match[1]!)]
       refuseAgentBotTargets(ctx, deps, wantPlatform, named, {

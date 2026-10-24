@@ -255,6 +255,14 @@ which expires 90 minutes after the message (**measured**) and cannot send cards.
 A send's `msgParam` is limited to 15,000 bytes. A plain message cannot be
 edited, only recalled by its process query key.
 
+An agent can direct-message a member it has seen (`sendMessage` with `toUser`
+alone): the DM is the batch send to that staff ID, so the read ports declare
+`openDirectMessage`. An outsider's opaque sender id addresses no DM and is
+refused. The `toUser` form that @-mentions people in a group is refused on
+DingTalk: the group send takes no mentions, so a `<@id>` in the body would show
+raw and notify nobody. Only a card delivery carries mentions
+(`imGroupOpenDeliverModel.atUserIds`), which a later change can use.
+
 ### 4.3 Acknowledgement and Markdown
 
 A turn is acknowledged by a reaction on the message that started it: DingTalk's

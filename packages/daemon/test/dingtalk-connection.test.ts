@@ -5,6 +5,8 @@ import { DINGTALK_MSG_PARAM_MAX_BYTES, splitForMsgParam } from '../src/platforms
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { fakeSocketFactory } from './fakes/dingtalk-socket.js'
 import { elicitOptionToken } from '../src/slack/render.js'
+import { Daemon } from '../src/daemon.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const log = { trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 const ORIGIN = 'https://api.example.test'
@@ -166,6 +168,21 @@ describe('DingTalk connection', () => {
       ['cid-example-group', 'externalMember'],
       ['cid-example-other', 'externalMember']
     ])
+  })
+
+  it("is the send tool's gateway: it opens a member's DM and posts there, and refuses an outsider", async () => {
+    const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { calls, fetchImpl } = fakeFetch({ failSendAfter: 1 })
+    const { conn } = connect(fetchImpl)
+    daemon.dingTalkConnByIntegration.set('int-dt', conn)
+    expect(daemon.gatewayForIntegration('int-dt')).toBe(conn)
+
+    const dm = await conn.openDirectMessage('user-0001')
+    expect(await conn.postMessage(dm, 'Review done.')).toBe('pqk-1')
+    expect(calls.at(-1)).toMatchObject({ path: '/v1.0/robot/oToMessages/batchSend', body: { userIds: ['user-0001'] } })
+    await expect(conn.openDirectMessage('$:LWCP_v1:$outsider')).rejects.toThrow("needs a member's staff ID")
+    // A refused send surfaces to the tool rather than reading as posted.
+    await expect(conn.postMessage('cid-example-group', 'Again.')).rejects.toThrow()
   })
 
   it('sends to a group by its conversation and to a DM by the staff id, with one cached token', async () => {

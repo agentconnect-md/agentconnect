@@ -1217,7 +1217,7 @@ describe('executeTool: sendMessage (channel post)', () => {
     const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
     await expect(
       executeTool(dual, 'sendMessage', { action: 'postMessage', toUser: '42', platform: 'telegram', message: 'x' }, d)
-    ).rejects.toThrow('sendMessage: toUser is only supported on Slack (not telegram) yet')
+    ).rejects.toThrow('sendMessage: toUser is only supported on Slack or DingTalk (not telegram) yet')
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
@@ -1235,7 +1235,32 @@ describe('executeTool: sendMessage (channel post)', () => {
         { action: 'postMessage', toUser: '42', channel: '-100123', platform: 'telegram', message: 'x' },
         d
       )
-    ).rejects.toThrow('sendMessage: toUser is only supported on Slack (not telegram) yet')
+    ).rejects.toThrow('sendMessage: toUser is only supported on Slack or DingTalk (not telegram) yet')
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('sends a DingTalk DM, and refuses the channel form whose mention DingTalk would show raw', async () => {
+    const gw = fakeGateway()
+    const { deps: d } = deps(gw)
+    const dt = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-dt', platform: 'dingtalk' }] }
+    await executeTool(
+      dt,
+      'sendMessage',
+      { action: 'postMessage', toUser: '0123', platform: 'dingtalk', message: 'x' },
+      d
+    )
+    expect(gw.openDirectMessage).toHaveBeenCalledWith('0123')
+    expect(gw.postMessage).toHaveBeenCalledWith('D-0123', 'x', undefined, authorIdentity)
+
+    vi.mocked(gw.postMessage).mockClear()
+    await expect(
+      executeTool(
+        dt,
+        'sendMessage',
+        { action: 'postMessage', toUser: '0123', channel: 'cid-example', platform: 'dingtalk', message: 'x' },
+        d
+      )
+    ).rejects.toThrow('toUser with channel (an @-mention in a channel) is not supported on DingTalk')
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
