@@ -48,6 +48,9 @@ beforeEach(() => {
       })
       return json(201, { id: `bot-${posts.length}` })
     }
+    // The roster names a member a team install left nameless.
+    if (/\/v3\/conversations\/[^/]+\/members\/[^/]+$/.test(new URL(target).pathname))
+      return json(200, { id: '29:example-user', name: 'Looked-up Person' })
     return json(200, {})
   })
 })
@@ -99,7 +102,13 @@ async function boot(): Promise<Daemon> {
   return d
 }
 
-const install = (d: Daemon, conversationId: string, scope: 'personal' | 'channel', id: string) =>
+const install = (
+  d: Daemon,
+  conversationId: string,
+  scope: 'personal' | 'channel',
+  id: string,
+  addedBy: { id: string; name?: string } = { id: '29:example-user', name: 'Example Person' }
+) =>
   (d as any).handleRelayPlatformAction({
     source: 'platform_action',
     platformId: 'msteams',
@@ -114,7 +123,7 @@ const install = (d: Daemon, conversationId: string, scope: 'personal' | 'channel
       serviceUrl: SERVICE_URL,
       scope,
       botName: 'Example Bot',
-      addedBy: { id: '29:example-user', name: 'Example Person' }
+      addedBy
     }
   })
 
@@ -162,6 +171,21 @@ describe('the Teams welcome', () => {
     expect(text).toContain('I’m not enabled in this conversation yet')
     expect(posts[0]!.card?.msteams?.entities).toEqual([
       { type: 'mention', text: '<at>Example Person</at>', mentioned: { id: '29:example-user', name: 'Example Person' } }
+    ])
+  })
+})
+
+describe('the Teams welcome of a nameless installer', () => {
+  it('looks the installer up in the roster to mention them', async () => {
+    daemon = await boot()
+    await install(daemon, OFF, 'channel', 'install-3', { id: '29:example-user' })
+    expect(cardText(posts[0]!)).toContain('Thanks for adding me, <at>Looked-up Person</at>.')
+    expect(posts[0]!.card?.msteams?.entities).toEqual([
+      {
+        type: 'mention',
+        text: '<at>Looked-up Person</at>',
+        mentioned: { id: '29:example-user', name: 'Looked-up Person' }
+      }
     ])
   })
 })

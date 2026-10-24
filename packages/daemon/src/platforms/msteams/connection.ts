@@ -566,6 +566,12 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     return chat
   }
 
+  /** A conversation member's display name from the Bot Connector, for an event that names nobody; undefined when the lookup tells none. */
+  async memberName(target: MsTeamsTarget, user: string): Promise<string | undefined> {
+    const member = await this.api.conversationMember(target.serviceUrl, target.conversationId, user)
+    return member?.name
+  }
+
   // The person's roster entry where they were seen, else in each team the bot knows, whose roster lists every member of it.
   private async rosterEntry(user: string): Promise<{ serviceUrl: string; member: MsTeamsMember } | undefined> {
     const seen = this.seenIn(user)

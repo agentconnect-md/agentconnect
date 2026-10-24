@@ -40,7 +40,12 @@ export function msTeamsBotAdds(host: MsTeamsRelayIngressHost): RelayBotAdds {
           const conn = host.connection(msg.integrationId)
           if (!conn) throw new Error('msteams: the integration has no live connection')
           const target = { serviceUrl: added.serviceUrl, conversationId: added.conversationId }
-          const addedBy = added.scope === 'personal' ? undefined : added.addedBy
+          let addedBy = added.scope === 'personal' ? undefined : added.addedBy
+          // A team install names its installer by ID only, so the mention's name comes from the roster; a failed lookup only drops the mention.
+          if (addedBy && !addedBy.name) {
+            const name = await conn.memberName(target, addedBy.id).catch(() => undefined)
+            addedBy = name ? { ...addedBy, name } : addedBy
+          }
           await conn.postCard(target, msTeamsWelcomeCard(welcome, addedBy), welcome.title)
         }
       }
