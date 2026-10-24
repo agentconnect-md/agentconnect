@@ -43,8 +43,6 @@ export function integrationRouting(int: Integration): {
   staticBotUserId?: string
   bindRules: BindRuleConfig[]
   mutedChannels: string[]
-  /** The muted conversations that still owe the §14.3 notice (§14.9). */
-  pendingChannels: string[]
   gated: boolean
   /** The enabled By decision gate for a channel with its resolved definition, or undefined. */
   decisionBindingFor(channel: string): ResolvedDecisionGate | undefined
@@ -55,13 +53,12 @@ export function integrationRouting(int: Integration): {
   /** The bot router this daemon hosts for this integration, if any. */
   sharedBotRouting(): ResolvedDecisionBundle['sharedBotRouting']
 } {
-  const { bindRules, mutedChannels, pendingChannels, gated, decisions } = integrationCore(int)
+  const { bindRules, mutedChannels, gated, decisions } = integrationCore(int)
   const bundle = resolveDecisionBundle(decisions)
   return {
     staticBotUserId: configuredBotSelfId(int),
     bindRules,
     mutedChannels,
-    pendingChannels,
     gated,
     decisionBindingFor: (channel) => bundle.gates.get(channel),
     routingFor: (channel) => bundle.routed.get(channel),

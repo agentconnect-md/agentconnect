@@ -169,10 +169,9 @@ describe('assistant mode', () => {
     expect(on.statusCode, on.body).toBe(200)
     const projected = spy.integrations.at(-1)!
     expect(projected.integrationId).toBe(integrationId)
-    // The Everyone defaults still answer every conversation; the Off nobody chose stays muted and keeps its notice.
+    // The Everyone defaults still answer every conversation; the Off one stays muted.
     expect(projected.core.gated).toBe(false)
     expect(projected.core.mutedChannels).toEqual(['C2'])
-    expect(projected.core.pendingChannels).toEqual(['C2'])
     expect(projected.core.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
     // One session per room and Slack DM; a group DM keeps the platform's own keying, listed so no default overrides it.
     expect(byChannel(projected.core.sessionModes)).toEqual([
@@ -195,7 +194,6 @@ describe('assistant mode', () => {
     expect(open.core.gated).toBe(false)
     expect(open.core.sessionModes).toEqual([])
     expect(open.core.mutedChannels).toEqual(['C2'])
-    expect(open.core.pendingChannels).toEqual(['C2'])
     expect(await rows()).toEqual(stored)
   })
 

@@ -71,7 +71,6 @@ import {
   type RcBotCredentialCheck,
   type RcBotTenant,
   type RcBotRevoked,
-  type RcNoticePosted,
   type RcThreadAssign,
   type RcThreadParticipant,
   type RcThreadLookup,
@@ -562,17 +561,6 @@ export class RelayCpClient {
       return false
     }
     this.transport.send(JSON.stringify(buildRelayCpFrame('rc/bot-channels', m)))
-    return true
-  }
-
-  /** Emit one DELIVERED §14.3 DM gating-notice report. Best-effort: a drop costs at
-   *  most one duplicate notice later, never a lost enablement path. */
-  emitNoticePosted(m: RcNoticePosted): boolean {
-    if (this.state !== 'READY' || !this.transport) {
-      this.deps.log.warn(`relay: dropping rc/notice-posted for ${m.botId} (link ${this.state})`)
-      return false
-    }
-    this.transport.send(JSON.stringify(buildRelayCpFrame('rc/notice-posted', m)))
     return true
   }
 

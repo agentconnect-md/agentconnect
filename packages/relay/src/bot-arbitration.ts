@@ -91,14 +91,10 @@ export interface BotAssignment {
    *  — thread continuity, the unscoped keyword slug, `defaultAgentId` — so Off is a
    *  fence rather than an omission: a muted channel resolves to nothing. */
   mutedChannels?: string[]
-  /** The muted channels nobody enabled (a gated owner's, or any Off nobody chose, §14.9): fenced like any mute, but they keep the one-time notice. */
-  gatedOffChannels?: string[]
-  /** §14.3: the relayId deterministically responsible for this bot's one-time
-   *  CHANNEL gating notices (stamped by the CP from the connected roster). */
+  /** The muted channels that are Off rather than a held decision: fenced like any mute, and an addressed message there gets the §14.3 notice. */
+  offChannels?: string[]
+  /** §14.3: the relayId that posts this bot's CHANNEL gating notices (stamped by the CP from the connected roster). */
   noticeAuthority?: string
-  /** §14.3: DM conversation ids whose notice was ACTUALLY DELIVERED (pool-wide
-   *  latch for single-copy DM messages; never mere row discovery). */
-  noticedDmConversations?: string[]
   /** Per-conversation defaults (linear-integration.md §6.2): the ladder rung between
    *  the unscoped keyword slug and `defaultAgentId`, and the grant a gated agent holds
    *  where a conversation row's owner compiles to a default instead of a route. */
@@ -123,9 +119,8 @@ export type RoutesPatch = Pick<
   | 'defaultDaemonId'
   | 'gatedAgentIds'
   | 'mutedChannels'
-  | 'gatedOffChannels'
+  | 'offChannels'
   | 'noticeAuthority'
-  | 'noticedDmConversations'
   | 'conversationDefaults'
   | 'routedConversations'
 >
@@ -143,9 +138,8 @@ export function toRoutesPatch(r: RcRoutes): RoutesPatch {
     ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),
     gatedAgentIds: r.gatedAgentIds,
     mutedChannels: r.mutedChannels,
-    gatedOffChannels: r.gatedOffChannels,
+    offChannels: r.offChannels,
     ...(r.noticeAuthority ? { noticeAuthority: r.noticeAuthority } : {}),
-    noticedDmConversations: r.noticedDmConversations,
     conversationDefaults: r.conversationDefaults
   }
 }
@@ -277,9 +271,8 @@ export class BotArbitrationRouter {
     a.defaultDaemonId = patch.defaultDaemonId
     a.gatedAgentIds = patch.gatedAgentIds
     a.mutedChannels = patch.mutedChannels
-    a.gatedOffChannels = patch.gatedOffChannels
+    a.offChannels = patch.offChannels
     a.noticeAuthority = patch.noticeAuthority
-    a.noticedDmConversations = patch.noticedDmConversations
     // An owner edit converges through here, so the defaults are replaced with the routes:
     // otherwise a connected relay keeps the old default — and the old grant — forever.
     a.conversationDefaults = patch.conversationDefaults
@@ -402,9 +395,9 @@ export class BotArbitrationRouter {
     return this.bots.get(botId)?.mutedChannels?.includes(channelId) ?? false
   }
 
-  /** True iff `channelId` is Off because nobody enabled it (§14 gated owner, §14.9 external default) — the muted case that still speaks once. */
-  channelGatedOff(botId: string, channelId: string): boolean {
-    return this.bots.get(botId)?.gatedOffChannels?.includes(channelId) ?? false
+  /** True iff `channelId` is Off rather than a held decision — the muted case that answers an address with the notice. */
+  channelOff(botId: string, channelId: string): boolean {
+    return this.bots.get(botId)?.offChannels?.includes(channelId) ?? false
   }
 
   /** A channel-scoped `auto`/`decision` owner re-resolves every message on any pod, so it needs no durable thread binding. */
@@ -940,8 +933,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     ...(a.defaultDaemonId ? { defaultDaemonId: a.defaultDaemonId } : {}),
     gatedAgentIds: a.gatedAgentIds,
     mutedChannels: a.mutedChannels,
-    gatedOffChannels: a.gatedOffChannels,
-    noticedDmConversations: a.noticedDmConversations,
+    offChannels: a.offChannels,
     conversationDefaults: a.conversationDefaults,
     ownerAsDefault: a.ownerAsDefault,
     ...(a.noticeAuthority ? { noticeAuthority: a.noticeAuthority } : {})

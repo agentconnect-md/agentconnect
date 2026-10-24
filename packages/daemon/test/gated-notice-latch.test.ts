@@ -32,7 +32,7 @@ describe('the gated notice latch', () => {
     root = undefined
   })
 
-  it('posts once on DingTalk, and a failed post leaves the notice for the next message', async () => {
+  it('answers each DingTalk message once, and a failed post leaves that message unanswered for a retry', async () => {
     root = mkdtempSync(join(tmpdir(), 'ac-gated-notice-'))
     writeFileSync(
       join(root, 'config.json'),
@@ -54,11 +54,12 @@ describe('the gated notice latch', () => {
     notice(1)
     await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1))
     await vi.waitFor(() => expect((daemon as any).gatedNoticesSent.size).toBe(0))
-    notice(2)
-    notice(3)
+    // The failed message's redelivery is answered; its second copy posts nothing more.
+    notice(1)
+    notice(1)
     await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(2))
-    notice(4)
-    expect(sendText).toHaveBeenCalledTimes(2)
+    notice(2)
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(3))
     expect(sendText).toHaveBeenLastCalledWith('group:example', GATED)
   })
 })

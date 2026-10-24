@@ -428,9 +428,9 @@ needed an editor. An assistant-mode agent now takes the defaults of its visibili
 agent's new room answers @-mentions, a member's new 1:1 DM starts On, a conversation shared with
 another organization starts Off ([resource-visibility.md](resource-visibility.md) §14.9), and it
 can be a shared bot's default member; a restricted one stays gated. Rows already Off stay Off:
-nothing is migrated or re-seeded. An Off nobody chose keeps the one-time notice for every agent
-([resource-visibility.md](resource-visibility.md) §14.9), so a room seeded Off under the old gating
-still tells a person who mentions the agent there; an Off an editor chose is silent. Without the
+nothing is migrated or re-seeded. Every Off answers an addressed message with the notice, for
+every agent ([resource-visibility.md](resource-visibility.md) §14.9), so a room seeded Off under the
+old gating still tells a person who mentions the agent there. Without the
 gate, a new place can be answered before its row reaches the daemon, so the daemon keys an
 unlisted place on one session from its first message (§5.2).
 

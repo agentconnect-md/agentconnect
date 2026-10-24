@@ -805,7 +805,7 @@ gate executes depends on the transport:
   saving that routing needs edit rights on every target, the same people who could
   enable the conversation, and only the owner holds a channel-scoped route; (2) **backstop — the daemon's `handleRelayIm` admission
   check**: the shared spec carries the gated install's conversation-scoped
-  bindRules + `gated`, and the last hop refuses (with the one-time notice) any
+  bindRules + `gated`, and the last hop refuses (with the notice) any
   conversation those rules don't cover, so a stale relay route snapshot cannot
   activate a private agent. The in-Slack config modal (`rc/set-channel-agent`)
   is reachable by any workspace user, so assigning a channel to a gated agent
@@ -841,7 +841,7 @@ Discord / Lark / Feishu DM id shape when extending.)
 
 **Spec flag: `gated`.** `IntegrationSpec` gains a boolean (working name
 `gated`) so the daemon knows this integration is fail-closed. The daemon needs
-it to send the one-time notice when an explicitly addressed message matches no
+it to send the notice when an explicitly addressed message matches no
 rule and to discover unknown/Off restricted channels. Direct-conversation
 reporting is visibility-independent. This is the §9 derived-form exception:
 the flag carries no identities.
@@ -872,21 +872,16 @@ counterpart name), which the CP fans across **every install** and converges to
 one owner plus one effective trigger. A new conversation uses the earliest
 active install as owner; restricted rows start Off, org-visible 1:1 DMs start On,
 and group DMs start on Mention. The relay also
-posts the one-time
-per-conversation notice (chrome-marked; the unrouted @-mention case included)
+posts the notice (chrome-marked; the unrouted @-mention case included)
 since no daemon is involved before arbitration. Because a channel mention
 arrives as two independent Events API POSTs that the pool LB may hand to
 different relay pods, the CHANNEL notice is posted only by the bot's
 **`noticeAuthority`** — a relayId the CP stamps deterministically from the
 connected roster at (re)assign time and re-converges on relay join, disconnect,
 and sweep (config-time orchestration; the CP is never a per-message
-round-trip) — with a local per-conversation latch on that pod. A DM has a
-SINGLE event copy, so the RECEIVING pod posts its notice; the pool-wide latch
-is the **`noticedDmConversations`** set, which records notices ACTUALLY
-DELIVERED (reported via `rc/notice-posted` after the post, then re-stamped to
-every pod) — deliberately not derived from conversation rows, since a mixed
-bot's DM routed by its public default creates a row with no notice and must
-still receive one if it later becomes unroutable. Enabling a shared conversation
+round-trip) — with a local per-message latch on that pod, so the two copies
+of one mention answer once. A DM has a SINGLE event copy, so the RECEIVING pod
+posts its notice. Enabling a shared conversation
 compiles one conversation-scoped route for its selected owner; it does not fan
 out to every install or create per-agent DM slug routes. Unscoped keyword
 remains forbidden for gated agents.
@@ -961,7 +956,7 @@ remains forbidden for gated agents.
 Existing integrations already attached to restricted agents follow the same
 grandfathering as the org → restricted transition: known channels keep their
 triggers, DMs close. Closing DMs is the one behavior break for incumbent DM
-users; the one-time notice tells them what happened and the pending row gives
+users; the notice tells them what happened and the pending row gives
 editors a one-click re-enable. (The strict alternative — everything Off on
 migration — was considered and rejected as needlessly disruptive to channels
 that editors demonstrably already configured.)
@@ -987,8 +982,9 @@ Mention.
 1. Does `gated` need a per-integration override (e.g. force-gate a public
    agent's integration), or is derivation from visibility enough for v1?
    Current call: derivation only.
-2. Exact notice copy and whether the notice deduplication window should reset
-   (e.g. after 24 h) or be strictly once per conversation per daemon lifetime.
+2. Exact notice copy. Deduplication is settled: every addressed message gets the
+   notice, because a chat app store requires a bot to answer whenever it is
+   addressed; only a message's duplicate event copies are collapsed.
 3. Whether the DM boot-sweep ships in v1 or first-message reporting alone is
    enough.
 
@@ -1133,29 +1129,24 @@ membership snapshot) and `upsertConversation` (the shared bot's `rc/bot-conversa
 A caller with a stricter seed (a gated install's Off, §14.8's opened DM) still passes it
 and wins.
 
-**Pending, not chosen.** Off already fences every path, because it is `mutedChannels` on
+**Every Off answers.** Off already fences every path, because it is `mutedChannels` on
 both arbiters (thread affinity, explicit targets and agent-authored recipients included),
-so the change adds no fence. What it adds is which Off still answers. An Off that nobody
-chose behaves like the gate, for every agent and every place: an addressed message (an @-mention or a DM) gets the
-§14.3 one-time notice through the existing notice paths. An Off an editor chose stays
-silent. The edge learns the difference from a subset of the muted set:
+so the change adds no fence. An Off conversation, whoever chose it, behaves like the gate
+for every agent and every place: each addressed message (an @-mention or a DM) gets the
+§14.3 notice through the existing notice paths. The chat app stores require it: a bot that
+is addressed must answer, so neither an editor's Off nor a repeat mention may go silent.
+A muted conversation that is not Off — a By decision conversation whose gate is held —
+stays silent, so the edge tells the two apart:
 
-- **Daemon:** `IntegrationSpec.core.pendingChannels`, emitted only when non-empty, on an
-  ungated integration's direct and send-only specs. `maybeGatedNotice` speaks for a
-  listed conversation as it does for a gated integration.
-- **Relay:** the existing `gatedOffChannels` set also carries these conversations, read
-  conversation-wide (any row's choice), and the relay posts the notice
-  for a listed conversation even on a bot with no gated member.
+- **Daemon:** `maybeGatedNotice` speaks for an ungated integration's muted conversation
+  unless it is decision-bound.
+- **Relay:** `offChannels` carries the bot's Off conversations, a subset of `mutedChannels`,
+  and the relay posts the notice for a listed conversation even on a bot with no gated
+  member.
 
-Pending first also required the place to still be marked external, because an Off from
-before `triggerChosen` existed reads as unchosen and may well be an operator's. Issue #2979
-(item B7) dropped that condition: rows seeded Off while assistant mode gated an Everyone agent
-are Offs nobody chose, and without the notice a person mentioning the agent there got no answer
-and no hint. The accepted cost is that an operator's internal Off from before `triggerChosen`
-existed answers one addressed message too; nothing is migrated. The Console lists the row Off,
-as it does a gated agent's undecided row.
-An older daemon drops the field and an older relay notices only on a bot with a gated
-member, so either falls back to a silent Off.
+`triggerChosen` still records whether an editor chose the Off; it no longer decides
+whether the Off answers. The Console lists the row Off, as it does a gated agent's
+undecided row.
 
 **Push.** Seeding such a row changes routing, so it pushes exactly as enabling one does.
 On the socket path a new external row always changes the detected set, which already

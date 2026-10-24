@@ -414,7 +414,8 @@ also carries the event's tenant key (§10.4) and the payload's
 `configCompleteRedirectUri`.
 
 Run the existing discovery, conversation gate, trigger, command, session routing,
-and Decision checks. Off stays silent, including for commands. Restricted agents
+and Decision checks. Off starts nothing, including for commands, and answers an
+addressed message with the not-enabled notice. Restricted agents
 remain disabled in new conversations until an editor enables them. Reuse the
 normal DM On/Off policy. In Spaces, the console does not offer the every-message
 trigger, because Google does not deliver unmentioned traffic, and the mention
@@ -427,7 +428,7 @@ The app's connection is not one of the daemon's shared reply connections, so
 core's notices outside a turn's output reach Google Chat through the
 command-chrome surface's optional `notice` member
 ([platform modules](integration-plugin-architecture.md) §7.4), never a
-platform branch in core. Two use it: the one-time notice that a restricted
+platform branch in core. Two use it: the notice that a restricted
 agent is not enabled in an addressed conversation, at the top of a DM or in the
 mentioned Space thread, and the notice that a cut turn's message will be picked
 up again or must be sent again

@@ -461,7 +461,7 @@ member's reason, found when they join.
 A place that turns external this way starts Off for every agent until an
 editor enables it, as a Slack Connect channel does. Teams gives the relay no
 egress, so a mention there is handed to the bot's agent's daemon, which posts
-the one-time notice and starts no turn. The relay-ingress `observe` step has
+the notice and starts no turn. The relay-ingress `observe` step has
 already recorded the conversation's `serviceUrl` by then, so the notice can
 answer even the conversation's first activity.
 

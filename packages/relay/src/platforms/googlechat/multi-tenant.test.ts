@@ -37,7 +37,6 @@ const deps = (): RelayIngressManagerDeps => ({
   setChannelAgent: vi.fn(),
   reportBotChannels: vi.fn(() => true),
   reportBotConversation: vi.fn(() => true),
-  reportNoticePosted: vi.fn(() => true),
   reportBotRevoked: vi.fn(async () => true),
   reportBotCredentialCheck: vi.fn(async () => true),
   credentialCheckSupported: () => true,

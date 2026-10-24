@@ -34,7 +34,6 @@ import type {
   RcBotRevoked,
   RcBotCredentialCheck,
   RcBotTenant,
-  RcNoticePosted,
   RcSetChannelAgent,
   RcThreadAssign,
   RcThreadParticipant,
@@ -96,7 +95,6 @@ export interface RelayConnDeps {
   onBotConversation: (m: RcBotConversation) => Promise<void>
   /** Record a DELIVERED §14.3 DM gating notice and re-stamp the pool's latch.
    *  Fire-and-forget. */
-  onNoticePosted: (m: RcNoticePosted) => Promise<void>
   /** Apply a workspace uninstall / token revocation (`rc/bot-revoked`): mark the
    *  Bot + its installs revoked and release the bot. ACKNOWLEDGED — resolve only
    *  after the decision is COMMITTED (`applied: false` = the generation fence
@@ -224,9 +222,6 @@ export class RelayConnection implements RelayChannel {
         case 'rc/bot-conversation':
           await this.deps.onBotConversation(frame.payload)
           return
-        case 'rc/notice-posted':
-          await this.deps.onNoticePosted(frame.payload)
-          return
         case 'rc/bot-revoked':
           await this.handleBotRevoked(frame, frame.payload)
           return
@@ -288,7 +283,6 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/bot-revoked' ||
           type === 'rc/bot-credential-check' ||
           type === 'rc/bot-tenant' ||
-          type === 'rc/notice-posted' ||
           type === 'rc/thread-assign' ||
           type === 'rc/thread-participant' ||
           type === 'rc/thread-lookup' ||
