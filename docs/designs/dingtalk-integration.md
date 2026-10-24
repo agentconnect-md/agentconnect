@@ -455,17 +455,39 @@ text, so no migration is needed. Normalization lives in the message package.
 
 ## 7. Unverified and open
 
-- **Sign-in with DingTalk.** A sign-in button that works for any DingTalk user
-  needs a third-party app (§2). A per-organization internal app should support
-  web OAuth for its own members, which would allow linking a signed-in user to
-  their DingTalk identity, but not a sign-in button. Not probed.
+- **Sign-in with DingTalk.** One sign-in app shared by every organization
+  needs a third-party app (§2). Within one organization, the robot's own
+  internal app serves web OAuth (**measured**): it needs `Contact.User.Read`
+  and the callback in the app's redirect URLs, with no new version published.
+  The token exchange returns the `corpId` the user signed in through; the user
+  read returns `unionId`, `openId`, nickname and avatar, but no email or phone.
+  The same person kept one `unionId` across two organizations, and
+  `POST /topapi/user/getbyunionid` (`qyapi_get_member`) maps it to the
+  `senderStaffId` the robot receives, so a signed-in Console user links to
+  their chat identity. Admission checks the returned `corpId` or that lookup
+  rather than trusting DingTalk to confine sign-in to the app's organization.
+  Not measured: whether a message's `senderUnionId` equals the sign-in
+  `unionId`, and whether a second internal app of the same organization sees
+  the same `unionId` (the documented scope says it does, so one sign-in app
+  could serve several robots; an app of another developer would not).
 - **Permission sync.** No API lists an ordinary group's members to an internal
-  app: the member query (`POST /v1.0/im/innerGroups/members/query`) needs
-  `Chat.OrgInnerGroup.Read`, which an internal app's console does not offer,
-  and the group detail read (`POST /v1.0/im/sceneGroups/queryDetail`,
-  `qyapi_chat_read`) returns the title, owner and member count but no members
-  (**measured**). Membership stays observed (who has spoken), so a DingTalk
-  group's visibility stays weaker than a channel with an enumerable roster.
+  app (**measured**):
+  - the member query (`POST /v1.0/im/innerGroups/members/query`) needs
+    `Chat.OrgInnerGroup.Read`, which an internal app's console does not list,
+    and the apply link in the error offers no form;
+  - the scene-group member query (`POST /v1.0/im/sceneGroups/members/batchQuery`,
+    `qyapi_chat_manage`) refuses an ordinary group unless the app owns its
+    template or passes a group cool app's `coolAppCode`;
+  - the interconnected-group member query needs
+    `InterConnect.Common.ReadWrite` and covers only interconnected groups;
+  - the group detail read (`POST /v1.0/im/sceneGroups/queryDetail`,
+    `qyapi_chat_read`) returns the title, owner and member count but no members.
+
+  Only a group cool app installed in each group could list its members.
+  Membership stays observed (who has spoken), so a DingTalk group's sessions
+  stay `org`, like any group on a platform without session access sync
+  ([session-visibility.md](session-visibility.md) §4.2).
+
 - **Group history.** No API reads an ordinary group's messages for an internal
   app; the legacy `POST /chat/getChatHistory` answers that the URI does not
   exist (**measured**). A getting-to-know task therefore never runs on DingTalk
