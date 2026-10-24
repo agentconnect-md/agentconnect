@@ -6802,35 +6802,6 @@
       "queued": "waiting since {when}",
       "openSession": "Open session"
     },
-    "quotas": {
-      "title": "Limits",
-      "edit": "Edit",
-      "hint": "What this organization may use. Starting a managed computer, waking one, or opening a viewer past a limit is refused with the reason, for agents and here alike.",
-      "rows": {
-        "runningDesktops": "Running managed computers",
-        "desktops": "Managed computers held, sleeping ones included",
-        "storageGib": "Managed computer storage (GiB)",
-        "monthlyDesktopHours": "Managed computer hours this month",
-        "viewers": "Open viewers",
-        "viewersPerComputer": "Viewers on one computer",
-        "monthlyViewerGib": "Relayed viewer video this month (GiB)",
-        "screenshotStorageGib": "Stored screenshots (GiB)",
-        "screenshotRetentionDays": "Longest screenshot retention (days)"
-      },
-      "unlimited": "Unlimited",
-      "usedUnlimited": "{used} · no limit",
-      "limitOnly": "up to {limit}",
-      "usedOf": "{used} of {limit}",
-      "invalid": "{label} must be a whole number of 0 or more",
-      "defaultUnlimited": "Default: no limit",
-      "defaultValue": "Default: {value}",
-      "noLimitFor": "No limit for {label}",
-      "noLimit": "No limit",
-      "editHint": "Leave a field empty to keep the deployment's default. Lower limits stop nothing that runs now; they refuse the next start, wake or viewer.",
-      "save": "Save",
-      "cancel": "Cancel",
-      "useDefaults": "Use the defaults"
-    },
     "egress": {
       "title": "Managed computer egress",
       "edit": "Edit",

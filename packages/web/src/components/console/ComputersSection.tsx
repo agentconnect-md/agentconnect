@@ -23,7 +23,7 @@ import { Icon } from '@/components/ui'
 import { SectionHeader } from '@/components/console/SectionHeader'
 import { FLEET_GRID, FLEET_ROW } from '@/components/console/fleet-grid'
 import { useAgentName } from '@/components/console/ComputerPoolCards'
-import { ComputerEgressCard, ComputerQuotasCard } from '@/components/console/ComputerPlanCards'
+import { ComputerEgressCard } from '@/components/console/ComputerPlanCards'
 
 export function ComputersSection() {
   const t = useTranslations('Computers')
@@ -72,11 +72,12 @@ export function ComputersSection() {
           ))}
         </div>
       )}
-      {/* Limits and egress apply to every Computer the organization adds, so they show before the first one too. */}
-      <div className="mt-[14px] grid grid-cols-1 items-start gap-[14px] desktop:grid-cols-2">
-        <ComputerQuotasCard />
-        {pool?.enabled && <ComputerEgressCard />}
-      </div>
+      {/* Egress applies to every managed computer the organization adds, so it shows before the first one too. */}
+      {pool?.enabled && (
+        <div className="mt-[14px] grid grid-cols-1 items-start gap-[14px] desktop:grid-cols-2">
+          <ComputerEgressCard />
+        </div>
+      )}
     </>
   )
 }
