@@ -4,6 +4,7 @@ import { Daemon } from '../src/daemon.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import {
   msTeamsConversationMemberUrl,
+  msTeamsConversationsUrl,
   msTeamsPagedMembersUrl,
   msTeamsTeamChannelsUrl,
   msTeamsTeamUrl,
@@ -39,15 +40,15 @@ const people: Record<string, Record<string, string>> = {
   [OUTSIDER]: { id: '29:outsider', aadObjectId: OUTSIDER, name: 'Outsider', userRole: 'user', tenantId: OTHER }
 }
 
-type Answer = (url: string) => Response | undefined
+type Answer = (url: string, init?: RequestInit) => Response | undefined
 
 function connection(answer: Answer = () => undefined) {
   const reads: string[] = []
-  const fetchImpl = (async (input: unknown) => {
+  const fetchImpl = (async (input: unknown, init?: RequestInit) => {
     const url = String(input)
     if (url === msTeamsTokenEndpoint(HOME)) return Response.json({ access_token: 'tok', expires_in: 3600 })
     reads.push(url)
-    const own = answer(url)
+    const own = answer(url, init)
     if (own) return own
     if (url === msTeamsTeamChannelsUrl(SERVICE_URL, TEAM))
       return Response.json({
@@ -210,8 +211,11 @@ describe('Teams audience', () => {
     const ingress = msTeamsRelayIngress(host)
     const shared = { ...post(SHARED), msgId: 'msteams:x:1' } as NormalizedMessage
     const standard = { ...post(STANDARD), msgId: 'msteams:x:2' } as NormalizedMessage
-    await ingress.prepare({ integrationId: 'i' } as never, shared, { stage: '' })
-    await ingress.prepare({ integrationId: 'i' } as never, standard, { stage: '' })
+    for (const message of [shared, standard]) {
+      // Core notes the delivery before any gate, then prepares it.
+      ingress.observe?.({ integrationId: 'i' } as never, message)
+      await ingress.prepare({ integrationId: 'i' } as never, message, { stage: '' })
+    }
     expect(shared.externallyShared).toBe(true)
     expect(standard.externallyShared).toBeUndefined()
     expect(placeExternal).toHaveBeenCalledExactlyOnceWith(['i'], SHARED, 'externallyShared')
@@ -270,6 +274,45 @@ describe('Teams audience', () => {
   })
 })
 
+describe('a Teams 1:1 chat the bot opens', () => {
+  it('addresses the person by the roster ID a conversation they share answers, and can write into it', async () => {
+    const opened: unknown[] = []
+    const { conn } = connection((url, init) => {
+      if (url !== msTeamsConversationsUrl(SERVICE_URL)) return undefined
+      opened.push(JSON.parse(String(init?.body)))
+      return Response.json({ id: 'a:example-alice-chat' }, { status: 201 })
+    })
+    await expect(conn.openDirectMessage(ALICE)).rejects.toThrow()
+    conn.noteMessage(post(STANDARD))
+    expect(await conn.openDirectMessage(ALICE)).toBe('a:example-alice-chat')
+    expect(opened).toEqual([
+      expect.objectContaining({
+        isGroup: false,
+        bot: { id: `28:${APP}` },
+        members: [{ id: '29:alice' }],
+        tenantId: HOME
+      })
+    ])
+    expect(conn.targetFor('a:example-alice-chat')).toEqual({
+      serviceUrl: SERVICE_URL,
+      conversationId: 'a:example-alice-chat'
+    })
+  })
+
+  it('finds a team member it never saw in the roster of a team it knows', async () => {
+    const opened: unknown[] = []
+    const { conn, reads } = connection((url, init) => {
+      if (url !== msTeamsConversationsUrl(SERVICE_URL)) return undefined
+      opened.push(JSON.parse(String(init?.body)))
+      return Response.json({ id: 'a:example-guest-chat' }, { status: 201 })
+    })
+    conn.noteMessage(post(STANDARD))
+    expect(await conn.openDirectMessage(GUEST)).toBe('a:example-guest-chat')
+    expect(reads).toContain(msTeamsConversationMemberUrl(SERVICE_URL, TEAM, GUEST))
+    expect(opened).toEqual([expect.objectContaining({ members: [{ id: '29:guest' }] })])
+  })
+})
+
 describe('Teams audience through Graph', () => {
   const GROUP = '00000000-0000-0000-0000-00000000000d'
   const graphMember = (aad: string, roles: string[] = []) => ({
@@ -316,5 +359,18 @@ describe('Teams audience through Graph', () => {
     expect(await conn.listMemberIds(SHARED)).toEqual([ALICE, GUEST])
     expect(await conn.isFullMember(GUEST)).toBe(false)
     expect(msTeamsGraphMember(graphMember(OUTSIDER))).toMatchObject({ id: OUTSIDER, userRole: 'user', tenantId: OTHER })
+  })
+
+  it('lists a person Graph repeats through the team share once, and a guest copy keeps them a guest', async () => {
+    const twice = [
+      graphMember(ALICE, ['owner']),
+      graphMember(GUEST),
+      { ...graphMember(ALICE), userId: ALICE.toUpperCase() },
+      graphMember(GUEST, ['guest'])
+    ]
+    const { conn } = connection(graph('private', twice))
+    conn.noteMessage(post(SHARED))
+    expect(await conn.listMemberIds(SHARED)).toEqual([ALICE, GUEST])
+    expect(await conn.isFullMember(GUEST)).toBe(false)
   })
 })

@@ -275,6 +275,16 @@ export async function listMsTeamsTeams(
   return Teams.parse(await response.json()).value.map((team) => ({ id: team.id, name: team.displayName ?? team.id }))
 }
 
+// The consent body an install or upgrade sends: every permission the package asks for.
+function consentedPermissions(permissions: readonly { name: string; type: string }[]) {
+  return {
+    resourceSpecificPermissions: permissions.map((p) => ({
+      permissionValue: p.name,
+      permissionType: p.type.toLowerCase()
+    }))
+  }
+}
+
 /** Installs the catalog app into a team with the package's resource-specific permissions; an app already there counts as installed. */
 export async function installMsTeamsApp(
   fetchImpl: typeof fetch,
@@ -284,14 +294,60 @@ export async function installMsTeamsApp(
   const response = await graph(fetchImpl, token, 'POST', `/teams/${encodeURIComponent(input.teamId)}/installedApps`, {
     json: {
       'teamsApp@odata.bind': `${GRAPH}/appCatalogs/teamsApps/${input.catalogAppId}`,
-      consentedPermissionSet: {
-        resourceSpecificPermissions: input.permissions.map((p) => ({
-          permissionValue: p.name,
-          permissionType: p.type.toLowerCase()
-        }))
-      }
+      consentedPermissionSet: consentedPermissions(input.permissions)
     }
   })
   if (response.ok || response.status === 409) return
   throw refused(response)
+}
+
+const Installed = z.object({ value: z.array(z.object({ id: z.string() })) })
+// Teams upgraded at once; an administrator can belong to hundreds.
+const UPGRADE_CONCURRENCY = 4
+
+/** Where a team's app stands after {@link upgradeMsTeamsInstalls}: upgraded, absent, or unknown after a refused or failed read or upgrade. */
+export type MsTeamsAppUpgrade = 'updated' | 'none' | 'failed'
+
+/** Upgrades the catalog app to its latest definition in each team that has it, re-consenting its resource-specific permissions; a refused or failed team is reported, not thrown, since the connect itself already stands. */
+export async function upgradeMsTeamsInstalls(
+  fetchImpl: typeof fetch,
+  token: string,
+  input: { teamIds: readonly string[]; catalogAppId: string; permissions: readonly { name: string; type: string }[] },
+  log: { warn(bindings: Record<string, unknown>, message: string): void }
+): Promise<Map<string, MsTeamsAppUpgrade>> {
+  const filter = encodeURIComponent(`teamsApp/id eq '${input.catalogAppId}'`)
+  const outcome = new Map<string, MsTeamsAppUpgrade>()
+  const upgrade = async (teamId: string): Promise<MsTeamsAppUpgrade> => {
+    const team = encodeURIComponent(teamId)
+    const listed = await graph(
+      fetchImpl,
+      token,
+      'GET',
+      `/teams/${team}/installedApps?$expand=teamsApp&$filter=${filter}`
+    )
+    if (!listed.ok) {
+      log.warn({ status: listed.status }, 'msteams: could not read a team’s installed apps')
+      return 'failed'
+    }
+    const installation = Installed.parse(await listed.json()).value[0]
+    if (!installation) return 'none'
+    const response = await graph(
+      fetchImpl,
+      token,
+      'POST',
+      `/teams/${team}/installedApps/${encodeURIComponent(installation.id)}/upgrade`,
+      { json: { consentedPermissionSet: consentedPermissions(input.permissions) } }
+    )
+    if (response.ok) return 'updated'
+    log.warn({ status: response.status }, 'msteams: could not upgrade the app in a team')
+    return 'failed'
+  }
+  const queue = [...input.teamIds]
+  await Promise.all(
+    Array.from({ length: Math.min(UPGRADE_CONCURRENCY, queue.length) }, async () => {
+      for (let teamId = queue.shift(); teamId !== undefined; teamId = queue.shift())
+        outcome.set(teamId, await upgrade(teamId))
+    })
+  )
+  return outcome
 }

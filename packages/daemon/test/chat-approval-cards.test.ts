@@ -16,6 +16,7 @@ import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
 import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
 import { TELEGRAM_CALLBACK_ANSWER_LIMIT } from '../src/telegram/render.js'
+import { TURN_NOTICE_TEXT } from '../src/platforms/approval-card.js'
 import { LocalStore, sessionKey } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -206,7 +207,14 @@ async function world(platform: Platform, opts: { level: 'talk' | 'approve' | 'se
   }
   daemon.pending.set(JSON.stringify([AGENT, 's1']), pending)
   const permissions = daemon.permissions
-  const notices = (): string[] => applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
+  // The editor path's notice is posted on the card surface now, so it is told apart from a card here.
+  const all = (): any[] => fake.posts()
+  const noticePosts = () => all().filter((post: any) => post.text === TURN_NOTICE_TEXT)
+  const posts = () => all().filter((post: any) => post.text !== TURN_NOTICE_TEXT)
+  const notices = (): string[] => [
+    ...applied.filter((a) => a.kind === 'notice').map((a) => a.text as string),
+    ...noticePosts().map((post: any) => post.text)
+  ]
   const onlyRequest = (): string => [...permissions.pendingApprovals.keys(), ...permissions.pendingElicits.keys()][0]
   /** Click a permission card's option as the platform's ingress delivers it; what only the clicker was told. */
   const click = async (option: number, actor: { userId: string; name?: string; isBot?: boolean } = ADA) => {
@@ -242,7 +250,7 @@ async function world(platform: Platform, opts: { level: 'talk' | 'approve' | 'se
     }
     return await daemon.connectionReconcilerHost().handleElicitCardTap({ requestId, token, actor })
   }
-  return { daemon, store, agent, int, permissions, notices, onlyRequest, click, tap, ...fake }
+  return { daemon, store, agent, int, permissions, notices, onlyRequest, click, tap, ...fake, posts, noticePosts }
 }
 
 describe.each(['telegram', 'discord'] as const)('%s permission cards', (platform) => {
@@ -269,6 +277,42 @@ describe.each(['telegram', 'discord'] as const)('%s permission cards', (platform
     await vi.waitFor(() => expect(w.notices()).toEqual([expect.stringContaining('Ask an Agent editor')]))
     expect(w.posts()).toEqual([])
     expect(w.permissions.pendingApprovals.get(w.onlyRequest()).chat).toBeUndefined()
+    await w.store.close()
+  })
+
+  it('rewrites the notice once an Agent editor decides, naming them, and once a turn ends undecided', async () => {
+    const w = await world(platform, { level: 'talk' })
+    const decided = w.permissions.onAcpPermission(AGENT, 's1', permission())
+    await vi.waitFor(() => expect(w.noticePosts()).toHaveLength(1))
+    const id = w.onlyRequest()
+    await expect(
+      w.permissions.decideEditorPermission({
+        agentId: AGENT,
+        requestId: id,
+        decision: 'allow',
+        decidedByName: 'Ed Itor'
+      })
+    ).resolves.toEqual({ ok: true })
+    await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    const where = platform === 'telegram' ? CHAT : 'TH1'
+    await vi.waitFor(() =>
+      expect(w.rewrites()).toEqual([
+        { channel: where, ts: '101', text: '✅ Permission granted by Ed Itor.', live: false }
+      ])
+    )
+    expect(await w.store.takeOrphanedSubsessionNotices(INT)).toEqual([])
+
+    void w.permissions.onAcpPermission(AGENT, 's1', permission())
+    await vi.waitFor(() => expect(w.noticePosts()).toHaveLength(2))
+    await w.permissions.releaseApprovals(AGENT, 's1')
+    await vi.waitFor(() =>
+      expect(w.rewrites()[1]).toEqual({
+        channel: where,
+        ts: '102',
+        text: '⏳ Permission no longer needed.',
+        live: false
+      })
+    )
     await w.store.close()
   })
 

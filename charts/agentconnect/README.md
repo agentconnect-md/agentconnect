@@ -407,6 +407,19 @@ the relay.
 | `computerViewer.turn.secretKey`  | `COMPUTER_TURN_SECRET` | Key in `secrets.existingSecret` with coturn's secret        |
 | `computerViewer.turn.ttlSeconds` | `21600`                | Lifetime of minted credentials; bounds one viewing          |
 
+Or use [Cloudflare Realtime TURN](https://developers.cloudflare.com/realtime/turn/) instead of a
+coturn, with no public address, DNS name or certificate of your own: create a TURN key in
+Cloudflare, put its API token in `secrets.existingSecret`, and set
+`computerViewer.turn.cloudflare.keyId`, leaving `urls` empty. The Control Plane asks Cloudflare for
+each viewer's and desktop's credentials (lasting `ttlSeconds`), and desktops may reach Cloudflare's
+TURN ports (UDP and TCP 3478, TLS on 5349 and 443). Cloudflare bills the relayed traffic, which the
+relays' own metering does not count.
+
+| Value                                        | Default                              | Meaning                                        |
+| -------------------------------------------- | ------------------------------------ | ---------------------------------------------- |
+| `computerViewer.turn.cloudflare.keyId`       | `''`                                 | The TURN key's ID; empty leaves it off         |
+| `computerViewer.turn.cloudflare.apiTokenKey` | `COMPUTER_TURN_CLOUDFLARE_API_TOKEN` | Key in `secrets.existingSecret` with its token |
+
 A Computer's policy can set `screenshotRetentionDays`; 0 means its screenshots are never
 written. The Control Plane deletes expired screenshots itself, so the bucket needs no
 extra lifecycle rule. Its credentials need `s3:PutObject`, `s3:GetObject` and

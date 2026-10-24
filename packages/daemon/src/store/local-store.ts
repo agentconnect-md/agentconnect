@@ -389,7 +389,7 @@ export interface PermissionNoticeRow {
   joinAsk: string | null
 }
 
-/** A settled sub-session request whose notice in its conversation was never rewritten (assistant-mode.md §5.6). */
+/** A settled request whose neutral notice in its conversation was never rewritten (assistant-mode.md §5.6). */
 export interface SubsessionNoticeRow {
   id: string
   agentId: string
@@ -398,6 +398,8 @@ export interface SubsessionNoticeRow {
   status: PermissionRequestStatus
   noticeChannel: string
   noticeTs: string
+  /** `turn` for the turn's own editor-path notice; null for a sub-session's. */
+  noticeKind: 'turn' | null
 }
 
 /**
@@ -1315,7 +1317,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 68
+export const SCHEMA_VERSION = 69
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2057,7 +2059,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       'msteams',
       /^(?:19:[\w.@-]{1,190}|a:[\w-]{1,190})$/,
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-    )
+    ),
+  // v69 tells the turn's own editor-path notice from a sub-session's, so a restart's sweep settles each in its own words.
+  async (db, store) => await addColumn(db, store.postgres, 'permission_requests', 'noticeKind', 'TEXT')
 ]
 
 // Binds a platform's recorded conversations to their tenant, then hands each conversation's audience to its inherited children.
@@ -2909,6 +2913,7 @@ export class LocalStore {
         noticeIntegrationId TEXT,
         noticeChannel TEXT,
         noticeTs TEXT,
+        noticeKind TEXT,
         besideIntegrationId TEXT,
         besideChannel TEXT,
         besideTs TEXT,
@@ -3577,20 +3582,21 @@ export class LocalStore {
     return [...(await take('notify')), ...(await take('beside'))]
   }
 
-  /** Record a pending sub-session request's notice handle in its conversation; false if the row already settled. */
+  /** Record a pending request's neutral notice handle in its conversation; false if the row already settled. */
   async setPermissionRequestNotice(
     agentId: string,
     id: string,
     integrationId: string,
     channel: string,
-    ts: string
+    ts: string,
+    kind?: 'turn'
   ): Promise<boolean> {
     const result = await this.db
       .prepare(
-        `UPDATE permission_requests SET noticeIntegrationId = ?, noticeChannel = ?, noticeTs = ?
+        `UPDATE permission_requests SET noticeIntegrationId = ?, noticeChannel = ?, noticeTs = ?, noticeKind = ?
          WHERE agentId = ? AND id = ? AND status = 'pending'`
       )
-      .run(integrationId, channel, ts, agentId, id)
+      .run(integrationId, channel, ts, kind ?? null, agentId, id)
     return Number(result.changes) === 1
   }
 
@@ -3598,17 +3604,17 @@ export class LocalStore {
   async clearPermissionRequestNotice(agentId: string, id: string): Promise<void> {
     await this.db
       .prepare(
-        `UPDATE permission_requests SET noticeIntegrationId = NULL, noticeChannel = NULL, noticeTs = NULL
+        `UPDATE permission_requests SET noticeIntegrationId = NULL, noticeChannel = NULL, noticeTs = NULL, noticeKind = NULL
          WHERE agentId = ? AND id = ?`
       )
       .run(agentId, id)
   }
 
-  /** Settled rows whose sub-session notice was never rewritten — returned once, handles cleared, like the DM cards' sweep. */
+  /** Settled rows whose neutral notice was never rewritten — returned once, handles cleared, like the DM cards' sweep. */
   async takeOrphanedSubsessionNotices(integrationId: string, limit = 20): Promise<SubsessionNoticeRow[]> {
     const rows = (await this.db
       .prepare(
-        `SELECT id, agentId, sessionId, status, noticeChannel, noticeTs
+        `SELECT id, agentId, sessionId, status, noticeChannel, noticeTs, noticeKind
          FROM permission_requests
          WHERE noticeIntegrationId = ? AND noticeTs IS NOT NULL AND status != 'pending'
          ORDER BY resolvedAt DESC LIMIT ?`

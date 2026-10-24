@@ -2,6 +2,7 @@
 import { MSTEAMS_CARD_NOTE_MAX, MSTEAMS_PLATFORM, type WireMsTeamsCardAction } from '@agentconnect.md/protocol'
 import type {
   ApprovalCardAsk,
+  ApprovalCardContext,
   ApprovalCardDraft,
   ApprovalCardFacet,
   ApprovalCardHandle,
@@ -16,7 +17,9 @@ import {
   orphanMark,
   subsessionAskerText,
   subsessionSettledText,
-  subsessionWaitText
+  subsessionWaitText,
+  TURN_NOTICE_TEXT,
+  turnNoticeSettledText
 } from '../approval-card.js'
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
 import { clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
@@ -52,6 +55,14 @@ function intro(asker: SubsessionAsker): AdaptiveElement[] {
   ]
 }
 
+function contextIntro(context: ApprovalCardContext): AdaptiveElement[] {
+  const requester = context.requesterName ? ` for ${clampTo(context.requesterName, 60)}` : ''
+  return [
+    ...plainText(`${clampTo(context.agentName, 60)} is waiting on an approval${requester}.`),
+    openUrlRow('Open session', context.sessionUrl)
+  ]
+}
+
 function optionStyle(kind: string): 'positive' | 'destructive' | undefined {
   if (kind === 'allow_once' || kind === 'allow_always') return 'positive'
   if (kind === 'reject_once' || kind === 'reject_always') return 'destructive'
@@ -71,6 +82,7 @@ export function buildMsTeamsApprovalCard(ask: ApprovalCardAsk): Record<string, u
   })
   return adaptiveCard([
     ...(ask.subsession ? intro(ask.subsession) : []),
+    ...(ask.context ? contextIntro(ask.context) : []),
     ...plainText(`🔒 Permission requested — ${permToolLabel(ask.params)}`, { bold: true }),
     ...buttonRows(buttons)
   ])
@@ -130,6 +142,7 @@ export const msTeamsApprovalCards: ApprovalCardFacet = {
     const decision = `${approvalMark(settled.allowed)} ${clampTo(settled.text, MSTEAMS_DECISION_CAP)}`
     const card = adaptiveCard([
       ...(settled.subsession ? intro(settled.subsession) : []),
+      ...(settled.context ? contextIntro(settled.context) : []),
       ...plainText(`🔒 Permission — ${permToolLabel(settled.params)}`, { bold: true }),
       ...plainText(decision)
     ])
@@ -151,6 +164,18 @@ export const msTeamsApprovalCards: ApprovalCardFacet = {
     )
     const body = [...plainText(line), ...(view.sessionUrl ? [openUrlRow('Open the task', view.sessionUrl)] : [])]
     return { card: adaptiveCard(body) } satisfies MsTeamsCardDraft
+  },
+
+  turnNotice(): ApprovalCardDraft {
+    return {
+      card: adaptiveCard(plainText(TURN_NOTICE_TEXT)),
+      summary: 'Permission requested'
+    } satisfies MsTeamsCardDraft
+  },
+
+  turnNoticeSettled(outcome: SubsessionNoticeOutcome): ApprovalCardDraft {
+    const line = turnNoticeSettledText(outcome, (s) => clampTo(s, 60))
+    return { card: adaptiveCard(plainText(line)) } satisfies MsTeamsCardDraft
   },
 
   orphaned(row: ApprovalCardOrphan): ApprovalCardDraft {

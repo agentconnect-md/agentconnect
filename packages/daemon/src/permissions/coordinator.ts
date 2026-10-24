@@ -79,6 +79,7 @@ import {
 } from '../slack/render.js'
 import type { ElicitKind, ElicitSurface, ElicitTarget, SubsessionNoticeOutcome } from '../slack/render.js'
 import type {
+  ApprovalCardContext,
   ApprovalCardDraft,
   ApprovalCardFacet,
   ApprovalCardHandle,
@@ -86,6 +87,7 @@ import type {
   SubsessionAsker,
   SubsessionNoticeView
 } from '../platforms/approval-card.js'
+import { TURN_NOTICE_TEXT } from '../platforms/approval-card.js'
 import { sessionLinkSourceFor } from '../platforms/link-source.js'
 import type { ChatEvent } from '../session/chat-turn.js'
 import { consolePermissionOptions, isAllowOption } from './editor-options.js'
@@ -172,6 +174,8 @@ export interface PermissionCoreHost {
     channel: string,
     externallyShared?: boolean
   ): ChatSurface
+  /** Whether a conversation is held external (a share or a guest detected), whatever its chat surface; one it cannot place counts as such. */
+  placeExternal(agentId: string, integrationId: string | undefined, channel: string): boolean
   /** Whether chat actions on this integration are taken only from the agent's editors (its platform's permissions are synced). */
   chatEditorsOnly(agentId: string, integrationId: string | undefined): boolean
   /** Whether this person may act in chat past the level and the conversation; fails closed where permissions are synced. */
@@ -402,8 +406,8 @@ export interface PermissionSurfaceHost {
   orgForAgent(agentId: string): string | undefined
   sessionLink(sessionId: string, source?: string): string
   slackConnFor(integrationId: string): SlackConnection | undefined
-  /** The agent's LIVE Slack integration ids, `preferred` first. */
-  approvalDmIntegrations(agentId: string, preferred?: string): string[]
+  /** The agent's LIVE Slack integration ids, `preferred` first; `cards` adds those whose platform takes an editor's card in a 1:1 chat. */
+  approvalDmIntegrations(agentId: string, preferred?: string, cards?: boolean): string[]
   /** Unconditional shared-target block_id for a DM card (§5.3). */
   slackDmSessionTarget(p: Pick<Pending, 'plan'>, integrationId: string): string
   // ── assistant-mode sub-sessions (assistant-mode.md §5.6) ──
@@ -413,6 +417,10 @@ export interface PermissionSurfaceHost {
   assistantApprover?(agentId: string, requestId: string): Promise<SubsessionApprover | undefined>
   /** The person whose message started the turn, in their own DM, when they are an internal member (§5.5). */
   externalAskerDm?(p: Pending): Promise<AskerApprover | undefined>
+  /** That asker's DM on a platform whose connection opens one, for a card through its facet; undefined where none reaches them. */
+  askerDirectMessage?(p: Pending): Promise<{ integrationId: string; userId: string; channel: string } | undefined>
+  /** A person's 1:1 chat on a platform whose connection opens one, for an editor's card through its facet; undefined where none does. */
+  directMessageAt?(integrationId: string, userId: string): Promise<string | undefined>
   /** A join card a restart left pending was rewritten as expired: its session hears that the call did nothing. */
   joinCardExpired?(agentId: string, acpSessionId: string, ask: StoredJoinAsk): void
   /** One person behind a turn in their own direct message, routed as drafts route an approver; undefined when no card reaches them. */
@@ -462,15 +470,23 @@ interface ChatPermissionCard extends ApprovalCardHandle {
   stored?: { agentId: string; requestId: string }
   /** Posted outside the turn's own conversation through this integration, which its relayed click names. */
   routedVia?: string
+  /** Posted in this asker's own DM for an external place: only they answer, judged as the asker of `place` (§5.5). */
+  askerId?: string
+  /** Posted in this editor's own chat on the editor path: only they answer, rechecked by the control plane (§6.3). */
+  editor?: DmTarget
+  /** What an editor's card says it is for, on every rewrite too. */
+  context?: ApprovalCardContext
   /** How the card must read once its post returns, when its request settled first. */
   settledFirst?: ApprovalCardDraft
 }
 
-/** A sub-session's neutral notice in its conversation (§5.6); its handle is on the row too, so a restart's sweep settles it. */
-interface SubsessionNotice {
+/** A neutral notice: a sub-session's in its conversation (§5.6), or the turn's own on the editor path (view unset); its handle is on the row too, so a restart's sweep settles it. */
+interface NeutralNotice {
   facet: ApprovalCardFacet
   handle: ApprovalCardHandle
-  view: SubsessionNoticeView
+  view?: SubsessionNoticeView
+  /** The turn's notice in an external conversation, whose settled line names nobody. */
+  anonymous?: boolean
 }
 
 /** Where people may answer a turn's approval: its conversation's card, the asker's DM for an external one, or only the editor path. */
@@ -508,7 +524,7 @@ interface ApprovalEntry<P, R> {
   notify?: DmNotice
   /** Set on a background sub-session's request: denied and stopped once its wait runs out. */
   subsession?: SubsessionWait
-  notice?: SubsessionNotice
+  notice?: NeutralNotice
   /** How it settled, for a notice whose post returns after that. */
   settled?: SubsessionNoticeOutcome
 }
@@ -518,6 +534,8 @@ interface PermissionApproval extends ApprovalEntry<RequestPermissionRequest, Req
   /** Original ACP object used by the host's final policy observer. */
   evaluationParams: RequestPermissionRequest
   chat?: ChatPermissionCard
+  /** The routed editor's card in their own chat, beside a conversation card only editors may answer; kept on the row's beside handle. */
+  beside?: ChatPermissionCard
   /** Set on the daemon's own confirmation before the bot joins a channel: only the people behind the turn answer it. */
   join?: JoinWait
 }
@@ -534,6 +552,23 @@ interface ElicitationApproval extends ApprovalEntry<CreateElicitationRequest, Cr
   kind: 'elicitation'
   /** The answers whoever asked it offers (§11.2); absent ⇒ Allow/Deny. A permission request re-derives its own (#1815). */
   choices?: ApprovalChoice<CreateElicitationResponse>[]
+  /** The routed editor's card in their own chat, drawn from `choices` by the platform's approval-card facet (teams-integration.md §4.4). */
+  chat?: ChatPermissionCard
+}
+
+/** The permission request an approval-card facet draws: a permission request as asked, an MCP approval as its choices; null without choices. */
+function cardRequest(rec: PendingApproval): RequestPermissionRequest | null {
+  if (rec.kind === 'permission') return rec.params
+  if (!rec.choices) return null
+  const toolCallId = 'toolCallId' in rec.params ? rec.params.toolCallId : undefined
+  return {
+    sessionId: rec.sessionId,
+    toolCall: {
+      toolCallId: typeof toolCallId === 'string' ? toolCallId : '',
+      title: elicitationApprovalParts(rec.params).tool
+    },
+    options: rec.choices.map((choice) => choice.option)
+  }
 }
 
 type PendingApproval = PermissionApproval | ElicitationApproval
@@ -722,7 +757,7 @@ export class PermissionCoordinator {
     })
 
     if (!notifyChat) return { requesterName }
-    const text = '🔒 Permission requested. Ask an Agent editor to allow it from the Agent or Session page.'
+    const text = TURN_NOTICE_TEXT
     try {
       if (p.webchat) {
         // A webchat conversation's owner answers it there too once people in chat may approve.
@@ -738,8 +773,7 @@ export class PermissionCoordinator {
       // surface owns that notice where it has one — Linear's feed has no chat transport at all,
       // so without this the gate would be invisible until the session went stale.
       if (!p.webchat || p.webchat.continuation) {
-        if (!this.host.approvalGateOpened(p, id, request) && chatOut(p))
-          this.host.enqueueApply(p, { kind: 'notice', text })
+        if (!this.host.approvalGateOpened(p, id, request) && chatOut(p)) this.postTurnNotice(id, agentId, p)
       }
     } catch (err) {
       // The durable editor request is authoritative. A best-effort chat notice
@@ -747,6 +781,42 @@ export class PermissionCoordinator {
       this.host.log().warn(`permission request notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
     }
     return { requesterName }
+  }
+
+  /** The editor path's notice in the turn's conversation; a card surface keeps its handle so it says how the request settled. */
+  private postTurnNotice(id: string, agentId: string, p: Pending): void {
+    const rec = this.pendingApprovals.get(id)
+    const facet = p.plan.approvalSurfaceSuppressed ? undefined : this.host.approvalCardFacet(p.plan.platform)
+    const integrationId = p.plan.integrationId
+    if (!rec || !facet || integrationId === undefined) {
+      this.host.enqueueApply(p, { kind: 'notice', text: TURN_NOTICE_TEXT })
+      return
+    }
+    const thread = p.plan.thread ? { thread: p.plan.thread } : {}
+    const handle: ApprovalCardHandle = {
+      conn: chatOut(p),
+      channel: facet.cardChannel?.({ channel: p.plan.channel, ...thread }) ?? p.plan.channel,
+      ...thread
+    }
+    // Read from the audience, not the chat surface: a closed surface outranks external there.
+    const anonymous =
+      p.entry.msg.externallyShared === true || this.host.placeExternal(agentId, integrationId, p.plan.channel)
+    void facet
+      .send(this.elicitCardHost, p, facet.turnNotice())
+      .catch(() => undefined)
+      .then(async (ts) => {
+        // A card that did not land still leaves the plain notice.
+        if (!ts) return this.host.enqueueApply(p, { kind: 'notice', text: TURN_NOTICE_TEXT })
+        await this.keepNotice(
+          id,
+          rec,
+          { facet, handle: { ...handle, ts }, ...(anonymous ? { anonymous } : {}) },
+          integrationId
+        )
+      })
+      .catch((err: unknown) =>
+        this.host.log().warn(`permission request notice for "${p.plan.sessionKey}" not kept: ${formatErr(err)}`)
+      )
   }
 
   private async resolveStoredPermissionRequest(
@@ -1477,7 +1547,7 @@ export class PermissionCoordinator {
     return undefined
   }
 
-  /** Where only editors may answer a card, an editor is also told in a DM unless the person who asked is one; the first answer decides. */
+  /** Where only editors may answer a card, an editor also gets it in their own chat unless the person who asked is one; the first answer decides. */
   private async dmEditorBeside(requestId: string, agentId: string, p: Pending, requesterName: string | null) {
     const asker = p.plan.requesterId
     // The asker as their own message named them, with the cross-app id a synced platform matches by.
@@ -1549,7 +1619,7 @@ export class PermissionCoordinator {
         // An asker's DM that did not land leaves the request to the editor path.
         const rec = this.pendingApprovals.get(requestId)
         if (!rec || rec.notify) return
-      }
+      } else if (askerFirst && (await this.sendAskerCard(requestId, agentId, p).catch(() => false))) return
       await this.sendApprovalDm(requestId, agentId, p, requesterName)
     })().catch((err) => {
       this.host.log().warn(`approval DM for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
@@ -1570,7 +1640,11 @@ export class PermissionCoordinator {
     const rec = this.pendingApprovals.get(requestId)
     if (!rec) return
     const conn = this.host.slackConnFor(target.integrationId)
-    if (!conn) return
+    if (!conn) {
+      // Off Slack the chosen editor's card goes through their platform's own facet, beside the conversation's card if one is up.
+      if (!approver) await this.sendEditorCard(requestId, agentId, p, target, requesterName)
+      return
+    }
     const channel = approver?.channel ?? (await conn.openDirectMessage(target.userId))
     const sessionTarget = this.host.slackDmSessionTarget(p, target.integrationId)
     // A question this DM has no control for still gets its own block: the reader is handed the
@@ -1642,6 +1716,113 @@ export class PermissionCoordinator {
     }
   }
 
+  /** The asker's card in their own DM through their platform's facet, where no Slack DM card reaches them (§5.5); true once it is live. */
+  private async sendAskerCard(requestId: string, agentId: string, p: Pending): Promise<boolean> {
+    const rec = this.pendingApprovals.get(requestId)
+    // An MCP approval with no choices has no card to send; it goes on to the editor path.
+    if (!rec || rec.chat || rec.notify || !cardRequest(rec)) return false
+    const dm = await this.host.askerDirectMessage?.(p).catch(() => undefined)
+    return dm ? await this.sendDirectCard(requestId, agentId, p, dm, { askerId: dm.userId }) : false
+  }
+
+  /** The chosen editor's card in their own chat through their platform's facet (§5); true once it is live. */
+  private async sendEditorCard(
+    requestId: string,
+    agentId: string,
+    p: Pending,
+    target: DmTarget,
+    requesterName: string | null
+  ): Promise<boolean> {
+    const rec = this.pendingApprovals.get(requestId)
+    if (!rec || rec.notify) return false
+    if (rec.kind === 'permission' ? rec.beside || rec.chat?.editor || rec.chat?.askerId : rec.chat) return false
+    const channel = await this.host.directMessageAt?.(target.integrationId, target.userId).catch(() => undefined)
+    if (!channel) return false
+    const dm = { integrationId: target.integrationId, channel }
+    return await this.sendDirectCard(
+      requestId,
+      agentId,
+      p,
+      dm,
+      { editor: target, requesterName },
+      rec.kind === 'permission' && rec.chat !== undefined
+    )
+  }
+
+  /** Post a permission card into one person's own chat, answered by them alone as the asker or the routed editor; true once it is live. */
+  private async sendDirectCard(
+    requestId: string,
+    agentId: string,
+    p: Pending,
+    dm: { integrationId: string; channel: string },
+    who: { askerId: string } | { editor: DmTarget; requesterName: string | null },
+    beside = false
+  ): Promise<boolean> {
+    const rec = this.pendingApprovals.get(requestId)
+    if (!rec || rec.notify || (rec.kind === 'permission' && rec.beside) || (rec.chat !== undefined) !== beside)
+      return false
+    const params = cardRequest(rec)
+    const cards = this.host.chatCardsAt(dm.integrationId)
+    if (!params || !cards || params.options.length > cards.facet.maxOptions) return false
+    const { facet, conn } = cards
+    const context: ApprovalCardContext | undefined =
+      'editor' in who
+        ? {
+            agentName: p.plan.agentName,
+            requesterName: who.requesterName,
+            sessionUrl: this.host.sessionLink(p.outwardSessionId, sessionLinkSourceFor(facet.platform))
+          }
+        : undefined
+    const draft = facet.build(
+      {
+        requestId,
+        params,
+        sessionTarget: this.host.slackDmSessionTarget(p, dm.integrationId),
+        via: { agentId, integrationId: dm.integrationId },
+        ...(context ? { context } : {})
+      },
+      conn
+    )
+    const where: ApprovalCardPlace = { channel: dm.channel }
+    const landed: ApprovalCardHandle = { conn, ...where, channel: facet.cardChannel?.(where) ?? dm.channel }
+    const ts = draft
+      ? await facet.post(conn, where, draft, p).catch((err: unknown) => {
+          this.host.log().warn(`approval card in a direct chat for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
+          return undefined
+        })
+      : undefined
+    if (!ts) return false
+    // Kept on the row as well, so the sweep after a restart retires a card no resolver answers any more.
+    const store = this.host.store()
+    const stored = beside
+      ? await store.setPermissionRequestBeside(agentId, requestId, dm.integrationId, landed.channel, ts)
+      : await store.setPermissionRequestNotify(agentId, requestId, dm.integrationId, landed.channel, ts)
+    if (!stored || this.pendingApprovals.get(requestId) !== rec) {
+      facet.rewrite(
+        { ...landed, ts },
+        facet.settled({
+          params,
+          ...(context ? { context } : {}),
+          text: 'Already decided',
+          fallback: 'Permission resolved'
+        })
+      )
+      if (stored) void this.clearDmHandle(agentId, requestId, beside)
+      return true
+    }
+    const card: ChatPermissionCard = {
+      facet,
+      ...landed,
+      ts,
+      place: { integrationId: p.plan.integrationId, channel: p.plan.channel },
+      routedVia: dm.integrationId,
+      ...('editor' in who ? { editor: who.editor, ...(context ? { context } : {}) } : { askerId: who.askerId })
+    }
+    if (beside && rec.kind === 'permission') rec.beside = card
+    else rec.chat = { ...card, stored: { agentId, requestId } }
+    return true
+  }
+
   /** Drop a DM card's stored handle once it says how its request ended; a DM beside a card keeps its own. */
   private async clearDmHandle(agentId: string, requestId: string, beside: boolean | undefined): Promise<void> {
     const store = this.host.store()
@@ -1661,8 +1842,16 @@ export class PermissionCoordinator {
   ): Promise<ApprovalRouteTarget | undefined> {
     const cp = this.host.cpApprovalRoute()
     if (!cp) return undefined
-    const preferred = p.plan.platform === 'slack' ? p.plan.integrationId : undefined
-    const integrationIds = this.host.approvalDmIntegrations(agentId, preferred)
+    // A permission request may also go to an editor's card off Slack, alone or beside the conversation's, as may an MCP approval with choices; Slack's own integration stays first.
+    const rec = this.pendingApprovals.get(requestId)
+    const cards =
+      !!rec &&
+      !rec.notify &&
+      (rec.kind === 'permission'
+        ? !rec.beside && !rec.chat?.editor && !rec.chat?.askerId
+        : !rec.chat && rec.choices !== undefined)
+    const preferred = this.host.slackConnFor(p.plan.integrationId ?? '') ? p.plan.integrationId : undefined
+    const integrationIds = this.host.approvalDmIntegrations(agentId, preferred, cards)
     if (integrationIds.length === 0) return undefined
     // A computer-use approval goes to the Computer's owner first (computer-use.md §4.2), else down the usual chain.
     const computerOwner = subsession ? undefined : this.computerOwnerOf(requestId)
@@ -1673,8 +1862,11 @@ export class PermissionCoordinator {
       )
       if (routed.target) return routed.target
     }
+    // The person behind the turn, as a member of its own integration where the chain can match them.
     const requesterId =
-      p.plan.platform === 'slack' && p.plan.requesterId && !subsession ? p.plan.requesterId : undefined
+      p.plan.requesterId && !subsession && p.plan.integrationId && integrationIds.includes(p.plan.integrationId)
+        ? p.plan.requesterId
+        : undefined
     const routed = await cp.approvalRoute(
       {
         agentId,
@@ -1761,13 +1953,7 @@ export class PermissionCoordinator {
         : null
     if (!permission || !draft) {
       const ts = await post(facet.notice(asker))
-      if (ts)
-        await this.keepSubsessionNotice(
-          requestId,
-          rec,
-          { facet, handle: { ...landed, ts }, view: asker },
-          at.integrationId
-        )
+      if (ts) await this.keepNotice(requestId, rec, { facet, handle: { ...landed, ts }, view: asker }, at.integrationId)
       return await editorDm()
     }
     const ts = await post(draft)
@@ -1801,15 +1987,17 @@ export class PermissionCoordinator {
   }
 
   /** Hold the notice's handle until its request settles, on the row too; a request settled while it posted gets its settled line now. */
-  private async keepSubsessionNotice(
+  private async keepNotice(
     requestId: string,
     rec: PendingApproval,
-    notice: SubsessionNotice & { handle: { ts: string } },
+    notice: NeutralNotice & { handle: { ts: string } },
     integrationId: string
   ): Promise<void> {
     const store = this.host.store()
+    const { channel, ts } = notice.handle
+    const kind = notice.view ? undefined : 'turn'
     const stored = await store
-      .setPermissionRequestNotice(rec.agentId, requestId, integrationId, notice.handle.channel, notice.handle.ts)
+      .setPermissionRequestNotice(rec.agentId, requestId, integrationId, channel, ts, kind)
       .catch(() => false)
     // Still listed, a decision in flight included: whichever path settles it rewrites the notice.
     if (this.pendingApprovals.get(requestId) === rec) {
@@ -1817,12 +2005,14 @@ export class PermissionCoordinator {
       return
     }
     // Only a turn's release awaits between unlisting and settling, and it settles as cancelled.
-    this.settleSubsessionNotice(notice, rec.settled ?? { kind: 'cancelled' })
+    this.settleNotice(notice, rec.settled ?? { kind: 'cancelled' })
     if (stored) void store.clearPermissionRequestNotice(rec.agentId, requestId).catch(() => {})
   }
 
-  private settleSubsessionNotice(notice: SubsessionNotice, outcome: SubsessionNoticeOutcome): void {
-    notice.facet.rewrite(notice.handle, notice.facet.noticeSettled(notice.view, outcome))
+  private settleNotice(notice: NeutralNotice, outcome: SubsessionNoticeOutcome): void {
+    const { facet, view } = notice
+    const named = notice.anonymous && 'by' in outcome ? { ...outcome, by: null } : outcome
+    facet.rewrite(notice.handle, view ? facet.noticeSettled(view, outcome) : facet.turnNoticeSettled(named))
   }
 
   /** Rewrite the cards whose rows settled while no process could edit them (a restart): the reconnect sweep (slack-approval-dm.md §5.4). */
@@ -1838,12 +2028,19 @@ export class PermissionCoordinator {
     }
   }
 
-  /** Settle sub-session notices whose requests ended while no process could edit them (a restart): the reconnect sweep's half for §5.6. */
+  /** Settle neutral notices whose requests ended while no process could edit them (a restart): the reconnect sweep's half for §5.6. */
   async retireOrphanedSubsessionNotices(integrationId: string): Promise<void> {
     const cards = this.host.chatCardsAt(integrationId)
     if (!cards) return
     const store = this.host.store()
     for (const row of await store.takeOrphanedSubsessionNotices(integrationId)) {
+      const outcome: SubsessionNoticeOutcome =
+        row.status === 'allowed' || row.status === 'denied' ? { kind: row.status, by: null } : { kind: 'cancelled' }
+      const handle = { conn: cards.conn, channel: row.noticeChannel, ts: row.noticeTs }
+      if (row.noticeKind === 'turn') {
+        cards.facet.rewrite(handle, cards.facet.turnNoticeSettled(outcome))
+        continue
+      }
       const agent = this.host.agents().get(row.agentId)
       const session = await store.getSessionByAcpIdForAgent(row.agentId, row.sessionId).catch(() => undefined)
       const source = sessionLinkSourceFor(cards.facet.platform)
@@ -1852,9 +2049,6 @@ export class PermissionCoordinator {
         title: subsessionLabel(session?.title, undefined),
         ...(session?.sessionId ? { sessionUrl: this.host.sessionLink(session.sessionId, source) } : {})
       }
-      const outcome: SubsessionNoticeOutcome =
-        row.status === 'allowed' || row.status === 'denied' ? { kind: row.status, by: null } : { kind: 'cancelled' }
-      const handle = { conn: cards.conn, channel: row.noticeChannel, ts: row.noticeTs }
       cards.facet.rewrite(handle, cards.facet.noticeSettled(view, outcome))
     }
   }
@@ -1865,7 +2059,8 @@ export class PermissionCoordinator {
     if (rec?.agentId !== agentId) return false
     return (
       rec.notify?.target.integrationId === integrationId ||
-      (rec.kind === 'permission' && rec.chat?.routedVia === integrationId)
+      rec.chat?.routedVia === integrationId ||
+      (rec.kind === 'permission' && rec.beside?.routedVia === integrationId)
     )
   }
 
@@ -1914,26 +2109,32 @@ export class PermissionCoordinator {
       if (verdict === 'allowed') return { ok: true, name: actor.name ?? null }
       return { ok: false, authoritative: verdict !== 'unavailable' }
     }
+    return await this.verifyEditor(agentId, requestId, notify.target, actor)
+  }
+
+  /** The control plane's recheck of a routed editor's click (§6.3): still an editor, still linked to the account that clicked. */
+  private async verifyEditor(
+    agentId: string,
+    requestId: string,
+    target: DmTarget,
+    actor: InteractionActor | undefined
+  ): Promise<{ ok: true; name: string | null } | { ok: false; authoritative: boolean }> {
     const cp = this.host.cpApprovalRoute()
-    const consoleUserId = notify.target.consoleUserId
-    if (!cp || !consoleUserId) return { ok: false, authoritative: false }
+    const consoleUserId = target.consoleUserId
+    if (!actor || actor.isBot || actor.userId !== target.userId || !cp || !consoleUserId)
+      return { ok: false, authoritative: false }
     try {
       const res = await cp.approvalRoute(
         {
           agentId,
           requestId,
-          integrationIds: [notify.target.integrationId],
-          verify: {
-            integrationId: notify.target.integrationId,
-            teamId: notify.target.teamId,
-            userId: actor.userId,
-            consoleUserId
-          }
+          integrationIds: [target.integrationId],
+          verify: { integrationId: target.integrationId, teamId: target.teamId, userId: actor.userId, consoleUserId }
         },
         this.host.orgForAgent(agentId)
       )
       return res.allowed === true
-        ? { ok: true, name: res.displayName ?? notify.target.displayName ?? actor.name ?? null }
+        ? { ok: true, name: res.displayName ?? target.displayName ?? actor.name ?? null }
         : { ok: false, authoritative: true }
     } catch {
       return { ok: false, authoritative: false }
@@ -1989,33 +2190,37 @@ export class PermissionCoordinator {
   ): void {
     rec.settled = outcome
     if (rec.notice) {
-      this.settleSubsessionNotice(rec.notice, outcome)
+      this.settleNotice(rec.notice, outcome)
       void this.host
         .store()
         .clearPermissionRequestNotice(rec.agentId, id)
         .catch(() => {})
     }
     const fallback = allowed === undefined ? 'Permission cancelled' : 'Permission resolved'
-    if (rec.kind === 'permission' && rec.chat) {
-      const chat = rec.chat
-      const settled = chat.facet.settled({
-        params: rec.params,
-        ...(chat.subsession ? { subsession: chat.subsession } : {}),
-        text: label,
-        ...(allowed !== undefined ? { allowed } : {}),
-        fallback
-      })
-      // A card whose post has not returned is rewritten by its posting path, in these words.
-      if (chat.ts === undefined) chat.settledFirst = settled
-      else chat.facet.rewrite(chat, settled)
-    }
-    if (rec.kind === 'permission' && rec.chat?.ts) {
+    const params = cardRequest(rec)
+    if (params)
+      for (const chat of [rec.chat, rec.kind === 'permission' ? rec.beside : undefined]) {
+        if (!chat) continue
+        const settled = chat.facet.settled({
+          params,
+          ...(chat.subsession ? { subsession: chat.subsession } : {}),
+          ...(chat.context ? { context: chat.context } : {}),
+          text: label,
+          ...(allowed !== undefined ? { allowed } : {}),
+          fallback
+        })
+        // A card whose post has not returned is rewritten by its posting path, in these words.
+        if (chat.ts === undefined) chat.settledFirst = settled
+        else chat.facet.rewrite(chat, settled)
+      }
+    if (rec.chat?.ts) {
       if (rec.chat.stored)
         void this.host
           .store()
           .clearPermissionRequestNotify(rec.chat.stored.agentId, rec.chat.stored.requestId)
           .catch(() => {})
     }
+    if (rec.kind === 'permission' && rec.beside) void this.clearDmHandle(rec.agentId, id, true)
     if (!rec.notify) return
     const mark = allowed === undefined ? ':hourglass:' : allowed ? ':white_check_mark:' : ':no_entry_sign:'
     const blocks =
@@ -2264,10 +2469,25 @@ export class PermissionCoordinator {
     actor?: InteractionActor
   }): Promise<string | undefined> {
     const rec = this.pendingApprovals.get(input.requestId)
-    if (rec?.kind !== 'permission') return
+    if (!rec) return
     const optionId =
-      input.optionId ?? (input.option === undefined ? undefined : rec.params.options[input.option]?.optionId)
+      input.optionId ?? (input.option === undefined ? undefined : cardRequest(rec)?.options[input.option]?.optionId)
     if (optionId === undefined) return
+    // An MCP approval's only card here is in one person's own chat: the routed editor's, or an external place's asker's.
+    if (rec.kind === 'elicitation') {
+      const chat = rec.chat
+      if (!chat) return
+      if (chat.ts === undefined && input.ts !== undefined) chat.ts = input.ts
+      if (chat.editor) {
+        await this.answerEditorCard(input.requestId, rec, { ...chat, editor: chat.editor }, optionId, input.actor)
+        return
+      }
+      if (input.actor?.isBot) {
+        this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, input.actor)
+        return
+      }
+      return await this.answerChatCard(input.requestId, rec, chat, optionId, input.actor)
+    }
     // A DM card's request lives on the editor path (§2): its addressee's click is checked there, anyone else's on the card beside it.
     if (rec.notify && (!rec.chat || input.actor?.userId === rec.notify.target.userId)) {
       const by = await this.authorizeDm(input.requestId, { ...rec, notify: rec.notify }, input.actor, optionId)
@@ -2278,8 +2498,12 @@ export class PermissionCoordinator {
       await this.settle(input.requestId, rec, picked, by, 'dm', input.actor, answeredBy)
       return
     }
+    // The routed editor's card beside the conversation's is told apart by the card clicked, else by who clicked.
+    const besideClicked =
+      rec.beside &&
+      (input.ts !== undefined ? input.ts === rec.beside.ts : input.actor?.userId === rec.beside.editor?.userId)
     // A request no card was posted for is the console's alone.
-    const chat = rec.chat
+    const chat = besideClicked ? rec.beside : rec.chat
     if (!chat) return
     if (chat.ts === undefined && input.ts !== undefined) chat.ts = input.ts
     // A bot never answers, and its click leaves the card for the people there.
@@ -2304,25 +2528,85 @@ export class PermissionCoordinator {
       await this.settle(input.requestId, rec, picked, answered.by, 'chat', input.actor, answered.asker)
       return
     }
-    // The level was lowered, the conversation closed, or only editors may answer here and this person is not one.
-    const verdict = await this.chatAnswerVerdict(rec.agentId, chat.place, input.actor)
+    // An editor's card in their own chat is the editor path: the chat level does not reach it, the control plane rechecks the clicker.
+    if (chat.editor) {
+      await this.answerEditorCard(input.requestId, rec, { ...chat, editor: chat.editor }, optionId, input.actor)
+      return
+    }
+    return await this.answerChatCard(input.requestId, rec, chat, optionId, input.actor)
+  }
+
+  /** A click on a card the chat level governs, or an asker's card in their own chat; returns what only the clicker is told when the card's surface cannot tell them itself. */
+  private async answerChatCard(
+    requestId: string,
+    rec: PendingApproval,
+    chat: ChatPermissionCard,
+    optionId: string,
+    actor: InteractionActor | undefined
+  ): Promise<string | undefined> {
+    // The level was lowered, the conversation closed, or only editors may answer here and this person is not one; an asker's card answers to them alone.
+    const verdict =
+      chat.askerId === undefined
+        ? await this.chatAnswerVerdict(rec.agentId, chat.place, actor)
+        : actor?.userId === chat.askerId
+          ? await this.chatAnswerVerdict(rec.agentId, chat.place, actor, true)
+          : 'closed'
     if (verdict !== 'allowed') {
       // Refused, so it decided nothing — recorded as an attempt, never as the decision.
-      this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, input.actor)
-      if (!input.actor) return
+      this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, actor)
+      if (!actor) return
       // Only the clicker is told; the card stays as everyone else sees it.
       const text = this.chatRefusal(rec, verdict, chat.facet)
       if (!chat.facet.tellPrivately) return text
-      chat.facet.tellPrivately(chat, input.actor.userId, text)
+      chat.facet.tellPrivately(chat, actor.userId, text)
       return
     }
-    const picked = choiceById(permissionChoices(rec.params), optionId)
-    if (!picked) return
-    const actor = input.actor
     // A relayed click carries only the member's id, so the settled card names them by a lookup.
     const name = actor ? (actor.name ?? (await this.cardMemberName(chat, actor.userId))) : undefined
     const by = actor ? { resolvedBy: cardAnswererId(chat, actor.userId), resolvedByName: name ?? null } : undefined
-    await this.settle(input.requestId, rec, picked, by, 'chat', input.actor)
+    if (rec.kind === 'permission') {
+      const picked = choiceById(permissionChoices(rec.params), optionId)
+      if (picked) await this.settle(requestId, rec, picked, by, 'chat', actor)
+      return
+    }
+    const picked = choiceById(rec.choices, optionId)
+    if (picked) await this.settle(requestId, rec, picked, by, 'chat', actor)
+  }
+
+  /** A click on a routed editor's card in their own chat: the control plane rechecks the clicker, and a rights refusal retires the card. */
+  private async answerEditorCard(
+    requestId: string,
+    rec: PendingApproval,
+    chat: ChatPermissionCard & { editor: DmTarget },
+    optionId: string,
+    actor: InteractionActor | undefined
+  ): Promise<void> {
+    const checked = await this.verifyEditor(rec.agentId, requestId, chat.editor, actor)
+    if (!checked.ok || !actor) {
+      this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, actor)
+      const params = cardRequest(rec)
+      if (!checked.ok && checked.authoritative && params) {
+        const settled = chat.facet.settled({
+          params,
+          ...(chat.context ? { context: chat.context } : {}),
+          text: 'No longer authorized — decide it from the Agent or Session page',
+          fallback: 'Permission requires an Agent editor'
+        })
+        chat.facet.rewrite(chat, settled)
+      }
+      return
+    }
+    const by = {
+      resolvedBy: cardAnswererId(chat, actor.userId) ?? `${chat.facet.platform}:${actor.userId}`,
+      resolvedByName: checked.name
+    }
+    if (rec.kind === 'permission') {
+      const picked = choiceById(permissionChoices(rec.params), optionId)
+      if (picked) await this.settle(requestId, rec, picked, by, 'dm', actor)
+      return
+    }
+    const picked = choiceById(rec.choices, optionId)
+    if (picked) await this.settle(requestId, rec, picked, by, 'dm', actor)
   }
 
   /** A card clicker's name for a click that carried none; a failed lookup names nobody and never blocks the decision. */
@@ -2342,10 +2626,13 @@ export class PermissionCoordinator {
 
   /** Rewrite one in-chat permission card for everyone once approving in chat is turned off; its request stays pending for editors. */
   private retireChatApprovalsOffCard(rec: PendingApproval): void {
-    if (rec.kind !== 'permission' || !rec.chat?.ts) return
+    // An editor's card is the editor path, which the chat level does not reach.
+    if (!rec.chat?.ts || rec.chat.editor) return
     const chat = rec.chat
+    const params = cardRequest(rec)
+    if (!params) return
     const settled = chat.facet.settled({
-      params: rec.params,
+      params,
       ...(chat.subsession ? { subsession: chat.subsession } : {}),
       text: CHAT_APPROVALS_OFF,
       fallback: 'Approving in chat was turned off'

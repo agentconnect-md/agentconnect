@@ -105,7 +105,7 @@ describe('ComputersSection', () => {
     const heading = el.querySelector('#computers')!
     expect(heading.textContent).toBe('Computers')
     expect(heading.parentElement!.textContent).toContain('2')
-    expect(el.textContent).toContain('Desktops your agents can see and operate')
+    expect(el.textContent).toContain('Desktops members register for their agents')
   })
 
   it('shows the managed pool as one entry, named for a self-hosted cluster, and lists only self-hosted computers', () => {
@@ -126,7 +126,7 @@ describe('ComputersSection', () => {
     expect(mocks.push).toHaveBeenCalledWith('/acme/computers/pool')
   })
 
-  it('names the pool AgentConnect Computers on the managed install, and shows it before the first managed computer', () => {
+  it('names the pool AgentConnect Computers on the managed install, in a section of its own before the first managed computer', () => {
     mocks.flags = new Set(['managed'])
     mocks.pool = { enabled: true, available: false }
     const el = render()
@@ -134,7 +134,12 @@ describe('ComputersSection', () => {
     expect(entry.textContent).toContain('AgentConnect Computers')
     expect(entry.textContent).toContain('No managed computers yet')
     expect(entry.textContent).toContain('Unavailable')
-    expect(el.textContent).not.toContain('Add a computer to let agents')
+    const managed = el.querySelector('#managed-computers')!
+    expect(managed.textContent).toBe('AgentConnect Computers')
+    // The section adds a managed computer; the self-hosted one below keeps its own empty state.
+    act(() => [...el.querySelectorAll('button')].find((b) => b.textContent === 'Add managed computer')!.click())
+    expect(mocks.openModal).toHaveBeenCalledWith('computer', undefined, { computerSource: 'pool' })
+    expect(el.querySelector('#computers')!.parentElement!.textContent).toContain('0')
   })
 
   it('keeps the entry while managed computers remain on a deployment that turned the pool off', () => {

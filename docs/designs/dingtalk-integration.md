@@ -232,6 +232,21 @@ and `senderUnionId` is stable across organizations for the same developer.
 `senderNick` is display-only; the adapter never merges people by name. Profiles
 (`qyapi_get_member`) are optional enrichment.
 
+Only DMs and ordinary groups reach the robot. A topic circle admits DingTalk's
+own assistants and webhook custom robots only, so an internal app's robot cannot
+be added to one (**measured**). A group that includes members of another
+organization accepts the robot, and its messages carry no field marking the
+group external (**measured**). A member of the other organization can
+@-mention the robot and is answered, and their message carries no
+`senderStaffId`, since a staff ID exists only within the robot's organization,
+only the opaque `senderId` (**measured**). The connection therefore reports a
+group as external (`externalMember`,
+[assistant-mode.md](assistant-mode.md) §5.3) the first time a group message
+arrives without a staff ID, or with a `senderCorpId` other than the robot's.
+The detection is sticky, as a guest's is on Slack, so the group stays external
+for every agent: approvals go to internal members, its memory stays in its own
+place layer, and a post into it from elsewhere is drafted.
+
 ### 4.2 Replies
 
 Replies use the robot send APIs (`/v1.0/robot/groupMessages/send` and
@@ -239,6 +254,36 @@ Replies use the robot send APIs (`/v1.0/robot/groupMessages/send` and
 which expires 90 minutes after the message (**measured**) and cannot send cards.
 A send's `msgParam` is limited to 15,000 bytes. A plain message cannot be
 edited, only recalled by its process query key.
+
+An agent can direct-message a member it has seen (`sendMessage` with `toUser`
+alone): the DM is the batch send to that staff ID, so the read ports declare
+`openDirectMessage`. An outsider's opaque sender id addresses no DM and is
+refused. The group send takes no mentions in any form tried: `@<staffId>` or
+`@<name>` in text or Markdown, or an `at` field, all arrive as plain text
+(**measured**). Two sends do carry them (**measured**: the person sees a
+highlighted mention and finds it under @-mentions):
+
+- the reply address a group message brings (`sessionWebhook`, 90 minutes), with
+  `@<staffId>` in a text or Markdown body and the person in `at.atUserIds`;
+- a card delivery, with `imGroupOpenDeliverModel.atUserIds` (staff ID → name).
+
+The `toUser` form that @-mentions people in a group (read port
+`channelMentions: 'gateway'`) therefore posts Markdown through the group's
+latest reply address while more than a minute of it remains; the connection
+keeps the latest one per group, only when its origin is the edition's own
+`oapi` host. Without a fresh one, or when the address refuses the message, it
+posts a card on the question template: the text, prefixed with `@<name>` for
+each person, as its body, with no buttons, plain text up to 2,000 characters.
+The international edition, or a deployment with no question template, has only
+the reply address. A post too long for its send is refused whole rather than
+cut.
+
+Replies stay on the group send. A message sent through the reply address
+answers with no key (only `errcode` and `errmsg`), while a quote of it carries
+an `originalProcessQueryKey` and `originalMsgId` the sender never learned
+(**measured**), so a quote of such a reply could not find its session. Nor can
+a robot message quote the one it answers: fields naming that message are
+ignored (**measured**).
 
 ### 4.3 Acknowledgement and Markdown
 
@@ -323,7 +368,8 @@ sent through `shareFile`; an image's caption follows as its own message.
 Questions reuse `ElicitCardFacet` for single-choice and yes/no asks of up to
 twelve options. Each is asked with an interactive card answered by a tap, and
 falls back to a numbered text card answered by reply. Tool approvals stay in
-the Console, with a notice in the conversation.
+the Console, with a notice in the conversation that stays as posted: a robot's
+text message cannot be edited (slack-approval-dm.md §5.5).
 
 **The tap card.** The integration owns one advanced card template, kept in the
 project's own organization; its ID is a daemon constant that the
@@ -410,15 +456,43 @@ text, so no migration is needed. Normalization lives in the message package.
 
 ## 7. Unverified and open
 
-- **Sign-in with DingTalk.** A sign-in button that works for any DingTalk user
-  needs a third-party app (§2). A per-organization internal app should support
-  web OAuth for its own members, which would allow linking a signed-in user to
-  their DingTalk identity, but not a sign-in button. Not probed.
-- **Permission sync.** No API was found that lists the members of an ordinary
-  group by `openConversationId`; the legacy chat API accepts only groups created
-  through the API. Membership is likely observed (who has spoken) rather than
-  authoritative, so a DingTalk group's visibility stays weaker than a channel
-  with an enumerable roster. Not probed.
+- **Sign-in with DingTalk.** One sign-in app shared by every organization
+  needs a third-party app (§2). Within one organization, the robot's own
+  internal app serves web OAuth (**measured**): it needs `Contact.User.Read`
+  and the callback in the app's redirect URLs, with no new version published.
+  The token exchange returns the `corpId` the user signed in through; the user
+  read returns `unionId`, `openId`, nickname and avatar, but no email or phone.
+  The same person kept one `unionId` across two organizations, and
+  `POST /topapi/user/getbyunionid` (`qyapi_get_member`) maps it to the
+  `senderStaffId` the robot receives, so a signed-in Console user links to
+  their chat identity. Admission checks the returned `corpId` or that lookup
+  rather than trusting DingTalk to confine sign-in to the app's organization.
+  Not measured: whether a message's `senderUnionId` equals the sign-in
+  `unionId`, and whether a second internal app of the same organization sees
+  the same `unionId` (the documented scope says it does, so one sign-in app
+  could serve several robots; an app of another developer would not).
+- **Permission sync.** No API lists an ordinary group's members to an internal
+  app (**measured**):
+  - the member query (`POST /v1.0/im/innerGroups/members/query`) needs
+    `Chat.OrgInnerGroup.Read`, which an internal app's console does not list,
+    and the apply link in the error offers no form;
+  - the scene-group member query (`POST /v1.0/im/sceneGroups/members/batchQuery`,
+    `qyapi_chat_manage`) refuses an ordinary group unless the app owns its
+    template or passes a group cool app's `coolAppCode`;
+  - the interconnected-group member query needs
+    `InterConnect.Common.ReadWrite` and covers only interconnected groups;
+  - the group detail read (`POST /v1.0/im/sceneGroups/queryDetail`,
+    `qyapi_chat_read`) returns the title, owner and member count but no members.
+
+  Only a group cool app installed in each group could list its members.
+  Membership stays observed (who has spoken), so a DingTalk group's sessions
+  stay `org`, like any group on a platform without session access sync
+  ([session-visibility.md](session-visibility.md) §4.2).
+
+- **Group history.** No API reads an ordinary group's messages for an internal
+  app; the legacy `POST /chat/getChatHistory` answers that the URI does not
+  exist (**measured**). A getting-to-know task therefore never runs on DingTalk
+  ([assistant-mode.md](assistant-mode.md) §5.13).
 - On the international edition, the thinking reaction and media have not been
   exercised live.
 - Whether DingTalk keeps allowing a template from one organization to serve

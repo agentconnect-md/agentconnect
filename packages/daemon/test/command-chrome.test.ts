@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { CommandChromeRegistry } from '../src/platforms/command-chrome.js'
 import { slackCommandChrome } from '../src/platforms/slack/command-chrome.js'
 import {
@@ -9,6 +9,10 @@ import {
 import { discordCommandChrome } from '../src/platforms/discord/command-chrome.js'
 import { feishuCommandChrome } from '../src/platforms/feishu/command-chrome.js'
 import { googleChatCommandChrome } from '../src/platforms/googlechat/command-chrome.js'
+import { dingTalkCommandChrome } from '../src/platforms/dingtalk/command-chrome.js'
+import { QQCommandChrome } from '../src/platforms/qq/command-chrome.js'
+import { linearCommandChrome } from '../src/platforms/linear/command-chrome.js'
+import { msTeamsCommandChrome } from '../src/platforms/msteams/command-chrome.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 
 const ctx = { channel: 'C1', replyThread: '1700000000.001', sessionKey: 'k1' }
@@ -113,10 +117,19 @@ describe('per-platform reply anchoring', () => {
 })
 
 describe('out-of-turn notices (§7.4 notice)', () => {
+  const msg = { channel: 'group:G', msgId: 'm1', sender: { id: 'u1', isBot: false } } as NormalizedMessage
+
   it('only a platform outside the reply connections posts them through its surface', () => {
     for (const surface of [slackCommandChrome, telegramCommandChrome, discordCommandChrome, feishuCommandChrome])
       expect(surface.notice).toBeUndefined()
-    expect(googleChatCommandChrome.notice).toBeTypeOf('function')
+    for (const surface of [
+      googleChatCommandChrome,
+      msTeamsCommandChrome,
+      dingTalkCommandChrome,
+      QQCommandChrome,
+      linearCommandChrome
+    ])
+      expect(surface.notice).toBeTypeOf('function')
   })
 
   it('google chat posts into a Space thread, and at the top of a DM whose thread is the Space itself', async () => {
@@ -125,13 +138,44 @@ describe('out-of-turn notices (§7.4 notice)', () => {
       postChrome: async (space: string, thread: string | undefined, text: string) =>
         void posts.push([space, thread, text])
     }
-    await googleChatCommandChrome.notice!(conn, 'spaces/S', 'spaces/S/threads/T', 'a')
-    await googleChatCommandChrome.notice!(conn, 'spaces/D', 'spaces/D', 'b')
-    await googleChatCommandChrome.notice!(conn, 'spaces/D', undefined, 'c')
+    await googleChatCommandChrome.notice!(conn, 'spaces/S', 'spaces/S/threads/T', 'a', {})
+    await googleChatCommandChrome.notice!(conn, 'spaces/D', 'spaces/D', 'b', {})
+    await googleChatCommandChrome.notice!(conn, 'spaces/D', undefined, 'c', {})
     expect(posts).toEqual([
       ['spaces/S', 'spaces/S/threads/T', 'a'],
       ['spaces/D', undefined, 'b'],
       ['spaces/D', undefined, 'c']
     ])
+  })
+
+  it('dingtalk posts a plain message, and rejects a send DingTalk did not accept', async () => {
+    const sendText = vi.fn(async (): Promise<string | undefined> => 'query-key')
+    await dingTalkCommandChrome.notice!({ sendText }, 'group:G', 'T', 'a', msg)
+    expect(sendText).toHaveBeenCalledWith('group:G', 'a')
+    sendText.mockResolvedValueOnce(undefined)
+    await expect(dingTalkCommandChrome.notice!({ sendText }, 'group:G', 'T', 'b', msg)).rejects.toThrow()
+  })
+
+  it('qq replies to the message that raised the notice, and rejects without one', async () => {
+    const sendText = vi.fn(async () => {})
+    const raised = { ...msg, adapterExt: { qq: { replyId: 'R1' } } } as NormalizedMessage
+    await QQCommandChrome.notice!({ sendText }, 'group:G', 'T', 'a', raised)
+    expect(sendText).toHaveBeenCalledWith('group:G', 'R1', 'a')
+    await expect(QQCommandChrome.notice!({ sendText }, 'group:G', 'T', 'b', msg)).rejects.toThrow()
+    expect(sendText).toHaveBeenCalledTimes(1)
+  })
+
+  it('linear answers the AgentSession with a response activity, and rejects without one', async () => {
+    const postActivity = vi.fn(async () => {})
+    await linearCommandChrome.notice!({ postActivity }, 'team', 'session-1', 'a', msg)
+    expect(postActivity).toHaveBeenCalledWith('session-1', { type: 'response', body: 'a' })
+    await expect(linearCommandChrome.notice!({ postActivity }, 'team', undefined, 'b', msg)).rejects.toThrow()
+  })
+
+  it('teams rejects when the conversation has no recorded target', async () => {
+    const postText = vi.fn(async () => {})
+    const port = { targetFor: () => undefined, postText }
+    await expect(msTeamsCommandChrome.notice!(port, '19:C@thread.tacv2', 'T', 'a', msg)).rejects.toThrow()
+    expect(postText).not.toHaveBeenCalled()
   })
 })

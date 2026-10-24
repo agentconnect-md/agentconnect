@@ -171,9 +171,6 @@ importers:
       json:
         specifier: ^11.0.0
         version: 11.0.0
-      postject:
-        specifier: 1.0.0-alpha.6
-        version: 1.0.0-alpha.6
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -331,7 +328,7 @@ importers:
     dependencies:
       '@agentclientprotocol/sdk':
         specifier: ^2.0.0
-        version: 2.0.0(zod@4.6.7)
+        version: 2.0.2(zod@4.6.7)
       '@agentconnect.md/activation-policy':
         specifier: workspace:*
         version: link:../activation-policy
@@ -490,8 +487,8 @@ importers:
         specifier: ^11.0.0
         version: 11.0.0
       microsandbox:
-        specifier: 0.7.8
-        version: 0.7.8
+        specifier: 0.7.10
+        version: 0.7.10
       testcontainers:
         specifier: ^12.2.1
         version: 12.2.1(supports-color@7.2.0)
@@ -699,7 +696,7 @@ importers:
         version: 8.18.2
       ai:
         specifier: ^7.0.148
-        version: 7.0.148(zod@4.6.7)
+        version: 7.0.152(zod@4.6.7)
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -799,7 +796,7 @@ importers:
         version: 10.0.1
       cronstrue:
         specifier: ^3.37.0
-        version: 3.37.0
+        version: 3.38.0
       highlight.js:
         specifier: ^11.11.1
         version: 11.12.0
@@ -817,7 +814,7 @@ importers:
         version: 2.2.0
       posthog-js:
         specifier: ^1.438.13
-        version: 1.438.13(@types/react@19.3.0)(react@19.3.1)
+        version: 1.438.21(@types/react@19.3.0)(react@19.3.1)
       react:
         specifier: ^19.3.1
         version: 19.3.1
@@ -914,8 +911,8 @@ packages:
   '@ag-ui/proto@1.0.3':
     resolution: {integrity: sha512-L3YVEJN1hCYx3P7Zfrf4e1obA1pwzykkkPZkNHAdcXyUZ05/ezvWCkErnfNoUlER8QCasBwRjKiDjicu3Tt7+g==}
 
-  '@agentclientprotocol/sdk@2.0.0':
-    resolution: {integrity: sha512-Za5gWOPQ44aBOdegDJZ+OjCAPn7POc0cw8BlFJQ1mmUY1OoUWxRi3+QZT4gdZnyEWgKXyfeGRb0Oo1ag9YkQ1w==}
+  '@agentclientprotocol/sdk@2.0.2':
+    resolution: {integrity: sha512-jLywRB42hZMRMc4aUgt0uRjkY9FQnMdybv4XgLl+ddi75QuJn8Vbl0+CHcVHJDC0+WDfi1KQXRWtHaR5vp6gHw==}
     peerDependencies:
       zod: ^3.25.76 || ^4.0.0
 
@@ -925,8 +922,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/gateway@4.0.121':
-    resolution: {integrity: sha512-cPNXvQ4B5OkmVAm98Dxe1fHdMthyqqqAG0HJx3D92NUa9FpcvkNxdAqiuZdeAhNAodFb9lBrslzzzEwxuVS53A==}
+  '@ai-sdk/gateway@4.0.125':
+    resolution: {integrity: sha512-9raNdkENebDxVl4piGntpQgOBHB62K1rC87KceV8kkGOc/g7s6lwbxN7C6QTqXYJaM+h1Lnm64MDgnHAmzUApg==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -937,8 +934,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider-utils@5.0.65':
-    resolution: {integrity: sha512-LCugcsP8oWmdeI3BASf4Fuo1wiC6Qx0YrefFssl7n12s+LV4DNi5RdwWQrtrB4oek3GGNQRN/h/NSwVZM2eHKw==}
+  '@ai-sdk/provider-utils@5.0.67':
+    resolution: {integrity: sha512-EUzV6GXutGcesWKOY8tRKgijfuv1LUBpqAquMh5k0n74NCjDbca5d5ZG12qhVtM2X5UwM4B2ZMP2XpnAwZlA8Q==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -947,8 +944,8 @@ packages:
     resolution: {integrity: sha512-5lWq7zSfRaU5ylDESn3sDQjgGl2AI1vjZKO/6JY3aFW70ct4zcP1kN+ZUYOuTXr28fVsYbyu2YFhddLdIgQFZQ==}
     engines: {node: '>=18'}
 
-  '@ai-sdk/provider@4.0.31':
-    resolution: {integrity: sha512-3wJnwVTFg8SwOyoZCv+ov7Re2GB+7IQnU5a5MYJACrtiWDDUHgqTBeeesq2MB2ddgojzL8hgWleltwpAgtUqfg==}
+  '@ai-sdk/provider@4.0.33':
+    resolution: {integrity: sha512-C6ylMuAXjgqKJllp6ODIJwUltK/tm3ZmIj4V2fqENP3Y8gif2DyeJSsTcDwFrXppgEKcrBisi/BWx2tYeoeCAw==}
     engines: {node: '>=22'}
 
   '@alloc/quick-lru@5.2.0':
@@ -2083,8 +2080,8 @@ packages:
     resolution: {integrity: sha512-9I2Zn6+NJLfaGoz9jN3lpwDgAYvfGeNYdbAIjJOqzs4Tpc+VU3Jqq4IofSUBKajiDS8k9fZIg18/z13mpk1bsA==}
     engines: {node: '>=8'}
 
-  '@microsandbox/types@0.7.8':
-    resolution: {integrity: sha512-GCLuiSbTXU/5s8/VhyQzRc8AtDyz4uaIk3fP0GbWAPvj2xJfR7rpUr51UYZIFd9ONwAqa7XEfpyr8jnlFInkhA==}
+  '@microsandbox/types@0.7.10':
+    resolution: {integrity: sha512-rmpduQWEm+l1LEzbgvcoysKOypvTYkcEl1fHC8fu3Sv4glpzlAo2aQiwps9LTy+p5SZLk1PfhRqrVBWY9Ih8Jw==}
 
   '@microsoft/agent-host-protocol@1.0.0':
     resolution: {integrity: sha512-swjikGoqZ/bv3Mn4vkkLzwpmS/j9tV7Aas7ruD2a/R3KVsUlokwCJNSET57mdsmZLMnrawDaCr/ctufbpjE4iA==}
@@ -3625,34 +3622,34 @@ packages:
   '@standard-schema/utils@0.3.0':
     resolution: {integrity: sha512-e7Mew686owMaPJVNNLs55PUvgz371nKgwsc4vxE49zsODpJEnxgxRo2y/OKrqueavXgZNMDVj3DdHFlaSAeU8g==}
 
-  '@superradcompany/microsandbox-darwin-arm64@0.7.8':
-    resolution: {integrity: sha512-WoTlB2b06o32AXW3D3Xp6GLiSoAXGNqNikbakA/RP2Uqj2Z8mfoDZ7mYKONLG7PXUAWu/vTTqJkOtVt8JFEWvA==}
+  '@superradcompany/microsandbox-darwin-arm64@0.7.10':
+    resolution: {integrity: sha512-qIG8OGdYJca3/MdeVdIyTYgq/PPMc5+M55AD0LxYIOKa/aHGvV6hFPKN+RSqakelT7xtS8KjLtxKCGkf637faw==}
     engines: {node: '>= 22'}
     cpu: [arm64]
     os: [darwin]
 
-  '@superradcompany/microsandbox-linux-arm64-gnu@0.7.8':
-    resolution: {integrity: sha512-NRm8GVXlgoPsLYX8BovMTwg4oNWiT0EZp34+6zM7s7slhCbv3TItebbg6urKj8yqKoLP1T+OHH/7Y/RnD9omZw==}
+  '@superradcompany/microsandbox-linux-arm64-gnu@0.7.10':
+    resolution: {integrity: sha512-HeD0pRpR11XAwDqzNM/GvaRih5g79tcnB5lAKs1qFK+aQbLTMdzFLeBpvX6D+H0zFwvj4jLU+VOAjzekijBWCg==}
     engines: {node: '>= 22'}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@superradcompany/microsandbox-linux-x64-gnu@0.7.8':
-    resolution: {integrity: sha512-4AnLhlDSvgzQPTrKcd6kCpCpgPWq275sGWTy7tg1deo42lU0PXKtwnaUlBx7uBdQO4YFIGfIx0T8lgsGO9h5EA==}
+  '@superradcompany/microsandbox-linux-x64-gnu@0.7.10':
+    resolution: {integrity: sha512-OLqEvC9yuPNdW/6on3n6/vVSi79Hi40lUGKcjm2P+PzUkBAWprKJU7Rq5DHpnkorvfIj+Eyl67QCro/vk/F7YQ==}
     engines: {node: '>= 22'}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@superradcompany/microsandbox-win32-arm64-msvc@0.7.8':
-    resolution: {integrity: sha512-wwXD/B9JwmyDAhrkX2V4L4VHVumDK1JbMnUFTOuNCoozyeNV4fogL+BziINp3HeInBTbKOJrAI7+A8kTawKfPA==}
+  '@superradcompany/microsandbox-win32-arm64-msvc@0.7.10':
+    resolution: {integrity: sha512-FfUIMyUGHokPF05ml/fKsdNtLW7uHVmlil9ImYOB3gPGsuN0xbsQtCq47fydYU2d9S7QIhqgSgQ7Ii48uLRfeg==}
     engines: {node: '>= 22'}
     cpu: [arm64]
     os: [win32]
 
-  '@superradcompany/microsandbox-win32-x64-msvc@0.7.8':
-    resolution: {integrity: sha512-m11kPzyaid/DMXK5kJRvDZEGkdlvndmOzfjNjfhqpL+LFQssnJgQ2WSyYfBQMrHj17pRfDkDxqwZPr9iXZoSMw==}
+  '@superradcompany/microsandbox-win32-x64-msvc@0.7.10':
+    resolution: {integrity: sha512-l/qT2ub8gbP9Nx+1XiYvdo1LfNoNNe+obnQs3dnBR5A3UN8aeRVuf5FbhGmJwWP/hSqrDaH4jo33JukGkDPofg==}
     engines: {node: '>= 22'}
     cpu: [x64]
     os: [win32]
@@ -4471,8 +4468,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  ai@7.0.148:
-    resolution: {integrity: sha512-FPgfIAhz/FrlzcvqTN7pGGibahR5rD19NXZWX9WQ1tskTic+CN+jxvubpreyq8uN1maIEHPwvZmil/3IYN8FIw==}
+  ai@7.0.152:
+    resolution: {integrity: sha512-cxQaE/17qhgqJcLCespbnyaN3c4IkGuNUtBXKSX1yTvlSsQ7ERV2ygFADMG7d+IWCUuvi7R8DrqAy9DGj0cgkg==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -4985,10 +4982,6 @@ packages:
     resolution: {integrity: sha512-P0CysNDQ7rtVw4QIQtm+MRxV66vKFSvlsQvGYXZWR3qFU0jlMKHZZZgw8e+8DSah4UDKMqnknRDQz+xuQXQ/Zg==}
     engines: {node: '>= 6'}
 
-  commander@9.5.0:
-    resolution: {integrity: sha512-KRs7WVDKg86PWiuAqhDrAQnTXZKraVcCc6vFdL14qrZ/DcWwuRo7VoiYXalXO7S5GKpqYiVEwCbgFDfxNHKJBQ==}
-    engines: {node: ^12.20.0 || >=14}
-
   comment-parser@1.4.8:
     resolution: {integrity: sha512-rKZTGo4fzKYna8UcL0isTg5wkBNla7bxTypLwZQXjIdi++IdP1OJ41rI5Mti3/jltkPujbu4i9LIARYA+zpotQ==}
     engines: {node: '>= 12.0.0'}
@@ -5125,8 +5118,8 @@ packages:
     resolution: {integrity: sha512-ixNtAJndqh173VQ4KodSdJEI6nuioBWI0V1ITNKhZZsO0pEMoDxz539T4FTTbSZ/xIOSuDnzxLVRqBVSvPNE2g==}
     engines: {node: '>=18.0'}
 
-  cronstrue@3.37.0:
-    resolution: {integrity: sha512-Nc5PL23nz3HjRcHRc6O7ikCc3lnFM2SQg5nwSDMGOi0jv0g178mUMClgfT6WuOevrEsPOTQCWOaGFV5PKFYymg==}
+  cronstrue@3.38.0:
+    resolution: {integrity: sha512-i10xR7fS4AH9LKwmt3gYdt/5lSsB2qFGSNfC8aeyYybxo48DCMz+nUrSVI4kUj8yo+SgTbMJqp/BWEem9avlcA==}
     hasBin: true
 
   cross-spawn@7.0.6:
@@ -7147,8 +7140,8 @@ packages:
     resolution: {integrity: sha512-PXwfBhYu0hBCPw8Dn0E+WDYb7af3dSLVWKi3HGv84IdF4TyFoC0ysxFd0Goxw7nSv4T/PzEJQxsYsEiFCKo2BA==}
     engines: {node: '>=8.6'}
 
-  microsandbox@0.7.8:
-    resolution: {integrity: sha512-bUll2JNeVhAdvtlemsD5rNkVpLU0KQSXVpuSjXFmkG6Z52Z2ZL9sP8hAdFT8pIGoEPLj+OB9ohgFEPsJgBVkFg==}
+  microsandbox@0.7.10:
+    resolution: {integrity: sha512-yvP9+55fCP0Nmj14kpNw3yknla+598IsGhr6JhO3fXbaJKloFIw/EcRKXaHJzWuLVcjOT0nlYghJZ1joA8pvdQ==}
     engines: {node: '>= 22'}
     hasBin: true
 
@@ -7945,8 +7938,8 @@ packages:
     resolution: {integrity: sha512-Jtc2612XINuBjIl/QTWsV5UvE8UHuNblcO3vVADSrKsrc6RqGX6lOW1cEo3CM2v0XG4Nat8nI+YM7/f26VxXLw==}
     engines: {node: '>=12'}
 
-  posthog-js@1.438.13:
-    resolution: {integrity: sha512-fcRhMZ/TKvpDjmDGTlf4KCBqqTnpLWLplZ76NfeLNEE1P6N6qCGGZzqZ6gEzJoOfYLNLgjd0sRM5fC8F/Ky9fA==}
+  posthog-js@1.438.21:
+    resolution: {integrity: sha512-KFrb9SOhyWg65OYOJ6dIxog26AqyD3ETj5pin/dWBcGll3pqa3FnqoJxq5IkHC6dtms/YjRCj6cT06u9j+EkoA==}
     peerDependencies:
       '@types/react': '>=16.8.0'
       react: '>=16.8.0'
@@ -7959,11 +7952,6 @@ packages:
   posthog-node@5.24.17:
     resolution: {integrity: sha512-mdb8TKt+YCRbGQdYar3AKNUPCyEiqcprScF4unYpGALF6HlBaEuO6wPuIqXXpCWkw4VclJYCKbb6lq6pH6bJeA==}
     engines: {node: ^20.20.0 || >=22.22.0}
-
-  postject@1.0.0-alpha.6:
-    resolution: {integrity: sha512-b9Eb8h2eVqNE8edvKdwqkrY6O7kAwmI8kcnBv1NScolYJbo59XUF0noFq+lxbC1yN20bmC0WBEbDC5H/7ASb0A==}
-    engines: {node: '>=14.0.0'}
-    hasBin: true
 
   powershell-utils@0.2.1:
     resolution: {integrity: sha512-C+y9x90UElAddDZmV4qOx9W53B61PO7cIqWz2dQsWlwswuq4mr8NEwytdGKboYbQlGZ3awrkTeNvcZiZNHnQ8A==}
@@ -9642,7 +9630,7 @@ snapshots:
       '@protobuf-ts/protoc': 2.11.1
       zod: 3.25.76
 
-  '@agentclientprotocol/sdk@2.0.0(zod@4.6.7)':
+  '@agentclientprotocol/sdk@2.0.2(zod@4.6.7)':
     dependencies:
       zod: 4.6.7
 
@@ -9653,10 +9641,10 @@ snapshots:
       '@vercel/oidc': 3.2.0
       zod: 4.6.7
 
-  '@ai-sdk/gateway@4.0.121(zod@4.6.7)':
+  '@ai-sdk/gateway@4.0.125(zod@4.6.7)':
     dependencies:
-      '@ai-sdk/provider': 4.0.31
-      '@ai-sdk/provider-utils': 5.0.65(zod@4.6.7)
+      '@ai-sdk/provider': 4.0.33
+      '@ai-sdk/provider-utils': 5.0.67(zod@4.6.7)
       '@vercel/oidc': 3.2.0
       zod: 4.6.7
 
@@ -9668,9 +9656,9 @@ snapshots:
       undici: 6.29.1
       zod: 4.6.7
 
-  '@ai-sdk/provider-utils@5.0.65(zod@4.6.7)':
+  '@ai-sdk/provider-utils@5.0.67(zod@4.6.7)':
     dependencies:
-      '@ai-sdk/provider': 4.0.31
+      '@ai-sdk/provider': 4.0.33
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1
@@ -9681,7 +9669,7 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/provider@4.0.31':
+  '@ai-sdk/provider@4.0.33':
     dependencies:
       json-schema: 0.4.0
 
@@ -11073,7 +11061,7 @@ snapshots:
 
   '@lukeed/ms@2.0.2': {}
 
-  '@microsandbox/types@0.7.8': {}
+  '@microsandbox/types@0.7.10': {}
 
   '@microsoft/agent-host-protocol@1.0.0(patch_hash=03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510)': {}
 
@@ -12675,19 +12663,19 @@ snapshots:
 
   '@standard-schema/utils@0.3.0': {}
 
-  '@superradcompany/microsandbox-darwin-arm64@0.7.8':
+  '@superradcompany/microsandbox-darwin-arm64@0.7.10':
     optional: true
 
-  '@superradcompany/microsandbox-linux-arm64-gnu@0.7.8':
+  '@superradcompany/microsandbox-linux-arm64-gnu@0.7.10':
     optional: true
 
-  '@superradcompany/microsandbox-linux-x64-gnu@0.7.8':
+  '@superradcompany/microsandbox-linux-x64-gnu@0.7.10':
     optional: true
 
-  '@superradcompany/microsandbox-win32-arm64-msvc@0.7.8':
+  '@superradcompany/microsandbox-win32-arm64-msvc@0.7.10':
     optional: true
 
-  '@superradcompany/microsandbox-win32-x64-msvc@0.7.8':
+  '@superradcompany/microsandbox-win32-x64-msvc@0.7.10':
     optional: true
 
   '@swc/core-darwin-arm64@1.16.13':
@@ -13456,11 +13444,11 @@ snapshots:
       '@opentelemetry/api': 1.9.1
       zod: 4.6.7
 
-  ai@7.0.148(zod@4.6.7):
+  ai@7.0.152(zod@4.6.7):
     dependencies:
-      '@ai-sdk/gateway': 4.0.121(zod@4.6.7)
-      '@ai-sdk/provider': 4.0.31
-      '@ai-sdk/provider-utils': 5.0.65(zod@4.6.7)
+      '@ai-sdk/gateway': 4.0.125(zod@4.6.7)
+      '@ai-sdk/provider': 4.0.33
+      '@ai-sdk/provider-utils': 5.0.67(zod@4.6.7)
       zod: 4.6.7
 
   ajv-formats@3.0.1(ajv@8.20.0):
@@ -13960,8 +13948,6 @@ snapshots:
 
   commander@5.1.0: {}
 
-  commander@9.5.0: {}
-
   comment-parser@1.4.8: {}
 
   compare-func@2.0.0:
@@ -14091,7 +14077,7 @@ snapshots:
 
   croner@10.0.1: {}
 
-  cronstrue@3.37.0: {}
+  cronstrue@3.38.0: {}
 
   cross-spawn@7.0.6:
     dependencies:
@@ -16400,15 +16386,15 @@ snapshots:
       braces: 3.0.3
       picomatch: 2.3.2
 
-  microsandbox@0.7.8:
+  microsandbox@0.7.10:
     dependencies:
-      '@microsandbox/types': 0.7.8
+      '@microsandbox/types': 0.7.10
     optionalDependencies:
-      '@superradcompany/microsandbox-darwin-arm64': 0.7.8
-      '@superradcompany/microsandbox-linux-arm64-gnu': 0.7.8
-      '@superradcompany/microsandbox-linux-x64-gnu': 0.7.8
-      '@superradcompany/microsandbox-win32-arm64-msvc': 0.7.8
-      '@superradcompany/microsandbox-win32-x64-msvc': 0.7.8
+      '@superradcompany/microsandbox-darwin-arm64': 0.7.10
+      '@superradcompany/microsandbox-linux-arm64-gnu': 0.7.10
+      '@superradcompany/microsandbox-linux-x64-gnu': 0.7.10
+      '@superradcompany/microsandbox-win32-arm64-msvc': 0.7.10
+      '@superradcompany/microsandbox-win32-x64-msvc': 0.7.10
 
   mime-db@1.52.0: {}
 
@@ -17109,7 +17095,7 @@ snapshots:
 
   postgres@3.4.7: {}
 
-  posthog-js@1.438.13(@types/react@19.3.0)(react@19.3.1):
+  posthog-js@1.438.21(@types/react@19.3.0)(react@19.3.1):
     dependencies:
       '@posthog/browser-common': 0.9.11
       '@posthog/core': 1.60.1
@@ -17130,10 +17116,6 @@ snapshots:
   posthog-node@5.24.17:
     dependencies:
       '@posthog/core': 1.23.1
-
-  postject@1.0.0-alpha.6:
-    dependencies:
-      commander: 9.5.0
 
   powershell-utils@0.2.1:
     optional: true

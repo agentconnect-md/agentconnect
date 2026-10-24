@@ -307,7 +307,7 @@ composition point. Do not add speculative backend branches throughout ACP.
 The current microsandbox integration supports Linux with usable KVM. The startup
 probe is the cheap one of the [strategy table](#strategy-table-implemented-on-the-daemon):
 it opens `/dev/kvm` and, when the runtime store already holds the pinned
-`microsandbox@0.7.8` package, checks its msb and libkrunfw, then recovers the
+`microsandbox@0.7.10` package, checks its msb and libkrunfw, then recovers the
 state an earlier run left and collects the cached images no binding needs. It boots
 no VM; that rule is the availability probe's alone. Once it passes, a background task
 of the ready daemon, or a session that needs the image first, installs the package
@@ -494,7 +494,7 @@ records the existing login requirement. For sandbox execution, the console shows
 image contains that runtime. The underlying authentication status is retained.
 
 File and database discovery currently covers Claude, Codex, Qoder, OMP, Grok, pi,
-OpenCode, DSH, Hermes, Auggie, Cline, Amp, Gemini/Qwen/Kimi OAuth, Qwen saved API
+OpenCode, DSH, Hermes, Auggie, Cline, Amp, Antigravity/Qwen/Kimi OAuth, Qwen saved API
 keys, Antigravity ACP file logins, Devin, and Copilot's stored token map. These
 descriptors also prepare the corresponding files in the private runtime HOME.
 Keyring-only logins are not detected by file discovery. Credential formats without

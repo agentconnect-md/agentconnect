@@ -7,7 +7,7 @@ import { useConsoleData } from '@/lib/data-context'
 import type { WebBotSettingsFragments } from '../contract'
 import { useDeploymentConfig } from '../deployment-config'
 import { msTeamsApi } from './api'
-import { AppPackageButton } from './app-package'
+import { AppPackageActions } from './app-package'
 import { CopyField } from './fields'
 import { msTeamsErrorMessage, msTeamsMessagesUrl } from './setup'
 
@@ -24,7 +24,7 @@ export function MsTeamsBotSettings({ bot, canWrite }: { bot: BotDto; canWrite: b
 
   const endpoint = msTeamsMessagesUrl(probe.config?.relayPublicUrl ?? null)
   // The package is built per integration; a freed bot has none to build it from.
-  const integrationId = integrations.find((row) => row.botId === bot.id)?.id
+  const integration = integrations.find((row) => row.botId === bot.id)
   const secretTrim = secret.trim()
 
   const replace = async () => {
@@ -50,14 +50,15 @@ export function MsTeamsBotSettings({ bot, canWrite }: { bot: BotDto; canWrite: b
     <div className="mb-3 flex flex-col gap-3 rounded-lg border border-(--border-subtle) bg-(--surface-card) px-3 py-3">
       <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
         <Value label={t('credentials.appId')}>{bot.externalAppId ?? '—'}</Value>
-        <Value label={t('credentials.tenantId')}>{bot.platformConfig?.tenantId ?? '—'}</Value>
+        <Value label={t('credentials.tenantId')}>{bot.externalTenantId ?? '—'}</Value>
         {endpoint && (
           <div className="desktop:col-span-2">
             <CopyField label={t('register.endpoint')} value={endpoint} />
           </div>
         )}
       </div>
-      {canWrite && (
+      {/* A deployment app's secret is the Setup Server's, so its row offers no rotation. */}
+      {canWrite && !bot.prebuilt && (
         <form
           className="flex flex-col gap-2 desktop:flex-row desktop:items-end"
           onSubmit={(event) => {
@@ -90,10 +91,13 @@ export function MsTeamsBotSettings({ bot, canWrite }: { bot: BotDto; canWrite: b
           {result.text}
         </p>
       )}
-      {integrationId && (
-        <div className="flex">
-          <AppPackageButton integrationId={integrationId} className="dsbtn sm dsbtn-secondary" />
-        </div>
+      {integration?.id && integration.agentId && (
+        <AppPackageActions
+          integrationId={integration.id}
+          agentId={integration.agentId}
+          connected={bot.prebuilt}
+          canWrite={canWrite}
+        />
       )}
     </div>
   )

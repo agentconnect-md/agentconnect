@@ -33,6 +33,18 @@ rejects); the shim merges it under any daemon-sent `CODEX_CONFIG`, one level dee
 both carry (the daemon always sends `features`), so every leaf the daemon decided stays
 authoritative.
 
+A DeepSeek Harness permission mode is enforced by the harness itself, not by the daemon or the
+shim. In a pod its bubblewrap probe fails, because the pod has no user namespaces and drops every
+capability, so the harness confines commands with its own Landlock launcher instead. Under
+`workspace-write` that launcher grants write access to the workspace, `/tmp` and `$TMPDIR` by
+design, so a write to `/tmp` that asks no permission is expected. The launcher refuses to run
+when the kernel has no Landlock. On an older ABI it runs anyway and prints
+`landlock-run: partial enforcement (older Landlock ABI)` to stderr. Before ABI 3 (kernel 6.2),
+path-based `truncate(2)` is not governed: an agent in `workspace-write` can zero, but not write
+to, a file outside its grants that the pod's agent user can write. Creating, appending,
+unlinking and renaming stay denied. The pod remains the isolation boundary, and running sandbox
+pods on nodes with kernel 6.2 or newer closes the gap.
+
 The daemon carries one more deployment assertion of the same kind for Claude: the
 `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` variables and their `_NAME`,
 `_DESCRIPTION` and `_SUPPORTED_CAPABILITIES` suffixes, which say which concrete model each

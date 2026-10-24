@@ -980,6 +980,28 @@ _, turn_cp = control_plane_of.call(turn_docs)
 turn_plan = JSON.parse(turn_cp.fetch('env').find { |item| item['name'] == 'AC_COMPUTER_PLAN' }.fetch('value'))
 abort("unexpected computer plan: #{turn_plan}") unless turn_plan['volumeGib'] == 1024 && turn_plan['quotas'] == { 'desktops' => nil }
 
+# Cloudflare TURN: the Control Plane gets the key ID and the token from the Secret, and a desktop reaches Cloudflare's TURN ports.
+cf_rendered, cf_error, cf_status = Open3.capture3(
+  *command, '--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test',
+  '--set', 'computerViewer.turn.cloudflare.keyId=cf-key-1'
+)
+abort("helm template (Cloudflare TURN) failed:\n#{cf_error}") unless cf_status.success?
+cf_docs = YAML.load_stream(cf_rendered).compact
+cf_template = cf_docs.find { |doc| doc['kind'] == 'SandboxTemplate' && doc.dig('metadata', 'name') == 'example-agentconnect-computer' }
+cf_egress = cf_template.dig('spec', 'networkPolicy', 'egress', 1, 'ports').map { |p| "#{p['protocol']}/#{p['port']}" }
+abort("unexpected desktop media egress with Cloudflare TURN: #{cf_egress}") unless cf_egress == %w[TCP/443 UDP/3478 TCP/3478 TCP/5349]
+_, cf_cp = control_plane_of.call(cf_docs)
+cf_env = cf_cp.fetch('env').to_h { |item| [item['name'], item] }
+abort('Cloudflare TURN must pass its key ID to the Control Plane') unless cf_env.dig('COMPUTER_TURN_CLOUDFLARE_KEY_ID', 'value') == 'cf-key-1'
+abort('Cloudflare TURN must read its API token from the Secret') unless
+  cf_env.dig('COMPUTER_TURN_CLOUDFLARE_API_TOKEN', 'valueFrom', 'secretKeyRef', 'key') == 'COMPUTER_TURN_CLOUDFLARE_API_TOKEN'
+abort('Cloudflare TURN must not render a coturn secret') if cf_env.key?('COMPUTER_TURN_SECRET')
+_, _, both_status = Open3.capture3(
+  *command, '--set', 'computerViewer.turn.cloudflare.keyId=cf-key-1',
+  '--set-json', 'computerViewer.turn.urls=["turn:coturn.example.test:3478"]'
+)
+abort('a coturn beside Cloudflare TURN must fail the render') if both_status.success?
+
 # Without the daemon pool nothing can claim a desktop, so the Control Plane must not advertise managed computers.
 poolless_rendered, poolless_error, poolless_status = Open3.capture3(*command, '--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test', '--set', 'daemonPool.enabled=false')
 abort("helm template (computer pool without daemon pool) failed:\n#{poolless_error}") unless poolless_status.success?

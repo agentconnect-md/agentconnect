@@ -4,6 +4,8 @@ import { isMalformedPlatformTurn } from '../src/platforms/malformed-turn.js'
 import { threadPromotionFor, type ThreadPromotionHost } from '../src/platforms/thread-promotion.js'
 import { discordThreadPromotion, discordThreadName } from '../src/platforms/discord/thread-promotion.js'
 import { manifestFor } from '@agentconnect.md/protocol'
+import { canonicalizeDingTalkThread } from '../src/platforms/dingtalk/threading.js'
+import type { NormalizedMessage } from '../src/messages/normalized.js'
 
 describe('outbound thread keys (threadKeyForPost)', () => {
   it('keeps each platform aligned with its inbound canonicalization', () => {
@@ -25,6 +27,25 @@ describe('outbound thread keys (threadKeyForPost)', () => {
     // Google Chat: a Space post keys on its thread (the gateway's threadOfPost), a DM on its Space.
     expect(threadKeyForPost('googlechat', 'spaces/S', 'spaces/S/threads/T')).toBe('spaces/S/threads/T')
     expect(threadKeyForPost('googlechat', 'spaces/D', 'spaces/D/threads/T', true)).toBe('spaces/D')
+    // DingTalk: a group post keys on its process query key, a DM joins the one `dm` session.
+    expect(threadKeyForPost('dingtalk', 'cid-1', 'pqk-1')).toBe('pqk-1')
+    expect(threadKeyForPost('dingtalk', 'dm:user-0001', 'pqk-1', true)).toBe('dm')
+  })
+
+  it('lands a DingTalk send and the reply to it in the same session', async () => {
+    // The inbound side of the two DingTalk keys above: a DM reply resolves to `dm`, a quote of the group post to its recorded key.
+    const host = { threadForMessage: async (_channel: string, id: string) => (id === 'pqk-1' ? 'pqk-1' : undefined) }
+    const dm = { platform: 'dingtalk', isDm: true, msgId: 'dingtalk:cid-dm:m1' } as NormalizedMessage
+    await canonicalizeDingTalkThread(host as never, dm, 'dm:user-0001')
+    expect(dm.thread).toBe(threadKeyForPost('dingtalk', 'dm:user-0001', 'pqk-1', true))
+    const quote = {
+      platform: 'dingtalk',
+      isDm: false,
+      replyTo: 'pqk-1',
+      msgId: 'dingtalk:cid-1:m2'
+    } as NormalizedMessage
+    await canonicalizeDingTalkThread(host as never, quote, 'cid-1')
+    expect(quote.thread).toBe(threadKeyForPost('dingtalk', 'cid-1', 'pqk-1'))
   })
 
   it('defaults an unregistered platform to the core rule (own ts)', () => {

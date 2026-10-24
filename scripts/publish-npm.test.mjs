@@ -13,6 +13,7 @@ test('a partial npm retry skips completed packages and compares against each pac
   const calls = []
   let failSetup = true
   const options = {
+    built: () => false,
     readVersion: async (name, selector) => {
       const version = current.get(name.split('/')[1])
       return selector === 'latest' || selector === version ? version : undefined
@@ -41,7 +42,7 @@ test('a partial npm retry skips completed packages and compares against each pac
     ['setup', 'v0.9.0', 'latest', 'publish'],
     ['setup', 'v0.9.0', '1.0.1', 'prepare'],
     ['setup', 'v0.9.0', 'latest', 'publish'],
-    ['computer', 'v1.0.0', '1.0.1', 'prepare'],
+    ['computer', 'v1.0.0', '1.0.1', 'prepare', '{}'],
     ['computer', 'v1.0.0', 'latest', 'publish']
   ])
 })
@@ -68,14 +69,66 @@ test('registry errors fail publication instead of treating an unknown version as
 test('a package with no release on a channel publishes with no baseline, so its first release always builds', async () => {
   const calls = []
   await publishPackages('v2.6.0', {
-    readVersion: async (name, selector) => (name.endsWith('/computer') || selector !== 'latest' ? undefined : '2.5.0'),
-    execute: (script, args) => calls.push([/publish-(.+)-if-changed/.exec(script)[1], ...args])
+    readVersion: async (name, selector) =>
+      name.endsWith('/computer') || name.includes('darwin') || selector !== 'latest' ? undefined : '2.5.0',
+    execute: (script, args) => calls.push([/publish-(.+)-if-changed/.exec(script)[1], ...args]),
+    built: () => false
   })
   assert.deepEqual(
     calls.filter(([component]) => component === 'computer'),
     [
-      ['computer', '', '2.6.0', 'prepare'],
+      ['computer', '', '2.6.0', 'prepare', '{}'],
       ['computer', '', 'latest', 'publish']
     ]
   )
+})
+
+test('the computer package pins each macOS app, rebuilt only when its recipe changed so grants survive', async () => {
+  const run = async ({ published, changed, built = () => true }) => {
+    const calls = []
+    await publishPackages('v2.7.0', {
+      readVersion: async (name, selector) => {
+        const version = name.includes('darwin') ? published[name.split('-').pop()] : '2.6.0'
+        return selector === 'latest' || selector === version ? version : undefined
+      },
+      execute: (script, args) => calls.push([script.replace(/^scripts\//, ''), ...args]),
+      changed: (tag, paths) => {
+        assert.deepEqual(paths, ['packages/computer/scripts/build-macos-app.mjs'])
+        return changed(tag)
+      },
+      built
+    })
+    return calls
+  }
+  const pins = (calls) => calls.find(([script, , , mode]) => script.includes('computer-if') && mode === 'prepare')[4]
+
+  const rebuilt = await run({ published: { arm64: '2.6.0', x64: '2.6.0' }, changed: () => true })
+  assert.deepEqual(rebuilt.slice(0, 4), [
+    ['publish-computer-app.sh', 'arm64', '2.7.0', 'prepare'],
+    ['publish-computer-app.sh', 'arm64', 'latest', 'publish'],
+    ['publish-computer-app.sh', 'x64', '2.7.0', 'prepare'],
+    ['publish-computer-app.sh', 'x64', 'latest', 'publish']
+  ])
+  assert.deepEqual(JSON.parse(pins(rebuilt)), {
+    '@agentconnect.md/computer-darwin-arm64': '2.7.0',
+    '@agentconnect.md/computer-darwin-x64': '2.7.0'
+  })
+
+  const kept = await run({ published: { arm64: '2.5.0', x64: '2.6.0' }, changed: (tag) => tag === 'v2.6.0' })
+  assert.deepEqual(
+    kept.filter(([script]) => script.includes('computer-app')),
+    [
+      ['publish-computer-app.sh', 'x64', '2.7.0', 'prepare'],
+      ['publish-computer-app.sh', 'x64', 'latest', 'publish']
+    ]
+  )
+  assert.deepEqual(JSON.parse(pins(kept)), {
+    '@agentconnect.md/computer-darwin-arm64': '2.5.0',
+    '@agentconnect.md/computer-darwin-x64': '2.7.0'
+  })
+
+  // A release that did not build the apps pins what is published, or nothing before the first app release.
+  const unbuilt = await run({ published: { arm64: '2.6.0' }, changed: () => true, built: () => false })
+  assert.ok(!unbuilt.some(([script]) => script.includes('computer-app')))
+  assert.deepEqual(JSON.parse(pins(unbuilt)), { '@agentconnect.md/computer-darwin-arm64': '2.6.0' })
 })

@@ -42,7 +42,7 @@ and system-prompt injection for others. The upstream `skills` CLI from
 that machinery:
 
 - It supports more than 73 agents, including `-a claude-code`, `-a codex`,
-  `-a cursor`, `-a opencode`, and `-a gemini-cli`. The CLI maintains each
+  `-a cursor`, and `-a opencode`. The CLI maintains each
   agent's directory convention, so AgentConnect need not track destinations per
   runtime.
 - Upstream accepts several remote and local source forms. AgentConnect narrows

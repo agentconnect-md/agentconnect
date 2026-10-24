@@ -543,7 +543,8 @@ looked up exactly, so webchat, hook and dream turns inherit neither:
   message buttons need a provider grant a bot cannot count on. A card is built for the
   connection it is posted on, the turn's reply connection or, for a surface that posts
   through a leased egress (Google Chat), that egress. A surface builds the live card, its settled
-  form, a task's card and notice, and the form a restart's sweep
+  form, a task's card and notice, the editor path's own notice and its settled line
+  (slack-approval-dm.md §5.5), and the form a restart's sweep
   rewrites; it posts on the turn's apply chain (`send`) or into another conversation of
   the platform (`post`, for a task's request), and rewrites in place. `maxOptions`
   never exceeds the cap every surface and the console share (#1969). A button carries
@@ -580,11 +581,15 @@ a real thread and re-dispatches), command chrome renderers (the four-way
 
 The command-chrome surface (`platforms/command-chrome.ts`) also carries an
 optional `notice` member for core's notices outside a command or a turn's
-output: a gated conversation's one-time notice and a cut turn's notice. A
+output: a gated or Off conversation's notice and a cut turn's notice. A
 platform with a shared reply connection keeps posting them through it; one
-whose connection is outside that set (Google Chat) posts them through
-`notice`, so core never branches on the platform. A surface without the member
-posts nothing, as before.
+whose connection is outside that set (Google Chat, Teams, DingTalk, QQ,
+Linear) posts them through `notice`, so core never branches on the platform.
+`notice` also receives the message that raised it, because QQ can only reply
+passively to a message. A send that did not land rejects. The gated notice
+answers every addressed message once: its per-message latch collapses a
+message's duplicate event copies, and a failed post releases it so a
+redelivery is answered. A surface without the member posts nothing.
 
 `DaemonPlatformModule.chatMemberKey?` is the same kind of member: the id a
 synced organization matches a platform's chat member to a console account by,
@@ -595,7 +600,9 @@ than a core table keyed by platform name: `DaemonPlatformModule.relayIngress?`
 (`platforms/contract.ts`), which core reads through `PlatformModuleRegistry`
 (`platforms/registry.ts`) by `normalized.platform` once its own gates on the
 relay `im` path (arbitration echo, conversation gating, control commands, the
-`!stop` mute) have passed. `prepare` shapes the delivery and may answer it
+`!stop` mute) have passed. `observe?` runs before those gates and only notes
+what the delivery says about its conversation, so a message a gate drops still
+leaves the reply target its gate notice needs. `prepare` shapes the delivery and may answer it
 itself (`settled`) or refuse it as unrecorded (`refused`); `onAdmitted?` runs
 once inside dispatch's durable admission fence; `requireDurable?` and
 `receiptId?` bind the delivery to a permanent receipt minted with its admission

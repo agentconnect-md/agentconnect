@@ -287,6 +287,9 @@ export class ConnectionReconciler {
                 .cpClient()
                 ?.emitIntegrationTenant({ integrationIds, botUserId: group.clientId, tenantId: corpId }) ?? false
             )
+          },
+          onPlaceExternal: (channel, reason) => {
+            if (conn) this.host.placeTrust().detected(this.host.srcIntegrationIds(conn), channel, reason)
           }
         })
         try {

@@ -9,9 +9,8 @@ import { discoverSeededRuntimeCredentials } from './runtime-seeded-credentials.j
 import { discoverOmpCredentialProviders } from './omp-credentials.js'
 import { runtimeStateLocations } from './probe.js'
 
-/** Provider API keys that authenticate a runtime with no on-disk login. GOOGLE_API_KEY is Vertex-only for gemini-cli. */
+/** Provider API keys that authenticate a runtime with no on-disk login. */
 const RUNTIME_CREDENTIAL_ENV: Readonly<Record<string, { provider: string; keys: readonly string[] }>> = Object.freeze({
-  gemini: { provider: 'google', keys: ['GEMINI_API_KEY'] },
   'muse-acp': { provider: 'meta', keys: ['META_API_KEY'] }
 })
 

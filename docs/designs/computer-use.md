@@ -150,8 +150,8 @@ session. `sleeping` is a CP verdict like `offline`: the lease service and the ch
 
 ### 3.1 Components [validated]
 
-The desktop daemon is a Node program bundled into one `.mjs` (on macOS, a Node single executable application inside a
-signed `.app`, §3.2.1). The package is `packages/computer`, published to npm as `@agentconnect.md/computer` (bin
+The desktop daemon is a Node program bundled into one `.mjs` (on macOS it runs inside a signed `.app` whose Node
+runtime holds the grants, §3.2.1). The package is `packages/computer`, published to npm as `@agentconnect.md/computer` (bin
 `agentconnect-computer`) like the agent daemon. `@agentconnect.md/cli` installs, upgrades and runs it as
 `agentconnect computer …`, from its own version store in the computer data directory
 ([cli-daemon-split.md §1.2](cli-daemon-split.md#12-computer-desktop-daemon)).
@@ -210,16 +210,33 @@ TCC records a grant against the **responsible process**. Started from a terminal
 broad (anything run in that terminal inherits it), once per terminal app, and impossible over SSH. So the desktop
 daemon runs as its own app:
 
-- `AgentConnect Computer.app`, bundle id `md.agentconnect.computer`, containing a Node SEA, `LSUIElement` (no Dock icon),
-  launched by a per-user LaunchAgent in the Aqua session.
+- `AgentConnect Computer.app`, bundle id `md.agentconnect.computer`, `LSUIElement` (no Dock icon), launched by a
+  per-user LaunchAgent in the Aqua session. **[implemented]** The app is a runtime, not the daemon: its executable is
+  the official, pinned Node re-signed under the app's identity, and the LaunchAgent runs
+  `<app>/Contents/MacOS/agentconnect-computer <data dir>/current/dist/agentconnect-computer.mjs run`. A daemon upgrade
+  moves `current` and never touches the app, so the grants stay even with an ad-hoc signature; only a Node update
+  changes the app. Each `@agentconnect.md/computer` version pins its app as an exact optional dependency
+  (`@agentconnect.md/computer-darwin-arm64` / `-x64`); `computer install` / `upgrade` verify it through the same
+  registry integrity check, require `codesign --verify --strict` and the `md.agentconnect.computer` identifier, and
+  swap it into `~/Applications` (no administrator) only when the pin changes. npm downloads carry no quarantine.
 - Cua Driver and ffmpeg inherit the app's grants as children; `TCC.db` held only `md.agentconnect.computer`, never Terminal.
 - Three grants: **Accessibility** (renamed "Device Control and Data Access" in macOS 27; being listed is not enough, the
   switch must be on, or clicks and keys are dropped silently while pointer moves still work, which is easy to miss);
   **Screen Recording** (takes effect only after the app restarts, so `setup` restarts the service while it waits); and
   the extra "bypass the private window picker" consent of the legacy capture API.
-- Signing: an ad-hoc signature ties grants to the build hash, so every rebuild needs new grants. Release needs a
-  Developer ID, notarization, and the hardened runtime (Node needs the JIT entitlement). Gatekeeper blocks an unsigned
-  quarantined download.
+- Signing: an ad-hoc signature ties grants to the build hash, so every new app needs new grants. Release needs a
+  Developer ID, notarization, and the hardened runtime. **[implemented]** The app is always signed with the hardened
+  runtime and only `allow-jit` plus `allow-unsigned-executable-memory`: library validation and `DYLD_*` stay locked,
+  and the LaunchAgent clears `NODE_OPTIONS`, so nothing loads foreign code into the granted process through the
+  runtime. The trust boundary is still the user account: the daemon runs Cua Driver, ffmpeg, and the store's bundle from
+  the user-writable data directory, as a terminal-held grant would. `CODESIGN_IDENTITY` and `NOTARY_KEYCHAIN_PROFILE`
+  switch the build to Developer ID plus notarization.
+- Install over SSH works in app mode: launchd starts the app in the logged-in desktop session, so the prompts appear on
+  the Mac's own screen. With nobody logged in, `setup` writes the LaunchAgent and asks for a desktop login.
+- `doctor` cannot read `TCC.db` without Full Disk Access, so the app records in `macos-grants.json` which grants it
+  asked for and which it has held. A missing grant that was asked for is "listed but switched off"; one that was held
+  is "switched off or held by an earlier build", fixed by `tccutil reset <service> md.agentconnect.computer` and
+  `setup`. `uninstall --purge` resets both grants.
 - No Swift is needed for this. Swift / AppKit comes later for the menu bar UI, ScreenCaptureKit plus VideoToolbox
   native capture, and `SMAppService` login items.
 
@@ -526,9 +543,12 @@ it is then a **self-hosted computer with isolation**.
 
 ### 4.1 Who may use it [implemented]
 
-Which agents may use a Computer is **one relation**, its agent access, modelled like daemon and agent visibility
-([resource-visibility.md](resource-visibility.md)) and edited from either side: the Computer page and the agent's
-Computers card change the same value, so there is no agent-side switch to forget.
+Two values decide it. Its **visibility** ([resource-visibility.md](resource-visibility.md), as on a daemon) says which
+members see the Computer and so may give it to their agents: Everyone or Selected members, chosen when the Computer is
+added and changed later from its details. A self-hosted desktop starts Selected with only its registrant, who always
+stays in a Selected audience; a managed one starts visible to Everyone. Its **agent access** is the one relation that
+says which agents may use it, set from the agent's side only: the agent's Computers card on its Tools tab adds and
+removes Computers, and the Computer page shows the result with a pointer there.
 
 ```ts
 interface ComputerAgentAccess {
@@ -543,17 +563,19 @@ interface ComputerAgentAccess {
   lists the agent. The `computer` table stores the mode in `agentAccess` and the list in `accessAgentIds` (GIN
   indexed); `PUT /computers/{id}/agent-access` sets the whole value, and `PUT` / `DELETE
 /computers/{id}/agent-access/agents/{agentId}` add or remove one agent for the agent's card.
-- **Authorization**: changing a Computer's agent access needs the same right as its policy: the registrant of a
-  self-hosted desktop, which has no isolation, and any editor (`canEdit`) of a managed one. Sharing a desktop with
-  the organization so others can watch therefore lets no collaborator point agents at it, and a viewer, or a member
-  who cannot see the Computer, cannot change it from either page. An agent newly listed must be visible to the caller,
-  and a Selected list keeps the existing agents the caller cannot see, as an agent's call policy keeps a hidden
-  caller; it lists at most 200 agents (409 past that, so All agents is the way beyond it). A member's removal revokes
-  their Computers and bumps and re-ships the agents they granted, as a revoke does. Deleting an agent removes it
-  from every Selected list in the same transaction. From the agent's card a member adds or removes only Computers they can edit; a Computer granted to All agents
-  shows as such there and is changed on the Computer page (409 from the per-agent routes). Removing an agent's access
-  does not touch the agent. Every change is audited as `computer_change` / `agent_access_update` with the access
-  before and after.
+- **Authorization**: giving one agent a Computer or taking it away (the per-agent routes the agent's card uses) needs
+  edit rights on the Computer (`canEdit`: any non-viewer member it is visible to) and a visible agent. Sharing a
+  desktop with a member therefore lets them point their agents at it, as sharing a daemon lets them place agents on
+  it; the registrant decides who that is through its visibility. Setting the whole value (`PUT …/agent-access`, which
+  can widen it to All agents) keeps the policy right: the registrant of a self-hosted desktop, which has no isolation,
+  and any editor of a managed one. A viewer, or a member who cannot see the Computer, changes neither. An agent newly
+  listed must be visible to the caller, and a Selected list keeps the existing agents the caller cannot see, as an
+  agent's call policy keeps a hidden caller; it lists at most 200 agents (409 past that). A member's removal revokes
+  their Computers and bumps and re-ships the agents they granted, as a revoke does. Deleting an agent removes it from
+  every Selected list in the same transaction. The console no longer offers All agents: a Computer already granted to
+  All agents shows as such, adding it to an agent is a no-op, and taking it away from one agent turns it into Selected
+  with every other agent of the organization (409 past 200). Removing an agent's access does not touch the agent.
+  Every change is audited as `computer_change` / `agent_access_update` with the access before and after.
 - **Delivery**: the agent spec carries the derived list in the existing `computerUse` field (`{ enabled, computers,
 managed }`, with `enabled` true when the list is non-empty or a managed mode is set, and the list capped at 32), so
   older daemons keep working unchanged. A change bumps the `configRevision` of every agent whose list moved (all of
@@ -564,7 +586,7 @@ managed }`, with `enabled` true when the list is non-empty or a managed mode is 
   Computer is absent from specs without a console notice yet; and a change to or from All agents bumps and re-ships
   every agent of the organization (concurrently, after the write), a cost that grows with the organization.
 - **Managed computers** (§15.1): a `manual` computer takes agent access like a self-hosted one (`POST
-/computers/pool` accepts `agentAccess`); a `per-agent` or `ephemeral` computer is implicitly Selected for the agent it
+/computers/pool` accepts `agentAccess`, and `visibility` / `sharedWith`, Everyone when omitted); a `per-agent` or `ephemeral` computer is implicitly Selected for the agent it
   was made for, cannot be changed (409), and is reached through the agent's `managed` mode rather than listed among its
   Computers.
 - **Migration** (`20261207000001_computer_agent_access_backfill`): a policy's former `allowedAgents` became the
@@ -608,7 +630,7 @@ computerUse: z.object({
 needs one, and `per-agent` creates the agent's own one on first use and keeps it, sleeping, between uses (§15.1). The
 agent DTO and the spec return the derived `{ enabled, computers, managed }`.
 
-Sharing a self-hosted computer with another member's agent, whether selected or through All agents, shows a "no
+A self-hosted computer granted to another member's agent, whether selected or through All agents, shows a "no
 isolation" warning in the console. In the prototype the unit of grant is the **client token** (controllers are told
 apart by name), with no agent or member granularity.
 
@@ -991,6 +1013,14 @@ Control Plane, which only issues credentials:
   since a TURN allocation cannot refresh past it) turn it on, and it takes precedence over the relays' TURN; the CP
   mints coturn REST-API credentials per viewer (`<expiry>:viewer-<user>`) and per desktop (`<expiry>:computer-<id>`)
   and never sends the secret out. The chart sets them from `computerViewer.turn`.
+- **Cloudflare TURN.** Cloudflare Realtime TURN takes no shared secret: its credentials come from an API call with a
+  TURN key's ID and API token (`COMPUTER_TURN_CLOUDFLARE_KEY_ID`, `COMPUTER_TURN_CLOUDFLARE_API_TOKEN`, the chart's
+  `computerViewer.turn.cloudflare`), so the CP asks once per peer of each viewing, with `COMPUTER_TURN_TTL_SEC` as the
+  credential's TTL. It is an alternative to a coturn, not a second one, and takes the same precedence over the relays'
+  TURN. The CP keeps the answer's TURN entry and drops its STUN entry, port 53 (browsers block it) and port 80 (a
+  desktop has no plain-HTTP egress); a refused or failed call leaves that viewing without TURN rather than without a
+  grant. It needs no public address, DNS name or certificate of the deployment's own; Cloudflare bills relayed
+  egress, and relay-side metering (`relayed_bytes`, the viewer media quota) does not see it.
 - **Input.** Take control, the keyboard and mouse mapping and the IME text box are the prototype's (§7.3), over the
   DataChannel when one is open and through the relay otherwise. Leaving the page releases a takeover.
 
@@ -1127,28 +1157,32 @@ and every `computer/policy`.
   granted agents, `doctor` results with fixes, recent activity, audit.
 - Computer detail: policy editing, an **embedded viewer** (watch / take over), pause and stop, revoke. Viewer media
   still flows between the browser and the desktop daemon, directly or through the relay, never through the Control Plane.
-- Agent settings: the agent's Computers card lists the Computers its agent access derives, with add and remove for the ones the member can edit (§4.1).
+- Agent settings: the agent's Computers card lists the Computers its agent access derives, with add and remove for the ones visible to the member (§4.1); it is the only place agent access changes.
 - **[implemented]** The **Computers** section of Infra (`/daemons#computers`; `/computers` redirects there, and a
-  Computer's page keeps `/computers/:id` under Infra in the rail) lists what the caller can see as cards in the daemons'
-  grid, with status, OS and session, granted agents, and a `doctor` summary; the owner is on the detail page. **Add Computer** mints the registration token only when asked, shows
+  Computer's page keeps `/computers/:id` under Infra in the rail) lists the self-hosted Computers the caller can see as
+  cards in the daemons' grid, with status, OS and session, granted agents, and a `doctor` summary; the owner is on the
+  detail page. **Add Computer** takes an optional name and the visibility (Selected with only the registrant by
+  default, sent with `POST …/computers/registrations` and applied at the exchange), mints the registration token only when asked, shows
   `npx -y @agentconnect.md/cli@<tag> computer install [--channel rc] --register <token> --cp-url <exchange URL>` on
   Linux (§3.5, the tag following the CP's release channel), or `computer setup` with the same tag and arguments on
   macOS and Windows, quoted for the chosen OS, and follows `GET …/computers/registrations/:id`, which
   only the token's minter may read, until the new Computer is online. The detail page shows each `doctor` check with its
   fix (failures first), the reported capabilities, Stop / Resume (§6), Revoke and Delete, the policy form (granted
   agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot
-  retention, driver tools; read-only for anyone but the owner), the **Agent access** card (No agents / Selected agents
-  / All agents tiles, pills on a phone, with the selected agents and a "no isolation" mark; editable by the registrant of a
-  self-hosted desktop and by any editor of a managed one, fixed for a per-agent or ephemeral one), and, for the owner, the audit as recent activity. An agent's Tools
-  tab carries its **Computers** card: the Computers whose access grants it, each marked selected or all agents, an Add
-  menu of the Computers the member can edit, and remove for a Selected one they can edit (§4.1). The detail page embeds the viewer (§7.2): Watch opens it, an allowed member
+  retention, driver tools; read-only for anyone but the owner), the visibility in the details with a change dialog for
+  its editors, the **Agent access** card (display only: the selected agents, each linking to its Tools tab, or All
+  agents, with a "no isolation" mark, and a note that access is set on each agent's Tools tab; fixed for a per-agent or
+  ephemeral one), and, for the owner, the audit as recent activity. An agent's Tools tab carries its **Computers** card:
+  the Computers whose access grants it, each marked selected or all agents, an Add menu of the Computers visible to the
+  member, and remove for any of them (§4.1). The detail page embeds the viewer (§7.2): Watch opens it, an allowed member
   may Take control and Release, and a badge names the media path (Direct, TURN relay or Screenshots).
 - **Managed computers [implemented]** (#3232). Where the deployment runs the pool (`GET …/computers/pool` answers
   `enabled` and whether a member is `available`), **Add Computer** offers _Your machine_ or _Managed_: a name and the
-  agent access (No agents / Selected agents / All agents) create a `manual` computer with `POST …/computers/pool`.
-  Infra shows the pool as one entry, like the daemon pool: **AgentConnect Computers** on the managed install,
-  **Computer pool** on a self-hosted cluster, with how many run and sleep and whether a member is `available`; it stays
-  while managed computers remain after the pool is turned off. It opens `/computers/pool`, which lists the managed
+  visibility (Everyone by default) create a `manual` computer with `POST …/computers/pool`; agents get it on their Tools
+  tab. Infra shows the pool as one entry in a section of its own above Computers, like the daemon pool, with its own
+  add action: **AgentConnect Computers** on the managed install, **Computer pool** on a self-hosted cluster, with how
+  many run and sleep and whether a member is `available`; it stays while managed computers remain after the pool is
+  turned off. It opens `/computers/pool`, which lists the managed
   computers and adds one on the _Managed_ source. The egress card is hidden for now. That list marks a managed
   computer's allocation (Pool, Agent's own with its agent, Session desktop), shows `Asleep` and
   any pool phase in flight (Starting, Waking, Resetting, Failed, Removing), and names the agent in control and how many
@@ -1400,6 +1434,17 @@ agents sharing a `manual` computer take turns through the lease queue; without d
 
 **Acceptance**: on a fresh macOS 14+ (arm64 and x64), download to agent-ready in under 5 minutes with at most 3 grant
 prompts; no new grants after an update; `doctor` recognizes "Accessibility listed but off" and gives the fix.
+
+**Progress**: the app as a stable runtime, its install, upgrade and removal through the CLI, the LaunchAgent on the
+version store, and `doctor`'s grant diagnosis are implemented (§3.2.1). The release builds both app packages on a macOS
+runner, runs each signed runtime once under the hardened runtime, and publishes an arch's app only when its recipe
+(`build-macos-app.mjs`, which pins the Node version) changed since the app on npm. The app's version is part of its
+signature, so an unchanged recipe keeps the published app and its grants. The computer package then pins each app as an
+exact `optionalDependencies` entry. The macOS job stays off until the repository variable `PUBLISH_COMPUTER_MACOS_APP`
+is `true`, because npm trusted publishing needs both packages to exist first. Signing switches to Developer ID with the
+`MACOS_DEVELOPER_ID_P12` secrets and adds notarization with the `MACOS_NOTARY_API_*` secrets. Still open: those
+credentials and the first publication, the console's macOS install command, validation on fresh macOS 14+ arm64 and
+x64, and the local UI.
 
 ### 14.7 M4: Windows
 

@@ -5,6 +5,7 @@ import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
 import { buildCpPlatformRegistry } from '../platforms/registry.js'
 import { createSlackCpProvider } from '../platforms/slack/provider.js'
 import { createGoogleChatCpProvider } from '../platforms/googlechat/provider.js'
+import { createMsTeamsCpProvider } from '../platforms/msteams/provider.js'
 import type {
   AgentRecord,
   BotRecord,
@@ -25,7 +26,8 @@ const TEAM_B = 'T0BBB'
 const PLATFORMS = buildCpPlatformRegistry([
   createSlackCpProvider({}),
   createFeishuCpProvider({}),
-  createGoogleChatCpProvider()
+  createGoogleChatCpProvider(),
+  createMsTeamsCpProvider()
 ])
 
 interface World {
@@ -392,6 +394,41 @@ describe('resolveApprovalRoute — verify form', () => {
     expect(await check('users/123')).toMatchObject({ allowed: true, displayName: 'Editor' })
     expect(await check('users/456')).toMatchObject({ allowed: false, linked: true })
     expect(await check('users/789')).toMatchObject({ allowed: false, linked: false })
+  })
+
+  it('routes a Teams turn to the editor linked by Microsoft account, and rechecks that pair', async () => {
+    const asker = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const editor = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const d = deps({
+      integrations: [{ id: INTEGRATION_A, botId: 'teams-bot', platform: 'msteams' }],
+      bots: { 'teams-bot': { platform: 'msteams', revokedAt: null } },
+      agent: { createdByUserId: 'u-editor' },
+      members: [
+        { userId: 'u-asker', role: 'viewer' },
+        { userId: 'u-editor', displayName: 'Editor' }
+      ]
+    })
+    d.identity = {
+      chatIdentitiesFor: async (sub) => [
+        { platform: 'msteams', tenant: 'global', memberId: sub === 'sub:u-editor' ? editor : asker }
+      ]
+    }
+    // The asker may not edit, so the chain falls through to the creator, linked by their Entra object id.
+    const routed = await resolveApprovalRoute(routeReq({ requesterId: asker }), d)
+    expect(routed.target).toEqual({
+      integrationId: INTEGRATION_A,
+      teamId: 'global',
+      userId: editor,
+      consoleUserId: 'u-editor',
+      displayName: 'Editor'
+    })
+    const verify = (userId: string) =>
+      resolveApprovalRoute(
+        routeReq({ verify: { integrationId: INTEGRATION_A, teamId: 'global', userId, consoleUserId: 'u-editor' } }),
+        d
+      )
+    expect(await verify(editor)).toMatchObject({ allowed: true, displayName: 'Editor' })
+    expect(await verify(asker)).toMatchObject({ allowed: false })
   })
 
   const verifyReq = (consoleUserId = 'u-owner', userId = 'U0OWNER', teamId = TEAM_A) =>

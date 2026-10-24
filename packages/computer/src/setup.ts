@@ -6,6 +6,7 @@ import { configPath, controlBaseUrl, isLoopbackHost, type DaemonConfig } from '.
 import { CuaDriver } from './driver/client.js'
 import { CUA_DRIVER_VERSION } from './driver/install.js'
 import { canKeepAwake, displaySleepMinutes, wakeDisplay } from './keep-awake.js'
+import { APP_ID, grantLoss, readGrantRecord, TCC_SERVICE, type Grant, type GrantRecord } from './macos-grants.js'
 import { appBundlePath, selfCommand } from './self.js'
 import { loadRegistration, registrationPath, type Registration } from './cp/registration.js'
 import { ffmpegAvailable, probeCapture } from './stream/ffmpeg.js'
@@ -176,7 +177,10 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
         status: 'ok',
         detail: `${driver.version ?? CUA_DRIVER_VERSION}: ${size.content.find((block) => block.text)?.text ?? 'started'}`
       })
-      if (process.platform === 'darwin') checks.push(...macPermissionChecks(await macPermissions(driver)))
+      if (process.platform === 'darwin')
+        checks.push(
+          ...macPermissionChecks(await macPermissions(driver), appBundlePath() ? readGrantRecord(ctx.dir) : undefined)
+        )
       const shot = await driver
         .call('get_desktop_state', { max_image_dimension: 320 })
         .then(() => undefined)
@@ -287,26 +291,42 @@ function sessionCheck(): Check {
 const permissionFix = (): string | undefined =>
   process.platform === 'darwin' ? `grant ${hostApp()} the macOS permissions: ${selfCommand()} setup` : undefined
 
-function macPermissionChecks(state: MacPermissions): Check[] {
-  const app = hostApp()
-  const reopen = appBundlePath() ? `then: ${selfCommand()} service restart` : 'then Cmd+Q and reopen'
+const PANE: Record<Grant, string> = {
+  accessibility: 'Privacy & Security > Accessibility (macOS 27: Device Control and Data Access)',
+  screenRecording: 'Privacy & Security > Screen & System Audio Recording'
+}
+
+// Only the app passes a record: a grant to a terminal app is not ours to explain or reset.
+export function macPermissionChecks(state: MacPermissions, record?: GrantRecord, app = hostApp()): Check[] {
+  const inApp = Boolean(record)
+  const reopen = inApp ? `then: ${selfCommand()} service restart` : 'then Cmd+Q and reopen'
+  const check = (grant: Grant, name: string, effect: string): Check => {
+    if (state[grant]) return { name, status: 'ok', detail: `granted to ${app}` }
+    const loss = record ? grantLoss(record, grant) : 'never-asked'
+    if (loss === 'lost')
+      return {
+        name,
+        status: 'fail',
+        detail: `was granted to ${app} but is not in effect: switched off, or held by an earlier build of the app${effect}`,
+        fix: `run: tccutil reset ${TCC_SERVICE[grant]} ${APP_ID}, then: ${selfCommand()} setup`
+      }
+    if (loss === 'listed-off')
+      return {
+        name,
+        status: 'fail',
+        detail: `${app} is listed in ${PANE[grant]} but switched off${effect}`,
+        fix: `switch ${app} on there (listed is not enough), ${reopen}`
+      }
+    return {
+      name,
+      status: 'fail',
+      detail: `not granted to ${app}${effect}`,
+      fix: inApp ? `run: ${selfCommand()} setup` : `${PANE[grant]}: switch it on, ${reopen}`
+    }
+  }
   return [
-    state.accessibility
-      ? { name: 'accessibility', status: 'ok', detail: `granted to ${app}` }
-      : {
-          name: 'accessibility',
-          status: 'fail',
-          detail: `not granted to ${app}: clicks and keys are silently dropped`,
-          fix: `Privacy & Security > Accessibility (macOS 27: Device Control and Data Access): switch it on, ${reopen}`
-        },
-    state.screenRecording
-      ? { name: 'screen recording', status: 'ok', detail: `granted to ${app}` }
-      : {
-          name: 'screen recording',
-          status: 'fail',
-          detail: `not granted to ${app}`,
-          fix: `Privacy & Security > Screen & System Audio Recording: switch it on, ${reopen}`
-        }
+    check('accessibility', 'accessibility', ': clicks and keys are silently dropped while pointer moves still work'),
+    check('screenRecording', 'screen recording', '')
   ]
 }
 
@@ -543,6 +563,9 @@ async function setupMac(ctx: SetupContext): Promise<void> {
     return
   }
   const app = hostApp()
+  ctx.log(
+    `macOS grants these permissions to ${app}, which runs this command; \`agentconnect computer install\` installs the AgentConnect Computer app to hold them instead.`
+  )
   // Prompting can wait on dialogs, so this driver gets a generous timeout.
   const driver = new CuaDriver({ command: ctx.driverCommand, callTimeoutMs: 180_000 })
   try {

@@ -1066,6 +1066,7 @@ export interface BotDto {
   credentialRejectedAt?: string | null // an ambiguous check rejected the current credential (first seen); the bot stays live
   credentialRejectedCode?: string | null // the platform's own code behind that rejection
   externalAppId?: string | null // the platform's public app identity, such as a Google Chat project number
+  externalTenantId?: string | null // the tenant half of that identity, such as a Teams bot's Microsoft 365 tenant
   platformConfig?: Record<string, string> | null // public row metadata, such as a Google Chat project ID
   createdAt: string // ISO-8601
 }
@@ -2929,6 +2930,8 @@ export async function fetchComputerAudit(
 export async function createComputerRegistration(body: {
   name?: string
   ttlMinutes?: number
+  visibility?: SharingInput['visibility']
+  sharedWith?: string[]
 }): Promise<ComputerRegistrationDto> {
   return apiPost<ComputerRegistrationDto>(`${orgBase()}/computers/registrations`, body)
 }
@@ -2994,6 +2997,8 @@ export async function fetchComputerUsage(range: UsageRange, orgId?: string): Pro
 export async function createPoolComputer(body: {
   name: string
   agentAccess?: ComputerAgentAccess
+  visibility?: SharingInput['visibility']
+  sharedWith?: string[]
 }): Promise<ComputerDto> {
   return apiPost<ComputerDto>(`${orgBase()}/computers/pool`, body)
 }
@@ -5368,6 +5373,12 @@ export async function downloadMsTeamsAppPackage(integrationId: string): Promise<
   if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
   return await res.blob()
 }
+/** Whether Teams holds the package the integration would build now (teams-integration.md §5.1). */
+export async function fetchMsTeamsAppPackageStatus(integrationId: string): Promise<{ current: boolean }> {
+  return apiGet<{ current: boolean }>(
+    `${orgBase()}/integrations/${encodeURIComponent(integrationId)}/msteams/app-package/status`
+  )
+}
 /** `GET /integrations/msteams/app`: the deployment Teams app's ID, null when the deployment has none (teams-integration.md §8). */
 export interface MsTeamsDeploymentAppDto {
   appId: string | null
@@ -5382,7 +5393,8 @@ export async function startMsTeamsConnect(orgId: string, agentId: string): Promi
 export interface MsTeamsConnectResultDto {
   integrationId: string
   agentId: string
-  teams: { id: string; name: string }[]
+  /** `app`: updated to the published package, not installed, or not updated (the package stays pending). */
+  teams: { id: string; name: string; app: 'updated' | 'none' | 'failed' }[]
   ticket: string
 }
 /** Redeem the code Microsoft returned: connects the tenant and answers the administrator's teams. */

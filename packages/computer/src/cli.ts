@@ -32,6 +32,7 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import { createComputerMcpServer, exposedDriverTools } from './tools.js'
 import { createViewer, type Viewer, type ViewerPrincipal } from './viewer.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
+import { recordGrants } from './macos-grants.js'
 import { appBundlePath, managedEntry, runSelf, selfCommand, serviceEntry } from './self.js'
 import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
@@ -85,6 +86,7 @@ import {
   MAC_PANES,
   macPermissions,
   open,
+  overSsh,
   printChecks,
   setupPermissions,
   type Check,
@@ -249,7 +251,9 @@ async function main(): Promise<void> {
         callTimeoutMs: values.prompt ? 180_000 : 20_000
       })
       try {
-        console.log(JSON.stringify(await macPermissions(driver, Boolean(values.prompt))))
+        const state = await macPermissions(driver, Boolean(values.prompt))
+        if (appBundlePath()) recordGrants(dir, state, Boolean(values.prompt))
+        console.log(JSON.stringify(state))
       } finally {
         await driver.close()
       }
@@ -707,6 +711,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
   // Under launchd the .app asks for its own grants once; the dialogs appear on the Mac's screen.
   if (process.platform === 'darwin' && appBundlePath() && !process.stdin.isTTY) {
     const state = await macPermissions(driver).catch(() => undefined)
+    if (state) recordGrants(dir, state, false)
     if (state && (!state.accessibility || !state.screenRecording)) {
       void runSelf(['permissions', '--json', '--prompt'], 200_000).catch(() => undefined)
     }
@@ -869,16 +874,20 @@ interface Grants {
   screenRecording: boolean
 }
 
+// The app's Node runs the store's stable entry, so an upgrade moves `current` and never touches the app or its grants.
+const macServiceProgram = (): string[] => [process.execPath, serviceEntry()]
+
 // .app mode: launchd starts the daemon in the GUI session, the app asks for its own grants, setup waits and restarts it.
 async function setupMacApp(dir: string, config: DaemonConfig): Promise<Check[]> {
   const app = basename(appBundlePath()!)
-  if (!appBundlePath()!.startsWith('/Applications/') && !appBundlePath()!.includes('/Applications/')) {
-    console.log(
-      `Note: the service runs ${process.execPath}; move ${app} to /Applications first if you plan to keep it.`
+  if (!installService(macServiceProgram(), join(dir, 'daemon.log'))) {
+    throw new Error(
+      `installed LaunchAgent ${plistPath()}, but nobody is logged in to this Mac's desktop: log in (in person or through Screen Sharing) to answer the permission prompts, then run: ${selfCommand()} setup`
     )
   }
-  installService(process.execPath, join(dir, 'daemon.log'))
   console.log(`Installed LaunchAgent ${plistPath()} and started ${app}.`)
+  // The prompts belong to the app launchd started, so they appear on the Mac's screen even when setup runs over SSH.
+  if (overSsh()) console.log(`The permission prompts appear on the Mac's own screen; answer them there.`)
   if (!(await waitForDaemon(config, 60_000)))
     throw new Error(`the service did not come up; see ${join(dir, 'daemon.log')}`)
 
@@ -940,7 +949,7 @@ function serviceCommand(dir: string, config: DaemonConfig, action: string | unde
     if (!appBundlePath())
       throw new Error('run this from the AgentConnect Computer.app binary (…/Contents/MacOS/agentconnect-computer)')
   }
-  if (action === 'install') installService(process.execPath, join(dir, 'daemon.log'))
+  if (action === 'install') installService(macServiceProgram(), join(dir, 'daemon.log'))
   else if (action === 'uninstall') uninstallService()
   else if (action === 'start') startService()
   else if (action === 'stop') stopService()

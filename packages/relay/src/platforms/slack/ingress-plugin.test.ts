@@ -57,8 +57,7 @@ const slackAssignment = (): BotAssignment =>
     routes: [],
     gatedAgentIds: [],
     mutedChannels: [],
-    gatedOffChannels: [],
-    noticedDmConversations: []
+    offChannels: []
   }) as unknown as BotAssignment
 
 const SHORTCUT = {

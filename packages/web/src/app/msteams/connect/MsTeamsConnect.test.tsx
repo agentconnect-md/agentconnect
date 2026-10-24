@@ -72,8 +72,8 @@ describe('MsTeamsConnect', () => {
       integrationId: 'int-1',
       agentId: 'agent-a',
       teams: [
-        { id: 'team-1', name: 'Engineering' },
-        { id: 'team-2', name: 'Support' }
+        { id: 'team-1', name: 'Engineering', app: 'none' },
+        { id: 'team-2', name: 'Support', app: 'none' }
       ],
       ticket: 'sealed'
     })
@@ -86,6 +86,43 @@ describe('MsTeamsConnect', () => {
     expect(mocks.install).toHaveBeenCalledWith('org-a', 'sealed', ['team-1'])
     expect(host.textContent).toContain('Teams is connected')
     expect(host.querySelector('a')?.getAttribute('href')).toBe('/example/agents/agent-a')
+  })
+
+  it('shows an update: the teams that had the app are updated, and nothing more is preselected', async () => {
+    mocks.finish.mockResolvedValue({
+      integrationId: 'int-1',
+      agentId: 'agent-a',
+      teams: [
+        { id: 'team-1', name: 'Engineering', app: 'updated' },
+        { id: 'team-2', name: 'Support', app: 'none' }
+      ],
+      ticket: 'sealed'
+    })
+    await land(`code=c&state=${STATE}`)
+    expect(host.textContent).toContain('Updated the app in 1 team that already had it.')
+    const boxes = [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+    expect(boxes.map((box) => [box.checked, box.disabled])).toEqual([
+      [true, true],
+      [false, false]
+    ])
+    await act(async () => button('Done').click())
+    expect(mocks.install).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Teams is connected')
+  })
+
+  it('names the teams Microsoft did not update and offers no install into them', async () => {
+    mocks.finish.mockResolvedValue({
+      integrationId: 'int-1',
+      agentId: 'agent-a',
+      teams: [{ id: 'team-1', name: 'Engineering', app: 'failed' }],
+      ticket: 'sealed'
+    })
+    await land(`code=c&state=${STATE}`)
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Microsoft did not update the app in 1 team.')
+    expect(host.textContent).toContain('Not updated')
+    const box = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    expect([box.checked, box.disabled]).toEqual([false, true])
+    expect(button('Done')).toBeTruthy()
   })
 
   it('names a refusal, and a sign-in Microsoft sent back without a code', async () => {

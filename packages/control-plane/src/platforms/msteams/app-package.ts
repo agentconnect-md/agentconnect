@@ -100,6 +100,16 @@ export function msTeamsManifest(input: MsTeamsManifestInput): Record<string, unk
   }
 }
 
+/** A short hash of everything a package carries but its version, so a recorded value differs once the agent or the manifest changes (§5.1). */
+export function msTeamsPackageFingerprint(
+  input: Omit<MsTeamsManifestInput, 'nowMs'>,
+  agent: BotProfileIconAgent
+): string {
+  const manifest = msTeamsManifest({ ...input, nowMs: 0 })
+  const icon = agent.icon ?? { runtime: agent.runtime ?? null }
+  return createHash('sha256').update(JSON.stringify({ manifest, icon })).digest('base64url').slice(0, 22)
+}
+
 const COLOR_SIZE = 192
 const OUTLINE_SIZE = 32
 

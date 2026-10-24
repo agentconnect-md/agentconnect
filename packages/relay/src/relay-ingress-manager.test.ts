@@ -65,7 +65,6 @@ const deps = (over: Partial<RelayIngressManagerDeps> = {}): RelayIngressManagerD
   setChannelAgent: vi.fn(),
   reportBotChannels: vi.fn(() => true),
   reportBotConversation: vi.fn(() => true),
-  reportNoticePosted: vi.fn(() => true),
   reportBotRevoked: vi.fn(async () => true),
   reportBotCredentialCheck: vi.fn(async () => true),
   credentialCheckSupported: () => true,
@@ -2446,7 +2445,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     ...over
   })
 
-  it('reports an unrouted gated DM as a kind:im conversation and notices once per conversation', async () => {
+  it('reports an unrouted gated DM as a kind:im conversation once, and answers every DM with the notice', async () => {
     const reportBotConversation = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ reportBotConversation }))
     const internals = internalsOf(manager)
@@ -2464,10 +2463,13 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(ingest.postText).toHaveBeenCalledTimes(1)
     expect(ingest.postText.mock.calls[0]![0]).toBe('D42')
 
-    // Second DM: report is latched per conversation (CP row exists), notice too.
+    // Second DM: the report is latched per conversation (CP row exists); the notice answers again.
     await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000200' }))
     expect(reportBotConversation).toHaveBeenCalledTimes(1)
-    expect(ingest.postText).toHaveBeenCalledTimes(1)
+    expect(ingest.postText).toHaveBeenCalledTimes(2)
+    // A redelivery of the same message posts nothing more.
+    await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000200' }))
+    expect(ingest.postText).toHaveBeenCalledTimes(2)
   })
 
   it('a first gated DM on a NON-authority pod still posts (single event copy, receiving pod owns it)', async () => {
@@ -2481,25 +2483,9 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(ingest.postText).toHaveBeenCalledTimes(1)
   })
 
-  it('a DM whose notice was already DELIVERED (noticedDmConversations) is latched on EVERY pod', async () => {
-    const manager = new RelayIngressManager(deps())
-    const internals = internalsOf(manager)
-    const a = gatedAssignment()
-    a.noticedDmConversations = ['D42'] // delivery reported + re-stamped by the CP
-    internals.router.upsert(a)
-    const ingest = fakeIngest()
-    internals.slackPool.set(BOT_ID, ingest)
-
-    await internals.forward(BOT_ID, dm())
-    expect(ingest.postText).not.toHaveBeenCalled()
-  })
-
   it('a DM discovered while a public default routed it STILL gets its notice once unroutable', async () => {
-    const reportNoticePosted = vi.fn(() => true)
     const daemon = { sendMsg: vi.fn(async (m: { msgId: string }) => ({ msgId: m.msgId, accepted: true })) }
-    const manager = new RelayIngressManager(
-      deps({ reportNoticePosted, getDaemon: () => daemon as unknown as RelayDaemonConnection })
-    )
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon as unknown as RelayDaemonConnection }))
     const internals = internalsOf(manager)
     const a = gatedAssignment()
     // Mixed bot: OTHER is org-visible and catches the DM as the group default.
@@ -2535,11 +2521,9 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
       agents: [{ agentId: AGENT_ID, name: 'Agent' }],
       routes: [],
       gatedAgentIds: [AGENT_ID]
-      // no noticedDmConversations: discovery alone must never latch the notice
     })
     await internals.forward(BOT_ID, dm({ msgId: 'slack:D42:1720000000.000300' }))
     expect(ingest.postText).toHaveBeenCalledTimes(1)
-    expect(reportNoticePosted).toHaveBeenCalledWith({ botId: BOT_ID, channel: 'D42' })
   })
 
   it('reports a gated DM even when a non-gated default agent WINS the routing (mixed bot)', async () => {
@@ -2696,8 +2680,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
         }
       ]),
       routes: [],
-      gatedAgentIds: [AGENT_ID],
-      noticedDmConversations: ['oc_previous']
+      gatedAgentIds: [AGENT_ID]
     })
 
     const payload = dm({
@@ -2735,12 +2718,12 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
   const M1 = 'slack:C9:1720000000.000100'
   const M2 = 'slack:C9:1720000000.000200'
 
-  it('authority pod: sibling copies and repeat mentions collapse to exactly one notice', async () => {
+  it('authority pod: a mention’s sibling copies collapse to one notice, and every mention gets its own', async () => {
     const auth = pod(true)
     await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
     await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
     await auth.internals.forward(BOT_ID, mention(M2, '2.2'))
-    expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
+    expect(auth.ingest.postText).toHaveBeenCalledTimes(2)
   })
 
   it('non-authority pod never posts, whatever schedule its copies arrive in', async () => {
@@ -2755,36 +2738,33 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(peer.ingest.postText).not.toHaveBeenCalled()
   })
 
-  it('a mention missing the authority pod is caught by the next one that reaches it', async () => {
+  it('a mention whose copies both miss the authority pod gets no notice; the next one that reaches it does', async () => {
     const auth = pod(true)
     const peer = pod(false)
     await peer.internals.forward(BOT_ID, mention(M1, '1.1')) // both copies miss the authority
     expect(auth.ingest.postText).not.toHaveBeenCalled()
     expect(peer.ingest.postText).not.toHaveBeenCalled()
-    await auth.internals.forward(BOT_ID, mention(M2, '2.2')) // caught here — exactly once overall
+    await auth.internals.forward(BOT_ID, mention(M2, '2.2'))
     expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
     expect(peer.ingest.postText).not.toHaveBeenCalled()
   })
 
-  it('crossed concurrent mentions: only the authority posts, exactly once', async () => {
+  it('crossed concurrent mentions: only the authority posts, once per mention', async () => {
     const auth = pod(true)
     const peer = pod(false)
     await peer.internals.forward(BOT_ID, mention(M2, '2.2'))
     await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
     await peer.internals.forward(BOT_ID, mention(M1, '1.1'))
     await auth.internals.forward(BOT_ID, mention(M2, '2.2'))
-    expect(auth.ingest.postText).toHaveBeenCalledTimes(1)
+    expect(auth.ingest.postText).toHaveBeenCalledTimes(2)
     expect(peer.ingest.postText).not.toHaveBeenCalled()
   })
 
-  // Every Off channel is muted for ROUTING; only the reason differs for the NOTICE.
-  // On a mixed bot a gated member makes every unrouted mention a notice candidate, so
-  // without the split an operator's Off would be answered with "ask an admin to enable
-  // it" — a broken Off and the opposite of what happened.
-  it('an OPERATOR-muted channel stays silent, even for an explicit @bot', async () => {
+  // A held decision is muted for routing like an Off, but it is not Off, so it gives no notice.
+  it('a muted channel that is not Off stays silent, even for an explicit @bot', async () => {
     const auth = pod(true)
     const a = auth.internals.router.get(BOT_ID)!
-    a.mutedChannels = ['C9'] // switched Off in the console; NOT in gatedOffChannels
+    a.mutedChannels = ['C9'] // a held decision; NOT in offChannels
     await auth.internals.forward(BOT_ID, mention(M1, '1.1'))
     await auth.internals.forward(BOT_ID, mention(M2, '2.2'))
     expect(auth.ingest.postText).not.toHaveBeenCalled()
@@ -2792,8 +2772,8 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
 
   // The reviewer's end-to-end case: a gated owner's Off channel on a bot that also has
   // an ungated default. It must neither activate the public agent nor go silently
-  // indistinguishable from an operator mute — it is unroutable AND says so, once.
-  it('a GATED-Off channel is unroutable but still notices once', async () => {
+  // indistinguishable from a held decision — it is unroutable AND says so, every time.
+  it('a GATED-Off channel is unroutable but answers every mention with the notice', async () => {
     const sendMsg = vi.fn(async (msg: RdMsgIm): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
     const daemon = { sendMsg } as unknown as RelayDaemonConnection
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, selfRelayId: () => SELF_RELAY }))
@@ -2819,7 +2799,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
       defaultAgentId: OTHER_AGENT_ID,
       defaultDaemonId: DAEMON_ID,
       mutedChannels: ['C9'],
-      gatedOffChannels: ['C9']
+      offChannels: ['C9']
     })
 
     await internals.forward(BOT_ID, mention(M1, '1.1'))
@@ -2827,12 +2807,12 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(sendMsg).not.toHaveBeenCalled() // the public agent was NOT activated
     expect(ingest.postText).toHaveBeenCalledTimes(1) // …and the gate explained itself
     expect(ingest.postText.mock.calls[0]![0]).toBe('C9')
-    await internals.forward(BOT_ID, mention(M2, '2.2')) // still once per conversation
-    expect(ingest.postText).toHaveBeenCalledTimes(1)
+    await internals.forward(BOT_ID, mention(M2, '2.2'))
+    expect(ingest.postText).toHaveBeenCalledTimes(2)
   })
 
-  // resource-visibility.md §14.9: on a bot with no gated member, the CP's undecided Off still speaks once.
-  describe('an undecided Off on an ungated bot', () => {
+  // resource-visibility.md §14.9: on a bot with no gated member, an Off still answers an address.
+  describe('an Off on an ungated bot', () => {
     const ungated = (over: Partial<BotAssignment> = {}): BotAssignment => ({
       ...gatedAssignment(),
       gatedAgentIds: [],
@@ -2859,12 +2839,12 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
       return { internals, ingest, sendMsg }
     }
 
-    it('fences the conversation and answers an addressed message once', async () => {
-      const { internals, ingest, sendMsg } = setUp(ungated({ mutedChannels: ['C9'], gatedOffChannels: ['C9'] }))
+    it('fences the conversation and answers every addressed message', async () => {
+      const { internals, ingest, sendMsg } = setUp(ungated({ mutedChannels: ['C9'], offChannels: ['C9'] }))
       await internals.forward(BOT_ID, mention(M1, '1.1'))
       await internals.forward(BOT_ID, mention(M2, '2.2'))
       expect(sendMsg).not.toHaveBeenCalled()
-      expect(ingest.postText).toHaveBeenCalledTimes(1)
+      expect(ingest.postText).toHaveBeenCalledTimes(2)
       expect(ingest.postText.mock.calls[0]![0]).toBe('C9')
     })
 
@@ -2880,7 +2860,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
       expect(ingest.postText).not.toHaveBeenCalled()
     })
 
-    it('stays silent on an Off an editor chose, and on an older CP that marks nothing', async () => {
+    it('stays silent in a muted conversation that is not Off', async () => {
       const { internals, ingest, sendMsg } = setUp(ungated({ mutedChannels: ['C9'] }))
       await internals.forward(BOT_ID, mention(M1, '1.1'))
       expect(sendMsg).not.toHaveBeenCalled()

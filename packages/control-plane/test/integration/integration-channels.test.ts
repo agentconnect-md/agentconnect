@@ -2552,7 +2552,7 @@ describe('external places start closed', () => {
     return { spy, id, send }
   }
 
-  it('seeds an external channel Off, undecided, and pushes the spec that fences it and keeps its notice', async () => {
+  it('seeds an external channel Off, undecided, and pushes the spec that fences it', async () => {
     const { spy, id, send } = await setUp()
     await send([
       { id: 'C_EXT', name: 'partners', externalReason: 'externallyShared' },
@@ -2564,7 +2564,6 @@ describe('external places start closed', () => {
     const core = spy.upserts.at(-1)!.u.core
     expect(core.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
     expect(core.mutedChannels).toEqual(['C_EXT'])
-    expect(core.pendingChannels).toEqual(['C_EXT'])
   })
 
   it('leaves an internal report on the ordinary defaults and pushes nothing', async () => {
@@ -2579,14 +2578,13 @@ describe('external places start closed', () => {
     expect(spy.upserts).toHaveLength(0)
   })
 
-  it("keeps a restricted agent's own gate, which needs no pending list", async () => {
+  it("keeps a restricted agent's own gate", async () => {
     const { spy, id, send } = await setUp({ restricted: true })
     await send([{ id: 'C_EXT', name: 'partners', externalReason: 'externallyShared' }])
     expect((await rowsOf(id)).get('C_EXT')?.trigger).toBe('off')
     const core = spy.upserts.at(-1)!.u.core
     expect(core.gated).toBe(true)
     expect(core.bindRules).toEqual([])
-    expect(core).not.toHaveProperty('pendingChannels')
   })
 
   it('never touches an existing row that turns external later', async () => {
@@ -2596,7 +2594,7 @@ describe('external places start closed', () => {
     expect((await rowsOf(id)).get('C1')).toMatchObject({ trigger: 'mention', externalReason: 'externallyShared' })
   })
 
-  it('enabling the row records the choice and clears pending; an Off chosen afterwards stays silent', async () => {
+  it('enabling the row records the choice, and an Off chosen afterwards mutes it again', async () => {
     const { spy, id, send } = await setUp()
     await send([{ id: 'C_EXT', name: 'partners', externalReason: 'externallyShared' }])
     const patch = (trigger: string) =>
@@ -2606,12 +2604,10 @@ describe('external places start closed', () => {
     expect((await rowsOf(id)).get('C_EXT')).toMatchObject({ trigger: 'mention', triggerChosen: true })
     let core = spy.upserts.at(-1)!.u.core
     expect(core.mutedChannels).toEqual([])
-    expect(core).not.toHaveProperty('pendingChannels')
 
     expect((await patch('off')).statusCode).toBe(200)
     core = spy.upserts.at(-1)!.u.core
     expect(core.mutedChannels).toEqual(['C_EXT'])
-    expect(core).not.toHaveProperty('pendingChannels')
   })
 
   it('seeds an external conversation Off on the incremental path and keeps the detection', async () => {

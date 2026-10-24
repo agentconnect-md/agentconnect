@@ -241,15 +241,15 @@ describe('HTTP-bot arbitration (§10)', () => {
     // group's defaultAgentId are still in the table. Without the mute a bare @bot would
     // quietly activate the PUBLIC agent in a channel the console shows as Off.
     it('a gated owner Off channel does not fall through to the public default', () => {
-      const a = { ...assignment(), gatedAgentIds: [ALICE], mutedChannels: ['CX'], gatedOffChannels: ['CX'] }
+      const a = { ...assignment(), gatedAgentIds: [ALICE], mutedChannels: ['CX'], offChannels: ['CX'] }
       expect(arbitrate(a, msg({ channel: 'CX', text: '<@UBOT> hi', mentionedBots: [BOTUSER] }), empty())).toBeNull()
       // …and the slug rung is closed too, so naming the public agent cannot reopen it.
       expect(arbitrate(a, msg({ channel: 'CX', text: 'bob ship it', mentionedBots: [BOTUSER] }), empty())).toBeNull()
     })
 
     it('the notice-keeping subset does not make a channel routable', () => {
-      // gatedOffChannels only steers the notice; arbitration must still refuse.
-      const a = { ...assignment(), mutedChannels: ['C2'], gatedOffChannels: ['C2'] }
+      // offChannels only steers the notice; arbitration must still refuse.
+      const a = { ...assignment(), mutedChannels: ['C2'], offChannels: ['C2'] }
       expect(arbitrate(a, msg({ channel: 'C2', text: 'anything' }), empty())).toBeNull()
     })
   })
@@ -335,8 +335,7 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     routes: [],
     gatedAgentIds: [],
     mutedChannels: [],
-    gatedOffChannels: [],
-    noticedDmConversations: []
+    offChannels: []
   }
 
   it('maps the typed shapes and PRESERVES extra credential keys for the platform module', () => {
@@ -691,8 +690,7 @@ describe('Linear team-as-channel arbitration (the per-conversation default rung)
       defaultDaemonId: a.defaultDaemonId,
       gatedAgentIds: [],
       mutedChannels: [],
-      gatedOffChannels: [],
-      noticedDmConversations: [],
+      offChannels: [],
       conversationDefaults: [{ channel: TEAM_A, agentId: BOB, daemonId: D2, integrationId: 'iB' }]
     })
     expect(router.route('bot-1', delegation('a fresh delegation', TEAM_A, 'agent-session-9'))).toEqual({
@@ -973,8 +971,7 @@ describe('By decision candidate routes (decisions.md §7.1)', () => {
       routes,
       gatedAgentIds: [],
       mutedChannels: [],
-      gatedOffChannels: [],
-      noticedDmConversations: [],
+      offChannels: [],
       conversationDefaults: [],
       routedConversations: [{ ...host, evaluationDaemonId: D1 }]
     })
@@ -1091,8 +1088,7 @@ describe('By decision candidate routes (decisions.md §7.1)', () => {
       routes: base.routes,
       gatedAgentIds: [],
       mutedChannels: [],
-      gatedOffChannels: [],
-      noticedDmConversations: [],
+      offChannels: [],
       conversationDefaults: [],
       ownerAsDefault: false,
       routedConversations: [
@@ -1121,8 +1117,7 @@ describe('By decision candidate routes (decisions.md §7.1)', () => {
       routes: [route, { ...route, decisionId: 'dec-1' }],
       gatedAgentIds: [],
       mutedChannels: [],
-      gatedOffChannels: [],
-      noticedDmConversations: []
+      offChannels: []
     } as never)
     expect(a?.routes).toEqual([{ ...route, decisionId: 'dec-1' }])
   })

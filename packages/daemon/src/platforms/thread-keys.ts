@@ -22,6 +22,8 @@
  *    chat on Feishu. A post into one joins it; it never starts a second.
  *  - A Google Chat Space post keys on the thread Google put it in, which the
  *    gateway reports (`threadOfPost`); a Google Chat DM is keyed by its Space.
+ *  - A DingTalk group post keys on its process query key, which a quote of it
+ *    carries back (`originalProcessQueryKey`); a DingTalk DM is keyed `dm`.
  *
  * Whether the target is a DM is not derivable from the id, so callers pass what
  * the platform reports (`isIm` from `getChannelInfo`), defaulting to a non-DM
@@ -53,7 +55,9 @@ const STRATEGIES = new Map<string, ThreadKeyStrategy>([
   // Group chats thread off the post; a DM is keyed by the chat itself.
   ['feishu', { key: (channel, ts, isDm) => (isDm ? channel : ts), dmSensitive: true }],
   // A Space keys on the post's `spaces/…/threads/…` (the gateway's `threadOfPost`), a DM on the Space itself.
-  ['googlechat', { key: (channel, thread, isDm) => (isDm ? channel : thread), dmSensitive: true }]
+  ['googlechat', { key: (channel, thread, isDm) => (isDm ? channel : thread), dmSensitive: true }],
+  // A group post keys on its process query key, which a quote of it brings back; a DM is the one continuous `dm` session.
+  ['dingtalk', { key: (_channel, ts, isDm) => (isDm ? 'dm' : ts), dmSensitive: true }]
 ])
 
 /** Whether the platform's root-post session key depends on DM classification. */

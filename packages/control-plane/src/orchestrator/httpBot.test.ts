@@ -959,7 +959,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect(assign.routes.filter((r) => r.scope?.channel === 'D42')).toEqual([])
       expect(assign.mutedChannels).toContain('D42')
-      expect(assign.gatedOffChannels).not.toContain('D42')
+      expect(assign.offChannels).not.toContain('D42')
     })
 
     // The fence covers every Off channel: dropping the route is not enough, because
@@ -972,10 +972,10 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect(assign.routes.filter((r) => r.scope?.channel === 'C9')).toEqual([])
       expect(assign.mutedChannels).toEqual(['C9'])
-      expect(assign.gatedOffChannels).toEqual(['C9'])
+      expect(assign.offChannels).toEqual(['C9'])
     })
 
-    it('separates the two kinds of Off on one mixed bot: both muted, only the gated one speaks', async () => {
+    it('marks both kinds of Off on one mixed bot, a gate and an editor’s choice, for the notice', async () => {
       gatedAgents = new Set([ALICE])
       channels = [
         channel({ integrationId: INT_A, channelId: 'C9', agentId: ALICE, trigger: 'off' }), // gate
@@ -984,7 +984,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect([...assign.mutedChannels].sort()).toEqual(['C8', 'C9'])
-      expect(assign.gatedOffChannels).toEqual(['C9'])
+      expect([...assign.offChannels].sort()).toEqual(['C8', 'C9'])
     })
 
     it('leaves an active channel unmuted', async () => {
@@ -1021,7 +1021,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect(assign.defaultAgentId).toBe(ALICE)
       expect(assign.gatedAgentIds).toEqual([])
-      expect(assign.gatedOffChannels).toEqual([])
+      expect(assign.offChannels).toEqual([])
       expect(assign.routes.some((r) => r.match.kind === 'keyword' && r.agentId === ALICE)).toBe(true)
       const alice = upserts.find((u) => u.daemonId === D1)!.spec as never as {
         core: { gated: boolean; sessionModes: unknown[] }
@@ -1091,29 +1091,28 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       // The seed pushed routes and specs at once: the fence and the notice ride the assignment.
       const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
       expect(assign.mutedChannels).toEqual(['C_EXT'])
-      expect(assign.gatedOffChannels).toEqual(['C_EXT'])
+      expect(assign.offChannels).toEqual(['C_EXT'])
       expect(assign.routes.filter((r) => r.scope?.channel === 'C_EXT')).toEqual([])
       const bob = upserts.filter((u) => u.daemonId === D2).at(-1)!.spec as never as {
-        core: { mutedChannels: string[]; pendingChannels?: string[] }
+        core: { mutedChannels: string[] }
       }
       expect(bob.core.mutedChannels).toEqual(['C_EXT'])
-      expect(bob.core.pendingChannels).toEqual(['C_EXT'])
     })
 
-    it('an Off an editor chose on an external channel is silent, and enabling it opens the route', async () => {
+    it('an Off an editor chose on an external channel keeps the notice, and enabling it opens the route', async () => {
       channels = []
       const orch = makeOrch()
       await orch.replaceChannels(BOT, [{ id: 'C_EXT', name: 'partners', externalReason: 'externallyShared' }])
       await orch.updateConversation(BOT, 'C_EXT', { trigger: 'off' }, { source: 'console' })
       let assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
       expect(assign.mutedChannels).toEqual(['C_EXT'])
-      expect(assign.gatedOffChannels).toEqual([])
+      expect(assign.offChannels).toEqual(['C_EXT'])
 
       await orch.updateConversation(BOT, 'C_EXT', { trigger: 'mention' }, { source: 'console' })
       expect(channels.filter((c) => c.channelId === 'C_EXT').every((c) => c.triggerChosen)).toBe(true)
       assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
       expect(assign.mutedChannels).toEqual([])
-      expect(assign.gatedOffChannels).toEqual([])
+      expect(assign.offChannels).toEqual([])
       expect(assign.routes.filter((r) => r.scope?.channel === 'C_EXT')).toEqual([
         expect.objectContaining({ agentId: ALICE, match: { kind: 'mention' } })
       ])
@@ -1132,7 +1131,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       await makeOrch().reportConversation(BOT, { id: 'D_EXT', name: '@Partner', externalReason: 'externallyShared' })
       expect(channels.filter((c) => c.channelId === 'D_EXT').map((c) => c.trigger)).toEqual(['off', 'off'])
       const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
-      expect(assign.gatedOffChannels).toEqual(['D_EXT'])
+      expect(assign.offChannels).toEqual(['D_EXT'])
     })
 
     // #2979 B7: an Everyone assistant-mode owner seeds a room on @-mentions, a DM On and an external place Off.
@@ -1153,7 +1152,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(triggers('G_NEW')).toEqual(['mention', 'mention'])
       const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
       expect(assign.mutedChannels).toEqual(['C_EXT'])
-      expect(assign.gatedOffChannels).toEqual(['C_EXT'])
+      expect(assign.offChannels).toEqual(['C_EXT'])
     })
 
     it('leaves an assistant-mode owner’s existing Off rows Off, still owing the notice nobody chose to silence', async () => {
@@ -1172,15 +1171,15 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(channels.map((c) => c.trigger)).toEqual(['off', 'off', 'off', 'off'])
       const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
       expect([...assign.mutedChannels].sort()).toEqual(['C7', 'D7'])
-      expect([...assign.gatedOffChannels].sort()).toEqual(['C7', 'D7'])
+      expect([...assign.offChannels].sort()).toEqual(['C7', 'D7'])
       expect(assign.routes.filter((r) => r.scope?.channel === 'C7' || r.scope?.channel === 'D7')).toEqual([])
     })
 
-    // #2979 B7: an Off nobody chose keeps the one-time notice for every agent; an Off an editor chose is silent.
+    // Every Off answers an address with the notice, whether nobody or an editor chose it.
     it.each([
       ['in assistant mode', true],
       ['outside assistant mode', false]
-    ])('keeps the notice on an Everyone owner’s undecided Off room %s, and silence on a chosen one', async (_, on) => {
+    ])('marks an Everyone owner’s undecided and chosen Off rooms for the notice %s', async (_, on) => {
       assistantAgents = new Set(on ? [ALICE] : [])
       channels = [
         channel({ integrationId: INT_A, channelId: 'C7', agentId: ALICE, trigger: 'off' }),
@@ -1189,9 +1188,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       await makeOrch().syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect([...assign.mutedChannels].sort()).toEqual(['C7', 'C8'])
-      expect(assign.gatedOffChannels).toEqual(['C7'])
-      const alice = upserts.find((u) => u.daemonId === D1)!.spec as never as { core: { pendingChannels?: string[] } }
-      expect(alice.core.pendingChannels).toEqual(['C7'])
+      expect([...assign.offChannels].sort()).toEqual(['C7', 'C8'])
     })
 
     it('keeps a restricted assistant-mode owner gated: its new conversations start Off', async () => {
@@ -1482,20 +1479,6 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       ])
     })
 
-    it('recordNoticePosted re-stamps the pool with the DELIVERED conversation', async () => {
-      gatedAgents = new Set([ALICE])
-      const orch = makeOrch()
-      await orch.recordNoticePosted({ botId: BOT, channel: 'D42' })
-      const routes = ch.sends.filter((s) => s.type === 'rc/routes')
-      expect(routes.length).toBeGreaterThan(0)
-      const stamped = routes.at(-1)!.payload as { noticedDmConversations: string[] }
-      expect(stamped.noticedDmConversations).toEqual(['D42'])
-      // Idempotent: a repeat report neither grows the set nor re-pushes.
-      const before = ch.sends.length
-      await orch.recordNoticePosted({ botId: BOT, channel: 'D42' })
-      expect(ch.sends.length).toBe(before)
-    })
-
     it('an enabled gated DM row compiles one scoped auto route', async () => {
       gatedAgents = new Set([ALICE])
       channels = [channel({ integrationId: INT_A, channelId: 'D42', kind: 'im', agentId: ALICE, trigger: 'any' })]
@@ -1537,7 +1520,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
       expect(assign.routes.filter((r) => r.scope?.channel === 'D42')).toEqual([])
       expect(assign.mutedChannels).toContain('D42')
-      expect(assign.gatedOffChannels).not.toContain('D42')
+      expect(assign.offChannels).toContain('D42')
     })
 
     it('stamps a deterministic notice authority from the connected relay roster', async () => {
@@ -2057,7 +2040,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
       expect(assign.conversationDefaults.map((d) => d.channel)).toEqual([TEAM_B])
       expect(assign.mutedChannels).toContain(TEAM_A)
-      expect(assign.gatedOffChannels).toContain(TEAM_A)
+      expect(assign.offChannels).toContain(TEAM_A)
     })
 
     it('carries the defaults on the rc/routes HOT UPDATE, so an owner edit converges', async () => {

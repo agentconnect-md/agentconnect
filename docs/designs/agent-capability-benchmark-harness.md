@@ -8,7 +8,7 @@
 
 ## 1. Product boundary and motivation
 
-AgentConnect is a **harness-neutral capability layer**. Claude Code, Codex, Gemini, and other ACP runtimes supply the underlying agent loop, reasoning, and most general task competence. AgentConnect adds product behavior around that loop:
+AgentConnect is a **harness-neutral capability layer**. Claude Code, Codex, Antigravity, and other ACP runtimes supply the underlying agent loop, reasoning, and most general task competence. AgentConnect adds product behavior around that loop:
 
 - durable managed, native, or external memory;
 - multi-agent discovery, direct delivery, correlation, and policy;

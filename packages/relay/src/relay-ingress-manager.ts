@@ -107,6 +107,8 @@ const ACK_RETRY_MAX_MS = 60_000
 const CREDENTIAL_PROBE_INTERVAL_MS = 3_600_000
 /** Each later probe lands at the interval ± this fraction, so a pod's bots drift apart. */
 const CREDENTIAL_PROBE_JITTER = 0.1
+/** How many answered messages the §14.3 notice latch remembers before dropping the oldest. */
+const GATED_NOTICE_LATCH_LIMIT = 10_000
 
 /** Provably-older ordering between two revoke reports for one bot: by credential
  *  generation first, then by Slack's occurrence time when the generations agree
@@ -143,10 +145,6 @@ export interface RelayIngressManagerDeps {
   /** Report one observed direct conversation to the CP (→ `rc/bot-conversation`).
    *  Best-effort: loss self-heals on the counterpart's next DM. */
   reportBotConversation: (m: RcBotConversation) => boolean
-  /** Report one DELIVERED §14.3 DM gating notice (→ `rc/notice-posted`) so the CP
-   *  re-stamps the pool-wide latch. Best-effort: loss costs at most one duplicate
-   *  notice later, never a lost enablement path. */
-  reportNoticePosted: (m: { botId: string; channel: string }) => boolean
   /** Report a workspace uninstall / token revocation (→ `rc/bot-revoked`) so the CP
    *  marks the Bot + its installs revoked. Returns `false` when the CP link wasn't
    *  READY, so the manager can retry on reconnect ({@link
@@ -374,8 +372,7 @@ export class RelayIngressManager {
   private readonly lastCredentialChecks = new Map<string, string>()
   /** Each pooled ingest's next periodic credential probe. */
   private readonly credentialProbeTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  /** §14 one-time gating-notice latch (`botId:channel`) on the AUTHORITY pod —
-   *  correct because only one pod ever posts (deterministic per-bot authority). */
+  /** §14.3 notices already answered (`botId:msgId`), so a message's second event copy on this pod posts nothing more. */
   private readonly gatedNoticesSent = new Set<string>()
   /** Per-conversation direct-report latch (`botId:channel`) — scoped to the CURRENT
    *  bot assignment. Rows belong to the installs of that moment. */
@@ -1321,21 +1318,17 @@ export class RelayIngressManager {
       }
     }
     if (!tgt && conversationTargets.length === 0) {
-      // §14.3: an addressed message nothing could place answers once per conversation where nobody enabled the agent; an operator's Off stays silent.
+      // §14.3: an addressed message nothing could place answers with the notice wherever the agent is Off or not enabled.
       const muted = this.router.channelMuted(botId, msg.channel)
-      const gatedOff = this.router.channelGatedOff(botId, msg.channel)
-      // A bot with gated members speaks in unrouted places too; any bot speaks where the CP marks the Off undecided (§14.9).
-      const speaks = gatedOff || (hasGatedMembers && !muted)
+      const off = this.router.channelOff(botId, msg.channel)
+      // A bot with gated members speaks in unrouted places too; any bot speaks in an Off place, but not in a held decision's.
+      const speaks = off || (hasGatedMembers && !muted)
       if (!msg.sender.isBot && speaks) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
-          // §8 relayOwnsEgress, derived from the egress FACET: an ingest without
-          // one (Feishu — its callback credentials are receive-only) hands the
-          // addressed Off-conversation event to the owning daemon, which reports
-          // discovery, posts through its API client, and drops before agent
-          // dispatch. An ingest WITH the facet (Slack) keeps the relay-owned
-          // notice path below.
-          if (!this.ingestFor(botId)?.egress) tgt = this.router.soleGatedTarget(botId) ?? null
+          // Without an egress facet (Feishu, Teams) the owning daemon posts the notice and drops: the sole gated install, or in an Off place the sole install.
+          if (!this.ingestFor(botId)?.egress)
+            tgt = this.router.soleGatedTarget(botId) ?? (off ? this.router.soleTarget(botId) : undefined) ?? null
           if (!tgt) {
             await this.noticeGatedUnrouted(botId, msg)
             return rejected('off')
@@ -1536,50 +1529,27 @@ export class RelayIngressManager {
     if (sent) this.observedConversationsReported.add(latch)
   }
 
-  /** §14.3: the ONE-TIME per-conversation notice for an explicitly-addressed,
-   *  unroutable message on a bot with gated members — the bot must never look
-   *  silently broken. */
+  /** §14.3: the notice for an explicitly addressed, unroutable message — the bot must never look silently broken. */
   private async noticeGatedUnrouted(botId: string, msg: WireNormalizedMessage): Promise<void> {
-    // Once-per-conversation cannot rest on replica-local state, and the CP must
-    // never be a per-message round-trip (control-plane/data-plane boundary) — so both
-    // arbitration inputs are data-plane state stamped on the assignment:
-    //  • CHANNEL mentions arrive as TWO event copies that may land on different
-    //    pods → only the deterministic noticeAuthority pod posts (whichever copy
-    //    reaches it first; the local latch collapses siblings). A mention whose
-    //    copies miss the authority is caught by the next one; no authority ⇒ no
-    //    pod posts.
-    //  • DMs have a SINGLE event copy → the RECEIVING pod posts, gated by the
-    //    noticedDmConversations set — DELIVERED notices only (reported below via
-    //    rc/notice-posted and re-stamped pool-wide by the CP), never mere row
-    //    discovery: a mixed bot's DM routed by its public default creates a row
-    //    without a notice, and must still get one if it later becomes
-    //    unroutable. (A second DM inside the re-stamp window may double —
-    //    KNOWN, low-severity.)
-    const a = this.router.get(botId)
-    if (msg.isDm) {
-      if (a?.noticedDmConversations?.includes(msg.channel)) return
-    } else {
-      const authority = a?.noticeAuthority
-      if (!authority || authority !== this.deps.selfRelayId()) return
-    }
-    const key = `${botId}:${msg.channel}`
+    // A channel mention's two event copies may land on different pods, so only the bot's authority pod answers one; a DM has one copy.
+    const authority = this.router.get(botId)?.noticeAuthority
+    if (!msg.isDm && (!authority || authority !== this.deps.selfRelayId())) return
+    const key = `${botId}:${msg.msgId}`
     if (this.gatedNoticesSent.has(key)) return
+    // No egress facet (a receive-only ingress): the caller first tried the sole target daemon, so nothing posts here.
     const egress = this.ingestFor(botId)?.egress
-    // No egress facet (Feishu — receive-only ingress): the caller first tried
-    // the assignment directory's sole gated daemon target; an old CP that did
-    // not include the integration id safely lands here and drops instead of
-    // leaking API secrets.
     if (!egress) return
     this.gatedNoticesSent.add(key)
+    if (this.gatedNoticesSent.size > GATED_NOTICE_LATCH_LIMIT)
+      this.gatedNoticesSent.delete(this.gatedNoticesSent.values().next().value!)
     try {
       await egress.notice(
         msg.channel,
         '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.',
         msg.isDm ? undefined : msg.thread
       )
-      // Pool-wide DM latch = DELIVERY, reported after the post succeeds.
-      if (msg.isDm) this.deps.reportNoticePosted({ botId, channel: msg.channel })
     } catch (err) {
+      this.gatedNoticesSent.delete(key)
       this.deps.log.warn(
         `relay-ingress(${botId}): gating notice failed in ch=${msg.channel}: ${(err as Error).message}`
       )

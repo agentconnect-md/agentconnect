@@ -526,6 +526,7 @@ import type {
   InteractionActor,
   MemberJoin,
   PlatformChannelInfo,
+  PlatformConnection as ContractConnection,
   RelayCardClicks
 } from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
@@ -1386,6 +1387,8 @@ type HostRetirement = {
 const RELAY_ACK_SLOW_MS = 4000
 // One pod-local skill ref listing, the same bound the daemon's own ref naming has.
 const POD_SKILL_REF_TIMEOUT_MS = 10_000
+/** How many answered messages the §14.3 notice latch remembers before dropping the oldest. */
+const GATED_NOTICE_LATCH_LIMIT = 10_000
 
 /** Claude Code asks for a retry "in a minute" when its OAuth refresh lock is contended. */
 const OAUTH_REFRESH_CONTENTION_RETRY_MS = 60_000
@@ -13448,6 +13451,7 @@ export class Daemon {
     if (feishuConn) this.channelNameResolver?.noteMessage(feishuConn, normalized)
     // As on direct ingress, above the record: a relay-ingress module may place the message by its reply chain.
     await this.canonicalizeThread(normalized)
+    this.platformModules.get(normalized.platform)?.relayIngress?.observe?.(msg, normalized)
     // Before the turn this message starts reads the place's trust level (assistant-mode.md §5.3).
     this.placeTrust.observe(normalized, [msg.integrationId])
     // Step 1 (§5/§6): a relay-forwarded IM records exactly like direct ingress. Pre-addressed, so
@@ -15921,10 +15925,13 @@ export class Daemon {
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
       sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
       slackConnFor: (integrationId) => this.connByIntegration.get(integrationId),
-      approvalDmIntegrations: (agentId, preferred) => {
-        const live = (this.agents.get(agentId)?.integrations ?? [])
-          .filter((i) => i.platform === 'slack' && this.connByIntegration.has(i.id))
-          .map((i) => i.id)
+      approvalDmIntegrations: (agentId, preferred, cards = false) => {
+        const integrations = this.agents.get(agentId)?.integrations ?? []
+        const live = [
+          ...integrations.filter((i) => i.platform === 'slack' && this.connByIntegration.has(i.id)),
+          // After Slack's DM cards, a platform whose connection opens a 1:1 chat takes the editor's card through its facet.
+          ...(cards ? integrations.filter((i) => !this.connByIntegration.has(i.id) && this.directCardsAt(i.id)) : [])
+        ].map((i) => i.id)
         return preferred && live.includes(preferred) ? [preferred, ...live.filter((id) => id !== preferred)] : live
       },
       // Unconditional (§5.3): a card outside the session's conversation routes its click home only by this block_id.
@@ -15934,6 +15941,7 @@ export class Daemon {
       assistantApprover: (agentId, requestId) => this.drafts.cardApprover(agentId, requestId),
       chatSurface: (agentId, integrationId, channel, externallyShared) =>
         this.chatSurface(agentId, integrationId, channel, externallyShared),
+      placeExternal: (agentId, integrationId, channel) => this.memoryPlaceExternal(agentId, integrationId, channel),
       chatEditorsOnly: (agentId, integrationId) => this.chatEditorsOnly(agentId, integrationId),
       chatActor: async (agentId, integrationId, actor) => await this.chatActor(agentId, integrationId, actor),
       personDm: (agentId, requestId, asker) => this.drafts.personApprover(agentId, requestId, asker),
@@ -15947,7 +15955,21 @@ export class Daemon {
         if (p.webchat || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id || !p.plan.integrationId)
           return undefined
         return await this.drafts.askerApprover({ integrationId: p.plan.integrationId, userId: msg.sender.id })
-      }
+      },
+      askerDirectMessage: async (p) => {
+        const msg = p.entry.msg
+        const integrationId = p.plan.integrationId
+        if (p.webchat || msg.source !== 'user' || msg.sender.isBot || !msg.sender.id || !integrationId) return undefined
+        // A platform with draft cards reaches its asker through `externalAskerDm` and the DM card above.
+        if (this.draftCardPort(integrationId)) return undefined
+        const conn = this.anyConnForIntegration(integrationId) as Partial<ContractConnection> | undefined
+        if (!conn?.isFullMember || !conn.openDirectMessage) return undefined
+        // Only an internal member answers for an external place, as Slack's asker DM requires (assistant-mode.md §5.5).
+        if (!(await conn.isFullMember(msg.sender.id).catch(() => false))) return undefined
+        const channel = await conn.openDirectMessage(msg.sender.id).catch(() => undefined)
+        return channel ? { integrationId, userId: msg.sender.id, channel } : undefined
+      },
+      directMessageAt: async (integrationId, userId) => await this.directCardsAt(integrationId)?.(userId)
     }
   }
 
@@ -20790,8 +20812,7 @@ export class Daemon {
           chrome: true
         })
       else if (p.conn) await p.conn.postMessage(msg.channel, text, msg.thread)
-      else if (!p.plan.suppressReplyConn)
-        await this.chromeNotice(p.plan.platform, p.egress, msg.channel, msg.thread, text)
+      else if (!p.plan.suppressReplyConn) await this.chromeNotice(p.plan.platform, p.egress, msg, msg.thread, text)
       await this.store.appendTranscript({
         channel: p.plan.transcriptChannel,
         thread: p.plan.sessionThread,
@@ -23254,8 +23275,7 @@ export class Daemon {
 
   // ── Conversation gating (resource-visibility.md §14) ────────────────────────
 
-  /** One-time gating-notice latch, `${integrationId}:${channel}` — per daemon
-   *  lifetime (§14.7 open question 2: a restart re-notices, which is acceptable). */
+  /** Messages the §14.3 notice answered, by integration and message id, so a message's second event copy posts nothing more; bounded. */
   private readonly gatedNoticesSent = new Set<string>()
 
   /** agentId → the CP launch correlation awaiting the next session this agent
@@ -23263,6 +23283,12 @@ export class Daemon {
    *  host — the session arrives later, from the daemon's own ingress — so the
    *  provenance has to be parked here and consumed once. */
   private readonly pendingLaunchCorrelation = new Map<string, string>()
+
+  /** How an integration whose approval cards can go to a person's own 1:1 chat opens one; undefined where they cannot. */
+  private directCardsAt(integrationId: string): ((user: string) => Promise<string>) | undefined {
+    const conn = this.chatCardsAt(integrationId)?.conn as Partial<ContractConnection> | undefined
+    return conn?.openDirectMessage?.bind(conn)
+  }
 
   /** One integration's approval-card facet and live connection, for a card or notice posted outside a turn. */
   private chatCardsAt(integrationId: string): { facet: ApprovalCardFacet; conn: unknown } | undefined {
@@ -24221,8 +24247,9 @@ export class Daemon {
       const int = this.integrationConfigById(integrationId)
       if (!int || int.platform !== msg.platform) continue
       const routing = integrationRouting(int)
-      // An ungated integration speaks only where nobody decided its Off (§14.9); an operator's Off stays silent.
-      if (!routing.gated && !routing.pendingChannels.includes(msg.channel)) continue
+      // An ungated integration speaks in an Off conversation, not in a held decision's.
+      const off = routing.mutedChannels.includes(msg.channel) && !routing.decisionBound(msg.channel)
+      if (!routing.gated && !off) continue
       // An ENABLED conversation never gets a report/notice — this guard makes the
       // helper safe from the pre-command call site, which sees every DM. A thread of an
       // enabled channel is enabled too (the rule is scoped to the enclosing channel).
@@ -24231,23 +24258,28 @@ export class Daemon {
       // A trusted mention cause is an address even before the bot's own identity is known.
       const addressed = isDm || msg.trigger === 'mention' || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
       if (!addressed) continue
-      const latch = `${integrationId}:${msg.channel}`
+      // A message id is unique only per bot connection: two bots' DMs can share one.
+      const latch = `${integrationId}:${msg.msgId}`
       if (this.gatedNoticesSent.has(latch)) return
-      this.gatedNoticesSent.add(latch)
       const text =
         '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.'
       const thread = isDm ? undefined : msg.thread
       const conn = this.connForIntegration(integrationId)
       // Chrome-marked so peer daemons' thread backfill never re-ingests the notice.
       const post = !conn
-        ? this.chromeNotice(msg.platform, this.anyConnForIntegration(integrationId), msg.channel, thread, text)
+        ? this.chromeNotice(msg.platform, this.anyConnForIntegration(integrationId), msg, thread, text)
         : conn instanceof SlackConnection
           ? conn.postMessage(msg.channel, text, thread, { chrome: true })
           : conn.postChrome(msg.channel, text, { threadTs: thread })
       if (!post) return
-      void post.catch((err: unknown) =>
+      // Held from the post on so the message's other copy posts nothing; a failed post releases it.
+      this.gatedNoticesSent.add(latch)
+      if (this.gatedNoticesSent.size > GATED_NOTICE_LATCH_LIMIT)
+        this.gatedNoticesSent.delete(this.gatedNoticesSent.values().next().value!)
+      void post.catch((err: unknown) => {
+        this.gatedNoticesSent.delete(latch)
         this.log.warn(`gating: notice post failed in ch=${msg.channel}: ${(err as Error).message}`)
-      )
+      })
       return // one notice per message even when several integrations share the socket
     }
   }
@@ -24256,12 +24288,12 @@ export class Daemon {
   private chromeNotice(
     platform: string,
     conn: PlatformConnection | undefined,
-    channel: string,
+    msg: NormalizedMessage,
     thread: string | undefined,
     text: string
   ): Promise<void> | undefined {
     const surface = this.commandChrome.for(platform)
-    return conn && surface.notice ? surface.notice(conn, channel, thread, text) : undefined
+    return conn && surface.notice ? surface.notice(conn, msg.channel, thread, text, msg) : undefined
   }
 
   /** Surface an observed conversation as a configurable row. This is an incremental
@@ -24413,14 +24445,15 @@ export class Daemon {
     return undefined
   }
 
-  /** The send tool's and assistant mode's gateway: a reply connection, or a Google Chat or Teams one, which posts outside a turn but has no reply surface here. */
+  /** The send tool's and assistant mode's gateway: a reply connection, or a Google Chat, Teams or DingTalk one, which posts outside a turn but has no reply surface here. */
   private gatewayForIntegration(
     integrationId: string
-  ): ReplyConnection | GoogleChatConnection | MsTeamsConnection | undefined {
+  ): ReplyConnection | GoogleChatConnection | MsTeamsConnection | DingTalkConnection | undefined {
     return (
       this.connForIntegration(integrationId) ??
       this.gcConnByIntegration.get(integrationId) ??
-      this.msTeamsConnByIntegration.get(integrationId)
+      this.msTeamsConnByIntegration.get(integrationId) ??
+      this.dingTalkConnByIntegration.get(integrationId)
     )
   }
 

@@ -16,6 +16,7 @@ import {
   type ComputerChannelGrantOpts
 } from './computerChannelGrants.js'
 import { ComputerChannelKeys } from './computerChannelKeys.js'
+import { coturnTurn } from '../computer-viewer/turn.js'
 
 const ORG = OrgId('org_1')
 const CID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
@@ -190,7 +191,7 @@ describe('ComputerChannelGrants.grantViewer', () => {
       staleAfterMs: 45_000,
       relays: async () => [relay],
       viewerRelays: async () => opts.relays ?? ['https://relay.example.com', 'https://relay.example.com', relay.url],
-      ...(opts.withTurn ? { turn } : {}),
+      ...(opts.withTurn ? { turn: coturnTurn(turn) } : {}),
       ...(opts.relayTurn
         ? { relayTurn: { secret: relaySecret, ttlSec: 21_600, servers: async () => opts.relayTurn! } }
         : {}),

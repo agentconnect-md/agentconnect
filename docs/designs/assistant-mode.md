@@ -281,7 +281,7 @@ The terms as this design uses them, each with the section that defines it.
 | Read-only modes                 | Matched by **name** (`read-only`, else `plan`). Claude Code has `plan`; **OpenCode's `read-only` is a daemon-authored agent injected only on the credential-less dream host**, a normal host has native `plan` with bash allowed; **Codex's `read-only` profile opens the network when the managed credential channel is enabled**, so a "read-only" session can run write calls through that channel with no permission request — both are credential problems, not filesystem ones. Dreams use a credential-less host; **per-turn distillation uses the agent's own host** |
 | Runtime versions                | Managed Codex follows a floating release channel (`version: ''`); only probed versions are known                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Workspace isolation             | `isolation: session` applies to git mode only; **scratch is always `shared`, on the pool too**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| In-chat approval                | The in-conversation card checks who clicks only where permissions are synced (an editor's linked account, slack-approval-dm.md §6.5), hence behind `chatActions` at `approve` or above; otherwise the editor path. The card **exists on Slack, Telegram, Discord, Feishu/Lark and Google Chat** and the editor DM **on Slack only**, and both bind to a pending ACP request                                                                                                                                                                                                  |
+| In-chat approval                | The in-conversation card checks who clicks only where permissions are synced (an editor's linked account, slack-approval-dm.md §6.5), hence behind `chatActions` at `approve` or above; otherwise the editor path. The card **exists on Slack, Telegram, Discord, Feishu/Lark, Google Chat and Teams** and the editor DM **on Slack and Teams**, and both bind to a pending ACP request                                                                                                                                                                                      |
 | Context size                    | The daemon has `contextUsed` (usage snapshots) and infers compaction from it; the reminder path `shouldRemind` already handles first turn, restart and compaction                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Slack joins                     | A join waits for a person behind the turn (`askToJoin`, #2979); the join fires `member_joined_channel` and re-reports from the authoritative snapshot                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Pending cards                   | `OrganizationSuggestion`'s card component is reusable; its review route is owner-only and is not                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -428,9 +428,9 @@ needed an editor. An assistant-mode agent now takes the defaults of its visibili
 agent's new room answers @-mentions, a member's new 1:1 DM starts On, a conversation shared with
 another organization starts Off ([resource-visibility.md](resource-visibility.md) §14.9), and it
 can be a shared bot's default member; a restricted one stays gated. Rows already Off stay Off:
-nothing is migrated or re-seeded. An Off nobody chose keeps the one-time notice for every agent
-([resource-visibility.md](resource-visibility.md) §14.9), so a room seeded Off under the old gating
-still tells a person who mentions the agent there; an Off an editor chose is silent. Without the
+nothing is migrated or re-seeded. Every Off answers an addressed message with the notice, for
+every agent ([resource-visibility.md](resource-visibility.md) §14.9), so a room seeded Off under the
+old gating still tells a person who mentions the agent there. Without the
 gate, a new place can be answered before its row reaches the daemon, so the daemon keys an
 unlisted place on one session from its first message (§5.2).
 
@@ -467,6 +467,10 @@ unlisted place on one session from its first message (§5.2).
   its own: the standing list of follow-ups is not injected there (§5.4 ②). Its replies, its other
   writes there and its turns are what any agent's are.
 - Telegram groups, Discord channels, Feishu groups: no detection; such a place is internal.
+- DingTalk groups: a message from outside the robot's organization, which carries no staff ID
+  or names another organization, makes the group external, never lifted
+  ([dingtalk-integration.md](dingtalk-integration.md) §4.1). The message that reveals the
+  outsider is itself judged in the external place.
 - DM: never external; what it is told is judged by its one person (§5.5). Webchat is internal by
   construction.
 - A delegated task's place is its owning session's: one delegated in an external place reports through
@@ -602,7 +606,9 @@ member (below).
 - A draft is an approval record (§5.10) whose action is "post this text to this place"; the
   daemon executes it itself, with no task. It expires after 24 hours.
 - Any card that would land in an external place (a runtime permission request, a `propose`) goes
-  to the same DM instead: a card is output too.
+  to the same DM instead: a card is output too. On a platform without Slack's DM card, a runtime
+  permission request reaches the asker through the platform's own approval card in their 1:1 chat,
+  where its connection can tell a full member and open that chat (Teams, §4.4 of its design).
 
 **Posts from another place into an external one:**
 

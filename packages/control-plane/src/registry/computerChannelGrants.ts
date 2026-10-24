@@ -20,7 +20,7 @@ import { ComputerId, type OrgId } from '../domain/ids.js'
 import { computerGrantsAgent, isComputerReachable, presentComputerStatus } from '../domain/computer.js'
 import type { ComputerRepo } from '../persistence/ports.js'
 import type { ComputerChannelKeys } from './computerChannelKeys.js'
-import { turnCredentials, type TurnConfig } from '../computer-viewer/turn.js'
+import { turnCredentials, type ExternalTurn } from '../computer-viewer/turn.js'
 
 /** An mcp token lives this long, or less when its key runs out first; the agent daemon asks again before it lapses. */
 export const COMPUTER_CHANNEL_TOKEN_TTL_MS = 120_000
@@ -33,8 +33,8 @@ export interface ComputerChannelGrantOpts {
   tokenTtlMs?: number
   /** Where a browser reaches the desktop's viewer API: the relay pool's public origin first, then each relay. */
   viewerRelays?: () => Promise<string[]>
-  /** An external TURN (COMPUTER_TURN_*) for viewer media without a direct UDP path; it takes precedence over the relays' own. */
-  turn?: TurnConfig
+  /** An external TURN (a coturn or Cloudflare's) for viewer media without a direct UDP path; it takes precedence over the relays' own. */
+  turn?: ExternalTurn
   /** The relays' own TURN servers (computer-use.md §7.2): each alive relay's URLs, and the secret it checks credentials with. */
   relayTurn?: { secret: string; ttlSec: number; servers: () => Promise<string[][]> }
   /** The relays' STUN addresses, for hole punching viewer media when the Computer's policy allows it. */
@@ -159,7 +159,11 @@ export class ComputerChannelGrants {
     const exp = Math.min(now + COMPUTER_VIEWER_TOKEN_TTL_MS, Date.parse(credential.expiresAt))
     await quotaed?.viewerGranted(orgId, computerId, who.userId, new Date(exp))
     // The desktop and the browser each get their own TURN username, so the TURN server tells them apart.
-    const turn = await this.turnServers(computerId)
+    const turn = await this.turnFor(computerId)
+    const [desktopIce, viewerIce] = await Promise.all([
+      turn(`computer-${computerId}`, now),
+      turn(`viewer-${who.userId}`, now)
+    ])
     // Hole punching shows the viewer the desktop's public IP, so only a policy that allows it, on a desktop that reads it, gets STUN.
     const stun =
       computer.capabilities.viewerStun === true && viewerPeerToPeerAllowed(computer.policy, computer)
@@ -174,9 +178,7 @@ export class ComputerChannelGrants {
         exp,
         usr: who.userId,
         mode: who.mode,
-        ...(turn.length > 0
-          ? { ice: turn.map((server) => turnCredentials(server, `computer-${computerId}`, now)) }
-          : {}),
+        ...(desktopIce.length > 0 ? { ice: desktopIce } : {}),
         ...(stun.length > 0 ? { stun } : {})
       },
       Buffer.from(credential.key, 'base64url')
@@ -188,7 +190,7 @@ export class ComputerChannelGrants {
       expiresInMs: exp - now,
       mode: who.mode,
       relays,
-      iceServers: turn.map((server) => turnCredentials(server, `viewer-${who.userId}`, now)),
+      iceServers: viewerIce,
       stunUrls: stun,
       // A managed computer's pod has no UDP a browser can reach, so its viewer starts at TURN.
       directMedia: computer.kind !== 'managed'
@@ -196,13 +198,14 @@ export class ComputerChannelGrants {
   }
 
   // External TURN is the operator's explicit choice; otherwise the relays' own, spread per Computer, the same relay first for both peers.
-  private async turnServers(computerId: string): Promise<TurnConfig[]> {
-    if (this.opts.turn) return [this.opts.turn]
+  private async turnFor(computerId: string): Promise<ExternalTurn> {
+    if (this.opts.turn) return this.opts.turn
     const relay = this.opts.relayTurn
-    if (!relay) return []
-    return rendezvous(await relay.servers(), computerId)
+    if (!relay) return () => Promise.resolve([])
+    const servers = rendezvous(await relay.servers(), computerId)
       .slice(0, COMPUTER_ICE_SERVERS_MAX)
       .map((urls) => ({ urls, secret: relay.secret, ttlSec: relay.ttlSec }))
+    return (who, nowMs) => Promise.resolve(servers.map((server) => turnCredentials(server, who, nowMs)))
   }
 
   /** A relay's `rc/verify` of a desktop's `cr/hello`: the token must be signed with that Computer's live channel key. */

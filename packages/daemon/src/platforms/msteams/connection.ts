@@ -552,6 +552,46 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     return fullMember(await this.standingOf(user), this.tenantId)
   }
 
+  /** The bot's 1:1 chat with a person it shares a conversation or team with, opened by the `29:` ID their roster entry carries (§4.4); it becomes a known chat, so a card posts into it. */
+  async openDirectMessage(user: string): Promise<string> {
+    const entry = await this.rosterEntry(user)
+    const member = entry?.member
+    if (!entry || !member?.id.startsWith('29:'))
+      throw new MsTeamsApiError('msteams: no conversation this bot shares with the person names them', 'not_found')
+    this.noteStanding(member)
+    const { serviceUrl } = entry
+    const chat = await this.api.openDirectConversation(serviceUrl, member.id, this.tenantId, this.botUserId)
+    const name = member.name ?? this.names.get(user)
+    remember(this.conversations, chat, { serviceUrl, kind: 'personal', ...(name ? { name } : {}) }, CONVERSATIONS_MAX)
+    return chat
+  }
+
+  // The person's roster entry where they were seen, else in each team the bot knows, whose roster lists every member of it.
+  private async rosterEntry(user: string): Promise<{ serviceUrl: string; member: MsTeamsMember } | undefined> {
+    const seen = this.seenIn(user)
+    if (seen) {
+      const member = await this.api.conversationMember(seen.known.serviceUrl, seen.channel, user)
+      return member ? { serviceUrl: seen.known.serviceUrl, member } : undefined
+    }
+    const teams = new Set<string>()
+    for (const known of this.conversations.values()) {
+      if (known.kind !== 'channel' || !known.teamId || teams.has(known.teamId)) continue
+      teams.add(known.teamId)
+      const member = await this.api.conversationMember(known.serviceUrl, known.teamId, user).catch(() => undefined)
+      if (member) return { serviceUrl: known.serviceUrl, member }
+    }
+    return undefined
+  }
+
+  // The first conversation the person was seen in that the bot can still write to.
+  private seenIn(user: string): { channel: string; known: KnownConversation } | undefined {
+    for (const [channel, seen] of this.members) {
+      const known = seen.has(user) ? this.conversations.get(channel) : undefined
+      if (known) return { channel, known }
+    }
+    return undefined
+  }
+
   // A person's standing within the TTL, else looked up in a conversation they were seen in; rejects when none can tell.
   private async standingOf(user: string): Promise<MsTeamsMember> {
     const hit = this.standings.get(user)

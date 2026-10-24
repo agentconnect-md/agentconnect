@@ -35,7 +35,7 @@ tool approval onto `elicitation/create`), the daemon's
   lands in the daemon's `permission_requests` table
   (`packages/daemon/src/store/local-store.ts`), and chat gets only a notice:
   _"🔒 Permission requested. Ask an Agent editor to allow it from the Agent
-  or Session page."_ The console polls
+  or Session page."_ (§5.5 says how it reads once decided.) The console polls
   `GET /orgs/:org/agents/:id/permission-requests` (the CP proxies to the
   owning daemon and persists nothing) and an agent **editor** decides from
   the Agent or Session page.
@@ -296,6 +296,37 @@ in a DM channel routes exactly like one in the session thread:
 - **No timeout:** pending approvals have none today and this design adds
   none.
 
+### 5.5 The conversation's notice says how it ended
+
+A notice still reading "Permission requested" after an editor answered sends
+people after an editor who already acted, and one left by a stopped turn or a
+restart waits forever. So on a platform with an approval card (Slack, Teams,
+Telegram, Discord, Feishu/Lark, Google Chat) the editor path's notice is posted
+through the card facet (`turnNotice`, on the turn's apply chain), its handle is
+kept, and it is rewritten in place once the request settles (`turnNoticeSettled`):
+
+| Outcome                  | The notice reads                    |
+| ------------------------ | ----------------------------------- |
+| An editor allowed it     | _"✅ Permission granted by Ada."_   |
+| An editor denied it      | _"🚫 Permission denied by Ada."_    |
+| The turn ended undecided | _"⏳ Permission no longer needed."_ |
+
+A console decision with no recorded name reads "by an Agent editor". In an
+external conversation the line names nobody ("✅ Permission granted."): the
+notice there never named a person, and the decider is an organization member.
+The handle rides the same row columns a task's notice uses
+(`noticeIntegrationId`, `noticeChannel`, `noticeTs`) with `noticeKind = 'turn'`,
+so the reconnect sweep that settles a task's notice (assistant-mode.md §5.6)
+rewrites this one too, in its own words and without a name. A request that
+settles while the notice is still posting gets its settled line once the post
+returns.
+
+DingTalk and QQ have no approval card, so their notice stays as posted: neither
+connection can edit the message it sent, and a second line on every decision
+would double the noise (and QQ's passive replies are limited in number and
+time). A webchat conversation lists its pending requests itself, and Linear's
+activity feed already follows a gate through to its decision.
+
 ## 6. Recording the decision
 
 ### 6.1 Store (daemon SQLite, `permission_requests`)
@@ -306,7 +337,9 @@ New nullable columns:
   `slack:<teamId>:<userId>` for DM/chat-card decisions (the `ownerIdentity`
   encoding, keyed on the pair per the standing rule);
 - `resolvedByName` — display name captured at decision time;
-- `notifyChannel`, `notifyTs` — the DM card handle, for §5.4.
+- `notifyChannel`, `notifyTs` — the DM card handle, for §5.4;
+- `noticeKind` — `turn` when the notice handle is the editor path's own notice
+  (§5.5), null for a task's notice.
 
 The existing `ownerId` column is the daemon-pool lease and is **not** a
 human — untouched.
@@ -391,16 +424,18 @@ carries no console link: the session is `external` (session-visibility.md §1), 
 opens only to linked members with access to the same conversation, with no editor override, and
 an editor linked elsewhere would get a 404. A click in a closed conversation still
 gets the console link, as on any platform.
-Beside a permission request's card, the editor DM of §5 (a Slack DM) goes out too unless the
-turn owner is an editor. It is routed over the agent's Slack integrations
-(`approvalDmIntegrations`), so on a synced Feishu/Lark integration of an agent with no Slack
-integration nobody is DMed, and the request waits for an editor in the conversation or the
-console; a Feishu/Lark approval DM is not built yet. The first answer decides: the DM's addressee is checked as §6.3 says, anyone else as
-here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
+Beside a permission request's card, the editor DM of §5 goes out too unless the turn owner is an
+editor. It is routed over the agent's Slack integrations first, then those whose platform opens a
+1:1 chat (`approvalDmIntegrations`); an editor routed to one of those gets the card in that chat
+through the platform's facet, as on the editor path (teams-integration.md §4.4). On a synced
+Feishu/Lark integration of an agent with neither, nobody is DMed, and the request waits for an
+editor in the conversation or the console; a Feishu/Lark approval DM is not built yet. The first
+answer decides: the DM's addressee is checked as §6.3 says, anyone else as here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
 (§11.4); editors answer it there or in the console. A conversation shared with another
 organization takes the editor path instead of the asker's DM. A task's card keeps the
 row's `notify*` handle, so the DM beside it keeps its own (`besideIntegrationId`,
-`besideChannel`, `besideTs`), and the reconnect sweep of §5.4 retires both. §4.4 holds: the check
+`besideChannel`, `besideTs`), as an editor's card off Slack always does, and the reconnect sweep
+of §5.4 retires both. §4.4 holds: the check
 is a forward scan from the console side, never a reverse index.
 
 ## 7. Console notification states
@@ -482,9 +517,10 @@ Console notifications (§7) followed as their own change (#1704).
 - **Other platforms.** Feishu/Lark's linked identity asserts a cross-app
   `union_id` while its messages carry an app-scoped `open_id` — matching
   needs a resolution step `linkedMemberIds` deliberately refuses to guess
-  at. Telegram/Discord have no linked-identity assertion at all. The frame
-  pair of §4.2 is platform-shaped (`target` could grow a platform tag), but
-  only Slack ships.
+  at. Telegram/Discord have no linked-identity assertion at all. Microsoft
+  Teams posts its own approval card into the editor's 1:1 chat, for a
+  permission request or an MCP approval with choices, and the click is
+  verified as §6.3 says ([Teams](teams-integration.md) §4.4).
 - **Multi-recipient fan-out / escalation.** One target per request. If the
   chosen human is away, the console queue is the backstop, as today.
 - **Approval timeouts and reminders.** Orthogonal; nothing here precludes

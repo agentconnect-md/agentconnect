@@ -105,9 +105,12 @@ carried, which the daemon records per conversation; proactive sends need that
 recorded reference, since Teams offers no lookup by email or user principal
 name. The `serviceUrl` is regional and tenant-specific
 (`https://smba.trafficmanager.net/<region>/<tenantId>/`), so it is read, never
-built (**measured**). A proactive 1:1 with someone who has not installed the
-app in personal scope fails with 403 `BadArgument`, "Bot is not installed in
-user's personal scope" (**measured**).
+built (**measured**). A proactive 1:1 is opened by `POST v3/conversations`
+naming the person by the `29:` ID their roster entry carries; that works for a
+member of a team the app is installed in even if they never installed it
+themselves. Named by their Entra object ID instead, the same person is refused
+with 403 `BadArgument`, "Bot is not installed in user's personal scope"
+(**measured**, both).
 
 ## 4. Behavior and invariants
 
@@ -157,6 +160,16 @@ activation policy does the filtering, unchanged:
   has an open session in, and a quote in a group chat lands in that thread
   through `canonicalizeThread`;
 - anything else is dropped after admission and starts nothing.
+
+That holds in a team's standard channels only. In a private or a shared
+channel, where the app is added to the channel itself, Teams delivered a
+mention and the bot's replies posted there, but an unmentioned thread reply
+never reached the relay (**measured** in both, with the team holding the
+grant). Neither the layout nor the channel's own install is the cause: a
+standard channel switched to the threads layout still delivered the
+unmentioned reply, and removing the app from the private channel and adding
+it back changed nothing. A thread there continues only through a mention. Whether an
+unmentioned top-level post there reaches an `auto` trigger is **unverified**.
 
 The manifest therefore leaves `addressedByConstruction` unset. If a tenant
 blocks RSC consent, the bot receives mentions only; `auto` and unmentioned
@@ -274,6 +287,44 @@ clicker is linked to an editor of the agent (§4.5); an unlinked clicker or a
 non-editor is refused privately and the card stays live. The module's
 `chatMemberKey` is the clicker's `aadObjectId`, lower-cased.
 
+In an external place (§4.6) no approval card goes into the conversation, as on
+Slack ([assistant mode](assistant-mode.md) §5.5): a neutral notice does, replaced
+with the outcome once the request settles and naming nobody there
+([approval surfaces](slack-approval-dm.md) §5.5), and
+the card goes to the asker's own 1:1 chat when they are a full member of the
+home tenant. The connection opens that chat (`openDirectMessage`) by the
+asker's `29:` ID, read from a conversation the bot shares with them. Only the
+asker may answer that card, judged as the asker of the external place, so an
+approval switched off there or a conversation closed since refuses them too.
+An asker who is not a full member, or whose chat cannot be opened, leaves the
+request on the editor path. The card is the module's `ApprovalCardFacet` card,
+posted through core's platform-neutral asker path, which any platform whose
+connection offers `isFullMember` and `openDirectMessage` shares; Slack keeps its
+own DM card.
+
+On the editor path (an external place with sync on, an asker who is not a full
+member, or no asker card) the editor DM reaches Teams too
+([approval surfaces](slack-approval-dm.md) §3). The Control Plane walks the same
+preference chain with each editor's linked Microsoft account (§4.5), and the
+daemon posts the same card into the chosen editor's 1:1 chat, under a line that
+names the agent and the person who asked and links the session. The connection
+opens that chat by the `29:` ID from a conversation it shares with the editor,
+else from the roster of a team it knows, which lists every team member. Only that
+editor answers the card, rechecked by the Control Plane on each click as Slack's
+DM is; the chat approval level does not reach it. A Slack integration of the same
+agent is tried first, so an editor linked on both gets Slack's DM. The same card
+goes beside a card that only editors may answer (sync on, and the person who
+asked is not an editor): the routed editor gets it in their 1:1 chat while the
+conversation's card stays, and the first answer from either decides. Its handle
+is the row's `beside*` one, so the reconnect sweep retires it too.
+
+An MCP tool approval asked as a question (`elicitation/create`) takes the
+asker's and the editor's 1:1 chats as a permission request does when its one
+field reduces to choices: the card offers those choices and Deny, and a click
+settles it with the chosen value. One that reduces to no choices gets no Teams
+card on either path and is answered in the console. Other questions take
+neither path; they stay in their conversation.
+
 ### 4.5 Sign-in, linking, and session access sync
 
 Teams joins the existing permission sync model as Telegram, Discord, and Google
@@ -377,6 +428,12 @@ member lookup (enabled when the deployment offers Microsoft sign-in), the
 row, and the migrations that fence earlier Teams conversations on the Control
 Plane and bind them to their tenant in the daemon's store.
 
+With sync on, a linked member's channel @mention settled its session under the
+bot's tenant and that channel, and the member could open it in the Console;
+sessions from before sync stayed hidden until their conversation spoke again,
+and a session of another tenant stayed hidden from a member of this one
+(**measured**).
+
 ### 4.6 Audience
 
 A Teams place is judged external by the same three signals as any platform
@@ -412,6 +469,22 @@ private. Private and shared channels are their members' and report private. A
 chat is shared with no organization; a person from another one in it is a
 member's reason, found when they join.
 
+A place that turns external this way starts Off for every agent until an
+editor enables it, as a Slack Connect channel does. Teams gives the relay no
+egress, so a mention there is handed to the bot's agent's daemon, which posts
+the notice and starts no turn. The relay-ingress `observe` step has
+already recorded the conversation's `serviceUrl` by then, so the notice can
+answer even the conversation's first activity.
+
+Measured in a shared channel once a member from another tenant joined: the
+join wrote the channel's row Off and undecided with `externalMember` as its
+reason, and a mention was dropped. Before the fix there was nothing; after it
+the thread got the notice once. Enabled from the Console, the next mention ran
+a turn whose session took `external` visibility, synced to the conversation's
+members, while the row kept its reason. Graph's `allMembers` listed the
+requester twice there, once directly and once through the team the channel is
+shared with; the read keeps one entry per user ID (**measured**).
+
 ## 5. Console setup
 
 The wizard walks the admin through both registrations and then:
@@ -445,6 +518,38 @@ reach the Bot Connector, and the Teams client took hours to list the uploaded
 app. The wizard therefore leads with the admin center upload and "Add to team",
 and says that 1:1 chats may take hours to open.
 
+### 5.1 Keeping the app current
+
+The agent's name and icon, and the manifest itself, live in the package, so
+Teams shows what was last published until a new package reaches it. Microsoft
+lets only a Teams administrator's delegated token update a catalog app; no
+application permission can, so the Control Plane cannot push a change in the
+background as it does a Telegram or Discord avatar.
+
+The Control Plane records a fingerprint of each package that reaches Teams in
+the bot row's `platformConfig.appPackage`: a hash of the manifest without its
+version and of the agent's icon descriptor. A connected tenant records it after
+each catalog publish whose team upgrades all succeeded (§8.3); an own bot records it on each download, the last
+step the Control Plane sees before the admin uploads by hand.
+`GET /integrations/:id/msteams/app-package/status` compares it with the package
+the integration would build now, and a row with none counts as out of date.
+
+When they differ, the bot's row in the Console says Teams has an older version.
+A connected tenant gets **Update in Teams**, which runs the connect flow of §8.3
+again for the same agent; an own bot uploads a fresh download. A new
+resource-specific permission is part of the manifest, so it surfaces the same
+way, and the connect flow's team upgrade re-consents it without removing the
+app from the team (§8.3 step 5).
+
+Measured on a connected tenant whose catalog app carried another agent's name
+and icon: **Update in Teams** took the administrator through Microsoft's
+account picker with no new consent, and the connect page reported the one team
+that had the app as updated. The admin center showed the new version with this
+agent's icon, accent color and description after about two minutes, and the
+team's app list showed the new icon without the app being removed. Reads that
+need the team's resource-specific grants kept answering, and the Console then
+counted the package current (**measured**).
+
 ## 6. Platform module work
 
 The integration implements the four host contracts of the
@@ -471,13 +576,16 @@ relay route is added to the chart's HTTPRoute in the same change.
   linking (§4.5).
 - The member list of a group chat and of private and shared channels (§4.5).
 - Extended Markdown on mobile clients (§4.3).
-- Private and shared channels: Microsoft's pages disagree on whether bots may
-  post there.
+- That the upgrade of §8.3 step 5 takes a resource-specific permission the team
+  has not granted before (the measured upgrade re-consented grants it already
+  held), and how soon a personal install shows a new icon, which the Control
+  Plane does not upgrade (§5.1).
 
 ## 8. The deployment's Teams app
 
-Status: **implemented**; the Console offers it once Setup configures the app, and the path in a second tenant is still to be measured (§8.4). Each organization can
-still register its own bot (§2); this
+Status: **implemented and measured** in a second tenant (§8.3); the Console
+offers it once Setup configures the app. Each organization can still register
+its own bot (§2); this
 section adds one app the deployment operates, so an organization connects its
 Microsoft 365 tenant from the Console with an administrator's sign-in and no
 registration, package download or upload of its own.
@@ -588,7 +696,19 @@ rather than a Console rotation.
    Control Plane in the clear. The page lists the teams; the admin picks one or
    more and the Control Plane installs the app into each with the package's
    resource-specific permissions
-   (`POST /orgs/:orgId/integrations/msteams/connect/install`). The page drops
+   (`POST /orgs/:orgId/integrations/msteams/connect/install`). Before answering,
+   the Control Plane upgrades the app to the published definition in each of
+   those teams that already has it
+   (`POST /teams/{id}/installedApps/{id}/upgrade`), consenting to the
+   package's resource-specific permissions again; the delegated
+   `TeamsAppInstallation.ReadWriteAndConsentSelfForTeam` scope covers both the
+   read and the upgrade. A team that only picks up a new grant after the app is
+   removed and added again (**measured** without this step) takes it here. The
+   page marks those teams as updated and preselects none of the others. A team
+   whose read or upgrade Microsoft refuses or fails is marked as not updated
+   and cannot be picked for an install, which would count its existing app as
+   installed; the fingerprint of §5.1 then stays unrecorded, so **Update in
+   Teams** stays on offer to retry. The page drops
    the single-use code from the address bar before redeeming it.
    The app also appears under **Built for your org**, where people add it to a
    1:1 chat themselves where their app setup policy allows.
@@ -600,10 +720,15 @@ the catalog app stays until the tenant's admin removes it. Entra labels the
 app **unverified** until publisher verification, which tenants that only allow
 verified publishers require.
 
+Measured end to end from a second, new tenant (**measured**): its
+administrator's sign-in and consent, the catalog publish, and the install into
+the chosen team all succeeded from the connect page; the Control Plane wrote the
+tenant's prebuilt row with the home tenant as its token tenant; Teams sent the
+bot its installation events; and a channel @mention there ran a turn whose
+reply, signed with the home tenant's token, appeared in the channel.
+
 ### 8.4 Open
 
-- The whole path in a second tenant: consent, the catalog publish, the team
-  install, and the first reply signed with the home tenant's token.
 - Whether members of a tenant that connected through §8.3 can sign in with
   Microsoft without their own consent prompt (§4.5).
 - What the bot receives when the tenant's admin removes the catalog app or the
@@ -630,6 +755,8 @@ tenant:
 - Without session access sync, a permission request shows as a card that anyone
   in the conversation can settle. With sync on, a click by a linked editor settles
   it, and a click by an unlinked person or a non-editor is refused privately.
+- On the editor path, the chosen editor gets the approval card in their 1:1 chat
+  and their click settles it.
 - A person links Microsoft in the Profile; with sync on, a channel session is
   visible to a linked member of its team and hidden from a linked non-member.
 - A redelivered activity does not start a second turn.

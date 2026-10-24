@@ -53,6 +53,8 @@ export function toBotDto(b: BotRecord, platforms: Pick<CpPlatformRegistry, 'get'
     credentialRejectedAt: b.credentialRejectedAt?.toISOString() ?? null,
     credentialRejectedCode: b.credentialRejectedCode,
     externalAppId: b.externalAppId,
+    // `-` marks a tenantless platform's row (D6), which has no tenant to show.
+    externalTenantId: b.externalTenantId && b.externalTenantId !== '-' ? b.externalTenantId : null,
     platformConfig: publicPlatformConfig(b.platformConfig),
     createdAt: b.createdAt.toISOString()
   }

@@ -21,7 +21,9 @@ import {
   orphanMark,
   subsessionAskerText,
   subsessionSettledText,
-  subsessionWaitText
+  subsessionWaitText,
+  TURN_NOTICE_TEXT,
+  turnNoticeSettledText
 } from '../approval-card.js'
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
 import { clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
@@ -183,6 +185,19 @@ export const googleChatApprovalCards: ApprovalCardFacet = {
     )
     const html = view.sessionUrl ? `${cardText(line)}<br>${link(view.sessionUrl)}` : cardText(line)
     return { cardsV2: card([paragraph(html)]), clientId: '' } satisfies GoogleChatApprovalDraft
+  },
+
+  turnNotice(): ApprovalCardDraft {
+    return {
+      cardsV2: card([paragraph(cardText(TURN_NOTICE_TEXT))]),
+      clientId: clientIdFor(`notice\u001f${randomUUID()}`),
+      fallbackText: 'Permission requested'
+    } satisfies GoogleChatApprovalDraft
+  },
+
+  turnNoticeSettled(outcome: SubsessionNoticeOutcome): ApprovalCardDraft {
+    const line = turnNoticeSettledText(outcome, (s) => clampTo(s, 60))
+    return { cardsV2: card([paragraph(cardText(line))]), clientId: '' } satisfies GoogleChatApprovalDraft
   },
 
   orphaned(row: ApprovalCardOrphan): ApprovalCardDraft {

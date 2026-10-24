@@ -9,7 +9,7 @@ import type { Logger } from '../log.js'
 import { resolveMicrosandboxImage } from '../release-image.js'
 import { kvmPreflightFailure, observeKvm, type KvmObservation } from './kvm.js'
 
-export const MICROSANDBOX_VERSION = '0.7.8'
+export const MICROSANDBOX_VERSION = '0.7.10'
 
 const MSB_PACKAGE = { name: 'microsandbox', range: MICROSANDBOX_VERSION, bin: 'msb', args: [] }
 

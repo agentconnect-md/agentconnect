@@ -237,7 +237,13 @@ import { ComputerAuditLog } from './registry/computerAuditLog.js'
 import { ComputerChannelGrants } from './registry/computerChannelGrants.js'
 import { ComputerPool, COMPUTER_POOL_SWEEP_MS } from './registry/computerPool.js'
 import { ConnectedPoolMembers } from './orchestrator/computerPoolMembers.js'
-import { relayTurnSecret, turnConfigFrom } from './computer-viewer/turn.js'
+import {
+  cloudflareTurn,
+  cloudflareTurnConfigFrom,
+  coturnTurn,
+  relayTurnSecret,
+  turnConfigFrom
+} from './computer-viewer/turn.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
 import { AhpCatalogCursor } from './registry/ahpCatalogCursor.js'
@@ -1168,7 +1174,13 @@ export function buildContainer(
     relayStaleMs
   )
   // Viewers reach the desktop through the relay pool's public origin, then any relay it dialed (computer-use.md §7, §10).
-  const computerTurn = turnConfigFrom(config)
+  const coturn = turnConfigFrom(config)
+  const cloudflare = cloudflareTurnConfigFrom(config)
+  const computerTurn = cloudflare
+    ? cloudflareTurn(cloudflare, { warn: (o, m) => http.log.warn(o, m) })
+    : coturn
+      ? coturnTurn(coturn)
+      : undefined
   // Relays that serve TURN check viewer credentials with this; they receive it on rc/auth/ok (computer-use.md §7.2).
   const computerRelayTurnSecret = relayTurnSecret(config.API_KEY_PEPPER)
   const computerChannelGrants = new ComputerChannelGrants(repos.computer, computerChannelKeys, clock, {
@@ -3411,15 +3423,6 @@ export function buildContainer(
     onBotCredentialCheck: async (m, relayId) => httpBot.recordCredentialCheck(m, relayId),
     // A single-tenant Google Chat row's learned tenant key; acknowledged, so a failure propagates and the relay retries.
     onBotTenant: async (m) => httpBot.recordTenant(m.botId, m.tenantId),
-    // A relay delivered a §14.3 DM gating notice — record + re-stamp the pool's
-    // latch. Swallow+log.
-    onNoticePosted: async (m) => {
-      try {
-        await httpBot.recordNoticePosted(m)
-      } catch (err) {
-        http.log.error({ err, botId: m.botId }, 'relay: notice-posted record failed')
-      }
-    },
     // Incremental direct-conversation report: surface a configurable row on every
     // install, with its visibility-appropriate default. Swallow+log.
     onBotConversation: async (m) => {

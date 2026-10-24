@@ -5,6 +5,7 @@ import { join, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+  computerAppRunner,
   computerArgv,
   computerCandidates,
   computerDataDir,
@@ -94,7 +95,7 @@ describe('resolveComputerLaunch', () => {
     expect(launch).toEqual({ command: '/usr/bin/node', args: [store, 'setup'], serviceEntry: store })
   })
 
-  it('prefers the macOS app, which owns the grants, and runs its binary directly', () => {
+  it('runs the store entry inside the macOS app, whose Node runtime holds the grants', () => {
     const app = join(
       '/Users/ada',
       'Applications',
@@ -103,17 +104,25 @@ describe('resolveComputerLaunch', () => {
       'MacOS',
       'agentconnect-computer'
     )
+    const store = join('/Users/ada', '.agentconnect', 'computer', 'current', 'dist', 'agentconnect-computer.mjs')
     const h = host({ platform: 'darwin', home: '/Users/ada', exists: () => true })
     expect(resolveComputerLaunch(['service', 'install'], h, '/usr/bin/node')).toEqual({
       command: app,
-      args: ['service', 'install']
+      args: [store, 'service', 'install'],
+      serviceEntry: store
     })
+    expect(computerAppRunner(h)).toBe(app)
     expect(computerCandidates(h)).toEqual([
-      app,
-      join('/Applications', 'AgentConnect Computer.app', 'Contents', 'MacOS', 'agentconnect-computer'),
-      join('/Users/ada', '.agentconnect', 'computer', 'current', 'dist', 'agentconnect-computer.mjs'),
+      store,
       join('/Users/ada', '.agentconnect', 'computer', 'app', 'agentconnect-computer.mjs')
     ])
+  })
+
+  it('falls back to this node on a Mac without the app, and never uses an app off macOS', () => {
+    const store = join('/Users/ada', '.agentconnect', 'computer', 'current', 'dist', 'agentconnect-computer.mjs')
+    const mac = host({ platform: 'darwin', home: '/Users/ada', exists: (p: string) => p === store })
+    expect(resolveComputerLaunch(['doctor'], mac, '/usr/bin/node').command).toBe('/usr/bin/node')
+    expect(computerAppRunner(host({ exists: () => true }))).toBeUndefined()
   })
 
   it('honors AGENTCONNECT_COMPUTER_ENTRY and fails loudly when it is missing', () => {

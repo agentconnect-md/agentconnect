@@ -112,6 +112,7 @@ async function world(over?: {
     approvalDmIntegrations: () => ['int-1'],
     slackDmSessionTarget: () => 'encoded-target',
     chatSurface: () => 'open',
+    placeExternal: () => false,
     chatEditorsOnly: () => false,
     chatActor: async () => 'allowed' as const
   }

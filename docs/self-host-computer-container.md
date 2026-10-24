@@ -211,6 +211,11 @@ external IP, from the host itself. Run no other UDP service on that address, or 
 from the coturn container to ports outside the relay range. The Helm chart sets the same three variables from
 `computerViewer.turn`.
 
+Without a host to run coturn on, use [Cloudflare Realtime TURN](https://developers.cloudflare.com/realtime/turn/)
+instead: create a TURN key in Cloudflare and set `COMPUTER_TURN_CLOUDFLARE_KEY_ID` and
+`COMPUTER_TURN_CLOUDFLARE_API_TOKEN` (and no `COMPUTER_TURN_URLS`) in `compose.env`, without `compose.turn.yaml`. The
+Control Plane asks Cloudflare for each viewer's and desktop's credentials, and Cloudflare bills the relayed traffic.
+
 ## Keep the token out of the environment
 
 `docker inspect` shows a container's environment, so a token passed as `AGENTCONNECT_REGISTER_TOKEN` stays

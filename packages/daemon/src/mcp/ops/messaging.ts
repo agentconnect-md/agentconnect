@@ -18,7 +18,8 @@ import {
   directMessagePlatformFor,
   directMessagePlatformList,
   offersDirectMessages,
-  platformLabel
+  platformLabel,
+  channelMentionsFor
 } from '../../platforms/read-ports.js'
 
 /** The repair every pre-effect `sendMessage` rejection ends with: the action's guide, then a retry. */
@@ -536,6 +537,23 @@ export async function settlePost(
  *  `openDirectMessage` port. The platform already declared it (that gate ran before
  *  the gateway was resolved); this is the LIVE probe on the connection actually
  *  selected — a send-only or stubbed gateway can still lack the method. */
+/** A gateway-mention post, through the gateway that declared it. */
+async function postMentioning(
+  gateway: MessageGateway,
+  channel: string,
+  text: string,
+  users: string[],
+  identity: SendIdentity,
+  platform: string
+): Promise<string | undefined> {
+  if (!gateway.postMentioning) {
+    throw new Error(
+      `sendMessage: the selected ${platformLabel(platform)} integration cannot mention people in a channel`
+    )
+  }
+  return gateway.postMentioning(channel, text, users, identity)
+}
+
 async function openDirectMessage(gateway: MessageGateway, user: string, platform: string): Promise<string> {
   if (!gateway.openDirectMessage) {
     throw new Error(`sendMessage: the selected ${platformLabel(platform)} integration cannot open direct messages`)
@@ -679,6 +697,14 @@ export async function deliverSendMessage(
     // preferring this session's when it qualifies — the generalization of the literal
     // `'slack'` that used to sit here.
     const wantPlatform = namedPlatform ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
+    // A platform whose mention is not body text would show the `<@id>` raw and notify nobody; refused before anything is read.
+    const mentionStyle = channelMentionsFor(wantPlatform)
+    if (toUsers !== undefined && channel !== undefined && offersDirectMessages(wantPlatform) && !mentionStyle) {
+      throw new Error(
+        `sendMessage: toUser with channel (an @-mention in a channel) is not supported on ${platformLabel(wantPlatform)}; ` +
+          'send toUser alone for a direct message, or post to the channel without toUser'
+      )
+    }
     if (toAgent === undefined) {
       const named = [...(toUsers ?? []), ...[...message.matchAll(MENTION)].map((match) => match[1]!)]
       refuseAgentBotTargets(ctx, deps, wantPlatform, named, {
@@ -755,6 +781,8 @@ export async function deliverSendMessage(
       }
     }
     let body = message
+    // A gateway-mention platform carries the mentioned users beside the text, never inside it.
+    let mentionUsers: string[] | undefined
     if (toUsers !== undefined) {
       // Whole `toUser` mode — DM and the channel-root mention form alike — is gated on
       // the DM read port: the mention syntax rendered below is the same platform's.
@@ -765,7 +793,11 @@ export async function deliverSendMessage(
       }
       // dm form: the one user id IS the destination and the body is unchanged; the
       // channel-root form @-mentions every named user inside the one visible post.
-      if (channel !== undefined) {
+      if (channel !== undefined && mentionStyle === 'gateway') {
+        if (attachment)
+          throw new Error(`sendMessage: ${platformLabel(wantPlatform)} cannot mention people on a file post`)
+        mentionUsers = toUsers
+      } else if (channel !== undefined) {
         const mentions = toUsers.map((user) => (/^<@[^>]+>$/.test(user) ? user : `<@${user}>`))
         body = `${mentions.join(' ')} ${message}`
       }
@@ -837,6 +869,12 @@ export async function deliverSendMessage(
     // A post the write rule sent for approval is drafted here, once its target is fully resolved.
     if (verdict === 'draft') {
       if (!deps.interceptPost) throw new Error('sendMessage: this post needs approval, and none can be asked for here.')
+      if (mentionUsers) {
+        throw new Error(
+          'sendMessage: a post to that conversation needs approval, and an approved post cannot carry mentions there. ' +
+            'Nothing was sent; send it without toUser.'
+        )
+      }
       if (attachment) {
         throw new Error(
           'sendMessage: a post to that conversation needs approval, and a file cannot be sent for approval. ' +
@@ -884,7 +922,9 @@ export async function deliverSendMessage(
       providerPostId = shared.messageId
       if (shared.warning) notices.push(`This send partly failed: ${shared.warning}.`)
     } else {
-      providerPostId = await gw.postMessage(postChannel, body, updateThread, identity)
+      providerPostId = mentionUsers
+        ? await postMentioning(gw, postChannel, body, mentionUsers, identity, wantPlatform)
+        : await gw.postMessage(postChannel, body, updateThread, identity)
     }
     const ts = providerPostId ?? `local-${deps.now()}`
     const settled = await settlePost(ctx, deps, gw, {

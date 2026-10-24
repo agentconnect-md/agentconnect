@@ -211,23 +211,29 @@ export class MsTeamsGraph {
       : undefined
   }
 
-  /** Every member of a channel, up to `max`, following Graph's next links; `complete` is false when more remain. */
+  /** Every member of a channel once, up to `max`, following Graph's next links; `complete` is false when more remain. */
   async channelMembers(
     groupId: string,
     channelId: string,
     max: number
   ): Promise<{ members: MsTeamsMember[]; complete: boolean }> {
-    const members: MsTeamsMember[] = []
+    // A shared channel lists a person once directly and again through the team it is shared with (measured); a guest copy keeps them a guest.
+    const byId = new Map<string, MsTeamsMember>()
     let url: string | undefined = msTeamsGraphChannelMembersUrl(groupId, channelId)
-    while (url && members.length < max) {
+    while (url && byId.size < max) {
       const body = await this.api.read(url)
       for (const raw of Array.isArray(body.value) ? (body.value as unknown[]) : []) {
         const member = msTeamsGraphMember(raw)
-        if (member) members.push(member)
+        if (!member) continue
+        const key = member.id.toLowerCase()
+        const seen = byId.get(key)
+        if (!seen) byId.set(key, member)
+        else if (member.userRole === 'guest') seen.userRole = 'guest'
       }
       const next = body['@odata.nextLink']
       url = typeof next === 'string' && next.startsWith(GRAPH_ROOT) ? next : undefined
     }
+    const members = [...byId.values()]
     return { members: members.slice(0, max), complete: !url && members.length <= max }
   }
 

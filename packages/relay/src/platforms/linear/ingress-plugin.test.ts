@@ -284,8 +284,7 @@ describe('linear ingress plugin — demux and tenant isolation', () => {
       routes: [],
       gatedAgentIds: [],
       mutedChannels: [],
-      gatedOffChannels: [],
-      noticedDmConversations: []
+      offChannels: []
     } as never)
     const ingest = linearIngressPlugin.buildIngest(mapped!, h)!
     expect(ingest.identity).toEqual({ clientId: CLIENT_ID, organizationId: ORG_ID, appUserId: APP_USER_ID })

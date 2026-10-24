@@ -1028,23 +1028,10 @@ export const RcBotAssign = z.object({
   // target at all. Bot-scoped, matching how an HTTP bot's channels converge on one
   // owner, and how the trigger is replicated across its membership rows. Defaults empty.
   mutedChannels: z.array(z.string()).default([]),
-  // The muted channels nobody enabled (a gated owner's, or any Off nobody chose, §14.9): they keep the one-time notice, an operator's Off is silent.
-  gatedOffChannels: z.array(z.string()).default([]),
-  // §14.3 one-time gating notice, CHANNEL conversations: the relayId
-  // DETERMINISTICALLY responsible for posting it for this bot. A channel mention
-  // arrives as two event copies that may land on different pods — only the
-  // authority posts (local per-conversation latch). Stamped from the connected
-  // roster at (re)assign/replay time and re-converged on relay join/leave/sweep.
-  // Absent ⇒ no relay posts.
+  // The muted channels that are Off rather than a held decision: an addressed message there gets the §14.3 notice.
+  offChannels: z.array(z.string()).default([]),
+  // §14.3 gating notice in a CHANNEL: the relay that posts it, since a channel mention's two event copies may land on different pods; absent ⇒ no relay posts.
   noticeAuthority: z.string().uuid().optional(),
-  // §14.3 one-time gating notice, DM conversations: the ids whose notice was
-  // ACTUALLY DELIVERED (reported via `rc/notice-posted`, pool-converged by the
-  // CP re-stamp). A DM has a SINGLE event copy, so the RECEIVING pod posts —
-  // but only for a conversation not in this set. Deliberately NOT derived from
-  // conversation rows: a row can exist from mere discovery (a mixed bot's DM
-  // routed to its public default) with no notice ever posted, and the
-  // conversation must still get one if it later becomes unroutable.
-  noticedDmConversations: z.array(z.string()).default([]),
   // linear-integration.md §6.2 — the per-conversation default rung's table, keyed by
   // channel id, and the fact the thread-affinity gate reads for a gated agent on an
   // `ownerAsDefault` platform (its grant is the default seat it holds). Empty elsewhere.
@@ -1084,9 +1071,8 @@ export const RcRoutes = z.object({
   defaultDaemonId: z.string().uuid().optional(),
   gatedAgentIds: z.array(z.string().uuid()).default([]), // §14 — see RcBotAssign.gatedAgentIds
   mutedChannels: z.array(z.string()).default([]), // Off channels — see RcBotAssign.mutedChannels
-  gatedOffChannels: z.array(z.string()).default([]), // notice-keeping subset — see RcBotAssign.gatedOffChannels
+  offChannels: z.array(z.string()).default([]), // see RcBotAssign.offChannels
   noticeAuthority: z.string().uuid().optional(), // §14.3 — see RcBotAssign.noticeAuthority
-  noticedDmConversations: z.array(z.string()).default([]), // §14.3 — see RcBotAssign.noticedDmConversations
   // Rides the hot update too: an owner edit converges through `syncRoutes` without a
   // re-assign, so an already-connected relay would otherwise keep the old default —
   // and with it the old grant fact — after exactly the edit this rung exists for.
@@ -1144,16 +1130,6 @@ export const RcBotChannels = z.object({
   channels: z.array(IntegrationChannel)
 })
 export type RcBotChannels = z.infer<typeof RcBotChannels>
-
-// R→C EVT (fire-and-forget) — a relay POSTED the one-time §14.3 gating notice in
-// a DM conversation. The CP records delivery and re-stamps the pool's
-// `noticedDmConversations` so every pod latches. Loss (link down) costs at most
-// one duplicate notice later — never a lost enablement path.
-export const RcNoticePosted = z.object({
-  botId: z.string().uuid(),
-  channel: z.string().min(1)
-})
-export type RcNoticePosted = z.infer<typeof RcNoticePosted>
 
 // A platform's own answer code, recorded beside a revocation or a rejection; bounded so it stays a code, never prose.
 export const BotCredentialCode = z.string().min(1).max(64)
@@ -1437,7 +1413,6 @@ export const RELAY_CP_SCHEMAS = {
   'rc/bot-credential-check/ok': RcBotCredentialCheckOk,
   'rc/bot-tenant': RcBotTenant,
   'rc/bot-tenant/ok': RcBotTenantOk,
-  'rc/notice-posted': RcNoticePosted,
   'rc/thread-assign': RcThreadAssign,
   'rc/thread-participant': RcThreadParticipant,
   'rc/thread-lookup': RcThreadLookup,
@@ -1501,7 +1476,6 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/bot-credential-check/ok', RELAY_CP_SCHEMAS['rc/bot-credential-check/ok']),
   frameSchema('rc/bot-tenant', RELAY_CP_SCHEMAS['rc/bot-tenant']),
   frameSchema('rc/bot-tenant/ok', RELAY_CP_SCHEMAS['rc/bot-tenant/ok']),
-  frameSchema('rc/notice-posted', RELAY_CP_SCHEMAS['rc/notice-posted']),
   frameSchema('rc/thread-assign', RELAY_CP_SCHEMAS['rc/thread-assign']),
   frameSchema('rc/thread-participant', RELAY_CP_SCHEMAS['rc/thread-participant']),
   frameSchema('rc/thread-lookup', RELAY_CP_SCHEMAS['rc/thread-lookup']),

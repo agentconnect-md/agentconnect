@@ -62,8 +62,8 @@ COPY --from=runtime-payload-digest /payload-digest /
 
 # Antigravity is the first, independently cached application layer in the full image.
 FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS antigravity
-ARG ANTIGRAVITY_VERSION=1.2.1
-ARG ANTIGRAVITY_SHA256_AMD64=9fbf0bd584a26478161f637cabd75113f72541c842d148f578ef1a6a9edcb843
+ARG ANTIGRAVITY_VERSION=1.4.3
+ARG ANTIGRAVITY_SHA256_AMD64=0634ce5306ba92c932945455e7a83fda78e2d99c33fa8aa6ee0566206a382714
 ARG TARGETARCH
 RUN test "${TARGETARCH:-amd64}" = amd64 \
   && apt-get update \

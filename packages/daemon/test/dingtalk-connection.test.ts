@@ -5,6 +5,8 @@ import { DINGTALK_MSG_PARAM_MAX_BYTES, splitForMsgParam } from '../src/platforms
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { fakeSocketFactory } from './fakes/dingtalk-socket.js'
 import { elicitOptionToken } from '../src/slack/render.js'
+import { Daemon } from '../src/daemon.js'
+import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 const log = { trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 const ORIGIN = 'https://api.example.test'
@@ -32,10 +34,24 @@ interface Call {
   body: Record<string, unknown>
 }
 
-function fakeFetch(opts: { failSendAfter?: number; cardDelivered?: boolean } = {}) {
+const WEBHOOK = 'https://oapi.dingtalk.com/robot/sendBySession?session=session-example'
+
+function fakeFetch(opts: { failSendAfter?: number; cardDelivered?: boolean; webhookErrcode?: number } = {}) {
   const calls: Call[] = []
   let sends = 0
   const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    // A group's reply address answers with DingTalk's errcode envelope.
+    if (String(url) === WEBHOOK) {
+      calls.push({
+        path: 'webhook',
+        headers: init?.headers as Record<string, string>,
+        body: JSON.parse(String(init?.body))
+      })
+      return new Response(JSON.stringify({ errcode: opts.webhookErrcode ?? 0, errmsg: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    }
     const path = String(url).slice(ORIGIN.length)
     calls.push({
       path,
@@ -148,6 +164,41 @@ describe('DingTalk connection', () => {
     }
   })
 
+  it('marks a group external once someone outside the organization speaks there', () => {
+    const external: [string, string][] = []
+    const { conn } = connect(fakeFetch().fetchImpl, () => {}, {
+      onPlaceExternal: (channel, reason) => void external.push([channel, reason])
+    })
+    const message = (n: number, extra: Partial<DingTalkRobotMessage>) =>
+      conn.normalize({ ...groupMention, msgId: `msg-${n}`, chatbotCorpId: 'corp-example', ...extra })
+
+    message(1, { senderCorpId: 'corp-example' })
+    expect(external).toEqual([])
+    // An outsider has no staff ID in the robot's organization, only the opaque sender id.
+    message(2, { senderStaffId: undefined, senderId: '$:LWCP_v1:$outsider' })
+    message(3, { senderStaffId: undefined, senderId: '$:LWCP_v1:$outsider' })
+    message(4, { conversationId: 'cid-example-other', senderCorpId: 'corp-other' })
+    expect(external).toEqual([
+      ['cid-example-group', 'externalMember'],
+      ['cid-example-other', 'externalMember']
+    ])
+  })
+
+  it("is the send tool's gateway: it opens a member's DM and posts there, and refuses an outsider", async () => {
+    const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { calls, fetchImpl } = fakeFetch({ failSendAfter: 1 })
+    const { conn } = connect(fetchImpl)
+    daemon.dingTalkConnByIntegration.set('int-dt', conn)
+    expect(daemon.gatewayForIntegration('int-dt')).toBe(conn)
+
+    const dm = await conn.openDirectMessage('user-0001')
+    expect(await conn.postMessage(dm, 'Review done.')).toBe('pqk-1')
+    expect(calls.at(-1)).toMatchObject({ path: '/v1.0/robot/oToMessages/batchSend', body: { userIds: ['user-0001'] } })
+    await expect(conn.openDirectMessage('$:LWCP_v1:$outsider')).rejects.toThrow("needs a member's staff ID")
+    // A refused send surfaces to the tool rather than reading as posted.
+    await expect(conn.postMessage('cid-example-group', 'Again.')).rejects.toThrow()
+  })
+
   it('sends to a group by its conversation and to a DM by the staff id, with one cached token', async () => {
     const { calls, fetchImpl } = fakeFetch()
     const { conn } = connect(fetchImpl)
@@ -239,6 +290,100 @@ describe('DingTalk question cards', () => {
       }
     ])
     expect(delivered[0]!.headers['x-acs-dingtalk-access-token']).toBe('token-1')
+  })
+
+  it('mentions members on a group card, naming the people it has seen', async () => {
+    const { calls, fetchImpl } = fakeFetch()
+    const { conn } = connect(fetchImpl, () => {}, { questionTemplate: TEMPLATE })
+    conn.normalize(groupMention)
+    const id = await conn.postMentioning('cid-example-group', 'PR #482 needs a look', ['user-0001', 'user-0002'], {
+      username: 'Reviewer'
+    })
+    expect(id).toMatch(/^acm-/)
+    const delivered = calls.filter((call) => call.path === '/v1.0/card/instances/createAndDeliver')
+    expect(delivered.at(-1)!.body).toMatchObject({
+      outTrackId: id,
+      openSpaceId: 'dtv1.card//IM_GROUP.cid-example-group',
+      imGroupOpenDeliverModel: {
+        robotCode: CLIENT_ID,
+        atUserIds: { 'user-0001': 'Example User', 'user-0002': 'user-0002' }
+      },
+      cardData: {
+        cardParamMap: {
+          title: 'Reviewer',
+          layout: 'buttons',
+          prompt: '@Example User @user-0002 PR #482 needs a look',
+          opt0: ''
+        }
+      }
+    })
+    await expect(conn.postMentioning('dm:user-0001', 'x', ['user-0001'])).rejects.toThrow('mentions no one')
+    await expect(conn.postMentioning('cid-example-group', 'x', ['$:LWCP_v1:$outsider'])).rejects.toThrow('staff ID')
+    // The names count against the card's cap, so a message just under it is refused whole, never cut.
+    const before = calls.length
+    await expect(
+      conn.postMentioning('cid-example-group', `${'x'.repeat(1980)} DO NOT DEPLOY`, ['user-0001'])
+    ).rejects.toThrow('holds 2000 characters')
+    expect(calls.length).toBe(before)
+  })
+
+  it("mentions through the group's fresh reply address as Markdown, and falls back to the card", async () => {
+    const { calls, fetchImpl } = fakeFetch()
+    const { conn } = connect(fetchImpl, () => {}, { questionTemplate: TEMPLATE })
+    const hooked = (n: number, until: number, url = WEBHOOK) =>
+      conn.normalize({ ...groupMention, msgId: `msg-hook-${n}`, sessionWebhook: url, sessionWebhookExpiredTime: until })
+
+    hooked(1, Date.now() + 60 * 60 * 1000)
+    expect(await conn.postMentioning('cid-example-group', '**PR #482** needs a look', ['user-0001'])).toBeUndefined()
+    expect(calls.at(-1)).toEqual({
+      path: 'webhook',
+      headers: { 'content-type': 'application/json' },
+      body: {
+        msgtype: 'markdown',
+        markdown: { title: 'PR 482 needs a look', text: '@user-0001 **PR #482** needs a look' },
+        at: { atUserIds: ['user-0001'] }
+      }
+    })
+
+    // An address about to expire, and one on another host, are left for the card.
+    hooked(2, Date.now() + 30_000)
+    expect(await conn.postMentioning('cid-example-group', 'x', ['user-0001'])).toMatch(/^acm-/)
+    hooked(3, Date.now() + 60 * 60 * 1000, 'https://elsewhere.example.test/robot/sendBySession?session=s')
+    expect(await conn.postMentioning('cid-example-group', 'x', ['user-0001'])).toMatch(/^acm-/)
+    expect(calls.filter((call) => call.path === 'webhook')).toHaveLength(1)
+  })
+
+  it('takes the card when the reply address refuses, and needs one or the other', async () => {
+    const until = Date.now() + 60 * 60 * 1000
+    const refusing = connect(fakeFetch({ webhookErrcode: 300001 }).fetchImpl, () => {}, { questionTemplate: TEMPLATE })
+    refusing.conn.normalize({ ...groupMention, sessionWebhook: WEBHOOK, sessionWebhookExpiredTime: until })
+    expect(await refusing.conn.postMentioning('cid-example-group', 'x', ['user-0001'])).toMatch(/^acm-/)
+
+    // An answer it cannot read may follow a delivered message, so no card follows it.
+    const unreadable = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+      String(url) === WEBHOOK
+        ? new Response('<html>gateway timeout</html>', { status: 200 })
+        : fakeFetch().fetchImpl(url, init)
+    )
+    const unsure = connect(unreadable as unknown as typeof fetch, () => {}, { questionTemplate: TEMPLATE })
+    unsure.conn.normalize({ ...groupMention, sessionWebhook: WEBHOOK, sessionWebhookExpiredTime: until })
+    await expect(unsure.conn.postMentioning('cid-example-group', 'x', ['user-0001'])).rejects.toThrow(
+      'may have arrived'
+    )
+    expect(unreadable.mock.calls.map(([url]) => String(url))).toEqual([WEBHOOK])
+
+    // Without cards, a fresh reply address alone still mentions people.
+    const plain = connect(fakeFetch().fetchImpl)
+    plain.conn.normalize({ ...groupMention, sessionWebhook: WEBHOOK, sessionWebhookExpiredTime: until })
+    expect(await plain.conn.postMentioning('cid-example-group', 'x', ['user-0001'])).toBeUndefined()
+  })
+
+  it('refuses a mention where it sends no cards, and when the card is not delivered', async () => {
+    await expect(
+      connect(fakeFetch().fetchImpl).conn.postMentioning('cid-example-group', 'x', ['user-0001'])
+    ).rejects.toThrow('or a card, and this app sends no cards')
+    const refused = connect(fakeFetch({ cardDelivered: false }).fetchImpl, () => {}, { questionTemplate: TEMPLATE })
+    await expect(refused.conn.postMentioning('cid-example-group', 'x', ['user-0001'])).rejects.toThrow('not delivered')
   })
 
   it('reports a refused delivery with one warning, and updates a card by key', async () => {

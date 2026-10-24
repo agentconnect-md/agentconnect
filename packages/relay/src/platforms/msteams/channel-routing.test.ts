@@ -24,8 +24,8 @@ const DAEMON_ID = '33333333-3333-4333-8333-333333333333'
 const INTEGRATION_ID = '66666666-6666-4666-8666-666666666666'
 const silent = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
-/** The frame the CP sends for a Teams bot with one bound agent: an ungated default, or a gated agent with no enabled place. */
-function frame(gated: boolean): RcBotAssign {
+/** The frame the CP sends for a Teams bot with one bound agent: an ungated default, or a gated agent with no enabled place; `muted` marks the channel Off or a held decision. */
+function frame(gated: boolean, muted?: 'off' | 'held'): RcBotAssign {
   return {
     botId: ROW,
     platform: 'msteams',
@@ -46,16 +46,15 @@ function frame(gated: boolean): RcBotAssign {
         ],
     ...(gated ? {} : { defaultAgentId: AGENT_ID, defaultDaemonId: DAEMON_ID }),
     gatedAgentIds: gated ? [AGENT_ID] : [],
-    mutedChannels: [],
-    gatedOffChannels: [],
-    noticedDmConversations: [],
+    mutedChannels: muted ? [CHANNEL] : [],
+    offChannels: muted === 'off' ? [CHANNEL] : [],
     conversationDefaults: [],
     ownerAsDefault: false,
     routedConversations: []
   } as RcBotAssign
 }
 
-async function setup(gated: boolean) {
+async function setup(gated: boolean, muted?: 'off' | 'held') {
   const sendMsg = vi.fn(async (m: RdMsg): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
   const daemon = { sendMsg, supports: () => true } as unknown as RelayDaemonConnection
   const deps: RelayIngressManagerDeps = {
@@ -63,7 +62,6 @@ async function setup(gated: boolean) {
     setChannelAgent: vi.fn(),
     reportBotChannels: vi.fn(() => true),
     reportBotConversation: vi.fn(() => true),
-    reportNoticePosted: vi.fn(() => true),
     reportBotRevoked: vi.fn(async () => true),
     reportBotCredentialCheck: vi.fn(async () => true),
     credentialCheckSupported: () => true,
@@ -81,7 +79,7 @@ async function setup(gated: boolean) {
     log: silent
   }
   const manager = new RelayIngressManager(deps, [createMsTeamsIngressPlugin({ fetch: fakeBotFramework().fetchImpl })])
-  await manager.assign(toBotAssignment(frame(gated))!)
+  await manager.assign(toBotAssignment(frame(gated, muted))!)
   const deliver = async (activity: unknown) => {
     const raw = Buffer.from(JSON.stringify(activity))
     sendMsg.mockClear()
@@ -111,6 +109,17 @@ describe('msteams channel routing', () => {
   it('hands a mention in a place nobody enabled to the sole gated agent', async () => {
     const { deliver } = await setup(true)
     expect((await deliver(channelMention)).map((m) => m.agentId)).toEqual([AGENT_ID])
+  })
+
+  it('hands a mention in an Off channel to the ungated agent, whose daemon posts the notice', async () => {
+    const { deliver } = await setup(false, 'off')
+    expect((await deliver(channelMention)).map((m) => m.agentId)).toEqual([AGENT_ID])
+    expect(await deliver(channelReply)).toEqual([])
+  })
+
+  it('forwards nothing in a muted channel that is not Off', async () => {
+    const { deliver } = await setup(false, 'held')
+    expect(await deliver(channelMention)).toEqual([])
   })
 
   it('forwards no unmentioned message in a channel with no row', async () => {

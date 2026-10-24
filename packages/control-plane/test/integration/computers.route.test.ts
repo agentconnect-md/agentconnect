@@ -14,6 +14,7 @@ import { PgRelayRepo } from '../../src/persistence/repositories/relay.repo.js'
 import { ComputerChannelKeys } from '../../src/registry/computerChannelKeys.js'
 import { PgComputerRepo } from '../../src/persistence/repositories/computer.repo.js'
 import { systemClock } from '../../src/domain/clock.js'
+import { coturnTurn } from '../../src/computer-viewer/turn.js'
 import { readComputerChannelToken } from '@agentconnect.md/protocol'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -44,7 +45,13 @@ function appAs(userId: string = DEFAULT_OWNER_ID, withRelay: boolean | 'relay-tu
               viewerRelays: async () => ['https://relay.example.com'],
               ...(withRelay === 'relay-turn'
                 ? { relayTurn: { secret: 'r'.repeat(43), ttlSec: 3600, servers: () => roster.turnServers() } }
-                : { turn: { urls: ['turn:turn.example.com:3478'], secret: 'turn-shared-secret-0123', ttlSec: 3600 } }),
+                : {
+                    turn: coturnTurn({
+                      urls: ['turn:turn.example.com:3478'],
+                      secret: 'turn-shared-secret-0123',
+                      ttlSec: 3600
+                    })
+                  }),
               stunUrls: () => roster.stunUrls()
             }
           )
@@ -138,6 +145,23 @@ describe('registration exchange', () => {
       canEditAgentAccess: true
     })
     expect(read.json().policy).not.toHaveProperty('allowedAgents')
+  })
+
+  it('gives the new Computer the visibility chosen when the token was minted', async () => {
+    const dana = await makeUser('cmp-visibility', 'collaborator')
+    const app = appAs()
+    const everyone = await issueToken(app, { visibility: 'org' })
+    const open = await app.app.inject({ method: 'POST', url: REGISTER, payload: { token: everyone.token, ...profile } })
+    const openRow = await prisma.computer.findUniqueOrThrow({ where: { id: open.json().computerId } })
+    expect(openRow).toMatchObject({ visibility: 'org', sharedWith: [] })
+    // A Selected audience keeps the registrant and drops anyone who is not a member.
+    const selected = await issueToken(app, { visibility: 'restricted', sharedWith: [dana, 'not-a-member'] })
+    const shut = await app.app.inject({ method: 'POST', url: REGISTER, payload: { token: selected.token, ...profile } })
+    const shutRow = await prisma.computer.findUniqueOrThrow({ where: { id: shut.json().computerId } })
+    expect(shutRow).toMatchObject({ visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID, dana] })
+    expect((await appAs(dana).app.inject({ method: 'GET', url: `${ORG}/computers/${shutRow.id}` })).statusCode).toBe(
+      200
+    )
   })
 
   it('spends a token once, even under concurrent exchanges', async () => {

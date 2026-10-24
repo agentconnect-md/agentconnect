@@ -6,7 +6,9 @@ import {
   fetchRegistry,
   resolveRuntimes,
   cachedRuntimeNames,
-  resolveRuntimeCatalog
+  resolveRuntimeCatalog,
+  defaultRuntimes,
+  RegistryDocSchema
 } from '../src/runtimes/registry.js'
 import { CURATED_RUNTIME_CATALOG } from '../src/runtimes/curated.js'
 import { MANAGED_RUNTIME_CATALOG } from '../src/runtimes/managed.js'
@@ -26,11 +28,11 @@ const uvxEntry: RegistryEntry = {
   version: '0.7.21',
   distribution: { uvx: { package: 'fast-agent-acp==0.7.21', args: ['-x'] } }
 }
-const gemini: RegistryEntry = {
-  id: 'gemini',
-  name: 'Gemini CLI',
-  version: '0.47.0',
-  distribution: { npx: { package: '@google/gemini-cli@0.47.0', args: ['--acp'] } }
+const withArgs: RegistryEntry = {
+  id: 'example-agent',
+  name: 'Example Agent',
+  version: '1.0.0',
+  distribution: { npx: { package: 'example-agent@1.0.0', args: ['--acp'] } }
 }
 
 describe('toRuntimeDef', () => {
@@ -42,9 +44,9 @@ describe('toRuntimeDef', () => {
     })
   })
   it('appends npx distribution args', () => {
-    expect(toRuntimeDef(gemini)).toEqual({
+    expect(toRuntimeDef(withArgs)).toEqual({
       command: 'npx',
-      args: ['-y', '@google/gemini-cli@0.47.0', '--acp'],
+      args: ['-y', 'example-agent@1.0.0', '--acp'],
       env: []
     })
   })
@@ -92,6 +94,28 @@ function tmpRoot() {
 }
 
 describe('fetchRegistry', () => {
+  it.each(['array', 'record'])('excludes Gemini CLI from fresh and cached %s catalogs', async (shape) => {
+    const root = tmpRoot()
+    const retired = { id: 'gemini', name: 'Gemini CLI', distribution: { npx: { package: '@google/gemini-cli' } } }
+    const supported = {
+      id: 'antigravity-acp',
+      name: 'Google Antigravity',
+      distribution: { binary: { [platformKey()!]: { cmd: './agy_acp_server.par' } } }
+    }
+    const agents = [retired, supported]
+    const doc = { agents: shape === 'array' ? agents : Object.fromEntries(agents.map((entry) => [entry.id, entry])) }
+    const fetchImpl = (async () => new Response(JSON.stringify(doc))) as typeof fetch
+    expect(RegistryDocSchema.parse(doc).agents.gemini).toBeUndefined()
+    expect((await defaultRuntimes(root, { fetchImpl })).gemini).toBeUndefined()
+    const offline = (async () => {
+      throw new Error('offline')
+    }) as typeof fetch
+    const catalog = await resolveRuntimeCatalog({} as any, root, { fetchImpl: offline })
+    expect(catalog.entries.gemini).toBeUndefined()
+    expect(catalog.entries['antigravity-acp']?.name).toBe('Google Antigravity')
+    expect(cachedRuntimeNames(root)).not.toHaveProperty('gemini')
+  })
+
   it('fetches 200, returns doc, and writes body + cache validators', async () => {
     const root = tmpRoot()
     const fetchImpl = (async () =>
@@ -137,7 +161,12 @@ describe('fetchRegistry', () => {
 const REG2 = {
   agents: {
     'claude-acp': { id: 'claude-acp', name: 'Claude', version: '1', distribution: { npx: { package: 'claude@1' } } },
-    gemini: { id: 'gemini', name: 'Gemini', version: '1', distribution: { npx: { package: 'gem@1', args: ['--acp'] } } }
+    'registry-agent': {
+      id: 'registry-agent',
+      name: 'Registry Agent',
+      version: '1',
+      distribution: { npx: { package: 'example-agent@1', args: ['--acp'] } }
+    }
   }
 }
 
@@ -154,11 +183,16 @@ describe('cachedRuntimeNames', () => {
             version: '1',
             distribution: { npx: { package: 'p' } }
           },
-          gemini: { id: 'gemini', name: 'Gemini CLI', version: '1', distribution: { npx: { package: 'g' } } }
+          'registry-agent': {
+            id: 'registry-agent',
+            name: 'Registry Agent',
+            version: '1',
+            distribution: { npx: { package: 'g' } }
+          }
         }
       })
     )
-    expect(cachedRuntimeNames(root)).toEqual({ 'claude-acp': 'Claude Agent', gemini: 'Gemini CLI' })
+    expect(cachedRuntimeNames(root)).toEqual({ 'claude-acp': 'Claude Agent', 'registry-agent': 'Registry Agent' })
   })
 
   it('omits entries with no name, and returns {} when no cache exists', () => {
@@ -224,8 +258,8 @@ describe('resolveRuntimes', () => {
     const root = tmpRoot()
     const fetchImpl = (async () => new Response(JSON.stringify(REG2), { status: 200 })) as unknown as typeof fetch
     const cfg: any = { runtimes: { 'claude-acp': { command: 'custom', args: [], env: [] } } }
-    const out = await resolveRuntimes(cfg, root, { neededRuntimes: ['gemini'], mode: 'blocking', fetchImpl })
-    expect(out['gemini']).toEqual({ command: 'npx', args: ['-y', 'gem@1', '--acp'], env: [] })
+    const out = await resolveRuntimes(cfg, root, { neededRuntimes: ['registry-agent'], mode: 'blocking', fetchImpl })
+    expect(out['registry-agent']).toEqual({ command: 'npx', args: ['-y', 'example-agent@1', '--acp'], env: [] })
     expect(out['claude-acp']!.command).toBe('custom') // config override preserved
   })
 
@@ -456,7 +490,7 @@ describe('curated native ACP runtimes', () => {
 
     expect(fetched).toBe(false)
     expect(catalog.entries.local!.source).toBe('user')
-    expect(catalog.entries.gemini!.source).toBe('registry')
+    expect(catalog.entries['registry-agent']!.source).toBe('registry')
     expect(catalog.entries.maki!.source).toBe('curated')
   })
 

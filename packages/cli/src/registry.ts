@@ -5,6 +5,11 @@ import type { Channel } from './version-store.js'
 export const DAEMON_PKG = '@agentconnect.md/daemon'
 // The computer daemon, managed by `agentconnect computer …` (computer-use.md §3.5).
 export const COMPUTER_PKG = '@agentconnect.md/computer'
+// The signed macOS app a computer version pins per architecture (computer-use.md §3.2.1).
+export const COMPUTER_APP_PKGS = {
+  arm64: '@agentconnect.md/computer-darwin-arm64',
+  x64: '@agentconnect.md/computer-darwin-x64'
+} as const
 
 interface DistInfo {
   tarball: string
@@ -43,7 +48,8 @@ async function fetchPackument(pkg: string): Promise<Packument> {
   return (await res.json()) as Packument
 }
 
-export type ManagedPackage = typeof DAEMON_PKG | typeof COMPUTER_PKG
+export type ManagedPackage =
+  typeof DAEMON_PKG | typeof COMPUTER_PKG | (typeof COMPUTER_APP_PKGS)[keyof typeof COMPUTER_APP_PKGS]
 
 // Resolves an explicit `--to <version>` (must exist), otherwise the channel's dist-tag (stable → `latest`, rc → `rc`).
 export async function resolveDaemonTarget(

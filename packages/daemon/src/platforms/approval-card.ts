@@ -18,6 +18,13 @@ export interface SubsessionNoticeView {
   readonly sessionUrl?: string
 }
 
+/** What an editor's card in their own chat says it is for: the agent, who asked, and the session's page. */
+export interface ApprovalCardContext {
+  readonly agentName: string
+  readonly requesterName: string | null
+  readonly sessionUrl: string
+}
+
 /** One permission request as core hands it to a surface. */
 export interface ApprovalCardAsk {
   /** The unguessable id every button on the card carries back. */
@@ -30,12 +37,15 @@ export interface ApprovalCardAsk {
   readonly via?: { readonly agentId: string; readonly integrationId: string }
   /** Set when a background sub-session asks: the card names and links it above the request. */
   readonly subsession?: SubsessionAsker
+  /** Set on a card sent to an editor outside the conversation: it names and links what it is for. */
+  readonly context?: ApprovalCardContext
 }
 
 /** How a card reads once it takes no answer. */
 export interface ApprovalCardSettlement {
   readonly params: RequestPermissionRequest
   readonly subsession?: SubsessionAsker
+  readonly context?: ApprovalCardContext
   /** What happened, with who answered where someone did: "Allow — Ada", "Cancelled". */
   readonly text: string
   /** Undefined when nothing was decided: cancelled, expired, or approving in chat turned off. */
@@ -84,6 +94,10 @@ export interface ApprovalCardFacet {
   notice(asker: SubsessionAsker): ApprovalCardDraft
   /** That notice once its request settled. */
   noticeSettled(view: SubsessionNoticeView, outcome: SubsessionNoticeOutcome): ApprovalCardDraft
+  /** The editor path's notice in the turn's own conversation: an Agent editor answers it in the console. */
+  turnNotice(): ApprovalCardDraft
+  /** That notice once its request settled; `by` is already unset where the conversation is external. */
+  turnNoticeSettled(outcome: SubsessionNoticeOutcome): ApprovalCardDraft
   /** A card or notice a restart left behind, from its stored row. */
   orphaned(row: ApprovalCardOrphan): ApprovalCardDraft
   /** Where a card of this turn lands, when that is not the turn's channel (a Discord thread is a channel of its own). */
@@ -140,6 +154,25 @@ export function subsessionSettledText(
       return `🚫 ${asker} got no answer within ${outcome.hours} hour${outcome.hours === 1 ? '' : 's'}, so it was denied and stopped.`
     case 'cancelled':
       return `⏳ ${asker} no longer needs permission.`
+  }
+}
+
+/** The editor path's notice in the turn's own conversation; like a sub-session's, it names no tool. */
+export const TURN_NOTICE_TEXT =
+  '🔒 Permission requested. Ask an Agent editor to allow it from the Agent or Session page.'
+
+/** How the turn's notice reads once its request settled, in plain text with literal marks. */
+export function turnNoticeSettledText(outcome: SubsessionNoticeOutcome, name: (s: string) => string): string {
+  const by = (who: string | null): string => (who?.trim() ? ` by ${name(who.trim())}` : '')
+  switch (outcome.kind) {
+    case 'allowed':
+      return `✅ Permission granted${by(outcome.by)}.`
+    case 'denied':
+      return `🚫 Permission denied${by(outcome.by)}.`
+    case 'expired':
+      return `🚫 Permission denied: nobody answered within ${outcome.hours} hour${outcome.hours === 1 ? '' : 's'}.`
+    case 'cancelled':
+      return '⏳ Permission no longer needed.'
   }
 }
 

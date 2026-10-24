@@ -59,5 +59,11 @@ export const linearCommandChrome: CommandChromeSurface<unknown, LinearStatusInfo
 
   status(conn: unknown, _msg: unknown, ctx: CommandChromeContext, info: LinearStatusInfo, link?: string): void {
     post(conn, ctx, link ? `${renderLinearStatus(info)} · [View session](${link})` : renderLinearStatus(info))
+  },
+
+  // The AgentSession is the thread, and a `response` activity is the only answer its feed shows.
+  async notice(conn: unknown, _channel: string, thread: string | undefined, text: string): Promise<void> {
+    if (!thread) throw new Error('Linear notice has no AgentSession')
+    await (conn as LinearEgressPort).postActivity(thread, { type: 'response', body: text })
   }
 }

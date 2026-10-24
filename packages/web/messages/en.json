@@ -1334,6 +1334,11 @@
       "personal": "For 1:1 chats, people add the app from Apps → Built for your org where their app setup policy allows.",
       "install": "Add to teams",
       "installing": "Adding…",
+      "updated": "Updated the app in {count, plural, one {# team} other {# teams}} that already had it.",
+      "teamUpdated": "Updated",
+      "teamNotUpdated": "Not updated",
+      "updateFailed": "Microsoft did not update the app in {count, plural, one {# team} other {# teams}}. Use Update in Teams on the agent’s Teams bot to try again.",
+      "finish": "Done",
       "skip": "Skip",
       "doneTitle": "Teams is connected",
       "doneBody": "Mention the agent in a channel of the teams you chose; it answers there.",
@@ -3427,10 +3432,10 @@
       "computers": {
         "title": "Computers",
         "add": "Add computer",
-        "available": "Computers you can edit",
-        "noMore": "No more computers you can give it",
+        "available": "Computers you can see",
+        "noMore": "No more computers to give it",
         "empty": "No computers yet",
-        "emptyHint": "Give this agent access to a computer you can edit, here or on the computer's page.",
+        "emptyHint": "Give this agent a computer that is visible to you. A computer’s visibility decides who may give it to agents.",
         "unavailable": "A computer you can't see",
         "open": "Open computer",
         "remove": "Take away this agent's access",
@@ -6409,7 +6414,10 @@
       },
       "appPackage": {
         "download": "Download app package",
-        "downloading": "Downloading…"
+        "downloading": "Downloading…",
+        "outdated": "Teams has an older version of this app.",
+        "update": "Update in Teams",
+        "updating": "Opening Microsoft…"
       },
       "settings": {
         "newSecret": "New client secret",
@@ -6482,7 +6490,7 @@
   },
   "Computers": {
     "title": "Computers",
-    "description": "Desktops your agents can see and operate. Each runs the desktop daemon in a signed-in graphical session or a desktop container.",
+    "description": "Desktops members register for their agents to see and operate. Each runs the desktop daemon in a signed-in graphical session or a desktop container.",
     "addComputer": "Add computer",
     "add": {
       "title": "Add computer",
@@ -6529,12 +6537,12 @@
       "poolDescription": "A Linux desktop with Firefox from this deployment's pool, isolated in its own container with its own disk. Agents you give access share it one at a time. It sleeps when idle, keeping its files and sign-ins, and stays until you delete it. You will be its owner.",
       "poolName": "Name",
       "poolNamePlaceholder": "Shared browser",
-      "poolAccess": "Agents that may use it",
-      "poolAccessHint": "Agents take turns: one has control at a time, the others wait in line.",
+      "poolAccessHint": "Members who can see it may give it to their agents on the agent’s Tools tab. Agents take turns: one has control at a time, the others wait in line.",
       "poolUnavailable": "No pool member is connected right now, so a managed computer cannot be started. Try again in a minute.",
       "poolCreate": "Create computer",
       "poolCreating": "Creating…",
-      "poolError": "Could not create the computer: {message}"
+      "poolError": "Could not create the computer: {message}",
+      "visibilityHint": "Members who can see it may give it to their agents on the agent’s Tools tab. Only you see it unless you share it."
     },
     "loadError": "Could not load computers: {message}",
     "empty": {
@@ -6547,7 +6555,9 @@
       "none": "No managed computers yet",
       "countLabel": "managed computers",
       "available": "Available",
-      "unavailable": "Unavailable"
+      "unavailable": "Unavailable",
+      "add": "Add managed computer",
+      "description": "Isolated Linux desktops this deployment runs for your agents. They sleep when idle and wake on the next use."
     },
     "poolPage": {
       "description": "Desktops started for your agents in this deployment's cluster. Each sleeps when idle and wakes on the next use.",
@@ -6679,28 +6689,18 @@
     },
     "agentAccess": {
       "title": "Agent access",
-      "readOnly": "Only editors of this computer can change this",
       "ownAgentOnly": "Used only by the agent it was made for",
       "none": "No agents",
-      "noneDescription": "No agent can use it. The default.",
+      "noneDescription": "No agent can use it yet.",
       "selected": "Selected agents",
-      "selectedDescription": "Only the agents you pick can use it.",
       "all": "All agents",
       "allDescription": "Every agent in the organization can use it.",
       "allNoIsolation": "This includes other members' agents, and your desktop has no isolation from what they do.",
-      "selectedTitle": "Agents that may use this computer",
-      "agents": "Agents",
-      "addAgent": "Add an agent",
-      "noMoreAgents": "No more agents to add",
-      "pickAgent": "Pick at least one agent",
-      "pickAgentHint": "Add the agents that may use this computer, or choose No agents.",
       "unknownAgent": "Agent not visible to you",
       "noIsolation": "Not your agent",
       "noIsolationHint": "This agent belongs to another member. Your desktop has no isolation from what it does.",
-      "removeAgent": "Take away this agent's access",
-      "reset": "Reset",
-      "save": "Save",
-      "saving": "Saving…"
+      "changeOnAgent": "Which agents use this computer is set on each agent’s Tools tab, under Computers. Open one from <agents>Agents</agents> to give it this computer or take it away.",
+      "openAgentTools": "Open the agent’s tools"
     },
     "policy": {
       "title": "Usage policy",
@@ -6836,6 +6836,14 @@
       "proxyHint": "An http:// or https:// proxy with its port. Running managed computers switch at once; the password is stored encrypted and never shown again.",
       "save": "Save",
       "cancel": "Cancel"
+    },
+    "visibilityEdit": {
+      "open": "Change visibility",
+      "title": "Computer visibility",
+      "description": "Who can see this computer. Members who can see it may also give it to their agents on the agent’s Tools tab.",
+      "cancel": "Cancel",
+      "save": "Save",
+      "saving": "Saving…"
     }
   }
 }

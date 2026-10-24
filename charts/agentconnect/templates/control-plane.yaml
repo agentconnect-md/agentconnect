@@ -280,6 +280,19 @@ spec:
             {{- end }}
             {{- end }}
             {{- with .Values.computerViewer.turn }}
+            {{- if and .urls .cloudflare.keyId }}{{ fail "computerViewer.turn: set urls (a coturn) or cloudflare.keyId, not both" }}{{ end }}
+            {{- if .cloudflare.keyId }}
+            # Console viewer TURN from Cloudflare: the Control Plane asks its API for each viewer's credentials.
+            - name: COMPUTER_TURN_CLOUDFLARE_KEY_ID
+              value: {{ .cloudflare.keyId | quote }}
+            - name: COMPUTER_TURN_TTL_SEC
+              value: {{ .ttlSeconds | default 21600 | quote }}
+            - name: COMPUTER_TURN_CLOUDFLARE_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.existingSecret }}
+                  key: {{ .cloudflare.apiTokenKey | default "COMPUTER_TURN_CLOUDFLARE_API_TOKEN" }}
+            {{- end }}
             {{- if .urls }}
             # Console viewer TURN: the Control Plane mints per-viewer credentials from coturn's shared secret.
             - name: COMPUTER_TURN_URLS

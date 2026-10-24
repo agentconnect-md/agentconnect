@@ -77,7 +77,6 @@ import {
 } from './agentDefinitions.js'
 import { daemonSupportsAgent, encodeAgentSpecForPeer, requiredDaemonFeatures } from '../domain/daemon-features.js'
 import { encodeIntegrationSpecForPeer } from '../domain/decision-trigger-features.js'
-import { pendingConversation } from '../domain/conversation-defaults.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
@@ -288,12 +287,6 @@ function mutedChannelIds(channels: IntegrationChannelRecord[], gated: boolean): 
   return channels.filter((c) => c.trigger === 'off').map((c) => c.channelId)
 }
 
-/** The Off conversations nobody chose of an UNGATED integration, which still owe the §14.3 notice (§14.9); a gated one's notice needs no list. */
-function pendingChannelIds(channels: IntegrationChannelRecord[], gated: boolean): string[] {
-  if (gated) return []
-  return channels.filter(pendingConversation).map((c) => c.channelId)
-}
-
 /** Per-conversation session modes (channel-session-mode.md §4): sparse, but complete where `appendKinds` forces one session per place, so the daemon's append default for an unseen place never overrides a known row. */
 function sessionModeEntries(
   channels: IntegrationChannelRecord[],
@@ -364,12 +357,10 @@ export async function integrationToSpec(
   // the Feishu WSClient). The 'shared' envelope is assembled by
   // {@link httpIntegrationToSpec}; the two differ ONLY in this envelope, which is
   // why the fork stays core and the payload behind it does not.
-  const pendingChannels = pendingChannelIds(channels, gated)
   const core = {
     mode: 'direct' as const,
     bindRules,
     mutedChannels,
-    ...(pendingChannels.length > 0 ? { pendingChannels } : {}),
     gated,
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
     externalChannels: externalChannelIds(channels),
@@ -390,7 +381,6 @@ export async function httpIntegrationToSpec(
   owner?: SpecOwner
 ): Promise<IntegrationSpec | null> {
   const gated = owner ? isGatedAgent(owner) : false
-  const pendingChannels = pendingChannelIds(channels, gated)
   // §6.4 final shape (see integrationToSpec): envelope + opaque config only.
   // The shared-mode payload's remaining inputs — `shareable` (the daemon's
   // in-thread "Switch agent" control), the provider app id, the bot's own user
@@ -403,7 +393,6 @@ export async function httpIntegrationToSpec(
     // Non-gated ships no bind rules by design: the relay route is the candidate and the daemon holds by the bundle.
     bindRules: gated ? gatedBindRules(channels) : [],
     mutedChannels: [...mutedChannelIds(channels, gated), ...(gated ? [] : heldDecisionChannels(channels))],
-    ...(pendingChannels.length > 0 ? { pendingChannels } : {}),
     gated,
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner)),
     externalChannels: externalChannelIds(channels),
