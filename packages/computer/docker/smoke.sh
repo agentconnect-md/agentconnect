@@ -129,7 +129,7 @@ wait_browser
 environs=$(docker exec "$name-reg" env -u AGENTCONNECT_REGISTER_TOKEN sh -c '
   for dir in /proc/[0-9]*; do
     comm=$(cat "$dir/comm" 2> /dev/null) || continue
-    case "$comm" in tini | entrypoint.sh | "AgentConnect De") continue ;; esac
+    case "$comm" in tini | entrypoint.sh | "AgentConnect Co") continue ;; esac
     echo "== ${dir#/proc/} $comm"
     tr "\0" "\n" < "$dir/environ" 2> /dev/null || true
   done')
