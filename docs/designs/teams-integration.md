@@ -165,7 +165,9 @@ That holds in a team's standard channels only. In a private or a shared
 channel, where the app is added to the channel itself, Teams delivered a
 mention and the bot's replies posted there, but an unmentioned thread reply
 never reached the relay (**measured** in both, with the team holding the
-grant). A thread there continues only through a mention. Whether an
+grant). The layout is not the cause: a standard channel switched to the
+threads layout still delivered the unmentioned reply. A thread there
+continues only through a mention. Whether an
 unmentioned top-level post there reaches an `auto` trigger is **unverified**.
 
 The manifest therefore leaves `addressedByConstruction` unset. If a tenant
