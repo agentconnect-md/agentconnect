@@ -105,6 +105,10 @@ export async function upgradeComputer(
   const rollback = async (reason: string): Promise<never> => {
     ops.log(`${reason} — rolling back to ${before}`)
     useVersion(root, before!, missing(selfCommand)(before!))
+    // The new app may be what broke, so the previous daemon goes back into the app it pins before its service restarts.
+    await ops
+      .app?.(before!)
+      .catch((err: Error) => ops.log(`could not restore the macOS app of ${before}: ${err.message}`))
     await ops
       .refresh(before!)
       .catch((err: Error) => ops.log(`could not restore the service from ${before}: ${err.message}`))

@@ -72,12 +72,20 @@ describe('the macOS app', () => {
     const { app, resolved } = ops({ '2.7.0': packApp('2.7.0') })
     await ensureApp(root, '2.7.0', apps, 'arm64', app)
     expect(appVersion(join(apps, APP))).toBe('2.7.0')
-    expect(statSync(appBinary(join(apps, APP))).mode & 0o111).toBe(0o111)
     expect(readdirSync(apps)).toEqual([APP])
 
     installVersion(root, '2.8.0', '2.7.0')
     await ensureApp(root, '2.8.0', apps, 'arm64', app)
     expect(resolved).toEqual(['@agentconnect.md/computer-darwin-arm64@2.7.0'])
+  })
+
+  // npm pack drops the executable bit; Windows chmod sets no POSIX execute bits to check.
+  it.skipIf(process.platform === 'win32')('restores the executable bit the package lost', async () => {
+    const root = tmp('ac-computer-')
+    const apps = tmp('ac-apps-')
+    installVersion(root, '2.7.0', '2.7.0')
+    await ensureApp(root, '2.7.0', apps, 'arm64', ops({ '2.7.0': packApp('2.7.0') }).app)
+    expect(statSync(appBinary(join(apps, APP))).mode & 0o111).toBe(0o111)
   })
 
   it('replaces an app the new version pins differently', async () => {

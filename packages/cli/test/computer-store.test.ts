@@ -239,6 +239,24 @@ describe('upgradeComputer', () => {
     expect(ops.prune).not.toHaveBeenCalled()
   })
 
+  it("puts the previous version's macOS app back before restoring its service", async () => {
+    const root = tmp('ac-computer-')
+    seed(root, '1.0.0')
+    const ops = fakeOps({ health: async () => ({ healthy: false, reason: 'not running' }) })
+    ops.app = async (v) => void ops.calls.push(`app ${v}`)
+    await expect(upgradeComputer(root, {}, ops, 'ac computer')).rejects.toThrow(/rolled back to 1\.0\.0/)
+    expect(ops.calls).toEqual([
+      'install 2.0.0',
+      'app 2.0.0',
+      'status 1.0.0',
+      'refresh 2.0.0',
+      'restart 2.0.0',
+      'app 1.0.0',
+      'refresh 1.0.0',
+      'restart 1.0.0'
+    ])
+  })
+
   it('rolls back when the new version cannot install its service or restart', async () => {
     for (const broken of ['refresh', 'restart'] as const) {
       const root = tmp('ac-computer-')
