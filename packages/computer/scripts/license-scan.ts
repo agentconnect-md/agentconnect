@@ -95,13 +95,9 @@ export function forbiddenText(text: string): string[] {
 const DECLARED_BINARIES: { pattern: RegExp; component: string; license: string }[] = [
   {
     pattern: /(^|\/)AgentConnect Computer\.app\/Contents\/MacOS\/agentconnect-computer$/,
-    component: 'Node.js (official build, single executable application)',
+    component: 'Node.js (official build, re-signed as AgentConnect Computer.app)',
     license: 'MIT'
   }
-]
-// Archives that only repackage a directory scanned beside them.
-const DECLARED_ARCHIVES: { pattern: RegExp; contents: string }[] = [
-  { pattern: /(^|\/)AgentConnect-Computer-macos-[a-z0-9]+\.zip$/, contents: 'AgentConnect Computer.app' }
 ]
 // Separate downloads that must never be bundled (ffmpeg is GPL; Cua Driver is pinned and checksummed on the machine).
 const SEPARATE_DOWNLOADS = /(^|\/)(ffmpeg|ffprobe|cua-driver)[^/]*$/i
@@ -166,10 +162,14 @@ const isExecutable = (file: string): boolean => {
   )
 }
 
-// Scans an artifacts directory built by `bundle` / `bundle:macos`; esbuild metafiles in `.meta/` list every bundled input.
+// Scans an artifacts directory built by `bundle`; esbuild metafiles in `.meta/` list every bundled input, which a binaries-only package lacks.
 export function scanArtifacts(
   artifacts: string,
-  { packageRoot, workspaceRoot }: { packageRoot: string; workspaceRoot: string }
+  {
+    packageRoot,
+    workspaceRoot,
+    binariesOnly = false
+  }: { packageRoot: string; workspaceRoot: string; binariesOnly?: boolean }
 ): ScanResult {
   const components = new Map<string, Component>()
   const violations: string[] = []
@@ -187,7 +187,7 @@ export function scanArtifacts(
 
   const metaDir = join(artifacts, '.meta')
   const metafiles = existsSync(metaDir) ? readdirSync(metaDir).filter((name) => name.endsWith('.json')) : []
-  if (metafiles.length === 0) violations.push(`no esbuild metafile in ${metaDir}: nothing was scanned`)
+  if (metafiles.length === 0 && !binariesOnly) violations.push(`no esbuild metafile in ${metaDir}: nothing was scanned`)
   for (const name of metafiles) {
     const meta = JSON.parse(readFileSync(join(metaDir, name), 'utf8')) as Metafile
     for (const input of Object.keys(meta.inputs)) {
@@ -215,13 +215,6 @@ export function scanArtifacts(
     if (path.endsWith('.LEGAL.txt')) {
       for (const family of forbiddenText(readFileSync(file, 'utf8'))) {
         violations.push(`${path}: bundled legal comments name a forbidden license (${family})`)
-      }
-      continue
-    }
-    const archive = DECLARED_ARCHIVES.find((entry) => entry.pattern.test(path))
-    if (archive) {
-      if (!existsSync(join(dirname(file), archive.contents))) {
-        violations.push(`${path}: archive without its scanned contents (${archive.contents}) beside it`)
       }
       continue
     }
@@ -268,11 +261,15 @@ export function report(result: ScanResult): string {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { root: { type: 'string' }, workspace: { type: 'string' } }
+    options: { root: { type: 'string' }, workspace: { type: 'string' }, 'binaries-only': { type: 'boolean' } }
   })
   const packageRoot = resolve(values.root ?? join(dirname(fileURLToPath(import.meta.url)), '..'))
   const workspaceRoot = resolve(values.workspace ?? join(packageRoot, '..', '..'))
-  const result = scanArtifacts(resolve(positionals[0] ?? join(packageRoot, 'bundle')), { packageRoot, workspaceRoot })
+  const result = scanArtifacts(resolve(positionals[0] ?? join(packageRoot, 'bundle')), {
+    packageRoot,
+    workspaceRoot,
+    binariesOnly: values['binaries-only']
+  })
   const text = report(result)
   console.log(text)
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${text}\n`)

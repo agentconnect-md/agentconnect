@@ -150,8 +150,8 @@ session. `sleeping` is a CP verdict like `offline`: the lease service and the ch
 
 ### 3.1 Components [validated]
 
-The desktop daemon is a Node program bundled into one `.mjs` (on macOS, a Node single executable application inside a
-signed `.app`, §3.2.1). The package is `packages/computer`, published to npm as `@agentconnect.md/computer` (bin
+The desktop daemon is a Node program bundled into one `.mjs` (on macOS it runs inside a signed `.app` whose Node
+runtime holds the grants, §3.2.1). The package is `packages/computer`, published to npm as `@agentconnect.md/computer` (bin
 `agentconnect-computer`) like the agent daemon. `@agentconnect.md/cli` installs, upgrades and runs it as
 `agentconnect computer …`, from its own version store in the computer data directory
 ([cli-daemon-split.md §1.2](cli-daemon-split.md#12-computer-desktop-daemon)).
@@ -210,16 +210,33 @@ TCC records a grant against the **responsible process**. Started from a terminal
 broad (anything run in that terminal inherits it), once per terminal app, and impossible over SSH. So the desktop
 daemon runs as its own app:
 
-- `AgentConnect Computer.app`, bundle id `md.agentconnect.computer`, containing a Node SEA, `LSUIElement` (no Dock icon),
-  launched by a per-user LaunchAgent in the Aqua session.
+- `AgentConnect Computer.app`, bundle id `md.agentconnect.computer`, `LSUIElement` (no Dock icon), launched by a
+  per-user LaunchAgent in the Aqua session. **[implemented]** The app is a runtime, not the daemon: its executable is
+  the official, pinned Node re-signed under the app's identity, and the LaunchAgent runs
+  `<app>/Contents/MacOS/agentconnect-computer <data dir>/current/dist/agentconnect-computer.mjs run`. A daemon upgrade
+  moves `current` and never touches the app, so the grants stay even with an ad-hoc signature; only a Node update
+  changes the app. Each `@agentconnect.md/computer` version pins its app as an exact optional dependency
+  (`@agentconnect.md/computer-darwin-arm64` / `-x64`); `computer install` / `upgrade` verify it through the same
+  registry integrity check, require `codesign --verify --strict` and the `md.agentconnect.computer` identifier, and
+  swap it into `~/Applications` (no administrator) only when the pin changes. npm downloads carry no quarantine.
 - Cua Driver and ffmpeg inherit the app's grants as children; `TCC.db` held only `md.agentconnect.computer`, never Terminal.
 - Three grants: **Accessibility** (renamed "Device Control and Data Access" in macOS 27; being listed is not enough, the
   switch must be on, or clicks and keys are dropped silently while pointer moves still work, which is easy to miss);
   **Screen Recording** (takes effect only after the app restarts, so `setup` restarts the service while it waits); and
   the extra "bypass the private window picker" consent of the legacy capture API.
-- Signing: an ad-hoc signature ties grants to the build hash, so every rebuild needs new grants. Release needs a
-  Developer ID, notarization, and the hardened runtime (Node needs the JIT entitlement). Gatekeeper blocks an unsigned
-  quarantined download.
+- Signing: an ad-hoc signature ties grants to the build hash, so every new app needs new grants. Release needs a
+  Developer ID, notarization, and the hardened runtime. **[implemented]** The app is always signed with the hardened
+  runtime and only `allow-jit` plus `allow-unsigned-executable-memory`: library validation and `DYLD_*` stay locked,
+  and the LaunchAgent clears `NODE_OPTIONS`, so nothing loads foreign code into the granted process through the
+  runtime. The trust boundary is still the user account: the daemon runs Cua Driver, ffmpeg, and the store's bundle from
+  the user-writable data directory, as a terminal-held grant would. `CODESIGN_IDENTITY` and `NOTARY_KEYCHAIN_PROFILE`
+  switch the build to Developer ID plus notarization.
+- Install over SSH works in app mode: launchd starts the app in the logged-in desktop session, so the prompts appear on
+  the Mac's own screen. With nobody logged in, `setup` writes the LaunchAgent and asks for a desktop login.
+- `doctor` cannot read `TCC.db` without Full Disk Access, so the app records in `macos-grants.json` which grants it
+  asked for and which it has held. A missing grant that was asked for is "listed but switched off"; one that was held
+  is "switched off or held by an earlier build", fixed by `tccutil reset <service> md.agentconnect.computer` and
+  `setup`. `uninstall --purge` resets both grants.
 - No Swift is needed for this. Swift / AppKit comes later for the menu bar UI, ScreenCaptureKit plus VideoToolbox
   native capture, and `SMAppService` login items.
 
@@ -1417,6 +1434,17 @@ agents sharing a `manual` computer take turns through the lease queue; without d
 
 **Acceptance**: on a fresh macOS 14+ (arm64 and x64), download to agent-ready in under 5 minutes with at most 3 grant
 prompts; no new grants after an update; `doctor` recognizes "Accessibility listed but off" and gives the fix.
+
+**Progress**: the app as a stable runtime, its install, upgrade and removal through the CLI, the LaunchAgent on the
+version store, and `doctor`'s grant diagnosis are implemented (§3.2.1). The release builds both app packages on a macOS
+runner, runs each signed runtime once under the hardened runtime, and publishes an arch's app only when its recipe
+(`build-macos-app.mjs`, which pins the Node version) changed since the app on npm. The app's version is part of its
+signature, so an unchanged recipe keeps the published app and its grants. The computer package then pins each app as an
+exact `optionalDependencies` entry. The macOS job stays off until the repository variable `PUBLISH_COMPUTER_MACOS_APP`
+is `true`, because npm trusted publishing needs both packages to exist first. Signing switches to Developer ID with the
+`MACOS_DEVELOPER_ID_P12` secrets and adds notarization with the `MACOS_NOTARY_API_*` secrets. Still open: those
+credentials and the first publication, the console's macOS install command, validation on fresh macOS 14+ arm64 and
+x64, and the local UI.
 
 ### 14.7 M4: Windows
 

@@ -3,7 +3,8 @@ name: Build & Publish Artifacts
 # Publishes service, pool-runtime, full daemon-runtime and computer images to GHCR at each release tag.
 # Stable releases also move `:latest`, release candidates `:rc`.
 #
-# Release versioning and preparation share one job, followed by parallel npm, image, and chart publication.
+# Release versioning and preparation share one job, followed by parallel npm, image, and chart publication;
+# npm also waits for the macOS app build, whose packages the computer package pins.
 # Manual image rebuilds select an existing release tag; npm retries stay in Release for its OIDC identity.
 #
 # Per-component effective versions: most releases don't touch every component,
@@ -315,10 +316,105 @@ jobs:
 
           echo "matrix=$(jq -cn --argjson include "$matrix" '{include: $include}')" >> "$GITHUB_OUTPUT"
 
+  # The macOS app (computer-use.md §3.2.1): official Node re-signed as md.agentconnect.computer, one npm package per arch.
+  # Off until the PUBLISH_COMPUTER_MACOS_APP variable is true, since npm trusted publishing needs both packages to exist.
+  build-macos-app:
+    name: Build macOS app
+    needs: prepare
+    if: inputs.create_release && needs.prepare.outputs.version != '' && vars.PUBLISH_COMPUTER_MACOS_APP == 'true'
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.version }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      # A Developer ID keeps grants across app updates and enables notarization; without one the apps are signed ad hoc.
+      - name: Import the Developer ID identity
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.MACOS_NOTARY_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_API_ISSUER }}
+        run: |
+          set -eu
+          if [ -z "$CERTIFICATE" ]; then
+            echo "No Developer ID configured: signing ad hoc"
+            exit 0
+          fi
+          keychain="${RUNNER_TEMP}/signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "${RUNNER_TEMP}/developer-id.p12"
+          security import "${RUNNER_TEMP}/developer-id.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "${RUNNER_TEMP}/developer-id.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"$/\1/p' | head -1)"
+          if [ -z "$identity" ]; then
+            echo "::error::The certificate holds no Developer ID Application identity"
+            exit 1
+          fi
+          echo "CODESIGN_IDENTITY=${identity}" >> "$GITHUB_ENV"
+          if [ -n "$NOTARY_KEY" ]; then
+            printf '%s' "$NOTARY_KEY" > "${RUNNER_TEMP}/notary.p8"
+            xcrun notarytool store-credentials agentconnect-notary --key "${RUNNER_TEMP}/notary.p8" \
+              --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --keychain "$keychain"
+            rm "${RUNNER_TEMP}/notary.p8"
+            echo "NOTARY_KEYCHAIN_PROFILE=agentconnect-notary" >> "$GITHUB_ENV"
+          fi
+      - name: Build the apps
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -eu
+          for arch in arm64 x64; do
+            TARGET_ARCH="$arch" AGENTCONNECT_RELEASE_VERSION="${RELEASE_TAG#v}" node packages/computer/scripts/build-macos-app.mjs
+          done
+      # V8 must run JIT and WebAssembly under the hardened runtime with only the two JIT entitlements.
+      - name: Smoke-test the signed runtimes
+        run: |
+          set -eu
+          probe='const m = new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])); let n = 0; for (let i = 0; i < 1e7; i++) n += i; console.log(process.version, process.arch, n, m instanceof WebAssembly.Module)'
+          for arch in arm64 x64; do
+            app="packages/computer/bundle/computer-darwin-${arch}/AgentConnect Computer.app"
+            codesign --display --entitlements - --verbose=2 "$app"
+            if [ "$arch" = arm64 ]; then
+              "$app/Contents/MacOS/agentconnect-computer" -e "$probe"
+            elif arch -x86_64 /usr/bin/true 2>/dev/null; then
+              arch -x86_64 "$app/Contents/MacOS/agentconnect-computer" -e "$probe"
+            else
+              echo "::warning::Rosetta is unavailable; the x64 app is signed but not run"
+            fi
+          done
+      # tar keeps the executable bit, which an artifact upload drops.
+      - name: Pack the app packages
+        run: tar -cf "${RUNNER_TEMP}/computer-darwin.tar" -C packages/computer/bundle computer-darwin-arm64 computer-darwin-x64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: computer-darwin-apps
+          path: ${{ runner.temp }}/computer-darwin.tar
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
   publish-npm:
     name: Publish npm packages
-    needs: prepare
-    if: inputs.create_release && needs.prepare.outputs.version != ''
+    needs:
+      - prepare
+      - build-macos-app
+    # A skipped macOS build publishes the rest and pins only apps already on npm; a failed one stops publication.
+    if: >-
+      ${{ !cancelled() && inputs.create_release && needs.prepare.outputs.version != ''
+          && needs.build-macos-app.result != 'failure' }}
     runs-on: ubuntu-latest
     # Serialize npm retries with other release runs on the same channel.
     concurrency:
@@ -344,6 +440,16 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       - name: Install
         run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        if: needs.build-macos-app.result == 'success'
+        with:
+          name: computer-darwin-apps
+          path: ${{ runner.temp }}/computer-darwin
+      - name: Unpack the macOS app packages
+        if: needs.build-macos-app.result == 'success'
+        run: |
+          mkdir -p packages/computer/bundle
+          tar -xf "${RUNNER_TEMP}/computer-darwin/computer-darwin.tar" -C packages/computer/bundle
       - name: Build and publish changed packages
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.version }}

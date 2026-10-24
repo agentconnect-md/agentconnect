@@ -11,6 +11,7 @@ export const COMPUTER_BUNDLE = 'agentconnect-computer.mjs'
 export const COMPUTER_PACKAGE_ENTRY = `dist/${COMPUTER_BUNDLE}`
 export const COMPUTER_APP = 'AgentConnect Computer.app'
 export const COMPUTER_APP_BINARY = 'agentconnect-computer'
+export const COMPUTER_APP_ID = 'md.agentconnect.computer'
 export const COMPUTER_COMMAND_ENV = 'AGENTCONNECT_COMPUTER_COMMAND'
 // Tells the daemon which stable entry its service should launch (packages/computer/src/self.ts).
 export const COMPUTER_SERVICE_ENTRY_ENV = 'AGENTCONNECT_COMPUTER_SERVICE_ENTRY'
@@ -62,20 +63,23 @@ export function computerArgv(argv: string[]): string[] {
   return argv.slice(at + 1)
 }
 
-const isScript = (path: string): boolean => /\.(c|m)?js$/i.test(path)
+// Where `computer install` puts the macOS app; a copy dragged into /Applications also counts.
+export const computerAppBinaries = (home: string): string[] =>
+  [join(home, 'Applications'), '/Applications'].map((dir) =>
+    join(dir, COMPUTER_APP, 'Contents', 'MacOS', COMPUTER_APP_BINARY)
+  )
 
-// Candidate entries in order: the dev override, the macOS app (it owns the TCC grants, §3.2.1), the CLI's version store, the legacy installer's bundle.
+// The macOS app's Node runtime holds the TCC grants (computer-use.md §3.2.1), so every daemon script runs inside it there.
+export function computerAppRunner(host: ComputerHost): string | undefined {
+  return host.platform === 'darwin' ? computerAppBinaries(host.home).find((path) => host.exists(path)) : undefined
+}
+
+// Candidate entries in order: the dev override, the CLI's version store, the legacy installer's bundle.
 export function computerCandidates(host: ComputerHost): string[] {
   const override = host.env.AGENTCONNECT_COMPUTER_ENTRY
   if (override) return [override]
-  const apps =
-    host.platform === 'darwin'
-      ? [join(host.home, 'Applications'), '/Applications'].map((dir) =>
-          join(dir, COMPUTER_APP, 'Contents', 'MacOS', COMPUTER_APP_BINARY)
-        )
-      : []
   const root = computerDataDir(host)
-  return [...apps, storeEntry(root, host.platform), pathJoin(host.platform)(root, 'app', COMPUTER_BUNDLE)]
+  return [storeEntry(root, host.platform), pathJoin(host.platform)(root, 'app', COMPUTER_BUNDLE)]
 }
 
 // The process to start for `agentconnect computer <args>`, or a human-readable error naming where it looked.
@@ -89,7 +93,7 @@ export function resolveComputerLaunch(
   const found = candidates.find((path) => host.exists(path))
   const managed = storeEntry(computerDataDir(host), host.platform)
   if (found) {
-    const launch = isScript(found) ? { command: node, args: [found, ...args] } : { command: found, args }
+    const launch = { command: computerAppRunner(host) ?? node, args: [found, ...args] }
     return found === managed ? { ...launch, serviceEntry: managed } : launch
   }
   if (host.env.AGENTCONNECT_COMPUTER_ENTRY)

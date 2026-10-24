@@ -138,31 +138,41 @@ enough: the switch must be on. Without it, clicks and keys are silently dropped,
 moves still work. Cmd shortcuts are allowed on macOS; only lock screen, log out, and force quit are
 refused. ffmpeg is a pinned static 6.0 build (eugeneware/ffmpeg-static b6.1.1).
 
-### macOS app mode (prototype): the app holds the permissions, not Terminal
+### macOS: the app holds the permissions, not Terminal
 
-`pnpm bundle:macos` builds `AgentConnect Computer.app` (`md.agentconnect.computer`): the daemon as a
-Node single executable app on the official, pinned Node.js, ad-hoc signed. Install it and run
-`setup` from the app's binary. This works from Terminal or over SSH:
+`agentconnect computer install` puts `AgentConnect Computer.app` (`md.agentconnect.computer`) in
+`~/Applications` next to the daemon. The app is a signed copy of the official, pinned Node.js; the
+daemon itself stays in the version store and runs inside it. Run the install from Terminal on the
+Mac, or over SSH while someone is logged in to its desktop:
 
 ```sh
-ditto -x -k AgentConnect-Computer-macos-arm64.zip ~/Applications/
-~/Applications/"AgentConnect Computer.app"/Contents/MacOS/agentconnect-computer setup
+npx -y @agentconnect.md/cli@latest computer install --register <token> --cp-url <exchange URL>
 ```
 
 - `setup` installs a per-user LaunchAgent (`~/Library/LaunchAgents/md.agentconnect.computer.plist`,
-  Aqua session, starts at login, restarts on crash) and starts it. launchd starts the app itself,
-  so macOS attributes Accessibility and Screen Recording to **AgentConnect Computer**. Cua Driver
-  and ffmpeg run as its children and inherit the grants. The app raises the dialogs itself.
-  `setup` opens the System Settings panes, waits, and restarts the service until a new Screen
-  Recording grant takes effect. Then it runs `doctor` inside the service.
+  Aqua session, starts at login, restarts on crash) that runs
+  `<app>/Contents/MacOS/agentconnect-computer ~/.agentconnect/computer/current/dist/agentconnect-computer.mjs run`.
+  launchd starts the app itself, so macOS attributes Accessibility and Screen Recording to
+  **AgentConnect Computer**. Cua Driver and ffmpeg run as its children and inherit the grants. The
+  app raises the dialogs on the Mac's screen; `setup` opens the System Settings panes, waits, and
+  restarts the service until a new Screen Recording grant takes effect. Then it runs `doctor`
+  inside the service.
+- `agentconnect computer upgrade` only moves `current`, so the grants stay. The app is replaced
+  only when a version pins a different one (a new app build, such as a Node update).
 - `doctor` asks the running service to run the checks as its own child (`/control/doctor`, loopback
-  only), so the result reflects the app's grants. `--here` checks the calling process instead.
-- `service start | stop | restart | status | uninstall` manage the LaunchAgent. The log is
-  `~/.agentconnect/computer/daemon.log`.
-- Ad-hoc signing ties the grants to this exact build: each rebuild must be granted again.
-  Distribution needs a Developer ID signature plus notarization (`CODESIGN_IDENTITY=...`; the
-  hardened runtime then needs the JIT entitlements for Node). Unsigned zips downloaded through a
-  browser are quarantined and blocked by Gatekeeper.
+  only), so the result reflects the app's grants. It tells a grant that is listed but switched off
+  from one never asked for, and from one the app lost (fix:
+  `tccutil reset Accessibility md.agentconnect.computer`, then `setup`).
+- `agentconnect computer uninstall` removes the LaunchAgent and the app; `--purge` also resets the
+  app's grants.
+- Until a release publishes the app packages, `install` says that this version pins no app, and
+  the grants go to the terminal that runs the daemon.
+- `pnpm bundle:macos` builds the app package into `bundle/computer-darwin-<arch>/` (on a Mac;
+  `TARGET_ARCH=x64` cross-builds). It is ad-hoc signed by default, which ties grants to that build;
+  `CODESIGN_IDENTITY` (Developer ID) and `NOTARY_KEYCHAIN_PROFILE` sign and notarize it for release.
+- The release builds the app on a macOS runner once the repository variable
+  `PUBLISH_COMPUTER_MACOS_APP` is `true`. It republishes an arch's app only when
+  `build-macos-app.mjs` changed, and the computer package pins each app exactly.
 
 ## Run on Linux
 

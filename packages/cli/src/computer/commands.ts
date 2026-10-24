@@ -7,9 +7,12 @@ import { withVersionLock } from '../version-lock.js'
 import { DEFAULT_KEEP_VERSIONS } from '../version-ops.js'
 import { currentVersion, listInstalled, readMeta, type Channel } from '../version-store.js'
 import { currentLink, versionsDir, versionsJsonPath } from '../paths.js'
+import { resolveTarget } from '../install.js'
 import {
   computerArgv,
+  COMPUTER_APP,
   COMPUTER_BUNDLE,
+  computerAppRunner,
   computerDataDir,
   hostDefaults,
   resolveComputerLaunch,
@@ -17,7 +20,14 @@ import {
   type ComputerLaunch
 } from './launch.js'
 import { entryRunner, execComputer, type EntryRunner } from './run.js'
-import { installComputer, realComputerOps, upgradeComputer, type ComputerTargetOpts } from './store.js'
+import { ensureApp, macGuiSession, realAppOps, resetGrants, type AppOps } from './macos-app.js'
+import {
+  installComputer,
+  realComputerOps,
+  upgradeComputer,
+  type ComputerOps,
+  type ComputerTargetOpts
+} from './store.js'
 
 // Subcommands the CLI implements; everything else (setup, register, run, pause, resume, token, service, …) goes to the daemon.
 export const COMPUTER_OWNED_COMMANDS: ReadonlySet<string> = new Set([
@@ -41,6 +51,9 @@ export interface ComputerContext {
   node: string
   run: EntryRunner
   log: (m: string) => void
+  /** The macOS app's registry and signature operations; tests swap them. */
+  appOps?: AppOps
+  arch?: string
 }
 
 export function computerContext(cli: string, host: ComputerHost = hostDefaults()): ComputerContext {
@@ -53,6 +66,29 @@ export function computerContext(cli: string, host: ComputerHost = hostDefaults()
     run: entryRunner(self),
     log: (m) => console.log(m)
   }
+}
+
+// Where `computer install` puts the macOS app: the user's own Applications folder, so no administrator is needed.
+const appsDir = (ctx: ComputerContext): string => join(ctx.host.home, 'Applications')
+
+function storeOps(ctx: ComputerContext): ComputerOps {
+  const mac = ctx.host.platform === 'darwin'
+  const appOps =
+    ctx.appOps ?? realAppOps(ctx.log, (name, version) => resolveTarget({ to: version, channel: 'stable' }, name))
+  return realComputerOps(ctx.root, {
+    run: ctx.run,
+    log: ctx.log,
+    platform: ctx.host.platform,
+    env: ctx.host.env,
+    node: ctx.node,
+    ...(mac
+      ? {
+          appRunner: () => computerAppRunner(ctx.host),
+          app: (version: string) => ensureApp(ctx.root, version, appsDir(ctx), ctx.arch ?? process.arch, appOps),
+          guiSession: macGuiSession()
+        }
+      : {})
+  })
 }
 
 const launchFor = (ctx: ComputerContext, args: string[]): ComputerLaunch =>
@@ -227,6 +263,11 @@ export async function uninstall(ctx: ComputerContext, purge: boolean): Promise<v
     )
   }
   removeLegacyLauncher(ctx.root, ctx.log)
+  if (ctx.host.platform === 'darwin' && existsSync(join(appsDir(ctx), COMPUTER_APP))) {
+    rmSync(join(appsDir(ctx), COMPUTER_APP), { recursive: true, force: true })
+    ctx.log(`removed ${join(appsDir(ctx), COMPUTER_APP)}`)
+  }
+  if (purge && ctx.host.platform === 'darwin') resetGrants(ctx.log)
   if (purge) {
     rmSync(ctx.root, { recursive: true, force: true })
     ctx.log(`removed ${ctx.root} (config, Computer key, audit log, Cua Driver, ffmpeg)`)
@@ -270,7 +311,7 @@ function program(ctx: ComputerContext): Command {
   ).action(async (o: InstallOptions, cmd: Command) => {
     try {
       ensureRoot(ctx.root)
-      const ops = realComputerOps(ctx.root, { run: ctx.run, log: ctx.log })
+      const ops = storeOps(ctx)
       const target = targetOpts(o)
       await withVersionLock(ctx.root, 'install', () => installComputer(ctx.root, target, ops, ctx.self))
       if (o.setup === false) return void ctx.log(`installed; run \`${ctx.self} setup\` in the desktop session next`)
@@ -292,7 +333,7 @@ function program(ctx: ComputerContext): Command {
     try {
       if (!currentVersion(ctx.root))
         throw new Error(`nothing installed in ${ctx.root} — run \`${ctx.self} install\` first`)
-      const ops = realComputerOps(ctx.root, { run: ctx.run, log: ctx.log })
+      const ops = storeOps(ctx)
       const target = targetOpts(o)
       await withVersionLock(ctx.root, 'upgrade', () => upgradeComputer(ctx.root, target, ops, ctx.self), { wait: true })
     } catch (err) {

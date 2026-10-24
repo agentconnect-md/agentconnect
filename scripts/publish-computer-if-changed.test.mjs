@@ -63,19 +63,23 @@ test(
     }
     commit('v1.0.0')
 
-    const publish = (previous, version, channel = 'latest') => {
+    const publish = (previous, version, channel = 'latest', pins) => {
       writeFileSync(log, '')
-      run('sh', ['scripts/publish-computer-if-changed.sh', previous, version, 'prepare'])
+      run('sh', ['scripts/publish-computer-if-changed.sh', previous, version, 'prepare', ...(pins ? [pins] : [])])
       run('sh', ['scripts/publish-computer-if-changed.sh', previous, channel, 'publish'])
       return readFileSync(log, 'utf8')
     }
 
-    // No baseline (never published): build with the release version, scan dist, strip dependencies, publish.
-    const first = publish('', '1.0.0')
+    // No baseline (never published): build with the release version, scan dist, strip dependencies, pin the apps, publish.
+    const first = publish('', '1.0.0', 'latest', '{"@agentconnect.md/computer-darwin-arm64":"0.9.0"}')
     assert.match(first, /^\|exec json -I -f package\.json -e this\.version='1\.0\.0'$/m)
     assert.match(first, /^1\.0\.0\|run build$/m)
     assert.match(first, /^\|run license-scan dist$/m)
     assert.match(first, /^\|exec json -I -f package\.json -e this\.dependencies=\{\}$/m)
+    assert.match(
+      first,
+      /^\|exec json -I -f package\.json -e this\.optionalDependencies=\{"@agentconnect\.md\/computer-darwin-arm64":"0\.9\.0"\}$/m
+    )
     assert.match(first, /^\|publish --no-git-checks --ignore-scripts --tag latest$/m)
 
     write('packages/daemon/src/index.ts', 'export const d = 2\n')
@@ -86,6 +90,7 @@ test(
     commit('v1.0.2-rc.1')
     const rc = publish('v1.0.1', '1.0.2-rc.1', 'rc')
     assert.match(rc, /^1\.0\.2-rc\.1\|run build$/m)
+    assert.match(rc, /^\|exec json -I -f package\.json -e this\.optionalDependencies=\{\}$/m)
     assert.match(rc, /^\|publish --no-git-checks --ignore-scripts --tag rc$/m)
 
     write('pnpm-lock.yaml', 'lockfileVersion: 9.0\n# a dependency changed\n')
