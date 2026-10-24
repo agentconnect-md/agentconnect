@@ -8,7 +8,7 @@
  * the platform's. GitHub's turn-FINAL shape is deliberately not used: Linear's
  * product is the live feed, so this surface emits as it goes.
  */
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { WorkBoundary } from '../../messages/message-boundary.js'
 import { appendGithubMarkdownChrome, GithubReplyCollector } from '../../github/poster.js'
 import { renderAttributionMessage } from '../../messages/attribution.js'

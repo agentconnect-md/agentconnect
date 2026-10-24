@@ -1,4 +1,4 @@
-import type { ContentBlock } from '@agentclientprotocol/sdk'
+import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import { attachmentMention } from '../session/attachment-block.js'
 import { MAX_STEERS_PER_TURN } from './constants.js'

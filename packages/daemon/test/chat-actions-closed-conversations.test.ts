@@ -5,7 +5,7 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
-import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { chatSurfaceOf } from '../src/agents/chat-actions.js'
 import { Daemon } from '../src/daemon.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'

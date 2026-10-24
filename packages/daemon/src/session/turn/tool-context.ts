@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { McpServer } from '@agentclientprotocol/sdk'
+import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 
 export interface SessionToolContext {

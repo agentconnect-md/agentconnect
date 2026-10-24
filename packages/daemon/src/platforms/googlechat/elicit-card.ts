@@ -1,6 +1,6 @@
 // Google Chat's elicitation-card facet (§7.3): a cardsV2 message whose button clicks reach the events URL and the relay forwards.
 import { createHash } from 'node:crypto'
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import {
   elicitFormBlockId,
   GOOGLE_CHAT_ACTION_PARAMETER,

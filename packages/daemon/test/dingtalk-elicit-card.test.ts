@@ -1,7 +1,7 @@
 // DingTalk's question cards — tapped, or answered by quote — and the approval notice that keeps approvals in the Console (dingtalk-integration.md §4.6).
 import { DatabaseSync } from 'node:sqlite'
 import { describe, it, expect, vi } from 'vitest'
-import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { Daemon } from '../src/daemon.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'

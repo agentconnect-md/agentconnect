@@ -7,7 +7,7 @@
  * notice #1819/#1839 post.
  */
 import { describe, it, expect, vi } from 'vitest'
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import { Daemon } from '../src/daemon.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'

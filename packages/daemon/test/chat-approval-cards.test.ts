@@ -2,7 +2,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { MessageFlags } from 'discord.js'
 import { describe, expect, it, vi } from 'vitest'
-import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { FakeClock } from '@agentconnect.md/connection'
 import { agentHostKey } from '../src/acp/host-key.js'
 import { approvalRefusalText, CHAT_LINK_HINT, settingsRefusalText } from '../src/agents/chat-actions.js'

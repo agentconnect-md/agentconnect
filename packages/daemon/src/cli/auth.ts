@@ -5,7 +5,7 @@ import type {
   AuthMethodTerminal,
   CreateElicitationRequest,
   CreateElicitationResponse
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 import { AcpHost } from '../acp/acp-host.js'
 import { loadConfig } from '../config/load-config.js'
 import { resolveRoot } from '../paths.js'

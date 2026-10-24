@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
+import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { DiscordConverger, type DiscordAction } from '../src/discord/render.js'
 
 const chunk = (text: string): SessionUpdate =>

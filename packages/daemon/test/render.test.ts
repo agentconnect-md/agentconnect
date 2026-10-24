@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import {
   ELICIT_FORM_FIELD_CAP,
   SHARED_CONFIG_ACTION_ID,

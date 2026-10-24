@@ -1,4 +1,4 @@
-import type { ContentBlock } from '@agentclientprotocol/sdk'
+import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 import {
   CanonicalMemoryRecord,
   MEMORY_RECALL_HARD_LIMITS,

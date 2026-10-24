@@ -1,6 +1,6 @@
 // The Telegram and Discord approval cards stay inside their platforms' button limits, and their button payloads decode only what they minted.
 import { describe, expect, it } from 'vitest'
-import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import {
   discordApprovalCards,
   discordApprovalId,

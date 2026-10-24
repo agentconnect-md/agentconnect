@@ -1,7 +1,7 @@
 // Feishu/Lark and Google Chat carry the in-conversation permission card too, and synced Feishu/Lark takes chat actions only from editors, matched by union_id.
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
-import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,

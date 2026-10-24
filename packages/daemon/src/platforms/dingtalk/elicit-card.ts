@@ -1,6 +1,6 @@
 // DingTalk's elicitation-card facet (dingtalk-integration.md §4.6): a tap card from the project's template, else a numbered text card answered by quoting it.
 import { elicitFormBlockId } from '@agentconnect.md/protocol'
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import type {
   ElicitCardAsk,
   ElicitCardDraft,

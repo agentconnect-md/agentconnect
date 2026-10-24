@@ -19,7 +19,7 @@
  * and are named as such. A card the platform refuses is a card that never posts, which core
  * already treats as an ask nobody could answer.
  */
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import { elicitFormBlockId, type WireFeishuCardActionTarget } from '@agentconnect.md/protocol'
 import type {
   ElicitCardAsk,

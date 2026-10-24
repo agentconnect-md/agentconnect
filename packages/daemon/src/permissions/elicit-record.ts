@@ -1,7 +1,7 @@
 // One elicitation card's REDUCED payload — the shape the webchat stream sends live and the
 // transcript row persists (#1794), built once so the two can never describe one card differently.
 
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import type { ElicitBody, ElicitCard, ElicitField, ElicitOutcome } from '@agentconnect.md/protocol'
 import type { ElicitTarget } from '../slack/render.js'
 import { elicitFieldLabel, elicitRequiredProps } from '../slack/render.js'

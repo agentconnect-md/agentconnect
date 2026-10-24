@@ -9,7 +9,7 @@
  * whole against the card that offered it before the ACP request is resolved.
  */
 import { describe, it, expect, vi } from 'vitest'
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import type { ElicitTarget } from '../src/slack/render.js'
 import { Daemon } from '../src/daemon.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'

@@ -1,4 +1,4 @@
-import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { ALL_TOOL_NAMES } from '../mcp/tools.js'
 import { RESERVED_MCP_SERVER_NAME } from '../mcp/resolve-servers.js'
 

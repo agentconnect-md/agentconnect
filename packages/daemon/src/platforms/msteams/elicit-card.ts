@@ -1,5 +1,5 @@
 // Teams' elicitation-card facet (teams-integration.md §4.4): an Adaptive Card whose `Action.Execute` clicks the relay forwards, inputs merged into their data.
-import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest } from '@agentclientprotocol/sdk/unstable'
 import {
   elicitFormBlockId,
   elicitFormBlockIndex,

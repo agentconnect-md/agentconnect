@@ -5,7 +5,7 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
-import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { APPROVAL_DM_ROUTE_V1_FEATURE, CHAT_ACTOR_V1_FEATURE } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
 import { CHAT_ACTOR_ALLOW_TTL_MS, CHAT_ACTOR_DENY_TTL_MS, ChatActors } from '../src/agents/chat-actor.js'

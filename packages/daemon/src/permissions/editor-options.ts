@@ -1,4 +1,4 @@
-import type { PermissionOption, RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { PermissionOption, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { AGENT_PERMISSION_MAX_OPTIONS, AgentPermissionOption } from '@agentconnect.md/protocol'
 
 /** The request's options as the console renders them, or undefined when the record cannot carry them whole (#1969). */

@@ -9,7 +9,7 @@ import type { PickerModel, PickerRow } from '../src/cli/auth-picker.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 import type { RuntimeProbeResult } from '../src/runtimes/runtime-prober.js'
-import type { CreateElicitationRequest, CreateElicitationResponse } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, CreateElicitationResponse } from '@agentclientprotocol/sdk/unstable'
 
 function scaffold(): { root: string; configPath: string } {
   const root = mkdtempSync(join(tmpdir(), 'ac-auth-'))

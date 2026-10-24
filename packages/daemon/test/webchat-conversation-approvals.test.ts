@@ -1,7 +1,7 @@
 // A webchat conversation's approval requests answered from that conversation (product-conventions.md, What people can do in chat).
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
-import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { FakeClock } from '@agentconnect.md/connection'
 import { PERMISSION_REQUEST_NOT_IN_CONVERSATION, type ChatActions, type WebchatOutput } from '@agentconnect.md/protocol'
 import { agentHostKey } from '../src/acp/host-key.js'

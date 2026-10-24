@@ -1,4 +1,4 @@
-import type { ContentBlock } from '@agentclientprotocol/sdk'
+import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 import { recalledMemoryBlock, sanitizeRecallRecords } from '../../memory/recall.js'
 import type { memoryKindOf, MemoryProvider, MemoryScope } from '../../memory/provider.js'
 import type { RecallPolicy } from '../../memory/types.js'

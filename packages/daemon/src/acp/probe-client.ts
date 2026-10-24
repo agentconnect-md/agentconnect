@@ -1,4 +1,4 @@
-import type { McpServer, SessionConfigOption } from '@agentclientprotocol/sdk'
+import type { McpServer, SessionConfigOption } from '@agentclientprotocol/sdk/unstable'
 import type { McpTransportCapabilities } from '@agentconnect.md/protocol'
 import type { AcpHost, ModelOptions } from './acp-host.js'
 
