@@ -258,15 +258,25 @@ edited, only recalled by its process query key.
 An agent can direct-message a member it has seen (`sendMessage` with `toUser`
 alone): the DM is the batch send to that staff ID, so the read ports declare
 `openDirectMessage`. An outsider's opaque sender id addresses no DM and is
-refused. The group send takes no mentions, so a `<@id>` in the body would show
-raw and notify nobody; only a card delivery carries them
-(`imGroupOpenDeliverModel.atUserIds`, staff ID → name), and the mentioned member
-finds it under @-mentions (**measured**). The `toUser` form that @-mentions
-people in a group therefore posts a card on the question template: the text,
-prefixed with `@<name>` for each person, is its body, with no buttons
-(read port `channelMentions: 'gateway'`). It is plain text up to 2,000
-characters, not Markdown, and needs the card client, so the international
-edition, or a deployment with no question template, refuses it.
+refused. The group send takes no mentions in any form tried: `@<staffId>` or
+`@<name>` in text or Markdown, or an `at` field, all arrive as plain text
+(**measured**). Two sends do carry them (**measured**: the person sees a
+highlighted mention and finds it under @-mentions):
+
+- the reply address a group message brings (`sessionWebhook`, 90 minutes), with
+  `@<staffId>` in a text or Markdown body and the person in `at.atUserIds`;
+- a card delivery, with `imGroupOpenDeliverModel.atUserIds` (staff ID → name).
+
+The `toUser` form that @-mentions people in a group (read port
+`channelMentions: 'gateway'`) therefore posts Markdown through the group's
+latest reply address while more than a minute of it remains; the connection
+keeps the latest one per group, only when its origin is the edition's own
+`oapi` host. Without a fresh one, or when the address refuses the message, it
+posts a card on the question template: the text, prefixed with `@<name>` for
+each person, as its body, with no buttons, plain text up to 2,000 characters.
+The international edition, or a deployment with no question template, has only
+the reply address. A post too long for its send is refused whole rather than
+cut.
 
 ### 4.3 Acknowledgement and Markdown
 

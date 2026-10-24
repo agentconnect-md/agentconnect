@@ -34,10 +34,24 @@ interface Call {
   body: Record<string, unknown>
 }
 
-function fakeFetch(opts: { failSendAfter?: number; cardDelivered?: boolean } = {}) {
+const WEBHOOK = 'https://oapi.dingtalk.com/robot/sendBySession?session=session-example'
+
+function fakeFetch(opts: { failSendAfter?: number; cardDelivered?: boolean; webhookErrcode?: number } = {}) {
   const calls: Call[] = []
   let sends = 0
   const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    // A group's reply address answers with DingTalk's errcode envelope.
+    if (String(url) === WEBHOOK) {
+      calls.push({
+        path: 'webhook',
+        headers: init?.headers as Record<string, string>,
+        body: JSON.parse(String(init?.body))
+      })
+      return new Response(JSON.stringify({ errcode: opts.webhookErrcode ?? 0, errmsg: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    }
     const path = String(url).slice(ORIGIN.length)
     calls.push({
       path,
@@ -313,10 +327,48 @@ describe('DingTalk question cards', () => {
     expect(calls.length).toBe(before)
   })
 
+  it("mentions through the group's fresh reply address as Markdown, and falls back to the card", async () => {
+    const { calls, fetchImpl } = fakeFetch()
+    const { conn } = connect(fetchImpl, () => {}, { questionTemplate: TEMPLATE })
+    const hooked = (n: number, until: number, url = WEBHOOK) =>
+      conn.normalize({ ...groupMention, msgId: `msg-hook-${n}`, sessionWebhook: url, sessionWebhookExpiredTime: until })
+
+    hooked(1, Date.now() + 60 * 60 * 1000)
+    expect(await conn.postMentioning('cid-example-group', '**PR #482** needs a look', ['user-0001'])).toBeUndefined()
+    expect(calls.at(-1)).toEqual({
+      path: 'webhook',
+      headers: { 'content-type': 'application/json' },
+      body: {
+        msgtype: 'markdown',
+        markdown: { title: 'PR 482 needs a look', text: '@user-0001 **PR #482** needs a look' },
+        at: { atUserIds: ['user-0001'] }
+      }
+    })
+
+    // An address about to expire, and one on another host, are left for the card.
+    hooked(2, Date.now() + 30_000)
+    expect(await conn.postMentioning('cid-example-group', 'x', ['user-0001'])).toMatch(/^acm-/)
+    hooked(3, Date.now() + 60 * 60 * 1000, 'https://elsewhere.example.test/robot/sendBySession?session=s')
+    expect(await conn.postMentioning('cid-example-group', 'x', ['user-0001'])).toMatch(/^acm-/)
+    expect(calls.filter((call) => call.path === 'webhook')).toHaveLength(1)
+  })
+
+  it('takes the card when the reply address refuses, and needs one or the other', async () => {
+    const until = Date.now() + 60 * 60 * 1000
+    const refusing = connect(fakeFetch({ webhookErrcode: 300001 }).fetchImpl, () => {}, { questionTemplate: TEMPLATE })
+    refusing.conn.normalize({ ...groupMention, sessionWebhook: WEBHOOK, sessionWebhookExpiredTime: until })
+    expect(await refusing.conn.postMentioning('cid-example-group', 'x', ['user-0001'])).toMatch(/^acm-/)
+
+    // Without cards, a fresh reply address alone still mentions people.
+    const plain = connect(fakeFetch().fetchImpl)
+    plain.conn.normalize({ ...groupMention, sessionWebhook: WEBHOOK, sessionWebhookExpiredTime: until })
+    expect(await plain.conn.postMentioning('cid-example-group', 'x', ['user-0001'])).toBeUndefined()
+  })
+
   it('refuses a mention where it sends no cards, and when the card is not delivered', async () => {
     await expect(
       connect(fakeFetch().fetchImpl).conn.postMentioning('cid-example-group', 'x', ['user-0001'])
-    ).rejects.toThrow('only on a card')
+    ).rejects.toThrow('or a card, and this app sends no cards')
     const refused = connect(fakeFetch({ cardDelivered: false }).fetchImpl, () => {}, { questionTemplate: TEMPLATE })
     await expect(refused.conn.postMentioning('cid-example-group', 'x', ['user-0001'])).rejects.toThrow('not delivered')
   })

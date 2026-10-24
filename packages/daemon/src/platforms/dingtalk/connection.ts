@@ -18,6 +18,7 @@ import {
   DINGTALK_ROBOT_TOPIC,
   DingTalkApi,
   DingTalkApiError,
+  DINGTALK_MSG_PARAM_MAX_BYTES,
   dingTalkMarkdownTitle,
   dingTalkTargetForChannel,
   splitForMsgParam,
@@ -94,6 +95,8 @@ const SEEN_LIMIT = 2_000
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const MEMBERS_PER_CHANNEL = 200
 const TENANT_REPORT_INTERVAL_MS = 60 * 60 * 1000
+// A reply address this close to expiry is left for the card, so a send never races its expiry.
+const WEBHOOK_MARGIN_MS = 60_000
 
 /** A sender outside the robot's organization has no staff ID in it (**measured**, §4.1), or names another organization. */
 function fromOutside(payload: DingTalkRobotMessage): boolean {
@@ -117,6 +120,8 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
   private readonly attachmentTypes = new Map<string, string>()
   private readonly media: DingTalkMediaDeps
   private tenantReport?: { corpId: string; at: number }
+  // Each group's latest reply address (`sessionWebhook`), the one send that carries mentions in a plain message (§4.2).
+  private readonly webhooks = new Map<string, { url: string; until: number }>()
   // Groups already reported as holding an outsider; the detection is sticky, so once per connection is enough.
   private readonly outsiderPlaces = new Set<string>()
 
@@ -257,12 +262,28 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     this.members.set(msg.channel, members)
     if (msg.sender.name) this.names.set(msg.sender.id, msg.sender.name)
     this.reportTenant(payload.chatbotCorpId)
+    this.noteWebhook(msg, payload)
     if (!msg.isDm && fromOutside(payload) && !this.outsiderPlaces.has(msg.channel)) {
       this.outsiderPlaces.add(msg.channel)
       while (this.outsiderPlaces.size > SEEN_LIMIT)
         this.outsiderPlaces.delete(this.outsiderPlaces.values().next().value!)
       this.deps.onPlaceExternal?.(msg.channel, 'externalMember')
     }
+  }
+
+  // Kept only when it is this edition's own address, so a send never goes anywhere a payload names.
+  private noteWebhook(msg: NormalizedMessage, payload: DingTalkRobotMessage): void {
+    const url = payload.sessionWebhook
+    const until = payload.sessionWebhookExpiredTime
+    if (msg.isDm || typeof url !== 'string' || typeof until !== 'number') return
+    try {
+      if (new URL(url).origin !== this.api.oapiOrigin) return
+    } catch {
+      return
+    }
+    this.webhooks.delete(msg.channel)
+    this.webhooks.set(msg.channel, { url, until })
+    while (this.webhooks.size > SEEN_LIMIT) this.webhooks.delete(this.webhooks.keys().next().value!)
   }
 
   // A robot join raises no event, so the first message names the organization; resent hourly in case the CP lost it.
@@ -282,13 +303,24 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     return sent[0]?.processQueryKey
   }
 
-  /** A group post that @-mentions members: only a card carries mentions, so it needs the card client (§4.2). */
-  async postMentioning(channel: string, text: string, users: string[], identity?: SendIdentity): Promise<string> {
-    if (!this.cards) throw new Error('dingtalk: this app mentions people only on a card, and it sends no cards')
+  /** A group post that @-mentions members: a Markdown message through the group's fresh reply address, else a card (§4.2). */
+  async postMentioning(
+    channel: string,
+    text: string,
+    users: string[],
+    identity?: SendIdentity
+  ): Promise<string | undefined> {
     if (channel.startsWith('dm:'))
       throw new Error('dingtalk: a direct message mentions no one; send it without a channel')
     const ids = [...new Set(users)]
     if (!ids.every((id) => /^[^\s:$]{1,64}$/.test(id))) throw new Error("dingtalk: a mention needs a member's staff ID")
+    const hook = this.webhooks.get(channel)
+    const fresh = hook && hook.until - Date.now() > WEBHOOK_MARGIN_MS ? hook.url : undefined
+    if (fresh && (await this.mentionByWebhook(fresh, text, ids))) return undefined
+    if (!this.cards)
+      throw new Error(
+        'dingtalk: mentions need a message in this group within the last 90 minutes, or a card, and this app sends no cards'
+      )
     const names = Object.fromEntries(ids.map((id) => [id, this.names.get(id) ?? id]))
     const shown = `${ids.map((id) => `@${names[id]}`).join(' ')} ${text}`
     // A card body has a hard cap; a mention post that would not fit whole is refused rather than cut.
@@ -301,6 +333,31 @@ export class DingTalkConnection implements PlatformConnection, DingTalkReplyPort
     if (!(await this.cards.deliver(channel, outTrackId, params, names)))
       throw new Error('dingtalk: the mention card was not delivered')
     return outTrackId
+  }
+
+  // True once DingTalk took the message; false when it refused it, so the card may follow. A transport failure throws: the message may have landed.
+  private async mentionByWebhook(url: string, text: string, ids: string[]): Promise<boolean> {
+    const markdown = {
+      title: dingTalkMarkdownTitle(text),
+      text: `${ids.map((id) => `@${id}`).join(' ')} ${rewriteDingTalkMarkdown(text)}`
+    }
+    const bytes = Buffer.byteLength(JSON.stringify(markdown))
+    if (bytes > DINGTALK_MSG_PARAM_MAX_BYTES)
+      throw new Error(
+        `dingtalk: a mention message holds ${DINGTALK_MSG_PARAM_MAX_BYTES} bytes, and this one has ${bytes}; shorten it or send it without toUser`
+      )
+    const response = await (this.deps.fetchImpl ?? fetch)(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ msgtype: 'markdown', markdown, at: { atUserIds: ids } }),
+      signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(10_000)])
+    })
+    const answer = (await response.json().catch(() => ({}))) as { errcode?: unknown }
+    if (response.ok && answer.errcode === 0) return true
+    this.deps.log.warn(
+      `dingtalk: the reply address refused a mention (${String(answer.errcode ?? response.status)}); trying a card`
+    )
+    return false
   }
 
   /** A member's DM is the robot's own 1:1 chat, addressed by staff ID (§4.2); an outsider's opaque sender id has none. */
