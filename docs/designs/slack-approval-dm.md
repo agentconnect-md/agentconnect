@@ -391,16 +391,18 @@ carries no console link: the session is `external` (session-visibility.md §1), 
 opens only to linked members with access to the same conversation, with no editor override, and
 an editor linked elsewhere would get a 404. A click in a closed conversation still
 gets the console link, as on any platform.
-Beside a permission request's card, the editor DM of §5 (a Slack DM) goes out too unless the
-turn owner is an editor. It is routed over the agent's Slack integrations
-(`approvalDmIntegrations`), so on a synced Feishu/Lark integration of an agent with no Slack
-integration nobody is DMed, and the request waits for an editor in the conversation or the
-console; a Feishu/Lark approval DM is not built yet. The first answer decides: the DM's addressee is checked as §6.3 says, anyone else as
-here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
+Beside a permission request's card, the editor DM of §5 goes out too unless the turn owner is an
+editor. It is routed over the agent's Slack integrations first, then those whose platform opens a
+1:1 chat (`approvalDmIntegrations`); an editor routed to one of those gets the card in that chat
+through the platform's facet, as on the editor path (teams-integration.md §4.4). On a synced
+Feishu/Lark integration of an agent with neither, nobody is DMed, and the request waits for an
+editor in the conversation or the console; a Feishu/Lark approval DM is not built yet. The first
+answer decides: the DM's addressee is checked as §6.3 says, anyone else as here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
 (§11.4); editors answer it there or in the console. A conversation shared with another
 organization takes the editor path instead of the asker's DM. A task's card keeps the
 row's `notify*` handle, so the DM beside it keeps its own (`besideIntegrationId`,
-`besideChannel`, `besideTs`), and the reconnect sweep of §5.4 retires both. §4.4 holds: the check
+`besideChannel`, `besideTs`), as an editor's card off Slack always does, and the reconnect sweep
+of §5.4 retires both. §4.4 holds: the check
 is a forward scan from the console side, never a reverse index.
 
 ## 7. Console notification states
