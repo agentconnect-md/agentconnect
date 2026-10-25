@@ -129,9 +129,37 @@ export function rememberToolCall(known: Map<string, KnownToolCall>, update: unkn
   if (u.sessionUpdate !== 'tool_call' && u.sessionUpdate !== 'tool_call_update') return
   if (typeof u.toolCallId !== 'string' || !u.toolCallId) return
   const prior = known.get(u.toolCallId)
-  const title = approvalSummary(u.title, '') || prior?.title
+  const title = approvalSummary(mcpToolLabel(u.rawInput) || u.title, '') || prior?.title
   const detail = approvalSummary(approvalInputSummary(u.rawInput), '') || prior?.detail
   if (title || detail) known.set(u.toolCallId, { ...(title ? { title } : {}), ...(detail ? { detail } : {}) })
+}
+
+/** `server · tool` for an MCP call's `{server, tool}` input, which names it better than a flattened title; '' otherwise. */
+function mcpToolLabel(rawInput: unknown): string {
+  if (!rawInput || typeof rawInput !== 'object') return ''
+  const { server, tool } = rawInput as { server?: unknown; tool?: unknown }
+  if (typeof server !== 'string' || typeof tool !== 'string' || !server.trim() || !tool.trim()) return ''
+  return `${server.trim()} · ${tool.trim()}`
+}
+
+/** The request's first text content, where codex-acp puts an MCP approval's own question. */
+function permissionMessage(params: RequestPermissionRequest): string {
+  for (const item of params.toolCall?.content ?? []) {
+    if (item.type === 'content' && item.content.type === 'text' && item.content.text.trim()) return item.content.text
+  }
+  return ''
+}
+
+/** The request with a title every card can name it by, when it came without one: the call's earlier label, else its own question. */
+export function titledPermissionRequest(
+  params: RequestPermissionRequest,
+  known?: ReadonlyMap<string, KnownToolCall>
+): RequestPermissionRequest {
+  if (params.toolCall?.title?.trim()) return params
+  const toolCallId = params.toolCall?.toolCallId
+  const prior = typeof toolCallId === 'string' ? known?.get(toolCallId)?.title : undefined
+  const title = approvalSummary(prior || permissionMessage(params), '')
+  return title ? { ...params, toolCall: { ...params.toolCall, title } } : params
 }
 
 export function permissionRequestParts(
@@ -147,8 +175,20 @@ export function permissionRequestParts(
   }
 }
 
-export function elicitationApprovalParts(params: CreateElicitationRequest): ApprovalRequestParts {
-  return { tool: approvalSummary((params as { message?: unknown }).message, 'MCP tool permission request'), detail: '' }
+/** An MCP approval named by its call's `server · tool` when an earlier update said it, else by its message. */
+export function elicitationApprovalParts(
+  params: CreateElicitationRequest,
+  known?: ReadonlyMap<string, KnownToolCall>
+): ApprovalRequestParts {
+  const toolCallId = 'toolCallId' in params ? params.toolCallId : undefined
+  const prior = typeof toolCallId === 'string' ? known?.get(toolCallId) : undefined
+  const message = approvalSummary((params as { message?: unknown }).message, 'MCP tool permission request')
+  const toolParams = params._meta?.tool_params
+  const args =
+    toolParams && typeof toolParams === 'object' && !Array.isArray(toolParams)
+      ? mcpArgumentsSummary(toolParams as Record<string, unknown>)
+      : ''
+  return { tool: prior?.title || message, detail: prior?.detail || approvalSummary(args, '') }
 }
 
 /** The same request as the one line the durable permission row stores. */

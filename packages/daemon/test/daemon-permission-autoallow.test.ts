@@ -10,7 +10,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LocalStore } from '../src/store/local-store.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
-import { permissionRequestParts, rememberToolCall, type KnownToolCall } from '../src/daemon/tool-classification.js'
+import {
+  elicitationApprovalParts,
+  permissionRequestParts,
+  rememberToolCall,
+  titledPermissionRequest,
+  type KnownToolCall
+} from '../src/daemon/tool-classification.js'
 import { consolePermissionOptions } from '../src/permissions/editor-options.js'
 import { AGENT_PERMISSION_MAX_OPTIONS } from '@agentconnect.md/protocol'
 import { SlackConnection } from '../src/slack/connection.js'
@@ -2664,7 +2670,7 @@ describe('an approval names a call its request identifies only by id (#3289)', (
     )
     await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
     expect((daemon as any).store.createPermissionRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ command: 'mcp.files.create_folder: parent=/reports, name=drafts' })
+      expect.objectContaining({ command: 'files · create_folder: parent=/reports, name=drafts' })
     )
     const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision: 'deny' })
@@ -2687,7 +2693,7 @@ describe('an approval names a call its request identifies only by id (#3289)', (
     rememberToolCall(known, mcpCall('tc-1', { name: 'drafts' }))
     rememberToolCall(known, { sessionUpdate: 'tool_call_update', toolCallId: 'tc-1', status: 'in_progress' })
     expect(permissionRequestParts(req({ kind: 'execute' }), known)).toEqual({
-      tool: 'mcp.files.create_folder',
+      tool: 'files · create_folder',
       detail: 'name=drafts'
     })
   })
@@ -2702,5 +2708,50 @@ describe('an approval names a call its request identifies only by id (#3289)', (
 
   it('still falls back to the kind for a call it knows nothing about', () => {
     expect(permissionRequestParts(req({ kind: 'execute' }), new Map())).toEqual({ tool: 'execute', detail: '' })
+  })
+
+  it('titles a request that came without one by its call’s server and tool, for every card to name', () => {
+    const known = new Map<string, KnownToolCall>()
+    rememberToolCall(known, mcpCall('tc-1', { timezone: 'UTC' }))
+    expect(titledPermissionRequest(req({ kind: 'execute' }), known).toolCall.title).toBe('files · create_folder')
+    // The request's own title stays.
+    expect(titledPermissionRequest(req({ title: 'Run tests', kind: 'execute' }), known).toolCall.title).toBe(
+      'Run tests'
+    )
+  })
+
+  it('titles an uncorrelated MCP approval by its own question', () => {
+    const asked = {
+      ...req({ toolCallId: 'elicitation-files', kind: 'execute', rawInput: { serverName: 'files' } }),
+      toolCall: {
+        toolCallId: 'elicitation-files',
+        kind: 'execute',
+        content: [{ type: 'content', content: { type: 'text', text: 'Allow the files MCP server to run tool "x"?' } }]
+      }
+    } as unknown as RequestPermissionRequest
+    expect(titledPermissionRequest(asked, new Map()).toolCall.title).toBe('Allow the files MCP server to run tool "x"?')
+    // Nothing to name it by leaves it as asked.
+    expect(titledPermissionRequest(req({ kind: 'execute' }), new Map())).toEqual(req({ kind: 'execute' }))
+  })
+
+  it('names an MCP approval elicitation by its call, its arguments, else its message', () => {
+    const asked = {
+      sessionId: 's1',
+      toolCallId: 'tc-1',
+      mode: 'form',
+      message: 'Allow the files MCP server to run tool "create_folder"?',
+      requestedSchema: { type: 'object', properties: {} },
+      _meta: { codex_approval_kind: 'mcp_tool_call', tool_params: { name: 'drafts' } }
+    } as unknown as CreateElicitationRequest
+    const known = new Map<string, KnownToolCall>()
+    rememberToolCall(known, mcpCall('tc-1', { parent: '/reports' }))
+    expect(elicitationApprovalParts(asked, known)).toEqual({
+      tool: 'files · create_folder',
+      detail: 'parent=/reports'
+    })
+    expect(elicitationApprovalParts(asked, new Map())).toEqual({
+      tool: 'Allow the files MCP server to run tool "create_folder"?',
+      detail: 'name=drafts'
+    })
   })
 })

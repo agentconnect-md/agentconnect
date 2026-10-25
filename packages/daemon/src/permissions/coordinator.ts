@@ -115,6 +115,7 @@ import {
   isBuiltinSystemToolElicitation,
   isMcpToolApprovalElicitation,
   permissionRequestParts,
+  titledPermissionRequest,
   type ApprovalRequestParts
 } from '../daemon/tool-classification.js'
 import { pendingTurnKey, turnState, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
@@ -552,6 +553,8 @@ interface ElicitationApproval extends ApprovalEntry<CreateElicitationRequest, Cr
   kind: 'elicitation'
   /** The answers whoever asked it offers (§11.2); absent ⇒ Allow/Deny. A permission request re-derives its own (#1815). */
   choices?: ApprovalChoice<CreateElicitationResponse>[]
+  /** What its cards name it by, resolved while its turn could still say which call it is. */
+  parts: ApprovalRequestParts
   /** The routed editor's card in their own chat, drawn from `choices` by the platform's approval-card facet (teams-integration.md §4.4). */
   chat?: ChatPermissionCard
 }
@@ -565,7 +568,7 @@ function cardRequest(rec: PendingApproval): RequestPermissionRequest | null {
     sessionId: rec.sessionId,
     toolCall: {
       toolCallId: typeof toolCallId === 'string' ? toolCallId : '',
-      title: elicitationApprovalParts(rec.params).tool
+      title: rec.parts.tool
     },
     options: rec.choices.map((choice) => choice.option)
   }
@@ -1174,6 +1177,7 @@ export class PermissionCoordinator {
     const id = randomUUID()
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
+    const parts = this.elicitationParts(agentId, params, p)
     const entry: ElicitationApproval = {
       kind: 'elicitation',
       chatScope: this.chatScope(p),
@@ -1183,10 +1187,10 @@ export class PermissionCoordinator {
       askedAt: this.host.clock().now(),
       params,
       ...(choices ? { choices } : {}),
+      parts,
       resolve: resolveResult
     }
     this.pendingApprovals.set(id, entry)
-    const parts = elicitationApprovalParts(params)
     this.observeEditorPermission(p, id, parts, result, (value) => ({
       outcome: value.action === 'accept' ? 'allowed' : value.action === 'decline' ? 'denied' : 'cancelled'
     }))
@@ -2856,6 +2860,8 @@ export class PermissionCoordinator {
       })
       return { outcome: { outcome: 'cancelled' } }
     }
+    // codex-acp asks to approve an MCP call by id and kind alone; every card names it by what the call said (#3289).
+    params = this.host.maskAgentSecrets(agentId, titledPermissionRequest(params, p.knownToolCalls))
     // assistant-mode.md §5.12: a check is read-only, so whatever would need approval is refused, never asked.
     if (isCheckCoordinate(p.plan.sessionThread)) {
       this.permissionEvaluationDetails.set(evaluationParams, { reason: 'assistant_check' })
@@ -2917,6 +2923,11 @@ export class PermissionCoordinator {
       route,
       inChat.to === 'asker'
     )
+  }
+
+  /** An MCP approval's name and input, from the call it approves when the turn saw it; masked like the request. */
+  private elicitationParts(agentId: string, params: CreateElicitationRequest, p: Pending): ApprovalRequestParts {
+    return this.host.maskAgentSecrets(agentId, elicitationApprovalParts(params, p.knownToolCalls))
   }
 
   /** Where people may answer a turn's approval: its surface's card in an open conversation, the asker's DM for an external one, or only the editor path. */
@@ -2995,7 +3006,7 @@ export class PermissionCoordinator {
     if (isCheckCoordinate(p.plan.sessionThread)) return { action: 'decline' }
     const isApproval = isMcpToolApprovalElicitation(params)
     if (isApproval && this.callerAnswers(p)) {
-      return await this.askCaller<CreateElicitationResponse>(p, sessionId, elicitationApprovalParts(params), {
+      return await this.askCaller<CreateElicitationResponse>(p, sessionId, this.elicitationParts(agentId, params, p), {
         allow: () => ({ action: 'accept' }),
         deny: () => ({ action: 'decline' }),
         outcome: (value) => ({
@@ -3131,7 +3142,7 @@ export class PermissionCoordinator {
     })
     const observed = this.pendingElicits.get(requestId)!
     if (isApproval) {
-      this.observeEditorPermission(p, requestId, elicitationApprovalParts(params), result, (value) => ({
+      this.observeEditorPermission(p, requestId, this.elicitationParts(agentId, params, p), result, (value) => ({
         outcome: value.action === 'accept' ? 'allowed' : value.action === 'decline' ? 'denied' : 'cancelled'
       }))
     } else if (observed.row) {
@@ -3150,7 +3161,7 @@ export class PermissionCoordinator {
         requestId,
         agentId,
         sessionId,
-        elicitationApprovalParts(params),
+        this.elicitationParts(agentId, params, p),
         p,
         false
       )
