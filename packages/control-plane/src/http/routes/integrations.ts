@@ -51,7 +51,7 @@ import {
   type DecisionGateReadiness
 } from '../decision-access.js'
 import { isRoutedChannel } from '../../orchestrator/decisionBundle.js'
-import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
+import { integrationPlatformAvailability, noInstallDaemonMessage } from '../daemon-platform-capability.js'
 import { relayIngress } from '../relay-ingress.js'
 import { buildCreateIntegrationBody, credentialBlockOf } from '../dto/create-integration-body.js'
 import type { CpConfigRefusal } from '../../platforms/provider.js'
@@ -246,14 +246,10 @@ export function integrationRoutes(deps: HttpDeps) {
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
-        // Delivery is daemon-scoped; refuse until the agent is placed (no backfill hook). A pool
-        // agent IS placed and names no machine, so the capability probe below asks whichever
-        // member serves it.
-        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        // Refuse an unplaced agent; a pool agent no lease holds is probed on a live member, and its first holder fetches the install.
+        const installDaemonId = await deps.placementResolver.installDaemon(agent)
         if (!installDaemonId) {
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: noInstallDaemonMessage(agent) })
         }
         const platformAvailability = await integrationPlatformAvailability(deps, {
           daemonId: installDaemonId,
@@ -297,9 +293,8 @@ export function integrationRoutes(deps: HttpDeps) {
             })
           }
           agent = current
-          // Re-taken under the lease, and RESOLVED: the column is null for a pool agent, which is
-          // served without naming a machine. Nothing serving it is what "no longer placed" means.
-          if (!(await deps.placementResolver.servingDaemon(current))) {
+          // Re-taken under the lease and resolved the same way: a pool agent names no machine.
+          if (!(await deps.placementResolver.installDaemon(current))) {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,

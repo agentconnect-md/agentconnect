@@ -14,7 +14,7 @@ import { AgentId, OrgId } from '../../domain/ids.js'
 import { resolveAgentIconUrl } from '../../agents/agent-icon.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canEdit, canView } from '../../authorization/policy.js'
-import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
+import { integrationPlatformAvailability, noInstallDaemonMessage } from '../daemon-platform-capability.js'
 import {
   FeishuRegistrationConflictError,
   FeishuRegistrationRetryError,
@@ -71,12 +71,10 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
-        // A pool agent is placed and names no machine; the capability probe asks its server.
-        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        // A pool agent names no machine; the capability probe asks its serving member, else a live one.
+        const installDaemonId = await deps.placementResolver.installDaemon(agent)
         if (!installDaemonId) {
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: noInstallDaemonMessage(agent) })
         }
         const availability = await integrationPlatformAvailability(deps, {
           daemonId: installDaemonId,
@@ -222,9 +220,8 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
             if (!current || !canView(current, ctxOf(req)) || !canEdit(current, ctxOf(req))) {
               throw new FeishuRegistrationSetupError('agent_unavailable')
             }
-            // Resolved under the lease, exactly as the start leg resolved it: the column is null
-            // for a pool agent, so re-reading it would refuse every registration one finishes.
-            const finalizeDaemonId = await deps.placementResolver.servingDaemon(current)
+            // Resolved under the lease exactly as the start leg resolved it: a pool agent names no machine.
+            const finalizeDaemonId = await deps.placementResolver.installDaemon(current)
             if (!finalizeDaemonId) throw new FeishuRegistrationSetupError('agent_unavailable')
             const availability = await integrationPlatformAvailability(deps, {
               daemonId: finalizeDaemonId,
