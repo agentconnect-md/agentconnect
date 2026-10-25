@@ -676,6 +676,24 @@ describe('managed computers (§15.1)', () => {
     ).toBe(true)
   })
 
+  it('lists a managed computer not started yet as on demand, without allocating it', async () => {
+    const { tools, poolCalls, connects } = setup({
+      granted: [],
+      managed: 'ephemeral',
+      pool: () => ({ state: 'ready', computerId: M, allocation: 'ephemeral' })
+    })
+    const listed = await tools.call(ctx(), 'computer_list', {})
+    expect(JSON.parse((listed!.result.mcpContent[0] as { text: string }).text)).toEqual([
+      expect.objectContaining({ managed: 'ephemeral', status: 'on_demand' })
+    ])
+    expect(poolCalls).toEqual([])
+    expect(connects).toEqual([])
+    // Without the pool nothing would start it, so nothing is promised.
+    const off = setup({ granted: [], managed: 'ephemeral' })
+    const none = await off.tools.call(ctx(), 'computer_list', {})
+    expect(JSON.parse((none!.result.mcpContent[0] as { text: string }).text)).toEqual([])
+  })
+
   it('allocates the session computer, waits while it comes up, then forwards to it', async () => {
     const answers: ComputerPoolAcquireResult[] = [
       { state: 'pending', phase: 'provisioning', retryAfterMs: 2000 },

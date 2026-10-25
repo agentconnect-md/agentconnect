@@ -1530,7 +1530,9 @@ cluster credentials ([k8s-daemon-pool.md](k8s-daemon-pool.md) D17):
 - **The agent's tools.** With `computerUse.managed` set, the tools are offered when the CP advertises `computer-pool-v1`
   even with no `computers` listed. A call with no explicit `computer` and no held lease targets the session's managed
   computer, asking `computer-pool/acquire` until it is ready for at most 180 s and failing with `unavailable`, its
-  reason and phase otherwise; nothing reaches a desktop meanwhile. A granted pool computer is woken before the session's
+  reason and phase otherwise; nothing reaches a desktop meanwhile. Until then `computer_list` shows it as one row with
+  the mode and `status: on_demand` and no id, without allocating it, so an agent does not read an empty list as having
+  no computer. A granted pool computer is woken before the session's
   first call to it, and once more when a call is refused because it fell asleep since.
 - **API and deployment.** `POST /orgs/:orgId/computers/pool` creates a `manual` computer (503 without a pool member);
   `PUT …/computers/:id/policy` assigns it; `GET …/computers` lists managed computers with `allocation`,
