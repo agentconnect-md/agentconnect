@@ -60,8 +60,14 @@ import type { GoogleChatWriteBudgets } from './googlechat/write-budget.js'
 import { QQConnection, consolidateQQ, QQConnKey } from './qq/connection.js'
 import { dingTalkQuestionTemplate } from './dingtalk/card.js'
 import { consolidateDingTalk, DingTalkConnection, dingTalkConnKey } from './dingtalk/connection.js'
-import { consolidateMsTeams, MsTeamsConnection } from './msteams/connection.js'
+import {
+  consolidateMsTeams,
+  MSTEAMS_REMEMBERED_CONVERSATIONS,
+  MsTeamsConnection,
+  msTeamsMemoryScope
+} from './msteams/connection.js'
 import { MsTeamsWriteBudgets } from './msteams/write-budget.js'
+import { storeConversationMemory } from './conversation-memory.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
 import { CredentialRevocationReporter } from './credential-revocation.js'
@@ -1133,7 +1139,12 @@ export class ConnectionReconciler {
         conn = new MsTeamsConnection({
           group,
           log: this.log,
-          budget: this.msTeamsBudgets.for(group.config.appId, group.config.tenantId)
+          budget: this.msTeamsBudgets.for(group.config.appId, group.config.tenantId),
+          memory: storeConversationMemory(
+            this.host.store(),
+            msTeamsMemoryScope(group.config),
+            MSTEAMS_REMEMBERED_CONVERSATIONS
+          )
         })
         try {
           this.msTeamsPool.add(conn)
@@ -1146,6 +1157,10 @@ export class ConnectionReconciler {
         } finally {
           this.msTeamsPool.endConnect(group.key)
         }
+        // The remembered conversations are back, so their rows regain their teams now rather than on their next message; detached like the Linear report.
+        void this.host
+          .refreshObservedChannels()
+          .catch((err) => this.log.warn(`msteams: refreshing the observed channels failed: ${formatErr(err)}`))
         continue
       }
       for (const { integrationId } of group.integrations)

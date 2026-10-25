@@ -21,6 +21,7 @@ import type {
   PlatformThreadWindow,
   PlatformUserProfile
 } from '../contract.js'
+import type { ConversationMemory } from '../conversation-memory.js'
 import { platformIntegrationConfig } from '../integration-config.js'
 import type { ObservedChat } from '../observed-channels.js'
 import { PlatformSendQueue } from '../send-queue.js'
@@ -50,6 +51,10 @@ export const MSTEAMS_CONVERSATION_INTERVAL_MS = 2_000
 export const MSTEAMS_MESSAGE_MAX_BYTES = 80 * 1024
 
 const CONVERSATIONS_MAX = 2_000
+/** The most conversations one bot's memory keeps across restarts, as many as it keeps live. */
+export const MSTEAMS_REMEMBERED_CONVERSATIONS = CONVERSATIONS_MAX
+/** How long an unchanged remembered conversation goes before its next traffic refreshes its place among the most recent. */
+const MEMORY_TOUCH_MS = 24 * 60 * 60_000
 const MEMBERS_PER_CONVERSATION = 200
 const NAMES_MAX = 5_000
 const CARDS_MAX = 2_000
@@ -71,6 +76,14 @@ export function msTeamsConnKey(c: Pick<IntegrationMsTeamsConfig, 'appId' | 'tena
   return createHash('sha256')
     .update(JSON.stringify([c.appId.toLowerCase(), c.tenantId.toLowerCase(), c.clientSecret]))
     .digest('hex')
+}
+
+/** The store scope one bot's remembered conversations live under: its app and tenant, which survive a secret rotation. */
+export function msTeamsMemoryScope(c: Pick<IntegrationMsTeamsConfig, 'appId' | 'tenantId'>): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([c.appId.toLowerCase(), c.tenantId.toLowerCase()]))
+    .digest('hex')
+  return `msteams:${digest.slice(0, 24)}`
 }
 
 /** Group an agent set's Teams integrations, one connection per bot credential; a rejected config is skipped. */
@@ -147,6 +160,28 @@ interface KnownConversation {
   teamId?: string
 }
 
+/** A conversation as it is remembered across restarts: what the bot saw, plus its team's name once read. */
+type RememberedConversation = KnownConversation & { team?: string }
+
+// A remembered conversation read back from the store, which may hold a row an older build or a hand edit left malformed.
+function rememberedConversation(facts: unknown): RememberedConversation | undefined {
+  if (!facts || typeof facts !== 'object') return undefined
+  const f = facts as Record<string, unknown>
+  const text = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
+  const serviceUrl = text(f.serviceUrl)
+  const kind = f.kind
+  if (!serviceUrl?.startsWith('https://') || (kind !== 'personal' && kind !== 'chat' && kind !== 'channel'))
+    return undefined
+  const [name, teamId, team] = [text(f.name), text(f.teamId), text(f.team)]
+  return {
+    serviceUrl,
+    kind,
+    ...(name ? { name } : {}),
+    ...(kind === 'channel' && teamId ? { teamId } : {}),
+    ...(team ? { team } : {})
+  }
+}
+
 /** What Teams answers unnamed in a team's channel list: the default channel, which its client calls General. */
 const DEFAULT_CHANNEL_NAME = 'General'
 /** How long a team's channel names are trusted, and how long a failed read waits before trying again. */
@@ -195,6 +230,8 @@ export interface MsTeamsDeps {
   sendIntervalMs?: number
   /** The (app, tenant) write budget on this daemon, shared by every connection of the app; absent ⇒ unbudgeted. */
   budget?: WriteBudget
+  /** Where the bot's conversations are kept across restarts; absent ⇒ memory only. */
+  memory?: ConversationMemory
 }
 
 function remember<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
@@ -232,6 +269,13 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   private readonly teamChannels = new Map<string, { at: number; channels: Promise<Map<string, TeamChannel>> }>()
   /** Team → its display name and when it was read; a failed read answers none until the TTL passes. */
   private readonly teamNames = new Map<string, { at: number; name: Promise<string | undefined> }>()
+  /** Team → the last name read for it, in this run or a remembered one; it stands while a read fails. */
+  private readonly knownTeamNames = new Map<string, string>()
+  /** Conversation → the facts last remembered for it and when, so unchanged traffic writes nothing. */
+  private readonly saved = new Map<string, { facts: string; at: number }>()
+  /** The remembered writes in order, each settled before the next. */
+  private saving: Promise<void> = Promise.resolve()
+  private restored = false
   /** Person, by `29:` and Entra object ID → their standing as a lookup or a member listing last answered. */
   private readonly standings = new Map<string, { at: number; member: MsTeamsMember }>()
   /** Team → its visibility and when it was read; a failed read answers undefined until the TTL passes. */
@@ -288,14 +332,74 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
 
   // ── 1. transport lifecycle ──
 
-  /** No socket to open: warm the token, which proves the app, tenant and secret together (§2). */
+  /** No socket to open: reload the remembered conversations, then warm the token, which proves the app, tenant and secret together (§2). */
   async start(): Promise<void> {
     this.stopped = false
+    await this.restore()
     await this.api.token()
   }
 
   async stop(): Promise<void> {
     this.stopped = true
+    await this.flush()
+  }
+
+  /** Resolves once every remembered write queued so far has landed. */
+  async flush(): Promise<void> {
+    for (let pending = this.saving; ; pending = this.saving) {
+      await pending
+      if (pending === this.saving) return
+    }
+  }
+
+  // The conversations an earlier run learned, oldest first so the newest stay most recent; anything noted meanwhile wins.
+  private async restore(): Promise<void> {
+    const memory = this.deps.memory
+    if (!memory || this.restored) return
+    this.restored = true
+    let rows: { id: string; facts: unknown }[]
+    try {
+      rows = await memory.load()
+    } catch (err) {
+      this.deps.log?.warn(`msteams: reading the remembered conversations failed: ${(err as Error).message}`)
+      return
+    }
+    const live = [...this.conversations]
+    for (const { id, facts } of [...rows].reverse()) {
+      const remembered = rememberedConversation(facts)
+      if (!remembered) continue
+      const { team, ...known } = remembered
+      remember(this.conversations, id, known, CONVERSATIONS_MAX)
+      if (team && known.teamId) remember(this.knownTeamNames, known.teamId, team, CONVERSATIONS_MAX)
+      // Read back but never written by this run, so its next traffic refreshes its place among the most recent.
+      remember(this.saved, id, { facts: JSON.stringify(remembered), at: 0 }, CONVERSATIONS_MAX)
+    }
+    for (const [id, known] of live) remember(this.conversations, id, known, CONVERSATIONS_MAX)
+  }
+
+  // Remember a conversation's facts and its team's name when they changed or were last written long ago; a failed write is only logged.
+  private persist(channel: string): void {
+    const memory = this.deps.memory
+    const known = this.conversations.get(channel)
+    if (!memory || !known) return
+    const team = known.teamId ? this.knownTeamNames.get(known.teamId) : undefined
+    const facts: RememberedConversation = { ...known, ...(team ? { team } : {}) }
+    const json = JSON.stringify(facts)
+    const last = this.saved.get(channel)
+    if (last?.facts === json && this.now() - last.at < MEMORY_TOUCH_MS) return
+    remember(this.saved, channel, { facts: json, at: this.now() }, CONVERSATIONS_MAX)
+    this.saving = this.saving.then(() =>
+      memory.save(channel, facts).catch((err: unknown) => {
+        this.deps.log?.debug(`msteams: remembering a conversation failed: ${(err as Error).message}`)
+      })
+    )
+  }
+
+  // A team's name as last read; a change is remembered on every conversation of the team.
+  private noteTeamName(teamId: string, name: string): void {
+    if (this.knownTeamNames.get(teamId) === name) return
+    remember(this.knownTeamNames, teamId, name, CONVERSATIONS_MAX)
+    for (const [channel, known] of this.conversations) if (known.teamId === teamId) this.persist(channel)
   }
 
   /** Record what a delivered message proves: its conversation's serviceUrl and kind, and who spoke there. */
@@ -317,6 +421,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     remember(members, msg.sender.id, msg.sender.name, MEMBERS_PER_CONVERSATION)
     remember(this.members, msg.channel, members, CONVERSATIONS_MAX)
     if (msg.sender.name) remember(this.names, msg.sender.id, msg.sender.name, NAMES_MAX)
+    this.persist(msg.channel)
   }
 
   /** A seen conversation's write target: a channel thread posts into `<channel>;messageid=<root>`, anything else into the conversation. */
@@ -497,7 +602,10 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     if (!known.teamId) return undefined
     const listed = (await this.teamChannelList(known.teamId, known.serviceUrl)).get(channel)
     const current = this.conversations.get(channel)
-    if (listed && current) remember(this.conversations, channel, { ...current, name: listed.name }, CONVERSATIONS_MAX)
+    if (listed && current && current.name !== listed.name) {
+      remember(this.conversations, channel, { ...current, name: listed.name }, CONVERSATIONS_MAX)
+      this.persist(channel)
+    }
     return listed
   }
 
@@ -541,7 +649,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
       .map(([id, c]) => ({ id, name: c.name, ...(team ? { spaceId: teamId, space: team } : {}) }))
   }
 
-  // A team's name from the Bot Connector's team details, read at most once per TTL per team.
+  // A team's name from the Bot Connector's team details, read at most once per TTL per team; the last name known stands while a read fails.
   private async teamName(teamId: string, serviceUrl: string): Promise<string | undefined> {
     let entry = this.teamNames.get(teamId)
     if (!entry || this.now() - entry.at > TEAM_CHANNELS_TTL_MS) {
@@ -555,7 +663,9 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
       entry = { at: this.now(), name }
       remember(this.teamNames, teamId, entry, CONVERSATIONS_MAX)
     }
-    return await entry.name
+    const name = await entry.name
+    if (name) this.noteTeamName(teamId, name)
+    return name ?? this.knownTeamNames.get(teamId)
   }
 
   /** The places a roster change made external and why: each added person looked up for a guest or another organization. */
@@ -603,6 +713,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     const chat = await this.api.openDirectConversation(serviceUrl, member.id, this.tenantId, this.botUserId)
     const name = member.name ?? this.names.get(user)
     remember(this.conversations, chat, { serviceUrl, kind: 'personal', ...(name ? { name } : {}) }, CONVERSATIONS_MAX)
+    this.persist(chat)
     return chat
   }
 

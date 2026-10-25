@@ -1659,6 +1659,26 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     await s.close()
   })
 
+  it('connection conversations: newest first, bounded per scope, another scope left alone', async () => {
+    const s = await store()
+    const scope = 'msteams:example-scope'
+    const other = 'msteams:other-scope'
+    await s.saveConnectionConversation(other, 'c0', '{}', 1, 2)
+    await s.saveConnectionConversation(scope, 'c1', '{"n":1}', 10, 2)
+    await s.saveConnectionConversation(scope, 'c2', '{"n":2}', 20, 2)
+    // A rewrite refreshes the row's place, so the next insert evicts the other one.
+    await s.saveConnectionConversation(scope, 'c1', '{"n":3}', 30, 2)
+    await s.saveConnectionConversation(scope, 'c3', '{"n":4}', 40, 2)
+    expect(await s.connectionConversations(scope, 10)).toEqual([
+      { id: 'c3', facts: '{"n":4}' },
+      { id: 'c1', facts: '{"n":3}' }
+    ])
+    expect(await s.connectionConversations(scope, 1)).toEqual([{ id: 'c3', facts: '{"n":4}' }])
+    expect(await s.connectionConversations(other, 10)).toEqual([{ id: 'c0', facts: '{}' }])
+    expect(await s.connectionConversations('msteams:unknown-scope', 10)).toEqual([])
+    await s.close()
+  })
+
   it('observedChannels/observedUsers: distinct per physical bot, newest-first, name-joined', async () => {
     const s = await store()
     const sess = async (

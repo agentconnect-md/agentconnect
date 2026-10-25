@@ -2884,6 +2884,12 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS channel_scopes (
         id TEXT PRIMARY KEY, parentId TEXT, spaceId TEXT, isIm INTEGER, updatedAt INTEGER
       );
+      -- What one connection learned about a conversation it reaches (ids, endpoint, kind, names; never content), kept across restarts.
+      CREATE TABLE IF NOT EXISTS connection_conversations (
+        scope TEXT NOT NULL, id TEXT NOT NULL, facts TEXT NOT NULL, updatedAt INTEGER NOT NULL,
+        PRIMARY KEY (scope, id)
+      );
+      CREATE INDEX IF NOT EXISTS connection_conversations_recent ON connection_conversations (scope, updatedAt);
       -- Conversations this daemon must stop REPORTING: the bot left, or an operator
       -- forgot the row. Needed because the observed set of a platform that cannot
       -- enumerate is derived from SESSION HISTORY, which knows nothing about leaving —
@@ -8183,6 +8189,36 @@ export class LocalStore {
       })
     }
     return out
+  }
+
+  /** One connection's remembered conversations, most recently updated first, at most `limit`. */
+  async connectionConversations(scope: string, limit: number): Promise<{ id: string; facts: string }[]> {
+    return (await this.db
+      .prepare('SELECT id, facts FROM connection_conversations WHERE scope = ? ORDER BY updatedAt DESC, id LIMIT ?')
+      .all(scope, Math.max(1, Math.trunc(limit)))) as unknown as { id: string; facts: string }[]
+  }
+
+  /** Remember a conversation for one connection, keeping only its `keep` most recently updated. */
+  async saveConnectionConversation(
+    scope: string,
+    id: string,
+    facts: string,
+    updatedAt: number,
+    keep: number
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO connection_conversations (scope, id, facts, updatedAt) VALUES (?, ?, ?, ?)
+         ON CONFLICT (scope, id) DO UPDATE SET facts = excluded.facts, updatedAt = excluded.updatedAt`
+      )
+      .run(scope, id, facts, updatedAt)
+    await this.db
+      .prepare(
+        `DELETE FROM connection_conversations WHERE scope = ? AND id NOT IN (
+           SELECT id FROM connection_conversations WHERE scope = ? ORDER BY updatedAt DESC, id LIMIT ?
+         )`
+      )
+      .run(scope, scope, Math.max(1, Math.trunc(keep)))
   }
 
   /**

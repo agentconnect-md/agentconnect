@@ -101,7 +101,8 @@ fails, or one no assigned bot owns, answers 401 before anything is forwarded.
 Tokens issued by Entra rather than the Bot Framework are refused.
 
 Outbound calls go to the `serviceUrl` the conversation's latest activity
-carried, which the daemon records per conversation; proactive sends need that
+carried, which the daemon records per conversation and keeps in its local store
+across restarts; proactive sends need that
 recorded reference, since Teams offers no lookup by email or user principal
 name. The `serviceUrl` is regional and tenant-specific
 (`https://smba.trafficmanager.net/<region>/<tenantId>/`), so it is read, never
@@ -208,12 +209,15 @@ as the Teams client does. A failed read leaves the ID until the next one.
 
 Every team has a General, so a channel row carries its team as its space (the
 team's ID, named by `GET {serviceUrl}/v3/teams/{teamId}` with the bot's own token
-at most once per team every ten minutes), which the Console groups rows under and
-a row keeps once learned. A team-wide install (`bot-added` with
-`teamMemberAdded`) reports the team's standard channels, General included, at
-once, seeded as a first mention would seed them; a private or a shared channel
-takes the app only when it is added there, so its row still appears on its first
-mention.
+at most once per team every ten minutes, **measured**), which the Console groups
+rows under and a row keeps once learned. The daemon keeps each conversation it has
+seen (its kind, team, `serviceUrl` and names, never content) in its local store,
+bounded per bot, so after a restart a seen channel's row keeps its team from the
+first refresh, without waiting for new traffic there. A team-wide install
+(`bot-added` with `teamMemberAdded`) reports the team's standard channels,
+General included, at once, seeded as a first mention would seed them; a private
+or a shared channel takes the app only when it is added there, so its row still
+appears on its first mention.
 
 Identity is tenant-scoped: `from.aadObjectId` with the tenant ID identifies a
 person, and `from.id` is specific to the bot. Display names are for display
@@ -633,7 +637,7 @@ relay route is added to the chart's HTTPRoute in the same change.
   linking (§4.5).
 - The member list of a group chat and of private and shared channels (§4.5).
 - That the bot's own team-wide install carries `eventType: teamMemberAdded` as a
-  member's does, and that the team details name the team (§4.1).
+  member's does (§4.1).
 - Extended Markdown on mobile clients (§4.3).
 - That the upgrade of §8.3 step 5 takes a resource-specific permission the team
   has not granted before (the measured upgrade re-consented grants it already
