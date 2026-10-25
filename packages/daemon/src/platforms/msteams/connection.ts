@@ -22,6 +22,7 @@ import type {
   PlatformUserProfile
 } from '../contract.js'
 import { platformIntegrationConfig } from '../integration-config.js'
+import type { ObservedChat } from '../observed-channels.js'
 import { PlatformSendQueue } from '../send-queue.js'
 import type { WriteBudget } from '../write-budget.js'
 import {
@@ -229,6 +230,8 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   private readonly rosters = new Map<string, { at: number; members: Promise<PlatformMemberRef[] | undefined> }>()
   /** Team → its channels' names and types and when they were read; a read in flight is shared. */
   private readonly teamChannels = new Map<string, { at: number; channels: Promise<Map<string, TeamChannel>> }>()
+  /** Team → its display name and when it was read; a failed read answers none until the TTL passes. */
+  private readonly teamNames = new Map<string, { at: number; name: Promise<string | undefined> }>()
   /** Person, by `29:` and Entra object ID → their standing as a lookup or a member listing last answered. */
   private readonly standings = new Map<string, { at: number; member: MsTeamsMember }>()
   /** Team → its visibility and when it was read; a failed read answers undefined until the TTL passes. */
@@ -516,6 +519,43 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
       remember(this.teamChannels, teamId, entry, CONVERSATIONS_MAX)
     }
     return await entry.channels
+  }
+
+  /** A channel's team as the space it sits in, once the team's name is read; undefined for a chat or an unknown team. */
+  async spaceOf(channel: string): Promise<{ id: string; name: string } | undefined> {
+    const known = this.conversations.get(channel)
+    if (known?.kind !== 'channel' || !known.teamId) return undefined
+    const name = await this.teamName(known.teamId, known.serviceUrl)
+    return name ? { id: known.teamId, name } : undefined
+  }
+
+  /** The channels a team-wide install put the bot in, its team as their space: every standard channel the team's list names. */
+  async teamInstallPlaces(serviceUrl: string, teamId: string): Promise<ObservedChat[]> {
+    const [channels, team] = await Promise.all([
+      this.teamChannelList(teamId, serviceUrl),
+      this.teamName(teamId, serviceUrl)
+    ])
+    // A private or shared channel takes the app only when it is added to that channel itself (§4.1), so the list does not say the bot is there.
+    return [...channels]
+      .filter(([id, c]) => c.kind === 'standard' || id === teamId)
+      .map(([id, c]) => ({ id, name: c.name, ...(team ? { spaceId: teamId, space: team } : {}) }))
+  }
+
+  // A team's name from the Bot Connector's team details, read at most once per TTL per team.
+  private async teamName(teamId: string, serviceUrl: string): Promise<string | undefined> {
+    let entry = this.teamNames.get(teamId)
+    if (!entry || this.now() - entry.at > TEAM_CHANNELS_TTL_MS) {
+      const name = this.api.teamDetails(serviceUrl, teamId).then(
+        (details) => details.name,
+        (err: unknown) => {
+          this.deps.log?.debug(`msteams: reading a team's details failed: ${(err as Error).message}`)
+          return undefined
+        }
+      )
+      entry = { at: this.now(), name }
+      remember(this.teamNames, teamId, entry, CONVERSATIONS_MAX)
+    }
+    return await entry.name
   }
 
   /** The places a roster change made external and why: each added person looked up for a guest or another organization. */

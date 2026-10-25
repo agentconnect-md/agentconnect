@@ -2663,6 +2663,10 @@ export class Daemon {
       agents: () => this.agents,
       channelSnapshots: () => this.channelSnapshots,
       integrationConfigById: (integrationId) => this.integrationConfigById(integrationId),
+      liveSpaceFor: async (integrationId, channelId) => {
+        const conn: ContractConnection | undefined = this.gatewayForIntegration(integrationId)
+        return await conn?.spaceOf?.(channelId).catch(() => undefined)
+      },
       transportScopeForIntegration: (integration) => this.transportScopeForIntegration(integration),
       emitSessionMetadataSnapshotsForDisplayName: (id) =>
         this.sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName(id)
@@ -13933,6 +13937,13 @@ export class Daemon {
     const agent = this.agents.get(msg.agentId)
     const int = agent?.integrations.find((i) => i.id === msg.integrationId && i.platform === msg.platformId)
     if (!agent || !int) return { msgId: msg.msgId, accepted: false, reason: 'not_found' }
+    // The install's places become rows now, seeded as a first message would seed them, rather than after one.
+    const places = await added.places?.().catch((err: unknown) => {
+      this.log.warn(`relay: ${msg.platformId} install places not read in ch=${added.channel}: ${formatErr(err)}`)
+      return []
+    })
+    if (places?.length)
+      await this.observedChannelsSync.observePlatformChats(msg.platformId, places, [msg.integrationId])
     const welcome = buildWelcome({
       isDm: added.isDm,
       enabled: conversationAdmitted(integrationRouting(int), added.channel),
@@ -24344,8 +24355,9 @@ export class Daemon {
     // agent's DM to its ordinary default when this member is one of the agent's own.
     const dmUserId = kind === 'im' ? { dmUserId: msg.sender.id } : undefined
     const known = (await this.store.getDisplayNames([channel])).get(channel)
-    // Which Discord server the channel belongs to — see spaceFor. Direct rows have none.
-    const found = kind === 'channel' ? await this.observedChannelsSync.spaceFor(msg.platform, channel) : undefined
+    // The space the channel sits in (a Discord server, a Teams team) — see spaceFor. Direct rows have none.
+    const found =
+      kind === 'channel' ? await this.observedChannelsSync.spaceFor(msg.platform, channel, integrationId) : undefined
     const space = found ? { spaceId: found.id, ...(found.name ? { space: found.name } : {}) } : undefined
     // Compare against what a write would actually change — a partially resolved space
     // (id known, name not yet) must not re-emit the snapshot on every message.

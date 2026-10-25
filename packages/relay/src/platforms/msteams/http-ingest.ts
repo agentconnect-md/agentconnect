@@ -114,11 +114,15 @@ export function msTeamsBotAdded(activity: Obj, appId: string): WireMsTeamsBotAdd
   const from = obj(activity.from)
   const fromId = str(from?.id)
   const fromName = str(from?.name)?.trim().slice(0, 256)
+  // A channel install names its team, and a team-wide one puts the bot in every standard channel.
+  const channelData = obj(activity.channelData)
+  const teamId = scope === 'channel' ? str(obj(channelData?.team)?.id) : undefined
   return {
     kind: 'bot-added',
     conversationId,
     serviceUrl,
     scope,
+    ...(teamId ? { teamId, teamWide: channelData?.eventType === 'teamMemberAdded' } : {}),
     ...(fromId && fromId.toLowerCase() !== bot
       ? { addedBy: { id: fromId, ...(fromName ? { name: fromName } : {}) } }
       : {})

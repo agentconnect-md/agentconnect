@@ -36,6 +36,7 @@
  */
 import type { PlaceExternalReason, RdMsgIm, RdMsgPlatformAction } from '@agentconnect.md/protocol'
 import type { NormalizedMessage } from '../messages/normalized.js'
+import type { ObservedChat } from './observed-channels.js'
 
 /** The human behind one interactive click (button / select / modal submit). Carried
  *  alongside the action so the daemon records WHO changed a session, which a bare
@@ -369,6 +370,8 @@ export interface PlatformConnection {
   leaveChannel?(channel: string): Promise<void>
   /** Leave the enclosing space/guild (`leaveGranularity: 'space'` — Discord). */
   leaveSpace?(space: string): Promise<void>
+  /** The named space a conversation sits in (a Teams channel's team), for a platform with no observed-channels strategy; undefined while unknown. */
+  spaceOf?(channel: string): Promise<{ id: string; name: string } | undefined>
   /** Delete a message the daemon posted (chrome cleanup). */
   deleteMessage?(channel: string, ts: string): Promise<boolean>
   /** React to an inbound message — the turn-start acknowledgement, placed before the
@@ -490,6 +493,8 @@ export interface BotAdded {
   channel: string
   isDm: boolean
   post(welcome: Welcome): Promise<void>
+  /** The conversations the install put the bot in, which core reports as observed rows before any message; absent ⇒ none. */
+  places?(): Promise<ObservedChat[]>
 }
 
 /** Core's welcome, which the platform renders: what the bot does, how to use it here, whether it is enabled here, and where to go next. */

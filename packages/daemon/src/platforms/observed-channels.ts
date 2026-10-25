@@ -14,8 +14,9 @@
  * thread channel in `sessions.channel`.
  *
  * Telegram and Feishu chats have neither notion; their rows pass through. That
- * is the default: no collapse, no spaces — any platform without a registered
- * strategy reports observed rows exactly as collected.
+ * is the default: no collapse — a platform without a registered strategy reports
+ * observed rows as collected, with only the space its live connection names
+ * (`PlatformConnection.spaceOf`, a Teams team).
  *
  * WHICH platforms get rebuilt this way is {@link observedMembershipPlatforms} —
  * a derived set, not a hand list, so the "no authoritative snapshot" fact has one
@@ -51,7 +52,11 @@ export function observedMembershipPlatforms(): readonly string[] {
 export interface ObservedChat {
   id: string
   name?: string
-  isPrivate: boolean
+  /** Absent when the reporter cannot tell, which leaves the row's own value standing. */
+  isPrivate?: boolean
+  /** The space it sits in and that space's name (a Teams team), reported together. */
+  spaceId?: string
+  space?: string
   icon?: string
   color?: string
   key?: string
@@ -88,8 +93,7 @@ export function registerObservedChannels(strategy: ObservedChannelsStrategy): vo
   STRATEGIES.set(strategy.platform, strategy)
 }
 
-/** The platform's strategy, or undefined — rows then pass through untouched
- *  and no space is attached, every non-Discord platform's behavior. */
+/** The platform's strategy, or undefined — rows then pass through, spaced only by the live connection. */
 export function observedChannelsFor(platform: string): ObservedChannelsStrategy | undefined {
   return STRATEGIES.get(platform)
 }

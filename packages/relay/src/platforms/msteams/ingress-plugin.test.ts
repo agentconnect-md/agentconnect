@@ -461,6 +461,8 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
         conversationId: CHANNEL,
         serviceUrl: SERVICE_URL,
         scope: 'channel',
+        teamId: TEAM,
+        teamWide: true,
         addedBy: { id: USER, name: 'Example Person' }
       },
       {
@@ -475,10 +477,17 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
     expect(first).toMatchObject({ integrationId: TARGET.integrationId, sessionKey: `msteams-bot-added:${CHANNEL}` })
     expect(first!.msgId).toMatch(/^msteams-bot-added:[0-9a-f]{32}$/)
     expect(second!.msgId).not.toBe(first!.msgId)
+    // An install into one channel names the team without putting the bot in all of it.
+    const channelInstall = edit(teamInstall, (a) => {
+      a.id = 'f:example-channel-install'
+      a.channelData.eventType = 'channelMemberAdded'
+    })
+    await deliver(s, channelInstall)
+    expect(installs()[2]![0].payload).toMatchObject({ scope: 'channel', teamId: TEAM, teamWide: false })
     // Someone else joining forwards no install.
     const someoneElse = edit(conversationUpdate, (a) => (a.membersAdded = [{ id: USER, aadObjectId: AAD_USER }]))
     await deliver(s, someoneElse)
-    expect(installs()).toHaveLength(2)
+    expect(installs()).toHaveLength(3)
   })
 })
 

@@ -206,6 +206,15 @@ read with the bot's own token at most once per team every ten minutes. Teams
 answers the default channel, whose ID is the team's, unnamed (**measured**), and the Console shows it as **General**,
 as the Teams client does. A failed read leaves the ID until the next one.
 
+Every team has a General, so a channel row carries its team as its space (the
+team's ID, named by `GET {serviceUrl}/v3/teams/{teamId}` with the bot's own token
+at most once per team every ten minutes), which the Console groups rows under and
+a row keeps once learned. A team-wide install (`bot-added` with
+`teamMemberAdded`) reports the team's standard channels, General included, at
+once, seeded as a first mention would seed them; a private or a shared channel
+takes the app only when it is added there, so its row still appears on its first
+mention.
+
 Identity is tenant-scoped: `from.aadObjectId` with the tenant ID identifies a
 person, and `from.id` is specific to the bot. Display names are for display
 only. Email and user principal name are available from the conversation member
@@ -502,7 +511,7 @@ answer `help`, so a first contact never dead-ends.
 
 - **Welcome.** A `conversationUpdate` that adds the bot itself is forwarded to
   the bot's agent as a `platform_action` (`bot-added`: the conversation, its
-  scope, and who added it). Core composes one welcome and Teams posts it as an
+  scope, its team, and who added it). Core composes one welcome and Teams posts it as an
   Adaptive Card: what it does, how to reach it in that scope, a line that an
   admin turns it on in the console when the conversation is not enabled yet,
   how to ask for help, and links to the console, the guide and support. The
@@ -619,6 +628,8 @@ relay route is added to the chart's HTTPRoute in the same change.
   any third-party application, and that an administrator's consent unblocks
   linking (§4.5).
 - The member list of a group chat and of private and shared channels (§4.5).
+- That the bot's own team-wide install carries `eventType: teamMemberAdded` as a
+  member's does, and that the team details name the team (§4.1).
 - Extended Markdown on mobile clients (§4.3).
 - That the upgrade of §8.3 step 5 takes a resource-specific permission the team
   has not granted before (the measured upgrade re-consented grants it already
