@@ -562,19 +562,22 @@ export class PgIntegrationRepo implements IntegrationRepo {
   constructor(private readonly db: PrismaLike) {}
 
   async create(input: CreateIntegrationInput): Promise<IntegrationRecord> {
-    const i = await this.db.integration.create({
-      data: {
-        id: input.id,
-        orgId: input.orgId,
-        agentId: input.agentId,
-        botId: input.botId,
-        platform: toDbPlatform(input.platform),
-        name: input.name,
-        ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
-        ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
-      }
+    return withAmbientTx(this.db, async (tx) => {
+      const i = await tx.integration.create({
+        data: {
+          id: input.id,
+          orgId: input.orgId,
+          agentId: input.agentId,
+          botId: input.botId,
+          platform: toDbPlatform(input.platform),
+          name: input.name,
+          ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
+          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
+        }
+      })
+      await seedExternalPlaces(tx, input.id, input.botId)
+      return toRecord(i)
     })
-    return toRecord(i)
   }
 
   async addBotMembership(
@@ -620,6 +623,7 @@ export class PgIntegrationRepo implements IntegrationRepo {
           ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
         }
       })
+      await seedExternalPlaces(tx, input.id, input.botId)
       return { outcome: 'added' as const, integration: toRecord(created) }
     })
   }
@@ -823,6 +827,51 @@ export class PgIntegrationRepo implements IntegrationRepo {
 
 /** The detections a later report never lifts (assistant-mode.md §5.3). */
 const STICKY_EXTERNAL_REASONS: string[] = PlaceExternalReason.options.filter(placeExternalReasonSticky)
+
+// Mirror the integration rows' merged detection onto the bot, which outlives them: a detection upserts, a lifted share deletes.
+async function rememberExternalPlaces(
+  db: PrismaLike,
+  integrationId: IntegrationId,
+  channelIds: string[]
+): Promise<void> {
+  if (channelIds.length === 0) return
+  await db.$executeRaw`
+    INSERT INTO "bot_external_place" ("botId", "channelId", "reason", "name", "kind", "updatedAt")
+    SELECT i."botId", ic."channelId", ic."externalReason", ic."name", ic."kind", NOW()
+    FROM "integration_channel" ic JOIN "integration" i ON i."id" = ic."integrationId"
+    WHERE ic."integrationId" = ${integrationId}::uuid AND ic."channelId" = ANY(${channelIds}::text[])
+      AND ic."externalReason" IS NOT NULL
+    ON CONFLICT ("botId", "channelId") DO UPDATE SET
+      "reason" = CASE WHEN "bot_external_place"."reason" = ANY(${STICKY_EXTERNAL_REASONS}::text[])
+                      THEN "bot_external_place"."reason" ELSE EXCLUDED."reason" END,
+      "name" = COALESCE(EXCLUDED."name", "bot_external_place"."name"),
+      "kind" = EXCLUDED."kind",
+      "updatedAt" = NOW()
+  `
+  await db.$executeRaw`
+    DELETE FROM "bot_external_place" p
+    USING "integration_channel" ic, "integration" i
+    WHERE i."id" = ic."integrationId" AND p."botId" = i."botId" AND p."channelId" = ic."channelId"
+      AND ic."integrationId" = ${integrationId}::uuid AND ic."channelId" = ANY(${channelIds}::text[])
+      AND ic."externalReason" IS NULL AND NOT (p."reason" = ANY(${STICKY_EXTERNAL_REASONS}::text[]))
+  `
+}
+
+// A new integration starts every place its bot found external Off and undecided (§14.9), unless another install already holds the conversation.
+async function seedExternalPlaces(db: PrismaLike, integrationId: IntegrationId, botId: BotId): Promise<void> {
+  await db.$executeRaw`
+    INSERT INTO "integration_channel"
+      ("integrationId", "channelId", "name", "kind", "trigger", "externalReason", "firstSeenAt", "updatedAt")
+    SELECT ${integrationId}::uuid, p."channelId", p."name", p."kind", 'off'::"ChannelTrigger", p."reason", NOW(), NOW()
+    FROM "bot_external_place" p
+    WHERE p."botId" = ${botId}::uuid
+      AND NOT EXISTS (
+        SELECT 1 FROM "integration_channel" ic JOIN "integration" i ON i."id" = ic."integrationId"
+        WHERE i."botId" = p."botId" AND ic."channelId" = p."channelId" AND i."id" <> ${integrationId}::uuid
+      )
+    ON CONFLICT ("integrationId", "channelId") DO NOTHING
+  `
+}
 
 // Every record read joins the bound gate Decision and the bot's router, so both ride each projection.
 const CHANNEL_INCLUDE = {
@@ -1064,9 +1113,15 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     }
     // After the upserts, so a target the report just seeded takes the source's settings.
     let migrated = false
+    const moved: string[] = []
     for (const { from, to } of opts?.migrated ?? []) {
-      if (from !== to && !removed.has(to) && (await this.migrateConversation(integrationId, from, to))) migrated = true
+      if (from !== to && !removed.has(to) && (await this.migrateConversation(integrationId, from, to))) {
+        migrated = true
+        moved.push(to)
+      }
     }
+    const checked = channels.filter((c) => c.externalReason !== undefined && !removed.has(c.id)).map((c) => c.id)
+    await rememberExternalPlaces(this.db, integrationId, [...checked, ...moved])
     // Retractions last: a conversation the reporter says it left is gone whatever
     // its kind, including a DM row that no authoritative snapshot could ever delete.
     if (removed.size > 0) {
@@ -1154,6 +1209,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         ...(conversation.dmUserId ? { dmUserId: conversation.dmUserId } : {})
       }
     })
+    if (conversation.externalReason !== undefined)
+      await rememberExternalPlaces(this.db, integrationId, [conversation.id])
     return (await channelRecords(this.db, [row]))[0]!
   }
 
