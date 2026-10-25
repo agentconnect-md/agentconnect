@@ -33,7 +33,7 @@ package and is used when the caller already selects the complete dependency clos
 For a complete local Control Plane and PostgreSQL development setup, follow the
 [Control Plane quickstart](packages/control-plane/README.md#local-dev-quickstart).
 
-## Pull requests
+## Pull requests and issues
 
 Pull request titles and at least one commit must follow the
 [Conventional Commits](https://www.conventionalcommits.org) style (`feat: ...`,
@@ -53,6 +53,17 @@ not by how much code it touches:
   adjustment to existing behavior.
 
 When two types fit, use the one that releases less.
+
+Keep fix-related issues open until the fix ships in a stable release. In PR titles,
+descriptions, and commit messages, use `Refs #123` or `Related to #123`. Do not pair
+issue references with GitHub's closing keywords (`close`, `fix`, `resolve`, or
+their variants), or add Development links that close issues on merge. Conventional
+commit types such as `fix(scope): ...` are unchanged. Merging a PR or publishing an
+RC/prerelease does not complete the issue workflow.
+
+For work split across PRs, each PR states which acceptance items it covers and
+what remains. Keep the issue's acceptance checklist and required PR references
+current; a partial implementation must not be presented as the complete fix.
 
 For pull requests prepared with an AI coding harness, report the actual harness
 and model at the end of the description. Keep any attribution footer the harness
