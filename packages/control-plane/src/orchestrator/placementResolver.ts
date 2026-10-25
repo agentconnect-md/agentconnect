@@ -104,6 +104,11 @@ export class PlacementResolver {
     return ((await this.servingDaemons(agent))[0] as DaemonId | undefined) ?? null
   }
 
+  /** The daemon an install probes for platform support: the serving one, else any live member of a set agent no lease holds right now (it claims the agent on first use, as a trigger does). */
+  async installDaemon(agent: ResolvableAgent): Promise<DaemonId | null> {
+    return (await this.servingDaemon(agent)) ?? (await this.dispatchDaemon(agent))
+  }
+
   /** May this daemon act on the agent's behalf — report its sessions, mint its credentials, ask on
    *  its behalf? True where it is the placement, and true where it holds the agent's duty. */
   async mayAct(agent: ResolvableAgent, daemonId: string): Promise<boolean> {

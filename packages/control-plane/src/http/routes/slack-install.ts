@@ -33,7 +33,7 @@ import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
 import { CONFIG_ACCESS_TTL_MS, configUsable } from '../slack-user-config.js'
 import type { SlackRouteSeams } from '../platform-route-seams.js'
-import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
+import { integrationPlatformAvailability, noInstallDaemonMessage } from '../daemon-platform-capability.js'
 import { relayHttpBase, relayIngress } from '../relay-ingress.js'
 import {
   SlackAppStartBody,
@@ -104,13 +104,10 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
-        // Delivery is daemon-scoped; refuse until the agent is placed. A pool agent IS placed and
-        // names no machine, so the capability probe asks whichever member serves it.
-        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        // Refuse an unplaced agent; a pool agent no lease holds is probed on a live member.
+        const installDaemonId = await deps.placementResolver.installDaemon(agent)
         if (!installDaemonId) {
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: noInstallDaemonMessage(agent) })
         }
         const platformAvailability = await integrationPlatformAvailability(deps, {
           daemonId: installDaemonId,
@@ -347,12 +344,10 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         if (!canEdit(agent, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
-        // A pool agent IS placed and names no machine; the probe asks whichever member serves it.
-        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        // A pool agent names no machine; the probe asks its serving member, else a live one.
+        const installDaemonId = await deps.placementResolver.installDaemon(agent)
         if (!installDaemonId) {
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: noInstallDaemonMessage(agent) })
         }
         const platformAvailability = await integrationPlatformAvailability(deps, {
           daemonId: installDaemonId,

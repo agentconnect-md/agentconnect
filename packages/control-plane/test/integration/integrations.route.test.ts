@@ -27,6 +27,8 @@ import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import { SlackBotIdentityReconciler } from '../../src/orchestrator/slackBotIdentityReconciler.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { createFeishuAppTenantGuard } from '../../src/http/feishu-identity.js'
+import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
+import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.repo.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -1945,23 +1947,82 @@ describe('integration updates follow the duty holder', () => {
     expect(await prisma.integration.count()).toBe(1)
   })
 
-  it('a POOL agent nothing is serving is still refused with 409, and stores nothing', async () => {
+  /** The prod resolver with the pool's live members pinned, since no member dials in here. */
+  function withLiveMembers(liveMembers: string[]): { app: HttpApp; spy: SpyControl } {
+    const spy = new SpyControl()
+    const placementResolver = new PlacementResolver({
+      duties: new PgDutyGroupRepo(prisma),
+      liveMembers: async () => liveMembers,
+      clock: systemClock
+    })
+    const app = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender, { placementResolver })
+    running = app
+    return { app, spy }
+  }
+
+  // A pool agent whose lease lapsed is still placed: the install lands and its next holder fetches it.
+  it('re-adds a freed bot to a POOL agent after its last integration is removed and its lease lapsed', async () => {
     const setId = await seedPoolMember(prisma, HOLDER)
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { setId })
-    const { app, spy } = withSpy()
+    await seedDutyGroup(prisma, GROUP, HOLDER, [agentId])
+    const { app } = withLiveMembers([HOLDER])
+
+    const first = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'pool-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect(first.statusCode).toBe(201)
+    const { id, botId } = first.json() as { id: string; botId: string }
+    expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}` })).statusCode).toBe(204)
+    await prisma.dutyGroup.update({ where: { id: GROUP }, data: { expiresAt: new Date(Date.now() - 1000) } })
+
+    const again = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'slack', agentId, botId }
+    })
+    expect({ status: again.statusCode, body: again.json() }).toMatchObject({ status: 201, body: { agentId, botId } })
+    expect(await prisma.integration.count({ where: { agentId } })).toBe(1)
+  })
+
+  it('a POOL agent with no member online is refused with 409 naming the pool, and stores nothing', async () => {
+    const setId = await seedPoolMember(prisma, HOLDER)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { setId })
+    const { app, spy } = withLiveMembers([])
 
     const created = await app.app.inject({
       method: 'POST',
       url: `${ORG}/integrations`,
       payload: { name: 'pool-bot', platform: 'slack', agentId, slack: SLACK }
     })
-    expect(created.statusCode).toBe(409)
+    expect({ status: created.statusCode, message: (created.json() as { message: string }).message }).toEqual({
+      status: 409,
+      message: "no daemon in the agent's pool is online; retry shortly"
+    })
     expect({
       integrations: await prisma.integration.count(),
       bots: await prisma.bot.count(),
       pushes: spy.upserts
     }).toEqual({ integrations: 0, bots: 0, pushes: [] })
+  })
+
+  it('an UNPLACED agent is still refused with 409', async () => {
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const { app } = withLiveMembers([])
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'loose-bot', platform: 'slack', agentId, slack: SLACK }
+    })
+    expect({ status: created.statusCode, message: (created.json() as { message: string }).message }).toEqual({
+      status: 409,
+      message: 'agent must be placed on a daemon first'
+    })
   })
 
   it('an EXPIRED lease is not a holding — the dependent goes to the placement alone', async () => {

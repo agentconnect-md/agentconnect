@@ -30,7 +30,7 @@ import { denyViewerWrite, ctxOf, orgOf } from '../../http/rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
 import { relayIngress } from '../../http/relay-ingress.js'
-import { integrationPlatformAvailability } from '../../http/daemon-platform-capability.js'
+import { integrationPlatformAvailability, noInstallDaemonMessage } from '../../http/daemon-platform-capability.js'
 import { installNewBot } from '../../http/install-bot.js'
 import { deleteBotIdentity, removeIntegrationRow } from '../../http/uninstall.js'
 import { BotExternalIdentityTaken, BotWorkspaceClaimed } from '../../persistence/errors.js'
@@ -144,11 +144,9 @@ export function linearConnectRoutes(deps: HttpDeps, linear: LinearRouteSeams) {
         }
         // The pre-install gate §4.2 names: the agent's daemon is the authority for whether the
         // Linear adapter can actually run, so ask it before sending anyone through OAuth.
-        const installDaemonId = await deps.placementResolver.servingDaemon(agent)
+        const installDaemonId = await deps.placementResolver.installDaemon(agent)
         if (!installDaemonId) {
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'agent must be placed on a daemon first' })
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: noInstallDaemonMessage(agent) })
         }
         const availability = await integrationPlatformAvailability(deps, {
           daemonId: installDaemonId,

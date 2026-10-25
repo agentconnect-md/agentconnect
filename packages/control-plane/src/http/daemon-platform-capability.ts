@@ -10,8 +10,16 @@ import type { ViewCtx } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
 import { canView } from '../authorization/policy.js'
 import { servesPlatform } from '../domain/platform-capability.js'
+import { dutyEligibility, type PlacementRef } from '../domain/placement.js'
 
 export type DaemonPlatformAvailability = 'available' | 'not_found' | 'unsupported'
+
+/** Why an install found no daemon to probe: the agent is unplaced, or its pool has no member online. */
+export function noInstallDaemonMessage(agent: PlacementRef): string {
+  return dutyEligibility(agent).scope === 'set'
+    ? "no daemon in the agent's pool is online; retry shortly"
+    : 'agent must be placed on a daemon first'
+}
 
 /**
  * Resolve a visible daemon and check the capability it last registered. A
