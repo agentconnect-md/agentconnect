@@ -1,6 +1,7 @@
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 import { ALL_TOOL_NAMES } from '../mcp/tools.js'
 import { RESERVED_MCP_SERVER_NAME } from '../mcp/resolve-servers.js'
+import { splitAppToolName } from '../mcp/apps/host.js'
 
 // ACP runtime identities for this daemon's own MCP tools; both approval transports below trust only these.
 const BUILTIN_TOOL_NAMES = new Set(ALL_TOOL_NAMES)
@@ -139,6 +140,9 @@ function mcpToolLabel(rawInput: unknown): string {
   if (!rawInput || typeof rawInput !== 'object') return ''
   const { server, tool } = rawInput as { server?: unknown; tool?: unknown }
   if (typeof server !== 'string' || typeof tool !== 'string' || !server.trim() || !tool.trim()) return ''
+  // An MCP App's tool reaches the runtime through the daemon's bridge as `<app>__<tool>`; name the app, not the bridge.
+  const app = server.trim() === RESERVED_MCP_SERVER_NAME ? splitAppToolName(tool.trim()) : undefined
+  if (app) return `${app.server} · ${app.tool}`
   return `${server.trim()} · ${tool.trim()}`
 }
 

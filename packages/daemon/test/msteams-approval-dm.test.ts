@@ -584,6 +584,21 @@ describe('a Codex MCP approval on a Teams card', () => {
     await w.store.close()
   })
 
+  it('names an MCP App and its tool, not the bridge they reach the runtime through', async () => {
+    const w = await world()
+    w.daemon.onAcpUpdate(AGENT, 's1', {
+      ...mcpCall('call-a'),
+      rawInput: { server: 'agentconnect', tool: 'Get Time App__get-time', arguments: {} }
+    })
+    const asked = { ...permission, toolCall: { toolCallId: 'call-a', kind: 'execute', status: 'pending' } }
+    void w.permissions.onAcpPermission(AGENT, 's1', asked)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${ASKER}`]))
+    const card = JSON.stringify(w.cardPosts.mock.calls[0]![1])
+    expect(card).toContain('Permission requested — Get Time App · get-time')
+    expect(card).not.toContain('agentconnect ·')
+    await w.store.close()
+  })
+
   it('names the server and tool of an MCP approval with choices', async () => {
     const w = await world()
     w.daemon.onAcpUpdate(AGENT, 's1', mcpCall('call-e'))
