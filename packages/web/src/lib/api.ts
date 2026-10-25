@@ -413,6 +413,7 @@ export interface AgentDto {
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join
   execution?: string // the strategy slug sessions run in (session-executors.md §5); absent only on an older CP
   strategies?: StrategyTable // what the placement offers `execution`, host alone for an unplaced agent; absent only on an older CP
+  githubAppId?: string | null // the registered GitHub App this agent acts as; null or absent (older CP) ⇒ the deployment App
   hookKinds: HookKind[] // distinct kinds of enabled inbound triggers (list-view marks)
 }
 
@@ -1113,6 +1114,8 @@ export interface UpdateAgentInput {
   computerUse?: AgentComputerSetting | null
   /** The strategy new sessions run in, checked against the placement's table (409 with the reason when it cannot run there). */
   execution?: string
+  /** The registered GitHub App the agent acts as; null returns it to the deployment App. */
+  githubAppId?: string | null
   /** Widen an existing App-backed GitHub workspace from read to write. */
   gitAccess?: 'write'
   /** Repository-relative ACP working directory; null selects the repository root. */
@@ -1365,6 +1368,8 @@ export interface CreateAgentInput {
   memory?: AgentMemoryConfig
   /** The strategy sessions run in; absent ⇒ the Control Plane's default for the placement. */
   execution?: string
+  /** The registered GitHub App the agent acts as; absent ⇒ the deployment App. */
+  githubAppId?: string | null
   /** Initial visibility (absent ⇒ 'org'); sharedWith is intersected with org members. */
   visibility?: ResourceVisibility
   sharedWith?: string[]
@@ -2170,6 +2175,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // An older CP that names no strategy is read as the unplaced agent's host-only table.
     execution: d.execution ?? HOST_STRATEGY,
     strategies: d.strategies ?? HOST_ONLY_TABLE,
+    githubAppId: d.githubAppId ?? null,
     hookKinds: d.hookKinds ?? [],
     integrations: [],
     workspace: ws
@@ -6556,6 +6562,46 @@ export async function syncGithubInstallations(): Promise<GithubInstallationDto[]
 export async function uninstallGithubInstallation(id: string): Promise<void> {
   await apiDelete<void>(`${orgBase()}/github/installations/${encodeURIComponent(id)}`)
   invalidateGithubRepoRosterCache(id)
+}
+
+export interface GithubRegisteredAppDto {
+  id: string // CP row id — what an agent references as `githubAppId`
+  appId: number // GitHub-side App id
+  slug: string // the bot is `<slug>[bot]`
+  clientId: string | null
+  botUserId: number | null
+  installations: { installationId: number; accountLogin: string; suspended: boolean }[]
+  createdAt: string
+}
+
+/** The organization's registered GitHub Apps (agents can act as one instead of the
+ *  deployment App). Like the installations list, 404 ⇒ the feature is off. */
+export async function fetchGithubApps(orgId?: string): Promise<GithubRegisteredAppDto[]> {
+  try {
+    return await apiGet<GithubRegisteredAppDto[]>(`${orgBase(orgId)}/github/apps`)
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return []
+    throw e
+  }
+}
+
+/** Register a GitHub App. Owner-only; 409 carries the reason (bad key, already registered). */
+export async function registerGithubApp(input: {
+  appId: number
+  clientId?: string
+  privateKey: string
+}): Promise<GithubRegisteredAppDto> {
+  return apiPost<GithubRegisteredAppDto>(`${orgBase()}/github/apps`, input)
+}
+
+/** Refresh one registered App's installations from GitHub. */
+export async function syncGithubApp(id: string): Promise<GithubRegisteredAppDto> {
+  return apiPost<GithubRegisteredAppDto>(`${orgBase()}/github/apps/${encodeURIComponent(id)}/sync`, {})
+}
+
+/** Remove a registered App; agents bound to it return to the deployment App. */
+export async function deleteGithubApp(id: string): Promise<void> {
+  await apiDelete<void>(`${orgBase()}/github/apps/${encodeURIComponent(id)}`)
 }
 
 // Smaller pages make the first permission-filtered results visible sooner;
