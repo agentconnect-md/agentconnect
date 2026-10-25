@@ -342,6 +342,11 @@ export function writeSandboxSettingsUnder(trustedRoot: string, relDir: string, p
       // A runtime's `git remote add`, `push -u` and hook installers write `.git/config`; an offline helper never needs to.
       allowGitConfig: policy.offline !== true
     },
+    // Codex's filesystem helper and Claude Code's Bash sandbox wrap each command in a bubblewrap of
+    // their own. sandbox-runtime 0.0.81 forbids that nesting unless asked (`--disable-userns`,
+    // `user.max_user_namespaces=0` in the namespace it made), and the runtime's wrap then fails with
+    // ENOSPC. An ordinary host lets the runtime keep its own sandbox; the offline helper nests nothing.
+    ...(policy.offline !== true ? { allowNestedUserNamespaces: true } : {}),
     ...(policy.gitSafeDirectories?.length ? { git: { safeDirectories: canonical(policy.gitSafeDirectories) } } : {})
   }
 

@@ -1319,6 +1319,13 @@ host with no directory of its own — runs in an **agent-scoped** shim (R1b-2b):
 - **It starts in the host's cwd** (`cwd` in the descriptor), which must be a writable
   mount. That is where a runtime wrapped alone started, so SRT's own protections are
   anchored where they were, and the runtime runs there.
+- **The runtime keeps its own sandbox.** Codex's filesystem helper and Claude Code's
+  Bash sandbox wrap each command in a bubblewrap of their own. The SRT policy of an
+  ordinary host sets `allowNestedUserNamespaces`: sandbox-runtime 0.0.81 otherwise
+  forbids a nested user namespace (`--disable-userns`, `user.max_user_namespaces=0`),
+  and the runtime's wrap fails with ENOSPC. That trades SRT's write denies against a
+  hostile command for the runtime's working sandbox; the offline skills helper keeps
+  the denies, as it nests nothing.
 - **The tool bridge dials the host's own tunnel**: the MCP spec follows the host key,
   a pass's included.
 - **Git and files stay on the host**, as they were for this agent: a runtime wrapped
