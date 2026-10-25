@@ -25,6 +25,8 @@ export const AgentApiProtocolName = z.string().min(1).max(64)
 export const API_AG_UI_V1_FEATURE = 'api-ag-ui-v1'
 // The daemon accepts standard AHP v1 attachments over the isolated rd/ahp carrier.
 export const API_AHP_V1_FEATURE = 'api-ahp-v1'
+// The daemon adopts a client the relay initialized during in-band `authenticate`; the relay sends `handshake` only here.
+export const API_AHP_HANDSHAKE_V1_FEATURE = 'api-ahp-handshake-v1'
 // The daemon feature a protocol needs beyond the chat API itself; `ai-sdk-ui` shipped with it.
 export const AGENT_API_PROTOCOL_FEATURE: Readonly<Partial<Record<AgentApiProtocol, string>>> = {
   'ag-ui': API_AG_UI_V1_FEATURE,

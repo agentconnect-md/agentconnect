@@ -43,13 +43,17 @@ export const AhpAttachmentAuthorization = z.strictObject({
 })
 export type AhpAttachmentAuthorization = z.infer<typeof AhpAttachmentAuthorization>
 
+// The relay answered `initialize` before in-band authentication; the daemon adopts that client instead.
+export const AhpHandshake = z.strictObject({ clientId: z.string().min(1).max(256), root: z.boolean() })
+export type AhpHandshake = z.infer<typeof AhpHandshake>
+
 const attachment = { attachmentId: z.string().uuid() }
-export const RdAhpOpen = z.strictObject({ ...attachment, authorization: AhpAttachmentAuthorization })
+export const RdAhpAuthorize = z.strictObject({ ...attachment, authorization: AhpAttachmentAuthorization })
+export type RdAhpAuthorize = z.infer<typeof RdAhpAuthorize>
+export const RdAhpOpen = RdAhpAuthorize.extend({ handshake: AhpHandshake.optional() })
 export type RdAhpOpen = z.infer<typeof RdAhpOpen>
 export const RdAhpOpened = z.strictObject({ ...attachment, accepted: z.boolean() })
 export type RdAhpOpened = z.infer<typeof RdAhpOpened>
-export const RdAhpAuthorize = RdAhpOpen
-export type RdAhpAuthorize = RdAhpOpen
 export const RdAhpAuthorized = RdAhpOpened
 export type RdAhpAuthorized = RdAhpOpened
 
