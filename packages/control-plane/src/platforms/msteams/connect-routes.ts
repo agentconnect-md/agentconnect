@@ -266,6 +266,7 @@ export function msTeamsConnectRoutes(deps: HttpDeps, seams: MsTeamsConnectSeams)
             appId: live.app.appId,
             relayHost: new URL(relayBase).host,
             agentName: target.displayName ?? target.name,
+            nameLabel: deps.config.MSTEAMS_APP_LABEL,
             accentColor: agentIconBackgroundColor(target.icon)
           }
           const appPackage = msTeamsPackageFingerprint(packageInput, target)

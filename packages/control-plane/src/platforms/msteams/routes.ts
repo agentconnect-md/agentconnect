@@ -58,6 +58,7 @@ async function packageSource(deps: HttpDeps, req: FastifyRequest<{ Params: { id:
     appId: bot.externalAppId,
     relayHost: new URL(relayBase).host,
     agentName: agent.displayName ?? agent.name,
+    nameLabel: deps.config.MSTEAMS_APP_LABEL,
     accentColor: agentIconBackgroundColor(agent.icon)
   }
   return { agent, bot, input, fingerprint: msTeamsPackageFingerprint(input, agent) }

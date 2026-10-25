@@ -9,6 +9,7 @@ import {
   msTeamsAppIcons,
   msTeamsAppPackage,
   msTeamsFullDescription,
+  msTeamsAppName,
   msTeamsManifest,
   msTeamsPackageFingerprint,
   msTeamsPackageId,
@@ -109,6 +110,15 @@ describe('Teams manifest', () => {
     expect(manifest.name.full).toHaveLength(100)
     expect(manifest.description.short.length).toBeLessThanOrEqual(80)
   })
+
+  it('appends the deployment label and keeps it whole when the name is clipped', () => {
+    const manifest = msTeamsManifest({ ...manifestInput, nameLabel: 'test' }) as { name: { short: string } }
+    expect(manifest.name).toEqual({ short: 'Example agent (test)', full: 'Example agent (test)' })
+    expect(msTeamsAppName('Example agent', '  ', 30)).toBe('Example agent')
+    const long = msTeamsAppName('x'.repeat(120), 'staging', 30)
+    expect(long).toHaveLength(30)
+    expect(long.endsWith('… (staging)')).toBe(true)
+  })
 })
 
 describe('Teams package fingerprint', () => {
@@ -120,6 +130,7 @@ describe('Teams package fingerprint', () => {
     expect(fingerprint).toMatch(/^[\w-]{22}$/)
     expect(msTeamsPackageFingerprint(input, glyph)).toBe(fingerprint)
     expect(msTeamsPackageFingerprint({ ...input, agentName: 'Renamed' }, glyph)).not.toBe(fingerprint)
+    expect(msTeamsPackageFingerprint({ ...input, nameLabel: 'test' }, glyph)).not.toBe(fingerprint)
     expect(msTeamsPackageFingerprint({ ...input, relayHost: 'relay2.example.test' }, glyph)).not.toBe(fingerprint)
     const recolored = { ...AGENT, icon: { kind: 'glyph' as const, glyph: 'bot', color: 'green' } } as never
     expect(msTeamsPackageFingerprint(input, recolored)).not.toBe(fingerprint)

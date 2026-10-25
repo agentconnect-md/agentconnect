@@ -166,6 +166,8 @@ export interface HttpServerConfig extends HumanAuthConfig {
   /** The relay pool's public ingress origin, returned by the webchat-token mint so the
    *  browser knows where to dial. Unset ⇒ the mint endpoint 503s (§10, A4). */
   PUBLIC_RELAY_URL?: string
+  /** A non-production deployment's label, appended to every Teams app's name (teams-integration.md §5). */
+  MSTEAMS_APP_LABEL?: string
   HOST?: string
   PORT?: number
   /** Grace window (ms) after a daemon's last heartbeat during which a disconnected

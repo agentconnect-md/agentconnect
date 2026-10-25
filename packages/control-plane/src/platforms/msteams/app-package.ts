@@ -67,8 +67,17 @@ export interface MsTeamsManifestInput {
   /** The relay's public host, the bot's only web domain. */
   relayHost: string
   agentName: string
+  /** The deployment's label (`MSTEAMS_APP_LABEL`), appended as "(label)" so a non-production app is told apart in one tenant. */
+  nameLabel?: string
   accentColor: string
   nowMs: number
+}
+
+/** The agent's name with the deployment label kept whole, clipped to Teams' `max` characters. */
+export function msTeamsAppName(agentName: string, label: string | undefined, max: number): string {
+  const name = agentName.trim() || 'AgentConnect agent'
+  const suffix = label?.trim() ? ` (${label.trim()})` : ''
+  return `${clip(name, max - suffix.length)}${suffix}`
 }
 
 /** The manifest Teams validates on upload; every field below is required for a bot with the `team` scope (§5). */
@@ -96,7 +105,7 @@ export function msTeamsManifest(input: MsTeamsManifestInput): Record<string, unk
     version: msTeamsPackageVersion(input.nowMs),
     id: msTeamsPackageId(input.appId),
     developer: { ...MSTEAMS_DEVELOPER },
-    name: { short: clip(name, 30), full: clip(name, 100) },
+    name: { short: msTeamsAppName(name, input.nameLabel, 30), full: msTeamsAppName(name, input.nameLabel, 100) },
     description: { short: PLATFORM_APP_DESCRIPTION, full: clip(msTeamsFullDescription(name), 4000) },
     icons: { color: 'color.png', outline: 'outline.png' },
     accentColor: input.accentColor,
