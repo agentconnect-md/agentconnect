@@ -9,6 +9,7 @@
  * seams swapped for fakes — so `auth`/`register`/`heartbeat` go red-green with no
  * real socket.
  */
+import { onTestFinished } from 'vitest'
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
 import type { CollabRoutesSnapshot, RelayRosterEntry } from '@agentconnect.md/protocol'
 import {
@@ -452,6 +453,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     connect: (stub = new InMemoryDaemonStub()) => {
       const conn = new DaemonConnection(stub, deps, router, opts.handshakes)
       conn.start()
+      // A dispatch still running when its test ends lands in the next test's freshly swept database.
+      onTestFinished(() => stub.settled())
       return { conn, stub }
     }
   }
