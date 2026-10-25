@@ -774,6 +774,10 @@ initialization performs no prompt, tools, memory recall/capture, evaluation turn
 or usage accounting. Session 2 records session 1 as its origin, but a post is not
 a session message, so session 2 has no message from session 1 to answer.
 
+A bot's first-run welcome that roots a thread, in a conversation the agent is
+enabled in, seeds the same idle session with no origin, so a reply under the
+welcome reaches the agent without a mention.
+
 ### 7.3 Case 2b: post to a channel and mention another agent
 
 Set `toAgent` to B's AgentConnect ID and include `channel` for a visible mention.

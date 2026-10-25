@@ -492,7 +492,8 @@ export interface RelayBotAdds {
 export interface BotAdded {
   channel: string
   isDm: boolean
-  post(welcome: Welcome): Promise<void>
+  /** Posts the welcome; where the post roots a thread, answers its ID, which is also the thread key a reply to it carries. */
+  post(welcome: Welcome): Promise<string | undefined>
   /** The conversations the install put the bot in, which core reports as observed rows before any message; absent ⇒ none. */
   places?(): Promise<ObservedChat[]>
 }

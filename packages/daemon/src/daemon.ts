@@ -528,7 +528,8 @@ import type {
   MemberJoin,
   PlatformChannelInfo,
   PlatformConnection as ContractConnection,
-  RelayCardClicks
+  RelayCardClicks,
+  Welcome
 } from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
 import { buildWelcome } from './platforms/welcome.js'
@@ -13944,18 +13945,49 @@ export class Daemon {
     })
     if (places?.length)
       await this.observedChannelsSync.observePlatformChats(msg.platformId, places, [msg.integrationId])
-    const welcome = buildWelcome({
-      isDm: added.isDm,
-      enabled: conversationAdmitted(integrationRouting(int), added.channel),
-      consoleUrl: this.agentLink(agent.id)
-    })
+    const enabled = conversationAdmitted(integrationRouting(int), added.channel)
+    const welcome = buildWelcome({ isDm: added.isDm, enabled, consoleUrl: this.agentLink(agent.id) })
+    let root: string | undefined
     try {
-      await added.post(welcome)
+      root = await added.post(welcome)
     } catch (err) {
       this.log.warn(`relay: ${msg.platformId} welcome not posted in ch=${added.channel}: ${formatErr(err)}`)
       return { msgId: msg.msgId, accepted: false, reason: 'unavailable' }
     }
+    // session-concept case 2a: a reply under the bot's own welcome continues the agent, so its root seeds the agent's session.
+    if (root !== undefined && !added.isDm && enabled)
+      await this.seedWelcomeRoot(msg, added.channel, root, welcome).catch((err: unknown) =>
+        this.log.warn(`relay: ${msg.platformId} welcome root not seeded in ch=${added.channel}: ${formatErr(err)}`)
+      )
     return { msgId: msg.msgId, accepted: true }
+  }
+
+  /** Record a posted welcome as its thread's root and initialize the agent's idle session there, with no model turn. */
+  private async seedWelcomeRoot(
+    msg: RdMsgPlatformAction,
+    channel: string,
+    thread: string,
+    welcome: Welcome
+  ): Promise<void> {
+    const text = [welcome.title, ...welcome.lines].join('\n')
+    await this.store.appendTranscript({
+      channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([msg.integrationId])),
+      thread,
+      ts: thread,
+      sender: msg.agentId,
+      kind: 'text',
+      text
+    })
+    await this.collab.spawnChannelRootSession({
+      agentId: msg.agentId,
+      platform: msg.platformId,
+      integrationId: msg.integrationId,
+      channel,
+      thread,
+      postTs: thread,
+      isDm: false,
+      text
+    })
   }
 
   /** A relayed click on a platform module's approval or question card: re-check the agent and integration, then core re-derives the answer; a refusal only the clicker hears rides the ack. */

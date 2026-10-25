@@ -10,12 +10,14 @@ import type { IntegrationChannel } from '@agentconnect.md/protocol'
 import { msTeamsTeamChannelsUrl, msTeamsTeamUrl, msTeamsTokenEndpoint } from '../src/platforms/msteams/api.js'
 import { isMsTeamsHelp, msTeamsHelpText } from '../src/platforms/msteams/relay-ingress.js'
 import { buildWelcome } from '../src/platforms/welcome.js'
+import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 
 const ZERO = '00000000-0000-0000-0000-000000000000'
 const BOT = `28:${ZERO}`
 const SERVICE_URL = `https://smba.trafficmanager.net/amer/${ZERO}/`
 const PERSONAL = 'a:example-personal'
 const OFF = '19:example-off@thread.tacv2'
+const ON = '19:example-on@thread.tacv2'
 const TEAM = '19:example-team@thread.tacv2'
 const DESIGN = '19:example-design@thread.tacv2'
 const PRIVATE = '19:example-private@thread.tacv2'
@@ -32,11 +34,20 @@ let root: string | undefined
 let daemon: Daemon | undefined
 let realFetch: typeof fetch
 let posts: Post[] = []
+let host: { newSession: ReturnType<typeof vi.fn>; prompt: ReturnType<typeof vi.fn> } & Record<string, unknown>
 let reported: { integrationId: string; channels: IntegrationChannel[] }[] = []
 
 beforeEach(() => {
   posts = []
   reported = []
+  host = {
+    __started: true,
+    start: vi.fn(async () => {}),
+    newSession: vi.fn(async () => 'acp-1'),
+    prompt: vi.fn(async () => 'end_turn'),
+    cancel: vi.fn(),
+    stop: vi.fn()
+  }
   realFetch = globalThis.fetch
   vi.stubGlobal('fetch', async (url: unknown, init: RequestInit | undefined) => {
     const target = String(url)
@@ -109,7 +120,7 @@ async function boot(): Promise<Daemon> {
       output: { mode: 'low' }
     })
   )
-  const d = new Daemon({ root, hostFactory: () => ({}) as any })
+  const d = new Daemon({ root, hostFactory: () => host as any })
   await d.start()
   await (d as any).connections.reconcileMsTeamsConnections()
   ;((d as any).msTeamsConnByIntegration.get(INTEGRATION) as { sendIntervalMs: number }).sendIntervalMs = 0
@@ -125,7 +136,7 @@ async function boot(): Promise<Daemon> {
 const install = (
   d: Daemon,
   conversationId: string,
-  scope: 'personal' | 'channel',
+  scope: 'personal' | 'groupChat' | 'channel',
   id: string,
   addedBy: { id: string; name?: string } = { id: '29:example-user', name: 'Example Person' },
   team?: { teamId: string; teamWide: boolean }
@@ -166,6 +177,26 @@ function personalText(text: string, id: string): NormalizedMessage {
   return { ...result.message, trigger: 'dm' } as NormalizedMessage
 }
 
+function channelReply(text: string, id: string, rootId: string): NormalizedMessage {
+  const activity: MsTeamsActivity = {
+    type: 'message',
+    id,
+    timestamp: '2026-01-01T00:00:20.000Z',
+    serviceUrl: SERVICE_URL,
+    channelId: 'msteams',
+    from: { id: '29:example-user', name: 'Example Person', aadObjectId: ZERO },
+    recipient: { id: BOT, name: 'Example Bot' },
+    conversation: { id: `${ON};messageid=${rootId}`, conversationType: 'channel', tenantId: ZERO },
+    text,
+    channelData: { tenant: { id: ZERO }, team: { id: ON }, channel: { id: ON } }
+  }
+  const result = normalizeMsTeamsActivity(activity, { appId: ZERO, tenantId: ZERO, traceId: `trace-${id}` })
+  if (result.kind !== 'message') throw new Error(`fixture did not normalize: ${result.kind}`)
+  return result.message as NormalizedMessage
+}
+
+const scopeOf = (d: Daemon): string | undefined => (d as any).transportScopeForIntegrationIds([INTEGRATION])
+
 const cardText = (post: Post) =>
   (post.card?.body ?? []).map((b) => b.text ?? (b.inlines ?? []).map((i) => i.text).join('')).join('\n')
 
@@ -193,6 +224,77 @@ describe('the Teams welcome', () => {
     expect(posts[0]!.card?.msteams?.entities).toEqual([
       { type: 'mention', text: '<at>Example Person</at>', mentioned: { id: '29:example-user', name: 'Example Person' } }
     ])
+  })
+})
+
+describe('the Teams welcome root', () => {
+  it('seeds an idle session at the card in an enabled channel, recording the welcome and running no turn', async () => {
+    daemon = await boot()
+    expect(await install(daemon, ON, 'channel', 'install-on')).toMatchObject({ accepted: true })
+    expect(posts.map((p) => p.conversation)).toEqual([ON])
+    const scope = scopeOf(daemon)
+    const key = sessionKey('msteams', ON, 'bot-1', AGENT, scope)
+    await vi.waitFor(
+      async () =>
+        expect(await (daemon as any).store.getSession(key)).toMatchObject({ state: 'idle', lastDeliveredTs: null }),
+      { timeout: 5000 }
+    )
+    expect(host.prompt).not.toHaveBeenCalled()
+    const rows = await (daemon as any).store.threadTranscript(transcriptChannelKey(ON, scope), 'bot-1')
+    expect(JSON.stringify(rows)).toContain('Hi! I’m an AI agent powered by AgentConnect')
+    expect(await (daemon as any).sessions.threadOwner(ON, 'bot-1', scope)).toBe(AGENT)
+  })
+
+  it('continues the seeded session with an unmentioned reply under the card', async () => {
+    daemon = await boot()
+    await install(daemon, ON, 'channel', 'install-on')
+    const key = sessionKey('msteams', ON, 'bot-1', AGENT, scopeOf(daemon))
+    await vi.waitFor(async () => expect(await (daemon as any).store.getSession(key)).toBeTruthy(), { timeout: 5000 })
+    const seeded = (await (daemon as any).store.getSession(key)).sessionId
+    const reply = channelReply('cool', '1767225640000', 'bot-1')
+    expect(reply.thread).toBe('bot-1')
+    expect(reply.mentionedBots).toEqual([])
+    const ack = await (daemon as any).handleRelayIm({
+      source: 'im',
+      agentId: AGENT,
+      botId: BOT,
+      integrationId: INTEGRATION,
+      sessionKey: `${ON}/bot-1`,
+      msgId: 'reply-1',
+      trustedRouteVia: 'implicit',
+      payload: reply
+    })
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), { timeout: 5000 })
+    expect(host.newSession).toHaveBeenCalledOnce()
+    expect((await (daemon as any).store.getSession(key)).sessionId).toBe(seeded)
+    // The first real reply replays the welcome root as context, as after an agent's own root post.
+    expect(JSON.stringify(host.prompt.mock.calls[0])).toContain('Hi! I’m an AI agent powered by AgentConnect')
+  })
+
+  it('seeds nothing in a channel the agent is not enabled in', async () => {
+    daemon = await boot()
+    await install(daemon, OFF, 'channel', 'install-off')
+    expect(posts).toHaveLength(1)
+    expect(await (daemon as any).sessions.threadOwner(OFF, 'bot-1', scopeOf(daemon))).toBeNull()
+    expect(host.newSession).not.toHaveBeenCalled()
+  })
+
+  it('seeds nothing in a 1:1 chat or a group chat, which root no thread', async () => {
+    daemon = await boot()
+    await install(daemon, PERSONAL, 'personal', 'install-dm')
+    await install(daemon, '19:example-group@thread.v2', 'groupChat', 'install-group')
+    expect(posts).toHaveLength(2)
+    expect(host.newSession).not.toHaveBeenCalled()
+  })
+
+  it('keeps the welcome acknowledged when seeding fails', async () => {
+    daemon = await boot()
+    ;(daemon as any).collab.spawnChannelRootSession = vi.fn(async () => {
+      throw new Error('seed failed')
+    })
+    expect(await install(daemon, ON, 'channel', 'install-on')).toMatchObject({ accepted: true })
+    expect(posts).toHaveLength(1)
   })
 })
 
