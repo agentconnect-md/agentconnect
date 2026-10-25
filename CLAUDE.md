@@ -158,6 +158,12 @@ their variants), or add Development links that close issues on merge. Convention
 commit types such as `fix(scope): ...` are unchanged. Merging a PR or publishing an
 RC/prerelease does not complete the issue workflow.
 
+Pick the commit type by who notices the change, not by its size: `feat` bumps the
+minor version and is listed under Features, so use it only for a new capability
+users or administrators of a release will see. A deployment knob, a test-environment
+convenience, tooling or a small adjustment is `chore` or `refactor`; see
+[CONTRIBUTING.md](CONTRIBUTING.md#pull-requests) for the full rule.
+
 For work split across PRs, each PR states which acceptance items it covers and
 what remains. Keep the issue's acceptance checklist and required PR references
 current; a partial implementation must not be presented as the complete fix.

@@ -40,6 +40,20 @@ Pull request titles and at least one commit must follow the
 `fix: ...`, `docs: ...`); a status check enforces this. Keep changes focused,
 and run `pnpm typecheck`, `pnpm lint`, and `pnpm test` before pushing.
 
+The type decides the release: `feat` bumps the minor version and is listed under
+Features in the release notes, `fix`, `chore` and `refactor` bump the patch version,
+and `docs`, `test` and `ci` do not release. Choose it by who will notice the change,
+not by how much code it touches:
+
+- `feat`: a new capability that users or administrators of a release will see and
+  that belongs in Features.
+- `fix`: something that was wrong for users and now works.
+- `chore` or `refactor`: everything internal, such as a deployment or environment
+  knob, a convenience for a test environment, tooling, logging, or a small
+  adjustment to existing behavior.
+
+When two types fit, use the one that releases less.
+
 For pull requests prepared with an AI coding harness, report the actual harness
 and model at the end of the description. Keep any attribution footer the harness
 provides and append the model name to its final line. Otherwise, use
