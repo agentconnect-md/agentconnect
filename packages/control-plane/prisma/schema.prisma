@@ -2736,6 +2736,8 @@ model Bot {
   credentialObservations BotCredentialObservation[]
   // The bot-owned By decision router (decisions.md §6.2); at most one per bot.
   decisionRouting BotDecisionRouting?
+  // Places its platform found external; they outlive every integration (resource-visibility.md §14.9).
+  externalPlaces BotExternalPlace[]
 
   // One Bot per external app identity per platform — the relay demux fence, and
   // cross-org global because a workspace binds to exactly one org. A row that
@@ -2946,6 +2948,22 @@ model IntegrationChannel {
   @@index([agentId])
   @@index([decisionId])
   @@map("integration_channel")
+}
+
+// A place the bot's platform detected external, kept per bot so a later integration of the bot seeds it Off (resource-visibility.md §14.9).
+model BotExternalPlace {
+  botId     String           @db.Uuid
+  channelId String
+  // The rows' merged `PlaceExternalReason`: a sticky one is never replaced, and a lifted share deletes the row.
+  reason    String
+  name      String?
+  kind      ConversationKind @default(channel)
+  updatedAt DateTime         @updatedAt @db.Timestamptz(6)
+
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@id([botId, channelId])
+  @@map("bot_external_place")
 }
 
 // Pending Slack auto-install session (docs/designs/slack-install-smoothing.md §Tier B).

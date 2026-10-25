@@ -2619,4 +2619,93 @@ describe('external places start closed', () => {
     })
     expect(row).toMatchObject({ trigger: 'off', triggerChosen: false, externalReason: 'externallyShared' })
   })
+
+  describe('a reused bot remembers', () => {
+    /** Free the bot through the console's DELETE, then connect it to a new agent with "Use an existing bot". */
+    async function reuse(id: string): Promise<string> {
+      const { botId } = await prisma.integration.findUniqueOrThrow({ where: { id } })
+      expect((await running!.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}` })).statusCode).toBe(204)
+      const agentId = randomUUID()
+      await seedAgent(prisma, agentId, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID })
+      const res = await running!.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations`,
+        payload: { platform: 'slack', agentId, botId }
+      })
+      expect(res.statusCode).toBe(201)
+      return (res.json() as { id: string }).id
+    }
+
+    it('seeds a place the bot found external Off, undecided, for the next agent, and fences it in the spec', async () => {
+      const { spy, id, send } = await setUp()
+      await send([
+        { id: 'C_EXT', name: 'shared', externalReason: null },
+        { id: 'C_INT', name: 'deploys', externalReason: null }
+      ])
+      // An outside member's join is seen once; no later report repeats it.
+      await report(DAEMON, id, [{ id: 'C_EXT', externalReason: 'externalMember' }], undefined, undefined, false)
+      const off = await running!.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/integrations/${id}/channels/C_EXT`,
+        payload: { trigger: 'off' }
+      })
+      expect(off.statusCode).toBe(200)
+
+      spy.upserts.length = 0
+      const next = await reuse(id)
+      const rows = await rowsOf(next)
+      expect(rows.get('C_EXT')).toMatchObject({
+        name: 'shared',
+        trigger: 'off',
+        triggerChosen: false,
+        externalReason: 'externalMember'
+      })
+      expect(rows.has('C_INT')).toBe(false)
+      const core = spy.upserts.at(-1)!.u.core
+      expect(core.mutedChannels).toEqual(['C_EXT'])
+      expect(core.externalChannels).toEqual(['C_EXT'])
+
+      // The new agent's daemon reports the place without a reason; the row stays Off.
+      await send([{ id: 'C_EXT', name: 'shared' }])
+      expect((await rowsOf(next)).get('C_EXT')).toMatchObject({ trigger: 'off', externalReason: 'externalMember' })
+    })
+
+    it('forgets a share the platform lifted', async () => {
+      const { id, send } = await setUp()
+      await send([{ id: 'C1', name: 'partners', externalReason: 'externallyShared' }])
+      await send([{ id: 'C1', name: 'partners', externalReason: null }])
+      expect((await rowsOf(await reuse(id))).has('C1')).toBe(false)
+    })
+
+    it('seeds a shared-bot membership the same way', async () => {
+      const { id } = await setUp()
+      await report(
+        DAEMON,
+        id,
+        [{ id: 'G_EXT', kind: 'mpim', externalReason: 'guestMember' }],
+        undefined,
+        undefined,
+        false
+      )
+      const { botId, orgId } = await prisma.integration.findUniqueOrThrow({ where: { id } })
+      expect((await running!.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}` })).statusCode).toBe(204)
+      const agentId = randomUUID()
+      await seedAgent(prisma, agentId, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID })
+      const admission = await new PgIntegrationRepo(prisma).addBotMembership({
+        id: IntegrationId(randomUUID()),
+        orgId: orgId as never,
+        agentId: agentId as never,
+        botId: botId as never,
+        platform: 'slack',
+        name: 'acme-bot'
+      })
+      if (!('integration' in admission)) throw new Error(`unexpected membership outcome: ${admission.outcome}`)
+      expect((await rowsOf(admission.integration.id)).get('G_EXT')).toMatchObject({
+        kind: 'mpim',
+        trigger: 'off',
+        triggerChosen: false,
+        externalReason: 'guestMember'
+      })
+    })
+  })
 })

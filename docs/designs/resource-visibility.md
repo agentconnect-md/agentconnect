@@ -1120,7 +1120,18 @@ report already carries an external reason (`externalReason`, the detection
 for an ungated agent too, with `triggerChosen = false`. Nothing else changes: existing
 rows keep their trigger even when they turn external later, a gated agent keeps §14.2's
 seeding, and enabling the row in the Console works as for any row and records the choice.
-There is no setting and no new column.
+There is no setting.
+
+**A reused bot remembers.** Conversation rows belong to an integration and are deleted
+with it, but a detection belongs to the bot: a guest's or an outside member's join is seen
+once and never reported again. So every recorded detection is mirrored onto the bot
+(`bot_external_place`, merged like the row's reason, a lifted share deleted), and a new
+integration of that bot — "Use an existing bot" after a delete, or another agent joining a
+shared bot — starts each such place Off with `triggerChosen = false`, unless another
+install already holds the conversation. The next agent therefore gets the notice in a
+shared place until an editor enables it there, and an editor's Off on the previous agent
+never comes back as Mention. Decisions themselves do not carry: the new agent's editor
+decides for the new agent.
 
 **One seed, every path.** The open default — Off for an external place, otherwise On for
 a 1:1 DM and Mention for a room — is one function the repository applies on both create
