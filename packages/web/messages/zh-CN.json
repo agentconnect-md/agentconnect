@@ -6621,8 +6621,7 @@
       "fix": "修复：",
       "notReported": "尚未报告检查结果",
       "failing": "{count, plural, other {# 项检查失败}}",
-      "warning": "{count, plural, other {# 项警告}}",
-      "healthy": "全部检查通过"
+      "warning": "{count, plural, other {# 项警告}}"
     },
     "detail": {
       "notFound": "找不到电脑",

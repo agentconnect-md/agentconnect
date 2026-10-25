@@ -99,6 +99,19 @@ describe('ComputersSection', () => {
     expect(mocks.push).toHaveBeenCalledWith('/acme/computers/c1')
   })
 
+  it('says nothing about passing checks, so an offline computer does not read as ready', () => {
+    mocks.computers = [
+      computer({
+        status: 'offline',
+        doctor: { checkedAt: '2026-10-21T00:00:00.000Z', checks: [{ name: 'driver', status: 'ok', detail: '' }] }
+      })
+    ]
+    const row = render().querySelector('[data-computer-row="c1"]')!
+    expect(row.textContent).toContain('Offline')
+    expect(row.textContent).not.toContain('checks')
+    expect(row.textContent).not.toContain('All checks pass')
+  })
+
   it('heads the section with its count as an anchor the old route lands on', () => {
     mocks.computers = [computer(), computer({ id: 'c2', status: 'offline' })]
     const el = render()

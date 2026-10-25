@@ -6621,8 +6621,7 @@
       "fix": "Fix:",
       "notReported": "Checks not reported",
       "failing": "{count, plural, one {# check failing} other {# checks failing}}",
-      "warning": "{count, plural, one {# warning} other {# warnings}}",
-      "healthy": "All checks pass"
+      "warning": "{count, plural, one {# warning} other {# warnings}}"
     },
     "detail": {
       "notFound": "Computer not found",
