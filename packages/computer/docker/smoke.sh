@@ -14,7 +14,22 @@ echo "image size: $((size / 1024 / 1024)) MiB"
 }
 
 net="$name-net"
+# What a failed run leaves to read: the container's log, the Xfce session's log and its processes.
+diagnose() {
+  docker inspect "$1" > /dev/null 2>&1 || return 0
+  echo "== $1: container log"
+  docker logs "$1" 2>&1 | tail -n 200
+  echo "== $1: /tmp/xfce4-session.log"
+  docker exec "$1" tail -n 200 /tmp/xfce4-session.log 2>&1 || true
+  echo "== $1: processes"
+  docker exec "$1" ps -eo pid,ppid,etimes,stat,comm 2>&1 || true
+}
 cleanup() {
+  local status=$?
+  if [ "$status" -ne 0 ]; then
+    diagnose "$name" >&2
+    diagnose "$name-reg" >&2
+  fi
   docker rm -f "$name" "$name-reg" "$name-stub" > /dev/null 2>&1 || true
   docker network rm "$net" > /dev/null 2>&1 || true
 }
