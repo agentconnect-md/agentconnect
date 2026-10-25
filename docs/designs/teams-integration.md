@@ -163,13 +163,20 @@ activation policy does the filtering, unchanged:
 
 That holds in a team's standard channels only. In a private or a shared
 channel, where the app is added to the channel itself, Teams delivered a
-mention and the bot's replies posted there, but an unmentioned thread reply
-never reached the relay (**measured** in both, with the team holding the
-grant). Neither the layout nor the channel's own install is the cause: a
-standard channel switched to the threads layout still delivered the
-unmentioned reply, and removing the app from the private channel and adding
-it back changed nothing. A thread there continues only through a mention. Whether an
-unmentioned top-level post there reaches an `auto` trigger is **unverified**.
+mention and the bot's replies posted there, but neither an unmentioned thread
+reply nor an unmentioned top-level post reached the relay (**measured** in
+both, with the team holding the grant). Neither the layout nor the channel's
+own install is the cause: a standard channel switched to the threads layout
+still delivered the unmentioned reply, and removing the app from the private
+channel and adding it back changed nothing. There a thread continues only
+through a mention, and an `auto` trigger never sees an unmentioned post.
+
+Graph does not close the gap. With the same grant, a change-notification
+subscription to a standard channel's messages is accepted, and one to a private
+or a shared channel's is refused with 403 after the endpoint validates
+(**measured**). The grant does let the bot read those channels' messages and
+replies through Graph, so polling the threads the agent is active in is the
+only way to see an unmentioned reply there.
 
 The manifest therefore leaves `addressedByConstruction` unset. If a tenant
 blocks RSC consent, the bot receives mentions only; `auto` and unmentioned
@@ -290,7 +297,8 @@ non-editor is refused privately and the card stays live. The module's
 In an external place (§4.6) no approval card goes into the conversation, as on
 Slack ([assistant mode](assistant-mode.md) §5.5): a neutral notice does, replaced
 with the outcome once the request settles and naming nobody there
-([approval surfaces](slack-approval-dm.md) §5.5), and
+([approval surfaces](slack-approval-dm.md) §5.5; **measured**: it read "✅
+Permission granted." after the editor allowed it from their 1:1 chat), and
 the card goes to the asker's own 1:1 chat when they are a full member of the
 home tenant. The connection opens that chat (`openDirectMessage`) by the
 asker's `29:` ID, read from a conversation the bot shares with them. Only the
@@ -311,7 +319,8 @@ names the agent and the person who asked and links the session. The connection
 opens that chat by the `29:` ID from a conversation it shares with the editor,
 else from the roster of a team it knows, which lists every team member. Only that
 editor answers the card, rechecked by the Control Plane on each click as Slack's
-DM is; the chat approval level does not reach it. A Slack integration of the same
+DM is; the chat approval level does not reach it (**measured** end to end in a
+shared channel with sync on). A Slack integration of the same
 agent is tried first, so an editor linked on both gets Slack's DM. The same card
 goes beside a card that only editors may answer (sync on, and the person who
 asked is not an editor): the routed editor gets it in their 1:1 chat while the
@@ -321,7 +330,8 @@ is the row's `beside*` one, so the reconnect sweep retires it too.
 An MCP tool approval asked as a question (`elicitation/create`) takes the
 asker's and the editor's 1:1 chats as a permission request does when its one
 field reduces to choices: the card offers those choices and Deny, and a click
-settles it with the chosen value. One that reduces to no choices gets no Teams
+settles it with the chosen value (**measured** with a Codex agent's MCP tool,
+from the editor's 1:1 chat). One that reduces to no choices gets no Teams
 card on either path and is answered in the console. Other questions take
 neither path; they stay in their conversation.
 
