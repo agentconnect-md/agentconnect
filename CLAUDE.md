@@ -151,24 +151,11 @@ line instead of leaving it as is.
 
 ## Pull requests and issues
 
-Keep fix-related issues open until the fix ships in a stable release. In PR titles,
-descriptions, and commit messages, use `Refs #123` or `Related to #123`. Do not pair
-issue references with GitHub's closing keywords (`close`, `fix`, `resolve`, or
-their variants), or add Development links that close issues on merge. Conventional
-commit types such as `fix(scope): ...` are unchanged. Merging a PR or publishing an
-RC/prerelease does not complete the issue workflow.
-
-For work split across PRs, each PR states which acceptance items it covers and
-what remains. Keep the issue's acceptance checklist and required PR references
-current; a partial implementation must not be presented as the complete fix.
+Before writing a commit message, a PR, or an issue reference, read
+[Pull requests and issues](CONTRIBUTING.md#pull-requests-and-issues) in `CONTRIBUTING.md` and follow it.
 
 For release summaries and post-release issue closure, use the
 [`agentconnect-release`](.claude/skills/agentconnect-release/SKILL.md) skill.
-
-When creating a pull request, report the actual coding harness and model at
-the end of its description. Keep any attribution footer the harness provides
-and append the model name to its final line. If there is no such footer, use
-`Created by <harness> . <model>`, such as `Created by Codex . GPT-6`.
 
 ## Commands
 

@@ -33,12 +33,37 @@ package and is used when the caller already selects the complete dependency clos
 For a complete local Control Plane and PostgreSQL development setup, follow the
 [Control Plane quickstart](packages/control-plane/README.md#local-dev-quickstart).
 
-## Pull requests
+## Pull requests and issues
 
 Pull request titles and at least one commit must follow the
 [Conventional Commits](https://www.conventionalcommits.org) style (`feat: ...`,
 `fix: ...`, `docs: ...`); a status check enforces this. Keep changes focused,
 and run `pnpm typecheck`, `pnpm lint`, and `pnpm test` before pushing.
+
+The type decides the release: `feat` bumps the minor version and is listed under
+Features in the release notes, `fix`, `chore` and `refactor` bump the patch version,
+and `docs`, `test` and `ci` do not release. Choose it by who will notice the change,
+not by how much code it touches:
+
+- `feat`: a new capability that users or administrators of a release will see and
+  that belongs in Features.
+- `fix`: something that was wrong for users and now works.
+- `chore` or `refactor`: everything internal, such as a deployment or environment
+  knob, a convenience for a test environment, tooling, logging, or a small
+  adjustment to existing behavior.
+
+When two types fit, use the one that releases less.
+
+Keep fix-related issues open until the fix ships in a stable release. In PR titles,
+descriptions, and commit messages, use `Refs #123` or `Related to #123`. Do not pair
+issue references with GitHub's closing keywords (`close`, `fix`, `resolve`, or
+their variants), or add Development links that close issues on merge. Conventional
+commit types such as `fix(scope): ...` are unchanged. Merging a PR or publishing an
+RC/prerelease does not complete the issue workflow.
+
+For work split across PRs, each PR states which acceptance items it covers and
+what remains. Keep the issue's acceptance checklist and required PR references
+current; a partial implementation must not be presented as the complete fix.
 
 For pull requests prepared with an AI coding harness, report the actual harness
 and model at the end of the description. Keep any attribution footer the harness
