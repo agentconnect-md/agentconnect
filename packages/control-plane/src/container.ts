@@ -3616,6 +3616,7 @@ export function httpServerConfigFrom(
     ...(config.PUBLIC_WEB_URL ? { PUBLIC_WEB_URL: config.PUBLIC_WEB_URL } : {}),
     SLACK_INSTALL_TTL_SEC: config.SLACK_INSTALL_TTL_SEC,
     ...(config.PUBLIC_RELAY_URL ? { PUBLIC_RELAY_URL: config.PUBLIC_RELAY_URL } : {}),
+    ...(config.MSTEAMS_APP_LABEL ? { MSTEAMS_APP_LABEL: config.MSTEAMS_APP_LABEL } : {}),
     AHP_MODE: config.AHP_MODE,
     WEBCHAT_PROTOCOL: config.WEBCHAT_PROTOCOL,
     ...(config.USAGE_INGEST_TOKEN ? { USAGE_INGEST_TOKEN: config.USAGE_INGEST_TOKEN } : {}),

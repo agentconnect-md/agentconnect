@@ -5,7 +5,9 @@ import { RcMsTeamsAnchor } from '@agentconnect.md/protocol'
 export const MsTeamsCpEnvSchema = {
   MSTEAMS_PLATFORM_APP_ID: z.string().optional(),
   MSTEAMS_PLATFORM_TENANT_ID: z.string().optional(),
-  MSTEAMS_PLATFORM_CLIENT_SECRET: z.string().optional()
+  MSTEAMS_PLATFORM_CLIENT_SECRET: z.string().optional(),
+  // A non-production deployment's label, shown after every Teams app's name (teams-integration.md §5).
+  MSTEAMS_APP_LABEL: z.string().optional()
 } satisfies ZodRawShape
 
 export interface MsTeamsPlatformApp {

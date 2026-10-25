@@ -541,7 +541,10 @@ The wizard walks the admin through both registrations and then:
   The Control Plane builds it from the integration's row
   (`GET /integrations/:id/msteams/app-package`). Its app ID is a UUIDv5 of the
   bot's app ID, so a re-download, even after a reinstall, updates the same app,
-  and its version grows with each download. The catalog
+  and its version grows with each download. The app's name is the agent's;
+  a non-production deployment sets `MSTEAMS_APP_LABEL` (for example `test`) to
+  show it as "AgentConnect (test)", so two deployments' apps in one tenant
+  are told apart. The catalog
   assigns the uploaded app an ID of its own and keeps the manifest's as its
   external ID.
 
