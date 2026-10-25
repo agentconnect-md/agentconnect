@@ -256,6 +256,20 @@ describe('discoverAuthServer', () => {
     expect(result.value.tokenEndpoint).toBe(`${ISSUER}/token`)
     expect(result.value.issParameterSupported).toBe(true)
     expect(result.value.clientIdMetadataDocumentSupported).toBe(false)
+    expect(result.value.tokenEndpointAuthMethodsSupported).toBeUndefined()
+  })
+
+  it('records the token endpoint auth methods the server advertises', async () => {
+    const dial = fakeDial({
+      'https://auth.example.test/.well-known/oauth-authorization-server': ok(200, {
+        ...AS_DOC,
+        token_endpoint_auth_methods_supported: ['client_secret_post']
+      })
+    })
+    const result = await discoverAuthServer(dial, ISSUER)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.tokenEndpointAuthMethodsSupported).toEqual(['client_secret_post'])
   })
 
   it('falls through to the OIDC location when the RFC 8414 one is absent', async () => {

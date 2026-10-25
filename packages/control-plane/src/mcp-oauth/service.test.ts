@@ -42,7 +42,7 @@ const AS_DOC = {
 
 /** The full discovery + registration + token surface a happy funnel walks. */
 function fakeDial(over: Record<string, GuardedResult> = {}) {
-  const seen: Array<{ url: string; body?: string }> = []
+  const seen: Array<{ url: string; body?: string; headers?: Record<string, string> }> = []
   const table: Record<string, GuardedResult> = {
     [MCP_URL]: ok(401, undefined, {
       'www-authenticate': `Bearer resource_metadata="${PRM_URL}", scope="files:read"`
@@ -57,8 +57,8 @@ function fakeDial(over: Record<string, GuardedResult> = {}) {
     [`${ISSUER}/token`]: ok(200, { access_token: 'access-1', refresh_token: 'refresh-1', expires_in: 3600 }),
     ...over
   }
-  const dial = (async (url: string, init?: { body?: string }) => {
-    seen.push({ url, ...(init?.body ? { body: init.body } : {}) })
+  const dial = (async (url: string, init?: { body?: string; headers?: Record<string, string> }) => {
+    seen.push({ url, ...(init?.body ? { body: init.body } : {}), ...(init?.headers ? { headers: init.headers } : {}) })
     return table[url] ?? { ok: false, failure: 'unreachable' }
   }) as Dial
   return { dial, seen }
@@ -100,6 +100,7 @@ function fakeWorld(providerOver: Partial<McpProviderRecord> = {}) {
         clientId: input.clientId,
         clientSource: input.clientSource,
         issParameterSupported: input.issParameterSupported,
+        clientSecretAuth: input.clientSecretAuth,
         status: 'pending',
         connectedByUserId: null,
         accessExpiresAt: null,
@@ -227,10 +228,29 @@ describe('McpProviderOauthService — the happy funnel', () => {
     expect(result).toEqual({ redirectPath: '/tools', result: 'connected' })
     expect(world.connected).toEqual([{ providerId: PROVIDER, accessExpiresAt: new Date(NOW + 3600_000) }])
     expect(onConnected).toHaveBeenCalledWith(ORG, PROVIDER)
-    const tokenBody = new URLSearchParams(seen.find((s) => s.url === `${ISSUER}/token`)!.body!)
+    const token = seen.find((s) => s.url === `${ISSUER}/token`)!
+    const tokenBody = new URLSearchParams(token.body!)
     expect(tokenBody.get('grant_type')).toBe('authorization_code')
     expect(tokenBody.get('resource')).toBe(MCP_URL)
     expect(tokenBody.get('redirect_uri')).toBe(CALLBACK)
+    expect(token.headers!.authorization).toMatch(/^Basic /)
+    expect(tokenBody.get('client_secret')).toBeNull()
+  })
+
+  it('sends the client secret in the form body for a server that only takes client_secret_post', async () => {
+    const world = fakeWorld()
+    const { dial, seen } = fakeDial({
+      'https://auth.example.test/.well-known/oauth-authorization-server': ok(200, {
+        ...AS_DOC,
+        token_endpoint_auth_methods_supported: ['client_secret_post']
+      })
+    })
+    const { result } = await walk(world, dial)
+    expect(result).toEqual({ redirectPath: '/tools', result: 'connected' })
+    expect(world.read()?.clientSecretAuth).toBe('post')
+    const token = seen.find((s) => s.url === `${ISSUER}/token`)!
+    expect(token.headers!.authorization).toBeUndefined()
+    expect(new URLSearchParams(token.body!).get('client_secret')).toBe('dcr-secret')
   })
 
   it('lands the browser back on the console origin carrying the outcome', () => {

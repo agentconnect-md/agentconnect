@@ -19,6 +19,7 @@
  */
 import type { Dial } from './discovery.js'
 import type { GuardedFailure } from '../net/guarded-fetch.js'
+import type { McpOauthClientSecretAuth } from '../persistence/ports.js'
 
 /** A grant as the authorization server issued it. `expiresAt` is absolute, not a duration. */
 export interface TokenGrant {
@@ -42,13 +43,28 @@ export type TokenResult = { ok: true; grant: TokenGrant } | { ok: false; failure
 export interface TokenClient {
   tokenEndpoint: string
   clientId: string
-  /** Present only for a confidential client; sent as HTTP Basic per OAuth 2.1 §2.4.1. */
+  /** Present only for a confidential client; sent as HTTP Basic per OAuth 2.1 §2.4.1 unless
+   *  `clientSecretAuth` says the server only takes it in the form body. */
   clientSecret?: string
+  /** How the secret travels. Defaults to `basic`; see {@link clientSecretAuthFor}. */
+  clientSecretAuth?: McpOauthClientSecretAuth
   /** The RFC 8707 audience, verbatim from protected-resource metadata. */
   resource: string
 }
 
 const unreachable = new Set<GuardedFailure>(['unreachable', 'address_blocked', 'url_rejected'])
+
+/**
+ * Pick how the client secret reaches the token endpoint from the server's advertised
+ * `token_endpoint_auth_methods_supported`. Basic is the OAuth 2.1 default and what a server
+ * that publishes nothing accepts, so `post` is chosen only when the server lists
+ * `client_secret_post` and NOT `client_secret_basic` (HubSpot's MCP server is one).
+ */
+export function clientSecretAuthFor(methods: string[] | undefined): McpOauthClientSecretAuth {
+  if (methods === undefined) return 'basic'
+  if (methods.includes('client_secret_basic')) return 'basic'
+  return methods.includes('client_secret_post') ? 'post' : 'basic'
+}
 
 function readGrant(json: unknown, now: number): TokenGrant | null {
   if (typeof json !== 'object' || json === null) return null
@@ -71,14 +87,19 @@ async function post(dial: Dial, client: TokenClient, form: Record<string, string
     'content-type': 'application/x-www-form-urlencoded',
     accept: 'application/json'
   }
+  const body: Record<string, string> = { ...form, client_id: client.clientId, resource: client.resource }
   if (client.clientSecret !== undefined) {
-    const basic = Buffer.from(`${encodeURIComponent(client.clientId)}:${encodeURIComponent(client.clientSecret)}`)
-    headers.authorization = `Basic ${basic.toString('base64')}`
+    if (client.clientSecretAuth === 'post') {
+      body.client_secret = client.clientSecret
+    } else {
+      const basic = Buffer.from(`${encodeURIComponent(client.clientId)}:${encodeURIComponent(client.clientSecret)}`)
+      headers.authorization = `Basic ${basic.toString('base64')}`
+    }
   }
   const result = await dial(client.tokenEndpoint, {
     method: 'POST',
     headers,
-    body: new URLSearchParams({ ...form, client_id: client.clientId, resource: client.resource }).toString()
+    body: new URLSearchParams(body).toString()
   })
   if (!result.ok) {
     return { ok: false, failure: unreachable.has(result.failure) ? 'unreachable' : 'malformed' }

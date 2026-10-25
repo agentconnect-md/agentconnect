@@ -162,6 +162,7 @@ export class McpProviderTokenService {
         tokenEndpoint: row.tokenEndpoint,
         clientId: row.clientId,
         ...(sealed.clientSecret ? { clientSecret: await this.deps.cipher.open(sealed.clientSecret, scope) } : {}),
+        clientSecretAuth: row.clientSecretAuth,
         resource: row.resource
       }
       const result = await refreshGrant(
