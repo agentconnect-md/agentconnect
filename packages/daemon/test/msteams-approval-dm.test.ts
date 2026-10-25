@@ -140,7 +140,7 @@ async function world(asker = ASKER, slack = false, editorsOnly = false) {
   const postedTo = (): string[] =>
     cardPosts.mock.calls.map((call) => (call[0] as { conversationId: string }).conversationId)
   const onlyRequest = (): string => [...permissions.pendingApprovals.keys()][0]
-  return { store, conn, cp, permissions, postedTo, onlyRequest, applied, notices, cardPosts, cardReplaces }
+  return { daemon, store, conn, cp, permissions, postedTo, onlyRequest, applied, notices, cardPosts, cardReplaces }
 }
 
 describe('an approval in a Teams channel shared with another organization', () => {
@@ -555,6 +555,41 @@ describe('an approval card in a Teams channel only editors may answer', () => {
     await w.permissions.retireOrphanedCards(INT)
     expect(replaced(w)).toEqual(['activity-2'])
     expect(await besideRow(w)).toMatchObject({ besideTs: null })
+    await w.store.close()
+  })
+})
+
+describe('a Codex MCP approval on a Teams card', () => {
+  /** The MCP call the turn saw before its approval was asked. */
+  const mcpCall = (toolCallId: string) => ({
+    sessionUpdate: 'tool_call',
+    toolCallId,
+    kind: 'execute',
+    title: 'mcp.get-time.get_current_time',
+    rawInput: { server: 'get-time', tool: 'get_current_time', arguments: { timezone: 'UTC' } }
+  })
+
+  it('names the server and tool of a request that carries only its id and kind', async () => {
+    const w = await world()
+    w.daemon.onAcpUpdate(AGENT, 's1', mcpCall('call-m'))
+    const asked = { ...permission, toolCall: { toolCallId: 'call-m', kind: 'execute', status: 'pending' } }
+    void w.permissions.onAcpPermission(AGENT, 's1', asked)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${ASKER}`]))
+    const card = JSON.stringify(w.cardPosts.mock.calls[0]![1])
+    expect(card).toContain('Permission requested — get-time · get_current_time')
+    expect(card).not.toContain('— execute')
+    expect((await w.store.listPermissionRequests(AGENT))[0]).toMatchObject({
+      command: 'get-time · get_current_time: timezone=UTC'
+    })
+    await w.store.close()
+  })
+
+  it('names the server and tool of an MCP approval with choices', async () => {
+    const w = await world()
+    w.daemon.onAcpUpdate(AGENT, 's1', mcpCall('call-e'))
+    void w.permissions.onAcpElicit(AGENT, 's1', question)
+    await vi.waitFor(() => expect(w.postedTo()).toEqual([`a:${ASKER}`]))
+    expect(JSON.stringify(w.cardPosts.mock.calls[0]![1])).toContain('get-time · get_current_time')
     await w.store.close()
   })
 })
