@@ -2666,8 +2666,19 @@ describe('external places start closed', () => {
       expect(core.externalChannels).toEqual(['C_EXT'])
 
       // The new agent's daemon reports the place without a reason; the row stays Off.
-      await send([{ id: 'C_EXT', name: 'shared' }])
-      expect((await rowsOf(next)).get('C_EXT')).toMatchObject({ trigger: 'off', externalReason: 'externalMember' })
+      await report(
+        DAEMON,
+        next,
+        [{ id: 'C_EXT', name: 'shared-ops', externalReason: null }],
+        undefined,
+        undefined,
+        false
+      )
+      expect((await rowsOf(next)).get('C_EXT')).toMatchObject({
+        name: 'shared-ops',
+        trigger: 'off',
+        externalReason: 'externalMember'
+      })
     })
 
     it('forgets a share the platform lifted', async () => {
