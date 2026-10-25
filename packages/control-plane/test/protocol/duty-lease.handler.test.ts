@@ -927,8 +927,10 @@ describe('duty/claim — the activation rendezvous (real Postgres)', () => {
     const groupId = first.payload.grant!.groupId
 
     stub.inject('duty/claim', { agentId: AGENT }, { id: REL_ID })
-    const second = await stub.expectFrame('duty/claim/ok')
-    if (!isFrame('duty/claim/ok')(second)) throw new Error('expected duty/claim/ok')
+    // `expectFrame` would hand back the FIRST reply again; read the one correlated to this claim.
+    await stub.settled()
+    const second = stub.sent.find((f) => f.type === 'duty/claim/ok' && f.corr === REL_ID)
+    if (!second || !isFrame('duty/claim/ok')(second)) throw new Error('expected duty/claim/ok')
     expect(second.payload.granted).toBe(true)
     expect(second.payload.grant).toMatchObject({ groupId, term: '1' })
   })
