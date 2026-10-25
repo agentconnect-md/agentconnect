@@ -24,7 +24,8 @@ mkdir -p -m 700 "$data"
 
 # The container filesystem survives `docker restart`, and so would a stale X lock.
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
-Xvfb :1 -screen 0 "${RESOLUTION:-1600x900x24}" -nolisten tcp -dpi 96 > /tmp/xvfb.log 2>&1 &
+# dbus-launch connects and leaves first; a reset on that last disconnect would drop the session's connection mid-handshake.
+Xvfb :1 -screen 0 "${RESOLUTION:-1600x900x24}" -nolisten tcp -noreset -dpi 96 > /tmp/xvfb.log 2>&1 &
 xvfb=$!
 for _ in $(seq 1 50); do
   [ -S /tmp/.X11-unix/X1 ] && break
