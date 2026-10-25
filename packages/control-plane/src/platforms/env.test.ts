@@ -219,6 +219,12 @@ describe('composed AppConfigSchema', () => {
     expect(config.GOOGLE_CHAT_PLATFORM_PROJECT_ID).toBeUndefined()
     expect(config.SLACK_INSTALL_TTL_SEC).toBe(3600)
   })
+
+  it('bounds the Teams app label so its suffix fits the 30-character short name', () => {
+    const label = (value: string) => loadConfig({ ...MINIMAL_ENV, MSTEAMS_APP_LABEL: value } as NodeJS.ProcessEnv)
+    expect(label(` ${'x'.repeat(26)} `).MSTEAMS_APP_LABEL).toBe('x'.repeat(26))
+    expect(() => label('x'.repeat(27))).toThrow()
+  })
 })
 
 describe('platform env declarations', () => {
