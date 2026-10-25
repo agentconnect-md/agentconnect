@@ -102,6 +102,7 @@ model Org {
   integrations              Integration[]
   bots                      Bot[]
   githubInstallations       GithubInstallation[]
+  githubApps                GithubApp[]
   gitlabConnections         GitlabConnection[]
   gitlabProjectBindings     GitlabProjectBinding[]
   gitlabAgentAccounts       GitlabAgentAccount[]
@@ -939,6 +940,9 @@ model Agent {
   // `gitCredentialProvider` qualifies which host numbered it.
   // Nullable for pre-migration/anonymous workspaces and lazily repairable.
   workspaceRepoId       BigInt?
+  // The organization-registered GitHub App this agent acts as (GithubApp.id).
+  // Null ⇒ the deployment App. Deleting the App returns the agent to the default.
+  githubAppId           String?            @db.Uuid
   gitAccess             GitAccess          @default(write) // ceiling for minted tokens; meaningful only with a credential provider
   capabilities          String[]           @default([]) // → AgentLaunch.activeCapabilities
   permissions           Json               @default("{}") @db.JsonB // {policy:"ask",autoApprove:[...]}
@@ -977,6 +981,7 @@ model Agent {
   updatedAt             DateTime           @updatedAt @db.Timestamptz(6)
 
   org                   Org                        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  githubApp             GithubApp?                 @relation(fields: [githubAppId], references: [id], onDelete: SetNull)
   daemon                Daemon?                    @relation(fields: [daemonId], references: [id], onDelete: SetNull)
   set                   MemberSet?                 @relation(fields: [setId], references: [id], onDelete: SetNull)
   createdBy             User?                      @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
@@ -3352,13 +3357,55 @@ model GithubInstallation {
   permissions         Json      @default("{}") @db.JsonB
   suspendedAt         DateTime? @db.Timestamptz(6)
   revokedAt           DateTime? @db.Timestamptz(6) // sync found it uninstalled ⇒ mark, don't delete
+  // The organization-registered App this installation belongs to. Null ⇒ the
+  // deployment App. Mint-time resolution is always qualified by it, so the two
+  // Apps' installations on the same GitHub account never stand in for each other.
+  githubAppId         String?   @db.Uuid
   createdAt           DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt           DateTime  @updatedAt @db.Timestamptz(6)
 
-  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org Org        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  app GithubApp? @relation(fields: [githubAppId], references: [id], onDelete: Cascade)
 
   @@index([orgId])
+  @@index([githubAppId])
   @@map("github_installation")
+}
+
+/// A GitHub App an organization registered beside the deployment App
+/// (github-app-git-credentials.md §Dedicated Apps). An agent bound to a row acts
+/// as that App's bot — pushes, `gh`, formal reviews and Checks — so two agents on
+/// one repository can carry distinct GitHub identities. The private key lives in
+/// `GithubAppSecret`, read only via the store.
+model GithubApp {
+  id        String   @id @default(uuid()) @db.Uuid
+  orgId     String
+  appId     BigInt   @unique // GitHub-side App id
+  slug      String // github.com/apps/<slug>; the bot login is `<slug>[bot]`
+  clientId  String? // JWT issuer when known (GitHub's recommendation); else the App id
+  botUserId BigInt? // user id of `<slug>[bot]`, resolved on registration; null ⇒ unknown
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  org           Org                  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  secret        GithubAppSecret?
+  installations GithubInstallation[]
+  agents        Agent[]
+
+  @@unique([id, orgId])
+  @@index([orgId])
+  @@map("github_app")
+}
+
+/// Private key of an organization-registered GitHub App — read ONLY via the
+/// GithubAppSecretStore (sealed by SecretCipher under the org scope).
+model GithubAppSecret {
+  githubAppId String @id @db.Uuid
+  privateKey  String // stored SecretCipher representation of the base64 PEM
+
+  app GithubApp @relation(fields: [githubAppId], references: [id], onDelete: Cascade)
+
+  @@map("github_app_secret")
 }
 
 /// One-shot HMAC-signed install-state nonces (the `state` on the GitHub install

@@ -54,6 +54,7 @@ import {
 import { OutputModeField } from '@/components/console/OutputModeField'
 import { ChatActionsField } from '@/components/console/ChatActionsField'
 import { ExecutionStrategyField } from '@/components/console/ExecutionStrategyField'
+import { GithubIdentityField } from '@/components/console/GithubIdentityField'
 import {
   agentStrategies,
   agentStrategyValue,
@@ -205,6 +206,8 @@ export default function EditAgentModal({
   const initialIntroduceOnJoin = useRef(agent.introduceOnJoin)
   const [execution, setExecution] = useState(() => agentStrategyValue(agent))
   const initialExecution = useRef(agentStrategyValue(agent))
+  const [githubAppId, setGithubAppId] = useState(agent.githubAppId ?? '')
+  const initialGithubAppId = useRef(agent.githubAppId ?? '')
   // Agent-call visibility (both directions) — prefilled from the list `Agent`
   // (which already carries the policy), edited here, and saved on the modal's
   // Save alongside the spec/sharing diffs rather than immediately per change.
@@ -299,6 +302,8 @@ export default function EditAgentModal({
         const storedExecution = agentStrategyValue({ execution: dto.execution ?? HOST_STRATEGY })
         setExecution(storedExecution)
         initialExecution.current = storedExecution
+        setGithubAppId(dto.githubAppId ?? '')
+        initialGithubAppId.current = dto.githubAppId ?? ''
         setSavedStrategies(agentStrategies({ strategies: dto.strategies ?? HOST_ONLY_TABLE }, false))
         const fresh: SharingValue = { visibility: dto.visibility, sharedWith: dto.sharedWith }
         setSharing(fresh)
@@ -660,6 +665,7 @@ export default function EditAgentModal({
     ...(introduceOnJoin !== initialIntroduceOnJoin.current ? { introduceOnJoin } : {}),
     // Saved before any move, so it is asked of the saved placement.
     ...(execution !== initialExecution.current ? executionAsk(savedStrategies, execution) : {}),
+    ...(githubAppId !== initialGithubAppId.current ? { githubAppId: githubAppId || null } : {}),
     ...(envChanged ? { env: envRecord } : {}),
     ...(secretsChanged ? { secrets: secretsPatch } : {}),
     ...(removedLiveSecrets.length > 0
@@ -960,6 +966,7 @@ export default function EditAgentModal({
                     disabledReason={placementRequested ? t('edit.saveComputerFirst') : undefined}
                   />
                 )}
+                <GithubIdentityField value={githubAppId} onChange={setGithubAppId} />
                 <OutputModeField
                   className="desktop:col-span-2"
                   value={outputMode}
