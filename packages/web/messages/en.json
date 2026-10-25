@@ -6513,25 +6513,18 @@
     "addComputer": "Add computer",
     "add": {
       "title": "Add computer",
-      "description": "Run one command on the desktop you want to add, in a terminal inside its signed-in graphical session. It installs the desktop daemon as a background service and registers it with this organization. You will be its owner.",
-      "descriptionDocker": "Run one command on a server with Docker. It starts a desktop container with Firefox, isolated from the server, and registers it with this organization. You will be its owner.",
-      "os": "Platform",
-      "docker": "Docker",
-      "osHint": {
-        "linux": "Ubuntu with Xfce on Xorg or GNOME on Wayland. Run it in a terminal on the desktop as yourself, not as root; the service then starts with every session.",
-        "macos": "macOS asks you to allow Accessibility and Screen Recording for AgentConnect the first time.",
-        "windows": "Run it in a normal PowerShell of the signed-in user, not as administrator.",
-        "docker": "A Linux desktop with Firefox in a container, on any host with Docker. To use docker compose, or to send the viewer's video directly, see the self-hosted desktop container guide."
+      "description": "Run this command in a terminal on the computer you want to add, signed in to its desktop as yourself. It installs the desktop daemon as a background service and registers it with this organization. You will be its owner.",
+      "kind": {
+        "desktop": "Linux · macOS · Windows",
+        "docker": "Docker"
+      },
+      "kindHint": {
+        "desktop": "Needs Node.js. Run it as yourself, not as root or administrator; on macOS, allow Accessibility and Screen Recording when asked.",
+        "docker": "On a server with Docker: a Linux desktop with Firefox in a container, isolated from the server. For docker compose, or to send the viewer's video directly, see the self-hosted desktop container guide."
       },
       "name": "Name",
       "optional": "optional",
       "namePlaceholder": "Uses the computer's hostname",
-      "run": "Run on the computer",
-      "runDocker": "Run on the server",
-      "shell": {
-        "posix": "Terminal",
-        "windows": "PowerShell"
-      },
       "copy": "Copy",
       "copied": "Copied",
       "expires": "The command works once and expires {when}.",
@@ -6544,15 +6537,13 @@
       "expiredHint": "Create a new command and run that one instead",
       "createNew": "Create new command",
       "mintError": "Could not create the command: {message}",
+      "saveError": "Could not save the visibility: {message}",
       "shownOnce": "The command is shown only once",
       "cancel": "Cancel",
-      "create": "Create command",
-      "minting": "Creating…",
+      "minting": "Creating the command…",
       "open": "Open computer",
-      "close": "Close",
-      "source": "Where it runs",
-      "own": "Your machine",
-      "pool": "Managed",
+      "saving": "Saving…",
+      "poolTitle": "Add managed computer",
       "poolDescription": "A Linux desktop with Firefox from this deployment's pool, isolated in its own container with its own disk. Agents you give access share it one at a time. It sleeps when idle, keeping its files and sign-ins, and stays until you delete it. You will be its owner.",
       "poolName": "Name",
       "poolNamePlaceholder": "Shared browser",
@@ -6630,8 +6621,7 @@
       "fix": "Fix:",
       "notReported": "Checks not reported",
       "failing": "{count, plural, one {# check failing} other {# checks failing}}",
-      "warning": "{count, plural, one {# warning} other {# warnings}}",
-      "healthy": "All checks pass"
+      "warning": "{count, plural, one {# warning} other {# warnings}}"
     },
     "detail": {
       "notFound": "Computer not found",

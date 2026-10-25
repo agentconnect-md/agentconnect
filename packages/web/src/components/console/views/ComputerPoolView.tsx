@@ -84,7 +84,7 @@ export default function ComputerPoolView() {
           </p>
         </div>
         {pool?.enabled && (
-          <Button size="sm" onClick={() => openModal('computer', undefined, { computerSource: 'pool' })}>
+          <Button size="sm" onClick={() => openModal('poolComputer')}>
             <Icon name="plus" size={15} />
             {t('poolPage.add')}
           </Button>

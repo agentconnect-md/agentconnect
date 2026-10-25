@@ -97,7 +97,7 @@ function ManagedComputersSection({ managed, available }: { managed: ComputerDto[
         action={
           <button
             className="inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand)"
-            onClick={() => openModal('computer', undefined, { computerSource: 'pool' })}
+            onClick={() => openModal('poolComputer')}
           >
             <Icon name="plus" size={13} />
             {t('add')}
@@ -260,7 +260,7 @@ export function ComputerRow({ computer }: { computer: ComputerDto }) {
         </span>
       </div>
       <div className="flex min-w-0 items-center gap-[14px] font-sans text-[12px] font-medium leading-normal desktop:flex-none">
-        {/* Checks over last seen in one fixed column, so the name keeps the rest of the row. */}
+        {/* Checks over last seen in one fixed column; passing checks say nothing, since green read as a ready computer. */}
         <div className="flex min-w-0 flex-1 items-center justify-between gap-3 desktop:w-[128px] desktop:flex-none desktop:flex-col desktop:items-end desktop:justify-center desktop:gap-[3px]">
           {doctor.total === 0 ? (
             <span className="max-w-full truncate text-(--text-tertiary)">{t('doctor.notReported')}</span>
@@ -274,12 +274,7 @@ export function ComputerRow({ computer }: { computer: ComputerDto }) {
               <Icon name="triangle-alert" size={13} className="mr-[5px] inline align-[-2px]" />
               {t('doctor.warning', { count: doctor.warn })}
             </span>
-          ) : (
-            <span className="max-w-full truncate text-(--status-online)">
-              <Icon name="circle-check" size={13} className="mr-[5px] inline align-[-2px]" />
-              {t('doctor.healthy')}
-            </span>
-          )}
+          ) : null}
           {computer.lease ? (
             <span data-lease-holder={computer.lease.agentId} className="max-w-full truncate text-(--status-info)">
               {t('inUseBy', { agent: agentName(computer.lease.agentId, computer.lease.agentName) })}

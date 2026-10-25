@@ -333,8 +333,8 @@ registration, and rollback from a version whose daemon crashes.
 
 Follow the "add a daemon in the console, run the generated command" flow and daemon API-key authentication:
 
-1. Console **Computers → Add Computer**: pick the OS; the console produces a one-time install command carrying a
-   short-lived registration token.
+1. Console **Computers → Add Computer**: the console produces a one-time install command, the same on every desktop OS,
+   carrying a short-lived registration token.
 2. The user runs it on the target machine, i.e. `setup --register <token>`: every §3.5 step, plus exchanging the
    registration token for **an API key bound to this organization and this Computer**, kept in the system keychain /
    credential manager [per-platform storage to be decided]. In a container the token arrives through an environment
@@ -521,8 +521,8 @@ clipboard, no Chromium variant, and the source obligations of the Debian package
 is downloaded on first start rather than preinstalled until counsel answers its distribution question (§14.8).
 
 **Self-hosted containers [implemented]**: `packages/computer/docker/compose.yaml` (settings in `compose.env.example`
-next to it) runs the image on a user's server, and the console's **Add Computer** offers **Docker** with the matching
-`docker run` line; the guide is [self-host-computer-container.md](../self-host-computer-container.md). The container
+next to it) runs the image on a user's server, and the console's **Add Computer** shows the matching `docker run` line
+on its **Docker** tab; the guide is [self-host-computer-container.md](../self-host-computer-container.md). The container
 only dials out, so the console viewer's signaling and screenshots go through the relay, and its video is direct when
 `RTC_ADDRESS` and the published UDP range reach the browser, through TURN otherwise. The deployment stack's
 `compose.relay-turn.yaml` turns on the relay's own TURN (§7.2); its `compose.turn.yaml` instead adds coturn with `use-auth-secret` and sets `COMPUTER_TURN_URLS` / `COMPUTER_TURN_SECRET` (§7.2); since both peers
@@ -1161,12 +1161,15 @@ and every `computer/policy`.
 - **[implemented]** The **Computers** section of Infra (`/daemons#computers`; `/computers` redirects there, and a
   Computer's page keeps `/computers/:id` under Infra in the rail) lists the self-hosted Computers the caller can see as
   cards in the daemons' grid, with status, OS and session, granted agents, and a `doctor` summary; the owner is on the
-  detail page. **Add Computer** takes an optional name and the visibility (Selected with only the registrant by
-  default, sent with `POST …/computers/registrations` and applied at the exchange), mints the registration token only when asked, shows
-  `npx -y @agentconnect.md/cli@<tag> computer install [--channel rc] --register <token> --cp-url <exchange URL>` on
-  Linux (§3.5, the tag following the CP's release channel), or `computer setup` with the same tag and arguments on
-  macOS and Windows, quoted for the chosen OS, and follows `GET …/computers/registrations/:id`, which
-  only the token's minter may read, until the new Computer is online. The detail page shows each `doctor` check with its
+  detail page. **Add Computer** adds a self-hosted Computer only. Like Add daemon, it mints the registration token
+  (`POST …/computers/registrations`, Selected with only the registrant) as it opens and shows one command for Linux,
+  macOS and Windows,
+  `npx -y @agentconnect.md/cli@<tag> computer install [--channel rc] --register "<token>" --cp-url "<exchange URL>"`
+  (§3.5, the tag following the CP's release channel; double quotes read the same in sh and PowerShell), with the
+  `docker run` line on a Docker tab. An optional name joins the command as `--name` (`AGENTCONNECT_COMPUTER_NAME` for
+  Docker) until the desktop registers; a changed visibility is written with `PUT …/computers/:id/sharing` when the
+  owner opens the connected Computer. It follows `GET …/computers/registrations/:id`, which only the token's minter
+  may read, until the new Computer is online. The detail page shows each `doctor` check with its
   fix (failures first), the reported capabilities, Stop / Resume (§6), Revoke and Delete, the policy form (granted
   agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot
   retention, driver tools; read-only for anyone but the owner), the visibility in the details with a change dialog for
@@ -1177,13 +1180,13 @@ and every `computer/policy`.
   member, and remove for any of them (§4.1). The detail page embeds the viewer (§7.2): Watch opens it, an allowed member
   may Take control and Release, and a badge names the media path (Direct, TURN relay or Screenshots).
 - **Managed computers [implemented]** (#3232). Where the deployment runs the pool (`GET …/computers/pool` answers
-  `enabled` and whether a member is `available`), **Add Computer** offers _Your machine_ or _Managed_: a name and the
-  visibility (Everyone by default) create a `manual` computer with `POST …/computers/pool`; agents get it on their Tools
+  `enabled` and whether a member is `available`), its own **Add managed computer** dialog takes a name and the
+  visibility (Everyone by default) and creates a `manual` computer with `POST …/computers/pool`; agents get it on their Tools
   tab. Infra shows the pool as one entry in a section of its own above Computers, like the daemon pool, with its own
   add action: **AgentConnect Computers** on the managed install, **Computer pool** on a self-hosted cluster, with how
   many run and sleep and whether a member is `available`; it stays while managed computers remain after the pool is
   turned off. It opens `/computers/pool`, which lists the managed
-  computers and adds one on the _Managed_ source. The egress card is hidden for now. That list marks a managed
+  computers and adds one through the same dialog. The egress card is hidden for now. That list marks a managed
   computer's allocation (Pool, Agent's own with its agent, Session desktop), shows `Asleep` and
   any pool phase in flight (Starting, Waking, Resetting, Failed, Removing), and names the agent in control and how many
   wait. The detail page has a **Control** card for every Computer (the lease holder with its session, and the queue in

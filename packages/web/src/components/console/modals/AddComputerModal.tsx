@@ -1,7 +1,7 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
-// Add Computer (computer-use.md §3.6): mint a one-time registration token and wait for the desktop to come online.
-import { useEffect, useState } from 'react'
+// Add Computer (computer-use.md §3.6): mint a one-time registration token on open and wait for the desktop to come online.
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import {
@@ -9,51 +9,59 @@ import {
   createComputerRegistration,
   fetchComputer,
   fetchComputerRegistration,
+  setComputerSharing,
   type ComputerDto,
   type ComputerRegistrationDto
 } from '@/lib/api'
-import { computerInstallCommand, type InstallOs, useAgo, useComputerPool } from '@/lib/computers'
+import { computerInstallCommand, type InstallKind, useAgo } from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Spinner } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
-import AddPoolComputer from '@/components/console/modals/AddPoolComputer'
-import { VisibilityField, type SharingValue } from '@/components/console/VisibilityField'
+import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 
 /** How often the dialog asks whether the desktop has registered and connected. */
 export const REGISTRATION_POLL_MS = 3000
 
-const OSES: InstallOs[] = ['linux', 'macos', 'windows', 'docker']
+const KINDS: InstallKind[] = ['desktop', 'docker']
 
-export default function AddComputerModal({
-  onClose,
-  source: initialSource = 'own'
-}: {
-  onClose: () => void
-  source?: 'own' | 'pool'
-}) {
+export default function AddComputerModal({ onClose }: { onClose: () => void }) {
   const t = useTranslations('Computers.add')
-  const tc = useTranslations('Computers')
   const ago = useAgo()
   const router = useRouter()
   const { orgPath } = useOrgs()
-  const [os, setOs] = useState<InstallOs>('linux')
+  const [kind, setKind] = useState<InstallKind>('desktop')
   const [name, setName] = useState('')
-  const [minting, setMinting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [registration, setRegistration] = useState<ComputerRegistrationDto | null>(null)
   const [computerId, setComputerId] = useState<string | null>(null)
   const [computer, setComputer] = useState<ComputerDto | null>(null)
   const [copied, setCopied] = useState(false)
   const [expired, setExpired] = useState(false)
+  const [saving, setSaving] = useState(false)
   const connected = computer !== null && computer.status !== 'offline' && computer.status !== 'revoked'
-  const { data: pool } = useComputerPool()
-  const [source, setSource] = useState<'own' | 'pool'>(initialSource)
-  // Someone's desktop starts seen by its registrant alone; the CP keeps them in any Selected audience.
+  // The CP registers someone's desktop seen by its registrant alone; a change here is written once it connects.
   const { members } = useConsoleData()
   const me = members.find((m) => m.isCurrentUser)?.userId
+  const registered: SharingValue = { visibility: 'restricted', sharedWith: me ? [me] : [] }
   const [sharing, setSharing] = useState<SharingValue | null>(null)
-  const shownSharing: SharingValue = sharing ?? { visibility: 'restricted', sharedWith: me ? [me] : [] }
+  const minted = useRef(false)
+
+  const mint = useCallback(async () => {
+    setErr(null)
+    try {
+      setRegistration(await createComputerRegistration({}))
+    } catch (cause) {
+      setErr(cause instanceof Error ? cause.message : String(cause))
+    }
+  }, [])
+
+  // One token per opening; the ref dedupes StrictMode's double effect so only one is minted.
+  useEffect(() => {
+    if (minted.current) return
+    minted.current = true
+    void mint()
+  }, [mint])
 
   // Wait for the token to be spent, then for the new Computer's channel to report in.
   useEffect(() => {
@@ -87,29 +95,25 @@ export default function AddComputerModal({
     setRegistration(null)
     setExpired(false)
     setCopied(false)
+    void mint()
   }
 
-  const mint = async () => {
-    if (minting) return
-    setMinting(true)
+  // Applies a changed visibility to the Computer the token created, then opens it.
+  const open = async () => {
+    if (saving || !computer) return
+    setSaving(true)
     setErr(null)
     try {
-      const trimmed = name.trim()
-      setRegistration(
-        await createComputerRegistration({
-          ...(trimmed ? { name: trimmed } : {}),
-          visibility: shownSharing.visibility,
-          sharedWith: shownSharing.sharedWith
-        })
-      )
+      if (sharing && !sameSharing(sharing, registered)) await setComputerSharing(computer.id, sharing)
+      onClose()
+      router.push(orgPath(`/computers/${computer.id}`))
     } catch (cause) {
       setErr(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setMinting(false)
+      setSaving(false)
     }
   }
 
-  const command = registration ? computerInstallCommand(os, registration) : null
+  const command = registration ? computerInstallCommand(kind, registration, name) : null
   const copy = async () => {
     if (!command) return
     try {
@@ -121,30 +125,6 @@ export default function AddComputerModal({
     }
   }
 
-  // A deployment that runs the pool offers a managed computer too (computer-use.md §15.1); a minted command stays put.
-  const sourcePicker =
-    pool?.enabled && !registration ? (
-      <div className="fld mb-[14px]">
-        <span className="fldlbl">{t('source')}</span>
-        <div role="radiogroup" aria-label={t('source')} className="pillbar self-start">
-          {(['own', 'pool'] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              role="radio"
-              aria-checked={source === value}
-              onClick={() => setSource(value)}
-              className={source === value ? 'pill on' : 'pill'}
-            >
-              {t(value)}
-            </button>
-          ))}
-        </div>
-      </div>
-    ) : null
-  if (source === 'pool' && sourcePicker)
-    return <AddPoolComputer onClose={onClose} available={pool?.available === true} sourcePicker={sourcePicker} />
-
   return (
     <>
       <div className="modalhead">
@@ -154,172 +134,146 @@ export default function AddComputerModal({
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
       </div>
       <div className="modalbody">
-        {sourcePicker}
         <p className="mb-[14px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-          {os === 'docker' ? t('descriptionDocker') : t('description')}
+          {t('description')}
         </p>
-        <div className="fld">
-          <span className="fldlbl">{t('os')}</span>
-          <div role="radiogroup" aria-label={t('os')} className="pillbar self-start">
-            {OSES.map((value) => (
+        <div className="overflow-hidden rounded-[9px] border border-(--gray-800) bg-(--gray-1000)">
+          <div role="tablist" className="flex items-stretch border-b border-(--gray-800)">
+            {KINDS.map((value) => (
               <button
                 key={value}
                 type="button"
-                role="radio"
-                aria-checked={os === value}
-                onClick={() => setOs(value)}
-                className={os === value ? 'pill on' : 'pill'}
+                role="tab"
+                aria-selected={kind === value}
+                onClick={() => {
+                  setKind(value)
+                  setCopied(false)
+                }}
+                className={`inline-flex cursor-pointer items-center gap-[6px] border-0 border-b-2 bg-transparent px-[13px] py-[9px] font-mono text-[11px] font-medium leading-normal ${
+                  kind === value
+                    ? 'border-(--magenta-300) text-[#cdd6e0]'
+                    : 'border-transparent text-(--text-inverse-dim) hover:text-[#cdd6e0]'
+                }`}
               >
-                {value === 'docker' ? t('docker') : tc(`os.${value}`)}
+                <Icon name="terminal" size={13} />
+                {t(`kind.${value}`)}
               </button>
             ))}
+            <button
+              type="button"
+              onClick={() => void copy()}
+              disabled={!command}
+              className="ml-auto inline-flex cursor-pointer items-center gap-[5px] border-0 bg-transparent px-[13px] py-[9px] font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim) disabled:cursor-default disabled:opacity-50"
+            >
+              <Icon name={copied ? 'check' : 'copy'} size={12} />
+              {copied ? t('copied') : t('copy')}
+            </button>
           </div>
-          <span className="mt-[6px] block font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-            {t(`osHint.${os}`)}
-          </span>
-        </div>
-        {!registration && (
-          <div className="fld mt-[14px]">
-            <span className="fldlbl">
-              {t('name')} <span className="font-normal text-(--text-tertiary)">· {t('optional')}</span>
-            </span>
-            <input
-              className="inp"
-              value={name}
-              maxLength={120}
-              spellCheck={false}
-              placeholder={t('namePlaceholder')}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void mint()
-              }}
-            />
-          </div>
-        )}
-        {!registration && (
-          <>
-            <VisibilityField value={shownSharing} onChange={setSharing} disabled={minting} />
-            <span className="mt-[6px] block font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-              {t('visibilityHint')}
-            </span>
-          </>
-        )}
-        {registration && command && (
-          <>
-            <p className="mt-[14px] mb-[8px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">
-              {os === 'docker' ? t('runDocker') : t('run')}
-            </p>
-            <div className="overflow-hidden rounded-[9px] border border-(--gray-800) bg-(--gray-1000)">
-              <div className="flex items-center border-b border-(--gray-800)">
-                <span className="inline-flex items-center gap-[6px] px-[13px] py-[9px] font-mono text-[11px] font-medium leading-normal text-[#cdd6e0]">
-                  <Icon name="terminal" size={13} />
-                  {os === 'windows' ? t('shell.windows') : t('shell.posix')}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void copy()}
-                  className="ml-auto inline-flex cursor-pointer items-center gap-[5px] border-0 bg-transparent px-[13px] py-[9px] font-mono text-[11px] font-medium leading-normal text-(--text-inverse-dim)"
-                >
-                  <Icon name={copied ? 'check' : 'copy'} size={12} />
-                  {copied ? t('copied') : t('copy')}
-                </button>
-              </div>
-              <div
-                data-install-command
-                className="break-all px-[14px] py-[13px] font-mono text-[12px] leading-[1.7] text-[#cdd6e0]"
-              >
-                <span className="text-(--magenta-300)">{os === 'windows' ? '>' : '$'}</span> {command}
-              </div>
-            </div>
-            {!expired && (
-              <p className="mt-[8px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                {t('expires', { when: ago(registration.expiresAt) })}
-              </p>
+          <div
+            data-install-command
+            className="break-all px-[14px] py-[13px] font-mono text-[12px] leading-[1.7] text-[#cdd6e0]"
+          >
+            {command ? (
+              <>
+                <span className="text-(--magenta-300)">$</span> {command}
+              </>
+            ) : err && !registration ? (
+              <span className="text-(--status-error)">{t('mintError', { message: err })}</span>
+            ) : (
+              <span className="text-(--text-inverse-dim)">{t('minting')}</span>
             )}
-            <div className="mt-[14px] flex items-center gap-[11px] rounded-[9px] border border-dashed border-(--border-strong) px-[14px] py-[13px]">
-              {expired ? (
-                <>
-                  <span className="flex h-[22px] w-[22px] flex-none items-center justify-center leading-[0]">
-                    <Icon name="triangle-alert" size={18} color="var(--status-paused)" />
-                  </span>
-                  <div className="flex-1">
-                    <div className="font-sans text-[13px] font-semibold leading-normal">{t('expired')}</div>
-                    <div className="mono text-[11px] text-(--text-tertiary)">{t('expiredHint')}</div>
+          </div>
+        </div>
+        <p className="mt-[8px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+          {t(`kindHint.${kind}`)}
+          {registration && !expired && ` ${t('expires', { when: ago(registration.expiresAt) })}`}
+        </p>
+        {registration && (
+          <div className="mt-[14px] flex items-center gap-[11px] rounded-[9px] border border-dashed border-(--border-strong) px-[14px] py-[13px]">
+            {expired ? (
+              <>
+                <span className="flex h-[22px] w-[22px] flex-none items-center justify-center leading-[0]">
+                  <Icon name="triangle-alert" size={18} color="var(--status-paused)" />
+                </span>
+                <div className="flex-1">
+                  <div className="font-sans text-[13px] font-semibold leading-normal">{t('expired')}</div>
+                  <div className="mono text-[11px] text-(--text-tertiary)">{t('expiredHint')}</div>
+                </div>
+              </>
+            ) : connected ? (
+              <>
+                <span className="flex h-[22px] w-[22px] flex-none items-center justify-center rounded-full bg-(--status-online)">
+                  <Icon name="check" size={13} color="#fff" />
+                </span>
+                <div className="flex-1">
+                  <div className="font-sans text-[13px] font-semibold leading-normal">{t('connected')}</div>
+                  <div className="mono text-[11px] text-(--text-tertiary)">{computer?.name}</div>
+                </div>
+              </>
+            ) : (
+              <>
+                <span className="flex-none leading-[0]">
+                  <Spinner size={22} />
+                </span>
+                <div className="flex-1">
+                  <div className="font-sans text-[13px] font-semibold leading-normal">
+                    {computerId ? t('registered') : t('waiting')}
                   </div>
-                </>
-              ) : connected ? (
-                <>
-                  <span className="flex h-[22px] w-[22px] flex-none items-center justify-center rounded-full bg-(--status-online)">
-                    <Icon name="check" size={13} color="#fff" />
-                  </span>
-                  <div className="flex-1">
-                    <div className="font-sans text-[13px] font-semibold leading-normal">{t('connected')}</div>
-                    <div className="mono text-[11px] text-(--text-tertiary)">{computer?.name}</div>
+                  <div className="mono text-[11px] text-(--text-tertiary)">
+                    {computerId ? t('registeredHint') : t('waitingHint')}
                   </div>
-                </>
-              ) : (
-                <>
-                  <span className="flex-none leading-[0]">
-                    <Spinner size={22} />
-                  </span>
-                  <div className="flex-1">
-                    <div className="font-sans text-[13px] font-semibold leading-normal">
-                      {computerId ? t('registered') : t('waiting')}
-                    </div>
-                    <div className="mono text-[11px] text-(--text-tertiary)">
-                      {computerId ? t('registeredHint') : t('waitingHint')}
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          </>
+                </div>
+              </>
+            )}
+          </div>
         )}
-        {err && (
+        {/* The name rides in the command, so it only counts until the desktop registers. */}
+        <div className="fld mt-[14px]">
+          <span className="fldlbl">
+            {t('name')} <span className="font-normal text-(--text-tertiary)">· {t('optional')}</span>
+          </span>
+          <input
+            className="inp"
+            value={name}
+            maxLength={120}
+            spellCheck={false}
+            disabled={computerId !== null}
+            placeholder={(computerId && computer?.name) || t('namePlaceholder')}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <VisibilityField value={sharing ?? registered} onChange={setSharing} disabled={saving} />
+        <span className="mt-[6px] block font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+          {t('visibilityHint')}
+        </span>
+        {err && registration && (
           <div
             role="alert"
             className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)"
           >
             <Icon name="triangle-alert" size={15} />
-            {t('mintError', { message: err })}
+            {t('saveError', { message: err })}
           </div>
         )}
       </div>
       <div className="modalfoot">
         <span className="mono text-[11px] text-(--text-tertiary)">{registration ? t('shownOnce') : ''}</span>
         <div className="flex-1" />
-        {!registration ? (
-          <>
-            <Button variant="ghost" onClick={onClose}>
-              {t('cancel')}
-            </Button>
-            <Button variant="primary" disabled={minting} onClick={() => void mint()}>
-              {minting ? t('minting') : t('create')}
-            </Button>
-          </>
-        ) : expired ? (
-          <>
-            <Button variant="ghost" onClick={onClose}>
-              {t('cancel')}
-            </Button>
-            <Button variant="primary" onClick={restart}>
-              {t('createNew')}
-            </Button>
-          </>
-        ) : connected && computer ? (
-          <Button
-            variant="primary"
-            onClick={() => {
-              onClose()
-              router.push(orgPath(`/computers/${computer.id}`))
-            }}
-          >
-            {t('open')}
+        {connected && computer ? (
+          <Button variant="primary" disabled={saving} onClick={() => void open()}>
+            {saving ? t('saving') : t('open')}
           </Button>
         ) : (
-          <Button variant="ghost" onClick={onClose}>
-            {t('close')}
-          </Button>
+          <>
+            <Button variant="ghost" onClick={onClose}>
+              {t('cancel')}
+            </Button>
+            {(expired || (err && !registration)) && (
+              <Button variant="primary" onClick={restart}>
+                {t('createNew')}
+              </Button>
+            )}
+          </>
         )}
       </div>
     </>
