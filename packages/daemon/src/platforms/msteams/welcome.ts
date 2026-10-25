@@ -53,7 +53,9 @@ export function msTeamsBotAdds(host: MsTeamsRelayIngressHost): RelayBotAdds {
             const name = await conn.memberName(target, addedBy.id).catch(() => undefined)
             addedBy = name ? { ...addedBy, name } : addedBy
           }
-          await conn.postCard(target, msTeamsWelcomeCard(welcome, addedBy), welcome.title)
+          const id = await conn.postCard(target, msTeamsWelcomeCard(welcome, addedBy), welcome.title)
+          // A channel post roots a thread keyed by its activity ID (§4.1); a chat has no thread to continue.
+          return added.scope === 'channel' ? id : undefined
         }
       }
     }

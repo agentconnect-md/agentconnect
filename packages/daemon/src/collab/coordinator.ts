@@ -3063,32 +3063,31 @@ export class CollabCoordinator {
     text: string
     originPlatform?: string
     originTransportScope?: string
-    originChannel: string
-    originThread: string
+    /** The posting session's coordinates; absent for a post no session made, such as a bot install's welcome. */
+    originChannel?: string
+    originThread?: string
   }): Promise<boolean> {
     const platform = req.platform
     // The origin session may live on a DIFFERENT platform than this post (e.g. a Telegram
     // turn posting to Slack). Key the origin lookup by the ORIGIN's platform, not the target's,
     // or the caller session is never found and the new session loses its parent lineage.
     const originPlatform = req.originPlatform ?? req.platform
-    const originKey = sessionKey(
-      originPlatform,
-      req.originChannel,
-      req.originThread,
-      req.agentId,
-      req.originTransportScope
-    )
-    const inbound = this.host.activeTurnCallMeta().get(originKey)
+    const originKey =
+      req.originChannel !== undefined && req.originThread !== undefined
+        ? sessionKey(originPlatform, req.originChannel, req.originThread, req.agentId, req.originTransportScope)
+        : undefined
+    const inbound = originKey !== undefined ? this.host.activeTurnCallMeta().get(originKey) : undefined
     // A self-post from a plain human/platform turn (no active callMeta) starts the self-chain at 1.
     const hopCount = inbound ? inbound.hopCount + 1 : 1
     if (hasReachedAgentCallHopLimit(hopCount)) {
       this.host.log().info(`channel-root session: hop limit reached for agent "${req.agentId}" — not spawning`)
       return false
     }
-    const originRec = await this.host.store().getSession(originKey)
-    const originSessionId = originRec
-      ? await this.host.store().ensureOutwardSessionId(originKey, req.agentId, this.host.clock().now())
-      : undefined
+    const originRec = originKey !== undefined ? await this.host.store().getSession(originKey) : undefined
+    const originSessionId =
+      originRec && originKey !== undefined
+        ? await this.host.store().ensureOutwardSessionId(originKey, req.agentId, this.host.clock().now())
+        : undefined
     const originCoordPlatform = originPlatform
     const deliveryId = randomUUID()
     const callMeta: CallMeta = {
@@ -3101,18 +3100,24 @@ export class CollabCoordinator {
       // would claim an audience this content was never posted to (§3.3).
       platformOrigin: true,
       ...(originSessionId ? { originSessionId } : {}),
-      originCodeHostReplyTarget: codeHostReplySnapshot(
-        originRec,
-        this.host.activeGateEntries().get(originKey)?.githubReply
-      ),
-      originCoords: {
-        platform: originCoordPlatform,
-        channel: req.originChannel,
-        ...(req.originThread ? { thread: req.originThread } : {})
-      },
+      ...(originKey !== undefined && req.originChannel !== undefined
+        ? {
+            originCodeHostReplyTarget: codeHostReplySnapshot(
+              originRec,
+              this.host.activeGateEntries().get(originKey)?.githubReply
+            ),
+            originCoords: {
+              platform: originCoordPlatform,
+              channel: req.originChannel,
+              ...(req.originThread ? { thread: req.originThread } : {})
+            }
+          }
+        : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(originSessionId && (await this.host.store().isCaptureExcluded(req.agentId, originKey))
+      ...(originSessionId &&
+      originKey !== undefined &&
+      (await this.host.store().isCaptureExcluded(req.agentId, originKey))
         ? { parentPrivate: true }
         : {})
     }

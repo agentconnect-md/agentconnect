@@ -521,6 +521,10 @@ answer `help`, so a first contact never dead-ends.
   the person who added the bot; a team install names them by ID only, so the
   name is looked up in the conversation's roster first. The relay's dedup key is the conversation and the
   activity, so a redelivery welcomes once and a later reinstall again.
+  In a channel the agent is enabled in, the card roots a thread, so core seeds
+  the agent's idle session at it as for its own channel-root post
+  ([session-concept §7.2](session-concept.md#72-case-2a-post-to-a-channel-without-mentioning-another-agent)):
+  an unmentioned reply under the welcome continues that agent.
   `installationUpdate` starts nothing.
 - **Help.** A message that is exactly `help` (the bot's mention removed) is
   answered by the daemon's relay-ingress step with how to use the bot, every
