@@ -354,8 +354,8 @@ export function conversationLink(key: unknown, url: unknown): { key?: string; ur
  * stays mention-gated there rather than answering every message.
  *
  * `spaceId`/`space` identify the container the conversation lives in — a Discord
- * GUILD, which a bot in several servers needs for the channel to be identifiable at
- * all (every server has a "#general"). The ID is the identity: two distinct guilds
+ * GUILD or a Teams TEAM, which a bot in several needs for the channel to be identifiable
+ * at all (every server has a "#general", every team a "General"). The ID is the identity: two distinct guilds
  * may carry the SAME name, so grouping on the name alone would merge them and hide
  * the ambiguity it was meant to resolve. `space` is the display label only. Both are
  * absent on platforms with one implicit container per bot (Slack workspace, Telegram,
@@ -370,8 +370,8 @@ export function conversationLink(key: unknown, url: unknown): { key?: string; ur
 export const IntegrationChannel = z.object({
   id: z.string(), // platform conversation id (Slack "C…" / DM "D…")
   name: z.string().optional(), // "#deploys" without the hash (or DM counterpart); absent if lookup failed
-  spaceId: z.string().optional(), // enclosing Discord guild snowflake — the space's IDENTITY
-  space: z.string().optional(), // that guild's display name; absent until resolved
+  spaceId: z.string().optional(), // enclosing Discord guild or Teams team id — the space's IDENTITY
+  space: z.string().optional(), // that space's display name; absent until resolved
   isPrivate: z.boolean().optional(),
   kind: z.enum(['channel', 'im', 'mpim']).optional(), // absent = 'channel'
   // The conversation's own glyph and tint, where the platform gives one — a Linear team's

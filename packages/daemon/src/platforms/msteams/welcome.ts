@@ -32,9 +32,17 @@ export function msTeamsBotAdds(host: MsTeamsRelayIngressHost): RelayBotAdds {
       const parsed = WireMsTeamsBotAdded.safeParse(msg.payload)
       if (!parsed.success) return null
       const added = parsed.data
+      const { teamId } = added
       return {
         channel: added.conversationId,
         isDm: added.scope === 'personal',
+        // A team-wide install puts the bot in the team's standard channels, which the console lists at once.
+        ...(teamId && added.teamWide
+          ? {
+              places: async () =>
+                (await host.connection(msg.integrationId)?.teamInstallPlaces(added.serviceUrl, teamId)) ?? []
+            }
+          : {}),
         post: async (welcome) => {
           const conn = host.connection(msg.integrationId)
           if (!conn) throw new Error('msteams: the integration has no live connection')

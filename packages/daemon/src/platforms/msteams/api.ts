@@ -297,10 +297,19 @@ export class MsTeamsApi {
     })
   }
 
+  /** A team's details: its display name and its Microsoft 365 group ID, read with the bot's own token. */
+  async teamDetails(serviceUrl: string, teamId: string): Promise<{ name?: string; aadGroupId?: string }> {
+    const body = await this.request('GET', msTeamsTeamUrl(serviceUrl, teamId))
+    const name = typeof body.name === 'string' ? body.name.trim() : ''
+    return {
+      ...(name ? { name } : {}),
+      ...(typeof body.aadGroupId === 'string' ? { aadGroupId: body.aadGroupId } : {})
+    }
+  }
+
   /** A team's Microsoft 365 group ID, which Graph addresses the team by; the activity's team ID is its thread ID. */
   async teamGroupId(serviceUrl: string, teamId: string): Promise<string> {
-    const body = await this.request('GET', msTeamsTeamUrl(serviceUrl, teamId))
-    const id = typeof body.aadGroupId === 'string' ? body.aadGroupId : ''
+    const id = (await this.teamDetails(serviceUrl, teamId)).aadGroupId ?? ''
     if (!/^[0-9a-f-]{36}$/i.test(id))
       throw new MsTeamsApiError('msteams: the team answered without its group ID', 'invalid')
     return id

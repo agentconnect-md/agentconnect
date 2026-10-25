@@ -6,7 +6,8 @@ import { join } from 'node:path'
 import { normalizeMsTeamsActivity, type MsTeamsActivity } from '@agentconnect.md/message'
 import { Daemon } from '../src/daemon.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
-import { msTeamsTokenEndpoint } from '../src/platforms/msteams/api.js'
+import type { IntegrationChannel } from '@agentconnect.md/protocol'
+import { msTeamsTeamChannelsUrl, msTeamsTeamUrl, msTeamsTokenEndpoint } from '../src/platforms/msteams/api.js'
 import { isMsTeamsHelp, msTeamsHelpText } from '../src/platforms/msteams/relay-ingress.js'
 import { buildWelcome } from '../src/platforms/welcome.js'
 
@@ -15,6 +16,9 @@ const BOT = `28:${ZERO}`
 const SERVICE_URL = `https://smba.trafficmanager.net/amer/${ZERO}/`
 const PERSONAL = 'a:example-personal'
 const OFF = '19:example-off@thread.tacv2'
+const TEAM = '19:example-team@thread.tacv2'
+const DESIGN = '19:example-design@thread.tacv2'
+const PRIVATE = '19:example-private@thread.tacv2'
 const AGENT = 'teams-agent'
 const INTEGRATION = 'teams-install'
 
@@ -28,9 +32,11 @@ let root: string | undefined
 let daemon: Daemon | undefined
 let realFetch: typeof fetch
 let posts: Post[] = []
+let reported: { integrationId: string; channels: IntegrationChannel[] }[] = []
 
 beforeEach(() => {
   posts = []
+  reported = []
   realFetch = globalThis.fetch
   vi.stubGlobal('fetch', async (url: unknown, init: RequestInit | undefined) => {
     const target = String(url)
@@ -48,6 +54,15 @@ beforeEach(() => {
       })
       return json(201, { id: `bot-${posts.length}` })
     }
+    if (target === msTeamsTeamUrl(SERVICE_URL, TEAM)) return json(200, { id: TEAM, name: 'Example Team' })
+    if (target === msTeamsTeamChannelsUrl(SERVICE_URL, TEAM))
+      return json(200, {
+        conversations: [
+          { id: TEAM, name: null, type: 'standard' },
+          { id: DESIGN, name: 'Design', type: 'standard' },
+          { id: PRIVATE, name: 'Private', type: 'private' }
+        ]
+      })
     // The roster names a member a team install left nameless.
     if (/\/v3\/conversations\/[^/]+\/members\/[^/]+$/.test(new URL(target).pathname))
       return json(200, { id: '29:example-user', name: 'Looked-up Person' })
@@ -98,7 +113,12 @@ async function boot(): Promise<Daemon> {
   await d.start()
   await (d as any).connections.reconcileMsTeamsConnections()
   ;((d as any).msTeamsConnByIntegration.get(INTEGRATION) as { sendIntervalMs: number }).sendIntervalMs = 0
-  ;(d as any).cpClient = new Proxy({} as Record<string, unknown>, { get: () => () => undefined })
+  ;(d as any).cpClient = new Proxy({} as Record<string, unknown>, {
+    get: (_target, key) =>
+      key === 'emitIntegrationChannels'
+        ? (s: { integrationId: string; channels: IntegrationChannel[] }) => reported.push(s)
+        : () => undefined
+  })
   return d
 }
 
@@ -107,7 +127,8 @@ const install = (
   conversationId: string,
   scope: 'personal' | 'channel',
   id: string,
-  addedBy: { id: string; name?: string } = { id: '29:example-user', name: 'Example Person' }
+  addedBy: { id: string; name?: string } = { id: '29:example-user', name: 'Example Person' },
+  team?: { teamId: string; teamWide: boolean }
 ) =>
   (d as any).handleRelayPlatformAction({
     source: 'platform_action',
@@ -122,6 +143,7 @@ const install = (
       conversationId,
       serviceUrl: SERVICE_URL,
       scope,
+      ...team,
       addedBy
     }
   })
@@ -171,6 +193,49 @@ describe('the Teams welcome', () => {
     expect(posts[0]!.card?.msteams?.entities).toEqual([
       { type: 'mention', text: '<at>Example Person</at>', mentioned: { id: '29:example-user', name: 'Example Person' } }
     ])
+  })
+})
+
+describe('a Teams team install', () => {
+  it('lists the team’s standard channels in the console at once, the team as their space', async () => {
+    daemon = await boot()
+    expect(
+      await install(daemon, TEAM, 'channel', 'install-4', undefined, { teamId: TEAM, teamWide: true })
+    ).toMatchObject({ accepted: true })
+    expect(reported.at(-1)).toEqual({
+      integrationId: INTEGRATION,
+      channels: [
+        { id: TEAM, name: 'General', spaceId: TEAM, space: 'Example Team', kind: 'channel' },
+        { id: DESIGN, name: 'Design', spaceId: TEAM, space: 'Example Team', kind: 'channel' }
+      ],
+      authoritative: false
+    })
+    expect(posts).toHaveLength(1)
+  })
+
+  it('lists nothing for an install into one channel, a chat or a 1:1 chat', async () => {
+    daemon = await boot()
+    await install(daemon, PRIVATE, 'channel', 'install-5', undefined, { teamId: TEAM, teamWide: false })
+    await install(daemon, PERSONAL, 'personal', 'install-6')
+    expect(reported).toEqual([])
+    expect(posts).toHaveLength(2)
+  })
+
+  it('names a seen channel’s team for its row', async () => {
+    daemon = await boot()
+    const conn = (daemon as any).msTeamsConnByIntegration.get(INTEGRATION)
+    conn.noteMessage({
+      platform: 'msteams',
+      channel: DESIGN,
+      isDm: false,
+      sender: { id: '29:example-user', isBot: false },
+      adapterExt: { msteams: { serviceUrl: SERVICE_URL, conversationId: `${DESIGN};messageid=1`, teamId: TEAM } }
+    })
+    expect(await (daemon as any).observedChannelsSync.spaceFor('msteams', DESIGN, INTEGRATION)).toEqual({
+      id: TEAM,
+      name: 'Example Team'
+    })
+    expect(await (daemon as any).observedChannelsSync.spaceFor('msteams', PERSONAL, INTEGRATION)).toBeUndefined()
   })
 })
 

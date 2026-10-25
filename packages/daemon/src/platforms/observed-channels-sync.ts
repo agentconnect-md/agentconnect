@@ -33,6 +33,8 @@ export interface ObservedChannelsSyncHost extends ObservedChannelsHost {
   /** The Daemon's cached per-integration channel snapshots, read and written in place. */
   channelSnapshots(): Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>
   integrationConfigById(integrationId: string): Integration | undefined
+  /** The space a conversation sits in, as the integration's live connection reads it (`PlatformConnection.spaceOf`). */
+  liveSpaceFor(integrationId: string, channelId: string): Promise<{ id: string; name?: string } | undefined>
   transportScopeForIntegration(integration: Integration): string
   emitSessionMetadataSnapshotsForDisplayName(id: string): Promise<void>
 }
@@ -88,35 +90,33 @@ export class ObservedChannelsSync {
           // DM surfaces as a configurable channel row named "@someone", which is not a
           // channel anyone can invite the bot to or set a trigger on.
           const kinds = await store.getChannelScopes([...observedIds])
-          const fromSessions: IntegrationChannel[] = observed.map((c) => {
-            const previous = priorById.get(c.id)
-            const isIm = kinds.get(c.id)?.isIm
-            const kind = isIm === undefined ? previous?.kind : isIm ? ('im' as const) : ('channel' as const)
-            const name = c.name ?? names.get(c.id)
-            // The enclosing Discord server: the guild snowflake is the identity the
-            // console groups on (two servers may share a name), the label is display
-            // only. Keep the last known values when this pass can't resolve them (the
-            // guild name lands with the channel's name lookup), so the console never
-            // flickers back to a bare "#general".
-            const spaceId = c.spaceId ?? previous?.spaceId
-            const space = c.space ?? previous?.space
-            return {
-              id: c.id,
-              ...(name ? { name } : {}),
-              ...(spaceId ? { spaceId } : {}),
-              ...(space ? { space } : {}),
-              ...(previous?.isPrivate !== undefined ? { isPrivate: previous.isPrivate } : {}),
-              ...(kind ? { kind } : {})
-            }
-          })
+          const fromSessions: IntegrationChannel[] = await Promise.all(
+            observed.map(async (c) => {
+              const previous = priorById.get(c.id)
+              const isIm = kinds.get(c.id)?.isIm
+              const kind = isIm === undefined ? previous?.kind : isIm ? ('im' as const) : ('channel' as const)
+              const name = c.name ?? names.get(c.id)
+              // The enclosing space (a Discord server, a Teams team) is the id the console groups on; the last known one stands while unresolved.
+              const live = c.spaceId ? undefined : await this.liveSpace(platform, integ.id, c.id)
+              const spaceId = c.spaceId ?? live?.id ?? previous?.spaceId
+              const space = c.space ?? live?.name ?? previous?.space
+              return {
+                id: c.id,
+                ...(name ? { name } : {}),
+                ...(spaceId ? { spaceId } : {}),
+                ...(space ? { space } : {}),
+                ...(previous?.isPrivate !== undefined ? { isPrivate: previous.isPrivate } : {}),
+                ...(kind ? { kind } : {})
+              }
+            })
+          )
           const retained = await Promise.all(
             prior
               .filter((c) => !observedIds.has(c.id))
               .map(async (c) => {
                 const name = names.get(c.id)
-                // A retained row has no session behind it (a gated Off channel), so its
-                // space is looked up directly rather than coming out of the collapse.
-                const found = await this.spaceFor(platform, c.id)
+                // A retained row has no session behind it (a gated Off channel, an install's channel), so its space is looked up directly.
+                const found = await this.spaceFor(platform, c.id, integ.id)
                 const spaceId = found?.id ?? c.spaceId
                 const space = found?.name ?? c.space
                 const next = {
@@ -263,11 +263,14 @@ export class ObservedChannelsSync {
           ...(chat.color ? { color: chat.color } : {}),
           ...(chat.key ? { key: chat.key } : {}),
           ...(chat.url ? { url: chat.url } : {}),
-          isPrivate: chat.isPrivate,
+          ...(chat.spaceId && chat.space ? { spaceId: chat.spaceId, space: chat.space } : {}),
+          ...(chat.isPrivate !== undefined ? { isPrivate: chat.isPrivate } : {}),
           kind: 'channel'
         }
         if (
           current?.name === observed.name &&
+          current?.spaceId === observed.spaceId &&
+          current?.space === observed.space &&
           current?.icon === observed.icon &&
           current?.color === observed.color &&
           current?.key === observed.key &&
@@ -288,11 +291,24 @@ export class ObservedChannelsSync {
     }
   }
 
-  /** The space a channel sits in, per its platform's strategy — the id that keeps
-   *  one bot's several same-named rows apart (Discord guilds). Undefined on
-   *  platforms without the notion, or until the lookup has recorded it. */
-  spaceFor(platform: string, channelId: string): Promise<{ id: string; name?: string } | undefined> {
-    return observedChannelsFor(platform)?.spaceFor(this.host, channelId) ?? Promise.resolve(undefined)
+  /** The space a channel sits in — the id that keeps one bot's several same-named rows apart (Discord guilds, Teams teams); undefined until known. */
+  spaceFor(
+    platform: string,
+    channelId: string,
+    integrationId?: string
+  ): Promise<{ id: string; name?: string } | undefined> {
+    const strategy = observedChannelsFor(platform)
+    if (strategy) return strategy.spaceFor(this.host, channelId)
+    return integrationId ? this.host.liveSpaceFor(integrationId, channelId) : Promise.resolve(undefined)
+  }
+
+  // A strategy-less platform's space from its live connection; a strategy's collapse has already attached its own.
+  private liveSpace(
+    platform: string,
+    integrationId: string,
+    channelId: string
+  ): Promise<{ id: string; name?: string } | undefined> {
+    return observedChannelsFor(platform) ? Promise.resolve(undefined) : this.host.liveSpaceFor(integrationId, channelId)
   }
 
   /**

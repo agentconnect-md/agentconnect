@@ -740,6 +740,10 @@ export const WireMsTeamsBotAdded = z.object({
   /** The regional Bot Connector origin the token vouched for, where the welcome is posted. */
   serviceUrl: z.string().url(),
   scope: z.enum(['personal', 'groupChat', 'channel']),
+  /** The team, when the bot was added to a team or one of its channels. */
+  teamId: z.string().min(1).optional(),
+  /** Whether the bot was added to the whole team, which puts it in every standard channel; absent from older relays. */
+  teamWide: z.boolean().optional(),
   /** The person who added the bot, whom a group or channel welcome mentions. */
   addedBy: z.object({ id: z.string().min(1), name: z.string().min(1).max(256).optional() }).optional()
 })
