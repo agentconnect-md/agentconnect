@@ -97,7 +97,7 @@ function ManagedComputersSection({ managed, available }: { managed: ComputerDto[
         action={
           <button
             className="inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand)"
-            onClick={() => openModal('computer', undefined, { computerSource: 'pool' })}
+            onClick={() => openModal('poolComputer')}
           >
             <Icon name="plus" size={13} />
             {t('add')}

@@ -32,14 +32,14 @@ deployment that publishes them as `localhost` is reachable only from its own hos
 
 ## Start it from the console
 
-In the console, open **Computers → Add computer**, pick **Docker**, give it a name if you like, and select
-**Create command**. Run the command on the server:
+In the console, open **Computers → Add computer**, give it a name if you like, and switch the
+command to the **Docker** tab. Run the command on the server:
 
 ```sh
 docker run -d --name agentconnect-computer --hostname agentconnect-computer --restart unless-stopped \
   --shm-size=1g -v agentconnect-computer:/home/computer -e LISTEN_HOST=127.0.0.1 \
-  -e AGENTCONNECT_CP_URL='https://cp.example.com/v1/computers/register' \
-  -e AGENTCONNECT_REGISTER_TOKEN='<one-time token>' ghcr.io/agentconnect-md/computer:v2.6.0
+  -e AGENTCONNECT_CP_URL="https://cp.example.com/v1/computers/register" \
+  -e AGENTCONNECT_REGISTER_TOKEN="<one-time token>" ghcr.io/agentconnect-md/computer:v2.6.0
 ```
 
 The image tag is the release your Control Plane runs (`latest` from a development build), and

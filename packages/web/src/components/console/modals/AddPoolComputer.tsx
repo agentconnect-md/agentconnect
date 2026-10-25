@@ -1,24 +1,18 @@
-// No 'use client' here: rendered only by AddComputerModal (inside ModalProvider, the client boundary).
+// No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 // A `manual` computer from the deployment's pool (computer-use.md §10, §15.1): a name and who sees it; agents get it on their Tools tab.
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { createPoolComputer } from '@/lib/api'
+import { useComputerPool } from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
 import { VisibilityField, type SharingValue } from '@/components/console/VisibilityField'
 import { Button, Icon } from '@/components/ui'
 
-export default function AddPoolComputer({
-  onClose,
-  available,
-  sourcePicker
-}: {
-  onClose: () => void
-  available: boolean
-  sourcePicker: ReactNode
-}) {
+export default function AddPoolComputer({ onClose }: { onClose: () => void }) {
   const t = useTranslations('Computers.add')
+  const available = useComputerPool().data?.available === true
   const router = useRouter()
   const { orgPath } = useOrgs()
   const [name, setName] = useState('')
@@ -50,10 +44,9 @@ export default function AddPoolComputer({
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
           <Icon name="monitor" size={17} color="var(--brand)" />
         </span>
-        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('poolTitle')}</span>
       </div>
       <div className="modalbody">
-        {sourcePicker}
         <p className="mb-[14px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
           {t('poolDescription')}
         </p>

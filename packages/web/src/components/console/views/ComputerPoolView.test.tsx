@@ -96,13 +96,13 @@ describe('ComputerPoolView', () => {
     expect(mocks.registerCrumb).toHaveBeenCalledWith(expect.objectContaining({ id: 'pool', title: 'Computer pool' }))
   })
 
-  it('opens Add computer on the managed source, under the managed install’s name', () => {
+  it('opens Add managed computer under the managed install’s name', () => {
     mocks.flags = new Set(['computer-use', 'managed'])
     const el = render()
     expect(el.querySelector('h1')!.textContent).toBe('AgentConnect Computers')
     const add = [...el.querySelectorAll('button')].find((b) => b.textContent?.includes('Add managed computer'))!
     act(() => add.click())
-    expect(mocks.openModal).toHaveBeenCalledWith('computer', undefined, { computerSource: 'pool' })
+    expect(mocks.openModal).toHaveBeenCalledWith('poolComputer')
   })
 
   it('reads as not found where the deployment runs no pool and the organization has no managed computer', () => {

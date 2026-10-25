@@ -176,7 +176,7 @@ npx -y @agentconnect.md/cli@latest computer install --register <token> --cp-url 
 
 ## Run on Linux
 
-**Install** (what the console's **Computers → Add Computer** shows for Linux): run it in a terminal
+**Install** (what the console's **Computers → Add Computer** shows for every desktop OS): run it in a terminal
 inside the desktop session, as the desktop user, not root. It needs Node.js ≥ 24.12 (the official
 tarball or your distribution's package).
 
@@ -261,8 +261,8 @@ off; `BROWSER_URL` opens a page). `docker stop` stops the daemon, closes the bro
 code 0. `/home/computer` is a volume: the Computer key, config, audit log, and the browser profile survive a new
 container. A `HEALTHCHECK` runs `doctor --json --daemon` inside the running daemon.
 
-Register it as a Computer: create a token in the console under **Computers → Add Computer** (pick **Docker** for
-this command), then
+Register it as a Computer: create a token in the console under **Computers → Add Computer** (its **Docker** tab
+shows this command), then
 
 ```sh
 docker run -d --name computer --hostname computer-1 --shm-size=1g --restart unless-stopped \

@@ -138,27 +138,34 @@ export function computerGrantsAgent(computer: Pick<ComputerDto, 'agentAccess'>, 
   return access.mode === 'all' || (access.mode === 'selected' && access.agents.includes(agentId))
 }
 
-export type InstallOs = 'linux' | 'macos' | 'windows' | 'docker'
+export type InstallKind = 'desktop' | 'docker'
 
 const CLI = '@agentconnect.md/cli'
 const DEFAULT_COMPUTER_IMAGE = 'ghcr.io/agentconnect-md/computer:latest'
 
+// Drops what either shell would expand or end inside double quotes, so one quoted name works in sh and PowerShell.
+const quotableName = (name?: string): string =>
+  (name ?? '')
+    .replace(/[\u0000-\u001f"'`$\\!]/g, '')
+    .trim()
+    .slice(0, 120)
+
 /** The one-line command that installs the computer daemon and registers this desktop (computer-use.md §3.5, §3.6). */
 export function computerInstallCommand(
-  os: InstallOs,
-  registration: Pick<ComputerRegistrationDto, 'token' | 'exchangeUrl' | 'computerImage' | 'cliChannel'>
+  kind: InstallKind,
+  registration: Pick<ComputerRegistrationDto, 'token' | 'exchangeUrl' | 'computerImage' | 'cliChannel'>,
+  name?: string
 ): string {
-  // PowerShell takes double quotes; POSIX shells single quotes, which keep the token literal.
-  const q = (value: string) => (os === 'windows' ? `"${value}"` : `'${value}'`)
+  // The base62 token and the exchange URL need no escaping, so double quotes read the same in sh and PowerShell.
+  const q = (value: string) => `"${value}"`
+  const named = quotableName(name)
   // The desktop image on a server (computer-use.md §3.8); the volume keeps the key the token buys.
-  if (os === 'docker') {
-    return `docker run -d --name agentconnect-computer --hostname agentconnect-computer --restart unless-stopped --shm-size=1g -v agentconnect-computer:/home/computer -e LISTEN_HOST=127.0.0.1 -e AGENTCONNECT_CP_URL=${q(registration.exchangeUrl)} -e AGENTCONNECT_REGISTER_TOKEN=${q(registration.token)} ${registration.computerImage ?? DEFAULT_COMPUTER_IMAGE}`
+  if (kind === 'docker') {
+    return `docker run -d --name agentconnect-computer --hostname agentconnect-computer --restart unless-stopped --shm-size=1g -v agentconnect-computer:/home/computer -e LISTEN_HOST=127.0.0.1 -e AGENTCONNECT_CP_URL=${q(registration.exchangeUrl)} -e AGENTCONNECT_REGISTER_TOKEN=${q(registration.token)}${named ? ` -e AGENTCONNECT_COMPUTER_NAME=${q(named)}` : ''} ${registration.computerImage ?? DEFAULT_COMPUTER_IMAGE}`
   }
-  const register = `--register ${q(registration.token)} --cp-url ${q(registration.exchangeUrl)}`
   // Always a dist-tag: an untagged npx runs npm latest, which can predate `computer install` while this CP is an rc.
   const rc = registration.cliChannel !== 'stable'
   const cli = `${CLI}@${rc ? 'rc' : 'latest'}`
-  // Linux installs the daemon from npm into the CLI's version store; macOS and Windows run setup in their installed app (M3 / M4).
-  if (os === 'linux') return `npx -y ${cli} computer install${rc ? ' --channel rc' : ''} ${register}`
-  return `npx -y ${cli} computer setup ${register}`
+  // One command on Linux, macOS and Windows: `install` fetches the daemon (and the macOS app) and runs its setup.
+  return `npx -y ${cli} computer install${rc ? ' --channel rc' : ''} --register ${q(registration.token)} --cp-url ${q(registration.exchangeUrl)}${named ? ` --name ${q(named)}` : ''}`
 }

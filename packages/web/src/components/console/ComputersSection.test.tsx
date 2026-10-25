@@ -138,7 +138,7 @@ describe('ComputersSection', () => {
     expect(managed.textContent).toBe('AgentConnect Computers')
     // The section adds a managed computer; the self-hosted one below keeps its own empty state.
     act(() => [...el.querySelectorAll('button')].find((b) => b.textContent === 'Add managed computer')!.click())
-    expect(mocks.openModal).toHaveBeenCalledWith('computer', undefined, { computerSource: 'pool' })
+    expect(mocks.openModal).toHaveBeenCalledWith('poolComputer')
     expect(el.querySelector('#computers')!.parentElement!.textContent).toContain('0')
   })
 
