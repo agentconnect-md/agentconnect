@@ -459,7 +459,8 @@ image running **the same desktop daemon**. The prototype was built and run on a 
 - **Entrypoint**: starts Xvfb (`RESOLUTION`, default `1600x900x24`), a session D-Bus, and Xfce, then runs the daemon in
   the foreground. `docker stop` stops the daemon, closes Firefox gracefully (so no profile lock is left), then ends
   the session, with exit code 0 in under 0.9 s. Xvfb must keep its local socket (`-nolisten tcp`, never
-  `-nolisten unix`).
+  `-nolisten unix`), and must not reset when its last client leaves (`-noreset`): `dbus-launch` connects and leaves
+  before Xfce does, and a reset at that moment drops Xfce's connection mid-handshake ("Cannot open display").
 - **Published image [implemented]**: `ghcr.io/<owner>/computer`, built from `packages/computer/docker/Dockerfile`
   (context: the repository root) for `linux/amd64` and `linux/arm64` with every release, through the same
   `docker-bake.hcl` target, effective-version and alias steps as the other images. The bundle stage runs once on the
