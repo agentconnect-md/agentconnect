@@ -3742,6 +3742,9 @@ model McpProviderOauth {
   // RFC 9207 `authorization_response_iss_parameter_supported`, recorded from the validated
   // metadata: it decides whether an authorization response that omits `iss` may be acted on.
   issParameterSupported Boolean   @default(false)
+  // basic | post — how the client secret reaches the token endpoint, from the server's
+  // `token_endpoint_auth_methods_supported`. Basic is the OAuth 2.1 default.
+  clientSecretAuth      String    @default("basic")
   // pending (never authorized, or disconnected) | connected | reauth_required (the grant is
   // dead upstream and only a fresh authorization can repair it).
   status                String    @default("pending")

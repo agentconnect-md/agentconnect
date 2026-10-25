@@ -27,6 +27,7 @@ function record(over: Partial<McpProviderOauthRecord> = {}): McpProviderOauthRec
     clientId: 'client-1',
     clientSource: 'dynamic',
     issParameterSupported: true,
+    clientSecretAuth: 'basic',
     status: 'connected',
     connectedByUserId: null,
     accessExpiresAt: new Date(NOW + 3600_000),

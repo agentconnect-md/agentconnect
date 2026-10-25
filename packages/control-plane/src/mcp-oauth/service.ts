@@ -40,7 +40,7 @@ import { orgScope } from '../secrets/scope.js'
 import { buildAuthorizeUrl, issuerResponseValid, pkceChallenge, pkcePair } from './authorize.js'
 import { discoverMcpAuthorization, type Dial, type DiscoveryFailure } from './discovery.js'
 import { clientBindingStale, obtainClient, type RegistrationFailure } from './registration.js'
-import { exchangeCode, type TokenClient } from './token-endpoint.js'
+import { clientSecretAuthFor, exchangeCode, type TokenClient } from './token-endpoint.js'
 
 /** Public (gateway-form) paths. Registered with the authorization server and never changed. */
 export const MCP_OAUTH_BEGIN_PATH = '/v1/mcp-providers/oauth/begin'
@@ -192,6 +192,7 @@ export class McpProviderOauthService {
       clientId: client.value.clientId,
       clientSource,
       issParameterSupported: metadata.issParameterSupported,
+      clientSecretAuth: clientSecretAuthFor(metadata.tokenEndpointAuthMethodsSupported),
       ...(client.value.clientSecret
         ? { sealedClientSecret: await this.deps.cipher.seal(client.value.clientSecret, scope) }
         : {})
@@ -292,6 +293,7 @@ export class McpProviderOauthService {
       tokenEndpoint: oauth.tokenEndpoint,
       clientId: oauth.clientId,
       ...(sealed?.clientSecret ? { clientSecret: await this.deps.cipher.open(sealed.clientSecret, scope) } : {}),
+      clientSecretAuth: oauth.clientSecretAuth,
       resource: oauth.resource
     }
     const verifier = await this.deps.cipher.open(row.verifier, scope)

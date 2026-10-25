@@ -188,6 +188,9 @@ export interface AuthServerMetadata {
   scopesSupported?: string[]
   codeChallengeMethodsSupported?: string[]
   grantTypesSupported?: string[]
+  /** RFC 8414 `token_endpoint_auth_methods_supported`. Absent means the server takes the
+   *  default, `client_secret_basic`. */
+  tokenEndpointAuthMethodsSupported?: string[]
   /** RFC 9207: when true, an authorization response without `iss` must be rejected. */
   issParameterSupported: boolean
   /** Draft CIMD: the AS resolves an https client_id url. Recorded now, used when CIMD lands. */
@@ -328,6 +331,7 @@ function readAuthServer(json: unknown, expectedIssuer: string): AuthServerMetada
   const scopes = strArray(doc.scopes_supported)
   const methods = strArray(doc.code_challenge_methods_supported)
   const grants = strArray(doc.grant_types_supported)
+  const authMethods = strArray(doc.token_endpoint_auth_methods_supported)
   return {
     issuer,
     authorizationEndpoint,
@@ -336,6 +340,7 @@ function readAuthServer(json: unknown, expectedIssuer: string): AuthServerMetada
     ...(scopes ? { scopesSupported: scopes } : {}),
     ...(methods ? { codeChallengeMethodsSupported: methods } : {}),
     ...(grants ? { grantTypesSupported: grants } : {}),
+    ...(authMethods ? { tokenEndpointAuthMethodsSupported: authMethods } : {}),
     issParameterSupported: doc.authorization_response_iss_parameter_supported === true,
     clientIdMetadataDocumentSupported: doc.client_id_metadata_document_supported === true
   }

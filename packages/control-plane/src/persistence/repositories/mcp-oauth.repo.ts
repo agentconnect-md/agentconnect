@@ -21,6 +21,7 @@
  */
 import type { PrismaLike } from '../prisma.js'
 import type {
+  McpOauthClientSecretAuth,
   McpOauthClientSource,
   McpOauthRefreshCandidate,
   McpProviderOauthRecord,
@@ -49,6 +50,7 @@ function toRecord(row: McpProviderOauth): McpProviderOauthRecord {
     clientId: row.clientId,
     clientSource: row.clientSource as McpOauthClientSource,
     issParameterSupported: row.issParameterSupported,
+    clientSecretAuth: row.clientSecretAuth as McpOauthClientSecretAuth,
     status: row.status as McpProviderOauthStatus,
     connectedByUserId: row.connectedByUserId,
     accessExpiresAt: row.accessExpiresAt,
@@ -97,7 +99,8 @@ export class PgMcpProviderOauthRepo implements McpProviderOauthRepo {
       scopes: input.scopes,
       clientId: input.clientId,
       clientSource: input.clientSource,
-      issParameterSupported: input.issParameterSupported
+      issParameterSupported: input.issParameterSupported,
+      clientSecretAuth: input.clientSecretAuth
     }
     return this.prisma.$transaction(async (tx) => {
       const row = await tx.mcpProviderOauth.upsert({

@@ -7013,6 +7013,10 @@ export type McpProviderOauthStatus = 'pending' | 'connected' | 'reauth_required'
 /** Where the client_id came from — what the console explains when authorization fails. */
 export type McpOauthClientSource = 'preregistered' | 'dynamic'
 
+/** How the client secret reaches the token endpoint: the HTTP Basic default, or in the form
+ *  body for a server that advertises only `client_secret_post`. */
+export type McpOauthClientSecretAuth = 'basic' | 'post'
+
 /** Domain view of an `mcp_provider_oauth` row. Carries NO secret: the client secret and
  *  the token pair live in {@link McpProviderOauthSecretStore}. */
 export interface McpProviderOauthRecord {
@@ -7028,6 +7032,7 @@ export interface McpProviderOauthRecord {
   clientSource: McpOauthClientSource
   /** RFC 9207: when true, an authorization response that omits `iss` must be rejected. */
   issParameterSupported: boolean
+  clientSecretAuth: McpOauthClientSecretAuth
   status: McpProviderOauthStatus
   connectedByUserId: string | null
   accessExpiresAt: Date | null
@@ -7056,6 +7061,7 @@ export interface PrepareMcpProviderOauthInput {
   clientId: string
   clientSource: McpOauthClientSource
   issParameterSupported: boolean
+  clientSecretAuth: McpOauthClientSecretAuth
   sealedClientSecret?: string
 }
 

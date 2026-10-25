@@ -43,6 +43,7 @@ const PREPARED: PrepareMcpProviderOauthInput = {
   clientId: 'client-1',
   clientSource: 'dynamic',
   issParameterSupported: true,
+  clientSecretAuth: 'basic',
   sealedClientSecret: 'client-secret-1'
 }
 
