@@ -62,7 +62,7 @@ export const COMPUTER_TOOLS: readonly ToolDescriptor[] = [
   {
     name: 'computer_list',
     description:
-      'List the computers this agent may use: id, name, OS, status, lease holder and display size. Use an id as the `computer` argument of the other computer_* tools.',
+      'List the computers this agent may use: id, name, OS, status, lease holder and display size. Use an id as the `computer` argument of the other computer_* tools. A managed computer not started yet is listed as on_demand, with no id; any other computer_* call without `computer` starts it.',
     inputSchema: obj({})
   },
   tool(
@@ -304,10 +304,14 @@ function withWaited(result: McpContentResult, wait: { waitedMs: number; position
   return { ...result, mcpContent: [...result.mcpContent, { type: 'text', text: note }] }
 }
 
+const MANAGED_ON_DEMAND =
+  "this agent's managed computer starts on the first computer_* call that omits `computer`; call computer_screenshot to start it"
+
 /** Standing guidance for a session that has the tools (§5.6). */
 export const COMPUTER_USE_GUIDANCE = [
   '# Computer use',
   'The computer_* tools operate real graphical desktops that people also use. Call computer_list to see the computers you may use, and computer_screenshot before acting; x/y are pixels of the latest screenshot.',
+  '- A managed computer is listed as on_demand until it starts: call computer_screenshot without `computer` and it is started for you, which can take a few minutes.',
   '- Elements shift while a page loads: wait (computer_wait) and take a new screenshot before clicking.',
   '- In a browser, press Escape before Ctrl+L while a page is still loading, then type the address and press Return.',
   '- Release the computer with computer_release when you are done so the person or another agent can use it.',
@@ -802,7 +806,8 @@ export class ComputerTools {
     const listed = this.deps.computersFor(state.agentId)
     // The session's managed computer appears once the pool gave it one; listing never allocates.
     const granted = state.managed && !listed.includes(state.managed) ? [...listed, state.managed] : listed
-    const rows = await Promise.all(
+    const mode = this.poolOn() ? this.deps.managedModeFor?.(state.agentId) : undefined
+    const rows: Array<Record<string, unknown>> = await Promise.all(
       granted.map(async (computer) => {
         try {
           const raw = await this.callDesktop(state, computer, 'computer_list', {})
@@ -821,6 +826,8 @@ export class ComputerTools {
         }
       })
     )
+    // A managed computer not started yet is still the session's to use, so an empty list does not read as "none".
+    if (mode && !state.managed) rows.push({ managed: mode, status: 'on_demand', note: MANAGED_ON_DEMAND })
     return { mcpContent: [{ type: 'text', text: JSON.stringify(rows, null, 2) }] }
   }
 
