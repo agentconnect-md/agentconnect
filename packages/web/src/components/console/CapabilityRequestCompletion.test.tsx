@@ -317,9 +317,9 @@ describe('completing a capability request', () => {
         want: { name: 'GRAFANA_TOKEN', description: 'A Grafana API token', use: { route: 'live' } },
         current: { present }
       })
-    const field = (scope: HTMLElement) => scope.querySelector<HTMLInputElement>('input[type="password"]')!
-    const type = (input: HTMLInputElement, value: string) => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+    const field = (scope: HTMLElement) => scope.querySelector<HTMLTextAreaElement>('[data-live-secret-field]')!
+    const type = (input: HTMLTextAreaElement, value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value)
       input.dispatchEvent(new Event('input', { bubbles: true }))
     }
 
@@ -330,11 +330,12 @@ describe('completing a capability request', () => {
       expect(scope.textContent).toContain('The agent can read this value.')
       expect(scope.textContent).toContain('A Grafana API token')
       expect(button(scope, 'Save GRAFANA_TOKEN')!.disabled).toBe(true)
-      await act(async () => type(field(scope), 'glsa_secret'))
+      // A multi-line credential (a kubeconfig, a PEM key) keeps its line breaks.
+      await act(async () => type(field(scope), 'glsa_secret\nsecond line'))
       await act(async () => button(scope, 'Save GRAFANA_TOKEN')!.click())
       expect(mocks.saveLiveSecret).toHaveBeenCalledWith(
         'agent-1',
-        { name: 'GRAFANA_TOKEN', value: 'glsa_secret', description: 'A Grafana API token' },
+        { name: 'GRAFANA_TOKEN', value: 'glsa_secret\nsecond line', description: 'A Grafana API token' },
         'org-1'
       )
       expect(mocks.settle).toHaveBeenCalledTimes(1)

@@ -518,9 +518,10 @@ function LiveSecretCompletion({ request, onSettled }: CompletionProps) {
       )}
       <label className="fld">
         <span className="fldlbl">{t('liveSecretLabel', { name: want.name })}</span>
-        <input
-          className="inp font-mono"
-          type="password"
+        {/* A textarea, not an input: a kubeconfig or a PEM key keeps its line breaks, which an input strips. */}
+        <textarea
+          data-live-secret-field
+          className="inp min-h-24 resize-y py-[5px] font-mono leading-[1.5]"
           autoComplete="off"
           spellCheck={false}
           value={value}

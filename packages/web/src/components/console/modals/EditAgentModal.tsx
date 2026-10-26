@@ -217,6 +217,8 @@ export default function EditAgentModal({
   const initialSecretKeys = useRef(agent.secretKeys)
   // Live secrets marked for removal; sent as `null` on save, like a removed secret.
   const [removedLiveSecrets, setRemovedLiveSecrets] = useState<string[]>([])
+  // The list projection omits live secrets, so the detail read below supplies them.
+  const [liveSecrets, setLiveSecrets] = useState(agent.liveSecrets ?? [])
   // What the saved placement offers, as the Control Plane projected it with the agent.
   const [savedStrategies, setSavedStrategies] = useState<PlacementStrategies>(() => agentStrategies(agent, false))
   const [repairPlacement, setRepairPlacement] = useState(false)
@@ -251,6 +253,7 @@ export default function EditAgentModal({
     fetchAgentDto(agent.id).then(
       (dto) => {
         setName(dto.name)
+        setLiveSecrets(dto.liveSecrets ?? [])
         setDisplayName(dto.displayName ?? '')
         initialDisplayName.current = dto.displayName ?? ''
         setRuntime(dto.runtime ?? '')
@@ -1020,7 +1023,7 @@ export default function EditAgentModal({
                 // see the group and its explanation alone (design §8.2).
                 organizationVariables={agent.organizationVariables}
                 organizationSecretKeys={agent.organizationSecretKeys}
-                liveSecrets={(agent.liveSecrets ?? []).filter((secret) => !removedLiveSecrets.includes(secret.name))}
+                liveSecrets={liveSecrets.filter((secret) => !removedLiveSecrets.includes(secret.name))}
                 onRemoveLiveSecret={(name) => setRemovedLiveSecrets((names) => [...names, name])}
                 {...(myRole === 'owner' ? { organizationSettingsHref: orgPath('/settings') } : {})}
               />

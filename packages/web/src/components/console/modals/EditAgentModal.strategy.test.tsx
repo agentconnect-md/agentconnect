@@ -321,15 +321,14 @@ it('removes a live secret only after its removal is confirmed, and sends it as n
     strategies: STRATEGIES,
     model: 'model-host',
     visibility: 'org',
-    sharedWith: []
-  }
-  const withLive = {
-    ...agent,
+    sharedWith: [],
+    // Only the detail read carries live secrets; the list projection the prop comes from omits them.
     liveSecrets: [
       { name: 'GRAFANA_TOKEN', description: 'Grafana API token' },
       { name: 'KUBE_TOKEN', description: null }
     ]
-  } as Agent
+  }
+  const withLive = { ...agent } as Agent
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)

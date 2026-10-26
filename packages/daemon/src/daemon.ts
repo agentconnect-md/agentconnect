@@ -8229,9 +8229,8 @@ export class Daemon {
         // Not sandbox-gated: an unconfined Codex launch needs it too, its own profile protects `.git`.
         trustedPrimaryCheckout: this.workspaces.localPrimaryCheckoutFor(agent),
         sandboxMechanism: this.sandboxMechanism,
-        // Inner tool sandboxes must CONNECT to the daemon socket for either
-        // managed provider — read permission on the path alone is insufficient.
-        allowModelToolUnixSockets: managedCredentials,
+        // Inner tool sandboxes must CONNECT to the daemon socket for a managed provider or for live secrets; reading the path is not enough.
+        allowModelToolUnixSockets: managedCredentials || liveSecretsChannel !== undefined,
         // The pod is the isolation boundary AND a different filesystem, so this daemon's env
         // must not travel with the launch.
         ...(this.k8s ? { k8s: true as const } : {})

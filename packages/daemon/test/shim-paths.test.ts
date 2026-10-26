@@ -20,6 +20,7 @@ describe('shimPaths', () => {
       glabTokenEntry: '/opt/agentconnect/shim/glab-token.js',
       autoMergeEntry: '/opt/agentconnect/shim/auto-merge.js',
       mcpBridgeEntry: '/opt/agentconnect/shim/mcp-bridge.js',
+      secretsEntry: '/opt/agentconnect/shim/secrets.js',
       ghWrapperDir: '/opt/agentconnect/pathbin',
       runtimeWrapperDir: '/run/agentconnect/pathbin',
       dshPresetDir: '/opt/agentconnect/dsh/agent-presets/standard-no-search',
@@ -41,7 +42,7 @@ describe('shimPaths', () => {
     const flat = (value: object): string[] =>
       Object.values(value).flatMap((entry) => (typeof entry === 'string' ? [entry] : flat(entry as object)))
     const all = flat(paths)
-    expect(all).toHaveLength(14)
+    expect(all).toHaveLength(15)
     expect(all.every((path) => path.startsWith('/tmp/rt/') || path.startsWith('/srv/helpers/'))).toBe(true)
     expect(all.some((path) => path.includes('/run/agentconnect') || path.includes('/opt/agentconnect'))).toBe(false)
     expect(paths.tunnels).toEqual({ gitcred: '/tmp/rt/gitcred.sock', mcp: '/tmp/rt/mcp.sock' })

@@ -337,14 +337,14 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       }).host
       expect((scratch as any).opts.env[GITCRED_CAPABILITY_ENV]).toEqual(expect.any(String))
       expect((scratch as any).opts.env[GITCRED_AGENT_ENV]).toBe('bot-a')
-      // Without App credentials a scratch workspace still carries no git identity of any kind.
+      // Without App credentials a scratch workspace carries no git identity; its capability serves live secrets only (capability-requests.md §4.9.2).
       agent.workspace = { mode: 'from-scratch', path: cwd, gitBranch: 'main', pullOnNewSession: true, skills: [] }
       const plain = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
         hostKey: agentHostKey(agent.id),
         strategy: 'srt',
         cwd
       }).host
-      expect((plain as any).opts.env[GITCRED_CAPABILITY_ENV]).toBeUndefined()
+      expect((plain as any).opts.env[GITCRED_CAPABILITY_ENV]).toEqual(expect.any(String))
       expect((plain as any).opts.env.GIT_CONFIG_KEY_0).toBeUndefined()
     } finally {
       await daemon.stop().catch(() => undefined)
