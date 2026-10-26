@@ -35,6 +35,8 @@ function facts() {
         (await new PgAgentSecretStore(prisma, new PlaintextSecretCipher()).liveInfo(orgId, [agentId])).get(agentId) ??
         []
       ).map((secret) => secret.name),
+    spawnSecretNames: async (orgId, agentId) =>
+      (await new PgAgentSecretStore(prisma, new PlaintextSecretCipher()).keys(orgId, [agentId])).get(agentId) ?? [],
     gitlabHost: 'gitlab.com'
   })
 }
@@ -127,5 +129,9 @@ describe('repoCapabilityFacts', () => {
       OTHER: 'spawn-only'
     })
     expect((await facts().load(agent, ask)).liveSecretPresent).toBe(true)
+    // A name a spawn-time secret already holds could never be saved live, so asking for it is refused up front.
+    const taken = { kind: 'secret', want: { name: 'OTHER', description: 'd', use: { route: 'live' } } } as const
+    expect(await facts().unknownTarget(agent, taken)).toContain('OTHER is already')
+    expect(await facts().unknownTarget(agent, ask)).toBeUndefined()
   })
 })

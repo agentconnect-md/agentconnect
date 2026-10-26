@@ -13,6 +13,7 @@
  *  - POST/GET/DELETE /crons          → CRUD through the real `CronRepo`.
  *  - humanAuth devAuth stub admits (a principal is attached, no 401).
  */
+import { LIVE_SECRETS_MAX } from '@agentconnect.md/protocol'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
@@ -1126,6 +1127,25 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     ).toMatchObject({
       delivery: 'live'
     })
+    // A delete names its own kind: neither map removes a secret of the other.
+    for (const payload of [{ liveSecrets: { API_KEY: null } }, { secrets: { GRAFANA_TOKEN: null } }]) {
+      const crossDelete = await app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${id}`, payload })
+      expect(crossDelete.statusCode, JSON.stringify(payload)).toBe(409)
+    }
+    expect(await prisma.agentSecret.count({ where: { agentId: id, key: { in: ['API_KEY', 'GRAFANA_TOKEN'] } } })).toBe(
+      2
+    )
+    // The spec ships at most LIVE_SECRETS_MAX, so a save past it is refused rather than left unable to sync.
+    const many = Object.fromEntries(
+      Array.from({ length: LIVE_SECRETS_MAX }, (_, i) => [`LIVE_${i}`, { value: `v${i}` }])
+    )
+    const tooMany = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${id}`,
+      payload: { liveSecrets: many }
+    })
+    expect(tooMany.statusCode).toBe(409)
+    expect(tooMany.json().message).toContain(String(LIVE_SECRETS_MAX))
   })
 
   it('POST + PATCH /agents carries output and chat runtime controls in runtimeOverrides', async () => {

@@ -7911,7 +7911,6 @@ export async function fetchCapabilityRequest(id: string, orgId?: string): Promis
   return apiGet<CapabilityRequestDto>(capabilityRequestPath(id, orgId))
 }
 
-/** Asks for the request to be settled once the change was saved; the outcome is what the server observes, not what was clicked. */
 /** Set (or replace) one of an agent's live secrets through the agent PATCH: write-only, read by its shell at use time (capability-requests.md §4.9.2). A name taken by a variable or a spawn-time secret answers 409. */
 export async function saveAgentLiveSecret(
   agentId: string,
@@ -7926,6 +7925,7 @@ export async function saveAgentLiveSecret(
   await apiPatch<AgentDto>(`${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}`, patch)
 }
 
+/** Asks for the request to be settled once the change was saved; the outcome is what the server observes, not what was clicked. */
 export async function settleCapabilityRequest(id: string, orgId?: string): Promise<CapabilityRequestDto> {
   return apiPost<CapabilityRequestDto>(`${capabilityRequestPath(id, orgId)}/settle`, {})
 }

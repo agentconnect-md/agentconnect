@@ -40,6 +40,8 @@ export interface RepoCapabilityFactsDeps {
   knownPlatform: (platform: string) => boolean
   /** The agent's live secret names, never their values. */
   liveSecretNames: (orgId: OrgId, agentId: AgentRecord['id']) => Promise<readonly string[]>
+  /** The agent's spawn-time secret names, which a live secret may not reuse. */
+  spawnSecretNames?: (orgId: OrgId, agentId: AgentRecord['id']) => Promise<readonly string[]>
   /** The deployment's GitLab host (`gitlab.com` unless self-managed). */
   gitlabHost: string
 }
@@ -174,6 +176,14 @@ export function repoCapabilityFacts(deps: RepoCapabilityFactsDeps): CapabilityFa
         !sameGitlabHost(ask.want.host, deps.gitlabHost)
       )
         return `This deployment does not connect to GitLab at ${JSON.stringify(ask.want.host)}.`
+      // A live secret named like an environment variable or spawn-time secret of the agent could never be saved, so it is never asked for.
+      if (ask.kind === 'secret' && ask.want.use.route === 'live') {
+        const name = ask.want.name
+        const taken = name in agent.env || ((await deps.spawnSecretNames?.(agent.orgId, agent.id)) ?? []).includes(name)
+        return taken
+          ? `${name} is already an environment variable or secret of this agent; ask for a live secret under another name.`
+          : undefined
+      }
       if (ask.kind === 'secret' && ask.want.use.route === 'mcp-header') {
         const p = await provider(agent.orgId, ask.want.use.server)
         if (!p) return `This organization has no MCP server named ${JSON.stringify(ask.want.use.server)}.`

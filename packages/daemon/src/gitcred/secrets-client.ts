@@ -3,7 +3,7 @@
 // Node builtins and the channel's leaves only: the in-sandbox bundle is asserted to import nothing else.
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { constants, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from './env.js'
@@ -15,7 +15,8 @@ const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/
 const USAGE = `usage: agentconnect-secrets <command>
   exec [--only A,B] -- <command> [args…]   run a command with the live secrets in its environment
   env [A B …]                              print shell-quoted export lines, for eval "$(agentconnect-secrets env A)"
-  file A                                   write A to a private file under $TMPDIR and print its path
+  file A [-- <command> [args…]]            with a command: run it with A_FILE naming a private file holding A, removed when it exits;
+                                           alone: write that file and print its path (delete it when done)
   list                                     list the live secrets by name and description
 `
 
@@ -66,6 +67,8 @@ export async function runSecretsHelper(argv: readonly string[], io: SecretsHelpe
       if (option === '--only' && options[i + 1] !== undefined) names = options[++i]!.split(',').filter(Boolean)
       else if (option.startsWith('--only=')) names = option.slice('--only='.length).split(',').filter(Boolean)
       else return fail(`unknown option "${option}"\n${USAGE}`, 2)
+      // An empty list would run the command with no secrets and exit 0, hiding the mistake.
+      if (names.length === 0) return fail(`--only needs at least one secret name\n${USAGE}`, 2)
     }
     // Without `--` the rest is the command, unless it starts with an option that belonged before one.
     if (execArgv.length === 0 || (dashes === -1 && execArgv[0]!.startsWith('-')))
@@ -73,8 +76,12 @@ export async function runSecretsHelper(argv: readonly string[], io: SecretsHelpe
   } else if (command === 'env') {
     names = rest.length > 0 ? [...rest] : undefined
   } else if (command === 'file') {
-    if (rest.length !== 1) return fail(`file takes exactly one secret name\n${USAGE}`, 2)
-    names = [rest[0]!]
+    const dashes = rest.indexOf('--')
+    const named = dashes === -1 ? rest : rest.slice(0, dashes)
+    execArgv = dashes === -1 ? [] : rest.slice(dashes + 1)
+    if (named.length !== 1) return fail(`file takes exactly one secret name\n${USAGE}`, 2)
+    if (dashes !== -1 && execArgv.length === 0) return fail(`file needs a command after --\n${USAGE}`, 2)
+    names = [named[0]!]
   } else if (rest.length > 0) {
     return fail(`list takes no arguments\n${USAGE}`, 2)
   }
@@ -105,17 +112,26 @@ export async function runSecretsHelper(argv: readonly string[], io: SecretsHelpe
     for (const s of secrets) io.stdout(`export ${s.name}=${shQuote(s.value)}\n`)
     return 0
   }
+  const run = io.run ?? runInherited
   if (command === 'file') {
     const secret = secrets[0]!
-    const path = join(io.tmpdir?.() ?? tmpdir(), `agentconnect-secret-${secret.name}-${randomBytes(6).toString('hex')}`)
-    // `wx` with 0600: never another file's contents, never readable by anyone else.
+    // A fresh 0700 directory per call, and `wx` with 0600: never another file's contents, never readable by anyone else.
+    const dir = mkdtempSync(join(io.tmpdir?.() ?? tmpdir(), 'agentconnect-secret-'))
+    const path = join(dir, `${secret.name}-${randomBytes(6).toString('hex')}`)
     writeFileSync(path, secret.value, { mode: 0o600, flag: 'wx' })
-    io.stdout(`${path}\n`)
-    return 0
+    if (execArgv.length === 0) {
+      io.stdout(`${path}\n`)
+      return 0
+    }
+    // With a command the file lives only as long as it runs.
+    try {
+      return await run(execArgv[0]!, execArgv.slice(1), { ...io.env, [`${secret.name}_FILE`]: path })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   }
   const env: NodeJS.ProcessEnv = { ...io.env }
   for (const s of secrets) env[s.name] = s.value
-  const run = io.run ?? runInherited
   return await run(execArgv[0]!, execArgv.slice(1), env)
 }
 
@@ -123,10 +139,18 @@ export async function runSecretsHelper(argv: readonly string[], io: SecretsHelpe
 function runInherited(command: string, args: readonly string[], env: NodeJS.ProcessEnv): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn(command, args, { env, stdio: 'inherit' })
+    // A runner that stops the helper stops the command too, rather than leaving it orphaned with the secrets.
+    const forwarded = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const
+    const forward = (signal: NodeJS.Signals) => child.kill(signal)
+    for (const signal of forwarded) process.on(signal, forward)
+    const done = (exitCode: number) => {
+      for (const signal of forwarded) process.off(signal, forward)
+      resolve(exitCode)
+    }
     child.on('error', (err) => {
       process.stderr.write(`agentconnect-secrets: cannot run ${command}: ${err.message}\n`)
-      resolve(127)
+      done(127)
     })
-    child.on('exit', (code, signal) => resolve(code ?? (signal ? 128 + (constants.signals[signal] ?? 0) : 1)))
+    child.on('exit', (code, signal) => done(code ?? (signal ? 128 + (constants.signals[signal] ?? 0) : 1)))
   })
 }

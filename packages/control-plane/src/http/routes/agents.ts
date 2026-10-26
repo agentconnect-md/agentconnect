@@ -42,7 +42,8 @@ import {
   DreamListPage,
   DreamFilesPage,
   DreamFileReadContent,
-  agentComputerUseOf
+  agentComputerUseOf,
+  LIVE_SECRETS_MAX
 } from '@agentconnect.md/protocol'
 /**
  * `http/routes/agents.ts` (design §2.1) — CRUD for agent definitions through the
@@ -2949,19 +2950,32 @@ export function agentRoutes(deps: HttpDeps) {
               message: `${twice.join(', ')} is named in both secrets and liveSecrets`
             })
           }
-          // One name is one row: a live secret never silently becomes a spawn-time one, or the other way round.
+          // One name is one row: a live secret never silently becomes a spawn-time one, or the other way round, and a delete names its own kind.
           if (plainSecretsPatch || liveSecretsPatch) {
             const spawnKeys = new Set(await secretKeysOf(orgOf(req), req.params.id))
             const liveKeys = new Set((await liveSecretsOf(orgOf(req), req.params.id)).map((secret) => secret.name))
             const crossed = [
-              ...Object.entries(liveSecretsPatch ?? {}).filter(([key, v]) => v !== null && spawnKeys.has(key)),
-              ...Object.entries(plainSecretsPatch ?? {}).filter(([key, v]) => v !== null && liveKeys.has(key))
-            ].map(([key]) => key)
+              ...Object.keys(liveSecretsPatch ?? {}).filter((key) => spawnKeys.has(key)),
+              ...Object.keys(plainSecretsPatch ?? {}).filter((key) => liveKeys.has(key))
+            ]
             if (crossed.length > 0) {
               return reply.code(409).send({
                 error: 'Conflict',
                 statusCode: 409,
-                message: `${crossed.join(', ')} is already a secret of the other kind on this agent; delete it first, then save it again`
+                message: `${crossed.join(', ')} is a secret of the other kind on this agent; change or delete it under ${liveKeys.has(crossed[0]!) ? 'liveSecrets' : 'secrets'}, then save it again`
+              })
+            }
+            // The spec carries at most LIVE_SECRETS_MAX, so a save past it would leave the agent unable to sync.
+            const kept = new Set(liveKeys)
+            for (const [key, live] of Object.entries(liveSecretsPatch ?? {})) {
+              if (live === null) kept.delete(key)
+              else kept.add(key)
+            }
+            if (kept.size > LIVE_SECRETS_MAX) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: `an agent holds at most ${LIVE_SECRETS_MAX} live secrets; delete one before adding another`
               })
             }
           }

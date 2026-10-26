@@ -394,6 +394,9 @@ export type ChatCallerRole = z.infer<typeof ChatCallerRole>
  * prompt + runtime selection. The launch protocol carries this config and the
  * daemon synthesizes the system prompt locally; `description` IS the prompt.
  */
+/** An agent holds at most this many live secrets (capability-requests.md §4.9.2); the CP refuses a save past it. */
+export const LIVE_SECRETS_MAX = 100
+
 export const AgentSpec = z.object({
   // Owning tenant. Optional only for CP/daemon rolling compatibility; a current CP always sends it.
   orgId: z.string().min(1).max(64).optional(),
@@ -472,7 +475,7 @@ export const AgentSpec = z.object({
         description: z.string().max(200).optional()
       })
     )
-    .max(100)
+    .max(LIVE_SECRETS_MAX)
     .optional(),
   // Which memory backend the agent uses (design: docs/designs/memory-evolution.md):
   //   managed  — our <agent-root>/memory/ directory (default)

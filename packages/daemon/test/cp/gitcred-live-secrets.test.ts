@@ -1,6 +1,6 @@
 // Live secrets over the credential channel (capability-requests.md §4.9.2): the server's `secret` op, the gate that keeps `get`
 // for agents with a managed credential, and the `agentconnect-secrets` helper end to end over a real socket.
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -146,10 +146,25 @@ describe('agentconnect-secrets', () => {
     if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600)
   })
 
+  it('with a command, names the file in NAME_FILE and removes it once the command exits', async () => {
+    const { code, runs } = await helper(['file', 'KUBE_CONFIG', '--', 'kubectl', 'get', 'pods'])
+    expect(code).toBe(7)
+    expect(runs[0]!.command).toBe('kubectl')
+    const path = runs[0]!.env.KUBE_CONFIG_FILE!
+    expect(path.startsWith(dir!)).toBe(true)
+    // The value never rides the environment, and the file is gone after the command.
+    expect(runs[0]!.env.KUBE_CONFIG).toBeUndefined()
+    expect(existsSync(path)).toBe(false)
+  })
+
   it('refuses malformed calls before reaching the daemon, and names a secret it does not have', async () => {
     expect((await helper(['exec'])).code).toBe(2)
     expect((await helper(['exec', '--only', 'GRAFANA_TOKEN'])).code).toBe(2)
     expect((await helper(['exec', '--bogus', '--', 'curl'])).code).toBe(2)
+    // An empty --only would run the command with no secrets and hide the mistake.
+    expect((await helper(['exec', '--only', ',', '--', 'curl'])).code).toBe(2)
+    expect((await helper(['exec', '--only=', '--', 'curl'])).code).toBe(2)
+    expect((await helper(['file', 'KUBE_CONFIG', '--'])).code).toBe(2)
     expect((await helper(['file'])).code).toBe(2)
     expect((await helper(['env', 'lower-case'])).code).toBe(2)
     expect((await helper(['frobnicate'])).code).toBe(2)
