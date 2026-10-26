@@ -73,7 +73,7 @@ describe('sendMessage self-delegation wording', () => {
   it.each([[[slackInt]], [[]]])('splits work between the runtime’s own subagents and delegateTask (%#)', (ints) => {
     const description = sendTool(ints).description
     // Within this turn → the runtime's own subagent tool; spanning turns, seen and stoppable → delegateTask.
-    expect(description).toContain('Short work stays here.')
+    expect(description).toContain('Short work stays here or with your runtime’s subagents.')
     expect(description).toContain('which people should see and stop, to a task of this session')
     const guide = sendMessageGuide(ctx(ints), 'delegateTask')
     expect((guide.rules as string[])[0]).toBe(
@@ -86,11 +86,12 @@ describe('sendMessage self-delegation wording', () => {
 
   it.each([[[slackInt]], [[]]])('asks for confirmation before delegating live-environment work (%#)', (ints) => {
     expect(sendTool(ints).description).toContain(
-      'Ask first for live-environment changes; "check again" is no approval.'
+      'Ask the person before delegating live-environment changes; "check again" is a lookup, not approval.'
     )
     const rules = sendMessageGuide(ctx(ints), 'delegateTask').rules as string[]
     expect(rules[1]).toBe(
-      'Confirm with the person before delegating work that changes a live environment; "check again" is not approval.'
+      'Confirm with the person before delegating work that changes a live environment (deploys, upgrades, ' +
+        'infrastructure, data); a follow-up such as "check again" asks for a status lookup, not to run it again.'
     )
   })
 })

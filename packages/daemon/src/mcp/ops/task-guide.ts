@@ -26,7 +26,8 @@ export const DELEGATE_TASK_GUIDE: TaskActionGuide = {
     'Work you can finish within this turn, even split into parallel parts, goes to your runtime’s own subagent ' +
       'or Task tool instead. Use delegateTask for long work that spans turns, may run a long time, or that people ' +
       'should be able to see and stop ("fix this bug and open a PR"). Quick lookups stay in this turn.',
-    'Confirm with the person before delegating work that changes a live environment; "check again" is not approval.',
+    'Confirm with the person before delegating work that changes a live environment (deploys, upgrades, ' +
+      'infrastructure, data); a follow-up such as "check again" asks for a status lookup, not to run it again.',
     'Delegate it before exploring the request yourself, say it has started, end your turn, and do not do the work ' +
       'here too. Questions, lookups and short answers never need a task.',
     'A task works in the background in a context of its own that starts from this session’s context. It posts ' +

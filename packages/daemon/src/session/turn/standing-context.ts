@@ -299,7 +299,8 @@ const COLLAB_SELF_DELEGATION =
   `session: it works in a context of its own, posts nothing, and reports back into this ` +
   `session each time a round of its work finishes or fails. Work you can finish within this turn, even split into ` +
   `parallel parts, goes to your runtime's own subagent or Task tool instead. ` +
-  `Confirm with the person before delegating live-environment changes; "check again" is not approval. Delegate before you explore or begin ` +
+  `Confirm with the person before delegating live-environment changes; "check again" asks for a lookup, not a ` +
+  `rerun. Delegate before you explore or begin ` +
   `the work yourself — the task starts from this session's context and finds what it needs — then say it has ` +
   `started and end your turn. Delegate independent tasks together; delegate a task that needs another's result ` +
   `once that result has arrived. To give one more work later, even after it reported, send ` +

@@ -32,7 +32,7 @@ describe('standing collaboration guidance', () => {
     expect(context.collabAppend).toContain(
       "Work you can finish within this turn, even split into parallel parts, goes to your runtime's own subagent " +
         'or Task tool instead. Confirm with the person before delegating live-environment changes; ' +
-        '"check again" is not approval. Delegate before you explore or begin the work yourself — the task starts from this ' +
+        '"check again" asks for a lookup, not a rerun. Delegate before you explore or begin the work yourself — the task starts from this ' +
         "session's context and finds what it needs — then say it has started and end your turn. Delegate " +
         "independent tasks together; delegate a task that needs another's result once that result has arrived. To " +
         'give one more work later, even after it reported, send ' +

@@ -1322,7 +1322,7 @@ splits up and can finish within the current turn goes to its runtime's own subag
 delegating is for work that spans turns, may run a long time, or that people should be able to
 see and stop. Ordinary conversation and quick lookups stay in the main conversation.
 The agent confirms with the person before delegating work that changes a live environment; a
-casual follow-up such as "check again" is not approval. The conversation says the
+follow-up such as "check again" asks for a status lookup, not for the work again. The conversation says the
 work has started; the task runs in a context of its own, never the conversation's long session;
 none of its replies is posted anywhere, and it reports back into the conversation that delegated
 it, which then speaks for it, in the thread the request for that work came from. A report names the

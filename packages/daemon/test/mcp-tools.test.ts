@@ -366,7 +366,7 @@ describe('toolsForIntegrations', () => {
     // Tasks and explicit peer sessions are advertised now that the daemon implements both (§8, §9).
     expect(tool.description).toContain('sessionId continues an existing peer session')
     expect(tool.description).toContain('delegateTask hands work that spans turns or runs long')
-    expect(tool.description).toContain('Short work stays here.')
+    expect(tool.description).toContain('Short work stays here or with your runtime’s subagents.')
     expect(tool.description).toContain('messageTask sends a task more (taskId)')
     expect(tool.description).toContain('listTasks lists them, stopTask stops one')
     // §9.4: a reply names the message it answers.

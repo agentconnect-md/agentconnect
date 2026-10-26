@@ -27,14 +27,14 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
     name: 'sendMessage',
     description:
       'Send outside your current conversation. Required action: callAgent asks a peer to work ' +
-      '(sessionId continues an existing peer session); calling yourself needs channel and starts visible work ' +
+      '(sessionId continues an existing peer session); self-calls need channel and work visibly ' +
       'there. delegateTask hands work that spans turns or runs long, which people should see and stop, to a task of ' +
-      'this session: call it before exploring, say so, end your turn. Short work stays here. Ask ' +
-      'first for live-environment changes; "check again" is no approval. messageTask sends ' +
-      'a task more (taskId); listTasks lists them, stopTask stops one. replyToSession answers a message another ' +
-      'session sent you, by its ' +
-      'messageId; replies are not broadcast. postMessage reaches a person, channel, or another thread; it starts no ' +
-      'work and gets no reply. For your current conversation, write your ordinary reply. To get a peer’s result, ' +
+      'this session: call it before exploring, say so, end your turn. Short work stays here or with your ' +
+      'runtime’s subagents. Ask the person before delegating live-environment changes; "check again" is a lookup, ' +
+      'not approval. messageTask sends a task more (taskId); listTasks lists them, stopTask stops one. ' +
+      'replyToSession answers a message another session sent you, by its messageId; replies are not broadcast. ' +
+      'postMessage reaches a person, channel, or another thread; it starts no work. For your current conversation, ' +
+      'write your ordinary reply. To get a peer’s result, ' +
       'use toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments and ' +
       'examples. Calls without action fail without sending anything.',
     inputSchema: obj(
