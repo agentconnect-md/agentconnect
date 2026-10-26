@@ -30,6 +30,7 @@ export type ComputerErrorCode =
   | 'unavailable'
   // Windows administrator prompts (computer-use.md §4.2.1).
   | 'admin_prompt_pending'
+  | 'admin_prompt_changed'
   | 'no_admin_prompt'
   | 'approval_required'
 
@@ -593,7 +594,11 @@ export class Computer {
   }
 
   // The agent's answer, which the mode may require a person's approval for, sent through the agent daemon.
-  adminPrompt(client: string, args: { answer: AdminPromptAnswer }, approval: string | undefined): Promise<ToolOutput> {
+  adminPrompt(
+    client: string,
+    args: { answer: AdminPromptAnswer; prompt?: string | undefined },
+    approval: string | undefined
+  ): Promise<ToolOutput> {
     const shown = this.pendingAdminPrompt()
     const audited = { ...args, ...(shown ? adminPromptArgs(shown) : {}) }
     return this.audited(client, 'computer_admin_prompt', audited, async () => {
@@ -602,6 +607,13 @@ export class Computer {
       if (!prompt) throw new ComputerError('no_admin_prompt', 'no administrator prompt is waiting on this computer')
       const mode = this.adminPromptMode()
       const details = { adminPrompt: adminPromptView(prompt) }
+      // An answer names the prompt it was decided for; another prompt that took its place is never answered by it.
+      if (args.prompt !== undefined && args.prompt !== prompt.id)
+        throw new ComputerError(
+          'admin_prompt_changed',
+          'the administrator prompt changed since this answer was decided; nothing was answered',
+          details
+        )
       if (mode === 'approve' || mode === 'deny')
         throw new ComputerError(
           'denied',
@@ -614,7 +626,7 @@ export class Computer {
           "this prompt asks for an administrator's password; only a person can approve it",
           details
         )
-      if (args.answer === 'approve' && mode === 'people' && approval !== 'allowed')
+      if (args.answer === 'approve' && mode === 'people' && (approval !== 'allowed' || args.prompt === undefined))
         throw new ComputerError(
           'approval_required',
           'approving an administrator prompt on this computer needs a person to allow it first',
@@ -1057,6 +1069,7 @@ function clickSentElsewhere(call: DriverCall, error: unknown): string | undefine
 // What an agent, a card and the audit see of a prompt: never more than its dialog shows.
 function adminPromptView(prompt: AdminPrompt): Record<string, unknown> {
   return {
+    id: prompt.id,
     kind: prompt.kind,
     ...(prompt.app ? { app: prompt.app } : {}),
     ...(prompt.publisher ? { publisher: prompt.publisher } : {}),

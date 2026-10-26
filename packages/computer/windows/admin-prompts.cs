@@ -21,7 +21,6 @@ static class AdminPrompts {
   static IntPtr shown = IntPtr.Zero;
   static string shownId;
   static string shownKind;
-  static int sequence;
 
   [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
   [DllImport("user32.dll", SetLastError = true)] static extern bool SetThreadDesktop(IntPtr desk);
@@ -73,23 +72,36 @@ static class AdminPrompts {
     return found;
   }
 
-  // Runs work on a fresh thread attached to the input desktop: a thread that owns windows cannot switch desktops.
+  // Runs work on a fresh thread attached to the input desktop; the handle closes once that thread is gone, as CloseDesktop requires.
   static T OnInputDesktop<T>(Func<IntPtr, T> work) {
+    var desk = OpenInputDesktop(0, false, GENERIC_ALL);
+    if (desk == IntPtr.Zero) throw new Exception("cannot open the input desktop (error " + Marshal.GetLastWin32Error() + "); the daemon must run as SYSTEM");
     T result = default(T);
     Exception failure = null;
+    // A thread that owns windows cannot switch desktops, so each piece of work gets a new one.
     var thread = new Thread(() => {
-      var desk = OpenInputDesktop(0, false, GENERIC_ALL);
-      if (desk == IntPtr.Zero) { failure = new Exception("cannot open the input desktop (error " + Marshal.GetLastWin32Error() + "); the daemon must run as SYSTEM"); return; }
       try {
         if (!SetThreadDesktop(desk)) throw new Exception("cannot attach to the " + DesktopName(desk) + " desktop (error " + Marshal.GetLastWin32Error() + ")");
         result = work(desk);
       } catch (Exception e) { failure = e; }
-      finally { CloseDesktop(desk); }
     });
     thread.Start();
     thread.Join();
+    // On stderr, which reaches the daemon log: a problem line would be cleared by the next poll.
+    if (!CloseDesktop(desk)) Console.Error.WriteLine("admin prompts: cannot close a desktop handle (error " + Marshal.GetLastWin32Error() + ")");
     if (failure != null) throw failure;
     return result;
+  }
+
+  // Polled by handle alone: attaching a thread is needed only to read or answer the dialog.
+  static IntPtr ShowingDialog() {
+    var desk = OpenInputDesktop(0, false, GENERIC_ALL);
+    if (desk == IntPtr.Zero) throw new Exception("cannot open the input desktop (error " + Marshal.GetLastWin32Error() + "); the daemon must run as SYSTEM");
+    try {
+      return DesktopName(desk) == "Winlogon" ? FindDialog(desk) : IntPtr.Zero;
+    } finally {
+      CloseDesktop(desk);
+    }
   }
 
   static AutomationElement ById(AutomationElement root, string id) {
@@ -105,10 +117,17 @@ static class AdminPrompts {
   // What the dialog asks, read through UI Automation once its details (the program's command line) are shown.
   static Dictionary<string, object> Read(IntPtr dialog) {
     var root = AutomationElement.FromHandle(dialog);
+    var prompt = ReadShown(root);
+    // The details link toggles, and a restarted helper may find them open already.
     var details = ById(root, "ShowHideDetails");
-    if (details != null) {
-      try { Invoke(details); Thread.Sleep(400); } catch { }
+    if (!prompt.ContainsKey("command") && details != null) {
+      try { Invoke(details); Thread.Sleep(400); prompt = ReadShown(root); } catch { }
     }
+    return prompt;
+  }
+
+  // What the dialog shows now: its lines, the app after its icon, the publisher line after the app, and the command line.
+  static Dictionary<string, object> ReadShown(AutomationElement root) {
     var lines = new List<string>();
     var texts = new List<KeyValuePair<string, string>>();
     var walker = TreeWalker.RawViewWalker;
@@ -155,7 +174,7 @@ static class AdminPrompts {
     for (;;) {
       try {
         lock (Work) {
-          var dialog = OnInputDesktop(desk => DesktopName(desk) == "Winlogon" ? FindDialog(desk) : IntPtr.Zero);
+          var dialog = ShowingDialog();
           Problem("");
           if (dialog != shown) {
             if (shownId != null) Send(new Dictionary<string, object> { { "event", "gone" }, { "id", shownId } });
@@ -164,7 +183,8 @@ static class AdminPrompts {
             shownKind = null;
             if (dialog != IntPtr.Zero) {
               var prompt = OnInputDesktop(desk => Read(dialog));
-              shownId = (++sequence).ToString();
+              // Unique across helper restarts, so an approval for one prompt never answers the next.
+              shownId = Guid.NewGuid().ToString("N");
               shownKind = (string)prompt["kind"];
               prompt["id"] = shownId;
               Send(prompt);
@@ -183,11 +203,14 @@ static class AdminPrompts {
     var reply = new Dictionary<string, object> { { "event", "answered" }, { "id", id ?? "" }, { "answer", answer ?? "" } };
     try {
       lock (Work) {
-        if (shownId == null || id != shownId || !IsWindow(shown)) throw new Exception("that administrator prompt is no longer showing");
+        if (shownId == null) throw new Exception("no administrator prompt is showing");
+        if (id != shownId) throw new Exception("that administrator prompt is no longer showing");
         if (answer != "approve" && answer != "deny") throw new Exception("answer must be approve or deny");
         if (answer == "approve" && shownKind == "credentials") throw new Exception("this prompt asks for an administrator's password, so only a person at the computer can approve it");
         var dialog = shown;
         OnInputDesktop(desk => {
+          // Checked from the secure desktop itself: another desktop's thread cannot see its windows.
+          if (!IsWindow(dialog)) throw new Exception("the administrator prompt's window is gone");
           var button = ById(AutomationElement.FromHandle(dialog), answer == "approve" ? "OkButton" : "CancelButton");
           if (button == null) throw new Exception("the prompt has no " + (answer == "approve" ? "Yes" : "No") + " button");
           Invoke(button);

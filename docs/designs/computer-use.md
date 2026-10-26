@@ -708,8 +708,9 @@ answer with `computer_admin_prompt` (`approve` or `deny`), which takes the lease
 The `approve` and `deny` modes act only while an agent holds the lease; a prompt the person raises with no agent in
 control stays theirs. A prompt that asks for an administrator's password (a standard account) is never approved by an
 agent or a mode, only denied. In `people` mode the desktop refuses an approve until the agent daemon's call carries
-`allowed`: the desktop names the prompt in an `approval_required` refusal, the agent daemon raises the card with it, and
-sends the approve again once a person allowed it. Every answer is audited with the app and the command line, the
+`allowed` and the prompt's id: the desktop names the prompt, with an id unique to it, in an `approval_required` refusal;
+the agent daemon raises the card with it and sends the approve again, with that id, once a person allowed it. A prompt
+that replaced the one on the card is refused with `admin_prompt_changed` rather than answered. Every answer is audited with the app and the command line, the
 automatic ones as `admin_prompt_auto`.
 
 **Two places, one setting.** The console's usage policy and the taskbar menu's Administrator Prompts submenu edit the

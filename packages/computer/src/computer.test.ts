@@ -478,11 +478,26 @@ describe('administrator prompts (computer-use.md §4.2.1)', () => {
       adminPrompt: { app: 'Windows Command Processor' }
     })
     expect(people.answers).toEqual([])
-    await people.computer.adminPrompt('claude', { answer: 'approve' }, 'allowed')
+    // The person's approval counts only with the prompt it was given for.
+    expect(errorOf(await people.computer.adminPrompt('claude', { answer: 'approve' }, 'allowed'))).toMatchObject({
+      error: 'approval_required',
+      adminPrompt: { id: '1' }
+    })
+    await people.computer.adminPrompt('claude', { answer: 'approve', prompt: '1' }, 'allowed')
     expect(people.answers).toEqual([['1', 'approve']])
     const deny = prompts('people')
     await deny.computer.adminPrompt('claude', { answer: 'deny' }, undefined)
     expect(deny.answers).toEqual([['1', 'deny']])
+  })
+
+  it('refuses an answer decided for a prompt that another one replaced', async () => {
+    const { computer, source, answers } = prompts('people')
+    source.current = { ...PROMPT, id: '2' }
+    expect(errorOf(await computer.adminPrompt('claude', { answer: 'approve', prompt: '1' }, 'allowed'))).toMatchObject({
+      error: 'admin_prompt_changed',
+      adminPrompt: { id: '2' }
+    })
+    expect(answers).toEqual([])
   })
 
   it('leaves a password prompt to a person, whatever the mode', async () => {

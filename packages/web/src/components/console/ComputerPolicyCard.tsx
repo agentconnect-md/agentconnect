@@ -3,11 +3,7 @@
 // How agents use a Computer once they have access (computer-use.md §4.1, §4.2): view or control, approvals and limits.
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
-import {
-  DEFAULT_COMPUTER_ADMIN_PROMPT_MODE,
-  type ComputerAdminPromptMode,
-  type ComputerPolicy
-} from '@agentconnect.md/protocol/computer'
+import type { ComputerAdminPromptMode, ComputerPolicy } from '@agentconnect.md/protocol/computer'
 import { viewerPeerToPeerAllowed } from '@agentconnect.md/protocol/computer-viewer'
 import { setComputerPolicy, type ComputerDto } from '@/lib/api'
 import { FieldSelect } from '@/components/console/FieldSelect'
@@ -95,6 +91,9 @@ export function policyFromDraft(
   }
 }
 
+// What an unset mode means, as protocol's DEFAULT_COMPUTER_ADMIN_PROMPT_MODE says; that module is not bundler-safe here.
+export const DEFAULT_ADMIN_PROMPTS: ComputerAdminPromptMode = 'people'
+
 // The order the console and the taskbar menu list them in.
 const ADMIN_PROMPT_OPTIONS: readonly ComputerAdminPromptMode[] = ['people', 'agent', 'approve', 'deny']
 
@@ -177,7 +176,7 @@ export function ComputerPolicyCard({
             <Field label={t('adminPrompts')} detail={t('adminPromptsHint')}>
               <FieldSelect
                 ariaLabel={t('adminPrompts')}
-                value={draft.adminPrompts ?? DEFAULT_COMPUTER_ADMIN_PROMPT_MODE}
+                value={draft.adminPrompts ?? DEFAULT_ADMIN_PROMPTS}
                 disabled={!editable}
                 options={ADMIN_PROMPT_OPTIONS.map((mode) => ({ value: mode, label: t(`adminPrompt.${mode}`) }))}
                 onChange={(v) => set('adminPrompts', v)}

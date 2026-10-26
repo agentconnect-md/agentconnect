@@ -654,11 +654,20 @@ describe('computer approvals', () => {
 })
 
 describe('administrator prompts (§4.2.1)', () => {
-  const PROMPT = { app: 'Windows Command Processor', publisher: 'Microsoft Windows', command: 'cmd.exe /c whoami' }
+  const PROMPT = {
+    id: 'a1',
+    app: 'Windows Command Processor',
+    publisher: 'Microsoft Windows',
+    command: 'cmd.exe /c whoami'
+  }
   // The desktop names the prompt and wants a person's approval until a call carries one.
   const desktop: CallTool = async (params) => {
     const meta = (params as { _meta?: Record<string, unknown> })._meta?.['md.agentconnect/approval']
-    if (params.name === 'computer_admin_prompt' && params.arguments?.answer === 'approve' && meta !== 'allowed')
+    if (
+      params.name === 'computer_admin_prompt' &&
+      params.arguments?.answer === 'approve' &&
+      (meta !== 'allowed' || params.arguments?.prompt !== PROMPT.id)
+    )
       return {
         isError: true,
         content: [{ type: 'text', text: JSON.stringify({ error: 'approval_required', adminPrompt: PROMPT }) }]
@@ -677,7 +686,7 @@ describe('administrator prompts (§4.2.1)', () => {
         action: 'approve “Windows Command Processor” (Microsoft Windows) to run as administrator: cmd.exe /c whoami'
       })
     ])
-    expect(calls.map((call) => call.name)).toEqual(['computer_admin_prompt', 'computer_admin_prompt'])
+    expect(calls.map((call) => call.args)).toEqual([{ answer: 'approve' }, { answer: 'approve', prompt: 'a1' }])
     expect(metas[1]).toEqual({ 'md.agentconnect/approval': 'allowed' })
     expect(computerApprovalTitle(asks[0]!)).toMatch(/^Administrator prompt on “Desk”: approve/)
     // Nothing carries over: the next prompt asks again.

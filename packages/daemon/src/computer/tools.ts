@@ -131,7 +131,10 @@ export const COMPUTER_TOOLS: readonly ToolDescriptor[] = [
   tool(
     'computer_admin_prompt',
     "Answer the Windows administrator (UAC) prompt waiting on a computer, which other computer_* results describe as admin_prompt (app, publisher, command). Approving may first wait for a person's approval, per the computer's setting. Takes the control lease.",
-    { answer: { type: 'string', enum: ['approve', 'deny'] } },
+    {
+      answer: { type: 'string', enum: ['approve', 'deny'] },
+      prompt: { type: 'string', description: 'the admin_prompt id this answer is for; optional' }
+    },
     ['answer']
   )
 ]
@@ -268,7 +271,10 @@ export const COMPUTER_TOOL_ARGS: ReadonlyMap<string, z.ZodType> = new Map<string
   ['computer_wait', Computer.extend({ ms: z.number().int().min(0).max(10_000) }).strict()],
   ['computer_acquire', Computer.strict()],
   ['computer_release', Computer.strict()],
-  ['computer_admin_prompt', Computer.extend({ answer: z.enum(['approve', 'deny']) }).strict()]
+  [
+    'computer_admin_prompt',
+    Computer.extend({ answer: z.enum(['approve', 'deny']), prompt: z.string().min(1).max(64).optional() }).strict()
+  ]
 ])
 
 // How long one queued acquire asks the CP to hold its reply, and the pause before asking again after a lost link.
@@ -473,7 +479,9 @@ export class ComputerTools {
       if (asked?.error === 'approval_required') {
         const prompt = (asked.adminPrompt ?? {}) as Record<string, unknown>
         await this.askOnce(ctx, state, target, name, describeAdminPrompt(prompt))
-        result = await this.forward(state, target, name, forwarded, true, 'allowed')
+        // The approve names the prompt the card showed, so a prompt that replaced it meanwhile is not answered.
+        const id = typeof prompt.id === 'string' ? { prompt: prompt.id } : {}
+        result = await this.forward(state, target, name, { ...forwarded, ...id }, true, 'allowed')
       }
       return waited ? withWaited(result, waited) : result
     }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { ComputerPolicy } from '@agentconnect.md/protocol/computer'
-import { draftOf, policyFromDraft } from './ComputerPolicyCard'
+import { DEFAULT_COMPUTER_ADMIN_PROMPT_MODE, type ComputerPolicy } from '@agentconnect.md/protocol/computer'
+import { DEFAULT_ADMIN_PROMPTS, draftOf, policyFromDraft } from './ComputerPolicyCard'
 
 const policy: ComputerPolicy = {
   allowedMembers: ['u1'],
@@ -26,6 +26,7 @@ describe('the policy form', () => {
     expect(policyFromDraft(windows, draftOf(windows))).toEqual({ policy: windows })
     const denied = policyFromDraft(policy, { ...draftOf(policy), adminPrompts: 'deny' })
     expect('policy' in denied && denied.policy.approvals).toEqual({ firstInputPerSession: true, adminPrompts: 'deny' })
+    expect(DEFAULT_ADMIN_PROMPTS).toBe(DEFAULT_COMPUTER_ADMIN_PROMPT_MODE)
   })
 
   it('drops the retention when blanked, so the deployment default applies', () => {

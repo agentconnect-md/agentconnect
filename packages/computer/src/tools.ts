@@ -217,7 +217,10 @@ export function createComputerMcpServer(options: {
       {
         description:
           'Answer the Windows administrator (UAC) prompt waiting on this computer: approve or deny. Results of the other tools describe a waiting prompt as admin_prompt.',
-        inputSchema: z.object({ answer: z.enum(['approve', 'deny']) }),
+        inputSchema: z.object({
+          answer: z.enum(['approve', 'deny']),
+          prompt: z.string().max(64).optional().describe('the admin_prompt id this answer is for')
+        }),
         annotations: acting
       },
       // The agent daemon's approval rides the call: in the `people` mode it says a person allowed this approve.
