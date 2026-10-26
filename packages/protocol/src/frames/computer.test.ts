@@ -78,6 +78,8 @@ describe('computer channel frames', () => {
       'computer/relays',
       'computer/stop',
       'computer/egress',
+      'computer/admin-prompts',
+      'computer/admin-prompts/ok',
       'computer/audit',
       'computer/audit/ok',
       'computer/screenshot/put',
@@ -112,6 +114,11 @@ describe('computer channel frames', () => {
       buildComputerCpFrame('computer/egress', { egress: { mode: 'direct' } }),
       buildComputerCpFrame('computer/egress', {
         egress: { mode: 'proxy', url: 'http://proxy.example.com:8080', username: 'u', password: 'p' }
+      }),
+      buildComputerCpFrame('computer/admin-prompts', { mode: 'agent' }),
+      buildComputerCpFrame('computer/admin-prompts/ok', { mode: 'agent' }),
+      buildComputerCpFrame('computer/policy', {
+        policy: ComputerPolicySchema.parse({ approvals: { firstInputPerSession: true, adminPrompts: 'deny' } })
       }),
       buildComputerCpFrame('computer/heartbeat', { status: 'busy', lease: { holder: 'sess-1', idleMs: 1200 } }),
       buildComputerCpFrame('computer/auth/ok', { ...authOk, features: [COMPUTER_AUDIT_FEATURE] }),

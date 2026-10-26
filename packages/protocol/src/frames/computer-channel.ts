@@ -13,10 +13,18 @@ export type ComputerRelayEntry = z.infer<typeof ComputerRelayEntry>
 /** The most relays one grant or roster names. */
 export const COMPUTER_RELAYS_MAX = 64
 
+/** Who answers a Windows administrator (UAC) prompt while an agent controls the Computer (computer-use.md §4.2.1). */
+export const COMPUTER_ADMIN_PROMPT_MODES = ['agent', 'people', 'approve', 'deny'] as const
+export type ComputerAdminPromptMode = (typeof COMPUTER_ADMIN_PROMPT_MODES)[number]
+/** The mode while a policy names none: the Computer's allowed members approve each prompt. */
+export const DEFAULT_COMPUTER_ADMIN_PROMPT_MODE: ComputerAdminPromptMode = 'people'
+
 /** Whether agents ask before using a Computer (computer-use.md §4.2): once per session, before its first input. */
 export const ComputerApprovalsSchema = z.object({
   // Ask before a session's first click, drag, type, key or launch; an allow covers the rest of the session.
-  firstInputPerSession: z.boolean().default(true)
+  firstInputPerSession: z.boolean().default(true),
+  // Windows only; absent means the default, so policies stored before it keep their meaning.
+  adminPrompts: z.enum(COMPUTER_ADMIN_PROMPT_MODES).optional()
 })
 export type ComputerApprovals = z.infer<typeof ComputerApprovalsSchema>
 

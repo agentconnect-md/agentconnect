@@ -29277,10 +29277,17 @@ export class Daemon {
           title: computerApprovalTitle(ask),
           kind: 'execute'
         },
-        options: [
-          { optionId: 'allow', name: 'Allow for this session', kind: 'allow_always' },
-          { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
-        ]
+        // An administrator prompt is approved one at a time; the first-input ask covers the session.
+        options:
+          ask.kind === 'admin-prompt'
+            ? [
+                { optionId: 'allow', name: 'Approve once', kind: 'allow_once' },
+                { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+              ]
+            : [
+                { optionId: 'allow', name: 'Allow for this session', kind: 'allow_always' },
+                { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+              ]
       },
       {
         computerId: ask.computerId,

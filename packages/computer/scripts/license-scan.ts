@@ -197,7 +197,10 @@ export function scanArtifacts(
   for (const name of metafiles) {
     const meta = JSON.parse(readFileSync(join(metaDir, name), 'utf8')) as Metafile
     for (const input of Object.keys(meta.inputs)) {
-      const file = resolve(packageRoot, input.replace(/^\(disabled\):/, ''))
+      // A build-time define (scripts/bundle.mjs inlines windows/*.cs) is the scanned package's own source.
+      const file = /^<define:\w+>$/.test(input)
+        ? join(packageRoot, 'package.json')
+        : resolve(packageRoot, input.replace(/^\(disabled\):/, ''))
       if (!existsSync(file)) {
         violations.push(`${input}: bundled input not found on disk, cannot attribute its license`)
         continue

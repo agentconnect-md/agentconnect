@@ -3553,6 +3553,7 @@ export function buildContainer(
     computerGateway: (app: FastifyInstance) =>
       createComputerWsServer(app, {
         computers,
+        policies: computers,
         repo: repos.computer,
         keys: computerChannelKeys,
         registry: computerChannels,

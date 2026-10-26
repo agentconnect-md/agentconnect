@@ -10,12 +10,14 @@ import {
   type Transport
 } from '@agentconnect.md/connection'
 import {
+  COMPUTER_ADMIN_PROMPTS_FEATURE,
   COMPUTER_AUDIT_FEATURE,
   COMPUTER_CP_SUBPROTOCOL,
   COMPUTER_EGRESS_FEATURE,
   COMPUTER_SCREENSHOT_FEATURE,
   buildComputerCpFrame,
   decodeComputerCpFrameTolerant,
+  type ComputerAdminPromptMode,
   type ComputerAuditEntry,
   type ComputerAuthOk,
   type ComputerControlLease,
@@ -143,6 +145,22 @@ export class ComputerCpClient {
       this.deps.log(`computer channel: audit report failed: ${(error as Error).message}`)
       return error instanceof WireError && !error.retryable ? 'rejected' : 'retry'
     }
+  }
+
+  /** Whether the CP stores the administrator-prompt mode the menu sets (computer-use.md §4.2.1). */
+  servesAdminPrompts(): boolean {
+    return this.state === 'READY' && this.features.has(COMPUTER_ADMIN_PROMPTS_FEATURE)
+  }
+
+  /** Store the menu's administrator-prompt mode in the policy; the CP pushes the policy back, as for a console edit. */
+  async setAdminPrompts(mode: ComputerAdminPromptMode): Promise<ComputerAdminPromptMode> {
+    const transport = this.transport
+    if (!transport || !this.servesAdminPrompts()) throw new Error('the Control Plane is not connected')
+    const reply = await this.correlator.request(buildComputerCpFrame('computer/admin-prompts', { mode }), (encoded) =>
+      transport.send(encoded)
+    )
+    if (reply.type !== 'computer/admin-prompts/ok') throw new Error(`unexpected reply ${reply.type}`)
+    return reply.payload.mode
   }
 
   /** Days the CP keeps this Computer's screenshots; 0 while it stores none or does not offer storage. */

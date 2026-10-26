@@ -1,13 +1,16 @@
 // The per-socket FSM of a desktop daemon's Computer channel (computer-use.md §3.6, §8.2): auth, heartbeat, renewal, revoke.
 import {
   CloseCode,
+  COMPUTER_ADMIN_PROMPTS_FEATURE,
   COMPUTER_AUDIT_FEATURE,
   COMPUTER_EGRESS_FEATURE,
   COMPUTER_RELAYS_MAX,
   COMPUTER_SCREENSHOT_FEATURE,
   buildComputerCpFrame,
   decodeComputerCpFrame,
+  DEFAULT_COMPUTER_ADMIN_PROMPT_MODE,
   type COMPUTER_CP_SCHEMAS,
+  type ComputerAdminPromptsSet,
   type ComputerAuditReport,
   type ComputerAuth,
   type ComputerControlLease,
@@ -45,6 +48,8 @@ export interface ComputerTransport {
 
 export interface ComputerConnDeps {
   computers: Pick<ComputerService, 'authenticate'>
+  /** Stores the administrator-prompt mode the desktop's menu sets (§4.2.1); without it the CP does not offer `computer-admin-prompts-v1`. */
+  policies?: Pick<ComputerService, 'setPolicy'>
   repo: Pick<ComputerRepo, 'get' | 'recordLive' | 'markOffline'>
   keys: ComputerChannelKeys
   registry: ComputerChannelRegistry
@@ -146,6 +151,8 @@ export class ComputerConnection implements ComputerChannel {
     }
     if (frame.type === 'computer/heartbeat') return this.handleHeartbeat(frame.payload)
     if (frame.type === 'computer/audit' && this.deps.audit) return this.handleAudit(frame, frame.payload)
+    if (frame.type === 'computer/admin-prompts' && this.deps.policies)
+      return this.handleAdminPrompts(frame, frame.payload)
     // Off the frame queue: a slow bucket must not hold back the heartbeats behind it.
     if (frame.type === 'computer/screenshot/put' && this.deps.screenshots)
       return void this.handleScreenshotPut(frame, frame.payload)
@@ -276,6 +283,30 @@ export class ComputerConnection implements ComputerChannel {
     }
   }
 
+  // The desktop's menu edits the same policy the console does, so the stored policy and its push reach both sides.
+  private async handleAdminPrompts(frame: ComputerCpFrame, set: ComputerAdminPromptsSet): Promise<void> {
+    try {
+      const orgId = OrgId(this.orgId)
+      const id = ComputerId(this.computerId)
+      const computer = await this.deps.repo.get(orgId, id)
+      const updated =
+        computer && computer.status !== 'revoked'
+          ? await this.deps.policies!.setPolicy(orgId, id, {
+              ...computer.policy,
+              approvals: { ...computer.policy.approvals, adminPrompts: set.mode }
+            })
+          : null
+      if (this.state !== 'READY') return
+      if (!updated) return this.sendError(frame.id, 'CONFLICT', 'computer revoked')
+      this.reply(frame, 'computer/admin-prompts/ok', {
+        mode: updated.policy.approvals.adminPrompts ?? DEFAULT_COMPUTER_ADMIN_PROMPT_MODE
+      })
+    } catch (err) {
+      this.deps.log?.warn({ err: (err as Error).message }, 'computer: admin prompt mode write failed')
+      if (this.state === 'READY') this.sendError(frame.id, 'INTERNAL', 'admin prompt mode write failed', true)
+    }
+  }
+
   // A failed signing is retryable: the desktop keeps the screenshot queued and offers it again.
   private async handleScreenshotPut(frame: ComputerCpFrame, put: ComputerScreenshotPut): Promise<void> {
     try {
@@ -315,6 +346,7 @@ export class ComputerConnection implements ComputerChannel {
   private features(): string[] {
     return [
       ...(this.deps.audit ? [COMPUTER_AUDIT_FEATURE] : []),
+      ...(this.deps.policies ? [COMPUTER_ADMIN_PROMPTS_FEATURE] : []),
       ...(this.deps.screenshots ? [COMPUTER_SCREENSHOT_FEATURE] : []),
       ...(this.managed && this.deps.egress ? [COMPUTER_EGRESS_FEATURE] : [])
     ]

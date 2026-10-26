@@ -17,27 +17,27 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 
 ## 0. Decisions
 
-| #   | Decision                           | Outcome                                                                                                                                                                                        | Status                                            |
-| --- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| 1   | New concept                        | **Computer**: a registered graphical desktop that can be granted to agents (§2)                                                                                                                | Design (the prototype has one per daemon)         |
-| 2   | First source                       | **Self-hosted computer**: a desktop daemon runs on the user's desktop (§3)                                                                                                                     | Validated                                         |
-| 3   | Driver                             | Embed **Cua Driver (MIT, pinned 0.35.2)** as a `cua-driver mcp --direct` stdio child; never `cua-spacesd` or the Cua viewer (FSL) (§3.1)                                                       | Validated                                         |
-| 4   | Process shape                      | A background service **inside the user's logged-in graphical session**: on macOS our own signed app plus a LaunchAgent, on Windows the user Run key, on Linux a systemd user unit (§3.2, §3.3) | Validated (except the Windows install flow)       |
-| 5   | macOS grant owner                  | macOS grants must belong to AgentConnect's own app (`md.agentconnect.computer`), not the terminal (§3.2.1)                                                                                     | Validated                                         |
-| 6   | Connection                         | Outbound WebSocket to the CP with a Computer key; tool calls ride the desktop's outbound relay link with per-session CP tokens; no screen bytes reach the CP (§3.6, §3.7)                      | Implemented (the agent's direct path is design)   |
-| 7   | Permissions                        | Per-Computer visibility; agent access as one relation (No agents / Selected / All agents) set from either side; `view` / `control` modes; approvals; hard refusals (§4)                        | Refusals validated; approvals, access implemented |
-| 8   | Concurrency                        | **At most one control lease** per Computer at a time; screenshots run concurrently (§4.4)                                                                                                      | Validated                                         |
-| 9   | Tools                              | `computer_*` MCP tools; coordinates are screenshot pixels with a fixed 1280 long edge (§5)                                                                                                     | Validated                                         |
-| 10  | Sharing with a human               | Human-first arbitration, owner pause, emergency stop, takeover pauses agents (§6)                                                                                                              | Validated (keyboard detection and tray: X11 only) |
-| 11  | Remote desktop                     | A **built-in WebRTC viewer** on the same port as MCP, instead of relying on the OS's remote desktop; embedded in the console, direct first then TURN (§7)                                      | Implemented                                       |
-| 12  | Screenshots                        | Returned as MCP `image` content; stored in the object store with configurable retention and billing (§9)                                                                                       | Implemented (masking is design)                   |
-| 13  | Runtimes without MCP image support | Computer use is disabled; no OCR or accessibility-tree fallback                                                                                                                                | Unchanged                                         |
-| 14  | Unknown outcomes                   | On timeout, disconnect, or driver crash, **never replay input**; return `uncertain` with a fresh screenshot (§5.4)                                                                             | Validated                                         |
-| 15  | Licenses                           | Bundled components are MIT / Apache / BSD / ISC only; GPL ffmpeg is **not bundled** but downloaded and checksummed on first run (§11)                                                          | Validated (Cloud distribution needs legal)        |
-| 16  | Container form                     | The same desktop daemon runs in a **Linux container** (Xvfb, Xfce, a browser) as a Computer without a physical desktop; it is the preferred base for managed computers (§3.8, §15)             | Validated (Docker on OrbStack)                    |
-| 17  | Development order                  | Linux desktop daemon (with the shared CP work) → Docker and the Linux managed computer → macOS → Windows (§14)                                                                                 | Plan                                              |
-| 18  | Later                              | **Managed computers**: containers on Linux; the earlier VM desktop pool design for macOS and Windows (§15, appendices)                                                                         | Design                                            |
-| 19  | Managed allocation and sharing     | Managed computers are `ephemeral` (per session), `per-agent` (one per agent, sleeps between uses) or `manual` (user-created, shared); shared Computers queue for the lease (§4.4, §15.1)       | Design                                            |
+| #   | Decision                           | Outcome                                                                                                                                                                                                                                           | Status                                            |
+| --- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| 1   | New concept                        | **Computer**: a registered graphical desktop that can be granted to agents (§2)                                                                                                                                                                   | Design (the prototype has one per daemon)         |
+| 2   | First source                       | **Self-hosted computer**: a desktop daemon runs on the user's desktop (§3)                                                                                                                                                                        | Validated                                         |
+| 3   | Driver                             | Embed **Cua Driver (MIT, pinned 0.35.2)** as a `cua-driver mcp --direct` stdio child; never `cua-spacesd` or the Cua viewer (FSL) (§3.1)                                                                                                          | Validated                                         |
+| 4   | Process shape                      | A background service **inside the user's logged-in graphical session**: on macOS our own signed app plus a LaunchAgent, on Windows a LocalSystem service that runs it as SYSTEM in the console session, on Linux a systemd user unit (§3.2, §3.3) | Validated                                         |
+| 5   | macOS grant owner                  | macOS grants must belong to AgentConnect's own app (`md.agentconnect.computer`), not the terminal (§3.2.1)                                                                                                                                        | Validated                                         |
+| 6   | Connection                         | Outbound WebSocket to the CP with a Computer key; tool calls ride the desktop's outbound relay link with per-session CP tokens; no screen bytes reach the CP (§3.6, §3.7)                                                                         | Implemented (the agent's direct path is design)   |
+| 7   | Permissions                        | Per-Computer visibility; agent access as one relation (No agents / Selected / All agents) set from either side; `view` / `control` modes; approvals; hard refusals (§4)                                                                           | Refusals validated; approvals, access implemented |
+| 8   | Concurrency                        | **At most one control lease** per Computer at a time; screenshots run concurrently (§4.4)                                                                                                                                                         | Validated                                         |
+| 9   | Tools                              | `computer_*` MCP tools; coordinates are screenshot pixels with a fixed 1280 long edge (§5)                                                                                                                                                        | Validated                                         |
+| 10  | Sharing with a human               | Human-first arbitration, owner pause, emergency stop, takeover pauses agents (§6)                                                                                                                                                                 | Validated (keyboard detection and tray: X11 only) |
+| 11  | Remote desktop                     | A **built-in WebRTC viewer** on the same port as MCP, instead of relying on the OS's remote desktop; embedded in the console, direct first then TURN (§7)                                                                                         | Implemented                                       |
+| 12  | Screenshots                        | Returned as MCP `image` content; stored in the object store with configurable retention and billing (§9)                                                                                                                                          | Implemented (masking is design)                   |
+| 13  | Runtimes without MCP image support | Computer use is disabled; no OCR or accessibility-tree fallback                                                                                                                                                                                   | Unchanged                                         |
+| 14  | Unknown outcomes                   | On timeout, disconnect, or driver crash, **never replay input**; return `uncertain` with a fresh screenshot (§5.4)                                                                                                                                | Validated                                         |
+| 15  | Licenses                           | Bundled components are MIT / Apache / BSD / ISC only; GPL ffmpeg is **not bundled** but downloaded and checksummed on first run (§11)                                                                                                             | Validated (Cloud distribution needs legal)        |
+| 16  | Container form                     | The same desktop daemon runs in a **Linux container** (Xvfb, Xfce, a browser) as a Computer without a physical desktop; it is the preferred base for managed computers (§3.8, §15)                                                                | Validated (Docker on OrbStack)                    |
+| 17  | Development order                  | Linux desktop daemon (with the shared CP work) → Docker and the Linux managed computer → macOS → Windows (§14)                                                                                                                                    | Plan                                              |
+| 18  | Later                              | **Managed computers**: containers on Linux; the earlier VM desktop pool design for macOS and Windows (§15, appendices)                                                                                                                            | Design                                            |
+| 19  | Managed allocation and sharing     | Managed computers are `ephemeral` (per session), `per-agent` (one per agent, sleeps between uses) or `manual` (user-created, shared); shared Computers queue for the lease (§4.4, §15.1)                                                          | Design                                            |
 
 ## 1. Background and goals
 
@@ -189,20 +189,20 @@ flowchart LR
 - **Screen stream**: one shared capture that the first viewer starts and the last one stops (§7).
 - **Keep-awake**: keeps the display awake while running (§3.4).
 - **Local UI**: the console window (title and keys) is the indicator and emergency stop; on X11 a tray icon, a global
-  stop hotkey and keyboard activity detection join it (§6); macOS has a menu bar icon (§6), and a Windows tray remains the goal.
+  stop hotkey and keyboard activity detection join it (§6); macOS has a menu bar icon and Windows a taskbar icon, drawn by native helpers from one menu model (§6).
 
 ### 3.2 Process shape, identity, and OS grants
 
 The desktop daemon must run inside **the user's logged-in graphical session** and hold OS grants under one stable,
 recognizable identity.
 
-| Platform                 | Started by                                                                               | Required grants / limits                                                                              | Status                                                    |
-| ------------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| macOS                    | Our own `AgentConnect Computer.app` plus a user LaunchAgent (§3.3)                       | Accessibility, Screen Recording, "bypass the private window picker"; granted to the app               | Validated (macOS 27 VM)                                   |
-| Windows                  | User Run key at login, interactive session; **not a service** (Session 0 has no desktop) | No TCC; an inbound firewall rule; the UAC secure desktop and lock screen cannot be captured or driven | Tools and viewer validated; install and firewall flow not |
-| Linux X11                | systemd user unit plus XDG autostart                                                     | None                                                                                                  | Validated (Xfce on Xorg / Xvfb)                           |
-| Linux GNOME Wayland      | Same                                                                                     | The Cua GNOME Shell extension; RemoteDesktop and ScreenCast portal consent once each                  | Validated (GNOME 50); KDE unsupported                     |
-| Linux container (Docker) | The container entrypoint, in the foreground, without systemd (§3.8)                      | None; publish the HTTP port and a UDP port range                                                      | Validated                                                 |
+| Platform                 | Started by                                                                             | Required grants / limits                                                                                                                  | Status                                             |
+| ------------------------ | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| macOS                    | Our own `AgentConnect Computer.app` plus a user LaunchAgent (§3.3)                     | Accessibility, Screen Recording, "bypass the private window picker"; granted to the app                                                   | Validated (macOS 27 VM)                            |
+| Windows                  | A LocalSystem service that starts the daemon as SYSTEM in the console session (§3.2.2) | No TCC; an inbound firewall rule; UAC prompts answered on the secure desktop by a SYSTEM helper (§4.2.1); the lock screen is out of reach | Validated (Windows 11 arm64 VM), firewall flow not |
+| Linux X11                | systemd user unit plus XDG autostart                                                   | None                                                                                                                                      | Validated (Xfce on Xorg / Xvfb)                    |
+| Linux GNOME Wayland      | Same                                                                                   | The Cua GNOME Shell extension; RemoteDesktop and ScreenCast portal consent once each                                                      | Validated (GNOME 50); KDE unsupported              |
+| Linux container (Docker) | The container entrypoint, in the foreground, without systemd (§3.8)                    | None; publish the HTTP port and a UDP port range                                                                                          | Validated                                          |
 
 #### 3.2.1 macOS: who owns the grant [validated]
 
@@ -243,12 +243,28 @@ daemon runs as its own app:
 
 #### 3.2.2 Windows
 
-- Must run in an interactive user session; the user Run key starts it at login (the prototype's `autostart enable`).
-  `doctor` tells an RDP session from the console session.
+- **[validated]** The `AgentConnectComputer` service (LocalSystem, Session 0) only supervises: it duplicates its own
+  token into the active console session and starts the daemon there, so the daemon and Cua Driver run as SYSTEM on
+  `winsta0\default`. It restarts the daemon after a crash, follows logon, logoff and console switches, and leaves it
+  stopped after the taskbar's Quit until the next logon or `service start` (custom control 128). Only a
+  System-integrity process can drive `consent.exe`; an elevated administrator (High) is still blocked by UIPI.
+- **[validated]** UAC prompts stay on the secure desktop (`WinSta0\Winlogon`), as Windows ships them; the system setting
+  is never changed. Only a SYSTEM process can open that desktop, so the service installs a third helper,
+  `agentconnect-computer-admin-prompts.exe`, which the daemon starts beside it; who answers a prompt is §4.2.1. A click
+  that closes a prompt, or opens a menu, moves the foreground to another process, which Cua Driver reports as
+  `foreground_unavailable`; the daemon reports such a click as sent.
+- **[validated]** Apps the agent launches start as the signed-in person: the service host's `run-as-user` mode
+  (`WTSQueryUserToken`) runs them, the taskbar helper and Open Logs; Cua Driver itself refuses to launch from SYSTEM.
+- **[validated]** What SYSTEM runs is the administrators' to change: `setup` asks for one UAC approval, compiles the
+  service host and taskbar helper with the in-box .NET Framework `csc.exe` into `%ProgramFiles%\AgentConnect\Computer`
+  with a copy of `node.exe` and the bundle, and moves the data to `%ProgramData%\AgentConnect\computer`, which the
+  installing person may read but not write. Commands that write it ask for approval the same way.
+- Without the service (`setup --no-service`), the user Run key starts it at login (`autostart enable`). `doctor` tells an
+  RDP session from the console session.
 - Firewall: `setup` uses one UAC prompt to add an inbound allow rule for `node.exe` covering every profile (Tailscale
   networks are often classified Public), and disables the block rule Windows creates when the user presses Cancel on its
   firewall prompt. [implemented, not validated end to end]
-- The UAC secure desktop and lock screen cannot be captured or driven from the user session. That boundary is expected.
+- The lock screen and the sign-in screen stay out of reach: the daemon only runs while someone is signed in.
 
 #### 3.2.3 Linux
 
@@ -268,7 +284,7 @@ daemon runs as its own app:
 | --------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | macOS     | Per-user LaunchAgent | Aqua session, `RunAtLoad`, `KeepAlive` on failure                                                                                                                                                                                                                                                |
 | Linux     | systemd user unit    | Pulled in by `graphical-session.target`; an XDG autostart entry imports `DISPLAY` / `WAYLAND_DISPLAY` and friends into systemd (Xfce never activates `graphical-session.target`); `ExecCondition` skips the start without a display instead of crash-looping; `PartOf` the session; `StartLimit` |
-| Windows   | User Run key         | Starts at login; the console window doubles as indicator                                                                                                                                                                                                                                         |
+| Windows   | LocalSystem service  | Starts at boot, runs the daemon in whoever signs in at the console (§3.2.2), restarts it on failure; the taskbar icon is the indicator; without the service, a user Run key                                                                                                                      |
 | Container | Entrypoint           | The daemon runs in the foreground; `docker stop` shuts it down cleanly (§3.8)                                                                                                                                                                                                                    |
 
 - **[implemented]** Linux session following: Xfce leaves `graphical-session.target` active after logout, so the
@@ -668,14 +684,49 @@ them parses with them stripped. A daemon from before the single ask defaults bot
 `launchApp: 'never-ask'` and `submitLikeKeys: false`. A daemon on a CP without `computer-approvers-v1` keeps that CP's
 editor-based routing and checks.
 
+#### 4.2.1 Windows administrator prompts [validated]
+
+A UAC prompt appears on the secure desktop, which screenshots cannot show and Cua Driver cannot reach. Remote-access
+tools answer it from a SYSTEM process that follows the input desktop; the desktop daemon does the same with a narrow
+helper instead of handing the secure desktop to the driver (`packages/computer/windows/admin-prompts.cs`). The helper
+watches for `consent.exe`'s dialog, reads it through UI Automation (the app, its publisher line, and the command line
+under Show more details) and answers only by invoking the dialog's own `OkButton` or `CancelButton`. It never sees or
+touches anything else on that desktop: the lock screen and the sign-in screen stay out of reach.
+
+While a prompt waits, every tool result carries `admin_prompt` with what the dialog shows, a screenshot that the secure
+desktop refuses returns that text instead of an error, and other input is refused with `admin_prompt_pending`. Agents
+answer with `computer_admin_prompt` (`approve` or `deny`), which takes the lease like any input. Who decides is
+`policy.approvals.adminPrompts`:
+
+| Mode               | A prompt while an agent holds the lease                                                                     |
+| ------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `people` (default) | Approving asks the Computer's allowed members, one card per prompt (Approve once, Deny); denying never asks |
+| `agent`            | The agent's answer stands                                                                                   |
+| `approve`          | Approved at once, without the agent                                                                         |
+| `deny`             | Denied at once, without the agent                                                                           |
+
+The `approve` and `deny` modes act only while an agent holds the lease; a prompt the person raises with no agent in
+control stays theirs. A prompt that asks for an administrator's password (a standard account) is never approved by an
+agent or a mode, only denied. In `people` mode the desktop refuses an approve until the agent daemon's call carries
+`allowed` and the prompt's id: the desktop names the prompt, with an id unique to it, in an `approval_required` refusal;
+the agent daemon raises the card with it and sends the approve again, with that id, once a person allowed it. A prompt
+that replaced the one on the card is refused with `admin_prompt_changed` rather than answered. Every answer is audited with the app and the command line, the
+automatic ones as `admin_prompt_auto`.
+
+**Two places, one setting.** The console's usage policy and the taskbar menu's Administrator Prompts submenu edit the
+same field. A console save pushes `computer/policy` as for any policy change; the taskbar sends `computer/admin-prompts`
+(`computer-admin-prompts-v1`) and the CP stores it with `setPolicy`, which pushes the policy back too, so both show the
+stored value. The desktop keeps the last value in its config, so it answers the same way before the CP is reached; the
+taskbar can change it only while the channel is up. A desktop with no CP keeps the setting in its own config alone.
+
 ### 4.3 Hard refusals
 
 Whatever the policy, the desktop daemon refuses locally:
 
 - **Dangerous shortcuts, per OS [validated]**: Windows refuses Win-key combinations and Ctrl+Alt+Del. Cmd is an everyday
   modifier on macOS and cannot be refused wholesale, so only lock screen, log out, and force quit are refused.
-- **System security surfaces**: elevation and authentication dialogs, the keychain, UAC and the secure desktop, the
-  login / lock screen, the system privacy and security settings, and AgentConnect's own indicator and stop controls.
+- **System security surfaces**: elevation and authentication dialogs, the keychain, UAC and the secure desktop (apart
+  from answering a UAC prompt as §4.2.1 allows), the login / lock screen, the system privacy and security settings, and AgentConnect's own indicator and stop controls.
   Cua Driver itself hard-refuses known system security prompts; the desktop daemon's own window-level check is [design].
 - **Driver tools**: the script, configuration, extension, screen recording, process-kill, clipboard, and file-transfer
   tools among the `cua_*` pass-throughs are never exposed (§5.5).

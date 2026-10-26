@@ -1,9 +1,12 @@
 import { hostname, release } from 'node:os'
 import {
+  DEFAULT_COMPUTER_ADMIN_PROMPT_MODE,
   computerLeaseHolderName,
   normalizeComputerKey as normalizeKey,
+  type ComputerAdminPromptMode,
   type ComputerControlLease
 } from '@agentconnect.md/protocol/computer'
+import type { AdminPrompt, AdminPromptAnswer, AdminPromptSource } from './admin-prompts.js'
 import { currentCallContext, type AuditSink, type CallContext } from './audit.js'
 import type { DaemonConfig } from './config.js'
 import {
@@ -25,6 +28,11 @@ export type ComputerErrorCode =
   | 'driver_unavailable'
   | 'uncertain'
   | 'unavailable'
+  // Windows administrator prompts (computer-use.md §4.2.1).
+  | 'admin_prompt_pending'
+  | 'admin_prompt_changed'
+  | 'no_admin_prompt'
+  | 'approval_required'
 
 export class ComputerError extends Error {
   constructor(
@@ -76,6 +84,10 @@ export interface ComputerDeps {
   screenshots?: ScreenshotStash
   // What computer_list reports about this machine; defaults to the hostname and kernel release.
   profile?: ComputerProfile
+  // Starts an app in place of the driver's launch_app: the Windows service's SYSTEM driver would start it as SYSTEM.
+  launchApp?: (app: string) => Promise<string>
+  // Windows under the service: UAC prompts on the secure desktop, and who answers them (computer-use.md §4.2.1).
+  adminPrompts?: { source: AdminPromptSource; mode: () => ComputerAdminPromptMode | undefined }
 }
 
 export interface ComputerProfile {
@@ -128,6 +140,10 @@ export class Computer {
   private readonly refusal: () => string | undefined
   private readonly screenshots: ScreenshotStash | undefined
   private profile: ComputerProfile | undefined
+  private readonly launchApp: ((app: string) => Promise<string>) | undefined
+  private readonly adminPrompts: ComputerDeps['adminPrompts']
+  // The prompt already answered by the policy, so a repeated change does not answer it twice.
+  private autoAnswered: string | undefined
   // The driver's screen size at startup, reported until the first capture measures it.
   private screen: ScreenSize | undefined
   private lastStatus = ''
@@ -156,6 +172,8 @@ export class Computer {
     this.refusal = deps.refusal ?? (() => undefined)
     this.screenshots = deps.screenshots
     this.profile = deps.profile
+    this.launchApp = deps.launchApp
+    this.adminPrompts = deps.adminPrompts
   }
 
   setScreenSize(size: ScreenSize | undefined): void {
@@ -483,7 +501,15 @@ export class Computer {
   // ---- observation ----
 
   screenshot(client: string, signal?: AbortSignal): Promise<ToolOutput> {
-    return this.audited(client, 'computer_screenshot', {}, () => this.exclusive(() => this.captureScreen(signal)))
+    return this.audited(client, 'computer_screenshot', {}, async () => {
+      try {
+        return this.withAdminPrompt(await this.exclusive(() => this.captureScreen(signal)))
+      } catch (error) {
+        // The secure desktop refuses capture while a prompt shows; the prompt in words is the screenshot then.
+        if (!this.pendingAdminPrompt()) throw error
+        return this.withAdminPrompt({ content: [] })
+      }
+    })
   }
 
   private async captureScreen(signal?: AbortSignal): Promise<ToolOutput> {
@@ -533,6 +559,122 @@ export class Computer {
         return { content: [{ type: 'text', text: JSON.stringify(point) }] }
       })
     )
+  }
+
+  // ---- administrator prompts (computer-use.md §4.2.1) ----
+
+  adminPromptMode(): ComputerAdminPromptMode {
+    return this.adminPrompts?.mode() ?? DEFAULT_COMPUTER_ADMIN_PROMPT_MODE
+  }
+
+  pendingAdminPrompt(): AdminPrompt | undefined {
+    return this.adminPrompts?.source.pending()
+  }
+
+  // A prompt appeared, or the mode changed: always approve or always deny answers it while an agent holds control.
+  async adminPromptChanged(): Promise<void> {
+    const prompt = this.pendingAdminPrompt()
+    const mode = this.adminPromptMode()
+    const holder = this.leaseActivity()?.holder
+    if (!prompt || (mode !== 'approve' && mode !== 'deny') || !holder || this.autoAnswered === prompt.id) return
+    if (this.refusal() || this.paused) return
+    // An administrator's password is for a person to type; always approve leaves such a prompt to them.
+    if (mode === 'approve' && prompt.kind === 'credentials') return
+    this.autoAnswered = prompt.id
+    const started = this.now()
+    const args = { answer: mode, ...adminPromptArgs(prompt) }
+    try {
+      await this.adminPrompts!.source.answer(prompt.id, mode)
+      this.log(`administrator prompt ${mode === 'approve' ? 'approved' : 'denied'} by the setting, for ${holder}`)
+      this.audit({ client: holder, tool: 'admin_prompt_auto', args, outcome: 'ok', ms: this.now() - started })
+    } catch (error) {
+      this.log(`administrator prompt: answering it by the setting failed: ${(error as Error).message}`)
+      this.audit({ client: holder, tool: 'admin_prompt_auto', args, outcome: 'error', ms: this.now() - started })
+    }
+  }
+
+  // The agent's answer, which the mode may require a person's approval for, sent through the agent daemon.
+  adminPrompt(
+    client: string,
+    args: { answer: AdminPromptAnswer; prompt?: string | undefined },
+    approval: string | undefined
+  ): Promise<ToolOutput> {
+    const shown = this.pendingAdminPrompt()
+    const audited = { ...args, ...(shown ? adminPromptArgs(shown) : {}) }
+    return this.audited(client, 'computer_admin_prompt', audited, async () => {
+      const prompt = this.pendingAdminPrompt()
+      if (!this.adminPrompts) throw new ComputerError('no_admin_prompt', 'this computer has no administrator prompts')
+      if (!prompt) throw new ComputerError('no_admin_prompt', 'no administrator prompt is waiting on this computer')
+      const mode = this.adminPromptMode()
+      const details = { adminPrompt: adminPromptView(prompt) }
+      // An answer names the prompt it was decided for; another prompt that took its place is never answered by it.
+      if (args.prompt !== undefined && args.prompt !== prompt.id)
+        throw new ComputerError(
+          'admin_prompt_changed',
+          'the administrator prompt changed since this answer was decided; nothing was answered',
+          details
+        )
+      if (mode === 'approve' || mode === 'deny')
+        throw new ComputerError(
+          'denied',
+          `this computer answers administrator prompts itself (always ${mode})`,
+          details
+        )
+      if (args.answer === 'approve' && prompt.kind === 'credentials')
+        throw new ComputerError(
+          'denied',
+          "this prompt asks for an administrator's password; only a person can approve it",
+          details
+        )
+      if (args.answer === 'approve' && mode === 'people' && (approval !== 'allowed' || args.prompt === undefined))
+        throw new ComputerError(
+          'approval_required',
+          'approving an administrator prompt on this computer needs a person to allow it first',
+          details
+        )
+      this.acquire(client)
+      this.assertHumanIdle()
+      return this.exclusive(async () => {
+        this.acquire(client)
+        await this.adminPrompts!.source.answer(prompt.id, args.answer)
+        if (this.lease) this.lease.lastUsedAt = this.now()
+        return {
+          content: [
+            { type: 'text', text: JSON.stringify({ answered: args.answer, adminPrompt: adminPromptView(prompt) }) }
+          ]
+        }
+      })
+    })
+  }
+
+  // Screenshots cannot show the secure desktop, so a result tells the agent about a waiting prompt in words.
+  private withAdminPrompt(output: ToolOutput): ToolOutput {
+    const prompt = this.pendingAdminPrompt()
+    if (!prompt) return output
+    const mode = this.adminPromptMode()
+    const howTo =
+      mode === 'approve' || mode === 'deny'
+        ? `this computer answers it itself (always ${mode})`
+        : prompt.kind === 'credentials'
+          ? 'it asks for an administrator password: only a person at the computer can approve it; you may deny it with computer_admin_prompt'
+          : mode === 'people'
+            ? 'answer it with computer_admin_prompt; approving waits for a person to allow it'
+            : 'answer it with computer_admin_prompt'
+    const note = {
+      admin_prompt: adminPromptView(prompt),
+      note: `A Windows administrator prompt is waiting on the secure desktop, which screenshots cannot show; ${howTo}. Other input waits until it is answered.`
+    }
+    return { ...output, content: [...output.content, { type: 'text', text: JSON.stringify(note) }] }
+  }
+
+  private assertNoAdminPrompt(): void {
+    const prompt = this.pendingAdminPrompt()
+    if (prompt)
+      throw new ComputerError(
+        'admin_prompt_pending',
+        'a Windows administrator prompt is waiting; answer it with computer_admin_prompt first',
+        { adminPrompt: adminPromptView(prompt) }
+      )
   }
 
   // ---- input ----
@@ -612,6 +754,14 @@ export class Computer {
       'computer_launch',
       args,
       () => {
+        const launchApp = this.launchApp
+        if (launchApp) {
+          return {
+            name: 'launch_app',
+            args: { name: args.app },
+            run: async () => ({ content: [{ type: 'text' as const, text: await launchApp(args.app) }] })
+          }
+        }
         const looksLikePath = /[\\/]/.test(args.app) || /\.exe$/i.test(args.app)
         return {
           name: 'launch_app',
@@ -652,14 +802,15 @@ export class Computer {
     client: string,
     tool: string,
     publicArgs: object,
-    prepare: () => { name: string; args: Record<string, unknown> },
+    prepare: () => DriverCall,
     options: { coordinates?: boolean; screenshot?: boolean; passthrough?: boolean } = {}
   ): Promise<ToolOutput> {
     return this.audited(client, tool, publicArgs as Record<string, unknown>, async () => {
       const call = prepare()
       this.acquire(client)
       this.assertHumanIdle()
-      return this.exclusive(async () => {
+      this.assertNoAdminPrompt()
+      const output = await this.exclusive(async () => {
         // The driver maps desktop x/y from this session's last capture, so one must exist at the configured size.
         if (options.coordinates !== false && !this.captureIsCurrent()) await this.captureScreen()
         this.assertHumanIdle()
@@ -667,10 +818,12 @@ export class Computer {
         this.acquire(client)
         let result: DriverResult
         try {
-          result = await this.callDriver(call, () => this.assertStillHolds(client))
+          result = await (call.run ?? (() => this.callDriver(call, () => this.assertStillHolds(client))))()
         } catch (error) {
           if (error instanceof DriverUncertainError) return this.uncertain(error)
-          throw error
+          const sent = clickSentElsewhere(call, error)
+          if (!sent) throw error
+          result = { content: [{ type: 'text', text: sent }] }
         }
         if (this.lease) this.lease.lastUsedAt = this.now()
         this.cursorBaseline = await this.readCursor().catch(() => undefined)
@@ -680,11 +833,14 @@ export class Computer {
           try {
             content.push(...(await this.captureScreen()).content)
           } catch (error) {
-            content.push({ type: 'text', text: `post-action screenshot failed: ${(error as Error).message}` })
+            // The action raised a UAC prompt, whose secure desktop refuses capture: the note below says so instead.
+            if (!this.pendingAdminPrompt())
+              content.push({ type: 'text', text: `post-action screenshot failed: ${(error as Error).message}` })
           }
         }
         return { content }
       })
+      return this.withAdminPrompt(output)
     })
   }
 
@@ -895,6 +1051,36 @@ function passthroughKeys(args: Record<string, unknown>): string[] {
     .filter((key) => key.trim() !== '')
     .map(normalizeKey)
 }
+
+interface DriverCall {
+  name: string
+  args: Record<string, unknown>
+  // Carries out the call instead of the driver.
+  run?: () => Promise<DriverResult>
+}
+
+// Windows' driver fails a click it did send when the click moved the foreground to another process (a menu, or a UAC prompt closing).
+function clickSentElsewhere(call: DriverCall, error: unknown): string | undefined {
+  if (call.name !== 'click' || !(error instanceof DriverToolError)) return undefined
+  if (!/^foreground_unavailable: .*not foreground after the click/.test(error.message)) return undefined
+  return 'Click sent; the foreground moved to another window (such as a menu, or a prompt that closed). Check the screenshot.'
+}
+
+// What an agent, a card and the audit see of a prompt: never more than its dialog shows.
+function adminPromptView(prompt: AdminPrompt): Record<string, unknown> {
+  return {
+    id: prompt.id,
+    kind: prompt.kind,
+    ...(prompt.app ? { app: prompt.app } : {}),
+    ...(prompt.publisher ? { publisher: prompt.publisher } : {}),
+    ...(prompt.command ? { command: prompt.command } : {})
+  }
+}
+
+const adminPromptArgs = (prompt: AdminPrompt): Record<string, unknown> => ({
+  ...(prompt.app ? { app: prompt.app } : {}),
+  ...(prompt.command ? { command: prompt.command.slice(0, 256) } : {})
+})
 
 function toComputerError(error: unknown): ComputerError {
   if (error instanceof ComputerError) return error

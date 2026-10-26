@@ -1,8 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
+import { COMPUTER_ADMIN_PROMPT_MODES } from '@agentconnect.md/protocol/computer'
 import { DEFAULT_STOP_HOTKEY } from './linux/x11-local.js'
 
 export const DEFAULT_HOST = '127.0.0.1'
@@ -51,6 +52,8 @@ export const DaemonConfig = z.object({
   // Global hotkey that stops all agent input (X11); an empty string turns it off. It can only stop, never resume.
   stopHotkey: z.string().max(64).default(DEFAULT_STOP_HOTKEY),
   exposeDriverTools: z.boolean().default(false),
+  // Windows: who answers UAC prompts (computer-use.md §4.2.1); a registered desktop keeps the Control Plane's policy here.
+  adminPrompts: z.enum(COMPUTER_ADMIN_PROMPT_MODES).optional(),
   driverCallTimeoutMs: z.number().int().min(1000).max(300_000).default(30_000),
   // WebRTC viewer at /view: ffmpeg screen capture to H.264; falls back to screenshot polling without ffmpeg.
   webrtc: z.boolean().default(true),
@@ -74,11 +77,21 @@ export type DaemonConfig = z.infer<typeof DaemonConfig>
 
 export function dataDir(): string {
   if (process.env.AGENTCONNECT_COMPUTER_HOME) return process.env.AGENTCONNECT_COMPUTER_HOME
+  if (process.platform === 'win32' && existsSync(join(windowsServiceHome(), 'config.json'))) return windowsServiceHome()
+  return userDataDir()
+}
+
+// Where a person's own setup keeps its data, before (or without) the Windows service.
+export function userDataDir(): string {
   if (process.platform === 'win32') {
     return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'AgentConnect', 'computer')
   }
   return join(homedir(), '.agentconnect', 'computer')
 }
+
+// The Windows service's data dir, which only SYSTEM and administrators may change (src/service-windows.ts).
+export const windowsServiceHome = (): string =>
+  join(process.env.ProgramData ?? 'C:\\ProgramData', 'AgentConnect', 'computer')
 
 export const configPath = (dir = dataDir()): string => join(dir, 'config.json')
 

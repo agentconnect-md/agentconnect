@@ -8,6 +8,7 @@ import { CUA_DRIVER_VERSION } from './driver/install.js'
 import { canKeepAwake, displaySleepMinutes, wakeDisplay } from './keep-awake.js'
 import { APP_ID, grantLoss, readGrantRecord, TCC_SERVICE, type Grant, type GrantRecord } from './macos-grants.js'
 import { appBundlePath, selfCommand } from './self.js'
+import { SERVICE_NAME, adminPromptHelperPath, serviceHost } from './service-windows.js'
 import { loadRegistration, registrationPath, type Registration } from './cp/registration.js'
 import { ffmpegAvailable, probeCapture } from './stream/ffmpeg.js'
 import { screencastTokenPath, waylandSession } from './stream/wayland-capture.js'
@@ -254,6 +255,20 @@ function sessionCheck(): Check {
   }
   if (process.platform === 'win32') {
     const session = process.env.SESSIONNAME
+    if (serviceHost()) {
+      return existsSync(adminPromptHelperPath())
+        ? {
+            name: 'session',
+            status: 'ok',
+            detail: `${SERVICE_NAME} service, as SYSTEM in the signed-in session; UAC prompts are answered as its administrator prompt setting says`
+          }
+        : {
+            name: 'session',
+            status: 'warn',
+            detail: `${SERVICE_NAME} service, as SYSTEM in the signed-in session; the administrator prompt helper is missing, so UAC prompts need a person`,
+            fix: `reinstall the service: ${selfCommand()} service install`
+          }
+    }
     if (!session) {
       return {
         name: 'session',
@@ -633,12 +648,12 @@ export function open(url: string): void {
   spawn('open', [url], { stdio: 'ignore', detached: true }).unref()
 }
 
-function setupWindowsFirewall(ctx: SetupContext): void {
+// `program` is the Node that serves: this one, or the Windows service's copy.
+export function setupWindowsFirewall(ctx: SetupContext, program = process.execPath): void {
   if (isLoopbackHost(ctx.config.host)) {
     ctx.log(`Listening on ${ctx.config.host} only, so no Windows Firewall rule is needed.`)
     return
   }
-  const program = process.execPath
   const state = firewallState(program)
   const uncovered = state?.activeProfiles.filter(
     (category) => !state.allow.some((rule) => profileCovered(rule.profile, category))

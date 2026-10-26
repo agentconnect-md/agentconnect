@@ -83,10 +83,12 @@ async function start(
 }
 
 describe('local controls', () => {
-  it('runs in an X11 session on Linux or on macOS', async () => {
+  it('runs in an X11 session on Linux, on macOS or on Windows', async () => {
     const computer = new FakeComputer()
     const base = { computer, refusal: () => undefined, stopHotkey: '', log: () => undefined }
-    expect(await startLocalControls({ ...base, platform: 'win32', env: {} })).toBeUndefined()
+    const windows = (await startLocalControls({ ...base, platform: 'win32', env: {} }))!
+    expect(windows.checks()).toMatchObject([{ name: 'tray', status: 'warn' }])
+    windows.close()
     expect(
       await startLocalControls({ ...base, platform: 'linux', env: { DISPLAY: ':0', WAYLAND_DISPLAY: 'wayland-0' } })
     ).toBeUndefined()
@@ -233,6 +235,37 @@ describe('local controls', () => {
     const older = (await startLocalControls({ ...base, menuBar: { helper: '/nonexistent/menubar', host } }))!
     expect(older.checks()[0]!.detail).toContain('has no menu bar helper')
     older.close()
+  })
+
+  it('starts the Windows taskbar helper through its spawner, and warns when it is not installed', async () => {
+    const computer = new FakeComputer()
+    const base = {
+      computer,
+      refusal: () => undefined,
+      stopHotkey: '',
+      log: () => undefined,
+      platform: 'win32' as const
+    }
+    const host = { facts: async () => FACTS } as unknown as Omit<MenuBarHost, 'stop' | 'resume' | 'log'>
+    const spawnHelper = () => undefined as never
+    let spawner: HelperTrayOptions['spawnHelper']
+    const controls = (await startLocalControls({
+      ...base,
+      menuBar: { helper: process.execPath, host, spawnHelper },
+      startHelperTray: (_path, options) => {
+        spawner = options.spawnHelper
+        return { problem: undefined, update: () => undefined, close: () => undefined } as unknown as HelperTray
+      }
+    }))!
+    expect(spawner).toBe(spawnHelper)
+    expect(controls.checks()).toMatchObject([{ name: 'tray', status: 'ok' }])
+    controls.close()
+    const missing = (await startLocalControls({ ...base, menuBar: { helper: 'C:\\nonexistent\\tray.exe', host } }))!
+    expect(missing.checks()[0]).toMatchObject({
+      status: 'warn',
+      fix: expect.stringContaining('agentconnect computer setup')
+    })
+    missing.close()
   })
 
   it('shows who holds the desktop and whether agents can act', () => {
