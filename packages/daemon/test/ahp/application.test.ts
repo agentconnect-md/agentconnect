@@ -212,6 +212,35 @@ it('rejects server-only actions and foreign channels without invoking domain ope
   expect(f.host.dispatch).not.toHaveBeenCalled()
 })
 
+it("echoes VS Code's draft and read state without touching the runtime", async () => {
+  const f = fixture()
+  const draft = { type: ActionType.ChatDraftChanged, draft: { text: 'half typed', origin: { kind: MessageKind.User } } }
+  for (const action of [
+    draft,
+    { type: ActionType.ChatDraftChanged },
+    { type: ActionType.ChatIsReadChanged, isRead: true }
+  ])
+    await f.application.dispatch(scope, { ...start, action } as DispatchActionParams, origin, f.hooks)
+  expect(vi.mocked(f.hooks.echo).mock.calls.map((call) => call[0])).toEqual([
+    draft,
+    { type: ActionType.ChatDraftChanged },
+    { type: ActionType.ChatIsReadChanged, isRead: true }
+  ])
+  await expect(
+    f.application.dispatch(
+      scope,
+      {
+        ...start,
+        action: { type: ActionType.ChatDraftChanged, draft: { text: 'x', origin: { kind: 'agent' } } }
+      } as DispatchActionParams,
+      origin,
+      f.hooks
+    )
+  ).rejects.toMatchObject({ code: -32602 })
+  expect(f.prepare).not.toHaveBeenCalled()
+  expect(f.host.dispatch).not.toHaveBeenCalled()
+})
+
 it('publishes its own durable claim without treating that claimed gate as a competing turn', async () => {
   const f = fixture()
   let claimed = false

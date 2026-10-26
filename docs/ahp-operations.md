@@ -128,6 +128,8 @@ A turn message may carry the client's own `model` and `agent` selections and any
 spec attachment kind, as VS Code's do. The daemon advertises no models, so it
 ignores both selections and delivers only one PNG, JPEG or WebP embedded image;
 other attachments are accepted, never read, and left out of the projected turn.
+Clients may also set the chat's `draft` and `isRead`; the daemon publishes both to
+the session's subscribers and never forwards them to the runtime.
 
 Set `AHP_AUTHORIZATION_SERVER` to the `issuer` the CP serves at
 `/.well-known/oauth-authorization-server` (the `PUBLIC_MCP_URL` origin when set,
