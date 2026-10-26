@@ -55,7 +55,7 @@ describe('listAgents self-delegation wording', () => {
 describe('sendMessage self-delegation wording', () => {
   it.each([[[slackInt]], [[]]])('explains the delegated task to every agent (%#)', (ints) => {
     const text = allText(ints)
-    expect(text).toContain('delegateTask hands long work of your own, spanning turns, to a task of this session')
+    expect(text).toContain('delegateTask hands work that spans turns or runs long')
     expect(text).toContain('long work that spans turns, may run a long time, or that people should be able to see')
     expect(text).toContain('("fix this bug and open a PR")')
     expect(text).toContain(
@@ -73,14 +73,27 @@ describe('sendMessage self-delegation wording', () => {
   it.each([[[slackInt]], [[]]])('splits work between the runtime’s own subagents and delegateTask (%#)', (ints) => {
     const description = sendTool(ints).description
     // Within this turn → the runtime's own subagent tool; spanning turns, seen and stoppable → delegateTask.
-    expect(description).toContain('Work you finish within this turn goes to your runtime’s own subagent tool.')
-    expect(description).toContain('to a task of this session that people can see and stop')
+    expect(description).toContain('Work that fits this turn stays here.')
+    expect(description).toContain('which people should see and stop, to a task of this session')
     const guide = sendMessageGuide(ctx(ints), 'delegateTask')
     expect((guide.rules as string[])[0]).toBe(
       'Work you can finish within this turn, even split into parallel parts, goes to your runtime’s own subagent ' +
         'or Task tool instead. Use delegateTask for long work that spans turns, may run a long time, or that people ' +
-        'should be able to see and stop ("fix this bug and open a PR").'
+        'should be able to see and stop ("fix this bug and open a PR"). Quick lookups and status checks stay in ' +
+        'this turn.'
     )
     expect(guide.purpose).toContain('outlives this turn, which people can see and stop')
+  })
+
+  it.each([[[slackInt]], [[]]])('asks for confirmation before delegating live-environment work (%#)', (ints) => {
+    expect(sendTool(ints).description).toContain(
+      'Ask the person before delegating live-environment changes; "check again" is no approval.'
+    )
+    const rules = sendMessageGuide(ctx(ints), 'delegateTask').rules as string[]
+    expect(rules[1]).toBe(
+      'Before delegating work that changes a live environment (deploys, upgrades, infrastructure, data), confirm it ' +
+        'with the person in this conversation first. A casual follow-up such as "check again" is not approval to run ' +
+        'such work.'
+    )
   })
 })

@@ -1320,7 +1320,10 @@ Every agent, in assistant mode or not, hands long work, such as "fix this bug an
 delegated task of its own: `sendMessage` with action `delegateTask` and only a `message`. Work it
 splits up and can finish within the current turn goes to its runtime's own subagents instead;
 delegating is for work that spans turns, may run a long time, or that people should be able to
-see and stop. Ordinary conversation stays in the main conversation. The conversation says the
+see and stop. Ordinary conversation, quick lookups and status checks stay in the main
+conversation. Before delegating work that changes a live environment (deploys, upgrades,
+infrastructure, data), the agent confirms with the person in the conversation first; a casual
+follow-up such as "check again" is not approval to run such work. The conversation says the
 work has started; the task runs in a context of its own, never the conversation's long session;
 none of its replies is posted anywhere, and it reports back into the conversation that delegated
 it, which then speaks for it, in the thread the request for that work came from. A report names the

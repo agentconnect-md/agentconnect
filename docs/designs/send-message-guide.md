@@ -217,8 +217,11 @@ visible self-call example, and the description steers work without a channel to 
 turns, may run a long time, or that people should be able to see and stop: a delegated task
 reports on its own, appears in the console's Tasks tab, and can be messaged and stopped. Work the
 agent splits up and can finish within this turn belongs to the runtime's own subagent or Task
-tool, whose subagents AgentConnect only shows as this turn's tasks (§2.1). The description and
-the `delegateTask` guide state this division.
+tool, whose subagents AgentConnect only shows as this turn's tasks (§2.1). Quick lookups and
+status checks stay in the main turn. Before delegating work that changes a live environment
+(deploys, upgrades, infrastructure, data), the agent confirms with the person in the conversation;
+a casual follow-up such as "check again" is not approval. The description and the `delegateTask`
+guide state this division and this rule; the contract gains no argument.
 
 `delegateTask` requires `action` and `message` and accepts nothing else. It starts a new
 delegated task of the current session, owned by it through trusted caller identity, and returns the task's
@@ -847,8 +850,9 @@ the sections above left open:
   `replyToSession` only. The current revision ships the §3.2 draft with one change: the
   `delegateTask` clause keeps the matrix-earned steering "for "fix this bug and open a PR", call
   it before exploring, say it started, and end your turn", and states the division of labour with
-  the runtime's own subagents (§3.1). Measured for a Slack + Telegram agent,
-  the description is 971 characters, the flat schema 1956, and `getToolGuide` description plus
+  the runtime's own subagents (§3.1), and a one-clause confirmation rule for live-environment
+  work. Measured with no integrations, the description is 1020 characters (the test cap is 1024); measured for a Slack + Telegram agent,
+  the description was 971 characters before that clause, the flat schema 1956, and `getToolGuide` description plus
   schema 486; `sessionId` is described for `callAgent` only, `taskId` for `messageTask`, and
   `messageId` for `replyToSession`.
 - **Not-yet-available targets.** The adapter stage refused `callAgent.sessionId`; §9 lifted it
