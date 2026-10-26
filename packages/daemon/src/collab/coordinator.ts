@@ -346,6 +346,8 @@ export interface CollabCoreHost {
   activeGateEntries(): ReadonlyMap<string, QueueEntry>
   /** A sub-session was opened from the parent session's live turn, whose people it then reads for (assistant-mode.md §5.5). */
   noteSubsessionOpened?(childKey: string, parentKey: string): void
+  /** A settled sub-session was given a new work round from the parent session's live turn. */
+  noteSubsessionRound?(childKey: string, parentKey: string): void
   /** The platform thread a session's live turn replies in; absent with no live turn. */
   activeTurnThread?(sessionKey: string): string | undefined
   /** assistant-mode.md §5.12: a message to a follow-up from its place's current long session; anything else names nothing. */
@@ -2390,6 +2392,7 @@ export class CollabCoordinator {
     const { round, reopenedFrom } = decided
     // The round's report replies where the turn asking for it does; the daemon's own message has none, so it lands at the top.
     await index.setReplyThread(agentId, key, this.host.activeTurnThread?.(callerKey) ?? null)
+    this.host.noteSubsessionRound?.(key, callerKey)
     let accepted: { accepted: boolean; reason?: string }
     try {
       accepted = await this.dispatchSubsessionInput(req, { ...at, round, inbound })

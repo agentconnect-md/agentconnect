@@ -131,6 +131,7 @@ export interface PlatformActionSink {
     shortcut: { channel: string; thread: string },
     srcIntegrationIds: readonly string[]
   ): Promise<string[]>
+  stopSlackThreadTasks(at: { channel: string; thread: string }, srcIntegrationIds: readonly string[]): string[]
   startNewAppendSessions(
     platform: string,
     channel: string,
@@ -451,6 +452,7 @@ export class ConnectionReconciler {
         this.revocations.report(this.revocableIntegrations(conn(), group), revocation),
       onMessageShortcut: (shortcut) => this.host.slackShortcutSession(shortcut, this.host.srcIntegrationIds(conn())),
       onThreadSessions: (a) => this.host.slackThreadSessions(a, this.host.srcIntegrationIds(conn())),
+      onStopThreadTasks: (a) => this.host.stopSlackThreadTasks(a, this.host.srcIntegrationIds(conn())),
       onSlotSettle: (a) => this.host.settleSlackSlot(conn(), a),
       onStatusAction: (a) => this.host.handleStatusAction(a),
       onStatusInfo: (key) => this.host.statusInfoForKey(key),
@@ -777,6 +779,7 @@ export class ConnectionReconciler {
             // Registered on this transport too: the relay forwards the native Stop, which resolves
             // the conversation's sessions the same way a Socket Mode stop does.
             onThreadSessions: (a) => this.host.slackThreadSessions(a, this.host.srcIntegrationIds(created)),
+            onStopThreadTasks: (a) => this.host.stopSlackThreadTasks(a, this.host.srcIntegrationIds(created)),
             onSlotSettle: (a) => this.host.settleSlackSlot(created, a),
             onStatusAction: (a) => this.host.handleStatusAction(a),
             onStatusInfo: (key) => this.host.statusInfoForKey(key),
