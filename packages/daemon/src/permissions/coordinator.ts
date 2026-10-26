@@ -1931,9 +1931,12 @@ export class PermissionCoordinator {
     const place = route.place
     if (place.kind !== 'chat') return await editorDm()
     const at: { integrationId: string; channel: string; thread?: string } = place
+    const computer = this.computerAskOf(requestId)
     if (place.external) {
-      // A card is output too, so an external place gets none (§5.5): the responsible user's DM, else an editor's.
-      const approver = await this.host.assistantApprover?.(agentId, requestId).catch(() => undefined)
+      // A card is output too, so an external place gets none (§5.5): the responsible user's DM, else an editor's; a computer-use approval's goes the Computer's route.
+      const approver = computer
+        ? undefined
+        : await this.host.assistantApprover?.(agentId, requestId).catch(() => undefined)
       return approver
         ? await this.sendApprovalDm(requestId, agentId, p, requesterName, route, approver)
         : await editorDm()
@@ -2007,8 +2010,8 @@ export class PermissionCoordinator {
       routedVia: at.integrationId,
       stored: { agentId, requestId }
     }
-    // Where only editors may answer the card, an editor is told in a DM too, on a handle of its own.
-    if (this.host.chatEditorsOnly(agentId, at.integrationId)) await editorDm(true)
+    // Where only editors may answer the card, an editor is told in a DM too, on a handle of its own; a computer-use card's goes to the Computer's owner.
+    if (computer || this.host.chatEditorsOnly(agentId, at.integrationId)) await editorDm(true)
   }
 
   /** Hold the notice's handle until its request settles, on the row too; a request settled while it posted gets its settled line now. */

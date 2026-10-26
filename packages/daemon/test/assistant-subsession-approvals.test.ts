@@ -103,6 +103,8 @@ async function world(
     editors?: string[]
     /** The editor is routed to a platform with no Slack DM, which takes their card in a 1:1 chat. */
     cardsElsewhere?: true
+    /** The CP routes and verifies computer-use approvals by the Computer's allowed members. */
+    computers?: true
   } = {}
 ) {
   const store = await LocalStore.open({
@@ -186,7 +188,7 @@ async function world(
     chatEditorsOnly: () => over.editors !== undefined,
     chatActor: async (_agentId, _integrationId, actor) =>
       !over.editors || over.editors.includes(actor?.userId ?? '') ? 'allowed' : 'not-editor',
-    servesComputerApprovers: () => false,
+    servesComputerApprovers: () => over.computers === true,
     computerActor: async () => 'unavailable' as const
   }
   const coordinator = new PermissionCoordinator(host)
@@ -260,6 +262,45 @@ describe('a sub-session’s permission request in the conversation it belongs to
     expect(w.coordinator.pendingSubsessionApprovals(AGENT)).toEqual([])
     expect(w.clock.pending).toBe(0)
     await w.store.close()
+  })
+
+  it("routes a sub-session's computer-use approval by the Computer: the owner's DM beside its card, and theirs over the responsible user's in an external place", async () => {
+    const scope = {
+      computerId: '00000000-0000-4000-8000-0000000000c1',
+      ownerUserId: 'cu-owner',
+      approvers: ['cu-owner']
+    }
+    const computerParams = () =>
+      ({
+        ...params(),
+        toolCall: { toolCallId: `computer-approval-${Math.random()}`, title: 'Computer use on “Desk”: click at (1, 2)' }
+      }) as RequestPermissionRequest
+    const owned = (cp: ReturnType<typeof vi.fn>) =>
+      cp.mock.calls.some(([payload]) => {
+        const route = payload as { consoleUserId?: string; computerId?: string; verify?: unknown }
+        return !route.verify && route.consoleUserId === 'cu-owner' && route.computerId === scope.computerId
+      })
+
+    const open = await world({ chatOn: true, computers: true })
+    void open.coordinator.askComputerApproval(open.p, computerParams(), scope)
+    // The card lands in the conversation, and the owner's DM beside it on the same workspace.
+    await vi.waitFor(() => expect(open.place.postBlocks).toHaveBeenCalledTimes(2))
+    expect((open.place.postBlocks.mock.calls[0] as unknown[])[0]).toBe('C1')
+    expect(owned(open.cp)).toBe(true)
+    await open.coordinator.releaseApprovals(OWNER, ACP)
+    await open.store.close()
+
+    const external = await world({
+      chatOn: true,
+      computers: true,
+      route: routeTo(slackPlace({ external: true })),
+      approver: { channel: 'D-approver', target: EDITOR }
+    })
+    void external.coordinator.askComputerApproval(external.p, computerParams(), scope)
+    await vi.waitFor(() => expect(owned(external.cp)).toBe(true))
+    expect(external.host.assistantApprover).not.toHaveBeenCalled()
+    await external.coordinator.releaseApprovals(OWNER, ACP)
+    await external.store.close()
   })
 
   it('leaves a neutral notice in the conversation and DMs an editor when only an editor may answer', async () => {
