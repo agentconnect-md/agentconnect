@@ -17,6 +17,8 @@ export type FeatureFlagId =
   | 'repository-decision'
   // Computers in the console: Infra's section, a Computer's page, the agent's Computers card and their usage.
   | 'computer-use'
+  // Capability requests on the agent page; a request's own page opens from its link either way.
+  | 'capability-requests'
 
 function enabledIds(): ReadonlySet<string> {
   // Match PublicEnvScript's precedence so server rendering and browser hydration agree.

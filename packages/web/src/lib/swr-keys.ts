@@ -35,6 +35,11 @@ export const consoleKeys = {
     consoleKey(orgId, 'organization-knowledge-entry', id),
   /** The Handbook: research's status and the organization record's three entries. */
   organizationRecord: (orgId: string | null | undefined) => consoleKey(orgId, 'organization-record'),
+  /** One capability request, as its page shows it. */
+  capabilityRequest: (orgId: string | null | undefined, id: string) => consoleKey(orgId, 'capability-request', id),
+  /** An agent's open capability requests. */
+  agentCapabilityRequests: (orgId: string | null | undefined, agentId: string) =>
+    consoleKey(orgId, 'agent-capability-requests', agentId),
   /** The caller's own People cards. */
   myPeopleEntries: (orgId: string | null | undefined, peopleId: string, revision: string) =>
     consoleKey(orgId, 'my-people-entries', peopleId, revision),

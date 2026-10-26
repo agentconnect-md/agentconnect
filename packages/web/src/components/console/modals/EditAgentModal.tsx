@@ -77,6 +77,15 @@ import { useDaemonDetail } from '@/lib/use-daemon-detail'
 // editors (the Workspace card / the Memory tab), so they are NOT sections here.
 export type EditAgentSection = 'basics' | 'runtime' | 'access' | 'secrets'
 
+/** The runtime settings a dialog can open on prefilled. */
+export interface EditAgentPrefill {
+  model?: string
+  reasoningEffort?: string
+  outputMode?: OutputMode
+  fastMode?: boolean
+  permissionMode?: string
+}
+
 // A picker row that opens the join-command dialog instead of naming a placement. Never a
 // daemonId, so it can never be saved: the onChange below intercepts it.
 const ADD_DAEMON = '__add_daemon__'
@@ -107,12 +116,15 @@ export default function EditAgentModal({
   agent,
   focusSection,
   preselectDaemonId,
+  prefill,
   onSaved,
   onFailed,
   onClose
 }: {
   agent: Agent
   focusSection?: EditAgentSection
+  /** Runtime settings to open on as pending changes, as a capability request asked for them; the reader may still edit them. */
+  prefill?: EditAgentPrefill
   /** A daemon to open the placement picker on — set when a chained Add-daemon dialog just
    *  connected one, so Continue lands on a form already pointed at the new machine. */
   preselectDaemonId?: string
@@ -292,6 +304,12 @@ export default function EditAgentModal({
           setModel('')
           setEffort('')
         }
+        // Applied after the saved values so they read as unsaved edits and Save writes them.
+        if (prefill?.model !== undefined) setModel(prefill.model)
+        if (prefill?.reasoningEffort !== undefined) setEffort(prefill.reasoningEffort)
+        if (prefill?.outputMode !== undefined) setOutputMode(prefill.outputMode)
+        if (prefill?.fastMode !== undefined) setFastMode(prefill.fastMode)
+        if (prefill?.permissionMode !== undefined) setPermissionMode(prefill.permissionMode)
         setLoaded(true)
       },
       (e) => {

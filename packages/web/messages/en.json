@@ -6854,5 +6854,101 @@
       "save": "Save",
       "saving": "Saving…"
     }
+  },
+  "CapabilityRequests": {
+    "metadata": {
+      "title": "Capability request · AgentConnect"
+    },
+    "page": {
+      "crumb": "Capability request",
+      "loading": "Loading request…",
+      "notFound": "Request not found",
+      "notFoundBody": "It may have been removed, or it belongs to an agent you can't see.",
+      "backHome": "Back to Home",
+      "heading": "{agent} asks for something it lacks",
+      "askedBy": "Asked by {people}",
+      "askedByNobody": "Asked during work nobody was present for",
+      "externalPlace": "An external conversation",
+      "openConversation": "Open conversation",
+      "askedAt": "Asked {time}",
+      "expiresAt": "Expires {time}",
+      "agentSays": "The agent says:",
+      "whatChanges": "What changes",
+      "settingChange": "{field}: <code>{from}</code> → <code>{to}</code>",
+      "valueOn": "on",
+      "valueOff": "off",
+      "valueDefault": "default",
+      "addServer": "Add MCP server <name>{server}</name>",
+      "serverAlready": "Already attached",
+      "serverMissing": "No MCP server with this name is registered in this organization.",
+      "installSkill": "Install skill <name>{skill}</name>",
+      "skillAlready": "Already installed",
+      "conversations": "Conversations waiting for it"
+    },
+    "fields": {
+      "model": "Model",
+      "reasoningEffort": "Reasoning effort",
+      "fastMode": "Fast mode",
+      "outputMode": "Output mode",
+      "permissionMode": "Permission mode"
+    },
+    "complete": {
+      "heading": "Make the change",
+      "settingsHint": "The agent's settings open with the requested values filled in. Adjust them if you want, then save.",
+      "reviewSettings": "Review and save settings",
+      "addServer": "Add {server}",
+      "reviewTools": "Review tools",
+      "hideTools": "Hide tools",
+      "toolsDone": "I'm done",
+      "serverMissingHint": "Register it under Tools & Skills first, then add it here.",
+      "openTools": "Open Tools & Skills",
+      "installSkill": "Install {skill}",
+      "findSkill": "Find it in the skill registry",
+      "skillMissingHint": "The skill library has no source named {source} yet.",
+      "saving": "Saving…",
+      "done": "Done — the agent has been told.",
+      "doneDiffers": "Done — the agent has been told what was saved: {outcome}",
+      "settleFailed": "The change was saved, but the request could not be closed: {error}"
+    },
+    "authority": {
+      "heading": "You can't make this change",
+      "needs": "It needs: {missing}",
+      "whoCan": "People who can: {names}",
+      "nobodyCan": "Nobody in this organization can make it right now.",
+      "forward": "Forward",
+      "forwardTo": "Forward to",
+      "forwardAnyone": "Anyone who can",
+      "forwardedDm": "Forwarded — they got a direct message.",
+      "forwardedActivity": "Forwarded — it waits in the agent's Activity."
+    },
+    "decline": {
+      "action": "Decline",
+      "note": "Note for the agent (optional)",
+      "placeholder": "Why not, or what to use instead",
+      "confirm": "Decline request",
+      "cancel": "Cancel",
+      "reopen": "Reopen"
+    },
+    "status": {
+      "open": "Waiting for someone to act",
+      "completed": "Completed by {name}",
+      "completedNoName": "Completed",
+      "declined": "Declined by {name}",
+      "declinedNoName": "Declined",
+      "expired": "Expired — nobody acted on it in 7 days",
+      "withdrawn": "Withdrawn by the agent",
+      "outcome": "What changed: {outcome}",
+      "note": "Their note:"
+    },
+    "wake": {
+      "delivered": "The agent was told.",
+      "pending": "Telling the agent…",
+      "paused": "The agent is paused; it will be told when it resumes.",
+      "gone": "That conversation has ended, so the agent was not told there."
+    },
+    "agentCard": {
+      "title": "Requests",
+      "count": "{count, plural, one {# open request} other {# open requests}}"
+    }
   }
 }

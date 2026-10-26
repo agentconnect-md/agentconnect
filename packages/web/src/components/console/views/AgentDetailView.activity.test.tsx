@@ -40,6 +40,9 @@ vi.mock('@/components/console/AssistantActivityPanel', () => ({
     <div data-activity-panel={agentId} data-can-edit={String(canEdit)} />
   )
 }))
+vi.mock('@/components/console/AgentCapabilityRequestsCard', () => ({
+  AgentCapabilityRequestsCard: ({ agentId }: { agentId: string }) => <div data-capability-requests-card={agentId} />
+}))
 vi.mock('@/lib/use-daemon-detail', () => ({ useDaemonDetail: (row: unknown) => row }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/lib/org-context', () => ({
@@ -170,6 +173,10 @@ describe('the agent page’s Activity tab', () => {
     const panel = scope.querySelector('[data-activity-panel]')
     expect(panel?.getAttribute('data-activity-panel')).toBe('agent-1')
     expect(panel?.getAttribute('data-can-edit')).toBe('true')
+    // The agent's open capability requests head the tab, ahead of its tasks.
+    const requests = scope.querySelector('[data-capability-requests-card]')
+    expect(requests?.getAttribute('data-capability-requests-card')).toBe('agent-1')
+    expect(requests?.compareDocumentPosition(panel!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
   })
 
   it('appears for an assistant-mode agent whether or not its daemon serves every agent', async () => {
