@@ -31,7 +31,8 @@ import {
   SessionCapabilitySettledResult,
   CapabilityReopened,
   CapabilityForward,
-  CapabilityForwardResult
+  CapabilityForwardResult,
+  AgentMcpRebound
 } from './frames/capability-request.js'
 
 import { AuthReq, AuthOk } from './frames/auth.js'
@@ -636,6 +637,7 @@ export const FRAME_SCHEMAS = {
   'capability/reopened': CapabilityReopened,
   'capability/forward': CapabilityForward,
   'capability/forward/result': CapabilityForwardResult,
+  'agent/mcp-rebound': AgentMcpRebound,
   'session/capability-settled': SessionCapabilitySettled,
   'session/capability-settled/result': SessionCapabilitySettledResult,
   // ── merge-when-ready: arm/read the EDGE's in-memory watcher. Nothing is stored on either side.
@@ -1016,6 +1018,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('capability/reopened', FRAME_SCHEMAS['capability/reopened']),
   frame('capability/forward', FRAME_SCHEMAS['capability/forward']),
   frame('capability/forward/result', FRAME_SCHEMAS['capability/forward/result']),
+  frame('agent/mcp-rebound', FRAME_SCHEMAS['agent/mcp-rebound']),
   frame('session/capability-settled', FRAME_SCHEMAS['session/capability-settled']),
   frame('session/capability-settled/result', FRAME_SCHEMAS['session/capability-settled/result']),
   frame('automerge/set', FRAME_SCHEMAS['automerge/set']),

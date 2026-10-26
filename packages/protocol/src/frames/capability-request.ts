@@ -3,6 +3,12 @@ import { z } from 'zod'
 /** Capability requests (capability-requests.md): a CP advertising it serves `capability/*`, and a daemon advertising it answers `session/capability-settled`. */
 export const CAPABILITY_REQUESTS_FEATURE = 'capability-requests-v1'
 
+/** Phase 2: a CP advertising it takes `repository`, `connection` and `secret` asks; a daemon advertising it takes `agent/mcp-rebound` and offers those kinds. */
+export const CAPABILITY_REQUESTS_V2_FEATURE = 'capability-requests-v2'
+
+/** The kinds a CP or daemon without `capability-requests-v2` knows. */
+export const CAPABILITY_V1_KINDS: readonly CapabilityKind[] = ['agent-settings', 'mcp-server', 'skill']
+
 /** At most this many open requests started from one session (§4.1). */
 export const CAPABILITY_REQUEST_SESSION_CAP = 3
 /** A request nobody settles expires after seven days (§4.3). */
@@ -16,8 +22,8 @@ export const CAPABILITY_REASON_MAX = 280
 /** A decider's note on a decline (§4.7.1). */
 export const CAPABILITY_NOTE_MAX = 500
 
-/** What an agent may ask for; later phases add `repository`, `connection` and `secret`. */
-export const CapabilityKind = z.enum(['agent-settings', 'mcp-server', 'skill'])
+/** What an agent may ask for (§4.2). */
+export const CapabilityKind = z.enum(['agent-settings', 'mcp-server', 'skill', 'repository', 'connection', 'secret'])
 export type CapabilityKind = z.infer<typeof CapabilityKind>
 
 /** The `agent-settings` fields an agent may ask for (§4.2); workspace, visibility, sharing, integrations and triggers are not among them. */
@@ -49,11 +55,62 @@ export const CapabilitySkillWant = z
   .strict()
 export type CapabilitySkillWant = z.infer<typeof CapabilitySkillWant>
 
+/** A repository on a code host and the tier wanted; `host` names a self-managed GitLab, else the provider's public host. */
+export const CapabilityRepositoryWant = z
+  .object({
+    provider: z.enum(['github', 'gitlab']),
+    host: z.string().min(1).max(253).optional(),
+    repository: z
+      .string()
+      .min(3)
+      .max(300)
+      .regex(/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+$/, 'expected <owner>/<repo>'),
+    access: z.enum(['read', 'write'])
+  })
+  .strict()
+export type CapabilityRepositoryWant = z.infer<typeof CapabilityRepositoryWant>
+
+/** A connection the console makes through a browser redirect: an MCP server's OAuth, a code host, or a chat integration. */
+export const CapabilityConnectionWant = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('mcp-oauth'), server: z.string().min(1).max(200) }).strict(),
+  z
+    .object({
+      type: z.literal('code-host'),
+      provider: z.enum(['github', 'gitlab']),
+      host: z.string().min(1).max(253).optional()
+    })
+    .strict(),
+  z.object({ type: z.literal('chat-integration'), platform: z.string().min(1).max(50) }).strict()
+])
+export type CapabilityConnectionWant = z.infer<typeof CapabilityConnectionWant>
+
+const LIVE_SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,100}$/
+
+/** A secret by name and purpose, never its value; the route says whether the agent can read it (§4.9). */
+export const CapabilitySecretWant = z
+  .object({
+    name: z.string().min(1).max(100),
+    description: z.string().min(1).max(200),
+    use: z.discriminatedUnion('route', [
+      z.object({ route: z.literal('mcp-header'), server: z.string().min(1).max(200) }).strict(),
+      z.object({ route: z.literal('live') }).strict()
+    ])
+  })
+  .strict()
+  .refine((want) => (want.use.route === 'live' ? LIVE_SECRET_NAME : HEADER_NAME).test(want.name), {
+    message: 'a live secret is named like an environment variable (A-Z, 0-9, _), a header like an HTTP header'
+  })
+export type CapabilitySecretWant = z.infer<typeof CapabilitySecretWant>
+
 /** The kind with its validated `want`; unknown fields are refused, not ignored (§4.2). */
 export const CapabilityAsk = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('agent-settings'), want: CapabilitySettingsWant }),
   z.object({ kind: z.literal('mcp-server'), want: CapabilityMcpServerWant }),
-  z.object({ kind: z.literal('skill'), want: CapabilitySkillWant })
+  z.object({ kind: z.literal('skill'), want: CapabilitySkillWant }),
+  z.object({ kind: z.literal('repository'), want: CapabilityRepositoryWant }),
+  z.object({ kind: z.literal('connection'), want: CapabilityConnectionWant }),
+  z.object({ kind: z.literal('secret'), want: CapabilitySecretWant })
 ])
 export type CapabilityAsk = z.infer<typeof CapabilityAsk>
 
@@ -69,6 +126,16 @@ export function capabilityTarget(ask: CapabilityAsk): string {
       return ask.want.server
     case 'skill':
       return ask.want.skill
+    case 'repository':
+      return `${ask.want.provider}:${ask.want.host ?? ''}:${ask.want.repository.toLowerCase()}:${ask.want.access}`
+    case 'connection': {
+      const want = ask.want
+      if (want.type === 'mcp-oauth') return `mcp-oauth:${want.server}`
+      if (want.type === 'code-host') return `code-host:${want.provider}:${want.host ?? ''}`
+      return `chat-integration:${want.platform}`
+    }
+    case 'secret':
+      return `${ask.want.use.route}:${ask.want.use.route === 'mcp-header' ? ask.want.use.server : ''}:${ask.want.name}`
   }
 }
 
@@ -120,7 +187,7 @@ export const CapabilityRequestReq = z.object({
 export type CapabilityRequestReq = z.infer<typeof CapabilityRequestReq>
 
 /** Why a request was not taken: the per-session cap, a target the agent cannot be given, or a malformed want. */
-export const CapabilityRequestRefusal = z.enum(['limit', 'unknown_target', 'invalid', 'not_offered'])
+export const CapabilityRequestRefusal = z.enum(['limit', 'unknown_target', 'invalid', 'not_offered', 'unsupported'])
 export type CapabilityRequestRefusal = z.infer<typeof CapabilityRequestRefusal>
 
 /** C→D REP to `capability/request`. `pending` names the request (new or joined), its link and the CP's wording of it. */
@@ -251,3 +318,10 @@ export const CapabilityForwardResult = z.object({
   reason: z.enum(['no_linked_identity', 'no_card_surface', 'not_found', 'failed']).optional()
 })
 export type CapabilityForwardResult = z.infer<typeof CapabilityForwardResult>
+
+/** C→D EVT, `agent/mcp-rebound`: an MCP server's OAuth connected; the daemon reloads the agent's sessions that use it (§4.8 item 2). */
+export const AgentMcpRebound = z.object({
+  agentId: z.string().uuid(),
+  server: z.string().min(1).max(200)
+})
+export type AgentMcpRebound = z.infer<typeof AgentMcpRebound>
