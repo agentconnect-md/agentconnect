@@ -436,3 +436,13 @@ function chatUri(uri: string): string {
 function summaryOf(chat: ChatState): ChatSummary {
   return { resource: chat.resource, title: chat.title, status: chat.status, modifiedAt: chat.modifiedAt }
 }
+
+// Clients such as VS Code refuse to send without a model, so the agent's own model is always offered.
+export function ahpAgentInfo(provider: string, displayName: string, model: string | undefined): AgentInfo {
+  return {
+    provider,
+    displayName,
+    description: '',
+    models: [{ id: model ?? 'default', provider, name: model ?? 'Default' }]
+  }
+}

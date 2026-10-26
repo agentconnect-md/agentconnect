@@ -124,9 +124,11 @@ a daemon until the key is verified:
 The relay's own `initialize` answer omits the daemon's `_meta` extension flags;
 first-party clients use the header or browser-token paths.
 
-A turn message may carry the client's own `model` and `agent` selections and any
-spec attachment kind, as VS Code's do. The daemon advertises no models, so it
-ignores both selections and delivers only one PNG, JPEG or WebP embedded image;
+Each agent advertises one model, its configured model or `default`, because VS
+Code disables sending when an agent offers none. A turn message may carry the
+client's `model` and `agent` selections and any spec attachment kind, as VS
+Code's do. The daemon runs the agent's own model, so it ignores both selections
+and delivers only one PNG, JPEG or WebP embedded image;
 other attachments are accepted, never read, and left out of the projected turn.
 Clients may also set the chat's `draft` and `isRead`; the daemon publishes both to
 the session's subscribers and never forwards them to the runtime.
