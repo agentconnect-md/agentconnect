@@ -97,6 +97,12 @@ const DECLARED_BINARIES: { pattern: RegExp; component: string; license: string }
     pattern: /(^|\/)AgentConnect Computer\.app\/Contents\/MacOS\/agentconnect-computer$/,
     component: 'Node.js (official build, re-signed as AgentConnect Computer.app)',
     license: 'MIT'
+  },
+  {
+    // Built from packages/computer/macos/menubar.swift; the Swift runtime it links is the OS's own.
+    pattern: /(^|\/)AgentConnect Computer\.app\/Contents\/MacOS\/agentconnect-computer-menubar$/,
+    component: 'AgentConnect Computer menu bar helper (this repository)',
+    license: 'Apache-2.0'
   }
 ]
 // Separate downloads that must never be bundled (ffmpeg is GPL; Cua Driver is pinned and checksummed on the machine).

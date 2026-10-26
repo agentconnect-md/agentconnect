@@ -143,7 +143,8 @@ writeFileSync(
       name: `@agentconnect.md/computer-darwin-${arch}`,
       version,
       description: `AgentConnect Computer.app for ${arch} Macs: the signed Node.js runtime that holds the computer daemon's macOS permissions`,
-      license: 'MIT',
+      // Node.js is MIT; the menu bar helper is this repository's own code.
+      license: '(MIT AND Apache-2.0)',
       repository: {
         type: 'git',
         url: 'git+https://github.com/agentconnect-md/agentconnect.git',
