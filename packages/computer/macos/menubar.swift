@@ -19,6 +19,7 @@ struct Item: Decodable {
 
 struct Menu: Decodable {
   let tone: String
+  let badge: String?
   let tooltip: String
   let items: [Item]
 }
@@ -33,8 +34,8 @@ func send(_ message: [String: String]) {
   FileHandle.standardOutput.write(line)
 }
 
-// The AgentConnect mark (packages/web/src/app/icon.svg), with a badge for agent control or a pause and greyed without authority.
-func icon(_ tone: String, size: CGFloat = 18) -> NSImage {
+// The AgentConnect mark (packages/web/src/app/icon.svg), greyed without authority, with the daemon's badge in its corner.
+func icon(_ tone: String, badge: String? = nil, size: CGFloat = 18) -> NSImage {
   NSImage(size: NSSize(width: size, height: size), flipped: true) { _ in
     // Drawn on an 18-point grid, the menu bar's size, and scaled for the dialogs.
     let scale = NSAffineTransform()
@@ -55,14 +56,28 @@ func icon(_ tone: String, size: CGFloat = 18) -> NSImage {
       (tone == "unavailable" ? NSColor.systemGray : color).setFill()
       path.fill()
     }
-    let badge: NSColor? = tone == "busy" ? .systemOrange : tone == "paused" ? .systemRed : nil
-    if let badge {
+    let fill: NSColor? =
+      switch badge {
+      case "busy": .systemOrange
+      case "paused": .systemGray
+      case "error": .systemRed
+      default: nil
+      }
+    if let fill {
       // A transparent ring cuts the badge out of the mark, readable on light and dark menu bars.
       NSGraphicsContext.current?.compositingOperation = .clear
-      NSBezierPath(ovalIn: NSRect(x: 9.5, y: 9.5, width: 9, height: 9)).fill()
+      NSBezierPath(ovalIn: NSRect(x: 8.5, y: 8.5, width: 10, height: 10)).fill()
       NSGraphicsContext.current?.compositingOperation = .sourceOver
-      badge.setFill()
-      NSBezierPath(ovalIn: NSRect(x: 11, y: 11, width: 6.5, height: 6.5)).fill()
+      fill.setFill()
+      NSBezierPath(ovalIn: NSRect(x: 10, y: 10, width: 8, height: 8)).fill()
+      NSColor.white.setFill()
+      if badge == "paused" {
+        NSBezierPath(rect: NSRect(x: 12.3, y: 11.9, width: 1.2, height: 4.2)).fill()
+        NSBezierPath(rect: NSRect(x: 14.5, y: 11.9, width: 1.2, height: 4.2)).fill()
+      } else if badge == "error" {
+        NSBezierPath(rect: NSRect(x: 13.4, y: 11.4, width: 1.2, height: 3.3)).fill()
+        NSBezierPath(rect: NSRect(x: 13.4, y: 15.3, width: 1.2, height: 1.2)).fill()
+      }
     }
     return true
   }
@@ -107,11 +122,11 @@ final class Indicator: NSObject, NSMenuDelegate {
     menu.autoenablesItems = false
     menu.delegate = self
     item.menu = menu
-    apply(Menu(tone: "unavailable", tooltip: "AgentConnect Computer: starting", items: []))
+    apply(Menu(tone: "unavailable", badge: nil, tooltip: "AgentConnect Computer: starting", items: []))
   }
 
   func apply(_ update: Menu) {
-    item.button?.image = icon(update.tone)
+    item.button?.image = icon(update.tone, badge: update.badge)
     item.button?.toolTip = update.tooltip
     item.button?.setAccessibilityLabel(update.tooltip)
     // An open menu is updated in place when its shape holds, so a refresh never closes it under the pointer.

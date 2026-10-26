@@ -17,8 +17,12 @@ export interface MenuItem {
   confirm?: { title: string; message: string; button: string }
 }
 
+// The corner badge: paused outranks agent control, which outranks a failing check.
+export type Badge = 'paused' | 'busy' | 'error'
+
 export interface Menu {
   tone: TrayTone
+  badge?: Badge
   tooltip: string
   items: MenuItem[]
 }
@@ -43,6 +47,8 @@ export interface MenuBarFacts {
 export type GrantState = 'allowed' | 'off' | 'stale'
 
 export type Busy = 'driver' | 'ffmpeg' | 'control-plane'
+
+const FACTS_REFRESH_MS = 30_000
 
 const CONTROL_PLANE: Record<ControlPlaneState, [Mark, string]> = {
   connected: ['ok', 'connected'],
@@ -79,51 +85,56 @@ export function menuBarMenu(tray: TrayState, facts: MenuBarFacts, busy: Readonly
           ? { id: 'ffmpeg', title: `ffmpeg ${facts.ffmpeg.version}: not installed, click to install`, mark: 'fail' }
           : { title: 'ffmpeg: not found, the viewer falls back to screenshots', mark: 'warn', enabled: false }
   const version = facts.appVersion ? `Version ${facts.version} (app ${facts.appVersion})` : `Version ${facts.version}`
+  const items: MenuItem[] = [
+    { title: facts.name ? `AgentConnect Computer · ${facts.name}` : 'AgentConnect Computer', enabled: false },
+    { title: `Agents: ${tray.status}`, enabled: false },
+    tray.canResume
+      ? { id: 'resume', title: 'Resume Agent Input' }
+      : { id: 'stop', title: 'Stop All Agent Input', enabled: tray.canStop },
+    { title: '', separator: true },
+    {
+      id: 'control-plane',
+      title: `Control Plane${facts.controlPlane.host ? ` (${facts.controlPlane.host})` : ''}: ${cpText}`,
+      mark: cpMark,
+      enabled: cpMark === 'fail' && facts.controlPlane.state !== 'revoked'
+    },
+    grant('Screen Recording', facts.screenRecording, 'screen-recording'),
+    grant('Device Control (Accessibility)', facts.accessibility, 'accessibility'),
+    driver,
+    ffmpeg,
+    { title: '', separator: true },
+    { id: 'start-at-login', title: 'Start at Login', checked: facts.startAtLogin },
+    { id: 'logs', title: 'Open Logs' },
+    { title: version, enabled: false },
+    { title: '', separator: true },
+    {
+      id: 'uninstall',
+      title: 'Uninstall…',
+      confirm: {
+        title: 'Uninstall AgentConnect Computer?',
+        message:
+          'Terminal opens and runs the uninstaller: it stops the service and removes the app. Your Computer key and settings stay unless you run it with --purge.',
+        button: 'Uninstall'
+      }
+    },
+    {
+      id: 'quit',
+      title: 'Quit AgentConnect Computer',
+      confirm: {
+        title: 'Quit AgentConnect Computer?',
+        message: 'Agents cannot use this Mac until it starts again at your next login.',
+        button: 'Quit'
+      }
+    }
+  ]
+  const failing = items.some((item) => item.mark === 'fail')
+  const badge: Badge | undefined =
+    tray.tone === 'paused' ? 'paused' : tray.tone === 'busy' ? 'busy' : failing ? 'error' : undefined
   return {
     tone: tray.tone,
-    tooltip: `AgentConnect Computer: ${tray.status}`,
-    items: [
-      { title: facts.name ? `AgentConnect Computer · ${facts.name}` : 'AgentConnect Computer', enabled: false },
-      { title: `Agents: ${tray.status}`, enabled: false },
-      tray.canResume
-        ? { id: 'resume', title: 'Resume Agent Input' }
-        : { id: 'stop', title: 'Stop All Agent Input', enabled: tray.canStop },
-      { title: '', separator: true },
-      {
-        id: 'control-plane',
-        title: `Control Plane${facts.controlPlane.host ? ` (${facts.controlPlane.host})` : ''}: ${cpText}`,
-        mark: cpMark,
-        enabled: cpMark === 'fail' && facts.controlPlane.state !== 'revoked'
-      },
-      grant('Screen Recording', facts.screenRecording, 'screen-recording'),
-      grant('Device Control (Accessibility)', facts.accessibility, 'accessibility'),
-      driver,
-      ffmpeg,
-      { title: '', separator: true },
-      { id: 'start-at-login', title: 'Start at Login', checked: facts.startAtLogin },
-      { id: 'logs', title: 'Open Logs' },
-      { title: version, enabled: false },
-      { title: '', separator: true },
-      {
-        id: 'uninstall',
-        title: 'Uninstall…',
-        confirm: {
-          title: 'Uninstall AgentConnect Computer?',
-          message:
-            'Terminal opens and runs the uninstaller: it stops the service and removes the app. Your Computer key and settings stay unless you run it with --purge.',
-          button: 'Uninstall'
-        }
-      },
-      {
-        id: 'quit',
-        title: 'Quit AgentConnect Computer',
-        confirm: {
-          title: 'Quit AgentConnect Computer?',
-          message: 'Agents cannot use this Mac until it starts again at your next login.',
-          button: 'Quit'
-        }
-      }
-    ]
+    ...(badge ? { badge } : {}),
+    tooltip: `AgentConnect Computer: ${tray.status}${failing ? '; something needs attention, open the menu' : ''}`,
+    items
   }
 }
 
@@ -165,14 +176,23 @@ export function startMenuBar(
   const render = (): void => {
     if (facts) helperTray.update(menuBarMenu(tray, facts, busy))
   }
+  let reading: Promise<void> | undefined
   const refresh = (): Promise<void> =>
-    host.facts().then(
-      (fresh) => {
-        facts = fresh
-        render()
-      },
-      (error: Error) => host.log(`menu bar: cannot read the status: ${error.message}`)
-    )
+    (reading ??= host
+      .facts()
+      .then(
+        (fresh) => {
+          facts = fresh
+          render()
+        },
+        (error: Error) => host.log(`menu bar: cannot read the status: ${error.message}`)
+      )
+      .finally(() => {
+        reading = undefined
+      }))
+  // A check can fail with nobody opening the menu, and the icon's error badge must show it anyway.
+  const recheck = setInterval(() => void refresh(), FACTS_REFRESH_MS)
+  recheck.unref()
   // One install or reconnect at a time per item; the menu shows it in progress meanwhile.
   const task = (kind: Busy, run: () => Promise<unknown>): void => {
     if (busy.has(kind)) return
@@ -246,6 +266,9 @@ export function startMenuBar(
           : { name: 'tray', status: 'ok', detail: 'the menu bar icon shows agent control and can stop it' }
       ]
     },
-    close: () => helperTray.close()
+    close() {
+      clearInterval(recheck)
+      helperTray.close()
+    }
   }
 }
