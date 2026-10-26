@@ -2644,7 +2644,13 @@
           "nameAriaLabel": "Secret name",
           "valueAriaLabel": "Secret value",
           "add": "Add secret",
-          "replaceValue": "Replace value"
+          "replaceValue": "Replace value",
+          "live": "Live",
+          "liveHint": "Live: the agent's shell loads it when a command needs it. The agent can read this value.",
+          "removeLive": "Remove live secret {name}",
+          "removeLiveConfirm": "Remove {name}? Commands the agent runs from now on can't load it. A process that already loaded it, such as a running server, keeps the value until it is restarted.",
+          "removeLiveCancel": "Keep it",
+          "removeLiveAction": "Remove"
         }
       },
       "iconPicker": {
@@ -6896,7 +6902,7 @@
       "connectChat": "Add a <name>{platform}</name> integration",
       "connected": "Already connected",
       "secretHeader": "Header <code>{header}</code> on <name>{server}</name>",
-      "secretLive": "Secret <code>{secret}</code>",
+      "secretLive": "Set live secret <code>{secret}</code>",
       "secretPurpose": "For: {description}",
       "secretPresent": "Already set"
     },
@@ -6937,7 +6943,12 @@
       "openIntegrations": "Open Integrations",
       "checkAgain": "Check again",
       "connectionWatching": "Waiting for the connection to finish…",
-      "liveSecretUnavailable": "Secrets the agent reads from its own shell aren't available yet. Decline the request, or ask the agent to use an MCP server's header instead.",
+      "liveSecretHint": "The agent loads {name} from its own shell when a command needs it, with nothing restarted.",
+      "liveSecretPurpose": "What goes in it, as the agent asked: {description}",
+      "liveSecretNotice": "The agent can read this value.",
+      "liveSecretLabel": "Value for {name}",
+      "liveSecretReplace": "{name} is already set; saving replaces it.",
+      "saveLiveSecret": "Save {name}",
       "headerOnOauthServer": "{server} signs in with OAuth, so it has no headers to set. Decline the request, or connect the server instead.",
       "headerHint": "The value is stored on {server} and added to each of its calls. The agent never sees it.",
       "setHeader": "Set {header}"

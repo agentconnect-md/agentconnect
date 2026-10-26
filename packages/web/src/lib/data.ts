@@ -621,6 +621,8 @@ export interface Agent {
   env: { k: string; v: string }[]
   /** Names of the agent's write-only secret env vars (values are never returned). */
   secretKeys: string[]
+  /** Live secrets its shell loads at use time (capability-requests.md §4.9.2), by name; absent where the server did not say. */
+  liveSecrets?: { name: string; description: string | null }[]
   /** Organization-owned variables assigned to this agent (design §8.2). Read-only
    *  here — only Organization Settings can change them or their audience. */
   organizationVariables: { k: string; v: string }[]

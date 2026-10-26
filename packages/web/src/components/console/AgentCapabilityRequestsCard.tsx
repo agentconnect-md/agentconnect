@@ -12,7 +12,14 @@ import { consoleKeys } from '@/lib/swr-keys'
 
 const REFRESH_MS = 30_000
 
-export function AgentCapabilityRequestsCard({ agentId }: { agentId: string }) {
+export function AgentCapabilityRequestsCard({
+  agentId,
+  className = 'mb-4'
+}: {
+  agentId: string
+  /** Spacing where it is placed: below it in a stack (the default), none inside a grid that spaces its cells. */
+  className?: string
+}) {
   const enabled = featureFlagEnabled('capability-requests')
   const { activeOrg, orgPath } = useOrgs()
   const t = useTranslations('CapabilityRequests')
@@ -24,7 +31,7 @@ export function AgentCapabilityRequestsCard({ agentId }: { agentId: string }) {
   // Nothing to find means nothing to show; a failed read is not worth a card of its own here.
   if (!enabled || !data || data.length === 0) return null
   return (
-    <div className="card mb-4 overflow-hidden max-desktop:rounded-lg" data-capability-requests>
+    <div className={`card overflow-hidden max-desktop:rounded-lg ${className}`} data-capability-requests>
       <div className="cardhead flex-wrap gap-2">
         <span className="cardtitle">{t('agentCard.title')}</span>
         <span className="mono ml-auto text-[11px] text-(--text-tertiary)">
