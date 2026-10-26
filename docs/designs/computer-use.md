@@ -910,7 +910,9 @@ says this, and how to read each error, in the standing instructions of every ses
   per change over stdio (`src/tray-helper.ts`); the helper only draws it, asks for confirmation where an item says so,
   and reports clicks by id, menu opens, and a quit from macOS. The menu holds the agent state with Stop / Resume; a
   checked or crossed line each for the Control Plane (click: redial now, and open the log when it stays away), Screen
-  Recording and Device Control (click: open that Privacy pane), Cua Driver (click: reinstall and restart) and ffmpeg
+  Recording and Device Control (click: open that Privacy pane; a grant `macos-grants.json` once recorded as held but
+  now not in effect, as after an ad-hoc rebuild, reads "not in effect" and its click runs `tccutil reset` and asks
+  again), Cua Driver (click: reinstall and restart) and ffmpeg
   (click: download, shared with the viewer's own start); Start at Login (`launchctl enable` / `disable`, which leaves
   the running daemon alone); Open Logs (`daemon.log` in Console); the daemon and app versions; Uninstall… (confirmed,
   then runs `agentconnect computer uninstall` in Terminal from a `.command` file, so no Automation grant is needed);

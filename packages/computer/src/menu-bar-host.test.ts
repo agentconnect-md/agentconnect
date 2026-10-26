@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { ComputerCpClient } from './cp/client.js'
 import type { Registration } from './cp/registration.js'
-import { appVersion, controlPlaneState, uninstallScript } from './menu-bar-host.js'
+import { appVersion, controlPlaneState, grantState, uninstallScript } from './menu-bar-host.js'
 
 describe('macOS menu bar host', () => {
   it('reads the Control Plane state from the registration and the channel', () => {
@@ -16,6 +16,13 @@ describe('macOS menu bar host', () => {
     expect(controlPlaneState(registration, client('AUTHENTICATING'))).toBe('connecting')
     expect(controlPlaneState(registration, client('DEGRADED'))).toBe('disconnected')
     expect(controlPlaneState(registration, undefined)).toBe('disconnected')
+  })
+
+  it('tells a grant held for an earlier build from one never switched on', () => {
+    const record = { asked: { accessibility: 'then' }, held: { screenRecording: 'then' } }
+    expect(grantState(true, record, 'screenRecording')).toBe('allowed')
+    expect(grantState(false, record, 'screenRecording')).toBe('stale')
+    expect(grantState(false, record, 'accessibility')).toBe('off')
   })
 
   it('reads the app’s version from its Info.plist', () => {

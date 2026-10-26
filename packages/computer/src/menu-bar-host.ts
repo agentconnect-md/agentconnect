@@ -1,5 +1,5 @@
 // The macOS daemon's side of the menu bar: reads each item's state and carries out its click (#3403).
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,7 +7,16 @@ import type { ComputerCpClient } from './cp/client.js'
 import type { Registration } from './cp/registration.js'
 import type { CuaDriver } from './driver/client.js'
 import { CUA_DRIVER_VERSION, installDriver, installedDriverDir } from './driver/install.js'
-import type { ControlPlaneState, MenuBarFacts, MenuBarHost } from './menu-bar.js'
+import {
+  APP_ID,
+  forgetGrant,
+  grantLoss,
+  readGrantRecord,
+  TCC_SERVICE,
+  type Grant,
+  type GrantRecord
+} from './macos-grants.js'
+import type { ControlPlaneState, GrantState, MenuBarFacts, MenuBarHost } from './menu-bar.js'
 import { setStartAtLogin, startsAtLogin } from './service-macos.js'
 import { MAC_PANES, macPermissions, open } from './setup.js'
 import {
@@ -18,6 +27,7 @@ import {
   installFfmpeg,
   resolveFfmpegPath
 } from './stream/ffmpeg.js'
+import { runSelf } from './self.js'
 import { COMPUTER_DAEMON_VERSION } from './version.js'
 
 export interface MacMenuBarDeps {
@@ -39,6 +49,11 @@ const PERMISSIONS_TIMEOUT_MS = 5_000
 
 const within = <T>(promise: Promise<T>, ms: number): Promise<T> =>
   Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timed out')), ms).unref())])
+
+export function grantState(granted: boolean, record: GrantRecord, grant: Grant): GrantState {
+  if (granted) return 'allowed'
+  return grantLoss(record, grant) === 'lost' ? 'stale' : 'off'
+}
 
 export function controlPlaneState(
   registration: Registration | undefined,
@@ -93,13 +108,17 @@ export function macMenuBarHost(deps: MacMenuBarDeps): Omit<MenuBarHost, 'stop' |
       const permissions = await within(macPermissions(driver), PERMISSIONS_TIMEOUT_MS).catch(() => undefined)
       const name = deps.name()
       const app = appVersion(deps.appPath)
+      const record = readGrantRecord(dir)
       return {
         ...(name ? { name } : {}),
         version: COMPUTER_DAEMON_VERSION,
         ...(app ? { appVersion: app } : {}),
         controlPlane: { state: controlPlaneState(deps.registration, deps.client()), ...(host ? { host } : {}) },
         ...(permissions
-          ? { screenRecording: permissions.screenRecording, accessibility: permissions.accessibility }
+          ? {
+              screenRecording: grantState(permissions.screenRecording, record, 'screenRecording'),
+              accessibility: grantState(permissions.accessibility, record, 'accessibility')
+            }
           : {}),
         driver: { version: driver.version ?? CUA_DRIVER_VERSION, running: permissions !== undefined },
         ffmpeg: {
@@ -130,6 +149,16 @@ export function macMenuBarHost(deps: MacMenuBarDeps): Omit<MenuBarHost, 'stop' |
       deps.onFfmpegInstalled()
     },
     openSettings: (pane) => open(MAC_PANES[pane]),
+    resetGrant(grant) {
+      // The pane opens first: resetting a held Screen Recording grant makes macOS quit the app, which restarts the daemon.
+      open(MAC_PANES[grant])
+      forgetGrant(dir, grant)
+      log(`resetting the ${grant} grant held for an earlier build of the app, from the menu bar`)
+      const reset = spawnSync('tccutil', ['reset', TCC_SERVICE[grant], APP_ID], { encoding: 'utf8' })
+      if (reset.status !== 0) log(`tccutil reset failed: ${`${reset.stdout}${reset.stderr}`.trim()}`)
+      // A fresh child asks, as the daemon's start does: it lists the app in the pane again, switched off, to switch on.
+      void runSelf(['permissions', '--json', '--prompt'], 200_000).catch(() => undefined)
+    },
     setStartAtLogin(on) {
       setStartAtLogin(on)
       log(`start at login turned ${on ? 'on' : 'off'} from the menu bar`)

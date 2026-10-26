@@ -1,4 +1,5 @@
 // The macOS menu bar's model and actions (#3403): the daemon decides every item, the Swift helper only draws and clicks.
+import type { Grant } from './macos-grants.js'
 import type { Check } from './setup.js'
 import type { TrayState, TrayTone } from './linux/tray.js'
 import { HelperTray } from './tray-helper.js'
@@ -31,12 +32,15 @@ export interface MenuBarFacts {
   appVersion?: string
   controlPlane: { state: ControlPlaneState; host?: string }
   // Undefined while unknown: the driver did not answer.
-  screenRecording?: boolean
-  accessibility?: boolean
+  screenRecording?: GrantState
+  accessibility?: GrantState
   driver: { version: string; running: boolean }
   ffmpeg: { version: string; installed: boolean; installable: boolean; installing?: boolean }
   startAtLogin: boolean
 }
+
+// `stale`: once held, now not in effect: switched off, or held by an earlier ad-hoc build of the app.
+export type GrantState = 'allowed' | 'off' | 'stale'
 
 export type Busy = 'driver' | 'ffmpeg' | 'control-plane'
 
@@ -48,12 +52,14 @@ const CONTROL_PLANE: Record<ControlPlaneState, [Mark, string]> = {
   unregistered: ['fail', 'not registered']
 }
 
-const grant = (label: string, granted: boolean | undefined, id: string): MenuItem =>
-  granted === undefined
+const grant = (label: string, state: GrantState | undefined, id: string): MenuItem =>
+  state === undefined
     ? { id, title: `${label}: unknown, click to open Settings`, mark: 'warn' }
-    : granted
+    : state === 'allowed'
       ? { id, title: `${label}: allowed`, mark: 'ok' }
-      : { id, title: `${label}: not allowed, click to open Settings`, mark: 'fail' }
+      : state === 'stale'
+        ? { id: `reset-${id}`, title: `${label}: not in effect, click to reset and allow again`, mark: 'fail' }
+        : { id, title: `${label}: not allowed, click to open Settings`, mark: 'fail' }
 
 export function menuBarMenu(tray: TrayState, facts: MenuBarFacts, busy: ReadonlySet<Busy> = new Set()): Menu {
   const [cpMark, cpText] = busy.has('control-plane')
@@ -130,7 +136,9 @@ export interface MenuBarHost {
   reconnect(): Promise<boolean>
   installDriver(): Promise<void>
   installFfmpeg(): Promise<void>
-  openSettings(pane: 'screenRecording' | 'accessibility'): void
+  openSettings(pane: Grant): void
+  // Forgets a grant macOS holds for an earlier build, then asks for it again.
+  resetGrant(grant: Grant): void
   setStartAtLogin(on: boolean): void
   openLogs(): void
   uninstall(): void
@@ -191,6 +199,10 @@ export function startMenuBar(
         return host.openSettings('screenRecording')
       case 'accessibility':
         return host.openSettings('accessibility')
+      case 'reset-screen-recording':
+        return host.resetGrant('screenRecording')
+      case 'reset-accessibility':
+        return host.resetGrant('accessibility')
       case 'cua-driver':
         return task('driver', () => host.installDriver())
       case 'ffmpeg':

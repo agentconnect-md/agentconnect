@@ -9,8 +9,8 @@ const FACTS: MenuBarFacts = {
   version: '2.7.0',
   appVersion: '2.7.0-rc.7',
   controlPlane: { state: 'connected', host: 'api.example.com' },
-  screenRecording: true,
-  accessibility: true,
+  screenRecording: 'allowed',
+  accessibility: 'allowed',
   driver: { version: '0.35.2', running: true },
   ffmpeg: { version: 'b6.1.1', installed: true, installable: true },
   startAtLogin: true
@@ -51,7 +51,7 @@ describe('menu bar menu', () => {
       {
         ...FACTS,
         controlPlane: { state: 'disconnected' },
-        screenRecording: false,
+        screenRecording: 'off',
         accessibility: undefined,
         driver: { version: '0.35.2', running: false },
         ffmpeg: { version: 'b6.1.1', installed: false, installable: true },
@@ -62,6 +62,9 @@ describe('menu bar menu', () => {
     expect(item(broken, 'Control Plane')).toMatchObject({ mark: 'fail', enabled: true })
     expect(item(broken, 'Screen Recording')).toMatchObject({ id: 'screen-recording', mark: 'fail' })
     expect(item(broken, 'Device Control')).toMatchObject({ mark: 'warn' })
+    const stale = menuBarMenu(READY, { ...FACTS, screenRecording: 'stale', accessibility: 'stale' })
+    expect(item(stale, 'Screen Recording')).toMatchObject({ id: 'reset-screen-recording', mark: 'fail' })
+    expect(item(stale, 'Device Control').id).toBe('reset-accessibility')
     expect(item(broken, 'Cua Driver').title).toContain('click to reinstall')
     expect(item(broken, 'ffmpeg')).toMatchObject({ id: 'ffmpeg', mark: 'fail' })
     expect(item(broken, 'Start at Login').checked).toBe(false)
@@ -91,6 +94,7 @@ function harness(facts: Partial<MenuBarFacts> = {}) {
       current = { ...current, ffmpeg: { ...current.ffmpeg, installed: true } }
     },
     openSettings: (pane) => calls.push(`settings ${pane}`),
+    resetGrant: (grant) => calls.push(`reset ${grant}`),
     setStartAtLogin: (on) => {
       calls.push(`startAtLogin ${on}`)
       current = { ...current, startAtLogin: on }
@@ -123,12 +127,25 @@ describe('menu bar actions', () => {
   it('runs each item in the daemon and redraws with what changed', async () => {
     const h = harness({ ffmpeg: { version: 'b6.1.1', installed: false, installable: true }, startAtLogin: true })
     await expect.poll(() => h.menus.length).toBeGreaterThan(0)
-    for (const id of ['stop', 'resume', 'screen-recording', 'accessibility', 'logs', 'uninstall', 'quit']) h.click(id)
+    for (const id of [
+      'stop',
+      'resume',
+      'screen-recording',
+      'accessibility',
+      'reset-screen-recording',
+      'reset-accessibility',
+      'logs',
+      'uninstall',
+      'quit'
+    ])
+      h.click(id)
     expect(h.calls).toEqual([
       'stop',
       'resume',
       'settings screenRecording',
       'settings accessibility',
+      'reset screenRecording',
+      'reset accessibility',
       'logs',
       'uninstall',
       'quit'
