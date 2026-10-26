@@ -10,6 +10,8 @@ const NODE_VERSION = 'v24.22.0'
 const BUNDLE_ID = 'md.agentconnect.computer'
 const APP_NAME = 'AgentConnect Computer'
 const EXECUTABLE = 'agentconnect-computer'
+// The menu bar indicator (#3403); src/self.ts finds it by this name beside the runtime.
+const MENU_BAR_HELPER = 'agentconnect-computer-menubar'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const arch = process.env.TARGET_ARCH ?? process.arch
@@ -51,6 +53,30 @@ const binary = join(contents, 'MacOS', EXECUTABLE)
 cpSync(join(node, 'bin', 'node'), binary)
 chmodSync(binary, 0o755)
 cpSync(join(node, 'LICENSE'), join(contents, 'Resources', 'LICENSE-node.txt'))
+const timestamp = identity === '-' ? '--timestamp=none' : '--timestamp'
+// Nested code is signed before the bundle, whose seal then covers it.
+const helper = join(contents, 'MacOS', MENU_BAR_HELPER)
+run('swiftc', [
+  '-O',
+  '-swift-version',
+  '5',
+  '-target',
+  `${arch === 'x64' ? 'x86_64' : 'arm64'}-apple-macos13.5`,
+  '-o',
+  helper,
+  join(root, 'macos', 'menubar.swift')
+])
+run('codesign', [
+  '--force',
+  '--sign',
+  identity,
+  '--identifier',
+  `${BUNDLE_ID}.menubar`,
+  '--options',
+  'runtime',
+  timestamp,
+  helper
+])
 writeFileSync(
   join(contents, 'Info.plist'),
   `<?xml version="1.0" encoding="UTF-8"?>
@@ -96,7 +122,7 @@ run('codesign', [
   'runtime',
   '--entitlements',
   entitlements,
-  identity === '-' ? '--timestamp=none' : '--timestamp',
+  timestamp,
   app
 ])
 run('codesign', ['--verify', '--strict', '--verbose', app])

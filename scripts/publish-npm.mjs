@@ -49,7 +49,7 @@ function changedSince(tag, paths) {
 }
 
 // The macOS app: its Info.plist version is in its signature, so a rebuild at an unchanged recipe would cost ad-hoc grants.
-const APP_INPUTS = ['packages/computer/scripts/build-macos-app.mjs']
+const APP_INPUTS = ['packages/computer/scripts/build-macos-app.mjs', 'packages/computer/macos/menubar.swift']
 const appBuilt = (arch) =>
   existsSync(new URL(`../packages/computer/bundle/computer-darwin-${arch}/package.json`, import.meta.url))
 

@@ -33,11 +33,13 @@ import { createComputerMcpServer, exposedDriverTools } from './tools.js'
 import { createViewer, type Viewer, type ViewerPrincipal } from './viewer.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
 import { recordGrants } from './macos-grants.js'
-import { appBundlePath, managedEntry, runSelf, selfCommand, serviceEntry } from './self.js'
+import { appBundlePath, managedEntry, menuBarHelperPath, runSelf, selfCommand, serviceEntry } from './self.js'
 import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
 import { consoleStopHandler } from './cp/console-stop.js'
 import { DAEMON_CONSOLE_STOP_REASON, startLocalControls, type LocalControls } from './local-controls.js'
+import { macMenuBarHost } from './menu-bar-host.js'
+import { watchAccessibility, type AccessibilityWatch } from './accessibility-watch.js'
 import { RelayLinks } from './cp/relay-links.js'
 import {
   channelPrincipal,
@@ -650,6 +652,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     viewer?: Viewer
     channel?: ReturnType<typeof startCpChannel>
     local?: LocalControls
+    accessibility?: AccessibilityWatch
   } = {}
   // Registered with a Control Plane: act only while its channel key is live, never after a revoke (§8.2).
   const authority = new ChannelAuthority({
@@ -715,6 +718,15 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     if (state && (!state.accessibility || !state.screenRecording)) {
       void runSelf(['permissions', '--json', '--prompt'], 200_000).catch(() => undefined)
     }
+    if (state && !state.accessibility) {
+      live.accessibility = watchAccessibility({
+        check: async () =>
+          (JSON.parse(await runSelf(['permissions', '--json'], 60_000)) as { accessibility?: boolean })
+            .accessibility === true,
+        restartDriver: () => driver.close(),
+        log
+      })
+    }
   }
   const releaseDisplay = config.keepAwake ? keepDisplayAwake(log) : () => undefined
   const driverTools = await loadDriverTools(driver, config)
@@ -734,6 +746,27 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     refusal: () => authority.refusal(),
     stopHotkey: config.stopHotkey,
     headless: sessionKind() === 'xvfb',
+    ...(process.platform === 'darwin'
+      ? {
+          menuBar: {
+            helper: menuBarHelperPath(),
+            host: macMenuBarHost({
+              dir,
+              ffmpegPath: config.ffmpegPath,
+              appPath: appBundlePath(),
+              driver,
+              name: () => computer.info().name as string | undefined,
+              registration,
+              client: () => live.channel?.client,
+              // A non-zero exit makes launchd's KeepAlive start the daemon again; zero leaves it stopped.
+              shutdown: (code) => void shutdown(code),
+              onFfmpegInstalled: () => live.channel?.refreshDoctor(),
+              accessibilityGranted: () => live.accessibility?.now() ?? Promise.resolve(false),
+              log
+            })
+          }
+        }
+      : {}),
     log
   })
   const createMcpServer = ({ client, viewOnly, agent }: McpPrincipal): McpServer =>
@@ -798,6 +831,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     await auditReport?.flush()
     live.channel?.stop()
     live.local?.close()
+    live.accessibility?.stop()
     authority.close()
     releaseDisplay()
     await Promise.allSettled([server.close(), driver.close(), egress?.stop()])

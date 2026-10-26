@@ -71,8 +71,21 @@ export function ffmpegAvailable(command: string): boolean {
 // Whether `run` should fetch the pinned build when no ffmpeg is found.
 export const canInstallFfmpeg = (): boolean => pinnedBuild() !== undefined
 
-export async function installFfmpeg(dataDir: string, log: (line: string) => void = console.log): Promise<string> {
+// One download per target at a time: the viewer's start and the menu bar's install share it.
+const downloads = new Map<string, Promise<string>>()
+
+export const ffmpegInstalling = (dataDir: string): boolean => downloads.has(installedFfmpegPath(dataDir))
+
+export function installFfmpeg(dataDir: string, log: (line: string) => void = console.log): Promise<string> {
   const target = installedFfmpegPath(dataDir)
+  const running = downloads.get(target)
+  if (running) return running
+  const download = downloadFfmpeg(dataDir, target, log).finally(() => downloads.delete(target))
+  downloads.set(target, download)
+  return download
+}
+
+async function downloadFfmpeg(dataDir: string, target: string, log: (line: string) => void): Promise<string> {
   if (existsSync(target)) return target
   const build = pinnedBuild()
   if (!build) throw new Error('no pinned ffmpeg for this platform; install it with your package manager')

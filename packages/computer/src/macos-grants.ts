@@ -43,6 +43,18 @@ export function recordGrants(
   return record
 }
 
+// Drops what was recorded for a grant, as `tccutil reset` drops it from macOS.
+export function forgetGrant(dir: string, grant: Grant): void {
+  const record = readGrantRecord(dir)
+  delete record.asked[grant]
+  delete record.held[grant]
+  try {
+    writeFileSync(grantRecordPath(dir), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 })
+  } catch {
+    // Nothing recorded, nothing to forget.
+  }
+}
+
 export type GrantLoss = 'never-asked' | 'listed-off' | 'lost'
 
 // Why a missing grant is missing: never asked, asked but left off, or once held and now off or for an older signature.

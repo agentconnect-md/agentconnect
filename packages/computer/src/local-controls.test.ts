@@ -10,6 +10,16 @@ import {
 } from './local-controls.js'
 import type { X11LocalControls, X11LocalOptions } from './linux/x11-local.js'
 import type { Tray, TrayOptions, TrayState } from './linux/tray.js'
+import type { HelperTray, HelperTrayOptions } from './tray-helper.js'
+import type { Menu, MenuBarFacts, MenuBarHost } from './menu-bar.js'
+
+const FACTS: MenuBarFacts = {
+  version: '2.7.0',
+  controlPlane: { state: 'connected' },
+  driver: { version: '0.35.2', running: true },
+  ffmpeg: { version: 'b6.1.1', installed: true, installable: true },
+  startAtLogin: true
+}
 
 class FakeComputer implements LocallyControlled {
   status: 'online' | 'paused' | 'human_in_control' | 'busy' = 'online'
@@ -73,10 +83,10 @@ async function start(
 }
 
 describe('local controls', () => {
-  it('runs only in an X11 session on Linux', async () => {
+  it('runs in an X11 session on Linux or on macOS', async () => {
     const computer = new FakeComputer()
     const base = { computer, refusal: () => undefined, stopHotkey: '', log: () => undefined }
-    expect(await startLocalControls({ ...base, platform: 'darwin', env: { DISPLAY: ':0' } })).toBeUndefined()
+    expect(await startLocalControls({ ...base, platform: 'win32', env: {} })).toBeUndefined()
     expect(
       await startLocalControls({ ...base, platform: 'linux', env: { DISPLAY: ':0', WAYLAND_DISPLAY: 'wayland-0' } })
     ).toBeUndefined()
@@ -179,6 +189,50 @@ describe('local controls', () => {
     expect(trays).toBe(0)
     expect(controls!.checks()[2]).toMatchObject({ name: 'tray', status: 'info' })
     controls!.close()
+  })
+
+  it('drives the macOS menu bar, and warns when the app has none', async () => {
+    const computer = new FakeComputer()
+    const hooks: { path?: string; tray?: HelperTrayOptions; menus: Menu[] } = { menus: [] }
+    const base = {
+      computer,
+      refusal: () => undefined,
+      stopHotkey: '',
+      log: () => undefined,
+      platform: 'darwin' as const
+    }
+    const host = { facts: async () => FACTS } as unknown as Omit<MenuBarHost, 'stop' | 'resume' | 'log'>
+    const controls = (await startLocalControls({
+      ...base,
+      menuBar: { helper: process.execPath, host },
+      startHelperTray: (path, options) => {
+        hooks.path = path
+        hooks.tray = options
+        return {
+          problem: undefined,
+          update: (menu: Menu) => hooks.menus.push(menu),
+          close: () => undefined
+        } as unknown as HelperTray
+      }
+    }))!
+    expect(hooks.path).toBe(process.execPath)
+    await expect.poll(() => hooks.menus.at(-1)?.tone).toBe('online')
+    hooks.tray!.onClick('stop')
+    expect(computer.reason).toBe(TRAY_STOP_REASON)
+    controls.update()
+    expect(hooks.menus.at(-1)!.items.some((item) => item.id === 'resume')).toBe(true)
+    hooks.tray!.onClick('resume')
+    expect(computer.status).toBe('online')
+    expect(controls.keyboard()).toBe(false)
+    expect(controls.checks()).toMatchObject([{ name: 'tray', status: 'ok' }])
+    controls.close()
+
+    const outside = (await startLocalControls({ ...base, menuBar: { helper: undefined, host } }))!
+    expect(outside.checks()).toMatchObject([{ name: 'tray', status: 'warn' }])
+    outside.close()
+    const older = (await startLocalControls({ ...base, menuBar: { helper: '/nonexistent/menubar', host } }))!
+    expect(older.checks()[0]!.detail).toContain('has no menu bar helper')
+    older.close()
   })
 
   it('shows who holds the desktop and whether agents can act', () => {
