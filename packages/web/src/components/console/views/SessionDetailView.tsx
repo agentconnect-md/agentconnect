@@ -164,6 +164,7 @@ import { SessionVisibilityControl } from '@/components/console/SessionVisibility
 import { SessionAgentFocusMenu, type SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { DockPanel, SessionDock, SessionDockSlot, type DockTab } from '@/components/console/dock/SessionDock'
+import { ComputerPanel } from '@/components/console/dock/ComputerPanel'
 import {
   SessionsPanel,
   SessionsPanelSkeleton,
@@ -2471,7 +2472,9 @@ const DOCK_TABS: DockTab[] = [
     icon: 'list-checks',
     actionIcon: 'refresh-cw',
     actionLabel: 'Refresh tasks'
-  }
+  },
+  // The focused agent's Computers: watch, expand and take control (computer-use.md §10).
+  { key: 'computer', label: 'Computer', icon: 'monitor' }
 ]
 
 /** Loading keeps the same dock + body tracks as the transcript; a resolved 404 opts out, so its card gets the whole content wrap. */
@@ -3168,6 +3171,11 @@ export default function SessionDetailView() {
   }, [defaultHeaderFocusAgentId, headerFocusOptionIds, headerFocusScope])
   // Whose checkout the Files tab and the viewer read: the agent the header is focused on. Empty on a session with no agent at all, and then there is no workspace to offer a tab for.
   const filesAgentId = headerFocusAgentId || null
+  // The Computers the focused agent may use; the Computer tab exists only when there is one.
+  const computerIds = useMemo(
+    () => (filesAgentId ? (agentById.get(filesAgentId)?.computerUse?.computers ?? []) : []),
+    [agentById, filesAgentId]
+  )
   const headerFocusOption = headerFocusOptions.find((option) => option.agentId === headerFocusAgentId)
   const headerFocusSessionId = headerFocusOption?.sessionId
   const extraHeaderDetailId =
@@ -3290,6 +3298,8 @@ export default function SessionDetailView() {
   )
   // Which panel is on screen. Sessions is where a session page opens; every other tab is one the reader asked for.
   const [dockTab, setDockTab] = useState(DOCK_TABS[0]!.key)
+  // A closed drawer leaves its panels mounted, so the Computer viewer must hear that it is off screen and hand control back.
+  const [dockVisible, setDockVisible] = useState(true)
   // The Files tab's `refresh-cw` action: re-reads the tree and the git status without remounting the panel, so the reader's filter and expanded folders survive it.
   const [filesRefreshTick, setFilesRefreshTick] = useState(0)
   // Reported by the panel, like the Sessions verdict: only it knows whether its first root listing has answered.
@@ -3368,7 +3378,9 @@ export default function SessionDetailView() {
                 ? t('git')
                 : tab.key === 'pr'
                   ? t('pullRequest')
-                  : t('tasks'),
+                  : tab.key === 'computer'
+                    ? t('computer')
+                    : t('tasks'),
         ...(tab.key === 'files'
           ? { actionLabel: t('refreshFiles') }
           : tab.key === 'git'
@@ -3386,13 +3398,15 @@ export default function SessionDetailView() {
         .filter((tab) =>
           tab.key === 'files' || tab.key === 'git'
             ? filesAgentId !== null && !MOCK_MODE
-            : tab.key === 'tasks'
-              ? // Against its OWN scope (an agent and a canonical session), and dropped once settled with nothing in either group.
-                filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE && tasksTabShown(tasksVerdict)
-              : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
-                tab.key !== 'pr' ||
-                (prSessionId !== null &&
-                  (prVerdict.answer !== 'none' || (prBranchScoped && gitVerdict.changed !== null)))
+            : tab.key === 'computer'
+              ? computerIds.length > 0 && !MOCK_MODE
+              : tab.key === 'tasks'
+                ? // Against its OWN scope (an agent and a canonical session), and dropped once settled with nothing in either group.
+                  filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE && tasksTabShown(tasksVerdict)
+                : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
+                  tab.key !== 'pr' ||
+                  (prSessionId !== null &&
+                    (prVerdict.answer !== 'none' || (prBranchScoped && gitVerdict.changed !== null)))
         )
         .map((tab) =>
           tab.key === 'sessions'
@@ -3425,6 +3439,7 @@ export default function SessionDetailView() {
                     : tab
         ),
     [
+      computerIds.length,
       filesAgentId,
       filesStatus,
       gitStatus,
@@ -6457,6 +6472,7 @@ export default function SessionDetailView() {
         }}
         overlayKey={`${session.id}:${viewerPath ?? ''}`}
         label={t('panels')}
+        onVisibleChange={setDockVisible}
       >
         {/* Both panels stay mounted; only the active one draws. Sessions owns the verdict that sets its own tab status, and Files owns the tree, the filter and the scroll position a tab switch must not spend. */}
         <DockPanel active={dockTabKey === 'sessions'}>
@@ -6551,6 +6567,11 @@ export default function SessionDetailView() {
           ) : null}
         </DockPanel>
         {/* Mounted while hidden, like PR: its verdict is what puts its tab in the strip once any group has something to show. */}
+        <DockPanel active={dockTabKey === 'computer'}>
+          {computerIds.length > 0 ? (
+            <ComputerPanel computerIds={computerIds} active={dockVisible && dockTabKey === 'computer'} />
+          ) : null}
+        </DockPanel>
         <DockPanel active={dockTabKey === 'tasks'}>
           {filesAgentId && tasksSessionId ? (
             <TasksPanel

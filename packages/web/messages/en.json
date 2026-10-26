@@ -948,7 +948,10 @@
       "zoomOut": "Zoom out",
       "fitToScreen": "Fit to screen",
       "actualSize": "Actual size",
-      "closeViewer": "Close"
+      "closeViewer": "Close",
+      "computer": "Computer",
+      "computerPick": "Computer",
+      "computerNone": "This agent has no computer you can watch."
     }
   },
   "Shell": {
@@ -6778,7 +6781,9 @@
         "p2p": "Peer to peer",
         "turn": "TURN relay",
         "screenshots": "Screenshots"
-      }
+      },
+      "expand": "Expand",
+      "collapse": "Exit full view"
     },
     "allAgents": "All agents",
     "allocation": {

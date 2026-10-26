@@ -721,6 +721,19 @@ describe('SessionDock collapsed bands', () => {
     expect(trigger().getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('tells the caller when the drawer puts a panel on screen and when it takes it away', () => {
+    const seen: boolean[] = []
+    const onVisibleChange = (visible: boolean) => seen.push(visible)
+    render(dock({ onVisibleChange }))
+    expect(seen.at(-1)).toBe(false)
+    click(trigger())
+    expect(seen.at(-1)).toBe(true)
+    click(container.querySelector('[data-dock-close]'))
+    expect(seen.at(-1)).toBe(false)
+    setViewport(DOCK_WIDE_MIN + 200)
+    expect(seen.at(-1)).toBe(true)
+  })
+
   it('closes from the in-panel button, since the overlay covers its own trigger', () => {
     render(dock())
     click(trigger())

@@ -1,6 +1,6 @@
 'use client'
 
-// The Computer detail's embedded viewer (computer-use.md §7, §10): watch, take over and release; media never crosses the CP.
+// The embedded viewer (computer-use.md §7, §10), on the Computer detail and in the session dock: watch, take over and release; media never crosses the CP.
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from 'react'
 import { useTranslations } from 'next-intl'
 import { openComputerViewer, type ComputerDto } from '@/lib/api'
@@ -43,7 +43,7 @@ export function ComputerViewerCard({ computer, createSession }: ComputerViewerPr
         )}
       </div>
       {open ? (
-        <ViewerBody computer={computer} {...(createSession ? { createSession } : {})} />
+        <ComputerViewerScreen computer={computer} {...(createSession ? { createSession } : {})} />
       ) : (
         <div className="px-4 py-5 font-sans text-[13px] font-normal leading-[1.55] text-(--text-tertiary)">
           {watchable ? t('idle') : t('offline')}
@@ -53,8 +53,14 @@ export function ComputerViewerCard({ computer, createSession }: ComputerViewerPr
   )
 }
 
-function ViewerBody({ computer, createSession }: ComputerViewerProps) {
+export interface ComputerViewerScreenProps extends ComputerViewerProps {
+  // The session dock's narrow column: tighter chrome, and an expand control that fills the window.
+  compact?: boolean
+}
+
+export function ComputerViewerScreen({ computer, createSession, compact = false }: ComputerViewerScreenProps) {
   const t = useTranslations('Computers.viewer')
+  const [expanded, setExpanded] = useState(false)
   const video = useRef<HTMLVideoElement>(null)
   const surface = useRef<HTMLDivElement>(null)
   const session = useRef<ComputerViewerSession | null>(null)
@@ -86,9 +92,30 @@ function ViewerBody({ computer, createSession }: ComputerViewerProps) {
     void action().finally(() => surface.current?.focus())
   }
 
+  // Escape leaves the expanded view, except while driving: then it is the remote machine's key.
+  useEffect(() => {
+    if (!expanded || inControl) return
+    const collapse = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setExpanded(false)
+    }
+    window.addEventListener('keydown', collapse)
+    return () => window.removeEventListener('keydown', collapse)
+  }, [expanded, inControl])
+  // The expanded view leaves room for its toolbar and the control row under the screen.
+  const screenSize = expanded ? 'block max-h-[calc(100vh-112px)] max-w-full' : 'block max-h-[70vh] max-w-full'
+
   return (
-    <div>
-      <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-4 py-[9px]">
+    <div
+      className={expanded ? 'fixed inset-0 z-[70] flex flex-col bg-(--surface-app)' : undefined}
+      data-viewer-expanded={expanded ? '' : undefined}
+    >
+      <div
+        className={
+          compact && !expanded
+            ? 'flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-3 py-[7px]'
+            : 'flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-4 py-[9px]'
+        }
+      >
         <StatusLine state={state} />
         <span className="ml-auto flex flex-wrap items-center gap-2">
           {state?.path && (
@@ -109,6 +136,21 @@ function ViewerBody({ computer, createSession }: ComputerViewerProps) {
                 {t('takeControl')}
               </Button>
             ))}
+          {(compact || expanded) && (
+            <span title={expanded ? t('collapse') : t('expand')} data-viewer-expand>
+              <Button
+                variant="secondary"
+                size="sm"
+                ariaLabel={expanded ? t('collapse') : t('expand')}
+                onClick={() => {
+                  setExpanded((value) => !value)
+                  surface.current?.focus()
+                }}
+              >
+                <Icon name={expanded ? 'minimize-2' : 'maximize-2'} size={14} />
+              </Button>
+            </span>
+          )}
         </span>
       </div>
       {state?.error && (
@@ -119,7 +161,13 @@ function ViewerBody({ computer, createSession }: ComputerViewerProps) {
           {state.error}
         </div>
       )}
-      <div className="flex items-center justify-center bg-[#111] p-0 desktop:p-2">
+      <div
+        className={
+          expanded
+            ? 'flex min-h-0 flex-1 items-center justify-center bg-[#111] p-2'
+            : 'flex items-center justify-center bg-[#111] p-0 desktop:p-2'
+        }
+      >
         <div
           className={inControl ? 'relative leading-[0] outline-2 outline-(--status-online)' : 'relative leading-[0]'}
         >
@@ -128,10 +176,10 @@ function ViewerBody({ computer, createSession }: ComputerViewerProps) {
             autoPlay
             muted
             playsInline
-            className={state?.path && state.path !== 'screenshots' ? 'block max-h-[70vh] max-w-full' : 'hidden'}
+            className={state?.path && state.path !== 'screenshots' ? screenSize : 'hidden'}
           />
           {state?.path === 'screenshots' && state.frameUrl && (
-            <img src={state.frameUrl} alt={t('screenAlt')} className="block max-h-[70vh] max-w-full" />
+            <img src={state.frameUrl} alt={t('screenAlt')} className={screenSize} />
           )}
           {(!state || state.phase === 'connecting') && (
             <div className="flex h-60 w-full min-w-[280px] items-center justify-center font-sans text-[13px] text-[#cdd6e0]">

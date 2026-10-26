@@ -948,7 +948,10 @@
       "zoomOut": "缩小",
       "fitToScreen": "适应屏幕",
       "actualSize": "实际大小",
-      "closeViewer": "关闭"
+      "closeViewer": "关闭",
+      "computer": "电脑",
+      "computerPick": "电脑",
+      "computerNone": "这个 agent 没有你可以查看的电脑。"
     }
   },
   "Shell": {
@@ -6778,7 +6781,9 @@
         "p2p": "点对点",
         "turn": "TURN 中继",
         "screenshots": "截图"
-      }
+      },
+      "expand": "放大",
+      "collapse": "退出全屏"
     },
     "allAgents": "所有 Agent",
     "allocation": {
