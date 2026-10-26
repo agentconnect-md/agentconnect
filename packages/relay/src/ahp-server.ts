@@ -42,7 +42,7 @@ const PreauthRequest = z.object({
   jsonrpc: z.literal('2.0'),
   id: z.union([identifier, z.number().finite()]).optional(),
   method: identifier,
-  params: z.unknown()
+  params: z.unknown().optional()
 })
 const InitializeParams = z.object({
   channel: z.literal(ROOT),

@@ -289,6 +289,7 @@ it('authenticates a VS Code-shaped client that resumes, pipelines requests and p
   )
   await client.initialize()
   const os = client.request('resolveOperatingSystem', { channel: 'ahp-root://' })
+  client.socket.send(JSON.stringify({ jsonrpc: '2.0', id: 'diagnostics', method: 'getNetworkDiagnosticsInfo' }))
   client.socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'clientInfoChanged', params: {} }))
   const pong = client.request('ping', { channel: 'ahp-root://' })
   const authenticated = client.request('authenticate', {
@@ -298,6 +299,7 @@ it('authenticates a VS Code-shaped client that resumes, pipelines requests and p
     token: 'personal-key'
   })
   expect((await os).error.code).toBe(-32007)
+  expect((await client.next((message) => message.id === 'diagnostics')).error.code).toBe(-32007)
   expect((await pong).result).toEqual({})
   expect((await authenticated).result).toEqual({})
   expect(host.conn.authorizeAhp).toHaveBeenCalledWith(
