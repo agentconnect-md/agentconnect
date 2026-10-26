@@ -1,10 +1,31 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ComputerCpClient } from './cp/client.js'
 import type { Registration } from './cp/registration.js'
-import { appVersion, controlPlaneState, grantState, uninstallScript } from './menu-bar-host.js'
+import type { CuaDriver } from './driver/client.js'
+import { appVersion, controlPlaneState, grantState, macMenuBarHost, uninstallScript } from './menu-bar-host.js'
+
+const calls = vi.hoisted(() => ({ spawnSync: [] as string[][], opened: [] as string[], asked: 0 }))
+vi.mock('node:child_process', async (actual) => ({
+  ...(await actual<typeof import('node:child_process')>()),
+  spawnSync: (command: string, args: string[]) => {
+    calls.spawnSync.push([command, ...args])
+    return { status: 0, stdout: '', stderr: '' }
+  }
+}))
+vi.mock('./setup.js', async (actual) => ({
+  ...(await actual<typeof import('./setup.js')>()),
+  open: (url: string) => calls.opened.push(url)
+}))
+vi.mock('./self.js', async (actual) => ({
+  ...(await actual<typeof import('./self.js')>()),
+  runSelf: async () => {
+    calls.asked++
+    return '{}'
+  }
+}))
 
 describe('macOS menu bar host', () => {
   it('reads the Control Plane state from the registration and the channel', () => {
@@ -41,5 +62,36 @@ describe('macOS menu bar host', () => {
     expect(uninstallScript('rc')).toContain('npx -y @agentconnect.md/cli@rc computer uninstall')
     expect(uninstallScript('latest')).toContain('npx -y @agentconnect.md/cli computer uninstall')
     expect(uninstallScript(undefined)).toContain('agentconnect computer uninstall')
+  })
+
+  it('resets a stale grant, and restarts for Screen Recording, which macOS asks a running app for only once', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'menu-bar-host-'))
+    writeFileSync(
+      join(dir, 'macos-grants.json'),
+      JSON.stringify({ asked: {}, held: { accessibility: 'then', screenRecording: 'then' } })
+    )
+    const exits: number[] = []
+    const host = macMenuBarHost({
+      dir,
+      appPath: undefined,
+      driver: {} as CuaDriver,
+      name: () => undefined,
+      registration: undefined,
+      client: () => undefined,
+      shutdown: (code) => exits.push(code),
+      onFfmpegInstalled: () => undefined,
+      accessibilityGranted: async () => false,
+      log: () => undefined
+    })
+    host.resetGrant('accessibility')
+    expect(calls.spawnSync.at(-1)).toEqual(['tccutil', 'reset', 'Accessibility', 'md.agentconnect.computer'])
+    expect(calls.asked).toBe(1)
+    expect(exits).toEqual([])
+    host.resetGrant('screenRecording')
+    expect(calls.spawnSync.at(-1)).toEqual(['tccutil', 'reset', 'ScreenCapture', 'md.agentconnect.computer'])
+    expect(calls.asked).toBe(1)
+    expect(exits).toEqual([1])
+    expect(calls.opened).toHaveLength(2)
+    expect(JSON.parse(readFileSync(join(dir, 'macos-grants.json'), 'utf8')).held).toEqual({})
   })
 })

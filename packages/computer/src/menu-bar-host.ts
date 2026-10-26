@@ -156,13 +156,14 @@ export function macMenuBarHost(deps: MacMenuBarDeps): Omit<MenuBarHost, 'stop' |
     },
     openSettings: (pane) => open(MAC_PANES[pane]),
     resetGrant(grant) {
-      // The pane opens first: resetting a held Screen Recording grant makes macOS quit the app, which restarts the daemon.
       open(MAC_PANES[grant])
       forgetGrant(dir, grant)
       log(`resetting the ${grant} grant held for an earlier build of the app, from the menu bar`)
       const reset = spawnSync('tccutil', ['reset', TCC_SERVICE[grant], APP_ID], { encoding: 'utf8' })
       if (reset.status !== 0) log(`tccutil reset failed: ${`${reset.stdout}${reset.stderr}`.trim()}`)
-      // A fresh child asks, as the daemon's start does: it lists the app in the pane again, switched off, to switch on.
+      // macOS asks a running app for Screen Recording once, so only a fresh daemon gets the app listed again (its start asks).
+      if (grant === 'screenRecording') return deps.shutdown(1)
+      // A fresh child asks for Accessibility: it lists the app in the pane again, switched off, to switch on.
       void runSelf(['permissions', '--json', '--prompt'], 200_000).catch(() => undefined)
     },
     setStartAtLogin(on) {
