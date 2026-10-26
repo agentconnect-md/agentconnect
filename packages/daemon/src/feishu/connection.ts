@@ -11,6 +11,8 @@ import type {
 } from '@agentconnect.md/protocol'
 import { parseFeishuElicit } from '../platforms/feishu/elicit-card.js'
 import { parseFeishuApproval } from '../platforms/feishu/approval-card.js'
+import { parseFeishuCapabilityDecline } from '../platforms/feishu/capability-card.js'
+import { withCapabilityClick } from '../platforms/capability-click.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
@@ -125,6 +127,8 @@ export interface FeishuDeps {
     token: string | null
     actor?: InteractionActor
   }) => Promise<string | undefined>
+  /** A clicked capability-card Decline (capability-requests.md §4.4.4); core tells the clicker privately through the click. */
+  onCapabilityDecline?: (a: { generation: number; cardId: string; actor: InteractionActor }) => Promise<void>
   /** A clicked permission-card option, by position; a refusal only the clicker is told comes back. */
   onApprovalChoice?: (a: {
     requestId: string
@@ -873,6 +877,19 @@ export class FeishuConnection implements PlatformConnection {
     const channel = event.context?.open_chat_id ?? event.open_chat_id
     const actorId = event.operator?.open_id ?? event.operator?.user_id
     const value = asRecord(event.action?.value)
+    // A capability card's Decline: core judges it with this click registered, and its private line becomes the toast.
+    const decline = parseFeishuCapabilityDecline(value)
+    if (decline) {
+      const operator = cardActor(event, actorId)
+      // Judged by the union_id a message sender carries, so a p2p chat's person matches the clicker.
+      const actor = operator && { ...operator, userId: operator.memberId ?? operator.userId }
+      if (!actor || !this.deps.onCapabilityDecline) return undefined
+      const told = await withCapabilityClick(this, actor.userId, actor.name ? { name: actor.name } : {}, async () =>
+        this.deps.onCapabilityDecline!({ ...decline, actor })
+      ).catch(() => [] as string[])
+      const text = told.at(-1)
+      return text ? { toast: { type: 'warning', content: text } } : undefined
+    }
     // A permission card carries its request in its own payload too; a refusal is answered in the toast only the clicker sees.
     const approval = parseFeishuApproval(value)
     if (approval) {
@@ -996,12 +1013,14 @@ export class FeishuConnection implements PlatformConnection {
 
   /** Rewrite a posted elicitation card as settled — the CardKit analog of Slack's `chat.update`.
    *  Best effort by construction: no ACP outcome depends on it. */
-  async updateElicitCard(messageId: string, card: Record<string, unknown>): Promise<void> {
-    await this.queue.enqueue(async () => {
+  async updateElicitCard(messageId: string, card: Record<string, unknown>): Promise<boolean> {
+    return await this.queue.enqueue(async () => {
       try {
         await this.handle.api.patchCardMessage(messageId, card)
+        return true
       } catch (err) {
         this.deps.log?.debug(`feishu: elicitation card update failed (id=${messageId}): ${(err as Error).message}`)
+        return false
       }
     })
   }

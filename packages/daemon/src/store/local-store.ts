@@ -468,7 +468,7 @@ export interface SessionListRow extends SessionRecord {
  * output mode only gates what reaches the platform, never the transcript.
  * Only `text` and `tool` rows ever rebuild model context; the rest are read-only history.
  */
-export type TranscriptKind = 'text' | 'tool' | 'reasoning' | 'plan' | 'elicit' | 'app'
+export type TranscriptKind = 'text' | 'tool' | 'reasoning' | 'plan' | 'elicit' | 'app' | 'capability'
 
 /** One elicitation card's row identity in the shared `tool_call_id` column, namespaced so it
  *  cannot be an ACP tool id. Keyed by the card's minted `ts`, not its request id: request ids
@@ -482,6 +482,11 @@ function elicitRowId(ts: string): string {
  *  on it is what lets the daemon find a card's record from an RPC that carries nothing else. */
 function appRowId(appId: string): string {
   return `app:${appId}`
+}
+
+/** A webchat capability card's row, keyed by its request (capability-requests.md §4.4.2): one per request in a conversation. */
+function capabilityRowId(requestId: string): string {
+  return `capability:${requestId}`
 }
 
 /** The session a row is admitted into (message-intake.md §4.2). Absent ⇒ the row is an observation. */
@@ -6505,6 +6510,61 @@ export class LocalStore {
       this.transcriptRevision = written.revision
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision, [e.admission.sessionKey])
     }
+  }
+
+  /** Write (or rewrite) a webchat capability card's row, so a reloaded conversation shows it and how it settled. */
+  async upsertCapabilityCard(e: {
+    channel: string
+    thread: string
+    ts: string
+    sender: string
+    requestId: string
+    text: string
+    body: string
+    admission: TranscriptAdmission
+  }): Promise<void> {
+    const orgId = this.orgFor(e.sender)
+    const cardId = capabilityRowId(e.requestId)
+    await this.transcriptMutex.run(async () => {
+      const revision = this.transcriptRevision + 1
+      const written = await this.writeTranscriptRows(orgId, e.channel, [
+        {
+          kind: 'run',
+          sql: `INSERT OR IGNORE INTO transcript
+             (orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
+           VALUES (@orgId, @channel, @thread, @ts, @sender, 'capability', @text, @cardId, @body, @eventTimeUs, @revision)`,
+          params: [
+            {
+              orgId,
+              channel: e.channel,
+              thread: e.thread,
+              ts: e.ts,
+              sender: e.sender,
+              text: e.text,
+              cardId,
+              body: e.body,
+              eventTimeUs: transcriptEventTimeUs(e.ts),
+              revision
+            }
+          ]
+        },
+        {
+          kind: 'run',
+          sql: `UPDATE transcript SET text = ?, body = ?, revision = ?
+           WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ? AND kind = 'capability'
+             AND (text IS NOT ? OR body IS NOT ?)`,
+          params: [e.text, e.body, revision, orgId, e.channel, e.thread, e.sender, cardId, e.text, e.body]
+        },
+        this.cardAdmissionStatement(e, orgId, 'capability', cardId, e.admission)
+      ])
+      if (written.changes.some((changed) => changed > 0)) {
+        this.transcriptRevision = written.revision
+        this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision, [
+          e.admission.sessionKey
+        ])
+      }
+    })
+    this.armObservationSweep(orgId, e.channel)
   }
 
   /**

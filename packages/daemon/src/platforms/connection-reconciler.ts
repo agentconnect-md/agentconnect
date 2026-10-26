@@ -114,6 +114,13 @@ export interface PlatformActionSink {
     ts?: string
     actor?: InteractionActor
   }): Promise<string | undefined>
+  /** A capability card's Decline named by its card and generation, judged against the bots of the connection it arrived on. */
+  declineCapabilityCard(a: {
+    generation: number
+    cardId: string
+    actor: InteractionActor
+    srcIntegrationIds: readonly string[]
+  }): Promise<void>
   /** A permission card's option clicked by position, where its button payload cannot carry the option's id. */
   handlePermissionPick(a: {
     requestId: string
@@ -922,6 +929,8 @@ export class ConnectionReconciler {
         onElicitChoice: (a) => this.host.handleElicitCardTap(a),
         onElicitSubmit: (a) => this.host.submitElicitEditor(a),
         onApprovalChoice: (a) => this.host.handlePermissionPick(a),
+        onCapabilityDecline: (a) =>
+          this.host.declineCapabilityCard({ ...a, srcIntegrationIds: this.host.srcIntegrationIds(conn) }),
         log: this.log
       })
       try {
@@ -997,6 +1006,8 @@ export class ConnectionReconciler {
         onElicitChoice: (a) => this.host.handleElicitCardTap(a),
         onElicitSubmit: (a) => this.host.submitElicitEditor(a),
         onApprovalChoice: (a) => this.host.handlePermissionPick(a),
+        onCapabilityDecline: (a) =>
+          this.host.declineCapabilityCard({ ...a, srcIntegrationIds: this.host.srcIntegrationIds(conn) }),
         log: this.log
       })
       try {

@@ -31,6 +31,8 @@ import {
 } from './render.js'
 import { DISCORD_ELICIT_MODAL, DISCORD_ELICIT_OPEN, parseDiscordElicit } from '../platforms/discord/elicit-card.js'
 import { parseDiscordApproval } from '../platforms/discord/approval-card.js'
+import { parseCapabilityDeclineData } from '../platforms/capability-card.js'
+import { withCapabilityClick } from '../platforms/capability-click.js'
 import type {
   ChatRefusal,
   InteractionActor,
@@ -119,6 +121,8 @@ export interface DiscordDeps {
     token: string | null
     actor?: InteractionActor
   }) => Promise<string | undefined>
+  /** A clicked capability-card Decline (capability-requests.md §4.4.4); core tells the clicker privately through the click. */
+  onCapabilityDecline?: (a: { generation: number; cardId: string; actor: InteractionActor }) => Promise<void>
   /** A clicked permission-card option, by position; a refusal only the clicker is told comes back. */
   onApprovalChoice?: (a: {
     requestId: string
@@ -315,6 +319,11 @@ export class DiscordConnection implements PlatformConnection {
         return
       }
       if (!interaction.isButton()) return
+      const decline = parseCapabilityDeclineData(interaction.customId)
+      if (decline) {
+        await this.onCapabilityDeclineInteraction(interaction, decline)
+        return
+      }
       const approval = parseDiscordApproval(interaction.customId)
       if (approval) {
         await this.onApprovalInteraction(interaction, approval)
@@ -407,6 +416,23 @@ export class DiscordConnection implements PlatformConnection {
   }
 
   /** Route one click on a permission card: acked first, and a refusal told to the clicker alone. */
+  /** A capability card's Decline: judged by core with this click registered, its private lines sent as ephemeral follow-ups. */
+  private async onCapabilityDeclineInteraction(
+    interaction: ButtonInteraction,
+    decline: { generation: number; cardId: string }
+  ): Promise<void> {
+    const deferred = interaction.deferUpdate().catch(() => {})
+    const actor = cardActor(interaction)
+    const told = await withCapabilityClick(
+      this,
+      actor.userId,
+      { isBot: interaction.user.bot, ...(actor.name ? { name: actor.name } : {}) },
+      async () => await this.deps.onCapabilityDecline?.({ ...decline, actor })
+    ).catch(() => [] as string[])
+    await deferred
+    for (const content of told) await interaction.followUp({ content, flags: MessageFlags.Ephemeral }).catch(() => {})
+  }
+
   private async onApprovalInteraction(
     interaction: ButtonInteraction,
     approval: { requestId: string; option: number }
@@ -797,25 +823,28 @@ export class DiscordConnection implements PlatformConnection {
     messageId: string,
     text: string,
     opts: { threadTs?: string; keyboard?: DiscordComponents } = {}
-  ): Promise<void> {
+  ): Promise<boolean> {
     const target = this.replyTarget(channel, opts.threadTs)
-    await this.queue.enqueue(async () => {
+    return await this.queue.enqueue(async () => {
       let ch: Sendable | null = null
       try {
         ch = await this.sendableChannel(target)
         if (!ch?.messages) {
           await this.postPermissionUpdateNotice(target, ch)
-          return
+          return false
         }
         const msg = await ch.messages.fetch(messageId)
         const payload: SendPayload = { content: chunkForDiscord(text)[0] ?? '' }
         if (opts.keyboard) payload.components = opts.keyboard
         await msg.edit(payload)
+        await this.postPermissionUpdateNotice(target, ch)
+        return true
       } catch (err) {
         this.rememberPermissionIssue(err, target)
         this.deps.log?.debug(`discord: edit failed (ch=${target} id=${messageId}): ${(err as Error).message}`)
       }
       await this.postPermissionUpdateNotice(target, ch)
+      return false
     })
   }
 
@@ -1038,6 +1067,12 @@ export class DiscordConnection implements PlatformConnection {
       this.deps.log?.debug(`discord: listChannels failed: ${(err as Error).message}`)
       return []
     }
+  }
+
+  /** The bot's direct message with one person, opened if needed: its channel id. */
+  async openDirectMessage(user: string): Promise<string> {
+    const dm = await this.client.users.createDM(user)
+    return dm.id
   }
 
   async getUserProfile(

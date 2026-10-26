@@ -415,7 +415,8 @@ export function createSessionReader(
         }
         // An elicitation card's body IS the card and has no full-body fetch behind it: it rides
         // inline or not at all, leaving the row's question to stand alone.
-        if (r.kind === 'elicit') {
+        // A capability card's body is small and the card itself (capability-requests.md §4.4.2): it rides inline, like an elicitation card's.
+        if (r.kind === 'elicit' || r.kind === 'capability') {
           if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
           return base
         }

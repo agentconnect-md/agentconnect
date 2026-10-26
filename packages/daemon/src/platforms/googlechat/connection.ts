@@ -562,6 +562,28 @@ export class GoogleChatConnection implements PlatformConnection {
     }
   }
 
+  /** The one human in a DM, by user resource name; undefined when Google lists none or several. */
+  async directMessagePerson(space: string): Promise<string | undefined> {
+    const page = await this.request<{ memberships?: MembershipResource[] }>('GET', `${space}/members`, {
+      query: { pageSize: '2', filter: 'member.type = "HUMAN"' },
+      retry: 'none',
+      signal: AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS)
+    })
+    const humans = (page.memberships ?? []).filter((m) => m.member?.type === 'HUMAN')
+    return humans.length === 1 ? humans[0]!.member?.name || undefined : undefined
+  }
+
+  /** The app's existing DM with one person (`spaces:findDirectMessage`); throws when they have none. */
+  async findDirectMessage(user: string): Promise<string> {
+    const space = await this.request<SpaceResource>('GET', 'spaces:findDirectMessage', {
+      query: { name: user },
+      retry: 'none',
+      signal: AbortSignal.timeout(GOOGLE_CHAT_READ_DEADLINE_MS)
+    })
+    if (!space.name) throw new GoogleChatApiError('Google Chat found no direct message with that person', 'not_found')
+    return space.name
+  }
+
   /** No member enumeration in this version: a Space's roster is not something a turn reads. */
   async listMembers(_channel: string): Promise<PlatformMemberRef[]> {
     return []

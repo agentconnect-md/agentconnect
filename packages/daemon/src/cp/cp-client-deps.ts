@@ -216,6 +216,7 @@ export interface CpClientSeamHost {
   capabilitySettled: NonNullable<CapabilityControlDeps['capabilitySettled']>
   capabilityReopened: NonNullable<CapabilityControlDeps['capabilityReopened']>
   capabilityForward: NonNullable<CapabilityControlDeps['capabilityForward']>
+  capabilityMcpRebound: NonNullable<CapabilityControlDeps['mcpRebound']>
   /** The edge's in-memory merge-when-ready registry, or undefined before agents are loaded. */
   autoMerge(): AutoMergeWatcher | undefined
   /** The console keep-alive leases over this daemon's sandboxes (`k8s/sandbox-hold.ts`). */
@@ -472,6 +473,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     capabilitySettled: (req) => host.capabilitySettled(req),
     capabilityReopened: (req) => host.capabilityReopened(req),
     capabilityForward: (req) => host.capabilityForward(req),
+    mcpRebound: (req) => host.capabilityMcpRebound(req),
     // Merge-when-ready lives at the EDGE and nowhere else — the CP relays these two frames and
     // stores nothing, so an unarmed answer is the truth about this process, not a lost row.
     ...(host.autoMerge() ? { autoMerge: host.autoMerge()! } : {}),

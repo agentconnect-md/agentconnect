@@ -126,6 +126,15 @@ export class CapabilityCardLedger {
     return (rows.rows as Row[]).map(fromRow)
   }
 
+  /** The open cards posted as one message of a conversation: what a reply to that message may decline. */
+  async atMessage(channel: string, ts: string): Promise<CapabilityCardRow[]> {
+    const rows = await this.db.query(
+      `SELECT ${COLUMNS} FROM capability_card WHERE channel = ? AND ts = ? AND settledAt IS NULL`,
+      [channel, ts]
+    )
+    return (rows.rows as Row[]).map(fromRow)
+  }
+
   /** A reopened request's cards carry its new generation in their Decline control. */
   async setGeneration(cardId: string, generation: number): Promise<void> {
     await this.db.query('UPDATE capability_card SET generation = ?, settledAt = NULL WHERE cardId = ?', [

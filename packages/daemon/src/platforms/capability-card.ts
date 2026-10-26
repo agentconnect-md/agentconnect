@@ -48,6 +48,10 @@ export interface CapabilityCardFacet {
   readonly platform: string
   /** How a Decline reaches the daemon: a button on the card, a numbered reply, or not at all. */
   readonly declineControl: 'button' | 'reply' | 'none'
+  /** False where the app cannot open a direct message with a person, so core never routes a card there. */
+  readonly directMessages?: boolean
+  /** A `reply` surface: whether a reply to the card says Decline. */
+  claimReply?(text: string): boolean
   build(model: CapabilityCardModel): CapabilityCardDraft
   /** The card once settled, its controls gone. */
   settled(model: CapabilityCardModel, outcome: CapabilityCardOutcome): CapabilityCardDraft
@@ -105,5 +109,16 @@ export function capabilityDeclineOption(generation: number, cardId: string): str
 /** The generation and card a Decline option names, or null when the option is not one. */
 export function parseCapabilityDeclineOption(optionId: string): { generation: number; cardId: string } | null {
   const match = /^cr-decline:([1-9]\d{0,9}):([0-9a-f-]{36})$/.exec(optionId)
+  return match ? { generation: Number(match[1]), cardId: match[2]! } : null
+}
+
+/** A Decline control's compact form for a platform whose callback carries only a short string: the generation and the card. */
+export function capabilityDeclineData(generation: number, cardId: string): string {
+  return `ac_cr:${generation}:${cardId}`
+}
+
+/** The generation and card a compact Decline names, or null when the data is not one. */
+export function parseCapabilityDeclineData(data: string): { generation: number; cardId: string } | null {
+  const match = /^ac_cr:([1-9]\d{0,9}):([0-9a-f-]{36})$/.exec(data)
   return match ? { generation: Number(match[1]), cardId: match[2]! } : null
 }

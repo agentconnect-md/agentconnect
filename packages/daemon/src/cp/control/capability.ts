@@ -1,5 +1,6 @@
 // C→D capability-request frames (capability-requests.md §4.5, §4.7): the settling wake, a reopen's card rewrite, and a forward.
 import type {
+  AgentMcpRebound,
   AnyFrame,
   CapabilityForward,
   CapabilityForwardResult,
@@ -14,6 +15,7 @@ export interface CapabilityControlDeps {
   capabilitySettled?: (req: SessionCapabilitySettled) => Promise<SessionCapabilitySettledResult>
   capabilityReopened?: (req: CapabilityReopened) => Promise<void>
   capabilityForward?: (req: CapabilityForward) => Promise<CapabilityForwardResult>
+  mcpRebound?: (req: AgentMcpRebound) => Promise<void>
 }
 
 export const sessionCapabilitySettled: ControlHandler<CapabilityControlDeps> = (frame: AnyFrame, deps, wire) => {
@@ -44,4 +46,13 @@ export const capabilityForward: ControlHandler<CapabilityControlDeps> = (frame: 
       wire.log.warn(`cp: capability/forward failed: ${(err as Error)?.message}`)
       wire.reply(frame, 'capability/forward/result', { delivered: false, reason: 'failed' })
     })
+}
+
+/** EVT: an MCP server's OAuth connected; the sessions that use it reload (§4.8 item 2). */
+export const agentMcpRebound: ControlHandler<CapabilityControlDeps> = (frame: AnyFrame, deps, wire) => {
+  const req = frame.payload as AgentMcpRebound
+  void (deps.mcpRebound?.(req) ?? Promise.resolve()).catch((err: unknown) =>
+    wire.log.warn(`cp: agent/mcp-rebound failed: ${(err as Error)?.message}`)
+  )
+  return // EVT — no reply
 }

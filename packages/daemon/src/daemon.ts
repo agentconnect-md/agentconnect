@@ -128,6 +128,8 @@ import {
   CODEHOST_FEEDBACK_FEATURE,
   FOLLOW_UP_WAKE_FEATURE,
   CAPABILITY_REQUESTS_FEATURE,
+  CAPABILITY_REQUESTS_V2_FEATURE,
+  CAPABILITY_V1_KINDS,
   CAPABILITY_ASKERS_MAX,
   FOLLOW_UP_WATCH_FEATURE,
   parseFollowUpWatchUrl,
@@ -1056,12 +1058,25 @@ import { feishuApprovalCards } from './platforms/feishu/approval-card.js'
 import { feishuPlatformModule } from './platforms/feishu/module.js'
 import { slackApprovalCards } from './platforms/slack/approval-card.js'
 import { slackCapabilityCards } from './platforms/slack/capability-card.js'
+import { discordCapabilityCards } from './platforms/discord/capability-card.js'
+import { feishuCapabilityCards } from './platforms/feishu/capability-card.js'
+import { parseGoogleChatCapabilityClick } from './platforms/googlechat/capability-card.js'
+import { telegramCapabilityCards } from './platforms/telegram/capability-card.js'
+import { withCapabilityClick } from './platforms/capability-click.js'
 import {
   CapabilityRequests,
+  inlineCardBody,
   readAskerOf,
   type CapabilityDmTarget,
   type CapabilityOrigin
 } from './capability/requests.js'
+import {
+  capabilityDeclineOption,
+  parseCapabilityDeclineData,
+  type CapabilityCardModel,
+  type CapabilityCardOutcome
+} from './platforms/capability-card.js'
+import type { CapabilityCardRow } from './store/capability-cards.js'
 import { capabilityRequestToolsFor } from './mcp/ops/capability-requests.js'
 import type { ApprovalCardFacet } from './platforms/approval-card.js'
 import { discordElicitCards } from './platforms/discord/elicit-card.js'
@@ -1137,6 +1152,7 @@ import type {
   CapabilityReopened,
   CapabilityForward,
   CapabilityForwardResult,
+  AgentMcpRebound,
   TaskList,
   TaskListReq,
   McpAppRpc,
@@ -1766,6 +1782,7 @@ export class Daemon {
         platform: 'telegram',
         elicitCards: telegramElicitCards,
         approvalCards: telegramApprovalCards,
+        capabilityCards: telegramCapabilityCards,
         // The continue-the-topic hint only earns its space in a group, where the
         // reply chain is the ONLY way back into this session; a DM already has one
         // implicit thread. Gated on showFooter, the delivery-chrome switch.
@@ -1781,6 +1798,7 @@ export class Daemon {
         platform: 'discord',
         elicitCards: discordElicitCards,
         approvalCards: discordApprovalCards,
+        capabilityCards: discordCapabilityCards,
         createConverger: (ctx) => new DiscordConverger(ctx.mode as never, ctx.resolveFileLink),
         initialTurnState: () => ({}),
         apply: (p, action) => this.applyDiscordAction(p, action as DiscordAction)
@@ -1789,6 +1807,7 @@ export class Daemon {
         platform: 'feishu',
         elicitCards: feishuElicitCards,
         approvalCards: feishuApprovalCards,
+        capabilityCards: feishuCapabilityCards,
         createConverger: (ctx) => new FeishuConverger(ctx.mode as never, ctx.resolveFileLink),
         initialTurnState: (): FeishuTurnState => ({}),
         apply: (p, action) => this.applyFeishuAction(p, action as FeishuAction),
@@ -2866,6 +2885,7 @@ export class Daemon {
       openElicitEditor: (a) => this.permissions.openElicitEditor(a.requestId),
       handleElicitCardTap: async (a) => await this.permissions.handleElicitCardTap(a),
       handlePermissionPick: async (a) => await this.permissions.handlePermissionChoice(a),
+      declineCapabilityCard: async (a) => await this.declineCapabilityCard(a),
       submitElicitEditor: async (a) => {
         await this.permissions.submitElicitEditor(a)
       },
@@ -8508,6 +8528,8 @@ export class Daemon {
       FOLLOW_UP_WAKE_FEATURE,
       // capability-requests.md §4.7: this daemon answers `session/capability-settled`, `capability/reopened` and `capability/forward`. Static.
       CAPABILITY_REQUESTS_FEATURE,
+      // …and offers the repository, connection and secret kinds, and answers `agent/mcp-rebound`. Static.
+      CAPABILITY_REQUESTS_V2_FEATURE,
       // This daemon decodes the host-neutral `mode: 'git'` workspace arm; the CP
       // dual-encodes the legacy host-shaped arms to peers without this bit.
       WORKSPACE_GIT_V1_FEATURE,
@@ -10633,7 +10655,15 @@ export class Daemon {
       routeDm: (agentId, requestId, consoleUserId) => this.routeCapabilityDm(agentId, requestId, consoleUserId),
       admitsAsker: (agentId, integrationId, channel, isDm) => this.admitsAsker(agentId, integrationId, channel, isDm),
       forgetSession: (agentId, key) => this.forgetCapabilitySession(agentId, key),
-      dispatchWake: (req, text, askers) => this.dispatchCapabilityWake(req, text, askers)
+      dispatchWake: (req, text, askers) => this.dispatchCapabilityWake(req, text, askers),
+      servesKind: (kind) =>
+        CAPABILITY_V1_KINDS.includes(kind) ||
+        this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_V2_FEATURE) === true,
+      inline: {
+        post: (origin, model) => this.postInlineCapabilityCard(origin, model),
+        settle: (row, status, text) => this.rewriteInlineCapabilityCard(row, row.generation, { status, text }),
+        reopen: (row, generation) => this.rewriteInlineCapabilityCard(row, generation)
+      }
     })
     return this.capabilityRequestService
   }
@@ -10697,7 +10727,13 @@ export class Daemon {
     if (!consoleUserId && this.cpClient?.supportsServerFeature?.(ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE) !== true)
       return undefined
     const integrationIds = (this.agents.get(agentId)?.integrations ?? [])
-      .filter((i) => this.turnSurfaces.exact(i.platform)?.capabilityCards && this.connForIntegration(i.id))
+      // Only a surface that can open a person's direct message is offered as the place to reach them.
+      .filter(
+        (i) =>
+          this.turnSurfaces.exact(i.platform)?.capabilityCards?.directMessages !== false &&
+          this.turnSurfaces.exact(i.platform)?.capabilityCards &&
+          this.connForIntegration(i.id)
+      )
       .map((i) => i.id)
       .slice(0, 8)
     if (integrationIds.length === 0) return undefined
@@ -10727,6 +10763,87 @@ export class Daemon {
       void forget().catch(() => undefined)
     }
     poll()
+  }
+
+  /** A capability request's inline card in a live webchat turn of its session (§4.4.2), kept on the transcript like an elicitation card. */
+  private async postInlineCapabilityCard(
+    origin: CapabilityOrigin,
+    model: CapabilityCardModel
+  ): Promise<{ channel: string; thread: string | null; ts: string } | undefined> {
+    const p = [...this.pending.values()].find((pending) => pending.plan.sessionKey === origin.sessionKey)
+    const wc = p?.webchat
+    if (!p || !wc) return undefined
+    const ts = monotonicTs()
+    const card = this.maskAgentSecrets(origin.agentId, {
+      requestId: model.requestId,
+      generation: model.generation,
+      summary: model.summary,
+      reason: model.reason,
+      link: model.link
+    })
+    await this.store.upsertCapabilityCard({
+      channel: p.plan.transcriptChannel,
+      thread: p.plan.statusThread,
+      ts,
+      sender: origin.agentId,
+      requestId: model.requestId,
+      text: card.summary,
+      body: inlineCardBody(card),
+      admission: { agentId: origin.agentId, sessionKey: origin.sessionKey }
+    })
+    wc.sink.output({
+      conversationId: wc.conversationId,
+      turnId: wc.turnId,
+      index: wc.index++,
+      event: { kind: 'capability_request', ...card }
+    })
+    return { channel: p.plan.transcriptChannel, thread: p.plan.statusThread, ts }
+  }
+
+  /** Rewrite an inline card's row — settled, or back to open under a reopen's generation — and stream it to a live turn there. */
+  private async rewriteInlineCapabilityCard(
+    row: CapabilityCardRow,
+    generation: number,
+    settled?: { status: CapabilityCardOutcome['status']; text: string }
+  ): Promise<void> {
+    const card = this.maskAgentSecrets(row.agentId, {
+      requestId: row.requestId,
+      generation,
+      summary: row.view.summary,
+      reason: row.view.reason,
+      link: row.view.link
+    })
+    await this.store.upsertCapabilityCard({
+      channel: row.channel,
+      thread: row.thread ?? '',
+      ts: row.ts,
+      sender: row.agentId,
+      requestId: row.requestId,
+      text: card.summary,
+      body: inlineCardBody(card, settled),
+      admission: { agentId: row.agentId, sessionKey: row.sessionKey }
+    })
+    // Out of a turn the console picks the rewrite up from the transcript; a live turn there sees it at once.
+    const wc = [...this.pending.values()].find((pending) => pending.plan.sessionKey === row.sessionKey)?.webchat
+    if (!wc) return
+    wc.sink.output({
+      conversationId: wc.conversationId,
+      turnId: wc.turnId,
+      index: wc.index++,
+      event: settled
+        ? { kind: 'capability_request_resolved', requestId: row.requestId, status: settled.status, text: settled.text }
+        : { kind: 'capability_request', ...card }
+    })
+  }
+
+  /** An MCP server's OAuth connected (§4.8 item 2): the agent's sessions that use it reload, so they list its tools. */
+  private async reloadSessionsUsingMcpServer(agentId: string, server: string): Promise<void> {
+    if (!this.agents.get(agentId)?.mcpServers.includes(server)) return
+    // Only the sessions a runtime holds now: any other re-attaches with `session/load` on its next turn anyway.
+    for (const rec of await this.store.listSessions(agentId)) {
+      const host = rec.acpSessionId ? this.hostForOwner(this.sessionOwnerKey(agentId, rec.key)) : undefined
+      if (host?.hasSession?.(rec.acpSessionId!) === true) await this.forgetCapabilitySession(agentId, rec.key)
+    }
   }
 
   /** The settled request's reminder as a durable `source: 'system'` continuation of the origin session (§4.7.2), shaped like PR feedback's. */
@@ -10957,6 +11074,45 @@ export class Daemon {
     if (await this.capabilities.decline(a).catch(() => false)) return
     if (await this.drafts.handleChoice(a).catch(() => false)) return
     await this.permissions.handlePermissionChoice(a)
+  }
+
+  /** A capability card's Decline whose control named only the card and its generation (every platform but Slack, §4.4.4). */
+  private async declineCapabilityCard(a: {
+    generation: number
+    cardId: string
+    actor: { userId: string; name?: string }
+    srcIntegrationIds?: readonly string[]
+  }): Promise<void> {
+    const row = await this.store.capabilityCards.get(a.cardId).catch(() => undefined)
+    if (!row) return
+    await this.capabilities.decline({
+      requestId: row.requestId,
+      optionId: capabilityDeclineOption(a.generation, a.cardId),
+      actor: { userId: a.actor.userId, ...(a.actor.name ? { name: a.actor.name } : {}) },
+      ...(a.srcIntegrationIds ? { srcIntegrationIds: a.srcIntegrationIds } : {})
+    })
+  }
+
+  /** A reply that declines a reply-only capability card (QQ's "1"), claimed before the message is routed (§4.4.2). */
+  private async claimCapabilityReply(msg: NormalizedMessage, srcIntegrationIds?: readonly string[]): Promise<boolean> {
+    const facet = this.turnSurfaces.exact(msg.platform)?.capabilityCards
+    if (facet?.declineControl !== 'reply' || !facet.claimReply || msg.replyTo === undefined) return false
+    if (!facet.claimReply(msg.text)) return false
+    const row = (await this.store.capabilityCards.atMessage(msg.channel, msg.replyTo).catch(() => [])).find(
+      (card) => card.platform === msg.platform && (!srcIntegrationIds || srcIntegrationIds.includes(card.integrationId))
+    )
+    if (!row) return false
+    const actor = { userId: msg.sender.id, ...(msg.sender.name ? { name: msg.sender.name } : {}) }
+    await this.capabilities
+      .decline({
+        requestId: row.requestId,
+        optionId: capabilityDeclineOption(row.generation, row.cardId),
+        actor,
+        integrationId: row.integrationId,
+        ...(srcIntegrationIds ? { srcIntegrationIds } : {})
+      })
+      .catch(() => undefined)
+    return true
   }
 
   private sessionKeyOf(ctx: SessionContext): string {
@@ -13044,6 +13200,11 @@ export class Daemon {
       this.log.debug(`routing: ${msg.msgId} answered an elicitation card`)
       return { kind: 'rejected', reason: 'suppressed' }
     }
+    // A capability card answered by a reply (§4.4.2) is declined, never read as a prompt.
+    if (!agentAuthored && (await this.claimCapabilityReply(msg, srcIntegrationIds))) {
+      this.log.debug(`routing: ${msg.msgId} declined a capability request`)
+      return { kind: 'rejected', reason: 'suppressed' }
+    }
 
     // send-message-routing-rework.md §2.3/§6: an AgentConnect-authored platform message
     // takes its OWN ladder rather than continuing into the human one below. That
@@ -14107,6 +14268,20 @@ export class Daemon {
     }
     const name = payload.userName?.trim()
     const actor = msg.userId ? { actor: { userId: msg.userId, ...(name ? { name } : {}) } } : {}
+    // A capability card's Decline (§4.4.4): a card click is a person's, and its refusal is a private message.
+    const decline = parseGoogleChatCapabilityClick(payload)
+    if (decline) {
+      const conn = this.connForIntegration(msg.integrationId)
+      if (msg.userId && conn && typeof conn === 'object')
+        await withCapabilityClick(conn, msg.userId, name ? { name } : {}, () =>
+          this.declineCapabilityCard({
+            ...decline,
+            actor: { userId: msg.userId!, ...(name ? { name } : {}) },
+            srcIntegrationIds: [msg.integrationId]
+          })
+        ).catch(() => undefined)
+      return { msgId: msg.msgId, accepted: true }
+    }
     // A permission card's click; its refusal is told privately by the card's own surface.
     const pick = parseGoogleChatApprovalClick(payload)
     if (pick) {
@@ -22741,6 +22916,25 @@ export class Daemon {
 
   /** Route one tapped inline-keyboard button: a permission card's (`ac_pm`), an elicitation card's (`ac_el`), else a session-control card's; a refusal is answered on the tap, which only its tapper sees. */
   private async handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): Promise<void> {
+    // A capability card's Decline (§4.4.4): judged with this tap registered, its private line answered on the tap.
+    const decline = parseCapabilityDeclineData(cb.data)
+    if (decline) {
+      const told = await withCapabilityClick(
+        conn,
+        cb.userId,
+        { ...(cb.isBot !== undefined ? { isBot: cb.isBot } : {}), ...(cb.name ? { name: cb.name } : {}) },
+        () =>
+          this.declineCapabilityCard({
+            ...decline,
+            actor: { userId: cb.userId, ...(cb.name ? { name: cb.name } : {}) },
+            srcIntegrationIds: this.srcIntegrationIds(conn)
+          })
+      ).catch(() => [] as string[])
+      // A tap's answer is an alert of at most 200 characters.
+      const refusal = told.at(-1)?.slice(0, 200)
+      void conn.answerCallback(cb.id, refusal, refusal ? { alert: true } : {})
+      return
+    }
     const pick = parseTelegramApproval(cb.data)
     const tap = pick ? null : parseTelegramElicit(cb.data)
     if (!pick && !tap) return await this.commands.handleTelegramCallback(cb, conn)
@@ -27958,6 +28152,7 @@ export class Daemon {
       capabilitySettled: (req: SessionCapabilitySettled) => this.capabilities.settled(req),
       capabilityReopened: (req: CapabilityReopened) => this.capabilities.reopened(req),
       capabilityForward: (req: CapabilityForward): Promise<CapabilityForwardResult> => this.capabilities.forward(req),
+      capabilityMcpRebound: (req: AgentMcpRebound) => this.reloadSessionsUsingMcpServer(req.agentId, req.server),
       cancelSessionByKey: (key, actor) => this.stopSessionByKey(key, actor),
       autoMerge: () => this.autoMergeWatcher,
       sandboxHolds: () => this.sandboxHolds,

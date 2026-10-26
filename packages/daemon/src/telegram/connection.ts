@@ -93,6 +93,8 @@ export function consolidateTelegram(agents: Agent[]): Map<string, ConsolidatedTe
 export interface InlineButton {
   text: string
   callbackData: string
+  /** A link button: opens this URL and reports nothing back, so its `callbackData` is unused. */
+  url?: string
 }
 
 /** A normalized inline-keyboard tap (grammY `callback_query:data`), reduced to what the
@@ -141,7 +143,9 @@ export interface TelegramDeps {
 }
 
 /** grammY's `InlineKeyboardMarkup` slice we build. */
-type InlineKeyboardMarkup = { inline_keyboard: { text: string; callback_data: string }[][] }
+type InlineKeyboardMarkup = {
+  inline_keyboard: ({ text: string; callback_data: string } | { text: string; url: string })[][]
+}
 
 /** grammY's `ForceReply`: the client opens its compose box already aimed at this message, so the
  *  reader types straight into it and the reply carries `reply_to_message` back. It is the closest
@@ -296,7 +300,11 @@ function defaultFactory(token: string): TelegramBotHandle {
 
 /** Map our button rows to grammY's `InlineKeyboardMarkup` wire shape. */
 function toInlineKeyboard(buttons: InlineButton[][]): InlineKeyboardMarkup {
-  return { inline_keyboard: buttons.map((row) => row.map((b) => ({ text: b.text, callback_data: b.callbackData }))) }
+  return {
+    inline_keyboard: buttons.map((row) =>
+      row.map((b) => (b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.callbackData }))
+    )
+  }
 }
 
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
@@ -568,17 +576,19 @@ export class TelegramConnection implements PlatformConnection {
     text: string,
     buttons: InlineButton[][],
     opts: { parseMode?: string } = {}
-  ): Promise<void> {
-    await this.queue.enqueue(async () => {
+  ): Promise<boolean> {
+    return await this.queue.enqueue(async () => {
       try {
         await this.bot.api.editMessageText(channel, messageId, text, {
           ...(opts.parseMode ? { parse_mode: opts.parseMode } : {}),
           reply_markup: toInlineKeyboard(buttons)
         })
+        return true
       } catch (err) {
         this.deps.log?.debug(
           `telegram: editMessageText (card) failed (ch=${channel} id=${messageId}): ${(err as Error).message}`
         )
+        return false
       }
     })
   }

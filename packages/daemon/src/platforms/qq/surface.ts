@@ -2,6 +2,7 @@ import { turnState, type DaemonRenderAction, type Pending } from '../../daemon/t
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { TurnOutputSurface } from '../turn-output.js'
 import { QQReplyId } from './connection.js'
+import { qqCapabilityCards } from './capability-card.js'
 import { qqElicitCards } from './elicit-card.js'
 import {
   applyQQAction,
@@ -21,6 +22,7 @@ export function createQQTurnOutput(
     answerDelivery: QQAnswerDelivery,
     fileUploader: (turn) => QQImageUploader(turnState<QQTurnState>(turn)),
     elicitCards: qqElicitCards,
+    capabilityCards: qqCapabilityCards,
     createConverger: (ctx) => new QQConverger(ctx.mode, ctx.resolveFileLink, ctx.isDm ? 'stream' : 'group'),
     initialTurnState: (ctx): QQTurnState => ({
       conn: ctx.egress as QQTurnState['conn'],

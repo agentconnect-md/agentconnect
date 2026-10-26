@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { checkCoordinate, gettingToKnowCoordinate } from '../src/session/subsession-coordinate.js'
 import {
   CapabilityRequests,
+  inlineCardBody,
   ownAskers,
   type CapabilityOrigin,
   type CapabilityRequestsHost
@@ -97,6 +98,7 @@ interface Harness {
   decides: CapabilityDecideReq[]
   wakes: { req: SessionCapabilitySettled; text: string; askers: unknown }[]
   forgotten: string[]
+  inline: { posted: string[]; settled: { status: string; text: string }[]; reopened: number[] }
 }
 
 async function harness(
@@ -107,6 +109,8 @@ async function harness(
     admits?: boolean
     dm?: Record<string, string | null>
     decide?: 'settled' | 'already_settled' | 'not_found' | 'unreachable'
+    v2?: boolean
+    inline?: boolean
   } = {}
 ): Promise<Harness> {
   store = await openTestStore()
@@ -116,6 +120,7 @@ async function harness(
   const decides: CapabilityDecideReq[] = []
   const wakes: Harness['wakes'] = []
   const forgotten: string[] = []
+  const inline: Harness['inline'] = { posted: [], settled: [], reopened: [] }
   const turn: ElicitCardTurn = {
     plan: {
       platform: 'slack',
@@ -165,9 +170,24 @@ async function harness(
     dispatchWake: async (req, text, askers) => {
       wakes.push({ req, text, askers })
       return { accepted: true }
+    },
+    servesKind: (kind) => opts.v2 === true || ['agent-settings', 'mcp-server', 'skill'].includes(kind),
+    // A webchat session's live turn takes the card inline; any other session has none.
+    inline: {
+      post: async (_origin, model) => {
+        if (!opts.inline) return undefined
+        inline.posted.push(model.requestId)
+        return { channel: 'conv-1', thread: 'turn-1', ts: '100.000001' }
+      },
+      settle: async (_row, status, text) => {
+        inline.settled.push({ status, text })
+      },
+      reopen: async (_row, generation) => {
+        inline.reopened.push(generation)
+      }
     }
   }
-  return { service: new CapabilityRequests(host), log, requests, decides, wakes, forgotten }
+  return { service: new CapabilityRequests(host), log, requests, decides, wakes, forgotten, inline }
 }
 
 const origin = (over: Partial<CapabilityOrigin> = {}): CapabilityOrigin => ({
@@ -513,5 +533,98 @@ describe('the bridge tools', () => {
       deps
     )
     expect(calls).toEqual([{ ask: { kind: 'mcp-server', want: { server: 'Linear' } }, reason: 'needs it' }])
+  })
+})
+
+describe('Phase 2 kinds', () => {
+  const repository: CapabilityAsk = {
+    kind: 'repository',
+    want: { provider: 'github', repository: 'acme/widgets', access: 'write' }
+  }
+
+  it('never sends a Phase 2 kind to a CP without capability-requests-v2', async () => {
+    const h = await harness()
+    const result = await h.service.request(origin(), repository, 'pushing the fix needs write access')
+    expect(result.status).toBe('refused')
+    expect(result.message).toContain('cannot be made here yet')
+    expect(h.requests).toHaveLength(0)
+    expect(h.log.posted).toHaveLength(0)
+  })
+
+  it('forwards a Phase 2 kind to a CP that takes it', async () => {
+    const h = await harness({ v2: true })
+    const result = await h.service.request(origin(), repository, 'pushing the fix needs write access')
+    expect(h.requests[0]!.ask).toEqual(repository)
+    expect(result.status).toBe('pending')
+  })
+
+  it('points a refused live secret at the mcp-header route', async () => {
+    const h = await harness({ v2: true, reply: { status: 'refused', refused: 'unsupported' } })
+    const result = await h.service.request(
+      origin(),
+      { kind: 'secret', want: { name: 'GRAFANA_TOKEN', description: 'Grafana API token', use: { route: 'live' } } },
+      'querying dashboards needs a token'
+    )
+    expect(result.message).toContain('`mcp-header`')
+    expect(h.log.posted).toHaveLength(0)
+  })
+})
+
+describe('the inline card in a webchat session', () => {
+  const wake = (over: Partial<SessionCapabilitySettled> = {}): SessionCapabilitySettled => ({
+    agentId: AGENT,
+    sessionId: 'session-1',
+    sessionKey: 'key-1',
+    requestId: REQUEST,
+    generation: 1,
+    status: 'declined',
+    askers: { people: [{ kind: 'console', userId: 'user-1' }], nobody: false },
+    summary: 'add the MCP server "Linear"',
+    reason: 'r',
+    outcome: '',
+    by: { name: 'Ben' },
+    reload: false,
+    ...over
+  })
+  const webchat = () => origin({ platform: 'webchat', channel: 'conv-1', integrationId: undefined })
+
+  it('shows the card inline instead of a chat card and says so without the link', async () => {
+    const h = await harness({ inline: true })
+    const result = await h.service.request(webchat(), ASK, 'filing needs Linear')
+    expect(h.inline.posted).toEqual([REQUEST])
+    expect(h.log.posted).toHaveLength(0)
+    expect(result.message).toContain('shown in this conversation')
+    expect(result.message).not.toContain(LINK)
+    expect((await store!.capabilityCards.forRequest(REQUEST, 'key-1'))[0]).toMatchObject({ platform: 'webchat' })
+  })
+
+  it('settles, reopens and withdraws the inline card through the console port', async () => {
+    const h = await harness({ inline: true })
+    await h.service.request(webchat(), ASK, 'filing needs Linear')
+    await h.service.settled(wake())
+    expect(h.inline.settled).toEqual([{ status: 'declined', text: expect.stringContaining('Declined by Ben') }])
+    await h.service.reopened({
+      agentId: AGENT,
+      requestId: REQUEST,
+      generation: 2,
+      summary: 'add the MCP server "Linear"',
+      reason: 'r',
+      link: LINK
+    })
+    expect(h.inline.reopened).toEqual([2])
+    await h.service.withdraw({ agentId: AGENT, sessionId: 'session-1', sessionKey: 'key-1' }, REQUEST)
+    expect(h.inline.settled.at(-1)).toMatchObject({ status: 'withdrawn' })
+    // No chat card was ever involved.
+    expect(h.log.rewrites).toHaveLength(0)
+  })
+
+  it('records the card body with its settlement', () => {
+    const model = { requestId: REQUEST, generation: 2, summary: 's', reason: 'r', link: LINK }
+    expect(JSON.parse(inlineCardBody(model))).toEqual({ ...model, status: 'open' })
+    expect(JSON.parse(inlineCardBody(model, { status: 'completed', text: 'done' }))).toEqual({
+      ...model,
+      status: 'completed',
+      text: 'done'
+    })
   })
 })
