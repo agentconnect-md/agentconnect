@@ -298,9 +298,8 @@ const COLLAB_SELF_DELEGATION =
   `should be able to see and stop, \`{"action":"delegateTask","message":"..."}\` delegates it to a TASK of this ` +
   `session: it works in a context of its own, posts nothing, and reports back into this ` +
   `session each time a round of its work finishes or fails. Work you can finish within this turn, even split into ` +
-  `parallel parts, goes to your runtime's own subagent or Task tool instead; quick lookups and status checks stay ` +
-  `in this turn. Before delegating work that changes a live environment (deploys, upgrades, infrastructure, data), ` +
-  `confirm it with the person first; "check again" is not approval. Delegate before you explore or begin ` +
+  `parallel parts, goes to your runtime's own subagent or Task tool instead. ` +
+  `Confirm with the person before delegating live-environment changes; "check again" is not approval. Delegate before you explore or begin ` +
   `the work yourself — the task starts from this session's context and finds what it needs — then say it has ` +
   `started and end your turn. Delegate independent tasks together; delegate a task that needs another's result ` +
   `once that result has arrived. To give one more work later, even after it reported, send ` +

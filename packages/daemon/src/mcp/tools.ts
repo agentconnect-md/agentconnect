@@ -29,8 +29,8 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'Send outside your current conversation. Required action: callAgent asks a peer to work ' +
       '(sessionId continues an existing peer session); calling yourself needs channel and starts visible work ' +
       'there. delegateTask hands work that spans turns or runs long, which people should see and stop, to a task of ' +
-      'this session: call it before exploring, say so, end your turn. Work that fits this turn stays here. Ask ' +
-      'the person before delegating live-environment changes; "check again" is no approval. messageTask sends ' +
+      'this session: call it before exploring, say so, end your turn. Short work stays here. Ask ' +
+      'first for live-environment changes; "check again" is no approval. messageTask sends ' +
       'a task more (taskId); listTasks lists them, stopTask stops one. replyToSession answers a message another ' +
       'session sent you, by its ' +
       'messageId; replies are not broadcast. postMessage reaches a person, channel, or another thread; it starts no ' +
