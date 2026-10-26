@@ -3106,14 +3106,15 @@ describe('Slack status-slot settlement', () => {
   })
 
   describe('a running delegated task', () => {
-    const turn = (c: unknown, key: string) => ({
+    const turn = (c: unknown, key: string, thread = 'T1') => ({
       conn: c,
       plan: {
         platform: 'slack',
         agentId: 'a1',
+        integrationId: 'i1',
         channel: 'C1',
-        thread: 'T1',
-        statusThread: 'T1',
+        thread,
+        statusThread: thread,
         sessionKey: key,
         statusOptions: { username: 'Agent A', sessionKey: key }
       }
@@ -3164,6 +3165,22 @@ describe('Slack status-slot settlement', () => {
       await (unreadable.daemon as any).releaseEndedTaskSlackHolds()
       expect(unreadable.c.setStatus).not.toHaveBeenCalled()
       expect((unreadable.daemon as any).taskSlackHolds.size).toBe(1)
+    })
+
+    it('settles the thread a task leaves when a round is asked for from another thread', async () => {
+      const { c, daemon } = withTask('open')
+      ;(daemon as any).pending.set('p-2', turn(c, 'parent', 'T2'))
+      ;(daemon as any).holdSlackForTask('child', 'parent')
+      await flush()
+      expect(c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', '', undefined)
+      expect((daemon as any).taskSlackHolds.get('child').thread).toBe('T2')
+    })
+
+    it("lists the thread's held tasks for a thread-wide Stop, for its own integrations only", () => {
+      const { daemon } = withTask('open')
+      expect((daemon as any).taskSlackHoldKeys({ channel: 'C1', thread: 'T1' }, ['i1'])).toEqual(['child'])
+      expect((daemon as any).taskSlackHoldKeys({ channel: 'C1', thread: 'T1' }, ['i2'])).toEqual([])
+      expect((daemon as any).taskSlackHoldKeys({ channel: 'C1', thread: 'T9' }, ['i1'])).toEqual([])
     })
 
     it('leaves the slot to a turn admitted while the task row was read', async () => {

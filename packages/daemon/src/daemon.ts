@@ -2857,8 +2857,10 @@ export class Daemon {
       handleTelegramCallback: (cb, conn) => this.handleTelegramCallback(cb, conn),
       slackShortcutSession: (shortcut, srcIntegrationIds) =>
         this.commands.slackShortcutSession(shortcut, srcIntegrationIds),
-      slackThreadSessions: (shortcut, srcIntegrationIds) =>
-        this.commands.slackThreadSessions(shortcut, srcIntegrationIds),
+      slackThreadSessions: async (shortcut, srcIntegrationIds) => [
+        ...(await this.commands.slackThreadSessions(shortcut, srcIntegrationIds)),
+        ...this.taskSlackHoldKeys(shortcut, srcIntegrationIds)
+      ],
       startNewAppendSessions: (platform, channel, srcIntegrationIds, actor, notBefore) =>
         this.commands.startNewAppendSessions(platform, channel, srcIntegrationIds, actor, notBefore),
       settleSlackSlot: (conn, a) => this.settleSlackSlot(conn as SlackConnection, a.channel, a.thread, a.exclude)
@@ -10837,6 +10839,7 @@ export class Daemon {
     string,
     {
       agentId: string
+      integrationId: string | undefined
       conn: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
       channel: string
       thread: string
@@ -10848,15 +10851,31 @@ export class Daemon {
   private holdSlackForTask(childKey: string, parentKey: string): void {
     for (const p of this.pending.values()) {
       if (p.plan.sessionKey !== parentKey || p.plan.platform !== 'slack' || !p.conn || !p.plan.thread) continue
+      const previous = this.taskSlackHolds.get(childKey)
       this.taskSlackHolds.set(childKey, {
         agentId: p.plan.agentId,
+        integrationId: p.plan.integrationId,
         conn: p.conn,
         channel: p.plan.channel,
         thread: p.plan.thread,
         options: { ...p.plan.statusOptions, sessionKey: childKey }
       })
+      // A round asked for from another thread moves the hold, so the thread it leaves is settled.
+      if (
+        previous &&
+        (previous.conn !== p.conn || previous.channel !== p.plan.channel || previous.thread !== p.plan.thread)
+      )
+        this.settleSlackSlot(previous.conn, previous.channel, previous.thread)
       return
     }
+  }
+
+  /** The tasks holding one thread's indicator for these integrations, which a thread-wide Stop also cancels. */
+  private taskSlackHoldKeys(at: { channel: string; thread: string }, srcIntegrationIds: readonly string[]): string[] {
+    return [...this.taskSlackHolds]
+      .filter(([, h]) => h.channel === at.channel && h.thread === at.thread)
+      .filter(([, h]) => h.integrationId !== undefined && srcIntegrationIds.includes(h.integrationId))
+      .map(([childKey]) => childKey)
   }
 
   /** The newest still-open task holding this thread's indicator; ended ones are dropped on the way. */

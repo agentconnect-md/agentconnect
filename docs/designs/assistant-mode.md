@@ -868,7 +868,9 @@ with `listTasks`.
   Settlement re-reads the task's index row, so the report turn that follows the task's end clears
   the slot; a once-a-minute sweep releases a task that ended with no turn after it, and shutdown
   clears every hold so a cut task never leaves the indicator on across a restart. A turn at a
-  channel root has no thread status, so it holds none.
+  channel root has no thread status, so it holds none. A round asked for from another thread
+  moves the hold there and settles the thread it leaves; a thread-wide Stop, which a
+  relay-backed connection always sends, also cancels the tasks holding that thread.
 
 ### 5.7 The report channel
 
