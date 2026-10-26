@@ -256,31 +256,55 @@ it('admits a credential-less ahp upgrade only to initialize and advertise the pr
   ])
   const refused = await client.request('listSessions', { channel: 'ahp-root://' })
   expect(refused.error).toMatchObject({ code: -32007, data: { resources: [{ resource: RESOURCE(host.url) }] } })
-  expect(await client.closed).toBe(4401)
+  expect((await client.request('ping', { channel: 'ahp-root://' })).result).toEqual({})
+  expect(client.socket.readyState).toBe(WebSocket.OPEN)
+  client.socket.close()
   expect(host.verify).not.toHaveBeenCalled()
   expect(host.conn.authorizeAhp).not.toHaveBeenCalled()
 })
-it('refuses reconnect without closing, but closes on notifications, a second initialize and malformed frames', async () => {
+it('answers reconnect with NotFound and refuses other requests without closing, ignoring notifications', async () => {
   const host = await fixture()
   const resuming = await preauth(host.url)
-  expect((await resuming.request('reconnect', { channel: 'ahp-root://' })).error.code).toBe(-32007)
+  expect((await resuming.request('reconnect', { channel: 'ahp-root://' })).error.code).toBe(-32008)
+  expect(
+    (await resuming.request('authenticate', { channel: 'ahp-root://', resource: RESOURCE(host.url), token: 'k' })).error
+      .code
+  ).toBe(-32007)
   await resuming.initialize()
   resuming.socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'dispatchAction', params: {} }))
-  expect(await resuming.closed).toBe(4401)
-  const twice = await preauth(host.url)
-  await twice.initialize()
-  expect((await twice.initialize()).error.code).toBe(-32007)
-  expect(await twice.closed).toBe(4401)
+  expect((await resuming.request('reconnect', { channel: 'ahp-root://' })).error.code).toBe(-32007)
+  expect((await resuming.initialize()).error.code).toBe(-32007)
+  expect(resuming.socket.readyState).toBe(WebSocket.OPEN)
+  resuming.socket.close()
   const garbage = await preauth(host.url)
   garbage.socket.send('not json')
   expect(await garbage.closed).toBe(1008)
-  const early = await preauth(host.url)
-  expect(
-    (await early.request('authenticate', { channel: 'ahp-root://', resource: RESOURCE(host.url), token: 'k' })).error
-      .code
-  ).toBe(-32007)
-  expect(await early.closed).toBe(4401)
   expect(host.verify).not.toHaveBeenCalled()
+})
+it('authenticates a VS Code-shaped client that resumes, pipelines requests and pings before authenticate', async () => {
+  const host = await fixture()
+  const client = await preauth(host.url, [])
+  expect((await client.request('reconnect', { channel: 'ahp-root://', clientId: 'third-party' })).error.code).toBe(
+    -32008
+  )
+  await client.initialize()
+  const os = client.request('resolveOperatingSystem', { channel: 'ahp-root://' })
+  client.socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'clientInfoChanged', params: {} }))
+  const pong = client.request('ping', { channel: 'ahp-root://' })
+  const authenticated = client.request('authenticate', {
+    channel: 'ahp-root://',
+    resource: RESOURCE(host.url),
+    scopes: [],
+    token: 'personal-key'
+  })
+  expect((await os).error.code).toBe(-32007)
+  expect((await pong).result).toEqual({})
+  expect((await authenticated).result).toEqual({})
+  expect(host.conn.authorizeAhp).toHaveBeenCalledWith(
+    expect.objectContaining({ handshake: { clientId: 'third-party', root: true } }),
+    true
+  )
+  expect(host.conn.sendAhp).not.toHaveBeenCalled()
 })
 it('bounds the pre-auth window by deadline and message count', async () => {
   const host = await fixture('on', { deadlineMs: 50, maxMessages: 3 })

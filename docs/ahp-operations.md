@@ -111,13 +111,14 @@ a daemon until the key is verified:
    Success returns `{}`; the daemon then adopts the client and replaces the
    placeholder with a `root/agentsChanged` action. Grant renewal and expiry
    match the header path, rechecking the pushed key.
-3. A refused `reconnect` returns `AuthRequired` (`-32007`) and keeps the socket,
-   so resuming clients fall back to `initialize`. Any other request returns
-   `-32007` with the protected resource and closes with 4401; notifications
-   close too. A bad key returns `-32007` and closes with 4401; an unadvertised
-   resource returns `-32602` and closes with 1008. One attempt per socket.
+3. `reconnect` before `initialize` returns `NotFound` (`-32008`), so resuming
+   clients such as VS Code fall back to `initialize` on the same socket. `ping`
+   returns `{}`. Any other request returns `AuthRequired` (`-32007`) with the
+   protected resource and keeps the socket; notifications are ignored. A bad key
+   returns `-32007` and closes with 4401; an unadvertised resource returns
+   `-32602` and closes with 1008. One attempt per socket.
 4. The pre-authentication window closes with 4401 after 30 seconds and with 1008
-   after 8 messages. Each relay holds at most 64 such sockets. Requests sent
+   after 16 messages. Each relay holds at most 64 such sockets. Requests sent
    after `authenticate` wait for its verdict and are forwarded only on success.
 
 The relay's own `initialize` answer omits the daemon's `_meta` extension flags;

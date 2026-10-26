@@ -30,10 +30,11 @@ const MAX_HELD_EVENTS = 16
 const MAX_BUFFER_BYTES = 1024 * 1024
 const ROOT = 'ahp-root://'
 const AUTH_REQUIRED = -32007
+const NOT_FOUND = -32008
 const UNSUPPORTED_VERSION = -32005
 const INVALID_PARAMS = -32602
 const INTERNAL_ERROR = -32603
-const PREAUTH = { deadlineMs: 30_000, maxMessages: 8 }
+const PREAUTH = { deadlineMs: 30_000, maxMessages: 16 }
 // The authorization server's own scope vocabulary (control-plane `OAUTH_SCOPES`); `authenticate` still takes only personal keys.
 const OAUTH_SCOPES = ['mcp:read', 'mcp:write']
 const identifier = z.string().min(1).max(256)
@@ -429,10 +430,12 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
         const snapshots = client.root ? [{ resource: ROOT, state: { agents: [agent] }, fromSeq: 0 }] : []
         return send({ jsonrpc: '2.0', id, result: { protocolVersion: '1.0.0', serverSeq: 0, snapshots } })
       }
-      // A refused `reconnect` lets a resuming client fall back to `initialize` on this socket.
-      if (id !== undefined && method === 'reconnect' && !client)
-        return fail(id, AUTH_REQUIRED, 'Authentication required', required)
-      if (id !== undefined && method === 'authenticate' && client) {
+      // Clients that pipeline requests or notifications (VS Code) keep the socket; only the bounds end it.
+      if (id === undefined) return
+      if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} })
+      // An unknown client makes a resuming client fall back to `initialize` on this socket.
+      if (method === 'reconnect' && !client) return fail(id, NOT_FOUND, 'Unknown client')
+      if (method === 'authenticate' && client) {
         const parsed = AuthenticateParams.safeParse(params)
         if (!parsed.success || parsed.data.resource !== resource) {
           fail(id, INVALID_PARAMS, 'Unknown protected resource')
@@ -440,8 +443,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
         }
         return void authenticate(id, parsed.data.token)
       }
-      if (id !== undefined) fail(id, AUTH_REQUIRED, 'Authentication required', required)
-      end('unauthorized')
+      fail(id, AUTH_REQUIRED, 'Authentication required', required)
     })
     ws.on('close', () => (phase === 'bound' ? bound!.closed() : end('client_closed')))
     ws.on('error', () => (phase === 'bound' ? bound!.errored() : end('unavailable')))

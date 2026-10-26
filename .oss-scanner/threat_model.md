@@ -140,8 +140,9 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
 - **Pre-authentication state:** a credential-less upgrade (with or without the
   `ahp` subprotocol) reaches only the
   relay. It may `initialize` (answered by the relay, advertising the endpoint as a
-  protected resource), have `reconnect` refused, and `authenticate` once; any
-  other request or notification closes it. A 30-second deadline, an 8-message
+  protected resource), get `NotFound` for `reconnect`, a `ping` reply, and
+  `AuthRequired` for any other request, and `authenticate` once; notifications
+  are ignored. A 30-second deadline, a 16-message
   budget and a 64-socket per-relay cap bound unauthenticated resources. No
   daemon attachment, placement or registry read happens before CP verification,
   and the refusal never echoes the pushed key.

@@ -186,8 +186,8 @@ There the relay answers `initialize` with the endpoint as a required
 (`required: true`) `AgentInfo.protectedResources` entry and accepts one
 `authenticate` carrying the
 same full personal key, verified through the same `rc/verify(ahp-client-key)`
-rules. Any other request refuses with `AuthRequired` and closes; a deadline and a
-message budget bound the window. On success the relay opens the daemon attachment
+rules. Any other request refuses with `AuthRequired` and keeps the socket; a
+deadline and a message budget bound the window. On success the relay opens the daemon attachment
 with a handshake (`clientId`, root subscription), and a daemon advertising
 `api-ahp-handshake-v1` adopts that client and replaces the placeholder agent
 through `root/agentsChanged`. Renewal re-verifies the pushed key exactly as it
