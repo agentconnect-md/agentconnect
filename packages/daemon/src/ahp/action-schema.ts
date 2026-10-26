@@ -69,6 +69,17 @@ const message = z.strictObject({
 export function deliveredImages<T>(attachments: readonly T[] | undefined): T[] {
   return (attachments ?? []).filter((item) => embeddedImage.safeParse(item).success)
 }
+// Strips the client context the runtime never received before a message is published.
+export function publishedMessage<M extends { attachments?: readonly unknown[]; model?: unknown; agent?: unknown }>(
+  message: M
+): Omit<M, 'model' | 'agent'> {
+  const published: Record<string, unknown> = { ...message }
+  delete published.model
+  delete published.agent
+  delete published.attachments
+  const images = deliveredImages(message.attachments)
+  return { ...published, ...(images.length ? { attachments: images } : {}) } as Omit<M, 'model' | 'agent'>
+}
 export const startAction = z.strictObject({
   type: z.literal(ActionType.ChatTurnStarted),
   turnId: id,

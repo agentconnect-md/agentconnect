@@ -120,6 +120,31 @@ it("runs VS Code's turn shape as plain text on a continuation, ignoring its mode
   expect(f.host.setRuntime).not.toHaveBeenCalled()
   expect(f.hooks.admitted).toHaveBeenCalledOnce()
 })
+it('publishes a steering fallback without the client context the runtime never received', async () => {
+  const f = fixture()
+  const steer = {
+    ...start,
+    action: {
+      type: ActionType.ChatPendingMessageSet,
+      kind: 'steering',
+      id: 'steer',
+      message: {
+        text: 'also this',
+        origin: { kind: MessageKind.User },
+        model: { id: 'copilot/gpt' },
+        attachments: [{ type: 'simple', label: 'selection', modelRepresentation: 'secret text' }]
+      }
+    }
+  } as DispatchActionParams
+  await f.application.dispatch(scope, steer, origin, f.hooks)
+  expect(f.hooks.steered).not.toHaveBeenCalled()
+  expect(vi.mocked(f.hooks.echo).mock.calls[0]?.[0]).toEqual({
+    type: ActionType.ChatPendingMessageSet,
+    kind: 'steering',
+    id: 'steer',
+    message: { text: 'also this', origin: { kind: MessageKind.User } }
+  })
+})
 it('does not wait for ACP completion after durable admission', async () => {
   const f = fixture()
   vi.mocked(f.host.dispatch).mockImplementation(async (_turn, _context, options) => {

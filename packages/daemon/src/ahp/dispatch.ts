@@ -13,7 +13,7 @@ import { observeChatTurn } from '../session/chat-observer.js'
 import type { ChatOutput, ChatPost, ChatSink } from '../session/chat-turn.js'
 import type { MaskedChatEvent } from '../session/chat-events.js'
 import type { AhpApplication, AhpActionScope } from './application.js'
-import { deliveredImages } from './action-schema.js'
+import { publishedMessage } from './action-schema.js'
 import type { AhpActionContext } from './service.js'
 
 export interface AhpDispatchEnvironment {
@@ -76,7 +76,7 @@ export async function dispatchAhpAction(
     admitted: async (action, acceptedOrigin, result) => {
       if (result.duplicate) throw new Error('Duplicate admission requires snapshot reconciliation')
       // Only the image the runtime received is shown back; ignored client context may name local paths.
-      const attachments = deliveredImages(action.message.attachments)
+      const { attachments } = publishedMessage(action.message)
       await state.apply(
         channel,
         {
@@ -85,7 +85,7 @@ export async function dispatchAhpAction(
           message: {
             text: host.mask(auth.agentId, action.message.text),
             origin: { kind: MessageKind.User },
-            ...(attachments.length ? { attachments } : {})
+            ...(attachments ? { attachments } : {})
           }
         },
         acceptedOrigin
