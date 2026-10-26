@@ -105,6 +105,11 @@ const CoreConfigShape = {
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  // Capability requests (capability-requests.md): 'true' lets daemons offer agents `requestCapability`; the console flag `capability-requests` shows the pages.
+  CAPABILITY_REQUESTS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   // How long an ephemeral managed computer may sit idle before it is reclaimed, pod and volume.
   COMPUTER_POOL_EPHEMERAL_IDLE_SEC: z.coerce.number().int().min(60).max(86_400).default(600),
   // How long a per-agent or manual managed computer may sit idle before it sleeps, its volume kept.

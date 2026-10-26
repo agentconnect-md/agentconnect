@@ -1,4 +1,5 @@
 import type { FileTransferService } from '../file-transfer/service.js'
+import type { CapabilityRequestService } from '../capability/capability-request.service.js'
 import type { SharedImageService } from '../file-transfer/shared-image.js'
 /**
  * `http/deps.ts` — the dependency bundle the C2 BFF routes receive (design §2.1,
@@ -193,6 +194,8 @@ export interface HttpServerConfig extends HumanAuthConfig {
 }
 
 export interface HttpDeps {
+  /** Capability requests: the request page, its list, and the console's settle, decline, reopen and forward (capability-requests.md §4.5). */
+  capabilityRequests?: CapabilityRequestService
   providerCredentialsChanged?: (orgId: OrgId, provider: ProviderKeyProvider) => void
   /** Secret-free startup snapshot served to the prebuilt browser image. */
   runtimeConfig: RuntimeConfigRouteDeps

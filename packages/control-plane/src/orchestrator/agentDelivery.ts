@@ -43,6 +43,8 @@ export class AgentDelivery {
       /** Live advertised features per connected daemon (§17.3 projection gate).
        *  Absent or unknown reads as "no features" — fail-closed for gated agents. */
       daemonFeatures?: (daemonId: string) => readonly string[] | undefined
+      /** After every spec push, with the daemons that acknowledged it; capability requests settle and wake on it. */
+      upserted?: (agent: AgentRecord, ackedDaemonIds: readonly string[]) => void
     }
   ) {}
 
@@ -95,6 +97,15 @@ export class AgentDelivery {
   /** Push an edited spec to every delivery target. The spec is assembled ONCE:
    *  the targets replicate the same agent, and two assemblies could disagree. */
   async upsert(agent: AgentRecord, onError: DeliveryErrorHandler): Promise<void> {
+    const acked: string[] = []
+    try {
+      await this.pushSpec(agent, onError, acked)
+    } finally {
+      this.deps.upserted?.(agent, acked)
+    }
+  }
+
+  private async pushSpec(agent: AgentRecord, onError: DeliveryErrorHandler, acked: string[]): Promise<void> {
     const candidates = await this.daemonsFor(agent)
     if (candidates.length === 0) return
     const spec = await this.deps.specs.assemble(agent)
@@ -111,9 +122,10 @@ export class AgentDelivery {
     const targets = candidates.filter((daemonId) => daemonSupportsAgent(shaped, this.deps.daemonFeatures?.(daemonId)))
     if (targets.length === 0) return
     // The per-peer workspace dual encoding (§8) lives in the sender's agentUpsert.
-    await this.fanOut(targets, onError, (daemonId) =>
-      this.deps.control.agentUpsert(daemonId, { agentId: agent.id, spec }, agent.orgId)
-    )
+    await this.fanOut(targets, onError, async (daemonId) => {
+      await this.deps.control.agentUpsert(daemonId, { agentId: agent.id, spec }, agent.orgId)
+      acked.push(daemonId)
+    })
   }
 
   /** Tell every delivery target the agent is gone. The agent row is already

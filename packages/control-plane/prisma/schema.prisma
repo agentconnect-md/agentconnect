@@ -999,6 +999,7 @@ model Agent {
   memoryHistory         AgentMemoryHistory[]
   hostedHookRoutings    CodeHostDecisionRouting[]
   followUpWatches       FollowUpWatch[]
+  capabilityRequests    CapabilityRequest[]
   researchedRecords     OrganizationRecord[] @relation("OrganizationRecordResearch")
 
   @@unique([orgId, name]) // slug is unique within an org
@@ -1562,6 +1563,65 @@ model FollowUpWatch {
   @@index([orgId, provider, bindingId, repoId, subject, number], map: "follow_up_watch_object_idx")
   @@index([dueAt, claimUntil], map: "follow_up_watch_due_idx")
   @@map("follow_up_watch")
+}
+
+// One thing an agent asked a person for (capability-requests.md §4.3); open rows are unique per (agentId, kind, target) by a partial index in the migration.
+model CapabilityRequest {
+  id              String    @id @db.Uuid
+  orgId           String
+  agentId         String    @db.Uuid
+  kind            String
+  target          String
+  want            Json
+  summary         String
+  reason          String
+  // Starts at 1; Reopen grows it, and every decision and wake names the generation it belongs to.
+  generation      Int       @default(1)
+  status          String    @default("open")
+  outcome         String?
+  differs         Boolean   @default(false)
+  note            String?
+  settledBy       Json?
+  settledAt       DateTime? @db.Timestamptz(6)
+  // The agent's configRevision a completion was observed at; its wake waits until a daemon has applied it.
+  settledRevision BigInt?   @db.BigInt
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  expiresAt       DateTime  @db.Timestamptz(6)
+
+  agent   Agent                     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  origins CapabilityRequestOrigin[]
+
+  @@index([agentId, kind, target, status], map: "capability_request_key_idx")
+  @@index([status, expiresAt], map: "capability_request_expiry_idx")
+  @@map("capability_request")
+}
+
+// One conversation waiting for a request, with its own asker context and its wake.
+model CapabilityRequestOrigin {
+  requestId      String    @db.Uuid
+  sessionId      String
+  sessionKey     String
+  platform       String
+  placeLabel     String?
+  external       Boolean   @default(false)
+  askers         Json
+  askedAt        DateTime  @default(now()) @db.Timestamptz(6)
+  // The generation the wake below belongs to; `none` until the request settles.
+  wakeGeneration Int       @default(0)
+  wakeState      String    @default("none")
+  wakeAttempts   Int       @default(0)
+  wakeReason     String?
+  wakeSince      DateTime? @db.Timestamptz(6)
+  wakeDueAt      DateTime? @db.Timestamptz(6)
+  claimOwner     String?   @db.Uuid
+  claimUntil     DateTime? @db.Timestamptz(6)
+
+  request CapabilityRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@id([requestId, sessionId], map: "capability_request_origin_pkey")
+  @@index([sessionId], map: "capability_request_origin_session_idx")
+  @@index([wakeDueAt, claimUntil], map: "capability_request_origin_wake_idx")
+  @@map("capability_request_origin")
 }
 
 // One receipt per watched object and delivery, so a redelivered event folds into nothing.

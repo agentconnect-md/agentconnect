@@ -12,6 +12,7 @@
  */
 import {
   FOLLOW_UP_WATCH_FEATURE,
+  CAPABILITY_REQUESTS_FEATURE,
   FRAME_FRAGMENTS_FEATURE,
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
@@ -201,6 +202,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       SESSION_EXECUTORS_V1_FEATURE,
       // assistant-mode.md §5.14: this CP takes follow-up watches and sends their wakes.
       ...(deps.followUpWatch ? [FOLLOW_UP_WATCH_FEATURE] : []),
+      // capability-requests.md: this CP takes `capability/*` and sends `session/capability-settled`.
+      ...(deps.capabilityRequests ? [CAPABILITY_REQUESTS_FEATURE] : []),
       // A daemon socket reports explicit credential-lifecycle events only to a CP that applies them.
       ...(deps.socketBotRevocation ? [INTEGRATION_REVOKED_FEATURE] : []),
       // A daemon socket reports the tenant its traffic named only to a CP that records it.
@@ -210,6 +213,7 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   deps.connReg.markReady(conn.daemonId, conn)
   deps.pullRequestFeedback?.kick()
   deps.followUpWatch?.kick()
+  deps.capabilityRequests?.daemonReady(conn.daemonId)
   void deps.httpBotDaemonReady?.(conn.daemonId).catch(() => {})
 
   // Converge the per-session memory-capture gates (session-visibility.md §5.1).
