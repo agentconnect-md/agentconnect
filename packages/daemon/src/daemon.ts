@@ -10017,7 +10017,13 @@ export class Daemon {
     // Capability requests (capability-requests.md §4.1): an agent in assistant mode, toward a CP that serves them; execution re-checks.
     tools = [
       ...tools,
-      ...capabilityRequestToolsFor(agent, this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_FEATURE) === true)
+      ...capabilityRequestToolsFor(
+        agent,
+        this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_FEATURE) === true,
+        {
+          thread
+        }
+      )
     ]
     // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
     const managedRepo = this.managedWorkspaceRepo(agent.id)
@@ -10941,6 +10947,7 @@ export class Daemon {
     requestId: string
     optionId: string
     actor?: { userId: string; name?: string }
+    srcIntegrationIds?: readonly string[]
   }): Promise<void> {
     // A capability card's Decline (capability-requests.md §4.4.4) carries its own option; its checks authorize the click.
     if (await this.capabilities.decline(a).catch(() => false)) return

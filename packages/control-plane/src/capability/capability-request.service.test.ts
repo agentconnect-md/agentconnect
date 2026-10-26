@@ -393,9 +393,10 @@ describe('CapabilityRequestService', () => {
       differs: true,
       outcome: 'The model is "medium" (you asked for "big").'
     })
-    expect(await h.service.settleFromConsole(ORG, requestId!, { kind: 'console', userId: 'u-ana', name: 'Ana' })).toBe(
-      'not_open'
-    )
+    // Settling again answers with the completed request rather than refusing (the save usually completed it already).
+    expect(
+      await h.service.settleFromConsole(ORG, requestId!, { kind: 'console', userId: 'u-ana', name: 'Ana' })
+    ).toMatchObject({ status: 'completed', differs: true })
   })
 
   it('reopens a declined request with the next generation; an old card no longer counts', async () => {

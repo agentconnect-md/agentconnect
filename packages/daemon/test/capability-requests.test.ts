@@ -8,6 +8,7 @@ import type {
   SessionCapabilitySettled
 } from '@agentconnect.md/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
+import { checkCoordinate, gettingToKnowCoordinate } from '../src/session/subsession-coordinate.js'
 import {
   CapabilityRequests,
   ownAskers,
@@ -332,6 +333,13 @@ describe('a Decline clicked on a card', () => {
       actor: { userId: 'U2' },
       integrationId: 'int-9'
     })
+    // A Socket Mode click names the bots of the connection it arrived on.
+    await h.service.decline({
+      requestId: REQUEST,
+      optionId: capabilityDeclineOption(1, cardId),
+      actor: { userId: 'U2' },
+      srcIntegrationIds: ['int-9']
+    })
     expect(h.decides).toHaveLength(0)
     await h.service.decline({
       requestId: REQUEST,
@@ -403,6 +411,17 @@ describe('the settling wake', () => {
     expect((await store!.capabilityCards.forRequest(REQUEST))[0]).toMatchObject({ generation: 2, settledAt: null })
   })
 
+  it('rewrites a card that missed its reopen when the next generation settles', async () => {
+    const h = await harness()
+    await h.service.request(origin(), ASK, 'r')
+    await h.service.settled(wake())
+    // No `capability/reopened` reached this daemon; generation 2 completes.
+    await h.service.settled(wake({ generation: 2, status: 'completed', outcome: 'Added.' }))
+    expect(h.log.rewrites).toHaveLength(2)
+    expect(h.log.rewrites.at(-1)).toMatchObject({ outcome: { status: 'completed' } })
+    expect((await store!.capabilityCards.forRequest(REQUEST))[0]).toMatchObject({ generation: 2 })
+  })
+
   it("forwards the card into the named person's direct message, and rewrites it with any origin", async () => {
     const h = await harness()
     expect(
@@ -444,12 +463,18 @@ describe('the bridge tools', () => {
   } as unknown as SessionContext
 
   it('are offered only to an agent in assistant mode toward a CP that serves them', () => {
-    expect(capabilityRequestToolsFor({ assistantMode: { enabled: true } } as never, true).map((t) => t.name)).toEqual([
-      'requestCapability',
-      'withdrawCapabilityRequest'
-    ])
-    expect(capabilityRequestToolsFor({ assistantMode: { enabled: true } } as never, false)).toEqual([])
-    expect(capabilityRequestToolsFor({} as never, true)).toEqual([])
+    const at = { thread: '1.1' }
+    expect(
+      capabilityRequestToolsFor({ assistantMode: { enabled: true } } as never, true, at).map((t) => t.name)
+    ).toEqual(['requestCapability', 'withdrawCapabilityRequest'])
+    expect(capabilityRequestToolsFor({ assistantMode: { enabled: true } } as never, false, at)).toEqual([])
+    expect(capabilityRequestToolsFor({} as never, true, at)).toEqual([])
+  })
+
+  it('are never listed in a follow-up check or a getting-to-know task', () => {
+    const agent = { assistantMode: { enabled: true } } as never
+    expect(capabilityRequestToolsFor(agent, true, { thread: checkCoordinate('d-1') })).toEqual([])
+    expect(capabilityRequestToolsFor(agent, true, { thread: gettingToKnowCoordinate('d-2') })).toEqual([])
   })
 
   it('refuse unknown want fields and a session that is not offered them', async () => {

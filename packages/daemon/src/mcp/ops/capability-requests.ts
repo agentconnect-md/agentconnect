@@ -6,6 +6,11 @@ import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { parseArgs, requiredString } from './args.js'
 import { assistantModeOn } from './assistant-items.js'
 import type { SessionContext, ToolHandler } from './context.js'
+import {
+  isCheckCoordinate,
+  isGettingToKnowCoordinate,
+  isResearchCoordinate
+} from '../../session/subsession-coordinate.js'
 
 export interface CapabilityRequestDeps {
   capabilityRequests?: {
@@ -94,8 +99,15 @@ export const WITHDRAW_CAPABILITY_REQUEST_TOOL: ToolDescriptor = {
 export const CAPABILITY_REQUEST_TOOLS: ToolDescriptor[] = [REQUEST_CAPABILITY_TOOL, WITHDRAW_CAPABILITY_REQUEST_TOOL]
 
 /** The tools a session is offered: only an agent in assistant mode, toward a CP that serves them (§5). */
-export function capabilityRequestToolsFor(agent: Pick<Agent, 'assistantMode'>, served: boolean): ToolDescriptor[] {
-  return served && assistantModeOn(agent) ? CAPABILITY_REQUEST_TOOLS : []
+export function capabilityRequestToolsFor(
+  agent: Pick<Agent, 'assistantMode'>,
+  served: boolean,
+  at: { thread: string }
+): ToolDescriptor[] {
+  // A follow-up's check, organization research and a getting-to-know task change nothing through AgentConnect, so they never list it.
+  const narrowed =
+    isCheckCoordinate(at.thread) || isResearchCoordinate(at.thread) || isGettingToKnowCoordinate(at.thread)
+  return served && assistantModeOn(agent) && !narrowed ? CAPABILITY_REQUEST_TOOLS : []
 }
 
 function portOf(ctx: SessionContext, deps: CapabilityRequestDeps, name: string) {

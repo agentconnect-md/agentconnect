@@ -217,6 +217,7 @@ export class CapabilityRequests {
     actor?: { userId: string; name?: string }
     integrationId?: string
     agentId?: string
+    srcIntegrationIds?: readonly string[]
   }): Promise<boolean> {
     const option = parseCapabilityDeclineOption(click.optionId)
     if (!option) return false
@@ -227,6 +228,7 @@ export class CapabilityRequests {
     if (!row || row.requestId !== click.requestId) return true
     if (click.agentId !== undefined && click.agentId !== row.agentId) return true
     if (click.integrationId !== undefined && click.integrationId !== row.integrationId) return true
+    if (click.srcIntegrationIds !== undefined && !click.srcIntegrationIds.includes(row.integrationId)) return true
     const facet = this.host.facet(row.platform)
     const conn = this.host.conn(row.integrationId)
     const actor = click.actor
@@ -279,7 +281,8 @@ export class CapabilityRequests {
     await this.rewrite(
       req.requestId,
       (row) => row.sessionKey === req.sessionKey || row.sessionKey === `${FORWARD_KEY}${req.requestId}`,
-      outcome
+      outcome,
+      req.generation
     ).catch((err: unknown) => this.host.log.warn(`capability ${req.requestId}: card rewrite failed: ${String(err)}`))
     if (req.reload) await this.host.forgetSession(req.agentId, req.sessionKey).catch(() => undefined)
     const askers = ownAskers(
@@ -406,9 +409,13 @@ export class CapabilityRequests {
   private async rewrite(
     requestId: string,
     pick: (row: CapabilityCardRow) => boolean,
-    outcome: CapabilityCardOutcome
+    outcome: CapabilityCardOutcome,
+    generation?: number
   ): Promise<void> {
-    const rows = (await this.host.cards().forRequest(requestId)).filter((row) => row.settledAt === null && pick(row))
+    // A card still settled from an earlier generation missed its reopen, so a later settlement rewrites it too.
+    const due = (row: CapabilityCardRow) =>
+      row.settledAt === null || (generation !== undefined && row.generation < generation)
+    const rows = (await this.host.cards().forRequest(requestId)).filter((row) => due(row) && pick(row))
     for (const row of rows) {
       const facet = this.host.facet(row.platform)
       const conn = this.host.conn(row.integrationId)
@@ -416,6 +423,8 @@ export class CapabilityRequests {
         const model = modelOf(row, row.generation)
         await facet.rewrite(handleOf(row, conn), facet.settled(model, outcome)).catch(() => 'failed' as const)
       }
+      if (generation !== undefined && row.generation < generation)
+        await this.host.cards().setGeneration(row.cardId, generation)
       await this.host.cards().markSettled(row.cardId, this.host.now())
     }
   }

@@ -128,6 +128,14 @@ describe('capability request routes', () => {
     expect(sent.forwarded).toEqual([
       expect.objectContaining({ consoleUserId: editor, forwardedBy: 'Vic', requestId: id })
     ])
+    // Forwarding to the same person again within the hour sends nothing more.
+    const repeated = await asViewer.app.inject({
+      method: 'POST',
+      url: `${ORG}/capability-requests/${id}/forward`,
+      payload: { userId: editor }
+    })
+    expect(repeated.json()).toEqual({ forwarded: 'dm' })
+    expect(sent.forwarded).toHaveLength(1)
     const forwardToViewer = await asViewer.app.inject({
       method: 'POST',
       url: `${ORG}/capability-requests/${id}/forward`,
@@ -165,6 +173,10 @@ describe('capability request routes', () => {
     const settled = await asEditor.app.inject({ method: 'POST', url: `${ORG}/capability-requests/${id}/settle` })
     expect(settled.statusCode, settled.body).toBe(200)
     expect(settled.json()).toMatchObject({ status: 'completed', differs: true, settledBy: { name: 'Ana' } })
+    // The save usually completes the request itself, so settling a completed one still answers with it.
+    const again = await asEditor.app.inject({ method: 'POST', url: `${ORG}/capability-requests/${id}/settle` })
+    expect(again.statusCode, again.body).toBe(200)
+    expect(again.json()).toMatchObject({ status: 'completed' })
   })
 
   it('answers 404 for a request on an agent the caller cannot see', async () => {

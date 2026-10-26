@@ -44,6 +44,8 @@ const MAX_PER_TICK = 20
 const IDLE_TICK_MS = 60_000
 // A completion whose upsert no daemon was seen to apply is sent anyway after this, rather than never.
 const UNACKED_COMPLETION_MS = 2 * 60_000
+// A request forwarded to the same person again within this window is not sent again.
+const FORWARD_REPEAT_MS = 60 * 60_000
 
 /** Why a console action was refused. */
 export type CapabilityActionRefusal = 'not_found' | 'not_open' | 'not_declined' | 'conflict'
@@ -93,6 +95,7 @@ export class CapabilityRequestService {
   // The configRevision each daemon acknowledged per agent, and when each daemon last registered: a completion's wake waits for either (§4.7.5).
   private readonly acked = new Map<string, bigint>()
   private readonly readyAt = new Map<string, number>()
+  private readonly forwardedAt = new Map<string, number>()
 
   constructor(private readonly deps: CapabilityRequestServiceDeps) {}
 
@@ -338,10 +341,15 @@ export class CapabilityRequestService {
   ): Promise<CapabilityRequestRecord | CapabilityActionRefusal> {
     const row = await this.deps.requests.get(orgId, id)
     if (!row) return 'not_found'
+    // The save itself usually completed it (`agentUpserted`), so a completed request answers as settled.
+    if (row.status === 'completed') return row
     if (row.status !== 'open') return 'not_open'
     const agent = await this.deps.agents.getUnscoped(row.agentId)
     if (!agent || agent.orgId !== orgId) return 'not_found'
-    if (!(await this.complete(row, agent, by, false))) return 'not_open'
+    if (!(await this.complete(row, agent, by, false))) {
+      const current = await this.deps.requests.get(orgId, id)
+      return current?.status === 'completed' ? current : 'not_open'
+    }
     return (await this.deps.requests.get(orgId, id)) ?? 'not_found'
   }
 
@@ -398,6 +406,10 @@ export class CapabilityRequestService {
 
   /** Forward an open request to someone who can act on it, through the agent's linked DM; else it stays listed. */
   async forward(row: CapabilityRequestRecord, consoleUserId: string, forwardedBy: string): Promise<'dm' | 'activity'> {
+    const key = `${row.id}:${row.generation}:${consoleUserId}`
+    const now = this.deps.clock.now()
+    for (const [seen, at] of this.forwardedAt) if (now - at >= FORWARD_REPEAT_MS) this.forwardedAt.delete(seen)
+    if (this.forwardedAt.has(key)) return 'dm'
     let delivered = false
     await this.tellDaemon(row, async (daemonId, link) => {
       const result = await this.deps.sendForward(daemonId, row.orgId, {
@@ -412,6 +424,7 @@ export class CapabilityRequestService {
       })
       delivered = result.delivered
     })
+    if (delivered) this.forwardedAt.set(key, now)
     return delivered ? 'dm' : 'activity'
   }
 
@@ -533,7 +546,12 @@ export class CapabilityRequestService {
       })
       return
     }
-    const by = deciderName(row.settledBy)
+    // A reopen may have landed while the daemon was looked up: never send the old generation's outcome.
+    const fresh = await this.deps.requests.get(row.orgId, row.id)
+    if (!fresh || fresh.generation !== row.generation || fresh.status !== row.status) {
+      return this.finish(origin, 'none', null)
+    }
+    const by = deciderName(row.settledBy)?.slice(0, 200)
     const wake: SessionCapabilitySettled = {
       agentId: row.agentId,
       sessionId: origin.sessionId,
@@ -544,7 +562,7 @@ export class CapabilityRequestService {
       askers: origin.askers,
       summary: row.summary,
       reason: row.reason,
-      outcome: row.outcome ?? '',
+      outcome: (row.outcome ?? '').slice(0, 500),
       ...(row.differs ? { differs: true } : {}),
       ...(by ? { by: { name: by } } : {}),
       ...(row.note ? { note: row.note } : {}),

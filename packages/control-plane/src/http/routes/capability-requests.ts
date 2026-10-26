@@ -272,6 +272,8 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
     r.post(
       '/capability-requests/:id/settle',
       {
+        // A person's own decision: no key, token or agent's delegated call may make it (§4.10).
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Agents],
           summary: 'Complete a capability request',
@@ -300,6 +302,8 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
     r.post(
       '/capability-requests/:id/decline',
       {
+        // A person's own decision: no key, token or agent's delegated call may make it (§4.10).
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Agents],
           summary: 'Decline a capability request',
@@ -330,6 +334,8 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
     r.post(
       '/capability-requests/:id/reopen',
       {
+        // A person's own decision: no key, token or agent's delegated call may make it (§4.10).
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Agents],
           summary: 'Reopen a declined capability request',
@@ -353,6 +359,8 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
     r.post(
       '/capability-requests/:id/forward',
       {
+        // A person's own decision: no key, token or agent's delegated call may make it (§4.10).
+        config: { interactiveOnly: true },
         schema: {
           tags: [Tag.Agents],
           summary: 'Forward a capability request',
