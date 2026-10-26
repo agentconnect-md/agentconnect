@@ -1647,6 +1647,39 @@ never run again: the conversation is told once that it is not sure this went thr
 check, and the card says the same. Each step (approved, denied, expired, reported back, ended
 without reporting, uncertain) is recorded on the follow-up.
 
+## Capability requests
+
+When an agent in assistant mode cannot do what it was asked because of how it is set up, it may ask
+for what it lacks with `requestCapability`: a change to its own model, effort, fast mode, output mode
+or permission mode, an organization MCP server, or a skill. A request grants nothing. Only a person
+completes it, in the console, through the same dialog and under the same permissions as making that
+change without a request. A deployment offers this only once its operator turns capability requests
+on, and a follow-up's check never gets the tool.
+
+The agent says in one sentence what it asked for and ends its turn; it does not wait. In Slack a card
+under its reply shows what it asked for, its reason as plain text, a button to open the request in the
+console and **Decline**. On other platforms there is no card: the agent's reply carries the link. A
+conversation shared with another organization sees only that the agent asked an admin; the card goes
+to the agent's responsible user in a direct message, otherwise the request waits on the agent's page.
+Asking again for something already asked for returns the open request, an identical request declined
+in the last 24 hours is not reopened, one conversation holds at most three open requests, and a
+request nobody settles expires after seven days.
+
+Whoever could ask the agent in that conversation may decline from the card: in a direct message, that
+person; in a channel, anyone whose own message would start a turn of the agent there; never a bot.
+Anyone else is refused privately and the card stays as it is. Completing a request needs edit access
+to the agent; someone without it sees on the request page what is needed and who has it, and may
+forward the request to one of them. An editor may decline it there with a note, and reopen a declined
+request.
+
+The request is completed when what it asked for holds, whether it was saved from the request page or
+elsewhere. If what was saved differs from what was asked, the request still completes, and the agent
+is told what it got instead. On completion, decline or expiry the card is rewritten in place, and the
+agent continues in every conversation that asked, with the authority of the people who asked there,
+and never with another conversation's. That continuation is not shown as anyone's message and passes
+a mention-only trigger; it waits behind a running turn and while the agent is paused. A request the
+agent withdraws wakes nobody.
+
 ## Reminders
 
 Every agent, in assistant mode or not, can be asked to remind a conversation of something at a set

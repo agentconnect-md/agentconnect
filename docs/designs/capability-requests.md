@@ -1,8 +1,9 @@
 # Capability Requests
 
-**Status:** Design, fourth revision (2026-10-15): per-platform cards with Decline (§4.4), the
-settlement reminder (§4.7), secret delivery without a restart (§4.9); asker context and delivery
-keys per origin, settlement generations (review of #3048). Nothing is implemented yet.
+**Status:** Phase 1 implemented (#3396): `agent-settings`, `mcp-server` and `skill` requests, the Slack
+card and the plain-link fallback, the request page, and the settlement wake, behind
+`features.capabilityRequests` for assistant-mode agents. §4.8 item 1 landed separately in #3128.
+Phases 2 and 3 are not implemented.
 
 **In one sentence:** when an agent finds it cannot do what it was asked because of how it is set up,
 it says what it is missing and why, hands the people present a link, and once someone with the
