@@ -127,6 +127,7 @@ import {
   PULL_REQUEST_FEEDBACK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
   FOLLOW_UP_WAKE_FEATURE,
+  CAPABILITY_REQUESTS_FEATURE,
   FOLLOW_UP_WATCH_FEATURE,
   parseFollowUpWatchUrl,
   WORKSPACE_GIT_V1_FEATURE,
@@ -1053,6 +1054,14 @@ import { discordApprovalCards } from './platforms/discord/approval-card.js'
 import { feishuApprovalCards } from './platforms/feishu/approval-card.js'
 import { feishuPlatformModule } from './platforms/feishu/module.js'
 import { slackApprovalCards } from './platforms/slack/approval-card.js'
+import { slackCapabilityCards } from './platforms/slack/capability-card.js'
+import {
+  CapabilityRequests,
+  readAskerOf,
+  type CapabilityDmTarget,
+  type CapabilityOrigin
+} from './capability/requests.js'
+import { capabilityRequestToolsFor } from './mcp/ops/capability-requests.js'
 import type { ApprovalCardFacet } from './platforms/approval-card.js'
 import { discordElicitCards } from './platforms/discord/elicit-card.js'
 import { feishuElicitCards } from './platforms/feishu/elicit-card.js'
@@ -1121,6 +1130,12 @@ import type {
   ChannelAgentsOk,
   SessionPullRequestFeedback,
   SessionPullRequestFeedbackResult,
+  SessionCapabilitySettled,
+  SessionCapabilitySettledResult,
+  CapabilityAskers,
+  CapabilityReopened,
+  CapabilityForward,
+  CapabilityForwardResult,
   TaskList,
   TaskListReq,
   McpAppRpc,
@@ -1704,6 +1719,7 @@ export class Daemon {
         platform: 'slack',
         elicitCards: slackElicitCards,
         approvalCards: slackApprovalCards,
+        capabilityCards: slackCapabilityCards,
         createConverger: (ctx) =>
           new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? [], ctx.resolveFileLink),
         initialTurnState: (ctx): SlackTurnState => {
@@ -4613,6 +4629,16 @@ export class Daemon {
       targetExternal: async (agentId, integrationId, channel, dm) =>
         !(await this.placeConfirmedInternal(agentId, integrationId, channel, { dm })),
       draftPost: (ctx, post) => this.draftPost(ctx, post),
+      capabilityRequests: {
+        offered: (ctx) => this.capabilityOffered(ctx),
+        request: async (ctx, ask, reason) =>
+          await this.capabilities.request(await this.capabilityOrigin(ctx), ask, reason),
+        withdraw: async (ctx, requestId) => {
+          const key = this.sessionKeyOf(ctx)
+          const sessionId = await this.store.ensureOutwardSessionId(key, ctx.agentId, this.clock.now())
+          return await this.capabilities.withdraw({ agentId: ctx.agentId, sessionId, sessionKey: key }, requestId)
+        }
+      },
       // A call refused because the bot is not in a public channel asks a person behind the turn first (#2979).
       confirmJoin: (ctx, ask, offered) => this.confirmJoin(ctx, ask, offered),
       deliverJoinOutcome: (ctx, outcome) => void this.deliverJoinOutcome(ctx, outcome),
@@ -8479,6 +8505,8 @@ export class Daemon {
       CODEHOST_FEEDBACK_FEATURE,
       // assistant-mode.md §5.14: this daemon records follow-ups' event wakes and sends their watches. Static.
       FOLLOW_UP_WAKE_FEATURE,
+      // capability-requests.md §4.7: this daemon answers `session/capability-settled`, `capability/reopened` and `capability/forward`. Static.
+      CAPABILITY_REQUESTS_FEATURE,
       // This daemon decodes the host-neutral `mode: 'git'` workspace arm; the CP
       // dual-encodes the legacy host-shaped arms to peers without this bit.
       WORKSPACE_GIT_V1_FEATURE,
@@ -9222,6 +9250,7 @@ export class Daemon {
 
   /** Assistant-mode drafts (assistant-mode.md §5.5), built on first use over the live store. */
   private assistantDraftService?: AssistantDrafts
+  private capabilityRequestService?: CapabilityRequests
   private get drafts(): AssistantDrafts {
     this.assistantDraftService ??= new AssistantDrafts({
       ledger: () => this.store.assistantDrafts,
@@ -9985,6 +10014,11 @@ export class Daemon {
     tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
     // Listing and stopping its tasks (send-message-guide.md §8.7), in every session that can delegate one.
     tools = [...tools, ...stopTaskToolsFor({ thread })]
+    // Capability requests (capability-requests.md §4.1): an agent in assistant mode, toward a CP that serves them; execution re-checks.
+    tools = [
+      ...tools,
+      ...capabilityRequestToolsFor(agent, this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_FEATURE) === true)
+    ]
     // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
     const managedRepo = this.managedWorkspaceRepo(agent.id)
     if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
@@ -10563,6 +10597,219 @@ export class Daemon {
     return await this.drafts.interceptPost(ctx.agentId, source, post, this.draftAskerOf(askers))
   }
 
+  /** Capability requests (capability-requests.md §4): the agent's ask, its cards, a card's Decline and the settling wake. */
+  private get capabilities(): CapabilityRequests {
+    this.capabilityRequestService ??= new CapabilityRequests({
+      now: () => this.clock.now(),
+      log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) },
+      cp: () =>
+        this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_FEATURE) === true ? this.cpClient : undefined,
+      orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
+      agent: (agentId) => {
+        const a = this.agents.get(agentId)
+        if (!a) return undefined
+        return {
+          name: a.displayName?.trim() || a.name,
+          ...(a.iconUrl ? { iconUrl: a.iconUrl } : {}),
+          integrations: a.integrations.map((i) => ({ id: i.id, platform: i.platform }))
+        }
+      },
+      facet: (platform) => this.turnSurfaces.exact(platform)?.capabilityCards,
+      cardHost: {
+        postCardSerialized: (turn, post) => this.postCardSerialized(turn as Pending, post),
+        sessionTarget: (turn) => this.httpSlackSessionTarget(turn as Pending),
+        turnState: (turn) => turnState(turn as Pending)
+      },
+      liveTurn: (key) => [...this.pending.values()].find((pending) => pending.plan.sessionKey === key),
+      conn: (integrationId) => this.connForIntegration(integrationId),
+      cards: () => this.store.capabilityCards,
+      routeDm: (agentId, requestId, consoleUserId) => this.routeCapabilityDm(agentId, requestId, consoleUserId),
+      admitsAsker: (agentId, integrationId, channel, isDm) => this.admitsAsker(agentId, integrationId, channel, isDm),
+      forgetSession: (agentId, key) => this.forgetCapabilitySession(agentId, key),
+      dispatchWake: (req, text, askers) => this.dispatchCapabilityWake(req, text, askers)
+    })
+    return this.capabilityRequestService
+  }
+
+  /** Whether a session may ask (§4.1, §5): an agent in assistant mode toward a CP that serves it, never a follow-up's check, research or a getting-to-know task. */
+  private capabilityOffered(ctx: SessionContext): boolean {
+    if (isCheckCoordinate(ctx.thread) || isResearchCoordinate(ctx.thread) || isGettingToKnowCoordinate(ctx.thread))
+      return false
+    return (
+      assistantModeOn(this.agents.get(ctx.agentId)) &&
+      this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_FEATURE) === true
+    )
+  }
+
+  /** The asking session as the trusted context names it: its ids, the people its live turn speaks for, and whether its place is external. */
+  private async capabilityOrigin(ctx: SessionContext): Promise<CapabilityOrigin> {
+    const key = this.sessionKeyOf(ctx)
+    const live = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
+    const sessionId =
+      live?.outwardSessionId ?? (await this.store.ensureOutwardSessionId(key, ctx.agentId, this.clock.now()))
+    const turnAskers = await this.readAskersFor(ctx).catch(() => NOBODY)
+    const conn = ctx.integrationId ? this.connForIntegration(ctx.integrationId) : undefined
+    const facet = this.turnSurfaces.exact(ctx.platform)?.capabilityCards
+    const people = await Promise.all(
+      turnAskers.people.slice(0, 8).map(async (asker) => {
+        const name =
+          asker.kind === 'member' && conn && facet && asker.integrationId === ctx.integrationId
+            ? await facet.nameOf(conn, asker.userId).catch(() => undefined)
+            : undefined
+        return { ...asker, ...(name ? { name } : {}) }
+      })
+    )
+    const names = people.flatMap((p) => (p.name ? [p.name] : []))
+    const external = !(await this.placeConfirmedInternal(ctx.agentId, ctx.integrationId, ctx.channel, {
+      dm: ctx.isDm
+    }).catch(() => false))
+    return {
+      agentId: ctx.agentId,
+      sessionKey: key,
+      sessionId,
+      platform: ctx.platform,
+      channel: ctx.channel,
+      ...(ctx.integrationId ? { integrationId: ctx.integrationId } : {}),
+      askers: { people, nobody: turnAskers.nobody },
+      ...(names.length > 0 ? { askedBy: names.join(', ') } : {}),
+      external
+    }
+  }
+
+  /** A named console user's linked chat identity, else the responsible user's, on an integration whose platform shows capability cards. */
+  private async routeCapabilityDm(
+    agentId: string,
+    requestId: string,
+    consoleUserId?: string
+  ): Promise<CapabilityDmTarget | undefined> {
+    const cp = this.cpClient?.supportsServerFeature?.(APPROVAL_DM_ROUTE_V1_FEATURE) === true ? this.cpClient : undefined
+    if (!cp) return undefined
+    if (!consoleUserId && this.cpClient?.supportsServerFeature?.(ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE) !== true)
+      return undefined
+    const integrationIds = (this.agents.get(agentId)?.integrations ?? [])
+      .filter((i) => this.turnSurfaces.exact(i.platform)?.capabilityCards && this.connForIntegration(i.id))
+      .map((i) => i.id)
+      .slice(0, 8)
+    if (integrationIds.length === 0) return undefined
+    const routed = await cp.approvalRoute(
+      { agentId, requestId, integrationIds, ...(consoleUserId ? { consoleUserId } : { responsible: true as const }) },
+      this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+    )
+    const target = routed.target
+    // A control plane that predates the named route answers with its own chain; only the named user counts.
+    if (!target || (consoleUserId !== undefined && target.consoleUserId !== consoleUserId)) return undefined
+    return { integrationId: target.integrationId, userId: target.userId }
+  }
+
+  /** Forget a session's runtime attachment so its next turn re-attaches with `session/load` (§4.8); a busy one once its turn ends. */
+  private async forgetCapabilitySession(agentId: string, key: string): Promise<void> {
+    const forget = async (): Promise<void> => {
+      const rec = await this.store.getSession(key)
+      if (rec?.acpSessionId) this.hostForOwner(this.sessionOwnerKey(agentId, key))?.forgetSession(rec.acpSessionId)
+    }
+    if (!this.activeGateEntries.has(key)) return await forget()
+    const deadline = this.clock.now() + 30 * 60_000
+    const poll = (): void => {
+      if (this.activeGateEntries.has(key) && this.clock.now() < deadline) {
+        setTimeout(poll, 1_000).unref?.()
+        return
+      }
+      void forget().catch(() => undefined)
+    }
+    poll()
+  }
+
+  /** The settled request's reminder as a durable `source: 'system'` continuation of the origin session (§4.7.2), shaped like PR feedback's. */
+  private async dispatchCapabilityWake(
+    req: SessionCapabilitySettled,
+    text: string,
+    askers: CapabilityAskers
+  ): Promise<SessionCapabilitySettledResult> {
+    const deferred = (
+      reason: NonNullable<SessionCapabilitySettledResult['reason']>
+    ): SessionCapabilitySettledResult => ({
+      accepted: false,
+      reason
+    })
+    const session = await this.store.getSessionByOutwardId(req.sessionId, req.agentId)
+    if (!session || session.key !== req.sessionKey) return deferred('not_found')
+    const originKind = originKindOf(session.platform) ?? 'chat'
+    const integrationId =
+      originKind === 'chat'
+        ? this.integrationIdForSessionTransport(req.agentId, session.platform, session.transportScope)
+        : undefined
+    if (originKind === 'chat' && (!integrationId || !this.connForIntegration(integrationId)))
+      return deferred('integration_offline')
+    const deliveryId = `capability:${req.requestId}:${req.generation}:${req.sessionId}`
+    const msg: NormalizedMessage = {
+      msgId: deliveryId,
+      traceId: deliveryId,
+      transcriptTs: monotonicTs(),
+      source: 'system',
+      platform: session.platform,
+      channel: session.channel,
+      // Keyed by the session alone, so it replies where the session's latest turn did.
+      ...wakeThreadFields(session.thread, session.replyThread ?? undefined),
+      ...(session.transportScope ? { transportScope: session.transportScope } : {}),
+      sender: { id: 'capability-request', name: 'AgentConnect', isBot: true },
+      text,
+      ...(originKind === 'hook' || originKind === 'dream' ? { headless: true } : {}),
+      mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
+      isDm: session.conversationKind === 'dm',
+      ...(session.conversationKind === 'group_dm' ? { isGroupDm: true } : {}),
+      trigger: 'auto',
+      capabilityWake: {
+        requestId: req.requestId,
+        generation: req.generation,
+        askers: { people: askers.people.map(readAskerOf), nobody: askers.nobody }
+      }
+    }
+    const externalOrigin = this.externalAudienceForSessionRecord(session)
+    const callMeta: CallMeta = {
+      callFrom: req.agentId,
+      hopCount: 0,
+      deliveryId,
+      conversationContinuation: true,
+      ...(externalOrigin ? { externalOrigin } : {})
+    }
+    return await new Promise<SessionCapabilitySettledResult>((resolve) => {
+      let settled = false
+      const settle = (result: SessionCapabilitySettledResult): void => {
+        if (settled) return
+        settled = true
+        resolve(result)
+      }
+      void this.dispatch(
+        req.agentId,
+        msg,
+        integrationId,
+        this.webchatTransport.webchatWakeContext(session.platform, session.channel),
+        callMeta,
+        {
+          requireDurable: true,
+          deliveryId,
+          onAdmission: (result) => {
+            if (result.accepted) return settle({ accepted: true })
+            settle(
+              deferred(result.reason === 'paused' ? 'paused' : result.reason === 'durability' ? 'durability' : 'busy')
+            )
+          }
+        }
+      ).then(
+        () => settle(deferred('durability')),
+        (err) => {
+          this.log.warn(`capability wake dispatch failed for agent "${req.agentId}": ${formatErr(err)}`)
+          settle(deferred('durability'))
+        }
+      )
+    })
+  }
+
+  /** The people a settled request's reminder speaks for, when it started this live turn (§4.7.3). */
+  private capabilityWakeOpener(key: string): TurnAskers | undefined {
+    return this.activeGateEntries.get(key)?.msg.capabilityWake?.askers
+  }
+
   /** The person the write rule judged the turn by, as a draft approver candidate; a member approves only on their platform's word (§5.5). */
   private draftAskerOf(askers: TurnAskers): DraftAsker | undefined {
     // The turn's own message comes first, so a schedule's, a sub-session's or an item's person stands in where no one typed.
@@ -10695,6 +10942,8 @@ export class Daemon {
     optionId: string
     actor?: { userId: string; name?: string }
   }): Promise<void> {
+    // A capability card's Decline (capability-requests.md §4.4.4) carries its own option; its checks authorize the click.
+    if (await this.capabilities.decline(a).catch(() => false)) return
     if (await this.drafts.handleChoice(a).catch(() => false)) return
     await this.permissions.handlePermissionChoice(a)
   }
@@ -10768,6 +11017,9 @@ export class Daemon {
     // A join's result continues the request of the person who answered Join, so its turn reads as them.
     const wake = this.joinWakeOpeners.get(this.activeGateEntries.get(key)?.msg.msgId ?? '')
     if (wake) return wake
+    // A settled capability request's reminder speaks for the people its origin's turn did (capability-requests.md §4.7.3).
+    const capabilityWake = this.capabilityWakeOpener(key)
+    if (capabilityWake) return capabilityWake
     if (isCheckCoordinate(thread)) {
       const { item, extra } = await this.followUpChecks
         .askersFor(agentId, key)
@@ -14127,6 +14379,22 @@ export class Daemon {
     // connection resolves the one this thread owns and runs the same cancel + transition.
     if (payload.kind === 'agent-session-stopped') {
       await conn.agentSessionStopped(payload.channelId, payload.threadTs, msg.userId)
+      return { msgId: msg.msgId, accepted: true }
+    }
+
+    // A capability card's Decline names its own card; the card's row and the click's bot and agent must agree.
+    if (
+      payload.kind === 'permission-choice' &&
+      (await this.capabilities
+        .decline({
+          requestId: payload.requestId,
+          optionId: payload.optionId,
+          ...(msg.userId ? { actor: { userId: msg.userId } } : {}),
+          integrationId: msg.integrationId,
+          agentId: msg.agentId
+        })
+        .catch(() => false))
+    ) {
       return { msgId: msg.msgId, accepted: true }
     }
 
@@ -27676,6 +27944,9 @@ export class Daemon {
       pendingSubsessionApprovals: (agentId) => this.permissions.pendingSubsessionApprovals(agentId),
       stopAssistantFollowUp: (agentId, item, actor) => this.followUpChecks.stop(agentId, item, actor),
       assistantFollowUpWake: (req) => this.followUpChecks.wake(req.agentId, req),
+      capabilitySettled: (req: SessionCapabilitySettled) => this.capabilities.settled(req),
+      capabilityReopened: (req: CapabilityReopened) => this.capabilities.reopened(req),
+      capabilityForward: (req: CapabilityForward): Promise<CapabilityForwardResult> => this.capabilities.forward(req),
       cancelSessionByKey: (key, actor) => this.stopSessionByKey(key, actor),
       autoMerge: () => this.autoMergeWatcher,
       sandboxHolds: () => this.sandboxHolds,

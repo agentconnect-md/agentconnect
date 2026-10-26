@@ -345,7 +345,12 @@ export const canonicalColumns = [
   'hopCount',
   'senderKey',
   'senderAgentId',
-  'senderSessionId'
+  'senderSessionId',
+  // capability_card (capability-requests.md §4.4.6)
+  'cardId',
+  'modelJson',
+  'postedAt',
+  'requestId'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

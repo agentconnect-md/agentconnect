@@ -88,6 +88,12 @@ import {
   type AssistantControlDeps
 } from './assistant.js'
 import { autoMergeSet, autoMergeState, type AutoMergeControlDeps } from './automerge.js'
+import {
+  capabilityForward,
+  capabilityReopened,
+  sessionCapabilitySettled,
+  type CapabilityControlDeps
+} from './capability.js'
 import { sandboxKeepAlive, type SandboxKeepAliveDeps } from './sandbox-keepalive.js'
 import { runtimeProbe, type RuntimeProbeDeps } from './runtime-probe.js'
 import { computerPoolOp, type ComputerPoolControlDeps } from './computer-pool.js'
@@ -133,6 +139,7 @@ export interface ControlDeps
     SkillsControlDeps,
     TaskControlDeps,
     AssistantControlDeps,
+    CapabilityControlDeps,
     AutoMergeControlDeps,
     SandboxKeepAliveDeps,
     RuntimeProbeDeps,
@@ -213,6 +220,9 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['assistant/activity/read', assistantActivityRead],
   ['assistant/activity/write', assistantActivityWrite],
   ['assistant/follow-up-wake', assistantFollowUpWake],
+  ['session/capability-settled', sessionCapabilitySettled],
+  ['capability/reopened', capabilityReopened],
+  ['capability/forward', capabilityForward],
   ['automerge/set', autoMergeSet],
   ['automerge/state', autoMergeState],
   ['sandbox/keepalive', sandboxKeepAlive],

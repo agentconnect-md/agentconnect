@@ -13,6 +13,7 @@ import { ASSISTANT_ONBOARDING_SCHEMA, AssistantOnboardingLedger } from './assist
 import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
 import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
 import { newSessionMessageId, SESSION_MESSAGE_SCHEMA, SessionMessages } from './session-messages.js'
+import { CAPABILITY_CARD_SCHEMA, CapabilityCardLedger } from './capability-cards.js'
 import {
   APPEND_COORDINATE_PREFIX,
   appendCoordinate,
@@ -2616,6 +2617,8 @@ export class LocalStore {
   readonly placeTimeZones: PlaceTimeZones
   /** The messages each session received and sent, with their reply obligations (send-message-guide.md §9.3). */
   readonly sessionMessages: SessionMessages
+  /** The capability cards this daemon posted, for their rewrite on settlement (capability-requests.md §4.4.6). */
+  readonly capabilityCards: CapabilityCardLedger
   private readonly ahpState: AhpStateStore
   private transcriptRevision = 0
   private transcriptMutationListener?: (mutation: TranscriptMutation) => void | Promise<void>
@@ -2657,6 +2660,7 @@ export class LocalStore {
     this.assistantOnboarding = new AssistantOnboardingLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.placeTimeZones = new PlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
     this.sessionMessages = new SessionMessages({ query: (sql, params) => this.db.query(sql, params) })
+    this.capabilityCards = new CapabilityCardLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.ahpState = new AhpStateStore({
       query: (sql, params) => this.db.query(sql, params),
       transaction: (fn) => this.transaction(fn)
@@ -2751,6 +2755,7 @@ export class LocalStore {
       ${ASSISTANT_ONBOARDING_SCHEMA}
       ${PLACE_TIME_ZONE_SCHEMA}
       ${SESSION_MESSAGE_SCHEMA}
+      ${CAPABILITY_CARD_SCHEMA}
       ${AHP_STATE_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,

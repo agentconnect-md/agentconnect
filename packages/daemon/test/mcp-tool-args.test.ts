@@ -8,6 +8,7 @@ import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
 import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { GETTING_TO_KNOW_TOOL } from '../src/mcp/ops/getting-to-know.js'
 import { CODE_HOST_RESEARCH_TOOLS } from '../src/mcp/ops/code-host-research.js'
+import { CAPABILITY_REQUEST_TOOLS } from '../src/mcp/ops/capability-requests.js'
 import { allPortPlatforms, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -98,7 +99,8 @@ const advertised: ToolDescriptor[] = [
   PROPOSE_WATCH_TOOL,
   ...ASSISTANT_REMINDER_TOOLS,
   LIST_TASKS_TOOL,
-  STOP_TASK_TOOL
+  STOP_TASK_TOOL,
+  ...CAPABILITY_REQUEST_TOOLS
 ]
 
 interface ObjectSchemaView {

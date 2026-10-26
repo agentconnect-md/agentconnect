@@ -166,6 +166,13 @@ import {
   ASSISTANT_SUBSESSION_HANDLERS,
   type AssistantSubsessionDeps
 } from './ops/assistant-subsessions.js'
+import {
+  requestCapability,
+  REQUEST_CAPABILITY_ARGS,
+  withdrawCapabilityRequest,
+  WITHDRAW_CAPABILITY_REQUEST_ARGS,
+  type CapabilityRequestDeps
+} from './ops/capability-requests.js'
 
 export type { McpContentResult, MessageGateway, SendIdentity, SessionContext } from './ops/context.js'
 export type { ChannelAgentsRequest } from './ops/directory.js'
@@ -215,7 +222,8 @@ export interface OpsDeps
     JoinAskDeps,
     AssistantItemDeps,
     AssistantReminderDeps,
-    AssistantSubsessionDeps {
+    AssistantSubsessionDeps,
+    CapabilityRequestDeps {
   /** Rejected tool arguments are logged here at debug, key names only — the sole trace of them (#1921). */
   log?: Pick<Logger, 'debug'>
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
@@ -327,7 +335,9 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ...ASSISTANT_ITEM_HANDLERS,
   ['getToKnow', gettingToKnow],
   ...ASSISTANT_REMINDER_HANDLERS,
-  ...ASSISTANT_SUBSESSION_HANDLERS
+  ...ASSISTANT_SUBSESSION_HANDLERS,
+  ['requestCapability', requestCapability],
+  ['withdrawCapabilityRequest', withdrawCapabilityRequest]
 ])
 
 /**
@@ -400,6 +410,8 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['getToKnow', GETTING_TO_KNOW_ARGS],
   ...ASSISTANT_REMINDER_ARG_SCHEMAS,
   ...ASSISTANT_SUBSESSION_ARG_SCHEMAS,
+  ['requestCapability', REQUEST_CAPABILITY_ARGS],
+  ['withdrawCapabilityRequest', WITHDRAW_CAPABILITY_REQUEST_ARGS],
   // The session's own conversation is read from trusted context alone — no arguments.
   ['getCurrentChannel', z.object({})],
   // One body serves every platform's credentialed attachment read, so one schema does too.

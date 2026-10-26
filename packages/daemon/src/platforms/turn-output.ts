@@ -35,6 +35,7 @@
  */
 
 import type { ApprovalCardFacet } from './approval-card.js'
+import type { CapabilityCardFacet } from './capability-card.js'
 import type { ElicitCardFacet } from './elicit-card.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import type { FileUploader } from '../mcp/ops/context.js'
@@ -117,6 +118,8 @@ export interface TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
   readonly elicitCards?: ElicitCardFacet
   /** How this surface offers a permission request as a card the conversation answers; absent ⇒ a notice and the console. Exact lookup, as `elicitCards`. */
   readonly approvalCards?: ApprovalCardFacet
+  /** How this surface shows an agent's capability request with a link and Decline; absent ⇒ the agent puts the link in its reply. Exact lookup, as `elicitCards`. */
+  readonly capabilityCards?: CapabilityCardFacet
   /** Build this turn's converger. A fresh one per turn, so a config change
    *  applies from the next turn rather than mid-stream. */
   createConverger(ctx: TurnOutputContext<TMessage>): TConv

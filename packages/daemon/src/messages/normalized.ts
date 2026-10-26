@@ -6,6 +6,7 @@ import {
   type UserTurnBody
 } from '@agentconnect.md/protocol'
 import type { ChannelIntake } from '../decisions/evidence.js'
+import type { ReadAsker } from '../assistant/place-access.js'
 
 /**
  * A file shared alongside a message. Platform ingresses carry metadata + a
@@ -112,6 +113,12 @@ export interface NormalizedMessage extends Omit<
    * does not see private night/task reports as room posts.
    */
   parentReport?: boolean
+  /** A settled capability request's reminder (capability-requests.md §4.7.2): the people its origin's turn spoke for, persisted with the message so a replay still knows them. Set only by the daemon. */
+  capabilityWake?: {
+    requestId: string
+    generation: number
+    askers: { people: ReadAsker[]; nobody: boolean }
+  }
   /**
    * This delivery CONTINUES a session the control plane authorized, synthesized on that
    * session's own stored coordinates (webchat-cross-integration-continuation.md §9). Set only

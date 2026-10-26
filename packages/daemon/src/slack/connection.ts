@@ -46,6 +46,7 @@ import {
   ELICIT_DISMISS_ACTION,
   PERMISSION_ACTION_PREFIX,
   PERMISSION_UPDATE_ACTION,
+  CAPABILITY_OPEN_ACTION,
   buildPermissionUpdateCard,
   buildStatusModal,
   buildStatusUnavailableModal,
@@ -1343,6 +1344,9 @@ export class SlackConnection implements PlatformConnection {
     })
     this.app.action(PERMISSION_UPDATE_ACTION, async ({ ack }) => {
       await ack() // URL button — Slack still sends an interaction payload.
+    })
+    this.app.action(CAPABILITY_OPEN_ACTION, async ({ ack }) => {
+      await ack() // A capability card's link button: the browser follows it; nothing waits on the click.
     })
     // Interactive permission card (buildPermissionCard): every option button shares the
     // `ac_perm:<index>` prefix, matched here by RegExp. The chosen requestId+optionId ride
