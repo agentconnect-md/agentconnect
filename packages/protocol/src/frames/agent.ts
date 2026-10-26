@@ -463,6 +463,17 @@ export const AgentSpec = z.object({
   // means write-only from the API/UI, not KMS-sealed. Always shipped (even {}) so a
   // removed secret replicates, same contract as `env` below.
   secrets: z.record(z.string(), z.string()).optional(),
+  // Live secrets (capability-requests.md §4.9.2): fetched at use time by `agentconnect-secrets`, never in the child env or `hostSpawnSig`.
+  liveSecrets: z
+    .array(
+      z.object({
+        name: z.string().regex(/^[A-Z][A-Z0-9_]{1,63}$/),
+        value: z.string(),
+        description: z.string().max(200).optional()
+      })
+    )
+    .max(100)
+    .optional(),
   // Which memory backend the agent uses (design: docs/designs/memory-evolution.md):
   //   managed  — our <agent-root>/memory/ directory (default)
   //   native   — the runtime's own memory (Claude auto-memory / Codex memories),
