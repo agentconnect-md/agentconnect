@@ -179,3 +179,13 @@ describe('maskSecretsDeep', () => {
     expect(masked.sibling).toBe(update.sibling)
   })
 })
+
+describe('live secrets', () => {
+  it('are masked beside the spawn-time secrets (capability-requests.md §4.9.2)', () => {
+    const entries = maskableSecrets({
+      runtimeOverrides: { secrets: [{ name: 'API_KEY', value: 'spawn-time-value-1234' }] },
+      liveSecrets: [{ name: 'GRAFANA_TOKEN', value: 'live-value-abcdef-5678' }]
+    })
+    expect(entries.map((e) => e.name)).toEqual(expect.arrayContaining(['API_KEY', 'GRAFANA_TOKEN']))
+  })
+})

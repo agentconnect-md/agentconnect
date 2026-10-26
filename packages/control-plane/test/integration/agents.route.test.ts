@@ -13,6 +13,7 @@
  *  - POST/GET/DELETE /crons          → CRUD through the real `CronRepo`.
  *  - humanAuth devAuth stub admits (a principal is attached, no 401).
  */
+import { LIVE_SECRETS_MAX } from '@agentconnect.md/protocol'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
@@ -1076,6 +1077,75 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: { secrets: { 'no spaces': 'x' } }
     })
     expect(badKey.statusCode).toBe(400)
+  })
+
+  it('PATCH saves a live secret beside the environment, names only in the DTO, and refuses a name the environment uses', async () => {
+    const app = build()
+    const create = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'live-bot', runtime: 'claude', env: { PUBLIC_URL: 'https://x' }, secrets: { API_KEY: 'sk-1' } }
+    })
+    const id = (create.json() as { id: string }).id
+    const saved = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${id}`,
+      payload: { liveSecrets: { GRAFANA_TOKEN: { value: 'gt-1', description: 'Grafana API token' } } }
+    })
+    expect(saved.statusCode, saved.body).toBe(200)
+    const dto = saved.json() as { secretKeys: string[]; liveSecrets: unknown }
+    // capability-requests.md §4.9.2: the live secret is no environment secret, and its value never comes back.
+    expect(dto.secretKeys).toEqual(['API_KEY'])
+    expect(dto.liveSecrets).toEqual([{ name: 'GRAFANA_TOKEN', description: 'Grafana API token' }])
+    expect(saved.body).not.toContain('gt-1')
+    const got = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${id}` })
+    expect((got.json() as { liveSecrets: unknown }).liveSecrets).toEqual([
+      { name: 'GRAFANA_TOKEN', description: 'Grafana API token' }
+    ])
+
+    // A name an env var or a spawn-time secret already uses is refused, and a live one never turns into a spawn-time one.
+    const clashes: Array<[string, Record<string, unknown>]> = [
+      ['PUBLIC_URL', { liveSecrets: { PUBLIC_URL: { value: 'v' } } }],
+      ['API_KEY', { liveSecrets: { API_KEY: { value: 'v' } } }],
+      ['GRAFANA_TOKEN', { secrets: { GRAFANA_TOKEN: 'spawn' } }],
+      ['GRAFANA_TOKEN', { env: { PUBLIC_URL: 'https://x', GRAFANA_TOKEN: 'plain' } }]
+    ]
+    for (const [name, payload] of clashes) {
+      const clash = await app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${id}`, payload })
+      expect(clash.statusCode, JSON.stringify(payload)).toBe(409)
+      expect(clash.json().message).toContain(name)
+    }
+    // A live secret is named like A_NAME, and never named in both maps at once.
+    for (const payload of [
+      { liveSecrets: { grafana: { value: 'v' } } },
+      { secrets: { NEW_ONE: 'a' }, liveSecrets: { NEW_ONE: { value: 'b' } } }
+    ]) {
+      expect((await app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${id}`, payload })).statusCode).toBe(400)
+    }
+    expect(
+      await prisma.agentSecret.findUnique({ where: { agentId_key: { agentId: id, key: 'GRAFANA_TOKEN' } } })
+    ).toMatchObject({
+      delivery: 'live'
+    })
+    // A delete names its own kind: neither map removes a secret of the other.
+    for (const payload of [{ liveSecrets: { API_KEY: null } }, { secrets: { GRAFANA_TOKEN: null } }]) {
+      const crossDelete = await app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${id}`, payload })
+      expect(crossDelete.statusCode, JSON.stringify(payload)).toBe(409)
+    }
+    expect(await prisma.agentSecret.count({ where: { agentId: id, key: { in: ['API_KEY', 'GRAFANA_TOKEN'] } } })).toBe(
+      2
+    )
+    // The spec ships at most LIVE_SECRETS_MAX, so a save past it is refused rather than left unable to sync.
+    const many = Object.fromEntries(
+      Array.from({ length: LIVE_SECRETS_MAX }, (_, i) => [`LIVE_${i}`, { value: `v${i}` }])
+    )
+    const tooMany = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${id}`,
+      payload: { liveSecrets: many }
+    })
+    expect(tooMany.statusCode).toBe(409)
+    expect(tooMany.json().message).toContain(String(LIVE_SECRETS_MAX))
   })
 
   it('POST + PATCH /agents carries output and chat runtime controls in runtimeOverrides', async () => {

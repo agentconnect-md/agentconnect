@@ -230,8 +230,12 @@ export interface AgentEnvironmentSnapshot {
   agentId: string
   /** The agent's own variables (`runtimeOverrides.env`). */
   variables: Record<string, string>
-  /** The agent's own secret KEY names — values are irrelevant to admission. */
+  /** The agent's own spawn-time secret KEY names — values are irrelevant to admission. */
   secretKeys: string[]
+  /** The agent's live secret names (capability-requests.md §4.9.2): outside the environment, never sharing a name with it. */
+  liveKeys?: string[]
+  /** JSON-encoded sizes of the live secrets' values, which ride the spec beside the environment. */
+  liveSecretBytes?: Map<string, number>
   /** Organization entries assigned to this agent AFTER the candidate mutation. */
   organizationEntries: AssignedOrganizationEntry[]
   /** JSON-ENCODED sizes of the organization values (quotes and escapes included),
@@ -251,7 +255,9 @@ export interface AgentEnvironmentSnapshot {
 }
 
 export type AdmissionFailure =
-  { outcome: 'cross_kind_conflict'; keys: string[] } | { outcome: 'too_large'; agentIds: string[] }
+  | { outcome: 'cross_kind_conflict'; keys: string[] }
+  | { outcome: 'too_large'; agentIds: string[] }
+  | { outcome: 'live_secret_conflict'; keys: string[] }
 
 /**
  * Step 4 for a batch of agents. Two refusals, both before any persistence:
@@ -270,6 +276,17 @@ export function checkEnvironmentAdmission(snapshots: readonly AgentEnvironmentSn
     if (resolvedSpecBytes(snapshot) > MAX_RESOLVED_ENVIRONMENT_BYTES) oversized.push(snapshot.agentId)
   }
   if (conflicts.size > 0) return { outcome: 'cross_kind_conflict', keys: [...conflicts].sort() }
+  // A live secret never shares a name with anything that reaches the child's environment, the agent's or the organization's.
+  const live = new Set<string>()
+  for (const snapshot of snapshots) {
+    const spawnKeys = new Set([
+      ...Object.keys(snapshot.variables),
+      ...snapshot.secretKeys,
+      ...snapshot.organizationEntries.map((entry) => entry.key)
+    ])
+    for (const key of snapshot.liveKeys ?? []) if (spawnKeys.has(key)) live.add(key)
+  }
+  if (live.size > 0) return { outcome: 'live_secret_conflict', keys: [...live].sort() }
   if (oversized.length > 0) return { outcome: 'too_large', agentIds: oversized.sort() }
   return null
 }
@@ -285,7 +302,9 @@ export class OrganizationEnvironmentAdmissionError extends Error {
     super(
       failure.outcome === 'cross_kind_conflict'
         ? `an organization variable already provides ${failure.keys.join(', ')}; an agent secret cannot use the same name`
-        : 'the resolved agent configuration exceeds the size the daemon protocol admits'
+        : failure.outcome === 'live_secret_conflict'
+          ? `${failure.keys.join(', ')} is already an environment variable or secret of this agent or its organization; a live secret cannot use the same name`
+          : 'the resolved agent configuration exceeds the size the daemon protocol admits'
     )
     this.name = 'OrganizationEnvironmentAdmissionError'
   }
@@ -367,8 +386,8 @@ export async function snapshotAgentEnvironments(
     // SIZES ONLY — this is an admission check, never a value read. `to_json`
     // computes the escaped JSON length Postgres-side, so escaping is measured
     // exactly while the value itself never crosses the wire.
-    tx.$queryRaw<Array<{ agentId: string; key: string; bytes: number }>>(
-      Prisma.sql`SELECT "agentId", "key", ${Prisma.raw(ENCODED_LENGTH_SQL)}::int AS bytes FROM "agent_secret" WHERE "agentId" IN (${Prisma.join(ids)})`
+    tx.$queryRaw<Array<{ agentId: string; key: string; bytes: number; delivery: string }>>(
+      Prisma.sql`SELECT "agentId", "key", "delivery", ${Prisma.raw(ENCODED_LENGTH_SQL)}::int AS bytes FROM "agent_secret" WHERE "agentId" IN (${Prisma.join(ids)})`
     ),
     // The NON-ENVIRONMENT projection of the agent row (see `otherSpecBytes`).
     // `- 'env'` is essential: the effective env members are counted individually by
@@ -410,10 +429,12 @@ export async function snapshotAgentEnvironments(
   ])
 
   const secretBytes = new Map<string, Map<string, number>>()
+  const liveBytes = new Map<string, Map<string, number>>()
   for (const row of secretRows) {
-    const perAgent = secretBytes.get(row.agentId) ?? new Map<string, number>()
+    const into = row.delivery === 'live' ? liveBytes : secretBytes
+    const perAgent = into.get(row.agentId) ?? new Map<string, number>()
     perAgent.set(row.key, row.bytes)
-    secretBytes.set(row.agentId, perAgent)
+    into.set(row.agentId, perAgent)
   }
 
   // Value sizes for assigned organization secrets, keyed by entry id.
@@ -468,6 +489,8 @@ export async function snapshotAgentEnvironments(
       organizationEntries,
       organizationValueBytes,
       agentSecretBytes: secretBytes.get(agent.id) ?? new Map(),
+      liveKeys: [...(liveBytes.get(agent.id)?.keys() ?? [])],
+      liveSecretBytes: liveBytes.get(agent.id) ?? new Map(),
       // The row's non-env projection, plus only the skill sources THIS agent
       // enables — the resolved `AgentSpec.skills` entries are built from them.
       otherSpecBytes: (otherSpec.get(agent.id) ?? 0) + enabledSkillSourceBytes(agent.runtimeOverrides, skillSourceSizes)
@@ -498,5 +521,7 @@ function resolvedSpecBytes(snapshot: AgentEnvironmentSnapshot): number {
     // own quotes already included), and a separating comma.
     bytes += encodedValueBytes(effective.key) + 1 + valueBytes + 1
   }
+  // Each live secret rides the spec as `{"name":…,"value":…}`; its description is capped and counted generously.
+  for (const [key, valueBytes] of snapshot.liveSecretBytes ?? []) bytes += encodedValueBytes(key) + valueBytes + 240
   return bytes
 }

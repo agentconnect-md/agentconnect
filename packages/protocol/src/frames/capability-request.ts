@@ -6,6 +6,9 @@ export const CAPABILITY_REQUESTS_FEATURE = 'capability-requests-v1'
 /** Phase 2: a CP advertising it takes `repository`, `connection` and `secret` asks; a daemon advertising it takes `agent/mcp-rebound` and offers those kinds. */
 export const CAPABILITY_REQUESTS_V2_FEATURE = 'capability-requests-v2'
 
+/** Phase 3: a CP advertising it takes `secret` asks on the `live` route and ships `AgentSpec.liveSecrets`; a daemon advertising it serves them through `agentconnect-secrets`. */
+export const CAPABILITY_REQUESTS_V3_FEATURE = 'capability-requests-v3'
+
 /** The kinds a CP or daemon without `capability-requests-v2` knows. */
 export const CAPABILITY_V1_KINDS: readonly CapabilityKind[] = ['agent-settings', 'mcp-server', 'skill']
 

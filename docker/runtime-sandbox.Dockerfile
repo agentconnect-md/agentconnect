@@ -47,9 +47,10 @@ RUN mkdir -p /out/shim /out/pathbin \
   && cp /build/packages/daemon/dist/shim/*.js /out/shim/ \
   && cp -R /build/packages/daemon/dist/shim/skills /out/shim/skills \
   && cp /build/packages/daemon/dist/shim/gh /out/pathbin/gh \
+  && cp /build/packages/daemon/dist/shim/agentconnect-secrets /out/pathbin/agentconnect-secrets \
   && chmod 0444 /out/shim/*.js /out/shim/skills/dist/cli.js \
     /out/shim/skills/workspace-mutation.js /out/shim/skills/package.json \
-  && chmod 0555 /out/shim /out/pathbin /out/pathbin/gh
+  && chmod 0555 /out/shim /out/pathbin /out/pathbin/gh /out/pathbin/agentconnect-secrets
 
 # ────────────────────────────── payload digest ──────────────────────────────
 # The payload's content digest, taken from the stage the images copy; build.yaml aliases an image whose digest matches.

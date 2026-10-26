@@ -311,3 +311,54 @@ it('shows the saved level of what people can do in chat and saves a new one', as
   await vi.waitFor(() => expect(mocks.updateAgent).toHaveBeenCalled())
   expect(mocks.updateAgent.mock.calls[0]![1]).toMatchObject({ chatActions: 'approve' })
 })
+
+it('removes a live secret only after its removal is confirmed, and sends it as null on save', async () => {
+  mocks.dto = {
+    name: 'pilot',
+    runtime: 'claude',
+    daemonId: 'd1',
+    execution: 'host',
+    strategies: STRATEGIES,
+    model: 'model-host',
+    visibility: 'org',
+    sharedWith: [],
+    // Only the detail read carries live secrets; the list projection the prop comes from omits them.
+    liveSecrets: [
+      { name: 'GRAFANA_TOKEN', description: 'Grafana API token' },
+      { name: 'KUBE_TOKEN', description: null }
+    ]
+  }
+  const withLive = { ...agent } as Agent
+  host = document.createElement('div')
+  document.body.appendChild(host)
+  root = createRoot(host)
+  await act(async () =>
+    root!.render(
+      <SWRConfig value={{ provider: () => new Map(), shouldRetryOnError: false }}>
+        <EditAgentModal agent={withLive} onClose={vi.fn()} />
+      </SWRConfig>
+    )
+  )
+  const remove = () => host!.querySelector<HTMLButtonElement>('[aria-label="Remove live secret GRAFANA_TOKEN"]')!
+  await vi.waitFor(() => expect(remove()).not.toBeNull())
+  const pick = (text: string) =>
+    [...host!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === text)!
+  // A first click only asks, and says a process that already loaded it keeps the value until restarted.
+  await act(async () => remove().click())
+  expect(host!.querySelector('[role="alertdialog"]')!.textContent).toContain('keeps the value until it is restarted')
+  await act(async () => pick('Keep it').click())
+  expect(host!.querySelector('[role="alertdialog"]')).toBeNull()
+  expect(host!.querySelector('[data-live-secrets]')!.textContent).toContain('GRAFANA_TOKEN')
+  await act(async () => remove().click())
+  await act(async () => pick('Remove').click())
+  expect(host!.querySelector('[data-live-secrets]')!.textContent).not.toContain('GRAFANA_TOKEN')
+  expect(host!.querySelector('[data-live-secrets]')!.textContent).toContain('KUBE_TOKEN')
+  const save = [...host!.querySelectorAll<HTMLButtonElement>('.modalfoot button')].at(-1)!
+  await vi.waitFor(() => expect(save.disabled).toBe(false))
+  await act(async () => save.click())
+  await vi.waitFor(() => expect(mocks.updateAgent).toHaveBeenCalled())
+  expect(mocks.updateAgent.mock.calls[0]![1]).toMatchObject({ liveSecrets: { GRAFANA_TOKEN: null } })
+  expect(Object.keys((mocks.updateAgent.mock.calls[0]![1] as { liveSecrets: object }).liveSecrets)).toEqual([
+    'GRAFANA_TOKEN'
+  ])
+})

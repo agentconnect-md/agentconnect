@@ -8,6 +8,7 @@ import {
   fetchAgentDto,
   fetchAgentRepos,
   fetchGithubInstallUrl,
+  saveAgentLiveSecret,
   settleCapabilityRequest,
   startGitlabOauth,
   startMcpProviderOauth,
@@ -441,10 +442,7 @@ function SecretCompletion({ request, onSettled }: CompletionProps) {
   const [dialog, setDialog] = useState(false)
   const { busy, settle, status } = useSettling(request, onSettled)
 
-  // A live secret the agent's shell reads is not offered here yet.
-  if (want.use.route !== 'mcp-header') {
-    return <p className="text-[13px] text-(--text-secondary)">{t('liveSecretUnavailable')}</p>
-  }
+  if (want.use.route === 'live') return <LiveSecretCompletion request={request} onSettled={onSettled} />
   const { server } = want.use
   const providerId = capabilityProviderId(request)
   const provider = mcpProviders.find((item) => item.id === providerId || item.name === server)
@@ -486,5 +484,60 @@ function SecretCompletion({ request, onSettled }: CompletionProps) {
         </Scrim>
       )}
     </div>
+  )
+}
+
+/** A live secret: typed here only, write-only, and loaded by the agent's own shell when a command needs it (§4.9.2). */
+function LiveSecretCompletion({ request, onSettled }: CompletionProps) {
+  const t = useTranslations('CapabilityRequests.complete')
+  const want = request.want as CapabilitySecretWant
+  const [value, setValue] = useState('')
+  const { busy, saveThenSettle, status } = useSettling(request, onSettled)
+  const save = () =>
+    saveThenSettle(async () => {
+      await saveAgentLiveSecret(
+        request.agentId,
+        { name: want.name, value, ...(want.description ? { description: want.description } : {}) },
+        request.orgId
+      )
+      // The value is never kept or shown again once it is stored.
+      setValue('')
+    })
+  return (
+    <form
+      className="flex flex-col gap-3"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (value && !busy) void save()
+      }}
+    >
+      <p className="text-[13px] text-(--text-secondary)">{t('liveSecretHint', { name: want.name })}</p>
+      <p className="text-[13px] text-(--text-secondary)">{t('liveSecretPurpose', { description: want.description })}</p>
+      {request.current.present === true && (
+        <p className="text-[13px] text-(--text-secondary)">{t('liveSecretReplace', { name: want.name })}</p>
+      )}
+      <label className="fld">
+        <span className="fldlbl">{t('liveSecretLabel', { name: want.name })}</span>
+        {/* A textarea, not an input: a kubeconfig or a PEM key keeps its line breaks, which an input strips. */}
+        <textarea
+          data-live-secret-field
+          className="inp min-h-24 resize-y py-[5px] font-mono leading-[1.5]"
+          autoComplete="off"
+          spellCheck={false}
+          value={value}
+          disabled={busy}
+          onChange={(e) => setValue(e.target.value)}
+        />
+      </label>
+      <p className="text-[13px] font-medium text-(--text-primary)" data-live-secret-notice>
+        {t('liveSecretNotice')}
+      </p>
+      <div>
+        <Button type="submit" disabled={busy || !value}>
+          {t('saveLiveSecret', { name: want.name })}
+        </Button>
+      </div>
+      {status}
+    </form>
   )
 }

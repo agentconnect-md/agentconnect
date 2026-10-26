@@ -2,6 +2,7 @@
 import {
   CAPABILITY_REQUESTS_FEATURE,
   CAPABILITY_REQUESTS_V2_FEATURE,
+  CAPABILITY_REQUESTS_V3_FEATURE,
   CAPABILITY_V1_KINDS,
   isFrame,
   type AnyFrame
@@ -56,7 +57,13 @@ export const handleCapabilityRequest: Handler = async (frame, conn, deps) => {
     return
   }
   try {
-    conn.replyTo(frame, 'capability/request/result', await deps.capabilityRequests!.request(agent, frame.payload))
+    // A live secret reaches the agent's shell only through a daemon that serves `agentconnect-secrets` (§4.9.2).
+    const liveSecrets = served.features.includes(CAPABILITY_REQUESTS_V3_FEATURE)
+    conn.replyTo(
+      frame,
+      'capability/request/result',
+      await deps.capabilityRequests!.request(agent, frame.payload, { liveSecrets })
+    )
   } catch (error) {
     deps.log.error({ error, agentId: agent.id }, 'capability request failed')
     conn.sendError(frame.id, 'INTERNAL', 'capability request failed', true)

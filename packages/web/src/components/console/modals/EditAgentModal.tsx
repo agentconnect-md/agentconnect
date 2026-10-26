@@ -215,6 +215,10 @@ export default function EditAgentModal({
   const initialEnvRecord = useRef(envRecordFromRows(envRowsFromEnv(agent.env)))
   const [secretRows, setSecretRows] = useState<SecretDraft[]>(() => secretRowsFromKeys(agent.secretKeys))
   const initialSecretKeys = useRef(agent.secretKeys)
+  // Live secrets marked for removal; sent as `null` on save, like a removed secret.
+  const [removedLiveSecrets, setRemovedLiveSecrets] = useState<string[]>([])
+  // The list projection omits live secrets, so the detail read below supplies them.
+  const [liveSecrets, setLiveSecrets] = useState(agent.liveSecrets ?? [])
   // What the saved placement offers, as the Control Plane projected it with the agent.
   const [savedStrategies, setSavedStrategies] = useState<PlacementStrategies>(() => agentStrategies(agent, false))
   const [repairPlacement, setRepairPlacement] = useState(false)
@@ -249,6 +253,7 @@ export default function EditAgentModal({
     fetchAgentDto(agent.id).then(
       (dto) => {
         setName(dto.name)
+        setLiveSecrets(dto.liveSecrets ?? [])
         setDisplayName(dto.displayName ?? '')
         initialDisplayName.current = dto.displayName ?? ''
         setRuntime(dto.runtime ?? '')
@@ -630,7 +635,10 @@ export default function EditAgentModal({
     // Saved before any move, so it is asked of the saved placement.
     ...(execution !== initialExecution.current ? executionAsk(savedStrategies, execution) : {}),
     ...(envChanged ? { env: envRecord } : {}),
-    ...(secretsChanged ? { secrets: secretsPatch } : {})
+    ...(secretsChanged ? { secrets: secretsPatch } : {}),
+    ...(removedLiveSecrets.length > 0
+      ? { liveSecrets: Object.fromEntries(removedLiveSecrets.map((name) => [name, null])) }
+      : {})
   }
   const hasSpecChanges = Object.keys(patch).length > 0
   const hasSharingChanges = !sameSharing(sharing, initialSharing.current)
@@ -1015,6 +1023,8 @@ export default function EditAgentModal({
                 // see the group and its explanation alone (design §8.2).
                 organizationVariables={agent.organizationVariables}
                 organizationSecretKeys={agent.organizationSecretKeys}
+                liveSecrets={liveSecrets.filter((secret) => !removedLiveSecrets.includes(secret.name))}
+                onRemoveLiveSecret={(name) => setRemovedLiveSecrets((names) => [...names, name])}
                 {...(myRole === 'owner' ? { organizationSettingsHref: orgPath('/settings') } : {})}
               />
             </section>

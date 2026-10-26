@@ -42,7 +42,8 @@ import {
   DreamListPage,
   DreamFilesPage,
   DreamFileReadContent,
-  agentComputerUseOf
+  agentComputerUseOf,
+  LIVE_SECRETS_MAX
 } from '@agentconnect.md/protocol'
 /**
  * `http/routes/agents.ts` (design §2.1) — CRUD for agent definitions through the
@@ -94,6 +95,7 @@ import {
   type AgentWorkspace,
   type AssignedOrganizationMetadata,
   type McpProviderRecord,
+  type SecretPatchValue,
   isSyntheticEmail
 } from '../../persistence/ports.js'
 import {
@@ -1511,6 +1513,12 @@ export function agentRoutes(deps: HttpDeps) {
     // The agent's secret KEY NAMES for the DTO ([] when none) — never the values.
     const secretKeysOf = async (orgId: OrgId, agentId: string): Promise<string[]> =>
       (await deps.repos.agentSecret.keys(orgId, [AgentId(agentId)])).get(agentId) ?? []
+    // Names and descriptions only: a live secret's value never leaves the spec assembler.
+    const liveSecretsOf = async (
+      orgId: OrgId,
+      agentId: string
+    ): Promise<{ name: string; description: string | null }[]> =>
+      (await deps.repos.agentSecret.liveInfo(orgId, [AgentId(agentId)])).get(agentId) ?? []
 
     /** Assigned organization rows for ONE agent's DTO. Metadata only — this path
      *  never decrypts an organization secret (design §6). */
@@ -2427,16 +2435,19 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const agent = await getOrgAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        return toDto(
-          agent,
-          ctxOf(req),
-          await secretKeysOf(agent.orgId, agent.id),
-          await hookKindsOf(deps, agent.id),
-          iconBasesOf(deps),
-          await placementViewFor(deps, agent),
-          await organizationEnvironmentOf(agent),
-          await computersOf(agent)
-        )
+        return {
+          ...toDto(
+            agent,
+            ctxOf(req),
+            await secretKeysOf(agent.orgId, agent.id),
+            await hookKindsOf(deps, agent.id),
+            iconBasesOf(deps),
+            await placementViewFor(deps, agent),
+            await organizationEnvironmentOf(agent),
+            await computersOf(agent)
+          ),
+          liveSecrets: await liveSecretsOf(agent.orgId, agent.id)
+        }
       }
     )
 
@@ -2696,7 +2707,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update an agent',
           description:
-            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home, nor can an agent in assistant mode: turning assistant mode on switches a daemon home to control-plane in the same write and flags the migration, and while it is on the memory must stay managed and the forced return is refused with 409. A new `execution` is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards. `repositorySelector` names the Decision provider and model the per-session repository selector asks, must answer Choice questions (400 otherwise), and null clears it (409 while any repository authorization or installation grant is marked `decision`).',
+            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home, nor can an agent in assistant mode: turning assistant mode on switches a daemon home to control-plane in the same write and flags the migration, and while it is on the memory must stay managed and the forced return is refused with 409. A new `execution` is checked against the strategies the placement reports and refused with 409 when it cannot run there; it reaches only sessions created afterwards. `repositorySelector` names the Decision provider and model the per-session repository selector asks, must answer Choice questions (400 otherwise), and null clears it (409 while any repository authorization or installation grant is marked `decision`). `liveSecrets` merges key by key like `secrets` (an object `{ value, description? }` sets one, null deletes it): a live secret is fetched by the agent’s own shell when a command needs it, never placed in its environment, and saving one restarts nothing; a name already used by an environment variable or secret of the agent or its organization answers 409.',
           operationId: 'updateAgent',
           params: IdParam,
           body: UpdateAgentBody,
@@ -2923,12 +2934,69 @@ export function agentRoutes(deps: HttpDeps) {
           // inside a concurrent registry-delete's check→drop window.
           // `force` and the submitted binding are consumed above; the row gets the resolved binding.
           const {
-            secrets: secretsPatch,
+            secrets: plainSecretsPatch,
+            liveSecrets: liveSecretsPatch,
             force: _force,
             memory: _memory,
             execution: _execution,
             ...bodyPatch
           } = req.body
+          // One key-by-key merge: a live secret is a row of its own kind (capability-requests.md §4.9.2), never also a plain one.
+          const twice = Object.keys(liveSecretsPatch ?? {}).filter((key) => plainSecretsPatch?.[key] !== undefined)
+          if (twice.length > 0) {
+            return reply.code(400).send({
+              error: 'Bad Request',
+              statusCode: 400,
+              message: `${twice.join(', ')} is named in both secrets and liveSecrets`
+            })
+          }
+          // One name is one row: a live secret never silently becomes a spawn-time one, or the other way round, and a delete names its own kind.
+          if (plainSecretsPatch || liveSecretsPatch) {
+            const spawnKeys = new Set(await secretKeysOf(orgOf(req), req.params.id))
+            const liveKeys = new Set((await liveSecretsOf(orgOf(req), req.params.id)).map((secret) => secret.name))
+            const crossed = [
+              ...Object.keys(liveSecretsPatch ?? {}).filter((key) => spawnKeys.has(key)),
+              ...Object.keys(plainSecretsPatch ?? {}).filter((key) => liveKeys.has(key))
+            ]
+            if (crossed.length > 0) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: `${crossed.join(', ')} is a secret of the other kind on this agent; change or delete it under ${liveKeys.has(crossed[0]!) ? 'liveSecrets' : 'secrets'}, then save it again`
+              })
+            }
+            // The spec carries at most LIVE_SECRETS_MAX, so a save past it would leave the agent unable to sync.
+            const kept = new Set(liveKeys)
+            for (const [key, live] of Object.entries(liveSecretsPatch ?? {})) {
+              if (live === null) kept.delete(key)
+              else kept.add(key)
+            }
+            if (kept.size > LIVE_SECRETS_MAX) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: `an agent holds at most ${LIVE_SECRETS_MAX} live secrets; delete one before adding another`
+              })
+            }
+          }
+          const secretsPatch: Record<string, SecretPatchValue> | undefined =
+            plainSecretsPatch || liveSecretsPatch
+              ? {
+                  ...plainSecretsPatch,
+                  ...Object.fromEntries(
+                    Object.entries(liveSecretsPatch ?? {}).map(([key, live]) => [
+                      key,
+                      live === null
+                        ? null
+                        : {
+                            value: live.value,
+                            delivery: 'live' as const,
+                            ...(live.description ? { description: live.description } : {})
+                          }
+                    ])
+                  )
+                }
+              : undefined
           const skillsFence = skillSourceFenceFor(orgOf(req), ctxOf(req), req.body.skills)
           // The first switch-on records research's hints (assistant-mode.md §5.15); a lookup that fails records none.
           const assistantOnboardingHints =
@@ -3009,18 +3077,21 @@ export function agentRoutes(deps: HttpDeps) {
             await syncMcpDefsForAgent(agent, existing.mcpServers, agent.mcpServers)
           }
           if (req.body.skills !== undefined) convergeGitlabSkillProjects(agent.orgId, existing.skills, agent.skills)
-          return toDto(
-            agent,
-            ctxOf(req),
-            await secretKeysOf(agent.orgId, agent.id),
-            await hookKindsOf(deps, agent.id),
-            iconBasesOf(deps),
-            placementView,
-            // A PATCH may also have enrolled the agent into `all` entries added
-            // since its last edit, so re-resolve rather than echoing the request.
-            await organizationEnvironmentOf(agent),
-            await computersOf(agent)
-          )
+          return {
+            ...toDto(
+              agent,
+              ctxOf(req),
+              await secretKeysOf(agent.orgId, agent.id),
+              await hookKindsOf(deps, agent.id),
+              iconBasesOf(deps),
+              placementView,
+              // A PATCH may also have enrolled the agent into `all` entries added
+              // since its last edit, so re-resolve rather than echoing the request.
+              await organizationEnvironmentOf(agent),
+              await computersOf(agent)
+            ),
+            liveSecrets: await liveSecretsOf(agent.orgId, agent.id)
+          }
         } catch (e) {
           if (e instanceof MemoryConnectionBusy) {
             return reply.code(409).send({

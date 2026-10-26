@@ -121,6 +121,23 @@ describe('diffAgents', () => {
     }
   })
 
+  // capability-requests.md §4.9.2: a live secret is fetched at use time, so saving or rotating one restarts nothing.
+  it('classifies a live secret change as soft, never a host respawn', () => {
+    const before = a('x')
+    const after = { ...before, liveSecrets: [{ name: 'GRAFANA_TOKEN', value: 'v1', description: 'Grafana' }] } as Agent
+    const rotated = { ...after, liveSecrets: [{ name: 'GRAFANA_TOKEN', value: 'v2', description: 'Grafana' }] } as Agent
+    for (const [from, to] of [
+      [before, after],
+      [after, rotated]
+    ] as const) {
+      expect(diffAgents([to], actual(from)).toChange[0]).toMatchObject({
+        hostRespawn: false,
+        workspace: false,
+        integrations: false
+      })
+    }
+  })
+
   it('respawns the host when the enabled workspace skills change', () => {
     const before = {
       ...a('x'),

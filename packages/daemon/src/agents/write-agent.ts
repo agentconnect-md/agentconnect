@@ -851,6 +851,15 @@ export function applySpecFields(
     raw.runtimeOverrides = ro
   }
 
+  // Live secrets ride beside runtimeOverrides, never in it: they are not spawn-time env (capability-requests.md §4.9.2).
+  if (spec.liveSecrets !== undefined) {
+    raw.liveSecrets = spec.liveSecrets.map(({ name, value, description }) => ({
+      name,
+      value,
+      ...(description !== undefined ? { description } : {})
+    }))
+  }
+
   // workspace: translate mode + git fields. On update, PRESERVE the existing
   // workspace.path (never overwrite a path); on create, generate a default path.
   if (spec.workspace !== undefined) {

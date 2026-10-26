@@ -1765,6 +1765,12 @@ function AgentDetail() {
         // Two-up on desktop (Home's dashboard split): integration cards left,
         // this agent's recent sessions right. Mobile keeps the single stack.
         <div className="grid grid-cols-1 gap-4 p-4 desktop:grid-cols-[1.5fr_1fr] desktop:items-start desktop:gap-[18px] desktop:p-0">
+          {/* Open capability requests head the default tab of an agent with no Activity tab, where they live otherwise; never both. */}
+          {!activityShown && (
+            <div className="empty:hidden desktop:col-span-2" data-capability-requests-slot="integrations">
+              <AgentCapabilityRequestsCard agentId={da.id} className="" />
+            </div>
+          )}
           <div className="card overflow-hidden max-desktop:rounded-lg">
             <div className="flex min-h-[53px] items-center justify-between border-b border-(--border-subtle) px-4 py-3 desktop:min-h-[55px] desktop:py-[13px]">
               <span className="font-sans text-[14px] font-semibold leading-normal">{t('integrations.title')}</span>

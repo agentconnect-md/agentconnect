@@ -182,6 +182,10 @@ export const AgentSchema = z.object({
       secrets: z.array(z.object({ name: z.string(), value: z.string() })).default([])
     })
     .optional(),
+  // Live secrets (capability-requests.md §4.9.2): served to `agentconnect-secrets` at use time, never in the child env.
+  liveSecrets: z
+    .array(z.object({ name: z.string(), value: z.string(), description: z.string().optional() }))
+    .default([]),
   // Names of daemon-configured MCP servers (daemon config `mcpServers`) to attach
   // at ACP session/new|load, after the daemon's own bridge entry. Empty ⇒ none;
   // unknown names are skipped with a warn (see mcp/resolve-servers.ts).

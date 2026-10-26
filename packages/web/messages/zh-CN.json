@@ -2644,7 +2644,13 @@
           "nameAriaLabel": "密钥名",
           "valueAriaLabel": "密钥值",
           "add": "添加密钥",
-          "replaceValue": "替换值"
+          "replaceValue": "替换值",
+          "live": "实时",
+          "liveHint": "实时：命令需要时由智能体的 shell 加载。智能体可以读取这个值。",
+          "removeLive": "移除实时密钥 {name}",
+          "removeLiveConfirm": "要移除 {name} 吗？此后智能体运行的命令将无法加载它。已经加载过它的进程（例如正在运行的服务）会保留该值，直到重启。",
+          "removeLiveCancel": "保留",
+          "removeLiveAction": "移除"
         }
       },
       "iconPicker": {
@@ -6896,7 +6902,7 @@
       "connectChat": "添加 <name>{platform}</name> 集成",
       "connected": "已连接",
       "secretHeader": "<name>{server}</name> 的请求头 <code>{header}</code>",
-      "secretLive": "密钥 <code>{secret}</code>",
+      "secretLive": "设置实时密钥 <code>{secret}</code>",
       "secretPurpose": "用途：{description}",
       "secretPresent": "已设置"
     },
@@ -6937,7 +6943,12 @@
       "openIntegrations": "打开集成",
       "checkAgain": "重新检查",
       "connectionWatching": "正在等待连接完成…",
-      "liveSecretUnavailable": "智能体从自己的 shell 读取的密钥暂不可用。请拒绝此请求，或让智能体改用 MCP 服务器的请求头。",
+      "liveSecretHint": "命令需要 {name} 时，智能体会在自己的 shell 中加载它，无需重启。",
+      "liveSecretPurpose": "按智能体的说明，这里应填：{description}",
+      "liveSecretNotice": "智能体可以读取这个值。",
+      "liveSecretLabel": "{name} 的值",
+      "liveSecretReplace": "{name} 已设置，保存会替换它。",
+      "saveLiveSecret": "保存 {name}",
       "headerOnOauthServer": "{server} 通过 OAuth 登录，没有可设置的请求头。请拒绝此请求，或改为连接该服务器。",
       "headerHint": "该值保存在 {server} 上，并在每次调用时附加。智能体永远看不到它。",
       "setHeader": "设置 {header}"

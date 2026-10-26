@@ -5368,17 +5368,41 @@ export interface BotCredentialWriter {
 // an encrypting provider supplies at-rest encryption.
 // ───────────────────────────────────────────────────────────────────────────
 
+/** A live secret's write (capability-requests.md §4.9.2): fetched at use time, never in the child's environment. */
+export interface LiveSecretInput {
+  value: string
+  delivery: 'live'
+  description?: string
+}
+
+/** One secret key's PATCH value: a string sets a spawn-time secret, a {@link LiveSecretInput} a live one, `null` deletes either. */
+export type SecretPatchValue = string | LiveSecretInput | null
+
+/** A live secret as `AgentSpec.liveSecrets` ships it. NEVER DTO the value. */
+export interface LiveSecret {
+  name: string
+  value: string
+  description?: string
+}
+
 export interface AgentSecretStore {
   /** PATCH-merge, key-by-key: a string value sets/replaces that secret, `null`
    *  deletes it, an omitted key is left untouched (the client never holds values).
    *  This is the standalone row primitive — REST create/PATCH go through
    *  {@link AgentConfigWriter} so the agent row and its secrets commit atomically. */
-  merge(orgId: OrgId, agentId: AgentId, patch: Record<string, string | null>): Promise<void>
-  /** Every secret of one agent ({} when none) — the wire-projection read
+  merge(orgId: OrgId, agentId: AgentId, patch: Record<string, SecretPatchValue>): Promise<void>
+  /** Every spawn-time secret of one agent ({} when none) — the wire-projection read
    *  (agent/upsert, register/ok roster, agent/activate). NEVER DTO this. */
   get(orgId: OrgId, agentId: AgentId): Promise<Record<string, string>>
-  /** Key names only (sorted), batched for list DTOs — never touches values. */
+  /** Spawn-time key names only (sorted), batched for list DTOs — never touches values. */
   keys(orgId: OrgId, agentIds: readonly AgentId[]): Promise<Map<string, string[]>>
+  /** The agent's live secrets with their values, for `AgentSpec.liveSecrets` alone. NEVER DTO this. */
+  live(orgId: OrgId, agentId: AgentId): Promise<LiveSecret[]>
+  /** Live secrets' names and descriptions (sorted), batched for DTOs — never touches values. */
+  liveInfo(
+    orgId: OrgId,
+    agentIds: readonly AgentId[]
+  ): Promise<Map<string, { name: string; description: string | null }[]>>
 }
 
 /**
@@ -5400,7 +5424,7 @@ export interface AgentConfigWriter {
     orgId: OrgId,
     agentId: AgentId,
     patch: UpdateAgentInput,
-    secrets?: Record<string, string | null>,
+    secrets?: Record<string, SecretPatchValue>,
     opts?: AgentUpdateOpts
   ): Promise<AgentRecord>
 }
@@ -8139,6 +8163,8 @@ export type OrganizationEnvironmentWriteFailure =
   /** Would place an organization variable over an agent secret (§3.2). The keys
    *  are safe to name: they are names, not values. */
   | { outcome: 'cross_kind_conflict'; keys: string[] }
+  /** Would give an agent an organization entry named like one of its live secrets (capability-requests.md §4.9.2). */
+  | { outcome: 'live_secret_conflict'; keys: string[] }
   /** An affected agent's resolved AgentSpec would exceed the wire admission budget. */
   | { outcome: 'too_large'; agentIds: string[] }
   /** The key already exists in this organization's single keyspace. */

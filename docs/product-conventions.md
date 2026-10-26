@@ -1660,14 +1660,14 @@ without reporting, uncertain) is recorded on the follow-up.
 
 ## Capability requests
 
-When an agent in assistant mode cannot do what it was asked because of how it is set up, it may ask
+When an agent cannot do what it was asked because of how it is set up, it may ask
 for what it lacks with `requestCapability`: a change to its own model, effort, fast mode, output mode
 or permission mode, an organization MCP server, a skill, access to a GitHub or GitLab repository, a
-connection (an MCP server's sign-in, a code host, or a chat integration), or a secret an MCP server
-sends as a header. A request grants nothing. Only a person
+connection (an MCP server's sign-in, a code host, or a chat integration), or a secret: one an MCP
+server sends as a header, or a live secret the agent loads in its own shell. A request grants nothing. Only a person
 completes it, in the console, through the same dialog and under the same permissions as making that
 change without a request. A deployment offers this only once its operator turns capability requests
-on, and a follow-up's check never gets the tool.
+on, and a follow-up's check, organization research and a getting-to-know task never get the tool.
 
 The agent says in one sentence what it asked for and ends its turn; it does not wait. A card under
 its reply shows what it asked for, its reason as plain text, a button to open the request in the
@@ -1688,8 +1688,10 @@ is. Completing a request needs the authority the change itself needs: edit acces
 an MCP server's sign-in or header, edit access to that server; someone without it sees on the request
 page what is needed and who has it, and may forward the request to one of them.
 
-A secret's value is typed only on the request page, into the MCP server's header, and the agent never
-sees it; no request, card, reminder or Activity row holds a value. The agent never asks for a value in
+A secret's value is typed only on the request page, and no request, card, reminder or Activity row
+holds a value. A header secret goes into the MCP server's header and the agent never sees it; it is
+offered first wherever it would work. A live secret is stored on the agent, the page says next to its
+field that the agent can read it, and the agent is told its name and how to load it, never its value. The agent never asks for a value in
 chat, and tells anyone who pastes one there to rotate it. An editor may decline it there with a note, and reopen a declined
 request.
 
@@ -2606,6 +2608,14 @@ prompt can re-encode it past any literal-match filter. Values too short to mask
 meaningfully are left alone rather than mangling unrelated output. Neither half
 substitutes for the other: the notice is what makes the agent behave; the mask is
 what keeps a slip out of chat and the permanent record.
+
+A live secret (marked **Live** in the Secrets card) is never in the environment:
+the agent's shell loads it with `agentconnect-secrets exec --only NAME -- <command>`
+when a command needs it, so saving, rotating or removing one restarts nothing and
+reaches the next command at once. Its name is in the standing context with that
+line, its value is masked like any secret, and its name may not repeat an env var
+or secret of the agent or its organization. A process that already loaded it keeps
+the old value until restarted.
 
 Agent env and secret values configured in the console enter only the ACP child
 process environment; they are not configuration-template inputs. Every string in

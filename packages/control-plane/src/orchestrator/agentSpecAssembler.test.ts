@@ -80,7 +80,9 @@ function storeWith(values: Record<string, Record<string, string>>): AgentSecretS
   return {
     get: async (_orgId, agentId) => values[agentId] ?? {},
     merge: async () => {},
-    keys: async () => new Map()
+    keys: async () => new Map(),
+    live: async () => [],
+    liveInfo: async () => new Map()
   }
 }
 
@@ -129,6 +131,17 @@ describe('AgentSpecAssembler', () => {
     const specs = new AgentSpecAssembler(storeWith({ [AGENT.id]: { API_KEY: 'sk-1' } }))
     const spec = await specs.assemble(AGENT)
     expect(spec).toMatchObject({ agentId: AGENT.id, secrets: { API_KEY: 'sk-1' } })
+  })
+
+  it('ships live secrets beside the environment, and an empty list so a removal replicates', async () => {
+    const store = storeWith({ [AGENT.id]: { API_KEY: 'sk-1' } })
+    expect((await new AgentSpecAssembler(store).assemble(AGENT)).liveSecrets).toEqual([])
+    const live = { name: 'GRAFANA_TOKEN', value: 'gt-1', description: 'Grafana' }
+    const spec = await new AgentSpecAssembler({ ...store, live: async () => [live] }).assemble(AGENT)
+    expect(spec.liveSecrets).toEqual([live])
+    // Never in the child's environment.
+    expect(spec.secrets).toEqual({ API_KEY: 'sk-1' })
+    expect(spec.env ?? {}).not.toHaveProperty('GRAFANA_TOKEN')
   })
 
   it('assembleAll assembles one spec per agent (each with ITS OWN secrets)', async () => {

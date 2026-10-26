@@ -101,4 +101,19 @@ describe('capability wording', () => {
       current: { providerId: 'p', present: false }
     })
   })
+
+  it('warns that the agent can read a live secret, and judges it by its name alone', () => {
+    const live = {
+      kind: 'secret',
+      want: { name: 'GRAFANA_TOKEN', description: 'Grafana', use: { route: 'live' } }
+    } as const
+    expect(capabilityWarnings(live, { runtime: 'claude-acp' })).toEqual([
+      'The agent can read this value: its own commands load it when they need it.'
+    ])
+    expect(evaluateCapability(live, {} as never, { liveSecretPresent: false })).toMatchObject({
+      satisfied: false,
+      current: { present: false }
+    })
+    expect(evaluateCapability(live, {} as never, { liveSecretPresent: true }).outcome).not.toMatch(/value/i)
+  })
 })

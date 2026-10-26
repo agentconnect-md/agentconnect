@@ -262,6 +262,12 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
             statusCode: 409,
             message: `an agent already defines ${failure.keys.join(', ')} as a secret; an organization variable cannot replace a secret. Remove or rename one side first.`
           })
+        case 'live_secret_conflict':
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: `an agent already has a live secret named ${failure.keys.join(', ')}; rename or remove one side first.`
+          })
         case 'too_large':
           return reply.code(409).send({
             error: 'Conflict',

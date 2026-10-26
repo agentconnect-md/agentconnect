@@ -201,6 +201,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         fastMode: true,
         env: { GITHUB_TOKEN: 'ghp_x' },
         secrets: {}, // write-only secrets ride the same wire as env; always shipped (even {})
+        liveSecrets: [], // live secrets ride beside env, always shipped so a removal replicates
         mcpServers: ['github', 'metrics'],
         // Skills enable-list resolves to inline entries; none enabled here ⇒ always shipped [].
         skills: [],
@@ -279,6 +280,34 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     })
     expect(clear.statusCode).toBe(200)
     expect(spy.upserts.at(-1)!.u.spec.secrets).toEqual({})
+  })
+
+  it('PATCHed live secrets replicate beside the environment, never in it, and a deletion ships []', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const { app, spy } = withSpy()
+    const live = { GRAFANA_TOKEN: { value: 'gt-live', description: 'Grafana' } }
+    const patch = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { liveSecrets: live }
+    })
+    expect(patch.statusCode).toBe(200)
+    // capability-requests.md §4.9.2: the daemon gets the value for its helper, outside the child's environment.
+    const spec = spy.upserts.at(-1)!.u.spec
+    expect(spec.liveSecrets).toEqual([{ name: 'GRAFANA_TOKEN', value: 'gt-live', description: 'Grafana' }])
+    expect(spec.secrets).toEqual({})
+    expect(spec.env ?? {}).not.toHaveProperty('GRAFANA_TOKEN')
+    expect(patch.body).not.toContain('gt-live')
+
+    const clear = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { liveSecrets: { GRAFANA_TOKEN: null } }
+    })
+    expect(clear.statusCode).toBe(200)
+    expect(spy.upserts.at(-1)!.u.spec.liveSecrets).toEqual([])
   })
 
   it('PATCH stores, returns and replicates the managed computer mode, and null switches it off', async () => {

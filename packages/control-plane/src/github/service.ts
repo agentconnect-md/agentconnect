@@ -143,7 +143,13 @@ const OR_AUTHORIZE_ITS_INSTALLATION = ', or authorize its installation'
 const NOT_COVERED_BY_INSTALLATION = 'is not covered by the installation — give the GitHub App access to it first'
 
 function notAuthorizedForAgent(repoFullName: string, installationGrantable: boolean): string {
-  return `${repoFullName} ${NOT_AUTHORIZED_FOR_AGENT}${installationGrantable ? OR_AUTHORIZE_ITS_INSTALLATION : ''}`
+  return `${repoFullName} ${NOT_AUTHORIZED_FOR_AGENT}${installationGrantable ? OR_AUTHORIZE_ITS_INSTALLATION : ''}${requestCapabilityPointer('github', repoFullName)}`
+}
+
+/** The agent's own way to ask for the access a refusal names (capability-requests.md §4.11). */
+export function requestCapabilityPointer(provider: 'github' | 'gitlab', repository?: string): string {
+  const want = repository ? { provider, repository, access: 'read' } : { provider, access: 'read' }
+  return `; if you have the requestCapability tool, ask for it with ${JSON.stringify({ kind: 'repository', want })}${repository ? '' : ' and the project path'}`
 }
 
 // A stale grant is listed but not honored, so its refusal says why instead of asking for a grant that exists.

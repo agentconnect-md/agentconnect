@@ -53,6 +53,32 @@ describe('AgentSecretStore — row-per-key, merge semantics, cipher seam (real P
     expect(await prisma.agentSecret.count({ where: { agentId: AGENT } })).toBe(0)
   })
 
+  it('keeps live secrets out of the environment reads, sealed like any value, with names and descriptions apart', async () => {
+    await seedAgent(prisma, AGENT)
+    const store = new PgAgentSecretStore(prisma, new PrefixCipher())
+    const org = OrgId(DEFAULT_ORG_ID)
+    await store.merge(org, AgentId(AGENT), {
+      API_KEY: 'sk-1',
+      GRAFANA_TOKEN: { value: 'gt-1', delivery: 'live', description: 'Grafana' }
+    })
+    // capability-requests.md §4.9.2: a live secret never joins the child's environment or its key list.
+    expect(await store.get(org, AgentId(AGENT))).toEqual({ API_KEY: 'sk-1' })
+    expect((await store.keys(org, [AgentId(AGENT)])).get(AGENT)).toEqual(['API_KEY'])
+    expect(await store.live(org, AgentId(AGENT))).toEqual([
+      { name: 'GRAFANA_TOKEN', value: 'gt-1', description: 'Grafana' }
+    ])
+    expect((await store.liveInfo(org, [AgentId(AGENT)])).get(AGENT)).toEqual([
+      { name: 'GRAFANA_TOKEN', description: 'Grafana' }
+    ])
+    const row = await prisma.agentSecret.findUnique({
+      where: { agentId_key: { agentId: AGENT, key: 'GRAFANA_TOKEN' } }
+    })
+    expect(row).toMatchObject({ value: 'sealed:gt-1', delivery: 'live' })
+    // Deleting removes it like any secret.
+    await store.merge(org, AgentId(AGENT), { GRAFANA_TOKEN: null })
+    expect(await store.live(org, AgentId(AGENT))).toEqual([])
+  })
+
   it('every VALUE passes the SecretCipher: transformed before storage, opened on get, keys() untouched', async () => {
     await seedAgent(prisma, AGENT)
     const store = new PgAgentSecretStore(prisma, new PrefixCipher())

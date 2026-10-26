@@ -21,7 +21,8 @@ const mocks = vi.hoisted(() => ({
   openModal: vi.fn(),
   repoProps: undefined as Record<string, unknown> | undefined,
   mcpEditProps: undefined as Record<string, unknown> | undefined,
-  mcpProviders: [] as Array<Record<string, unknown>>
+  mcpProviders: [] as Array<Record<string, unknown>>,
+  saveLiveSecret: vi.fn()
 }))
 
 vi.mock('next/link', () => ({
@@ -58,7 +59,8 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   updateAgentRepo: mocks.updateRepo,
   startMcpProviderOauth: mocks.startOauth,
   fetchGithubInstallUrl: mocks.githubInstallUrl,
-  startGitlabOauth: mocks.startGitlab
+  startGitlabOauth: mocks.startGitlab,
+  saveAgentLiveSecret: mocks.saveLiveSecret
 }))
 vi.mock('@/components/console/Scrim', () => ({ Scrim: ({ children }: { children: ReactNode }) => <>{children}</> }))
 vi.mock('@/components/console/modals/EditAgentModal', () => ({
@@ -131,6 +133,7 @@ beforeEach(() => {
   for (const fn of [mocks.fetchRepos, mocks.updateRepo, mocks.startOauth, mocks.githubInstallUrl, mocks.startGitlab])
     fn.mockReset()
   mocks.openModal.mockReset()
+  mocks.saveLiveSecret.mockReset()
   mocks.repoProps = undefined
   mocks.mcpEditProps = undefined
   mocks.mcpProviders = []
@@ -307,15 +310,50 @@ describe('completing a capability request', () => {
     expect(mocks.settle).toHaveBeenCalledTimes(1)
   })
 
-  it('says a live secret is not available yet, with nothing to save', async () => {
-    const scope = await render(
+  describe('a live secret', () => {
+    const live = (present = false) =>
       request({
         kind: 'secret',
-        want: { name: 'GRAFANA_TOKEN', description: 'token', use: { route: 'live' } },
-        current: { present: false }
+        want: { name: 'GRAFANA_TOKEN', description: 'A Grafana API token', use: { route: 'live' } },
+        current: { present }
       })
-    )
-    expect(scope.textContent).toContain('aren’t available yet'.replace('’', "'"))
-    expect(scope.querySelector('button')).toBeNull()
+    const field = (scope: HTMLElement) => scope.querySelector<HTMLTextAreaElement>('[data-live-secret-field]')!
+    const type = (input: HTMLTextAreaElement, value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+
+    it('takes the value write-only, says the agent can read it, saves it, clears it and settles', async () => {
+      mocks.saveLiveSecret.mockResolvedValue(undefined)
+      mocks.settle.mockResolvedValue(request({ status: 'completed' }))
+      const scope = await render(live())
+      expect(scope.textContent).toContain('The agent can read this value.')
+      expect(scope.textContent).toContain('A Grafana API token')
+      expect(button(scope, 'Save GRAFANA_TOKEN')!.disabled).toBe(true)
+      // A multi-line credential (a kubeconfig, a PEM key) keeps its line breaks.
+      await act(async () => type(field(scope), 'glsa_secret\nsecond line'))
+      await act(async () => button(scope, 'Save GRAFANA_TOKEN')!.click())
+      expect(mocks.saveLiveSecret).toHaveBeenCalledWith(
+        'agent-1',
+        { name: 'GRAFANA_TOKEN', value: 'glsa_secret\nsecond line', description: 'A Grafana API token' },
+        'org-1'
+      )
+      expect(mocks.settle).toHaveBeenCalledTimes(1)
+      expect(field(scope).value).toBe('')
+      expect(scope.innerHTML).not.toContain('glsa_secret')
+    })
+
+    it('shows a name collision and does not settle', async () => {
+      const { ApiError } = await import('@/lib/api')
+      mocks.saveLiveSecret.mockRejectedValue(new ApiError('GRAFANA_TOKEN is already an environment variable', 409))
+      const scope = await render(live(true))
+      expect(scope.textContent).toContain('already set; saving replaces it')
+      await act(async () => type(field(scope), 'v'))
+      await act(async () => button(scope, 'Save GRAFANA_TOKEN')!.click())
+      expect(scope.querySelector('[role="alert"]')?.textContent).toBe(
+        'GRAFANA_TOKEN is already an environment variable'
+      )
+      expect(mocks.settle).not.toHaveBeenCalled()
+    })
   })
 })

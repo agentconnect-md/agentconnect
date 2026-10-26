@@ -37,6 +37,7 @@ import type {
   AgentRecord,
   AgentRepoAuthorizationRepo,
   AgentSecretStore,
+  LiveSecret,
   CodeHostDecisionRoutingRepo,
   ComputerRepo,
   DecisionRepo,
@@ -145,6 +146,7 @@ export class AgentSpecAssembler {
   async assemble(a: AgentRecord): Promise<AssembledAgentSpec> {
     const [
       secrets,
+      liveSecrets,
       skillEntries,
       managedSkillEntries,
       organization,
@@ -157,6 +159,7 @@ export class AgentSpecAssembler {
       computers
     ] = await Promise.all([
       this.secrets.get(a.orgId, a.id),
+      this.secrets.live(a.orgId, a.id),
       resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
       this.managedSkillsOf(a),
       this.organizationEnvironmentOf(a),
@@ -168,20 +171,24 @@ export class AgentSpecAssembler {
       this.apiGatesOf(a),
       this.computersOf(a)
     ])
-    return this.project(
-      a,
-      secrets,
-      skillEntries,
-      managedSkillEntries,
-      organization,
-      additionalRepos,
-      gitlabHook,
-      giteaHook,
-      hookRoutings,
-      additionalInstallations,
-      apiGates,
-      computers
-    )
+    // Live secrets ride beside the environment, never in it (capability-requests.md §4.9.2); always a full list, `[]` included, so a removal replicates.
+    return {
+      ...this.project(
+        a,
+        secrets,
+        skillEntries,
+        managedSkillEntries,
+        organization,
+        additionalRepos,
+        gitlabHook,
+        giteaHook,
+        hookRoutings,
+        additionalInstallations,
+        apiGates,
+        computers
+      ),
+      liveSecrets
+    }
   }
 
   /** The routings this agent hosts, always shipped so losing the last one replicates; the daemon digests [] as absent. */
@@ -243,6 +250,11 @@ export class AgentSpecAssembler {
    *  exposed here so move code needs no separate secrets dependency. */
   secretsOf(a: Pick<AgentRecord, 'id' | 'orgId'>): Promise<Record<string, string>> {
     return this.secrets.get(a.orgId, a.id)
+  }
+
+  /** The live secrets the agent-move snapshot pins beside `secretsOf`. */
+  liveSecretsOf(a: Pick<AgentRecord, 'id' | 'orgId'>): Promise<LiveSecret[]> {
+    return this.secrets.live(a.orgId, a.id)
   }
 
   /** The agent's authorized additional repositories, sorted by provider then full name

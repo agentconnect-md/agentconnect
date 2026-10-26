@@ -152,13 +152,15 @@ const expansionCache = new WeakMap<object, SecretMaskEntry[]>()
  */
 export function maskableSecrets(agent?: {
   runtimeOverrides?: { secrets?: { name: string; value: string }[] }
+  /** Live secrets (capability-requests.md §4.9.2): masked from the moment they are saved, as reconcile replaces the agent. */
+  liveSecrets?: { name: string; value: string }[]
 }): SecretMaskEntry[] {
   if (!agent) return []
   const cached = expansionCache.get(agent)
   if (cached) return cached
   const entries: SecretMaskEntry[] = []
   const seen = new Set<string>()
-  for (const { name, value } of agent.runtimeOverrides?.secrets ?? []) {
+  for (const { name, value } of [...(agent.runtimeOverrides?.secrets ?? []), ...(agent.liveSecrets ?? [])]) {
     for (const variant of expandSecretVariants(value)) {
       if (seen.has(variant)) continue
       seen.add(variant)

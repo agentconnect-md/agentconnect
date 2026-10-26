@@ -114,7 +114,14 @@ for (const asset of ['resvg.wasm', 'webp_dec.wasm']) {
 // Every entry the image ships, checked identically: the credential helper and the gh token fetch are separate
 // bundles precisely so their graphs stay disjoint from the channel's, and a shared module would show up here
 // as a relative chunk import — a file the image never copies.
-for (const entry of ['index.js', 'git-credential.js', 'gh-token.js', 'glab-token.js', 'skills/workspace-mutation.js']) {
+for (const entry of [
+  'index.js',
+  'git-credential.js',
+  'gh-token.js',
+  'glab-token.js',
+  'secrets.js',
+  'skills/workspace-mutation.js'
+]) {
   const shimPath = new URL(`../dist/shim/${entry}`, import.meta.url)
   if (!existsSync(shimPath)) {
     console.error(`✗ shim bundle ${entry} is missing — \`tsdown --config tsdown.shim.config.ts\` did not run`)
@@ -174,6 +181,15 @@ if (!existsSync(ghWrapper)) {
 }
 if (!readFileSync(ghWrapper, 'utf8').includes('/opt/agentconnect/shim/gh-token.js')) {
   console.error('✗ the sandbox gh wrapper does not call the in-image token entry')
+  process.exit(1)
+}
+// The live secrets helper the image puts beside it (capability-requests.md §4.9.2).
+const secretsWrapper = new URL('../dist/shim/agentconnect-secrets', import.meta.url)
+if (
+  !existsSync(secretsWrapper) ||
+  !readFileSync(secretsWrapper, 'utf8').includes('/opt/agentconnect/shim/secrets.js')
+) {
+  console.error('✗ the sandbox agentconnect-secrets wrapper is missing or does not call the in-image entry')
   process.exit(1)
 }
 

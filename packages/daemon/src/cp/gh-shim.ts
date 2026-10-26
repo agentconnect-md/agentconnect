@@ -67,11 +67,22 @@ exec "$REAL_GH" "$@"
 `
 }
 
+/** The `agentconnect-secrets` wrapper (capability-requests.md §4.9.2): it holds no policy and no secret, only where the helper lives. */
+export function renderSecretsWrapper(command: string): string {
+  return `#!/bin/sh
+# agentconnect live secrets — generated, never edited; NO secrets.
+exec ${command} "$@"
+`
+}
+
+/** The wrapper's file name, on every PATH it is put on. */
+export const SECRETS_WRAPPER_NAME = 'agentconnect-secrets'
+
 export function ghShimDir(root: string): string {
   return join(root, 'run', 'bin')
 }
 
-/** (Re)write `run/bin/gh` and return the bin dir to prepend to agent PATHs. */
+/** (Re)write `run/bin/gh` and `run/bin/agentconnect-secrets`, and return the bin dir to prepend to agent PATHs. */
 export function writeGhShim(root: string, cliEntry: string): string {
   const dir = ghShimDir(root)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -94,5 +105,10 @@ export function writeGhShim(root: string, cliEntry: string): string {
     tokenCommand: `AGENTCONNECT_ROOT=${shQuote(root)} ${argv.join(' ')} gh-token "$AC_AGENT_ID" -- "$@"`
   })
   writeFileSync(join(dir, 'gh'), body, { mode: 0o755 })
+  writeFileSync(
+    join(dir, SECRETS_WRAPPER_NAME),
+    renderSecretsWrapper(`env AGENTCONNECT_ROOT=${shQuote(root)} ${argv.join(' ')} secrets`),
+    { mode: 0o755 }
+  )
   return dir
 }

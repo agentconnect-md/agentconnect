@@ -231,3 +231,15 @@ describe('buildStandingContext with memory guidance', () => {
     expect(buildStandingContext({ ...BASE, memoryGuidance: '' })).toEqual(buildStandingContext(BASE))
   })
 })
+
+// capability-requests.md §4.9.2: live secrets are named with the one command that loads them, never valued.
+describe('live secrets in the standing context', () => {
+  it('names each live secret and the agentconnect-secrets command, and says nothing when there are none', () => {
+    const context = buildStandingContext({ ...BASE, liveSecretNames: ['GRAFANA_TOKEN'] })
+    const text = JSON.stringify(context)
+    expect(text).toContain('# Live secrets')
+    expect(text).toContain('`GRAFANA_TOKEN`')
+    expect(text).toContain('agentconnect-secrets exec --only NAME -- <command>')
+    expect(JSON.stringify(buildStandingContext({ ...BASE, liveSecretNames: [] }))).not.toContain('# Live secrets')
+  })
+})

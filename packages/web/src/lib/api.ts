@@ -372,6 +372,7 @@ export interface AgentDto {
   computerUse?: AgentComputerUse | null // computer use (computer-use.md §4.1); null or absent ⇒ off
   env: Record<string, string> // the agent's OWN variables
   secretKeys: string[] // names of the agent's write-only secret env vars (values never returned)
+  liveSecrets?: Array<{ name: string; description: string | null }> // live secrets by name; absent on list reads and an older CP
   // Organization-owned rows assigned to THIS agent (organization-secrets-and-variables.md
   // §6). Absent on an older CP. Read-only in the agent surfaces; organization
   // variable values are ordinary config, organization secrets contribute names only.
@@ -1121,6 +1122,8 @@ export interface UpdateAgentInput {
   /** Write-only secrets, merged key-by-key: a string sets/replaces a secret, null
    *  deletes it, an omitted key is left untouched. Values are never returned. */
   secrets?: Record<string, string | null>
+  /** Live secrets (capability-requests.md §4.9.2), merged key-by-key like `secrets`; null deletes one. Values are never returned. */
+  liveSecrets?: Record<string, { value: string; description?: string } | null>
   capabilities?: string[]
   /** Replaced wholesale when provided; [] clears all servers. */
   mcpServers?: string[]
@@ -2109,6 +2112,7 @@ export function agentFromDto(d: AgentDto): Agent {
     chatActions: d.chatActions ?? 'talk',
     env: Object.entries(d.env ?? {}).map(([k, v]) => ({ k, v })),
     secretKeys: d.secretKeys ?? [],
+    ...(d.liveSecrets ? { liveSecrets: d.liveSecrets } : {}),
     // Inherited organization rows. Empty on an older CP, which renders exactly as
     // the pre-feature console did.
     organizationVariables: (d.organizationVariables ?? []).map((e) => ({ k: e.key, v: e.value })),
@@ -7905,6 +7909,20 @@ export async function fetchCapabilityRequests(
 
 export async function fetchCapabilityRequest(id: string, orgId?: string): Promise<CapabilityRequestDto> {
   return apiGet<CapabilityRequestDto>(capabilityRequestPath(id, orgId))
+}
+
+/** Set (or replace) one of an agent's live secrets through the agent PATCH: write-only, read by its shell at use time (capability-requests.md §4.9.2). A name taken by a variable or a spawn-time secret answers 409. */
+export async function saveAgentLiveSecret(
+  agentId: string,
+  secret: { name: string; value: string; description?: string },
+  orgId?: string
+): Promise<void> {
+  const patch: UpdateAgentInput = {
+    liveSecrets: {
+      [secret.name]: { value: secret.value, ...(secret.description ? { description: secret.description } : {}) }
+    }
+  }
+  await apiPatch<AgentDto>(`${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}`, patch)
 }
 
 /** Asks for the request to be settled once the change was saved; the outcome is what the server observes, not what was clicked. */

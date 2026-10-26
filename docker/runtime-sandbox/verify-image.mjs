@@ -50,6 +50,8 @@ const SHIM_PATH = '/opt/agentconnect/shim/index.js'
 const CREDENTIAL_HELPER_PATH = '/opt/agentconnect/bin/git-credential'
 // Must match SANDBOX_GH_WRAPPER_DIR in sandbox-paths.ts: the shim prepends exactly this directory to the runtime PATH.
 const GH_WRAPPER_PATH = '/opt/agentconnect/pathbin/gh'
+// Must match SANDBOX_SECRETS_ENTRY in sandbox-paths.ts and SECRETS_WRAPPER_NAME in cp/gh-shim.ts (capability-requests.md §4.9.2).
+const SECRETS_WRAPPER_PATH = '/opt/agentconnect/pathbin/agentconnect-secrets'
 // Must match SANDBOX_MCP_BRIDGE_ENTRY in sandbox-paths.ts: the daemon copies this path into the `mcpServers` spec.
 const MCP_BRIDGE_PATH = '/opt/agentconnect/shim/mcp-bridge.js'
 const SKILLS_CLI_PATH = '/opt/agentconnect/shim/skills/dist/cli.js'
@@ -164,6 +166,18 @@ check('the gh wrapper defers to the real gh when no agent identity is present', 
   const out = sh(`PATH=${dir}:$PATH gh --version 2>&1 | head -1`)
   if (!/^gh version /.test(out)) throw new Error(`the wrapper did not reach the real gh: ${out}`)
   return out
+})
+
+// Live secrets are loaded at use time through this helper, so a pod agent without it could not load one.
+check('the agentconnect-secrets helper is present, root-owned, on PATH, and fails loudly with no channel', () => {
+  const owner = assertImmutable('agentconnect-secrets wrapper', SECRETS_WRAPPER_PATH)
+  const resolved = execFileSync('bash', ['-lc', 'command -v agentconnect-secrets'], { encoding: 'utf8' }).trim()
+  if (resolved !== SECRETS_WRAPPER_PATH) throw new Error(`login shell resolves agentconnect-secrets to ${resolved}`)
+  const out = sh(`env -u AC_GITCRED_CAPABILITY ${SECRETS_WRAPPER_PATH} list 2>&1; echo "exit=$?"`)
+  if (!out.includes('exit=1') || !/no AgentConnect credential channel/.test(out)) {
+    throw new Error(`the helper did not refuse without a credential channel: ${out}`)
+  }
+  return owner
 })
 
 // A helper that cannot reach a socket must SAY so and fail, or git reads an empty answer as "no credentials configured".

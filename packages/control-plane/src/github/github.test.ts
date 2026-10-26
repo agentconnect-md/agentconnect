@@ -20,7 +20,7 @@ import { githubAppBotIdentity, resolveGithubAppConfig, type GithubAppConfig } fr
 import { GithubApiError, githubRequest, githubRetryAfterMs, mintAppJwt, type FetchLike } from './api.js'
 import { InstallationTokenInvalidatedError, InstallationTokenService } from './installation-token.service.js'
 import { deriveInstallStateKey, mintInstallState, verifyInstallState, INSTALL_STATE_TTL_MS } from './install-state.js'
-import { GithubService } from './service.js'
+import { GithubService, requestCapabilityPointer } from './service.js'
 import { TokenBucket } from './rate-limit.js'
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
@@ -1803,12 +1803,13 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
 
       // A scratch agent: no workspace owner makes the probe legitimate, so these are first refusals.
       await expect(svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')).rejects.toThrow(
-        `acme/tools is not authorized for this agent — ${remedy}, or authorize its installation`
+        `acme/tools is not authorized for this agent — ${remedy}, or authorize its installation${requestCapabilityPointer('github', 'acme/tools')}`
       )
       for (const uncovered of ['evil/repo', 'example-co/lib']) {
         const denied = svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, uncovered)
         await expect(denied).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
-        await expect(denied).rejects.toThrow(new RegExp(`${remedy}$`))
+        // The agent is pointed at asking for exactly this repository (capability-requests.md §4.11).
+        await expect(denied).rejects.toThrow(`${remedy}${requestCapabilityPointer('github', uncovered)}`)
       }
     })
 
@@ -1838,7 +1839,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         repoRefs: TOOLS
       })
       await expect(reinstalled.svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')).rejects.toThrow(
-        /or authorize its installation$/
+        `, or authorize its installation${requestCapabilityPointer('github', 'acme/tools')}`
       )
       expect(reinstalled.repoLookups).toEqual([])
     })
@@ -1879,7 +1880,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       // A grant has no per-repository Check cleanup on revoke, so Checks never rest on one.
       const checks = svc.mintChecksForAgent(AGENT, 111n, 'acme/tools')
       await expect(checks).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
-      await expect(checks).rejects.toThrow(/workspace settings$/)
+      await expect(checks).rejects.toThrow(`workspace settings${requestCapabilityPointer('github', 'acme/tools')}`)
     })
   })
 })

@@ -233,6 +233,28 @@ describe('the agent page’s Activity tab', () => {
   })
 })
 
+describe('the agent’s open capability requests', () => {
+  const cards = (scope: HTMLElement) => [...scope.querySelectorAll('[data-capability-requests-card]')]
+
+  it('head the default tab of an agent with no Activity tab, and appear nowhere else', async () => {
+    const scope = await render()
+    expect(scope.querySelector('a.tab.on')?.textContent).toBe('Integrations')
+    expect(cards(scope).map((card) => card.getAttribute('data-capability-requests-card'))).toEqual(['agent-1'])
+    expect(scope.querySelector('[data-capability-requests-slot="integrations"]')).toBeTruthy()
+  })
+
+  it('stay in the Activity tab of an agent that has one, never also on its default tab', async () => {
+    mocks.assistantMode = { enabled: true }
+    const integrations = await render()
+    expect(cards(integrations)).toEqual([])
+    await act(async () => root!.unmount())
+    host?.remove()
+    mocks.query = 'tab=activity'
+    const activity = await render()
+    expect(cards(activity)).toHaveLength(1)
+  })
+})
+
 describe('the assistant mode switch', () => {
   const panel = async () => {
     mocks.query = 'tab=config'

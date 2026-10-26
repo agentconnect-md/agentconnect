@@ -1056,10 +1056,13 @@ model PresetAgent {
 // single read/write path, so the configured SecretCipher transforms every value;
 // an encrypting provider supplies at-rest encryption while `none` is identity.
 model AgentSecret {
-  agentId   String   @db.Uuid
-  key       String // env var name (validated at the API edge)
-  value     String // passes through the SecretCipher seam (plaintext under the identity cipher)
-  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  agentId     String   @db.Uuid
+  key         String // env var name (validated at the API edge)
+  value       String // passes through the SecretCipher seam (plaintext under the identity cipher)
+  // `spawn` joins the child's environment at spawn; `live` is fetched at use time by `agentconnect-secrets` (capability-requests.md §4.9.2).
+  delivery    String   @default("spawn")
+  description String?
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 

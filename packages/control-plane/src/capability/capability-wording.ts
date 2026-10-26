@@ -18,6 +18,8 @@ export interface CapabilityFacts {
   mcpProvider?: { providerId: string | null; connected: boolean; headerPresent: boolean }
   codeHostConnected?: boolean
   integrationConnected?: boolean
+  // A live secret of that name exists on the agent; never its value (§4.9.2).
+  liveSecretPresent?: boolean
 }
 
 /** The agent fields a predicate reads. */
@@ -197,11 +199,15 @@ export function evaluateCapability(
     case 'secret': {
       // Existence only: no value is ever read into an outcome, a wake or a page.
       const use = ask.want.use
-      if (use.route !== 'mcp-header') {
+      if (use.route === 'live') {
+        const present = facts.liveSecretPresent === true
+        const name = ask.want.name
         return {
-          satisfied: false,
-          outcome: `Secret ${quote(ask.want.name)} cannot be set this way yet.`,
-          current: { present: false }
+          satisfied: present,
+          outcome: present
+            ? `Secret ${name} is set. Run commands that need it as agentconnect-secrets exec --only ${name} -- <command>; never print it.`
+            : `Secret ${name} is still not set.`,
+          current: { present }
         }
       }
       const present = facts.mcpProvider?.headerPresent === true
@@ -232,6 +238,8 @@ export function capabilityWarnings(
       )
     return lines
   }
+  if (ask.kind === 'secret' && ask.want.use.route === 'live')
+    return ['The agent can read this value: its own commands load it when they need it.']
   if (ask.kind !== 'agent-settings' || ask.want.permissionMode === undefined) return []
   const modes = agent.runtime ? ASSISTANT_MODE_PERMISSION_MODES[agent.runtime] : undefined
   const kind =

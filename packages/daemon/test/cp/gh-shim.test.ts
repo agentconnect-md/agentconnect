@@ -180,3 +180,24 @@ describe('gh wrapper on a failed token fetch', () => {
     expect(runWith(1).ran).toBe(true)
   })
 })
+
+// capability-requests.md §4.9.2: the daemon's `run/bin` carries `agentconnect-secrets` beside gh, calling the CLI's `secrets`.
+describe.skipIf(process.platform === 'win32')('agentconnect-secrets wrapper', () => {
+  let root: string | undefined
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true })
+  })
+
+  it('forwards its whole argv to the daemon CLI secrets command under this daemon root', () => {
+    root = mkdtempSync(join(tmpdir(), 'secrets-shim-'))
+    const cliEntry = join(root, 'fake-cli.mjs')
+    writeFileSync(
+      cliEntry,
+      `process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), root: process.env.AGENTCONNECT_ROOT }))\n`
+    )
+    const wrapper = join(writeGhShim(root, cliEntry), 'agentconnect-secrets')
+    expect(existsSync(wrapper)).toBe(true)
+    const out = execFileSync('sh', [wrapper, 'exec', '--only', 'A', '--', 'curl'], { encoding: 'utf8' })
+    expect(JSON.parse(out)).toEqual({ argv: ['secrets', 'exec', '--only', 'A', '--', 'curl'], root })
+  })
+})

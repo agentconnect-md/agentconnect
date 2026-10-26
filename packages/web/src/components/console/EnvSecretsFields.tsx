@@ -11,9 +11,9 @@
 // "Overridden by Organization" rather than removed, so unassigning the entry later
 // makes it active again without re-entering its value.
 
-import type { Dispatch, SetStateAction } from 'react'
+import { useState, type Dispatch, type SetStateAction } from 'react'
 import { useTranslations } from 'next-intl'
-import { Icon } from '@/components/ui'
+import { Button, Icon } from '@/components/ui'
 import { OrganizationRowBadge } from '@/components/console/OrganizationEnvironmentRows'
 
 // Env/secret key rule — mirrors the CP's AgentEnvBody / AgentSecretsPatchBody so a
@@ -168,6 +168,8 @@ export function EnvSecretsFields({
   setSecretRows,
   organizationVariables = [],
   organizationSecretKeys = [],
+  liveSecrets = [],
+  onRemoveLiveSecret,
   organizationSettingsHref
 }: {
   envRows: EnvVarDraft[]
@@ -178,6 +180,10 @@ export function EnvSecretsFields({
   organizationVariables?: { k: string; v: string }[]
   /** Names of organization secrets assigned to this agent — read-only here. */
   organizationSecretKeys?: string[]
+  /** The agent's live secrets by name and purpose — read-only here; set from a capability request's page. */
+  liveSecrets?: { name: string; description: string | null }[]
+  /** Mark a live secret for removal once its removal is confirmed; absent ⇒ the group is read-only. */
+  onRemoveLiveSecret?: (name: string) => void
   /** Link to Organization settings; owners only (absent ⇒ explanatory text only). */
   organizationSettingsHref?: string
 }) {
@@ -189,6 +195,8 @@ export function EnvSecretsFields({
   // A local row is inactive while ANY assigned entry claims its key, regardless of
   // which kind that entry is.
   const organizationKeys = new Set([...organizationVariables.map((e) => e.k), ...organizationSecretKeys])
+  // The live secret whose removal is being confirmed.
+  const [confirmingLive, setConfirmingLive] = useState<string | null>(null)
 
   return (
     <div className="flex flex-col gap-[22px]">
@@ -288,6 +296,65 @@ export function EnvSecretsFields({
           masked
           manageHref={organizationSettingsHref}
         />
+        {liveSecrets.length > 0 && (
+          <div className="mt-[10px] overflow-hidden rounded-lg border border-(--border-subtle)" data-live-secrets>
+            {liveSecrets.map((secret) => (
+              <div key={secret.name} className={ROW_VIEW}>
+                <span className="mono min-w-0 flex-1 truncate text-[12px] text-(--text-primary)" title={secret.name}>
+                  {secret.name}
+                </span>
+                <span className="badge bg-(--surface-active) text-(--text-secondary)" title={t('secrets.liveHint')}>
+                  {t('secrets.live')}
+                </span>
+                {secret.description && (
+                  <span
+                    className="min-w-0 flex-1 truncate text-right text-[12px] text-(--text-tertiary)"
+                    title={secret.description}
+                  >
+                    {secret.description}
+                  </span>
+                )}
+                {onRemoveLiveSecret && (
+                  <button
+                    type="button"
+                    className="iconbtn h-[26px] w-[26px] flex-none"
+                    title={t('remove')}
+                    aria-label={t('secrets.removeLive', { name: secret.name })}
+                    onClick={() => setConfirmingLive(secret.name)}
+                  >
+                    <Icon name="trash" size={12} />
+                  </button>
+                )}
+              </div>
+            ))}
+            {confirmingLive && onRemoveLiveSecret && (
+              <div
+                className={ROW_EDIT}
+                role="alertdialog"
+                aria-label={t('secrets.removeLive', { name: confirmingLive })}
+              >
+                <span className="font-sans text-[12.5px] leading-[1.5] text-(--text-secondary)">
+                  {t('secrets.removeLiveConfirm', { name: confirmingLive })}
+                </span>
+                <div className="flex items-center justify-end gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => setConfirmingLive(null)}>
+                    {t('secrets.removeLiveCancel')}
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => {
+                      onRemoveLiveSecret(confirmingLive)
+                      setConfirmingLive(null)
+                    }}
+                  >
+                    {t('secrets.removeLiveAction')}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <div className="mt-[10px] overflow-hidden rounded-lg border border-(--border-subtle)">
           {secretRows.map((r, i) =>
             r.editing ? (
