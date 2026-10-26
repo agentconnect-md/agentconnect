@@ -72,6 +72,13 @@ describe('menu bar menu', () => {
     const installing = menuBarMenu(READY, FACTS, new Set(['ffmpeg', 'control-plane'] as const))
     expect(item(installing, 'ffmpeg')).toMatchObject({ mark: 'progress', enabled: false })
     expect(item(installing, 'Control Plane')).toMatchObject({ mark: 'progress', enabled: false })
+    expect(healthy.badge).toBeUndefined()
+    expect(broken.badge).toBe('paused')
+    expect(menuBarMenu(READY, { ...FACTS, screenRecording: 'off' })).toMatchObject({ badge: 'error' })
+    expect(menuBarMenu({ ...READY, tone: 'busy' }, { ...FACTS, screenRecording: 'off' }).badge).toBe('busy')
+    expect(
+      menuBarMenu(READY, { ...FACTS, ffmpeg: { ...FACTS.ffmpeg, installed: false, installable: false } }).badge
+    ).toBe(undefined)
     const revoked = menuBarMenu(READY, { ...FACTS, controlPlane: { state: 'revoked' } })
     expect(item(revoked, 'Control Plane')).toMatchObject({ mark: 'fail', enabled: false })
   })

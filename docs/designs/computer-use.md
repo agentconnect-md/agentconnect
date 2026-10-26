@@ -902,8 +902,9 @@ says this, and how to read each error, in the standing instructions of every ses
   the panel restarts. Xfce's Status Tray plugin shows it; a virtual display (Xvfb, §3.8) gets none. The screen border
   and revoking input without an indicator are not built yet.
   **[implemented, macOS]** The app's `agentconnect-computer-menubar` (`packages/computer/macos/menubar.swift`, #3403):
-  an `NSStatusItem` with the AgentConnect mark, an orange badge while an agent holds the lease, a red one while paused,
-  greyed while authority is missing. The daemon decides the whole menu (`src/menu-bar.ts`) and sends it one JSON line
+  an `NSStatusItem` with the AgentConnect mark, greyed while authority is missing, and one corner badge: a grey
+  pause while paused, else an orange dot while an agent holds the lease, else a red "!" while any menu row fails
+  (status is read again every 30 s for it). The daemon decides the whole menu (`src/menu-bar.ts`) and sends it one JSON line
   per change over stdio (`src/tray-helper.ts`); the helper only draws it, asks for confirmation where an item says so,
   and reports clicks by id, menu opens, and a quit from macOS. The menu holds the agent state with Stop / Resume; a
   checked or crossed line each for the Control Plane (click: redial now, and open the log when it stays away), Screen
