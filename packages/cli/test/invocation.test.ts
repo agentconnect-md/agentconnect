@@ -14,6 +14,9 @@ describe('detectInvocation', () => {
     const base = { cliEntry: NPX_ENTRY, path: '', platform: 'linux' as const }
     expect(detectInvocation({ ...base, version: '1.61.0-rc.74' })).toBe('npx -y @agentconnect.md/cli@rc')
     expect(detectInvocation({ ...base, version: '1.60.0' })).toBe('npx -y @agentconnect.md/cli')
+    // Windows PowerShell would read the bare `@` as splatting, so the package is quoted there.
+    const windows = { ...base, platform: 'win32' as const, version: '1.61.0-rc.74' }
+    expect(detectInvocation(windows)).toBe('npx -y "@agentconnect.md/cli@rc"')
   })
 
   it('suggests the bare bin when the PATH copy is this very CLI', () => {

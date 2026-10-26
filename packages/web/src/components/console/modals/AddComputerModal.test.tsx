@@ -95,7 +95,7 @@ describe('AddComputerModal', () => {
     expect(host.textContent).not.toContain('Where it runs')
     expect(host.textContent).not.toContain('Platform')
     expect(commandText(host)).toContain(
-      'npx -y @agentconnect.md/cli@rc computer install --channel rc --register "ac_secret" --cp-url "https://cp.example.com/v1/computers/register"'
+      'npx -y "@agentconnect.md/cli@rc" computer install --channel rc --register "ac_secret" --cp-url "https://cp.example.com/v1/computers/register"'
     )
     expect(host.textContent).toContain('Waiting for the computer to register')
 
@@ -117,7 +117,7 @@ describe('AddComputerModal', () => {
     mocks.fetchComputerRegistration.mockResolvedValue({ registrationId: 'r1', computerId: null })
     const host = await render()
     expect(commandText(host)).toContain(
-      'npx -y @agentconnect.md/cli@latest computer install --register "ac_secret" --cp-url'
+      'npx -y "@agentconnect.md/cli@latest" computer install --register "ac_secret" --cp-url'
     )
   })
 

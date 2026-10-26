@@ -18,6 +18,7 @@ import {
 } from '@/lib/api'
 import { MOCK_MODE } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
+import { npxCommand } from '@/lib/npx'
 
 /** How often an open Computers page re-reads status; the desktop heartbeats every 15 s. */
 export const COMPUTERS_REFRESH_MS = 10_000
@@ -167,5 +168,8 @@ export function computerInstallCommand(
   const rc = registration.cliChannel !== 'stable'
   const cli = `${CLI}@${rc ? 'rc' : 'latest'}`
   // One command on Linux, macOS and Windows: `install` fetches the daemon (and the macOS app) and runs its setup.
-  return `npx -y ${cli} computer install${rc ? ' --channel rc' : ''} --register ${q(registration.token)} --cp-url ${q(registration.exchangeUrl)}${named ? ` --name ${q(named)}` : ''}`
+  return npxCommand(
+    cli,
+    `computer install${rc ? ' --channel rc' : ''} --register ${q(registration.token)} --cp-url ${q(registration.exchangeUrl)}${named ? ` --name ${q(named)}` : ''}`
+  )
 }

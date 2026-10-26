@@ -7,15 +7,15 @@ describe('computer console helpers', () => {
     const registration = { token: 'ac_tok', exchangeUrl: url, cliChannel: 'rc' as const }
     // An rc CP pins the rc CLI and daemon channel: npm latest can predate `computer install`.
     expect(computerInstallCommand('desktop', registration)).toBe(
-      `npx -y @agentconnect.md/cli@rc computer install --channel rc --register "ac_tok" --cp-url "${url}"`
+      `npx -y "@agentconnect.md/cli@rc" computer install --channel rc --register "ac_tok" --cp-url "${url}"`
     )
     // A stable CP pins latest, whose own channel is stable.
     expect(computerInstallCommand('desktop', { ...registration, cliChannel: 'stable' })).toBe(
-      `npx -y @agentconnect.md/cli@latest computer install --register "ac_tok" --cp-url "${url}"`
+      `npx -y "@agentconnect.md/cli@latest" computer install --register "ac_tok" --cp-url "${url}"`
     )
     // A CP older than the field is an rc of this line, never an untagged command.
     expect(computerInstallCommand('desktop', { token: 'ac_tok', exchangeUrl: url })).toMatch(
-      /^npx -y @agentconnect\.md\/cli@rc computer install --channel rc /
+      /^npx -y "@agentconnect\.md\/cli@rc" computer install --channel rc /
     )
     expect(computerInstallCommand('docker', registration)).toBe(
       `docker run -d --name agentconnect-computer --hostname agentconnect-computer --restart unless-stopped --shm-size=1g -v agentconnect-computer:/home/computer -e LISTEN_HOST=127.0.0.1 -e AGENTCONNECT_CP_URL="${url}" -e AGENTCONNECT_REGISTER_TOKEN="ac_tok" ghcr.io/agentconnect-md/computer:latest`
