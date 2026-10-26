@@ -4,7 +4,7 @@ import type { Check } from './setup.js'
 import { X11LocalControls, parseHotkey, type Hotkey } from './linux/x11-local.js'
 import { Tray, type TrayState } from './linux/tray.js'
 import { startMenuBar, type MenuBarHost } from './menu-bar.js'
-import type { HelperTray } from './tray-helper.js'
+import { HelperTray, type HelperTrayOptions } from './tray-helper.js'
 
 export const TRAY_STOP_REASON = 'stopped from the tray'
 export const HOTKEY_STOP_REASON = 'stopped with the stop hotkey'
@@ -39,8 +39,13 @@ export interface LocalControlsOptions {
   env?: NodeJS.ProcessEnv
   startX11?: typeof X11LocalControls.start
   startTray?: typeof Tray.start
-  // macOS: the menu bar helper inside AgentConnect Computer.app (undefined outside the app) and the daemon's side of its menu.
-  menuBar?: { helper: string | undefined; host: Omit<MenuBarHost, 'stop' | 'resume' | 'log'> }
+  // The native helper (the menu bar inside AgentConnect Computer.app, the Windows taskbar icon) and the daemon's side of its menu.
+  menuBar?: {
+    helper: string | undefined
+    host: Omit<MenuBarHost, 'stop' | 'resume' | 'log'>
+    // Windows: the helper runs as the signed-in person rather than as the SYSTEM daemon.
+    spawnHelper?: HelperTrayOptions['spawnHelper']
+  }
   startHelperTray?: typeof HelperTray.start
 }
 
@@ -105,18 +110,34 @@ function refreshing(controls: LocalControls, log: (line: string) => void): Local
   }
 }
 
-// macOS: the menu bar only, for now; the stop hotkey and keyboard activity are #3182 M3.
-function startMacLocalControls(options: LocalControlsOptions): LocalControls {
+const HELPER_PROBLEMS = {
+  darwin: {
+    outside: 'the daemon runs outside AgentConnect Computer.app',
+    missing: 'this AgentConnect Computer.app has no menu bar helper',
+    fix: 'update the app with agentconnect computer upgrade, then restart the service'
+  },
+  win32: {
+    outside: 'no taskbar helper',
+    missing: 'the taskbar helper is not installed',
+    fix: 'install the service, which builds the helper: agentconnect computer setup'
+  }
+}
+
+// macOS and Windows: the helper's menu only, for now; the stop hotkey and keyboard activity are #3182 M3.
+function startHelperLocalControls(options: LocalControlsOptions, platform: 'darwin' | 'win32'): LocalControls {
   const { computer, log } = options
   const actions = ownerActions(options)
   const helper = options.menuBar?.helper
+  const texts = HELPER_PROBLEMS[platform]
   const problem = !options.menuBar
     ? 'no menu bar host'
     : !helper
-      ? 'the daemon runs outside AgentConnect Computer.app'
+      ? texts.outside
       : !existsSync(helper)
-        ? 'this AgentConnect Computer.app has no menu bar helper'
+        ? texts.missing
         : undefined
+  const spawnHelper = options.menuBar?.spawnHelper
+  const start = options.startHelperTray ?? HelperTray.start
   const menuBar =
     problem || !helper || !options.menuBar
       ? undefined
@@ -124,7 +145,7 @@ function startMacLocalControls(options: LocalControlsOptions): LocalControls {
           helper,
           { ...options.menuBar.host, stop: () => actions.stop(TRAY_STOP_REASON), resume: actions.resume, log },
           trayState(computer, options.refusal()),
-          options.startHelperTray
+          spawnHelper ? (path, helperOptions) => start(path, { ...helperOptions, spawnHelper }) : start
         )
   return refreshing(
     {
@@ -135,7 +156,7 @@ function startMacLocalControls(options: LocalControlsOptions): LocalControls {
             name: 'tray',
             status: 'warn',
             detail: `${problem}: no local indicator; stop agents with agentconnect-computer pause`,
-            fix: 'update the app with agentconnect computer upgrade, then restart the service'
+            fix: texts.fix
           }
         ],
       update() {
@@ -149,11 +170,11 @@ function startMacLocalControls(options: LocalControlsOptions): LocalControls {
   )
 }
 
-// X11 and macOS; Wayland (#3221) and Windows get no local controls here yet.
+// X11, macOS and Windows; Wayland (#3221) gets no local controls here yet.
 export async function startLocalControls(options: LocalControlsOptions): Promise<LocalControls | undefined> {
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
-  if (platform === 'darwin') return startMacLocalControls(options)
+  if (platform === 'darwin' || platform === 'win32') return startHelperLocalControls(options, platform)
   if (platform !== 'linux' || !env.DISPLAY || env.WAYLAND_DISPLAY) return undefined
   const { computer, log } = options
   const hotkey: Hotkey | undefined = options.stopHotkey ? parseHotkey(options.stopHotkey) : undefined

@@ -653,6 +653,49 @@ describe('computer approvals', () => {
   })
 })
 
+describe('administrator prompts (§4.2.1)', () => {
+  const PROMPT = { app: 'Windows Command Processor', publisher: 'Microsoft Windows', command: 'cmd.exe /c whoami' }
+  // The desktop names the prompt and wants a person's approval until a call carries one.
+  const desktop: CallTool = async (params) => {
+    const meta = (params as { _meta?: Record<string, unknown> })._meta?.['md.agentconnect/approval']
+    if (params.name === 'computer_admin_prompt' && params.arguments?.answer === 'approve' && meta !== 'allowed')
+      return {
+        isError: true,
+        content: [{ type: 'text', text: JSON.stringify({ error: 'approval_required', adminPrompt: PROMPT }) }]
+      }
+    return { content: [{ type: 'text', text: JSON.stringify({ answered: params.arguments?.answer }) }] }
+  }
+
+  it('asks a person to approve each prompt it names, then sends the approval with the answer', async () => {
+    const { tools, asks, calls, metas } = setup({ callTool: desktop })
+    const handled = await tools.call(ctx(), 'computer_admin_prompt', { answer: 'approve' })
+    expect(parse(handled!.result)).toEqual({ answered: 'approve' })
+    expect(asks).toEqual([
+      expect.objectContaining({
+        kind: 'admin-prompt',
+        tool: 'computer_admin_prompt',
+        action: 'approve “Windows Command Processor” (Microsoft Windows) to run as administrator: cmd.exe /c whoami'
+      })
+    ])
+    expect(calls.map((call) => call.name)).toEqual(['computer_admin_prompt', 'computer_admin_prompt'])
+    expect(metas[1]).toEqual({ 'md.agentconnect/approval': 'allowed' })
+    expect(computerApprovalTitle(asks[0]!)).toMatch(/^Administrator prompt on “Desk”: approve/)
+    // Nothing carries over: the next prompt asks again.
+    await tools.call(ctx(), 'computer_admin_prompt', { answer: 'approve' })
+    expect(asks).toHaveLength(2)
+  })
+
+  it('leaves the prompt waiting when nobody approves, and never asks to deny one', async () => {
+    const { tools, asks, calls } = setup({ callTool: desktop, approve: async () => 'deny' })
+    const handled = await tools.call(ctx(), 'computer_admin_prompt', { answer: 'approve' })
+    expect(parse(handled!.result)).toMatchObject({ error: 'approval_denied', computer: C1 })
+    expect(calls).toHaveLength(1)
+    await tools.call(ctx(), 'computer_admin_prompt', { answer: 'deny' })
+    expect(asks).toHaveLength(1)
+    expect(calls).toHaveLength(2)
+  })
+})
+
 describe('managed computers (§15.1)', () => {
   const M = '00000000-0000-4000-8000-0000000000aa'
 

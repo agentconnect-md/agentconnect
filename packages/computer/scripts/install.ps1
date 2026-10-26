@@ -1,8 +1,10 @@
-# Installs the AgentConnect desktop daemon prototype for the current Windows user (no admin rights needed).
+# Installs the AgentConnect desktop daemon prototype; setup asks for administrator approval once to install the service.
 param(
   [string]$Client = 'claude',
   [string]$ListenHost = '127.0.0.1',
   [int]$Port = 7681,
+  # No service: the daemon runs in a console; -Autostart opens that console at logon. It cannot answer UAC prompts.
+  [switch]$NoService,
   [switch]$Autostart
 )
 $ErrorActionPreference = 'Stop'
@@ -18,10 +20,16 @@ Copy-Item -Force (Join-Path $PSScriptRoot 'agentconnect-computer.mjs') $installD
 Copy-Item -Force (Join-Path $PSScriptRoot 'README.md') $installDir -ErrorAction SilentlyContinue
 $script = Join-Path $installDir 'agentconnect-computer.mjs'
 
-# setup downloads Cua Driver and ffmpeg, adds the firewall rule unless loopback-only (one administrator prompt), then runs doctor.
-& node $script setup --client $Client --host $ListenHost --port $Port
-if ($Autostart) { & node $script autostart enable }
+# setup downloads Cua Driver and ffmpeg, installs the service (one administrator prompt) unless -NoService, then runs doctor.
+$setup = @('setup', '--client', $Client, '--host', $ListenHost, '--port', $Port)
+if ($NoService) { $setup += '--no-service' }
+& node $script @setup
+if ($NoService -and $Autostart) { & node $script autostart enable }
 
 Write-Host ''
-Write-Host "Start the daemon in this desktop session:  node `"$script`" run"
-if (-not $Autostart) { Write-Host "Start it at every logon:                   node `"$script`" autostart enable" }
+if (-not $NoService) {
+  Write-Host "The service runs the daemon whenever you are signed in:  node `"$script`" service status | restart | stop"
+} else {
+  Write-Host "Start the daemon in this desktop session:  node `"$script`" run"
+  if (-not $Autostart) { Write-Host "Start it at every logon:                   node `"$script`" autostart enable" }
+}

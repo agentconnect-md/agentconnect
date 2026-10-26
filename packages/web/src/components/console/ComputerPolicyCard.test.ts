@@ -21,6 +21,13 @@ describe('the policy form', () => {
     expect(result).toEqual({ policy })
   })
 
+  it('keeps the administrator prompt mode the taskbar set, and stores a change made here', () => {
+    const windows = { ...policy, approvals: { firstInputPerSession: true, adminPrompts: 'agent' as const } }
+    expect(policyFromDraft(windows, draftOf(windows))).toEqual({ policy: windows })
+    const denied = policyFromDraft(policy, { ...draftOf(policy), adminPrompts: 'deny' })
+    expect('policy' in denied && denied.policy.approvals).toEqual({ firstInputPerSession: true, adminPrompts: 'deny' })
+  })
+
   it('drops the retention when blanked, so the deployment default applies', () => {
     const result = policyFromDraft(policy, { ...draftOf(policy), screenshotRetentionDays: ' ' })
     expect('policy' in result && result.policy.screenshotRetentionDays).toBeUndefined()

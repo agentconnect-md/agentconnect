@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { redactArgs, type AuditRecord } from './audit.js'
+import type { ComputerAdminPromptMode } from '@agentconnect.md/protocol/computer'
+import type { AdminPrompt, AdminPromptSource } from './admin-prompts.js'
 import { Computer, type ToolOutput } from './computer.js'
+import { DriverToolError } from './driver/client.js'
 import { FakeDriver, testConfig } from './testing.js'
 
 function setup(
@@ -53,6 +56,36 @@ describe('Computer', () => {
     expect(driver.inputCalls()).toEqual(['get_desktop_state', 'click', 'get_desktop_state'])
     expect(driver.calls.find((call) => call.name === 'click')!.args).toEqual({ scope: 'desktop', x: 10, y: 20 })
     expect(output.content.some((block) => block.type === 'image')).toBe(true)
+  })
+
+  it('reports a click the driver sent as delivered when it moved the foreground to another process', async () => {
+    const { driver, computer } = setup({ actionScreenshot: false })
+    const failure = (text: string) => () => {
+      throw new DriverToolError('click', { content: [{ type: 'text', text }] })
+    }
+    driver.handlers.click = failure(
+      'foreground_unavailable: exact target HWND 0x4023a or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x102ae)'
+    )
+    const sent = await computer.click('claude', { x: 10, y: 20 })
+    expect(sent.isError).toBeUndefined()
+    expect(sent.content[0]!.text).toMatch(/^Click sent/)
+    driver.handlers.click = failure('foreground_unavailable: could not bring HWND 0x1 to the foreground')
+    expect(errorOf(await computer.click('claude', { x: 10, y: 20 }))).toMatchObject({ error: 'driver_error' })
+  })
+
+  it('launches through its own launcher instead of the driver when it has one', async () => {
+    const driver = new FakeDriver()
+    const launched: string[] = []
+    const computer = new Computer({
+      driver,
+      config: testConfig({ actionScreenshot: false }),
+      sleep: async () => undefined,
+      launchApp: async (app) => (launched.push(app), `launched ${app} (pid 42)`)
+    })
+    const output = await computer.launch('claude', { app: 'notepad' })
+    expect(launched).toEqual(['notepad'])
+    expect(output.content).toEqual([{ type: 'text', text: 'launched notepad (pid 42)' }])
+    expect(driver.inputCalls()).not.toContain('launch_app')
   })
 
   it('recaptures after the driver restarts because the capture mapping is lost', async () => {
@@ -364,5 +397,120 @@ describe('Computer', () => {
     }
     expect(errorOf(await computer.type('claude', { text: '你好' }))).toMatchObject({ error: 'human_in_control' })
     expect(driver.calls.filter((call) => call.name === 'type_text')).toHaveLength(1)
+  })
+})
+
+describe('administrator prompts (computer-use.md §4.2.1)', () => {
+  const PROMPT: AdminPrompt = {
+    id: '1',
+    kind: 'consent',
+    app: 'Windows Command Processor',
+    publisher: 'Verified publisher: Microsoft Windows',
+    command: '"C:\\Windows\\system32\\cmd.exe" /c whoami',
+    lines: []
+  }
+
+  function prompts(mode: ComputerAdminPromptMode | undefined, prompt: AdminPrompt | undefined = PROMPT) {
+    const answers: Array<[string, string]> = []
+    const source: { current: AdminPrompt | undefined } & AdminPromptSource = {
+      current: prompt,
+      problem: undefined,
+      pending: () => source.current,
+      answer: async (id: string, answer: string) => {
+        answers.push([id, answer])
+        source.current = undefined
+      }
+    }
+    const driver = new FakeDriver()
+    const audit: AuditRecord[] = []
+    const computer = new Computer({
+      driver,
+      config: testConfig({ actionScreenshot: false, humanIdleSeconds: 0 }),
+      audit: (record) => audit.push(record),
+      sleep: async () => undefined,
+      adminPrompts: { source, mode: () => mode }
+    })
+    return { computer, source, answers, audit, driver }
+  }
+
+  it('tells the agent about a waiting prompt that screenshots cannot show, and holds other input until it is answered', async () => {
+    const { computer, driver } = prompts('agent')
+    const shot = await computer.screenshot('claude')
+    const note = JSON.parse(shot.content.at(-1)!.text!) as Record<string, unknown>
+    expect(note).toMatchObject({ admin_prompt: { kind: 'consent', app: 'Windows Command Processor' } })
+    expect(note.note).toContain('computer_admin_prompt')
+    expect(errorOf(await computer.click('claude', { x: 1, y: 1 }))).toMatchObject({
+      error: 'admin_prompt_pending',
+      adminPrompt: { command: PROMPT.command }
+    })
+    expect(driver.inputCalls()).not.toContain('click')
+    // The secure desktop refuses capture: the prompt in words stands in for the screenshot.
+    driver.handlers.get_desktop_state = () => {
+      throw new DriverToolError('get_desktop_state', { content: [{ type: 'text', text: 'BitBlt failed' }] })
+    }
+    const refused = await computer.screenshot('claude')
+    expect(refused.isError).toBeUndefined()
+    expect(JSON.parse(refused.content[0]!.text!)).toMatchObject({ admin_prompt: { kind: 'consent' } })
+  })
+
+  it('lets the agent answer in the agent mode, takes the lease and audits what it approved', async () => {
+    const { computer, answers, audit } = prompts('agent')
+    const output = await computer.adminPrompt('claude', { answer: 'approve' }, undefined)
+    expect(JSON.parse(output.content[0]!.text!)).toMatchObject({ answered: 'approve' })
+    expect(answers).toEqual([['1', 'approve']])
+    expect(computer.info().lease).toMatchObject({ holder: 'claude' })
+    expect(audit.at(-1)).toMatchObject({
+      tool: 'computer_admin_prompt',
+      outcome: 'ok',
+      args: { answer: 'approve', app: 'Windows Command Processor' }
+    })
+    expect(errorOf(await computer.adminPrompt('claude', { answer: 'deny' }, undefined))).toMatchObject({
+      error: 'no_admin_prompt'
+    })
+  })
+
+  it("needs a person's approval to approve in the people mode, the default, but never to deny", async () => {
+    const people = prompts(undefined)
+    expect(
+      errorOf(await people.computer.adminPrompt('claude', { answer: 'approve' }, 'allowed_session'))
+    ).toMatchObject({
+      error: 'approval_required',
+      adminPrompt: { app: 'Windows Command Processor' }
+    })
+    expect(people.answers).toEqual([])
+    await people.computer.adminPrompt('claude', { answer: 'approve' }, 'allowed')
+    expect(people.answers).toEqual([['1', 'approve']])
+    const deny = prompts('people')
+    await deny.computer.adminPrompt('claude', { answer: 'deny' }, undefined)
+    expect(deny.answers).toEqual([['1', 'deny']])
+  })
+
+  it('leaves a password prompt to a person, whatever the mode', async () => {
+    const { computer, answers } = prompts('agent', { ...PROMPT, kind: 'credentials' })
+    expect(errorOf(await computer.adminPrompt('claude', { answer: 'approve' }, 'allowed'))).toMatchObject({
+      error: 'denied'
+    })
+    await computer.adminPrompt('claude', { answer: 'deny' }, undefined)
+    expect(answers).toEqual([['1', 'deny']])
+  })
+
+  it('answers by itself in the always modes, only while an agent holds control, and once per prompt', async () => {
+    const idle = prompts('approve')
+    await idle.computer.adminPromptChanged()
+    expect(idle.answers).toEqual([])
+
+    const { computer, source, answers, audit } = prompts('deny')
+    computer.acquire('claude')
+    await Promise.all([computer.adminPromptChanged(), computer.adminPromptChanged()])
+    expect(answers).toEqual([['1', 'deny']])
+    expect(audit.at(-1)).toMatchObject({ client: 'claude', tool: 'admin_prompt_auto', outcome: 'ok' })
+    source.current = { ...PROMPT, id: '2' }
+    expect(errorOf(await computer.adminPrompt('claude', { answer: 'approve' }, 'allowed'))).toMatchObject({
+      error: 'denied'
+    })
+    const password = prompts('approve', { ...PROMPT, kind: 'credentials' })
+    password.computer.acquire('claude')
+    await password.computer.adminPromptChanged()
+    expect(password.answers).toEqual([])
   })
 })

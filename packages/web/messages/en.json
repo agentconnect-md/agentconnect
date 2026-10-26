@@ -6732,6 +6732,14 @@
       "modeView": "View only",
       "firstInput": "Ask once per session",
       "firstInputHint": "An agent's first click or keystroke in a session waits until someone allowed to use this Computer approves it.",
+      "adminPrompts": "Administrator prompts (UAC)",
+      "adminPromptsHint": "Who answers a Windows administrator prompt that appears while an agent controls this computer. The menu on the computer changes the same setting.",
+      "adminPrompt": {
+        "people": "People approve each one",
+        "agent": "The agent decides",
+        "approve": "Always approve",
+        "deny": "Always deny"
+      },
       "limitsTitle": "Limits",
       "idle": "Idle release (seconds)",
       "idleHint": "Control is released after this long without input, 10 to 3600.",

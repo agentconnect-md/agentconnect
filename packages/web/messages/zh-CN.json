@@ -6732,6 +6732,14 @@
       "modeView": "仅查看",
       "firstInput": "每个会话询问一次",
       "firstInputHint": "Agent 在一个会话中第一次点击或按键前，需要有权使用这台电脑的人批准。",
+      "adminPrompts": "管理员提示（UAC）",
+      "adminPromptsHint": "Agent 控制这台电脑时弹出的 Windows 管理员提示由谁回答。电脑上任务栏菜单改的是同一个设置。",
+      "adminPrompt": {
+        "people": "每次由人批准",
+        "agent": "交给 Agent 决定",
+        "approve": "总是批准",
+        "deny": "总是拒绝"
+      },
       "limitsTitle": "限制",
       "idle": "空闲释放（秒）",
       "idleHint": "无输入超过此时长后释放控制权，10 到 3600。",

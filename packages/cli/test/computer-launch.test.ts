@@ -12,7 +12,6 @@ import {
   resolveComputerLaunch,
   type ComputerHost
 } from '../src/computer/launch.js'
-import { serviceArgs } from '../src/computer/commands.js'
 import { classifyInvocation } from '../src/route.js'
 
 const host = (over: Partial<ComputerHost> = {}): ComputerHost => ({
@@ -37,20 +36,6 @@ describe('computer routing', () => {
 
   it('no longer routes the retired desktop alias to the computer daemon', () => {
     expect(classifyInvocation(['desktop', 'doctor'])).toBe('delegate')
-  })
-})
-
-describe('serviceArgs', () => {
-  it("maps start/stop/restart to the daemon's service command off Windows", () => {
-    for (const platform of ['linux', 'darwin'] as const)
-      for (const action of ['start', 'stop', 'restart'])
-        expect(serviceArgs(action, platform)).toEqual(['service', action])
-  })
-
-  it('starts the Run-key entry on Windows and rejects stop/restart there instead of a misleading service error', () => {
-    expect(serviceArgs('start', 'win32')).toEqual(['autostart', 'start'])
-    expect(() => serviceArgs('stop', 'win32')).toThrow(/stop is not supported on Windows yet/)
-    expect(() => serviceArgs('restart', 'win32')).toThrow(/restart is not supported on Windows yet/)
   })
 })
 

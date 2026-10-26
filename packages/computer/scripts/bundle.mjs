@@ -24,7 +24,18 @@ const result = await build({
   target: 'node24',
   // Workspace packages (protocol, connection) are bundled from source, so no prior build is needed.
   conditions: ['development'],
-  define: { __AGENTCONNECT_COMPUTER_VERSION__: JSON.stringify(version) },
+  define: {
+    __AGENTCONNECT_COMPUTER_VERSION__: JSON.stringify(version),
+    // The Windows service and its helpers, compiled on the machine at `service install` (src/service-windows.ts).
+    __AGENTCONNECT_COMPUTER_WINDOWS_SOURCES__: JSON.stringify(
+      Object.fromEntries(
+        ['service.cs', 'tray.cs', 'admin-prompts.cs'].map((name) => [
+          name,
+          readFileSync(join(root, 'windows', name), 'utf8')
+        ])
+      )
+    )
+  },
   legalComments: 'linked',
   // Every bundled input, for the release license scan (scripts/license-scan.ts).
   metafile: true,

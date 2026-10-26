@@ -3,7 +3,11 @@
 // How agents use a Computer once they have access (computer-use.md §4.1, §4.2): view or control, approvals and limits.
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
-import type { ComputerPolicy } from '@agentconnect.md/protocol/computer'
+import {
+  DEFAULT_COMPUTER_ADMIN_PROMPT_MODE,
+  type ComputerAdminPromptMode,
+  type ComputerPolicy
+} from '@agentconnect.md/protocol/computer'
 import { viewerPeerToPeerAllowed } from '@agentconnect.md/protocol/computer-viewer'
 import { setComputerPolicy, type ComputerDto } from '@/lib/api'
 import { FieldSelect } from '@/components/console/FieldSelect'
@@ -13,6 +17,8 @@ import { Button, Toggle } from '@/components/ui'
 export interface PolicyDraft {
   agentMode: ComputerPolicy['agentMode']
   firstInputPerSession: boolean
+  /** Windows only; undefined while the policy names none, so the default applies. */
+  adminPrompts?: ComputerAdminPromptMode
   exposeDriverTools: boolean
   /** The effective setting; it is stored only while it differs from the default. */
   viewerPeerToPeer: boolean
@@ -32,6 +38,7 @@ export function draftOf(policy: ComputerPolicy, owner: PolicyOwner = NO_OWNER): 
   return {
     agentMode: policy.agentMode,
     firstInputPerSession: policy.approvals.firstInputPerSession,
+    ...(policy.approvals.adminPrompts ? { adminPrompts: policy.approvals.adminPrompts } : {}),
     exposeDriverTools: policy.exposeDriverTools,
     viewerPeerToPeer: viewerPeerToPeerAllowed(policy, owner),
     leaseIdleSeconds: String(policy.leaseIdleSeconds),
@@ -74,7 +81,10 @@ export function policyFromDraft(
     policy: {
       ...rest,
       agentMode: draft.agentMode,
-      approvals: { firstInputPerSession: draft.firstInputPerSession },
+      approvals: {
+        firstInputPerSession: draft.firstInputPerSession,
+        ...(draft.adminPrompts ? { adminPrompts: draft.adminPrompts } : {})
+      },
       exposeDriverTools: draft.exposeDriverTools,
       ...(p2pDefault ? {} : { viewerPeerToPeer: draft.viewerPeerToPeer }),
       leaseIdleSeconds: idle,
@@ -84,6 +94,9 @@ export function policyFromDraft(
     }
   }
 }
+
+// The order the console and the taskbar menu list them in.
+const ADMIN_PROMPT_OPTIONS: readonly ComputerAdminPromptMode[] = ['people', 'agent', 'approve', 'deny']
 
 const sameDraft = (a: PolicyDraft, b: PolicyDraft) => JSON.stringify(a) === JSON.stringify(b)
 
@@ -160,6 +173,17 @@ export function ComputerPolicyCard({
             disabled={!editable}
             onChange={(v) => set('firstInputPerSession', v)}
           />
+          {computer.os === 'windows' && (
+            <Field label={t('adminPrompts')} detail={t('adminPromptsHint')}>
+              <FieldSelect
+                ariaLabel={t('adminPrompts')}
+                value={draft.adminPrompts ?? DEFAULT_COMPUTER_ADMIN_PROMPT_MODE}
+                disabled={!editable}
+                options={ADMIN_PROMPT_OPTIONS.map((mode) => ({ value: mode, label: t(`adminPrompt.${mode}`) }))}
+                onChange={(v) => set('adminPrompts', v)}
+              />
+            </Field>
+          )}
         </div>
       </Section>
 

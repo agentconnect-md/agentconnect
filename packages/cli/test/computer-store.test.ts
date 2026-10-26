@@ -377,6 +377,8 @@ describe('realComputerOps against the installed daemon', () => {
     expect(ops('linux', { WAYLAND_DISPLAY: 'wayland-0' }).refreshStarts).toBe(true)
     expect(ops('linux', {}).refreshStarts).toBe(false)
     expect(ops('darwin', { DISPLAY: ':0' }).refreshStarts).toBe(false)
+    // The Windows service starts at install and runs the daemon in whoever signs in, so a refresh always activates.
+    expect(ops('win32', {})).toMatchObject({ serviceRunsStore: true, refreshStarts: true })
   })
 
   it('runs macOS service commands inside the app and starts the LaunchAgent only with a desktop login', async () => {
