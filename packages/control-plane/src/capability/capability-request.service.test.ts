@@ -98,7 +98,7 @@ class MemoryRequests implements CapabilityRequestRepo {
       settledBy: null,
       settledAt: null,
       settledRevision: null,
-      changeAppliedAt: null,
+      appliedBy: {},
       origins: [this.origin(input.id, origin, input.createdAt)]
     }
     this.rows.set(row.id, row)
@@ -121,12 +121,12 @@ class MemoryRequests implements CapabilityRequestRepo {
     row.settledAt = at
     return 'withdrawn' as const
   }
-  async markChangeApplied(agentIds: readonly string[], revision: bigint | null, at: Date) {
+  async markChangeApplied(daemonId: string, agentIds: readonly string[], revision: bigint | null, at: Date) {
     let n = 0
     for (const row of this.rows.values()) {
-      if (!agentIds.includes(row.agentId) || row.status !== 'completed' || row.changeAppliedAt !== null) continue
+      if (!agentIds.includes(row.agentId) || row.status !== 'completed' || daemonId in row.appliedBy) continue
       if (revision === null ? row.settledAt! > at : row.settledRevision! > revision) continue
-      row.changeAppliedAt = at
+      row.appliedBy[daemonId] = at.toISOString()
       n += 1
     }
     return n
@@ -142,7 +142,7 @@ class MemoryRequests implements CapabilityRequestRepo {
       settledBy: s.settledBy,
       settledAt: s.at,
       settledRevision: s.settledRevision,
-      changeAppliedAt: s.changeApplied ? s.at : null
+      appliedBy: Object.fromEntries((s.appliedBy ?? []).map((d) => [d, s.at.toISOString()]))
     })
     for (const o of row.origins)
       Object.assign(o, {
@@ -399,7 +399,7 @@ describe('CapabilityRequestService', () => {
     const { requestId } = await h.service.request(h.agent(), ask('s1'))
     h.setAgent({ mcpServers: ['Linear'], configRevision: 2n })
     await h.service.agentUpserted(h.agent(), [])
-    expect(h.requests.rows.get(requestId!)!.changeAppliedAt).toBeNull()
+    expect(h.requests.rows.get(requestId!)!.appliedBy).toEqual({})
     for (const step of [10_000, 5 * 60_000, 60 * 60_000]) {
       h.clock.advance(step)
       await h.service.settle()
@@ -414,12 +414,21 @@ describe('CapabilityRequestService', () => {
     })
   })
 
-  it('records an acknowledged change on the request, so any replica may wake it', async () => {
+  it('records which daemon applied the change, and wakes only through that daemon', async () => {
     const h = harness()
     const { requestId } = await h.service.request(h.agent(), ask('s1'))
     h.setAgent({ mcpServers: ['Linear'], configRevision: 2n })
+    // Only a secondary holder acknowledged; the wake's daemon has not applied the change.
+    await h.service.agentUpserted(h.agent(), ['44444444-4444-4444-8444-444444444444'])
+    expect(Object.keys(h.requests.rows.get(requestId!)!.appliedBy)).toEqual(['44444444-4444-4444-8444-444444444444'])
+    h.clock.advance(10_000)
+    await h.service.settle()
+    expect(h.sent).toEqual([])
     await h.service.agentUpserted(h.agent(), [DAEMON])
-    expect(h.requests.rows.get(requestId!)!.changeAppliedAt).not.toBeNull()
+    expect(Object.keys(h.requests.rows.get(requestId!)!.appliedBy)).toContain(DAEMON)
+    h.clock.advance(10_000)
+    await h.service.settle()
+    expect(h.sent).toEqual([expect.objectContaining({ status: 'completed' })])
   })
 
   it('completes from the console with what was saved, even when it differs', async () => {

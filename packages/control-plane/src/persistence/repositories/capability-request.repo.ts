@@ -62,7 +62,7 @@ function toRecord(row: Row): CapabilityRequestRecord {
     settledBy: (row.settledBy as CapabilityDecider | null) ?? null,
     settledAt: row.settledAt,
     settledRevision: row.settledRevision,
-    changeAppliedAt: row.changeAppliedAt,
+    appliedBy: (row.appliedBy as Record<string, string> | null) ?? {},
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     origins: row.origins.map(toOrigin)
@@ -212,19 +212,22 @@ export class PgCapabilityRequestRepo implements CapabilityRequestRepo {
     })
   }
 
-  async markChangeApplied(agentIds: readonly string[], revision: bigint | null, at: Date): Promise<number> {
+  async markChangeApplied(
+    daemonId: string,
+    agentIds: readonly string[],
+    revision: bigint | null,
+    at: Date
+  ): Promise<number> {
     if (agentIds.length === 0) return 0
-    const done = await this.db.capabilityRequest.updateMany({
-      where: {
-        agentId: { in: [...agentIds] },
-        status: 'completed',
-        changeAppliedAt: null,
-        // A registration hands over every agent's current spec, so no revision bound applies to it.
-        ...(revision === null ? { settledAt: { lte: at } } : { settledRevision: { lte: revision } })
-      },
-      data: { changeAppliedAt: at }
-    })
-    return done.count
+    // A registration hands over every agent's current spec, so it covers what was settled by then; an upsert covers its revision.
+    const bound = revision === null ? Prisma.sql`"settledAt" <= ${at}` : Prisma.sql`"settledRevision" <= ${revision}`
+    return await this.db.$executeRaw`
+      UPDATE "capability_request"
+      SET "appliedBy" = "appliedBy" || jsonb_build_object(${daemonId}::text, ${at.toISOString()}::text)
+      WHERE "agentId" IN (${Prisma.join(agentIds.map((id) => Prisma.sql`${id}::uuid`))})
+        AND "status" = 'completed'
+        AND NOT ("appliedBy" ? ${daemonId}::text)
+        AND ${bound}`
   }
 
   async settle(id: string, generation: number, settlement: CapabilitySettlement): Promise<boolean> {
@@ -239,7 +242,7 @@ export class PgCapabilityRequestRepo implements CapabilityRequestRepo {
           settledBy: (settlement.settledBy ?? Prisma.DbNull) as Prisma.InputJsonValue,
           settledAt: settlement.at,
           settledRevision: settlement.settledRevision,
-          changeAppliedAt: settlement.changeApplied ? settlement.at : null
+          appliedBy: Object.fromEntries((settlement.appliedBy ?? []).map((d) => [d, settlement.at.toISOString()]))
         }
       })
       if (done.count !== 1) return false
@@ -274,7 +277,7 @@ export class PgCapabilityRequestRepo implements CapabilityRequestRepo {
             settledBy: Prisma.DbNull,
             settledAt: null,
             settledRevision: null,
-            changeAppliedAt: null,
+            appliedBy: {},
             createdAt: at,
             expiresAt
           }

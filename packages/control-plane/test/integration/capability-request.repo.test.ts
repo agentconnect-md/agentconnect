@@ -85,13 +85,19 @@ describe('PgCapabilityRequestRepo', () => {
     expect((await repo.get(ORG_ID, row.id))!.origins.map((o) => o.sessionId)).toEqual(['s1'])
   })
 
-  it('records an applied change only for completions at or below the acknowledged revision', async () => {
+  it('records an applied change per daemon, only for completions at or below the acknowledged revision', async () => {
     const repo = new PgCapabilityRequestRepo(prisma)
     const low = (await create(repo))!
     await repo.settle(low.id, 1, { ...declined(NOW), status: 'completed', note: null, settledRevision: 2n })
-    await expect(repo.markChangeApplied([AGENT_ID], 1n, NOW)).resolves.toBe(0)
-    await expect(repo.markChangeApplied([AGENT_ID], 2n, NOW)).resolves.toBe(1)
-    expect((await repo.get(ORG_ID, low.id))!.changeAppliedAt).toEqual(NOW)
+    await expect(repo.markChangeApplied(DAEMON_ID, [AGENT_ID], 1n, NOW)).resolves.toBe(0)
+    await expect(repo.markChangeApplied(DAEMON_ID, [AGENT_ID], 2n, NOW)).resolves.toBe(1)
+    await expect(repo.markChangeApplied(DAEMON_ID, [AGENT_ID], 2n, NOW)).resolves.toBe(0)
+    // Another daemon's acknowledgement is recorded beside it, never in its place.
+    await expect(repo.markChangeApplied('other-daemon', [AGENT_ID], null, NOW)).resolves.toBe(1)
+    expect((await repo.get(ORG_ID, low.id))!.appliedBy).toEqual({
+      [DAEMON_ID]: NOW.toISOString(),
+      'other-daemon': NOW.toISOString()
+    })
   })
 
   it('settles by compare-and-set on status and generation, making every wake pending', async () => {

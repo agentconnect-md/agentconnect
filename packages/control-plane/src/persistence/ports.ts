@@ -2291,7 +2291,8 @@ export interface CapabilityRequestRecord {
   settledBy: CapabilityDecider | null
   settledAt: Date | null
   settledRevision: bigint | null
-  changeAppliedAt: Date | null
+  // Daemon id → when it was seen to apply `settledRevision`.
+  appliedBy: Record<string, string>
   createdAt: Date
   expiresAt: Date
   origins: CapabilityRequestOriginRecord[]
@@ -2310,8 +2311,8 @@ export interface CapabilitySettlement {
   note: string | null
   settledBy: CapabilityDecider | null
   settledRevision: bigint | null
-  // A daemon has already applied `settledRevision` (the settlement follows its acknowledged upsert).
-  changeApplied?: boolean
+  // The daemons that already applied `settledRevision`: the settlement follows their acknowledged upsert.
+  appliedBy?: readonly string[]
   at: Date
 }
 
@@ -2367,8 +2368,8 @@ export interface CapabilityRequestRepo {
     generation: number,
     next: { state: CapabilityWakeState; reason: string | null; dueAt: Date | null; attempts: number }
   ): Promise<void>
-  /** Note that a daemon applied the agent's configuration up to `revision`: completions observed at or below it may wake. */
-  markChangeApplied(agentIds: readonly string[], revision: bigint | null, at: Date): Promise<number>
+  /** Note that `daemonId` applied the agents' configuration up to `revision` (null: everything settled by `at`); only its own wakes may then go. */
+  markChangeApplied(daemonId: string, agentIds: readonly string[], revision: bigint | null, at: Date): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

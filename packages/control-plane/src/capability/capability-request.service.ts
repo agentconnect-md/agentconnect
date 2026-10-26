@@ -290,7 +290,7 @@ export class CapabilityRequestService {
     agent: AgentRecord,
     settledBy: CapabilityDecider | null,
     requireSatisfied: boolean,
-    changeApplied = false
+    appliedBy: readonly string[] = []
   ): Promise<boolean> {
     const ask = askOf(row)
     if (!ask) return false
@@ -303,7 +303,7 @@ export class CapabilityRequestService {
       note: null,
       settledBy,
       settledRevision: agent.configRevision,
-      changeApplied,
+      appliedBy,
       at: this.now()
     })
   }
@@ -323,11 +323,11 @@ export class CapabilityRequestService {
           name: agent.lastModifiedBy.displayName ?? agent.lastModifiedBy.email
         }
       : null
-    const applied = ackedDaemonIds.length > 0
-    for (const row of open) await this.complete(row, agent, by, true, applied)
-    if (!applied) return
-    // Recorded on the rows, so whichever replica holds a wake sees the acknowledgement.
-    await this.deps.requests.markChangeApplied([agent.id], agent.configRevision, this.now())
+    for (const row of open) await this.complete(row, agent, by, true, ackedDaemonIds)
+    if (ackedDaemonIds.length === 0) return
+    // Recorded per daemon on the rows, so whichever replica holds a wake checks the daemon it is about to send to.
+    for (const daemonId of ackedDaemonIds)
+      await this.deps.requests.markChangeApplied(daemonId, [agent.id], agent.configRevision, this.now())
     this.kick()
   }
 
@@ -336,7 +336,7 @@ export class CapabilityRequestService {
     this.readyAt.set(daemonId, this.deps.clock.now())
     // Registration handed it every agent's current spec: completions settled before now are applied there.
     void this.deps.requests
-      .markChangeApplied(agentIds, null, this.now())
+      .markChangeApplied(daemonId, agentIds, null, this.now())
       .catch((err: unknown) =>
         this.deps.log.warn({ err, daemonId }, 'capability request: recording a registration failed')
       )
@@ -527,7 +527,7 @@ export class CapabilityRequestService {
 
   /** Whether the daemon has applied the change a completion observed: an acknowledged upsert at that revision, or a registration after it. */
   private applied(row: CapabilityRequestRecord, daemonId: string): boolean {
-    if (row.status !== 'completed' || row.settledRevision === null || row.changeAppliedAt !== null) return true
+    if (row.status !== 'completed' || row.settledRevision === null || row.appliedBy[daemonId] !== undefined) return true
     const acked = this.acked.get(`${row.agentId}:${daemonId}`)
     if (acked !== undefined && acked >= row.settledRevision) return true
     const ready = this.readyAt.get(daemonId)
