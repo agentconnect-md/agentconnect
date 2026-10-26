@@ -470,6 +470,9 @@ export const APPROVAL_DM_ROUTE_V1_FEATURE = 'approval-dm-route-v1'
  *  editor's linked identity. A daemon must not send that form before seeing this: an older CP refuses it. */
 export const CHAT_ACTOR_V1_FEATURE = 'chat-actor-v1'
 
+/** CP answers an `agent/approval-route` naming a `computerId` by that Computer's allowed members; an older CP strips it and asks editors. */
+export const COMPUTER_APPROVERS_V1_FEATURE = 'computer-approvers-v1'
+
 /** CP answers the `responsible` form of `agent/approval-route` with the agent's derived responsible user; without it an older CP strips the form and answers its own chain, so a daemon asks nobody. */
 export const ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE = 'assistant-responsible-route-v1'
 

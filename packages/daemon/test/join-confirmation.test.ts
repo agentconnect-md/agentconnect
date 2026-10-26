@@ -128,6 +128,8 @@ async function world(
     placeExternal: () => false,
     chatEditorsOnly: () => false,
     chatActor: async () => 'not-editor',
+    servesComputerApprovers: () => false,
+    computerActor: async () => 'unavailable' as const,
     ...(over.personDm ? { personDm: over.personDm } : {}),
     ...(over.joinCardExpired ? { joinCardExpired: over.joinCardExpired } : {})
   }

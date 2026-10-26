@@ -1,4 +1,4 @@
-// Pick one approval recipient by preference, or revalidate their edit authority and linked chat identity.
+// Pick one approval recipient by preference, or revalidate their authority (edit, or a Computer's membership) and linked chat identity.
 import type { AgentApprovalRoute, AgentApprovalRouted, ApprovalRouteTarget } from '@agentconnect.md/protocol'
 import type { LinkedChatIdentity } from '../github/logto-identity.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
@@ -6,13 +6,15 @@ import type {
   AgentRepo,
   BotRecord,
   BotRepo,
+  ComputerRepo,
   IntegrationRecord,
   IntegrationRepo,
   OrgMemberRecord,
   SessionRepo,
   UserRepo
 } from '../persistence/ports.js'
-import { AgentId, OrgId, SessionId } from '../domain/ids.js'
+import { AgentId, ComputerId, OrgId, SessionId } from '../domain/ids.js'
+import { withOwnerMember } from '../domain/computer.js'
 import { AUDIENCE_CONCURRENCY, MAX_AUDIENCE, mapLimited } from './linkedDm.js'
 import { canEdit } from '../authorization/policy.js'
 import { assistantResponsibleUser } from '../agents/assistant-mode.js'
@@ -23,6 +25,8 @@ export interface ApprovalRouteDeps {
   integration: Pick<IntegrationRepo, 'activeForAgents'>
   bot: Pick<BotRepo, 'get'>
   users: Pick<UserRepo, 'listMembers' | 'getOidcSubject'>
+  /** A computer-use approval's Computer, whose allowed members stand in for the agent's editors (computer-use.md §4.2). */
+  computer?: Pick<ComputerRepo, 'getUnscoped'>
   /** Each platform's provider says whether, and under which tenant, its chat members can be matched (`chatMemberTenant`). */
   platforms: Pick<CpPlatformRegistry, 'get'>
   /** Absent when the deployment has no sign-in configured — then nothing is linked. */
@@ -69,8 +73,14 @@ export async function resolveApprovalRoute(
   if (matchable.size === 0) return none
 
   const members = await deps.users.listMembers(agent.orgId)
-  // Authority includes organization owners; recipient selection below still follows the explicit preference chain.
-  const editors = members.filter((member) => canEdit(agent, member))
+  // A computer-use approval's authority is the Computer's allowed members, else the agent's editors, organization owners included.
+  let editors: OrgMemberRecord[]
+  if (req.computerId) {
+    const computer = await deps.computer?.getUnscoped(ComputerId(req.computerId))
+    if (!computer || computer.orgId !== agent.orgId || computer.revokedAt) return none
+    const allowed = new Set(withOwnerMember(computer.policy, computer.ownerUserId).allowedMembers)
+    editors = members.filter((member) => allowed.has(member.userId))
+  } else editors = members.filter((member) => canEdit(agent, member))
   if (editors.length === 0) return none
 
   // The integration's tenant anchor (Slack's workspace, Feishu/Lark's region), as its platform reads it off the bot.

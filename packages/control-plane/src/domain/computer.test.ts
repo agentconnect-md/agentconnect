@@ -17,7 +17,7 @@ describe('ComputerPolicySchema', () => {
     expect(ComputerPolicySchema.parse({})).toEqual({
       allowedMembers: [],
       agentMode: 'control',
-      approvals: { firstInputPerSession: true, launchApp: 'always', submitLikeKeys: true },
+      approvals: { firstInputPerSession: true },
       redactApps: [],
       exposeDriverTools: false,
       leaseIdleSeconds: 120,

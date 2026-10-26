@@ -104,6 +104,8 @@ async function world(chatActions: ChatActions) {
     placeExternal: () => false,
     chatEditorsOnly: () => false,
     chatActor: async () => 'allowed' as const,
+    servesComputerApprovers: () => false,
+    computerActor: async () => 'unavailable' as const,
     pending: () => pending,
     evalHooks: () => ({ emit: vi.fn() }) as never,
     memoryExtraction: () => undefined,

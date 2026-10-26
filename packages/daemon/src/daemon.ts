@@ -76,6 +76,7 @@ import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
+  COMPUTER_APPROVERS_V1_FEATURE,
   READ_ACCESS_V1_FEATURE,
   READ_ACCESS_LINKED_V1_FEATURE,
   READ_ACCESS_BATCH_V1_FEATURE,
@@ -9394,6 +9395,38 @@ export class Daemon {
     return await this.chatActors.judge(agentId, integrationId, key)
   }
 
+  /** Whether a chat member is one of a Computer's allowed members, by their linked identity (computer-use.md §4.2); fails closed. */
+  private async computerActor(
+    agentId: string,
+    integrationId: string | undefined,
+    computerId: string,
+    actor: InteractionActor | undefined
+  ): Promise<ChatActorVerdict> {
+    const cp = this.cpClient
+    if (!integrationId || !actor || actor.isBot || cp?.supportsServerFeature?.(COMPUTER_APPROVERS_V1_FEATURE) !== true)
+      return 'unavailable'
+    const platform = this.agents.get(agentId)?.integrations.find((i) => i.id === integrationId)?.platform
+    const memberKey = platform ? this.platformModules.get(platform)?.chatMemberKey : undefined
+    const userId = !platform ? undefined : memberKey ? memberKey(actor) : actor.userId
+    if (!userId) return 'unavailable'
+    try {
+      const res = await cp.approvalRoute(
+        {
+          agentId,
+          requestId: randomUUID(),
+          integrationIds: [integrationId],
+          computerId,
+          verify: { integrationId, userId }
+        },
+        this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+      )
+      if (res.allowed === undefined) return 'unavailable'
+      return res.allowed ? 'allowed' : res.linked === false ? 'unlinked' : 'not-editor'
+    } catch {
+      return 'unavailable'
+    }
+  }
+
   /** Whether a chat member is one of the agent's editors, by their linked identity; undefined when the CP cannot be asked. */
   private async askChatActor(
     agentId: string,
@@ -16570,6 +16603,9 @@ export class Daemon {
       placeExternal: (agentId, integrationId, channel) => this.memoryPlaceExternal(agentId, integrationId, channel),
       chatEditorsOnly: (agentId, integrationId) => this.chatEditorsOnly(agentId, integrationId),
       chatActor: async (agentId, integrationId, actor) => await this.chatActor(agentId, integrationId, actor),
+      servesComputerApprovers: () => this.cpClient?.supportsServerFeature?.(COMPUTER_APPROVERS_V1_FEATURE) === true,
+      computerActor: async (agentId, integrationId, computerId, actor) =>
+        await this.computerActor(agentId, integrationId, computerId, actor),
       personDm: (agentId, requestId, asker) => this.drafts.personApprover(agentId, requestId, asker),
       joinCardExpired: (agentId, acpSessionId, ask) =>
         void this.joinCardExpired(agentId, acpSessionId, ask).catch((err) =>
@@ -29241,16 +29277,18 @@ export class Daemon {
           kind: 'execute'
         },
         options: [
-          { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
-          { optionId: 'allow_session', name: 'Allow for this session', kind: 'allow_always' },
+          { optionId: 'allow', name: 'Allow for this session', kind: 'allow_always' },
           { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
         ]
       },
-      ask.ownerUserId
+      {
+        computerId: ask.computerId,
+        ...(ask.ownerUserId ? { ownerUserId: ask.ownerUserId } : {}),
+        ...(ask.approvers ? { approvers: ask.approvers } : {})
+      }
     )
     if (response.outcome.outcome !== 'selected') return 'deny'
-    const picked = response.outcome.optionId
-    return picked === 'allow_once' || picked === 'allow_session' ? picked : 'deny'
+    return response.outcome.optionId === 'allow' ? 'allow' : 'deny'
   }
 
   /** The Computers an agent may use now (computer-use.md §4.1), as the CP derives them from each Computer's agent access. */

@@ -161,7 +161,7 @@ describe('computer-use approvals on the daemon (computer-use.md §4.2)', () => {
     ownerUserId: 'user_owner',
     tool: 'computer_type',
     action: 'type 6 characters',
-    reasons: ['first_input' as const]
+    approvers: ['user_owner', 'user_member']
   }
   const sessionContext = {
     agentId: 'bot-a',
@@ -182,25 +182,25 @@ describe('computer-use approvals on the daemon (computer-use.md §4.2)', () => {
     }
   })
 
-  it("asks on the session's live turn with the Computer's owner and reads back the person's choice", async () => {
+  it("asks on the session's live turn with the Computer, its owner and approvers, and reads back the person's choice", async () => {
     const { daemon } = await boot(BOTH)
     const d = daemon as any
     try {
       const live = { plan: { sessionKey: 'webchat:c1:append:1:bot-a' }, acpSessionId: 'acp-9', hostKey: 'bot-a' }
       d.pending.set('k', live)
-      const asked = vi.fn(async () => ({ outcome: { outcome: 'selected', optionId: 'allow_session' } }))
+      const asked = vi.fn(async () => ({ outcome: { outcome: 'selected', optionId: 'allow' } }))
       d.permissions.askComputerApproval = asked
-      expect(await d.askComputerApproval(sessionContext, ask)).toBe('allow_session')
-      const [turn, params, owner] = asked.mock.calls[0] as unknown as [unknown, any, string]
+      expect(await d.askComputerApproval(sessionContext, ask)).toBe('allow')
+      const [turn, params, computer] = asked.mock.calls[0] as unknown as [unknown, any, unknown]
       expect(turn).toBe(live)
-      expect(owner).toBe('user_owner')
+      expect(computer).toEqual({
+        computerId: COMPUTER,
+        ownerUserId: 'user_owner',
+        approvers: ['user_owner', 'user_member']
+      })
       expect(params.sessionId).toBe('acp-9')
       expect(params.toolCall.title).toBe('Computer use on “Desk”: type 6 characters (first input this session)')
-      expect(params.options.map((option: { kind: string }) => option.kind)).toEqual([
-        'allow_once',
-        'allow_always',
-        'reject_once'
-      ])
+      expect(params.options.map((option: { kind: string }) => option.kind)).toEqual(['allow_always', 'reject_once'])
       asked.mockResolvedValueOnce({ outcome: { outcome: 'cancelled' } } as never)
       expect(await d.askComputerApproval(sessionContext, ask)).toBe('deny')
     } finally {

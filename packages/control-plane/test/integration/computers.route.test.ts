@@ -665,7 +665,8 @@ describe('visibility and policy', () => {
       payload: {
         allowedMembers: [bob, 'not-a-member'],
         agentMode: 'view',
-        approvals: { launchApp: 'session' },
+        // A dropped ask an older console still sends is ignored.
+        approvals: { firstInputPerSession: false, launchApp: 'session' },
         redactApps: ['org.keepassxc.KeePassXC'],
         quietHours: { tz: 'Asia/Shanghai', ranges: ['22:00-23:59'] },
         leaseIdleSeconds: 60,
@@ -677,7 +678,7 @@ describe('visibility and policy', () => {
     expect(res.json().policy).toEqual({
       allowedMembers: [DEFAULT_OWNER_ID, bob],
       agentMode: 'view',
-      approvals: { firstInputPerSession: true, launchApp: 'session', submitLikeKeys: true },
+      approvals: { firstInputPerSession: false },
       redactApps: ['org.keepassxc.KeePassXC'],
       exposeDriverTools: false,
       quietHours: { tz: 'Asia/Shanghai', ranges: ['22:00-23:59'] },

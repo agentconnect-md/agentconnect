@@ -13,16 +13,22 @@ export type ComputerRelayEntry = z.infer<typeof ComputerRelayEntry>
 /** The most relays one grant or roster names. */
 export const COMPUTER_RELAYS_MAX = 64
 
-/** Which risky actions need a person's approval (computer-use.md §4.2); every field defaults to asking. */
+/** Whether agents ask before using a Computer (computer-use.md §4.2): once per session, before its first input. */
 export const ComputerApprovalsSchema = z.object({
-  // Ask before a session's first click, drag, type, key or launch; any allow covers the rest of the session.
-  firstInputPerSession: z.boolean().default(true),
-  // `always` asks per launch until an approver answers "Allow for this session"; `session` asks once.
-  launchApp: z.enum(['always', 'session', 'never-ask']).default('always'),
-  // Ask before each Enter until an approver answers "Allow for this session".
-  submitLikeKeys: z.boolean().default(true)
+  // Ask before a session's first click, drag, type, key or launch; an allow covers the rest of the session.
+  firstInputPerSession: z.boolean().default(true)
 })
 export type ComputerApprovals = z.infer<typeof ComputerApprovalsSchema>
+
+/** A grant's approvals: daemons before the single ask default the dropped asks on, so a CP turns them off explicitly. */
+export const ComputerGrantApprovalsSchema = ComputerApprovalsSchema.extend({
+  launchApp: z.enum(['always', 'session', 'never-ask']).optional(),
+  submitLikeKeys: z.boolean().optional()
+})
+export type ComputerGrantApprovals = z.infer<typeof ComputerGrantApprovalsSchema>
+
+/** What a grant sends daemons before the single ask, so they ask only before the first input too. */
+export const LEGACY_COMPUTER_APPROVALS_OFF = { launchApp: 'never-ask', submitLikeKeys: false } as const
 
 /** Definite refusals: no token was issued. */
 export const COMPUTER_CHANNEL_REFUSALS = ['denied', 'unavailable'] as const
@@ -47,7 +53,9 @@ export const ComputerChannelGrantResult = z.discriminatedUnion('granted', [
     // What the approval cards name and whom they also reach (§4.2); an older CP sends none, and every approval is asked.
     name: z.string().min(1).max(200).optional(),
     ownerUserId: z.string().min(1).max(128).optional(),
-    approvals: ComputerApprovalsSchema.optional()
+    approvals: ComputerGrantApprovalsSchema.optional(),
+    // The console users who may answer its approvals: the Computer's allowed members; an older CP sends none.
+    approvers: z.array(z.string().min(1).max(128)).max(500).optional()
   }),
   z.object({
     granted: z.literal(false),

@@ -5,7 +5,7 @@ import { draftOf, policyFromDraft } from './ComputerPolicyCard'
 const policy: ComputerPolicy = {
   allowedMembers: ['u1'],
   agentMode: 'control',
-  approvals: { firstInputPerSession: true, launchApp: 'always', submitLikeKeys: true },
+  approvals: { firstInputPerSession: true },
   redactApps: ['1password'],
   exposeDriverTools: false,
   quietHours: { tz: 'UTC', ranges: ['22:00-07:00'] },

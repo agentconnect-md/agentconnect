@@ -376,6 +376,45 @@ describe.each(['telegram', 'discord'] as const)('%s permission cards', (platform
     await w.store.close()
   })
 
+  it('takes a computer-use approval only from the Computer’s allowed members (computer-use.md §4.2)', async () => {
+    const w = await world(platform, { level: 'approve' })
+    const COMPUTER = '00000000-0000-4000-8000-0000000000c1'
+    const route = vi.fn(async (payload: { requestId: string; verify?: { userId: string } }) =>
+      payload.verify
+        ? { requestId: payload.requestId, allowed: payload.verify.userId === ADA.userId, linked: true }
+        : { requestId: payload.requestId }
+    )
+    w.daemon.cpClient = {
+      supportsServerFeature: (feature: string) => ['approval-dm-route-v1', 'computer-approvers-v1'].includes(feature),
+      approvalRoute: route
+    }
+    const pending = { ...[...w.daemon.pending.values()][0], acpSessionId: 's1' }
+    const params = {
+      ...permission(),
+      options: [
+        { optionId: 'allow', name: 'Allow for this session', kind: 'allow_always' },
+        { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+      ],
+      toolCall: { toolCallId: 'computer-approval-1', title: 'Computer use on “Desk”: click at (1, 2)' }
+    } as unknown as RequestPermissionRequest
+    const decided = w.permissions.askComputerApproval(pending, params, {
+      computerId: COMPUTER,
+      ownerUserId: 'cu-owner'
+    })
+    await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
+    expect(await w.click(0, { userId: '7', name: 'Not Member' })).toBe(
+      'Only people allowed to use this Computer can answer this request.'
+    )
+    expect(w.permissions.pendingApprovals.size).toBe(1)
+    expect(await w.click(0)).toBeUndefined()
+    await expect(decided).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    expect(route).toHaveBeenCalledWith(
+      expect.objectContaining({ computerId: COMPUTER, verify: { integrationId: INT, userId: ADA.userId } }),
+      undefined
+    )
+    await w.store.close()
+  })
+
   it('rewrites the card when an Agent editor answers in the console', async () => {
     const w = await world(platform, { level: 'approve' })
     const decided = w.permissions.onAcpPermission(AGENT, 's1', permission())

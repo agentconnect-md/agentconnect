@@ -108,11 +108,7 @@ export const ComputerPolicySchema = z
   .object({
     allowedMembers: z.array(z.string().min(1).max(128)).max(500).default([]),
     agentMode: z.enum(['view', 'control']).default('control'),
-    approvals: ComputerApprovalsSchema.default({
-      firstInputPerSession: true,
-      launchApp: 'always',
-      submitLikeKeys: true
-    }),
+    approvals: ComputerApprovalsSchema.default({ firstInputPerSession: true }),
     appAllowlist: z.array(AppId).max(200).optional(),
     redactApps: z.array(AppId).max(200).default([]),
     exposeDriverTools: z.boolean().default(false),

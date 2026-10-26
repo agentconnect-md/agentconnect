@@ -1286,6 +1286,7 @@ export function buildContainer(
         integration: repos.integration,
         bot: repos.bot,
         users: repos.user,
+        computer: repos.computer,
         platforms,
         ...(logtoIdentity ? { identity: logtoIdentity } : {}),
         log: { debug: (o, m) => http.log.debug(o, m), warn: (o, m) => http.log.warn(o, m) }

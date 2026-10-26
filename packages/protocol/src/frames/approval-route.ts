@@ -43,6 +43,8 @@ export const AgentApprovalRoute = z.object({
   consoleUserId: z.string().min(1).optional(),
   // Route to the agent's responsible user, whom the CP derives (assistant-mode.md §5.1); the reply names them or nobody.
   responsible: z.literal(true).optional(),
+  // A computer-use approval (`computer-approvers-v1`): the Computer's allowed members stand in for the agent's editors.
+  computerId: z.string().uuid().optional(),
   // Decision-time revalidation (§6.3): the clicking actor's pair and the console
   // user the DM addressed. Present ⇒ the reply carries `allowed`, never `target`.
   // Without `consoleUserId` (`chat-actor-v1`) it asks whether the pair is any editor's linked identity,

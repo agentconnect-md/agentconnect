@@ -13,8 +13,6 @@ import { Button, Toggle } from '@/components/ui'
 export interface PolicyDraft {
   agentMode: ComputerPolicy['agentMode']
   firstInputPerSession: boolean
-  launchApp: ComputerPolicy['approvals']['launchApp']
-  submitLikeKeys: boolean
   exposeDriverTools: boolean
   /** The effective setting; it is stored only while it differs from the default. */
   viewerPeerToPeer: boolean
@@ -34,8 +32,6 @@ export function draftOf(policy: ComputerPolicy, owner: PolicyOwner = NO_OWNER): 
   return {
     agentMode: policy.agentMode,
     firstInputPerSession: policy.approvals.firstInputPerSession,
-    launchApp: policy.approvals.launchApp,
-    submitLikeKeys: policy.approvals.submitLikeKeys,
     exposeDriverTools: policy.exposeDriverTools,
     viewerPeerToPeer: viewerPeerToPeerAllowed(policy, owner),
     leaseIdleSeconds: String(policy.leaseIdleSeconds),
@@ -78,11 +74,7 @@ export function policyFromDraft(
     policy: {
       ...rest,
       agentMode: draft.agentMode,
-      approvals: {
-        firstInputPerSession: draft.firstInputPerSession,
-        launchApp: draft.launchApp,
-        submitLikeKeys: draft.submitLikeKeys
-      },
+      approvals: { firstInputPerSession: draft.firstInputPerSession },
       exposeDriverTools: draft.exposeDriverTools,
       ...(p2pDefault ? {} : { viewerPeerToPeer: draft.viewerPeerToPeer }),
       leaseIdleSeconds: idle,
@@ -161,32 +153,12 @@ export function ComputerPolicyCard({
               onChange={(v) => set('agentMode', v)}
             />
           </Field>
-          <Field label={t('launchApp')} detail={t('launchAppHint')}>
-            <FieldSelect
-              ariaLabel={t('launchApp')}
-              value={draft.launchApp}
-              disabled={!editable}
-              options={[
-                { value: 'always', label: t('launchAlways') },
-                { value: 'session', label: t('launchSession') },
-                { value: 'never-ask', label: t('launchNever') }
-              ]}
-              onChange={(v) => set('launchApp', v)}
-            />
-          </Field>
           <ToggleRow
             label={t('firstInput')}
             detail={t('firstInputHint')}
             checked={draft.firstInputPerSession}
             disabled={!editable}
             onChange={(v) => set('firstInputPerSession', v)}
-          />
-          <ToggleRow
-            label={t('submitKeys')}
-            detail={t('submitKeysHint')}
-            checked={draft.submitLikeKeys}
-            disabled={!editable}
-            onChange={(v) => set('submitLikeKeys', v)}
           />
         </div>
       </Section>
