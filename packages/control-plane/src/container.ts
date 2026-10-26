@@ -78,6 +78,7 @@ import { SessionPullRequestLinkService } from './github/session-pull-request-lin
 import { SessionPullRequestFeedbackService } from './codehost/session-pull-request-feedback.service.js'
 import { FollowUpWatchService } from './codehost/follow-up-watch.service.js'
 import { CapabilityRequestService } from './capability/capability-request.service.js'
+import { gitlabHostOf, repoCapabilityFacts } from './capability/capability-facts.js'
 import { githubFollowUpWatchProvider } from './github/follow-up-watch.js'
 import { gitlabFollowUpWatchProvider } from './gitlab/follow-up-watch.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
@@ -1082,12 +1083,25 @@ export function buildContainer(
     mcpProviders: repos.mcpProvider,
     skillSources: repos.skillSource,
     orgs: repos.org,
+    facts: repoCapabilityFacts({
+      repoAuth: repos.agentRepoAuth,
+      installationAuth: repos.agentInstallationAuth,
+      mcpProviders: repos.mcpProvider,
+      mcpOauth: repos.mcpProviderOauth,
+      mcpSecrets: repos.mcpProviderSecret,
+      githubInstallations: repos.githubInstallation,
+      gitlabConnections: repos.gitlabConnection,
+      integrations: repos.integration,
+      knownPlatform: (platform) => platforms.get(platform) !== undefined,
+      gitlabHost: gitlabHostOf(gitlabAppCfg?.baseUrl)
+    }),
     ...(webAppUrl ? { webAppUrl } : {}),
     placement: placementResolver,
     daemon: (daemonId) => connReg.get(daemonId),
     sendSettled: (daemonId, orgId, wake) => sender.capabilitySettled(daemonId, orgId, wake),
     sendReopened: (daemonId, orgId, frame) => sender.capabilityReopened(daemonId, orgId, frame),
     sendForward: (daemonId, orgId, frame) => sender.capabilityForward(daemonId, orgId, frame),
+    sendMcpRebound: (daemonId, orgId, frame) => sender.agentMcpRebound(daemonId, orgId, frame),
     log: {
       debug: (obj, message) => http.log.debug(obj, message),
       warn: (obj, message) => http.log.warn(obj, message)
@@ -1390,6 +1404,21 @@ export function buildContainer(
   const readiness = createReadiness(() => pingDb(rootPrisma))
   // Best-effort, but never detached: shutdown must not disconnect Prisma while
   // these projection wakeups are still running.
+  // A code host connected to the organization: requests waiting for that connection complete (capability-requests.md §4.6).
+  const codeHostConnected = async (
+    orgId: OrgId,
+    provider: 'github' | 'gitlab',
+    userId: string | null
+  ): Promise<void> => {
+    const profile = userId ? await repos.user.getProfile(userId).catch(() => null) : null
+    await capabilityRequests
+      .orgChanged(
+        orgId,
+        { kind: 'code-host', provider },
+        userId ? { kind: 'console', userId, name: profile?.displayName?.trim() || profile?.email || 'A member' } : null
+      )
+      .catch((err) => http.log.warn({ err, provider }, 'capability request: re-evaluation after a connection failed'))
+  }
   const wakeGithubReviewProjections = async (installationId: bigint, orgId: OrgId): Promise<void> => {
     const at = new Date(clock.now())
     const results = await Promise.allSettled([
@@ -1420,7 +1449,10 @@ export function buildContainer(
         installationAuths: repos.agentInstallationAuth,
         skillSources: repos.skillSource,
         agents: repos.agent,
-        onInstallationFactsChanged: wakeGithubReviewProjections,
+        onInstallationFactsChanged: async (installationId, orgId) => {
+          await wakeGithubReviewProjections(installationId, orgId)
+          await codeHostConnected(orgId, 'github', null)
+        },
         pepper: config.API_KEY_PEPPER,
         log: { warn: (message) => http.log.warn(message) },
         ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
@@ -1447,7 +1479,8 @@ export function buildContainer(
           publicCpUrl: config.PUBLIC_CP_URL,
           ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),
           api: gitlabApi!,
-          log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+          log: { warn: (obj, msg) => http.log.warn(obj, msg) },
+          onConnected: (orgId, userId) => codeHostConnected(OrgId(orgId), 'gitlab', userId)
         })
       : undefined
   // Late-bound, like the other orchestrator refs here: the account service is
@@ -2381,7 +2414,18 @@ export function buildContainer(
   const mcpOauthRebind = makeOauthRebind(httpDeps, mcpPush, mcpTokenService)
   const rebindProvider = async (orgId: OrgId, providerId: string): Promise<void> => {
     const provider = await repos.mcpProvider.get(orgId, providerId)
-    if (provider) await mcpOauthRebind(orgId, providerId, provider.name)
+    if (!provider) return
+    await mcpOauthRebind(orgId, providerId, provider.name)
+    // The relay binding is live, so a request waiting for this connection completes now (capability-requests.md §4.6).
+    const userId = (await repos.mcpProviderOauth.get(orgId, providerId))?.connectedByUserId ?? null
+    const profile = userId ? await repos.user.getProfile(userId).catch(() => null) : null
+    await capabilityRequests
+      .orgChanged(
+        orgId,
+        { kind: 'mcp-oauth', server: provider.name },
+        userId ? { kind: 'console', userId, name: profile?.displayName?.trim() || profile?.email || 'A member' } : null
+      )
+      .catch((err) => http.log.warn({ err, providerId }, 'capability request: re-evaluation after connect failed'))
   }
   httpDeps.mcpProviderOauth = new McpProviderOauthService({
     providers: repos.mcpProvider,

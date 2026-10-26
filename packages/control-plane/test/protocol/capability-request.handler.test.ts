@@ -1,6 +1,7 @@
 // `capability/request`, `capability/decide` and `session/capability-settled` over the real daemon WS edge and real Postgres.
 import { describe, expect, it } from 'vitest'
-import { CAPABILITY_REQUESTS_FEATURE, isFrame } from '@agentconnect.md/protocol'
+import { CAPABILITY_REQUESTS_FEATURE, CAPABILITY_REQUESTS_V2_FEATURE, isFrame } from '@agentconnect.md/protocol'
+import type { CapabilityFacts } from '../../src/capability/capability-wording.js'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness, type WsHarness } from '../fakes/build-ws.js'
 import { InMemoryDaemonStub } from '../fakes/daemon-stub.js'
@@ -15,7 +16,7 @@ const DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddd21'
 const OTHER_DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddd22'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa21'
 
-function harness() {
+function harness(facts: { current: CapabilityFacts } = { current: {} }) {
   const h = buildWsHarness(prisma)
   const sender = new ControlSender(h.deps.connReg, new PgLaunchRepo(prisma))
   const service = new CapabilityRequestService({
@@ -31,6 +32,8 @@ function harness() {
     sendSettled: (daemonId, orgId, wake) => sender.capabilitySettled(daemonId, orgId, wake),
     sendReopened: (daemonId, orgId, frame) => sender.capabilityReopened(daemonId, orgId, frame),
     sendForward: (daemonId, orgId, frame) => sender.capabilityForward(daemonId, orgId, frame),
+    sendMcpRebound: (daemonId, orgId, frame) => sender.agentMcpRebound(daemonId, orgId, frame),
+    facts: { load: async () => facts.current, unknownTarget: async () => undefined },
     log: { debug: () => {}, warn: () => {} }
   })
   h.deps.capabilityRequests = service
@@ -138,5 +141,36 @@ describe('capability requests over the daemon WS edge', () => {
     )
     expect(foreign.error).toMatchObject({ code: 'SCOPE_DENIED' })
     expect(await prisma.capabilityRequest.count()).toBe(0)
+  })
+
+  it('refuses the Phase 2 kinds from a daemon without them, and rebinds a v2 daemon when the server connects', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON, runtimeOverrides: { mcpServers: ['Linear'] } })
+    const facts = { current: {} as CapabilityFacts }
+    const { h, service } = harness(facts)
+    const oauth = { ...request, ask: { kind: 'connection', want: { type: 'mcp-oauth', server: 'Linear' } } }
+
+    const v1 = await ready(h, DAEMON, [CAPABILITY_REQUESTS_FEATURE])
+    expect(v1.serverFeatures).toContain(CAPABILITY_REQUESTS_V2_FEATURE)
+    const refused = await answerTo(v1.stub, v1.stub.inject('capability/request', oauth), 'capability/request/result')
+    expect(refused.reply).toMatchObject({ status: 'refused', refused: 'unsupported' })
+
+    const v2 = await ready(h, DAEMON, [CAPABILITY_REQUESTS_FEATURE, CAPABILITY_REQUESTS_V2_FEATURE])
+    const opened = await answerTo(v2.stub, v2.stub.inject('capability/request', oauth), 'capability/request/result')
+    expect(opened.reply).toMatchObject({ status: 'pending', summary: 'connect the MCP server "Linear"' })
+
+    facts.current = { mcpProvider: { providerId: null, connected: true, headerPresent: false } }
+    const org = (await prisma.agent.findUniqueOrThrow({ where: { id: AGENT } })).orgId
+    await service.orgChanged(org as never, { kind: 'mcp-oauth', server: 'Linear' }, null)
+    const rebound = await v2.stub.expectFrame('agent/mcp-rebound')
+    expect(rebound.payload).toEqual({ agentId: AGENT, server: 'Linear' })
+
+    service.start()
+    h.clock.advance(0)
+    const wake = await v2.stub.expectFrame('session/capability-settled')
+    expect(wake.payload).toMatchObject({ status: 'completed', reload: true })
+    v2.stub.reply(wake.id, 'session/capability-settled/result', { accepted: true })
+    await service.settle()
+    service.stop()
   })
 })

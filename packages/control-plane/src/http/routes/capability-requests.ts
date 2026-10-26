@@ -1,13 +1,23 @@
 // Capability requests in the console (capability-requests.md §4.5): the request page, the lists, and the actions a person takes on one; every change it asks for is saved through that change's own route.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
-import { CAPABILITY_NOTE_MAX, type CapabilityDecider } from '@agentconnect.md/protocol'
+import {
+  CAPABILITY_NOTE_MAX,
+  CapabilityKind,
+  type CapabilityAsk,
+  type CapabilityDecider
+} from '@agentconnect.md/protocol'
 import { assistantResponsibleUser } from '../../agents/assistant-mode.js'
 import { canEdit, canView, type ViewCtx } from '../../authorization/policy.js'
 import { askOf, type CapabilityActionRefusal } from '../../capability/capability-request.service.js'
 import { capabilityWarnings, evaluateCapability } from '../../capability/capability-wording.js'
 import { AgentId, type OrgId } from '../../domain/ids.js'
-import type { AgentRecord, CapabilityRequestRecord, OrgMemberRecord } from '../../persistence/ports.js'
+import type {
+  AgentRecord,
+  CapabilityRequestRecord,
+  McpProviderRecord,
+  OrgMemberRecord
+} from '../../persistence/ports.js'
 import type { HttpDeps } from '../deps.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
@@ -32,7 +42,7 @@ export const CapabilityRequestDto = z.object({
   orgId: z.string(),
   agentId: z.string(),
   agentName: z.string(),
-  kind: z.enum(['agent-settings', 'mcp-server', 'skill']),
+  kind: CapabilityKind,
   target: z.string(),
   want: z.record(z.string(), z.unknown()),
   summary: z.string(),
@@ -79,6 +89,13 @@ export const CapabilityRequestDto = z.object({
 })
 export type CapabilityRequestDtoT = z.infer<typeof CapabilityRequestDto>
 
+/** The MCP server a kind is completed on, whose editors hold the authority (§4.2). */
+function providerNameOf(ask: CapabilityAsk | null): string | undefined {
+  if (ask?.kind === 'connection' && ask.want.type === 'mcp-oauth') return ask.want.server
+  if (ask?.kind === 'secret' && ask.want.use.route === 'mcp-header') return ask.want.use.server
+  return undefined
+}
+
 const memberName = (m: Pick<OrgMemberRecord, 'displayName' | 'email'>): string =>
   m.displayName?.trim() || m.email || 'A member'
 
@@ -123,6 +140,29 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
       return profile?.displayName?.trim() || profile?.email || 'A member'
     }
 
+    /** Who may complete a request: an MCP server's editors for its OAuth or headers, any non-viewer for a code host, else the agent's editors (§4.2). */
+    const authority = async (
+      ask: CapabilityAsk | null,
+      agent: AgentRecord
+    ): Promise<{ may: (who: ViewCtx) => boolean; missing: string }> => {
+      const server = providerNameOf(ask)
+      if (server !== undefined) {
+        const provider: McpProviderRecord | undefined = (await deps.repos.mcpProvider.listForOrg(agent.orgId)).find(
+          (p) => p.name === server
+        )
+        return {
+          may: (who) => provider !== undefined && canEdit(provider, who),
+          missing: `Only someone who can edit the MCP server ${JSON.stringify(server)} can complete this request.`
+        }
+      }
+      if (ask?.kind === 'connection' && ask.want.type === 'code-host')
+        return {
+          may: (who) => who.role !== 'viewer',
+          missing: 'Only an organization member who can change connections can complete this request.'
+        }
+      return { may: (who) => canEdit(agent, who), missing: 'Only an editor of this agent can complete this request.' }
+    }
+
     const toDto = async (
       row: CapabilityRequestRecord,
       agent: AgentRecord,
@@ -131,8 +171,11 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
     ): Promise<CapabilityRequestDtoT> => {
       const ask = askOf(row)
       let current: Record<string, unknown> = {}
+      let warnings: string[] = []
       if (ask) {
-        current = evaluateCapability(ask, agent).current
+        const facts = await service.factsFor(agent, ask)
+        current = evaluateCapability(ask, agent, facts).current
+        warnings = capabilityWarnings(ask, agent, facts)
         if (ask.kind === 'mcp-server') {
           const provider = (await deps.repos.mcpProvider.listForOrg(agent.orgId)).find(
             (p) => p.name === ask.want.server
@@ -141,6 +184,8 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
         }
       }
       const editor = canEdit(agent, ctx)
+      const completer = await authority(ask, agent)
+      const mayComplete = completer.may(ctx)
       const open = row.status === 'open'
       return {
         id: row.id,
@@ -179,14 +224,14 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
           wakeReason: origin.wakeGeneration === row.generation ? origin.wakeReason : null
         })),
         current,
-        warnings: ask ? capabilityWarnings(ask, agent) : [],
+        warnings,
         viewer: {
-          canComplete: editor && open,
+          canComplete: mayComplete && open,
           canDecline: editor && open,
           canReopen: editor && row.status === 'declined',
           canForward: open,
-          missing: editor ? null : 'Only an editor of this agent can complete or decline this request.',
-          whoCan: members.filter((m) => canEdit(agent, m)).map((m) => ({ userId: m.userId, name: memberName(m) }))
+          missing: mayComplete ? null : completer.missing,
+          whoCan: members.filter((m) => completer.may(m)).map((m) => ({ userId: m.userId, name: memberName(m) }))
         }
       }
     }
@@ -223,7 +268,7 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List capability requests',
           description:
-            'Lists the requests agents made for something they lack — a setting, an MCP server or a skill — newest first, at most 200, for the agents the caller can see. Filter by `agentId` and `status`. Each carries what was asked, the agent’s reason as untrusted plain text, the conversations waiting for it and what the caller may do with it.',
+            'Lists the requests agents made for something they lack — a setting, an MCP server, a skill, repository access, a connection or an MCP server header — newest first, at most 200, for the agents the caller can see. Filter by `agentId` and `status`. Each carries what was asked, the agent’s reason as untrusted plain text, the conversations waiting for it and what the caller may do with it.',
           operationId: 'listCapabilityRequests',
           querystring: ListQuery,
           response: { 200: z.object({ requests: z.array(CapabilityRequestDto) }) }
@@ -278,7 +323,7 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Complete a capability request',
           description:
-            'Completes an open request after its change was saved through the change’s own route. The outcome is computed from the agent as it is now, so a save that differs from what was asked still completes the request and the agent is told what it got. The conversations that asked are told once the agent’s daemon has applied the change. Only an editor of the agent may complete a request; one no longer open answers 409.',
+            'Completes an open request after its change was saved through the change’s own route. The outcome is computed from the agent as it is now, so a save that differs from what was asked still completes the request and the agent is told what it got. The conversations that asked are told once the agent’s daemon has applied the change. Only someone who can make the change may complete it: an editor of the agent, an editor of the MCP server for its connection or headers, or a member who can change the organization’s code-host connections; one no longer open answers 409.',
           operationId: 'settleCapabilityRequest',
           params: RequestParam,
           response: { 200: CapabilityRequestDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -288,7 +333,8 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
         const admitted = await admit(req, reply, req.params.id)
         if (!admitted) return reply
         const ctx = ctxOf(req)
-        if (!canEdit(admitted.agent, ctx)) return send(reply, NOT_EDITOR)
+        if (!(await authority(askOf(admitted.row), admitted.agent)).may(ctx))
+          return send(reply, { ...NOT_EDITOR, message: 'only someone who can make this change can complete it' })
         const result = await service.settleFromConsole(orgOf(req), req.params.id, {
           kind: 'console',
           userId: ctx.userId,
@@ -365,7 +411,7 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Forward a capability request',
           description:
-            'Sends an open request to someone who can complete it: the named editor, else the agent’s responsible user, else its first editor. It reaches them as a direct message where the agent can send one to their linked chat account (`forwarded: dm`); otherwise it stays listed for them (`forwarded: activity`). Any member who can see the agent may forward; a `userId` who cannot edit the agent answers 400, and a request no longer open answers 409.',
+            'Sends an open request to someone who can complete it: the named member, else the agent’s responsible user when they can, else the first member who can. It reaches them as a direct message where the agent can send one to their linked chat account (`forwarded: dm`); otherwise it stays listed for them (`forwarded: activity`). Any member who can see the agent may forward; a `userId` who cannot make the change answers 400, and a request no longer open answers 409.',
           operationId: 'forwardCapabilityRequest',
           params: RequestParam,
           body: ForwardBody,
@@ -382,14 +428,16 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
         if (!admitted) return reply
         if (admitted.row.status !== 'open') return send(reply, refused('not_open'))
         const members = await deps.repos.user.listMembers(orgOf(req))
-        const editors = members.filter((m) => canEdit(admitted.agent, m))
+        const completer = await authority(askOf(admitted.row), admitted.agent)
+        const able = members.filter((m) => completer.may(m))
         let target: OrgMemberRecord | undefined
         if (req.body.userId) {
-          target = editors.find((m) => m.userId === req.body.userId)
+          target = able.find((m) => m.userId === req.body.userId)
           if (!target)
-            return send(reply, { status: 400, error: 'Bad Request', message: 'that member cannot edit this agent' })
+            return send(reply, { status: 400, error: 'Bad Request', message: 'that member cannot make this change' })
         } else {
-          target = assistantResponsibleUser(admitted.agent, members) ?? editors[0]
+          const responsible = assistantResponsibleUser(admitted.agent, members)
+          target = responsible && completer.may(responsible) ? responsible : able[0]
         }
         if (!target) return { forwarded: 'activity' as const }
         const forwarded = await service.forward(admitted.row, target.userId, await viewerName(ctxOf(req).userId))

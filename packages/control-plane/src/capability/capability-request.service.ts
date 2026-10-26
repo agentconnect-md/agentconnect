@@ -5,9 +5,11 @@ import {
   CAPABILITY_REQUEST_SESSION_CAP,
   CAPABILITY_REQUEST_TTL_MS,
   CAPABILITY_REQUESTS_FEATURE,
+  CAPABILITY_REQUESTS_V2_FEATURE,
   CAPABILITY_WAKE_GIVE_UP_MS,
   CapabilityAsk,
   capabilityTarget,
+  type AgentMcpRebound,
   type CapabilityDecideReq,
   type CapabilityDecideResult,
   type CapabilityDecider,
@@ -35,7 +37,8 @@ import type {
   OrgRepo,
   SkillSourceRepo
 } from '../persistence/ports.js'
-import { capabilitySummary, evaluateCapability, skillSourceOf } from './capability-wording.js'
+import type { CapabilityFactsSource } from './capability-facts.js'
+import { capabilitySummary, evaluateCapability, skillSourceOf, type CapabilityFacts } from './capability-wording.js'
 
 const RETRY_BASE_MS = 10_000
 const RETRY_MAX_MS = 10 * 60_000
@@ -51,7 +54,9 @@ export type CapabilityActionRefusal = 'not_found' | 'not_open' | 'not_declined' 
 export interface CapabilityRequestServiceDeps {
   clock: Clock
   requests: CapabilityRequestRepo
-  agents: Pick<AgentRepo, 'getUnscoped'>
+  agents: Pick<AgentRepo, 'getUnscoped'> & Partial<Pick<AgentRepo, 'list'>>
+  /** The rows outside the agent the Phase 2 kinds are judged by; absent ⇒ those kinds never hold. */
+  facts?: CapabilityFactsSource
   mcpProviders: Pick<McpProviderRepo, 'listForOrg'>
   skillSources: Pick<SkillSourceRepo, 'getByName'>
   orgs: Pick<OrgRepo, 'slugById'>
@@ -66,6 +71,8 @@ export interface CapabilityRequestServiceDeps {
   ) => Promise<SessionCapabilitySettledResult>
   sendReopened: (daemonId: string, orgId: string, frame: CapabilityReopened) => Promise<void>
   sendForward: (daemonId: string, orgId: string, frame: CapabilityForward) => Promise<CapabilityForwardResult>
+  /** Tell a daemon an MCP server it runs for an agent was connected or re-keyed (§4.8 item 2). */
+  sendMcpRebound?: (daemonId: string, orgId: string, frame: AgentMcpRebound) => void
   log: { debug(obj: unknown, msg: string): void; warn(obj: unknown, msg: string): void }
 }
 
@@ -78,6 +85,31 @@ export function askOf(row: Pick<CapabilityRequestRecord, 'kind' | 'want'>): Capa
 /** How long a deferred wake waits before its next attempt. */
 export function wakeBackoffMs(attempts: number): number {
   return Math.min(RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1), RETRY_MAX_MS)
+}
+
+/** A change outside any agent's spec that can satisfy open requests: an MCP server connected or re-keyed, or a code host connected. */
+export type CapabilityOrgChange =
+  | { kind: 'mcp-oauth'; server: string }
+  | { kind: 'mcp-headers'; server: string }
+  | { kind: 'code-host'; provider: 'github' | 'gitlab' }
+
+/** Whether a settled request of this ask must reload the session before its reminder runs (§4.8). */
+export function reloadsSession(ask: CapabilityAsk | null): boolean {
+  if (!ask) return false
+  if (ask.kind === 'repository') return true
+  if (ask.kind === 'connection') return ask.want.type === 'mcp-oauth'
+  if (ask.kind === 'secret') return ask.want.use.route === 'mcp-header'
+  return false
+}
+
+/** Whether an open request is one an org-level change could satisfy. */
+function touchedBy(ask: CapabilityAsk | null, change: CapabilityOrgChange): boolean {
+  if (!ask) return false
+  if (change.kind === 'mcp-oauth')
+    return ask.kind === 'connection' && ask.want.type === 'mcp-oauth' && ask.want.server === change.server
+  if (change.kind === 'mcp-headers')
+    return ask.kind === 'secret' && ask.want.use.route === 'mcp-header' && ask.want.use.server === change.server
+  return ask.kind === 'connection' && ask.want.type === 'code-host' && ask.want.provider === change.provider
 }
 
 /** A decider as the card and the reminder name them. */
@@ -147,10 +179,17 @@ export class CapabilityRequestService {
     const parsed = CapabilityAsk.safeParse(req.ask)
     if (!parsed.success) return { status: 'refused', refused: 'invalid', message: 'the request is malformed' }
     const ask = parsed.data
+    // A live secret is Phase 3: its value would reach the agent's shell, which nothing serves yet.
+    if (ask.kind === 'secret' && ask.want.use.route === 'live')
+      return {
+        status: 'refused',
+        refused: 'unsupported',
+        message: 'A secret the agent reads itself cannot be requested yet; ask for an MCP server header instead.'
+      }
     const unknown = await this.unknownTarget(agent, ask)
     if (unknown) return { status: 'refused', refused: 'unknown_target', message: unknown }
     const summary = capabilitySummary(ask)
-    const evaluation = evaluateCapability(ask, agent)
+    const evaluation = evaluateCapability(ask, agent, await this.factsFor(agent, ask))
     if (evaluation.satisfied) {
       return {
         status: 'already_satisfied',
@@ -245,7 +284,13 @@ export class CapabilityRequestService {
       if (!(await this.deps.skillSources.getByName(agent.orgId, source)))
         return `This organization has no skill source named ${JSON.stringify(source)}.`
     }
-    return undefined
+    return await this.deps.facts?.unknownTarget(agent, ask)
+  }
+
+  /** The facts one ask is judged by; nothing for the kinds the agent row alone decides. */
+  async factsFor(agent: AgentRecord, ask: CapabilityAsk): Promise<CapabilityFacts> {
+    if (ask.kind === 'agent-settings' || ask.kind === 'mcp-server' || ask.kind === 'skill') return {}
+    return (await this.deps.facts?.load(agent, ask)) ?? {}
   }
 
   /** `capability/withdraw`: only a conversation waiting for the request may leave it; nobody is woken. */
@@ -290,11 +335,12 @@ export class CapabilityRequestService {
     agent: AgentRecord,
     settledBy: CapabilityDecider | null,
     requireSatisfied: boolean,
-    appliedBy: readonly string[] = []
+    appliedBy: readonly string[] = [],
+    specless = false
   ): Promise<boolean> {
     const ask = askOf(row)
     if (!ask) return false
-    const evaluation = evaluateCapability(ask, agent)
+    const evaluation = evaluateCapability(ask, agent, await this.factsFor(agent, ask))
     if (requireSatisfied && !evaluation.satisfied) return false
     return this.commit(row, row.generation, {
       status: 'completed',
@@ -302,7 +348,8 @@ export class CapabilityRequestService {
       differs: !evaluation.satisfied,
       note: null,
       settledBy,
-      settledRevision: agent.configRevision,
+      // A change outside the spec has no upsert to wait for: no revision, so its wake is not held.
+      settledRevision: specless ? null : agent.configRevision,
       appliedBy,
       at: this.now()
     })
@@ -341,6 +388,34 @@ export class CapabilityRequestService {
         this.deps.log.warn({ err, daemonId }, 'capability request: recording a registration failed')
       )
       .finally(() => this.kick())
+  }
+
+  /** A change outside any agent's spec (§4.6): complete the org's open requests it satisfies, and reload the sessions that use a re-keyed MCP server. Call it only once the relay binding was pushed. */
+  async orgChanged(orgId: OrgId, change: CapabilityOrgChange, by: CapabilityDecider | null): Promise<void> {
+    const open = await this.deps.requests.list(orgId, { status: 'open' })
+    for (const row of open) {
+      if (!touchedBy(askOf(row), change)) continue
+      const agent = await this.deps.agents.getUnscoped(row.agentId)
+      if (agent && agent.orgId === orgId) await this.complete(row, agent, by, true, [], true)
+    }
+    if (change.kind === 'code-host') return
+    await this.rebound(orgId, change.server)
+  }
+
+  /** `agent/mcp-rebound` to each daemon serving an agent that uses the server, where it understands it (§4.8 item 2). */
+  private async rebound(orgId: OrgId, server: string): Promise<void> {
+    const send = this.deps.sendMcpRebound
+    if (!send || !this.deps.agents.list) return
+    for (const agent of await this.deps.agents.list(orgId)) {
+      if (!agent.mcpServers.includes(server)) continue
+      try {
+        const daemonId = await this.deps.placement.dispatchDaemon(agent)
+        if (daemonId && this.serves(daemonId, CAPABILITY_REQUESTS_V2_FEATURE))
+          send(daemonId, orgId, { agentId: agent.id, server })
+      } catch (err) {
+        this.deps.log.warn({ err, agentId: agent.id }, 'capability request: MCP rebound notice failed')
+      }
+    }
   }
 
   /** Settle from the console after a save: completes with what was saved, whether or not it is what was asked. */
@@ -454,9 +529,9 @@ export class CapabilityRequestService {
     }
   }
 
-  private serves(daemonId: string): boolean {
+  private serves(daemonId: string, feature: string = CAPABILITY_REQUESTS_FEATURE): boolean {
     const daemon = this.deps.daemon(daemonId)
-    return daemon?.state === 'READY' && daemon.capabilities?.features?.includes(CAPABILITY_REQUESTS_FEATURE) === true
+    return daemon?.state === 'READY' && daemon.capabilities?.features?.includes(feature) === true
   }
 
   private async tick(): Promise<void> {
@@ -579,7 +654,8 @@ export class CapabilityRequestService {
       ...(row.differs ? { differs: true } : {}),
       ...(by ? { by: { name: by } } : {}),
       ...(row.note ? { note: row.note } : {}),
-      reload: false
+      // A completion the session must re-list tools or roots for; a decline or an expiry changed nothing.
+      reload: row.status === 'completed' && reloadsSession(askOf(row))
     }
     const result = await this.deps.sendSettled(daemonId, row.orgId, wake)
     if (result.accepted) return this.finish(origin, 'delivered', null)

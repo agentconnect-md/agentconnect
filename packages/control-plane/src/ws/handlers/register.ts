@@ -13,6 +13,7 @@
 import {
   FOLLOW_UP_WATCH_FEATURE,
   CAPABILITY_REQUESTS_FEATURE,
+  CAPABILITY_REQUESTS_V2_FEATURE,
   FRAME_FRAGMENTS_FEATURE,
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
@@ -204,6 +205,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       ...(deps.followUpWatch ? [FOLLOW_UP_WATCH_FEATURE] : []),
       // capability-requests.md: this CP takes `capability/*` and sends `session/capability-settled`.
       ...(deps.capabilityRequests ? [CAPABILITY_REQUESTS_FEATURE] : []),
+      // …and its repository, connection and MCP-header secret kinds, with `agent/mcp-rebound`.
+      ...(deps.capabilityRequests ? [CAPABILITY_REQUESTS_V2_FEATURE] : []),
       // A daemon socket reports explicit credential-lifecycle events only to a CP that applies them.
       ...(deps.socketBotRevocation ? [INTEGRATION_REVOKED_FEATURE] : []),
       // A daemon socket reports the tenant its traffic named only to a CP that records it.
