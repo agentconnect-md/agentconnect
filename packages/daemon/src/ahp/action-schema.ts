@@ -21,22 +21,54 @@ export const contextMetadata = z.strictObject({
   files: ChatAttachmentsInput.shape.files,
   images: ChatAttachmentsInput.shape.images
 })
+const label = z.string().min(1).max(256)
+const range = z.unknown().optional()
 const embeddedImage = z.strictObject({
   type: z.literal('embeddedResource'),
-  label: z.string().min(1).max(256),
+  label,
+  range,
   displayKind: z.literal('image').optional(),
   contentType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
   data: z
     .string()
     .min(1)
-    .max(64 * 1024)
+    .max(64 * 1024),
+  _meta: metadata
 })
+// Accepted so clients like VS Code can send their context, but never read or delivered to the runtime.
+const ignoredAttachment = z.union([
+  z.looseObject({ type: z.enum(['simple', 'resource', 'annotations', 'chat']), label }),
+  z.looseObject({
+    type: z.literal('embeddedResource'),
+    label,
+    contentType: z.string().refine((type) => !type.toLowerCase().startsWith('image/'), 'Unsupported image type')
+  })
+])
+// The host advertises no models or custom agents, so a client's own picker selection is accepted and ignored.
+const clientSelection = {
+  model: z
+    .strictObject({
+      id,
+      config: z
+        .record(z.string().max(256), z.union([z.string().max(1024), z.number(), z.boolean(), z.null()]))
+        .optional()
+    })
+    .optional(),
+  agent: z.strictObject({ uri: z.string().min(1).max(2048) }).optional()
+}
 const message = z.strictObject({
   text: z.string().max(64 * 1024),
   origin: z.strictObject({ kind: z.literal('user') }),
-  attachments: z.array(embeddedImage).max(1).optional(),
+  attachments: z
+    .array(z.union([embeddedImage, ignoredAttachment]))
+    .max(32)
+    .optional(),
+  ...clientSelection,
   _meta: metadata
 })
+export function deliveredImages<T>(attachments: readonly T[] | undefined): T[] {
+  return (attachments ?? []).filter((item) => embeddedImage.safeParse(item).success)
+}
 export const startAction = z.strictObject({
   type: z.literal(ActionType.ChatTurnStarted),
   turnId: id,
@@ -101,11 +133,13 @@ export function messageAttachments(
   message: z.infer<typeof startAction>['message'],
   context: z.infer<typeof contextMetadata>
 ) {
-  const images = message.attachments?.map((image) =>
-    SessionImageAttachment.parse({ name: image.label, mimeType: image.contentType, data: image.data })
-  )
-  if (images?.length && context.images?.length) throw new Error('Image supplied twice')
-  return { images: images?.length ? images : context.images, files: context.files }
+  const images = deliveredImages(message.attachments).map((item) => {
+    const image = embeddedImage.parse(item)
+    return SessionImageAttachment.parse({ name: image.label, mimeType: image.contentType, data: image.data })
+  })
+  if (images.length > 1) throw new Error('Only one image is supported')
+  if (images.length && context.images?.length) throw new Error('Image supplied twice')
+  return { images: images.length ? images : context.images, files: context.files }
 }
 
 type ElicitValue = string | number | string[] | Record<string, string | number | string[]> | null

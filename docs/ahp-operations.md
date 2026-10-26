@@ -124,6 +124,11 @@ a daemon until the key is verified:
 The relay's own `initialize` answer omits the daemon's `_meta` extension flags;
 first-party clients use the header or browser-token paths.
 
+A turn message may carry the client's own `model` and `agent` selections and any
+spec attachment kind, as VS Code's do. The daemon advertises no models, so it
+ignores both selections and delivers only one PNG, JPEG or WebP embedded image;
+other attachments are accepted, never read, and left out of the projected turn.
+
 Set `AHP_AUTHORIZATION_SERVER` to the `issuer` the CP serves at
 `/.well-known/oauth-authorization-server` (the `PUBLIC_MCP_URL` origin when set,
 otherwise `PUBLIC_CP_URL`). VS Code's Agents window can then resolve an auth
