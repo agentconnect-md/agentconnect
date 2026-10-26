@@ -1,9 +1,10 @@
 # Capability Requests
 
-**Status:** Phases 1 and 2 implemented (#3396): every kind except the `live` secret route, the card on
-Slack, Discord, Feishu/Lark, Telegram, Google Chat and QQ, the webchat inline card, the request page,
-the settlement wake and `agent/mcp-rebound`, behind `features.capabilityRequests` for assistant-mode
-agents. §4.8 item 1 landed separately in #3128. Phase 3 is not implemented.
+**Status:** Implemented (#3396): every kind, live secrets with the `agentconnect-secrets` helper, the
+card on Slack, Discord, Feishu/Lark, Telegram, Google Chat and QQ, the webchat inline card, the request
+page, the settlement wake and `agent/mcp-rebound`, behind `features.capabilityRequests` and offered to
+every agent. §4.8 item 1 landed separately in #3128. The open questions in §6 keep the defaults written
+here.
 
 **In one sentence:** when an agent finds it cannot do what it was asked because of how it is set up,
 it says what it is missing and why, hands the people present a link, and once someone with the
