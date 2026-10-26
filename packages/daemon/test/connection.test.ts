@@ -1796,6 +1796,28 @@ describe('SlackConnection agent_session_stopped', () => {
     expect(settles).toEqual([])
     expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
   })
+
+  it.each([false, true])(
+    'one stop also cancels the delegated tasks holding the thread (forwarded: %s)',
+    async (sendOnly) => {
+      const asked: unknown[] = []
+      const { conn, actions } = await started(['slack:C1:200.1:bot-a'], {
+        sendOnly,
+        onStopThreadTasks: (a: unknown) => {
+          asked.push(a)
+          return ['slack:C1:sub-task:bot-a']
+        }
+      })
+
+      await conn.agentSessionStopped('C1', '200.1', 'U1')
+
+      expect(asked).toEqual([{ channel: 'C1', thread: '200.1' }])
+      expect(actions).toEqual([
+        { kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-a', actor: { userId: 'U1' } },
+        { kind: 'cancel', sessionKey: 'slack:C1:sub-task:bot-a', actor: { userId: 'U1' } }
+      ])
+    }
+  )
 })
 
 describe('SlackConnection.setTitle', () => {

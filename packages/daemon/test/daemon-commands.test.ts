@@ -3176,11 +3176,12 @@ describe('Slack status-slot settlement', () => {
       expect((daemon as any).taskSlackHolds.get('child').thread).toBe('T2')
     })
 
-    it("lists the thread's held tasks for a thread-wide Stop, for its own integrations only", () => {
+    it("releases the thread's held tasks to a Stop, for its own integrations only", () => {
       const { daemon } = withTask('open')
-      expect((daemon as any).taskSlackHoldKeys({ channel: 'C1', thread: 'T1' }, ['i1'])).toEqual(['child'])
-      expect((daemon as any).taskSlackHoldKeys({ channel: 'C1', thread: 'T1' }, ['i2'])).toEqual([])
-      expect((daemon as any).taskSlackHoldKeys({ channel: 'C1', thread: 'T9' }, ['i1'])).toEqual([])
+      expect((daemon as any).stopTaskSlackHolds({ channel: 'C1', thread: 'T9' }, ['i1'])).toEqual([])
+      expect((daemon as any).stopTaskSlackHolds({ channel: 'C1', thread: 'T1' }, ['i2'])).toEqual([])
+      expect((daemon as any).stopTaskSlackHolds({ channel: 'C1', thread: 'T1' }, ['i1'])).toEqual(['child'])
+      expect((daemon as any).taskSlackHolds.size).toBe(0)
     })
 
     it('leaves the slot to a turn admitted while the task row was read', async () => {

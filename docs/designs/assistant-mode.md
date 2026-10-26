@@ -864,13 +864,14 @@ with `listTasks`.
   `active`; it has no timeout and posting a message does not clear it, so nothing needs refreshing.
   The daemon remembers, in memory, the thread of the turn that delegated each running task. When
   the last turn of that thread settles the slot, a still-`open` task keeps it `processing` under
-  the delegating agent's identity, with the task as the slot's owner so the native Stop cancels it.
+  the delegating agent's identity, with the task as the slot's owner.
   Settlement re-reads the task's index row, so the report turn that follows the task's end clears
   the slot; a once-a-minute sweep releases a task that ended with no turn after it, and shutdown
   clears every hold so a cut task never leaves the indicator on across a restart. A turn at a
   channel root has no thread status, so it holds none. A round asked for from another thread
-  moves the hold there and settles the thread it leaves; a thread-wide Stop, which a
-  relay-backed connection always sends, also cancels the tasks holding that thread.
+  moves the hold there and settles the thread it leaves. The native Stop, on either connection arm,
+  also cancels every task holding the thread and releases their holds, so one press ends all the
+  thread's work: the socket arm with the displayed turn, the relay arm with its all-stop.
 
 ### 5.7 The report channel
 

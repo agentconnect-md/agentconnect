@@ -1343,6 +1343,8 @@ report, and cannot be given more work.
 In Slack, a thread whose delegated task is running keeps showing "is working…" after the
 conversation's own turn has ended, and it goes away when the task ends or its report is
 answered. A restart clears it; the task's report then shows it again while the report is answered.
+Its Stop stops the thread's running turn and its delegated tasks at once, and each stopped task
+reports that it was stopped.
 
 The agent lists its conversation's tasks with `listTasks`: its delegated tasks and, in the
 conversation's long session, its follow-ups, each with the `taskId` it is messaged and stopped by,

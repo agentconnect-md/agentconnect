@@ -466,6 +466,8 @@ export interface SlackDeps {
   /** Every local session in one Slack conversation, newest first — the stop's fallback
    *  resolver when no displayed owner is recorded (e.g. right after a reconnect). */
   onThreadSessions?: (a: { channel: string; thread: string }) => Promise<string[]>
+  /** Release the delegated tasks holding this thread's indicator and return their keys, for a Stop to cancel. */
+  onStopThreadTasks?: (a: { channel: string; thread: string }) => string[]
   /** Settle the conversation's ONE status slot after a stop: re-assert a surviving sibling's
    *  `processing`, or transition an empty thread to `active`. Owned by the daemon. */
   onSlotSettle?: (a: { channel: string; thread: string; exclude?: string }) => void
@@ -3311,20 +3313,23 @@ export class SlackConnection implements PlatformConnection {
    *  per-daemon survivor settlement could disagree — one daemon's `active` racing another's
    *  `processing` re-assert for Slack's one global slot. Until displayed ownership has a
    *  cross-daemon authority, this arm keeps the globally consistent all-stop: every local turn
-   *  cancels and every daemon's final write is `active`. */
+   *  cancels and every daemon's final write is `active`.
+   *  Both arms also stop the delegated tasks holding the thread's indicator, so one Stop ends all its work. */
   async agentSessionStopped(channel: string, threadTs: string, userId?: string): Promise<void> {
     this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
+    const cancel = (sessionKey: string) =>
+      this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
     if (this.deps.sendOnly) {
       const sessionKeys = (await this.deps.onThreadSessions?.({ channel, thread: threadTs })) ?? []
-      for (const sessionKey of sessionKeys)
-        this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
+      const tasks = this.deps.onStopThreadTasks?.({ channel, thread: threadTs }) ?? []
+      for (const sessionKey of new Set([...sessionKeys, ...tasks])) cancel(sessionKey)
       await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))
       return
     }
     const displayed = this.slotOwner.get(`${channel}:${threadTs}`)
     const target = displayed ?? (await this.deps.onThreadSessions?.({ channel, thread: threadTs }))?.[0]
-    if (target)
-      this.deps.onStatusAction?.({ kind: 'cancel', sessionKey: target, ...(userId ? { actor: { userId } } : {}) })
+    const tasks = this.deps.onStopThreadTasks?.({ channel, thread: threadTs }) ?? []
+    for (const sessionKey of new Set([...(target ? [target] : []), ...tasks])) cancel(sessionKey)
     this.deps.onSlotSettle?.({ channel, thread: threadTs, ...(target ? { exclude: target } : {}) })
   }
 

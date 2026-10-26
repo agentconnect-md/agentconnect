@@ -2857,10 +2857,9 @@ export class Daemon {
       handleTelegramCallback: (cb, conn) => this.handleTelegramCallback(cb, conn),
       slackShortcutSession: (shortcut, srcIntegrationIds) =>
         this.commands.slackShortcutSession(shortcut, srcIntegrationIds),
-      slackThreadSessions: async (shortcut, srcIntegrationIds) => [
-        ...(await this.commands.slackThreadSessions(shortcut, srcIntegrationIds)),
-        ...this.taskSlackHoldKeys(shortcut, srcIntegrationIds)
-      ],
+      slackThreadSessions: (shortcut, srcIntegrationIds) =>
+        this.commands.slackThreadSessions(shortcut, srcIntegrationIds),
+      stopSlackThreadTasks: (at, srcIntegrationIds) => this.stopTaskSlackHolds(at, srcIntegrationIds),
       startNewAppendSessions: (platform, channel, srcIntegrationIds, actor, notBefore) =>
         this.commands.startNewAppendSessions(platform, channel, srcIntegrationIds, actor, notBefore),
       settleSlackSlot: (conn, a) => this.settleSlackSlot(conn as SlackConnection, a.channel, a.thread, a.exclude)
@@ -10870,12 +10869,14 @@ export class Daemon {
     }
   }
 
-  /** The tasks holding one thread's indicator for these integrations, which a thread-wide Stop also cancels. */
-  private taskSlackHoldKeys(at: { channel: string; thread: string }, srcIntegrationIds: readonly string[]): string[] {
-    return [...this.taskSlackHolds]
+  /** A Stop on the thread: release the tasks holding its indicator for these integrations and return them to cancel. */
+  private stopTaskSlackHolds(at: { channel: string; thread: string }, srcIntegrationIds: readonly string[]): string[] {
+    const keys = [...this.taskSlackHolds]
       .filter(([, h]) => h.channel === at.channel && h.thread === at.thread)
       .filter(([, h]) => h.integrationId !== undefined && srcIntegrationIds.includes(h.integrationId))
       .map(([childKey]) => childKey)
+    for (const key of keys) this.taskSlackHolds.delete(key)
+    return keys
   }
 
   /** The newest still-open task holding this thread's indicator; ended ones are dropped on the way. */
