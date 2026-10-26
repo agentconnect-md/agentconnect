@@ -7,6 +7,7 @@ import {
   PendingMessageKind,
   type ActionOrigin,
   type ChatTurnStartedAction,
+  type ChatDraftChangedAction,
   type ChatPendingMessageSetAction,
   type ChatInputCompletedAction,
   type DispatchActionParams
@@ -25,6 +26,8 @@ import { AhpProtocolError } from './connection.js'
 import {
   startAction,
   steeringAction,
+  draftAction,
+  readAction,
   publishedMessage,
   cancelAction,
   permissionAction,
@@ -122,6 +125,10 @@ export class AhpApplication {
           action
         )
       }
+      case ActionType.ChatDraftChanged:
+        return hooks.echo(parse(draftAction, params.action) as ChatDraftChangedAction, origin)
+      case ActionType.ChatIsReadChanged:
+        return hooks.echo(parse(readAction, params.action), origin)
       case ActionType.ChatTurnCancelled: {
         const action = parse(cancelAction, params.action)
         if (!(await this.host.cancel(scope, action.turnId))) refuse('The turn is no longer cancellable')

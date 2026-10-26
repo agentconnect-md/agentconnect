@@ -295,6 +295,11 @@ describe('actual Daemon AHP acceptance with official SDK and an ACP process', ()
     ).toContain(uri)
     await first.subscribe()
     await second.subscribe()
+    first.client.dispatch(chat, {
+      type: ActionType.ChatDraftChanged,
+      draft: { text: 'typing', origin: { kind: MessageKind.User } }
+    })
+    await expect.poll(() => second.state()?.draft?.text, WAIT).toBe('typing')
     const approval = randomUUID()
     // VS Code's shape: its own model picker, custom agent and editor context ride along and are ignored.
     first.send(approval, '[ahp:approve]', {

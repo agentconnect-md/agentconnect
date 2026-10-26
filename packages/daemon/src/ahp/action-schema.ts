@@ -86,6 +86,9 @@ export const startAction = z.strictObject({
   startedAt: z.string().datetime(),
   message
 })
+// Client UI state VS Code mirrors into the chat; neither reaches the runtime.
+export const draftAction = z.strictObject({ type: z.literal(ActionType.ChatDraftChanged), draft: message.optional() })
+export const readAction = z.strictObject({ type: z.literal(ActionType.ChatIsReadChanged), isRead: z.boolean() })
 export const steeringAction = z.strictObject({
   type: z.literal(ActionType.ChatPendingMessageSet),
   kind: z.literal('steering'),
