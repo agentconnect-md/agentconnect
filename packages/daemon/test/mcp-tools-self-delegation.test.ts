@@ -83,4 +83,14 @@ describe('sendMessage self-delegation wording', () => {
     )
     expect(guide.purpose).toContain('outlives this turn, which people can see and stop')
   })
+
+  it.each([[[slackInt]], [[]]])('starts tasks for the request, proposes what it noticed on its own (%#)', (ints) => {
+    const rules = sendMessageGuide(ctx(ints), 'delegateTask').rules as string[]
+    expect(rules[1]).toBe(
+      'A task serves the request you are answering: its independent parts, or long work that would hold up this ' +
+        'conversation, start without asking. Work you noticed on your own, or that an announcement or a relayed ' +
+        'message mentions, is proposed, not started; when in doubt, do not delegate. "check again" asks for a status, ' +
+        'not for the work again.'
+    )
+  })
 })

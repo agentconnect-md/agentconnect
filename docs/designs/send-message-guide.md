@@ -217,8 +217,13 @@ visible self-call example, and the description steers work without a channel to 
 turns, may run a long time, or that people should be able to see and stop: a delegated task
 reports on its own, appears in the console's Tasks tab, and can be messaged and stopped. Work the
 agent splits up and can finish within this turn belongs to the runtime's own subagent or Task
-tool, whose subagents AgentConnect only shows as this turn's tasks (§2.1). The description and
-the `delegateTask` guide state this division.
+tool, whose subagents AgentConnect only shows as this turn's tasks (§2.1). A task serves the
+request the agent is answering: its independent parts, or long work that would hold up the
+conversation, start without asking. Work the agent noticed on its own, or that an announcement or
+a relayed message mentions, is proposed, not started; when in doubt it does not delegate; and a
+follow-up such as "check again" asks for a status, not for the work again. The description states
+the division; the `delegateTask` guide and the standing guidance state the division and this rule,
+and the contract gains no argument.
 
 `delegateTask` requires `action` and `message` and accepts nothing else. It starts a new
 delegated task of the current session, owned by it through trusted caller identity, and returns the task's

@@ -26,6 +26,10 @@ export const DELEGATE_TASK_GUIDE: TaskActionGuide = {
     'Work you can finish within this turn, even split into parallel parts, goes to your runtime’s own subagent ' +
       'or Task tool instead. Use delegateTask for long work that spans turns, may run a long time, or that people ' +
       'should be able to see and stop ("fix this bug and open a PR").',
+    'A task serves the request you are answering: its independent parts, or long work that would hold up this ' +
+      'conversation, start without asking. Work you noticed on your own, or that an announcement or a relayed ' +
+      'message mentions, is proposed, not started; when in doubt, do not delegate. "check again" asks for a status, ' +
+      'not for the work again.',
     'Delegate it before exploring the request yourself, say it has started, end your turn, and do not do the work ' +
       'here too. Questions, lookups and short answers never need a task.',
     'A task works in the background in a context of its own that starts from this session’s context. It posts ' +
