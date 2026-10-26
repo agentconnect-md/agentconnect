@@ -44,6 +44,7 @@ import type {
   AgentWorkspace,
   AgentWorkspaceCredential,
   IntegrationChannelRepo,
+  LiveSecret,
   IntegrationRepo
 } from '../persistence/ports.js'
 import { AgentWorkspaceIntegrationConflict, GiteaBindingUnavailable } from '../persistence/errors.js'
@@ -149,6 +150,8 @@ interface MoveBundle {
   /** The agent's write-only secret env vars (AgentSecretStore) — part of the wire
    *  definition, so a mid-move secret edit trips the fingerprint stability check. */
   secrets: Record<string, string>
+  /** Live secrets (capability-requests.md §4.9.2), pinned like `secrets` so activation ships them and the fingerprint sees an edit. */
+  liveSecrets: LiveSecret[]
   /** Resolved skill entries (shared-skills.md) — pinned so the authoritative
    *  `agent/activate` ships them; a bare project() would clear skills on the target. */
   skills: AgentSkillEntry[]
@@ -887,6 +890,7 @@ export class AgentMoveService {
       integrations,
       cronRows,
       secrets,
+      liveSecrets,
       skills,
       managedSkills,
       organizationEnvironment,
@@ -899,6 +903,7 @@ export class AgentMoveService {
       this.deps.integrations.listForAgent(agent.id),
       this.deps.crons.listForAgent(agent.id),
       this.deps.specs.secretsOf(agent),
+      this.deps.specs.liveSecretsOf(agent),
       this.deps.specs.skillsOf(agent),
       this.deps.specs.managedSkillsOf(agent),
       this.deps.specs.organizationEnvironmentOf(agent),
@@ -955,6 +960,7 @@ export class AgentMoveService {
       crons,
       httpBotIds: [...new Set(specs.filter((s) => s.http).map((s) => s.botId))].sort(),
       secrets,
+      liveSecrets,
       skills,
       managedSkills,
       organizationEnvironment,
@@ -973,20 +979,23 @@ export class AgentMoveService {
       // project() (not assemble()): the snapshot pinned the secrets, skills, and
       // resolved organization environment into the bundle so the activation
       // fingerprint compares stable inputs.
-      spec: this.deps.specs.project(
-        agent,
-        bundle.secrets,
-        bundle.skills,
-        bundle.managedSkills,
-        bundle.organizationEnvironment,
-        bundle.additionalRepos,
-        bundle.gitlabHook,
-        false,
-        bundle.hookRoutings,
-        bundle.additionalInstallations,
-        bundle.apiGates,
-        bundle.computers
-      ),
+      spec: {
+        ...this.deps.specs.project(
+          agent,
+          bundle.secrets,
+          bundle.skills,
+          bundle.managedSkills,
+          bundle.organizationEnvironment,
+          bundle.additionalRepos,
+          bundle.gitlabHook,
+          false,
+          bundle.hookRoutings,
+          bundle.additionalInstallations,
+          bundle.apiGates,
+          bundle.computers
+        ),
+        liveSecrets: bundle.liveSecrets
+      },
       integrations: bundle.integrations.map(({ spec }) => spec),
       crons: bundle.crons
     }

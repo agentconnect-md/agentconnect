@@ -363,7 +363,9 @@ function make(
       {
         get: async () => ({}),
         merge: async () => {},
-        keys: async () => new Map()
+        keys: async () => new Map(),
+        live: async () => [],
+        liveInfo: async () => new Map()
       } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[0],
       {},
       undefined,
@@ -888,7 +890,9 @@ describe('AgentMoveService.bundleFor — the duty/fetch install bundle', () => {
       specs: new AgentSpecAssembler({
         get: async () => ({}),
         merge: async () => {},
-        keys: async () => new Map()
+        keys: async () => new Map(),
+        live: async () => [],
+        liveInfo: async () => new Map()
       } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[0]),
       crons: { listForAgent: async () => [] } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['crons'],
       assignments: {} as unknown as ConstructorParameters<typeof AgentMoveService>[0]['assignments'],

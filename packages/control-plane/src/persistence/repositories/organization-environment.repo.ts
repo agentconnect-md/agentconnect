@@ -483,7 +483,12 @@ export class PgOrganizationEnvironmentRepo implements OrganizationEnvironmentRep
       add?: Map<string, Array<{ entry: AssignedOrganizationEntry; valueBytes: number }>>
       resize?: Map<string, number>
     }
-  ): Promise<{ outcome: 'too_large'; agentIds: string[] } | { outcome: 'cross_kind_conflict'; keys: string[] } | null> {
+  ): Promise<
+    | { outcome: 'too_large'; agentIds: string[] }
+    | { outcome: 'cross_kind_conflict'; keys: string[] }
+    | { outcome: 'live_secret_conflict'; keys: string[] }
+    | null
+  > {
     if (agentIds.length === 0) return null
     const locked = await lockAgentsForConfigWrite(tx, agentIds)
     if (locked.length === 0) return null

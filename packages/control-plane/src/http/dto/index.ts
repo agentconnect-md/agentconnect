@@ -564,6 +564,14 @@ const AgentSecretsCreateBody = z.record(ENV_VAR_NAME, ENV_VAR_VALUE)
  *  merged key-by-key because the client never holds the existing values: a string
  *  sets/replaces that secret, `null` deletes it, and an omitted key is left as-is. */
 const AgentSecretsPatchBody = z.record(ENV_VAR_NAME, ENV_VAR_VALUE.nullable())
+/** Live secrets (capability-requests.md §4.9.2), merged key-by-key like `secrets`: an object sets one, `null` deletes it. Values are write-only. */
+const AgentLiveSecretsPatchBody = z.record(
+  z.string().regex(/^[A-Z][A-Z0-9_]{1,63}$/, 'a live secret is named like A_NAME: capital letters, digits and _'),
+  z
+    .object({ value: ENV_VAR_VALUE.min(1), description: z.string().max(200).optional() })
+    .strict()
+    .nullable()
+)
 const McpServerNamesBody = z.array(
   z
     .string()
@@ -796,6 +804,8 @@ export const UpdateAgentBody = z
     // Merged key-by-key (NOT wholesale): string sets/replaces a secret, null deletes
     // it, an omitted key is left untouched — the client never holds existing values.
     secrets: AgentSecretsPatchBody.optional(),
+    // Fetched by the agent's own shell at use time, never in its environment; a name may not repeat an env var or secret.
+    liveSecrets: AgentLiveSecretsPatchBody.optional(),
     mcpServers: McpServerNamesBody.nullable().optional(), // replaced wholesale; null clears
     skills: SkillEnableBody.nullable().optional(), // enabled skills; replaced wholesale; null clears
     managedSkills: ManagedSkillEnableBody.nullable().optional(), // accepted managed-skill ids; null clears
@@ -897,6 +907,8 @@ export const AgentDto = z.object({
   // Names of the agent's write-only secret env vars, sorted. Values are NEVER
   // returned — set/replace them via the PATCH `secrets` body; the console masks them.
   secretKeys: z.array(z.string()),
+  // The agent's live secrets by name and description, on a single agent's read and edit; values are NEVER returned.
+  liveSecrets: z.array(z.object({ name: z.string(), description: z.string().nullable() })).optional(),
   // ── organization-owned rows assigned to THIS agent (design §6/§8.2) ──
   // Read-only here: the agent editor cannot change an organization entry or its
   // audience. Scoped per agent, so viewing agent A reveals nothing about entries

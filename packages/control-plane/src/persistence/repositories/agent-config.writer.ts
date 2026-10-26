@@ -37,6 +37,7 @@ import type {
   AgentRecord,
   AgentUpdateOpts,
   CreateAgentInput,
+  SecretPatchValue,
   UpdateAgentInput
 } from '../ports.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
@@ -80,7 +81,7 @@ export class PgAgentConfigWriter implements AgentConfigWriter {
     orgId: OrgId,
     agentId: AgentId,
     patch: UpdateAgentInput,
-    secrets?: Record<string, string | null>,
+    secrets?: Record<string, SecretPatchValue>,
     opts?: AgentUpdateOpts
   ): Promise<AgentRecord> {
     const sealed =

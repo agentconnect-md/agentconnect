@@ -1,6 +1,6 @@
 import type { GitCredGrant } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
-import { GitCredDeniedError } from '../github/service.js'
+import { GitCredDeniedError, requestCapabilityPointer } from '../github/service.js'
 import { GITLAB_CREATION_FORBIDDEN_STATE } from '../persistence/ports.js'
 import type {
   AgentRecord,
@@ -184,7 +184,7 @@ export class GitlabGitcredService {
     }
     if (!grant) {
       throw new GitCredDeniedError(
-        'requested project is neither this agent’s workspace nor an authorized additional project',
+        `requested project is neither this agent’s workspace nor an authorized additional project${requestCapabilityPointer('gitlab')}`,
         'SCOPE_DENIED',
         false
       )

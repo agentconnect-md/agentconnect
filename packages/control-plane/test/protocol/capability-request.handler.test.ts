@@ -1,6 +1,11 @@
 // `capability/request`, `capability/decide` and `session/capability-settled` over the real daemon WS edge and real Postgres.
 import { describe, expect, it } from 'vitest'
-import { CAPABILITY_REQUESTS_FEATURE, CAPABILITY_REQUESTS_V2_FEATURE, isFrame } from '@agentconnect.md/protocol'
+import {
+  CAPABILITY_REQUESTS_FEATURE,
+  CAPABILITY_REQUESTS_V2_FEATURE,
+  CAPABILITY_REQUESTS_V3_FEATURE,
+  isFrame
+} from '@agentconnect.md/protocol'
 import type { CapabilityFacts } from '../../src/capability/capability-wording.js'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness, type WsHarness } from '../fakes/build-ws.js'
@@ -172,5 +177,27 @@ describe('capability requests over the daemon WS edge', () => {
     v2.stub.reply(wake.id, 'session/capability-settled/result', { accepted: true })
     await service.settle()
     service.stop()
+  })
+
+  it('takes a live secret request only from a daemon that serves live secrets', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const { h } = harness({ current: {} })
+    const live = {
+      ...request,
+      ask: { kind: 'secret', want: { name: 'GRAFANA_TOKEN', description: 'Grafana', use: { route: 'live' } } }
+    }
+    const v2 = await ready(h, DAEMON, [CAPABILITY_REQUESTS_FEATURE, CAPABILITY_REQUESTS_V2_FEATURE])
+    expect(v2.serverFeatures).toContain(CAPABILITY_REQUESTS_V3_FEATURE)
+    const refused = await answerTo(v2.stub, v2.stub.inject('capability/request', live), 'capability/request/result')
+    expect(refused.reply).toMatchObject({ status: 'refused', refused: 'unsupported' })
+
+    const v3 = await ready(h, DAEMON, [
+      CAPABILITY_REQUESTS_FEATURE,
+      CAPABILITY_REQUESTS_V2_FEATURE,
+      CAPABILITY_REQUESTS_V3_FEATURE
+    ])
+    const opened = await answerTo(v3.stub, v3.stub.inject('capability/request', live), 'capability/request/result')
+    expect(opened.reply).toMatchObject({ status: 'pending', summary: 'set the secret "GRAFANA_TOKEN"' })
   })
 })

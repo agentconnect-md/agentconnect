@@ -175,12 +175,16 @@ export class CapabilityRequestService {
   }
 
   /** Answer `capability/request` for an agent its caller serves. */
-  async request(agent: AgentRecord, req: CapabilityRequestReq): Promise<CapabilityRequestResult> {
+  async request(
+    agent: AgentRecord,
+    req: CapabilityRequestReq,
+    opts: { liveSecrets?: boolean } = {}
+  ): Promise<CapabilityRequestResult> {
     const parsed = CapabilityAsk.safeParse(req.ask)
     if (!parsed.success) return { status: 'refused', refused: 'invalid', message: 'the request is malformed' }
     const ask = parsed.data
-    // A live secret is Phase 3: its value would reach the agent's shell, which nothing serves yet.
-    if (ask.kind === 'secret' && ask.want.use.route === 'live')
+    // A live secret's value reaches the agent's shell only through a daemon that serves `agentconnect-secrets`.
+    if (ask.kind === 'secret' && ask.want.use.route === 'live' && opts.liveSecrets !== true)
       return {
         status: 'refused',
         refused: 'unsupported',

@@ -38,6 +38,8 @@ export interface RepoCapabilityFactsDeps {
   integrations: Pick<IntegrationRepo, 'activeForAgents'>
   /** Whether a chat platform with this id is installed on this deployment. */
   knownPlatform: (platform: string) => boolean
+  /** The agent's live secret names, never their values. */
+  liveSecretNames: (orgId: OrgId, agentId: AgentRecord['id']) => Promise<readonly string[]>
   /** The deployment's GitLab host (`gitlab.com` unless self-managed). */
   gitlabHost: string
 }
@@ -135,7 +137,8 @@ export function repoCapabilityFacts(deps: RepoCapabilityFactsDeps): CapabilityFa
         }
         case 'secret': {
           const use = ask.want.use
-          if (use.route !== 'mcp-header') return {}
+          if (use.route === 'live')
+            return { liveSecretPresent: (await deps.liveSecretNames(agent.orgId, agent.id)).includes(ask.want.name) }
           const p = await provider(agent.orgId, use.server)
           // Names only: the values are dropped here and never leave this function.
           const names = p ? ((await deps.mcpSecrets.get(agent.orgId, p.id)) ?? []).map((h) => h.name.toLowerCase()) : []

@@ -7,6 +7,7 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { repoCapabilityFacts } from '../../src/capability/capability-facts.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import { PgAgentSecretStore } from '../../src/persistence/repositories/agent-secret.repo.js'
 import { PgAgentRepoAuthorizationRepo } from '../../src/persistence/repositories/agent-repo-auth.repo.js'
 import { PgAgentInstallationAuthorizationRepo } from '../../src/persistence/repositories/agent-installation-auth.repo.js'
 import { PgGithubInstallationRepo } from '../../src/persistence/repositories/github.repo.js'
@@ -29,6 +30,11 @@ function facts() {
     gitlabConnections: new PgGitlabConnectionRepo(prisma),
     integrations: new PgIntegrationRepo(prisma),
     knownPlatform: (platform) => platform === 'slack',
+    liveSecretNames: async (orgId, agentId) =>
+      (
+        (await new PgAgentSecretStore(prisma, new PlaintextSecretCipher()).liveInfo(orgId, [agentId])).get(agentId) ??
+        []
+      ).map((secret) => secret.name),
     gitlabHost: 'gitlab.com'
   })
 }
@@ -105,5 +111,21 @@ describe('repoCapabilityFacts', () => {
         want: { provider: 'gitlab', host: 'git.example.test', repository: 'a/b', access: 'read' }
       })
     ).toContain('does not connect to GitLab')
+  })
+
+  it('reads whether a live secret exists by its name alone', async () => {
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {})
+    const agent = (await new PgAgentRepo(prisma).get(ORG, AgentId(agentId)))!
+    const ask = {
+      kind: 'secret',
+      want: { name: 'GRAFANA_TOKEN', description: 'Grafana', use: { route: 'live' } }
+    } as const
+    expect((await facts().load(agent, ask)).liveSecretPresent).toBe(false)
+    await new PgAgentSecretStore(prisma, new PlaintextSecretCipher()).merge(ORG, AgentId(agentId), {
+      GRAFANA_TOKEN: { value: 'gt-1', delivery: 'live' },
+      OTHER: 'spawn-only'
+    })
+    expect((await facts().load(agent, ask)).liveSecretPresent).toBe(true)
   })
 })

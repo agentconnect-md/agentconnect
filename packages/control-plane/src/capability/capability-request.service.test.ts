@@ -545,6 +545,31 @@ describe('CapabilityRequestService', () => {
       ask: a
     })
 
+    it('takes a live secret only from a daemon that serves them, and completes it with how to load it, never the value', async () => {
+      const h = harness()
+      const live = askOfKind('s1', {
+        kind: 'secret',
+        want: { name: 'GRAFANA_TOKEN', description: 'Grafana API token', use: { route: 'live' } }
+      })
+      expect(await h.service.request(h.agent(), live)).toMatchObject({ status: 'refused', refused: 'unsupported' })
+      const { requestId, status } = await h.service.request(h.agent(), live, { liveSecrets: true })
+      expect(status).toBe('pending')
+      h.setFacts({ liveSecretPresent: true })
+      h.setAgent({ configRevision: 2n })
+      await h.service.agentUpserted(h.agent(), [DAEMON])
+      h.clock.advance(10_000)
+      await h.service.settle()
+      expect(h.requests.rows.get(requestId!)!.status).toBe('completed')
+      expect(h.sent).toEqual([
+        expect.objectContaining({
+          status: 'completed',
+          outcome:
+            'Secret GRAFANA_TOKEN is set. Run commands that need it as agentconnect-secrets exec --only GRAFANA_TOKEN -- <command>; never print it.',
+          reload: false
+        })
+      ])
+    })
+
     it('refuses a live secret as unsupported and an unknown platform as an unknown target', async () => {
       const h = harness()
       const live = await h.service.request(
