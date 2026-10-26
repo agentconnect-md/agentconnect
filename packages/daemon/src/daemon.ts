@@ -1396,6 +1396,8 @@ const GATED_NOTICE_LATCH_LIMIT = 10_000
 /** Claude Code asks for a retry "in a minute" when its OAuth refresh lock is contended. */
 const OAUTH_REFRESH_CONTENTION_RETRY_MS = 60_000
 const RUNTIME_FAILURE_RETRY_MS = 5_000
+/** How long shutdown waits for Slack to take the clears of task-held working indicators. */
+const TASK_HOLD_CLEAR_MS = 2_000
 
 /** The step a relay delivery is in, read by the slow-ack watchdog when it fires. */
 type RelayAckTrace = { stage: string }
@@ -10867,8 +10869,8 @@ export class Daemon {
     let open: SlackStatusOptions | undefined
     for (const [childKey, hold] of [...this.taskSlackHolds]) {
       if (hold.conn !== conn || hold.channel !== channel || hold.thread !== thread) continue
-      const row = await this.store.assistantSubsessions.get(hold.agentId, childKey).catch(() => undefined)
-      if (row && row.state !== 'open') this.taskSlackHolds.delete(childKey)
+      const state = await this.taskHoldState(hold.agentId, childKey)
+      if (state === 'ended') this.taskSlackHolds.delete(childKey)
       else if (childKey !== exclude) open = hold.options
     }
     return open
@@ -10877,20 +10879,29 @@ export class Daemon {
   /** Once a sweep: a task that ended without a parent turn to follow it releases its thread's indicator. */
   private async releaseEndedTaskSlackHolds(): Promise<void> {
     for (const [childKey, hold] of [...this.taskSlackHolds]) {
-      const row = await this.store.assistantSubsessions.get(hold.agentId, childKey).catch(() => undefined)
-      if (row?.state === 'open') continue
+      if ((await this.taskHoldState(hold.agentId, childKey)) !== 'ended') continue
       this.taskSlackHolds.delete(childKey)
       this.settleSlackSlot(hold.conn, hold.channel, hold.thread)
     }
   }
 
-  /** Shutdown cuts every task here, so none leaves its indicator on across the restart. */
+  /** A held task's row: `open`, `ended` (settled or gone), or undefined when it could not be read, which keeps the hold. */
+  private async taskHoldState(agentId: string, childKey: string): Promise<'open' | 'ended' | undefined> {
+    return await this.store.assistantSubsessions.get(agentId, childKey).then(
+      (row) => (row?.state === 'open' ? 'open' : 'ended'),
+      () => undefined
+    )
+  }
+
+  /** Shutdown cuts every task here, so none leaves its indicator on across the restart; a thread a live turn still shows is left to that turn. */
   private async clearTaskSlackHolds(): Promise<void> {
-    const holds = [...this.taskSlackHolds.values()]
+    const holds = [...this.taskSlackHolds.values()].filter((h) => !this.slackSlotSurvivor(h.conn, h.channel, h.thread))
     this.taskSlackHolds.clear()
-    await Promise.all(
+    const cleared = Promise.all(
       holds.map((h) => (h.conn as Partial<SlackConnection>).setStatus?.(h.channel, h.thread, '').catch(() => {}))
     )
+    // Bounded, so a slow Slack never eats the drain budget.
+    await Promise.race([cleared, new Promise((resolve) => setTimeout(resolve, TASK_HOLD_CLEAR_MS).unref())])
   }
 
   /** A sub-session reads as the people whose turn opened it; a restart forgets them, so it then reads as nobody. */
@@ -19320,13 +19331,7 @@ export class Daemon {
     exclude?: string
   ): void {
     if (!conn || !statusThread) return
-    let survivor: Pending | undefined
-    for (const p of this.pending.values()) {
-      if (p.conn !== conn || p.plan.platform !== 'slack') continue
-      if (p.plan.channel !== channel || p.plan.statusThread !== statusThread) continue
-      if (p.outputSuppressed || p.plan.sessionKey === exclude) continue
-      survivor = p // insertion order: the last match is the newest admitted turn
-    }
+    const survivor = this.slackSlotSurvivor(conn, channel, statusThread, exclude)
     if (survivor) {
       void this.showActivity(conn, channel, statusThread, 'is thinking…', survivor.plan.statusOptions)
       return
@@ -19339,11 +19344,30 @@ export class Daemon {
       void this.showActivity(conn, channel, statusThread, '')
       return
     }
-    void this.openTaskSlackHold(conn, channel, statusThread, exclude).then((options) =>
-      options
+    void this.openTaskSlackHold(conn, channel, statusThread, exclude).then((options) => {
+      // A turn admitted while the task rows were read owns the slot now.
+      if (this.slackSlotSurvivor(conn, channel, statusThread, exclude)) return
+      return options
         ? this.showActivity(conn, channel, statusThread, 'is thinking…', options)
         : this.showActivity(conn, channel, statusThread, '')
-    )
+    })
+  }
+
+  /** The newest live Slack turn of the thread, other than `exclude`. */
+  private slackSlotSurvivor(
+    conn: unknown,
+    channel: string,
+    statusThread: string,
+    exclude?: string
+  ): Pending | undefined {
+    let survivor: Pending | undefined
+    for (const p of this.pending.values()) {
+      if (p.conn !== conn || p.plan.platform !== 'slack') continue
+      if (p.plan.channel !== channel || p.plan.statusThread !== statusThread) continue
+      if (p.outputSuppressed || p.plan.sessionKey === exclude) continue
+      survivor = p // insertion order: the last match is the newest admitted turn
+    }
+    return survivor
   }
 
   /** Replay the metadata session/new|load emitted before Pending existed, then install the

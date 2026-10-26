@@ -3106,26 +3106,30 @@ describe('Slack status-slot settlement', () => {
   })
 
   describe('a running delegated task', () => {
-    const withTask = (state: string) => {
+    const turn = (c: unknown, key: string) => ({
+      conn: c,
+      plan: {
+        platform: 'slack',
+        agentId: 'a1',
+        channel: 'C1',
+        thread: 'T1',
+        statusThread: 'T1',
+        sessionKey: key,
+        statusOptions: { username: 'Agent A', sessionKey: key }
+      }
+    })
+    const withTask = (state: string | undefined | Error) => {
       const c = { setStatus: vi.fn(async () => true) }
       const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
-      const get = vi.fn(async () => ({ state }))
-      ;(daemon as any).store = { assistantSubsessions: { get } }
-      ;(daemon as any).pending.set('p-0', {
-        conn: c,
-        plan: {
-          platform: 'slack',
-          agentId: 'a1',
-          channel: 'C1',
-          thread: 'T1',
-          statusThread: 'T1',
-          sessionKey: 'parent',
-          statusOptions: { username: 'Agent A', sessionKey: 'parent' }
-        }
+      const get = vi.fn(async () => {
+        if (state instanceof Error) throw state
+        return state === undefined ? undefined : { state }
       })
+      ;(daemon as any).store = { assistantSubsessions: { get } }
+      ;(daemon as any).pending.set('p-0', turn(c, 'parent'))
       ;(daemon as any).holdSlackForTask('child', 'parent')
       ;(daemon as any).pending.clear()
-      return { c, daemon }
+      return { c, daemon, get }
     }
     const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -3150,6 +3154,26 @@ describe('Slack status-slot settlement', () => {
       expect(stopped.c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', '', undefined)
     })
 
+    it('treats a missing row as ended, and keeps the hold when the row cannot be read', async () => {
+      const gone = withTask(undefined)
+      ;(gone.daemon as any).settleSlackSlot(gone.c, 'C1', 'T1', 'parent')
+      await flush()
+      expect(gone.c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', '', undefined)
+      expect((gone.daemon as any).taskSlackHolds.size).toBe(0)
+      const unreadable = withTask(new Error('store down'))
+      await (unreadable.daemon as any).releaseEndedTaskSlackHolds()
+      expect(unreadable.c.setStatus).not.toHaveBeenCalled()
+      expect((unreadable.daemon as any).taskSlackHolds.size).toBe(1)
+    })
+
+    it('leaves the slot to a turn admitted while the task row was read', async () => {
+      const { c, daemon } = withTask('done')
+      ;(daemon as any).settleSlackSlot(c, 'C1', 'T1', 'parent')
+      ;(daemon as any).pending.set('p-1', turn(c, 'next'))
+      await flush()
+      expect(c.setStatus).not.toHaveBeenCalled()
+    })
+
     it('releases an ended task on the sweep and every hold on shutdown', async () => {
       const { c, daemon } = withTask('failed')
       await (daemon as any).releaseEndedTaskSlackHolds()
@@ -3158,6 +3182,10 @@ describe('Slack status-slot settlement', () => {
       await (live.daemon as any).clearTaskSlackHolds()
       expect(live.c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', '')
       expect((live.daemon as any).taskSlackHolds.size).toBe(0)
+      const busy = withTask('open')
+      ;(busy.daemon as any).pending.set('p-1', turn(busy.c, 'next'))
+      await (busy.daemon as any).clearTaskSlackHolds()
+      expect(busy.c.setStatus).not.toHaveBeenCalled()
     })
   })
 })
