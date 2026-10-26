@@ -266,12 +266,12 @@ async function connect(url: string) {
     seq = snapshot.fromSeq
     for (const envelope of buffered.splice(0)) apply(envelope)
   }
-  const send = (turnId: string, text: string) =>
+  const send = (turnId: string, text: string, extra: Partial<ChatState['turns'][number]['message']> = {}) =>
     client.dispatch(chat, {
       type: ActionType.ChatTurnStarted,
       turnId,
       startedAt: new Date().toISOString(),
-      message: { text, origin: { kind: MessageKind.User } }
+      message: { text, origin: { kind: MessageKind.User }, ...extra }
     })
   return { client, close, subscribe, send, state: () => state, sequence: () => seq, closed: () => closed }
 }
@@ -296,7 +296,12 @@ describe('actual Daemon AHP acceptance with official SDK and an ACP process', ()
     await first.subscribe()
     await second.subscribe()
     const approval = randomUUID()
-    first.send(approval, '[ahp:approve]')
+    // VS Code's shape: its own model picker, custom agent and editor context ride along and are ignored.
+    first.send(approval, '[ahp:approve]', {
+      model: { id: 'copilot/gpt' },
+      agent: { uri: 'file:///agents/review.agent.md' },
+      attachments: [{ type: 'resource', label: 'main.ts', uri: 'file:///src/main.ts' } as never]
+    })
     await expect
       .poll(
         () =>
@@ -315,6 +320,7 @@ describe('actual Daemon AHP acceptance with official SDK and an ACP process', ()
         (part) => part.kind === ResponsePartKind.ToolCall && part.toolCall.status === ToolCallStatus.PendingConfirmation
       )!
     if (permission.kind !== ResponsePartKind.ToolCall) throw new Error('Missing actual permission request')
+    expect(second.state()!.activeTurn!.message).toEqual({ text: '[ahp:approve]', origin: { kind: MessageKind.User } })
     second.client.dispatch(chat, {
       type: ActionType.ChatToolCallConfirmed,
       turnId: approval,

@@ -25,6 +25,7 @@ import { AhpProtocolError } from './connection.js'
 import {
   startAction,
   steeringAction,
+  publishedMessage,
   cancelAction,
   permissionAction,
   inputAction,
@@ -241,7 +242,7 @@ export class AhpApplication {
           } else {
             if (!result.duplicate && !scope.targetSessionId)
               await this.host.application.recordAdmission(prepared.turn, { ...request, steer: false })
-            if (steering) await hooks.echo(steering, origin)
+            if (steering) await hooks.echo({ ...steering, message: publishedMessage(steering.message) }, origin)
             await hooks.admitted(action, origin, { duplicate: result.duplicate === true })
             if (steering)
               await hooks.echo(
