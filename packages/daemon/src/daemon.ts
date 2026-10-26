@@ -128,6 +128,7 @@ import {
   CODEHOST_FEEDBACK_FEATURE,
   FOLLOW_UP_WAKE_FEATURE,
   CAPABILITY_REQUESTS_FEATURE,
+  CAPABILITY_ASKERS_MAX,
   FOLLOW_UP_WATCH_FEATURE,
   parseFollowUpWatchUrl,
   WORKSPACE_GIT_V1_FEATURE,
@@ -10656,10 +10657,13 @@ export class Daemon {
     const turnAskers = await this.readAskersFor(ctx).catch(() => NOBODY)
     const conn = ctx.integrationId ? this.connForIntegration(ctx.integrationId) : undefined
     const facet = this.turnSurfaces.exact(ctx.platform)?.capabilityCards
+    // Every person the turn speaks for is kept, or none: a cut list would let the continuation read what one of them may not.
+    const askers: TurnAskers = turnAskers.people.length > CAPABILITY_ASKERS_MAX ? NOBODY : turnAskers
     const people = await Promise.all(
-      turnAskers.people.slice(0, 8).map(async (asker) => {
+      askers.people.map(async (asker, index) => {
+        // Display names only for the first few, which head the card; authority never depends on them.
         const name =
-          asker.kind === 'member' && conn && facet && asker.integrationId === ctx.integrationId
+          index < 8 && asker.kind === 'member' && conn && facet && asker.integrationId === ctx.integrationId
             ? await facet.nameOf(conn, asker.userId).catch(() => undefined)
             : undefined
         return { ...asker, ...(name ? { name } : {}) }
@@ -10676,7 +10680,7 @@ export class Daemon {
       platform: ctx.platform,
       channel: ctx.channel,
       ...(ctx.integrationId ? { integrationId: ctx.integrationId } : {}),
-      askers: { people, nobody: turnAskers.nobody },
+      askers: { people, nobody: askers.nobody },
       ...(names.length > 0 ? { askedBy: names.join(', ') } : {}),
       external
     }

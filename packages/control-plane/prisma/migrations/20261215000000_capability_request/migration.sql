@@ -16,6 +16,7 @@ CREATE TABLE "capability_request" (
     "settledBy" JSONB,
     "settledAt" TIMESTAMPTZ(6),
     "settledRevision" BIGINT,
+    "changeAppliedAt" TIMESTAMPTZ(6),
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "expiresAt" TIMESTAMPTZ(6) NOT NULL,
 

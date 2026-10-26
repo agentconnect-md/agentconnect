@@ -42,8 +42,6 @@ const RETRY_MAX_MS = 10 * 60_000
 const CLAIM_MS = 60_000
 const MAX_PER_TICK = 20
 const IDLE_TICK_MS = 60_000
-// A completion whose upsert no daemon was seen to apply is sent anyway after this, rather than never.
-const UNACKED_COMPLETION_MS = 2 * 60_000
 // A request forwarded to the same person again within this window is not sent again.
 const FORWARD_REPEAT_MS = 60 * 60_000
 
@@ -291,7 +289,8 @@ export class CapabilityRequestService {
     row: CapabilityRequestRecord,
     agent: AgentRecord,
     settledBy: CapabilityDecider | null,
-    requireSatisfied: boolean
+    requireSatisfied: boolean,
+    changeApplied = false
   ): Promise<boolean> {
     const ask = askOf(row)
     if (!ask) return false
@@ -304,6 +303,7 @@ export class CapabilityRequestService {
       note: null,
       settledBy,
       settledRevision: agent.configRevision,
+      changeApplied,
       at: this.now()
     })
   }
@@ -323,14 +323,24 @@ export class CapabilityRequestService {
           name: agent.lastModifiedBy.displayName ?? agent.lastModifiedBy.email
         }
       : null
-    for (const row of open) await this.complete(row, agent, by, true)
-    if (ackedDaemonIds.length > 0) this.kick()
+    const applied = ackedDaemonIds.length > 0
+    for (const row of open) await this.complete(row, agent, by, true, applied)
+    if (!applied) return
+    // Recorded on the rows, so whichever replica holds a wake sees the acknowledgement.
+    await this.deps.requests.markChangeApplied([agent.id], agent.configRevision, this.now())
+    this.kick()
   }
 
   /** A daemon registered: the specs it was handed carry every change settled before now. */
-  daemonReady(daemonId: string): void {
+  daemonReady(daemonId: string, agentIds: readonly string[] = []): void {
     this.readyAt.set(daemonId, this.deps.clock.now())
-    this.kick()
+    // Registration handed it every agent's current spec: completions settled before now are applied there.
+    void this.deps.requests
+      .markChangeApplied(agentIds, null, this.now())
+      .catch((err: unknown) =>
+        this.deps.log.warn({ err, daemonId }, 'capability request: recording a registration failed')
+      )
+      .finally(() => this.kick())
   }
 
   /** Settle from the console after a save: completes with what was saved, whether or not it is what was asked. */
@@ -517,12 +527,12 @@ export class CapabilityRequestService {
 
   /** Whether the daemon has applied the change a completion observed: an acknowledged upsert at that revision, or a registration after it. */
   private applied(row: CapabilityRequestRecord, daemonId: string): boolean {
-    if (row.status !== 'completed' || row.settledRevision === null) return true
+    if (row.status !== 'completed' || row.settledRevision === null || row.changeAppliedAt !== null) return true
     const acked = this.acked.get(`${row.agentId}:${daemonId}`)
     if (acked !== undefined && acked >= row.settledRevision) return true
     const ready = this.readyAt.get(daemonId)
-    if (ready !== undefined && row.settledAt && ready >= row.settledAt.getTime()) return true
-    return row.settledAt !== null && this.deps.clock.now() - row.settledAt.getTime() >= UNACKED_COMPLETION_MS
+    // Elapsed time is no evidence: without an acknowledgement or a registration the wake waits, then is given up.
+    return ready !== undefined && row.settledAt !== null && ready >= row.settledAt.getTime()
   }
 
   private async deliver(row: CapabilityRequestRecord, origin: CapabilityRequestOriginRecord): Promise<void> {
@@ -538,6 +548,9 @@ export class CapabilityRequestService {
     const daemonId = await this.deps.placement.dispatchDaemon(agent)
     if (!daemonId || !this.serves(daemonId)) return this.defer(row, origin, 'daemon_unavailable')
     if (!this.applied(row, daemonId)) {
+      const since = origin.wakeSince?.getTime() ?? row.settledAt?.getTime() ?? this.deps.clock.now()
+      if (this.deps.clock.now() - since >= CAPABILITY_WAKE_GIVE_UP_MS)
+        return this.finish(origin, 'gone', 'change_not_applied')
       await this.deps.requests.finishWake(origin.requestId, origin.sessionId, this.owner, origin.wakeGeneration, {
         state: 'pending',
         reason: 'awaiting_change',

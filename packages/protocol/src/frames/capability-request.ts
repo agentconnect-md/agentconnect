@@ -85,9 +85,12 @@ export const CapabilityAsker = z.discriminatedUnion('kind', [
 ])
 export type CapabilityAsker = z.infer<typeof CapabilityAsker>
 
+/** At most this many people per origin; a turn speaking for more is recorded as nobody's rather than cut short. */
+export const CAPABILITY_ASKERS_MAX = 32
+
 /** An origin's asker context, stored as given and never widened (§4.3). */
 export const CapabilityAskers = z.object({
-  people: z.array(CapabilityAsker).max(32),
+  people: z.array(CapabilityAsker).max(CAPABILITY_ASKERS_MAX),
   nobody: z.boolean()
 })
 export type CapabilityAskers = z.infer<typeof CapabilityAskers>

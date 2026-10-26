@@ -98,6 +98,7 @@ class MemoryRequests implements CapabilityRequestRepo {
       settledBy: null,
       settledAt: null,
       settledRevision: null,
+      changeAppliedAt: null,
       origins: [this.origin(input.id, origin, input.createdAt)]
     }
     this.rows.set(row.id, row)
@@ -120,6 +121,16 @@ class MemoryRequests implements CapabilityRequestRepo {
     row.settledAt = at
     return 'withdrawn' as const
   }
+  async markChangeApplied(agentIds: readonly string[], revision: bigint | null, at: Date) {
+    let n = 0
+    for (const row of this.rows.values()) {
+      if (!agentIds.includes(row.agentId) || row.status !== 'completed' || row.changeAppliedAt !== null) continue
+      if (revision === null ? row.settledAt! > at : row.settledRevision! > revision) continue
+      row.changeAppliedAt = at
+      n += 1
+    }
+    return n
+  }
   async settle(id: string, generation: number, s: CapabilitySettlement) {
     const row = this.rows.get(id)
     if (row?.status !== 'open' || row.generation !== generation) return false
@@ -130,7 +141,8 @@ class MemoryRequests implements CapabilityRequestRepo {
       note: s.note,
       settledBy: s.settledBy,
       settledAt: s.at,
-      settledRevision: s.settledRevision
+      settledRevision: s.settledRevision,
+      changeAppliedAt: s.changeApplied ? s.at : null
     })
     for (const o of row.origins)
       Object.assign(o, {
@@ -380,6 +392,34 @@ describe('CapabilityRequestService', () => {
         reload: false
       })
     ])
+  })
+
+  it('never treats elapsed time as an applied change: an unacknowledged completion is given up, not sent', async () => {
+    const h = harness()
+    const { requestId } = await h.service.request(h.agent(), ask('s1'))
+    h.setAgent({ mcpServers: ['Linear'], configRevision: 2n })
+    await h.service.agentUpserted(h.agent(), [])
+    expect(h.requests.rows.get(requestId!)!.changeAppliedAt).toBeNull()
+    for (const step of [10_000, 5 * 60_000, 60 * 60_000]) {
+      h.clock.advance(step)
+      await h.service.settle()
+    }
+    expect(h.sent).toEqual([])
+    h.clock.advance(CAPABILITY_WAKE_GIVE_UP_MS)
+    await h.service.settle()
+    expect(h.sent).toEqual([])
+    expect(h.requests.rows.get(requestId!)!.origins[0]).toMatchObject({
+      wakeState: 'gone',
+      wakeReason: 'change_not_applied'
+    })
+  })
+
+  it('records an acknowledged change on the request, so any replica may wake it', async () => {
+    const h = harness()
+    const { requestId } = await h.service.request(h.agent(), ask('s1'))
+    h.setAgent({ mcpServers: ['Linear'], configRevision: 2n })
+    await h.service.agentUpserted(h.agent(), [DAEMON])
+    expect(h.requests.rows.get(requestId!)!.changeAppliedAt).not.toBeNull()
   })
 
   it('completes from the console with what was saved, even when it differs', async () => {

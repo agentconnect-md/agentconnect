@@ -213,7 +213,10 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   deps.connReg.markReady(conn.daemonId, conn)
   deps.pullRequestFeedback?.kick()
   deps.followUpWatch?.kick()
-  deps.capabilityRequests?.daemonReady(conn.daemonId)
+  deps.capabilityRequests?.daemonReady(
+    conn.daemonId,
+    snap.agents.map((agent) => agent.agentId)
+  )
   void deps.httpBotDaemonReady?.(conn.daemonId).catch(() => {})
 
   // Converge the per-session memory-capture gates (session-visibility.md §5.1).

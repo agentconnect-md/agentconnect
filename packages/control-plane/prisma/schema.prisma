@@ -1585,6 +1585,8 @@ model CapabilityRequest {
   settledAt       DateTime? @db.Timestamptz(6)
   // The agent's configRevision a completion was observed at; its wake waits until a daemon has applied it.
   settledRevision BigInt?   @db.BigInt
+  // When a daemon was seen to apply that revision, by any replica: the completion's wake goes only after it.
+  changeAppliedAt DateTime? @db.Timestamptz(6)
   createdAt       DateTime  @default(now()) @db.Timestamptz(6)
   expiresAt       DateTime  @db.Timestamptz(6)
 

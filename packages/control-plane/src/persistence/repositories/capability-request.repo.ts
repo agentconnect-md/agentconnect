@@ -62,6 +62,7 @@ function toRecord(row: Row): CapabilityRequestRecord {
     settledBy: (row.settledBy as CapabilityDecider | null) ?? null,
     settledAt: row.settledAt,
     settledRevision: row.settledRevision,
+    changeAppliedAt: row.changeAppliedAt,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     origins: row.origins.map(toOrigin)
@@ -182,8 +183,10 @@ export class PgCapabilityRequestRepo implements CapabilityRequestRepo {
 
   async addOrigin(id: string, origin: NewCapabilityOrigin, at: Date): Promise<boolean> {
     return this.atomic(async (db) => {
-      const open = await db.capabilityRequest.findFirst({ where: { id, status: 'open' }, select: { id: true } })
-      if (!open) return false
+      // Locked against `settle`: a join that waited for a settlement sees it, and one that won is woken by it.
+      const open = await db.$queryRaw<{ id: string }[]>`
+        SELECT "id" FROM "capability_request" WHERE "id" = ${id}::uuid AND "status" = 'open' FOR UPDATE`
+      if (open.length === 0) return false
       await db.capabilityRequestOrigin.upsert({
         where: { requestId_sessionId: { requestId: id, sessionId: origin.sessionId } },
         create: { requestId: id, ...originData(origin, at) },
@@ -209,6 +212,21 @@ export class PgCapabilityRequestRepo implements CapabilityRequestRepo {
     })
   }
 
+  async markChangeApplied(agentIds: readonly string[], revision: bigint | null, at: Date): Promise<number> {
+    if (agentIds.length === 0) return 0
+    const done = await this.db.capabilityRequest.updateMany({
+      where: {
+        agentId: { in: [...agentIds] },
+        status: 'completed',
+        changeAppliedAt: null,
+        // A registration hands over every agent's current spec, so no revision bound applies to it.
+        ...(revision === null ? { settledAt: { lte: at } } : { settledRevision: { lte: revision } })
+      },
+      data: { changeAppliedAt: at }
+    })
+    return done.count
+  }
+
   async settle(id: string, generation: number, settlement: CapabilitySettlement): Promise<boolean> {
     return this.atomic(async (db) => {
       const done = await db.capabilityRequest.updateMany({
@@ -220,7 +238,8 @@ export class PgCapabilityRequestRepo implements CapabilityRequestRepo {
           note: settlement.note,
           settledBy: (settlement.settledBy ?? Prisma.DbNull) as Prisma.InputJsonValue,
           settledAt: settlement.at,
-          settledRevision: settlement.settledRevision
+          settledRevision: settlement.settledRevision,
+          changeAppliedAt: settlement.changeApplied ? settlement.at : null
         }
       })
       if (done.count !== 1) return false
@@ -255,6 +274,7 @@ export class PgCapabilityRequestRepo implements CapabilityRequestRepo {
             settledBy: Prisma.DbNull,
             settledAt: null,
             settledRevision: null,
+            changeAppliedAt: null,
             createdAt: at,
             expiresAt
           }

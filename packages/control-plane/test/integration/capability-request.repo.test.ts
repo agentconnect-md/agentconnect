@@ -71,6 +71,29 @@ describe('PgCapabilityRequestRepo', () => {
     await expect(repo.openForSession('s2')).resolves.toBe(1)
   })
 
+  it('makes a join wait for a settlement in flight, so it never joins a request no wake will reach', async () => {
+    const repo = new PgCapabilityRequestRepo(prisma)
+    const row = (await create(repo))!
+    let joined: Promise<boolean> | undefined
+    await prisma.$transaction(async (tx) => {
+      // The settling transaction holds the row; the join must wait for it, then see it settled.
+      await tx.capabilityRequest.updateMany({ where: { id: row.id, status: 'open' }, data: { status: 'declined' } })
+      joined = repo.addOrigin(row.id, origin('s2'), NOW)
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    })
+    await expect(joined!).resolves.toBe(false)
+    expect((await repo.get(ORG_ID, row.id))!.origins.map((o) => o.sessionId)).toEqual(['s1'])
+  })
+
+  it('records an applied change only for completions at or below the acknowledged revision', async () => {
+    const repo = new PgCapabilityRequestRepo(prisma)
+    const low = (await create(repo))!
+    await repo.settle(low.id, 1, { ...declined(NOW), status: 'completed', note: null, settledRevision: 2n })
+    await expect(repo.markChangeApplied([AGENT_ID], 1n, NOW)).resolves.toBe(0)
+    await expect(repo.markChangeApplied([AGENT_ID], 2n, NOW)).resolves.toBe(1)
+    expect((await repo.get(ORG_ID, low.id))!.changeAppliedAt).toEqual(NOW)
+  })
+
   it('settles by compare-and-set on status and generation, making every wake pending', async () => {
     const repo = new PgCapabilityRequestRepo(prisma)
     const row = (await create(repo))!
