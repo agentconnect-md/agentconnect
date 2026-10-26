@@ -168,6 +168,11 @@ describe('scanArtifacts', () => {
       components: [expect.objectContaining({ license: 'MIT', verdict: 'allowed' })],
       violations: []
     })
+    writeFileSync(join(macos, 'agentconnect-computer-menubar'), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0]))
+    expect(scanArtifacts(pkg, options)).toEqual({
+      components: expect.arrayContaining([expect.objectContaining({ license: 'Apache-2.0', verdict: 'allowed' })]),
+      violations: []
+    })
     writeFileSync(join(macos, 'helper'), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0]))
     expect(scanArtifacts(pkg, options).violations).toEqual([
       'AgentConnect Computer.app/Contents/MacOS/helper: undeclared executable; declare its component and license in license-scan.ts'
