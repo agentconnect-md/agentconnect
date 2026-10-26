@@ -41,6 +41,8 @@ export interface MacMenuBarDeps {
   // Exits the daemon; a non-zero code makes launchd start it again.
   shutdown: (code: number) => void
   onFfmpegInstalled: () => void
+  // Whether a grant the running driver missed is now in effect, restarting the driver onto it if so.
+  accessibilityGranted: () => Promise<boolean>
   log: (line: string) => void
 }
 
@@ -105,7 +107,11 @@ export function macMenuBarHost(deps: MacMenuBarDeps): Omit<MenuBarHost, 'stop' |
   const host = deps.registration ? new URL(deps.registration.channelUrl).host : undefined
   return {
     async facts(): Promise<MenuBarFacts> {
-      const permissions = await within(macPermissions(driver), PERMISSIONS_TIMEOUT_MS).catch(() => undefined)
+      let permissions = await within(macPermissions(driver), PERMISSIONS_TIMEOUT_MS).catch(() => undefined)
+      // The running driver keeps the Accessibility answer it started with; a switch turned on since needs a fresh one.
+      if (permissions && !permissions.accessibility && (await deps.accessibilityGranted())) {
+        permissions = await within(macPermissions(driver), PERMISSIONS_TIMEOUT_MS).catch(() => undefined)
+      }
       const name = deps.name()
       const app = appVersion(deps.appPath)
       const record = readGrantRecord(dir)

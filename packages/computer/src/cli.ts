@@ -39,6 +39,7 @@ import { ComputerCpClient } from './cp/client.js'
 import { consoleStopHandler } from './cp/console-stop.js'
 import { DAEMON_CONSOLE_STOP_REASON, startLocalControls, type LocalControls } from './local-controls.js'
 import { macMenuBarHost } from './menu-bar-host.js'
+import { watchAccessibility, type AccessibilityWatch } from './accessibility-watch.js'
 import { RelayLinks } from './cp/relay-links.js'
 import {
   channelPrincipal,
@@ -651,6 +652,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     viewer?: Viewer
     channel?: ReturnType<typeof startCpChannel>
     local?: LocalControls
+    accessibility?: AccessibilityWatch
   } = {}
   // Registered with a Control Plane: act only while its channel key is live, never after a revoke (§8.2).
   const authority = new ChannelAuthority({
@@ -716,6 +718,15 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     if (state && (!state.accessibility || !state.screenRecording)) {
       void runSelf(['permissions', '--json', '--prompt'], 200_000).catch(() => undefined)
     }
+    if (state && !state.accessibility) {
+      live.accessibility = watchAccessibility({
+        check: async () =>
+          (JSON.parse(await runSelf(['permissions', '--json'], 60_000)) as { accessibility?: boolean })
+            .accessibility === true,
+        restartDriver: () => driver.close(),
+        log
+      })
+    }
   }
   const releaseDisplay = config.keepAwake ? keepDisplayAwake(log) : () => undefined
   const driverTools = await loadDriverTools(driver, config)
@@ -750,6 +761,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
               // A non-zero exit makes launchd's KeepAlive start the daemon again; zero leaves it stopped.
               shutdown: (code) => void shutdown(code),
               onFfmpegInstalled: () => live.channel?.refreshDoctor(),
+              accessibilityGranted: () => live.accessibility?.now() ?? Promise.resolve(false),
               log
             })
           }
@@ -819,6 +831,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     await auditReport?.flush()
     live.channel?.stop()
     live.local?.close()
+    live.accessibility?.stop()
     authority.close()
     releaseDisplay()
     await Promise.allSettled([server.close(), driver.close(), egress?.stop()])
