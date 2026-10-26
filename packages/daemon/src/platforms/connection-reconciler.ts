@@ -99,7 +99,10 @@ export type PlatformConnection =
 export interface PlatformActionSink {
   handleStatusAction: NonNullable<SlackDeps['onStatusAction']>
   statusInfoForKey: NonNullable<SlackDeps['onStatusInfo']>
-  handlePermissionChoice: NonNullable<SlackDeps['onPermissionChoice']>
+  // `srcIntegrationIds`: the bots of the connection a Socket Mode click arrived on, which a capability Decline is checked against.
+  handlePermissionChoice: (
+    a: Parameters<NonNullable<SlackDeps['onPermissionChoice']>>[0] & { srcIntegrationIds?: readonly string[] }
+  ) => void
   handleElicitChoice: NonNullable<SlackDeps['onElicitChoice']>
   handleElicitFormSubmit: NonNullable<SlackDeps['onElicitFormSubmit']>
   handleDiscordSelect: NonNullable<DiscordDeps['onSelectAction']>
@@ -451,7 +454,8 @@ export class ConnectionReconciler {
       onSlotSettle: (a) => this.host.settleSlackSlot(conn(), a),
       onStatusAction: (a) => this.host.handleStatusAction(a),
       onStatusInfo: (key) => this.host.statusInfoForKey(key),
-      onPermissionChoice: (a) => this.host.handlePermissionChoice(a),
+      onPermissionChoice: (a) =>
+        this.host.handlePermissionChoice({ ...a, srcIntegrationIds: this.host.srcIntegrationIds(conn()) }),
       onElicitChoice: (a) => this.host.handleElicitChoice(a),
       onElicitFormSubmit: (a) => this.host.handleElicitFormSubmit(a),
       log: this.log,

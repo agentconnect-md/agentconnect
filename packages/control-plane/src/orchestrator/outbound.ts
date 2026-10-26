@@ -170,6 +170,11 @@ import {
   SessionPullRequestFeedback,
   SessionPullRequestFeedbackResult,
   AssistantFollowUpWake,
+  CapabilityForward,
+  CapabilityForwardResult,
+  CapabilityReopened,
+  SessionCapabilitySettled,
+  SessionCapabilitySettledResult,
   AssistantFollowUpWakeResult,
   CodeHostNoteDesired
 } from '@agentconnect.md/protocol'
@@ -716,6 +721,47 @@ export class ControlSender {
     const c = this.must(daemonId)
     return c.conn.request<AssistantFollowUpWakeResult>(
       'assistant/follow-up-wake',
+      req,
+      { epoch: c.sessionEpoch, agentId: req.agentId },
+      undefined,
+      orgId
+    )
+  }
+
+  /** One origin's settlement wake (capability-requests.md §4.7); the daemon answers once the reminder is durable. */
+  async capabilitySettled(
+    daemonId: string,
+    orgId: string,
+    req: SessionCapabilitySettled
+  ): Promise<SessionCapabilitySettledResult> {
+    const c = this.must(daemonId)
+    return c.conn.request<SessionCapabilitySettledResult>(
+      'session/capability-settled',
+      req,
+      { epoch: c.sessionEpoch, agentId: req.agentId },
+      undefined,
+      orgId
+    )
+  }
+
+  /** A reopened request: the daemon puts its cards back to the open form (capability-requests.md §4.5). */
+  async capabilityReopened(daemonId: string, orgId: string, req: CapabilityReopened): Promise<void> {
+    const c = this.must(daemonId)
+    const ack = await c.conn.request<Ack>(
+      'capability/reopened',
+      req,
+      { epoch: c.sessionEpoch, agentId: req.agentId },
+      undefined,
+      orgId
+    )
+    if (!ack.ok) throw new Error(`capability reopen rejected${ack.reason ? `: ${ack.reason}` : ''}`)
+  }
+
+  /** Forward a request to someone who can act on it, through the agent's linked DM (capability-requests.md §4.5). */
+  async capabilityForward(daemonId: string, orgId: string, req: CapabilityForward): Promise<CapabilityForwardResult> {
+    const c = this.must(daemonId)
+    return c.conn.request<CapabilityForwardResult>(
+      'capability/forward',
       req,
       { epoch: c.sessionEpoch, agentId: req.agentId },
       undefined,

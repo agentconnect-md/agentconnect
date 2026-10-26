@@ -24,6 +24,8 @@ function stubDeps(): HttpDeps {
   return {
     repos: { user: { provisionOidcUser: async () => ({ userId: 'u' }) } },
     config: { NODE_ENV: 'test', DEFAULT_OWNER_ID: '00000000-0000-4000-8000-000000000000' },
+    // Mounted only with the service; its handlers are never reached here.
+    capabilityRequests: {},
     platforms: buildCpPlatformRegistry([
       createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
       createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
@@ -323,7 +325,11 @@ describe('openapi plane', () => {
           'POST /api/v1/orgs/:orgId/service-accounts/:id/keys',
           'PATCH /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId',
           'POST /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId/regenerate',
-          'DELETE /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId'
+          'DELETE /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId',
+          'POST /api/v1/orgs/:orgId/capability-requests/:id/settle',
+          'POST /api/v1/orgs/:orgId/capability-requests/:id/decline',
+          'POST /api/v1/orgs/:orgId/capability-requests/:id/reopen',
+          'POST /api/v1/orgs/:orgId/capability-requests/:id/forward'
         ].sort()
       )
       const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>

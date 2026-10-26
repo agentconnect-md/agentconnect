@@ -20,6 +20,19 @@ import {
   AssistantFollowUpWake,
   AssistantFollowUpWakeResult
 } from './frames/follow-up-watch.js'
+import {
+  CapabilityRequestReq,
+  CapabilityRequestResult,
+  CapabilityWithdrawReq,
+  CapabilityWithdrawResult,
+  CapabilityDecideReq,
+  CapabilityDecideResult,
+  SessionCapabilitySettled,
+  SessionCapabilitySettledResult,
+  CapabilityReopened,
+  CapabilityForward,
+  CapabilityForwardResult
+} from './frames/capability-request.js'
 
 import { AuthReq, AuthOk } from './frames/auth.js'
 import { ComputerLeaseAcquire, ComputerLeaseAcquireResult, ComputerLeaseRelease } from './frames/computer-lease.js'
@@ -613,6 +626,18 @@ export const FRAME_SCHEMAS = {
   'assistant/follow-up-watch/result': AssistantFollowUpWatchResult,
   'assistant/follow-up-wake': AssistantFollowUpWake,
   'assistant/follow-up-wake/result': AssistantFollowUpWakeResult,
+  // ── capability requests (capability-requests.md): the agent's ask, a chat Decline, and the CP's settling wake.
+  'capability/request': CapabilityRequestReq,
+  'capability/request/result': CapabilityRequestResult,
+  'capability/withdraw': CapabilityWithdrawReq,
+  'capability/withdraw/result': CapabilityWithdrawResult,
+  'capability/decide': CapabilityDecideReq,
+  'capability/decide/result': CapabilityDecideResult,
+  'capability/reopened': CapabilityReopened,
+  'capability/forward': CapabilityForward,
+  'capability/forward/result': CapabilityForwardResult,
+  'session/capability-settled': SessionCapabilitySettled,
+  'session/capability-settled/result': SessionCapabilitySettledResult,
   // ── merge-when-ready: arm/read the EDGE's in-memory watcher. Nothing is stored on either side.
   'automerge/set': AutoMergeSetReq,
   'automerge/set/result': AutoMergeState,
@@ -982,6 +1007,17 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('assistant/follow-up-watch/result', FRAME_SCHEMAS['assistant/follow-up-watch/result']),
   frame('assistant/follow-up-wake', FRAME_SCHEMAS['assistant/follow-up-wake']),
   frame('assistant/follow-up-wake/result', FRAME_SCHEMAS['assistant/follow-up-wake/result']),
+  frame('capability/request', FRAME_SCHEMAS['capability/request']),
+  frame('capability/request/result', FRAME_SCHEMAS['capability/request/result']),
+  frame('capability/withdraw', FRAME_SCHEMAS['capability/withdraw']),
+  frame('capability/withdraw/result', FRAME_SCHEMAS['capability/withdraw/result']),
+  frame('capability/decide', FRAME_SCHEMAS['capability/decide']),
+  frame('capability/decide/result', FRAME_SCHEMAS['capability/decide/result']),
+  frame('capability/reopened', FRAME_SCHEMAS['capability/reopened']),
+  frame('capability/forward', FRAME_SCHEMAS['capability/forward']),
+  frame('capability/forward/result', FRAME_SCHEMAS['capability/forward/result']),
+  frame('session/capability-settled', FRAME_SCHEMAS['session/capability-settled']),
+  frame('session/capability-settled/result', FRAME_SCHEMAS['session/capability-settled/result']),
   frame('automerge/set', FRAME_SCHEMAS['automerge/set']),
   frame('automerge/set/result', FRAME_SCHEMAS['automerge/set/result']),
   frame('automerge/state', FRAME_SCHEMAS['automerge/state']),

@@ -19,6 +19,12 @@ import {
   type MemoryTransactionReq,
   type MemoryTransactionResult,
   FOLLOW_UP_WATCH_BUDGET_MS,
+  type CapabilityDecideReq,
+  type CapabilityDecideResult,
+  type CapabilityRequestReq,
+  type CapabilityRequestResult,
+  type CapabilityWithdrawReq,
+  type CapabilityWithdrawResult,
   type AssistantFollowUpWatchReq,
   type AssistantFollowUpWatchResult
 } from '@agentconnect.md/protocol'
@@ -187,6 +193,7 @@ import type { SessionControlDeps } from './control/session.js'
 import type { SkillsControlDeps } from './control/skills.js'
 import type { TaskControlDeps } from './control/task.js'
 import type { AssistantControlDeps } from './control/assistant.js'
+import type { CapabilityControlDeps } from './control/capability.js'
 import type { AutoMergeControlDeps } from './control/automerge.js'
 import type { SandboxKeepAliveDeps } from './control/sandbox-keepalive.js'
 import type { RuntimeProbeDeps } from './control/runtime-probe.js'
@@ -205,6 +212,8 @@ const ACK_TIMEOUT_MS = 5000
 const TURN_PATH_BUDGET_MS = 5 * ACK_TIMEOUT_MS
 /** One deadline for a `memory/store` op, the shim carrier's per-op timeout; a safe re-send fits inside it. */
 const MEMORY_STORE_TIMEOUT_MS = 30_000
+/** A capability request reads the agent's rows and may join an open one; one attempt, a generous window. */
+const CAPABILITY_CALL_BUDGET_MS = 15_000
 /** The `memory/store` ops that change nothing, so a re-send needs no operation id. */
 const MEMORY_FS_READS: ReadonlySet<string> = new Set(['memory-read', 'memory-stat', 'memory-readdir'])
 /** How long a turn-path request waits for a reconnecting control link; a planned CP handoff takes seconds. */
@@ -258,6 +267,7 @@ export interface CpClientDeps
     SkillsControlDeps,
     TaskControlDeps,
     AssistantControlDeps,
+    CapabilityControlDeps,
     AutoMergeControlDeps,
     SandboxKeepAliveDeps,
     RuntimeProbeDeps,
@@ -443,6 +453,9 @@ export class CpClient {
       taskReader: deps.taskReader,
       assistantActivity: deps.assistantActivity,
       followUpWake: deps.followUpWake,
+      capabilitySettled: deps.capabilitySettled,
+      capabilityReopened: deps.capabilityReopened,
+      capabilityForward: deps.capabilityForward,
       autoMerge: deps.autoMerge,
       sandboxKeepAlive: deps.sandboxKeepAlive,
       runtimeProbe: deps.runtimeProbe,
@@ -1147,6 +1160,36 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected assistant/follow-up-watch/result, got ${rep.type}`, false)
     }
     return rep.payload as AssistantFollowUpWatchResult
+  }
+
+  /** An agent's capability request (capability-requests.md §4.1), single-shot: the CP deduplicates by target, so a lost ack is asked again by the agent, not by this socket. */
+  async capabilityRequest(payload: CapabilityRequestReq, orgId?: string): Promise<CapabilityRequestResult> {
+    return await this.capabilityCall('capability/request', payload, orgId)
+  }
+
+  /** The agent no longer needs its open request (§4.5); nobody is woken. */
+  async capabilityWithdraw(payload: CapabilityWithdrawReq, orgId?: string): Promise<CapabilityWithdrawResult> {
+    return await this.capabilityCall('capability/withdraw', payload, orgId)
+  }
+
+  /** A Decline clicked on a card, settled by the CP's compare-and-set (§4.4.4). */
+  async capabilityDecide(payload: CapabilityDecideReq, orgId?: string): Promise<CapabilityDecideResult> {
+    return await this.capabilityCall('capability/decide', payload, orgId)
+  }
+
+  private async capabilityCall<T>(
+    type: 'capability/request' | 'capability/withdraw' | 'capability/decide',
+    payload: unknown,
+    orgId?: string
+  ): Promise<T> {
+    this.requireReady(type)
+    const rep = await this.correlator.request(this.scopedFrame(type, payload, orgId), (e) => this.transport!.send(e), {
+      maxTries: 1,
+      ackTimeoutMs: CAPABILITY_CALL_BUDGET_MS
+    })
+    if (rep.type !== `${type}/result`)
+      throw new WireError('INTERNAL', `expected ${type}/result, got ${rep.type}`, false)
+    return rep.payload as T
   }
 
   /** Which of an agent's sessions the console user behind an asker could see, for the read rule (assistant-mode.md §5.5). */

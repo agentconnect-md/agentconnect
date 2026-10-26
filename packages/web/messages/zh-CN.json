@@ -6854,5 +6854,101 @@
       "save": "保存",
       "saving": "保存中…"
     }
+  },
+  "CapabilityRequests": {
+    "metadata": {
+      "title": "能力请求 · AgentConnect"
+    },
+    "page": {
+      "crumb": "能力请求",
+      "loading": "正在加载请求…",
+      "notFound": "未找到请求",
+      "notFoundBody": "它可能已被移除，或属于你无法查看的 Agent。",
+      "backHome": "返回首页",
+      "heading": "{agent} 请求它缺少的能力",
+      "askedBy": "请求人：{people}",
+      "askedByNobody": "在无人参与的任务中发起",
+      "externalPlace": "外部会话",
+      "openConversation": "打开会话",
+      "askedAt": "请求于 {time}",
+      "expiresAt": "{time} 过期",
+      "agentSays": "Agent 说：",
+      "whatChanges": "将要变更",
+      "settingChange": "{field}：<code>{from}</code> → <code>{to}</code>",
+      "valueOn": "开",
+      "valueOff": "关",
+      "valueDefault": "默认",
+      "addServer": "添加 MCP 服务器 <name>{server}</name>",
+      "serverAlready": "已添加",
+      "serverMissing": "此组织中没有注册该名称的 MCP 服务器。",
+      "installSkill": "安装技能 <name>{skill}</name>",
+      "skillAlready": "已安装",
+      "conversations": "等待此请求的会话"
+    },
+    "fields": {
+      "model": "模型",
+      "reasoningEffort": "推理强度",
+      "fastMode": "快速模式",
+      "outputMode": "输出模式",
+      "permissionMode": "权限模式"
+    },
+    "complete": {
+      "heading": "进行变更",
+      "settingsHint": "Agent 设置会以请求的值预先填好。你可以调整后再保存。",
+      "reviewSettings": "检查并保存设置",
+      "addServer": "添加 {server}",
+      "reviewTools": "查看工具",
+      "hideTools": "隐藏工具",
+      "toolsDone": "完成",
+      "serverMissingHint": "请先在“工具与技能”中注册它，然后在这里添加。",
+      "openTools": "打开工具与技能",
+      "installSkill": "安装 {skill}",
+      "findSkill": "在技能仓库中查找",
+      "skillMissingHint": "技能库中还没有名为 {source} 的来源。",
+      "saving": "正在保存…",
+      "done": "完成 — 已通知 Agent。",
+      "doneDiffers": "完成 — 已告知 Agent 实际保存的内容：{outcome}",
+      "settleFailed": "变更已保存，但请求未能关闭：{error}"
+    },
+    "authority": {
+      "heading": "你无法进行此变更",
+      "needs": "需要：{missing}",
+      "whoCan": "可以处理的人：{names}",
+      "nobodyCan": "此组织目前没有人可以进行此变更。",
+      "forward": "转发",
+      "forwardTo": "转发给",
+      "forwardAnyone": "任何有权限的人",
+      "forwardedDm": "已转发 — 对方收到了私信。",
+      "forwardedActivity": "已转发 — 请求在 Agent 的动态中等待处理。"
+    },
+    "decline": {
+      "action": "拒绝",
+      "note": "给 Agent 的备注（可选）",
+      "placeholder": "为什么不行，或可以改用什么",
+      "confirm": "拒绝请求",
+      "cancel": "取消",
+      "reopen": "重新打开"
+    },
+    "status": {
+      "open": "等待有人处理",
+      "completed": "已由 {name} 完成",
+      "completedNoName": "已完成",
+      "declined": "已被 {name} 拒绝",
+      "declinedNoName": "已拒绝",
+      "expired": "已过期 — 7 天内无人处理",
+      "withdrawn": "Agent 已撤回",
+      "outcome": "变更内容：{outcome}",
+      "note": "对方的备注："
+    },
+    "wake": {
+      "delivered": "已通知 Agent。",
+      "pending": "正在通知 Agent…",
+      "paused": "Agent 已暂停，恢复后会收到通知。",
+      "gone": "该会话已结束，因此未在那里通知 Agent。"
+    },
+    "agentCard": {
+      "title": "请求",
+      "count": "{count, plural, other {# 个待处理请求}}"
+    }
   }
 }

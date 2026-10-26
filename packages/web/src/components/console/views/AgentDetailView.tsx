@@ -94,6 +94,7 @@ import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { AssistantModePanel } from '@/components/console/AssistantModePanel'
 import { AssistantActivityPanel } from '@/components/console/AssistantActivityPanel'
+import { AgentCapabilityRequestsCard } from '@/components/console/AgentCapabilityRequestsCard'
 import { activityScope } from '@/lib/agent-activity'
 import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
@@ -2973,7 +2974,10 @@ function AgentDetail() {
 
       {/* Activity tab — what the agent follows, runs and waits on, read from its daemon. */}
       {tab === 'activity' && (
-        <AssistantActivityPanel agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
+        <>
+          <AgentCapabilityRequestsCard agentId={da.id} />
+          <AssistantActivityPanel agentId={da.id} canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit} />
+        </>
       )}
 
       {/* One review/check settings surface, rendered as a bottom sheet on mobile

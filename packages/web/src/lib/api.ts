@@ -7788,3 +7788,120 @@ export function createDecisionApi(orgId: string): DecisionApi {
       )
   }
 }
+
+// ── capability requests (capability-requests.md §4.5): an agent's ask, completed or declined by a person ──
+
+export type CapabilityRequestKind = 'agent-settings' | 'mcp-server' | 'skill'
+export type CapabilityRequestStatus = 'open' | 'completed' | 'declined' | 'expired' | 'withdrawn'
+
+/** The `agent-settings` fields an agent may ask for. */
+export interface CapabilitySettingsWant {
+  model?: string
+  reasoningEffort?: string
+  fastMode?: boolean
+  outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
+  permissionMode?: string
+}
+
+export type CapabilityRequestWant = CapabilitySettingsWant | { server: string } | { skill: string }
+
+export interface CapabilityRequestAskerDto {
+  kind: 'console' | 'member'
+  userId: string
+  name: string | null
+  platform: string | null
+}
+
+export interface CapabilityRequestOriginDto {
+  sessionId: string
+  platform: string
+  placeLabel: string | null
+  external: boolean
+  askers: CapabilityRequestAskerDto[]
+  nobody: boolean
+  askedAt: string
+  wake: 'none' | 'pending' | 'delivered' | 'gone'
+  wakeReason: string | null
+}
+
+export interface CapabilityRequestDto {
+  id: string
+  orgId: string
+  agentId: string
+  agentName: string
+  kind: CapabilityRequestKind
+  target: string
+  want: CapabilityRequestWant
+  summary: string
+  reason: string
+  status: CapabilityRequestStatus
+  generation: number
+  createdAt: string
+  expiresAt: string
+  settledAt: string | null
+  settledBy:
+    { kind: 'console'; userId: string; name: string } | { kind: 'member'; platform: string; name: string } | null
+  outcome: string | null
+  differs: boolean
+  note: string | null
+  origins: CapabilityRequestOriginDto[]
+  current: Record<string, unknown>
+  warnings: string[]
+  viewer: {
+    canComplete: boolean
+    canDecline: boolean
+    canReopen: boolean
+    canForward: boolean
+    missing: string | null
+    whoCan: Array<{ userId: string; name: string }>
+  }
+}
+
+const capabilityRequestPath = (id: string, orgId?: string) =>
+  `${orgBase(orgId)}/capability-requests/${encodeURIComponent(id)}`
+
+export async function fetchCapabilityRequests(
+  filter: { agentId?: string; status?: CapabilityRequestStatus } = {},
+  orgId?: string
+): Promise<CapabilityRequestDto[]> {
+  const query = new URLSearchParams()
+  if (filter.agentId) query.set('agentId', filter.agentId)
+  if (filter.status) query.set('status', filter.status)
+  const suffix = query.toString()
+  const page = await apiGet<{ requests: CapabilityRequestDto[] }>(
+    `${orgBase(orgId)}/capability-requests${suffix ? `?${suffix}` : ''}`
+  )
+  return page.requests
+}
+
+export async function fetchCapabilityRequest(id: string, orgId?: string): Promise<CapabilityRequestDto> {
+  return apiGet<CapabilityRequestDto>(capabilityRequestPath(id, orgId))
+}
+
+/** Asks for the request to be settled once the change was saved; the outcome is what the server observes, not what was clicked. */
+export async function settleCapabilityRequest(id: string, orgId?: string): Promise<CapabilityRequestDto> {
+  return apiPost<CapabilityRequestDto>(`${capabilityRequestPath(id, orgId)}/settle`, {})
+}
+
+export async function declineCapabilityRequest(
+  id: string,
+  note: string | undefined,
+  orgId?: string
+): Promise<CapabilityRequestDto> {
+  return apiPost<CapabilityRequestDto>(`${capabilityRequestPath(id, orgId)}/decline`, note ? { note } : {})
+}
+
+export async function reopenCapabilityRequest(id: string, orgId?: string): Promise<CapabilityRequestDto> {
+  return apiPost<CapabilityRequestDto>(`${capabilityRequestPath(id, orgId)}/reopen`, {})
+}
+
+export async function forwardCapabilityRequest(
+  id: string,
+  userId: string | undefined,
+  orgId?: string
+): Promise<{ forwarded: 'dm' | 'activity' }> {
+  return apiPost<{ forwarded: 'dm' | 'activity' }>(
+    `${capabilityRequestPath(id, orgId)}/forward`,
+    userId ? { userId } : {}
+  )
+}

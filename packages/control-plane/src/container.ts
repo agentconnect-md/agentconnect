@@ -77,6 +77,7 @@ import { PullRequestViewService } from './github/pull-request-view.service.js'
 import { SessionPullRequestLinkService } from './github/session-pull-request-link.service.js'
 import { SessionPullRequestFeedbackService } from './codehost/session-pull-request-feedback.service.js'
 import { FollowUpWatchService } from './codehost/follow-up-watch.service.js'
+import { CapabilityRequestService } from './capability/capability-request.service.js'
 import { githubFollowUpWatchProvider } from './github/follow-up-watch.js'
 import { gitlabFollowUpWatchProvider } from './gitlab/follow-up-watch.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
@@ -107,6 +108,7 @@ import {
   PgSessionRepo,
   PgSessionPullRequestFeedbackRepo,
   PgFollowUpWatchRepo,
+  PgCapabilityRequestRepo,
   PgSessionUsageRepo,
   PgAgentApiEntryRepo,
   PgWebchatConversationRepo,
@@ -538,6 +540,7 @@ export function buildContainer(
     session: new PgSessionRepo(prisma),
     sessionPullRequestFeedback: new PgSessionPullRequestFeedbackRepo(prisma),
     followUpWatch: new PgFollowUpWatchRepo(prisma),
+    capabilityRequest: new PgCapabilityRequestRepo(prisma),
     sessionUsage: new PgSessionUsageRepo(prisma),
     agentApiEntry: new PgAgentApiEntryRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
@@ -1071,13 +1074,38 @@ export function buildContainer(
     clock
   )
 
+  // Capability requests (capability-requests.md): built always so the console reads them; daemons are offered them only behind the flag.
+  const capabilityRequests = new CapabilityRequestService({
+    clock,
+    requests: repos.capabilityRequest,
+    agents: repos.agent,
+    mcpProviders: repos.mcpProvider,
+    skillSources: repos.skillSource,
+    orgs: repos.org,
+    ...(webAppUrl ? { webAppUrl } : {}),
+    placement: placementResolver,
+    daemon: (daemonId) => connReg.get(daemonId),
+    sendSettled: (daemonId, orgId, wake) => sender.capabilitySettled(daemonId, orgId, wake),
+    sendReopened: (daemonId, orgId, frame) => sender.capabilityReopened(daemonId, orgId, frame),
+    sendForward: (daemonId, orgId, frame) => sender.capabilityForward(daemonId, orgId, frame),
+    log: {
+      debug: (obj, message) => http.log.debug(obj, message),
+      warn: (obj, message) => http.log.warn(obj, message)
+    }
+  })
+
   // The fan-out that rides the resolver (orchestrator/agentDelivery.ts).
   const agentDelivery = new AgentDelivery({
     control: sender,
     specs: agentSpecs,
     placement: placementResolver,
     // §17.3 projection gate: live advertised features; unknown daemon reads fail-closed.
-    daemonFeatures: (daemonId) => connReg.get(daemonId)?.capabilities?.features
+    daemonFeatures: (daemonId) => connReg.get(daemonId)?.capabilities?.features,
+    // A pushed change may satisfy an open capability request; its wake follows the daemon's ack (§4.7.5).
+    upserted: (agent, acked) =>
+      void capabilityRequests
+        .agentUpserted(agent, acked)
+        .catch((err) => http.log.warn({ err, agentId: agent.id }, 'capability request: re-evaluation failed'))
   })
 
   // Code-host routing scopes (code-host-decisions.md §3.2): host choice, the scope's rules, and the hosts' specs.
@@ -2132,6 +2160,7 @@ export function buildContainer(
     }
   })
   const httpDeps: HttpDeps = {
+    capabilityRequests,
     providerCredentialsChanged: (orgId, provider) => {
       for (const peer of connReg.reachableDaemons()) {
         if (!peer.capabilities?.features?.includes(PROVIDER_CREDENTIALS_V1_FEATURE)) continue
@@ -2943,6 +2972,7 @@ export function buildContainer(
     httpBotDaemonOffline: (daemonId) => httpBot.daemonOffline(daemonId),
     pullRequestFeedback: sessionPullRequestFeedback,
     followUpWatch,
+    ...(config.CAPABILITY_REQUESTS_ENABLED ? { capabilityRequests } : {}),
     codeHostFeedback,
     events,
     usageWriter,
@@ -3527,6 +3557,7 @@ export function buildContainer(
       sessionAccessWarmer.start()
       sessionPullRequestFeedback?.start()
       followUpWatch.start()
+      capabilityRequests.start()
       for (const loop of backgroundLoops) loop.start()
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
       // failed boot resumes on the next one. Never blocks listen.
@@ -3563,6 +3594,7 @@ export function buildContainer(
       sessionAccessWarmer.stop()
       sessionPullRequestFeedback?.stop()
       followUpWatch.stop()
+      capabilityRequests.stop()
       for (const loop of backgroundLoops) loop.stop()
       visibilityPush.stop()
       await Promise.allSettled([
@@ -3573,6 +3605,7 @@ export function buildContainer(
         dutyRecompute.settle(),
         ...(sessionPullRequestFeedback ? [sessionPullRequestFeedback.settle()] : []),
         followUpWatch.settle(),
+        capabilityRequests.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
       ])
       await rootPrisma.$disconnect()

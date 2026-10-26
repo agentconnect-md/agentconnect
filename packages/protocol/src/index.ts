@@ -280,4 +280,6 @@ export * from './frames/codehost-feedback.js'
 
 export * from './frames/follow-up-watch.js'
 
+export * from './frames/capability-request.js'
+
 export * from './ahp.js'

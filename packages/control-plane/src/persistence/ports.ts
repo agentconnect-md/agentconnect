@@ -62,7 +62,11 @@ import type {
   RuntimeStrategyEntries,
   TransferUploadOutcome,
   ComputerApprovalResult,
-  ComputerScreenshotContentType
+  ComputerScreenshotContentType,
+  CapabilityAskers,
+  CapabilityDecider,
+  CapabilityKind,
+  CapabilityRequestStatus
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -2243,6 +2247,129 @@ export interface FollowUpWatchRepo {
   objects(provider: CodeHostProvider): Promise<Array<FollowUpWatchObject & { installationId: bigint | null }>>
   /** Drop delivery receipts older than the cutoff. */
   deleteExpiredReceipts(before: Date): Promise<number>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// CapabilityRequestRepo — what agents asked people for (capability-requests.md §4.3)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Where an origin's wake stands for the generation it names. */
+export type CapabilityWakeState = 'none' | 'pending' | 'delivered' | 'gone'
+
+/** One conversation waiting for a request, with its own asker context and wake. */
+export interface CapabilityRequestOriginRecord {
+  requestId: string
+  sessionId: string
+  sessionKey: string
+  platform: string
+  placeLabel: string | null
+  external: boolean
+  askers: CapabilityAskers
+  askedAt: Date
+  wakeGeneration: number
+  wakeState: CapabilityWakeState
+  wakeAttempts: number
+  wakeReason: string | null
+  wakeSince: Date | null
+  wakeDueAt: Date | null
+}
+
+export interface CapabilityRequestRecord {
+  id: string
+  orgId: OrgId
+  agentId: AgentId
+  kind: CapabilityKind
+  target: string
+  want: Record<string, unknown>
+  summary: string
+  reason: string
+  generation: number
+  status: CapabilityRequestStatus
+  outcome: string | null
+  differs: boolean
+  note: string | null
+  settledBy: CapabilityDecider | null
+  settledAt: Date | null
+  settledRevision: bigint | null
+  // Daemon id → when it was seen to apply `settledRevision`.
+  appliedBy: Record<string, string>
+  createdAt: Date
+  expiresAt: Date
+  origins: CapabilityRequestOriginRecord[]
+}
+
+export type NewCapabilityOrigin = Pick<
+  CapabilityRequestOriginRecord,
+  'sessionId' | 'sessionKey' | 'platform' | 'placeLabel' | 'external' | 'askers'
+>
+
+/** What one settling commit writes. */
+export interface CapabilitySettlement {
+  status: 'completed' | 'declined' | 'expired'
+  outcome: string | null
+  differs: boolean
+  note: string | null
+  settledBy: CapabilityDecider | null
+  settledRevision: bigint | null
+  // The daemons that already applied `settledRevision`: the settlement follows their acknowledged upsert.
+  appliedBy?: readonly string[]
+  at: Date
+}
+
+export interface CapabilityRequestRepo {
+  get(orgId: OrgId, id: string): Promise<CapabilityRequestRecord | null>
+  /** The request on an agent, whatever its org: for the daemon's frames, which name the agent. */
+  getForAgent(agentId: AgentId, id: string): Promise<CapabilityRequestRecord | null>
+  list(
+    orgId: OrgId,
+    filter: { agentIds?: AgentId[]; status?: CapabilityRequestStatus }
+  ): Promise<CapabilityRequestRecord[]>
+  /** The open request for this key, if any. */
+  open(agentId: AgentId, kind: CapabilityKind, target: string): Promise<CapabilityRequestRecord | null>
+  /** Every open request of an agent, for re-evaluation after its spec changes. */
+  openForAgent(agentId: AgentId): Promise<CapabilityRequestRecord[]>
+  /** The latest request for this key declined at or after `since`. */
+  declinedSince(
+    agentId: AgentId,
+    kind: CapabilityKind,
+    target: string,
+    since: Date
+  ): Promise<CapabilityRequestRecord | null>
+  /** How many open requests name this session as an origin. */
+  openForSession(sessionId: string): Promise<number>
+  /** Insert an open request with its first origin; null when another open request took the key first. */
+  create(
+    input: Pick<
+      CapabilityRequestRecord,
+      'id' | 'orgId' | 'agentId' | 'kind' | 'target' | 'want' | 'summary' | 'reason' | 'createdAt' | 'expiresAt'
+    > & { origin: NewCapabilityOrigin }
+  ): Promise<CapabilityRequestRecord | null>
+  /** Add a conversation to an open request; false when the request is no longer open. */
+  addOrigin(id: string, origin: NewCapabilityOrigin, at: Date): Promise<boolean>
+  /** Drop one origin of an open request, and withdraw the request when it was the last; null when not open or not an origin. */
+  withdrawOrigin(id: string, sessionId: string, at: Date): Promise<'withdrawn' | 'left' | null>
+  /** Compare-and-set from open at `generation`; on success every origin's wake for that generation is pending. */
+  settle(id: string, generation: number, settlement: CapabilitySettlement): Promise<boolean>
+  /** Declined → open with the next generation; null when it was not declined or another open request holds the key. */
+  reopen(id: string, generation: number, at: Date, expiresAt: Date): Promise<CapabilityRequestRecord | null>
+  /** Open requests past their expiry, oldest first. */
+  expired(now: Date, limit: number): Promise<CapabilityRequestRecord[]>
+  /** Lease the next due wake. */
+  claimWake(
+    owner: string,
+    now: Date,
+    until: Date
+  ): Promise<{ request: CapabilityRequestRecord; origin: CapabilityRequestOriginRecord } | null>
+  /** Record the outcome of one claimed wake, while it still names `generation`. */
+  finishWake(
+    requestId: string,
+    sessionId: string,
+    owner: string,
+    generation: number,
+    next: { state: CapabilityWakeState; reason: string | null; dueAt: Date | null; attempts: number }
+  ): Promise<void>
+  /** Note that `daemonId` applied the agents' configuration up to `revision` (null: everything settled by `at`); only its own wakes may then go. */
+  markChangeApplied(daemonId: string, agentIds: readonly string[], revision: bigint | null, at: Date): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

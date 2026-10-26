@@ -485,6 +485,8 @@ export const STATUS_ACTION = SLACK_STATUS_ACTION
 /** URL-only OAuth button. Direct Socket Mode bots still receive its interaction
  * payload and must ACK it; shared HTTP bots are ACKed by the relay ingress. */
 export const PERMISSION_UPDATE_ACTION = 'ac_update_permissions'
+/** A capability card's link button (capability-requests.md §4.4.2): Slack still sends its click, which is acked and ignored. */
+export const CAPABILITY_OPEN_ACTION = 'ac_capability_open'
 
 /** The modal view's callback_id — used if we ever handle a submit (controls apply on
  *  interaction today, so there's no submit). */
