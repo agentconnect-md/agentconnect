@@ -14,6 +14,7 @@ test('a partial npm retry skips completed packages and compares against each pac
   let failSetup = true
   const options = {
     built: () => false,
+    readPins: async () => ({}),
     readVersion: async (name, selector) => {
       const version = current.get(name.split('/')[1])
       return selector === 'latest' || selector === version ? version : undefined
@@ -91,6 +92,7 @@ test('the computer package pins each macOS app, rebuilt only when its recipe cha
         const version = name.includes('darwin') ? published[name.split('-').pop()] : '2.6.0'
         return selector === 'latest' || selector === version ? version : undefined
       },
+      readPins: async () => ({}),
       execute: (script, args) => calls.push([script.replace(/^scripts\//, ''), ...args]),
       changed: (tag, paths) => {
         assert.deepEqual(paths, ['packages/computer/scripts/build-macos-app.mjs'])
@@ -131,4 +133,30 @@ test('the computer package pins each macOS app, rebuilt only when its recipe cha
   const unbuilt = await run({ published: { arm64: '2.6.0' }, changed: () => true, built: () => false })
   assert.ok(!unbuilt.some(([script]) => script.includes('computer-app')))
   assert.deepEqual(JSON.parse(pins(unbuilt)), { '@agentconnect.md/computer-darwin-arm64': '2.6.0' })
+})
+
+test('a computer whose app pins moved republishes even when its bundle inputs did not change', async () => {
+  const run = async (publishedPins) => {
+    const calls = []
+    await publishPackages('v2.7.0-rc.7', {
+      readVersion: async (name, selector) => {
+        if (name.includes('darwin')) return selector === 'rc' ? '2.7.0-rc.7' : undefined
+        return selector === 'rc' ? '2.7.0-rc.3' : undefined
+      },
+      readPins: async (name, version) => {
+        assert.deepEqual([name, version], ['@agentconnect.md/computer', '2.7.0-rc.3'])
+        return publishedPins
+      },
+      execute: (script, args) => calls.push([/publish-(.+)-if-changed/.exec(script)?.[1], ...args]),
+      built: () => false
+    })
+    return calls.filter(([component]) => component === 'computer').map(([, previousTag]) => previousTag)
+  }
+  const pinned = {
+    '@agentconnect.md/computer-darwin-arm64': '2.7.0-rc.7',
+    '@agentconnect.md/computer-darwin-x64': '2.7.0-rc.7'
+  }
+
+  assert.deepEqual(await run({}), ['', ''])
+  assert.deepEqual(await run(pinned), ['v2.7.0-rc.3', 'v2.7.0-rc.3'])
 })
