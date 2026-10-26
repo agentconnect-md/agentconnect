@@ -17,6 +17,8 @@ export const SANDBOX_DSH_PRESET_ID = 'standard-no-search'
 export interface ShimPaths {
   gitCredentialHelper: string
   ghTokenEntry: string
+  /** The in-image `agentconnect-secrets` entry (capability-requests.md §4.9.2). */
+  secretsEntry: string
   glabTokenEntry: string
   autoMergeEntry: string
   mcpBridgeEntry: string
@@ -42,6 +44,7 @@ export function shimPaths(runtimeRoot = DEFAULT_SHIM_RUNTIME_ROOT, helperRoot = 
   return Object.freeze({
     gitCredentialHelper: `${helperRoot}/bin/git-credential`,
     ghTokenEntry: `${helperRoot}/shim/gh-token.js`,
+    secretsEntry: `${helperRoot}/shim/secrets.js`,
     glabTokenEntry: `${helperRoot}/shim/glab-token.js`,
     autoMergeEntry: `${helperRoot}/shim/auto-merge.js`,
     mcpBridgeEntry: `${helperRoot}/shim/mcp-bridge.js`,
@@ -64,6 +67,9 @@ export const SANDBOX_GIT_CREDENTIAL_HELPER = DEFAULT_SHIM_PATHS.gitCredentialHel
 
 /** The gh wrapper's token fetch in the pod — the in-sandbox twin of the daemon's hidden `gh-token` subcommand. */
 export const SANDBOX_GH_TOKEN_ENTRY = DEFAULT_SHIM_PATHS.ghTokenEntry
+
+/** Must match the runtime image: `/opt/agentconnect/pathbin/agentconnect-secrets` runs this entry. */
+export const SANDBOX_SECRETS_ENTRY = DEFAULT_SHIM_PATHS.secretsEntry
 
 /** The in-pod merge-when-ready watcher the shim spawns per armed pull request — one process, killed
  *  on disarm and gone with the pod. Its presence is REPORTED by the automerge handler rather than

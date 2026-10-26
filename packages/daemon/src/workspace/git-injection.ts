@@ -625,6 +625,19 @@ export function gitCredentialEnv(
   }
 }
 
+/** The credential channel alone, for every agent's runtime: its live secrets ride it, and `get` stays refused without a managed credential (capability-requests.md §4.9.2). */
+export function liveSecretsChannelEnv(
+  agentId: string,
+  target: GitCredentialTarget = targetOf(agentId)
+): Record<string, string> {
+  if (!capabilityFor) throw new Error('git credential injection is not initialized')
+  return {
+    [GITCRED_CAPABILITY_ENV]: capabilityFor(agentId),
+    [GITCRED_AGENT_ENV]: agentId,
+    ...(target.socketPath ? { [GITCRED_SOCKET_ENV]: target.socketPath } : {})
+  }
+}
+
 function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(agentId)): string {
   const { helper } = target
   const quoted = `'${helper.replaceAll("'", "'\\''")}'`

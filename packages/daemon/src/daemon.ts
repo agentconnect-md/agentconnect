@@ -129,6 +129,7 @@ import {
   FOLLOW_UP_WAKE_FEATURE,
   CAPABILITY_REQUESTS_FEATURE,
   CAPABILITY_REQUESTS_V2_FEATURE,
+  CAPABILITY_REQUESTS_V3_FEATURE,
   CAPABILITY_V1_KINDS,
   CAPABILITY_ASKERS_MAX,
   FOLLOW_UP_WATCH_FEATURE,
@@ -349,6 +350,7 @@ import {
   probeGitVersion,
   sandboxGitCredentialTarget,
   sessionGitConfig,
+  liveSecretsChannelEnv,
   sessionGitEnv
 } from './workspace/git-injection.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
@@ -3885,7 +3887,12 @@ export class Daemon {
         return (this.agents.get(agentId)?.skills ?? []).some(
           (entry) => isCredentialedSkillSource(entry) && gitSkillRepositoryPath(entry)?.toLowerCase() === wanted
         )
-      }
+      },
+      // Every agent holds a capability for its live secrets; only one whose spec carries a managed credential may `get` (the spawn's own predicate).
+      credentialedOf: (agentId: string) =>
+        credentialProviderOf(this.agents.get(agentId)?.workspace.gitCredential) !== undefined,
+      // Read from the CURRENT agent on every call, so a live secret saved a moment ago is served (capability-requests.md §4.9.2).
+      liveSecretsOf: (agentId: string) => this.agents.get(agentId)?.liveSecrets ?? []
     })
     const daemonCredentialTarget = daemonGitCredentialTarget({
       shimPath: writeGitcredShim(root, daemonEntryForShims(root)),
@@ -7321,11 +7328,9 @@ export class Daemon {
     return tunnel === 'gitcred' ? this.gitCredServer?.tunnelGreeting(subject) : undefined
   }
 
-  /** `mcp` for every pod agent; `gitcred` for any agent with a managed credential or a private skill source, the latter window-gated (source-cache.md §8). */
+  /** `mcp` and `gitcred` for every pod agent: its live secrets ride the credential channel, whose `get` serves only a managed credential (capability-requests.md §4.9.2). */
   private tunnelsForAgent(agentId: string): TunnelName[] {
-    const agent = this.agents.get(agentId)
-    if (!agent) return []
-    return this.workspaces.needsGitcredTunnel(agent) ? ['mcp', 'gitcred'] : ['mcp']
+    return this.agents.has(agentId) ? ['mcp', 'gitcred'] : []
   }
 
   /** D→C `agent/skill-status` after a completed skill reconcile: names and codes only, best-effort (source-cache.md §11). */
@@ -8063,10 +8068,16 @@ export class Daemon {
     const sessionGitInjection = needsSessionGit
       ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope))
       : undefined
+    // Every runtime but a dream's gets the credential channel for its live secrets; the session channel above re-states it where it applies.
+    const liveSecretsChannel =
+      !excludeAgentToolCredentials && this.gitCredServer
+        ? liveSecretsChannelEnv(agent.id, this.k8sPlane || remoteRoots ? sandboxGitTarget : undefined)
+        : undefined
     const env: Record<string, string> = {
       ...baseEnv,
       // Managed, none and external turn the runtime's own memory off; an unbuildable provider throws here at spawn.
       ...memoryProviderFor(agent, runtime, baseEnv, this.externalMemoryAdmission(agent.id)).runtimeEnv(),
+      ...(liveSecretsChannel ?? {}),
       // App identity rides with the CREDENTIAL mode, not the workspace mode: a scratch workspace with
       // authorized repositories needs the capability for its git and gh exactly like a clone does.
       ...(sessionGitInjection ?? {})
@@ -8109,6 +8120,9 @@ export class Daemon {
       // matching runtime-only capability; a user PATH override must not
       // shadow the wrapper.
       env.AC_AGENT_ID = agent.id
+      shimDirs.add(this.ghBinDir)
+    } else if (liveSecretsChannel && this.ghBinDir && !this.k8sPlane && !micro && !remoteSession) {
+      // `agentconnect-secrets` lives beside the gh wrapper; with no AC_AGENT_ID set here, that wrapper runs the real gh untouched.
       shimDirs.add(this.ghBinDir)
     }
     if (gitlabCredentials && this.glabBinDir && !this.k8sPlane && !micro && !remoteSession) {
@@ -8535,6 +8549,8 @@ export class Daemon {
       CAPABILITY_REQUESTS_FEATURE,
       // …and offers the repository, connection and secret kinds, and answers `agent/mcp-rebound`. Static.
       CAPABILITY_REQUESTS_V2_FEATURE,
+      // …and serves live secrets to `agentconnect-secrets` (capability-requests.md §4.9.2). Static.
+      CAPABILITY_REQUESTS_V3_FEATURE,
       // This daemon decodes the host-neutral `mode: 'git'` workspace arm; the CP
       // dual-encodes the legacy host-shaped arms to peers without this bit.
       WORKSPACE_GIT_V1_FEATURE,
@@ -10042,16 +10058,12 @@ export class Daemon {
     tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
     // Listing and stopping its tasks (send-message-guide.md §8.7), in every session that can delegate one.
     tools = [...tools, ...stopTaskToolsFor({ thread })]
-    // Capability requests (capability-requests.md §4.1): an agent in assistant mode, toward a CP that serves them; execution re-checks.
+    // Capability requests (capability-requests.md §4.1, §5): any agent toward a CP that serves them; execution re-checks.
     tools = [
       ...tools,
-      ...capabilityRequestToolsFor(
-        agent,
-        this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_FEATURE) === true,
-        {
-          thread
-        }
-      )
+      ...capabilityRequestToolsFor(this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_FEATURE) === true, {
+        thread
+      })
     ]
     // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
     const managedRepo = this.managedWorkspaceRepo(agent.id)
@@ -10664,9 +10676,12 @@ export class Daemon {
       admitsAsker: (agentId, integrationId, channel, isDm) => this.admitsAsker(agentId, integrationId, channel, isDm),
       forgetSession: (agentId, key) => this.forgetCapabilitySession(agentId, key),
       dispatchWake: (req, text, askers) => this.dispatchCapabilityWake(req, text, askers),
-      servesKind: (kind) =>
-        CAPABILITY_V1_KINDS.includes(kind) ||
-        this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_V2_FEATURE) === true,
+      serves: (ask) => {
+        const served = (feature: string) => this.cpClient?.supportsServerFeature?.(feature) === true
+        // A live secret needs a CP that ships it on the spec; every other Phase 2 kind needs v2.
+        if (ask.kind === 'secret' && ask.want.use.route === 'live') return served(CAPABILITY_REQUESTS_V3_FEATURE)
+        return CAPABILITY_V1_KINDS.includes(ask.kind) || served(CAPABILITY_REQUESTS_V2_FEATURE)
+      },
       inline: {
         post: (origin, model) => this.postInlineCapabilityCard(origin, model),
         settle: (row, status, text) => this.rewriteInlineCapabilityCard(row, row.generation, { status, text }),
@@ -10676,14 +10691,11 @@ export class Daemon {
     return this.capabilityRequestService
   }
 
-  /** Whether a session may ask (§4.1, §5): an agent in assistant mode toward a CP that serves it, never a follow-up's check, research or a getting-to-know task. */
+  /** Whether a session may ask (§4.1, §5): any agent toward a CP that serves it, never a follow-up's check, research or a getting-to-know task. */
   private capabilityOffered(ctx: SessionContext): boolean {
     if (isCheckCoordinate(ctx.thread) || isResearchCoordinate(ctx.thread) || isGettingToKnowCoordinate(ctx.thread))
       return false
-    return (
-      assistantModeOn(this.agents.get(ctx.agentId)) &&
-      this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_FEATURE) === true
-    )
+    return this.agents.has(ctx.agentId) && this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_FEATURE) === true
   }
 
   /** The asking session as the trusted context names it: its ids, the people its live turn speaks for, and whether its place is external. */

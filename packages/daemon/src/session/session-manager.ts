@@ -686,6 +686,7 @@ export class SessionManager {
           originSessionId: creatorSessionId,
           envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
           fileSecrets: fileSecrets.map((m) => ({ sourceVar: m.sourceVar, pointerVar: m.convention.pointerVar })),
+          liveSecretNames: (agent.liveSecrets ?? []).map((s) => s.name),
           // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
           // accessor, so the prompt names exactly the directories the session got.
           workspaceRoots: await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),

@@ -1,10 +1,8 @@
 // `requestCapability` and `withdrawCapabilityRequest` (capability-requests.md §4.1): the agent asks for what its setup lacks; a person completes it in the console.
 import { CAPABILITY_REASON_MAX, CapabilityAsk, CapabilityKind } from '@agentconnect.md/protocol'
 import { z } from 'zod'
-import type { Agent } from '../../agents/agent-schema.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { parseArgs, requiredString } from './args.js'
-import { assistantModeOn } from './assistant-items.js'
 import type { SessionContext, ToolHandler } from './context.js'
 import {
   isCheckCoordinate,
@@ -61,7 +59,9 @@ export const REQUEST_CAPABILITY_TOOL: ToolDescriptor = {
     'request. A secret is asked for by name and purpose only: never put a secret, token or password in any ' +
     'argument, never ask anyone to paste one into the conversation, and if someone pastes one anyway, tell them to ' +
     'rotate it and to enter the new value through the request link instead. For a credential an HTTP API takes, ' +
-    'prefer route `mcp-header` on the MCP server that calls it, so you never see the value.',
+    'prefer route `mcp-header` on the MCP server that calls it, so you never see the value. Use route `live` only ' +
+    'for a credential your own shell or code needs (a CLI token, a kubeconfig): once set, load it per command with ' +
+    '`agentconnect-secrets exec --only NAME -- <command>`, and never print it.',
   inputSchema: obj(
     {
       kind: {
@@ -82,7 +82,8 @@ export const REQUEST_CAPABILITY_TOOL: ToolDescriptor = {
           '`"host"` for a self-managed GitLab). connection: `{"type": "mcp-oauth", "server": "<name>"}`, ' +
           '`{"type": "code-host", "provider": "github" | "gitlab"}` or `{"type": "chat-integration", "platform": ' +
           '"<platform>"}`. secret: `{"name": "<header or VARIABLE_NAME>", "description": "<what goes in it, never ' +
-          'the value>", "use": {"route": "mcp-header", "server": "<MCP server>"}}`. Other fields are refused.'
+          'the value>", "use": {"route": "mcp-header", "server": "<MCP server>"}}`, or for a live secret ' +
+          '`{"name": "VARIABLE_NAME", "description": "…", "use": {"route": "live"}}`. Other fields are refused.'
       },
       reason: {
         type: 'string',
@@ -109,15 +110,11 @@ export const WITHDRAW_CAPABILITY_REQUEST_TOOL: ToolDescriptor = {
 export const CAPABILITY_REQUEST_TOOLS: ToolDescriptor[] = [REQUEST_CAPABILITY_TOOL, WITHDRAW_CAPABILITY_REQUEST_TOOL]
 
 /** The tools a session is offered: only an agent in assistant mode, toward a CP that serves them (§5). */
-export function capabilityRequestToolsFor(
-  agent: Pick<Agent, 'assistantMode'>,
-  served: boolean,
-  at: { thread: string }
-): ToolDescriptor[] {
+export function capabilityRequestToolsFor(served: boolean, at: { thread: string }): ToolDescriptor[] {
   // A follow-up's check, organization research and a getting-to-know task change nothing through AgentConnect, so they never list it.
   const narrowed =
     isCheckCoordinate(at.thread) || isResearchCoordinate(at.thread) || isGettingToKnowCoordinate(at.thread)
-  return served && assistantModeOn(agent) && !narrowed ? CAPABILITY_REQUEST_TOOLS : []
+  return served && !narrowed ? CAPABILITY_REQUEST_TOOLS : []
 }
 
 function portOf(ctx: SessionContext, deps: CapabilityRequestDeps, name: string) {

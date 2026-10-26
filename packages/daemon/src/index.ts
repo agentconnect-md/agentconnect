@@ -226,6 +226,19 @@ program
     await runGlabToken(agentId, glabArgs)
   })
 
+// Live secrets (capability-requests.md §4.9.2): invoked BY the run/bin/agentconnect-secrets wrapper; values reach stdout only for `env` and `file`.
+program
+  .command('secrets', { hidden: true })
+  .description("Load the agent's live secrets from the local daemon (agentconnect-secrets backend)")
+  .argument('[args...]', 'exec [--only A,B] -- <command…> | env [A B…] | file A | list')
+  .allowUnknownOption()
+  .helpOption(false)
+  .action(async () => {
+    const { runSecrets } = await import('./cli/secrets.js')
+    // The raw argv after the subcommand: commander would drop the `--` that separates `exec`'s command from its options.
+    process.exitCode = await runSecrets(process.argv.slice(process.argv.indexOf('secrets') + 1))
+  })
+
 // Agent business config (identity, status, bindings) is owned by the Control
 // Plane or by hand-editing agent.json — the daemon only reconciles what it finds
 // on disk (docs §4/§5). So the CLI exposes a read-only `list`, not local CRUD.

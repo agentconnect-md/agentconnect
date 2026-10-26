@@ -79,6 +79,8 @@ export type StandingContextInput = {
   envSecretNames: readonly string[]
   /** Secrets materialized to a private file instead of reaching the child env. */
   fileSecrets: readonly StandingContextFileSecret[]
+  /** NAMES (never values) of the live secrets `agentconnect-secrets` loads at use time (capability-requests.md §4.9.2). */
+  liveSecretNames?: readonly string[]
   /** The workspace roots this session is handed as additional directories, beside its own cwd. */
   workspaceRoots?: readonly { path: string; repoFullName: string; branch: string }[]
   /** The directory it clones the authorized repositories it was not handed into, and which those are (decision 20). */
@@ -212,6 +214,17 @@ function buildAgentMeta(input: StandingContextInput): string {
                   `report only whether the file exists, never what it contains.`
               ]
             : [])
+        ]
+      : []),
+    // Live secrets are in no environment until a command loads them, so the agent is told the one way to (capability-requests.md §4.9.2).
+    ...(input.liveSecretNames?.length
+      ? [
+          '',
+          '# Live secrets',
+          `The live secrets ${input.liveSecretNames.map((n) => `\`${n}\``).join(', ')} are not in your environment. ` +
+            'Run commands that need one as `agentconnect-secrets exec --only NAME -- <command>`; never print it. ' +
+            '`agentconnect-secrets list` names them all, and their values are confidential under the same rules as ' +
+            'secret environment variables.'
         ]
       : [])
   ].join('\n')

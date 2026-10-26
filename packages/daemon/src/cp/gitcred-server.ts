@@ -9,6 +9,7 @@
  * capability:
  *   { op: 'get',   agentId, capability, repoFullName?, plane? }  → { ok, username, password } | { ok:false, error }
  *   { op: 'erase', agentId, capability, password?, repoFullName?, plane? } → { ok: true }
+ *   { op: 'secret', agentId, capability, names? } → { ok, secrets: [{ name, value, description? }] }   (live secrets, capability-requests.md §4.9.2)
  *
  * `repoFullName` ("owner/repo") routes to that repo's token; absent — or equal, on the workspace's own host,
  * to the agent's workspace repo, which is NORMALIZED onto the repo-less key so
@@ -67,7 +68,7 @@ export function gitcredShimPath(root: string): string {
 }
 
 interface GitCredIpcRequest {
-  op: 'get' | 'erase'
+  op: 'get' | 'erase' | 'secret'
   agentId: string
   /** Ephemeral daemon-local capability bound to agentId. Never persisted. */
   capability?: string
@@ -79,6 +80,15 @@ interface GitCredIpcRequest {
   /** Host-derived hint from the helper — the provider whose managed host git asked for, absent for
    *  the implicit one. ROUTING ONLY: the daemon's own replicated spec decides the real provider. */
   provider?: string
+  /** `secret`: the live secrets wanted by name; absent ⇒ all of them. */
+  names?: unknown
+}
+
+/** One live secret as the `agentconnect-secrets` helper receives it. */
+export interface LiveSecretEntry {
+  name: string
+  value: string
+  description?: string
 }
 
 export interface GitCredServerDeps {
@@ -108,6 +118,10 @@ export interface GitCredServerDeps {
   privateGitlabSkillProjectOf?: (agentId: string, projectPath: string) => string | undefined
   /** The open skill credential windows (source-cache.md §8); absent ⇒ a private registry of this server's own. */
   skillWindows?: SkillCredentialWindows
+  /** Whether the agent's spec gives it a managed git credential; every agent holds a capability for live secrets, but only these may `get`. */
+  credentialedOf?: (agentId: string) => boolean
+  /** The agent's live secrets from the CURRENT in-memory agent, so a value saved a moment ago is served on the next call. */
+  liveSecretsOf?: (agentId: string) => readonly LiveSecretEntry[]
 }
 
 /** The first line a tunnel proxy sends on a gitcred connection; it carries the server's per-boot key so no pod can forge one. */
@@ -125,6 +139,8 @@ export class GitCredServer {
   private readonly githubAdditionalRepoOf?: GitCredServerDeps['githubAdditionalRepoOf']
   private readonly privateGithubSkillRepoOf?: GitCredServerDeps['privateGithubSkillRepoOf']
   private readonly privateGitlabSkillProjectOf?: GitCredServerDeps['privateGitlabSkillProjectOf']
+  private readonly credentialedOf?: GitCredServerDeps['credentialedOf']
+  private readonly liveSecretsOf?: GitCredServerDeps['liveSecretsOf']
   readonly skillWindows: SkillCredentialWindows
 
   constructor(
@@ -140,6 +156,8 @@ export class GitCredServer {
     if (deps.githubAdditionalRepoOf) this.githubAdditionalRepoOf = deps.githubAdditionalRepoOf
     if (deps.privateGithubSkillRepoOf) this.privateGithubSkillRepoOf = deps.privateGithubSkillRepoOf
     if (deps.privateGitlabSkillProjectOf) this.privateGitlabSkillProjectOf = deps.privateGitlabSkillProjectOf
+    if (deps.credentialedOf) this.credentialedOf = deps.credentialedOf
+    if (deps.liveSecretsOf) this.liveSecretsOf = deps.liveSecretsOf
     this.skillWindows = deps.skillWindows ?? new SkillCredentialWindows()
   }
 
@@ -293,6 +311,12 @@ export class GitCredServer {
       this.audit('rejected', req?.agentId, req?.plane === 'gh' ? 'gh' : 'git', req?.repoFullName, true)
       return reply({ ok: false, error: 'local credential capability required' })
     }
+    if (req.op === 'secret') return this.serveLiveSecrets(req, principal, reply)
+    // Every agent holds a capability for its live secrets; one without a managed git credential is answered as before it had one.
+    if (principal === 'agent' && this.credentialedOf && !this.credentialedOf(req.agentId)) {
+      this.audit('rejected', req.agentId, req.plane === 'gh' ? 'gh' : 'git', req.repoFullName, true)
+      return reply({ ok: false, error: 'local credential capability required' })
+    }
     const plane: CredPlane = req.plane === 'gh' ? 'gh' : req.plane === 'glab' ? 'glab' : 'git'
     let repo = typeof req.repoFullName === 'string' && req.repoFullName.includes('/') ? req.repoFullName : undefined
     // An omitted provider and an explicit `github` are the same GitHub ask; both meet the private-skill gate.
@@ -409,6 +433,29 @@ export class GitCredServer {
       const denied = e instanceof GitCredUnavailableError ? e.denied : undefined
       return reply({ ok: false, error: msg, ...(denied ? { denied } : {}) })
     }
+  }
+
+  /** The agent's live secrets, named ones only when `names` is given; unknown names are simply absent and values are never logged. */
+  private serveLiveSecrets(
+    req: GitCredIpcRequest,
+    principal: 'agent' | AdmittedSkillWindow,
+    reply: (msg: unknown) => void
+  ): void {
+    // A skill window opens its private repositories and nothing else.
+    if (principal !== 'agent') {
+      this.log.warn(`gitcred: live secrets refused agent=${JSON.stringify(req.agentId)} reason="skill window"`)
+      return reply({ ok: false, error: 'a skill credential window carries no live secrets' })
+    }
+    const wanted = Array.isArray(req.names)
+      ? new Set(req.names.filter((n): n is string => typeof n === 'string'))
+      : undefined
+    const secrets = (this.liveSecretsOf?.(req.agentId) ?? [])
+      .filter((s) => wanted === undefined || wanted.has(s.name))
+      .map((s) => ({ name: s.name, value: s.value, ...(s.description ? { description: s.description } : {}) }))
+    this.log.info(
+      `gitcred: live secrets served agent=${JSON.stringify(req.agentId)} names=${JSON.stringify(secrets.map((s) => s.name))}`
+    )
+    return reply({ ok: true, secrets })
   }
 
   /** One GitLab skill project's read credential inside a window that covers it; the op split mirrors the general path. */

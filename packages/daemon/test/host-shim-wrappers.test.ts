@@ -50,6 +50,17 @@ describe.skipIf(process.platform === 'win32')("a host shim's gh and glab wrapper
     )
   })
 
+  it('put agentconnect-secrets beside them when the installation ships its entry (capability-requests.md §4.9.2)', async () => {
+    const { paths } = layout()
+    writeFileSync(paths.secretsEntry, "process.stdout.write('secrets:' + process.argv.slice(2).join(' '))\n")
+    await writeRuntimeWrappers(paths)
+    const wrapper = join(paths.runtimeWrapperDir, 'agentconnect-secrets')
+    expect(existsSync(wrapper)).toBe(true)
+    expect(execFileSync('sh', [wrapper, 'exec', '--only', 'A', '--', 'env'], { encoding: 'utf8' })).toBe(
+      'secrets:exec --only A -- env'
+    )
+  })
+
   it('are written only for the token entries this installation has', async () => {
     const { paths } = layout()
     rmSync(paths.glabTokenEntry)

@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import type {
   CapabilityAsk,
   CapabilityAskers,
-  CapabilityKind,
   CapabilityDecideReq,
   CapabilityDecideResult,
   CapabilityForward,
@@ -64,7 +63,8 @@ export interface CapabilityRequestsHost {
   /** The CP when it serves capability requests; undefined otherwise. */
   cp(): CapabilityCp | undefined
   /** Whether that CP takes this kind: the Phase 2 kinds need `capability-requests-v2`, so none is ever sent to an older one. */
-  servesKind(kind: CapabilityKind): boolean
+  /** Whether the CP this daemon talks to takes this ask: its kind, and for a secret its route. */
+  serves(ask: CapabilityAsk): boolean
   /** The console's own inline cards; absent where nothing streams to a console. */
   inline?: CapabilityInlineCards
   orgForAgent(agentId: string): string | undefined
@@ -135,7 +135,15 @@ export class CapabilityRequests {
   async request(origin: CapabilityOrigin, ask: CapabilityAsk, reason: string): Promise<CapabilityToolResult> {
     const cp = this.host.cp()
     if (!cp) throw new Error('requestCapability is not available: this agent cannot ask for changes right now')
-    if (!this.host.servesKind(ask.kind)) {
+    if (!this.host.serves(ask)) {
+      if (ask.kind === 'secret' && ask.want.use.route === 'live')
+        return {
+          status: 'refused',
+          message:
+            'A live secret cannot be requested here yet; nothing was asked for. For a credential an HTTP API takes, ' +
+            'ask for a secret with route `mcp-header` on the MCP server that calls it; otherwise tell the people here ' +
+            'what you need set up.'
+        }
       return {
         status: 'refused',
         message:

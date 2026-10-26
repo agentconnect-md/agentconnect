@@ -110,6 +110,7 @@ async function harness(
     dm?: Record<string, string | null>
     decide?: 'settled' | 'already_settled' | 'not_found' | 'unreachable'
     v2?: boolean
+    v3?: boolean
     inline?: boolean
   } = {}
 ): Promise<Harness> {
@@ -171,7 +172,10 @@ async function harness(
       wakes.push({ req, text, askers })
       return { accepted: true }
     },
-    servesKind: (kind) => opts.v2 === true || ['agent-settings', 'mcp-server', 'skill'].includes(kind),
+    serves: (ask) =>
+      ask.kind === 'secret' && ask.want.use.route === 'live'
+        ? opts.v3 === true
+        : opts.v2 === true || ['agent-settings', 'mcp-server', 'skill'].includes(ask.kind),
     // A webchat session's live turn takes the card inline; any other session has none.
     inline: {
       post: async (_origin, model) => {
@@ -482,19 +486,18 @@ describe('the bridge tools', () => {
     tools: []
   } as unknown as SessionContext
 
-  it('are offered only to an agent in assistant mode toward a CP that serves them', () => {
+  it('are offered to every agent toward a CP that serves them (§5 item 14)', () => {
     const at = { thread: '1.1' }
-    expect(
-      capabilityRequestToolsFor({ assistantMode: { enabled: true } } as never, true, at).map((t) => t.name)
-    ).toEqual(['requestCapability', 'withdrawCapabilityRequest'])
-    expect(capabilityRequestToolsFor({ assistantMode: { enabled: true } } as never, false, at)).toEqual([])
-    expect(capabilityRequestToolsFor({} as never, true, at)).toEqual([])
+    expect(capabilityRequestToolsFor(true, at).map((t) => t.name)).toEqual([
+      'requestCapability',
+      'withdrawCapabilityRequest'
+    ])
+    expect(capabilityRequestToolsFor(false, at)).toEqual([])
   })
 
   it('are never listed in a follow-up check or a getting-to-know task', () => {
-    const agent = { assistantMode: { enabled: true } } as never
-    expect(capabilityRequestToolsFor(agent, true, { thread: checkCoordinate('d-1') })).toEqual([])
-    expect(capabilityRequestToolsFor(agent, true, { thread: gettingToKnowCoordinate('d-2') })).toEqual([])
+    expect(capabilityRequestToolsFor(true, { thread: checkCoordinate('d-1') })).toEqual([])
+    expect(capabilityRequestToolsFor(true, { thread: gettingToKnowCoordinate('d-2') })).toEqual([])
   })
 
   it('refuse unknown want fields and a session that is not offered them', async () => {
@@ -567,6 +570,19 @@ describe('Phase 2 kinds', () => {
     )
     expect(result.message).toContain('`mcp-header`')
     expect(h.log.posted).toHaveLength(0)
+    // Toward a CP without live secrets nothing is even sent.
+    expect(h.requests).toHaveLength(0)
+  })
+
+  it('asks for a live secret only toward a CP that serves them', async () => {
+    const h = await harness({ v2: true, v3: true })
+    const live = {
+      kind: 'secret',
+      want: { name: 'GRAFANA_TOKEN', description: 'Grafana API token', use: { route: 'live' } }
+    } as const
+    const result = await h.service.request(origin(), live, 'querying dashboards needs a token')
+    expect(h.requests[0]!.ask).toEqual(live)
+    expect(result.status).toBe('pending')
   })
 })
 
