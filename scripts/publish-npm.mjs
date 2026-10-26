@@ -19,6 +19,19 @@ export async function readPublishedVersion(name, selector) {
   return version
 }
 
+// The macOS app versions a published computer version pins.
+export async function readPublishedPins(name, version) {
+  const response = await fetch(
+    `https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`,
+    { signal: AbortSignal.timeout(30_000) }
+  )
+  if (!response.ok) throw new Error(`Cannot inspect ${name}@${version}: registry returned ${response.status}`)
+  return (await response.json()).optionalDependencies ?? {}
+}
+
+const samePins = (a, b) =>
+  Object.keys(a).length === Object.keys(b).length && Object.entries(a).every(([name, pin]) => b[name] === pin)
+
 function run(script, args) {
   execFileSync('sh', [script, ...args], { cwd: root, stdio: 'inherit' })
 }
@@ -57,7 +70,13 @@ async function publishApp(arch, version, channel, { readVersion, execute, change
 
 export async function publishPackages(
   tag,
-  { readVersion = readPublishedVersion, execute = run, changed = changedSince, built = appBuilt } = {}
+  {
+    readVersion = readPublishedVersion,
+    readPins = readPublishedPins,
+    execute = run,
+    changed = changedSince,
+    built = appBuilt
+  } = {}
 ) {
   const version = tag?.startsWith('v') && semver.valid(tag.slice(1))
   if (!version) throw new Error('Expected a release tag such as v1.2.3 or v1.2.3-rc.1')
@@ -79,7 +98,9 @@ export async function publishPackages(
     }
 
     // Compare with the last successful npm publication, so a failed earlier release cannot hide changed inputs.
-    const previousTag = current ? `v${current}` : ''
+    // A computer whose app pins moved must republish even when its bundle inputs did not change.
+    const repin = component === 'computer' && current && !samePins(await readPins(name, current), pins)
+    const previousTag = current && !repin ? `v${current}` : ''
     const script = `scripts/publish-${component}-if-changed.sh`
     execute(script, [previousTag, version, 'prepare', ...(component === 'computer' ? [JSON.stringify(pins)] : [])])
     execute(script, [previousTag, channel, 'publish'])
