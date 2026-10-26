@@ -1877,8 +1877,8 @@ export class PermissionCoordinator {
     const preferred = this.host.slackConnFor(p.plan.integrationId ?? '') ? p.plan.integrationId : undefined
     const integrationIds = this.host.approvalDmIntegrations(agentId, preferred, cards)
     if (integrationIds.length === 0) return undefined
-    // A computer-use approval goes to the Computer's owner first (computer-use.md §4.2), else down the chain of its allowed members.
-    const computer = subsession ? undefined : this.computerAskOf(requestId)
+    // A computer-use approval, a sub-session's too, goes to the Computer's owner first (computer-use.md §4.2), else down the chain of its allowed members.
+    const computer = this.computerAskOf(requestId)
     if (computer?.ownerUserId) {
       const routed = await cp.approvalRoute(
         { agentId, requestId, consoleUserId: computer.ownerUserId, integrationIds, ...this.computerRoute(computer) },
@@ -2974,15 +2974,9 @@ export class PermissionCoordinator {
       })
       return { outcome: { outcome: 'cancelled' } }
     }
-    return await this.awaitEditorPermission(
-      agentId,
-      sessionId,
-      params,
-      evaluationParams,
-      p,
-      route,
-      inChat.to === 'asker'
-    )
+    // An external place's asker may not be the Computer's member, so a computer-use approval skips their DM for the owner's (§4.2).
+    const askerFirst = inChat.to === 'asker' && !this.computerAsks.has(params.toolCall.toolCallId)
+    return await this.awaitEditorPermission(agentId, sessionId, params, evaluationParams, p, route, askerFirst)
   }
 
   /** An MCP approval's name and input, from the call it approves when the turn saw it; masked like the request. */

@@ -55,6 +55,7 @@ async function world(over?: {
   requesterId?: string
   activity?: PermissionHost['emitApprovalActivity']
   computers?: boolean
+  externalAsker?: ReturnType<typeof vi.fn>
 }) {
   const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
   const conn = fakeSlackConn()
@@ -90,7 +91,8 @@ async function world(over?: {
     clock: () => ({ now: () => Date.now() }) as never,
     cancelTurn: vi.fn(async () => {}),
     store: () => store,
-    agents: () => new Map([[AGENT, { id: AGENT } as never]]),
+    agents: () =>
+      new Map([[AGENT, (over?.externalAsker ? { id: AGENT, chatActions: 'approve' } : { id: AGENT }) as never]]),
     pending: () => pending,
     evalHooks: () => ({ emit: vi.fn() }) as never,
     memoryExtraction: () => undefined,
@@ -98,7 +100,8 @@ async function world(over?: {
     postCardSerialized: vi.fn(async () => undefined),
     // The approval DM is its own surface; no in-channel elicitation card is posted from here.
     elicitCardFacet: () => undefined,
-    approvalCardFacet: () => undefined,
+    // An external place needs a card surface for its asker's DM to be chosen.
+    approvalCardFacet: () => (over?.externalAsker ? ({ maxOptions: 5 } as never) : undefined),
     chatCardsAt: () => undefined,
     httpSlackSessionTarget: () => undefined,
     maskAgentSecrets: (_agentId, payload) => payload,
@@ -113,7 +116,8 @@ async function world(over?: {
       integrationId === TARGET.integrationId && !over?.noChannel ? (conn as unknown as SlackConnection) : undefined,
     approvalDmIntegrations: () => ['int-1'],
     slackDmSessionTarget: () => 'encoded-target',
-    chatSurface: () => 'open',
+    chatSurface: () => (over?.externalAsker ? 'external' : 'open'),
+    ...(over?.externalAsker ? { externalAskerDm: over.externalAsker as never } : {}),
     placeExternal: () => false,
     chatEditorsOnly: () => false,
     chatActor: async () => 'allowed' as const,
@@ -258,6 +262,45 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     ).resolves.toEqual({ ok: true })
     await expect(allowed).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'o-allow' } })
     await member.store.close()
+  })
+
+  it("routes a computer-use approval to the Computer's owner from an external place and a sub-session, never to the asker alone", async () => {
+    const owner = 'cu-owner'
+    const route = vi.fn(async (payload: { requestId: string; verify?: unknown }) =>
+      payload.verify
+        ? { requestId: payload.requestId, allowed: true }
+        : { requestId: payload.requestId, target: { ...TARGET, consoleUserId: owner } }
+    )
+    const asker = vi.fn(async () => ({ integrationId: 'int-1', teamId: 'T1', userId: 'U-asker', channel: 'D-ASK' }))
+    const scope = { computerId: COMPUTER_ID, ownerUserId: owner, approvers: [owner] }
+    const params = {
+      ...permissionParams(),
+      toolCall: { toolCallId: 'computer-approval-3', title: 'Computer use on “Desk”: click at (1, 2)' }
+    } as RequestPermissionRequest
+    const w = await world({ platform: 'slack', requesterId: 'U-asker', route, computers: true, externalAsker: asker })
+    void w.coordinator.askComputerApproval(w.p, params, scope)
+    await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1))
+    expect(asker).not.toHaveBeenCalled()
+    expect(route.mock.calls[0]![0]).toMatchObject({ consoleUserId: owner, computerId: COMPUTER_ID })
+    // A sub-session's DM keeps the Computer too, dropping only the requester preference.
+    const requestId = requestIdOf(route)
+    route.mockClear()
+    await (w.coordinator as unknown as { routeApprovalDm: (...a: unknown[]) => Promise<unknown> }).routeApprovalDm(
+      requestId,
+      AGENT,
+      w.p,
+      true
+    )
+    expect(route.mock.calls[0]![0]).toMatchObject({ consoleUserId: owner, computerId: COMPUTER_ID })
+    await w.coordinator.releaseApprovals(OWNER, ACP_SESSION)
+    await w.store.close()
+
+    // A plain request in the same place still goes to its asker first.
+    const plain = await world({ platform: 'slack', requesterId: 'U-asker', route, externalAsker: asker })
+    void plain.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())
+    await vi.waitFor(() => expect(asker).toHaveBeenCalledTimes(1))
+    await plain.coordinator.releaseApprovals(OWNER, ACP_SESSION)
+    await plain.store.close()
   })
 
   it('settles a console decision on the DM card with the chosen option and its decider (#2592)', async () => {
