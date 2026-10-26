@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { McpAppBody } from '@/lib/data'
 import {
+  capabilityCard,
+  liveCapabilityIds,
   appStepKey,
   foldCustomAnswers,
   liveAppKeys,
@@ -343,5 +345,24 @@ describe('mergeFetchedAppCard — the row stays authoritative over a fetched sna
 
   it('lets the row CLEAR an outcome too — a revived card is live again', () => {
     expect(mergeFetchedAppCard(preview, fetched).outcome).toBeUndefined()
+  })
+})
+
+describe('capabilityCard', () => {
+  const body = { requestId: 'r-1', generation: 2, summary: 's', reason: 'why', link: 'https://console.example.test/x' }
+  it('keeps an open row live and a settled one with its text', () => {
+    expect(capabilityCard(JSON.stringify({ ...body, status: 'open' }))).toEqual(body)
+    expect(capabilityCard(JSON.stringify({ ...body, status: 'completed', text: 'Completed by Ana' }))).toEqual({
+      ...body,
+      resolved: { status: 'completed', text: 'Completed by Ana' }
+    })
+  })
+  it('reads nothing without a request id, or from a malformed body', () => {
+    expect(capabilityCard(JSON.stringify({ summary: 's' }))).toBeNull()
+    expect(capabilityCard('{')).toBeNull()
+    expect(capabilityCard(undefined)).toBeNull()
+  })
+  it('lists the live cards by request', () => {
+    expect([...liveCapabilityIds([{ capability: { requestId: 'r-1' } }, {}])]).toEqual(['r-1'])
   })
 })

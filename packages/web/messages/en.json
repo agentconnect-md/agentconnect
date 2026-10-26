@@ -3580,7 +3580,9 @@
         "newValuePlaceholder": "new value",
         "cancel": "Cancel",
         "saving": "Saving…",
-        "save": "Save"
+        "save": "Save",
+        "requestedHeaderHint": "Enter the value for {header}. The agent never sees this value.",
+        "requestedHeaderOthers": "Saving replaces every header on this server: enter {names} again, or remove a row to drop that header."
       },
       "editConnector": {
         "reconnectTitle": "Reconnect connector",
@@ -6883,7 +6885,20 @@
       "serverMissing": "No MCP server with this name is registered in this organization.",
       "installSkill": "Install skill <name>{skill}</name>",
       "skillAlready": "Already installed",
-      "conversations": "Conversations waiting for it"
+      "conversations": "Conversations waiting for it",
+      "repositoryChange": "Repository <name>{repository}</name>: <code>{from}</code> → <code>{to}</code>",
+      "accessNone": "no access",
+      "accessRead": "read",
+      "accessWrite": "read & write",
+      "connectMcp": "Connect <name>{server}</name>",
+      "connectCodeHost": "Connect <name>{provider}</name>",
+      "connectCodeHostAt": "Connect <name>{provider}</name> at <name>{host}</name>",
+      "connectChat": "Add a <name>{platform}</name> integration",
+      "connected": "Already connected",
+      "secretHeader": "Header <code>{header}</code> on <name>{server}</name>",
+      "secretLive": "Secret <code>{secret}</code>",
+      "secretPurpose": "For: {description}",
+      "secretPresent": "Already set"
     },
     "fields": {
       "model": "Model",
@@ -6908,7 +6923,24 @@
       "saving": "Saving…",
       "done": "Done — the agent has been told.",
       "doneDiffers": "Done — the agent has been told what was saved: {outcome}",
-      "settleFailed": "The change was saved, but the request could not be closed: {error}"
+      "settleFailed": "The change was saved, but the request could not be closed: {error}",
+      "repositoryHint": "The agent's repository access opens with this repository and tier selected. Your own access on the code host is checked when you save.",
+      "repositoryWriteHint": "The agent's repository access opens with this repository selected for read & write. Write access lets the agent push and open pull requests; your own write access on the code host is checked when you save.",
+      "authorizeRepository": "Authorize {repository}",
+      "raiseRepository": "Raise {repository} to read & write",
+      "connectionHint": "Connecting happens in a new window. This page checks again when you come back and closes the request once the connection holds.",
+      "connectServer": "Connect {server}",
+      "connectGithub": "Install the GitHub app",
+      "connectGitlab": "Connect GitLab",
+      "connectUnavailable": "This connection can't be started right now.",
+      "addIntegration": "Add a {platform} integration",
+      "openIntegrations": "Open Integrations",
+      "checkAgain": "Check again",
+      "connectionWatching": "Waiting for the connection to finish…",
+      "liveSecretUnavailable": "Secrets the agent reads from its own shell aren't available yet. Decline the request, or ask the agent to use an MCP server's header instead.",
+      "headerOnOauthServer": "{server} signs in with OAuth, so it has no headers to set. Decline the request, or connect the server instead.",
+      "headerHint": "The value is stored on {server} and added to each of its calls. The agent never sees it.",
+      "setHeader": "Set {header}"
     },
     "authority": {
       "heading": "You can't make this change",
@@ -6949,6 +6981,10 @@
     "agentCard": {
       "title": "Requests",
       "count": "{count, plural, one {# open request} other {# open requests}}"
+    },
+    "card": {
+      "open": "Open in AgentConnect",
+      "whoCan": "People who can complete it: {names}"
     }
   }
 }

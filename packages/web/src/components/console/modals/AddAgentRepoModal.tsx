@@ -124,6 +124,8 @@ export default function AddAgentRepoModal({
   initialInstallationId,
   fixedRepo,
   initialAccess,
+  initialProvider,
+  initialSearch,
   workspaceContext = false,
   showBack = false,
   onClose,
@@ -151,6 +153,10 @@ export default function AddAgentRepoModal({
   fixedRepo?: string
   /** Default access tier — the review/hook flow opens this dialog at `write`. */
   initialAccess?: RepoAccess
+  /** The code host to open on (a capability request names one); GitHub otherwise. */
+  initialProvider?: GrantProvider
+  /** Seeds the GitLab project search, which has no single pre-selected row to point at. */
+  initialSearch?: string
   /** Present this authorization step as part of the Edit workspace surface. */
   workspaceContext?: boolean
   /** The parent workspace form is preserved behind this step. */
@@ -166,7 +172,7 @@ export default function AddAgentRepoModal({
   const { orgPath } = useOrgs()
   // A repository locked by a manual GitHub workspace pins the host too — that arm
   // may authorize only its own repository, so the choice would be a dead end.
-  const [provider, setProvider] = useState<GrantProvider>('github')
+  const [provider, setProvider] = useState<GrantProvider>(fixedRepo ? 'github' : (initialProvider ?? 'github'))
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   const [ghSyncing, setGhSyncing] = useState(false)
   // Repos merged across every installation; partial pages render immediately
@@ -199,7 +205,7 @@ export default function AddAgentRepoModal({
   // GitLab arm: the connection's Maintainer-or-Owner projects merged with the ones
   // already added. Inert until the GitLab tile is picked, so a GitHub-only
   // deployment issues no GitLab request at all.
-  const [glQ, setGlQ] = useState('')
+  const [glQ, setGlQ] = useState(initialProvider === 'gitlab' ? (initialSearch ?? '') : '')
   const [glPick, setGlPick] = useState('')
   const [glPickOpen, setGlPickOpen] = useState(false)
   const gl = useGitlabProjects(provider === 'gitlab', glQ)

@@ -7791,7 +7791,7 @@ export function createDecisionApi(orgId: string): DecisionApi {
 
 // ── capability requests (capability-requests.md §4.5): an agent's ask, completed or declined by a person ──
 
-export type CapabilityRequestKind = 'agent-settings' | 'mcp-server' | 'skill'
+export type CapabilityRequestKind = 'agent-settings' | 'mcp-server' | 'skill' | 'repository' | 'connection' | 'secret'
 export type CapabilityRequestStatus = 'open' | 'completed' | 'declined' | 'expired' | 'withdrawn'
 
 /** The `agent-settings` fields an agent may ask for. */
@@ -7803,7 +7803,34 @@ export interface CapabilitySettingsWant {
   permissionMode?: string
 }
 
-export type CapabilityRequestWant = CapabilitySettingsWant | { server: string } | { skill: string }
+/** A repository on a code host and the tier wanted; `host` names a self-managed GitLab. */
+export interface CapabilityRepositoryWant {
+  provider: 'github' | 'gitlab'
+  host?: string
+  repository: string
+  access: 'read' | 'write'
+}
+
+/** A connection the console makes through a browser redirect. */
+export type CapabilityConnectionWant =
+  | { type: 'mcp-oauth'; server: string }
+  | { type: 'code-host'; provider: 'github' | 'gitlab'; host?: string }
+  | { type: 'chat-integration'; platform: string }
+
+/** A secret by name and purpose, never its value; the route says whether the agent can read it. */
+export interface CapabilitySecretWant {
+  name: string
+  description: string
+  use: { route: 'mcp-header'; server: string } | { route: 'live' }
+}
+
+export type CapabilityRequestWant =
+  | CapabilitySettingsWant
+  | { server: string }
+  | { skill: string }
+  | CapabilityRepositoryWant
+  | CapabilityConnectionWant
+  | CapabilitySecretWant
 
 export interface CapabilityRequestAskerDto {
   kind: 'console' | 'member'
@@ -7846,6 +7873,8 @@ export interface CapabilityRequestDto {
   note: string | null
   origins: CapabilityRequestOriginDto[]
   current: Record<string, unknown>
+  /** Optional hints for completing it (a provider id, a start route); the page falls back to the console's own flows. */
+  completion?: Record<string, unknown> | null
   warnings: string[]
   viewer: {
     canComplete: boolean

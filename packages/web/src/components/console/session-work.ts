@@ -1,6 +1,6 @@
 import { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import type { PlanBody } from '@/lib/api'
-import type { ElicitBody, ElicitFieldSpec, McpAppBody } from '@/lib/data'
+import type { CapabilityCardBody, ElicitBody, ElicitFieldSpec, McpAppBody } from '@/lib/data'
 
 // 2b chat style: an agent turn shows its spoken answer (MSG/DONE lanes) as plain
 // text and collapses its "work" — reasoning (THINK/PLAN), tool calls (TOOL), and
@@ -27,6 +27,43 @@ export const ELICIT_LANE = 'ELICIT'
  *  as ELICIT: it is a surface handed to the reader, so collapsing it behind the work toggle would
  *  hide the one thing in the turn they are meant to touch. */
 export const APP_LANE = 'APP'
+
+/** A capability request card (capability-requests.md §4.4.2). NOT a work lane, like ELICIT: it is handed to the reader. */
+export const CAPABILITY_LANE = 'CAPABILITY'
+
+const CAPABILITY_STATUSES = new Set(['completed', 'declined', 'expired', 'withdrawn'])
+
+/** Parse a `capability` row's body; null for anything without a request id, and the caller then shows the row's own text. */
+export function capabilityCard(body: string | undefined): CapabilityCardBody | null {
+  if (!body) return null
+  try {
+    const parsed = JSON.parse(body) as Partial<CapabilityCardBody> & { status?: unknown; text?: unknown }
+    if (typeof parsed?.requestId !== 'string' || !parsed.requestId) return null
+    const status = typeof parsed.status === 'string' && CAPABILITY_STATUSES.has(parsed.status) ? parsed.status : null
+    return {
+      requestId: parsed.requestId,
+      generation: typeof parsed.generation === 'number' ? parsed.generation : 1,
+      summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+      reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+      link: typeof parsed.link === 'string' ? parsed.link : '',
+      ...(status
+        ? {
+            resolved: {
+              status: status as NonNullable<CapabilityCardBody['resolved']>['status'],
+              text: typeof parsed.text === 'string' ? parsed.text : ''
+            }
+          }
+        : {})
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Request ids the LIVE stream is carrying, so a reload's transcript twin of the same card stands aside. */
+export function liveCapabilityIds(live: readonly { capability?: { requestId: string } }[]): Set<string> {
+  return new Set(live.flatMap((step) => (step.capability?.requestId ? [step.capability.requestId] : [])))
+}
 
 /** The settlements a persisted app row may carry — anything else is a body we do not trust. */
 const MCP_APP_OUTCOMES = new Set(['closed', 'superseded', 'expired', 'completed'])

@@ -36,6 +36,8 @@ vi.mock('@/lib/api', async (importOriginal) => {
     ...actual,
     fetchSessionMessages: vi.fn(() => Promise.resolve({ messages: wire.messages, nextCursor: null })),
     fetchSessionDetail: vi.fn(() => Promise.reject(new Error('no detail'))),
+    // The card shows what its row carries when the request itself cannot be read.
+    fetchCapabilityRequest: vi.fn(() => Promise.reject(new Error('no request'))),
     fetchMySessionIdentity: vi.fn(() => Promise.reject(new Error('no identity'))),
     fetchConversationByKey: vi.fn(() => Promise.reject(new Error('no conversation'))),
     fetchAgentTasks: vi.fn(() =>
@@ -1104,5 +1106,68 @@ describe('a reload with a webchat card still pending', () => {
     expect(buttonsNamed('main')).toHaveLength(0)
     expect(declineButtons()).toHaveLength(0)
     expect(live.answered).toEqual([])
+  })
+})
+
+// A capability request card (capability-requests.md §4.4.2) read back from history: its row carries the card and, once settled, how it ended.
+describe('a capability request card in the transcript', () => {
+  const REQUEST = '7f3a1c56-8a2b-4c3d-9e4f-0a1b2c3d4e5f'
+  const row = (status: string, extra: Record<string, unknown> = {}) => ({
+    seq: 1,
+    sender: 'agent-1',
+    ts: '1700000001',
+    kind: 'capability',
+    text: 'add the MCP server "Linear"',
+    body: JSON.stringify({
+      requestId: REQUEST,
+      generation: 1,
+      summary: 'add the MCP server "Linear"',
+      reason: 'filing the bug needs <b>Linear</b>',
+      link: `https://console.example.test/acme/requests/${REQUEST}`,
+      status,
+      ...extra
+    })
+  })
+  const cards = () => container?.querySelectorAll(`[data-capability-request="${REQUEST}"]`) ?? []
+
+  it('shows an open request with its reason as plain text and a link to it', async () => {
+    live.steps = []
+    wire.messages = [row('open')]
+    await render()
+    expect(cards()).toHaveLength(1)
+    expect(text()).toContain('add the MCP server "Linear"')
+    expect(text()).toContain('filing the bug needs <b>Linear</b>')
+    expect(container?.querySelector('b')).toBeNull()
+    expect(container?.querySelector(`a[href="/acme/requests/${REQUEST}"]`)).not.toBeNull()
+  })
+
+  it('shows a settled request as its settled text, with nothing left to act on', async () => {
+    live.steps = []
+    wire.messages = [row('declined', { text: 'Declined by Ben' })]
+    await render()
+    expect(text()).toContain('Declined by Ben')
+    expect(container?.querySelector(`a[href="/acme/requests/${REQUEST}"]`)).toBeNull()
+  })
+
+  it('renders one card when the live stream replays the same request', async () => {
+    wire.messages = [row('open')]
+    live.steps = [
+      {
+        kind: 'capability',
+        turnId: 'turn-1',
+        agentId: 'agent-1',
+        boundary: true,
+        text: 'add the MCP server "Linear"',
+        capability: {
+          requestId: REQUEST,
+          generation: 1,
+          summary: 'add the MCP server "Linear"',
+          reason: 'filing the bug needs Linear',
+          link: `https://console.example.test/acme/requests/${REQUEST}`
+        }
+      }
+    ]
+    await render()
+    expect(cards()).toHaveLength(1)
   })
 })
