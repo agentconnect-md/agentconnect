@@ -367,7 +367,8 @@ subject is what fired. One rule across chat platforms and code hosts.
 
 Slack is the one surface with a durable indicator of its own: the agent-session
 lifecycle marks the thread "is working…", with a Stop control, for the whole turn
-and withdraws it when the turn ends. Where Slack confirms it took that write, the
+and withdraws it when the turn ends, unless a delegated task of that thread is still running,
+which keeps it on until the task ends or reports (see "Tasks"). Where Slack confirms it took that write, the
 indicator **is** the acknowledgement and no reaction is placed — one signal instead
 of two, and nothing left on the message once the answer has superseded it, which
 matters in workspaces where 👀 already carries a meaning between people. Only when
@@ -1338,6 +1339,10 @@ not end its work; the daemon reports the end of each round of work. A later `mes
 is taken with `followUp`, and each of its rounds is a check (see "Assistant-mode follow-up checks").
 An approved proposal is a task too, but nobody delegates it: it runs once, is settled by its one
 report, and cannot be given more work.
+
+In Slack, a thread whose delegated task is running keeps showing "is working…" after the
+conversation's own turn has ended, and it goes away when the task ends or its report is
+answered. A restart clears it; the task's report then shows it again while the report is answered.
 
 The agent lists its conversation's tasks with `listTasks`: its delegated tasks and, in the
 conversation's long session, its follow-ups, each with the `taskId` it is messaged and stopped by,

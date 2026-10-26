@@ -3104,4 +3104,60 @@ describe('Slack status-slot settlement', () => {
     )
     expect(setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', '', undefined)
   })
+
+  describe('a running delegated task', () => {
+    const withTask = (state: string) => {
+      const c = { setStatus: vi.fn(async () => true) }
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+      const get = vi.fn(async () => ({ state }))
+      ;(daemon as any).store = { assistantSubsessions: { get } }
+      ;(daemon as any).pending.set('p-0', {
+        conn: c,
+        plan: {
+          platform: 'slack',
+          agentId: 'a1',
+          channel: 'C1',
+          thread: 'T1',
+          statusThread: 'T1',
+          sessionKey: 'parent',
+          statusOptions: { username: 'Agent A', sessionKey: 'parent' }
+        }
+      })
+      ;(daemon as any).holdSlackForTask('child', 'parent')
+      ;(daemon as any).pending.clear()
+      return { c, daemon }
+    }
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+    it('keeps the thread working after the delegating turn ends, owned by the task', async () => {
+      const { c, daemon } = withTask('open')
+      ;(daemon as any).settleSlackSlot(c, 'C1', 'T1', 'parent')
+      await flush()
+      expect(c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', 'is thinking…', {
+        username: 'Agent A',
+        sessionKey: 'child'
+      })
+    })
+
+    it('clears once the task has left open, and a stopped task does not hold its own thread', async () => {
+      const ended = withTask('done')
+      ;(ended.daemon as any).settleSlackSlot(ended.c, 'C1', 'T1', 'parent')
+      await flush()
+      expect(ended.c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', '', undefined)
+      const stopped = withTask('open')
+      ;(stopped.daemon as any).settleSlackSlot(stopped.c, 'C1', 'T1', 'child')
+      await flush()
+      expect(stopped.c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', '', undefined)
+    })
+
+    it('releases an ended task on the sweep and every hold on shutdown', async () => {
+      const { c, daemon } = withTask('failed')
+      await (daemon as any).releaseEndedTaskSlackHolds()
+      expect(c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', '', undefined)
+      const live = withTask('open')
+      await (live.daemon as any).clearTaskSlackHolds()
+      expect(live.c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', '')
+      expect((live.daemon as any).taskSlackHolds.size).toBe(0)
+    })
+  })
 })

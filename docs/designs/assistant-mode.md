@@ -860,6 +860,15 @@ with `listTasks`.
   keep running; the adapter is never killed.
 - **Limits**: no delegated tasks of tasks; at most `maxConcurrentSubsessions` running (P0b
   refuses beyond it; the target queues the rest persistently with the asker told).
+- **Working indicator**: Slack's agent-session status stays `processing` until a write sets it
+  `active`; it has no timeout and posting a message does not clear it, so nothing needs refreshing.
+  The daemon remembers, in memory, the thread of the turn that delegated each running task. When
+  the last turn of that thread settles the slot, a still-`open` task keeps it `processing` under
+  the delegating agent's identity, with the task as the slot's owner so the native Stop cancels it.
+  Settlement re-reads the task's index row, so the report turn that follows the task's end clears
+  the slot; a once-a-minute sweep releases a task that ended with no turn after it, and shutdown
+  clears every hold so a cut task never leaves the indicator on across a restart. A turn at a
+  channel root has no thread status, so it holds none.
 
 ### 5.7 The report channel
 
