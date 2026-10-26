@@ -369,6 +369,7 @@ describe('toolsForIntegrations', () => {
       'delegateTask hands long work of your own, spanning turns, to a task of this session'
     )
     expect(tool.description).toContain('Work you finish within this turn goes to your runtime’s own subagent tool.')
+    expect(tool.description).toContain('Delegate only what you were asked to do.')
     expect(tool.description).toContain('messageTask sends a task more (taskId)')
     expect(tool.description).toContain('listTasks lists them, stopTask stops one')
     // §9.4: a reply names the message it answers.

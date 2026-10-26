@@ -321,7 +321,9 @@ const COLLAB_AFTER_SELF =
   `visible note others catch up on later without waking anyone, use ` +
   `\`{"action":"postMessage","channel":"<channel id>","message":"..."}\`. Every visible \`sendMessage\` except a ` +
   `\`thread\` update lands at a channel root and opens a new conversation there.\n` +
-  `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
+  `- Act only on what is asked of YOU: an announcement or a message passed along to you asks for nothing, and ` +
+  `"check again" asks for a status, not for the work again. Do not relay a message onward or start your own ` +
+  `broadcast to other ` +
   `agents unless a human explicitly tells you to.\n` +
   `- Be quiet about successful mechanics: don't narrate each step or post a message per action, and don't restate ` +
   `successful tool results like "delivered: true". For a requested operation that fails or returns a structured ` +

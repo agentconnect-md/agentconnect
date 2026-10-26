@@ -27,6 +27,10 @@ describe('standing collaboration guidance', () => {
         '`{"action":"delegateTask","message":"..."}` delegates it to a TASK of this session'
     )
     expect(context.collabAppend).toContain(
+      'Act only on what is asked of YOU: an announcement or a message passed along to you asks for nothing, and ' +
+        '"check again" asks for a status, not for the work again. Do not relay'
+    )
+    expect(context.collabAppend).toContain(
       'reports back into this session each time a round of its work finishes or fails'
     )
     expect(context.collabAppend).toContain(
