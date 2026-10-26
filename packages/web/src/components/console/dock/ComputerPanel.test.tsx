@@ -107,6 +107,28 @@ describe('ComputerPanel', () => {
     expect(options).toEqual(['mac', 'linux'])
   })
 
+  it('reads the computers again while shown, so an offline one becomes watchable and a failed read keeps the last', async () => {
+    vi.useFakeTimers()
+    try {
+      let status: 'offline' | 'online' = 'offline'
+      let failing = false
+      fetchComputer.mockImplementation(async (id: string) => {
+        if (failing) throw new Error('503')
+        return computer({ id, status })
+      })
+      const el = await render(<ComputerPanel computerIds={['c1']} active />)
+      expect(button(el, 'Watch')!.disabled).toBe(true)
+      status = 'online'
+      await act(async () => vi.advanceTimersByTimeAsync(15_000))
+      expect(button(el, 'Watch')!.disabled).toBe(false)
+      failing = true
+      await act(async () => vi.advanceTimersByTimeAsync(15_000))
+      expect(button(el, 'Watch')!.disabled).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('says so when none of the agent’s computers is visible', async () => {
     fetchComputer.mockRejectedValue(new Error('404'))
     const el = await render(<ComputerPanel computerIds={['hidden']} active />)

@@ -177,6 +177,7 @@ export function SessionDock({
   onOverflow,
   overlayKey,
   label = 'Panels',
+  onVisibleChange,
   children
 }: {
   /** The strip, in order. The dock does not sort, filter or hide them. */
@@ -192,6 +193,8 @@ export function SessionDock({
   overlayKey?: string
   /** Accessible name for the strip, the collapsed-band trigger and its overlay, and the app-bar action that replaces it on mobile. */
   label?: string
+  /** Whether a panel is on screen: always above `wide:`, only while the drawer is open below it; children stay mounted either way. */
+  onVisibleChange?: (visible: boolean) => void
   /** The active panel. A function receives the live rendered width, for a body that lays out differently at 380px than at 760px. */
   children: ReactNode | ((width: number) => ReactNode)
 }) {
@@ -304,6 +307,10 @@ export function SessionDock({
   useEffect(() => {
     if (!overlayBand) setOpen(false)
   }, [overlayBand])
+  const visible = !vacant && (!overlayBand || open)
+  useEffect(() => {
+    onVisibleChange?.(visible)
+  }, [visible, onVisibleChange])
 
   // In the collapsed bands the overlay is a MODAL dialog: it takes focus, keeps it, gives it back, and answers Escape — as its own agent picker does.
   useEffect(() => {

@@ -15,6 +15,8 @@ export interface ComputerPanelProps {
   createSession?: ComputerViewerProps['createSession']
 }
 
+const REFRESH_MS = 15_000
+
 const NOTE = 'px-3 py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-tertiary)'
 
 export function ComputerPanel({ computerIds, active, createSession }: ComputerPanelProps) {
@@ -25,18 +27,36 @@ export function ComputerPanel({ computerIds, active, createSession }: ComputerPa
   const [watching, setWatching] = useState(false)
   const key = computerIds.join(',')
 
-  // Keyed by the ids' content, not the array's identity, so a re-render does not refetch.
+  // Read on showing and then every 15 s while shown, so a computer coming online, or a failed read, recovers in place.
   useEffect(() => {
+    if (!active) return
     let live = true
-    setComputers(null)
     const ids = key ? key.split(',') : []
-    void Promise.all(ids.map((id) => fetchComputer(id).catch(() => null))).then((found) => {
-      if (live) setComputers(found.filter((computer): computer is ComputerDto => computer !== null))
-    })
+    const read = () =>
+      void Promise.all(
+        ids.map((id) =>
+          fetchComputer(id).then(
+            (computer): { id: string; computer: ComputerDto | null } => ({ id, computer }),
+            () => ({ id, computer: null })
+          )
+        )
+      ).then((found) => {
+        if (!live) return
+        // A failed read keeps what the last good one saw: the viewer on screen must not vanish over a blip.
+        setComputers((previous) =>
+          found.flatMap(({ id, computer }) => {
+            const kept = computer ?? previous?.find((candidate) => candidate.id === id)
+            return kept ? [kept] : []
+          })
+        )
+      })
+    read()
+    const timer = setInterval(read, REFRESH_MS)
     return () => {
       live = false
+      clearInterval(timer)
     }
-  }, [key])
+  }, [key, active])
 
   // Leaving the tab stops the stream, so a hidden panel spends no bandwidth.
   useEffect(() => {

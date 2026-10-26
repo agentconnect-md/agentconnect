@@ -3298,6 +3298,8 @@ export default function SessionDetailView() {
   )
   // Which panel is on screen. Sessions is where a session page opens; every other tab is one the reader asked for.
   const [dockTab, setDockTab] = useState(DOCK_TABS[0]!.key)
+  // A closed drawer leaves its panels mounted, so the Computer viewer must hear that it is off screen and hand control back.
+  const [dockVisible, setDockVisible] = useState(true)
   // The Files tab's `refresh-cw` action: re-reads the tree and the git status without remounting the panel, so the reader's filter and expanded folders survive it.
   const [filesRefreshTick, setFilesRefreshTick] = useState(0)
   // Reported by the panel, like the Sessions verdict: only it knows whether its first root listing has answered.
@@ -6470,6 +6472,7 @@ export default function SessionDetailView() {
         }}
         overlayKey={`${session.id}:${viewerPath ?? ''}`}
         label={t('panels')}
+        onVisibleChange={setDockVisible}
       >
         {/* Both panels stay mounted; only the active one draws. Sessions owns the verdict that sets its own tab status, and Files owns the tree, the filter and the scroll position a tab switch must not spend. */}
         <DockPanel active={dockTabKey === 'sessions'}>
@@ -6566,7 +6569,7 @@ export default function SessionDetailView() {
         {/* Mounted while hidden, like PR: its verdict is what puts its tab in the strip once any group has something to show. */}
         <DockPanel active={dockTabKey === 'computer'}>
           {computerIds.length > 0 ? (
-            <ComputerPanel computerIds={computerIds} active={dockTabKey === 'computer'} />
+            <ComputerPanel computerIds={computerIds} active={dockVisible && dockTabKey === 'computer'} />
           ) : null}
         </DockPanel>
         <DockPanel active={dockTabKey === 'tasks'}>
