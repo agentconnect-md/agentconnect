@@ -29,7 +29,7 @@ export function computerFixture(over: Partial<ComputerDto> = {}): ComputerDto {
     policy: {
       allowedMembers: ['u1'],
       agentMode: 'control',
-      approvals: { firstInputPerSession: true, launchApp: 'always', submitLikeKeys: true },
+      approvals: { firstInputPerSession: true },
       redactApps: [],
       exposeDriverTools: false,
       leaseIdleSeconds: 120,

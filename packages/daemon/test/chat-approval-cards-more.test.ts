@@ -544,6 +544,7 @@ describe('synced Feishu/Lark takes chat actions only from the agent’s editors,
   })
 
   it('DMs the Computer owner beside a computer-use card (computer-use.md §4.2)', async () => {
+    const COMPUTER_ID = '00000000-0000-4000-8000-0000000000c1'
     const ask = (asker: string) =>
       world('feishu', { level: 'approve', editors: new Set(['on_editor']), asker, slackDm: true })
     const params = () =>
@@ -557,19 +558,22 @@ describe('synced Feishu/Lark takes chat actions only from the agent’s editors,
     })
 
     const w = await ask('on_member')
-    void w.permissions.askComputerApproval(live(w), params(), 'cu-ed')
+    void w.permissions.askComputerApproval(live(w), params(), { computerId: COMPUTER_ID, ownerUserId: 'cu-ed' })
     await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
     await vi.waitFor(() => expect(w.slackConn.postBlocks).toHaveBeenCalledTimes(1))
     expect(w.slackConn.postBlocks.mock.calls[0]![0]).toBe('D-U-ED')
     expect(w.approvalRoute.mock.calls[0]![0]).toMatchObject({ consoleUserId: 'cu-ed' })
-    // The editor DM already went to the owner, so no second one follows.
+    // The owner's DM stands in for the editor DM, so no second one follows.
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(w.slackConn.postBlocks).toHaveBeenCalledTimes(1)
     await w.store.close()
 
     // An asker who may answer in the conversation needs no editor DM, yet the Computer owner still gets one.
     const editor = await ask('on_editor')
-    void editor.permissions.askComputerApproval(live(editor), params(), 'cu-ed')
+    void editor.permissions.askComputerApproval(live(editor), params(), {
+      computerId: COMPUTER_ID,
+      ownerUserId: 'cu-ed'
+    })
     await vi.waitFor(() => expect(editor.posts()).toHaveLength(1))
     await vi.waitFor(() => expect(editor.slackConn.postBlocks).toHaveBeenCalledTimes(1))
     expect(editor.slackConn.postBlocks.mock.calls[0]![0]).toBe('D-U-ED')

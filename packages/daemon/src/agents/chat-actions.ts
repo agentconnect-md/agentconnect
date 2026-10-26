@@ -46,6 +46,13 @@ export function approvalRefusalText(why: ApprovalRefusal, consoleUrl?: string, l
   })
 }
 
+/** What a refused answer to a computer-use approval is told: only the Computer's allowed members answer it (computer-use.md §4.2). */
+export function computerApprovalRefusalText(why: Exclude<ChatActorVerdict, 'allowed'>, limit?: number): string {
+  if (why === 'unavailable') return SYNCED_APPROVAL_REFUSALS.unavailable
+  const text = () => 'Only people allowed to use this Computer can answer this request.'
+  return fitRefusal(text, { consoleUrl: undefined, verdict: why, limit })
+}
+
 /** What only the person whose runtime-settings change was refused is told: who can change them, and where, within `limit` characters. */
 export function settingsRefusalText(consoleUrl: string, verdict?: ChatActorVerdict, limit?: number): string {
   const where = (url?: string) => (url ? `in the console: ${url}` : 'in the console.')

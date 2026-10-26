@@ -600,9 +600,7 @@ interface ComputerPolicy {
   allowedMembers: string[] // members who may watch / take over / manage (always includes the owner)
   agentMode: 'view' | 'control' // view: screenshots only; control: input too
   approvals: {
-    firstInputPerSession: boolean // default true
-    launchApp: 'always' | 'session' | 'never-ask'
-    submitLikeKeys: boolean // per-use approval for Enter-to-submit and send shortcuts, default true
+    firstInputPerSession: boolean // ask once per session, before its first input; default true
   }
   appAllowlist?: string[] // apps that may be operated (bundle id / executable name)
   redactApps: string[] // app windows masked in screenshots, such as password managers
@@ -638,37 +636,36 @@ apart by name), with no agent or member granularity.
 ### 4.2 Approvals [design]
 
 Reuse `packages/daemon/src/permissions/` and [mcp-elicitation.md](mcp-elicitation.md): an approval request goes both to
-where the session's conversation lives and to the Computer's owner. Screenshots, moves, and scrolls need no approval by
-default; the first input of a session, launching an app, and submit-like keys do, with an optional "always allow in
-this session".
+where the session's conversation lives and to the Computer's owner. The one approval is asked once per session, before
+its first input; whether the agent may act at all is `agentMode` (§4.1).
 
 **[implemented]** The agent daemon asks before it takes the lease, so a person's answer never holds the Computer
-(`packages/daemon/src/computer/tools.ts`). The grant (§3.7) carries the Computer's name, its owner and
-`policy.approvals`; a CP that sends no policy gets every approval asked. An input asks when the policy wants one of:
+(`packages/daemon/src/computer/tools.ts`). The grant (§3.7) carries the Computer's name, its owner, its approvers (the
+allowed members, owner included) and `policy.approvals`; a CP that sends no policy gets the approval asked.
 
-- **first input**: the first click, drag, type, key or launch of the session on that Computer (`firstInputPerSession`);
-  a move or a scroll does not count, and any "allow" answers it for the rest of the session;
-- **launching an app**: under `launchApp: always`, every `computer_launch` until someone answers Allow for this
-  session; under `session`, only the first, whatever the answer; none under `never-ask`;
-- **pressing Enter**: a `computer_key` with Return or Enter, or `computer_type` text with a line break
-  (`submitLikeKeys`), until someone answers Allow for this session. Keys are judged as the desktop presses them:
-  trimmed, lowercased and aliased by the shared `normalizeComputerKey`.
+- **first input**: the first click, drag, type, key or launch of the session on that Computer (`firstInputPerSession`)
+  asks; a screenshot, a move or a scroll does not. Once someone allows it, nothing else in that session asks.
 
-One card covers every reason a call has; it offers Allow once, Allow for this session and Deny. Allow for this session
-is the "always allow in this session" above: the person answering waives that call's reasons for the rest of the
-session, so `always` and `submitLikeKeys` are the defaults the session starts from, not a floor an approver cannot
-lower. It names the Computer and the action and never shows typed text, only its length.
-Approvals in a session run one at a time, so parallel inputs share an answer. The card is the daemon's own ask, like
-the bot-join confirmation, raised through `PermissionCoordinator.askComputerApproval` on the turn's ordinary approval
-path ([mcp-elicitation.md](mcp-elicitation.md) §8): a card in the conversation where people there may approve, or else
-the neutral notice plus the console and the approval DM. The approval DM goes to the Computer's owner first and falls
-back to the usual chain. Beside a card in the conversation the owner gets a DM too, unless they are the asker there or
-the editor DM already went to them. On an API turn the caller answers on its own stream, and the owner's DM only says
-that the agent asked and links the session.
-Through `agent/approval-route` the owner is reached, and their answer counts, only while they may edit the agent. On a
-self-hosted Computer only its registrant grants agents (§4.1), so an agent they cannot edit acts there only by their
-own choice, and its approvals follow that agent's usual chain until a computer-owner principal joins the route. A refusal, or no live turn to ask on, returns
-a definite `approval_denied` and nothing is sent.
+The card offers Allow for this session and Deny, names the Computer and the action, and never shows typed text, only its
+length. Approvals in a session run one at a time, so parallel inputs share an answer. A refusal, or no live turn to ask
+on, returns a definite `approval_denied` and nothing is sent.
+
+**Who answers.** The Computer's allowed members, not the agent's editors: the people who may use the machine are the
+ones who let an agent use it. The card is the daemon's own ask, raised through `PermissionCoordinator.askComputerApproval`
+on the turn's ordinary approval path ([mcp-elicitation.md](mcp-elicitation.md) §8): a card in the conversation where
+approving in chat is open, or else the neutral notice plus the console and the approval DM. Beside a card in the
+conversation the owner always gets a DM, unless they are the asker there, so a conversation with no allowed member in it
+still reaches someone. Every authority check names the Computer: `agent/approval-route` with `computerId`
+(`computer-approvers-v1`) routes the DM to the owner, else down the chain over the allowed members, and verifies a click
+against the allowed members' linked chat identities (`packages/control-plane/src/orchestrator/approvalRoute.ts`). A
+click in the conversation from anyone else, or from an account linked to no console account, is refused privately. A
+console decision counts only from an allowed member. On an API turn the caller answers on its own stream, and the
+owner's DM only says that the agent asked and links the session.
+
+**Compatibility.** The policy dropped `launchApp` and `submitLikeKeys`; a stored policy or a console write still carrying
+them parses with them stripped. A daemon from before the single ask defaults both on, so the grant still sends
+`launchApp: 'never-ask'` and `submitLikeKeys: false`. A daemon on a CP without `computer-approvers-v1` keeps that CP's
+editor-based routing and checks.
 
 ### 4.3 Hard refusals
 
@@ -1346,8 +1343,9 @@ register as Computers that agents use. M3 and M4 are independent and can run in 
    forwarded. Viewer: the console issues short-lived credentials and signaling uses the same channel; media tries direct
    (ICE-lite) first and falls back to TURN (such as coturn, BSD) or the relay.
 3. **Agent side**: the `computerUse` agent setting; registering `computer_*` in `resolve-servers.ts` (when the runtime
-   supports image content); forwarding tool calls over the data plane; session instructions (§5.6); approvals (first
-   input of a session, app launch, submit-like keys) through the existing permissions / elicitation; audit reporting.
+   supports image content); forwarding tool calls over the data plane; session instructions (§5.6); approvals (once per
+   session, before its first input, answered by the Computer's allowed members) through the existing permissions /
+   elicitation; audit reporting.
 4. **Screenshot storage** **[implemented]**: object-store writes, retention, references from the session timeline (§9).
 5. **Console**: the Computers page (list, status, `doctor` results with fixes, policy, granted agents); "Add Computer"
    producing the install command; an embedded viewer on the detail page (watch, take over, pause, stop, revoke); the

@@ -12,7 +12,7 @@ import {
   COMPUTER_TOOLS,
   COMPUTER_TOOL_ARGS,
   ComputerTools,
-  approvalsNeeded,
+  approvalNeeded,
   computerApprovalTitle,
   computerToolsOffered,
   describeComputerAction,
@@ -42,7 +42,7 @@ const ctx = (tools = COMPUTER_TOOLS): SessionContext => ({
 type CallTool = (params: { name: string; arguments?: Record<string, unknown> }, attempt: number) => Promise<unknown>
 
 // The approval policy most tests run under: nothing asks, so they exercise forwarding alone.
-const NO_APPROVALS: ComputerApprovals = { firstInputPerSession: false, launchApp: 'never-ask', submitLikeKeys: false }
+const NO_APPROVALS: ComputerApprovals = { firstInputPerSession: false }
 
 function setup(
   options: {
@@ -124,7 +124,7 @@ function setup(
     approver: {
       ask: async (_ctx, ask) => {
         asks.push(ask)
-        return options.approve ? await options.approve(ask) : 'allow_once'
+        return options.approve ? await options.approve(ask) : 'allow'
       }
     },
     connect: async (opts) => {
@@ -147,6 +147,7 @@ function setup(
             granted: true,
             name: 'Desk',
             ownerUserId: 'user_owner',
+            approvers: ['user_owner', 'user_member'],
             ...(approvals ? { approvals } : {})
           })
         },
@@ -561,23 +562,15 @@ describe('ComputerTools', () => {
 })
 
 describe('computer approvals', () => {
-  const ASK_ALL: ComputerApprovals = { firstInputPerSession: true, launchApp: 'always', submitLikeKeys: true }
+  const ASK: ComputerApprovals = { firstInputPerSession: true }
 
-  it('asks for the first input of a session, app launches and submit-like keys, not for moves or scrolls', () => {
-    expect(approvalsNeeded('computer_click', { x: 1, y: 1 }, ASK_ALL)).toEqual(['first_input'])
-    expect(approvalsNeeded('computer_move', { x: 1, y: 1 }, ASK_ALL)).toEqual([])
-    expect(approvalsNeeded('computer_scroll', { x: 1, y: 1, direction: 'down' }, ASK_ALL)).toEqual([])
-    expect(approvalsNeeded('computer_launch', { app: 'firefox' }, ASK_ALL)).toEqual(['first_input', 'launch_app'])
-    const typed = { input: true, session: new Set<never>() }
-    expect(approvalsNeeded('computer_key', { keys: ['Return'] }, ASK_ALL, typed)).toEqual(['submit'])
-    expect(approvalsNeeded('computer_key', { keys: ['ctrl', 'enter'] }, ASK_ALL, typed)).toEqual(['submit'])
-    expect(approvalsNeeded('computer_type', { text: 'hi\n' }, ASK_ALL, typed)).toEqual(['submit'])
-    // Keys are judged as the desktop presses them: trimmed, lowercased and aliased.
-    for (const key of [' return', 'Enter ', '\treturn', 'KP_Enter'])
-      expect(approvalsNeeded('computer_key', { keys: [key] }, ASK_ALL, typed)).toEqual(['submit'])
-    expect(approvalsNeeded('computer_key', { keys: [' esc'] }, ASK_ALL, typed)).toEqual([])
-    expect(approvalsNeeded('computer_type', { text: 'hi' }, ASK_ALL, typed)).toEqual([])
-    expect(approvalsNeeded('computer_launch', { app: 'x' }, { ...ASK_ALL, launchApp: 'never-ask' }, typed)).toEqual([])
+  it('asks before the first input of a session, never for moves, scrolls or once allowed', () => {
+    for (const name of ['computer_click', 'computer_drag', 'computer_type', 'computer_key', 'computer_launch'])
+      expect(approvalNeeded(name, ASK, false)).toBe(true)
+    expect(approvalNeeded('computer_move', ASK, false)).toBe(false)
+    expect(approvalNeeded('computer_scroll', ASK, false)).toBe(false)
+    expect(approvalNeeded('computer_click', ASK, true)).toBe(false)
+    expect(approvalNeeded('computer_click', { firstInputPerSession: false }, false)).toBe(false)
   })
 
   it('describes an action without the text it types', () => {
@@ -589,41 +582,41 @@ describe('computer approvals', () => {
       computerId: C1,
       computerName: 'Desk',
       tool: 'computer_type',
-      action: describeComputerAction('computer_type', { text: 'p4ss\n' }),
-      reasons: ['first_input', 'submit']
+      action: describeComputerAction('computer_type', { text: 'p4ss\n' })
     })
-    expect(title).toBe(
-      'Computer use on “Desk”: type 5 characters, including Enter (first input this session; presses Enter)'
-    )
+    expect(title).toBe('Computer use on “Desk”: type 5 characters, including Enter (first input this session)')
     expect(title).not.toContain('p4ss')
   })
 
-  it('asks once for the first input, names the owner, and tells the desktop how each call was approved', async () => {
-    const { tools, asks, metas, leases } = setup({ approvals: ASK_ALL })
+  it('asks once per session, names the owner and approvers, and tells the desktop how each call was approved', async () => {
+    const { tools, asks, metas, leases } = setup({ approvals: ASK })
     await tools.call(ctx(), 'computer_click', { x: 10, y: 20 })
     expect(asks).toEqual([
       {
         computerId: C1,
         computerName: 'Desk',
         ownerUserId: 'user_owner',
+        approvers: ['user_owner', 'user_member'],
         tool: 'computer_click',
-        action: 'click at (10, 20)',
-        reasons: ['first_input']
+        action: 'click at (10, 20)'
       }
     ])
-    await tools.call(ctx(), 'computer_click', { x: 11, y: 20 })
+    // Launching an app and pressing Enter no longer ask on their own.
+    await tools.call(ctx(), 'computer_launch', { app: 'firefox' })
+    await tools.call(ctx(), 'computer_key', { keys: ['return'] })
     await tools.call(ctx(), 'computer_screenshot', {})
     expect(asks).toHaveLength(1)
     expect(metas).toEqual([
       { 'md.agentconnect/approval': 'allowed' },
       { 'md.agentconnect/approval': 'allowed_session' },
+      { 'md.agentconnect/approval': 'allowed_session' },
       undefined
     ])
-    expect(leases.computerLeaseAcquire).toHaveBeenCalledTimes(2)
+    expect(leases.computerLeaseAcquire).toHaveBeenCalledTimes(3)
   })
 
   it('refuses a denied input with approval_denied before taking the lease, and asks again next time', async () => {
-    const { tools, asks, calls, leases } = setup({ approvals: ASK_ALL, approve: async () => 'deny' })
+    const { tools, asks, calls, leases } = setup({ approvals: ASK, approve: async () => 'deny' })
     const handled = await tools.call(ctx(), 'computer_type', { text: 'secret' })
     expect(handled?.result.mcpIsError).toBe(true)
     expect(parse(handled!.result)).toMatchObject({ error: 'approval_denied', computer: C1 })
@@ -633,35 +626,30 @@ describe('computer approvals', () => {
     expect(asks).toHaveLength(2)
   })
 
-  it('remembers "allow for this session" per reason, and asks for every launch under `always` otherwise', async () => {
-    const answers: ComputerApprovalAnswer[] = ['allow_once', 'allow_once', 'allow_session']
-    const { tools, asks } = setup({ approvals: ASK_ALL, approve: async () => answers.shift() ?? 'deny' })
-    await tools.call(ctx(), 'computer_launch', { app: 'firefox' })
-    await tools.call(ctx(), 'computer_launch', { app: 'firefox' })
-    expect(asks.map((ask) => ask.reasons)).toEqual([['first_input', 'launch_app'], ['launch_app']])
-    await tools.call(ctx(), 'computer_key', { keys: ['return'] })
-    await tools.call(ctx(), 'computer_key', { keys: ['return'] })
-    expect(asks.map((ask) => ask.reasons)).toEqual([['first_input', 'launch_app'], ['launch_app'], ['submit']])
-  })
-
   it('shares one answer between parallel inputs', async () => {
     let answer!: (value: ComputerApprovalAnswer) => void
     const { tools, asks } = setup({
-      approvals: ASK_ALL,
+      approvals: ASK,
       approve: () => new Promise<ComputerApprovalAnswer>((resolve) => (answer = resolve))
     })
     const first = tools.call(ctx(), 'computer_click', { x: 1, y: 1 })
     const second = tools.call(ctx(), 'computer_click', { x: 2, y: 2 })
     await vi.waitFor(() => expect(asks).toHaveLength(1))
-    answer('allow_once')
+    answer('allow')
     await Promise.all([first, second])
     expect(asks).toHaveLength(1)
   })
 
-  it('asks for everything when the Control Plane sends no policy', async () => {
-    const { tools, asks } = setup({ approvals: null })
-    await tools.call(ctx(), 'computer_key', { keys: ['return'] })
-    expect(asks[0]?.reasons).toEqual(['first_input', 'submit'])
+  it('asks once when the Control Plane sends no policy, ignoring the dropped asks an older one sends', async () => {
+    const none = setup({ approvals: null })
+    await none.tools.call(ctx(), 'computer_click', { x: 1, y: 1 })
+    expect(none.asks).toHaveLength(1)
+    const legacy = setup({
+      approvals: { firstInputPerSession: false, launchApp: 'always', submitLikeKeys: true } as ComputerApprovals
+    })
+    await legacy.tools.call(ctx(), 'computer_launch', { app: 'firefox' })
+    await legacy.tools.call(ctx(), 'computer_key', { keys: ['return'] })
+    expect(legacy.asks).toEqual([])
   })
 })
 

@@ -11,6 +11,7 @@ import { pendingTurnKey, type Pending } from '../src/daemon/turn-types.js'
 const AGENT = 'bot-a'
 const OWNER = agentHostKey(AGENT)
 const ACP_SESSION = 'acp-1'
+const COMPUTER_ID = '00000000-0000-4000-8000-0000000000c1'
 const CONV = 'conv-1'
 
 const PERMISSION: RequestPermissionRequest = {
@@ -98,7 +99,9 @@ function world(apiProtocol: string | undefined = 'ai-sdk-ui', platform = 'webcha
     chatSurface: () => 'open',
     placeExternal: () => false,
     chatEditorsOnly: () => false,
-    chatActor: async () => 'allowed' as const
+    chatActor: async () => 'allowed' as const,
+    servesComputerApprovers: () => false,
+    computerActor: async () => 'unavailable' as const
   }
   const events = (): any[] => sink.output.mock.calls.map(([o]: any[]) => o.event)
   return { p, host, store, events, timers, cancelTurn, coordinator: new PermissionCoordinator(host) }
@@ -145,7 +148,7 @@ describe("an API turn's runtime approval", () => {
       toolCall: { toolCallId: 'computer-approval-1', title: 'Computer use on “Desk”: click at (1, 2)', kind: 'execute' }
     } as RequestPermissionRequest
     ;(w.p.plan as { agentName?: string }).agentName = 'Butler'
-    const outcome = w.coordinator.askComputerApproval(w.p, params, 'cu-own')
+    const outcome = w.coordinator.askComputerApproval(w.p, params, { computerId: COMPUTER_ID, ownerUserId: 'cu-own' })
     const requestId = await handedOut(w)
     await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
     expect(approvalRoute.mock.calls[0]![0]).toMatchObject({ consoleUserId: 'cu-own', integrationIds: ['int-1'] })

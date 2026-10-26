@@ -76,11 +76,7 @@ export const poolNeedsReset = (error: string | null | undefined): boolean => {
 
 /** A desktop made by and for an agent asks no approvals: it is isolated and fresh, and nothing on it is a person's (§15.1). */
 export function managedComputerPolicy(ownerUserId: string, base?: ComputerPolicy): ComputerPolicy {
-  const policy =
-    base ??
-    ComputerPolicySchema.parse({
-      approvals: { firstInputPerSession: false, launchApp: 'never-ask', submitLikeKeys: false }
-    })
+  const policy = base ?? ComputerPolicySchema.parse({ approvals: { firstInputPerSession: false } })
   const members = [ownerUserId, ...policy.allowedMembers.filter((id) => id !== ownerUserId)]
   return { ...policy, allowedMembers: members }
 }

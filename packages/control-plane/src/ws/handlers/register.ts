@@ -38,6 +38,7 @@ import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
+  COMPUTER_APPROVERS_V1_FEATURE,
   READ_ACCESS_V1_FEATURE,
   READ_ACCESS_LINKED_V1_FEATURE,
   READ_ACCESS_BATCH_V1_FEATURE,
@@ -185,6 +186,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       APPROVAL_DM_ROUTE_V1_FEATURE,
       // …and tells whether a chat member is any editor's linked identity, for a synced integration's chat actions.
       CHAT_ACTOR_V1_FEATURE,
+      // …and answers a computer-use approval's route by the Computer's allowed members (computer-use.md §4.2).
+      COMPUTER_APPROVERS_V1_FEATURE,
       // …and names an assistant-mode agent's derived responsible user (assistant-mode.md §5.1).
       ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE,
       // …and gives the console's session visibility for whoever asks a cross-platform read.

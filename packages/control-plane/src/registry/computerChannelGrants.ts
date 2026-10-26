@@ -5,6 +5,7 @@ import {
   COMPUTER_RELAYS_MAX,
   COMPUTER_STUN_URLS_MAX,
   COMPUTER_VIEWER_TOKEN_TTL_MS,
+  LEGACY_COMPUTER_APPROVALS_OFF,
   type ComputerAgentMode,
   type ComputerIceServer,
   readComputerChannelToken,
@@ -17,7 +18,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
 import { ComputerId, type OrgId } from '../domain/ids.js'
-import { computerGrantsAgent, isComputerReachable, presentComputerStatus } from '../domain/computer.js'
+import { computerGrantsAgent, isComputerReachable, presentComputerStatus, withOwnerMember } from '../domain/computer.js'
 import type { ComputerRepo } from '../persistence/ports.js'
 import type { ComputerChannelKeys } from './computerChannelKeys.js'
 import { turnCredentials, type ExternalTurn } from '../computer-viewer/turn.js'
@@ -122,10 +123,11 @@ export class ComputerChannelGrants {
       expiresAt: new Date(exp).toISOString(),
       mode: computer.policy.agentMode,
       relays,
-      // The agent daemon asks for approvals by these (§4.2): the card names the Computer and also goes to its owner.
+      // The agent daemon asks for approvals by these (§4.2): the card names the Computer, goes to its owner, and its allowed members answer.
       name: computer.name,
       ownerUserId: computer.ownerUserId,
-      approvals: computer.policy.approvals
+      approvals: { ...computer.policy.approvals, ...LEGACY_COMPUTER_APPROVALS_OFF },
+      approvers: withOwnerMember(computer.policy, computer.ownerUserId).allowedMembers
     }
   }
 

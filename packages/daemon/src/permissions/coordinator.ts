@@ -129,6 +129,7 @@ import {
 } from './subsession-approval.js'
 import {
   approvalRefusalText,
+  computerApprovalRefusalText,
   CHAT_APPROVALS_OFF,
   chatApprovalsAllowed,
   type ApprovalRefusal,
@@ -185,6 +186,15 @@ export interface PermissionCoreHost {
     integrationId: string | undefined,
     actor: InteractionActor | undefined
   ): Promise<ChatActorVerdict>
+  /** Whether the CP answers approval routes by a Computer's allowed members (`computer-approvers-v1`). */
+  servesComputerApprovers(): boolean
+  /** Whether this chat member is one of the Computer's allowed members, by their linked identity; fails closed. */
+  computerActor(
+    agentId: string,
+    integrationId: string | undefined,
+    computerId: string,
+    actor: InteractionActor | undefined
+  ): Promise<ChatActorVerdict>
   /** Live turns keyed by `pendingTurnKey(agentId, acpSessionId)`. */
   pending(): ReadonlyMap<string, Pending>
   evalHooks(): DaemonEvaluationHooks
@@ -192,6 +202,14 @@ export interface PermissionCoreHost {
   memoryExtraction(turnKey: string): MemoryExtractionTurn | undefined
   /** End a turn as its caller's cancel would; a sub-session whose approval wait ran out names that instead. */
   cancelTurn(p: Pending, reason?: 'approval wait expired'): Promise<void>
+}
+
+/** The Computer a computer-use approval asks about, whose owner it also reaches and whose allowed members answer it (§4.2). */
+export interface ComputerAskScope {
+  computerId: string
+  ownerUserId?: string
+  /** The console users who may answer; absent from an older CP, which leaves the agent's usual approvers. */
+  approvers?: readonly string[]
 }
 
 /** What the permission path knows about a live extraction turn: the bridge calls it has issued so far. */
@@ -312,6 +330,9 @@ function formAnswerLabel(
   // as a card that never resolved, the same reason a `minItems: 0` selection says so too.
   return parts.length ? clampTo(parts.join(' · '), 200) : 'Nothing filled in'
 }
+
+/** Why a console decision on a computer-use approval was refused. */
+const COMPUTER_ANSWER_REFUSED = 'Only people allowed to use this Computer can answer this request.'
 
 /** How a card the turn ended under is labelled: nothing was decided, so it says so. */
 const ELICIT_CANCELLED: ElicitCardLabel = { mark: 'waiting', text: 'Cancelled', fallback: 'Cancelled' }
@@ -630,8 +651,8 @@ export class PermissionCoordinator {
   private readonly pendingApprovals = new Map<string, PendingApproval>()
   /** Runtime approvals handed to an API caller, keyed by the id its answer names. */
   private readonly pendingCallerApprovals = new Map<string, CallerApproval>()
-  /** A computer-use approval's Computer owner, by its request's tool call id (computer-use.md §4.2). */
-  private readonly computerOwners = new Map<string, string>()
+  /** A computer-use approval's Computer, owner and approvers, by its request's tool call id (computer-use.md §4.2). */
+  private readonly computerAsks = new Map<string, ComputerAskScope>()
 
   /** Decision details discovered inside the platform policy and merged into the
    * single terminal event emitted by AcpHost's policy observer. */
@@ -1302,7 +1323,7 @@ export class PermissionCoordinator {
     if (!chatApprovalsAllowed(this.host.agents().get(agentId))) this.retireChatApprovalsOffCard(live)
     else {
       const editorsOnly = this.host.chatEditorsOnly(agentId, p.plan.integrationId)
-      if (editorsOnly || this.computerOwnerOf(requestId))
+      if (editorsOnly || this.computerAskOf(requestId))
         void this.dmBesideCard(requestId, agentId, p, requesterName, editorsOnly).catch((err) => {
           this.host.log().warn(`approval DM beside the card for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
         })
@@ -1564,7 +1585,7 @@ export class PermissionCoordinator {
     return true
   }
 
-  /** The DMs beside a card: an editor's where only editors may answer, and the Computer owner's unless that DM already went (§4.2). */
+  /** The DMs beside a card: the Computer owner's for a computer-use approval (§4.2), else an editor's where only editors may answer. */
   private async dmBesideCard(
     requestId: string,
     agentId: string,
@@ -1572,9 +1593,8 @@ export class PermissionCoordinator {
     requesterName: string | null,
     editorsOnly: boolean
   ): Promise<void> {
-    // The editor DM routes to the Computer's owner first, so the owner needs no second one.
-    if (editorsOnly && (await this.dmEditorBeside(requestId, agentId, p, requesterName))) return
-    if (this.computerOwnerOf(requestId)) await this.dmComputerOwnerBeside(requestId, agentId, p, requesterName)
+    if (this.computerAskOf(requestId)) await this.dmComputerOwnerBeside(requestId, agentId, p, requesterName)
+    else if (editorsOnly) await this.dmEditorBeside(requestId, agentId, p, requesterName)
   }
 
   /** Say in the channel that a too-long option list was declined; every surface, the console included, shares the cap (#1969). */
@@ -1857,11 +1877,11 @@ export class PermissionCoordinator {
     const preferred = this.host.slackConnFor(p.plan.integrationId ?? '') ? p.plan.integrationId : undefined
     const integrationIds = this.host.approvalDmIntegrations(agentId, preferred, cards)
     if (integrationIds.length === 0) return undefined
-    // A computer-use approval goes to the Computer's owner first (computer-use.md §4.2), else down the usual chain.
-    const computerOwner = subsession ? undefined : this.computerOwnerOf(requestId)
-    if (computerOwner) {
+    // A computer-use approval goes to the Computer's owner first (computer-use.md §4.2), else down the chain of its allowed members.
+    const computer = subsession ? undefined : this.computerAskOf(requestId)
+    if (computer?.ownerUserId) {
       const routed = await cp.approvalRoute(
-        { agentId, requestId, consoleUserId: computerOwner, integrationIds },
+        { agentId, requestId, consoleUserId: computer.ownerUserId, integrationIds, ...this.computerRoute(computer) },
         this.host.orgForAgent(agentId)
       )
       if (routed.target) return routed.target
@@ -1877,7 +1897,8 @@ export class PermissionCoordinator {
         requestId,
         sessionId: p.outwardSessionId,
         ...(requesterId ? { requesterId } : {}),
-        integrationIds
+        integrationIds,
+        ...this.computerRoute(computer)
       },
       this.host.orgForAgent(agentId)
     )
@@ -2109,7 +2130,12 @@ export class PermissionCoordinator {
     if (asked?.kind === 'permission' && asked.join && !notify.target.consoleUserId)
       return { ok: true, name: actor.name ?? null }
     if (notify.asker) {
-      const verdict = await this.chatAnswerVerdict(agentId, notify.asker, actor, true)
+      const computer = this.host.servesComputerApprovers() ? this.computerAskOf(requestId) : undefined
+      const verdict = !computer
+        ? await this.chatAnswerVerdict(agentId, notify.asker, actor, true)
+        : this.chatAnswerOpen(agentId, notify.asker, true)
+          ? await this.host.computerActor(agentId, notify.asker.integrationId, computer.computerId, actor)
+          : 'closed'
       if (verdict === 'allowed') return { ok: true, name: actor.name ?? null }
       return { ok: false, authoritative: verdict !== 'unavailable' }
     }
@@ -2133,7 +2159,8 @@ export class PermissionCoordinator {
           agentId,
           requestId,
           integrationIds: [target.integrationId],
-          verify: { integrationId: target.integrationId, teamId: target.teamId, userId: actor.userId, consoleUserId }
+          verify: { integrationId: target.integrationId, teamId: target.teamId, userId: actor.userId, consoleUserId },
+          ...this.computerRoute(this.computerAskOf(requestId))
         },
         this.host.orgForAgent(agentId)
       )
@@ -2408,6 +2435,10 @@ export class PermissionCoordinator {
       if (rec.kind === 'permission') {
         // Only a person behind the turn decides whether the bot joins a channel, an Agent editor included.
         if (rec.join && !joinDecidedByAsker(rec.join, req.decidedBy)) return { ok: false, reason: JOIN_ANSWER_REFUSED }
+        // Only the Computer's allowed members decide a computer-use approval (computer-use.md §4.2).
+        const approvers = this.computerAskOf(req.requestId)?.approvers
+        if (approvers && !approvers.some((userId) => req.decidedBy === `user:${userId}`))
+          return { ok: false, reason: COMPUTER_ANSWER_REFUSED }
         const choices = permissionChoices(rec.params)
         const picked = pickChoice(choices, req, permissionFallback(choices))
         if (!picked.ok) return picked
@@ -2548,9 +2579,16 @@ export class PermissionCoordinator {
     optionId: string,
     actor: InteractionActor | undefined
   ): Promise<string | undefined> {
+    // A computer-use approval is answered by the Computer's allowed members alone (computer-use.md §4.2).
+    const computer = this.computerAskOf(requestId)
+    const byComputer = computer !== undefined && this.host.servesComputerApprovers()
     // The level was lowered, the conversation closed, or only editors may answer here and this person is not one; an asker's card answers to them alone.
-    const verdict =
-      chat.askerId === undefined
+    const verdict = byComputer
+      ? this.chatAnswerOpen(rec.agentId, chat.place, chat.askerId !== undefined) &&
+        (chat.askerId === undefined || actor?.userId === chat.askerId)
+        ? await this.host.computerActor(rec.agentId, chat.place.integrationId, computer.computerId, actor)
+        : 'closed'
+      : chat.askerId === undefined
         ? await this.chatAnswerVerdict(rec.agentId, chat.place, actor)
         : actor?.userId === chat.askerId
           ? await this.chatAnswerVerdict(rec.agentId, chat.place, actor, true)
@@ -2560,7 +2598,10 @@ export class PermissionCoordinator {
       this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, actor)
       if (!actor) return
       // Only the clicker is told; the card stays as everyone else sees it.
-      const text = this.chatRefusal(rec, verdict, chat.facet)
+      const text =
+        byComputer && verdict !== 'closed'
+          ? computerApprovalRefusalText(verdict, chat.facet.privateTextLimit)
+          : this.chatRefusal(rec, verdict, chat.facet)
       if (!chat.facet.tellPrivately) return text
       chat.facet.tellPrivately(chat, actor.userId, text)
       return
@@ -2745,31 +2786,48 @@ export class PermissionCoordinator {
   async askComputerApproval(
     p: Pending,
     params: RequestPermissionRequest,
-    computerOwnerUserId?: string
+    computer: ComputerAskScope
   ): Promise<RequestPermissionResponse> {
     const callId = params.toolCall.toolCallId
-    if (computerOwnerUserId) this.computerOwners.set(callId, computerOwnerUserId)
+    this.computerAsks.set(callId, computer)
     try {
       return await this.onAcpPermission(p.hostKey, p.acpSessionId, params)
     } finally {
-      this.computerOwners.delete(callId)
+      this.computerAsks.delete(callId)
     }
   }
 
-  /** The Computer owner a pending computer-use approval also goes to. */
-  private computerOwnerOf(requestId: string): string | undefined {
+  /** The Computer a pending computer-use approval asks about. */
+  private computerAskOf(requestId: string): ComputerAskScope | undefined {
+    if (this.computerAsks.size === 0) return undefined
     const rec = this.pendingApprovals.get(requestId)
-    return rec?.kind === 'permission' ? this.computerOwners.get(rec.params.toolCall.toolCallId) : undefined
+    return rec?.kind === 'permission' ? this.computerAsks.get(rec.params.toolCall.toolCallId) : undefined
+  }
+
+  /** What makes an approval route judge by a Computer's allowed members; an older CP keeps the editors. */
+  private computerRoute(computer: ComputerAskScope | undefined): { computerId?: string } {
+    return computer && this.host.servesComputerApprovers() ? { computerId: computer.computerId } : {}
   }
 
   /** An API caller answers a computer-use approval on its own stream; the Computer's owner is told in their DM (§4.2). */
-  private async noticeComputerOwner(agentId: string, p: Pending, params: RequestPermissionRequest, owner: string) {
+  private async noticeComputerOwner(
+    agentId: string,
+    p: Pending,
+    params: RequestPermissionRequest,
+    computer: ComputerAskScope & { ownerUserId: string }
+  ) {
     const cp = this.host.cpApprovalRoute()
     if (!cp) return
     const integrationIds = this.host.approvalDmIntegrations(agentId, undefined)
     if (integrationIds.length === 0) return
     const { target } = await cp.approvalRoute(
-      { agentId, requestId: params.toolCall.toolCallId, consoleUserId: owner, integrationIds },
+      {
+        agentId,
+        requestId: params.toolCall.toolCallId,
+        consoleUserId: computer.ownerUserId,
+        integrationIds,
+        ...this.computerRoute(computer)
+      },
       this.host.orgForAgent(agentId)
     )
     const conn = target ? this.host.slackConnFor(target.integrationId) : undefined
@@ -2789,13 +2847,13 @@ export class PermissionCoordinator {
   /** A computer-use card in the conversation also reaches the Computer's owner in their DM, unless they asked there. */
   private async dmComputerOwnerBeside(requestId: string, agentId: string, p: Pending, requesterName: string | null) {
     const cp = this.host.cpApprovalRoute()
-    const owner = this.computerOwnerOf(requestId)
-    if (!cp || !owner) return
+    const computer = this.computerAskOf(requestId)
+    if (!cp || !computer?.ownerUserId) return
     const preferred = p.plan.platform === 'slack' ? p.plan.integrationId : undefined
     const integrationIds = this.host.approvalDmIntegrations(agentId, preferred)
     if (integrationIds.length === 0) return
     const { target } = await cp.approvalRoute(
-      { agentId, requestId, consoleUserId: owner, integrationIds },
+      { agentId, requestId, consoleUserId: computer.ownerUserId, integrationIds, ...this.computerRoute(computer) },
       this.host.orgForAgent(agentId)
     )
     if (!target || (target.integrationId === p.plan.integrationId && target.userId === p.plan.requesterId)) return
@@ -2878,11 +2936,13 @@ export class PermissionCoordinator {
     }
     // An API caller decides first: its refusal stands, and only an allow it may not make reaches an Agent editor.
     if (this.callerAnswers(p)) {
-      const computerOwner = this.computerOwners.get(params.toolCall.toolCallId)
-      if (computerOwner)
-        void this.noticeComputerOwner(agentId, p, params, computerOwner).catch((err) => {
-          this.host.log().warn(`computer owner notice for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
-        })
+      const computer = this.computerAsks.get(params.toolCall.toolCallId)
+      if (computer?.ownerUserId)
+        void this.noticeComputerOwner(agentId, p, params, { ...computer, ownerUserId: computer.ownerUserId }).catch(
+          (err) => {
+            this.host.log().warn(`computer owner notice for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
+          }
+        )
       const option = (...kinds: string[]) =>
         kinds.map((kind) => params.options.find((o) => o.kind === kind)).find((o) => o !== undefined)
       const select = (o: { optionId: string } | undefined): RequestPermissionResponse => {

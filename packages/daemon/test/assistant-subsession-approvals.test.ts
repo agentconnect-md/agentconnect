@@ -185,7 +185,9 @@ async function world(
     placeExternal: () => false,
     chatEditorsOnly: () => over.editors !== undefined,
     chatActor: async (_agentId, _integrationId, actor) =>
-      !over.editors || over.editors.includes(actor?.userId ?? '') ? 'allowed' : 'not-editor'
+      !over.editors || over.editors.includes(actor?.userId ?? '') ? 'allowed' : 'not-editor',
+    servesComputerApprovers: () => false,
+    computerActor: async () => 'unavailable' as const
   }
   const coordinator = new PermissionCoordinator(host)
   /** The one request the sub-session has waiting, once it is listed. */

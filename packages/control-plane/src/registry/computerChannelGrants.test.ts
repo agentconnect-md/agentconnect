@@ -53,14 +53,15 @@ function setup(over: Partial<ComputerRecord> = {}, policy: Record<string, unknow
 const who = { agentId: AGENT, sessionId: 'sess-1', daemonId: DAEMON }
 
 describe('ComputerChannelGrants', () => {
-  it('names the Computer, its owner and its approval policy for the approval cards', async () => {
-    const policy = { approvals: { launchApp: 'session', submitLikeKeys: false } }
+  it("names the Computer, its owner, approvers and approval policy for the approval cards, turning older daemons' dropped asks off", async () => {
+    const policy = { allowedMembers: ['user_member'], approvals: { firstInputPerSession: true } }
     const result = await setup({}, policy).grants.grant(ORG, CID, who)
     expect(result).toMatchObject({
       granted: true,
       name: 'Desk',
       ownerUserId: 'user_owner',
-      approvals: { firstInputPerSession: true, launchApp: 'session', submitLikeKeys: false }
+      approvers: ['user_owner', 'user_member'],
+      approvals: { firstInputPerSession: true, launchApp: 'never-ask', submitLikeKeys: false }
     })
   })
 

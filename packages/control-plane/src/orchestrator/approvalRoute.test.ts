@@ -6,13 +6,16 @@ import { buildCpPlatformRegistry } from '../platforms/registry.js'
 import { createSlackCpProvider } from '../platforms/slack/provider.js'
 import { createGoogleChatCpProvider } from '../platforms/googlechat/provider.js'
 import { createMsTeamsCpProvider } from '../platforms/msteams/provider.js'
+import { ComputerPolicySchema } from '@agentconnect.md/protocol'
 import type {
   AgentRecord,
   BotRecord,
+  ComputerRecord,
   IntegrationRecord,
   OrgMemberRecord,
   SessionMetaRecord
 } from '../persistence/ports.js'
+import { OrgId } from '../domain/ids.js'
 import { resolveApprovalRoute, type ApprovalRouteDeps } from './approvalRoute.js'
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111'
@@ -22,6 +25,7 @@ const INTEGRATION_B = '44444444-4444-4444-8444-444444444444'
 const ORG = 'org-1'
 const TEAM_A = 'T0AAA'
 const TEAM_B = 'T0BBB'
+const COMPUTER_ID = '55555555-5555-4555-8555-555555555555'
 
 const PLATFORMS = buildCpPlatformRegistry([
   createSlackCpProvider({}),
@@ -41,6 +45,7 @@ interface World {
   identityAbsent?: boolean
   // consoleUserId → linked Feishu/Lark identities
   feishuLinks?: Record<string, FeishuIdentity[]>
+  computer?: Partial<ComputerRecord>
 }
 
 function deps(world: World): ApprovalRouteDeps {
@@ -79,6 +84,18 @@ function deps(world: World): ApprovalRouteDeps {
       getOidcSubject: async (userId) => `sub:${userId}`
     },
     platforms: PLATFORMS,
+    computer: {
+      getUnscoped: async (id) =>
+        world.computer && String(id) === COMPUTER_ID
+          ? ({
+              id: COMPUTER_ID,
+              orgId: ORG,
+              ownerUserId: 'u-owner',
+              revokedAt: null,
+              ...world.computer
+            } as ComputerRecord)
+          : null
+    },
     ...(world.identityAbsent
       ? {}
       : { identity: { chatIdentitiesFor: async (sub: string) => chatIdentities(world, sub) } })
@@ -629,5 +646,59 @@ describe('resolveApprovalRoute — a Feishu/Lark chat member, matched by union_i
     expect((await resolveApprovalRoute(actorReq('on_editor'), deps(slackOnly))).allowed).toBe(false)
     const telegram = feishuWorld({ integrations: [{ id: INTEGRATION_A, botId: 'bot-f', platform: 'telegram' }] })
     expect((await resolveApprovalRoute(actorReq('on_editor'), deps(telegram))).allowed).toBe(false)
+  })
+})
+
+describe('resolveApprovalRoute — a computer-use approval (computer-use.md §4.2)', () => {
+  const world: World = {
+    // A restricted agent nobody here was given: only the organization owner may edit it.
+    agent: { visibility: 'restricted', sharedWith: [] },
+    members: [
+      { userId: 'u-owner', displayName: 'Owner' },
+      { userId: 'u-member', displayName: 'Member' },
+      { userId: 'u-admin', displayName: 'Admin', role: 'owner' }
+    ],
+    links: { 'u-owner': linked('U0OWNER'), 'u-member': linked('U0MEMBER'), 'u-admin': linked('U0ADMIN') },
+    computer: { policy: ComputerPolicySchema.parse({ allowedMembers: ['u-member'] }) }
+  }
+  const verify = (userId: string, consoleUserId?: string) => ({
+    integrationId: INTEGRATION_A,
+    teamId: TEAM_A,
+    userId,
+    ...(consoleUserId ? { consoleUserId } : {})
+  })
+
+  it("takes the Computer's allowed members and its owner as the approvers, in place of the agent's editors", async () => {
+    const as = async (userId: string, consoleUserId?: string, computerId: string | null = COMPUTER_ID) =>
+      (
+        await resolveApprovalRoute(
+          routeReq({ verify: verify(userId, consoleUserId), ...(computerId ? { computerId } : {}) }),
+          deps(world)
+        )
+      ).allowed
+    expect(await as('U0MEMBER', 'u-member')).toBe(true)
+    expect(await as('U0OWNER', 'u-owner')).toBe(true)
+    expect(await as('U0ADMIN', 'u-admin')).toBe(false)
+    expect(await as('U0MEMBER')).toBe(true)
+    expect(await as('U0ADMIN')).toBe(false)
+    // Without the Computer, the agent's editors decide as before.
+    expect(await as('U0MEMBER', 'u-member', null)).toBe(false)
+    expect(await as('U0ADMIN', 'u-admin', null)).toBe(true)
+  })
+
+  it("routes to the Computer's owner, and refuses a Computer of another organization or a revoked one", async () => {
+    const routed = await resolveApprovalRoute(
+      routeReq({ computerId: COMPUTER_ID, consoleUserId: 'u-owner' }),
+      deps(world)
+    )
+    expect(routed.target).toMatchObject({ userId: 'U0OWNER', consoleUserId: 'u-owner' })
+    for (const computer of [{ orgId: OrgId('org-2') }, { revokedAt: new Date() }]) {
+      const other = { ...world, computer: { ...world.computer, ...computer } }
+      const refused = await resolveApprovalRoute(
+        routeReq({ computerId: COMPUTER_ID, verify: verify('U0MEMBER', 'u-member') }),
+        deps(other)
+      )
+      expect(refused.allowed).toBe(false)
+    }
   })
 })
