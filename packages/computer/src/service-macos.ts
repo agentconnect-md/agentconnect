@@ -49,13 +49,20 @@ export function installService(program: string[], logPath: string): boolean {
   return true
 }
 
+// How to start the job: a running one needs nothing, and one the menu bar quit stays loaded but has no process.
+export function startArgs(status: { loaded: boolean; pid?: number }, uid: number): string[] | undefined {
+  if (status.loaded && status.pid !== undefined) return undefined
+  return status.loaded ? ['kickstart', `gui/${uid}/${SERVICE_LABEL}`] : ['bootstrap', `gui/${uid}`, plistPath()]
+}
+
 export function startService(): void {
-  if (serviceStatus().loaded) return
+  const args = startArgs(serviceStatus(), process.getuid!())
+  if (!args) return
   if (!guiSession()) throw new Error("nobody is logged in to this Mac's desktop: the service starts at the next login")
   // The menu bar's "Start at Login" may have disabled it, and launchd refuses to bootstrap a disabled job.
   setStartAtLogin(true)
-  const result = launchctl('bootstrap', domain(), plistPath())
-  if (!result.ok) throw new Error(`launchctl bootstrap failed: ${result.output}`)
+  const result = launchctl(...args)
+  if (!result.ok) throw new Error(`launchctl ${args[0]} failed: ${result.output}`)
 }
 
 export function stopService(): void {
