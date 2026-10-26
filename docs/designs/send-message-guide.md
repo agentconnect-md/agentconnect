@@ -217,11 +217,13 @@ visible self-call example, and the description steers work without a channel to 
 turns, may run a long time, or that people should be able to see and stop: a delegated task
 reports on its own, appears in the console's Tasks tab, and can be messaged and stopped. Work the
 agent splits up and can finish within this turn belongs to the runtime's own subagent or Task
-tool, whose subagents AgentConnect only shows as this turn's tasks (§2.1). A task is delegated
-only for work the agent was asked to do: an announcement or a message passed along to it is not a
-request, and a follow-up such as "check again" asks for a status, not for the work again. The
-description, the `delegateTask` guide and the standing guidance state this division and this
-rule; the contract gains no argument.
+tool, whose subagents AgentConnect only shows as this turn's tasks (§2.1). A task serves the
+request the agent is answering: its independent parts, or long work that would hold up the
+conversation, start without asking. Work the agent noticed on its own, or that an announcement or
+a relayed message mentions, is proposed, not started; when in doubt it does not delegate; and a
+follow-up such as "check again" asks for a status, not for the work again. The description states
+the division; the `delegateTask` guide and the standing guidance state the division and this rule,
+and the contract gains no argument.
 
 `delegateTask` requires `action` and `message` and accepts nothing else. It starts a new
 delegated task of the current session, owned by it through trusted caller identity, and returns the task's
@@ -850,9 +852,8 @@ the sections above left open:
   `replyToSession` only. The current revision ships the §3.2 draft with one change: the
   `delegateTask` clause keeps the matrix-earned steering "for "fix this bug and open a PR", call
   it before exploring, say it started, and end your turn", and states the division of labour with
-  the runtime's own subagents (§3.1), and says to delegate only what was asked. Measured with no
-  integrations, the description is 1008 characters against the 1024-character cap the test pins;
-  for a Slack + Telegram agent it was 971 characters before that clause, the flat schema 1956, and `getToolGuide` description plus
+  the runtime's own subagents (§3.1). Measured for a Slack + Telegram agent,
+  the description is 971 characters, the flat schema 1956, and `getToolGuide` description plus
   schema 486; `sessionId` is described for `callAgent` only, `taskId` for `messageTask`, and
   `messageId` for `replyToSession`.
 - **Not-yet-available targets.** The adapter stage refused `callAgent.sessionId`; §9 lifted it

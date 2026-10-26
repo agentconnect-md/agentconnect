@@ -298,7 +298,11 @@ const COLLAB_SELF_DELEGATION =
   `should be able to see and stop, \`{"action":"delegateTask","message":"..."}\` delegates it to a TASK of this ` +
   `session: it works in a context of its own, posts nothing, and reports back into this ` +
   `session each time a round of its work finishes or fails. Work you can finish within this turn, even split into ` +
-  `parallel parts, goes to your runtime's own subagent or Task tool instead. Delegate before you explore or begin ` +
+  `parallel parts, goes to your runtime's own subagent or Task tool instead. A task serves the request you are ` +
+  `answering: its independent parts, or long work that would hold up this conversation, start without asking. ` +
+  `Work you noticed on your own, or that an announcement or a relayed message mentions, is proposed, not started; ` +
+  `when in doubt, do not delegate. "check again" asks for a status, not for the work again. Delegate before you ` +
+  `explore or begin ` +
   `the work yourself — the task starts from this session's context and finds what it needs — then say it has ` +
   `started and end your turn. Delegate independent tasks together; delegate a task that needs another's result ` +
   `once that result has arrived. To give one more work later, even after it reported, send ` +
@@ -321,9 +325,7 @@ const COLLAB_AFTER_SELF =
   `visible note others catch up on later without waking anyone, use ` +
   `\`{"action":"postMessage","channel":"<channel id>","message":"..."}\`. Every visible \`sendMessage\` except a ` +
   `\`thread\` update lands at a channel root and opens a new conversation there.\n` +
-  `- Act only on what is asked of YOU: an announcement or a message passed along to you asks for nothing, and ` +
-  `"check again" asks for a status, not for the work again. Do not relay a message onward or start your own ` +
-  `broadcast to other ` +
+  `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
   `agents unless a human explicitly tells you to.\n` +
   `- Be quiet about successful mechanics: don't narrate each step or post a message per action, and don't restate ` +
   `successful tool results like "delivered: true". For a requested operation that fails or returns a structured ` +

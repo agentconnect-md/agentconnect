@@ -26,11 +26,11 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
   return {
     name: 'sendMessage',
     description:
-      'Send outside your current conversation. Required action: callAgent asks a peer to work ' +
+      'Send outside your current conversation. Required action: callAgent asks a peer to work or answer you ' +
       '(sessionId continues an existing peer session); calling yourself needs channel and starts visible work ' +
       'there. delegateTask hands long work of your own, spanning turns, to a task of this session that people can ' +
       'see and stop: call it before exploring, say so, end your turn. Work you finish within this turn goes to your ' +
-      'runtime’s own subagent tool. Delegate only what you were asked to do. messageTask sends a task more (taskId); ' +
+      'runtime’s own subagent tool. messageTask sends a task more (taskId); a task reports each round itself; ' +
       'listTasks lists them, stopTask stops one. replyToSession answers a message another session sent you, by its ' +
       'messageId; replies are not broadcast. postMessage reaches a person, channel, or another thread; it starts no ' +
       'work and gets no reply. For your current conversation, write your ordinary reply. To get a peer’s result, ' +

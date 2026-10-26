@@ -27,15 +27,14 @@ describe('standing collaboration guidance', () => {
         '`{"action":"delegateTask","message":"..."}` delegates it to a TASK of this session'
     )
     expect(context.collabAppend).toContain(
-      'Act only on what is asked of YOU: an announcement or a message passed along to you asks for nothing, and ' +
-        '"check again" asks for a status, not for the work again. Do not relay'
-    )
-    expect(context.collabAppend).toContain(
       'reports back into this session each time a round of its work finishes or fails'
     )
     expect(context.collabAppend).toContain(
       "Work you can finish within this turn, even split into parallel parts, goes to your runtime's own subagent " +
-        'or Task tool instead. Delegate before you explore or begin the work yourself — the task starts from this ' +
+        'or Task tool instead. A task serves the request you are answering: its independent parts, or long work ' +
+        'that would hold up this conversation, start without asking. Work you noticed on your own, or that an ' +
+        'announcement or a relayed message mentions, is proposed, not started; when in doubt, do not delegate. ' +
+        '"check again" asks for a status, not for the work again. Delegate before you explore or begin the work yourself — the task starts from this ' +
         "session's context and finds what it needs — then say it has started and end your turn. Delegate " +
         "independent tasks together; delegate a task that needs another's result once that result has arrived. To " +
         'give one more work later, even after it reported, send ' +
