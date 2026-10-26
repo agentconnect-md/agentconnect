@@ -1072,8 +1072,8 @@ export class DiscordConnection implements PlatformConnection {
     }
   }
 
-  /** The bot's direct message with one person, opened if needed: its channel id. */
-  async openDirectMessage(user: string): Promise<string> {
+  /** The bot's direct message with one person, opened if needed, for a capability card; not the `openDirectMessage` read port, which Discord does not offer. */
+  async capabilityDirectMessage(user: string): Promise<string> {
     const dm = await this.client.users.createDM(user)
     return dm.id
   }

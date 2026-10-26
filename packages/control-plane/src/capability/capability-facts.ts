@@ -1,6 +1,11 @@
 // The rows outside the agent that the Phase 2 kinds are judged by (capability-requests.md §4.2, §4.6): never a secret's value.
-import type { CapabilityAsk, CapabilityConnectionWant, CapabilityRepositoryWant } from '@agentconnect.md/protocol'
-import type { AgentId, OrgId } from '../domain/ids.js'
+import {
+  gitRepoLabel,
+  type CapabilityAsk,
+  type CapabilityConnectionWant,
+  type CapabilityRepositoryWant
+} from '@agentconnect.md/protocol'
+import type { OrgId } from '../domain/ids.js'
 import type {
   AgentInstallationAuthorizationRepo,
   AgentRecord,
@@ -37,8 +42,6 @@ export interface RepoCapabilityFactsDeps {
   gitlabHost: string
 }
 
-const TIER: Record<RepoAccess, number> = { read: 1, comment: 2, write: 3 }
-
 function tierOf(access: RepoAccess | undefined): 'none' | 'read' | 'write' {
   if (!access) return 'none'
   return access === 'write' ? 'write' : 'read'
@@ -62,31 +65,47 @@ export function repoCapabilityFacts(deps: RepoCapabilityFactsDeps): CapabilityFa
   const provider = async (orgId: OrgId, name: string) =>
     (await deps.mcpProviders.listForOrg(orgId)).find((p) => p.name === name) ?? null
 
+  // The tier credential issuance would mint at, in its own order: the workspace's repository, an exact grant, then an installation grant (GithubService.resolveAgentRepoAuthorizationByName).
   const repository = async (
-    agentId: AgentId,
+    agent: AgentRecord,
     want: CapabilityRepositoryWant
   ): Promise<CapabilityFacts['repository']> => {
     const path = want.repository.toLowerCase()
-    const grants = (await deps.repoAuth.listForAgent(agentId)).filter(
+    const workspace = agent.workspace
+    if (
+      workspace.mode === 'git' &&
+      workspace.credential?.provider === want.provider &&
+      gitRepoLabel(workspace.gitRepo).toLowerCase() === path
+    ) {
+      const repoId = agent.workspaceRepoId
+      return {
+        authorized: tierOf(workspace.credential.access as RepoAccess),
+        repoId: repoId !== undefined ? repoId.toString() : null,
+        installationId: null,
+        installationWide: false
+      }
+    }
+    const exact = (await deps.repoAuth.listForAgent(agent.id)).find(
       (g) => g.provider === want.provider && isHonoredRepoGrant(g) && g.repoFullName.toLowerCase() === path
     )
-    const best = grants.sort((a, b) => TIER[b.access] - TIER[a.access])[0]
-    // An installation grant covers every repository of its account (GitHub only in this version).
+    if (exact)
+      return {
+        authorized: tierOf(exact.access),
+        repoId: exact.repoId.toString(),
+        installationId: null,
+        installationWide: false
+      }
+    // An installation grant covers every repository of its account, and counts only where no exact grant exists (GitHub only in this version).
     const owner = path.split('/')[0]
     const installation =
       want.provider === 'github'
-        ? (await deps.installationAuth.listForAgent(agentId))
-            .filter((g) => g.accountLogin.toLowerCase() === owner)
-            .sort((a, b) => TIER[b.access] - TIER[a.access])[0]
+        ? (await deps.installationAuth.listForAgent(agent.id)).find((g) => g.accountLogin.toLowerCase() === owner)
         : undefined
-    const repoTier = best ? TIER[best.access] : 0
-    const installationTier = installation ? TIER[installation.access] : 0
-    const viaInstallation = installationTier > repoTier
     return {
-      authorized: tierOf(viaInstallation ? installation?.access : best?.access),
-      repoId: best ? best.repoId.toString() : null,
+      authorized: tierOf(installation?.access),
+      repoId: null,
       installationId: installation ? installation.installationId.toString() : null,
-      installationWide: viaInstallation
+      installationWide: installation !== undefined
     }
   }
 
@@ -100,7 +119,7 @@ export function repoCapabilityFacts(deps: RepoCapabilityFactsDeps): CapabilityFa
     async load(agent, ask) {
       switch (ask.kind) {
         case 'repository':
-          return { repository: await repository(agent.id, ask.want) }
+          return { repository: await repository(agent, ask.want) }
         case 'connection': {
           const want = ask.want
           if (want.type === 'mcp-oauth') {

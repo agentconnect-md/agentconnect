@@ -34,7 +34,7 @@ function facts() {
 }
 
 describe('repoCapabilityFacts', () => {
-  it('reads the best honored grant for a repository, and an installation grant over its account', async () => {
+  it('reads the tier credentials would mint at: an exact grant before an installation grant over its account', async () => {
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, {})
     const agent = (await new PgAgentRepo(prisma).get(ORG, AgentId(agentId)))!
@@ -56,7 +56,15 @@ describe('repoCapabilityFacts', () => {
     await prisma.agentInstallationAuthorization.create({
       data: { agentId, installationId: 4242n, accountLogin: 'acme', access: 'write' }
     })
+    // The exact read grant still decides this repository, as credential issuance does.
     expect((await facts().load(agent, { kind: 'repository', want })).repository).toMatchObject({
+      authorized: 'read',
+      repoId: '77',
+      installationWide: false
+    })
+    // Another repository of the account, with no grant of its own, is covered by the installation grant.
+    const other = { ...want, repository: 'acme/gadgets' }
+    expect((await facts().load(agent, { kind: 'repository', want: other })).repository).toMatchObject({
       authorized: 'write',
       installationId: '4242',
       installationWide: true

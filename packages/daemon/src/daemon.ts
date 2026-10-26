@@ -2169,6 +2169,8 @@ export class Daemon {
   private readonly personTimeZones = new PersonTimeZones()
   /** Whom a join result's wake speaks for, by its message id: the person who answered Join (#2979). */
   private readonly joinWakeOpeners = new Map<string, TurnAskers>()
+  // Sessions a settled capability request or an MCP sign-in asked to reload while a turn held them: consumed before their next turn attaches.
+  private readonly pendingSessionReloads = new Set<string>()
   /** Join confirmations in flight, by session, bot and channel, so parallel calls share one card (#2979). */
   private readonly joinAsks = new Map<string, JoinFlight>()
   /** Places turning external, for every agent (assistant-mode.md §5.3). */
@@ -10754,15 +10756,8 @@ export class Daemon {
       if (rec?.acpSessionId) this.hostForOwner(this.sessionOwnerKey(agentId, key))?.forgetSession(rec.acpSessionId)
     }
     if (!this.activeGateEntries.has(key)) return await forget()
-    const deadline = this.clock.now() + 30 * 60_000
-    const poll = (): void => {
-      if (this.activeGateEntries.has(key) && this.clock.now() < deadline) {
-        setTimeout(poll, 1_000).unref?.()
-        return
-      }
-      void forget().catch(() => undefined)
-    }
-    poll()
+    // A turn holds it: the next turn of this session, the wake queued behind it included, reloads before it attaches.
+    this.pendingSessionReloads.add(key)
   }
 
   /** A capability request's inline card in a live webchat turn of its session (§4.4.2), kept on the transcript like an elicitation card. */
@@ -18923,6 +18918,12 @@ export class Daemon {
         } catch (error) {
           this.log.warn(`remote MCP descriptor attachment failed (${formatErr(error)})`)
         }
+      }
+      // A reload asked for while an earlier turn held the session happens here, before this turn attaches, so a capability wake sees the new tools.
+      if (this.pendingSessionReloads.delete(key)) {
+        const existing = await this.store.getSession(key)
+        const warmHost = entry.selectedHost?.host ?? this.hostForOwner(this.sessionOwnerKey(agentId, key))
+        if (existing?.acpSessionId) warmHost?.forgetSession(existing.acpSessionId)
       }
       // send-message-guide.md §9.5–§9.6: the sending session is recorded as a new session's creator, except where a report opens its place's; the input shows its own message id.
       handled = await this.sessions.handle(

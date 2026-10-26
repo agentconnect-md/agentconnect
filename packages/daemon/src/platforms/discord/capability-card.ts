@@ -29,7 +29,7 @@ interface DiscordCapabilityDraft {
 
 type CapabilityCardConnection = Pick<
   DiscordConnection,
-  'postChrome' | 'updateMessage' | 'getUserProfile' | 'getChannelInfo' | 'openDirectMessage'
+  'postChrome' | 'updateMessage' | 'getUserProfile' | 'getChannelInfo' | 'capabilityDirectMessage'
 >
 
 const conn = (c: unknown): CapabilityCardConnection => c as CapabilityCardConnection
@@ -109,7 +109,7 @@ export const discordCapabilityCards: CapabilityCardFacet = {
     capabilityClick(handle.conn, userId)?.reply(text)
   },
 
-  openDirectMessage: (c, userId) => conn(c).openDirectMessage(userId),
+  openDirectMessage: (c, userId) => conn(c).capabilityDirectMessage(userId),
 
   async isPerson(c: unknown, userId: string): Promise<boolean> {
     const click = capabilityClick(c, userId)
