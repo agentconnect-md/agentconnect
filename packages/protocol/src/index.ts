@@ -287,6 +287,7 @@ export {
   DINGTALK_PLATFORM,
   GOOGLE_CHAT_PLATFORM,
   MSTEAMS_PLATFORM,
+  WECHAT_PLATFORM,
   manifestFor
 } from './platform-manifest.js'
 export type { AppendConversationKind, MembershipEnumeration, PlatformManifest } from './platform-manifest.js'

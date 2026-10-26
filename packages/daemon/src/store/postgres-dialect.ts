@@ -378,7 +378,10 @@ export const canonicalColumns = [
   'cardId',
   'modelJson',
   'postedAt',
-  'requestId'
+  'requestId',
+  'botId',
+  'pollCursor',
+  'contextToken'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

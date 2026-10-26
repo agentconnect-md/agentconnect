@@ -604,7 +604,8 @@ export const MCP_TOOLS: McpToolDef[] = [
             'qq',
             'googlechat',
             'dingtalk',
-            'msteams'
+            'msteams',
+            'wechat'
           ])
           .optional(),
         channel: z.string().min(1).optional(),

@@ -5,6 +5,7 @@ import {
   DINGTALK_PLATFORM,
   GOOGLE_CHAT_PLATFORM,
   MSTEAMS_PLATFORM,
+  WECHAT_PLATFORM,
   manifestFor
 } from './platform-manifest.js'
 
@@ -176,6 +177,20 @@ describe('platform manifest', () => {
     // A chat origin the console composer may not continue.
     expect(originKindOf(MSTEAMS_PLATFORM)).toBe('chat')
     expect(continuableOrigin(MSTEAMS_PLATFORM)).toBe(false)
+  })
+
+  it('keeps WeChat on the conservative arm of every axis but a DM key it can recognize', () => {
+    // An iLink bot has one counterpart, so its one chat is a DM that is already one continuous session.
+    const { platform, ...axes } = manifestFor(WECHAT_PLATFORM)
+    expect(platform).toBe('wechat')
+    expect(axes).toEqual({ ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/ })
+    expect(axes.dmChannelPattern?.test('dm:o9cq800000example@im.wechat')).toBe(true)
+    expect(axes.appendKinds).toEqual([])
+    expect(axes.multiAgentShareable).toBe(false)
+    expect(axes.botSenderRouting).toBe(false)
+    // A chat origin the console composer may not continue.
+    expect(originKindOf(WECHAT_PLATFORM)).toBe('chat')
+    expect(continuableOrigin(WECHAT_PLATFORM)).toBe(false)
   })
 
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {

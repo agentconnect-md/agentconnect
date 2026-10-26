@@ -46,7 +46,8 @@ describe('daemon platform registry (audit F16)', () => {
       'qq',
       'googlechat',
       'dingtalk',
-      'msteams'
+      'msteams',
+      'wechat'
     ])
   })
 
@@ -78,7 +79,8 @@ describe('daemon platform registry (audit F16)', () => {
       daemon.connections.linearPool,
       daemon.connections.googleChatPool,
       daemon.connections.dingTalkPool,
-      daemon.connections.msTeamsPool
+      daemon.connections.msTeamsPool,
+      daemon.connections.weChatPool
     ].map((pool: { name: string }) => pool.name.split('/')[0]!)
     expect(sorted([...new Set(poolPlatforms)])).toEqual(composed)
   })
@@ -106,7 +108,8 @@ describe('observed-membership platforms (audit F17)', () => {
       'qq',
       'googlechat',
       'dingtalk',
-      'msteams'
+      'msteams',
+      'wechat'
     ])
     for (const platform of platformIds()) {
       expect(observedMembershipPlatforms().includes(platform)).toBe(

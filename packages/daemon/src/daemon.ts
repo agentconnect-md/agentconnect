@@ -614,6 +614,10 @@ import type { MsTeamsConnection } from './platforms/msteams/connection.js'
 import { msTeamsCommandChrome } from './platforms/msteams/command-chrome.js'
 import { msTeamsPlatformModule } from './platforms/msteams/module.js'
 import { createMsTeamsTurnOutput } from './platforms/msteams/surface.js'
+import type { WeChatConnection } from './platforms/wechat/connection.js'
+import { weChatCommandChrome } from './platforms/wechat/command-chrome.js'
+import { weChatPlatformModule } from './platforms/wechat/module.js'
+import { createWeChatTurnOutput } from './platforms/wechat/surface.js'
 import { TelegramConnection, type TelegramCallback } from './telegram/connection.js'
 import { DiscordConnection } from './discord/connection.js'
 import { FeishuConnection } from './feishu/connection.js'
@@ -1908,6 +1912,7 @@ export class Daemon {
     registry.register(dingTalkCommandChrome)
     registry.register(googleChatCommandChrome)
     registry.register(msTeamsCommandChrome)
+    registry.register(weChatCommandChrome)
     return registry
   })()
 
@@ -2103,6 +2108,12 @@ export class Daemon {
           warn: (message) => this.log.warn(message)
         })
       )
+      registry.register(
+        createWeChatTurnOutput({
+          appendTranscript: async (row) => await this.store.appendTranscript(row),
+          monotonicTs: () => monotonicTs()
+        })
+      )
       return registry
     })()
   // Slack id → display-name resolver (created with the store in start()).
@@ -2222,6 +2233,8 @@ export class Daemon {
   private gcConnByIntegration = new Map<string, GoogleChatConnection>()
   // integrationId -> the MsTeamsConnection that owns it: relay-terminated ingress, daemon-direct Bot Connector egress.
   private msTeamsConnByIntegration = new Map<string, MsTeamsConnection>()
+  // integrationId -> the WeChatConnection that owns it: the bot's daemon-held long poll and its sends.
+  private weChatConnByIntegration = new Map<string, WeChatConnection>()
   // One Google Chat write budget per app on this daemon (§10.8), built from the config on first use.
   private googleChatBudgets: GoogleChatWriteBudgets | undefined
   // Sessions whose console link already sits in the issue's Resources (Linear keys the entry
@@ -3147,7 +3160,8 @@ export class Daemon {
         dingtalk: this.dingTalkConnByIntegration,
         linear: this.lnConnByIntegration,
         googlechat: this.gcConnByIntegration,
-        msteams: this.msTeamsConnByIntegration
+        msteams: this.msTeamsConnByIntegration,
+        wechat: this.weChatConnByIntegration
       }),
       bindSlack: (integrationId, conn, botUserId) => {
         this.bind(this.connByIntegration, integrationId, conn, botUserId)
@@ -3177,6 +3191,7 @@ export class Daemon {
         this.sweepOrphanedApprovalCards(integrationId)
       },
       bindMsTeams: (id, conn, botUserId) => this.bind(this.msTeamsConnByIntegration, id, conn, botUserId),
+      bindWeChat: (id, conn, botId) => this.bind(this.weChatConnByIntegration, id, conn, botId),
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
       slackNameResolver: () => this.nameResolver,
       channelNameResolver: () => this.channelNameResolver,
@@ -3286,6 +3301,7 @@ export class Daemon {
     this.dingTalkConnByIntegration.delete(integrationId)
     this.gcConnByIntegration.delete(integrationId)
     this.msTeamsConnByIntegration.delete(integrationId)
+    this.weChatConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
     this.placeTrust.forget(integrationId)
@@ -5130,7 +5146,8 @@ export class Daemon {
       attachmentReaderFor: (integrationId) =>
         this.connForIntegration(integrationId) ??
         this.QQConnByIntegration.get(integrationId) ??
-        this.dingTalkConnByIntegration.get(integrationId),
+        this.dingTalkConnByIntegration.get(integrationId) ??
+        this.weChatConnByIntegration.get(integrationId),
       // The live turn's own delivery thread, which `activeTurnShare` already records per
       // turn from `plan.thread`. The bridge context froze the opening turn's value at
       // registration, and a session that spans several threads outgrows it immediately.
@@ -6418,6 +6435,7 @@ export class Daemon {
   private async openPlatformConnections(agents: LoadedAgent[]): Promise<void> {
     void this.connections.reconcileQQConnections().catch(() => this.log.warn('qq: initial connect failed'))
     void this.connections.reconcileDingTalkConnections().catch(() => this.log.warn('dingtalk: initial connect failed'))
+    void this.connections.reconcileWeChatConnections().catch(() => this.log.warn('wechat: initial connect failed'))
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     await this.connections.openInitialSlackConnections(agents)
     // Open send-only Slack clients for HTTP bots (inbound lives on the relay).
@@ -6915,6 +6933,7 @@ export class Daemon {
       await this.connections.reconcileQQConnections()
       await this.connections.reconcileDingTalkConnections()
       await this.connections.reconcileMsTeamsConnections()
+      await this.connections.reconcileWeChatConnections()
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
       // so the trailing re-run still converges it.
@@ -16491,7 +16510,8 @@ export class Daemon {
     feishuPlatformModule,
     telegramPlatformModule,
     dingTalkPlatformModule,
-    msTeamsPlatformModule(this.relayIngressHost((integrationId) => this.msTeamsConnByIntegration.get(integrationId)))
+    msTeamsPlatformModule(this.relayIngressHost((integrationId) => this.msTeamsConnByIntegration.get(integrationId))),
+    weChatPlatformModule
   ])
 
   /** The one narrow port every relay-ingress strategy reaches the daemon through; only the connection accessor is per platform. */
@@ -19453,7 +19473,8 @@ export class Daemon {
     ['dingtalk', (id) => (id ? this.dingTalkConnByIntegration.get(id) : undefined)],
     ['linear', (integrationId) => (integrationId ? this.lnConnByIntegration.get(integrationId) : undefined)],
     ['googlechat', (integrationId) => (integrationId ? this.gcConnByIntegration.get(integrationId) : undefined)],
-    ['msteams', (id) => (id ? this.msTeamsConnByIntegration.get(id) : undefined)]
+    ['msteams', (id) => (id ? this.msTeamsConnByIntegration.get(id) : undefined)],
+    ['wechat', (id) => (id ? this.weChatConnByIntegration.get(id) : undefined)]
   ])
 
   private readonly platformFailureSinks = new Map<
@@ -19489,6 +19510,13 @@ export class Daemon {
         const conn = ctx.integrationId ? this.msTeamsConnByIntegration.get(ctx.integrationId) : undefined
         const target = conn?.targetFor(ctx.channel, ctx.thread)
         if (conn && target) await conn.postText(target, `⚠️ Agent failed to respond: ${ctx.reason}`)
+      }
+    ],
+    [
+      'wechat',
+      async (ctx) => {
+        const conn = ctx.integrationId ? this.weChatConnByIntegration.get(ctx.integrationId) : undefined
+        if (conn) await conn.sendText(ctx.channel, `⚠️ Agent failed to respond: ${ctx.reason}`)
       }
     ]
   ])
@@ -27121,6 +27149,7 @@ export class Daemon {
     for (const [id, c] of this.lnConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.gcConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.msTeamsConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.weChatConnByIntegration) if (c === conn) out.push(id)
     return out
   }
 
@@ -27855,7 +27884,8 @@ export class Daemon {
       this.QQConnByIntegration.get(integrationId) ??
       this.dingTalkConnByIntegration.get(integrationId) ??
       this.gcConnByIntegration.get(integrationId) ??
-      this.msTeamsConnByIntegration.get(integrationId)
+      this.msTeamsConnByIntegration.get(integrationId) ??
+      this.weChatConnByIntegration.get(integrationId)
     )
   }
 

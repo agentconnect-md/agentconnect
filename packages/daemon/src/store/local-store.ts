@@ -3603,6 +3603,13 @@ export class LocalStore {
         value TEXT NOT NULL,
         createdAt INTEGER NOT NULL
       );
+      -- One iLink bot's poll cursor and latest reply token (wechat-integration.md §3.3, §4.5); never message content.
+      CREATE TABLE IF NOT EXISTS wechat_bot_state (
+        botId TEXT PRIMARY KEY,
+        pollCursor TEXT,
+        contextToken TEXT,
+        updatedAt INTEGER NOT NULL
+      );
       -- gitlab-com-integration.md §15.1: control-plane frames a finished review still OWES. Both
       -- the operation settle and the terminal result are idempotent REQs, so an unacknowledged one
       -- is replayed verbatim until the control plane takes it; a lost ack must never leave an
@@ -5221,6 +5228,35 @@ export class LocalStore {
       .prepare('SELECT value FROM tenant_scopes WHERE integrationId = ?')
       .get(integrationId)) as { value: string } | undefined
     return row?.value
+  }
+
+  /** One WeChat bot's stored poll cursor and reply token; empty for a bot never polled here. */
+  async getWeChatBotState(botId: string): Promise<{ cursor?: string; contextToken?: string }> {
+    const row = (await this.db
+      .prepare('SELECT pollCursor, contextToken FROM wechat_bot_state WHERE botId = ?')
+      .get(botId)) as { pollCursor: string | null; contextToken: string | null } | undefined
+    return {
+      ...(row?.pollCursor ? { cursor: row.pollCursor } : {}),
+      ...(row?.contextToken ? { contextToken: row.contextToken } : {})
+    }
+  }
+
+  async setWeChatPollCursor(botId: string, cursor: string): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO wechat_bot_state (botId, pollCursor, updatedAt) VALUES (?, ?, ?)
+         ON CONFLICT (botId) DO UPDATE SET pollCursor = excluded.pollCursor, updatedAt = excluded.updatedAt`
+      )
+      .run(botId, cursor, Date.now())
+  }
+
+  async setWeChatContextToken(botId: string, token: string): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO wechat_bot_state (botId, contextToken, updatedAt) VALUES (?, ?, ?)
+         ON CONFLICT (botId) DO UPDATE SET contextToken = excluded.contextToken, updatedAt = excluded.updatedAt`
+      )
+      .run(botId, token, Date.now())
   }
 
   /** Mint-once: concurrent callers converge on the first stored value. */
