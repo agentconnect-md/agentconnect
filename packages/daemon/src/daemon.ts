@@ -1,6 +1,7 @@
 import { dispatchAhpAppRequest, type AhpAppsScope } from './ahp/apps.js'
 import { AhpProtocolError } from './ahp/connection.js'
 import { initialAhpChat } from './ahp/initial-state.js'
+import { ahpAgentInfo } from './ahp/agent-state.js'
 import { AhpRuntimeObserver } from './ahp/runtime-observer.js'
 import { AhpShadowService } from './ahp/shadow-service.js'
 import { SessionStatus, ActionType, MessageKind, AhpErrorCodes } from '@microsoft/agent-host-protocol'
@@ -3080,7 +3081,7 @@ export class Daemon {
         this.servesAgent(auth.agentId) && this.orgForAgent(auth.agentId) === auth.orgId && !this.draining,
       initializeMetadata: { 'agentconnect.md': { webchat: true, files: true, steering: true, mcpApps: true } },
       now: () => this.clock.now(),
-      provider: (id) => ({ provider: id, displayName: this.agents.get(id)?.name ?? id, description: '', models: [] }),
+      provider: (id) => ahpAgentInfo(id, this.agents.get(id)?.name ?? id, this.agents.get(id)?.runtimeOverrides?.model),
       reserveSequence: (org, agent, size) => this.store.reserveAhpSequenceBlock(org, agent, size),
       checkpoints: (org, agent) =>
         new LocalAhpCheckpoints(

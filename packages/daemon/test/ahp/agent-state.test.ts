@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ActionType, chatReducer, SessionStatus, type ChatAction, type ChatState } from '@microsoft/agent-host-protocol'
 import { AhpActionJournal } from '../../src/ahp/action-journal.js'
-import { AhpAgentState, type AhpCheckpointStore } from '../../src/ahp/agent-state.js'
+import { AhpAgentState, ahpAgentInfo, type AhpCheckpointStore } from '../../src/ahp/agent-state.js'
 
 const binding = {
   sessionUri: 'ahp-session:/one',
@@ -141,4 +141,10 @@ describe('AHP logical agent state', () => {
     expect(journal.replay(1, new Set([chat]))).toEqual([])
     expect((state.snapshot(chat) as ChatState).turnsNextCursor).toBe('first')
   })
+})
+it('always offers the agent its own model so clients can enable sending', () => {
+  expect(ahpAgentInfo('agent', 'Agent', 'gpt-5').models).toEqual([{ id: 'gpt-5', provider: 'agent', name: 'gpt-5' }])
+  expect(ahpAgentInfo('agent', 'Agent', undefined).models).toEqual([
+    { id: 'default', provider: 'agent', name: 'Default' }
+  ])
 })

@@ -44,7 +44,7 @@ const ignoredAttachment = z.union([
     contentType: z.string().refine((type) => !type.toLowerCase().startsWith('image/'), 'Unsupported image type')
   })
 ])
-// The host advertises no models or custom agents, so a client's own picker selection is accepted and ignored.
+// The host offers only the agent's own model and no custom agents, so a client's selection is accepted and ignored.
 const clientSelection = {
   model: z
     .strictObject({

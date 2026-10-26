@@ -20,7 +20,8 @@ import {
   ToolCallStatus,
   type ActionEnvelope,
   type ChatAction,
-  type ChatState
+  type ChatState,
+  type RootState
 } from '@microsoft/agent-host-protocol'
 import type {
   AhpAttachmentAuthorization,
@@ -283,11 +284,13 @@ describe('actual Daemon AHP acceptance with official SDK and an ACP process', ()
     const host = await boot(files.root, metadata)
     const first = await host.connect()
     const second = await host.connect()
-    await first.client.initialize({
+    const initialized = await first.client.initialize({
       clientId: 'first',
       protocolVersions: ['1.0.0'],
       initialSubscriptions: ['ahp-root://']
     })
+    const root = initialized.snapshots?.find((snapshot) => snapshot.resource === 'ahp-root://')?.state as RootState
+    expect(root.agents[0]?.models).toHaveLength(1)
     await second.client.initialize({ clientId: 'second', protocolVersions: ['1.0.0'] })
     await first.client.request('createSession', { channel: uri, provider: agentId })
     expect(
