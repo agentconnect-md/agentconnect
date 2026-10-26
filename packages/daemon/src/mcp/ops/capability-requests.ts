@@ -54,11 +54,14 @@ export const REQUEST_CAPABILITY_TOOL: ToolDescriptor = {
   name: 'requestCapability',
   description:
     'Ask for something your own setup lacks when it stops you from doing what you were asked: a setting, an ' +
-    'organization MCP server, or a skill. This grants nothing: a person who can change your setup completes or ' +
-    'declines it in AgentConnect, and you are woken in this conversation when they do. It returns at once; ' +
-    'follow the `message` it returns, then stop the work that needs it and end your turn. Ask only for what the ' +
-    'task needs, once; asking again for the same thing returns the open request. Never put a secret or token ' +
-    'in any argument.',
+    'organization MCP server, a skill, access to a repository, a connection, or a secret. This grants nothing: a ' +
+    'person who can change your setup completes or declines it in AgentConnect, and you are woken in this ' +
+    'conversation when they do. It returns at once; follow the `message` it returns, then stop the work that needs ' +
+    'it and end your turn. Ask only for what the task needs, once; asking again for the same thing returns the open ' +
+    'request. A secret is asked for by name and purpose only: never put a secret, token or password in any ' +
+    'argument, never ask anyone to paste one into the conversation, and if someone pastes one anyway, tell them to ' +
+    'rotate it and to enter the new value through the request link instead. For a credential an HTTP API takes, ' +
+    'prefer route `mcp-header` on the MCP server that calls it, so you never see the value.',
   inputSchema: obj(
     {
       kind: {
@@ -66,13 +69,20 @@ export const REQUEST_CAPABILITY_TOOL: ToolDescriptor = {
         enum: [...CapabilityKind.options],
         description:
           '`agent-settings` (your model, reasoningEffort, fastMode, outputMode or permissionMode), `mcp-server` (an ' +
-          'organization MCP server added to your tools), or `skill` (a skill added to your setup).'
+          'organization MCP server added to your tools), `skill` (a skill added to your setup), `repository` (read ' +
+          'or write access to a GitHub or GitLab repository), `connection` (an MCP server signed in, a code host ' +
+          'connected, or a chat integration added), or `secret` (a credential set where you need it).'
       },
       want: {
         type: 'object',
         description:
           'What you need, by kind. agent-settings: only the fields to change, e.g. `{"model": "…"}`. mcp-server: ' +
-          '`{"server": "<name as the organization lists it>"}`. skill: `{"skill": "<source>/<skill>"}`. Other fields are refused.'
+          '`{"server": "<name as the organization lists it>"}`. skill: `{"skill": "<source>/<skill>"}`. repository: ' +
+          '`{"provider": "github" | "gitlab", "repository": "<owner>/<repo>", "access": "read" | "write"}` (add ' +
+          '`"host"` for a self-managed GitLab). connection: `{"type": "mcp-oauth", "server": "<name>"}`, ' +
+          '`{"type": "code-host", "provider": "github" | "gitlab"}` or `{"type": "chat-integration", "platform": ' +
+          '"<platform>"}`. secret: `{"name": "<header or VARIABLE_NAME>", "description": "<what goes in it, never ' +
+          'the value>", "use": {"route": "mcp-header", "server": "<MCP server>"}}`. Other fields are refused.'
       },
       reason: {
         type: 'string',

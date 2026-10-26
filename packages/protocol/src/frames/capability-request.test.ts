@@ -64,4 +64,33 @@ describe('capability request frames', () => {
     expect(SessionCapabilitySettled.safeParse(wake).success).toBe(true)
     expect(SessionCapabilitySettled.safeParse({ ...wake, generation: 0 }).success).toBe(false)
   })
+
+  it('validates the Phase 2 kinds and keys them by what they name', () => {
+    const repo = {
+      kind: 'repository',
+      want: { provider: 'github', repository: 'Acme/Widgets', access: 'write' }
+    } as const
+    expect(CapabilityAsk.safeParse(repo).success).toBe(true)
+    expect(capabilityTarget(repo)).toBe('github::acme/widgets:write')
+    expect(CapabilityAsk.safeParse({ ...repo, want: { ...repo.want, access: 'admin' } }).success).toBe(false)
+
+    const oauth = { kind: 'connection', want: { type: 'mcp-oauth', server: 'Linear' } } as const
+    expect(capabilityTarget(oauth)).toBe('mcp-oauth:Linear')
+    expect(
+      CapabilityAsk.safeParse({ kind: 'connection', want: { type: 'mcp-oauth', server: 'Linear', token: 'x' } }).success
+    ).toBe(false)
+
+    const header = {
+      kind: 'secret',
+      want: { name: 'X-Api-Key', description: 'Grafana API key', use: { route: 'mcp-header', server: 'Grafana' } }
+    } as const
+    expect(CapabilityAsk.safeParse(header).success).toBe(true)
+    expect(capabilityTarget(header)).toBe('mcp-header:Grafana:X-Api-Key')
+    // A live secret is named like an environment variable, and no want ever carries a value.
+    const live = { kind: 'secret', want: { name: 'X-Api-Key', description: 'd', use: { route: 'live' } } }
+    expect(CapabilityAsk.safeParse(live).success).toBe(false)
+    expect(
+      CapabilityAsk.safeParse({ ...live, want: { ...live.want, name: 'GRAFANA_TOKEN', value: 'secret' } }).success
+    ).toBe(false)
+  })
 })

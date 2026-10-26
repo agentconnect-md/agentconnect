@@ -1662,14 +1662,19 @@ without reporting, uncertain) is recorded on the follow-up.
 
 When an agent in assistant mode cannot do what it was asked because of how it is set up, it may ask
 for what it lacks with `requestCapability`: a change to its own model, effort, fast mode, output mode
-or permission mode, an organization MCP server, or a skill. A request grants nothing. Only a person
+or permission mode, an organization MCP server, a skill, access to a GitHub or GitLab repository, a
+connection (an MCP server's sign-in, a code host, or a chat integration), or a secret an MCP server
+sends as a header. A request grants nothing. Only a person
 completes it, in the console, through the same dialog and under the same permissions as making that
 change without a request. A deployment offers this only once its operator turns capability requests
 on, and a follow-up's check never gets the tool.
 
-The agent says in one sentence what it asked for and ends its turn; it does not wait. In Slack a card
-under its reply shows what it asked for, its reason as plain text, a button to open the request in the
-console and **Decline**. On other platforms there is no card: the agent's reply carries the link. A
+The agent says in one sentence what it asked for and ends its turn; it does not wait. A card under
+its reply shows what it asked for, its reason as plain text, a button to open the request in the
+console and **Decline**: in Slack, Discord, Feishu/Lark, Telegram and Google Chat. QQ has no buttons,
+so its card carries the link and asks for a reply of `1` to decline. In a webchat conversation the
+card is inline and someone who may complete it does so there. On other platforms there is no card:
+the agent's reply carries the link. A
 conversation shared with another organization sees only that the agent asked an admin; the card goes
 to the agent's responsible user in a direct message, otherwise the request waits on the agent's page.
 Asking again for something already asked for returns the open request, an identical request declined
@@ -1678,16 +1683,22 @@ request nobody settles expires after seven days.
 
 Whoever could ask the agent in that conversation may decline from the card: in a direct message, that
 person; in a channel, anyone whose own message would start a turn of the agent there; never a bot.
-Anyone else is refused privately and the card stays as it is. Completing a request needs edit access
-to the agent; someone without it sees on the request page what is needed and who has it, and may
-forward the request to one of them. An editor may decline it there with a note, and reopen a declined
+Anyone else is refused privately where the platform can say so (QQ cannot) and the card stays as it
+is. Completing a request needs the authority the change itself needs: edit access to the agent, or for
+an MCP server's sign-in or header, edit access to that server; someone without it sees on the request
+page what is needed and who has it, and may forward the request to one of them.
+
+A secret's value is typed only on the request page, into the MCP server's header, and the agent never
+sees it; no request, card, reminder or Activity row holds a value. The agent never asks for a value in
+chat, and tells anyone who pastes one there to rotate it. An editor may decline it there with a note, and reopen a declined
 request.
 
 The request is completed when what it asked for holds, whether it was saved from the request page or
 elsewhere. If what was saved differs from what was asked, the request still completes, and the agent
 is told what it got instead. On completion, decline or expiry the card is rewritten in place, and the
 agent continues in every conversation that asked, with the authority of the people who asked there,
-and never with another conversation's. That continuation is not shown as anyone's message and passes
+and never with another conversation's. A repository, a sign-in or a header reloads the conversation's
+session first, so the agent sees the new access or tools. That continuation is not shown as anyone's message and passes
 a mention-only trigger; it waits behind a running turn and while the agent is paused. A request the
 agent withdraws wakes nobody.
 

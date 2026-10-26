@@ -1,5 +1,11 @@
 /** `capability/request`, `capability/withdraw`, `capability/decide`: an agent's capability requests from the daemon that serves it (capability-requests.md §4.1, §4.4.4). */
-import { CAPABILITY_REQUESTS_FEATURE, isFrame, type AnyFrame } from '@agentconnect.md/protocol'
+import {
+  CAPABILITY_REQUESTS_FEATURE,
+  CAPABILITY_REQUESTS_V2_FEATURE,
+  CAPABILITY_V1_KINDS,
+  isFrame,
+  type AnyFrame
+} from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import type { AgentRecord } from '../../persistence/ports.js'
@@ -12,7 +18,7 @@ async function servedAgent(
   frame: AnyFrame & { payload: { agentId: string } },
   conn: DaemonConnection,
   deps: DaemonWsDeps
-): Promise<AgentRecord | null> {
+): Promise<{ agent: AgentRecord; features: readonly string[] } | null> {
   if (!deps.capabilityRequests) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'capability requests are not enabled', false)
     return null
@@ -29,13 +35,26 @@ async function servedAgent(
     conn.sendError(frame.id, 'SCOPE_DENIED', 'agent is not served by this daemon', false)
     return null
   }
-  return agent
+  return { agent, features: daemon.capabilities.features }
 }
 
 export const handleCapabilityRequest: Handler = async (frame, conn, deps) => {
   if (!isFrame('capability/request')(frame)) return
-  const agent = await servedAgent(frame, conn, deps)
-  if (!agent) return
+  const served = await servedAgent(frame, conn, deps)
+  if (!served) return
+  const { agent } = served
+  // A daemon that never advertised the Phase 2 kinds cannot have offered them; refuse rather than act on one.
+  if (
+    !CAPABILITY_V1_KINDS.includes(frame.payload.ask.kind) &&
+    !served.features.includes(CAPABILITY_REQUESTS_V2_FEATURE)
+  ) {
+    conn.replyTo(frame, 'capability/request/result', {
+      status: 'refused',
+      refused: 'unsupported',
+      message: 'this kind of request is not available here'
+    })
+    return
+  }
   try {
     conn.replyTo(frame, 'capability/request/result', await deps.capabilityRequests!.request(agent, frame.payload))
   } catch (error) {
@@ -46,7 +65,7 @@ export const handleCapabilityRequest: Handler = async (frame, conn, deps) => {
 
 export const handleCapabilityWithdraw: Handler = async (frame, conn, deps) => {
   if (!isFrame('capability/withdraw')(frame)) return
-  const agent = await servedAgent(frame, conn, deps)
+  const agent = (await servedAgent(frame, conn, deps))?.agent
   if (!agent) return
   try {
     conn.replyTo(frame, 'capability/withdraw/result', await deps.capabilityRequests!.withdraw(agent, frame.payload))
@@ -58,7 +77,7 @@ export const handleCapabilityWithdraw: Handler = async (frame, conn, deps) => {
 
 export const handleCapabilityDecide: Handler = async (frame, conn, deps) => {
   if (!isFrame('capability/decide')(frame)) return
-  const agent = await servedAgent(frame, conn, deps)
+  const agent = (await servedAgent(frame, conn, deps))?.agent
   if (!agent) return
   try {
     conn.replyTo(frame, 'capability/decide/result', await deps.capabilityRequests!.decide(agent, frame.payload))

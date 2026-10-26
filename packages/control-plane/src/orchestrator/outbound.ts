@@ -170,6 +170,7 @@ import {
   SessionPullRequestFeedback,
   SessionPullRequestFeedbackResult,
   AssistantFollowUpWake,
+  AgentMcpRebound,
   CapabilityForward,
   CapabilityForwardResult,
   CapabilityReopened,
@@ -767,6 +768,12 @@ export class ControlSender {
       undefined,
       orgId
     )
+  }
+
+  /** An MCP server an agent uses was connected or re-keyed: the daemon reloads the sessions that use it (capability-requests.md §4.8). */
+  agentMcpRebound(daemonId: string, orgId: string, evt: AgentMcpRebound): void {
+    const c = this.must(daemonId)
+    c.conn.send('agent/mcp-rebound', evt, { epoch: c.sessionEpoch, agentId: evt.agentId }, orgId)
   }
 
   /**

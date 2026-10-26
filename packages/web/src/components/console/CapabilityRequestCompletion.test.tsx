@@ -12,7 +12,16 @@ const mocks = vi.hoisted(() => ({
   fetchAgent: vi.fn(),
   updateAgent: vi.fn(),
   editProps: undefined as Record<string, unknown> | undefined,
-  skillSources: [] as Array<{ name: string }>
+  skillSources: [] as Array<{ name: string }>,
+  fetchRepos: vi.fn(),
+  updateRepo: vi.fn(),
+  startOauth: vi.fn(),
+  githubInstallUrl: vi.fn(),
+  startGitlab: vi.fn(),
+  openModal: vi.fn(),
+  repoProps: undefined as Record<string, unknown> | undefined,
+  mcpEditProps: undefined as Record<string, unknown> | undefined,
+  mcpProviders: [] as Array<Record<string, unknown>>
 }))
 
 vi.mock('next/link', () => ({
@@ -24,13 +33,32 @@ vi.mock('@/lib/data-context', () => ({
     agents: [{ id: 'agent-1', name: 'pilot', runtime: 'claude-acp', daemon: 'd-1', canEdit: true }],
     daemons: [],
     skillSources: mocks.skillSources,
+    mcpProviders: mocks.mcpProviders,
     updateAgent: mocks.updateAgent
   })
+}))
+vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: mocks.openModal }) }))
+vi.mock('@/components/console/modals/AddAgentRepoModal', () => ({
+  default: (props: Record<string, unknown>) => {
+    mocks.repoProps = props
+    return <div data-repo-modal />
+  }
+}))
+vi.mock('@/components/console/McpServersCard', () => ({
+  EditMcpProviderModal: (props: Record<string, unknown>) => {
+    mocks.mcpEditProps = props
+    return <div data-mcp-edit />
+  }
 }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   settleCapabilityRequest: mocks.settle,
-  fetchAgentDto: mocks.fetchAgent
+  fetchAgentDto: mocks.fetchAgent,
+  fetchAgentRepos: mocks.fetchRepos,
+  updateAgentRepo: mocks.updateRepo,
+  startMcpProviderOauth: mocks.startOauth,
+  fetchGithubInstallUrl: mocks.githubInstallUrl,
+  startGitlabOauth: mocks.startGitlab
 }))
 vi.mock('@/components/console/Scrim', () => ({ Scrim: ({ children }: { children: ReactNode }) => <>{children}</> }))
 vi.mock('@/components/console/modals/EditAgentModal', () => ({
@@ -79,11 +107,15 @@ let root: Root | undefined
 let host: HTMLDivElement | undefined
 const onSettled = vi.fn()
 
+const onRefresh = vi.fn()
+
 async function render(dto: CapabilityRequestDto): Promise<HTMLDivElement> {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
-  await act(async () => root!.render(<CapabilityRequestCompletion request={dto} onSettled={onSettled} />))
+  await act(async () =>
+    root!.render(<CapabilityRequestCompletion request={dto} onSettled={onSettled} onRefresh={onRefresh} />)
+  )
   return host
 }
 
@@ -96,7 +128,14 @@ beforeEach(() => {
   mocks.updateAgent.mockReset()
   mocks.editProps = undefined
   mocks.skillSources = []
+  for (const fn of [mocks.fetchRepos, mocks.updateRepo, mocks.startOauth, mocks.githubInstallUrl, mocks.startGitlab])
+    fn.mockReset()
+  mocks.openModal.mockReset()
+  mocks.repoProps = undefined
+  mocks.mcpEditProps = undefined
+  mocks.mcpProviders = []
   onSettled.mockReset()
+  onRefresh.mockReset()
 })
 
 afterEach(async () => {
@@ -169,5 +208,114 @@ describe('completing a capability request', () => {
     expect(fresh.textContent).toContain('The skill library has no source named acme yet.')
     await act(async () => button(fresh, 'Find it in the skill registry')!.click())
     expect(fresh.querySelector('[data-registry]')?.getAttribute('data-registry')).toBe('lint')
+  })
+
+  it('raises an existing read grant to write in place, then settles', async () => {
+    mocks.fetchRepos.mockResolvedValue([
+      {
+        id: 'grant-1',
+        provider: 'github',
+        repoFullName: 'Acme/Widgets',
+        access: 'read',
+        createdBy: null,
+        createdAt: ''
+      }
+    ])
+    mocks.updateRepo.mockResolvedValue({})
+    mocks.settle.mockResolvedValue(request({ status: 'completed' }))
+    const scope = await render(
+      request({
+        kind: 'repository',
+        want: { provider: 'github', repository: 'acme/widgets', access: 'write' },
+        current: { authorized: 'read', repoId: '7', installationId: null }
+      })
+    )
+    await act(async () => button(scope, 'Raise acme/widgets to read & write')!.click())
+    expect(mocks.updateRepo).toHaveBeenCalledWith('agent-1', 'grant-1', { access: 'write' })
+    expect(mocks.settle).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the repository dialog on the asked code host, repository and tier', async () => {
+    mocks.fetchRepos.mockResolvedValue([])
+    mocks.settle.mockResolvedValue(request({ status: 'completed' }))
+    const scope = await render(
+      request({
+        kind: 'repository',
+        want: { provider: 'gitlab', repository: 'group/project', access: 'read' },
+        current: { authorized: 'none', repoId: null, installationId: null }
+      })
+    )
+    await act(async () => button(scope, 'Authorize group/project')!.click())
+    expect(mocks.repoProps).toMatchObject({
+      initialProvider: 'gitlab',
+      initialSearch: 'group/project',
+      initialAccess: 'read'
+    })
+    await act(async () => (mocks.repoProps!.onCreated as (row: unknown) => void)({ id: 'grant-2' }))
+    expect(mocks.settle).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts the server’s OAuth with a return to this request, and looks again instead of settling', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    mocks.startOauth.mockResolvedValue({ url: 'https://auth.example.test/start' })
+    const scope = await render(
+      request({
+        id: 'req-9',
+        kind: 'connection',
+        want: { type: 'mcp-oauth', server: 'Linear' },
+        current: { providerId: 'prov-1', connected: false }
+      })
+    )
+    await act(async () => button(scope, 'Connect Linear')!.click())
+    expect(mocks.startOauth).toHaveBeenCalledWith('prov-1', { returnPath: '/acme/requests/req-9' })
+    expect(open).toHaveBeenCalledWith('https://auth.example.test/start', 'mcp_provider_oauth', expect.any(String))
+    expect(scope.textContent).toContain('Waiting for the connection to finish')
+    await act(async () => button(scope, 'Check again')!.click())
+    expect(onRefresh).toHaveBeenCalled()
+    expect(mocks.settle).not.toHaveBeenCalled()
+    open.mockRestore()
+  })
+
+  it('opens the add-integration dialog for the agent on the asked platform', async () => {
+    const scope = await render(
+      request({
+        kind: 'connection',
+        want: { type: 'chat-integration', platform: 'discord' },
+        current: { connected: false }
+      })
+    )
+    await act(async () => button(scope, 'Add a discord integration')!.click())
+    expect(mocks.openModal).toHaveBeenCalledWith('integration', expect.objectContaining({ id: 'agent-1' }), {
+      platform: 'discord'
+    })
+  })
+
+  it('asks for a header in the server’s own edit dialog and settles once it saved', async () => {
+    mocks.mcpProviders = [{ id: 'prov-2', name: 'Grafana', auth: 'headers', canEdit: true, headerNames: ['X-Org'] }]
+    mocks.settle.mockResolvedValue(request({ status: 'completed' }))
+    const scope = await render(
+      request({
+        kind: 'secret',
+        want: { name: 'X-Api-Key', description: 'Grafana key', use: { route: 'mcp-header', server: 'Grafana' } },
+        current: { providerId: 'prov-2', present: false }
+      })
+    )
+    expect(scope.textContent).toContain('The agent never sees it')
+    await act(async () => button(scope, 'Set X-Api-Key')!.click())
+    expect(mocks.mcpEditProps).toMatchObject({ requestedHeader: 'X-Api-Key' })
+    await act(async () => (mocks.mcpEditProps!.onSaved as () => void)())
+    expect(mocks.settle).toHaveBeenCalledTimes(1)
+  })
+
+  it('says a live secret is not available yet, with nothing to save', async () => {
+    const scope = await render(
+      request({
+        kind: 'secret',
+        want: { name: 'GRAFANA_TOKEN', description: 'token', use: { route: 'live' } },
+        current: { present: false }
+      })
+    )
+    expect(scope.textContent).toContain('aren’t available yet'.replace('’', "'"))
+    expect(scope.querySelector('button')).toBeNull()
   })
 })

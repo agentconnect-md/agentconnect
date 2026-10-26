@@ -456,6 +456,7 @@ export class CpClient {
       capabilitySettled: deps.capabilitySettled,
       capabilityReopened: deps.capabilityReopened,
       capabilityForward: deps.capabilityForward,
+      mcpRebound: deps.mcpRebound,
       autoMerge: deps.autoMerge,
       sandboxKeepAlive: deps.sandboxKeepAlive,
       runtimeProbe: deps.runtimeProbe,

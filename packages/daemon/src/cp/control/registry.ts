@@ -89,6 +89,7 @@ import {
 } from './assistant.js'
 import { autoMergeSet, autoMergeState, type AutoMergeControlDeps } from './automerge.js'
 import {
+  agentMcpRebound,
   capabilityForward,
   capabilityReopened,
   sessionCapabilitySettled,
@@ -223,6 +224,7 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['session/capability-settled', sessionCapabilitySettled],
   ['capability/reopened', capabilityReopened],
   ['capability/forward', capabilityForward],
+  ['agent/mcp-rebound', agentMcpRebound],
   ['automerge/set', autoMergeSet],
   ['automerge/state', autoMergeState],
   ['sandbox/keepalive', sandboxKeepAlive],

@@ -94,3 +94,62 @@ describe('the daemon-hosting toggle', () => {
     expect(mocks.updates).toEqual([{ ui: true }])
   })
 })
+
+// A capability request's `mcp-header` secret is typed into this dialog (capability-requests.md §4.9.1).
+describe('a header a capability request asks for', () => {
+  const typeInto = (input: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    setter.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+
+  it('opens on the header with the stored names to re-enter, saves only once it has a value, then reports it saved', async () => {
+    const onSaved = vi.fn()
+    act(() =>
+      root.render(
+        <EditMcpProviderModal
+          provider={{ ...PROVIDER, headerNames: ['X-Org'] }}
+          requestedHeader="X-Api-Key"
+          onSaved={onSaved}
+          onClose={() => {}}
+        />
+      )
+    )
+    expect(host.textContent).toContain('The agent never sees this value')
+    expect(host.textContent).toContain('enter X-Org again')
+    const names = [...host.querySelectorAll<HTMLInputElement>('input[aria-label="Header name"]')].map((i) => i.value)
+    expect(names).toEqual(['X-Api-Key', 'X-Org'])
+    const save = () => [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Save')!
+    expect(save().className).toContain('pointer-events-none')
+
+    const values = [...host.querySelectorAll<HTMLInputElement>('input[aria-label="Header value"]')]
+    act(() => typeInto(values[0]!, 'secret-1'))
+    // A stored header left blank would be dropped by the replacing save, so it must be re-entered or its row removed.
+    expect(save().className).toContain('pointer-events-none')
+    act(() => typeInto(values[1]!, 'org-7'))
+    await act(async () => save().click())
+    expect(mocks.updates).toEqual([
+      {
+        headers: [
+          { name: 'X-Api-Key', value: 'secret-1' },
+          { name: 'X-Org', value: 'org-7' }
+        ]
+      }
+    ])
+    expect(onSaved).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats a stored header of another case as the requested one, never a second row', () => {
+    act(() =>
+      root.render(
+        <EditMcpProviderModal
+          provider={{ ...PROVIDER, headerNames: ['x-api-key', 'X-Org'] }}
+          requestedHeader="X-Api-Key"
+          onClose={() => {}}
+        />
+      )
+    )
+    const names = [...host.querySelectorAll<HTMLInputElement>('input[aria-label="Header name"]')].map((i) => i.value)
+    expect(names).toEqual(['x-api-key', 'X-Org'])
+  })
+})

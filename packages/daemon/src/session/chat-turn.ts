@@ -42,6 +42,14 @@ export type ChatEvent =
       outcome: 'allowed' | 'denied' | 'cancelled'
       selectedOptionId?: string
     }
+  // A capability request's inline card and its settlement (capability-requests.md §4.4.2); core-owned like elicitation cards.
+  | { kind: 'capability_request'; requestId: string; generation: number; summary: string; reason: string; link: string }
+  | {
+      kind: 'capability_request_resolved'
+      requestId: string
+      status: 'completed' | 'declined' | 'expired' | 'withdrawn'
+      text: string
+    }
   | ({ kind: 'app' } & McpAppCard)
   | { kind: 'app_template'; appId: string; seq: number; chunk: string }
   | { kind: 'app_resolved'; appId: string; outcome: McpAppOutcome }

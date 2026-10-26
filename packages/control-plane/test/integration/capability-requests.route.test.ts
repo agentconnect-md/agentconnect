@@ -45,6 +45,10 @@ function service(sent: { reopened: CapabilityReopened[]; forwarded: CapabilityFo
     mcpProviders: new PgMcpProviderRepo(prisma),
     skillSources: { getByName: async () => null },
     orgs: new PgOrgRepo(prisma),
+    facts: {
+      load: async () => ({ mcpProvider: { providerId: null, connected: false, headerPresent: false } }),
+      unknownTarget: async () => undefined
+    },
     webAppUrl: 'https://console.example.test',
     placement: { dispatchDaemon: async () => DAEMON as never },
     daemon: () => ({ state: 'READY', capabilities: { features: [CAPABILITY_REQUESTS_FEATURE] } }),
@@ -218,5 +222,73 @@ describe('capability request routes', () => {
       current: { attached: false, exists: true },
       viewer: { canComplete: true }
     })
+  })
+
+  it('lets only an editor of the MCP server complete a request for its header, and forwards to one', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const keeper = await member('collaborator', 'Kay')
+    const other = await member('collaborator', 'Oz')
+    await new PgMcpProviderRepo(prisma).create({
+      orgId: OrgId(DEFAULT_ORG_ID),
+      name: 'Grafana',
+      url: 'https://mcp.example.test/grafana',
+      visibility: 'restricted',
+      sharedWith: [keeper],
+      createdByUserId: keeper
+    })
+    const sent = { reopened: [] as CapabilityReopened[], forwarded: [] as CapabilityForward[] }
+    const capabilityRequests = service(sent)
+    const agent = (await new PgAgentRepo(prisma).get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+    const asked = await capabilityRequests.request(agent, {
+      ...ask(agentId, {}),
+      ask: {
+        kind: 'secret',
+        want: { name: 'X-Api-Key', description: 'the Grafana key', use: { route: 'mcp-header', server: 'Grafana' } }
+      }
+    })
+    expect(asked).toMatchObject({
+      status: 'pending',
+      summary: 'set the header "X-Api-Key" of the MCP server "Grafana"'
+    })
+    const asOther = buildHttpApp(prisma, { DEFAULT_OWNER_ID: other }, undefined, undefined, { capabilityRequests })
+    const asKeeper = buildHttpApp(prisma, { DEFAULT_OWNER_ID: keeper }, undefined, undefined, { capabilityRequests })
+    running.push(asOther, asKeeper)
+
+    const seen = await asOther.app.inject({ method: 'GET', url: `${ORG}/capability-requests/${asked.requestId}` })
+    expect(seen.json()).toMatchObject({
+      kind: 'secret',
+      current: { present: false },
+      viewer: {
+        canComplete: false,
+        canDecline: true,
+        missing: expect.stringContaining('"Grafana"'),
+        whoCan: expect.arrayContaining([{ userId: keeper, name: 'Kay' }])
+      }
+    })
+    expect(seen.json().viewer.whoCan.map((m: { userId: string }) => m.userId)).not.toContain(other)
+    const refused = await asOther.app.inject({
+      method: 'POST',
+      url: `${ORG}/capability-requests/${asked.requestId}/settle`
+    })
+    expect(refused.statusCode).toBe(403)
+    expect(
+      (await asKeeper.app.inject({ method: 'GET', url: `${ORG}/capability-requests/${asked.requestId}` })).json().viewer
+        .canComplete
+    ).toBe(true)
+    const toOther = await asOther.app.inject({
+      method: 'POST',
+      url: `${ORG}/capability-requests/${asked.requestId}/forward`,
+      payload: { userId: other }
+    })
+    expect(toOther.statusCode).toBe(400)
+    const forwarded = await asOther.app.inject({
+      method: 'POST',
+      url: `${ORG}/capability-requests/${asked.requestId}/forward`,
+      payload: { userId: keeper }
+    })
+    expect(forwarded.json()).toEqual({ forwarded: 'dm' })
+    expect(sent.forwarded).toEqual([expect.objectContaining({ consoleUserId: keeper })])
   })
 })

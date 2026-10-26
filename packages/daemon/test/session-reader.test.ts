@@ -589,6 +589,30 @@ describe('SessionReader', () => {
     await s.close()
   })
 
+  it('carries a webchat capability card and its settlement, so a reloaded conversation still shows both', async () => {
+    const s = await store()
+    await seedHistorySession(s)
+    const card = {
+      requestId: '7f3a1c56-8a2b-4c3d-9e4f-0a1b2c3d4e5f',
+      generation: 1,
+      summary: 'add the MCP server "Linear"',
+      reason: 'filing needs Linear',
+      link: 'https://console.example.test/example-org/requests/7f3a'
+    }
+    const row = { channel: 'C1', thread: 'T1', ts: '1', sender: AGENT, requestId: card.requestId, text: card.summary }
+    await s.upsertCapabilityCard(admitted({ ...row, body: JSON.stringify({ ...card, status: 'open' }) }))
+    const settled = JSON.stringify({
+      ...card,
+      status: 'declined',
+      text: '🚫 Declined by Ben — add the MCP server "Linear"'
+    })
+    await s.upsertCapabilityCard(admitted({ ...row, body: settled }))
+    const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    // One row per request, rewritten in place.
+    expect(messages).toEqual([expect.objectContaining({ kind: 'capability', text: card.summary, body: settled })])
+    await s.close()
+  })
+
   it('drops only the TEMPLATE from an oversized app card, leaving the card fetchable whole', async () => {
     const s = await store()
     await seedHistorySession(s)

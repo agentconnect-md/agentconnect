@@ -48,6 +48,19 @@ describe('capability card ledger', () => {
     expect((await store.capabilityCards.forRequest(requestId, 'key-b')).map((row) => row.cardId)).toEqual([b.cardId])
   })
 
+  it('finds the open cards a reply to one message may decline', async () => {
+    store = await openTestStore()
+    const open = card(randomUUID(), 'key-a', 1_000)
+    const settled = card(randomUUID(), 'key-b', 2_000)
+    await store.capabilityCards.record(open)
+    await store.capabilityCards.record(settled)
+    await store.capabilityCards.markSettled(settled.cardId, 3_000)
+    expect((await store.capabilityCards.atMessage(open.channel, open.ts)).map((row) => row.cardId)).toEqual([
+      open.cardId
+    ])
+    expect(await store.capabilityCards.atMessage(open.channel, 'another-message')).toEqual([])
+  })
+
   it('marks a card settled once, and a reopen clears it with the new generation', async () => {
     store = await openTestStore()
     const a = card(randomUUID(), 'key-a', 1_000)

@@ -671,6 +671,46 @@ describe('stream text delta batching', () => {
 
   // ACP resends the WHOLE list on every revision, so a live plan must be one block that is
   // rewritten — appending would stack a fresh checklist per keystroke of progress.
+  it('stands a capability request card in the conversation and settles it in place', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+    const requestId = '7f3a1c56-8a2b-4c3d-9e4f-0a1b2c3d4e5f'
+    act(() => {
+      for (const output of [
+        {
+          agentId: 'agent-1',
+          index: 0,
+          event: {
+            kind: 'capability_request',
+            requestId,
+            generation: 1,
+            summary: 'add the MCP server "Linear"',
+            reason: 'filing the bug needs Linear',
+            link: `https://console.example.test/acme/requests/${requestId}`
+          }
+        },
+        { agentId: 'agent-1', index: 1, event: { kind: 'message', text: 'I asked for Linear.' } },
+        {
+          agentId: 'agent-1',
+          index: 2,
+          event: { kind: 'capability_request_resolved', requestId, status: 'declined', text: 'Declined by Ben' }
+        }
+      ]) {
+        socket.onmessage?.({ data: JSON.stringify({ type: 'output', output: { turnId, ...output } }) })
+      }
+    })
+    act(runFrame)
+
+    // The reply after it stays its own text, and the card keeps its place, now settled.
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
+      {
+        kind: 'capability',
+        capability: { requestId, generation: 1, resolved: { status: 'declined', text: 'Declined by Ben' } }
+      },
+      { text: 'I asked for Linear.' }
+    ])
+  })
+
   it("replaces the lane's plan block on each revision instead of appending another", async () => {
     const runFrame = captureAnimationFrames()
     const { socket, turnId } = await openStream()

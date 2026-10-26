@@ -320,7 +320,8 @@ export function agentIsPlaced(agent: Pick<Agent, 'daemon' | 'runtime' | 'placeme
 // `plan` is REASONING, for historical reasons — the ACP task list is `planblock`, which is
 // not a work lane at all. Renaming `plan` to `think` would be the honest fix; it is left
 // alone here so this change stays about the task list.
-export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done' | 'notice' | 'planblock' | 'elicit' | 'app'
+export type LaneKind =
+  'msg' | 'plan' | 'tool' | 'edit' | 'done' | 'notice' | 'planblock' | 'elicit' | 'app' | 'capability'
 
 export interface LaneInfo {
   lane: string
@@ -406,6 +407,16 @@ const LANE_MAP: Record<LaneKind, LaneInfo> = {
   // own chrome around a frame that paints itself.
   app: {
     lane: 'APP',
+    laneColor: 'var(--text-tertiary)',
+    dot: 'var(--text-disabled)',
+    weight: 400,
+    textColor: 'var(--text-primary)',
+    codeColor: 'var(--text-secondary)'
+  },
+  // A capability request the agent made here (capability-requests.md §4.4.2). Like `elicit`, NOT a
+  // work lane: the card is handed to the reader. The row colors are unused — the card paints itself.
+  capability: {
+    lane: 'CAPABILITY',
     laneColor: 'var(--text-tertiary)',
     dot: 'var(--text-disabled)',
     weight: 400,
@@ -1337,6 +1348,18 @@ export interface SessionStep {
     dimensions?: McpAppDimensions
     outcome?: McpAppOutcome
   }
+  /** A capability request card — present only on a `capability` step; its state is read from the request itself. */
+  capability?: CapabilityCardBody
+}
+
+/** A capability request as the conversation carries it: enough to show the card before the request is fetched, and how it ended once settled. */
+export interface CapabilityCardBody {
+  requestId: string
+  generation: number
+  summary: string
+  reason: string
+  link: string
+  resolved?: { status: 'completed' | 'declined' | 'expired' | 'withdrawn'; text: string }
 }
 
 /** The agent's structured question as the transcript PERSISTS it (protocol `ElicitBody`): the

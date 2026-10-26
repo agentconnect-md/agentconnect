@@ -1,6 +1,13 @@
 // What a capability request's page says changes is read from what was asked against the agent's current values.
 import { describe, expect, it } from 'vitest'
-import { askedBy, askerName, capabilityDiff, splitSkillRef } from './capability-requests'
+import {
+  askedBy,
+  askerName,
+  capabilityDiff,
+  capabilityProviderId,
+  grantNamesRepository,
+  splitSkillRef
+} from './capability-requests'
 
 describe('capabilityDiff', () => {
   it('lists each asked setting against its current value, in a fixed order', () => {
@@ -56,5 +63,55 @@ describe('askedBy', () => {
     expect(people.map(askerName)).toEqual(['Ana'])
     expect(askedBy({ origins: [origin('U3', null)] }).map(askerName)).toEqual(['U3'])
     expect(askedBy({ origins: [] })).toEqual([])
+  })
+})
+
+describe('the Phase 2 kinds', () => {
+  it('reads a repository request against the tier the agent holds', () => {
+    expect(
+      capabilityDiff({
+        kind: 'repository',
+        want: { provider: 'github', repository: 'acme/widgets', access: 'write' },
+        current: { authorized: 'read' }
+      })
+    ).toEqual([{ kind: 'repository', provider: 'github', repository: 'acme/widgets', from: 'read', to: 'write' }])
+    expect(
+      capabilityDiff({
+        kind: 'repository',
+        want: { provider: 'gitlab', repository: 'g/p', access: 'read' },
+        current: {}
+      })[0]
+    ).toMatchObject({ from: 'none' })
+  })
+
+  it('says whether a connection already holds and where a header goes', () => {
+    expect(
+      capabilityDiff({
+        kind: 'connection',
+        want: { type: 'mcp-oauth', server: 'Linear' },
+        current: { connected: true }
+      })
+    ).toEqual([{ kind: 'connection', connection: { type: 'mcp-oauth', server: 'Linear' }, connected: true }])
+    expect(
+      capabilityDiff({
+        kind: 'secret',
+        want: { name: 'X-Api-Key', description: 'key', use: { route: 'mcp-header', server: 'Grafana' } },
+        current: { present: false }
+      })
+    ).toEqual([
+      { kind: 'secret', name: 'X-Api-Key', description: 'key', route: 'mcp-header', server: 'Grafana', present: false }
+    ])
+  })
+
+  it('finds the provider from the request, else from the completion hint', () => {
+    expect(capabilityProviderId({ current: { providerId: 'p-1' }, completion: { providerId: 'p-2' } })).toBe('p-1')
+    expect(capabilityProviderId({ current: {}, completion: { providerId: 'p-2' } })).toBe('p-2')
+    expect(capabilityProviderId({ current: {}, completion: null })).toBeNull()
+  })
+
+  it('matches a grant to a repository the way the code host does', () => {
+    const want = { provider: 'github' as const, repository: 'acme/widgets' }
+    expect(grantNamesRepository({ repoFullName: 'Acme/Widgets' }, want)).toBe(true)
+    expect(grantNamesRepository({ repoFullName: 'acme/widgets', provider: 'gitlab' }, want)).toBe(false)
   })
 })

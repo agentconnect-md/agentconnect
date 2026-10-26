@@ -178,6 +178,20 @@ type WebchatEvent =
       label?: string
     }
   | ({ kind: 'app' } & McpAppCard)
+  | {
+      kind: 'capability_request'
+      requestId: string
+      generation: number
+      summary: string
+      reason: string
+      link: string
+    }
+  | {
+      kind: 'capability_request_resolved'
+      requestId: string
+      status: 'completed' | 'declined' | 'expired' | 'withdrawn'
+      text: string
+    }
   | { kind: 'app_template'; appId: string; seq: number; chunk: string }
   | { kind: 'app_resolved'; appId: string; outcome: McpAppOutcome }
   | { kind: 'app_rpc_result'; appId: string; callId: string; outcome: McpAppRpcResult }
@@ -648,6 +662,38 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 outcome: ev.outcome,
                 ...(ev.label !== undefined ? { answerLabel: ev.label } : {})
               },
+              observedAtMs
+            })
+          }
+          return steps
+        }
+        if (ev.kind === 'capability_request') {
+          // The agent's capability request, standing in the conversation as a card; `boundary` keeps later chunks out of it.
+          return [
+            ...steps,
+            lane({
+              kind: 'capability',
+              text: ev.summary,
+              capability: {
+                requestId: ev.requestId,
+                generation: ev.generation,
+                summary: ev.summary,
+                reason: ev.reason,
+                link: ev.link
+              },
+              boundary: true
+            })
+          ]
+        }
+        if (ev.kind === 'capability_request_resolved') {
+          // Settle the card in place, scanned across the whole transcript: a request may settle days after its turn.
+          for (let i = steps.length - 1; i >= 0; i--) {
+            const step = steps[i]!
+            if (step.kind !== 'capability' || step.capability?.requestId !== ev.requestId) continue
+            if ((step.agentId ?? undefined) !== agentId) continue
+            return replaceAt(i, {
+              ...step,
+              capability: { ...step.capability, resolved: { status: ev.status, text: ev.text } },
               observedAtMs
             })
           }

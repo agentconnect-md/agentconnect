@@ -3580,7 +3580,9 @@
         "newValuePlaceholder": "新值",
         "cancel": "取消",
         "saving": "保存中…",
-        "save": "保存"
+        "save": "保存",
+        "requestedHeaderHint": "请输入 {header} 的值。智能体永远看不到这个值。",
+        "requestedHeaderOthers": "保存会替换此服务器上的所有请求头：请重新输入 {names}，或删除对应行以移除该请求头。"
       },
       "editConnector": {
         "reconnectTitle": "重新连接连接器",
@@ -6883,7 +6885,20 @@
       "serverMissing": "此组织中没有注册该名称的 MCP 服务器。",
       "installSkill": "安装技能 <name>{skill}</name>",
       "skillAlready": "已安装",
-      "conversations": "等待此请求的会话"
+      "conversations": "等待此请求的会话",
+      "repositoryChange": "仓库 <name>{repository}</name>：<code>{from}</code> → <code>{to}</code>",
+      "accessNone": "无权限",
+      "accessRead": "只读",
+      "accessWrite": "读写",
+      "connectMcp": "连接 <name>{server}</name>",
+      "connectCodeHost": "连接 <name>{provider}</name>",
+      "connectCodeHostAt": "连接 <name>{host}</name> 上的 <name>{provider}</name>",
+      "connectChat": "添加 <name>{platform}</name> 集成",
+      "connected": "已连接",
+      "secretHeader": "<name>{server}</name> 的请求头 <code>{header}</code>",
+      "secretLive": "密钥 <code>{secret}</code>",
+      "secretPurpose": "用途：{description}",
+      "secretPresent": "已设置"
     },
     "fields": {
       "model": "模型",
@@ -6908,7 +6923,24 @@
       "saving": "正在保存…",
       "done": "完成 — 已通知 Agent。",
       "doneDiffers": "完成 — 已告知 Agent 实际保存的内容：{outcome}",
-      "settleFailed": "变更已保存，但请求未能关闭：{error}"
+      "settleFailed": "变更已保存，但请求未能关闭：{error}",
+      "repositoryHint": "智能体的仓库访问权限会打开并预选此仓库和权限级别。保存时会检查你本人在代码托管平台上的权限。",
+      "repositoryWriteHint": "智能体的仓库访问权限会打开并以读写权限预选此仓库。写权限允许智能体推送代码和创建拉取请求；保存时会检查你本人在代码托管平台上的写权限。",
+      "authorizeRepository": "授权 {repository}",
+      "raiseRepository": "将 {repository} 提升为读写",
+      "connectionHint": "连接会在新窗口中进行。你回到本页时会重新检查，连接生效后此请求会自动完成。",
+      "connectServer": "连接 {server}",
+      "connectGithub": "安装 GitHub 应用",
+      "connectGitlab": "连接 GitLab",
+      "connectUnavailable": "现在无法开始此连接。",
+      "addIntegration": "添加 {platform} 集成",
+      "openIntegrations": "打开集成",
+      "checkAgain": "重新检查",
+      "connectionWatching": "正在等待连接完成…",
+      "liveSecretUnavailable": "智能体从自己的 shell 读取的密钥暂不可用。请拒绝此请求，或让智能体改用 MCP 服务器的请求头。",
+      "headerOnOauthServer": "{server} 通过 OAuth 登录，没有可设置的请求头。请拒绝此请求，或改为连接该服务器。",
+      "headerHint": "该值保存在 {server} 上，并在每次调用时附加。智能体永远看不到它。",
+      "setHeader": "设置 {header}"
     },
     "authority": {
       "heading": "你无法进行此变更",
@@ -6949,6 +6981,10 @@
     "agentCard": {
       "title": "请求",
       "count": "{count, plural, other {# 个待处理请求}}"
+    },
+    "card": {
+      "open": "在 AgentConnect 中打开",
+      "whoCan": "可以完成它的人：{names}"
     }
   }
 }

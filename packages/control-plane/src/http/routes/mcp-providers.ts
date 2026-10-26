@@ -143,6 +143,16 @@ export function mcpProviderRoutes(deps: HttpDeps) {
   return async function mcpProviderRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
 
+    // Saved headers are bound on the relay by now: a request waiting for one completes (capability-requests.md §4.9.1).
+    const headersSaved = async (orgId: OrgId, provider: McpProviderRecord, userId: string): Promise<void> => {
+      if (!deps.capabilityRequests) return
+      const profile = await deps.repos.user.getProfile(userId).catch(() => null)
+      const name = profile?.displayName?.trim() || profile?.email || 'A member'
+      await deps.capabilityRequests
+        .orgChanged(orgId, { kind: 'mcp-headers', server: provider.name }, { kind: 'console', userId, name })
+        .catch((err: unknown) => app.log.warn({ err }, 'capability request: re-evaluation after a header save failed'))
+    }
+
     // Shared relay+daemon push (also used by the connectors create flow).
     const { pushAssign, pushUnassign } = makeMcpPush(deps)
 
@@ -308,6 +318,8 @@ export function mcpProviderRoutes(deps: HttpDeps) {
               'an agent already enables an MCP server with this name; unselect it there first or pick another name'
           })
         }
+        if (created.provider.auth !== 'oauth2' && req.body.headers.length > 0)
+          await headersSaved(orgOf(req), created.provider, ctxOf(req).userId)
         return reply
           .code(201)
           .send({ ...toDto(created.provider, ctxOf(req), req.body.headers), grantKey: created.grant.key })
@@ -369,6 +381,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
           const grant = currentMcpGrant(await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))
           if (grant) await pushAssign(provider, await upstreamFor(provider, orgOf(req))(), grant, orgOf(req))
         })
+        if (req.body.headers !== undefined) await headersSaved(orgOf(req), provider, ctxOf(req).userId)
         return toDto(provider, ctxOf(req), headers)
       }
     )

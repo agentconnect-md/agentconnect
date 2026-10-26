@@ -3,7 +3,9 @@ import {
   CAPABILITY_REQUEST_DECLINE_MEMORY_MS,
   CAPABILITY_REQUEST_TTL_MS,
   CAPABILITY_REQUESTS_FEATURE,
+  CAPABILITY_REQUESTS_V2_FEATURE,
   CAPABILITY_WAKE_GIVE_UP_MS,
+  type AgentMcpRebound,
   type CapabilityRequestReq,
   type SessionCapabilitySettled,
   type SessionCapabilitySettledResult
@@ -19,6 +21,7 @@ import type {
   NewCapabilityOrigin
 } from '../persistence/ports.js'
 import { CapabilityRequestService, wakeBackoffMs } from './capability-request.service.js'
+import type { CapabilityFacts } from './capability-wording.js'
 
 const NOW = 1_780_000_000_000
 const ORG = OrgId('org-a')
@@ -41,8 +44,10 @@ class MemoryRequests implements CapabilityRequestRepo {
     const row = this.rows.get(id)
     return row?.agentId === agentId ? this.copy(row) : null
   }
-  async list(orgId: OrgId) {
-    return [...this.rows.values()].filter((r) => r.orgId === orgId).map((r) => this.copy(r)!)
+  async list(orgId: OrgId, filter: { status?: string } = {}) {
+    return [...this.rows.values()]
+      .filter((r) => r.orgId === orgId && (filter.status === undefined || r.status === filter.status))
+      .map((r) => this.copy(r)!)
   }
   async open(agentId: AgentId, kind: string, target: string) {
     return this.copy(
@@ -207,7 +212,11 @@ class MemoryRequests implements CapabilityRequestRepo {
   }
 }
 
-function harness(opts: { agent?: Partial<AgentRecord>; reply?: SessionCapabilitySettledResult } = {}) {
+function harness(
+  opts: { agent?: Partial<AgentRecord>; reply?: SessionCapabilitySettledResult; features?: string[] } = {}
+) {
+  let facts: CapabilityFacts = {}
+  const rebounds: { daemonId: string; frame: AgentMcpRebound }[] = []
   const clock = new FakeClock(NOW)
   const requests = new MemoryRequests()
   let agent = {
@@ -234,19 +243,27 @@ function harness(opts: { agent?: Partial<AgentRecord>; reply?: SessionCapability
   const service = new CapabilityRequestService({
     clock,
     requests,
-    agents: { getUnscoped: async () => agent },
+    agents: { getUnscoped: async () => agent, list: async () => [agent] },
+    facts: {
+      load: async () => facts,
+      unknownTarget: async (_agent, a) =>
+        a.kind === 'connection' && a.want.type === 'chat-integration' && a.want.platform === 'fax'
+          ? 'There is no chat platform named "fax".'
+          : undefined
+    },
     mcpProviders: { listForOrg: async () => [{ name: 'Linear' }, { name: 'GitHub' }] as never },
     skillSources: { getByName: async (_org, name) => (name === 'acme' ? ({ name } as never) : null) },
     orgs: { slugById: async () => 'example-org' },
     webAppUrl: 'https://console.example.test/',
     placement: { dispatchDaemon: async () => DAEMON as never },
-    daemon: () => ({ state: 'READY', capabilities: { features: [CAPABILITY_REQUESTS_FEATURE] } }),
+    daemon: () => ({ state: 'READY', capabilities: { features: opts.features ?? [CAPABILITY_REQUESTS_FEATURE] } }),
     sendSettled: async (_d, _o, wake) => {
       sent.push(wake)
       return reply
     },
     sendReopened: async () => undefined,
     sendForward: async () => ({ delivered: true }),
+    sendMcpRebound: (daemonId, _org, frame) => void rebounds.push({ daemonId, frame }),
     log: { debug: () => undefined, warn: () => undefined }
   })
   service.start()
@@ -262,7 +279,9 @@ function harness(opts: { agent?: Partial<AgentRecord>; reply?: SessionCapability
     pass,
     setAgent: (patch: Partial<AgentRecord>) => (agent = { ...agent, ...patch } as AgentRecord),
     agent: () => agent,
-    setReply: (next: SessionCapabilitySettledResult) => (reply = next)
+    setReply: (next: SessionCapabilitySettledResult) => (reply = next),
+    setFacts: (next: CapabilityFacts) => (facts = next),
+    rebounds
   }
 }
 
@@ -517,6 +536,92 @@ describe('CapabilityRequestService', () => {
     expect(g.requests.rows.get(second.requestId!)!.origins[0]).toMatchObject({
       wakeState: 'gone',
       wakeReason: 'not_found'
+    })
+  })
+
+  describe('Phase 2 kinds', () => {
+    const askOfKind = (sessionId: string, a: CapabilityRequestReq['ask']): CapabilityRequestReq => ({
+      ...ask(sessionId),
+      ask: a
+    })
+
+    it('refuses a live secret as unsupported and an unknown platform as an unknown target', async () => {
+      const h = harness()
+      const live = await h.service.request(
+        h.agent(),
+        askOfKind('s1', { kind: 'secret', want: { name: 'TOKEN', description: 'd', use: { route: 'live' } } })
+      )
+      expect(live).toMatchObject({ status: 'refused', refused: 'unsupported' })
+      const fax = await h.service.request(
+        h.agent(),
+        askOfKind('s1', { kind: 'connection', want: { type: 'chat-integration', platform: 'fax' } })
+      )
+      expect(fax).toMatchObject({ status: 'refused', refused: 'unknown_target' })
+    })
+
+    it('completes an OAuth connection when the server connects, wakes at once with a reload, and rebinds sessions', async () => {
+      const h = harness({
+        agent: { mcpServers: ['Linear'] },
+        features: [CAPABILITY_REQUESTS_FEATURE, CAPABILITY_REQUESTS_V2_FEATURE]
+      })
+      const { requestId } = await h.service.request(
+        h.agent(),
+        askOfKind('s1', { kind: 'connection', want: { type: 'mcp-oauth', server: 'Linear' } })
+      )
+      h.setFacts({ mcpProvider: { providerId: 'p-1', connected: true, headerPresent: false } })
+      await h.service.orgChanged(ORG, { kind: 'mcp-oauth', server: 'Linear' }, null)
+      const row = h.requests.rows.get(requestId!)!
+      expect(row).toMatchObject({ status: 'completed', settledRevision: null })
+      await h.pass()
+      expect(h.sent).toEqual([
+        expect.objectContaining({
+          status: 'completed',
+          reload: true,
+          outcome: 'MCP server "Linear" is connected. Its tools are available from this turn.'
+        })
+      ])
+      expect(h.rebounds).toEqual([{ daemonId: DAEMON, frame: { agentId: AGENT, server: 'Linear' } }])
+    })
+
+    it('sends no rebound to a daemon without the Phase 2 feature, and leaves other requests open', async () => {
+      const h = harness({ agent: { mcpServers: ['Linear'] } })
+      const { requestId } = await h.service.request(
+        h.agent(),
+        askOfKind('s1', {
+          kind: 'secret',
+          want: { name: 'X-Api-Key', description: 'Grafana key', use: { route: 'mcp-header', server: 'Grafana' } }
+        })
+      )
+      await h.service.orgChanged(ORG, { kind: 'mcp-oauth', server: 'Linear' }, null)
+      expect(h.rebounds).toEqual([])
+      expect(h.requests.rows.get(requestId!)!.status).toBe('open')
+      h.setFacts({ mcpProvider: { providerId: 'p-2', connected: false, headerPresent: true } })
+      await h.service.orgChanged(ORG, { kind: 'mcp-headers', server: 'Grafana' }, null)
+      expect(h.requests.rows.get(requestId!)!).toMatchObject({
+        status: 'completed',
+        outcome:
+          'Header "X-Api-Key" of MCP server "Grafana" is set. The server\'s tools send it; you never see its value.'
+      })
+    })
+
+    it('completes a repository request after the authorization reached the daemon, with a reload', async () => {
+      const h = harness()
+      const { requestId } = await h.service.request(
+        h.agent(),
+        askOfKind('s1', {
+          kind: 'repository',
+          want: { provider: 'github', repository: 'acme/widgets', access: 'write' }
+        })
+      )
+      h.setFacts({ repository: { authorized: 'read', repoId: '7', installationId: null, installationWide: false } })
+      h.setAgent({ configRevision: 2n })
+      await h.service.agentUpserted(h.agent(), [DAEMON])
+      expect(h.requests.rows.get(requestId!)!.status).toBe('open')
+      h.setFacts({ repository: { authorized: 'write', repoId: '7', installationId: null, installationWide: false } })
+      h.setAgent({ configRevision: 3n })
+      await h.service.agentUpserted(h.agent(), [DAEMON])
+      await h.pass()
+      expect(h.sent).toEqual([expect.objectContaining({ status: 'completed', reload: true })])
     })
   })
 })

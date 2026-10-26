@@ -549,6 +549,22 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     outcome: z.enum(['accepted', 'dismissed', 'cancelled', 'completed']),
     label: z.string().optional()
   }),
+  // A capability request the agent made in this conversation (capability-requests.md §4.4.2); the browser renders the request page's card and calls REST itself.
+  z.object({
+    kind: z.literal('capability_request'),
+    requestId: z.string().uuid(),
+    generation: z.number().int().positive(),
+    summary: z.string().max(500),
+    reason: z.string().max(280),
+    link: z.string().url()
+  }),
+  // The same card, settled — append-only, keyed by `requestId`, as `elicitation_resolved` is.
+  z.object({
+    kind: z.literal('capability_request_resolved'),
+    requestId: z.string().uuid(),
+    status: z.enum(['completed', 'declined', 'expired', 'withdrawn']),
+    text: z.string().max(300)
+  }),
   // A runtime approval handed to an API caller first (shared-bot-relay.md §10.4), answered by `permission_choice`.
   z.object({
     kind: z.literal('permission'),

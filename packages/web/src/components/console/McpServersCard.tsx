@@ -621,14 +621,37 @@ export function CreateMcpProviderModal({
 }
 
 // ── edit dialog (url + headers; headers are write-only — blank keeps them) ─────
-export function EditMcpProviderModal({ provider, onClose }: { provider: McpProviderDto; onClose: () => void }) {
+export function EditMcpProviderModal({
+  provider,
+  requestedHeader,
+  onSaved,
+  onClose
+}: {
+  provider: McpProviderDto
+  /** A header a capability request asks for: the editor opens on it, with the stored names to re-enter beside it. */
+  requestedHeader?: string
+  /** Fired once the save went through, before the dialog closes. */
+  onSaved?: () => void
+  onClose: () => void
+}) {
   const t = useTranslations('Tools.mcp.edit')
   const { updateMcpProvider, saveSharing } = useConsoleData()
   const [url, setUrl] = useState(provider.url)
   // Start empty: the stored values are never returned, so a blank editor means
   // "keep the current headers". Adding rows REPLACES the whole set on save.
-  const [headers, setHeaders] = useState<HeaderRow[]>([])
-  const [replaceHeaders, setReplaceHeaders] = useState(false)
+  // Header names are case-insensitive: a stored `x-api-key` is the requested `X-Api-Key`, kept as stored.
+  const isRequested = (name: string) => !!requestedHeader && name.trim().toLowerCase() === requestedHeader.toLowerCase()
+  const requestedName = provider.headerNames.find(isRequested) ?? requestedHeader
+  const [headers, setHeaders] = useState<HeaderRow[]>(() =>
+    requestedName
+      ? [
+          { name: requestedName, value: '' },
+          ...provider.headerNames.filter((n) => !isRequested(n)).map((n) => ({ name: n, value: '' }))
+        ]
+      : []
+  )
+  const [replaceHeaders, setReplaceHeaders] = useState(requestedHeader !== undefined)
+  const otherHeaders = requestedHeader ? provider.headerNames.filter((n) => !isRequested(n)) : []
   const [ui, setUi] = useState(provider.ui)
   const [sharing, setSharing] = useState<SharingValue>({
     visibility: provider.visibility,
@@ -638,7 +661,12 @@ export function EditMcpProviderModal({ provider, onClose }: { provider: McpProvi
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  const valid = !!url.trim()
+  // A requested header is the point of this edit, and the save replaces the set: every kept row needs its value, so dropping one is removing its row.
+  const requestedFilled =
+    !requestedHeader ||
+    (headers.some((r) => isRequested(r.name) && r.value.length > 0) &&
+      headers.every((r) => !r.name.trim() || r.value.length > 0))
+  const valid = !!url.trim() && requestedFilled
 
   const startEditingHeaders = () => {
     setReplaceHeaders(true)
@@ -668,6 +696,7 @@ export function EditMcpProviderModal({ provider, onClose }: { provider: McpProvi
       if (provider.canManageSharing && !sameSharing(sharing, initialSharing.current)) {
         await saveSharing('mcp', provider.id, sharing)
       }
+      onSaved?.()
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -703,7 +732,17 @@ export function EditMcpProviderModal({ provider, onClose }: { provider: McpProvi
           {provider.auth === 'oauth2' ? (
             <OauthConnectionField provider={provider} />
           ) : replaceHeaders ? (
-            <HeadersEditor rows={headers} onChange={setHeaders} valuePlaceholder={t('newValuePlaceholder')} />
+            <>
+              <HeadersEditor rows={headers} onChange={setHeaders} valuePlaceholder={t('newValuePlaceholder')} />
+              {requestedHeader && (
+                <div className="-mt-1 flex flex-col gap-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
+                  <span>{t('requestedHeaderHint', { header: requestedHeader })}</span>
+                  {otherHeaders.length > 0 && (
+                    <span>{t('requestedHeaderOthers', { names: otherHeaders.join(', ') })}</span>
+                  )}
+                </div>
+              )}
+            </>
           ) : (
             <div className="fld">
               <span className="fldlbl">{t('headers')}</span>

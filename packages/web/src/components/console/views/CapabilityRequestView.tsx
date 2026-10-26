@@ -66,16 +66,25 @@ export default function CapabilityRequestView() {
       </div>
     )
   }
-  return <CapabilityRequestBody request={data} onChange={(next) => void mutate(next, { revalidate: false })} />
+  return (
+    <CapabilityRequestBody
+      request={data}
+      onChange={(next) => void mutate(next, { revalidate: false })}
+      onRefresh={() => void mutate()}
+    />
+  )
 }
 
 /** The loaded request; split out so tests render it from a DTO without the route. */
 export function CapabilityRequestBody({
   request,
-  onChange
+  onChange,
+  onRefresh
 }: {
   request: CapabilityRequestDto
   onChange: (next: CapabilityRequestDto) => void
+  /** Re-read the request, for a change the server settles on its own (a connection made in another window). */
+  onRefresh?: () => void
 }) {
   const t = useTranslations('CapabilityRequests')
   const format = useFormatter()
@@ -143,7 +152,7 @@ export function CapabilityRequestBody({
       {open && request.viewer.canComplete && (
         <div className="card mt-4 p-4">
           <div className={sectionTitle}>{t('complete.heading')}</div>
-          <CapabilityRequestCompletion request={request} onSettled={onChange} />
+          <CapabilityRequestCompletion request={request} onSettled={onChange} {...(onRefresh ? { onRefresh } : {})} />
         </div>
       )}
       {open && !request.viewer.canComplete && <NoAuthority request={request} t={t} />}
@@ -198,6 +207,64 @@ function DiffLine({ line, t }: { line: CapabilityDiffLine; t: Translate }) {
       </span>
     )
   }
+  if (line.kind === 'repository') {
+    const access = (tier: 'none' | 'read' | 'write') =>
+      tier === 'write' ? t('page.accessWrite') : tier === 'read' ? t('page.accessRead') : t('page.accessNone')
+    return (
+      <>
+        {t.rich('page.repositoryChange', {
+          repository: line.repository,
+          from: access(line.from),
+          to: access(line.to),
+          name,
+          code
+        })}
+      </>
+    )
+  }
+  if (line.kind === 'connection') {
+    const { connection } = line
+    const subject =
+      connection.type === 'mcp-oauth'
+        ? t.rich('page.connectMcp', { server: connection.server, name })
+        : connection.type === 'code-host'
+          ? connection.host
+            ? t.rich('page.connectCodeHostAt', {
+                provider: codeHostName(connection.provider),
+                host: connection.host,
+                name
+              })
+            : t.rich('page.connectCodeHost', { provider: codeHostName(connection.provider), name })
+          : t.rich('page.connectChat', { platform: connection.platform, name })
+    return (
+      <span className="flex flex-wrap items-center gap-2">
+        <span>{subject}</span>
+        {line.connected && (
+          <span className="badge bg-(--surface-active) text-(--text-secondary)">{t('page.connected')}</span>
+        )}
+      </span>
+    )
+  }
+  if (line.kind === 'secret') {
+    return (
+      <span className="flex flex-col gap-1">
+        <span className="flex flex-wrap items-center gap-2">
+          <span>
+            {line.route === 'mcp-header'
+              ? t.rich('page.secretHeader', { header: line.name, server: line.server ?? '', name, code })
+              : t.rich('page.secretLive', { secret: line.name, code })}
+          </span>
+          {line.present && (
+            <span className="badge bg-(--surface-active) text-(--text-secondary)">{t('page.secretPresent')}</span>
+          )}
+        </span>
+        {/* The agent's description of what goes in it: its words, shown as plain text. */}
+        <span className="whitespace-pre-wrap break-words text-[13px] text-(--text-secondary)">
+          {t('page.secretPurpose', { description: line.description })}
+        </span>
+      </span>
+    )
+  }
   return (
     <span className="flex flex-wrap items-center gap-2">
       <span>{t.rich('page.installSkill', { skill: line.skill, name })}</span>
@@ -206,6 +273,11 @@ function DiffLine({ line, t }: { line: CapabilityDiffLine; t: Translate }) {
       )}
     </span>
   )
+}
+
+/** A code host's product name, which is a proper noun in every language. */
+function codeHostName(provider: 'github' | 'gitlab'): string {
+  return provider === 'github' ? 'GitHub' : 'GitLab'
 }
 
 function statusLine(request: CapabilityRequestDto, t: Translate): string {

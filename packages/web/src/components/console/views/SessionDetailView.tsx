@@ -132,6 +132,9 @@ import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
   elicitCard,
+  capabilityCard,
+  CAPABILITY_LANE,
+  liveCapabilityIds,
   appStepKey,
   liveAppKeys,
   mcpAppCard,
@@ -154,6 +157,7 @@ import {
   workSummary,
   type PlanEntry
 } from '@/components/console/session-work'
+import { CapabilityRequestCard } from '@/components/console/CapabilityRequestCard'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { activityScope, ASSISTANT_TASK_HANDLE_FEATURE } from '@/lib/agent-activity'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
@@ -515,6 +519,24 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
         ...(m.bodyTruncated ? { msg: m, ...(toolSessionId ? { toolSessionId } : {}) } : {})
       }
   }
+  if (k === 'capability') {
+    const card = capabilityCard(m.body)
+    if (card)
+      return {
+        lane: CAPABILITY_LANE,
+        laneColor: 'var(--text-tertiary)',
+        dot: 'var(--text-disabled)',
+        weight: 400,
+        textColor: 'var(--text-primary)',
+        codeColor: 'var(--text-secondary)',
+        text: m.text,
+        code: '',
+        files: [],
+        capability: card,
+        time: formatTranscriptRowTime(m),
+        ...(platform ? { platform } : {})
+      }
+  }
   if (k === 'elicit') {
     const card = elicitCard(m.body)
     if (card)
@@ -629,6 +651,8 @@ interface FmtStep {
   plan?: PlanEntry[]
   // The agent's in-band question — present only on an ELICIT_LANE step.
   elicit?: NonNullable<SessionStep['elicit']>
+  // A capability request card — present only on a CAPABILITY_LANE step.
+  capability?: NonNullable<SessionStep['capability']>
   app?: NonNullable<SessionStep['app']>
   // A superseded answer collapsed into this lane — carried so the summary can skip it.
   demoted?: boolean
@@ -1763,6 +1787,7 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     time: stp.time ?? '',
     ...(stp.kind === 'planblock' ? { plan: stp.plan ?? [] } : {}),
     ...(stp.kind === 'elicit' && stp.elicit ? { elicit: stp.elicit } : {}),
+    ...(stp.kind === 'capability' && stp.capability ? { capability: stp.capability } : {}),
     ...(stp.kind === 'app' && stp.app ? { app: stp.app } : {}),
     ...(stp.demoted ? { demoted: true } : {}),
     ...(platform ? { platform } : {}),
@@ -4363,6 +4388,8 @@ export default function SessionDetailView() {
   // aside while that replay does. Without this a second tab on a running conversation renders the
   // card twice, both armed.
   const liveApps = liveAppKeys(liveSteps, session.agentId)
+  // A capability card has the same two copies on a reload; the live one is what `capability_request_resolved` settles.
+  const liveCapabilities = liveCapabilityIds(liveSteps)
   if (wantTranscript) {
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
@@ -4371,6 +4398,10 @@ export default function SessionDetailView() {
         const persisted = elicitCard(m.body)
         const owner = conversationSourceAgentByMessageRef.current.get(m) ?? m.sender
         if (persisted && liveCards.has(elicitStepKey(owner, persisted.requestId))) continue
+      }
+      if (liveCapabilities.size > 0 && (m.kind || '').toLowerCase() === 'capability') {
+        const persisted = capabilityCard(m.body)
+        if (persisted && liveCapabilities.has(persisted.requestId)) continue
       }
       if (liveApps.size > 0 && (m.kind || '').toLowerCase() === 'app') {
         const persisted = mcpAppCard(m.body)
@@ -5599,7 +5630,9 @@ export default function SessionDetailView() {
                             const saidSteps = turn.steps.filter(
                               (s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE && s.lane !== PLAN_LANE
                             )
-                            const textSteps = saidSteps.filter((s) => s.lane !== ELICIT_LANE && s.lane !== APP_LANE)
+                            const textSteps = saidSteps.filter(
+                              (s) => s.lane !== ELICIT_LANE && s.lane !== APP_LANE && s.lane !== CAPABILITY_LANE
+                            )
                             const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
                             // Reasoning steps / tool commands / edited FILES (distinct paths across
                             // EDIT rows, since one EDIT row can touch several files).
@@ -5728,6 +5761,10 @@ export default function SessionDetailView() {
                                             : {})}
                                           {...(closeApp ? { onClose: (appId) => closeApp(turn.agentId, appId) } : {})}
                                         />
+                                      </div>
+                                    ) : st.lane === CAPABILITY_LANE && st.capability ? (
+                                      <div key={`c:${st.capability.requestId}`} className={si > 0 ? 'mt-2' : ''}>
+                                        <CapabilityRequestCard body={st.capability} />
                                       </div>
                                     ) : st.lane === ELICIT_LANE ? (
                                       <div key={`e:${st.elicit?.requestId ?? si}`} className={si > 0 ? 'mt-2' : ''}>

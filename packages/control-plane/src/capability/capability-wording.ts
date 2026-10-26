@@ -6,6 +6,20 @@ import {
 } from '@agentconnect.md/protocol'
 import type { AgentRecord } from '../persistence/ports.js'
 
+/** What the Phase 2 kinds are judged by, read from rows outside the agent; absent ⇒ not known, which never satisfies. */
+export interface CapabilityFacts {
+  repository?: {
+    authorized: 'none' | 'read' | 'write'
+    repoId: string | null
+    installationId: string | null
+    // The covering grant is an installation's, which reaches every repository it covers.
+    installationWide: boolean
+  }
+  mcpProvider?: { providerId: string | null; connected: boolean; headerPresent: boolean }
+  codeHostConnected?: boolean
+  integrationConnected?: boolean
+}
+
 /** The agent fields a predicate reads. */
 export type CapabilityAgentView = Pick<
   AgentRecord,
@@ -65,7 +79,25 @@ export function capabilitySummary(ask: CapabilityAsk): string {
       return `add the MCP server ${quote(ask.want.server)}`
     case 'skill':
       return `install the skill ${quote(ask.want.skill)}`
+    case 'repository':
+      return `grant ${ask.want.access} access to the ${hostLabel(ask.want.provider, ask.want.host)} repository ${quote(ask.want.repository)}`
+    case 'connection': {
+      const want = ask.want
+      if (want.type === 'mcp-oauth') return `connect the MCP server ${quote(want.server)}`
+      if (want.type === 'code-host') return `connect ${hostLabel(want.provider, want.host)} to the organization`
+      return `connect a ${quote(want.platform)} chat integration to this agent`
+    }
+    case 'secret':
+      return ask.want.use.route === 'mcp-header'
+        ? `set the header ${quote(ask.want.name)} of the MCP server ${quote(ask.want.use.server)}`
+        : `set the secret ${quote(ask.want.name)}`
   }
+}
+
+/** A code host as people name it: GitHub, GitLab, or a self-managed GitLab by its host. */
+function hostLabel(provider: 'github' | 'gitlab', host: string | undefined): string {
+  if (provider === 'github') return 'GitHub'
+  return host && host !== 'gitlab.com' ? `GitLab (${host})` : 'GitLab'
 }
 
 function skillInstalled(agent: CapabilityAgentView, skill: string): boolean {
@@ -75,7 +107,8 @@ function skillInstalled(agent: CapabilityAgentView, skill: string): boolean {
 /** Whether the state asked for holds, the change as observed, and the current values the page diffs against. */
 export function evaluateCapability(
   ask: CapabilityAsk,
-  agent: CapabilityAgentView
+  agent: CapabilityAgentView,
+  facts: CapabilityFacts = {}
 ): { satisfied: boolean; outcome: string; current: Record<string, unknown> } {
   switch (ask.kind) {
     case 'agent-settings': {
@@ -109,11 +142,96 @@ export function evaluateCapability(
         current: { installed }
       }
     }
+    case 'repository': {
+      const repo = facts.repository ?? {
+        authorized: 'none',
+        repoId: null,
+        installationId: null,
+        installationWide: false
+      }
+      const satisfied = repo.authorized === 'write' || (repo.authorized === 'read' && ask.want.access === 'read')
+      const name = `${hostLabel(ask.want.provider, ask.want.host)} repository ${quote(ask.want.repository)}`
+      const tier = (access: 'read' | 'write') => (access === 'write' ? 'read and write' : 'read')
+      return {
+        satisfied,
+        outcome: satisfied
+          ? `The agent can now ${tier(ask.want.access)} the ${name}. Sessions see it from their next turn.`
+          : repo.authorized === 'none'
+            ? `The agent still has no access to the ${name}.`
+            : `The agent can ${tier(repo.authorized)} the ${name} (you asked for ${ask.want.access} access).`,
+        current: { authorized: repo.authorized, repoId: repo.repoId, installationId: repo.installationId }
+      }
+    }
+    case 'connection': {
+      const want = ask.want
+      if (want.type === 'mcp-oauth') {
+        const connected = facts.mcpProvider?.connected === true
+        return {
+          satisfied: connected,
+          outcome: connected
+            ? `MCP server ${quote(want.server)} is connected. Its tools are available from this turn.`
+            : `MCP server ${quote(want.server)} is still not connected.`,
+          current: { providerId: facts.mcpProvider?.providerId ?? null, connected }
+        }
+      }
+      if (want.type === 'code-host') {
+        const connected = facts.codeHostConnected === true
+        const label = hostLabel(want.provider, want.host)
+        return {
+          satisfied: connected,
+          outcome: connected
+            ? `${label} is connected to the organization.`
+            : `${label} is still not connected to the organization.`,
+          current: { connected }
+        }
+      }
+      const connected = facts.integrationConnected === true
+      return {
+        satisfied: connected,
+        outcome: connected
+          ? `This agent now has a ${quote(want.platform)} chat integration.`
+          : `This agent still has no ${quote(want.platform)} chat integration.`,
+        current: { connected }
+      }
+    }
+    case 'secret': {
+      // Existence only: no value is ever read into an outcome, a wake or a page.
+      const use = ask.want.use
+      if (use.route !== 'mcp-header') {
+        return {
+          satisfied: false,
+          outcome: `Secret ${quote(ask.want.name)} cannot be set this way yet.`,
+          current: { present: false }
+        }
+      }
+      const present = facts.mcpProvider?.headerPresent === true
+      return {
+        satisfied: present,
+        outcome: present
+          ? `Header ${quote(ask.want.name)} of MCP server ${quote(use.server)} is set. The server's tools send it; you never see its value.`
+          : `Header ${quote(ask.want.name)} of MCP server ${quote(use.server)} is still not set.`,
+        current: { providerId: facts.mcpProvider?.providerId ?? null, present }
+      }
+    }
   }
 }
 
 /** Warning lines for a change that raises what the agent can do on its own (§4.5). */
-export function capabilityWarnings(ask: CapabilityAsk, agent: Pick<AgentRecord, 'runtime'>): string[] {
+export function capabilityWarnings(
+  ask: CapabilityAsk,
+  agent: Pick<AgentRecord, 'runtime'>,
+  facts: CapabilityFacts = {}
+): string[] {
+  if (ask.kind === 'repository') {
+    const lines: string[] = []
+    if (ask.want.access === 'write')
+      lines.push('Write access lets the agent push branches and open or change pull requests in this repository.')
+    if (facts.repository?.installationWide)
+      lines.push(
+        'The access this agent has here comes from an installation-wide grant, which reaches every repository it covers.'
+      )
+    return lines
+  }
   if (ask.kind !== 'agent-settings' || ask.want.permissionMode === undefined) return []
   const modes = agent.runtime ? ASSISTANT_MODE_PERMISSION_MODES[agent.runtime] : undefined
   const kind =

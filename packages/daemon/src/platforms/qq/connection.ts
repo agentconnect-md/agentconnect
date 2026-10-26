@@ -234,9 +234,10 @@ export class QQConnection implements PlatformConnection {
   }
 
   // QQ cannot edit a sent message, so a card's settlement or hint is a follow-up on the card's anchor.
-  async followCard(channel: string, cardId: string, text: string): Promise<void> {
+  async followCard(channel: string, cardId: string, text: string): Promise<boolean> {
     const replyId = this.cardAnchors.get(JSON.stringify([channel, cardId]))
-    if (replyId) await (await this.ensureSender()).sendCard(QQTargetForChannel(channel), replyId, text, 1)
+    if (!replyId) return false
+    return (await (await this.ensureSender()).sendCard(QQTargetForChannel(channel), replyId, text, 1)) !== undefined
   }
 
   async sendProgress(channel: string, replyId: string, text: string, signal?: AbortSignal): Promise<boolean> {

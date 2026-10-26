@@ -3,6 +3,7 @@ import { turnState, type DaemonRenderAction, type Pending } from '../../daemon/t
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { TurnOutputSurface } from '../turn-output.js'
 import { googleChatApprovalCards } from './approval-card.js'
+import { googleChatCapabilityCards } from './capability-card.js'
 import { googleChatElicitCards } from './elicit-card.js'
 import {
   acknowledgeGoogleChatTurn,
@@ -30,6 +31,7 @@ export function createGoogleChatTurnOutput(
     acknowledge: (ctx, turn) => acknowledgeGoogleChatTurn(ctx, turn, { warn: (message) => host.warn(message) }),
     elicitCards: googleChatElicitCards,
     approvalCards: googleChatApprovalCards,
+    capabilityCards: googleChatCapabilityCards,
     createConverger: (ctx) => new GoogleChatConverger(normalizeMode(ctx.mode), ctx.resolveFileLink),
     initialTurnState: (ctx): GoogleChatTurnState => initialGoogleChatTurnState(ctx),
     apply: (turn, action) =>

@@ -78,6 +78,8 @@ export interface GitlabOauthServiceDeps {
   webAppUrl?: string
   api: GitlabApiClient
   log?: { warn(obj: object, msg: string): void }
+  /** After a connection lands: what waited for one may now complete (capability-requests.md §4.6). */
+  onConnected?: (orgId: string, userId: string | null) => Promise<void>
 }
 
 export class GitlabOauthService {
@@ -177,6 +179,7 @@ export class GitlabOauthService {
         },
         axisBaseUrl: this.deps.api.baseUrl
       })
+      await this.deps.onConnected?.(row.orgId, row.userId ?? null).catch(() => undefined)
       return { redirectPath, result: 'connected' }
     } catch (e) {
       // §9.4: the starter lost their membership mid-flow — the repo's serialized

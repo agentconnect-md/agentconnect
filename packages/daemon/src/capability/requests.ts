@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   CapabilityAsk,
   CapabilityAskers,
+  CapabilityKind,
   CapabilityDecideReq,
   CapabilityDecideResult,
   CapabilityForward,
@@ -17,6 +18,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import { CAPABILITY_REQUEST_SESSION_CAP } from '@agentconnect.md/protocol'
 import {
+  capabilitySettledText,
   parseCapabilityDeclineOption,
   type CapabilityCardFacet,
   type CapabilityCardModel,
@@ -40,11 +42,31 @@ export interface CapabilityDmTarget {
   userId: string
 }
 
+/** The platform an inline card's row is recorded under: the console's own conversation, core-owned like its elicitation cards. */
+export const INLINE_CARD_PLATFORM = 'webchat'
+
+/** The console's own inline card (§4.4.2): streamed into a live webchat turn and kept on the conversation's transcript. */
+export interface CapabilityInlineCards {
+  /** Show the card in the session's live webchat turn and record its row; undefined when the session has none. */
+  post(
+    origin: CapabilityOrigin,
+    model: CapabilityCardModel
+  ): Promise<{ channel: string; thread: string | null; ts: string } | undefined>
+  /** Rewrite the card's row with how it settled and, while a turn there is live, stream that too. */
+  settle(row: CapabilityCardRow, status: CapabilityCardOutcome['status'], text: string): Promise<void>
+  /** Put a reopened request's card back to its open form under the new generation. */
+  reopen(row: CapabilityCardRow, generation: number): Promise<void>
+}
+
 export interface CapabilityRequestsHost {
   now(): number
   log: { info(message: string): void; warn(message: string): void }
   /** The CP when it serves capability requests; undefined otherwise. */
   cp(): CapabilityCp | undefined
+  /** Whether that CP takes this kind: the Phase 2 kinds need `capability-requests-v2`, so none is ever sent to an older one. */
+  servesKind(kind: CapabilityKind): boolean
+  /** The console's own inline cards; absent where nothing streams to a console. */
+  inline?: CapabilityInlineCards
   orgForAgent(agentId: string): string | undefined
   agent(
     agentId: string
@@ -113,6 +135,14 @@ export class CapabilityRequests {
   async request(origin: CapabilityOrigin, ask: CapabilityAsk, reason: string): Promise<CapabilityToolResult> {
     const cp = this.host.cp()
     if (!cp) throw new Error('requestCapability is not available: this agent cannot ask for changes right now')
+    if (!this.host.servesKind(ask.kind)) {
+      return {
+        status: 'refused',
+        message:
+          `A ${ask.kind} request cannot be made here yet; nothing was asked for. Tell the people here what you ` +
+          'need set up and why, so someone who manages you can do it.'
+      }
+    }
     void this.host
       .cards()
       .sweep(this.host.now())
@@ -170,6 +200,14 @@ export class CapabilityRequests {
             ? 'Nobody is in this conversation to see a card, so it was sent to the person responsible for you in a direct message.'
             : 'Nobody is in this conversation to see a card; the request is listed in your Activity for the people who manage you.') +
           `${joined} ${END_TURN}`
+      }
+    }
+    if (await this.postInline(origin, requestId, generation, view)) {
+      return {
+        ...base,
+        message:
+          'A card with your request is shown in this conversation, where someone who can make the change completes ' +
+          `or declines it. Tell the people here in one sentence what you are waiting for; do not repeat the link.${joined} ${END_TURN}`
       }
     }
     const posted = await this.postInTurn(origin, requestId, generation, view)
@@ -295,6 +333,12 @@ export class CapabilityRequests {
   /** An editor reopened a declined request (§4.5): its cards here return to the open form, with the new generation in Decline. */
   async reopened(req: CapabilityReopened): Promise<void> {
     for (const row of await this.host.cards().forRequest(req.requestId)) {
+      if (row.platform === INLINE_CARD_PLATFORM) {
+        const view = { ...row.view, summary: req.summary, reason: req.reason, link: req.link }
+        await this.host.inline?.reopen({ ...row, view }, req.generation).catch(() => undefined)
+        await this.host.cards().setGeneration(row.cardId, req.generation)
+        continue
+      }
       const facet = this.host.facet(row.platform)
       const conn = this.host.conn(row.integrationId)
       if (!facet || !conn) continue
@@ -326,6 +370,39 @@ export class CapabilityRequests {
       target
     )
     return posted ? { delivered: true } : { delivered: false, reason: 'no_card_surface' }
+  }
+
+  /** The console's inline card, in a session with a live webchat turn (§4.4.2). */
+  private async postInline(
+    origin: CapabilityOrigin,
+    requestId: string,
+    generation: number,
+    view: CapabilityCardView
+  ): Promise<boolean> {
+    const inline = this.host.inline
+    if (!inline) return false
+    const cardId = randomUUID()
+    const model = modelOf(
+      { cardId, requestId, agentId: origin.agentId, integrationId: '', sessionKey: origin.sessionKey, view },
+      generation
+    )
+    const shown = await inline.post(origin, model).catch(() => undefined)
+    if (!shown) return false
+    await this.host.cards().record({
+      cardId,
+      requestId,
+      generation,
+      agentId: origin.agentId,
+      sessionKey: origin.sessionKey,
+      integrationId: '',
+      platform: INLINE_CARD_PLATFORM,
+      channel: shown.channel,
+      thread: shown.thread,
+      ts: shown.ts,
+      view,
+      postedAt: this.host.now()
+    })
+    return true
   }
 
   /** The card in the turn's own conversation, posted on its apply chain like an approval card. */
@@ -417,9 +494,13 @@ export class CapabilityRequests {
       row.settledAt === null || (generation !== undefined && row.generation < generation)
     const rows = (await this.host.cards().forRequest(requestId)).filter((row) => due(row) && pick(row))
     for (const row of rows) {
-      const facet = this.host.facet(row.platform)
-      const conn = this.host.conn(row.integrationId)
-      if (facet && conn) {
+      const facet = row.platform === INLINE_CARD_PLATFORM ? undefined : this.host.facet(row.platform)
+      const conn = facet ? this.host.conn(row.integrationId) : undefined
+      if (row.platform === INLINE_CARD_PLATFORM) {
+        await this.host.inline
+          ?.settle(row, outcome.status, capabilitySettledText(row.view.summary, outcome))
+          .catch(() => undefined)
+      } else if (facet && conn) {
         const model = modelOf(row, row.generation)
         await facet.rewrite(handleOf(row, conn), facet.settled(model, outcome)).catch(() => 'failed' as const)
       }
@@ -497,6 +578,15 @@ function refusedResult(result: CapabilityRequestResult): CapabilityToolResult {
         'to be settled, or withdraw one you no longer need with withdrawCapabilityRequest.'
     }
   }
+  if (result.refused === 'unsupported') {
+    return {
+      ...base,
+      message:
+        'That kind of request cannot be completed here yet; nothing was asked for. For a credential an HTTP API ' +
+        'takes, ask for a secret with route `mcp-header` on the MCP server that calls it; otherwise tell the people ' +
+        'here what you need set up.'
+    }
+  }
   return { ...base, message: result.message ?? 'The request was refused; nothing was asked for.' }
 }
 
@@ -505,4 +595,21 @@ export function readAskerOf(asker: CapabilityAskers['people'][number]): ReadAske
   return asker.kind === 'console'
     ? { kind: 'console', userId: asker.userId }
     : { kind: 'member', platform: asker.platform, integrationId: asker.integrationId, userId: asker.userId }
+}
+
+/** A webchat capability card's transcript body: the card, and how it settled once it has (§4.4.2). */
+export function inlineCardBody(
+  model: Pick<CapabilityCardModel, 'requestId' | 'generation' | 'summary' | 'reason' | 'link'>,
+  settled?: { status: CapabilityCardOutcome['status']; text: string }
+): string {
+  const { requestId, generation, summary, reason, link } = model
+  return JSON.stringify({
+    requestId,
+    generation,
+    summary,
+    reason,
+    link,
+    status: settled?.status ?? 'open',
+    ...(settled ? { text: settled.text } : {})
+  })
 }
