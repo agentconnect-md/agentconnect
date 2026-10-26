@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 
 // Runs this CLI again as a child; children of the daemon share its macOS permission identity.
 export function runSelf(args: string[], timeoutMs: number): Promise<string> {
@@ -18,6 +18,10 @@ export function runSelf(args: string[], timeoutMs: number): Promise<string> {
 
 // The executable is the Node runtime inside the signed AgentConnect Computer.app, which holds the macOS grants.
 export const appBundlePath = (): string | undefined => /^(.*\.app)\/Contents\/MacOS\/[^/]+$/.exec(process.execPath)?.[1]
+
+// The menu bar helper build-macos-app.mjs places beside the runtime.
+export const menuBarHelperPath = (): string | undefined =>
+  appBundlePath() ? resolve(dirname(process.execPath), 'agentconnect-computer-menubar') : undefined
 
 // How the user runs this CLI: `agentconnect computer` sets AGENTCONNECT_COMPUTER_COMMAND; the standalone bin is the fallback.
 export const selfCommand = (): string => process.env.AGENTCONNECT_COMPUTER_COMMAND?.trim() || 'agentconnect-computer'

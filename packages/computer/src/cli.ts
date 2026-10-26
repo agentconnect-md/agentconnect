@@ -33,7 +33,7 @@ import { createComputerMcpServer, exposedDriverTools } from './tools.js'
 import { createViewer, type Viewer, type ViewerPrincipal } from './viewer.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
 import { recordGrants } from './macos-grants.js'
-import { appBundlePath, managedEntry, runSelf, selfCommand, serviceEntry } from './self.js'
+import { appBundlePath, managedEntry, menuBarHelperPath, runSelf, selfCommand, serviceEntry } from './self.js'
 import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
 import { consoleStopHandler } from './cp/console-stop.js'
@@ -734,6 +734,9 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     refusal: () => authority.refusal(),
     stopHotkey: config.stopHotkey,
     headless: sessionKind() === 'xvfb',
+    menuBarHelper: menuBarHelperPath(),
+    // A non-zero exit makes launchd's KeepAlive start the daemon again.
+    restart: () => void shutdown(1),
     log
   })
   const createMcpServer = ({ client, viewOnly, agent }: McpPrincipal): McpServer =>

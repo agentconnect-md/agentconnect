@@ -189,7 +189,7 @@ flowchart LR
 - **Screen stream**: one shared capture that the first viewer starts and the last one stops (§7).
 - **Keep-awake**: keeps the display awake while running (§3.4).
 - **Local UI**: the console window (title and keys) is the indicator and emergency stop; on X11 a tray icon, a global
-  stop hotkey and keyboard activity detection join it (§6); a macOS menu bar and a Windows tray remain the goal.
+  stop hotkey and keyboard activity detection join it (§6); macOS has a menu bar icon (§6), and a Windows tray remains the goal.
 
 ### 3.2 Process shape, identity, and OS grants
 
@@ -237,8 +237,9 @@ daemon runs as its own app:
   asked for and which it has held. A missing grant that was asked for is "listed but switched off"; one that was held
   is "switched off or held by an earlier build", fixed by `tccutil reset <service> md.agentconnect.computer` and
   `setup`. `uninstall --purge` resets both grants.
-- No Swift is needed for this. Swift / AppKit comes later for the menu bar UI, ScreenCaptureKit plus VideoToolbox
-  native capture, and `SMAppService` login items.
+- The grants need no Swift. **[implemented]** The one Swift part is the menu bar helper (§6), a separate executable
+  beside the runtime, signed before the bundle; ScreenCaptureKit plus VideoToolbox native capture and `SMAppService`
+  login items would come later.
 
 #### 3.2.2 Windows
 
@@ -903,6 +904,13 @@ says this, and how to read each error, in the standing instructions of every ses
   lease, red with pause bars while paused, grey while the Control Plane's authority is missing. It registers again when
   the panel restarts. Xfce's Status Tray plugin shows it; a virtual display (Xvfb, §3.8) gets none. The screen border
   and revoking input without an indicator are not built yet.
+  **[implemented, macOS]** The app's `agentconnect-computer-menubar` (`packages/computer/macos/menubar.swift`, #3403):
+  an `NSStatusItem` with the AgentConnect mark, an orange badge while an agent holds the lease, a red one while paused,
+  greyed while authority is missing, and the same menu as the Linux tray. The daemon spawns it and talks one JSON line
+  per message over stdio (`src/tray-helper.ts`): the state down, `stop` / `resume` up; it quits when its stdin closes,
+  and an exit the daemon did not ask for is a `tray` doctor warning. When macOS quits the app, as "Quit & Reopen"
+  after a Screen Recording grant does, the helper sends `restart` and the daemon exits non-zero so launchd's KeepAlive
+  starts it again with the grant applied. Windows will run a .NET Framework `NotifyIcon` helper over the same protocol.
 - **Takeover [validated]**: a human at the machine just uses it; a remote human takes over through the viewer (§7.3).
   Meanwhile agent input returns `human_in_control` and screenshots continue.
 

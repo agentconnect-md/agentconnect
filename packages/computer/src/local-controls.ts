@@ -1,7 +1,9 @@
 // The owner's local indicator and stop on the desktop itself (computer-use.md §6): tray, stop hotkey, keyboard activity.
+import { existsSync } from 'node:fs'
 import type { Check } from './setup.js'
 import { X11LocalControls, parseHotkey, type Hotkey } from './linux/x11-local.js'
 import { Tray, type TrayState } from './linux/tray.js'
+import { HelperTray } from './tray-helper.js'
 
 export const TRAY_STOP_REASON = 'stopped from the tray'
 export const HOTKEY_STOP_REASON = 'stopped with the stop hotkey'
@@ -36,6 +38,11 @@ export interface LocalControlsOptions {
   env?: NodeJS.ProcessEnv
   startX11?: typeof X11LocalControls.start
   startTray?: typeof Tray.start
+  // The macOS menu bar helper inside AgentConnect Computer.app; undefined when the daemon runs outside the app.
+  menuBarHelper?: string
+  // Restarts the service; the menu bar helper asks for it when macOS quits the app after a grant change.
+  restart?: () => void
+  startHelperTray?: typeof HelperTray.start
 }
 
 export interface LocalControls {
@@ -64,19 +71,97 @@ export function trayState(computer: LocallyControlled, refusal: string | undefin
 
 const TRAY_REFRESH_MS = 2000
 
-// X11 only for now; Wayland (#3221) and other platforms get no local controls here yet.
+// The stop and resume every local control shares; resume lifts only a pause made on this machine.
+function ownerActions({ computer, log }: LocalControlsOptions) {
+  return {
+    stop(reason: string): void {
+      // A viewer takeover ends too: the person at the machine outranks a remote one.
+      if (computer.liveStatus() === 'paused') return
+      computer.pause(reason)
+      log(`PAUSED (${reason}): all agent input is blocked until the owner resumes`)
+    },
+    resume(): void {
+      if (!trayState(computer, undefined).canResume) return
+      computer.resume()
+      log('resumed from the tray')
+    }
+  }
+}
+
+// Re-reads the indicator on a timer, since authority comes and goes without a status change.
+function refreshing(controls: LocalControls, log: (line: string) => void): LocalControls {
+  controls.update()
+  const refresh = setInterval(() => controls.update(), TRAY_REFRESH_MS)
+  refresh.unref()
+  for (const check of controls.checks().filter((check) => check.status === 'warn')) {
+    log(`local controls: ${check.name}: ${check.detail}`)
+  }
+  const close = controls.close
+  return {
+    ...controls,
+    close() {
+      clearInterval(refresh)
+      close()
+    }
+  }
+}
+
+// macOS: the menu bar helper only, for now; the stop hotkey and keyboard activity are #3182 M3.
+function startMenuBar(options: LocalControlsOptions): LocalControls {
+  const { computer, log } = options
+  const actions = ownerActions(options)
+  const helper = options.menuBarHelper
+  let tray: HelperTray | undefined
+  let trayProblem: string | undefined
+  if (!helper) trayProblem = 'the daemon runs outside AgentConnect Computer.app'
+  else if (!existsSync(helper)) trayProblem = 'this AgentConnect Computer.app has no menu bar helper'
+  else
+    tray = (options.startHelperTray ?? HelperTray.start)(helper, {
+      onStop: () => actions.stop(TRAY_STOP_REASON),
+      onResume: () => actions.resume(),
+      onRestart: () => {
+        log('macOS asked AgentConnect Computer to quit; restarting the service')
+        options.restart?.()
+      },
+      log
+    })
+  return refreshing(
+    {
+      keyboard: () => false,
+      checks() {
+        const problem = trayProblem ?? tray?.problem
+        return [
+          problem
+            ? {
+                name: 'tray',
+                status: 'warn',
+                detail: `${problem}: no local indicator; stop agents with agentconnect-computer pause`,
+                fix: 'update the app with agentconnect computer upgrade, then restart the service'
+              }
+            : { name: 'tray', status: 'ok', detail: 'the menu bar icon shows agent control and can stop it' }
+        ]
+      },
+      update() {
+        tray?.update(trayState(computer, options.refusal()))
+      },
+      close() {
+        tray?.close()
+      }
+    },
+    log
+  )
+}
+
+// X11 and macOS; Wayland (#3221) and Windows get no local controls here yet.
 export async function startLocalControls(options: LocalControlsOptions): Promise<LocalControls | undefined> {
   const env = options.env ?? process.env
-  if ((options.platform ?? process.platform) !== 'linux' || !env.DISPLAY || env.WAYLAND_DISPLAY) return undefined
+  const platform = options.platform ?? process.platform
+  if (platform === 'darwin') return startMenuBar(options)
+  if (platform !== 'linux' || !env.DISPLAY || env.WAYLAND_DISPLAY) return undefined
   const { computer, log } = options
   const hotkey: Hotkey | undefined = options.stopHotkey ? parseHotkey(options.stopHotkey) : undefined
   const hotkeyInvalid = options.stopHotkey && !hotkey ? `"${options.stopHotkey}" is not a valid hotkey` : undefined
-  const stop = (reason: string): void => {
-    // A viewer takeover ends too: the person at the machine outranks a remote one.
-    if (computer.liveStatus() === 'paused') return
-    computer.pause(reason)
-    log(`PAUSED (${reason}): all agent input is blocked until the owner resumes`)
-  }
+  const { stop, resume } = ownerActions(options)
   let x11: X11LocalControls | undefined
   let x11Problem: string | undefined
   try {
@@ -96,11 +181,7 @@ export async function startLocalControls(options: LocalControlsOptions): Promise
     try {
       tray = await (options.startTray ?? Tray.start)({
         onStop: () => stop(TRAY_STOP_REASON),
-        onResume: () => {
-          if (!trayState(computer, undefined).canResume) return
-          computer.resume()
-          log('resumed from the tray')
-        },
+        onResume: resume,
         ...(hotkey ? { hotkeyLabel: hotkey.label } : {}),
         log
       })
@@ -150,16 +231,9 @@ export async function startLocalControls(options: LocalControlsOptions): Promise
       tray?.update(trayState(computer, options.refusal()))
     },
     close() {
-      clearInterval(refresh)
       x11?.close()
       tray?.close()
     }
   }
-  controls.update()
-  // Authority comes and goes without a status change, so the indicator also re-reads it on a timer.
-  const refresh = setInterval(() => controls.update(), TRAY_REFRESH_MS)
-  refresh.unref()
-  const problems = controls.checks().filter((check) => check.status === 'warn')
-  for (const check of problems) log(`local controls: ${check.name}: ${check.detail}`)
-  return controls
+  return refreshing(controls, log)
 }

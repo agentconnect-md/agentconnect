@@ -95,7 +95,10 @@ test('the computer package pins each macOS app, rebuilt only when its recipe cha
       readPins: async () => ({}),
       execute: (script, args) => calls.push([script.replace(/^scripts\//, ''), ...args]),
       changed: (tag, paths) => {
-        assert.deepEqual(paths, ['packages/computer/scripts/build-macos-app.mjs'])
+        assert.deepEqual(paths, [
+          'packages/computer/scripts/build-macos-app.mjs',
+          'packages/computer/macos/menubar.swift'
+        ])
         return changed(tag)
       },
       built
