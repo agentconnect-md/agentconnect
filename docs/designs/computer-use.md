@@ -906,11 +906,19 @@ says this, and how to read each error, in the standing instructions of every ses
   and revoking input without an indicator are not built yet.
   **[implemented, macOS]** The app's `agentconnect-computer-menubar` (`packages/computer/macos/menubar.swift`, #3403):
   an `NSStatusItem` with the AgentConnect mark, an orange badge while an agent holds the lease, a red one while paused,
-  greyed while authority is missing, and the same menu as the Linux tray. The daemon spawns it and talks one JSON line
-  per message over stdio (`src/tray-helper.ts`): the state down, `stop` / `resume` up; it quits when its stdin closes,
-  and an exit the daemon did not ask for is a `tray` doctor warning. When macOS quits the app, as "Quit & Reopen"
-  after a Screen Recording grant does, the helper sends `restart` and the daemon exits non-zero so launchd's KeepAlive
-  starts it again with the grant applied. Windows will run a .NET Framework `NotifyIcon` helper over the same protocol.
+  greyed while authority is missing. The daemon decides the whole menu (`src/menu-bar.ts`) and sends it one JSON line
+  per change over stdio (`src/tray-helper.ts`); the helper only draws it, asks for confirmation where an item says so,
+  and reports clicks by id, menu opens, and a quit from macOS. The menu holds the agent state with Stop / Resume; a
+  checked or crossed line each for the Control Plane (click: redial now, and open the log when it stays away), Screen
+  Recording and Device Control (click: open that Privacy pane), Cua Driver (click: reinstall and restart) and ffmpeg
+  (click: download, shared with the viewer's own start); Start at Login (`launchctl enable` / `disable`, which leaves
+  the running daemon alone); Open Logs (`daemon.log` in Console); the daemon and app versions; Uninstall… (confirmed,
+  then runs `agentconnect computer uninstall` in Terminal from a `.command` file, so no Automation grant is needed);
+  and Quit (confirmed, exits 0 so KeepAlive leaves it stopped until the next login). Status is read again each time the
+  menu opens; the helper quits when its stdin closes, and an exit the daemon did not ask for is a `tray` doctor
+  warning. When macOS quits the app, as "Quit & Reopen" after a Screen Recording grant does, the helper sends
+  `restart` and the daemon exits non-zero so launchd's KeepAlive starts it again with the grant applied. Windows will
+  run a .NET Framework `NotifyIcon` helper over the same protocol.
 - **Takeover [validated]**: a human at the machine just uses it; a remote human takes over through the viewer (§7.3).
   Meanwhile agent input returns `human_in_control` and screenshots continue.
 

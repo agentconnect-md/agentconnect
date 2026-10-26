@@ -52,6 +52,8 @@ export function installService(program: string[], logPath: string): boolean {
 export function startService(): void {
   if (serviceStatus().loaded) return
   if (!guiSession()) throw new Error("nobody is logged in to this Mac's desktop: the service starts at the next login")
+  // The menu bar's "Start at Login" may have disabled it, and launchd refuses to bootstrap a disabled job.
+  setStartAtLogin(true)
   const result = launchctl('bootstrap', domain(), plistPath())
   if (!result.ok) throw new Error(`launchctl bootstrap failed: ${result.output}`)
 }
@@ -82,4 +84,16 @@ export function serviceStatus(): { installed: boolean; loaded: boolean; pid?: nu
   const pid = /^\s*pid = (\d+)/m.exec(result.output)?.[1]
   const state = /^\s*state = (\S+)/m.exec(result.output)?.[1]
   return { installed, loaded: true, ...(pid ? { pid: Number(pid) } : {}), ...(state ? { state } : {}) }
+}
+
+// Whether launchd starts the service at login; disabling it leaves a running daemon running.
+export function startsAtLogin(): boolean {
+  if (!existsSync(plistPath())) return false
+  const disabled = launchctl('print-disabled', domain()).output
+  // Older macOS prints `=> true` for a disabled job.
+  return ![`"${SERVICE_LABEL}" => disabled`, `"${SERVICE_LABEL}" => true`].some((line) => disabled.includes(line))
+}
+
+export function setStartAtLogin(on: boolean): void {
+  launchctl(on ? 'enable' : 'disable', `${domain()}/${SERVICE_LABEL}`)
 }

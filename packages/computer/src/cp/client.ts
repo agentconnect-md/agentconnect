@@ -102,6 +102,15 @@ export class ComputerCpClient {
     this.transport = undefined
   }
 
+  /** Skips the backoff wait and dials now, as the owner's menu bar asks; a live or ended channel is left alone. */
+  reconnectNow(): void {
+    if (this.state !== 'DEGRADED' || this.reconnectTimer === undefined) return
+    this.clock.clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = undefined
+    this.backoff.reset()
+    void this.attempt()
+  }
+
   /** Send a heartbeat now, e.g. when the status or the facts changed. */
   beat(): void {
     if (this.state !== 'READY' || !this.transport) return

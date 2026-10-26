@@ -38,6 +38,7 @@ import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
 import { consoleStopHandler } from './cp/console-stop.js'
 import { DAEMON_CONSOLE_STOP_REASON, startLocalControls, type LocalControls } from './local-controls.js'
+import { macMenuBarHost } from './menu-bar-host.js'
 import { RelayLinks } from './cp/relay-links.js'
 import {
   channelPrincipal,
@@ -734,9 +735,26 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     refusal: () => authority.refusal(),
     stopHotkey: config.stopHotkey,
     headless: sessionKind() === 'xvfb',
-    menuBarHelper: menuBarHelperPath(),
-    // A non-zero exit makes launchd's KeepAlive start the daemon again.
-    restart: () => void shutdown(1),
+    ...(process.platform === 'darwin'
+      ? {
+          menuBar: {
+            helper: menuBarHelperPath(),
+            host: macMenuBarHost({
+              dir,
+              ffmpegPath: config.ffmpegPath,
+              appPath: appBundlePath(),
+              driver,
+              name: () => computer.info().name as string | undefined,
+              registration,
+              client: () => live.channel?.client,
+              // A non-zero exit makes launchd's KeepAlive start the daemon again; zero leaves it stopped.
+              shutdown: (code) => void shutdown(code),
+              onFfmpegInstalled: () => live.channel?.refreshDoctor(),
+              log
+            })
+          }
+        }
+      : {}),
     log
   })
   const createMcpServer = ({ client, viewOnly, agent }: McpPrincipal): McpServer =>

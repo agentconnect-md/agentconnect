@@ -1,14 +1,13 @@
 // A native tray helper process (the macOS menu bar) speaking one JSON object per line over stdio (#3403).
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import type { TrayState } from './linux/tray.js'
 
 export interface HelperTrayOptions {
-  onStop: () => void
-  onResume: () => void
+  onClick: (id: string) => void
+  // The menu is about to show, so its status is worth reading again.
+  onMenuOpen: () => void
   // macOS asked the app to quit, as it does after a grant change; the daemon restarts to apply it.
   onRestart: () => void
-  hotkeyLabel?: string
   log: (line: string) => void
   spawnHelper?: (path: string) => ChildProcess
 }
@@ -34,8 +33,8 @@ export class HelperTray {
     return tray
   }
 
-  update(state: TrayState): void {
-    const line = `${JSON.stringify({ state: { ...state, hotkeyLabel: this.options.hotkeyLabel } })}\n`
+  update(menu: object): void {
+    const line = `${JSON.stringify({ menu })}\n`
     if (line === this.last || this.problem) return
     this.last = line
     this.child.stdin?.write(line)
@@ -48,15 +47,15 @@ export class HelperTray {
   }
 
   private received(line: string): void {
-    let action: unknown
+    let message: { action?: unknown; id?: unknown }
     try {
-      action = (JSON.parse(line) as { action?: unknown }).action
+      message = JSON.parse(line) as typeof message
     } catch {
       return
     }
-    if (action === 'stop') this.options.onStop()
-    if (action === 'resume') this.options.onResume()
-    if (action === 'restart') this.options.onRestart()
+    if (message.action === 'click' && typeof message.id === 'string') this.options.onClick(message.id)
+    if (message.action === 'menu-open') this.options.onMenuOpen()
+    if (message.action === 'restart') this.options.onRestart()
   }
 
   private gone(problem: string): void {

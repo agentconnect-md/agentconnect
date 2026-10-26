@@ -1,25 +1,45 @@
-// The macOS menu bar indicator (computer-use.md §6): stdin {"state"} lines in, stdout {"action"} lines out, EOF quits.
+// The macOS menu bar indicator (computer-use.md §6): draws the menu the daemon sends on stdin, reports clicks on stdout.
 import AppKit
 
-struct TrayState: Decodable {
+struct Confirm: Decodable {
+  let title: String
+  let message: String
+  let button: String
+}
+
+struct Item: Decodable {
+  let id: String?
+  let title: String
+  let mark: String?
+  let checked: Bool?
+  let enabled: Bool?
+  let separator: Bool?
+  let confirm: Confirm?
+}
+
+struct Menu: Decodable {
   let tone: String
-  let status: String
-  let canStop: Bool
-  let canResume: Bool
-  let hotkeyLabel: String?
+  let tooltip: String
+  let items: [Item]
 }
 
 struct Update: Decodable {
-  let state: TrayState?
+  let menu: Menu?
 }
 
-func send(_ action: String) {
-  FileHandle.standardOutput.write(Data("{\"action\":\"\(action)\"}\n".utf8))
+func send(_ message: [String: String]) {
+  guard var line = try? JSONSerialization.data(withJSONObject: message) else { return }
+  line.append(0x0A)
+  FileHandle.standardOutput.write(line)
 }
 
 // The AgentConnect mark (packages/web/src/app/icon.svg), with a badge for agent control or a pause and greyed without authority.
-func icon(_ tone: String) -> NSImage {
-  let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
+func icon(_ tone: String, size: CGFloat = 18) -> NSImage {
+  NSImage(size: NSSize(width: size, height: size), flipped: true) { _ in
+    // Drawn on an 18-point grid, the menu bar's size, and scaled for the dialogs.
+    let scale = NSAffineTransform()
+    scale.scale(by: size / 18)
+    scale.concat()
     let quadrants: [(NSPoint, NSPoint, NSColor)] = [
       (NSPoint(x: 9, y: 1), NSPoint(x: 17, y: 9), NSColor(red: 0.949, green: 0.776, blue: 0.290, alpha: 1)),
       (NSPoint(x: 17, y: 9), NSPoint(x: 9, y: 17), NSColor(red: 0.957, green: 0.475, blue: 0.227, alpha: 1)),
@@ -32,7 +52,7 @@ func icon(_ tone: String) -> NSImage {
       path.line(to: to)
       path.line(to: NSPoint(x: 9, y: 9))
       path.close()
-      (tone == "online" || tone == "busy" || tone == "paused" ? color : NSColor.systemGray).setFill()
+      (tone == "unavailable" ? NSColor.systemGray : color).setFill()
       path.fill()
     }
     let badge: NSColor? = tone == "busy" ? .systemOrange : tone == "paused" ? .systemRed : nil
@@ -46,51 +66,101 @@ func icon(_ tone: String) -> NSImage {
     }
     return true
   }
-  return image
 }
 
-final class Indicator: NSObject {
+func markImage(_ mark: String) -> NSImage? {
+  let (symbol, color): (String, NSColor) =
+    switch mark {
+    case "ok": ("checkmark.circle.fill", .systemGreen)
+    case "fail": ("xmark.circle.fill", .systemRed)
+    case "warn": ("exclamationmark.triangle.fill", .systemOrange)
+    default: ("arrow.triangle.2.circlepath", .systemGray)
+    }
+  // A filled symbol takes two colours, its glyph then its shape; one colour would fill both into a plain dot.
+  let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+    .applying(NSImage.SymbolConfiguration(paletteColors: symbol.hasSuffix(".fill") ? [.white, color] : [color]))
+  return NSImage(systemSymbolName: symbol, accessibilityDescription: mark)?.withSymbolConfiguration(config)
+}
+
+// The mark rides in the title, since macOS 26 and later menus do not draw an item's image beside its title.
+func titled(_ title: String, mark: String, enabled: Bool) -> NSAttributedString {
+  let font = NSFont.menuFont(ofSize: 0)
+  let text = NSMutableAttributedString()
+  if let image = markImage(mark) {
+    let attachment = NSTextAttachment()
+    attachment.image = image
+    attachment.bounds = NSRect(x: 0, y: (font.capHeight - image.size.height) / 2, width: image.size.width, height: image.size.height)
+    text.append(NSAttributedString(attachment: attachment))
+  }
+  let color: NSColor = enabled ? .labelColor : .secondaryLabelColor
+  text.append(NSAttributedString(string: "  \(title)", attributes: [.font: font, .foregroundColor: color]))
+  return text
+}
+
+final class Indicator: NSObject, NSMenuDelegate {
   private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-  private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-  private let stop = NSMenuItem(title: "Stop all agent input", action: #selector(stopClicked), keyEquivalent: "")
-  private let resume = NSMenuItem(title: "Resume agent input", action: #selector(resumeClicked), keyEquivalent: "")
+  private let menu = NSMenu()
+  private var items: [Item] = []
 
   override init() {
     super.init()
-    let menu = NSMenu()
     menu.autoenablesItems = false
-    statusLine.isEnabled = false
-    stop.target = self
-    resume.target = self
-    menu.addItem(NSMenuItem(title: "AgentConnect Computer", action: nil, keyEquivalent: ""))
-    menu.addItem(statusLine)
-    menu.addItem(.separator())
-    menu.addItem(stop)
-    menu.addItem(resume)
-    menu.items[0].isEnabled = false
+    menu.delegate = self
     item.menu = menu
-    apply(TrayState(tone: "unavailable", status: "starting", canStop: false, canResume: false, hotkeyLabel: nil))
+    apply(Menu(tone: "unavailable", tooltip: "AgentConnect Computer: starting", items: []))
   }
 
-  func apply(_ state: TrayState) {
-    let title = "AgentConnect Computer: \(state.status)"
-    item.button?.image = icon(state.tone)
-    item.button?.setAccessibilityLabel(title)
-    item.button?.toolTip = title
-    statusLine.title = "Agents: \(state.status)"
-    stop.title = "Stop all agent input" + (state.hotkeyLabel.map { " (\($0))" } ?? "")
-    stop.isEnabled = state.canStop
-    resume.isHidden = !state.canResume
+  func apply(_ update: Menu) {
+    item.button?.image = icon(update.tone)
+    item.button?.toolTip = update.tooltip
+    item.button?.setAccessibilityLabel(update.tooltip)
+    // An open menu is updated in place when its shape holds, so a refresh never closes it under the pointer.
+    let sameShape =
+      menu.items.count == update.items.count
+      && zip(menu.items, update.items).allSatisfy { $0.isSeparatorItem == ($1.separator ?? false) }
+    if !sameShape {
+      menu.removeAllItems()
+      for entry in update.items {
+        menu.addItem(entry.separator == true ? .separator() : NSMenuItem(title: "", action: nil, keyEquivalent: ""))
+      }
+    }
+    for (index, entry) in update.items.enumerated() where entry.separator != true {
+      let row = menu.items[index]
+      row.title = entry.title
+      row.tag = index
+      row.target = self
+      row.action = entry.id == nil ? nil : #selector(clicked(_:))
+      row.isEnabled = entry.id != nil && (entry.enabled ?? true)
+      row.state = entry.checked == true ? .on : .off
+      row.attributedTitle = entry.mark.map { titled(entry.title, mark: $0, enabled: row.isEnabled) }
+    }
+    items = update.items
   }
 
-  @objc private func stopClicked() { send("stop") }
-  @objc private func resumeClicked() { send("resume") }
+  func menuWillOpen(_ menu: NSMenu) {
+    send(["action": "menu-open"])
+  }
+
+  @objc private func clicked(_ sender: NSMenuItem) {
+    guard sender.tag < items.count, let id = items[sender.tag].id else { return }
+    if let confirm = items[sender.tag].confirm {
+      NSApp.activate(ignoringOtherApps: true)
+      let alert = NSAlert()
+      alert.icon = icon("online", size: 64)
+      alert.messageText = confirm.title
+      alert.informativeText = confirm.message
+      alert.addButton(withTitle: confirm.button)
+      alert.addButton(withTitle: "Cancel")
+      guard alert.runModal() == .alertFirstButtonReturn else { return }
+    }
+    send(["action": "click", "id": id])
+  }
 }
 
 // macOS quits the whole app after a grant change ("Quit & Reopen", tccutil reset); only a daemon restart applies it.
 final class Delegate: NSObject, NSApplicationDelegate {
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-    send("restart")
+    send(["action": "restart"])
     return .terminateNow
   }
 }
@@ -102,8 +172,8 @@ app.setActivationPolicy(.accessory)
 let indicator = Indicator()
 Thread {
   while let line = readLine() {
-    guard let update = try? JSONDecoder().decode(Update.self, from: Data(line.utf8)), let state = update.state else { continue }
-    DispatchQueue.main.async { indicator.apply(state) }
+    guard let update = try? JSONDecoder().decode(Update.self, from: Data(line.utf8)), let menu = update.menu else { continue }
+    DispatchQueue.main.async { indicator.apply(menu) }
   }
   // The daemon is gone, so its indicator must go too.
   DispatchQueue.main.async { exit(0) }

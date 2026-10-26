@@ -3,7 +3,8 @@ import { existsSync } from 'node:fs'
 import type { Check } from './setup.js'
 import { X11LocalControls, parseHotkey, type Hotkey } from './linux/x11-local.js'
 import { Tray, type TrayState } from './linux/tray.js'
-import { HelperTray } from './tray-helper.js'
+import { startMenuBar, type MenuBarHost } from './menu-bar.js'
+import type { HelperTray } from './tray-helper.js'
 
 export const TRAY_STOP_REASON = 'stopped from the tray'
 export const HOTKEY_STOP_REASON = 'stopped with the stop hotkey'
@@ -38,10 +39,8 @@ export interface LocalControlsOptions {
   env?: NodeJS.ProcessEnv
   startX11?: typeof X11LocalControls.start
   startTray?: typeof Tray.start
-  // The macOS menu bar helper inside AgentConnect Computer.app; undefined when the daemon runs outside the app.
-  menuBarHelper?: string
-  // Restarts the service; the menu bar helper asks for it when macOS quits the app after a grant change.
-  restart?: () => void
+  // macOS: the menu bar helper inside AgentConnect Computer.app (undefined outside the app) and the daemon's side of its menu.
+  menuBar?: { helper: string | undefined; host: Omit<MenuBarHost, 'stop' | 'resume' | 'log'> }
   startHelperTray?: typeof HelperTray.start
 }
 
@@ -106,46 +105,44 @@ function refreshing(controls: LocalControls, log: (line: string) => void): Local
   }
 }
 
-// macOS: the menu bar helper only, for now; the stop hotkey and keyboard activity are #3182 M3.
-function startMenuBar(options: LocalControlsOptions): LocalControls {
+// macOS: the menu bar only, for now; the stop hotkey and keyboard activity are #3182 M3.
+function startMacLocalControls(options: LocalControlsOptions): LocalControls {
   const { computer, log } = options
   const actions = ownerActions(options)
-  const helper = options.menuBarHelper
-  let tray: HelperTray | undefined
-  let trayProblem: string | undefined
-  if (!helper) trayProblem = 'the daemon runs outside AgentConnect Computer.app'
-  else if (!existsSync(helper)) trayProblem = 'this AgentConnect Computer.app has no menu bar helper'
-  else
-    tray = (options.startHelperTray ?? HelperTray.start)(helper, {
-      onStop: () => actions.stop(TRAY_STOP_REASON),
-      onResume: () => actions.resume(),
-      onRestart: () => {
-        log('macOS asked AgentConnect Computer to quit; restarting the service')
-        options.restart?.()
-      },
-      log
-    })
+  const helper = options.menuBar?.helper
+  const problem = !options.menuBar
+    ? 'no menu bar host'
+    : !helper
+      ? 'the daemon runs outside AgentConnect Computer.app'
+      : !existsSync(helper)
+        ? 'this AgentConnect Computer.app has no menu bar helper'
+        : undefined
+  const menuBar =
+    problem || !helper || !options.menuBar
+      ? undefined
+      : startMenuBar(
+          helper,
+          { ...options.menuBar.host, stop: () => actions.stop(TRAY_STOP_REASON), resume: actions.resume, log },
+          trayState(computer, options.refusal()),
+          options.startHelperTray
+        )
   return refreshing(
     {
       keyboard: () => false,
-      checks() {
-        const problem = trayProblem ?? tray?.problem
-        return [
-          problem
-            ? {
-                name: 'tray',
-                status: 'warn',
-                detail: `${problem}: no local indicator; stop agents with agentconnect-computer pause`,
-                fix: 'update the app with agentconnect computer upgrade, then restart the service'
-              }
-            : { name: 'tray', status: 'ok', detail: 'the menu bar icon shows agent control and can stop it' }
-        ]
-      },
+      checks: () =>
+        menuBar?.checks() ?? [
+          {
+            name: 'tray',
+            status: 'warn',
+            detail: `${problem}: no local indicator; stop agents with agentconnect-computer pause`,
+            fix: 'update the app with agentconnect computer upgrade, then restart the service'
+          }
+        ],
       update() {
-        tray?.update(trayState(computer, options.refusal()))
+        menuBar?.update(trayState(computer, options.refusal()))
       },
       close() {
-        tray?.close()
+        menuBar?.close()
       }
     },
     log
@@ -156,7 +153,7 @@ function startMenuBar(options: LocalControlsOptions): LocalControls {
 export async function startLocalControls(options: LocalControlsOptions): Promise<LocalControls | undefined> {
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
-  if (platform === 'darwin') return startMenuBar(options)
+  if (platform === 'darwin') return startMacLocalControls(options)
   if (platform !== 'linux' || !env.DISPLAY || env.WAYLAND_DISPLAY) return undefined
   const { computer, log } = options
   const hotkey: Hotkey | undefined = options.stopHotkey ? parseHotkey(options.stopHotkey) : undefined
