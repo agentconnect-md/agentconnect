@@ -1,7 +1,8 @@
 'use client'
 
 // The embedded viewer (computer-use.md §7, §10), on the Computer detail and in the session dock: watch, take over and release; media never crosses the CP.
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import { openComputerViewer, type ComputerDto } from '@/lib/api'
 import {
@@ -62,6 +63,17 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
   const t = useTranslations('Computers.viewer')
   const [expanded, setExpanded] = useState(false)
   const video = useRef<HTMLVideoElement>(null)
+  // The stream outlives the <video> element, which moving into or out of the expanded portal recreates.
+  const stream = useRef<MediaProvider | null>(null)
+  // On every path in or out (button, Escape, anything later), the leaving element hands its stream to the arriving one.
+  const attachVideo = useCallback((element: HTMLVideoElement | null) => {
+    if (element) {
+      if (!element.srcObject && stream.current) element.srcObject = stream.current
+    } else if (video.current?.srcObject) {
+      stream.current = video.current.srcObject
+    }
+    video.current = element
+  }, [])
   const surface = useRef<HTMLDivElement>(null)
   const session = useRef<ComputerViewerSession | null>(null)
   const [state, setState] = useState<ViewerState | null>(null)
@@ -104,7 +116,7 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
   // The expanded view leaves room for its toolbar and the control row under the screen.
   const screenSize = expanded ? 'block max-h-[calc(100vh-112px)] max-w-full' : 'block max-h-[70vh] max-w-full'
 
-  return (
+  const content = (
     <div
       className={expanded ? 'fixed inset-0 z-[70] flex flex-col bg-(--surface-app)' : undefined}
       data-viewer-expanded={expanded ? '' : undefined}
@@ -172,7 +184,7 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
           className={inControl ? 'relative leading-[0] outline-2 outline-(--status-online)' : 'relative leading-[0]'}
         >
           <video
-            ref={video}
+            ref={attachVideo}
             autoPlay
             muted
             playsInline
@@ -230,6 +242,8 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
       )}
     </div>
   )
+  // Expanded, it renders on the page body: the dock's fixed panel is a stacking context no z-index inside it can leave.
+  return expanded ? createPortal(content, document.body) : content
 }
 
 function StatusLine({ state }: { state: ViewerState | null }) {

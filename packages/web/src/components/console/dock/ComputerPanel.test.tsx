@@ -78,9 +78,18 @@ describe('ComputerPanel', () => {
     const expand = el.querySelector('[data-viewer-expand] button') as HTMLButtonElement
     expect(expand.getAttribute('aria-label')).toBe('Expand')
     await act(async () => expand.click())
-    expect(el.querySelector('[data-viewer-expanded]')).not.toBeNull()
+    // Expanded, the screen leaves the dock for the page body, out of the dock panel's stacking context.
+    const overlay = document.querySelector('[data-viewer-expanded]')
+    expect(overlay?.parentElement).toBe(document.body)
+    expect(el.contains(overlay)).toBe(false)
+    expect(fake.stop).not.toHaveBeenCalled()
+    // A stream that arrives while expanded survives the way back, whichever control collapses the view.
+    const stream = new MediaStream()
+    overlay!.querySelector('video')!.srcObject = stream
     await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
-    expect(el.querySelector('[data-viewer-expanded]')).toBeNull()
+    expect(el.querySelector('video')!.srcObject).toBe(stream)
+    expect(document.querySelector('[data-viewer-expanded]')).toBeNull()
+    expect(el.querySelector('[data-viewer-surface]')).not.toBeNull()
 
     await act(async () => button(el, 'Take control')!.click())
     expect(fake.takeControl).toHaveBeenCalled()
