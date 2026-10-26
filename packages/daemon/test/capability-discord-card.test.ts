@@ -26,6 +26,10 @@ describe('Discord capability card', () => {
     const draft = buildDiscordCapabilityCard(model)
     expect(draft.text).toContain('add the MCP server "Linear"')
     expect(draft.text).not.toContain('](https://evil.example.test)')
+    // A backtick cannot unpair the spans that defusing wraps links in.
+    expect(buildDiscordCapabilityCard({ ...model, reason: 'see ` https://evil.example.test' }).text).not.toMatch(
+      /see `/
+    )
     const [open, decline] = draft.components[0]!.components
     expect(open).toMatchObject({ style: 5, url: model.link })
     expect(open!.custom_id).toBeUndefined()
@@ -46,9 +50,11 @@ describe('Discord capability card', () => {
     const draft = discordCapabilityCards.settled(model, { status: 'expired' })
     const handle = { conn, channel: 'C1', thread: 'T1', ts: 'm1' }
     await expect(discordCapabilityCards.rewrite(handle, draft)).resolves.toBe('edited')
-    expect(conn.updateMessage).toHaveBeenCalledWith('T1', 'm1', expect.any(String), { keyboard: [] })
+    // Agent-authored text never pings anyone, posted or edited.
+    expect(conn.updateMessage).toHaveBeenCalledWith('T1', 'm1', expect.any(String), { keyboard: [], noMentions: true })
     conn.updateMessage.mockResolvedValueOnce(false)
     await expect(discordCapabilityCards.rewrite(handle, draft)).resolves.toBe('followed-up')
+    expect(conn.postChrome).toHaveBeenCalledWith('T1', expect.any(String), { keyboard: [], noMentions: true })
   })
 
   it('tells a clicker privately through their own click, and judges them by the bot flag it carried', async () => {

@@ -10770,6 +10770,8 @@ export class Daemon {
     origin: CapabilityOrigin,
     model: CapabilityCardModel
   ): Promise<{ channel: string; thread: string | null; ts: string } | undefined> {
+    // The relay and console that decode the inline events ship with a v2 CP; before that the agent shares the link instead.
+    if (this.cpClient?.supportsServerFeature?.(CAPABILITY_REQUESTS_V2_FEATURE) !== true) return undefined
     const p = [...this.pending.values()].find((pending) => pending.plan.sessionKey === origin.sessionKey)
     const wc = p?.webchat
     if (!p || !wc) return undefined

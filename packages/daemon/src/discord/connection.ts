@@ -415,7 +415,6 @@ export class DiscordConnection implements PlatformConnection {
     }
   }
 
-  /** Route one click on a permission card: acked first, and a refusal told to the clicker alone. */
   /** A capability card's Decline: judged by core with this click registered, its private lines sent as ephemeral follow-ups. */
   private async onCapabilityDeclineInteraction(
     interaction: ButtonInteraction,
@@ -433,6 +432,7 @@ export class DiscordConnection implements PlatformConnection {
     for (const content of told) await interaction.followUp({ content, flags: MessageFlags.Ephemeral }).catch(() => {})
   }
 
+  /** Route one click on a permission card: acked first, and a refusal told to the clicker alone. */
   private async onApprovalInteraction(
     interaction: ButtonInteraction,
     approval: { requestId: string; option: number }
@@ -790,7 +790,7 @@ export class DiscordConnection implements PlatformConnection {
   async postChrome(
     channel: string,
     text: string,
-    opts: { threadTs?: string; keyboard?: DiscordComponents; sessionKey?: string } = {}
+    opts: { threadTs?: string; keyboard?: DiscordComponents; sessionKey?: string; noMentions?: boolean } = {}
   ): Promise<string | undefined> {
     const target = this.replyTarget(channel, opts.threadTs)
     return this.queue.enqueue(async () => {
@@ -803,6 +803,8 @@ export class DiscordConnection implements PlatformConnection {
         }
         const payload: SendPayload = { content: chunkForDiscord(text)[0] ?? '' }
         if (opts.keyboard) payload.components = opts.keyboard
+        // Text a model or a person wrote must not be able to ping anyone.
+        if (opts.noMentions) payload.allowedMentions = { parse: [] }
         const sent = await ch.send(payload)
         if (sent && opts.sessionKey) this.statusKeys.set(`${target}:${sent.id}`, opts.sessionKey)
         await this.postPermissionUpdateNotice(target, ch)
@@ -822,7 +824,7 @@ export class DiscordConnection implements PlatformConnection {
     channel: string,
     messageId: string,
     text: string,
-    opts: { threadTs?: string; keyboard?: DiscordComponents } = {}
+    opts: { threadTs?: string; keyboard?: DiscordComponents; noMentions?: boolean } = {}
   ): Promise<boolean> {
     const target = this.replyTarget(channel, opts.threadTs)
     return await this.queue.enqueue(async () => {
@@ -836,6 +838,7 @@ export class DiscordConnection implements PlatformConnection {
         const msg = await ch.messages.fetch(messageId)
         const payload: SendPayload = { content: chunkForDiscord(text)[0] ?? '' }
         if (opts.keyboard) payload.components = opts.keyboard
+        if (opts.noMentions) payload.allowedMentions = { parse: [] }
         await msg.edit(payload)
         await this.postPermissionUpdateNotice(target, ch)
         return true

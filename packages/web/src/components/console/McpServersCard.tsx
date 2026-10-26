@@ -639,16 +639,19 @@ export function EditMcpProviderModal({
   const [url, setUrl] = useState(provider.url)
   // Start empty: the stored values are never returned, so a blank editor means
   // "keep the current headers". Adding rows REPLACES the whole set on save.
+  // Header names are case-insensitive: a stored `x-api-key` is the requested `X-Api-Key`, kept as stored.
+  const isRequested = (name: string) => !!requestedHeader && name.trim().toLowerCase() === requestedHeader.toLowerCase()
+  const requestedName = provider.headerNames.find(isRequested) ?? requestedHeader
   const [headers, setHeaders] = useState<HeaderRow[]>(() =>
-    requestedHeader
+    requestedName
       ? [
-          { name: requestedHeader, value: '' },
-          ...provider.headerNames.filter((n) => n !== requestedHeader).map((n) => ({ name: n, value: '' }))
+          { name: requestedName, value: '' },
+          ...provider.headerNames.filter((n) => !isRequested(n)).map((n) => ({ name: n, value: '' }))
         ]
       : []
   )
   const [replaceHeaders, setReplaceHeaders] = useState(requestedHeader !== undefined)
-  const otherHeaders = requestedHeader ? provider.headerNames.filter((n) => n !== requestedHeader) : []
+  const otherHeaders = requestedHeader ? provider.headerNames.filter((n) => !isRequested(n)) : []
   const [ui, setUi] = useState(provider.ui)
   const [sharing, setSharing] = useState<SharingValue>({
     visibility: provider.visibility,
@@ -661,7 +664,7 @@ export function EditMcpProviderModal({
   // A requested header is the point of this edit, and the save replaces the set: every kept row needs its value, so dropping one is removing its row.
   const requestedFilled =
     !requestedHeader ||
-    (headers.some((r) => r.name.trim() === requestedHeader && r.value.length > 0) &&
+    (headers.some((r) => isRequested(r.name) && r.value.length > 0) &&
       headers.every((r) => !r.name.trim() || r.value.length > 0))
   const valid = !!url.trim() && requestedFilled
 

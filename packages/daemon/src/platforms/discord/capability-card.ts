@@ -34,8 +34,8 @@ type CapabilityCardConnection = Pick<
 
 const conn = (c: unknown): CapabilityCardConnection => c as CapabilityCardConnection
 
-/** Agent- and person-authored words, with Discord's markdown and link syntax defused. */
-const md = (text: string, cap: number): string => defuseNoticeText(clampTo(text, cap), 'markdown')
+/** Agent- and person-authored words with links defused; backticks go first so none can unpair the spans that defusing adds. */
+const md = (text: string, cap: number): string => defuseNoticeText(clampTo(text, cap).replace(/`/g, "'"), 'markdown')
 
 /** A pending card: what was asked, the reason, who asked, then Open and Decline. */
 export function buildDiscordCapabilityCard(model: CapabilityCardModel): DiscordCapabilityDraft {
@@ -77,12 +77,14 @@ export const discordCapabilityCards: CapabilityCardFacet = {
     const d = draft as DiscordCapabilityDraft
     // A Discord thread is a channel of its own, so the card lands, and is edited, there.
     const channel = turn.plan.thread || turn.plan.channel
-    return await host.postCardSerialized(turn, (c) => conn(c).postChrome(channel, d.text, { keyboard: d.components }))
+    return await host.postCardSerialized(turn, (c) =>
+      conn(c).postChrome(channel, d.text, { keyboard: d.components, noMentions: true })
+    )
   },
 
   async post(c: unknown, place: CapabilityCardPlace, draft: CapabilityCardDraft): Promise<string | undefined> {
     const d = draft as DiscordCapabilityDraft
-    return await conn(c).postChrome(place.thread || place.channel, d.text, { keyboard: d.components })
+    return await conn(c).postChrome(place.thread || place.channel, d.text, { keyboard: d.components, noMentions: true })
   },
 
   async rewrite(
@@ -92,12 +94,12 @@ export const discordCapabilityCards: CapabilityCardFacet = {
     const d = draft as DiscordCapabilityDraft
     const channel = handle.thread || handle.channel
     const edited = await conn(handle.conn)
-      .updateMessage(channel, handle.ts, d.text, { keyboard: d.components })
+      .updateMessage(channel, handle.ts, d.text, { keyboard: d.components, noMentions: true })
       .catch(() => false)
     if (edited) return 'edited'
     // A card Discord will not edit (deleted) is answered beside it instead.
     const posted = await conn(handle.conn)
-      .postChrome(channel, d.text, { keyboard: d.components })
+      .postChrome(channel, d.text, { keyboard: d.components, noMentions: true })
       .catch(() => undefined)
     return posted ? 'followed-up' : 'failed'
   },

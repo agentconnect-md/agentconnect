@@ -138,4 +138,18 @@ describe('a header a capability request asks for', () => {
     ])
     expect(onSaved).toHaveBeenCalledTimes(1)
   })
+
+  it('treats a stored header of another case as the requested one, never a second row', () => {
+    act(() =>
+      root.render(
+        <EditMcpProviderModal
+          provider={{ ...PROVIDER, headerNames: ['x-api-key', 'X-Org'] }}
+          requestedHeader="X-Api-Key"
+          onClose={() => {}}
+        />
+      )
+    )
+    const names = [...host.querySelectorAll<HTMLInputElement>('input[aria-label="Header name"]')].map((i) => i.value)
+    expect(names).toEqual(['x-api-key', 'X-Org'])
+  })
 })
