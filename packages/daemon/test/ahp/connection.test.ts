@@ -391,5 +391,7 @@ describe('AHP recovery and authorization boundary', () => {
     )
     expect(custom).toHaveBeenCalledOnce()
     expect(JSON.parse(current.frames.at(-1)!)).toMatchObject({ id: 91, error: { code: -32601 } })
+    await current.connection.receive(JSON.stringify({ jsonrpc: '2.0', id: 92, method: 'getNetworkDiagnosticsInfo' }))
+    expect(JSON.parse(current.frames.at(-1)!)).toMatchObject({ id: 92, error: { code: -32601 } })
   })
 })
