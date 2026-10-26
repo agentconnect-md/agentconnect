@@ -46,7 +46,8 @@ function globalBinIsThis(f: InvocationFacts): boolean {
 export function detectInvocation(f: InvocationFacts): string {
   if (/[\\/]_npx[\\/]/.test(f.cliEntry)) {
     const tag = f.version.includes('-rc.') ? '@rc' : ''
-    return `npx -y ${PACKAGE}${tag}`
+    // Windows PowerShell reads a bare leading `@` as splatting; cmd reads the quotes the same way.
+    return f.platform === 'win32' ? `npx -y "${PACKAGE}${tag}"` : `npx -y ${PACKAGE}${tag}`
   }
   if (globalBinIsThis(f)) return BIN
   return `node ${shellArg(f.cliEntry)}`

@@ -338,7 +338,7 @@ describe('ClusterDetailView', () => {
     act(() => root.unmount())
     host.remove()
 
-    expect(opened).toContain('npx -y @agentconnect.md/cli auth --runtime claude-acp')
+    expect(opened).toContain('npx -y "@agentconnect.md/cli" auth --runtime claude-acp')
   })
 
   it('offers an owner a runtime refresh when the cluster’s members take requests', () => {

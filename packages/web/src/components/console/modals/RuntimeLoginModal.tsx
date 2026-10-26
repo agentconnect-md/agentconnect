@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
+import { npxCommand } from '@/lib/npx'
 
 /** What the "Login required" warning opens on: the runtime it is about, and where it was seen. */
 export interface RuntimeLoginTarget {
@@ -18,7 +19,7 @@ export interface RuntimeLoginTarget {
 /** The login command for one runtime, run on the daemon's own host. `auth` is not CLI-owned, so
  *  the unified CLI delegates it verbatim to the active daemon with the terminal attached. */
 export function runtimeLoginCommand(runtimeId: string): string {
-  return `npx -y @agentconnect.md/cli auth --runtime ${runtimeId}`
+  return npxCommand('@agentconnect.md/cli', `auth --runtime ${runtimeId}`)
 }
 
 /**

@@ -16,6 +16,8 @@
  * versioned CLI package, so their single command retains an explicit install
  * prefix before run/login.
  */
+import { npxCommand } from '@/lib/npx'
+
 const DAEMON_PKG = '@agentconnect.md/daemon'
 const CLI_PKG = '@agentconnect.md/cli'
 
@@ -44,8 +46,8 @@ export function daemonCommands(command: string): DaemonCommands {
   const rest = parsed?.rest ?? command.replace(new RegExp(`\\b${DAEMON_PKG.replace(/[.]/g, '\\.')}(@\\S+)?`), 'run')
   const tag = parsed?.tag
   const cli = cliPkgSpec(tag)
-  const run = `npx -y ${cli} ${rest}`
-  const login = `npx -y ${cli} ${rest.replace(/^run\b/, 'login')}`
+  const run = npxCommand(cli, rest)
+  const login = npxCommand(cli, rest.replace(/^run\b/, 'login'))
   const install = exactInstallPrefix(cli, tag)
 
   return {
@@ -66,5 +68,5 @@ function cliPkgSpec(tag?: string): string {
  *  still needs one explicit install before the connect command. */
 function exactInstallPrefix(cli: string, tag?: string): string | null {
   if (!tag || tag === 'stable' || tag === 'rc') return null
-  return `npx -y ${cli} install ${tag}`
+  return npxCommand(cli, `install ${tag}`)
 }
