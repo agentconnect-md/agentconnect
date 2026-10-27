@@ -278,8 +278,9 @@ access grants from the previous generation.
 
 The access-grant lifetime is 30 minutes, measured from issuance or from the last
 renewal. It has no refresh token. When a turn starts within five minutes of the
-active grant's expiry, the daemon sends `webchat/mcp-grant/renew` with the exact
-grant tuple. Under the same live authorization as issuance, the CP extends that
+active grant's expiry, or the daemon's once-a-minute sweep finds an open session's
+grant inside that window, the daemon sends `webchat/mcp-grant/renew` with the exact
+grant tuple. The sweep and a turn start share one in-flight renewal. Under the same live authorization as issuance, the CP extends that
 grant to 30 minutes from now, never past its logical authority's expiry and never
 earlier than it already was. The reply `webchat/mcp-grant/renewed` carries the new
 `expiresAt`. The token and revision stay the same, so the runtime keeps a valid
@@ -295,9 +296,12 @@ for a different tuple, the daemon falls back to issuing a replacement grant and
 reloading the session. A runtime that cannot replace a descriptor then receives a
 bounded authorization error, and rebuilding the ACP session obtains a fresh grant.
 
-An idle conversation's credential still lapses 30 minutes after its last renewal,
-and every revocation below still applies immediately. A conversation that stays
-active keeps one credential until its logical authority expires.
+The sweep covers the gaps a turn-start check misses: a pause between turns that
+skips over the renewal window, and a long turn, such as one waiting on an approval,
+that outlives the grant. A session that is closed, including by the idle TTL, is
+no longer renewed; its grant is revoked with it. A session that stays open keeps one
+credential until its logical authority expires, and every revocation below still
+applies immediately.
 
 Before implementation ships, integration tests must establish whether each curated
 runtime can install and replace the standard descriptor safely. No AgentConnect-
