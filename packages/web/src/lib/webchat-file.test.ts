@@ -5,7 +5,14 @@ import { TransferFileName, TransferMimeType } from '@agentconnect.md/protocol'
 const reserve = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/api', () => ({ reserveFileUpload: reserve }))
 
-import { fileSha256, filesMarker, transferFileName, transferMimeType, uploadWebchatFile } from './webchat-file'
+import {
+  fileSha256,
+  filesMarker,
+  splitFilesMarker,
+  transferFileName,
+  transferMimeType,
+  uploadWebchatFile
+} from './webchat-file'
 
 afterEach(() => reserve.mockReset())
 
@@ -34,6 +41,21 @@ describe('webchat file names and types', () => {
       ])
     ).toBe('[attached: a.pdf (application/pdf), b.zip (application/zip)]')
     expect(filesMarker([])).toBe('')
+  })
+
+  it('splits the marker back into the caption and its files', () => {
+    const files = [
+      { name: 'run me, (v2).sh', mimeType: 'text/x-sh' },
+      { name: 'b.zip', mimeType: 'application/zip' }
+    ]
+    expect(splitFilesMarker(`hello\nworld\n${filesMarker(files)}`)).toEqual({ text: 'hello\nworld', files })
+    expect(splitFilesMarker(filesMarker(files))).toEqual({ text: '', files })
+  })
+
+  it('leaves text without a well-formed trailing marker alone', () => {
+    for (const text of ['plain', '[attached: a.pdf (application/pdf)] then more', 'x\n[attached: nope]']) {
+      expect(splitFilesMarker(text)).toEqual({ text, files: [] })
+    }
   })
 })
 
