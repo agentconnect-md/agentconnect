@@ -91,7 +91,7 @@ async function trickleBrowser(
   rtc: RtcSessions,
   principal: ViewerPrincipal,
   stunUrls: string[]
-): Promise<{ offerSdp: string; offerId: string; pc: RTCPeerConnection; channel: RTCDataChannel }> {
+): Promise<{ offerSdp: string; pc: RTCPeerConnection; channel: RTCDataChannel }> {
   const offer = await rtc.offer(principal, { transport: 'stun' })
   const pc = new RTCPeerConnection({ iceServers: stunUrls.map((urls) => ({ urls })), iceUseIpv6: false })
   opened.push(() => pc.close())
@@ -129,7 +129,7 @@ async function trickleBrowser(
     })
   })
   await sent
-  return { offerSdp: offer.sdp, offerId: offer.id, pc, channel: await channel }
+  return { offerSdp: offer.sdp, pc, channel: await channel }
 }
 
 describe('viewer WebRTC', () => {
@@ -176,14 +176,16 @@ describe('viewer WebRTC', () => {
     const stunUrls = [`stun:127.0.0.1:${stun.port}`]
     const { rtc, messages } = sessions()
     const principal: ViewerPrincipal = { client: 'console:u1', control: true, stunUrls }
-    const { offerSdp, channel, offerId } = await trickleBrowser(rtc, principal, stunUrls)
+    const { offerSdp, channel, pc } = await trickleBrowser(rtc, principal, stunUrls)
     // Full ICE, not ICE-lite: the desktop runs its own connectivity checks.
     expect(offerSdp).not.toMatch(/a=ice-lite/)
     // The desktop's server-reflexive address reaches the browser by trickle, after the desktop has sent to the browser.
     expect(offerSdp).not.toMatch(/typ srflx/)
-    expect(rtc.candidates(principal.client, offerId, 0).candidates.map((c) => c.candidate)).toContainEqual(
-      expect.stringMatching(/typ srflx/)
-    )
+    expect(offerSdp).not.toMatch(/a=end-of-candidates/)
+    // …and the browser takes it, rather than dropping it as arriving after the end of candidates.
+    await expect
+      .poll(() => pc.iceTransports[0]?.connection.remoteCandidates.map((c) => c.type), { timeout: 5000 })
+      .toContain('srflx')
     if (channel.readyState !== 'open') await new Promise((resolve) => channel.stateChanged.subscribe(resolve))
     const reply = new Promise((resolve) => channel.onMessage.subscribe((data) => resolve(JSON.parse(data.toString()))))
     channel.send(JSON.stringify({ seq: 1, input: { type: 'key', keys: ['escape'] } }))

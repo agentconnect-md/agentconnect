@@ -55,7 +55,7 @@ describe('iceReport', () => {
 })
 
 describe('withoutReflexive', () => {
-  it('drops only the server-reflexive candidates', () => {
+  it('drops the server-reflexive candidates and the end-of-candidates marker', () => {
     const sdp = [
       'v=0',
       'a=candidate:1 1 udp 2130706431 10.0.0.5 40000 typ host',
@@ -66,7 +66,6 @@ describe('withoutReflexive', () => {
     expect(withoutReflexive(sdp).split('\r\n')).toEqual([
       'v=0',
       'a=candidate:1 1 udp 2130706431 10.0.0.5 40000 typ host',
-      'a=end-of-candidates',
       ''
     ])
   })

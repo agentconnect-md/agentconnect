@@ -354,11 +354,13 @@ const isPublicIpv4 = (line: string): boolean =>
   ['srflx', 'prflx', 'relay'].includes(candidateType(line) ?? '') &&
   /^\d+\.\d+\.\d+\.\d+$/.test(line.split(' ')[4] ?? '')
 
-/** Drops server-reflexive candidates from an offer, so the browser cannot knock on the desktop's NAT before the desktop has sent. */
+/** A punched offer without its server-reflexive candidates or end-of-candidates, so they can still trickle in after the desktop has sent. */
 export const withoutReflexive = (sdp: string): string =>
   sdp
     .split('\r\n')
-    .filter((line) => !line.startsWith('a=candidate:') || candidateType(line) !== 'srflx')
+    .filter(
+      (line) => line !== 'a=end-of-candidates' && !(line.startsWith('a=candidate:') && candidateType(line) === 'srflx')
+    )
     .join('\r\n')
 
 // Drops host candidates for interface addresses (e.g. a container IP) that a NATed browser cannot reach.
