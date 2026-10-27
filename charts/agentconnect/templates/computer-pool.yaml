@@ -97,7 +97,7 @@ spec:
             - name: shm
               mountPath: /dev/shm
       volumes:
-        # Firefox needs more shared memory than the runtime's 64 MiB default.
+        # Chromium needs more shared memory than the runtime's 64 MiB default.
         - name: shm
           emptyDir:
             medium: Memory

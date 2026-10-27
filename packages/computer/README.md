@@ -28,7 +28,7 @@ published with each release too (see [Run in Docker](#run-in-docker)).
 - `setup` / `doctor` on macOS, Linux (X11 and GNOME Wayland) and Windows; a macOS LaunchAgent
   (`.app` mode), a Linux systemd user unit, and a Windows service that runs the daemon as SYSTEM in
   the signed-in session, so UAC prompts can be answered as the Computer's setting says.
-- A Docker image (Xvfb + Xfce + Firefox ESR) that registers from its environment, amd64 and arm64.
+- A Docker image (Xvfb + Xfce + Chromium + LibreOffice) that registers from its environment, amd64 and arm64.
 
 **Limits**
 
@@ -268,11 +268,12 @@ static ffmpeg (6.0, libx264).
 ## Run in Docker
 
 The `computer` image (`ghcr.io/agentconnect-md/computer`, amd64 and arm64, published with each release) is a
-Debian trixie desktop with Xvfb, a lean Xfce, Firefox ESR, Noto CJK fonts, the pinned Node.js, and the daemon
+Debian trixie desktop with Xvfb, a lean Xfce, Chromium, LibreOffice, Noto CJK fonts, the pinned Node.js (with npm),
+Debian's Python, Go and Rust toolchains, and the daemon
 with Cua Driver preinstalled. ffmpeg (GPL) is not in the image: the daemon downloads the pinned, sha256-checked
 build on first start into the volume, and the viewer polls screenshots until it is there. The entrypoint starts Xvfb on `:1` (`RESOLUTION`, default
-`1600x900x24`), a session D-Bus, Xfce and a maximized browser, then runs `run` in the foreground as user
-`desktop`. The browser is restarted when it exits or crashes (`BROWSER`, default `firefox-esr`; `none` turns it
+`1280x800x24`), a session D-Bus, Xfce and a maximized browser, then runs `run` in the foreground as user
+`desktop`. The browser is restarted when it exits or crashes (`BROWSER`, default `chromium`; `none` turns it
 off; `BROWSER_URL` opens a page). `docker stop` stops the daemon, closes the browser, then the session, with exit
 code 0. `/home/computer` is a volume: the Computer key, config, audit log, and the browser profile survive a new
 container. A `HEALTHCHECK` runs `doctor --json --daemon` inside the running daemon.

@@ -470,23 +470,23 @@ desktop daemon ◀────────────────────�
 Where there is no physical desktop (a server, a NAS, Kubernetes), a "Linux desktop with a browser" is a container
 image running **the same desktop daemon**. The prototype was built and run on a Mac with OrbStack:
 
-- **Image**: Debian trixie-slim, Xvfb, a lean Xfce, Firefox ESR, Noto CJK fonts, pinned Node 24, and the desktop
-  daemon; Cua Driver is downloaded and checksummed at build time. ffmpeg (GPL) is not in the published image: the
+- **Image**: Debian trixie-slim, Xvfb, a lean Xfce, Chromium, LibreOffice, Noto CJK fonts, Debian's Python, Go and
+  Rust toolchains, pinned Node 24, and the desktop daemon; Cua Driver is downloaded and checksummed at build time. ffmpeg (GPL) is not in the published image: the
   daemon downloads the pinned build on first start into the volume, as on desktops (§7.4, §11). It runs as the non-root user `computer`,
   without systemd. `/home/computer` is a volume holding the token, config, audit log, and browser profile. The image is
   1.26 GB and builds in about 100 s.
-- **Entrypoint**: starts Xvfb (`RESOLUTION`, default `1600x900x24`), a session D-Bus, and Xfce, then runs the daemon in
-  the foreground. `docker stop` stops the daemon, closes Firefox gracefully (so no profile lock is left), then ends
+- **Entrypoint**: starts Xvfb (`RESOLUTION`, default `1280x800x24`, the §5.3 screenshot size so agents see it 1:1), a session D-Bus, and Xfce, then runs the daemon in
+  the foreground. `docker stop` stops the daemon, closes Chromium gracefully (so it saves its session), then ends
   the session, with exit code 0 in under 0.9 s. Xvfb must keep its local socket (`-nolisten tcp`, never
   `-nolisten unix`), and must not reset when its last client leaves (`-noreset`): `dbus-launch` connects and leaves
   before Xfce does, and a reset at that moment drops Xfce's connection mid-handshake ("Cannot open display").
 - **Published image [implemented]**: `ghcr.io/<owner>/computer`, built from `packages/computer/docker/Dockerfile`
   (context: the repository root) for `linux/amd64` and `linux/arm64` with every release, through the same
   `docker-bake.hcl` target, effective-version and alias steps as the other images. The bundle stage runs once on the
-  build platform. The image leaves out Mesa's software GL stack (Xvfb runs without GLX and Firefox renders in
-  software), the CJK serif faces, npm, ffmpeg and the driver's unused SDK library: 864 MiB on arm64 and about 860 MiB on amd64
-  (uncompressed). The PR job `Desktop image` builds both arches natively and runs `docker/smoke.sh` on them: size
-  under 1 GiB, healthy, every `doctor` check ok once ffmpeg is downloaded, a maximized browser, registration against
+  build platform. The image leaves out Mesa's GL drivers (Xvfb runs without GLX and Chromium and LibreOffice render in
+  software), the CJK serif faces, Go's test suite, gcc's sanitizers, ffmpeg and the driver's unused SDK library:
+  about 2.2 GiB uncompressed on amd64, 893 MB compressed. The PR job `Desktop image` builds both arches natively and runs `docker/smoke.sh` on them: size
+  under 2.5 GiB, healthy, every `doctor` check ok once ffmpeg is downloaded, a maximized browser, registration against
   a stub Control Plane (one exchange, the key kept on restart, the token absent from the log and from the session's
   and browser's environments), and `docker stop` exiting 0.
 - **Registration [implemented]**: `run` spends `AGENTCONNECT_REGISTER_TOKEN` (or the file named by
@@ -502,10 +502,22 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   `xvfb`, and `computer_list` reports the name, OS release, session, isolation and the driver's startup screen size
   before the first capture. The Computers API the console lists from showed a `docker run` registered this way as
   online with `isolation: 'container'`, `session: 'xvfb'`, one 1600×900 display and all nine `doctor` checks ok.
-- **Browser [implemented]**: the entrypoint keeps one Firefox ESR window open and maximized (`wmctrl`), restarting it
-  with a 2–30 s backoff when it exits or crashes; prefs turn off the first-run, crash and safe-mode prompts that would
-  block an unattended restart. While another instance holds the profile (Firefox restarting itself, or one an agent
-  started), the supervisor waits for it instead of opening a second window. `BROWSER=none` turns it off.
+- **Browser [implemented]**: the entrypoint keeps one Chromium window open and maximized (`wmctrl`), restarting it
+  with a 2–30 s backoff when it exits or crashes; flags in `/etc/chromium.d` (sourced by Debian's launcher on every
+  start, an agent's included) and a managed policy turn off the first-run, default-browser, crash-restore, sign-in and
+  translate prompts that would block an unattended restart, and restore the last session. The profile lock names the
+  hostname, which a woken pod no longer has, so the entrypoint removes it before anything starts. While another
+  instance holds the profile (one an agent started), the supervisor waits for it instead of opening a second window.
+  `BROWSER=none` turns it off.
+- **Browser sandbox [risk]**: Chromium runs with `--no-sandbox`. Docker's default seccomp profile and Kubernetes'
+  `RuntimeDefault` refuse the user namespaces its sandbox needs, and `allowPrivilegeEscalation: false` rules out the
+  setuid helper, so the container is the only boundary around a renderer: a compromised renderer can read the home
+  volume, the Computer key included. A seccomp profile that admits `CLONE_NEWUSER` for the desktop pod would restore it.
+- **Desktop and tools [implemented]**: the image's Xfce defaults are one centered bottom dock launching Chromium,
+  Thunar, the terminal and LibreOffice, a dark backdrop, and no desktop icons; a home volume that already holds Xfce
+  settings keeps its own. The terminal has Python 3 (pip, venv), Node.js (npm; pnpm and yarn through corepack), Go
+  (`GOTOOLCHAIN=auto`), Rust (cargo), git, curl, jq and poppler-utils. `npm -g`, `go install` and `cargo install` land
+  in the home volume, which is on `PATH`; there is no root, so nothing is installed with apt at run time.
 - **Health [implemented]**: `HEALTHCHECK` runs `doctor --json --daemon`, which asks the running daemon and fails when
   none answers or a required check fails, a revoked key included.
 - **WebRTC and NAT**: by default the daemon advertises the local address the browser reached it on, which in bridge
@@ -537,7 +549,7 @@ docker run -d --name computer --hostname "$NAME" --shm-size=1g -v computer-home:
 
 The prototype's gaps (container IP in the output, a token readable only from `docker logs`, no CP registration, an
 empty `display`, an unmanaged browser, an unpublished 1.26 GB image) are closed as above. Still open: no audio or
-clipboard, no Chromium variant, and the source obligations of the Debian packages in the published image (§11). ffmpeg
+clipboard, and the source obligations of the Debian packages in the published image (§11). ffmpeg
 is downloaded on first start rather than preinstalled until counsel answers its distribution question (§14.8).
 
 **Self-hosted containers [implemented]**: `packages/computer/docker/compose.yaml` (settings in `compose.env.example`
@@ -554,7 +566,7 @@ Control Plane and relay on another host: registration from the console's token, 
 and the console viewer over each of Direct, TURN relay and Screenshots.
 
 **Positioning**: containers start in seconds, are isolated, can hand each task a fresh desktop, and need no OS grants,
-which suits managed computers and multi-tenancy. The costs are an image of about 0.9 GB, configuring the public address
+which suits managed computers and multi-tenancy. The costs are an image of about 2.2 GiB (under 1 GB to pull), configuring the public address
 and UDP ports, and no access to the user's own apps and sessions (exactly what a self-hosted computer provides). Use a
 VM when a GPU, real Xorg, or a long-lived personal desktop is needed. A user can also run the image on their own server;
 it is then a **self-hosted computer with isolation**.
@@ -1276,15 +1288,15 @@ and every `computer/policy`.
 
 ### 11.1 Dependencies
 
-| Component                            | License                    | Use                                                            | Distribution                                                                                                                                                                      |
-| ------------------------------------ | -------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cua Driver (`libs/cua-driver`)       | MIT                        | Input, screenshots, accessibility on three OSes, GNOME Wayland | Pinned download, sha256-checked                                                                                                                                                   |
-| werift                               | MIT                        | WebRTC (pure TypeScript)                                       | In the bundle                                                                                                                                                                     |
-| Node.js (SEA)                        | MIT                        | Runtime inside the macOS app and the container                 | In the app / image                                                                                                                                                                |
-| ffmpeg (with libx264)                | GPL                        | Viewer encoding                                                | **Not bundled**: downloaded from a third-party build and checked on first run, in the published container image too (into its volume); preinstalling it waits for counsel [legal] |
-| GStreamer, PipeWire, python3-gi      | LGPL and others            | GNOME Wayland capture helper                                   | System packages                                                                                                                                                                   |
-| libei                                | MIT                        | GNOME Wayland input (through Cua)                              | System component                                                                                                                                                                  |
-| Xvfb, Xfce, Firefox ESR, Debian base | MIT / GPL / MPL and others | Container image                                                | Distribution packages in the image; source obligations when the image is published [legal]                                                                                        |
+| Component                                                  | License                          | Use                                                            | Distribution                                                                                                                                                                      |
+| ---------------------------------------------------------- | -------------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cua Driver (`libs/cua-driver`)                             | MIT                              | Input, screenshots, accessibility on three OSes, GNOME Wayland | Pinned download, sha256-checked                                                                                                                                                   |
+| werift                                                     | MIT                              | WebRTC (pure TypeScript)                                       | In the bundle                                                                                                                                                                     |
+| Node.js (SEA)                                              | MIT                              | Runtime inside the macOS app and the container                 | In the app / image                                                                                                                                                                |
+| ffmpeg (with libx264)                                      | GPL                              | Viewer encoding                                                | **Not bundled**: downloaded from a third-party build and checked on first run, in the published container image too (into its volume); preinstalling it waits for counsel [legal] |
+| GStreamer, PipeWire, python3-gi                            | LGPL and others                  | GNOME Wayland capture helper                                   | System packages                                                                                                                                                                   |
+| libei                                                      | MIT                              | GNOME Wayland input (through Cua)                              | System component                                                                                                                                                                  |
+| Xvfb, Xfce, Chromium, LibreOffice, toolchains, Debian base | MIT / GPL / MPL / BSD and others | Container image                                                | Distribution packages in the image; source obligations when the image is published [legal]                                                                                        |
 
 xdotool and wayvnc are no longer needed. Never used: `cua-spacesd`, the Cua HTML5 viewer and streaming crates
 (FSL-1.1-MIT); `cua-perception` (AGPL models); ydotool, RustDesk (AGPL-3.0); Sunshine (GPL-3.0); the official nut.js
@@ -1444,11 +1456,11 @@ register as Computers that agents use. M3 and M4 are independent and can run in 
 Right after M1. Image productization and self-hosted containers depend only on the Linux side (M1 item 6) and can run
 alongside the second half of M1; managed computers depend on M1's CP integration and data plane.
 
-1. **Productize the image** (the §3.8 gaps) [implemented, except the optional Chromium variant]: register through an environment variable or secret file
+1. **Productize the image** (the §3.8 gaps) [implemented]: register through an environment variable or secret file
    (`AGENTCONNECT_REGISTER_TOKEN`) and never print the token; use the public address (`PUBLIC_URL` / `RTC_ADDRESS`) in
    output and candidates; fill in `display` and other capabilities, with `session: 'xvfb'` and `isolation: 'container'`;
    maximize the browser and restart it if it crashes; a `HEALTHCHECK` running `doctor --json`; multi-arch amd64 / arm64
-   builds published to a registry; a smaller image (target under 1 GB); an optional Chromium variant.
+   builds published to a registry; an image under 2.5 GiB that carries Chromium, LibreOffice and the common toolchains.
 2. **Self-hosted containers** [implemented]: a docker compose example; a user runs it on their own server and it registers as a
    Computer with `kind: 'self-hosted'`, `isolation: 'container'`. See the self-hosted block in §3.8.
 3. **Linux managed computers** [#3199 implemented, the rest design]: `kind: 'managed'`; pods in the Kubernetes pool (reusing
@@ -1674,9 +1686,9 @@ its managed computers' browser traffic leaves:
 
 The Control Plane hands a managed desktop its organization's egress on `computer/auth/ok` (`egress`, read tolerantly
 by older desktops) and pushes a change with `computer/egress` to the desktops whose capabilities report `egress`;
-self-hosted Computers get none. In the desktop image, a managed pod sets `AGENTCONNECT_EGRESS_PORT` (7691): Firefox's
-autoconfig (`agentconnect.cfg`, read through `getenv`) locks its proxy to `127.0.0.1:<port>`, turns off DNS over HTTPS
-and keeps WebRTC to the proxy, and the desktop daemon serves an HTTP proxy there (`EgressForwarder`) that tunnels
+self-hosted Computers get none. In the desktop image, a managed pod sets `AGENTCONNECT_EGRESS_PORT` (7691): Chromium's
+launcher sources `/etc/chromium.d/agentconnect`, which reads the port and sets `--proxy-server=http://127.0.0.1:<port>`
+with `<-loopback>` (so loopback goes through it too) and keeps WebRTC to the proxy; host names resolve at the proxy, and the desktop daemon serves an HTTP proxy there (`EgressForwarder`) that tunnels
 `CONNECT` and forwards plain requests either straight out or through the organization's proxy with its credentials,
 which the browser never sees. Until the Control Plane names the egress the forwarder answers 503, so a desktop whose
 organization wants a proxy never goes out directly first; a desktop with no registration goes direct. A Control
@@ -1684,7 +1696,7 @@ Plane that cannot read a managed desktop's egress fails its auth (the desktop re
 desktop told `computer-egress-v1` never takes a missing egress as direct. The pod's NetworkPolicy admits TCP 443
 and the chart's `computerPool.egressPorts` (3128 and 8080 by default) for the proxy, to `computerPool.egressTo`
 only (public addresses by default, so the browser cannot reach in-cluster listeners on those ports).
-Limits: only the browser is bound to the proxy (other programs in the pod keep the pod's network); SOCKS proxies and
+Limits: only the browser started through `chromium` is bound to the proxy (other programs in the pod, and the binary run directly, keep the pod's network); SOCKS proxies and
 per-agent proxies are not offered; a proxy on another port needs `egressPorts`.
 
 ### 15.5 Quotas, metering and billing

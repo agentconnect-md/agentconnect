@@ -1,6 +1,7 @@
 # Run a desktop container as a Computer
 
-The `computer` image runs a Linux desktop (Xvfb, a lean Xfce and Firefox ESR) with the desktop daemon in a
+The `computer` image runs a Linux desktop (Xvfb, a lean Xfce, Chromium, LibreOffice, and Python, Node.js, Go and Rust
+toolchains) with the desktop daemon in a
 container on any server with Docker. It registers with your AgentConnect deployment as a **Computer** that
 your agents operate with the `computer_*` tools and that you watch and take over from the console. The console
 lists it as kind `self-hosted`, isolation `container`, session `xvfb`. The design is
@@ -13,7 +14,7 @@ own desktop; for that, add the desktop itself from **Computers → Add computer*
 ## What the server needs
 
 - Docker Engine with Compose v2, Docker Desktop or OrbStack, on `amd64` or `arm64`.
-- About 1 GB of disk for the image and up to 1 GB of memory for the desktop. Firefox needs the 1 GB `/dev/shm`
+- About 2 GB of disk for the image and 1–3 GB of memory for the desktop. Chromium needs the 1 GB `/dev/shm`
   the examples set.
 - **Outbound only.** The container dials out to the deployment and listens on nothing you have to publish:
 
@@ -86,8 +87,8 @@ once ffmpeg has downloaded, a few seconds after the first start.
 | `AGENTCONNECT_COMPUTER_NAME`       | the name when the console gave none; otherwise the hostname, `AGENTCONNECT_COMPUTER_HOSTNAME`                          |
 | `RTC_ADDRESS`                      | the public IP browsers reach this server on, for direct video                                                          |
 | `AGENTCONNECT_COMPUTER_RTC_PORTS`  | the UDP range published for direct video, `7700-7709` by default                                                       |
-| `AGENTCONNECT_COMPUTER_RESOLUTION` | the screen, `1600x900x24` by default                                                                                   |
-| `AGENTCONNECT_COMPUTER_BROWSER`    | the browser kept open and maximized, `firefox-esr`; `none` for none. `BROWSER_URL` is the page it opens                |
+| `AGENTCONNECT_COMPUTER_RESOLUTION` | the screen, `1280x800x24` by default, which agents' screenshots show 1:1                                               |
+| `AGENTCONNECT_COMPUTER_BROWSER`    | the browser kept open and maximized, `chromium`; `none` for none. `BROWSER_URL` is the page it opens                   |
 | `AGENTCONNECT_COMPUTER_PORT`       | the daemon's own port, on loopback only, `7681` by default                                                             |
 | `AGENTCONNECT_VERSION`             | the image tag; pin the version your Control Plane runs                                                                 |
 
@@ -100,7 +101,7 @@ A new Computer belongs to whoever created its token, and no agent may use it unt
 2. On the agent's **Tools** tab, turn on computer use and pick the Computer.
 
 The agent's next session has the `computer_*` tools. `computer_list` reports the Computer with
-`isolation: "container"` and `session: "xvfb"`, and Firefox is already open and maximized on it. The page's
+`isolation: "container"` and `session: "xvfb"`, and Chromium is already open and maximized on it. The page's
 activity lists what agents did, and a console **Stop** refuses every agent until you resume.
 
 ## Watch it from the console

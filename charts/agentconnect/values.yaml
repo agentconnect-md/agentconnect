@@ -429,7 +429,8 @@ computerPool:
   warmReplicas: 1
   # The port a desktop's pool bootstrap listens on; only daemon-pool members may reach it.
   bootstrapPort: 7690
-  resolution: 1600x900x24
+  # The screenshot size (computer-use.md §5.3), so agents see the screen 1:1.
+  resolution: 1280x800x24
   # The desktop's home (key, browser profile, files): kept while asleep, deleted with an ephemeral desktop.
   home:
     size: 5Gi

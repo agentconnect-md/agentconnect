@@ -16,9 +16,9 @@ services:
       # Or a file holding the token, such as the commented secret below: /run/secrets/register-token.
       - AGENTCONNECT_REGISTER_TOKEN_FILE
       - AGENTCONNECT_COMPUTER_NAME
-      - RESOLUTION=${AGENTCONNECT_COMPUTER_RESOLUTION:-1600x900x24}
+      - RESOLUTION=${AGENTCONNECT_COMPUTER_RESOLUTION:-1280x800x24}
       # `none` runs no browser; BROWSER_URL is the page it opens.
-      - BROWSER=${AGENTCONNECT_COMPUTER_BROWSER:-firefox-esr}
+      - BROWSER=${AGENTCONNECT_COMPUTER_BROWSER:-chromium}
       - BROWSER_URL
       # Direct viewer media: the public IP browsers reach this server on, offered with the UDP range published below.
       - RTC_ADDRESS
@@ -29,7 +29,7 @@ services:
     ports:
       # Same numbers on both sides, because the WebRTC candidates name them. TURN or screenshots cover a closed range.
       - ${AGENTCONNECT_COMPUTER_RTC_PORTS:-7700-7709}:${AGENTCONNECT_COMPUTER_RTC_PORTS:-7700-7709}/udp
-    # Firefox crashes with Docker's 64 MB default /dev/shm.
+    # Chromium's renderers outgrow Docker's 64 MB default /dev/shm.
     shm_size: 1g
     volumes:
       # The Computer key, config, audit log and browser profile; removing the volume unregisters this desktop.

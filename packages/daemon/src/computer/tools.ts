@@ -113,7 +113,7 @@ export const COMPUTER_TOOLS: readonly ToolDescriptor[] = [
   ),
   tool(
     'computer_launch',
-    'Launch an app by name (e.g. "firefox"), or on Windows by full .exe path. Takes the control lease.',
+    'Launch an app by name (e.g. "chromium"), or on Windows by full .exe path. Takes the control lease.',
     { app: { type: 'string', minLength: 1, maxLength: 512 } },
     ['app']
   ),
