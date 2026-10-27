@@ -1,13 +1,20 @@
 'use client'
 
-// How agents use a Computer once they have access (computer-use.md §4.1, §4.2): view or control, approvals and limits.
+// How agents use a Computer once they have access (computer-use.md §4.1, §4.2, §5.7): view or control, approvals, the command line, limits.
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import type { ComputerAdminPromptMode, ComputerPolicy } from '@agentconnect.md/protocol/computer'
 import { viewerPeerToPeerAllowed } from '@agentconnect.md/protocol/computer-viewer'
+import {
+  COMPUTER_FILE_ROOTS_MAX,
+  ComputerFileRoot,
+  computerCommandLine,
+  type ComputerFilesMode,
+  type ComputerShellMode
+} from '@agentconnect.md/protocol/computer-command-line'
 import { setComputerPolicy, type ComputerDto } from '@/lib/api'
 import { FieldSelect } from '@/components/console/FieldSelect'
-import { Button, Toggle } from '@/components/ui'
+import { Button, Icon, Toggle } from '@/components/ui'
 
 /** The policy fields the form edits; the rest (app lists, quiet hours) are kept as they are. */
 export interface PolicyDraft {
@@ -23,6 +30,11 @@ export interface PolicyDraft {
   leaseWaitSeconds: string
   /** Blank keeps the deployment's default. */
   screenshotRetentionDays: string
+  /** The effective command-line tier; each is stored only while it differs from the Computer's default. */
+  shell: ComputerShellMode
+  files: ComputerFilesMode
+  /** One path per line; blank means the home directory. */
+  fileRoots: string
 }
 
 /** Whose Computer the policy is for, which decides the peer-to-peer default. */
@@ -40,11 +52,13 @@ export function draftOf(policy: ComputerPolicy, owner: PolicyOwner = NO_OWNER): 
     leaseIdleSeconds: String(policy.leaseIdleSeconds),
     leaseMaxSeconds: String(policy.leaseMaxSeconds),
     leaseWaitSeconds: String(policy.leaseWaitSeconds),
-    screenshotRetentionDays: policy.screenshotRetentionDays === undefined ? '' : String(policy.screenshotRetentionDays)
+    screenshotRetentionDays: policy.screenshotRetentionDays === undefined ? '' : String(policy.screenshotRetentionDays),
+    ...computerCommandLine(policy, owner),
+    fileRoots: (policy.fileRoots ?? []).join('\n')
   }
 }
 
-export type PolicyProblem = 'idleRange' | 'maxRange' | 'idleAboveMax' | 'waitRange' | 'retentionRange'
+export type PolicyProblem = 'idleRange' | 'maxRange' | 'idleAboveMax' | 'waitRange' | 'retentionRange' | 'rootsInvalid'
 
 const wholeIn = (raw: string, min: number, max: number): number | null => {
   if (!/^\d+$/.test(raw.trim())) return null
@@ -68,9 +82,28 @@ export function policyFromDraft(
   const blank = draft.screenshotRetentionDays.trim() === ''
   const retention = blank ? undefined : wholeIn(draft.screenshotRetentionDays, 0, 3650)
   if (retention === null) return { problem: 'retentionRange' }
-  const { screenshotRetentionDays: _drop, viewerPeerToPeer: _p2p, ...rest } = base
+  const roots = draft.fileRoots
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (roots.length > COMPUTER_FILE_ROOTS_MAX || roots.some((root) => !ComputerFileRoot.safeParse(root).success))
+    return { problem: 'rootsInvalid' }
+  const {
+    screenshotRetentionDays: _drop,
+    viewerPeerToPeer: _p2p,
+    shell: _sh,
+    files: _fs,
+    fileRoots: _roots,
+    ...rest
+  } = base
   void _drop
   void _p2p
+  void _sh
+  void _fs
+  void _roots
+  // A view Computer offers no shell; a tier matching the default stays unset, so it follows the Computer's kind.
+  const tierDefault = computerCommandLine({ agentMode: draft.agentMode }, owner)
+  const shell = draft.agentMode === 'view' ? 'off' : draft.shell
   // Left unset while it matches the default, so sharing the Computer later still turns hole punching off.
   const p2pDefault = draft.viewerPeerToPeer === viewerPeerToPeerAllowed({ ...base, viewerPeerToPeer: undefined }, owner)
   return {
@@ -86,10 +119,16 @@ export function policyFromDraft(
       leaseIdleSeconds: idle,
       leaseMaxSeconds: max,
       leaseWaitSeconds: wait,
-      ...(retention === undefined ? {} : { screenshotRetentionDays: retention })
+      ...(retention === undefined ? {} : { screenshotRetentionDays: retention }),
+      ...(shell === tierDefault.shell ? {} : { shell }),
+      ...(draft.files === tierDefault.files ? {} : { files: draft.files }),
+      ...(roots.length > 0 ? { fileRoots: roots } : {})
     }
   }
 }
+
+const SHELL_OPTIONS: readonly ComputerShellMode[] = ['off', 'ask', 'on']
+const FILES_OPTIONS: readonly ComputerFilesMode[] = ['off', 'read', 'read-write']
 
 // What an unset mode means, as protocol's DEFAULT_COMPUTER_ADMIN_PROMPT_MODE says; that module is not bundler-safe here.
 export const DEFAULT_ADMIN_PROMPTS: ComputerAdminPromptMode = 'people'
@@ -184,6 +223,53 @@ export function ComputerPolicyCard({
             </Field>
           )}
         </div>
+      </Section>
+
+      <Section title={t('commandLineTitle')} hint={t('commandLineHint')}>
+        <div className="grid grid-cols-1 gap-3 desktop:grid-cols-2">
+          <Field label={t('shell')} detail={draft.agentMode === 'view' ? t('shellViewOnly') : t('shellHint')}>
+            <FieldSelect
+              ariaLabel={t('shell')}
+              value={draft.agentMode === 'view' ? 'off' : draft.shell}
+              disabled={!editable || draft.agentMode === 'view'}
+              options={SHELL_OPTIONS.map((mode) => ({ value: mode, label: t(`shellMode.${mode}`) }))}
+              onChange={(v) => set('shell', v)}
+            />
+          </Field>
+          <Field label={t('files')} detail={t('filesHint')}>
+            <FieldSelect
+              ariaLabel={t('files')}
+              value={draft.files}
+              disabled={!editable}
+              options={FILES_OPTIONS.map((mode) => ({ value: mode, label: t(`filesMode.${mode}`) }))}
+              onChange={(v) => set('files', v)}
+            />
+          </Field>
+          <Field label={t('fileRoots')} detail={t('fileRootsHint')}>
+            <textarea
+              className="inp min-h-[64px] font-mono"
+              aria-label={t('fileRoots')}
+              disabled={!editable || draft.files === 'off'}
+              placeholder="~"
+              value={draft.fileRoots}
+              onChange={(e) => set('fileRoots', e.target.value)}
+            />
+          </Field>
+        </div>
+        {computer.isolation === 'none' && draft.agentMode === 'control' && draft.shell !== 'off' && (
+          <p
+            role="note"
+            className="m-0 mt-3 flex items-start gap-2 rounded-md bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-normal leading-[1.5] text-[#9a6500]"
+          >
+            <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+            <span>{t('shellNoIsolation')}</span>
+          </p>
+        )}
+        {computer.capabilities.exec !== true && (draft.shell !== 'off' || draft.files !== 'off') && (
+          <p className="m-0 mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+            {t('commandLineUnsupported')}
+          </p>
+        )}
       </Section>
 
       <Section title={t('limitsTitle')}>

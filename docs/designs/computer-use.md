@@ -39,7 +39,7 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 17  | Development order                  | Linux desktop daemon (with the shared CP work) → Docker and the Linux managed computer → macOS → Windows (§14)                                                                                                                                    | Plan                                              |
 | 18  | Later                              | **Managed computers**: containers on Linux; the earlier VM desktop pool design for macOS and Windows (§15, appendices)                                                                                                                            | Design                                            |
 | 19  | Managed allocation and sharing     | Managed computers are `ephemeral` (per session), `per-agent` (one per agent, sleeps between uses) or `manual` (user-created, shared); shared Computers queue for the lease (§4.4, §15.1)                                                          | Design                                            |
-| 20  | Command line and files             | `computer_exec` and file tools implemented by the desktop daemon, not Cua's; policy `shell` / `files`, on for managed computers and off on a person's desktop; run as the signed-in person; no lease; stopped by pause and stop (§5.7)            | Design                                            |
+| 20  | Command line and files             | `computer_exec` and file tools implemented by the desktop daemon, not Cua's; policy `shell` / `files`, on for managed computers and off on a person's desktop; run as the signed-in person; no lease; stopped by pause and stop (§5.7)            | Implemented on Linux                              |
 
 ## 1. Background and goals
 
@@ -938,7 +938,7 @@ and screenshot again before clicking; press Esc before Ctrl+L while a page is st
 untrusted (prompt injection). **[implemented]** `COMPUTER_USE_GUIDANCE` in `packages/daemon/src/computer/tools.ts`
 says this, and how to read each error, in the standing instructions of every session that has the tools.
 
-### 5.7 Command line and files [design]
+### 5.7 Command line and files [implemented on Linux; Windows, macOS and pull / push design]
 
 An agent already has a shell and files in its own workspace (§1.1); what it lacks is a shell and files **on the
 Computer**. Through the GUI, every step costs a screenshot (a 1280×800 image is about 1,400 input tokens) and a chance
@@ -1035,18 +1035,30 @@ any editor of a managed one. A change ends no lease but refuses the next call; t
   it. A write (`computer_write_file`, `computer_push`) counts as the session's first input under
   `firstInputPerSession` (§4.2). A pool-made computer asks nothing by default, as for its GUI input.
 - **Authority on the desktop.** The channel token (§3.7) names `shell` and `files` beside `agentMode`, and the desktop
-  registers only the tools its token allows, as a `view` token gets no input tools today; each call also checks the
-  last policy the CP pushed, so a narrowing applies to the next call rather than after the token's 120 s. The agent
-  daemon's own check is not the guard.
+  registers only the tools its token allows, narrowed by the last policy the CP pushed, as a `view` token gets no input
+  tools today; every request builds its tools afresh, so a narrowing applies to the next call rather than after the
+  token's 120 s, and the agent daemon reads the missing tool as a definite refusal. The agent daemon's own check is not
+  the guard.
 - **Audit.** For `computer_exec` the command is the audit value, unlike typed text (§8.2): the entry records the
-  command (at most 4 KiB), `cwd`, exit code, duration, and output byte counts, never the output. File tools record the
+  command (its first 1,536 characters, within the entry's 2 KiB argument cap), `cwd`, exit code, duration, and output
+  byte counts, never the output. File tools record the
   path, size, and SHA-256, never content. The CP's copy is the record: a shell can edit the desktop's local log before
   it is sent.
-- **Delivery.** The desktop reports `capabilities.exec` and `capabilities.files` in its heartbeat (§2.2); the CP
-  advertises `computer-exec-v1`; each entry of the spec's derived `computerUse.computers` (§4.1) gains its `shell` and
-  `files`, so an agent is offered these tools only when one of its Computers allows them (or its managed mode would
-  create one that does). Guidance joins `COMPUTER_USE_GUIDANCE` (§5.6): find, read, and move data through commands and
-  files; use the GUI for what only the GUI can do; check the GUI's state with a screenshot afterwards.
+- **Delivery.** The desktop reports `capabilities.exec` and `capabilities.files` in its heartbeat (§2.2). The CP
+  advertises `computer-command-line-v1` on the daemon wire once its tokens and grants name the tier
+  (`computerCommandLine` in `packages/protocol/src/computer-command-line.ts` resolves the defaults); with it the agent
+  daemon offers the tier's tools in every session that has the computer tools, and a Computer whose grant does not
+  allow one refuses it as `denied` before anything is sent. The tier stays out of the agent spec, so a policy change
+  re-ships nothing. Guidance (`COMPUTER_COMMAND_LINE_GUIDANCE`) joins `COMPUTER_USE_GUIDANCE` (§5.6): find, read, and
+  move data through commands and files; use the GUI for what only the GUI can do; check the GUI's state with a
+  screenshot afterwards.
+
+**Implementation [Linux].** The desktop side is `packages/computer/src/command-line.ts` (runner, fence, limits, kill
+path) and its tools in `packages/computer/src/tools.ts`; the agent side is `COMPUTER_COMMAND_LINE_TOOLS` in
+`packages/daemon/src/computer/tools.ts`; the console's usage policy edits `shell`, `files` and `fileRoots`, and warns on
+a desktop with no isolation. Not built yet: `computer_pull` / `computer_push`; Windows (the `run-as-user` pipe) and
+macOS (the TCC disclaim), which report `exec: false` and `files: false` until then; the tray and menu bar state while a
+command runs; the prototype's local client tokens, which get no tier.
 
 **Considered and rejected.**
 

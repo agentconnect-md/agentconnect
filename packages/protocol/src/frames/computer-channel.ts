@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { COMPUTER_AGENT_MODES } from '../computer-channel-token.js'
+import { COMPUTER_FILES_MODES, COMPUTER_SHELL_MODES } from '../computer-command-line.js'
 
 // The Computer data plane (computer-use.md §3.7): how an agent daemon reaches a desktop daemon's `/mcp` for one session.
 
@@ -63,7 +64,10 @@ export const ComputerChannelGrantResult = z.discriminatedUnion('granted', [
     ownerUserId: z.string().min(1).max(128).optional(),
     approvals: ComputerGrantApprovalsSchema.optional(),
     // The console users who may answer its approvals: the Computer's allowed members; an older CP sends none.
-    approvers: z.array(z.string().min(1).max(128)).max(500).optional()
+    approvers: z.array(z.string().min(1).max(128)).max(500).optional(),
+    // The command-line tier the token allows (§5.7); an older CP sends none, which allows none.
+    shell: z.enum(COMPUTER_SHELL_MODES).optional(),
+    files: z.enum(COMPUTER_FILES_MODES).optional()
   }),
   z.object({
     granted: z.literal(false),

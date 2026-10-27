@@ -95,6 +95,7 @@ export function capabilitiesFrom(
     webrtc?: boolean
     keyboardActivity?: boolean
     egress?: boolean
+    commandLine?: boolean
   } = {}
 ): ComputerCapabilities {
   const platform = options.platform ?? process.platform
@@ -124,6 +125,7 @@ export function capabilitiesFrom(
     viewer: options.webrtc !== false && ok('ffmpeg') && ok('screen capture'),
     viewerStun: true,
     ...(options.egress ? { egress: true } : {}),
+    ...(options.commandLine ? { exec: true, files: true } : {}),
     displays:
       display && display.screenWidth > 0 && display.screenHeight > 0
         ? [

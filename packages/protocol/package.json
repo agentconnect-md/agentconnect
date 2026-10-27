@@ -41,6 +41,12 @@
       "import": "./dist/computer-viewer.js",
       "default": "./dist/computer-viewer.js"
     },
+    "./computer-command-line": {
+      "development": "./src/computer-command-line.ts",
+      "types": "./dist/computer-command-line.d.ts",
+      "import": "./dist/computer-command-line.js",
+      "default": "./dist/computer-command-line.js"
+    },
     "./organization-files": {
       "development": "./src/organization-files.ts",
       "types": "./dist/organization-files.d.ts",

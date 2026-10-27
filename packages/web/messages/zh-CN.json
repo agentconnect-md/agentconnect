@@ -6741,6 +6741,27 @@
         "approve": "总是批准",
         "deny": "总是拒绝"
       },
+      "commandLineTitle": "命令行与文件",
+      "commandLineHint": "在这台电脑上运行命令、读写文件比截图便宜得多。它们以已登录用户的身份运行，不需要控制权，暂停或停止 Agent 时会一并停止。",
+      "shell": "命令",
+      "shellHint": "是否允许 Agent 在这里运行 shell 命令。选择“每条都询问”时，每条命令都要先由可使用这台电脑的人批准。",
+      "shellViewOnly": "仅查看的电脑不运行命令。",
+      "shellMode": {
+        "off": "从不",
+        "ask": "每条都询问",
+        "on": "允许"
+      },
+      "files": "文件",
+      "filesHint": "是否允许 Agent 在这里读取，或读写文件。会话中的第一次写入会像第一次输入一样先询问。",
+      "filesMode": {
+        "off": "不可访问",
+        "read": "只读",
+        "read-write": "读写"
+      },
+      "fileRoots": "允许的路径",
+      "fileRootsHint": "每行一个绝对路径，例如 ~/work。留空则允许主目录。命令不受这些路径限制。",
+      "shellNoIsolation": "这是一个人自己的桌面，没有隔离：能运行命令的 Agent 可以做这个账户能做的一切，包括读取它的密钥和已登录的浏览器。",
+      "commandLineUnsupported": "这台电脑的守护进程暂不支持命令行，目前仅支持 Linux 电脑。",
       "limitsTitle": "限制",
       "idle": "空闲释放（秒）",
       "idleHint": "无输入超过此时长后释放控制权，10 到 3600。",
@@ -6760,7 +6781,8 @@
         "maxRange": "最长控制时间必须是 60 到 86400 之间的整数。",
         "idleAboveMax": "空闲释放不能长于最长控制时间。",
         "waitRange": "排队等待必须是 0 到 600 之间的整数。",
-        "retentionRange": "截图保留天数必须是 0 到 3650 之间的整数，或留空。"
+        "retentionRange": "截图保留天数必须是 0 到 3650 之间的整数，或留空。",
+        "rootsInvalid": "允许的路径必须是绝对路径，每行一个，最多 32 个。"
       },
       "reset": "重置",
       "save": "保存",

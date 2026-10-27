@@ -6,6 +6,7 @@ import {
   COMPUTER_STUN_URLS_MAX,
   COMPUTER_VIEWER_TOKEN_TTL_MS,
   LEGACY_COMPUTER_APPROVALS_OFF,
+  computerCommandLine,
   type ComputerAgentMode,
   type ComputerIceServer,
   readComputerChannelToken,
@@ -101,6 +102,8 @@ export class ComputerChannelGrants {
       now + (this.opts.tokenTtlMs ?? COMPUTER_CHANNEL_TOKEN_TTL_MS),
       Date.parse(credential.expiresAt)
     )
+    // The command-line tier the policy allows (§5.7); the desktop enforces the token's, narrowed by later pushes.
+    const tier = computerCommandLine(computer.policy, computer)
     const token = signComputerChannelToken(
       {
         aud: 'mcp',
@@ -111,7 +114,9 @@ export class ComputerChannelGrants {
         ses: who.sessionId,
         agt: who.agentId,
         dmn: who.daemonId,
-        mode: computer.policy.agentMode
+        mode: computer.policy.agentMode,
+        sh: tier.shell,
+        fs: tier.files
       },
       Buffer.from(credential.key, 'base64url')
     )
@@ -127,7 +132,9 @@ export class ComputerChannelGrants {
       name: computer.name,
       ownerUserId: computer.ownerUserId,
       approvals: { ...computer.policy.approvals, ...LEGACY_COMPUTER_APPROVALS_OFF },
-      approvers: withOwnerMember(computer.policy, computer.ownerUserId).allowedMembers
+      approvers: withOwnerMember(computer.policy, computer.ownerUserId).allowedMembers,
+      shell: tier.shell,
+      files: tier.files
     }
   }
 

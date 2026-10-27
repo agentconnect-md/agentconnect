@@ -6741,6 +6741,27 @@
         "approve": "Always approve",
         "deny": "Always deny"
       },
+      "commandLineTitle": "Command line and files",
+      "commandLineHint": "Commands and file access on this computer cost agents far less than screenshots. They run as the signed-in person, need no control, and stop when you pause or stop agents.",
+      "shell": "Commands",
+      "shellHint": "Whether agents may run shell commands here. Ask shows each command to someone allowed to use this computer first.",
+      "shellViewOnly": "A view-only computer runs no commands.",
+      "shellMode": {
+        "off": "Never",
+        "ask": "Ask for each command",
+        "on": "Allow"
+      },
+      "files": "Files",
+      "filesHint": "Whether agents may read, or read and write, files here. The first write in a session asks like the first input.",
+      "filesMode": {
+        "off": "No access",
+        "read": "Read",
+        "read-write": "Read and write"
+      },
+      "fileRoots": "Allowed paths",
+      "fileRootsHint": "One absolute path per line, such as ~/work. Blank allows the home directory. Commands are not limited to these paths.",
+      "shellNoIsolation": "This is a person’s own desktop with no isolation: an agent that can run commands can do anything this account can, including reading its keys and signed-in browsers.",
+      "commandLineUnsupported": "This computer’s daemon cannot run the command line yet. It works on Linux computers for now.",
       "limitsTitle": "Limits",
       "idle": "Idle release (seconds)",
       "idleHint": "Control is released after this long without input, 10 to 3600.",
@@ -6760,7 +6781,8 @@
         "maxRange": "Longest control must be a whole number from 60 to 86400.",
         "idleAboveMax": "Idle release can't be longer than the longest control.",
         "waitRange": "Wait in line must be a whole number from 0 to 600.",
-        "retentionRange": "Screenshot days must be a whole number from 0 to 3650, or blank."
+        "retentionRange": "Screenshot days must be a whole number from 0 to 3650, or blank.",
+        "rootsInvalid": "Allowed paths must be absolute, one per line, at most 32."
       },
       "reset": "Reset",
       "save": "Save",

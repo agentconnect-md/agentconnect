@@ -5,9 +5,15 @@ import { basename, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { parseArgs } from 'node:util'
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
-import type { ComputerAdminPromptMode, ComputerPolicy } from '@agentconnect.md/protocol/computer'
+import {
+  narrowerFiles,
+  narrowerShell,
+  type ComputerAdminPromptMode,
+  type ComputerPolicy
+} from '@agentconnect.md/protocol/computer'
 import { AdminPromptHelper } from './admin-prompts.js'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
+import { CommandLine, commandLineSupported } from './command-line.js'
 import { AuditReporter } from './cp/audit-report.js'
 import { ScreenshotStore } from './cp/screenshot-store.js'
 import { disableAutostart, enableAutostart, startAutostartNow } from './autostart.js'
@@ -32,7 +38,7 @@ import { canInstallFfmpeg, ffmpegAvailable, FFMPEG_VERSION, installFfmpeg, resol
 import { RtcSessions } from './stream/rtc.js'
 import { ScreenStream } from './stream/screen-stream.js'
 import type { McpServer } from '@modelcontextprotocol/server'
-import { createComputerMcpServer, exposedDriverTools } from './tools.js'
+import { createComputerMcpServer, exposedDriverTools, type CommandLineAccess } from './tools.js'
 import { createViewer, type Viewer, type ViewerPrincipal } from './viewer.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
 import { recordGrants } from './macos-grants.js'
@@ -380,7 +386,8 @@ function buildComputer(
   report?: AuditSink,
   screenshots?: ScreenshotStash,
   adminPrompts?: ComputerDeps['adminPrompts'],
-  name = process.env[COMPUTER_NAME_ENV]?.trim() || hostname()
+  name = process.env[COMPUTER_NAME_ENV]?.trim() || hostname(),
+  onHalt?: (reason: string) => void
 ) {
   const wrapper = driverWrapper()
   const driver = new CuaDriver({
@@ -402,6 +409,7 @@ function buildComputer(
       ? { launchApp: (app: string) => windowsService.launchAsUser(app) }
       : {}),
     ...(adminPrompts ? { adminPrompts } : {}),
+    ...(onHalt ? { onHalt } : {}),
     profile: { name: name.slice(0, 120), osVersion: osVersion(), session: sessionKind(), isolation: isolationKind() }
   })
   return { driver, computer }
@@ -449,6 +457,8 @@ function startCpChannel(options: {
   viewer: Viewer
   local: () => LocalControls | undefined
   egress?: EgressForwarder | undefined
+  // The command-line tier runs here (§5.7).
+  commandLine?: boolean
   onPolicy?: (policy: ComputerPolicy) => void
 }): { client: ComputerCpClient; relays: RelayLinks; refreshDoctor(): void; stop(): void } | undefined {
   const { dir, config, registration, authority, computer, driver, screenSize } = options
@@ -501,7 +511,8 @@ function startCpChannel(options: {
                   session,
                   webrtc: config.webrtc,
                   keyboardActivity: local?.keyboard() ?? false,
-                  egress: options.egress !== undefined
+                  egress: options.egress !== undefined,
+                  commandLine: options.commandLine === true
                 }),
                 doctor: doctorReport([...checks, ...(local?.checks() ?? [])], doctorAt)
               }
@@ -699,6 +710,8 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     local?: LocalControls
     accessibility?: AccessibilityWatch
     computer?: Computer
+    // The policy the Control Plane last sent, which narrows a channel token's command-line tier at once (§5.7).
+    policy?: ComputerPolicy
   } = {}
   // Registered with a Control Plane: act only while its channel key is live, never after a revoke (§8.2).
   const authority = new ChannelAuthority({
@@ -744,6 +757,17 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
           log
         })
       : undefined
+  // Commands and files on this machine for agent sessions whose token allows them; Linux only so far (§5.7).
+  const commandLine =
+    registration && !registration.revokedAt && commandLineSupported()
+      ? new CommandLine({
+          audit: auditSinks(fileAuditSink(join(dir, 'audit.log')), ...(auditReport ? [auditReport.sink] : [])),
+          refusal: () => authority.refusal(),
+          halted: () => live.computer?.haltReason(),
+          dataDir: dir,
+          log
+        })
+      : undefined
   const { driver, computer } = buildComputer(
     dir,
     config,
@@ -757,7 +781,9 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     () => authority.refusal(),
     auditReport?.sink,
     screenshotStore?.stash,
-    adminPromptHelper ? { source: adminPromptHelper, mode: () => config.adminPrompts } : undefined
+    adminPromptHelper ? { source: adminPromptHelper, mode: () => config.adminPrompts } : undefined,
+    undefined,
+    (reason) => commandLine?.halt(reason)
   )
   live.computer = computer
   setTitle('online')
@@ -892,15 +918,32 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
         : {}),
     log
   })
-  const createMcpServer = ({ client, viewOnly, agent }: McpPrincipal): McpServer =>
-    createComputerMcpServer({
+  // A token's tier, narrowed by whatever the policy pushed since it was signed.
+  const commandLineFor = (granted: McpPrincipal['commandLineGrant']): CommandLineAccess | undefined =>
+    commandLine && granted
+      ? {
+          runner: commandLine,
+          shell: () => {
+            const policy = live.policy
+            if (policy?.agentMode === 'view') return 'off'
+            return narrowerShell(granted.shell, policy?.shell ?? granted.shell)
+          },
+          files: () => narrowerFiles(granted.files, live.policy?.files ?? granted.files),
+          roots: () => live.policy?.fileRoots
+        }
+      : undefined
+  const createMcpServer = ({ client, viewOnly, agent, commandLineGrant: granted }: McpPrincipal): McpServer => {
+    const access = commandLineFor(granted)
+    return createComputerMcpServer({
       computer,
       client,
       driverTools,
       viewOnly,
       ...(agent ? { agent } : {}),
-      ...(adminPromptHelper ? { adminPrompts: true } : {})
+      ...(adminPromptHelper ? { adminPrompts: true } : {}),
+      ...(access ? { commandLine: access } : {})
     })
+  }
   const server = await startHttpServer({
     host: config.host,
     port: config.port,
@@ -929,7 +972,11 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     viewer,
     local: () => live.local,
     egress,
-    onPolicy: (policy) => keepAdminPrompts(policy.approvals.adminPrompts)
+    commandLine: commandLine !== undefined,
+    onPolicy: (policy) => {
+      live.policy = policy
+      keepAdminPrompts(policy.approvals.adminPrompts)
+    }
   })
   // Behind NAT the local addresses mean nothing to a client, so only the public one is printed.
   const publicBase = publicBaseUrl(config)

@@ -164,6 +164,7 @@ import {
   WEBCHAT_IMAGE_MAX_BYTES,
   MCP_APP_INLINE_TEMPLATE_MAX_BYTES,
   COMPUTER_CHANNEL_FEATURE,
+  COMPUTER_COMMAND_LINE_FEATURE,
   COMPUTER_LEASE_FEATURE,
   MAX_WORKSPACE_DOWNLOAD_BYTES
 } from '@agentconnect.md/protocol'
@@ -306,6 +307,8 @@ import { WorkBoundary } from './messages/message-boundary.js'
 import { attachmentMention } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import {
+  COMPUTER_COMMAND_LINE_GUIDANCE,
+  COMPUTER_COMMAND_LINE_TOOLS,
   COMPUTER_TOOLS,
   COMPUTER_USE_GUIDANCE,
   ComputerTools,
@@ -5309,11 +5312,16 @@ export class Daemon {
         // Computer use (computer-use.md §5.2): only for an agent that enabled it, on a runtime that shows the model images.
         const computers = !narrowed && !isGettingToKnowCoordinate(thread) && this.offersComputerTools(agent)
         if (computers) tools.push(...COMPUTER_TOOLS)
+        // The command-line tier (computer-use.md §5.7) needs a CP whose tokens name it; each Computer's policy decides per call.
+        const commandLine = computers && this.cpClient?.supportsServerFeature(COMPUTER_COMMAND_LINE_FEATURE) === true
+        if (commandLine) tools.push(...COMPUTER_COMMAND_LINE_TOOLS)
         if (!this.mcpToolServerReachable()) tools = []
         const instructions =
           [
             research ? this.organizationResearchPrompt(agent, tools) : undefined,
-            computers && tools.length > 0 ? COMPUTER_USE_GUIDANCE : undefined
+            computers && tools.length > 0
+              ? [COMPUTER_USE_GUIDANCE, ...(commandLine ? [COMPUTER_COMMAND_LINE_GUIDANCE] : [])].join('\n')
+              : undefined
           ]
             .filter(Boolean)
             .join('\n\n') || undefined
@@ -29298,17 +29306,23 @@ export class Daemon {
           title: computerApprovalTitle(ask),
           kind: 'execute'
         },
-        // An administrator prompt is approved one at a time; the first-input ask covers the session.
+        // An administrator prompt is approved one at a time; a command once or for the session; the first-input ask covers the session.
         options:
           ask.kind === 'admin-prompt'
             ? [
                 { optionId: 'allow', name: 'Approve once', kind: 'allow_once' },
                 { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
               ]
-            : [
-                { optionId: 'allow', name: 'Allow for this session', kind: 'allow_always' },
-                { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
-              ]
+            : ask.kind === 'command'
+              ? [
+                  { optionId: 'allow', name: 'Allow once', kind: 'allow_once' },
+                  { optionId: 'allow_session', name: 'Allow for this session', kind: 'allow_always' },
+                  { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+                ]
+              : [
+                  { optionId: 'allow', name: 'Allow for this session', kind: 'allow_always' },
+                  { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+                ]
       },
       {
         computerId: ask.computerId,
@@ -29317,7 +29331,8 @@ export class Daemon {
       }
     )
     if (response.outcome.outcome !== 'selected') return 'deny'
-    return response.outcome.optionId === 'allow' ? 'allow' : 'deny'
+    const chosen = response.outcome.optionId
+    return chosen === 'allow' || chosen === 'allow_session' ? chosen : 'deny'
   }
 
   /** The Computers an agent may use now (computer-use.md §4.1), as the CP derives them from each Computer's agent access. */

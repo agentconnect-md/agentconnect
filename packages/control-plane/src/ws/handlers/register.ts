@@ -31,6 +31,7 @@ import {
   COMPUTER_LEASE_QUEUE_FEATURE,
   COMPUTER_POOL_FEATURE,
   COMPUTER_CHANNEL_FEATURE,
+  COMPUTER_COMMAND_LINE_FEATURE,
   AGENT_PLACEMENT_FEATURE,
   AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
   AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE,
@@ -180,6 +181,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       ...(deps.computerLeases ? [COMPUTER_LEASE_QUEUE_FEATURE] : []),
       // computer-use.md §3.7: this CP issues per-session data-plane tokens.
       ...(deps.computerChannelGrants ? [COMPUTER_CHANNEL_FEATURE] : []),
+      // …whose tokens name the command-line tier each Computer's policy allows (computer-use.md §5.7).
+      ...(deps.computerChannelGrants ? [COMPUTER_COMMAND_LINE_FEATURE] : []),
       // computer-use.md §15.1: this CP allocates and wakes managed computers in the pool.
       ...(deps.computerPool ? [COMPUTER_POOL_FEATURE] : []),
       // slack-approval-dm.md §4.2: this CP resolves and revalidates approval-DM recipients.
