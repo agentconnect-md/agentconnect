@@ -1294,6 +1294,78 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
+  it('discards the VM disk of an idle-closed hook session only, keeping its row', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    try {
+      const manager = useMicrosandbox(daemon)
+      const store = (daemon as any).store
+      const row = (thread: string, platform: string) => ({
+        key: KEY(thread),
+        agentId: 'bot-a',
+        platform,
+        channel: 'C1',
+        thread,
+        acpSessionId: null
+      })
+      const closeIdle = vi
+        .spyOn(store, 'closeIdleSessions')
+        .mockResolvedValue([row('T1', 'hook'), row('T2', 'slack')] as never)
+      await (daemon as any).sweepIdle()
+      await vi.waitFor(() => expect(manager.discard).toHaveBeenCalledTimes(1), WAIT)
+      closeIdle.mockRestore()
+      expect(manager.discard).toHaveBeenCalledWith(`bot-a/${hostKeyDirName(sessionHostKey('bot-a', KEY('T1')))}`)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('keeps the VM of a closed hook session that a turn reopened', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    try {
+      const manager = useMicrosandbox(daemon)
+      const row = { key: KEY('T1'), agentId: 'bot-a', acpSessionId: null }
+      // The close was decided with no host; a turn reopened the key before the retirement ran.
+      const fence = { expected: undefined, generation: undefined, row }
+      await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+      const host = (daemon as any).hosts.get(sessionHostKey('bot-a', KEY('T1')))
+      expect(host).toBeDefined()
+      await (daemon as any).retireClosedHookSessionVm(row, fence)
+      expect(host.stop).not.toHaveBeenCalled()
+      expect(manager.discard).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('holds a dispatch that arrives mid-discard until the closed hook session VM is gone', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    try {
+      const manager = useMicrosandbox(daemon)
+      let finishDiscard!: () => void
+      manager.discard.mockImplementationOnce(() => new Promise<void>((resolve) => (finishDiscard = resolve)))
+      const row = { key: KEY('T1'), agentId: 'bot-a', acpSessionId: null }
+      const retiring = (daemon as any).retireClosedHookSessionVm(row, {
+        expected: undefined,
+        generation: undefined,
+        row
+      })
+      await vi.waitFor(() => expect(manager.discard).toHaveBeenCalledTimes(1), WAIT)
+      let admitted = false
+      const admission = (daemon as any).admitActiveDispatch('bot-a', KEY('T1')).then((release: () => void) => {
+        admitted = true
+        release()
+      })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(admitted).toBe(false)
+      finishDiscard()
+      await retiring
+      await admission
+      expect(admitted).toBe(true)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it('closeIdleSessions reports only the rows it closed, not a candidate a turn reopened meanwhile', async () => {
     const { daemon } = await startDaemon(scaffold())
     await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
