@@ -256,6 +256,42 @@ describe('ComputerViewerSession', () => {
     ])
   })
 
+  it('says which candidates and checks a failed punch had', async () => {
+    const { fetchImpl } = relayFetch({ stun: true })
+    const stats = new Map<string, object>([
+      ['L', { id: 'L', type: 'local-candidate', candidateType: 'srflx', address: '198.51.100.7', port: 6000 }],
+      ['R', { id: 'R', type: 'remote-candidate', candidateType: 'srflx', address: '203.0.113.9', port: 4000 }],
+      [
+        'P',
+        {
+          id: 'P',
+          type: 'candidate-pair',
+          localCandidateId: 'L',
+          remoteCandidateId: 'R',
+          state: 'failed',
+          requestsSent: 9,
+          responsesReceived: 0,
+          requestsReceived: 2
+        }
+      ]
+    ])
+    const { createPeer } = peers(
+      (config) => (config.iceTransportPolicy === 'relay' ? 'connected' : 'failed'),
+      undefined,
+      stats
+    )
+    const { session } = open({
+      fetch: fetchImpl,
+      createPeer,
+      grant: grant({ stunUrls: ['stun:stun-0.example.com:3478'] })
+    })
+    await session.start()
+    expect(session.snapshot().notes).toEqual([
+      'Peer to peer: ICE failed\nBrowser: srflx 198.51.100.7:6000\nDesktop: srflx 203.0.113.9:4000\n' +
+        'Pairs (sent/answered/received): srflx → srflx 203.0.113.9:4000 failed 9/0/2'
+    ])
+  })
+
   it('keeps the ICE-lite direct path when the desktop was issued no STUN', async () => {
     const { calls, fetchImpl } = relayFetch({ stun: false })
     const { createPeer } = peers(() => 'connected')

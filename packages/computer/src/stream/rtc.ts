@@ -44,6 +44,7 @@ interface Session {
   // Every local candidate in gathering order, for the browser to fetch over signaling; `gathered` once gathering is done.
   candidates: CandidateInit[]
   gathered: boolean
+  connected?: boolean
   unsubscribe?: () => void
 }
 
@@ -176,6 +177,7 @@ export class RtcSessions {
     })
     pc.connectionStateChange.subscribe((state) => {
       if (state === 'connected') {
+        session.connected = true
         session.lastSeen = Date.now()
         this.options.log(`viewer ${client()}: WebRTC connected (${transport}${selectedPairType(pc)})`)
         session.unsubscribe ??= this.options.stream.subscribe((packet) => track.writeRtp(packet))
@@ -269,6 +271,12 @@ export class RtcSessions {
     if (!session) return
     this.sessions.delete(id)
     session.unsubscribe?.()
+    // A full-ICE session that never connected says why: each side's candidates and how far each pair's checks got.
+    if (session.transport !== 'direct' && !session.connected) {
+      this.options.log(
+        `viewer ${session.principal.client}: ${session.transport} never connected: ${iceReport(session.pc, session.remoteCandidates ?? 0)}`
+      )
+    }
     void session.pc.close().catch(() => undefined)
     this.options.log(`viewer ${session.principal.client}: WebRTC session closed`)
   }
@@ -291,6 +299,27 @@ export class RtcSessions {
 function selectedPairType(pc: RTCPeerConnection): string {
   const pair = pc.iceTransports[0]?.connection.nominated
   return pair ? `, ${pair.localCandidate.type} → ${pair.remoteCandidate.type}` : ''
+}
+
+const PAIR_STATES = ['frozen', 'waiting', 'in-progress', 'succeeded', 'failed']
+
+const endpoint = (c: { type: string; host: string; port: number }) => `${c.type} ${c.host}:${c.port}`
+
+/** Local and remote candidates plus each pair's state and check counts (sent/answered/received), for a failed attempt's log line. */
+export function iceReport(pc: RTCPeerConnection, trickled: number): string {
+  const connection = pc.iceTransports[0]?.connection
+  if (!connection) return 'no ICE transport'
+  const local = connection.localCandidates.map(endpoint).join(', ') || 'none'
+  const remote = connection.remoteCandidates.map(endpoint).join(', ') || 'none'
+  const pairs =
+    connection.checkList
+      .map(
+        (pair) =>
+          `${pair.localCandidate.type} → ${endpoint(pair.remoteCandidate)} ${PAIR_STATES[pair.state] ?? pair.state} ` +
+          `${pair.requestsSent}/${pair.responsesReceived}/${pair.requestsReceived}`
+      )
+      .join(', ') || 'none'
+  return `ICE ${connection.state}; local ${local}; remote ${remote} (${trickled} trickled); pairs sent/answered/received ${pairs}`
 }
 
 // Drops host candidates for interface addresses (e.g. a container IP) that a NATed browser cannot reach.
