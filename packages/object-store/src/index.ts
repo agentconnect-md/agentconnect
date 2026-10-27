@@ -46,6 +46,7 @@ export {
 } from './lifecycle.js'
 export {
   createObjectClient,
+  headHolds,
   SourceCacheObjectError,
   type ObjectClientOptions,
   type SourceCacheBucketLifecycle,

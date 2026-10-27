@@ -4,6 +4,7 @@ import {
   addressFor,
   amzDate,
   bucketEndpoint,
+  headHolds,
   presign,
   SOURCE_CACHE_GRACE_SECONDS,
   type CredentialsProvider,
@@ -235,10 +236,7 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
     async uploadedFileUrl({ org, agentId, uploadId, size, sha256, network }) {
       // Another agent's upload is a different key, so it reads as absent.
       const key = transferUploadKey(org, agentId, uploadId)
-      const head = await objects.head(key)
-      // The PUT signed the checksum, so a matching one proves these bytes; a store that omits it is trusted on length alone.
-      if (!head.exists || head.contentLength !== size) return undefined
-      if (head.checksumSha256 !== undefined && head.checksumSha256 !== sha256) return undefined
+      if (!headHolds(await objects.head(key), { bytes: size, sha256 })) return undefined
       return await sign({ method: 'GET', key, address: addressOn(network), lifetimeSeconds: urlSeconds })
     },
 
@@ -251,7 +249,7 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
       // A copy without its checksum cannot prove which bytes it holds, so it is replaced rather than reused.
       const recent =
         head.exists &&
-        head.contentLength === size &&
+        (head.contentLength === undefined || head.contentLength === size) &&
         (head.lastModified === undefined || head.lastModified > now() - CACHED_DOWNLOAD_MAX_AGE_MS)
       return recent ? head.checksumSha256 : undefined
     },
@@ -268,9 +266,7 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
     },
 
     async storedDownload({ key, size, sha256, name }) {
-      const head = await objects.head(key)
-      if (!head.exists || head.contentLength !== size) return undefined
-      if (head.checksumSha256 !== undefined && head.checksumSha256 !== sha256) return undefined
+      if (!headHolds(await objects.head(key), { bytes: size, sha256 })) return undefined
       return await signDownload({ key, name })
     },
 

@@ -3,6 +3,7 @@ import {
   addressFor,
   amzDate,
   bucketEndpoint,
+  headHolds,
   presign,
   SOURCE_CACHE_GRACE_SECONDS,
   type CredentialsProvider,
@@ -158,10 +159,7 @@ export function createScreenshotBucket(deps: ScreenshotBucketDeps): ScreenshotBu
       })
     },
     async holds({ key, bytes, sha256 }) {
-      const head = await objects.head(key)
-      // The PUT signed the checksum, so a matching one proves these bytes; a store that omits it is trusted on length alone.
-      if (!head.exists || head.contentLength !== bytes) return false
-      return head.checksumSha256 === undefined || head.checksumSha256 === sha256HexToBase64(sha256)
+      return headHolds(await objects.head(key), { bytes, sha256: sha256HexToBase64(sha256) })
     },
     delete: (key) => objects.delete(key)
   }

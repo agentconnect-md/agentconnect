@@ -10,7 +10,17 @@ export type SourceCacheLifecycleTag = 'ac-cache=live' | 'ac-cache=unreferenced'
 
 export type SourceCacheObjectHead =
   | { exists: false }
-  | { exists: true; contentLength: number; checksumSha256?: string; etag?: string; lastModified?: number }
+  | { exists: true; contentLength?: number; checksumSha256?: string; etag?: string; lastModified?: number }
+
+/** Whether a HEAD proves the object is exactly these bytes: a stored checksum decides, the length only when there is none. */
+export function headHolds(head: SourceCacheObjectHead, expected: { bytes: number; sha256: string }): boolean {
+  if (!head.exists) return false
+  if (head.contentLength !== undefined && head.contentLength !== expected.bytes) return false
+  // The PUT signed both checksum and length, so a matching checksum proves the length a proxy may drop from a HEAD.
+  return head.checksumSha256 !== undefined
+    ? head.checksumSha256 === expected.sha256
+    : head.contentLength === expected.bytes
+}
 
 export interface SourceCacheObjectClient<K extends string = string> {
   head(key: K): Promise<SourceCacheObjectHead>
@@ -137,14 +147,17 @@ export function createObjectClient<K extends string>(opts: ObjectClientOptions<K
       const res = await send({ method: 'HEAD', key, headers: { 'x-amz-checksum-mode': 'ENABLED' } })
       if (res.status === 404) return { exists: false }
       if (res.status !== 200) throw new SourceCacheObjectError(res.status, undefined, 'HEAD')
-      const length = Number(res.headers.get('content-length'))
-      if (!Number.isSafeInteger(length) || length < 0) throw new SourceCacheObjectError(res.status, 'NoLength', 'HEAD')
+      // A HEAD may omit Content-Length (RFC 9110 §9.3.2), as a compressing proxy does, so absent is not zero.
+      const rawLength = res.headers.get('content-length')
+      if (rawLength !== null && !(/^\d+$/.test(rawLength) && Number.isSafeInteger(Number(rawLength))))
+        throw new SourceCacheObjectError(res.status, 'NoLength', 'HEAD')
+      const length = rawLength === null ? undefined : Number(rawLength)
       const checksum = res.headers.get('x-amz-checksum-sha256') ?? undefined
       const etag = res.headers.get('etag') ?? undefined
       const lastModified = Date.parse(res.headers.get('last-modified') ?? '')
       return {
         exists: true,
-        contentLength: length,
+        ...(length !== undefined ? { contentLength: length } : {}),
         ...(checksum ? { checksumSha256: checksum } : {}),
         ...(etag ? { etag } : {}),
         ...(Number.isFinite(lastModified) ? { lastModified } : {})

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import type { CredentialsProvider } from '../src/credentials.js'
-import { createObjectClient, SourceCacheObjectError } from '../src/object-client.js'
+import { createObjectClient, headHolds, SourceCacheObjectError } from '../src/object-client.js'
 import { canonicalUri, sha256Hex } from '../src/sigv4.js'
 
 // Header-signed HEAD, PutObjectTagging, DELETE and lifecycle read (source-cache.md §9, §10), against a fake fetch.
@@ -70,6 +70,27 @@ describe('Source Cache object client', () => {
     expect(req!.headers.authorization).toMatch(
       /^AWS4-HMAC-SHA256 Credential=AKID\/20261003\/us-east-1\/s3\/aws4_request,SignedHeaders=host;x-amz-checksum-mode;x-amz-content-sha256;x-amz-date;x-amz-security-token,Signature=[0-9a-f]{64}$/
     )
+  })
+
+  it('reads a HEAD without Content-Length as an unknown length, and a malformed one as an error', async () => {
+    const compressed = new Response(null, {
+      status: 200,
+      headers: { 'content-encoding': 'gzip', 'x-amz-checksum-sha256': 'abc=' }
+    })
+    expect(await harness({ response: compressed }).client.head(KEY)).toEqual({ exists: true, checksumSha256: 'abc=' })
+    const malformed = new Response(null, { status: 200, headers: { 'content-length': '12abc' } })
+    await expect(harness({ response: malformed }).client.head(KEY)).rejects.toBeInstanceOf(SourceCacheObjectError)
+  })
+
+  it('proves stored bytes by checksum, and by length only when the store reports no checksum', () => {
+    const expected = { bytes: 5, sha256: 'abc=' }
+    expect(headHolds({ exists: true, contentLength: 5, checksumSha256: 'abc=' }, expected)).toBe(true)
+    expect(headHolds({ exists: true, checksumSha256: 'abc=' }, expected)).toBe(true)
+    expect(headHolds({ exists: true, contentLength: 5 }, expected)).toBe(true)
+    expect(headHolds({ exists: true }, expected)).toBe(false)
+    expect(headHolds({ exists: true, contentLength: 0, checksumSha256: 'abc=' }, expected)).toBe(false)
+    expect(headHolds({ exists: true, checksumSha256: 'xyz=' }, expected)).toBe(false)
+    expect(headHolds({ exists: false }, expected)).toBe(false)
   })
 
   it('addresses virtual-hosted style when not forced to path style', async () => {

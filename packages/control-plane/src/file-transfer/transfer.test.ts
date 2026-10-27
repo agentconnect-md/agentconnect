@@ -146,6 +146,12 @@ describe('file transfer signing', () => {
     ).toBeUndefined()
   })
 
+  it('hands the agent a GET when a proxy drops the length from the HEAD but the checksum proves the bytes', async () => {
+    const input = { org: ORG, agentId: AGENT, uploadId: UPLOAD_ID, size: 5, sha256: SHA, network: 'public' as const }
+    expect(await transfer({ exists: true, checksumSha256: SHA }).uploadedFileUrl(input)).toBeDefined()
+    expect(await transfer({ exists: true }).uploadedFileUrl(input)).toBeUndefined()
+  })
+
   it('signs no GET for an upload reserved for another agent', async () => {
     const heads: string[] = []
     const store = createFileTransfer({
