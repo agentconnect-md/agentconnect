@@ -67,7 +67,7 @@ export function ComputerPanel({ computerIds, managed, active, createSession }: C
             const kept = computer ?? previous?.find((candidate) => candidate.id === id)
             return kept ? [kept] : []
           }),
-          ...(pooled ?? previous?.filter((c) => c.ownerAgentId === managedAgentId && !ids.includes(c.id)) ?? [])
+          ...(pooled ?? (managedAgentId ? managedOf(previous ?? [], managedAgentId, managedSessionId) : []))
         ])
       })
     read()

@@ -182,4 +182,24 @@ describe('ComputerPanel', () => {
     const el = await render(<ComputerPanel computerIds={[]} managed={{ agentId: 'a1', sessionId: 's1' }} active />)
     expect(el.textContent).toContain('The agent gets its computer when it first uses one in this session.')
   })
+
+  it('keeps no other session’s desktop when the list fails after moving to another session', async () => {
+    fetchComputers.mockResolvedValue([
+      computer({
+        id: 'mine',
+        name: 'mine',
+        kind: 'managed',
+        allocation: 'ephemeral',
+        ownerAgentId: 'a1',
+        poolSessionId: 's1'
+      })
+    ])
+    const el = await render(<ComputerPanel computerIds={[]} managed={{ agentId: 'a1', sessionId: 's1' }} active />)
+    expect(el.textContent).toContain('mine')
+    fetchComputers.mockRejectedValue(new Error('503'))
+    await act(async () =>
+      root!.render(<ComputerPanel computerIds={[]} managed={{ agentId: 'a1', sessionId: 's2' }} active />)
+    )
+    expect(el.textContent).not.toContain('mine')
+  })
 })
