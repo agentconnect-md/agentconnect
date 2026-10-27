@@ -32,7 +32,7 @@ const allow = (): RcVerifyResult => ({
 })
 async function fixture(
   mode: AhpMode = 'on',
-  preauth?: { deadlineMs: number; maxMessages: number },
+  preauth?: { deadlineMs: number; maxMessages: number; maxBytes?: number },
   authorizationServer?: string
 ) {
   const server = createServer()
@@ -318,6 +318,37 @@ it('bounds the pre-auth window by deadline and message count', async () => {
     chatty.socket.send(JSON.stringify({ jsonrpc: '2.0', id: i, method: 'reconnect', params: {} }))
   chatty.socket.send(JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'reconnect', params: {} }))
   expect(await chatty.closed).toBe(1008)
+  expect(host.verify).not.toHaveBeenCalled()
+})
+it('authenticates after a restoring client pipelines more than the old sixteen-message bound', async () => {
+  const host = await fixture()
+  const client = await preauth(host.url, [])
+  await client.initialize()
+  client.socket.send('{"jsonrpc":"2.0","method":"setClientManagedSettingsPermissions","params":{}}')
+  client.socket.send('{"jsonrpc":"2.0","method":"unsubscribe","params":{"channel":"ahp-session:/old"}}')
+  const config = { type: 'root/configChanged', config: { values: { setting: 'x'.repeat(4096) } } }
+  for (let i = 0; i < 20; i++)
+    client.socket.send(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'dispatchAction',
+        params: { channel: 'ahp-root://', clientSeq: i, action: config }
+      })
+    )
+  expect((await client.request('listSessions', { channel: 'ahp-root://' })).error.code).toBe(-32007)
+  const authenticated = await client.request('authenticate', {
+    channel: 'ahp-root://',
+    resource: RESOURCE(host.url),
+    token: 'personal-key'
+  })
+  expect(authenticated.result).toEqual({})
+})
+it('bounds the pre-auth window by bytes', async () => {
+  const host = await fixture('on', { deadlineMs: 1000, maxMessages: 128, maxBytes: 1024 })
+  const client = await preauth(host.url, [])
+  await client.initialize()
+  client.socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'notice', params: { pad: 'x'.repeat(1024) } }))
+  expect(await client.closed).toBe(1008)
   expect(host.verify).not.toHaveBeenCalled()
 })
 it('closes on a bad key or an unadvertised resource without opening a daemon attachment', async () => {
