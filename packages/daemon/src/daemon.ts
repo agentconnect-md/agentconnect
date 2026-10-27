@@ -26854,9 +26854,13 @@ export class Daemon {
         generation: generationsAtDecision.get(closedHost),
         row
       }
-      void this.stopSessionHost(row.agentId, row.key, fence).catch((error) =>
-        this.log.warn(`idle: stopping the host of closed session ${row.key} failed (${formatErr(error)})`)
-      )
+      void this.stopSessionHost(row.agentId, row.key, fence)
+        .then(() =>
+          originKindOf(row.platform) === 'hook' ? this.discardClosedHookSessionVm(row.agentId, row.key) : undefined
+        )
+        .catch((error) =>
+          this.log.warn(`idle: stopping the host of closed session ${row.key} failed (${formatErr(error)})`)
+        )
       // A session on the agent's shared host keeps its runtime child until the session itself is closed (#2923).
       void this.closeSharedHostSession(row, hostsAtDecision.get(agentHostKey(row.agentId)))
       if (!row.acpSessionId) continue
@@ -27245,6 +27249,14 @@ export class Daemon {
           `sandboxclaim "${plane.driver.claimName(agentId)}" is left for the orphan reconciler`
       )
     }
+  }
+
+  // A closed hook session is one-shot: drop its VM disk now, keeping the row and HOME; a resumed turn gets a fresh VM.
+  private async discardClosedHookSessionVm(agentId: string, sessionKey: string): Promise<void> {
+    const key = sessionHostKey(agentId, sessionKey)
+    if (!this.microsandbox || this.legacyMicrosandboxSessions.has(key)) return
+    if (this.hosts.has(key) || this.hostStarts.has(key) || this.sessionAdmitted(sessionKey, key)) return
+    await this.microsandbox.discard(`${agentId}/${hostKeyDirName(key)}`)
   }
 
   // Retire a session's VM and HOME with its row; a legacy shared VM lives until its last session retires.
