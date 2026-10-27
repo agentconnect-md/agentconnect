@@ -68,6 +68,18 @@ describe('WebchatRouter', () => {
     expect(first.onChat).not.toHaveBeenCalled()
   })
 
+  it('tells every attached browser that a daemon relinked', () => {
+    const r = new WebchatRouter()
+    const a = { ...sink(), onDaemonReady: vi.fn<(daemonId: string) => void>() }
+    const b = { ...sink(), onDaemonReady: vi.fn<(daemonId: string) => void>() }
+    r.register(CHAT_A, a)
+    r.register(CHAT_B, b)
+    r.register(CHAT_B, sink()) // a minimal sink without the hook stays valid
+    r.deliverDaemonReady('daemon-1')
+    expect(a.onDaemonReady).toHaveBeenCalledWith('daemon-1')
+    expect(b.onDaemonReady).toHaveBeenCalledWith('daemon-1')
+  })
+
   it('keeps the newest roster: an older verdict never replaces a newer one', () => {
     const r = new WebchatRouter()
     const joined = [{ agentId: CHAT_A }, { agentId: CHAT_B }]

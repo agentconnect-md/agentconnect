@@ -3,6 +3,7 @@ import {
   acceptWebchatDone,
   acceptWebchatOutput,
   createWebchatCursor,
+  webchatCursorHasGap,
   type OrderedWebchatDone,
   type OrderedWebchatOutput
 } from './webchat-stream'
@@ -48,5 +49,27 @@ describe('ordered webchat stream', () => {
     const final = acceptWebchatOutput(cursor, { turnId: 't1', index: 1, text: 'b' })
     expect(final.outputs.map((o) => o.text)).toEqual(['b', 'c'])
     expect(final.done?.result).toBe('ok')
+  })
+
+  it('reports a hole while frames past a dropped index, or a done it has not reached, are held', () => {
+    const cursor = createWebchatCursor<Output, Done>('t1')
+    acceptWebchatOutput(cursor, { turnId: 't1', index: 0, text: 'a' })
+    expect(webchatCursorHasGap(cursor)).toBe(false)
+    // Index 1 went out while the daemon's relay link was down and never arrives on its own.
+    acceptWebchatOutput(cursor, { turnId: 't1', index: 2, text: 'c' })
+    expect(webchatCursorHasGap(cursor)).toBe(true)
+    acceptWebchatDone(cursor, { turnId: 't1', lastIndex: 2, result: 'ok' })
+    expect(webchatCursorHasGap(cursor)).toBe(true)
+    // The resume replays it, and the held tail and done drain at once.
+    const replayed = acceptWebchatOutput(cursor, { turnId: 't1', index: 1, text: 'b' })
+    expect(replayed.outputs.map((o) => o.text)).toEqual(['b', 'c'])
+    expect(replayed.done?.result).toBe('ok')
+    expect(webchatCursorHasGap(cursor)).toBe(false)
+  })
+
+  it('reports a done held behind an output that never came as a hole', () => {
+    const cursor = createWebchatCursor<Output, Done>('t1')
+    acceptWebchatDone(cursor, { turnId: 't1', lastIndex: 0, result: 'ok' })
+    expect(webchatCursorHasGap(cursor)).toBe(true)
   })
 })

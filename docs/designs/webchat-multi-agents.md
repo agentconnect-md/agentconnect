@@ -680,6 +680,17 @@ Two scope rules:
     daemon holds rather than back down the socket that admitted the turn — a
     reload may land on a different relay instance, and only the one owning the
     conversation acts on the post;
+  - an open browser socket is no proof of delivery: `rd/chat` a daemon streams
+    while its relay link is down or still in `rd/hello` is dropped, and the
+    browser sees neither a close nor a later frame. Two signals put the lost
+    frames back through an ordinary `resume` of each acked lane. When a
+    daemon's link becomes READY, the relay sends `{type:'resync', agentIds}`
+    to every browser whose roster places a participant on that daemon. The
+    console also watches each busy session: a lane holding frames past a
+    missing index, or a `done` it has not reached, resumes after about 1.5 s,
+    and 20 s with no frame at all earns a replay-only resume. A `stream_stale`
+    answer to either one means another tab resumed the stream more recently,
+    so it is not a failure;
   - the `set_*` runtime ops are unchanged and carry no `agentId`: multi-agent
     conversations expose no runtime override (section 9.3), so these ops
     occur only in single-agent conversations;
