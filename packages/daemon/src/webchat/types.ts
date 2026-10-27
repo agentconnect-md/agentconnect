@@ -20,6 +20,8 @@ export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 export interface WebchatSink {
   output(o: WebchatOutput): void
   done(d: WebchatDone): void
+  /** The relay this sink streams through: the relay fans a chat to all its browsers, so two sinks on one relay are one. */
+  relayId?: string
 }
 
 export interface BufferedWebchatEvent {

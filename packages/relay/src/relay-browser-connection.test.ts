@@ -700,6 +700,30 @@ describe('RelayBrowserConnection', () => {
     expect(transport.last('done')).toEqual({ type: 'done', done: donePayload })
   })
 
+  it('asks the browser to resync the participants a relinked daemon serves, and only those', () => {
+    const OTHER = '22222222-2222-4222-8222-222222222222'
+    const OTHER_DAEMON = '88888888-8888-4888-8888-888888888888'
+    const { conn, transport } = build({
+      participants: [
+        { agentId: AGENT, daemonId: DAEMON, primary: true },
+        { agentId: OTHER, daemonId: OTHER_DAEMON }
+      ]
+    })
+    conn.onDaemonReady(OTHER_DAEMON)
+    expect(transport.last('resync')).toEqual({ type: 'resync', agentIds: [OTHER] })
+    transport.sent = []
+    conn.onDaemonReady('77777777-7777-4777-8777-777777777777')
+    expect(transport.last('resync')).toBeUndefined()
+  })
+
+  it('goes silent on a daemon relink after the browser closed', () => {
+    const { conn, transport } = build()
+    transport.fireClose()
+    transport.sent = []
+    conn.onDaemonReady(DAEMON)
+    expect(transport.sent).toEqual([])
+  })
+
   it('forwards a session-control op WITHOUT sending an ack (only turns are acked)', async () => {
     const { transport, sent } = build()
     transport.feed({ type: 'set_model', model: 'claude' })

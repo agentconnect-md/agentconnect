@@ -84,3 +84,8 @@ export function acceptWebchatDone<Output extends OrderedWebchatOutput, Done exte
   cursor.done = done
   return drainWebchatCursor(cursor)
 }
+
+/** The lane holds frames past a missing index, or a `done` its outputs have not reached — only a resume fills it. */
+export function webchatCursorHasGap(cursor: OrderedWebchatCursor): boolean {
+  return cursor.pending.size > 0 || cursor.done !== undefined
+}

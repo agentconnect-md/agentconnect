@@ -16,6 +16,8 @@ export interface ChatSink {
   onPost?(post: RdWebchatPost): void
   /** A published image's original changed state; optional like `onPost`. */
   onImageUpdate?(update: RdWebchatImageUpdate): void
+  /** A daemon's relay link (re)became READY; optional like `onPost`. */
+  onDaemonReady?(daemonId: string): void
 }
 
 /** One cached roster entry (agentId + current placement, as verified by the CP). */
@@ -124,6 +126,11 @@ export class WebchatRouter {
   /** Deliver an original-state update to every browser on the conversation; peers never receive it. */
   deliverImageUpdate(update: RdWebchatImageUpdate): void {
     for (const sink of this.byChatId.get(update.conversationId) ?? []) sink.onImageUpdate?.(update)
+  }
+
+  /** Tell every browser a daemon relinked, so one whose stream it served can resume what the gap dropped. */
+  deliverDaemonReady(daemonId: string): void {
+    for (const sinks of this.byChatId.values()) for (const sink of sinks) sink.onDaemonReady?.(daemonId)
   }
 
   size(): number {

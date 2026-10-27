@@ -15470,9 +15470,11 @@ export class Daemon {
   }
 
   private async dispatchRelayOp(msg: RdMsgWebchat, chat: (event: RdChatEvent) => void): Promise<RdAck> {
+    const relayId = this.relayIngressOf.get(msg)
     const sink: WebchatSink = {
       output: (o) => chat({ kind: 'output', output: o }),
-      done: (d) => chat({ kind: 'done', done: d })
+      done: (d) => chat({ kind: 'done', done: d }),
+      ...(relayId ? { relayId } : {})
     }
     const op = msg.payload
     const key = (): string => this.webchatTransport.webchatSessionKey(msg.chatId, msg.agentId)

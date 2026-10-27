@@ -60,6 +60,7 @@ import {
   acceptWebchatOutput,
   bindWebchatTurn,
   createWebchatCursor,
+  webchatCursorHasGap,
   type OrderedWebchatCursor,
   type OrderedWebchatResult
 } from '@/lib/webchat-stream'
@@ -71,6 +72,7 @@ import {
   lanesOf as lanesOfLanes
 } from '@/lib/webchat-lanes'
 import { createWebchatDeltaBuffer, type WebchatDeltaBuffer } from '@/lib/webchat-delta-buffer'
+import { createWebchatStallWatch, type WebchatStallWatch } from '@/lib/webchat-stall-watch'
 import { filesMarker, type ComposerFile } from '@/lib/webchat-file'
 import type { PlaygroundData, QueuedTurn, WebchatRuntimeConfig } from './contract'
 export type { QueuedTurn } from './contract'
@@ -354,6 +356,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // targeted participant (webchat-multi-agents.md §5.3); keys from lib/webchat-lanes.ts.
   const streamCursors = useRef<Map<string, OrderedWebchatCursor<WebchatOutput, WebchatDone>>>(new Map())
   const reconnectAttempts = useRef<Map<string, number>>(new Map())
+  // An open socket can still lose frames (a relay↔daemon gap), so a busy stream that stalls or holds a hole resumes itself.
+  const stallResumeRef = useRef<(id: string) => void>(() => undefined)
+  const stallWatchRef = useRef<WebchatStallWatch | null>(null)
+  if (!stallWatchRef.current) stallWatchRef.current = createWebchatStallWatch((id) => stallResumeRef.current(id))
+  const stallWatch = stallWatchRef.current
+  // Lanes with a watchdog/resync resume in flight: an outage or another tab's newer resume answers it, never a lost stream.
+  const stallResumes = useRef<Set<string>>(new Set())
   // Standalone set_* operations cannot bind until the first daemon session exists.
   // Keep only fields the user actually touched and attach them atomically to the turn.
   const stagedRuntime = useRef<Map<string, WebchatRuntimeConfig>>(new Map())
@@ -391,13 +400,21 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     stagedWorktree.current.set(id, worktree)
   }, [])
 
-  const setBusy = useCallback((id: string, v: boolean): void => {
-    if (v) busyRef.current[id] = true
-    else delete busyRef.current[id]
-    // Steerability belongs to the live turn: the next turn's status frame declares it afresh.
-    if (!v) delete steerableRef.current[id]
-    setPgBusyBy((cur) => (!!cur[id] === v ? cur : { ...cur, [id]: v }))
-  }, [])
+  const setBusy = useCallback(
+    (id: string, v: boolean): void => {
+      if (v) busyRef.current[id] = true
+      else delete busyRef.current[id]
+      // Steerability belongs to the live turn: the next turn's status frame declares it afresh.
+      if (!v) delete steerableRef.current[id]
+      if (v) stallWatch.observe(id, false)
+      else {
+        stallWatch.clear(id)
+        for (const key of stallResumes.current) if (key.startsWith(laneKey(id))) stallResumes.current.delete(key)
+      }
+      setPgBusyBy((cur) => (!!cur[id] === v ? cur : { ...cur, [id]: v }))
+    },
+    [stallWatch]
+  )
   const setPgInput = useCallback((id: string, v: string): void => {
     if ((pgDrafts.current[id] ?? '') === v) return
     pgDrafts.current = { ...pgDrafts.current, [id]: v }
@@ -875,6 +892,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   }
   const deltaBuffer = deltaBufferRef.current
   useEffect(() => () => deltaBuffer.discardAll(), [deltaBuffer])
+  useEffect(() => () => stallWatch.clearAll(), [stallWatch])
 
   /** Fold a status snapshot (model / context / tokens / cost) into the session's headline
    *  fields + `usage` — this is the live status bar, NOT a transcript step. Only defined
@@ -948,6 +966,15 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   }
   const cursorKeyFor = (id: string, agentId?: string): string | undefined =>
     cursorKeyForLanes(streamCursors.current, id, agentId)
+  /** Re-arm a busy session's stall watch from its lanes: a hole resumes soon, silence only after a long quiet. */
+  const watchLanes = (id: string): void => {
+    if (!busyRef.current[id]) return stallWatch.clear(id)
+    const gap = lanesOf(id).some((key) => {
+      const cursor = streamCursors.current.get(key)
+      return cursor !== undefined && webchatCursorHasGap(cursor)
+    })
+    stallWatch.observe(id, gap)
+  }
   // A steer the daemon could not steer runs as its own turn later: its frames admit a lane
   // exactly like the in-flight send's would, so the reply is not dropped.
   const pendingTurnIdFor = (id: string, turnId: string | undefined): string | undefined =>
@@ -1075,6 +1102,20 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         afterIndex: cursor.nextIndex - 1
       })
     )
+  }
+
+  /** Replay one acked lane the socket may have lost frames of; its verdict is read leniently (see `stallResumes`). */
+  const resumeStalledLane = (ws: WebSocket, key: string): void => {
+    if (!streamCursors.current.get(key)?.turnId) return
+    stallResumes.current.add(key)
+    sendLaneResumeOn(ws, key)
+  }
+  stallResumeRef.current = (id: string): void => {
+    if (!busyRef.current[id]) return
+    const ws = conns.current.get(id)?.ws
+    if (ws?.readyState === WebSocket.OPEN) for (const key of lanesOf(id)) resumeStalledLane(ws, key)
+    // A resume that replays nothing is the healthy quiet case — keep watching.
+    stallWatch.observe(id, false)
   }
 
   /** Open the lane of a steer the daemon admitted as its own turn (#547): the step becomes an
@@ -1247,6 +1288,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       }
       reconnectAttempts.current.delete(id)
       applyStreamResult(id, key, acceptWebchatOutput(cursor, output))
+      watchLanes(id)
     },
     [applyStreamResult]
   )
@@ -1276,6 +1318,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       const cursor = key ? streamCursors.current.get(key) : undefined
       if (!key || !cursor) return
       applyStreamResult(id, key, acceptWebchatDone(cursor, done))
+      watchLanes(id)
     },
     [applyStreamResult]
   )
@@ -1470,6 +1513,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   steered?: boolean
                 }
                 post?: WebchatPost
+                agentIds?: string[]
                 initiator?: string
                 update?: WebchatImageUpdate
                 refused?: { op?: string; agentId?: string; reason?: string }
@@ -1664,9 +1708,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 const cursor = key ? streamCursors.current.get(key) : undefined
                 if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
                 if (key) pendingTurnFrames.current.get(id)?.attaching?.delete(key)
+                if (key) stallResumes.current.delete(key)
                 reconnectAttempts.current.delete(id)
               } else if (m.type === 'resumed' && m.ack?.accepted === false) {
                 const key = cursorKeyFor(id, m.ack?.agentId)
+                // No daemon link yet (the outage the resume probes) or a newer tab's resume: keep the lane for the next try.
+                const transient = m.ack.reason === 'stream_stale' || m.ack.reason === 'no_agent'
+                if (key && stallResumes.current.delete(key) && transient) return
                 const pending = pendingTurnFrames.current.get(id)
                 if (key && pending?.resentOn === ws && pending.attaching?.has(key)) {
                   pending.attaching.delete(key)
@@ -1703,13 +1751,25 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 }
               } else if (m.type === 'ack' && m.ack?.accepted === false) {
                 rejectLane(m.ack.agentId, m.ack.turnId, m.ack.reason, m.ack.detail)
+              } else if (m.type === 'resync') {
+                // A participant's daemon relinked to the relay: replay what it streamed while unlinked.
+                const agentIds = Array.isArray(m.agentIds) ? m.agentIds : undefined
+                for (const key of lanesOf(id)) {
+                  const laneAgent = laneAgentId(key)
+                  if (agentIds && laneAgent && !agentIds.includes(laneAgent)) continue
+                  resumeStalledLane(ws, key)
+                }
               } else if (m.type === 'refused' && m.refused?.reason) {
                 // A runtime change the agent refused: only this browser is told, and the reason names who may make it.
                 pushStep(id, { kind: 'notice', text: `🔒 ${m.refused.reason}`, standing: true })
               } else if (m.type === 'error') {
-                // An error frame with nothing in flight (e.g. an older relay answering
-                // the attach probe with 'unrecognized frame') must not push a warning
-                // step into an idle transcript.
+                // A single-participant relay answers a resume it cannot deliver this way; resync or the watchdog retries.
+                const stalled = [...stallResumes.current].find((key) => key.startsWith(laneKey(id)))
+                if (stalled !== undefined) {
+                  stallResumes.current.delete(stalled)
+                  return
+                }
+                // An idle transcript takes no warning (an older relay answers the attach probe with an error).
                 if (busyRef.current[id]) failStream(id, 'Connection error.')
               }
             }
