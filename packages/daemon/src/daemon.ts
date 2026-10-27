@@ -25428,7 +25428,8 @@ export class Daemon {
         })
       if (failed?.length)
         this.log.warn(`remote MCP: could not renew the grant of ${failed.length} open conversation(s); retrying`)
-      if (!this.draining) this.armWebchatGrantRenewal()
+      // The shutdown latch, not `draining`: a temporary daemon/drain re-opens the gate without re-arming this.
+      if (!this.shutdownDraining) this.armWebchatGrantRenewal()
     }, WEBCHAT_MCP_GRANT_RENEW_SWEEP_MS)
   }
 
