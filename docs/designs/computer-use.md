@@ -1158,7 +1158,10 @@ input: DataChannel ─▶ Computer (same lease / arbitration as agents)
   (`stunUrls`, the token's `stun`). With them, the desktop gathers host and server-reflexive candidates with werift
   (full ICE, not ICE-lite) and so does the browser; ICE checks host pairs first, so a same-network viewer still gets
   the host path. Candidates trickle over the relay signaling: the browser posts its own to `rtc/candidate` after the
-  answer and fetches the desktop's late ones from `rtc/candidates`.
+  answer and fetches the desktop's late ones from `rtc/candidates`. The desktop holds its server-reflexive candidates
+  out of the offer and releases them once it has sent checks to a public browser candidate (or the browser's gathering
+  ends): a connection-tracking NAT that saw the browser knock first maps the desktop's reply to another port, and
+  the punch then fails both ways.
 - **Cross-internet tuning**: on a Windows → Mac link with about 93 ms RTT and 5–10 Mbps, unpaced keyframe bursts of
   about 500 KB lost 20% of packets and decoded zero frames. The fix: pace at 1.5× the bitrate; VBV buffer = bitrate / 4
   (keyframes about 78 KB); 1 s GOP; 2.5 Mbps default.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RTCPeerConnection } from 'werift'
-import { iceReport, onlyCandidatesFor } from './rtc.js'
+import { iceReport, onlyCandidatesFor, withoutReflexive } from './rtc.js'
 
 describe('onlyCandidatesFor', () => {
   it('keeps only the advertised host candidate', () => {
@@ -51,5 +51,22 @@ describe('iceReport', () => {
 
   it('says so when the peer has no ICE transport', () => {
     expect(iceReport({ iceTransports: [] } as unknown as RTCPeerConnection, 0)).toBe('no ICE transport')
+  })
+})
+
+describe('withoutReflexive', () => {
+  it('drops the server-reflexive candidates and the end-of-candidates marker', () => {
+    const sdp = [
+      'v=0',
+      'a=candidate:1 1 udp 2130706431 10.0.0.5 40000 typ host',
+      'a=candidate:2 1 udp 1694498815 64.38.144.146 40000 typ srflx raddr 10.0.0.5 rport 40000',
+      'a=end-of-candidates',
+      ''
+    ].join('\r\n')
+    expect(withoutReflexive(sdp).split('\r\n')).toEqual([
+      'v=0',
+      'a=candidate:1 1 udp 2130706431 10.0.0.5 40000 typ host',
+      ''
+    ])
   })
 })
