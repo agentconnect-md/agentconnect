@@ -10,6 +10,7 @@ import { AhpClient } from '@microsoft/agent-host-protocol/client'
 import { WebSocketTransport } from '@microsoft/agent-host-protocol/ws'
 import {
   ActionType,
+  AhpErrorCodes,
   chatReducer,
   ChatInputAnswerState,
   ChatInputAnswerValueKind,
@@ -18,6 +19,7 @@ import {
   ResponsePartKind,
   ToolCallConfirmationReason,
   ToolCallStatus,
+  ToolResultContentType,
   type ActionEnvelope,
   type ChatAction,
   type ChatState,
@@ -278,6 +280,35 @@ async function connect(url: string) {
 }
 
 describe('actual Daemon AHP acceptance with official SDK and an ACP process', () => {
+  it('shows a runtime edit as a file edit whose snapshots read back from the transcript', async () => {
+    const files = scaffold()
+    const host = await boot(files.root, registry())
+    const viewer = await host.connect()
+    await viewer.client.initialize({ clientId: 'viewer', protocolVersions: ['1.0.0'] })
+    await viewer.client.request('createSession', { channel: uri, provider: agentId })
+    await viewer.subscribe()
+    viewer.send(randomUUID(), '[ahp:edit]')
+    await expect.poll(() => viewer.state()?.turns.length, WAIT).toBe(1)
+    const tool = viewer
+      .state()!
+      .turns[0]!.responseParts.find(
+        (part) => part.kind === ResponsePartKind.ToolCall && part.toolCall.toolCallId === 'runtime:fixture-edit'
+      )
+    if (tool?.kind !== ResponsePartKind.ToolCall || tool.toolCall.status !== ToolCallStatus.Completed)
+      throw new Error('Missing completed edit')
+    const edit = tool.toolCall.content?.find((item) => item.type === ToolResultContentType.FileEdit)
+    if (edit?.type !== ToolResultContentType.FileEdit) throw new Error('Missing file edit')
+    expect(edit).toMatchObject({ after: { uri: 'file:///work/fixture.txt' }, diff: { added: 1, removed: 1 } })
+    const read = (contentUri: string) =>
+      viewer.client.request('resourceRead', { channel: 'ahp-root://', uri: contentUri })
+    expect(await read(edit.before!.content.uri)).toMatchObject({ data: 'old line\n', encoding: 'utf-8' })
+    expect(await read(edit.after!.content.uri)).toMatchObject({ data: 'new line\n', encoding: 'utf-8' })
+    await expect(
+      read(edit.after!.content.uri.replace(Buffer.from(uri).toString('hex'), Buffer.from(`${uri}x`).toString('hex')))
+    ).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
+    expect(viewer.closed()).toBe(false)
+  })
+
   it('creates, approves, answers, reconnects, cancels and cold-resumes without duplicate execution', async () => {
     const files = scaffold()
     const metadata = registry()

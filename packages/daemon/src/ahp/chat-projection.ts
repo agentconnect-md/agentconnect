@@ -14,13 +14,16 @@ import {
   type ChatState
 } from '@microsoft/agent-host-protocol'
 import type { MaskedChatEvent } from '../session/chat-events.js'
+import type { ToolEdit } from '../session/tool-edits.js'
 import { ahpInputRequest, ahpSubmittedAnswers } from './chat-input.js'
+import { fileEditContent } from './file-edits.js'
 
 export class AhpChatProjection {
   private value: ChatState
   private generation = -1
   private partSequence = 0
   private part?: { id: string; kind: 'text' | 'reasoning' }
+  private readonly edits = new Map<string, ToolEdit[]>()
 
   constructor(
     private readonly sessionId: string,
@@ -121,6 +124,7 @@ export class AhpChatProjection {
       case 'tool': {
         this.part = undefined
         const toolCallId = `runtime:${event.id}`
+        if (event.edits) this.edits.set(toolCallId, event.edits)
         let tool = this.tool(toolCallId)
         if (!tool) {
           this.emit({
@@ -146,6 +150,15 @@ export class AhpChatProjection {
           (event.status === 'completed' || event.status === 'failed') &&
           this.tool(toolCallId)?.status === ToolCallStatus.Running
         ) {
+          const edits =
+            event.status === 'completed'
+              ? (this.edits.get(toolCallId) ?? []).map((edit) => fileEditContent(this.sessionUri(), event.id, edit))
+              : []
+          this.edits.delete(toolCallId)
+          const content = [
+            ...(event.output !== undefined ? [{ type: ToolResultContentType.Text as const, text: event.output }] : []),
+            ...edits
+          ]
           this.emit({
             type: ActionType.ChatToolCallComplete,
             turnId,
@@ -153,9 +166,7 @@ export class AhpChatProjection {
             result: {
               success: event.status === 'completed',
               pastTenseMessage: event.title,
-              ...(event.output !== undefined
-                ? { content: [{ type: ToolResultContentType.Text, text: event.output }] }
-                : {})
+              ...(content.length ? { content } : {})
             }
           })
         }
@@ -240,6 +251,7 @@ export class AhpChatProjection {
         return
       }
       case 'finished': {
+        this.edits.clear()
         const duration = Math.max(0, event.at - Date.parse(active.startedAt))
         this.settlePending()
         if (event.outcome === 'failed')
@@ -296,6 +308,10 @@ export class AhpChatProjection {
           reason: ToolCallCancellationReason.Skipped
         })
     }
+  }
+
+  private sessionUri(): string {
+    return `ahp-session:${this.value.resource.slice('ahp-chat:'.length, -'/main'.length)}`
   }
 
   private tool(id: string) {

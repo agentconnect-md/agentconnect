@@ -18,6 +18,7 @@ import {
 } from '@microsoft/agent-host-protocol'
 import { AhpMessageText, AhpSessionUri, type AhpHandshake, type RdAhpClose } from '@agentconnect.md/protocol'
 import type { AhpActionJournal } from './action-journal.js'
+import { parseFileEditUri, type FileEditRef } from './file-edits.js'
 
 export class AhpProtocolError extends Error {
   constructor(
@@ -46,6 +47,7 @@ export interface AhpHostPort {
   dispatch(params: DispatchActionParams, origin: ActionOrigin): Promise<void>
   fetchTurns?(params: FetchTurnsParams): Promise<ChatTurnsLoadedAction | undefined>
   customRequest?(method: 'agentconnect/appRpc' | 'agentconnect/appClose', params: unknown): Promise<unknown>
+  readFileEdit?(ref: FileEditRef): Promise<string | undefined>
   subscribeNotification?(listener: (notification: AhpCatalogNotification) => void): () => void
 }
 
@@ -88,6 +90,10 @@ const createSession = z
 const fetchTurns = z.object({
   channel: channel.refine((value) => value.startsWith('ahp-chat:/')),
   cursor: cursor.optional()
+})
+const resourceRead = rootParams.extend({
+  uri: z.string().min(1).max(32768),
+  encoding: z.enum(['base64', 'utf-8']).optional()
 })
 const dispatch = z.object({
   channel,
@@ -286,6 +292,22 @@ export class AhpHostConnection {
       case 'dispatchAction':
         await this.dispatch(parse(dispatch, message.params) as DispatchActionParams)
         return undefined
+      case 'resourceRead': {
+        const params = parse(resourceRead, message.params)
+        const ref = parseFileEditUri(params.uri)
+        if (!ref || !this.port.readFileEdit) throw new AhpProtocolError(AhpErrorCodes.NotFound, 'Resource not found')
+        await this.prepare(ref.sessionUri)
+        const text = await this.port.readFileEdit(ref)
+        this.assertAuthorized()
+        if (text === undefined) throw new AhpProtocolError(AhpErrorCodes.NotFound, 'Resource not found')
+        const result =
+          params.encoding === 'base64'
+            ? { data: Buffer.from(text).toString('base64'), encoding: 'base64', contentType: 'text/plain' }
+            : { data: text, encoding: 'utf-8', contentType: 'text/plain' }
+        if (!this.fits({ jsonrpc: '2.0', id: message.id, result }))
+          throw new AhpProtocolError(JsonRpcErrorCodes.InvalidRequest, 'Resource exceeds the message limit')
+        return result
+      }
       case 'agentconnect/appRpc':
       case 'agentconnect/appClose': {
         if (!this.port.customRequest) throw new AhpProtocolError(JsonRpcErrorCodes.MethodNotFound, 'Unknown method')

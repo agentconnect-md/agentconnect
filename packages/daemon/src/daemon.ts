@@ -3182,6 +3182,21 @@ export class Daemon {
         }
       },
       dispatch: (params, origin, context) => dispatchAhpAction(actions, params, origin, context, dispatchEnvironment),
+      toolBody: async (binding, auth, toolCallId) => {
+        const local = await this.store.getSessionByOutwardId(binding.sessionId, auth.agentId)
+        if (!local) return undefined
+        const body = await this.store.getToolBodyForAgent(
+          {
+            transcriptChannel: transcriptChannelKey(local.channel, local.transportScope),
+            coordinate: local.thread,
+            sessionKey: local.key,
+            agentId: auth.agentId,
+            orgId: auth.orgId
+          },
+          toolCallId
+        )
+        return body === undefined ? undefined : this.maskAgentSecrets(auth.agentId, body)
+      },
       customRequest: (method, params, context, isCurrent) =>
         dispatchAhpAppRequest(
           method,
