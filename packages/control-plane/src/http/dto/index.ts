@@ -3755,20 +3755,60 @@ export const WorkspaceTransferOperationQuery = z
   })
   .strict()
 
+/** A multipart upload's cut: `partBytes` per part but the last, and each part's base64 SHA-256 in order. */
+const FileUploadParts = z
+  .object({
+    partBytes: z.number().int().positive(),
+    sha256: z.array(TransferSha256).min(1).max(10_000)
+  })
+  .strict()
+
 /** One file the console is about to upload for a webchat turn; the browser hashes it first. */
 export const FileUploadBody = z
   .object({
     name: TransferFileName,
     mimeType: TransferMimeType,
     size: z.number().int().positive(),
-    sha256: TransferSha256
+    sha256: TransferSha256, // the file's digest, or with `parts` the composite of the part digests
+    parts: FileUploadParts.optional() // upload in parts (runtime config's `fileTransfer.partBytes` is the largest part)
   })
   .strict()
 
-export const FileUploadDto = z.object({
-  uploadId: z.string(), // name it in the webchat turn's `files` once the PUT succeeded
-  url: z.string(), // presigned PUT
-  headers: z.record(z.string(), z.string()), // send exactly these (a browser sets content-length itself)
+const SignedRequestDto = z.object({
+  url: z.string(),
+  headers: z.record(z.string(), z.string()) // send exactly these (a browser sets content-length itself)
+})
+
+const PartUrlDto = SignedRequestDto.extend({ partNumber: z.number().int().positive() })
+
+const FileUploadMultipartDto = z.object({
+  multipartId: z.string(), // names the store's multipart upload in `…/uploads/:uploadId/parts`
+  parts: z.array(PartUrlDto), // the first parts' PUTs; ask `…/parts` for the rest and before these expire
+  complete: SignedRequestDto // POST the CompleteMultipartUpload XML (each part's ETag and checksum) here
+})
+
+export const FileUploadDto = z.union([
+  // One PUT: name `uploadId` in the webchat turn's `files` once it succeeded.
+  SignedRequestDto.extend({ uploadId: z.string(), expiresAt: z.string() }),
+  // In parts: name `uploadId` once the complete succeeded.
+  z.object({ uploadId: z.string(), expiresAt: z.string(), multipart: FileUploadMultipartDto })
+])
+
+export const FileUploadPartsParams = z.object({ id: z.string(), uploadId: z.string().uuid() })
+
+/** More, or fresh, part URLs for a multipart upload: the same cut it was reserved with, and the parts wanted now. */
+export const FileUploadPartsBody = z
+  .object({
+    multipartId: z.string().min(1).max(1024),
+    size: z.number().int().positive(),
+    partBytes: z.number().int().positive(),
+    parts: z.array(z.object({ partNumber: z.number().int().positive(), sha256: TransferSha256 }).strict()).max(100)
+  })
+  .strict()
+
+export const FileUploadPartsDto = z.object({
+  parts: z.array(PartUrlDto),
+  complete: SignedRequestDto,
   expiresAt: z.string()
 })
 

@@ -1,5 +1,6 @@
 import {
   evaluateSourceCacheLifecycle,
+  multipartAbortLifecycleRule,
   sourceCacheLifecycleRules,
   sourceCacheSrcPrefix,
   type SourceCacheObjectClient
@@ -18,6 +19,8 @@ export interface LifecycleGate {
   status(): LifecycleStatus
   /** Whether transfers may run: a failed read leaves them on, an affirmatively missing or short rule does not. */
   enabled(): boolean
+  /** Whether uploads may go in parts: transfers run, and no read showed the abort rule for unfinished uploads missing. */
+  multipart(): boolean
   /** Read the configuration now; never throws. */
   check(): Promise<LifecycleStatus>
   start(): void
@@ -33,6 +36,7 @@ export function createLifecycleGate(deps: {
   recheckMs?: number
 }): LifecycleGate {
   let status: LifecycleStatus = 'unknown'
+  let multipartAbort: boolean | undefined
   let timer: NodeJS.Timeout | undefined
   const src = sourceCacheSrcPrefix(deps.prefix)
 
@@ -59,6 +63,14 @@ export function createLifecycleGate(deps: {
       } else if (next === 'present' && status !== 'present') {
         deps.log.info(`file transfer: bucket lifecycle rules for ${src} are present`)
       }
+      // Only while transfers run does the abort rule decide anything: whether an upload may go in parts.
+      const abort = evaluation?.multipartAbort ?? false
+      if (next === 'present' && !abort && (status !== 'present' || multipartAbort !== false)) {
+        deps.log.warn(
+          `file transfer: the bucket has no enabled lifecycle rule aborting unfinished multipart uploads under ${src}; uploads larger than one part are refused until it does. Add this rule: ${JSON.stringify(multipartAbortLifecycleRule(deps.prefix))}`
+        )
+      }
+      multipartAbort = abort
     } catch (err) {
       next = 'unknown'
       if (status !== 'unknown')
@@ -73,6 +85,7 @@ export function createLifecycleGate(deps: {
   return {
     status: () => status,
     enabled: () => status === 'present' || status === 'unknown',
+    multipart: () => (status === 'present' || status === 'unknown') && multipartAbort !== false,
     check,
     start() {
       if (timer) return

@@ -258,7 +258,11 @@ spec:
             {{- end }}
             {{- $_ := set $document "publicEndpoint" . }}
             {{- end }}
-            {{- $_ := set $document "limits" (dict "maxBytes" ($limits.transferMaxBytes | default "512Mi") "urlSeconds" ($limits.transferUrlLifetime | default "30m") "putUrlSeconds" ($limits.putUrlLifetime | default "15m")) }}
+            {{- $transferLimits := dict "partBytes" ($limits.transferPartBytes | default "512Mi") "urlSeconds" ($limits.transferUrlLifetime | default "30m") "putUrlSeconds" ($limits.putUrlLifetime | default "15m") }}
+            {{- with $limits.transferMaxBytes }}
+            {{- $_ := set $transferLimits "maxBytes" . }}
+            {{- end }}
+            {{- $_ := set $document "limits" $transferLimits }}
             {{- $_ := set $document "credentials" (include "agentconnect.sourceCacheCredentials" $sourceCache | fromJson) }}
             # Console file transfer: the Control Plane signs every URL for the Source Cache bucket; bytes never cross it.
             - name: AC_FILE_TRANSFER

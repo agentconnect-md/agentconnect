@@ -43,12 +43,18 @@ export const WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES = 1024 * 1024
 export const FILE_TRANSFER_FEATURE = 'file-transfer-v2'
 export const WEBCHAT_FILES_MAX = 4
 
+function deploymentBytes(key: 'FILE_TRANSFER_MAX_BYTES' | 'FILE_TRANSFER_PART_BYTES'): number | undefined {
+  const raw = typeof window === 'undefined' ? process.env[key] : window.__AC_ENV?.[key]
+  const bytes = Number(raw)
+  return raw && Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined
+}
+
 /** The deployment's console file transfer, as the Control Plane's runtime config published it; undefined when off. */
-export function deploymentFileTransfer(): { maxBytes: number } | undefined {
-  const raw =
-    typeof window === 'undefined' ? process.env.FILE_TRANSFER_MAX_BYTES : window.__AC_ENV?.FILE_TRANSFER_MAX_BYTES
-  const maxBytes = Number(raw)
-  return raw && Number.isSafeInteger(maxBytes) && maxBytes > 0 ? { maxBytes } : undefined
+export function deploymentFileTransfer(): { maxBytes: number; partBytes?: number } | undefined {
+  const maxBytes = deploymentBytes('FILE_TRANSFER_MAX_BYTES')
+  if (maxBytes === undefined) return undefined
+  const partBytes = deploymentBytes('FILE_TRANSFER_PART_BYTES')
+  return partBytes === undefined ? { maxBytes } : { maxBytes, partBytes }
 }
 
 /** Files move through the bucket when the deployment signs transfers and the agent's daemon speaks that flow. */

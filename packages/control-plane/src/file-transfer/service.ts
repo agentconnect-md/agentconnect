@@ -20,7 +20,10 @@ import {
   isTransferObjectKey,
   transferDownloadKey,
   type FileTransfer,
-  type TransferObjectKey
+  type MultipartGrant,
+  type PartUrl,
+  type TransferObjectKey,
+  type TransferUrl
 } from './transfer.js'
 
 // The control plane's half of console file transfer (source-cache-file-transfer.md §5): stat, cache check, ticketed upload, sign.
@@ -77,13 +80,28 @@ export function isTransferPending(result: WorkspaceTransferResult): result is Wo
 }
 
 export interface FileTransferService {
+  /** The largest object one PUT carries, which is what a daemon may upload. */
   readonly maxBytes: number
-  reserveUpload(input: { orgId: string; agentId: string; size: number; sha256: string }): Promise<{
+  /** What the console may upload right now (runtime config). */
+  uploadLimits(): { maxBytes: number; partBytes?: number }
+  /** A browser upload: one PUT, or with `parts` a multipart upload whose first part URLs come back. */
+  reserveUpload(input: {
+    orgId: string
+    agentId: string
+    size: number
+    sha256: string
+    parts?: { partBytes: number; sha256: readonly string[] }
+  }): Promise<(TransferUrl & { uploadId: string }) | MultipartGrant>
+  /** More, or fresh, part URLs and a fresh complete for a multipart upload reserved for `agentId`. */
+  signUploadParts(input: {
+    orgId: string
+    agentId: string
     uploadId: string
-    url: string
-    headers: Record<string, string>
-    expiresAt: number
-  }>
+    multipartId: string
+    size: number
+    partBytes: number
+    parts: ReadonlyArray<{ partNumber: number; sha256: string }>
+  }): Promise<{ parts: PartUrl[]; complete: TransferUrl; expiresAt: number }>
   workspaceDownload(input: {
     orgId: string
     daemonId: string
@@ -110,6 +128,7 @@ function refusal(err: unknown): unknown {
   if (!(err instanceof FileTransferError)) return err
   if (err.reason === 'stale') return new FileTransferRefusal(409, 'WORKSPACE_STALE', err.message)
   if (err.reason === 'too-large') return new FileTransferRefusal(400, 'WORKSPACE_TOO_LARGE', err.message)
+  if (err.reason === 'invalid') return new FileTransferRefusal(400, 'WORKSPACE_UPLOAD_INVALID', err.message)
   return new FileTransferRefusal(409, 'WORKSPACE_TRANSFER_UNAVAILABLE', err.message)
 }
 
@@ -155,10 +174,21 @@ export function createFileTransferService(deps: {
 
   return {
     maxBytes: transfer.maxBytes,
+    uploadLimits: () => transfer.uploadLimits(),
 
-    async reserveUpload({ orgId, agentId, size, sha256 }) {
+    async reserveUpload({ orgId, agentId, size, sha256, parts }) {
       try {
-        return await transfer.grantUpload({ org: orgId, agentId, size, sha256 })
+        if (!parts) return await transfer.grantUpload({ org: orgId, agentId, size, sha256 })
+        const layout = { size, partBytes: parts.partBytes, parts: parts.sha256 }
+        return await transfer.grantMultipartUpload({ org: orgId, agentId, sha256, layout })
+      } catch (err) {
+        throw refusal(err)
+      }
+    },
+
+    async signUploadParts({ orgId, agentId, ...rest }) {
+      try {
+        return await transfer.signParts({ org: orgId, agentId, ...rest })
       } catch (err) {
         throw refusal(err)
       }

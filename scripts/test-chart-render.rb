@@ -756,7 +756,7 @@ abort("unexpected file transfer document: #{transfer_doc_of.call(secret_cp)}") u
     'source' => 'static', 'dir' => '/var/run/ac-source-cache',
     'accessKeyIdKey' => 'AWS_ACCESS_KEY_ID', 'secretAccessKeyKey' => 'AWS_SECRET_ACCESS_KEY'
   },
-  'limits' => { 'maxBytes' => '512Mi', 'urlSeconds' => '30m', 'putUrlSeconds' => '15m' }
+  'limits' => { 'partBytes' => '512Mi', 'urlSeconds' => '30m', 'putUrlSeconds' => '15m' }
 }
 abort('the control plane must mount the bucket Secret read-only at 0400') unless
   secret_cp_pod.fetch('volumes').include?({ 'name' => 'source-cache-credentials', 'secret' => { 'secretName' => 'example-source-cache', 'defaultMode' => 0o400 } }) &&

@@ -15,7 +15,14 @@ function bucket(opts: { enabled?: boolean; stored?: boolean; seen?: unknown[] } 
   return {
     enabled: () => opts.enabled ?? true,
     maxBytes: 100,
+    uploadLimits: () => ({ maxBytes: 100 }),
     grantUpload: async () => ({ uploadId: 'u', url: 'https://store.example.test/u', headers: {}, expiresAt: 1 }),
+    grantMultipartUpload: async () => {
+      throw new Error('unused')
+    },
+    signParts: async () => {
+      throw new Error('unused')
+    },
     uploadedFileUrl: async () => undefined,
     cachedDownload: async () => undefined,
     signPut: async (input) => {

@@ -37,7 +37,7 @@ export function stageComposerFile(
   // A removed entry stays removed: the settled upload updates only an entry still staged under its key.
   const settle = (patch: Partial<ComposerFile>) =>
     setPgFiles(sessionId, (files) => files.map((f) => (f.key === key ? { ...f, ...patch } : f)))
-  uploadWebchatFile(agentId, file).then(
+  uploadWebchatFile(agentId, file, { partBytes: deploymentFileTransfer()?.partBytes }).then(
     (attachment) => settle({ status: 'ready', attachment }),
     (error: unknown) =>
       settle({ status: 'failed', error: error instanceof Error ? error.message : 'Couldn’t upload that file.' })
