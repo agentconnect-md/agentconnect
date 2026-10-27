@@ -81,6 +81,11 @@ export function buildSyntheticMessage(
   return { agentId, msg }
 }
 
+/** A headless fire's session: its channel is the `cron:<id>` sender minted above, so it has no conversation to post into. */
+export function isHeadlessCronSession(rec: { channel: string; triggeredBy?: string | null }): boolean {
+  return rec.triggeredBy?.startsWith('cron:') === true && rec.channel === rec.triggeredBy
+}
+
 /** Staleness cap on a catch-up: past this, a swallowed moment is history rather than a late fire. */
 const CATCH_UP_GRACE_CAP_MS = 60 * 60 * 1_000
 

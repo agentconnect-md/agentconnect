@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   buildSyntheticMessage,
+  isHeadlessCronSession,
   missedOccurrence,
   scheduleFingerprint,
   scheduledRunContext,
@@ -71,6 +72,16 @@ describe('buildSyntheticMessage', () => {
     // The key is platform-shaped for continuity, so the message has to SAY it reaches no conversation.
     expect(msg.syntheticChannel).toBe(true)
     expect(msg.text.endsWith('post health report')).toBe(true)
+  })
+
+  it("recognizes a headless fire's session by its channel being its own cron sender", () => {
+    const headless = buildSyntheticMessage('bot-a', cron('daily', { target: undefined }), 't', FIRED_AT).msg
+    expect(isHeadlessCronSession({ channel: headless.channel, triggeredBy: headless.sender.id })).toBe(true)
+    const anchored = buildSyntheticMessage('bot-a', cron('daily'), 't', FIRED_AT).msg
+    expect(isHeadlessCronSession({ channel: anchored.channel, triggeredBy: anchored.sender.id })).toBe(false)
+    // A Telegram private chat shares its id with its sender, and is still a real conversation.
+    expect(isHeadlessCronSession({ channel: '12345', triggeredBy: '12345' })).toBe(false)
+    expect(isHeadlessCronSession({ channel: 'cron:daily', triggeredBy: null })).toBe(false)
   })
 
   it('an anchored cron posts to a real channel, so it mints nothing', () => {

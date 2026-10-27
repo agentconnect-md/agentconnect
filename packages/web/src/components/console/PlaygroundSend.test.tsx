@@ -1070,6 +1070,24 @@ describe('reconnect after an unacked turn', () => {
     expect(texts.some((text) => /busy|no live daemon/.test(text))).toBe(false)
   })
 
+  // A live daemon that could not post the turn to the session's origin conversation is not an absent daemon.
+  it('says the message could not reach the origin conversation instead of calling the daemon offline', async () => {
+    const { first, turn } = await sendAndOpen()
+    await act(async () => {
+      first.onmessage?.({
+        data: JSON.stringify({
+          type: 'ack',
+          ack: { accepted: false, reason: 'integration_delivery_failed', turnId: turn.turnId, agentId: 'agent-1' }
+        })
+      })
+    })
+    const texts = getLiveSteps('s1').map((step) => step.text ?? '')
+    expect(
+      texts.filter((text) => /could not be posted to the conversation this session came from/.test(text))
+    ).toHaveLength(1)
+    expect(texts.some((text) => /no live daemon/.test(text))).toBe(false)
+  })
+
   it('tells this reader why the agent refused their runtime change, and keeps it standing', async () => {
     const { first } = await sendAndOpen()
     const reason = 'Only an Agent editor or the owner of this conversation can change its runtime settings.'
