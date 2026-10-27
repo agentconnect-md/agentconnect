@@ -4,6 +4,7 @@ import type { Grant } from './macos-grants.js'
 import type { Check } from './setup.js'
 import type { TrayState, TrayTone } from './linux/tray.js'
 import { HelperTray } from './tray-helper.js'
+import type { FirewallVerdict } from './windows-firewall.js'
 
 export type Mark = 'ok' | 'fail' | 'warn' | 'progress'
 
@@ -45,7 +46,7 @@ export interface MenuBarFacts {
   ffmpeg: { version: string; installed: boolean; installable: boolean; installing?: boolean }
   startAtLogin: boolean
   // Set on Windows, where the service replaces the macOS grants: whether it runs the daemon, and its UAC prompts.
-  windows?: { service: boolean; adminPrompts?: AdminPromptFacts }
+  windows?: { service: boolean; adminPrompts?: AdminPromptFacts; firewall?: FirewallVerdict['state'] }
 }
 
 // Who answers UAC prompts (computer-use.md §4.2.1), set here or in the console; a registered desktop needs its Control Plane to change it.
@@ -63,7 +64,7 @@ export interface AdminPromptFacts {
 // `stale`: once held, now not in effect: switched off, or held by an earlier ad-hoc build of the app.
 export type GrantState = 'allowed' | 'off' | 'stale'
 
-export type Busy = 'driver' | 'ffmpeg' | 'control-plane' | 'admin-prompts'
+export type Busy = 'driver' | 'ffmpeg' | 'control-plane' | 'admin-prompts' | 'firewall'
 
 const FACTS_REFRESH_MS = 30_000
 
@@ -83,14 +84,40 @@ export const ADMIN_PROMPT_LABELS: Record<ComputerAdminPromptMode, string> = {
   deny: 'Always Deny'
 }
 
-// Windows rows in place of the macOS grants: the service, and who answers UAC prompts while an agent is in control.
-const windowsRows = ({ service, adminPrompts }: NonNullable<MenuBarFacts['windows']>, busy: boolean): MenuItem[] => {
+const FIREWALL_PROBLEM: Record<Exclude<FirewallVerdict['state'], 'allowed'>, string> = {
+  missing: 'no rule for direct video',
+  blocked: 'blocks direct video',
+  uncovered: 'blocks direct video on this network'
+}
+
+// Whether the console's viewer can reach this computer's WebRTC media directly; undefined while the rules cannot be read.
+const firewallRow = (state: FirewallVerdict['state'] | undefined, busy: boolean): MenuItem =>
+  busy
+    ? { title: 'Windows Firewall: adding the rule…', mark: 'progress', enabled: false }
+    : state === 'allowed'
+      ? { title: 'Windows Firewall: direct video allowed', mark: 'ok', enabled: false }
+      : state === undefined
+        ? { title: 'Windows Firewall: cannot read the rules', mark: 'warn', enabled: false }
+        : {
+            id: 'firewall',
+            title: `Windows Firewall: ${FIREWALL_PROBLEM[state]}, click to allow`,
+            mark: 'fail'
+          }
+
+// Windows rows in place of the macOS grants: the service, its firewall rule, and who answers UAC prompts.
+const windowsRows = (
+  { service, adminPrompts, firewall }: NonNullable<MenuBarFacts['windows']>,
+  busy: ReadonlySet<Busy>
+): MenuItem[] => {
   if (!service)
     return [
       { title: 'Service: not installed, run agentconnect computer setup', mark: 'warn', enabled: false },
       { title: 'Administrator prompts: out of reach without the service', mark: 'warn', enabled: false }
     ]
-  const rows: MenuItem[] = [{ title: 'Service: running as SYSTEM', mark: 'ok', enabled: false }]
+  const rows: MenuItem[] = [
+    { title: 'Service: running as SYSTEM', mark: 'ok', enabled: false },
+    firewallRow(firewall, busy.has('firewall'))
+  ]
   if (!adminPrompts) return rows
   if (adminPrompts.problem)
     rows.push({ title: `Administrator prompts: ${adminPrompts.problem}`, mark: 'fail', enabled: false })
@@ -98,13 +125,13 @@ const windowsRows = ({ service, adminPrompts }: NonNullable<MenuBarFacts['window
     rows.push({ title: `Administrator prompt waiting: ${adminPrompts.pending}`, mark: 'warn', enabled: false })
   const modes = Object.entries(ADMIN_PROMPT_LABELS) as Array<[ComputerAdminPromptMode, string]>
   rows.push({
-    title: `Administrator Prompts: ${busy ? 'saving…' : ADMIN_PROMPT_LABELS[adminPrompts.mode]}`,
+    title: `Administrator Prompts: ${busy.has('admin-prompts') ? 'saving…' : ADMIN_PROMPT_LABELS[adminPrompts.mode]}`,
     items: [
       ...modes.map(([mode, title]) => ({
         id: `admin-prompts:${mode}`,
         title,
         checked: mode === adminPrompts.mode,
-        enabled: adminPrompts.editable && !busy
+        enabled: adminPrompts.editable && !busy.has('admin-prompts')
       })),
       ...(adminPrompts.locked
         ? [
@@ -158,7 +185,7 @@ export function menuBarMenu(tray: TrayState, facts: MenuBarFacts, busy: Readonly
       enabled: cpMark === 'fail' && facts.controlPlane.state !== 'revoked'
     },
     ...(windows
-      ? windowsRows(windows, busy.has('admin-prompts'))
+      ? windowsRows(windows, busy)
       : [
           grant('Screen Recording', facts.screenRecording, 'screen-recording'),
           grant('Device Control (Accessibility)', facts.accessibility, 'accessibility')
@@ -219,6 +246,8 @@ export interface MenuBarHost {
   setStartAtLogin(on: boolean): void
   // Windows: who answers UAC prompts, stored where the console reads it too.
   setAdminPrompts?(mode: ComputerAdminPromptMode): Promise<void>
+  // Windows: the inbound rule the viewer's direct WebRTC media needs.
+  allowFirewall?(): Promise<void>
   openLogs(): void
   uninstall(): void
   quit(): void
@@ -298,6 +327,8 @@ export function startMenuBar(
         return task('driver', () => host.installDriver())
       case 'ffmpeg':
         return task('ffmpeg', () => host.installFfmpeg())
+      case 'firewall':
+        return host.allowFirewall && task('firewall', () => host.allowFirewall!())
       case 'start-at-login':
         host.setStartAtLogin(!(facts?.startAtLogin ?? true))
         return void refresh()

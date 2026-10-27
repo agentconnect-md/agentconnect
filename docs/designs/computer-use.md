@@ -263,7 +263,9 @@ daemon runs as its own app:
   RDP session from the console session.
 - Firewall: `setup` uses one UAC prompt to add an inbound allow rule for `node.exe` covering every profile (Tailscale
   networks are often classified Public), and disables the block rule Windows creates when the user presses Cancel on its
-  firewall prompt. [implemented, not validated end to end]
+  firewall prompt. It does so even when MCP listens on loopback only, since the viewer's direct WebRTC media is inbound
+  UDP all the same. The taskbar menu shows whether the rule is in effect and, when it is not, adds it on a click — the
+  SYSTEM service needs no UAC prompt for that. [implemented, not validated end to end]
 - The lock screen and the sign-in screen stay out of reach: the daemon only runs while someone is signed in.
 
 #### 3.2.3 Linux

@@ -18,6 +18,7 @@ import {
   resolveFfmpegPath
 } from './stream/ffmpeg.js'
 import { COMPUTER_DAEMON_VERSION } from './version.js'
+import { allowFirewall, readFirewall, type FirewallVerdict } from './windows-firewall.js'
 
 export interface WindowsMenuBarDeps {
   dir: string
@@ -29,6 +30,8 @@ export interface WindowsMenuBarDeps {
   // Exits the daemon; the service host starts it again after a non-zero code and waits for the next sign-in after zero.
   shutdown: (code: number) => void
   onFfmpegInstalled: () => void
+  // The doctor checks the console shows include the firewall's.
+  onFirewallChanged?: () => void
   // Who answers UAC prompts; absent without the prompt helper.
   adminPrompts?: { facts(): AdminPromptFacts; set(mode: ComputerAdminPromptMode): Promise<void> }
   log: (line: string) => void
@@ -36,6 +39,8 @@ export interface WindowsMenuBarDeps {
 
 const RECONNECT_WAIT_MS = 10_000
 const DRIVER_TIMEOUT_MS = 5_000
+// Rules rarely change and PowerShell is slow to start, so the 30 s refresh reuses a recent read.
+const FIREWALL_TTL_MS = 5 * 60_000
 
 const within = <T>(promise: Promise<T>, ms: number): Promise<T> =>
   Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timed out')), ms).unref())])
@@ -49,6 +54,12 @@ export function uninstallCommand(channel: string | undefined): string {
 export function windowsMenuBarHost(deps: WindowsMenuBarDeps): Omit<MenuBarHost, 'stop' | 'resume' | 'log'> {
   const { dir, driver, log } = deps
   const host = deps.registration ? new URL(deps.registration.channelUrl).host : undefined
+  let firewall: { at: number; state: FirewallVerdict['state'] | undefined } | undefined
+  const firewallState = async (): Promise<FirewallVerdict['state'] | undefined> => {
+    if (!firewall || Date.now() - firewall.at > FIREWALL_TTL_MS)
+      firewall = { at: Date.now(), state: (await readFirewall(process.execPath))?.state }
+    return firewall.state
+  }
   return {
     async facts(): Promise<MenuBarFacts> {
       const running = await within(driver.call('get_screen_size', {}), DRIVER_TIMEOUT_MS).then(
@@ -57,6 +68,7 @@ export function windowsMenuBarHost(deps: WindowsMenuBarDeps): Omit<MenuBarHost, 
       )
       const name = deps.name()
       const service = serviceHost() !== undefined
+      const firewallNow = service ? await firewallState() : undefined
       return {
         ...(name ? { name } : {}),
         version: COMPUTER_DAEMON_VERSION,
@@ -69,7 +81,11 @@ export function windowsMenuBarHost(deps: WindowsMenuBarDeps): Omit<MenuBarHost, 
           installing: ffmpegInstalling(dir)
         },
         startAtLogin: service && startsAtLogin(),
-        windows: { service, ...(deps.adminPrompts ? { adminPrompts: deps.adminPrompts.facts() } : {}) }
+        windows: {
+          service,
+          ...(firewallNow ? { firewall: firewallNow } : {}),
+          ...(deps.adminPrompts ? { adminPrompts: deps.adminPrompts.facts() } : {})
+        }
       }
     },
     async reconnect() {
@@ -94,6 +110,14 @@ export function windowsMenuBarHost(deps: WindowsMenuBarDeps): Omit<MenuBarHost, 
       if (!deps.adminPrompts) return
       await deps.adminPrompts.set(mode)
       log(`administrator prompts set to ${mode} from the taskbar`)
+    },
+    // The service runs as SYSTEM, so the rule goes in without a UAC prompt.
+    async allowFirewall() {
+      firewall = undefined
+      if (!(await allowFirewall(process.execPath, serviceHost() !== undefined)))
+        throw new Error('could not add the Windows Firewall rule')
+      log('Windows Firewall rule added from the taskbar')
+      deps.onFirewallChanged?.()
     },
     // macOS grants: not shown on Windows.
     openSettings: () => undefined,
