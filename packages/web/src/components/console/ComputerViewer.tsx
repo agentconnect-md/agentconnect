@@ -10,11 +10,20 @@ import {
   keyToInput,
   type ViewerInput,
   type ViewerState,
+  type ViewerStats,
   type ViewerStatus
 } from '@/lib/computer-viewer'
 import { Button, Icon } from '@/components/ui'
 
 type Point = { x: number; y: number }
+
+// `30 fps · 2.4 Mbps · 45 ms`, leaving out what the path cannot measure.
+export function formatStats({ fps, kbps, latencyMs }: ViewerStats): string {
+  const rate = kbps === null ? null : kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${kbps} kbps`
+  return [fps === null ? null : `${fps} fps`, rate, latencyMs === null ? null : `${latencyMs} ms`]
+    .filter(Boolean)
+    .join(' · ')
+}
 const BUTTONS = ['left', 'middle', 'right'] as const
 
 export interface ComputerViewerProps {
@@ -130,6 +139,15 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
       >
         <StatusLine state={state} />
         <span className="ml-auto flex flex-wrap items-center gap-2">
+          {state?.path && state.stats && (
+            <span
+              className="font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary) tabular-nums"
+              title={t(state.path === 'screenshots' ? 'stats.frameTime' : 'stats.roundTrip')}
+              data-viewer-stats
+            >
+              {formatStats(state.stats)}
+            </span>
+          )}
           {state?.path && (
             <span className="badge" title={state.notes.join('\n') || undefined} data-viewer-path={state.path}>
               <Icon name={state.path === 'screenshots' ? 'image' : 'radio-tower'} size={12} />

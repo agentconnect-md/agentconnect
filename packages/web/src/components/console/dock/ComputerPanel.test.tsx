@@ -22,6 +22,7 @@ const live: ViewerState = {
   frameUrl: null,
   error: null,
   notes: [],
+  stats: null,
   status: {
     you: 'console:u1',
     mode: 'control',

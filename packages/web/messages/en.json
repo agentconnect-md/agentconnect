@@ -6792,7 +6792,11 @@
         "screenshots": "Screenshots"
       },
       "expand": "Expand",
-      "collapse": "Exit full view"
+      "collapse": "Exit full view",
+      "stats": {
+        "roundTrip": "Frame rate, bitrate and round trip of the video from the computer",
+        "frameTime": "Screenshot rate, bitrate and time to fetch one screenshot"
+      }
     },
     "allAgents": "All agents",
     "allocation": {
