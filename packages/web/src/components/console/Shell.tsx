@@ -60,7 +60,7 @@ import { useConnectorNotifier } from '@/lib/connector-notifier'
 import { EscapeLayer } from './Scrim'
 import { localeList } from '@/i18n/config'
 import { NAV_GROUPS, NAV_LABEL_KEYS, SECTIONS, navVisible } from './nav'
-import { HELP_LINK_DEFAULTS } from '@/lib/help-links'
+import { HELP_LINK_DEFAULTS, helpDocsBase } from '@/lib/help-links'
 
 // A section's own page owns the list app bar (menu button, no back) on mobile; anything
 // nested under it is a "push" screen (back-button app bar). `/conversations/:key` is the
@@ -117,7 +117,7 @@ function resolveHelpLinks(): typeof HELP_LINK_DEFAULTS & { version: string } {
     (version ? `${HELP_LINK_DEFAULTS.releases}#release-${version}` : HELP_LINK_DEFAULTS.releases)
   return {
     mcp: src.HELP_MCP_URL || process.env.NEXT_PUBLIC_HELP_MCP_URL || HELP_LINK_DEFAULTS.mcp,
-    docs: src.HELP_DOCS_URL || process.env.NEXT_PUBLIC_HELP_DOCS_URL || HELP_LINK_DEFAULTS.docs,
+    docs: helpDocsBase(),
     releases,
     support: src.HELP_SUPPORT_URL || process.env.NEXT_PUBLIC_HELP_SUPPORT_URL || HELP_LINK_DEFAULTS.support,
     version

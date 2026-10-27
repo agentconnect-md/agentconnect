@@ -21,6 +21,7 @@ const TEAM_LABEL_SEPARATOR = ' / '
 export const linearModule: WebPlatformModule<LinearApi> = {
   platformId: 'linear',
   integrationGroup: 'workflow',
+  docsPath: 'connect-automate/triggers-automation/linear',
   Mark: LinearMark,
   wizard: {
     Body: LinearWizardBody,

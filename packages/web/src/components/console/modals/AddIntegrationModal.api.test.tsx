@@ -56,14 +56,14 @@ let root: Root | undefined
 let host: HTMLDivElement | undefined
 const onClose = vi.fn()
 
-async function render(): Promise<void> {
+async function render(platform = 'api'): Promise<void> {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
   await act(async () => {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <AddIntegrationModal agent={agent} initialPlatform="api" onClose={onClose} />
+        <AddIntegrationModal agent={agent} initialPlatform={platform} onClose={onClose} />
       </SWRConfig>
     )
   })
@@ -140,5 +140,21 @@ describe('AddIntegrationModal, API', () => {
       addButton().click()
     })
     expect(mocks.addAgentApi).not.toHaveBeenCalled()
+  })
+})
+
+describe('AddIntegrationModal, setup guide', () => {
+  const guide = () => [...document.querySelectorAll('a')].find((a) => a.textContent?.includes('Setup guide'))
+  it("links the picked platform's docs page", async () => {
+    await render('webhook')
+    expect(guide()?.getAttribute('href')).toBe(
+      'https://www.agentconnect.md/docs/connect-automate/triggers-automation/webhooks'
+    )
+    expect(guide()?.getAttribute('target')).toBe('_blank')
+  })
+
+  it('leaves the API pane to its per-protocol docs', async () => {
+    await render()
+    expect(guide()).toBeUndefined()
   })
 })

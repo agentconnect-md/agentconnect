@@ -669,6 +669,8 @@ export interface WebPlatformModule<TApi = unknown> {
   readonly platformId: string
   /** The integration picker's display group; chat is the default for platform modules. */
   readonly integrationGroup?: 'chat' | 'workflow'
+  /** This platform's setup page, relative to the docs root (`helpDocsBase`). */
+  readonly docsPath?: string
   /** Feature flag a deployment must turn on before the console offers installing this platform. Absent ⇒ always offered. */
   readonly requires?: FeatureFlagId
   /** Display-only label for an unresolved human sender; stored identities and known names take precedence. */

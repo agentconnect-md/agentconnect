@@ -17,6 +17,7 @@ export const MSTEAMS_CHANNEL_LIST: WebChannelListSemantics = {
 
 export const msTeamsModule: WebPlatformModule<MsTeamsApi> = {
   platformId: 'msteams',
+  docsPath: 'connect-automate/chat-platforms/msteams',
   Mark: MsTeamsMark,
   wizard: {
     Body: MsTeamsWizardBody,

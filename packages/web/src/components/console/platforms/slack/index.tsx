@@ -17,6 +17,7 @@ const SLACK_NATIVE_TS = /^\d+\.\d+$/
 
 export const slackModule: WebPlatformModule<SlackApi> = {
   platformId: 'slack',
+  docsPath: 'connect-automate/chat-platforms/slack',
   Mark: SlackMark,
   wizard: {
     Body: SlackWizardBody,
