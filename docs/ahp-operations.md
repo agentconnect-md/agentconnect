@@ -133,6 +133,15 @@ other attachments are accepted, never read, and left out of the projected turn.
 Clients may also set the chat's `draft` and `isRead`; the daemon publishes both to
 the session's subscribers and never forwards them to the runtime.
 
+When a runtime reports a file change as ACP `diff` content, the completed tool
+call carries a `fileEdit` result whose before and after snapshots use
+`session-db:` content URIs, which VS Code reads without a stat request. The daemon
+answers `resourceRead` only for those URIs: it authorizes the URI's session like a
+subscription, then reads the text from that tool call's transcript body, so
+snapshots survive daemon restarts and never pass through the CP. A snapshot
+larger than one AHP message is refused rather than truncated. Other
+`resource*` methods and the workspace file system are not served.
+
 Set `AHP_AUTHORIZATION_SERVER` to the `issuer` the CP serves at
 `/.well-known/oauth-authorization-server` (the `PUBLIC_MCP_URL` origin when set,
 otherwise `PUBLIC_CP_URL`). VS Code's Agents window can then resolve an auth

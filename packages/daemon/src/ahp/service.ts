@@ -30,6 +30,8 @@ import type { ChatOutput } from '../session/chat-turn.js'
 import { AhpActionJournal } from './action-journal.js'
 import { AhpAgentState, AhpStateCapacityError, type AhpCheckpointStore } from './agent-state.js'
 import { AhpHostConnection, AhpProtocolError, type AhpHostPort } from './connection.js'
+import type { FileEditRef } from './file-edits.js'
+import { toolEditText } from '../session/tool-edits.js'
 
 export type BoundAhpSession = AhpSessionBinding & { sessionId: string }
 export interface AhpActionContext {
@@ -63,6 +65,7 @@ export interface AhpServiceOptions {
     cursor: string
   ): Promise<{ turns: Turn[]; nextCursor?: string }>
   dispatch(params: DispatchActionParams, origin: ActionOrigin, context: AhpActionContext): Promise<void>
+  toolBody?(binding: BoundAhpSession, auth: AhpAttachmentAuthorization, toolCallId: string): Promise<string | undefined>
   customRequest?(
     method: 'agentconnect/appRpc' | 'agentconnect/appClose',
     params: unknown,
@@ -270,6 +273,20 @@ export class AhpService {
                     throw error
                   }
                 })
+              }
+            }
+          : {}),
+        ...(this.options.toolBody
+          ? {
+              readFileEdit: async (ref: FileEditRef) => {
+                const current = context(ref.sessionUri)
+                const body = await this.options.toolBody!(current.binding, current.authorization, ref.toolCallId)
+                if (body === undefined) return undefined
+                try {
+                  return toolEditText(JSON.parse(body), ref.path, ref.side)
+                } catch {
+                  return undefined
+                }
               }
             }
           : {}),

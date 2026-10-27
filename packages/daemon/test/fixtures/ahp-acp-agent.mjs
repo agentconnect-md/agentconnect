@@ -75,6 +75,17 @@ async function prompt(id, params) {
     if (!run.cancelled) text(params.sessionId, `input: ${JSON.stringify(result)}\n`)
   }
   if (!run.cancelled && input.includes('[ahp:hold]')) await stopped
+  if (!run.cancelled && input.includes('[ahp:edit]')) {
+    update(params.sessionId, {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'fixture-edit',
+      title: 'Edit fixture',
+      kind: 'edit',
+      status: 'in_progress',
+      content: [{ type: 'diff', path: '/work/fixture.txt', oldText: 'old line\n', newText: 'new line\n' }]
+    })
+    update(params.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'fixture-edit', status: 'completed' })
+  }
   if (!run.cancelled) {
     update(params.sessionId, {
       sessionUpdate: 'tool_call',

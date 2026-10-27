@@ -3,6 +3,7 @@ import { AhpClient, InMemoryTransport } from '@microsoft/agent-host-protocol/cli
 import {
   ActionType,
   AhpErrorCodes,
+  ContentEncoding,
   SessionStatus,
   MessageKind,
   TurnState,
@@ -13,6 +14,7 @@ import {
 } from '@microsoft/agent-host-protocol'
 import { AhpActionJournal } from '../../src/ahp/action-journal.js'
 import { AhpHostConnection, AhpProtocolError, type AhpHostPort } from '../../src/ahp/connection.js'
+import { fileEditUri, type FileEditRef } from '../../src/ahp/file-edits.js'
 
 const root = 'ahp-root://' as const
 const chat = 'ahp-chat:/one/main'
@@ -134,6 +136,49 @@ describe('AHP official SDK handshake', () => {
       code: AhpErrorCodes.UnsupportedProtocolVersion
     })
     expect(closed).toHaveBeenCalledWith('invalid_message')
+  })
+})
+
+describe('AHP file edit snapshots', () => {
+  const ref: FileEditRef = { sessionUri: 'ahp-session:/one', toolCallId: 'e1', path: '/work/a.ts', side: 'before' }
+
+  it('serves a snapshot only after preparing its session', async () => {
+    const prepare = vi.fn(async () => {})
+    const read = vi.fn(async () => 'old text\n')
+    const { client } = await fixture({ prepare, readFileEdit: read })
+    await client.initialize({ clientId: 'one', protocolVersions: ['1.0.0'] })
+    expect(await client.request('resourceRead', { channel: root, uri: fileEditUri(ref) })).toEqual({
+      data: 'old text\n',
+      encoding: 'utf-8',
+      contentType: 'text/plain'
+    })
+    expect(prepare).toHaveBeenCalledWith('ahp-session:/one')
+    expect(read).toHaveBeenCalledWith(ref)
+    expect(
+      await client.request('resourceRead', { channel: root, uri: fileEditUri(ref), encoding: ContentEncoding.Base64 })
+    ).toEqual({
+      data: Buffer.from('old text\n').toString('base64'),
+      encoding: 'base64',
+      contentType: 'text/plain'
+    })
+  })
+
+  it('answers unknown, missing, unauthorized and oversized snapshots without closing', async () => {
+    const read = vi.fn(async (r: FileEditRef) => (r.side === 'after' ? 'x'.repeat(70 * 1024) : undefined))
+    const prepare = vi.fn(async (channel: string) => {
+      if (channel !== 'ahp-session:/one') throw new AhpProtocolError(AhpErrorCodes.NotFound, 'Channel unavailable')
+    })
+    const { client, closed } = await fixture({ prepare, readFileEdit: read })
+    await client.initialize({ clientId: 'one', protocolVersions: ['1.0.0'] })
+    const request = (uri: string) => client.request('resourceRead', { channel: root, uri })
+    await expect(request('file:///etc/passwd')).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
+    await expect(request(fileEditUri(ref))).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
+    await expect(request(fileEditUri({ ...ref, sessionUri: 'ahp-session:/two' }))).rejects.toMatchObject({
+      code: AhpErrorCodes.NotFound
+    })
+    await expect(request(fileEditUri({ ...ref, side: 'after' }))).rejects.toMatchObject({ code: -32600 })
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(closed).not.toHaveBeenCalled()
   })
 })
 

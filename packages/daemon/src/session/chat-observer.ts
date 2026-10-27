@@ -61,7 +61,8 @@ export function observeChatTurn<T extends ChatTurnContext>(
             title,
             status,
             ...(e.input !== undefined ? { input: e.input } : {}),
-            ...(e.output !== undefined ? { output: e.output } : {})
+            ...(e.output !== undefined ? { output: e.output } : {}),
+            ...(e.edits ? { edits: e.edits } : {})
           })
         } else if (e && ['permission', 'permission_resolved', 'elicitation', 'elicitation_resolved'].includes(e.kind)) {
           emit({ ...base(), ...e } as MaskedChatEvent)
