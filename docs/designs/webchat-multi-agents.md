@@ -688,9 +688,13 @@ Two scope rules:
     to every browser whose roster places a participant on that daemon. The
     console also watches each busy session: a lane holding frames past a
     missing index, or a `done` it has not reached, resumes after about 1.5 s,
-    and 20 s with no frame at all earns a replay-only resume. A `stream_stale`
-    answer to either one means another tab resumed the stream more recently,
-    so it is not a failure;
+    and 20 s with no frame at all earns a replay-only resume. Some answers to
+    these resumes are not failures, so the lanes stay live for the next resync
+    or watchdog try. A `stream_stale` means another tab resumed the stream
+    more recently. A `no_agent`, or the error frame a single-participant
+    relay sends instead, means the outage the resume probes is still on. A lost
+    replay (`stream_gap`, or `stream_not_found` past the replay TTL) still
+    ends the turn;
   - the `set_*` runtime ops are unchanged and carry no `agentId`: multi-agent
     conversations expose no runtime override (section 9.3), so these ops
     occur only in single-agent conversations;

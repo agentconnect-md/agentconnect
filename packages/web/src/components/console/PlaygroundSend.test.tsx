@@ -73,6 +73,7 @@ let pgSetPermissionPreset: ReturnType<typeof usePlayground>['pgSetPermissionPres
 let pgSetFast: ReturnType<typeof usePlayground>['pgSetFast']
 let markSessionTarget: ReturnType<typeof usePlayground>['markSessionTarget']
 let getBusyLaneAgentIds: ReturnType<typeof usePlayground>['getBusyLaneAgentIds']
+let isPgBusy: ReturnType<typeof usePlayground>['isPgBusy']
 
 function Probe() {
   const pg = usePlayground()
@@ -98,6 +99,7 @@ function Probe() {
   pgSetFast = pg.pgSetFast
   markSessionTarget = pg.markSessionTarget
   getBusyLaneAgentIds = pg.getBusyLaneAgentIds
+  isPgBusy = pg.isPgBusy
   return null
 }
 
@@ -1122,6 +1124,133 @@ describe('reconnect after an unacked turn', () => {
     const sent = frames(second)
     expect(sent.filter((frame) => frame.text === 'hello')).toHaveLength(1)
     expect(sent.at(-1)).toMatchObject({ type: 'resume', turnId: turn.turnId })
+  })
+})
+
+// The socket stays open while the daemon's relay link is down, so frames it streamed then are simply gone.
+describe('a stream whose frames a relay gap dropped', () => {
+  class GapSocket extends StubSocket {
+    static instances: GapSocket[] = []
+    onopen?: () => void
+    onmessage?: (e: { data: string }) => void
+    onclose?: () => void
+    constructor() {
+      super()
+      GapSocket.instances.push(this)
+    }
+  }
+  const frames = (socket: GapSocket): Array<Record<string, unknown>> =>
+    socket.send.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+  const resumes = (socket: GapSocket) => frames(socket).filter((frame) => frame.type === 'resume')
+  const deliver = (socket: GapSocket, frame: unknown) =>
+    act(async () => {
+      socket.onmessage?.({ data: JSON.stringify(frame) })
+    })
+  const output = (turnId: string, index: number, text: string) => ({
+    type: 'output',
+    output: { turnId, agentId: 'agent-1', index, event: { kind: 'message', text } }
+  })
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** Send one turn, open its socket, ack it, and stream its first chunk. */
+  async function streaming() {
+    GapSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', GapSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello', 'c1')
+    })
+    const socket = GapSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    const { turnId } = frames(socket)[0] as { turnId: string }
+    await deliver(socket, { type: 'ack', ack: { accepted: true, turnId, agentId: 'agent-1' } })
+    await deliver(socket, output(turnId, 0, 'a'))
+    return { socket, turnId }
+  }
+
+  it('resumes a lane holding a hole, and the replay finishes the turn', async () => {
+    const { socket, turnId } = await streaming()
+    await deliver(socket, output(turnId, 2, 'c'))
+    await deliver(socket, { type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 2 } })
+    expect(isPgBusy('s1')).toBe(true)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500)
+    })
+    expect(resumes(socket)).toEqual([expect.objectContaining({ turnId, agentId: 'agent-1', afterIndex: 0 })])
+    await deliver(socket, output(turnId, 1, 'b'))
+    await deliver(socket, output(turnId, 2, 'c'))
+    await deliver(socket, { type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 2 } })
+    expect(isPgBusy('s1')).toBe(false)
+  })
+
+  it('resumes a turn whose done never arrived once the stream has been quiet for a while', async () => {
+    const { socket, turnId } = await streaming()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(19_000)
+    })
+    expect(resumes(socket)).toEqual([])
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    expect(resumes(socket)).toEqual([expect.objectContaining({ turnId, afterIndex: 0 })])
+    await deliver(socket, { type: 'resumed', ack: { accepted: true, turnId, agentId: 'agent-1' } })
+    await deliver(socket, { type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 0 } })
+    expect(isPgBusy('s1')).toBe(false)
+  })
+
+  it('resumes the lanes a resync names when their daemon relinks', async () => {
+    const { socket, turnId } = await streaming()
+    await deliver(socket, { type: 'resync', agentIds: ['agent-2'] })
+    expect(resumes(socket)).toEqual([])
+    await deliver(socket, { type: 'resync', agentIds: ['agent-1'] })
+    expect(resumes(socket)).toEqual([expect.objectContaining({ turnId, agentId: 'agent-1', afterIndex: 0 })])
+  })
+
+  it.each([
+    { name: 'a single-participant relay', answer: { type: 'error', message: 'agent daemon offline' } },
+    {
+      name: 'a multi-agent relay',
+      answer: { type: 'resumed', ack: { accepted: false, agentId: 'agent-1', reason: 'no_agent' } }
+    },
+    {
+      name: 'a newer tab’s resume',
+      answer: { type: 'resumed', ack: { accepted: false, agentId: 'agent-1', reason: 'stream_stale' } }
+    }
+  ])(
+    'keeps the turn live when $name answers a watchdog resume, so the relink still recovers it',
+    async ({ answer }) => {
+      const { socket, turnId } = await streaming()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000)
+      })
+      await deliver(socket, answer)
+      expect(isPgBusy('s1')).toBe(true)
+      expect(getLiveSteps('s1').some((step) => step.text?.startsWith('⚠️'))).toBe(false)
+      await deliver(socket, { type: 'resync', agentIds: ['agent-1'] })
+      expect(resumes(socket)).toHaveLength(2)
+      await deliver(socket, { type: 'resumed', ack: { accepted: true, turnId, agentId: 'agent-1' } })
+      await deliver(socket, { type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 0 } })
+      expect(isPgBusy('s1')).toBe(false)
+    }
+  )
+
+  it('still ends the turn when a watchdog resume finds its replay window gone', async () => {
+    const { socket } = await streaming()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+    await deliver(socket, { type: 'resumed', ack: { accepted: false, agentId: 'agent-1', reason: 'stream_not_found' } })
+    expect(isPgBusy('s1')).toBe(false)
   })
 })
 

@@ -361,7 +361,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const stallWatchRef = useRef<WebchatStallWatch | null>(null)
   if (!stallWatchRef.current) stallWatchRef.current = createWebchatStallWatch((id) => stallResumeRef.current(id))
   const stallWatch = stallWatchRef.current
-  // Lanes with a watchdog/resync resume in flight: a `stream_stale` answer only means another tab resumed it later.
+  // Lanes with a watchdog/resync resume in flight: an outage or another tab's newer resume answers it, never a lost stream.
   const stallResumes = useRef<Set<string>>(new Set())
   // Standalone set_* operations cannot bind until the first daemon session exists.
   // Keep only fields the user actually touched and attach them atomically to the turn.
@@ -1712,8 +1712,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 reconnectAttempts.current.delete(id)
               } else if (m.type === 'resumed' && m.ack?.accepted === false) {
                 const key = cursorKeyFor(id, m.ack?.agentId)
-                // A newer generation from another tab owns the replay; the stream is live, so keep waiting.
-                if (key && stallResumes.current.delete(key) && m.ack.reason === 'stream_stale') return
+                // No daemon link yet (the outage the resume probes) or a newer tab's resume: keep the lane for the next try.
+                const transient = m.ack.reason === 'stream_stale' || m.ack.reason === 'no_agent'
+                if (key && stallResumes.current.delete(key) && transient) return
                 const pending = pendingTurnFrames.current.get(id)
                 if (key && pending?.resentOn === ws && pending.attaching?.has(key)) {
                   pending.attaching.delete(key)
@@ -1762,9 +1763,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 // A runtime change the agent refused: only this browser is told, and the reason names who may make it.
                 pushStep(id, { kind: 'notice', text: `🔒 ${m.refused.reason}`, standing: true })
               } else if (m.type === 'error') {
-                // An error frame with nothing in flight (e.g. an older relay answering
-                // the attach probe with 'unrecognized frame') must not push a warning
-                // step into an idle transcript.
+                // A single-participant relay answers a resume it cannot deliver this way; resync or the watchdog retries.
+                const stalled = [...stallResumes.current].find((key) => key.startsWith(laneKey(id)))
+                if (stalled !== undefined) {
+                  stallResumes.current.delete(stalled)
+                  return
+                }
+                // An idle transcript takes no warning (an older relay answers the attach probe with an error).
                 if (busyRef.current[id]) failStream(id, 'Connection error.')
               }
             }
