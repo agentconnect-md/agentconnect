@@ -453,6 +453,9 @@ computerPool:
     - ipBlock:
         cidr: ::/0
         except: ['fc00::/7', 'fe80::/10', '::1/128']
+  # Peer-to-peer viewer media (computer-use.md §7.2): punched media goes to the browser's public address on any UDP
+  # port, so this admits UDP to egressTo. Off by default: it also lets the desktop send any UDP there.
+  viewerPeerToPeerEgress: false
   nodeSelector: {}
   tolerations: []
 

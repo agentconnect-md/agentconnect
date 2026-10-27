@@ -28,6 +28,13 @@ spec:
           - protocol: {{ .protocol }}
             port: {{ .port }}
           {{- end }}
+      {{- if $pool.viewerPeerToPeerEgress }}
+      # Hole-punched viewer media reaches the browser's public address on whatever UDP port its NAT chose.
+      - to:
+          {{- toYaml $pool.egressTo | nindent 10 }}
+        ports:
+          - protocol: UDP
+      {{- end }}
       {{- with $pool.egressPorts }}
       # Proxy ports reach only egressTo (public addresses by default), never the cluster's own 8080 listeners.
       - to:
