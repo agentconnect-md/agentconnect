@@ -10,20 +10,27 @@ export type FileEditSide = 'before' | 'after'
 export interface FileEditRef {
   sessionUri: string
   toolCallId: string
+  index: number
   path: string
   side: FileEditSide
 }
 
 export function fileEditUri(ref: FileEditRef): string {
   const name = ref.path.split('/').filter(Boolean).at(-1) ?? 'file'
-  return `${scheme}//${hex(ref.sessionUri)}/${hex(ref.toolCallId)}/${hex(ref.path)}/${ref.side}/${encodeURIComponent(name)}`
+  return `${scheme}//${hex(ref.sessionUri)}/${hex(ref.toolCallId)}/${ref.index}/${hex(ref.path)}/${ref.side}/${encodeURIComponent(name)}`
 }
 
 export function parseFileEditUri(uri: string): FileEditRef | undefined {
   if (!uri.startsWith(`${scheme}//`)) return
-  const [authority, toolCallId, path, side, name, ...rest] = uri.slice(scheme.length + 2).split('/')
-  if (rest.length || !name || (side !== 'before' && side !== 'after')) return
-  const ref: FileEditRef = { sessionUri: unhex(authority!), toolCallId: unhex(toolCallId!), path: unhex(path!), side }
+  const [authority, toolCallId, index, path, side, name, ...rest] = uri.slice(scheme.length + 2).split('/')
+  if (rest.length || !name || !/^(?:0|[1-9]\d?)$/.test(index ?? '') || (side !== 'before' && side !== 'after')) return
+  const ref: FileEditRef = {
+    sessionUri: unhex(authority!),
+    toolCallId: unhex(toolCallId!),
+    index: Number(index),
+    path: unhex(path!),
+    side
+  }
   return ref.sessionUri && ref.toolCallId && ref.path ? ref : undefined
 }
 
@@ -32,7 +39,7 @@ export function fileEditContent(sessionUri: string, toolCallId: string, edit: To
   const side = (name: FileEditSide, sizeHint: number) => ({
     uri: file,
     content: {
-      uri: fileEditUri({ sessionUri, toolCallId, path: edit.path, side: name }),
+      uri: fileEditUri({ sessionUri, toolCallId, index: edit.index, path: edit.path, side: name }),
       sizeHint,
       contentType: 'text/plain'
     }

@@ -20,20 +20,26 @@ describe('ACP diff content as tool edits', () => {
       ]
     })
     expect(edits).toEqual([
-      { path: '/work/src/a.ts', created: false, added: 2, removed: 1, beforeBytes: 14, afterBytes: 17 },
-      { path: '/work/new.md', created: true, added: 1, removed: 0, afterBytes: 6 }
+      { index: 0, path: '/work/src/a.ts', created: false, added: 2, removed: 1, beforeBytes: 14, afterBytes: 17 },
+      { index: 1, path: '/work/new.md', created: true, added: 1, removed: 0, afterBytes: 6 }
     ])
-    expect(toolEditsOf({ content: [{ type: 'content', content: { type: 'text', text: 'x' } }] })).toBeUndefined()
+    expect(toolEditsOf({ content: [{ type: 'content', content: { type: 'text', text: 'x' } }] })).toEqual([])
+    expect(toolEditsOf({ content: [] })).toEqual([])
+    expect(toolEditsOf({})).toBeUndefined()
   })
 
-  it('reads either side back from a persisted tool body', () => {
-    const body = { status: 'completed', content: [edit, create] }
-    expect(toolEditText(body, '/work/src/a.ts', 'before')).toBe(edit.oldText)
-    expect(toolEditText(body, '/work/src/a.ts', 'after')).toBe(edit.newText)
-    expect(toolEditText(body, '/work/new.md', 'before')).toBeUndefined()
-    expect(toolEditText(body, '/work/new.md', 'after')).toBe('# New\n')
-    expect(toolEditText(body, '/work/other.ts', 'after')).toBeUndefined()
-    expect(toolEditText({ content: 'nope' }, '/work/src/a.ts', 'after')).toBeUndefined()
+  it('reads either side of each block back from a persisted tool body', () => {
+    const second = { type: 'diff', path: '/work/src/a.ts', oldText: 'tail\n', newText: 'second new\n' }
+    const body = { status: 'completed', content: [edit, create, second] }
+    const a = { index: 0, path: '/work/src/a.ts' }
+    expect(toolEditText(body, a, 'before')).toBe(edit.oldText)
+    expect(toolEditText(body, a, 'after')).toBe(edit.newText)
+    expect(toolEditText(body, { index: 2, path: '/work/src/a.ts' }, 'after')).toBe('second new\n')
+    expect(toolEditText(body, { index: 1, path: '/work/new.md' }, 'before')).toBeUndefined()
+    expect(toolEditText(body, { index: 1, path: '/work/new.md' }, 'after')).toBe('# New\n')
+    expect(toolEditText(body, { index: 1, path: '/work/src/a.ts' }, 'after')).toBeUndefined()
+    expect(toolEditText(body, { index: 3, path: '/work/src/a.ts' }, 'after')).toBeUndefined()
+    expect(toolEditText({ content: 'nope' }, a, 'after')).toBeUndefined()
   })
 
   it('carries edits from a runtime tool call onto the observed chat event', () => {
@@ -53,9 +59,11 @@ describe('ACP diff content as tool edits', () => {
     }
     emitChatUpdate(wc, { sessionUpdate: 'tool_call', toolCallId: 'e1', title: 'Edit', content: [edit] })
     emitChatUpdate(wc, { sessionUpdate: 'tool_call_update', toolCallId: 'e1', status: 'completed' })
+    emitChatUpdate(wc, { sessionUpdate: 'tool_call_update', toolCallId: 'e1', status: 'completed', content: [] })
     expect(events.map((e) => (e.kind === 'tool' ? e.edits : undefined))).toEqual([
-      [{ path: '/work/src/a.ts', created: false, added: 2, removed: 1, beforeBytes: 14, afterBytes: 17 }],
-      undefined
+      [{ index: 0, path: '/work/src/a.ts', created: false, added: 2, removed: 1, beforeBytes: 14, afterBytes: 17 }],
+      undefined,
+      []
     ])
   })
 })

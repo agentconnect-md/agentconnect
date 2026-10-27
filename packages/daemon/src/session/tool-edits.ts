@@ -1,5 +1,7 @@
 // File edits an ACP tool call reports as `diff` content; only metadata travels on chat events.
 export interface ToolEdit {
+  // Position among the call's diff blocks; a runtime may report one block per hunk of the same file.
+  index: number
   path: string
   created: boolean
   added: number
@@ -49,27 +51,32 @@ function lineStats(before: string, after: string): { added: number; removed: num
   return { added, removed }
 }
 
+// Undefined when the update leaves content as it was; an empty list when replaced content holds no diffs.
 export function toolEditsOf(update: { content?: unknown }): ToolEdit[] | undefined {
-  const items = diffItems(update.content)
-  if (!items.length) return undefined
-  return items.slice(0, MAX_EDITS).map((item) => {
-    const before = item.oldText ?? ''
-    return {
-      path: item.path,
-      created: item.oldText == null,
-      ...lineStats(before, item.newText),
-      ...(item.oldText == null ? {} : { beforeBytes: Buffer.byteLength(item.oldText) }),
-      afterBytes: Buffer.byteLength(item.newText)
-    }
-  })
+  if (!Array.isArray(update.content)) return undefined
+  return diffItems(update.content)
+    .slice(0, MAX_EDITS)
+    .map((item, index) => {
+      const before = item.oldText ?? ''
+      return {
+        index,
+        path: item.path,
+        created: item.oldText == null,
+        ...lineStats(before, item.newText),
+        ...(item.oldText == null ? {} : { beforeBytes: Buffer.byteLength(item.oldText) }),
+        afterBytes: Buffer.byteLength(item.newText)
+      }
+    })
 }
 
 // Reads one side of an edit back out of a persisted tool body; a created file has no before side.
-export function toolEditText(body: unknown, path: string, side: 'before' | 'after'): string | undefined {
+export function toolEditText(
+  body: unknown,
+  edit: { index: number; path: string },
+  side: 'before' | 'after'
+): string | undefined {
   const content = body && typeof body === 'object' ? (body as { content?: unknown }).content : undefined
-  const item = diffItems(content)
-    .slice(0, MAX_EDITS)
-    .find((candidate) => candidate.path === path)
-  if (!item) return undefined
+  const item = diffItems(content).slice(0, MAX_EDITS)[edit.index]
+  if (item?.path !== edit.path) return undefined
   return side === 'after' ? item.newText : (item.oldText ?? undefined)
 }

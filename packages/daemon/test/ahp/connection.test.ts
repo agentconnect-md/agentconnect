@@ -140,7 +140,13 @@ describe('AHP official SDK handshake', () => {
 })
 
 describe('AHP file edit snapshots', () => {
-  const ref: FileEditRef = { sessionUri: 'ahp-session:/one', toolCallId: 'e1', path: '/work/a.ts', side: 'before' }
+  const ref: FileEditRef = {
+    sessionUri: 'ahp-session:/one',
+    toolCallId: 'e1',
+    index: 0,
+    path: '/work/a.ts',
+    side: 'before'
+  }
 
   it('serves a snapshot only after preparing its session', async () => {
     const prepare = vi.fn(async () => {})

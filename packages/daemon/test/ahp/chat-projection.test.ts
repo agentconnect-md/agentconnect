@@ -54,16 +54,18 @@ describe('AHP official chat reducer projection', () => {
 
   it('attaches remembered edits to a successful tool result as file edits', () => {
     const { projection, emit, converges } = fixture()
-    const edit = { path: '/work/a.ts', created: false, added: 2, removed: 1, beforeBytes: 14, afterBytes: 17 }
-    const create = { path: '/work/new.md', created: true, added: 1, removed: 0, afterBytes: 6 }
+    const edit = { index: 0, path: '/work/a.ts', created: false, added: 2, removed: 1, beforeBytes: 14, afterBytes: 17 }
+    const create = { index: 1, path: '/work/new.md', created: true, added: 1, removed: 0, afterBytes: 6 }
     emit({ kind: 'started', text: 'Edit', origin: 'user' })
     emit({ kind: 'tool', id: 'e1', title: 'Edit', status: 'pending', edits: [edit, create] })
     emit({ kind: 'tool', id: 'e1', title: 'Edit', status: 'running' })
     emit({ kind: 'tool', id: 'e1', title: 'Edit', status: 'completed' })
     emit({ kind: 'tool', id: 'e2', title: 'Edit', status: 'running', edits: [edit] })
     emit({ kind: 'tool', id: 'e2', title: 'Edit', status: 'failed', output: 'no match' })
+    emit({ kind: 'tool', id: 'e3', title: 'Edit', status: 'running', edits: [edit] })
+    emit({ kind: 'tool', id: 'e3', title: 'Edit', status: 'completed', output: 'replaced', edits: [] })
     emit({ kind: 'finished', outcome: 'complete', at: 2000 })
-    const [first, second] = projection.snapshot().turns[0]!.responseParts as Array<{ toolCall: any }>
+    const [first, second, third] = projection.snapshot().turns[0]!.responseParts as Array<{ toolCall: any }>
     const [changed, created] = first!.toolCall.content
     expect(changed).toMatchObject({
       type: 'fileEdit',
@@ -74,13 +76,15 @@ describe('AHP official chat reducer projection', () => {
     expect(parseFileEditUri(changed.before.content.uri)).toEqual({
       sessionUri: 'ahp-session:/one',
       toolCallId: 'e1',
+      index: 0,
       path: '/work/a.ts',
       side: 'before'
     })
-    expect(changed.after.content.uri).toMatch(/^session-db:\/\/[0-9a-f]+\/[0-9a-f]+\/[0-9a-f]+\/after\/a\.ts$/)
+    expect(changed.after.content.uri).toMatch(/^session-db:\/\/[0-9a-f]+\/[0-9a-f]+\/0\/[0-9a-f]+\/after\/a\.ts$/)
     expect(created.before).toBeUndefined()
-    expect(parseFileEditUri(created.after.content.uri)).toMatchObject({ path: '/work/new.md', side: 'after' })
+    expect(parseFileEditUri(created.after.content.uri)).toMatchObject({ index: 1, path: '/work/new.md', side: 'after' })
     expect(second!.toolCall).toMatchObject({ success: false, content: [{ type: 'text', text: 'no match' }] })
+    expect(third!.toolCall.content).toEqual([{ type: 'text', text: 'replaced' }])
     converges()
   })
 

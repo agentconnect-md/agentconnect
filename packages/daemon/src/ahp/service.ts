@@ -283,7 +283,7 @@ export class AhpService {
                 const body = await this.options.toolBody!(current.binding, current.authorization, ref.toolCallId)
                 if (body === undefined) return undefined
                 try {
-                  return toolEditText(JSON.parse(body), ref.path, ref.side)
+                  return toolEditText(JSON.parse(body), ref, ref.side)
                 } catch {
                   return undefined
                 }
