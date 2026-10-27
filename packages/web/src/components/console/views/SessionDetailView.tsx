@@ -3171,7 +3171,7 @@ export default function SessionDetailView() {
   }, [defaultHeaderFocusAgentId, headerFocusOptionIds, headerFocusScope])
   // Whose checkout the Files tab and the viewer read: the agent the header is focused on. Empty on a session with no agent at all, and then there is no workspace to offer a tab for.
   const filesAgentId = headerFocusAgentId || null
-  // The Computers the focused agent may use; the Computer tab exists only when there is one.
+  // The Computers granted to the focused agent; its pool computers come through `computerManaged` below.
   const computerIds = useMemo(
     () => (filesAgentId ? (agentById.get(filesAgentId)?.computerUse?.computers ?? []) : []),
     [agentById, filesAgentId]
@@ -3221,6 +3221,14 @@ export default function SessionDetailView() {
   // Which lease the Tasks tab reads. Tasks are NOT a checkout, so this waits on neither the worktree gate `filesSessionId` applies nor the isolation round trip Files and Git hold for — a session's background tasks exist whatever it is checked out into, and the CP says so. What it does need is the CANONICAL session id the lease is keyed by, which is what the focus options already carry. A playground session the daemon has not created yet has no canonical id and no tasks either, so it gets no tab rather than a 404 notice.
   const tasksSessionId =
     headerFocusSessionId && !(syntheticPlayground && headerFocusSessionId === session?.id) ? headerFocusSessionId : null
+  // An agent on a managed computer has one without any grant: its own kept desktop or this session's fresh one.
+  const computerManaged = useMemo(
+    () =>
+      filesAgentId && agentById.get(filesAgentId)?.computerUse?.managed
+        ? { agentId: filesAgentId, sessionId: tasksSessionId }
+        : undefined,
+    [agentById, filesAgentId, tasksSessionId]
+  )
   // The PR tab's scope: the OPEN SESSION — in a merged conversation its representative — because the hook run the CP resolves belongs to the session, not to a participant. Header focus deliberately plays NO part here: focusing another agent re-aims Files/Git/Tasks at that agent's checkout or lease, but a focus change must not re-key this read (§3.4). A synthetic playground id names no CP row and was never hook-dispatched, so it gets no probe rather than a manufactured 404.
   const prSessionId =
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
@@ -3399,7 +3407,7 @@ export default function SessionDetailView() {
           tab.key === 'files' || tab.key === 'git'
             ? filesAgentId !== null && !MOCK_MODE
             : tab.key === 'computer'
-              ? computerIds.length > 0 && !MOCK_MODE
+              ? (computerIds.length > 0 || computerManaged !== undefined) && !MOCK_MODE
               : tab.key === 'tasks'
                 ? // Against its OWN scope (an agent and a canonical session), and dropped once settled with nothing in either group.
                   filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE && tasksTabShown(tasksVerdict)
@@ -3440,6 +3448,7 @@ export default function SessionDetailView() {
         ),
     [
       computerIds.length,
+      computerManaged,
       filesAgentId,
       filesStatus,
       gitStatus,
@@ -6568,8 +6577,12 @@ export default function SessionDetailView() {
         </DockPanel>
         {/* Mounted while hidden, like PR: its verdict is what puts its tab in the strip once any group has something to show. */}
         <DockPanel active={dockTabKey === 'computer'}>
-          {computerIds.length > 0 ? (
-            <ComputerPanel computerIds={computerIds} active={dockVisible && dockTabKey === 'computer'} />
+          {computerIds.length > 0 || computerManaged ? (
+            <ComputerPanel
+              computerIds={computerIds}
+              {...(computerManaged ? { managed: computerManaged } : {})}
+              active={dockVisible && dockTabKey === 'computer'}
+            />
           ) : null}
         </DockPanel>
         <DockPanel active={dockTabKey === 'tasks'}>

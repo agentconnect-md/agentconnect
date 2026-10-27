@@ -4599,6 +4599,8 @@ export const ComputerDto = z.object({
   allocation: z.enum(COMPUTER_ALLOCATIONS).nullable(),
   /** The agent a `per-agent` or `ephemeral` computer was made for. */
   ownerAgentId: z.string().nullable(),
+  /** The session an `ephemeral` computer was made for. */
+  poolSessionId: z.string().nullable(),
   /** Where the pool has the computer: provisioning, registering, awake, sleeping, waking, failed or reclaiming. */
   poolPhase: z.enum(COMPUTER_POOL_PHASES).nullable(),
   /** Why the pool's last step for it failed, if it did. */
