@@ -77,6 +77,7 @@ function sameEntitlement(left: WebchatRemoteMcpEntitlement, right: WebchatRemote
  */
 export class RemoteWebchatGrantManager {
   private readonly active = new Map<string, ActiveDescriptor>()
+  private readonly renewals = new WeakMap<ActiveDescriptor, Promise<boolean>>()
 
   constructor(
     private readonly client: RemoteWebchatGrantClient,
@@ -170,8 +171,31 @@ export class RemoteWebchatGrantManager {
     return { server, changed: true }
   }
 
+  /** Renews each grant inside its renewal window whose session `isOpen`; returns the conversations it could not renew. */
+  async renewExpiring(
+    now: number,
+    isOpen: (conversationId: string, agentId: string) => Promise<boolean>
+  ): Promise<string[]> {
+    const failed: string[] = []
+    for (const [conversationId, current] of [...this.active]) {
+      if (!current.agentId || current.expiresAt <= now || current.expiresAt > now + RENEW_BEFORE_EXPIRY_MS) continue
+      if (!(await isOpen(conversationId, current.agentId))) continue
+      if (!(await this.renewInPlace(conversationId, current, current.agentId))) failed.push(conversationId)
+    }
+    return failed
+  }
+
   /** True when the CP extended the active grant; anything else falls back to rotation. */
-  private async renewInPlace(conversationId: string, current: ActiveDescriptor, agentId?: string): Promise<boolean> {
+  private renewInPlace(conversationId: string, current: ActiveDescriptor, agentId?: string): Promise<boolean> {
+    // One renewal per descriptor at a time: the sweep and a turn start must not race into a rotation.
+    const inFlight = this.renewals.get(current)
+    if (inFlight) return inFlight
+    const renewal = this.requestRenewal(conversationId, current, agentId).finally(() => this.renewals.delete(current))
+    this.renewals.set(current, renewal)
+    return renewal
+  }
+
+  private async requestRenewal(conversationId: string, current: ActiveDescriptor, agentId?: string): Promise<boolean> {
     if (!this.client.renewWebchatMcpGrant) return false
     const renew = {
       authorityId: current.entitlement.authorityId,

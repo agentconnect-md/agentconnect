@@ -162,6 +162,78 @@ describe('RemoteWebchatGrantManager', () => {
       expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(2)
     })
 
+    const renewingClient = () => ({
+      ...rotatingClient(),
+      renewWebchatMcpGrant: vi.fn(async (input: any) => ({
+        ...input,
+        expiresAt: new Date(firstExpiry + 26 * 60_000).toISOString()
+      }))
+    })
+    const open = async () => true
+
+    it('renews an open session between turns, only inside the renewal window', async () => {
+      const client = renewingClient()
+      const manager = new RemoteWebchatGrantManager(client)
+      const installed = await manager.provision(conversationId, entitlement, 0, 'agent-1')
+
+      expect(await manager.renewExpiring(firstExpiry - 6 * 60_000, open)).toEqual([])
+      expect(client.renewWebchatMcpGrant).not.toHaveBeenCalled()
+
+      expect(await manager.renewExpiring(firstExpiry - 4 * 60_000, open)).toEqual([])
+      expect(client.renewWebchatMcpGrant).toHaveBeenCalledTimes(1)
+      // A turn after the original expiry finds the same bearer still valid: no rotation, no reload.
+      expect(await manager.provision(conversationId, entitlement, firstExpiry + 60_000, 'agent-1')).toEqual({
+        server: installed.server,
+        changed: false
+      })
+      expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
+    })
+
+    it('leaves a closed session and an expired grant alone', async () => {
+      const client = renewingClient()
+      const manager = new RemoteWebchatGrantManager(client)
+      await manager.provision(conversationId, entitlement, 0, 'agent-1')
+      const isOpen = vi.fn(async () => false)
+
+      expect(await manager.renewExpiring(firstExpiry - 4 * 60_000, isOpen)).toEqual([])
+      expect(isOpen).toHaveBeenCalledWith(conversationId, 'agent-1')
+      expect(await manager.renewExpiring(firstExpiry, open)).toEqual([])
+      expect(client.renewWebchatMcpGrant).not.toHaveBeenCalled()
+    })
+
+    it('reports an open conversation whose renewal the CP refused', async () => {
+      const client = { ...rotatingClient(), renewWebchatMcpGrant: vi.fn(async () => 'unsupported' as const) }
+      const manager = new RemoteWebchatGrantManager(client)
+      await manager.provision(conversationId, entitlement, 0, 'agent-1')
+
+      expect(await manager.renewExpiring(firstExpiry - 4 * 60_000, open)).toEqual([conversationId])
+      expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
+    })
+
+    it('shares one renewal between the sweep and a turn start', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => (release = resolve))
+      const client = {
+        ...rotatingClient(),
+        renewWebchatMcpGrant: vi.fn(async (input: any) => {
+          await gate
+          return { ...input, expiresAt: new Date(firstExpiry + 26 * 60_000).toISOString() }
+        })
+      }
+      const manager = new RemoteWebchatGrantManager(client)
+      await manager.provision(conversationId, entitlement, 0, 'agent-1')
+
+      const sweep = manager.renewExpiring(firstExpiry - 4 * 60_000, open)
+      await vi.waitFor(() => expect(client.renewWebchatMcpGrant).toHaveBeenCalledTimes(1))
+      const turn = manager.provision(conversationId, entitlement, firstExpiry - 4 * 60_000, 'agent-1')
+      release()
+
+      expect(await sweep).toEqual([])
+      expect((await turn).changed).toBe(false)
+      expect(client.renewWebchatMcpGrant).toHaveBeenCalledTimes(1)
+      expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
+    })
+
     it('never asks to renew a grant that has already expired', async () => {
       const client = { ...rotatingClient(), renewWebchatMcpGrant: vi.fn() }
       const manager = new RemoteWebchatGrantManager(client)

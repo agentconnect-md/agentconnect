@@ -1304,7 +1304,8 @@ import {
   MEMBERS_SWEEP_INTERVAL_MS,
   MEMBERS_SWEEP_MAX_LOOKUPS,
   SESSION_RETENTION_SWEEP_INTERVAL_MS,
-  UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS
+  UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS,
+  WEBCHAT_MCP_GRANT_RENEW_SWEEP_MS
 } from './daemon/constants.js'
 import { nextRetentionRecheck, retentionRecheckPending } from './daemon/retention-recheck.js'
 import {
@@ -2298,6 +2299,7 @@ export class Daemon {
   private idleSweepTimer?: TimerHandle
   private storeRetentionTimer?: TimerHandle
   private checkSweepTimer?: TimerHandle
+  private webchatGrantRenewTimer?: TimerHandle
   // Last probe-temp-root reclaim, so it rides the idle sweep at its own slower
   // cadence — the OS temp dir can hold thousands of entries to scan.
   private lastProbeRootSweepAt = 0
@@ -5924,6 +5926,7 @@ export class Daemon {
     this.armIdleSweep()
     this.armStoreRetentionSweep()
     this.armCheckSweep()
+    this.armWebchatGrantRenewal()
     if (this.sourceCacheSweeper && this.k8sPlane)
       this.sourceCacheSweeper.start(`${this.k8sPlane.memberId}/${randomUUID().slice(0, 8)}`)
     this.startupComplete = true
@@ -25410,6 +25413,26 @@ export class Daemon {
     }, SESSION_RETENTION_SWEEP_INTERVAL_MS)
   }
 
+  /** Keeps an open webchat session's remote MCP grant alive between turns, so a runtime never holds an expired or rotated bearer. */
+  private armWebchatGrantRenewal(): void {
+    this.webchatGrantRenewTimer = this.clock.setTimeout(async () => {
+      this.webchatGrantRenewTimer = undefined
+      const failed = await this.remoteWebchatGrants
+        ?.renewExpiring(this.clock.now(), async (conversationId, agentId) => {
+          const session = await this.store.getSession(this.webchatTransport.webchatSessionKey(conversationId, agentId))
+          return session !== undefined && session.state !== 'closed'
+        })
+        .catch((err) => {
+          this.log.warn(`remote MCP: grant renewal sweep failed (${formatErr(err)})`)
+          return []
+        })
+      if (failed?.length)
+        this.log.warn(`remote MCP: could not renew the grant of ${failed.length} open conversation(s); retrying`)
+      // The shutdown latch, not `draining`: a temporary daemon/drain re-opens the gate without re-arming this.
+      if (!this.shutdownDraining) this.armWebchatGrantRenewal()
+    }, WEBCHAT_MCP_GRANT_RENEW_SWEEP_MS)
+  }
+
   /** Recurring idle sweep (§7.2/§7.3): reap idle adapter children and TTL-close
    *  idle sessions. Driven by the injected Clock so a FakeClock advances it in tests. */
   private armIdleSweep(): void {
@@ -29452,6 +29475,10 @@ export class Daemon {
     if (this.checkSweepTimer !== undefined) {
       this.clock.clearTimeout(this.checkSweepTimer)
       this.checkSweepTimer = undefined
+    }
+    if (this.webchatGrantRenewTimer !== undefined) {
+      this.clock.clearTimeout(this.webchatGrantRenewTimer)
+      this.webchatGrantRenewTimer = undefined
     }
     this.runtimeFacts.dispose()
     this.k8sProbeSchedule?.stop()
