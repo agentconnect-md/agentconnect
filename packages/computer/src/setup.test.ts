@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readGrantRecord, recordGrants } from './macos-grants.js'
-import { localizeChecks, macPermissionChecks, printChecks, profileCovered } from './setup.js'
+import { localizeChecks, macPermissionChecks, printChecks } from './setup.js'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -23,13 +23,6 @@ describe('setup helpers', () => {
       { name: 'daemon', status: 'fail', detail: 'start it with: agentconnect computer run' },
       { name: 'driver', status: 'ok', detail: '/opt/bin/agentconnect-computer ok' }
     ])
-  })
-
-  it('matches Windows network categories against firewall rule profiles', () => {
-    expect(profileCovered('Any', 'Public')).toBe(true)
-    expect(profileCovered('Private, Public', 'Public')).toBe(true)
-    expect(profileCovered('Private', 'Public')).toBe(false)
-    expect(profileCovered('Domain', 'DomainAuthenticated')).toBe(true)
   })
 
   it('fails the report only on failed checks and prints the fix for anything not ok', () => {

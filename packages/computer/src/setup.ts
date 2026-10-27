@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { configPath, controlBaseUrl, isLoopbackHost, type DaemonConfig } from './config.js'
+import { configPath, controlBaseUrl, type DaemonConfig } from './config.js'
 import { CuaDriver } from './driver/client.js'
 import { CUA_DRIVER_VERSION } from './driver/install.js'
 import { canKeepAwake, displaySleepMinutes, wakeDisplay } from './keep-awake.js'
@@ -13,6 +13,7 @@ import { loadRegistration, registrationPath, type Registration } from './cp/regi
 import { ffmpegAvailable, probeCapture } from './stream/ffmpeg.js'
 import { screencastTokenPath, waylandSession } from './stream/wayland-capture.js'
 import { COMPUTER_DAEMON_VERSION } from './version.js'
+import { allowFirewall, FIREWALL_RULE, readFirewall } from './windows-firewall.js'
 
 export type CheckStatus = 'ok' | 'info' | 'warn' | 'fail'
 
@@ -42,7 +43,6 @@ export interface SetupContext {
 }
 
 const ICON: Record<CheckStatus, string> = { ok: '✅', info: 'ℹ️ ', warn: '⚠️ ', fail: '❌' }
-const FIREWALL_RULE = 'AgentConnect Computer (Node.js)'
 export const MAC_PANES = {
   accessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
   screenRecording: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
@@ -93,52 +93,6 @@ export async function macPermissions(driver: CuaDriver, prompt = false): Promise
     directCapture: typeof meta.direct_capture_status === 'string' ? meta.direct_capture_status : 'not_checked'
   }
 }
-
-function powershell(script: string, timeoutMs = 30_000): { ok: boolean; stdout: string } {
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout: timeoutMs
-  })
-  return { ok: result.status === 0, stdout: result.stdout ?? '' }
-}
-
-const psQuote = (value: string): string => `'${value.replace(/'/g, "''")}'`
-
-interface FirewallState {
-  allow: { name: string; profile: string }[]
-  block: { name: string; profile: string }[]
-  activeProfiles: string[]
-}
-
-// Inbound rules for this node.exe, matched by expanded path because prompt-created rules may differ in case.
-function firewallState(program: string): FirewallState | undefined {
-  const script = `$ErrorActionPreference = 'SilentlyContinue'
-$p = ${psQuote(program)}
-$rules = @(Get-NetFirewallApplicationFilter | Where-Object { [Environment]::ExpandEnvironmentVariables($_.Program) -ieq $p } | Get-NetFirewallRule | Where-Object { "$($_.Enabled)" -eq 'True' -and "$($_.Direction)" -eq 'Inbound' } | ForEach-Object { [pscustomobject]@{ name = $_.DisplayName; action = "$($_.Action)"; profile = "$($_.Profile)" } })
-$profiles = @(Get-NetConnectionProfile | ForEach-Object { "$($_.NetworkCategory)" })
-ConvertTo-Json -Compress -InputObject @{ rules = $rules; profiles = $profiles }`
-  const result = powershell(script)
-  if (!result.ok) return undefined
-  try {
-    const parsed = JSON.parse(result.stdout.trim()) as {
-      rules: { name: string; action: string; profile: string }[]
-      profiles: string[]
-    }
-    const rules = parsed.rules ?? []
-    return {
-      allow: rules.filter((rule) => rule.action === 'Allow'),
-      block: rules.filter((rule) => rule.action === 'Block'),
-      activeProfiles: [...new Set(parsed.profiles ?? [])]
-    }
-  } catch {
-    return undefined
-  }
-}
-
-// NetworkCategory names (Public/Private/DomainAuthenticated) against rule profiles (Any, or Domain/Private/Public).
-export const profileCovered = (profile: string, category: string): boolean =>
-  profile === 'Any' || profile.split(/,\s*/).includes(category === 'DomainAuthenticated' ? 'Domain' : category)
 
 // ---- doctor ----
 
@@ -205,7 +159,7 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
 
   checks.push(displayCheck(config))
   checks.push(...ffmpegChecks(ctx, captureTimeoutMs))
-  if (process.platform === 'win32') checks.push(firewallCheck(config))
+  if (process.platform === 'win32') checks.push(await firewallCheck())
   if (process.platform === 'linux') checks.push(...linuxChecks(ctx))
   checks.push(await daemonCheck(config))
   return checks
@@ -474,39 +428,35 @@ function ffmpegChecks(ctx: SetupContext, timeoutMs: number): Check[] {
   ]
 }
 
-function firewallCheck(config: DaemonConfig): Check {
-  if (isLoopbackHost(config.host)) {
-    return { name: 'firewall', status: 'info', detail: `listening on ${config.host} only; no inbound rule needed` }
-  }
-  const state = firewallState(process.execPath)
-  if (!state) return { name: 'firewall', status: 'warn', detail: 'could not read Windows Firewall rules' }
-  const fix = `run: ${selfCommand()} setup (asks for administrator approval once)`
-  if (state.block.length > 0) {
-    return {
-      name: 'firewall',
-      status: 'fail',
-      detail: `inbound block rule(s) for ${process.execPath}: ${state.block.map((rule) => rule.name).join(', ')}`,
-      fix
-    }
-  }
-  const uncovered = state.activeProfiles.filter(
-    (category) => !state.allow.some((rule) => profileCovered(rule.profile, category))
-  )
-  if (state.allow.length === 0 || uncovered.length > 0) {
-    return {
-      name: 'firewall',
-      status: 'warn',
-      detail:
-        state.allow.length === 0
-          ? 'no inbound allow rule for Node.js: remote MCP and WebRTC will be blocked or prompt'
-          : `Node.js is not allowed on active ${uncovered.join('/')} network(s)`,
-      fix
-    }
-  }
-  return {
-    name: 'firewall',
-    status: 'ok',
-    detail: `Node.js allowed inbound (${state.allow.map((rule) => rule.profile).join(', ')})`
+// Not skipped for a loopback listener: WebRTC media from the console's viewer arrives as inbound UDP all the same.
+async function firewallCheck(): Promise<Check> {
+  const verdict = await readFirewall(process.execPath)
+  const fix = `run: ${selfCommand()} setup, or click Windows Firewall in the taskbar menu`
+  if (!verdict) return { name: 'firewall', status: 'warn', detail: 'could not read Windows Firewall rules' }
+  switch (verdict.state) {
+    case 'blocked':
+      return {
+        name: 'firewall',
+        status: 'fail',
+        detail: `inbound block rule(s) for ${process.execPath}: ${verdict.rules.join(', ')}`,
+        fix
+      }
+    case 'missing':
+      return {
+        name: 'firewall',
+        status: 'warn',
+        detail: 'no inbound allow rule for Node.js: direct WebRTC video falls back to TURN or screenshots',
+        fix
+      }
+    case 'uncovered':
+      return {
+        name: 'firewall',
+        status: 'warn',
+        detail: `Node.js is not allowed on active ${verdict.networks.join('/')} network(s)`,
+        fix
+      }
+    case 'allowed':
+      return { name: 'firewall', status: 'ok', detail: `Node.js allowed inbound (${verdict.profiles.join(', ')})` }
   }
 }
 
@@ -648,34 +598,16 @@ export function open(url: string): void {
   spawn('open', [url], { stdio: 'ignore', detached: true }).unref()
 }
 
-// `program` is the Node that serves: this one, or the Windows service's copy.
-export function setupWindowsFirewall(ctx: SetupContext, program = process.execPath): void {
-  if (isLoopbackHost(ctx.config.host)) {
-    ctx.log(`Listening on ${ctx.config.host} only, so no Windows Firewall rule is needed.`)
-    return
-  }
-  const state = firewallState(program)
-  const uncovered = state?.activeProfiles.filter(
-    (category) => !state.allow.some((rule) => profileCovered(rule.profile, category))
-  )
-  if (state && state.block.length === 0 && state.allow.length > 0 && uncovered?.length === 0) {
+// `program` is the Node that serves: this one, or the Windows service's copy; needed even on loopback, for WebRTC media.
+export async function setupWindowsFirewall(ctx: SetupContext, program = process.execPath): Promise<void> {
+  if ((await readFirewall(program))?.state === 'allowed') {
     ctx.log('Windows Firewall already allows Node.js inbound.')
     return
   }
   ctx.log(`Adding a Windows Firewall rule "${FIREWALL_RULE}" for ${program} (approve the administrator prompt).`)
-  // Block rules (created when someone pressed Cancel on Windows' own prompt) would override the allow rule.
-  const elevated = `$p = ${psQuote(program)}
-Get-NetFirewallRule -DisplayName ${psQuote(FIREWALL_RULE)} -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-Get-NetFirewallApplicationFilter | Where-Object { [Environment]::ExpandEnvironmentVariables($_.Program) -ieq $p } | Get-NetFirewallRule | Where-Object { "$($_.Action)" -eq 'Block' -and "$($_.Direction)" -eq 'Inbound' } | Disable-NetFirewallRule
-New-NetFirewallRule -DisplayName ${psQuote(FIREWALL_RULE)} -Direction Inbound -Program $p -Action Allow -Profile Any | Out-Null`
-  const encoded = Buffer.from(elevated, 'utf16le').toString('base64')
-  const result = powershell(
-    `Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','${encoded}'`,
-    180_000
-  )
   ctx.log(
-    result.ok
+    (await allowFirewall(program, false))
       ? 'Firewall rule added; any Node.js block rules were disabled.'
-      : 'Firewall rule not added (administrator prompt declined?); Windows will ask on first connection instead.'
+      : 'Firewall rule not added (administrator prompt declined?); click Windows Firewall in the taskbar menu to add it later.'
   )
 }

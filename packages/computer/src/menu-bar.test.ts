@@ -24,12 +24,13 @@ describe('menu bar menu', () => {
       ...FACTS,
       screenRecording: undefined,
       accessibility: undefined,
-      windows: { service: true, adminPrompts: { mode: 'people', editable: true } }
+      windows: { service: true, firewall: 'allowed', adminPrompts: { mode: 'people', editable: true } }
     })
     const rows = windows.items.map((entry) => (entry.separator ? '---' : `${entry.mark ?? ''} ${entry.title}`.trim()))
-    expect(rows.slice(4, 9)).toEqual([
+    expect(rows.slice(4, 10)).toEqual([
       'ok Control Plane (api.example.com): connected',
       'ok Service: running as SYSTEM',
+      'ok Windows Firewall: direct video allowed',
       'Administrator Prompts: People Approve Each One',
       'ok Cua Driver 0.35.2: running',
       'ok ffmpeg b6.1.1: installed'
@@ -52,6 +53,24 @@ describe('menu bar menu', () => {
     expect(item(revoked, 'Control Plane').title).toContain('add this computer again')
     expect(item(revoked, 'Service')).toMatchObject({ mark: 'warn' })
     expect(item(revoked, 'Administrator prompts')).toMatchObject({ mark: 'warn', enabled: false })
+  })
+
+  it('offers to add the firewall rule whenever direct video is not allowed, and says when the rules cannot be read', () => {
+    const row = (firewall?: 'allowed' | 'blocked' | 'missing' | 'uncovered') =>
+      item(
+        menuBarMenu(READY, { ...FACTS, windows: { service: true, ...(firewall ? { firewall } : {}) } }),
+        'Windows Firewall'
+      )
+    expect(row('allowed')).toMatchObject({ mark: 'ok', enabled: false })
+    expect(row('allowed').id).toBeUndefined()
+    for (const [state, title] of [
+      ['missing', 'Windows Firewall: no rule for direct video, click to allow'],
+      ['blocked', 'Windows Firewall: blocks direct video, click to allow'],
+      ['uncovered', 'Windows Firewall: blocks direct video on this network, click to allow']
+    ] as const)
+      expect(row(state)).toEqual({ id: 'firewall', title, mark: 'fail' })
+    expect(row()).toMatchObject({ title: 'Windows Firewall: cannot read the rules', mark: 'warn', enabled: false })
+    expect(menuBarMenu(READY, { ...FACTS, windows: { service: true, firewall: 'missing' } }).badge).toBe('error')
   })
 
   it('shows a waiting prompt and a helper problem, and locks the modes while the Control Plane is away', () => {
@@ -207,6 +226,19 @@ describe('menu bar actions', () => {
     expect(item(h.menus.at(-1)!, 'Administrator Prompts').title).toBe('Administrator Prompts: saving…')
     finish()
     await expect.poll(() => item(h.menus.at(-1)!, 'Administrator Prompts').title).not.toContain('saving')
+  })
+
+  it('adds the firewall rule through the host, showing it in progress meanwhile', async () => {
+    let finish!: () => void
+    const allowFirewall = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)))
+    const h = harness({ windows: { service: true, firewall: 'missing' } }, { allowFirewall })
+    await expect.poll(() => h.menus.length).toBeGreaterThan(0)
+    h.click('firewall')
+    h.click('firewall')
+    expect(allowFirewall).toHaveBeenCalledTimes(1)
+    expect(item(h.menus.at(-1)!, 'Windows Firewall')).toMatchObject({ mark: 'progress', enabled: false })
+    finish()
+    await expect.poll(() => item(h.menus.at(-1)!, 'Windows Firewall').mark).toBe('fail')
   })
 
   it('runs each item in the daemon and redraws with what changed', async () => {

@@ -299,7 +299,7 @@ async function main(): Promise<void> {
       return
     }
     case 'service':
-      return serviceCommand(dir, loadConfig(dir), rest[0], Boolean(values.purge))
+      return await serviceCommand(dir, loadConfig(dir), rest[0], Boolean(values.purge))
     case 'autostart': {
       const action = rest[0]
       if (action === 'enable') enableAutostart(dir, serviceEntry())
@@ -865,6 +865,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
                 // The service host starts the daemon again after a non-zero exit and waits for the next sign-in after zero.
                 shutdown: (code) => void shutdown(code),
                 onFfmpegInstalled: () => live.channel?.refreshDoctor(),
+                onFirewallChanged: () => live.channel?.refreshDoctor(),
                 ...(adminPromptHelper
                   ? {
                       adminPrompts: {
@@ -1107,7 +1108,12 @@ async function setupMacApp(dir: string, config: DaemonConfig): Promise<Check[]> 
   return (await daemonDoctor(config, 120_000)) ?? doctor(setupContext(dir, config))
 }
 
-function serviceCommand(dir: string, config: DaemonConfig, action: string | undefined, purge: boolean): void {
+async function serviceCommand(
+  dir: string,
+  config: DaemonConfig,
+  action: string | undefined,
+  purge: boolean
+): Promise<void> {
   if (process.platform === 'linux') return linuxServiceCommand(dir, config, action)
   if (process.platform === 'win32') return windowsServiceCommand(dir, config, action, purge)
   if (process.platform !== 'darwin') throw new Error('service is only implemented for macOS, Linux and Windows')
@@ -1153,9 +1159,14 @@ function linuxServiceCommand(dir: string, config: DaemonConfig, action: string |
 }
 
 // Runs elevated for install and uninstall (main asks for approval first).
-function windowsServiceCommand(dir: string, config: DaemonConfig, action: string | undefined, purge: boolean): void {
+async function windowsServiceCommand(
+  dir: string,
+  config: DaemonConfig,
+  action: string | undefined,
+  purge: boolean
+): Promise<void> {
   const say = (line: string): void => console.error(line)
-  if (action === 'install') installWindowsService(dir, config, say)
+  if (action === 'install') await installWindowsService(dir, config, say)
   else if (action === 'uninstall') windowsService.uninstallService(windowsServiceHome(), purge, say)
   else if (action === 'start') windowsService.startService()
   else if (action === 'stop') windowsService.stopService()
@@ -1178,15 +1189,15 @@ function windowsServiceCommand(dir: string, config: DaemonConfig, action: string
 }
 
 // Copies this bundle and its Node into Program Files, so what SYSTEM runs is the administrators' to change.
-function installWindowsService(dir: string, config: DaemonConfig, log: (line: string) => void): void {
+async function installWindowsService(dir: string, config: DaemonConfig, log: (line: string) => void): Promise<void> {
   windowsService.installService({ entry: serviceEntry(), node: process.execPath, home: dir, log })
   const installedNode = join(windowsService.installDir(), 'node.exe')
-  setupWindowsFirewall({ ...setupContext(dir, config), log }, installedNode)
+  await setupWindowsFirewall({ ...setupContext(dir, config), log }, installedNode)
 }
 
 // Windows: the service runs the daemon as SYSTEM in the signed-in session; doctor then checks from inside it.
 async function setupWindowsService(dir: string, config: DaemonConfig): Promise<Check[]> {
-  installWindowsService(dir, config, (line) => console.log(line))
+  await installWindowsService(dir, config, (line) => console.log(line))
   if (!(await waitForDaemon(config, 90_000))) {
     console.log(`The service did not come up; see ${join(dir, 'daemon.log')}`)
     return doctor(setupContext(dir, config))
