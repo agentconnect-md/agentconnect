@@ -474,3 +474,44 @@ describe('webchat session-targeted continuation — hook origin', () => {
     await daemon.stop()
   })
 })
+
+// A schedule with no target channel fires on a minted `cron:<id>` channel that exists on no platform: the console is its only surface.
+const CRON_ACP = 'acp-target-cron'
+const CRON_CHANNEL = 'cron:11111111-1111-4111-8111-111111111111'
+const CRON_THREAD = `${CRON_CHANNEL}:22222222-2222-4222-8222-222222222222`
+const CRON_KEY = `slack:${CRON_CHANNEL}:${CRON_THREAD}:${AGENT}`
+
+describe('webchat session-targeted continuation — headless cron origin', () => {
+  it('runs the turn on the cron session without mirroring into its minted channel', async () => {
+    const { daemon, d, prompts, postMessage, postAsAuthor } = await boot(() => 'report rerun')
+    await d.store.upsertSession({
+      key: CRON_KEY,
+      agentId: AGENT,
+      platform: 'slack',
+      channel: CRON_CHANNEL,
+      thread: CRON_THREAD,
+      acpSessionId: CRON_ACP,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      triggeredBy: CRON_CHANNEL
+    })
+    await d.store.setSessionClassification(CRON_KEY, { sourceBindingKind: 'local' })
+    const events: RdChatEvent[] = []
+
+    const ack = await d.handleRelayMsg(turn('run it again', { targetSessionId: CRON_ACP }), (e) => events.push(e))
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+
+    expect(postAsAuthor).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]!.text).toContain('run it again')
+    expect(events.some((e) => e.kind === 'output')).toBe(true)
+    const page = await d.store.transcriptPage(CRON_CHANNEL, CRON_THREAD, null, 50, AGENT)
+    const texts = page.rows.map((r) => r.text)
+    expect(texts).toContain('run it again')
+    expect(texts.filter((t) => t === 'report rerun')).toHaveLength(1)
+    await daemon.stop()
+  })
+})

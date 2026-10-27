@@ -1489,7 +1489,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                             : // The daemon answered but faulted taking the turn in (a full disk): a fault, not contention.
                               reason === 'admission_failed'
                               ? `⚠️ ${name ?? 'Agent'} could not take the message${detail ? ` — ${detail}` : ' — check the daemon logs.'}`
-                              : `⚠️ ${name ?? 'Agent'} is unavailable — no live daemon is serving it.`
+                              : // The daemon is live, but the message could not be posted to the conversation this session started in.
+                                reason === 'integration_delivery_failed'
+                                ? `⚠️ ${name ?? 'Agent'} did not run — your message could not be posted to the conversation this session came from.`
+                                : `⚠️ ${name ?? 'Agent'} is unavailable — no live daemon is serving it.`
               })
               if (lanesOf(id).length === 0) {
                 reconnectAttempts.current.delete(id)

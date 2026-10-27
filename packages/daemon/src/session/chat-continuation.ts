@@ -1,6 +1,7 @@
 import { continuableOrigin, originKindOf } from '@agentconnect.md/protocol'
 import { LifecycleCleanupBlockedError } from '../daemon/turn-types.js'
 import { formatErr } from '../daemon/text.js'
+import { isHeadlessCronSession } from '../scheduler/scheduler.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
@@ -102,8 +103,9 @@ export class ChatSessionContinuation {
     if (this.host.paused(agentId)) return { accepted: false, reason: 'paused' }
     if (this.host.safetyDraining(agentId)) return { accepted: false, reason: 'busy' }
     if (this.host.draining() || this.host.agentDraining(agentId)) return { accepted: false, reason: 'draining' }
-    // Hook sessions have no mirror; a missing chat integration must refuse the turn.
-    const integration = originKindOf(local.platform) === 'hook' ? null : this.integration(agentId, local)
+    // Hook and headless cron sessions have no mirror; a missing chat integration must refuse the turn.
+    const synthetic = isHeadlessCronSession(local)
+    const integration = originKindOf(local.platform) === 'hook' || synthetic ? null : this.integration(agentId, local)
     if (integration === undefined) return { accepted: false, reason: 'integration_offline' }
     await this.application.rememberAuthorName(author)
     const shared = integration === null ? post : undefined
@@ -123,7 +125,8 @@ export class ChatSessionContinuation {
       mentionedBots: integration?.botUserId ? [integration.botUserId] : [],
       isDm: local.conversationKind === 'dm',
       trigger: local.conversationKind === 'dm' ? 'dm' : 'mention',
-      adoptedSession: true
+      adoptedSession: true,
+      ...(synthetic ? { headless: true, syntheticChannel: true } : {})
     }
     const key = sessionKey(
       message.platform,
@@ -151,7 +154,7 @@ export class ChatSessionContinuation {
       if (!(error instanceof LifecycleCleanupBlockedError))
         this.host.error(`chat continuation dispatch failed for agent "${agentId}": ${formatErr(error)}`)
     }
-    // Hook output commits into the same transcript once and never uses a platform renderer.
+    // Mirror-less output commits into the same transcript once and never uses a platform renderer.
     if (!integration) {
       if (options) {
         let settle!: (result: { accepted: boolean; reason?: string }) => void
@@ -178,7 +181,7 @@ export class ChatSessionContinuation {
         void this.host.dispatch(agentId, message, undefined, context).catch(logFailure)
       }
       this.host.info(
-        `chat continuation: ${author.name} → hook session ${local.key} (conversation ${conversationId}, turn ${turnId})`
+        `chat continuation: ${author.name} → unmirrored session ${local.key} (conversation ${conversationId}, turn ${turnId})`
       )
       return { accepted: true }
     }
