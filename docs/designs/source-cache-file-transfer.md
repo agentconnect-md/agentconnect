@@ -74,8 +74,11 @@ cannot prove its bytes, so it is uploaded again.
 
 - **A PUT** signs `content-length`, `x-amz-checksum-sha256` and the tagging header, so the
   store accepts exactly the declared bytes.
-- **The agent's GET for an upload.** The CP `HEAD`s the object first and requires the
-  declared length, and the declared checksum when the store returns one.
+- **The agent's GET for an upload.** The CP `HEAD`s the object first. A returned checksum
+  must match the declared one and proves the bytes, since the PUT signed both checksum and
+  length; a returned `Content-Length` must match the declared size. The length is required
+  only when the store returns no checksum, because a HEAD may omit it (RFC 9110 §9.3.2), as
+  a compressing proxy in front of the store does for text types.
 - **The agent's GET is a bearer URL.** Anyone holding it can read that one object on the
   origin its network names until it expires. The agent may pass it to the model provider's API,
   so it can leave the cluster for up to `limits.urlSeconds`.
