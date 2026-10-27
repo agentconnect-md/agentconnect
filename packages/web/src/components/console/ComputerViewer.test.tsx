@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { computerFixture as computer } from '@/lib/computer-fixtures'
 import type { ComputerViewerSession, ViewerDeps, ViewerState } from '@/lib/computer-viewer'
-import { ComputerViewerCard } from './ComputerViewer'
+import { ComputerViewerCard, formatStats } from './ComputerViewer'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -14,6 +14,7 @@ const live: ViewerState = {
   frameUrl: null,
   error: null,
   notes: ['Direct: ICE failed'],
+  stats: null,
   status: {
     you: 'console:u1',
     mode: 'control',
@@ -98,6 +99,20 @@ describe('ComputerViewerCard', () => {
     expect(fake.release).toHaveBeenCalled()
     act(() => button(el, 'Close')!.click())
     expect(fake.stop).toHaveBeenCalled()
+  })
+
+  it('shows what the stream delivers beside the path, leaving out what it cannot measure', async () => {
+    const { fake, create } = fakeSession()
+    const el = render(<ComputerViewerCard computer={computer()} createSession={create} />)
+    await act(async () => button(el, 'Watch')!.click())
+    expect(el.querySelector('[data-viewer-stats]')).toBeNull()
+    act(() => fake.deps!.onState({ ...live, stats: { fps: 30, kbps: 2412, latencyMs: 41 } }))
+    const stats = el.querySelector<HTMLElement>('[data-viewer-stats]')!
+    expect(stats.textContent).toBe('30 fps · 2.4 Mbps · 41 ms')
+    expect(stats.title).toContain('round trip')
+    act(() => fake.deps!.onState({ ...live, path: 'screenshots', stats: { fps: 3, kbps: 850, latencyMs: 320 } }))
+    expect(el.querySelector<HTMLElement>('[data-viewer-stats]')!.title).toContain('fetch one screenshot')
+    expect(formatStats({ fps: null, kbps: 999, latencyMs: null })).toBe('999 kbps')
   })
 
   it('shows a watch-only member no takeover', async () => {

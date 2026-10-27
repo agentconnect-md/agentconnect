@@ -6792,7 +6792,11 @@
         "screenshots": "截图"
       },
       "expand": "放大",
-      "collapse": "退出全屏"
+      "collapse": "退出全屏",
+      "stats": {
+        "roundTrip": "来自电脑的视频的帧率、码率和往返延迟",
+        "frameTime": "截图频率、码率和拉取一张截图的耗时"
+      }
     },
     "allAgents": "所有 Agent",
     "allocation": {
