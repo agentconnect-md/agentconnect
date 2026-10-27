@@ -20,6 +20,7 @@ export const DINGTALK_CHANNEL_LIST: WebChannelListSemantics = {
 
 export const dingTalkModule: WebPlatformModule = {
   platformId: 'dingtalk',
+  docsPath: 'connect-automate/chat-platforms/dingtalk',
   Mark: DingTalkMark,
   wizard: {
     Body: DingTalkWizardBody,

@@ -17,6 +17,7 @@ const DISCORD_SNOWFLAKE = /^\d{16,20}$/
 
 export const discordModule: WebPlatformModule<typeof discordApi> = {
   platformId: 'discord',
+  docsPath: 'connect-automate/chat-platforms/discord',
   Mark: DiscordMark,
   wizard: {
     Body: DiscordWizardBody,

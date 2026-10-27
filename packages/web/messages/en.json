@@ -1980,6 +1980,7 @@
       "platform": "Platform",
       "chat": "Chat",
       "workflow": "Workflow",
+      "setupGuide": "Setup guide",
       "notSupportedByDaemon": "Not supported by this daemon",
       "name": "Name",
       "sessionContinuity": "Session continuity",

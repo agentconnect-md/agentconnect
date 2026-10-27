@@ -13,6 +13,7 @@ const TELEGRAM_MESSAGE_ID = /^\d{1,9}$/
 
 export const telegramModule: WebPlatformModule<TelegramApi> = {
   platformId: 'telegram',
+  docsPath: 'connect-automate/chat-platforms/telegram',
   Mark: TelegramMark,
   wizard: {
     Body: TelegramWizardBody,

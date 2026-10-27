@@ -72,6 +72,8 @@ import {
   type RepoAccess
 } from '@/lib/api'
 import { availableApiProtocols, ahpDeploymentAccess, apiProtocolLabel } from '@/lib/agent-api'
+import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
+import { docsPageUrl } from '@/lib/help-links'
 import EditWorkspaceModal from './EditWorkspaceModal'
 import { LabelFilterField } from '@/components/console/LabelFilterField'
 import {
@@ -177,6 +179,8 @@ const CODE_HOST_SUBSCRIPTION_HINT: Record<CodeHostProvider, string> = {
   gitlab: 'Matching events run the agent in a session and reply on the same issue, merge request or push thread.',
   gitea: 'Matching events run the agent in a session and reply on the same issue, pull request or push thread.'
 }
+
+const WEBHOOK_DOCS_PATH = 'connect-automate/triggers-automation/webhooks'
 
 type GithubRepoChoice = GithubRepoDto & { installationId: string }
 
@@ -751,6 +755,12 @@ export default function AddIntegrationModal({
   // The active platform module — undefined for the core trigger sections.
   const activeModule = platformRegistry.get(platform)
   const wizard = activeModule?.wizard
+  const docsPath =
+    platform === 'webhook'
+      ? WEBHOOK_DOCS_PATH
+      : isCodeHostProvider(platform)
+        ? CODE_HOST_PROJECTION[platform].docsPath
+        : activeModule?.docsPath
   // A platform's region: the member's pick, else where its module starts a new install.
   const regionOf = (candidate: Platform): string | undefined => {
     const regions = platformRegistry.get(candidate)?.wizard?.regions
@@ -2660,6 +2670,17 @@ export default function AddIntegrationModal({
                       : null
                   })()}
           </span>
+          {docsPath && (
+            <a
+              className="lnk ml-auto flex-none text-[12px]"
+              href={docsPageUrl(docsPath, locale)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {t('setupGuide')}
+              <Icon name="arrow-up-right" size={12} />
+            </a>
+          )}
         </div>
         {shareToggleAvailable && !identityHidden && (
           <label className="mt-[14px] flex cursor-pointer items-start gap-2.5 rounded-md border border-(--border) px-3 py-[11px]">
