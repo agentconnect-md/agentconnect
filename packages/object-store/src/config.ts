@@ -6,6 +6,11 @@ const KIB = 1024
 const GIB = KIB * KIB * KIB
 /** The S3 single-PUT ceiling; an object above it cannot be one presigned upload. */
 export const S3_SINGLE_PUT_MAX_BYTES = 5 * GIB
+/** S3's multipart bounds: every part but the last is at least this big, and an upload has at most this many parts. */
+export const S3_MIN_PART_BYTES = 5 * KIB * KIB
+export const S3_MAX_PARTS = 10_000
+/** The largest object S3 stores. */
+export const S3_MAX_OBJECT_BYTES = 5 * KIB * GIB
 /** Grace a URL lifetime needs on top of itself: the reservation margin and the credential refresh margin. */
 export const SOURCE_CACHE_GRACE_SECONDS = 300
 /** The longest STS session AssumeRoleWithWebIdentity grants. */

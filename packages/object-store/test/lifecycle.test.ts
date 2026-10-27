@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   evaluateSourceCacheLifecycle,
+  multipartAbortLifecycleRule,
   SOURCE_CACHE_LIFECYCLE_DAYS,
   sourceCacheLifecycleRules
 } from '../src/lifecycle.js'
@@ -55,9 +56,35 @@ describe('Source Cache lifecycle rules document', () => {
     expect(evaluateSourceCacheLifecycle(xml, 'agentconnect')).toEqual({
       pending: true,
       unreferenced: true,
+      multipartAbort: false,
       pendingShortestDays: 2,
       warnings: []
     })
+  })
+})
+
+describe('multipart abort rule', () => {
+  const abortRule = (filter: string, status = 'Enabled') =>
+    `<Rule><ID>a</ID><Filter>${filter}</Filter><Status>${status}</Status><AbortIncompleteMultipartUpload><DaysAfterInitiation>1</DaysAfterInitiation></AbortIncompleteMultipartUpload></Rule>`
+
+  it('documents a prefix-only rule over <prefix>/src/', () => {
+    expect(multipartAbortLifecycleRule('agentconnect')).toEqual({
+      ID: 'ac-source-cache-multipart-abort',
+      Status: 'Enabled',
+      Filter: { Prefix: 'agentconnect/src/' },
+      AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+    })
+  })
+
+  it('counts an enabled rule reaching every upload under src/, and no narrower, tagged or disabled one', () => {
+    const covers = (rule: string) => evaluateSourceCacheLifecycle(config(rule), 'agentconnect').multipartAbort
+    expect(covers(abortRule('<Prefix>agentconnect/src/</Prefix>'))).toBe(true)
+    expect(covers(abortRule('<Prefix></Prefix>'))).toBe(true)
+    expect(covers(abortRule('<Prefix>agentconnect/src/org_1/</Prefix>'))).toBe(false)
+    expect(covers(abortRule('<Prefix>agentconnect/src/</Prefix>', 'Disabled'))).toBe(false)
+    expect(
+      covers(abortRule('<And><Prefix>agentconnect/src/</Prefix><Tag><Key>k</Key><Value>v</Value></Tag></And>'))
+    ).toBe(false)
   })
 })
 
@@ -133,12 +160,14 @@ describe('Source Cache lifecycle evaluation', () => {
     expect(evaluateSourceCacheLifecycle(xml, 'a&b')).toEqual({
       pending: true,
       unreferenced: true,
+      multipartAbort: false,
       pendingShortestDays: 2,
       warnings: []
     })
     expect(evaluateSourceCacheLifecycle(config(foreign), 'a&b')).toEqual({
       pending: false,
       unreferenced: false,
+      multipartAbort: false,
       pendingShortestDays: undefined,
       warnings: []
     })

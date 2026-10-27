@@ -36,18 +36,51 @@ afterEach(async () => {
 
 type Download = Parameters<FileTransferService['workspaceDownload']>[0]
 
+type Reserve = Parameters<FileTransferService['reserveUpload']>[0]
+type SignParts = Parameters<FileTransferService['signUploadParts']>[0]
+const PART = {
+  url: 'https://store.example.test/bucket/key?partNumber=1&uploadId=mp-1',
+  headers: { 'content-length': '5' }
+}
+const COMPLETE = { url: 'https://store.example.test/bucket/key?uploadId=mp-1', headers: {}, expiresAt: EXPIRES }
+
 class TransferSpy implements FileTransferService {
   readonly maxBytes = 1024
-  uploads: Array<{ orgId: string; agentId: string; size: number; sha256: string }> = []
+  uploads: Reserve[] = []
+  signedParts: SignParts[] = []
   downloads: Download[] = []
   statuses: Array<{ agentId: string; operationId: string }> = []
   failure: Error | null = null
   /** When set, a download answers this operation as still uploading. */
   pending: string | null = null
 
-  async reserveUpload(input: { orgId: string; agentId: string; size: number; sha256: string }) {
+  uploadLimits() {
+    return { maxBytes: this.maxBytes }
+  }
+
+  async signUploadParts(input: SignParts) {
+    this.signedParts.push(input)
+    if (this.failure) throw this.failure
+    return {
+      parts: input.parts.map((p) => ({ ...PART, partNumber: p.partNumber })),
+      complete: COMPLETE,
+      expiresAt: EXPIRES
+    }
+  }
+
+  async reserveUpload(input: Reserve) {
     this.uploads.push(input)
     if (this.failure) throw this.failure
+    if (input.parts) {
+      const parts = [{ ...PART, partNumber: 1 }]
+      return {
+        uploadId: '0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b',
+        multipartId: 'mp-1',
+        parts,
+        complete: COMPLETE,
+        expiresAt: EXPIRES
+      }
+    }
     return {
       uploadId: '0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b',
       url: 'https://store.example.test/bucket/key?X-Amz-Signature=sig',
@@ -157,6 +190,64 @@ describe('POST /agents/:id/uploads', () => {
     })
     expect(badName.statusCode).toBe(400)
     expect(transfer.uploads).toHaveLength(0)
+  })
+
+  it('reserves a file in parts and answers its first part PUTs and the complete', async () => {
+    await seedTransferAgent()
+    const transfer = new TransferSpy()
+    const parts = { partBytes: 5 * 1024 * 1024, sha256: [SHA, SHA] }
+    const res = await app(transfer).app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/uploads`,
+      payload: { ...upload, size: 6 * 1024 * 1024, parts }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(transfer.uploads).toEqual([
+      { orgId: DEFAULT_ORG_ID, agentId: AGENT, size: 6 * 1024 * 1024, sha256: SHA, parts }
+    ])
+    expect(res.json()).toEqual({
+      uploadId: '0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b',
+      expiresAt: new Date(EXPIRES).toISOString(),
+      multipart: {
+        multipartId: 'mp-1',
+        parts: [{ ...PART, partNumber: 1 }],
+        complete: { url: COMPLETE.url, headers: {} }
+      }
+    })
+  })
+
+  it('signs more parts of a multipart upload for the agent it was reserved for', async () => {
+    await seedTransferAgent()
+    const transfer = new TransferSpy()
+    const running = app(transfer)
+    const body = { multipartId: 'mp-1', size: 12, partBytes: 5, parts: [{ partNumber: 3, sha256: SHA }] }
+    const uploadId = '0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b'
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/uploads/${uploadId}/parts`,
+      payload: body
+    })
+    expect(res.statusCode).toBe(200)
+    expect(transfer.signedParts).toEqual([{ orgId: DEFAULT_ORG_ID, agentId: AGENT, uploadId, ...body }])
+    expect(res.json()).toEqual({
+      parts: [{ ...PART, partNumber: 3 }],
+      complete: { url: COMPLETE.url, headers: {} },
+      expiresAt: new Date(EXPIRES).toISOString()
+    })
+    const tooMany = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/uploads/${uploadId}/parts`,
+      payload: { ...body, parts: Array.from({ length: 101 }, (_, i) => ({ partNumber: i + 1, sha256: SHA })) }
+    })
+    expect(tooMany.statusCode).toBe(400)
+    transfer.failure = new FileTransferRefusal(400, 'WORKSPACE_UPLOAD_INVALID', 'part number must be 1 to 3')
+    const invalid = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${AGENT}/uploads/${uploadId}/parts`,
+      payload: body
+    })
+    expect(invalid.statusCode).toBe(400)
+    expect(invalid.json()).toMatchObject({ code: 'WORKSPACE_UPLOAD_INVALID' })
   })
 
   it('answers the signer’s cap refusal with its code', async () => {

@@ -31,11 +31,13 @@ fi
 rule() {
   printf '<Rule><ID>ac-source-cache-%s</ID><Status>Enabled</Status><Filter><And><Prefix>%s</Prefix><Tag><Key>ac-cache</Key><Value>%s</Value></Tag></And></Filter><Expiration><Days>%s</Days></Expiration></Rule>' "$1" "$src" "$1" "$2"
 }
+# Unfinished multipart uploads are not objects, so no tag rule reaches them; this one aborts them after a day.
+abort_rule="<Rule><ID>ac-source-cache-multipart-abort</ID><Status>Enabled</Status><Filter><Prefix>${src}</Prefix></Filter><AbortIncompleteMultipartUpload><DaysAfterInitiation>1</DaysAfterInitiation></AbortIncompleteMultipartUpload></Rule>"
 s3 -o /dev/null -X PUT "${bucket_url}?lifecycle" \
-  --data-binary "<LifecycleConfiguration>$(rule pending 2)$(rule unreferenced 7)</LifecycleConfiguration>"
+  --data-binary "<LifecycleConfiguration>$(rule pending 2)$(rule unreferenced 7)${abort_rule}</LifecycleConfiguration>"
 
-# Browsers send the signed checksum and tagging headers on upload and read nothing but the body on download.
+# Browsers send the signed checksum and tagging headers on upload, read each part's ETag, and POST a multipart upload's part list.
 s3 -o /dev/null -X PUT "${bucket_url}?cors" \
-  --data-binary "<CORSConfiguration><CORSRule><AllowedOrigin>${AC_STORE_CORS_ORIGIN}</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedMethod>PUT</AllowedMethod><AllowedHeader>x-amz-checksum-sha256</AllowedHeader><AllowedHeader>x-amz-tagging</AllowedHeader><AllowedHeader>content-type</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>3600</MaxAgeSeconds></CORSRule></CORSConfiguration>"
+  --data-binary "<CORSConfiguration><CORSRule><AllowedOrigin>${AC_STORE_CORS_ORIGIN}</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedMethod>PUT</AllowedMethod><AllowedMethod>POST</AllowedMethod><AllowedHeader>x-amz-checksum-sha256</AllowedHeader><AllowedHeader>x-amz-tagging</AllowedHeader><AllowedHeader>content-type</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>3600</MaxAgeSeconds></CORSRule></CORSConfiguration>"
 
 echo "object store ready: bucket ${AC_STORE_BUCKET}, lifecycle rules under ${src}"

@@ -8,6 +8,8 @@ import {
   parseEnvDocument,
   Prefix,
   Region,
+  S3_MAX_OBJECT_BYTES,
+  S3_MIN_PART_BYTES,
   S3_SINGLE_PUT_MAX_BYTES,
   withSessionDuration
 } from '@agentconnect.md/object-store'
@@ -19,8 +21,9 @@ export const FILE_TRANSFER_ENV = 'AC_FILE_TRANSFER'
 
 const Limits = z
   .strictObject({
-    // The per-file cap, how long a download link (the browser's or the agent's) stays valid, and how long a PUT does.
-    maxBytes: ByteQuantity.default(512 * 1024 ** 2),
+    // An optional per-file cap (none when omitted), the largest single PUT the path to the store takes, and URL lifetimes.
+    maxBytes: ByteQuantity.optional(),
+    partBytes: ByteQuantity.default(512 * 1024 ** 2),
     urlSeconds: DurationSeconds.default(1800),
     putUrlSeconds: DurationSeconds.default(900)
   })
@@ -48,8 +51,11 @@ export const FileTransferConfigSchema = z
     if (limits.putUrlSeconds < 60 || limits.putUrlSeconds > 3600) {
       ctx.addIssue({ code: 'custom', path: ['limits', 'putUrlSeconds'], message: 'must be between 1m and 1h' })
     }
-    if (limits.maxBytes > S3_SINGLE_PUT_MAX_BYTES) {
-      ctx.addIssue({ code: 'custom', path: ['limits', 'maxBytes'], message: 'must not exceed 5Gi' })
+    if (limits.partBytes < S3_MIN_PART_BYTES || limits.partBytes > S3_SINGLE_PUT_MAX_BYTES) {
+      ctx.addIssue({ code: 'custom', path: ['limits', 'partBytes'], message: 'must be between 5Mi and 5Gi' })
+    }
+    if (limits.maxBytes !== undefined && limits.maxBytes > S3_MAX_OBJECT_BYTES) {
+      ctx.addIssue({ code: 'custom', path: ['limits', 'maxBytes'], message: 'must not exceed 5Ti' })
     }
     checkSessionDuration(config.credentials, longestUrl(limits), ['limits', 'urlSeconds'], ctx)
   })

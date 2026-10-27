@@ -30,8 +30,12 @@ export const RuntimeConfigDto = z
       })
       .strict()
       .nullable(),
-    // Console file transfer through the deployment's bucket; null when this process signs none.
-    fileTransfer: z.object({ maxBytes: z.number().int().positive() }).strict().nullable().optional()
+    // Console file transfer through the deployment's bucket; null when this process signs none. `partBytes` only while uploads may go in parts.
+    fileTransfer: z
+      .object({ maxBytes: z.number().int().positive(), partBytes: z.number().int().positive().optional() })
+      .strict()
+      .nullable()
+      .optional()
   })
   .strict()
 
@@ -43,8 +47,8 @@ export interface RuntimeConfigRouteDeps {
   /** Immutable DB-owned browser auth state loaded at process startup. */
   publicRuntimeConfig?: RuntimeConfigDto['config']
   deploymentRevision?: number
-  /** Set when this process signs console file transfers. */
-  fileTransfer?: { maxBytes: number }
+  /** Set when this process signs console file transfers; read per request, since the bucket's lifecycle can change. */
+  fileTransfer?: () => { maxBytes: number; partBytes?: number }
 }
 
 /** Public, secret-free auth config consumed by the prebuilt Web image at startup. */
@@ -58,7 +62,7 @@ export function runtimeConfigRoutes(deps: RuntimeConfigRouteDeps) {
           tags: [Tag.Deployment],
           summary: 'Get public runtime configuration',
           description:
-            'Returns the secret-free browser configuration loaded for this process: authentication, the GitLab instance the deployment talks to, and whether console file transfer is available with its per-file cap. A deployment change takes effect after restart.',
+            'Returns the secret-free browser configuration loaded for this process: authentication, the GitLab instance the deployment talks to, and whether console file transfer is available with its per-file cap and, when uploads may go in parts, the largest part. A deployment change takes effect after restart.',
           operationId: 'getRuntimeConfig',
           response: { 200: RuntimeConfigDto }
         }
@@ -69,7 +73,7 @@ export function runtimeConfigRoutes(deps: RuntimeConfigRouteDeps) {
         ahp: { enabled: deps.ahp?.enabled ?? false, publicAccess: deps.ahp?.publicAccess ?? false },
         revision: deps.deploymentRevision ?? null,
         config: deps.publicRuntimeConfig ?? null,
-        fileTransfer: deps.fileTransfer ?? null
+        fileTransfer: deps.fileTransfer?.() ?? null
       })
     )
   }

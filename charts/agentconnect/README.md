@@ -211,7 +211,8 @@ verified against this signer (design §14).
 | `limits.unreadPointerDays`   | `30`    | Days before an unread pointer is swept                    |
 | `limits.getUrlLifetime`      | `5m`    | Presigned GET lifetime (`1m` to `1h`)                     |
 | `limits.putUrlLifetime`      | `15m`   | Presigned PUT lifetime (`1m` to `1h`)                     |
-| `limits.transferMaxBytes`    | `512Mi` | Largest console file transfer (at most `5Gi`)             |
+| `limits.transferMaxBytes`    | none    | Optional cap on a console file transfer (at most `5Ti`)   |
+| `limits.transferPartBytes`   | `512Mi` | Largest single transfer PUT, `5Mi` to `5Gi`; see below    |
 | `limits.transferUrlLifetime` | `30m`   | Transfer download link lifetime (`1m` to `12h`)           |
 
 ### Bucket lifecycle rules
@@ -277,7 +278,8 @@ members, and self-hosted or local daemons that hold no bucket credentials of the
 
 - **Uploads:** a non-image file a user attaches in webchat is uploaded by the browser
   straight into the bucket, and the agent gets a presigned link to download it into its
-  workspace.
+  workspace. A file larger than one part goes as an S3 multipart upload, so there is no
+  size limit beyond `limits.transferMaxBytes` when set, and S3's 10,000 parts.
 - **Downloads:** a large text or binary workspace file is uploaded by its daemon (or its
   pod) on a URL the Control Plane signs, and the browser downloads it from the bucket.
 
@@ -293,6 +295,23 @@ needs:
 Transfer objects are tagged `ac-cache=pending`, so the 2-day `pending` lifecycle rule
 above collects them. The Control Plane refuses transfers while that rule is missing.
 
+A multipart upload the browser abandons leaves parts that are not objects, so no tag rule
+reaches them. Add a rule that aborts them; until the Control Plane finds it, a browser
+upload is refused above `limits.transferPartBytes`:
+
+```json
+{
+  "ID": "ac-source-cache-multipart-abort",
+  "Status": "Enabled",
+  "Filter": { "Prefix": "agentconnect/src/" },
+  "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
+}
+```
+
+`limits.transferPartBytes` is the largest single request a transfer sends: a daemon's
+workspace download, or one part of a browser upload. Behind a proxy that caps request
+bodies, such as Cloudflare's 100 MB, set it below that cap.
+
 Browsers and daemons outside the cluster reach the bucket directly, so two extra settings
 apply:
 
@@ -300,14 +319,15 @@ apply:
   use, when it differs from the in-cluster `endpoint`. Pool members and their pods keep
   using `endpoint`. Empty means `endpoint`.
 - A bucket CORS rule admitting the console origin. Browsers send the signed checksum and
-  tagging headers on upload and read nothing but the body on download:
+  tagging headers on upload, read each part's `ETag`, POST the part list to assemble a
+  multipart upload, and read nothing but the body on download:
 
 ```json
 {
   "CORSRules": [
     {
       "AllowedOrigins": ["https://console.example.test"],
-      "AllowedMethods": ["GET", "PUT"],
+      "AllowedMethods": ["GET", "PUT", "POST"],
       "AllowedHeaders": ["x-amz-checksum-sha256", "x-amz-tagging", "content-type"],
       "ExposeHeaders": ["ETag"],
       "MaxAgeSeconds": 3600

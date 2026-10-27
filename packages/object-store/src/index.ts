@@ -11,6 +11,9 @@ export {
   parseEnvDocument,
   Prefix,
   Region,
+  S3_MAX_OBJECT_BYTES,
+  S3_MAX_PARTS,
+  S3_MIN_PART_BYTES,
   S3_SINGLE_PUT_MAX_BYTES,
   SOURCE_CACHE_GRACE_SECONDS,
   sessionSecondsFor,
@@ -37,6 +40,8 @@ export {
 } from './credentials.js'
 export {
   evaluateSourceCacheLifecycle,
+  MULTIPART_ABORT_DAYS,
+  multipartAbortLifecycleRule,
   SOURCE_CACHE_LIFECYCLE_DAYS,
   sourceCacheLifecycleRules,
   sourceCacheSrcPrefix,
@@ -45,6 +50,7 @@ export {
   type SourceCacheLifecycleTagValue
 } from './lifecycle.js'
 export {
+  compositeSha256,
   createObjectClient,
   headHolds,
   SourceCacheObjectError,

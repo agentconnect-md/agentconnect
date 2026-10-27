@@ -1033,7 +1033,8 @@ export function buildContainer(
           config: fileTransferConfig,
           credentials,
           objects,
-          enabled: () => gate.enabled()
+          enabled: () => gate.enabled(),
+          multipart: () => gate.multipart()
         })
         return {
           gate,
@@ -2233,10 +2234,10 @@ export function buildContainer(
               // The console derives workspace tiles from this host (§7).
               gitlab: gitlab ? { instanceUrl: gitlab.api.baseUrl } : null
             },
-            ...(fileTransfer ? { fileTransfer: { maxBytes: fileTransfer.maxBytes } } : {})
+            ...(fileTransfer ? { fileTransfer: () => fileTransfer.uploadLimits() } : {})
           }
         : fileTransfer
-          ? { fileTransfer: { maxBytes: fileTransfer.maxBytes } }
+          ? { fileTransfer: () => fileTransfer.uploadLimits() }
           : {})
     },
     maxOrgsPerNonAdminUser: opts.deploymentConfig?.values.features.maxOrgsPerNonAdminUser ?? 1,

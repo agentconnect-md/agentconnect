@@ -116,7 +116,7 @@ describe('runtime config route', () => {
   it('tells the console it may transfer files, and the cap, without any other deployment config', async () => {
     const app = Fastify()
     installZod(app)
-    await app.register(runtimeConfigRoutes({ fileTransfer: { maxBytes: 1024 } }), { prefix: '/api/v1' })
+    await app.register(runtimeConfigRoutes({ fileTransfer: () => ({ maxBytes: 1024 }) }), { prefix: '/api/v1' })
     const response = await app.inject({ method: 'GET', url: '/api/v1/runtime-config' })
     expect(response.json()).toEqual({
       schemaVersion: '1',

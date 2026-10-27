@@ -7,6 +7,9 @@ import { transferPendingMinimumDays } from './transfer.js'
 const rule = (id: string, value: string, days: number, prefix = 'ac/src/') =>
   `<Rule><ID>${id}</ID><Filter><And><Prefix>${prefix}</Prefix><Tag><Key>ac-cache</Key><Value>${value}</Value></Tag></And></Filter><Status>Enabled</Status><Expiration><Days>${days}</Days></Expiration></Rule>`
 
+const abortRule = (prefix = 'ac/src/') =>
+  `<Rule><ID>a</ID><Filter><Prefix>${prefix}</Prefix></Filter><Status>Enabled</Status><AbortIncompleteMultipartUpload><DaysAfterInitiation>1</DaysAfterInitiation></AbortIncompleteMultipartUpload></Rule>`
+
 const xml = (...rules: string[]) => `<LifecycleConfiguration>${rules.join('')}</LifecycleConfiguration>`
 
 function gateOver(read: () => Promise<{ kind: 'none' } | { kind: 'rules'; xml: string }>, minimumPendingDays = 2) {
@@ -33,6 +36,28 @@ describe('createLifecycleGate', () => {
     const { gate } = gateOver(async () => ({ kind: 'rules', xml: xml(rule('p', 'pending', 2)) }))
     expect(await gate.check()).toBe('present')
     expect(gate.enabled()).toBe(true)
+  })
+
+  it('allows uploads in parts only while a rule aborts unfinished uploads across src/', async () => {
+    const without = gateOver(async () => ({ kind: 'rules', xml: xml(rule('p', 'pending', 2)) }))
+    await without.gate.check()
+    await without.gate.check()
+    expect(without.gate.multipart()).toBe(false)
+    expect(without.warnings).toHaveLength(1)
+    expect(without.warnings[0]).toMatch(/aborting unfinished multipart uploads/)
+    const narrow = gateOver(async () => ({ kind: 'rules', xml: xml(rule('p', 'pending', 2), abortRule('ac/src/x/')) }))
+    await narrow.gate.check()
+    expect(narrow.gate.multipart()).toBe(false)
+    const { gate, warnings } = gateOver(async () => ({
+      kind: 'rules',
+      xml: xml(rule('p', 'pending', 2), abortRule('ac/'))
+    }))
+    await gate.check()
+    expect(gate.multipart()).toBe(true)
+    expect(warnings).toEqual([])
+    const unread = gateOver(async () => Promise.reject(new Error('denied')))
+    await unread.gate.check()
+    expect(unread.gate.multipart()).toBe(true)
   })
 
   it('accepts a longer pending window', async () => {

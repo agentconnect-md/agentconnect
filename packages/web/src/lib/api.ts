@@ -3297,19 +3297,49 @@ export async function transferWorkspaceFile(
   return state
 }
 
-/** A presigned object-store PUT for one chat upload: send exactly these headers and `size` bytes. */
-export interface FileUploadGrantDto {
-  uploadId: string
+/** A presigned object-store request: send exactly these headers (a browser sets content-length itself). */
+export interface SignedRequestDto {
   url: string
   headers: Record<string, string>
-  expiresAt: string
 }
+
+export interface PartUrlDto extends SignedRequestDto {
+  partNumber: number
+}
+
+/** One chat upload's grant: a single PUT of `size` bytes, or a multipart upload's first part PUTs and its complete. */
+export type FileUploadGrantDto = { uploadId: string; expiresAt: string } & (
+  SignedRequestDto | { multipart: { multipartId: string; parts: PartUrlDto[]; complete: SignedRequestDto } }
+)
 
 export function reserveFileUpload(
   agentId: string,
-  body: { name: string; mimeType: string; size: number; sha256: string }
+  body: {
+    name: string
+    mimeType: string
+    size: number
+    sha256: string
+    parts?: { partBytes: number; sha256: string[] }
+  }
 ): Promise<FileUploadGrantDto> {
   return apiPost<FileUploadGrantDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/uploads`, body)
+}
+
+/** More, or fresh, part PUTs (at most 100) and a fresh complete for a multipart chat upload. */
+export function signFileUploadParts(
+  agentId: string,
+  uploadId: string,
+  body: {
+    multipartId: string
+    size: number
+    partBytes: number
+    parts: Array<{ partNumber: number; sha256: string }>
+  }
+): Promise<{ parts: PartUrlDto[]; complete: SignedRequestDto; expiresAt: string }> {
+  return apiPost(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/uploads/${encodeURIComponent(uploadId)}/parts`,
+    body
+  )
 }
 
 /** Read one workspace text file whole before editing it. Every slice must describe

@@ -959,8 +959,10 @@ sourceCache:
     unreadPointerDays: 30
     getUrlLifetime: 5m
     putUrlLifetime: 15m
-    # Console file transfers, signed by the Control Plane: the per-file cap and how long a download link stays valid.
-    transferMaxBytes: 512Mi
+    # Console file transfers, signed by the Control Plane: an optional per-file cap ('' => none), the largest single PUT
+    # (at most 100MB behind Cloudflare's proxy; larger browser uploads go in parts of at most this), and the link lifetime.
+    transferMaxBytes: ''
+    transferPartBytes: 512Mi
     transferUrlLifetime: 30m
 
 # Computer screenshot storage (computer-use.md §9): the Control Plane signs desktop uploads and console reads in the Source Cache bucket.

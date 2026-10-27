@@ -18,7 +18,14 @@ function signer(cached?: string, seen: unknown[] = []): FileTransfer {
   return {
     enabled: () => true,
     maxBytes: 100,
+    uploadLimits: () => ({ maxBytes: 100 }),
     grantUpload: async () => ({ uploadId: 'u', url: 'https://store.example.test/u', headers: {}, expiresAt: 1 }),
+    grantMultipartUpload: async () => {
+      throw new Error('unused')
+    },
+    signParts: async () => {
+      throw new Error('unused')
+    },
     uploadedFileUrl: async () => undefined,
     storedDownload: async () => undefined,
     cachedDownload: async (input) => {

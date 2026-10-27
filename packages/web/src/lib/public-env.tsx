@@ -58,9 +58,10 @@ const KEYS = [
   // (lib/analytics never initializes). POSTHOG_HOST defaults to us.i.posthog.com.
   'POSTHOG_API_KEY',
   'POSTHOG_HOST',
-  // The per-file cap of console file transfer, set when the Control Plane signs them. Served by the CP's
-  // runtime-config below; this env key is the local-dev fallback.
+  // The per-file cap of console file transfer, set when the Control Plane signs them, and the largest part
+  // when uploads may go in parts. Served by the CP's runtime-config below; these env keys are the local-dev fallback.
   'FILE_TRANSFER_MAX_BYTES',
+  'FILE_TRANSFER_PART_BYTES',
   // Console feature flags this deployment turns on — a comma-separated list of ids
   // (lib/feature-flags.ts). Unset ⇒ none: a flagged surface ships in every build and appears
   // only where an environment asks for it, so one prebuilt image serves them all.
@@ -83,7 +84,7 @@ interface RuntimeConfigResponse {
     }
     gitlab?: null | { instanceUrl: string }
   }
-  fileTransfer?: null | { maxBytes: number }
+  fileTransfer?: null | { maxBytes: number; partBytes?: number }
   webchatProtocol?: 'legacy' | 'ahp'
   ahp?: { enabled: boolean; publicAccess: boolean }
 }
@@ -111,6 +112,7 @@ async function loadDeploymentEnv(): Promise<DeploymentEnv | null> {
     AHP_PUBLIC_ACCESS: String(body.ahp?.publicAccess === true)
   }
   if (body.fileTransfer) topology.FILE_TRANSFER_MAX_BYTES = String(body.fileTransfer.maxBytes)
+  if (body.fileTransfer?.partBytes) topology.FILE_TRANSFER_PART_BYTES = String(body.fileTransfer.partBytes)
   if (body.config === null) return { config: null, topology }
 
   const env: Record<string, string> = {}
