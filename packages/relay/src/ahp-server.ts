@@ -34,7 +34,8 @@ const NOT_FOUND = -32008
 const UNSUPPORTED_VERSION = -32005
 const INVALID_PARAMS = -32602
 const INTERNAL_ERROR = -32603
-const PREAUTH = { deadlineMs: 30_000, maxMessages: 16 }
+// VS Code restores its subscriptions and settings before `authenticate`, so the window is bounded mainly by bytes.
+const PREAUTH = { deadlineMs: 30_000, maxMessages: 128, maxBytes: MAX_BUFFER_BYTES }
 // The authorization server's own scope vocabulary (control-plane `OAUTH_SCOPES`); `authenticate` still takes only personal keys.
 const OAUTH_SCOPES = ['mcp:read', 'mcp:write']
 const identifier = z.string().min(1).max(256)
@@ -64,7 +65,7 @@ export interface AhpServerDeps {
   daemon(daemonId: string): RelayDaemonConnection | undefined
   now?: () => number
   authorizationServer?: string
-  preauth?: { deadlineMs: number; maxMessages: number }
+  preauth?: { deadlineMs: number; maxMessages: number; maxBytes?: number }
 }
 interface Opened {
   conn: RelayDaemonConnection
@@ -344,6 +345,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
     let bound: ReturnType<typeof bind> | undefined
     let client: AhpHandshake | undefined
     let count = 0
+    let bytes = 0
     preauthorizing++
     const leave = () => {
       clearTimeout(deadline)
@@ -397,6 +399,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
       if (++count > limits.maxMessages) return end('invalid_message')
       const text = data.toString()
       if (binary || !AhpMessageText.safeParse(text).success) return end('invalid_message')
+      if ((bytes += Buffer.byteLength(text)) > (limits.maxBytes ?? PREAUTH.maxBytes)) return end('invalid_message')
       // A pipelining client's next requests wait for the verdict and reach the daemon only once bound.
       if (phase === 'verifying') return void queued.push(text)
       let request: z.infer<typeof PreauthRequest>
