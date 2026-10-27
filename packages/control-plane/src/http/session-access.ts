@@ -181,9 +181,15 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     )
     return viewer
   }
-  const viewerFor = (req: FastifyRequest) =>
+  // A delegated call names the asker but carries no sign-in: resolve their subject so the plugins judge by who is asking (assistant-mode.md §5.5), as the daemon's read rule does.
+  const viewerRequest = async (req: FastifyRequest): Promise<SessionAccessViewer['request']> => {
+    if (req.oidcSubject || !req.delegatedInvocation) return req
+    const sub = await deps.repos.user.getOidcSubject(ctxOf(req).userId)
+    return sub ? { log: req.log, oidcSubject: sub } : req
+  }
+  const viewerFor = async (req: FastifyRequest) =>
     expandViewer({
-      request: req,
+      request: await viewerRequest(req),
       orgId: orgOf(req),
       userId: ctxOf(req).userId,
       identitySet: identitySetOf(ctxOf(req))
