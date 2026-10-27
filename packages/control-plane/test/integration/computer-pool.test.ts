@@ -385,6 +385,9 @@ describe('managed computers in the pool', () => {
       session: 'xvfb',
       ownerUserId: DEFAULT_OWNER_ID
     })
+    // The console finds a session's own desktop by its session.
+    const shown = await app.http.inject({ method: 'GET', url: `${ORG}/computers/${id}` })
+    expect(shown.json()).toMatchObject({ allocation: 'ephemeral', ownerAgentId: AGENT, poolSessionId: S1 })
     // The browser task's lease is the session's; another session of the same agent gets its own desktop.
     expect(await h.lease(id, AGENT, S1)).toMatchObject({ granted: true })
     expect(await h.lease(id, AGENT, S2)).toMatchObject({ granted: false, code: 'denied' })

@@ -160,6 +160,7 @@ function toDto(
     canEditAgentAccess: canEditAgentAccess(c, ctx),
     allocation: c.allocation,
     ownerAgentId: c.ownerAgentId,
+    poolSessionId: c.poolSessionId,
     poolPhase: c.poolPhase,
     poolError: c.poolError,
     poolActions: {

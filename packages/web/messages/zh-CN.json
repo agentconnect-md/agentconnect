@@ -951,7 +951,8 @@
       "closeViewer": "关闭",
       "computer": "电脑",
       "computerPick": "电脑",
-      "computerNone": "这个 agent 没有你可以查看的电脑。"
+      "computerNone": "这个 agent 没有你可以查看的电脑。",
+      "computerOnDemand": "agent 在这个会话里第一次用电脑时才会分到一台。"
     }
   },
   "Shell": {

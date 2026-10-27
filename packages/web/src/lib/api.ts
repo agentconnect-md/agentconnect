@@ -2848,6 +2848,8 @@ export interface ComputerDto {
   /** A managed computer's allocation mode (computer-use.md §15.1); null for a self-hosted one. */
   allocation?: ComputerAllocation | null
   ownerAgentId?: string | null
+  /** The session an `ephemeral` computer was made for. */
+  poolSessionId?: string | null
   poolPhase?: ComputerPoolPhase | null
   poolError?: string | null
   /** The pool actions the caller may take now (computer-use.md §10); absent on an older Control Plane. */
