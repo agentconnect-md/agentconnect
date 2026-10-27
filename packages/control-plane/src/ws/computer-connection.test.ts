@@ -136,6 +136,27 @@ describe('ComputerConnection', () => {
     expect(transport.ofType('computer/egress').map((f) => f.payload)).toEqual([{ egress: { mode: 'direct' } }])
   })
 
+  it('sends the desktop its command-line tier resolved, so an unset field never reads as a token’s (§5.7)', async () => {
+    const own = setup()
+    own.transport.deliver(auth())
+    await settle()
+    expect(own.transport.ofType('computer/auth/ok')[0]?.payload).toMatchObject({
+      policy: { shell: 'off', files: 'off' }
+    })
+    own.registry.pushPolicy(CID, ComputerPolicySchema.parse({ shell: 'on' }))
+    expect(own.transport.ofType('computer/policy').at(-1)).toMatchObject({
+      payload: { policy: { shell: 'on', files: 'off' } }
+    })
+
+    const pool = setup({ kind: 'managed', egress: vi.fn(async () => ({ mode: 'direct' as const })) })
+    pool.transport.deliver(auth())
+    await settle()
+    pool.registry.pushPolicy(CID, ComputerPolicySchema.parse({ files: 'read' }))
+    expect(pool.transport.ofType('computer/policy').at(-1)).toMatchObject({
+      payload: { policy: { shell: 'on', files: 'read' } }
+    })
+  })
+
   it("fails a managed desktop's auth when its egress cannot be read, so it never goes direct by omission", async () => {
     const egress = vi.fn(async () => {
       throw new Error('kms down')

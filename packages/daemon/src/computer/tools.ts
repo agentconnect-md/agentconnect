@@ -157,7 +157,7 @@ const pathArg: ToolProperties = {
 export const COMPUTER_COMMAND_LINE_TOOLS: readonly ToolDescriptor[] = [
   tool(
     'computer_exec',
-    "Run a command in a computer's shell, as its signed-in person, without a terminal or stdin; computer_list names the shell. Returns the exit code, the last 32 KiB of stdout and stderr, and the duration. Needs no control lease, so it runs while a person or another agent uses the screen. Only on a computer whose policy allows commands; each one may wait for a person's approval.",
+    "Run a command in a computer's shell, as its signed-in person, without a terminal or stdin; computer_list names the shell. Returns the exit code, the last 32 KiB of stdout and stderr, and the duration. Anything it leaves running ends with it, so start an app with computer_launch. Needs no control lease, so it runs while a person or another agent uses the screen. Only on a computer whose policy allows commands; each one may wait for a person's approval.",
     {
       command: { type: 'string', minLength: 1, maxLength: COMPUTER_EXEC_COMMAND_MAX_CHARS },
       cwd: {

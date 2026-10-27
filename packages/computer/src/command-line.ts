@@ -14,7 +14,12 @@ import {
   COMPUTER_LIST_DIR_MAX,
   COMPUTER_READ_IMAGE_MAX_BYTES,
   COMPUTER_READ_TEXT_MAX_BYTES,
-  COMPUTER_WRITE_MAX_BYTES
+  COMPUTER_WRITE_MAX_BYTES,
+  narrowerFiles,
+  narrowerShell,
+  type ComputerFilesMode,
+  type ComputerPolicy,
+  type ComputerShellMode
 } from '@agentconnect.md/protocol/computer'
 import type { AuditSink } from './audit.js'
 import type { ToolOutput } from './computer.js'
@@ -57,6 +62,18 @@ export interface CommandLineDeps {
   shell?: string
   home?: string
   env?: NodeJS.ProcessEnv
+}
+
+/** A token's tier narrowed by the policy the CP pushed since; that policy names the tier resolved, so an unset field reads off. */
+export function narrowedCommandLine(
+  granted: { shell: ComputerShellMode; files: ComputerFilesMode },
+  policy: Pick<ComputerPolicy, 'agentMode' | 'shell' | 'files'> | undefined
+): { shell: ComputerShellMode; files: ComputerFilesMode } {
+  if (!policy) return granted
+  return {
+    shell: policy.agentMode === 'view' ? 'off' : narrowerShell(granted.shell, policy.shell ?? 'off'),
+    files: narrowerFiles(granted.files, policy.files ?? 'off')
+  }
 }
 
 /** Whether this platform runs the tier (§5.7): Linux only until Windows runs commands as the user and macOS sheds its TCC grants. */
@@ -219,6 +236,8 @@ export class CommandLine {
       }).finally(() => {
         clearTimeout(timer)
         signal?.removeEventListener('abort', abort)
+        // Whatever the command left running in its group ends with it, so nothing outlives the call, a Stop or the cap.
+        killGroup(child)
         this.running.delete(run)
       })
       if (ended.error) throw new CommandLineError('failed', `the command could not start: ${ended.error.message}`)
@@ -438,12 +457,13 @@ const error = (code: string, message: string, details: Record<string, unknown> =
   content: [{ type: 'text', text: JSON.stringify({ error: code, message, ...details }) }]
 })
 
+// The group outlives its shell while a background child holds on, so the kill never checks the leader's exit.
 function killGroup(child: ChildProcess): void {
-  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return
+  if (child.pid === undefined) return
   try {
     process.kill(-child.pid, 'SIGKILL')
   } catch {
-    child.kill('SIGKILL')
+    // ESRCH: the whole group is gone already.
   }
 }
 

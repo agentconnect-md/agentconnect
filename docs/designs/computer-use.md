@@ -996,7 +996,10 @@ any editor of a managed one. A change ends no lease but refuses the next call; t
   directory. The environment is the graphical session's (so a launched app reaches the display) minus every
   `AGENTCONNECT_*` variable and anything the desktop daemon holds. `timeoutMs` defaults to 30 s and is capped at 90 s,
   inside the relay's 120 s request timeout (§3.7) and close to the 60 s some runtimes give a tool call (§4.4); a
-  command still running then is killed. stdout and stderr keep their last 32 KiB each, with the total byte counts.
+  command still running then is killed. Each command is its own process group, and the group is killed when the shell's
+  output ends, at the timeout, or on a stop, even after the shell itself exited, so nothing a command started outlives
+  it (an app meant to stay is started with `computer_launch`). stdout and stderr keep their last 32 KiB each, with the
+  total byte counts.
 - **Whose account.** Commands run as the signed-in person, never with the daemon's privileges. On Windows the daemon is
   SYSTEM (§3.2.2), so `computer_exec` goes through the service host's `run-as-user` mode (`WTSQueryUserToken`), as
   `computer_launch` does, extended to pipe the output back and to start the process in a Job object. On macOS a child inherits the app's Accessibility and Screen Recording grants (§3.2.1),
@@ -1035,7 +1038,8 @@ any editor of a managed one. A change ends no lease but refuses the next call; t
   it. A write (`computer_write_file`, `computer_push`) counts as the session's first input under
   `firstInputPerSession` (§4.2). A pool-made computer asks nothing by default, as for its GUI input.
 - **Authority on the desktop.** The channel token (§3.7) names `shell` and `files` beside `agentMode`, and the desktop
-  registers only the tools its token allows, narrowed by the last policy the CP pushed, as a `view` token gets no input
+  registers only the tools its token allows, narrowed by the last policy the CP pushed (which names the tier resolved
+  for the Computer's kind, since the desktop does not know it, so an unset field reads off), as a `view` token gets no input
   tools today; every request builds its tools afresh, so a narrowing applies to the next call rather than after the
   token's 120 s, and the agent daemon reads the missing tool as a definite refusal. The agent daemon's own check is not
   the guard.

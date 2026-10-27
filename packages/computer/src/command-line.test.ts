@@ -10,7 +10,7 @@ import {
   type ComputerShellMode
 } from '@agentconnect.md/protocol/computer'
 import { auditSinks, redactArgs, type AuditRecord } from './audit.js'
-import { CommandLine, commandEnv, commandLineSupported } from './command-line.js'
+import { CommandLine, commandEnv, commandLineSupported, narrowedCommandLine } from './command-line.js'
 import { Computer, type ToolOutput } from './computer.js'
 import { startHttpServer, type RunningHttpServer } from './http-server.js'
 import type { McpPrincipal } from './mcp-access.js'
@@ -79,6 +79,37 @@ describe.skipIf(!posix)('the command-line tier', () => {
     const marker = join(root, 'survived')
     const output = await line.exec('a/s', { command: `(sleep 1; touch ${marker}) & sleep 30`, timeoutMs: 200 })
     expect(json(output)).toMatchObject({ error: 'timeout', timedOut: true, signal: 'SIGKILL' })
+    await new Promise((resolve) => setTimeout(resolve, 1300))
+    expect(() => statSync(marker)).toThrow()
+  })
+
+  it('kills a background child at the timeout even after its shell exited', async () => {
+    const { line } = runner()
+    const started = Date.now()
+    const output = await line.exec('a/s', { command: 'sleep 30 &', timeoutMs: 200 })
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(json(output)).toMatchObject({ error: 'timeout', timedOut: true })
+    expect(line.runningCount()).toBe(0)
+  })
+
+  it('stops a background child on halt after its shell exited', async () => {
+    const owner: { stop?: string } = {}
+    const { line } = runner({ halted: () => owner.stop })
+    const started = Date.now()
+    const running = line.exec('a/s', { command: 'sleep 30 &' })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    owner.stop = 'emergency stop'
+    line.halt(owner.stop)
+    await running
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(line.runningCount()).toBe(0)
+  })
+
+  it('ends whatever a finished command left running in its group', async () => {
+    const { line } = runner()
+    const marker = join(root, 'leftover')
+    const output = await line.exec('a/s', { command: `(sleep 1; touch ${marker}) >/dev/null 2>&1 &` })
+    expect(json(output)).toMatchObject({ exitCode: 0 })
     await new Promise((resolve) => setTimeout(resolve, 1300))
     expect(() => statSync(marker)).toThrow()
   })
@@ -163,6 +194,23 @@ describe.skipIf(!posix)('the command-line tier', () => {
     expect(json(await line.writeFile('a/s', { path: '~/missing/x.txt', content: 'x' }))).toMatchObject({
       error: 'not_found'
     })
+  })
+
+  it('narrows a token by the pushed policy, where an unset field reads off', () => {
+    const on = { shell: 'on', files: 'read-write' } as const
+    expect(narrowedCommandLine(on, undefined)).toEqual(on)
+    expect(narrowedCommandLine(on, { agentMode: 'control' })).toEqual({ shell: 'off', files: 'off' })
+    expect(narrowedCommandLine(on, { agentMode: 'control', shell: 'ask', files: 'read' })).toEqual({
+      shell: 'ask',
+      files: 'read'
+    })
+    expect(narrowedCommandLine(on, { agentMode: 'view', shell: 'off', files: 'read' })).toEqual({
+      shell: 'off',
+      files: 'read'
+    })
+    expect(
+      narrowedCommandLine({ shell: 'ask', files: 'off' }, { agentMode: 'control', shell: 'on', files: 'read' })
+    ).toEqual({ shell: 'ask', files: 'off' })
   })
 
   it('runs only on Linux for now', () => {

@@ -5,15 +5,10 @@ import { basename, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { parseArgs } from 'node:util'
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
-import {
-  narrowerFiles,
-  narrowerShell,
-  type ComputerAdminPromptMode,
-  type ComputerPolicy
-} from '@agentconnect.md/protocol/computer'
+import type { ComputerAdminPromptMode, ComputerPolicy } from '@agentconnect.md/protocol/computer'
 import { AdminPromptHelper } from './admin-prompts.js'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
-import { CommandLine, commandLineSupported } from './command-line.js'
+import { CommandLine, commandLineSupported, narrowedCommandLine } from './command-line.js'
 import { AuditReporter } from './cp/audit-report.js'
 import { ScreenshotStore } from './cp/screenshot-store.js'
 import { disableAutostart, enableAutostart, startAutostartNow } from './autostart.js'
@@ -918,17 +913,13 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
         : {}),
     log
   })
-  // A token's tier, narrowed by whatever the policy pushed since it was signed.
+  // A token's tier, narrowed by the policy pushed since it was signed.
   const commandLineFor = (granted: McpPrincipal['commandLineGrant']): CommandLineAccess | undefined =>
     commandLine && granted
       ? {
           runner: commandLine,
-          shell: () => {
-            const policy = live.policy
-            if (policy?.agentMode === 'view') return 'off'
-            return narrowerShell(granted.shell, policy?.shell ?? granted.shell)
-          },
-          files: () => narrowerFiles(granted.files, live.policy?.files ?? granted.files),
+          shell: () => narrowedCommandLine(granted, live.policy).shell,
+          files: () => narrowedCommandLine(granted, live.policy).files,
           roots: () => live.policy?.fileRoots
         }
       : undefined

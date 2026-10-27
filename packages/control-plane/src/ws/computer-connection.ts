@@ -7,6 +7,7 @@ import {
   COMPUTER_RELAYS_MAX,
   COMPUTER_SCREENSHOT_FEATURE,
   buildComputerCpFrame,
+  computerCommandLine,
   decodeComputerCpFrame,
   DEFAULT_COMPUTER_ADMIN_PROMPT_MODE,
   type COMPUTER_CP_SCHEMAS,
@@ -206,7 +207,7 @@ export class ComputerConnection implements ComputerChannel {
       heartbeatSec: this.deps.heartbeatSec,
       serverTime: now.toISOString(),
       credential,
-      policy: computer.policy,
+      policy: this.desktopPolicy(computer.policy),
       ...(this.features().length > 0 ? { features: this.features() } : {}),
       ...(this.deps.screenshots
         ? { screenshotRetentionDays: this.deps.screenshots.retentionDays(computer.policy) }
@@ -369,7 +370,15 @@ export class ComputerConnection implements ComputerChannel {
   pushPolicy(policy: ComputerPolicy): void {
     if (this.state !== 'READY') return
     const retention = this.deps.screenshots?.retentionDays(policy)
-    this.send('computer/policy', { policy, ...(retention !== undefined ? { screenshotRetentionDays: retention } : {}) })
+    this.send('computer/policy', {
+      policy: this.desktopPolicy(policy),
+      ...(retention !== undefined ? { screenshotRetentionDays: retention } : {})
+    })
+  }
+
+  // The desktop does not know its kind, so it gets the command-line tier resolved: an unset field must read as off, never as the token's (§5.7).
+  private desktopPolicy(policy: ComputerPolicy): ComputerPolicy {
+    return { ...policy, ...computerCommandLine(policy, { kind: this.managed ? 'managed' : 'self-hosted' }) }
   }
 
   // A Stop or resume made on another replica, or one the desktop lost, reaches it with the next heartbeat.

@@ -339,7 +339,7 @@ function registerCommandLine(server: McpServer, access: CommandLineAccess, clien
     server.registerTool(
       'computer_exec',
       {
-        description: `Run a command in this computer's shell (${runner.shellName()} -c), as the signed-in person, without a terminal or stdin. Returns exit code, the last 32 KiB of stdout and stderr, and duration. Needs no control lease.`,
+        description: `Run a command in this computer's shell (${runner.shellName()} -c), as the signed-in person, without a terminal or stdin. Returns exit code, the last 32 KiB of stdout and stderr, and duration. Anything it leaves running ends with it; start an app with computer_launch. Needs no control lease.`,
         inputSchema: z.object({
           command: z.string().min(1).max(COMPUTER_EXEC_COMMAND_MAX_CHARS),
           cwd: Path.optional(),
