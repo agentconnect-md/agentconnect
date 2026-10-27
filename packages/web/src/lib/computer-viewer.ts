@@ -338,8 +338,10 @@ export class ComputerViewerSession {
           this.update({ phase: 'live', path, notes, error: null })
           return
         } catch (error) {
+          // A failed punch says why: which candidates each side had and how far each pair's checks got.
+          const detail = transport === 'stun' && this.pc ? await iceReport(this.pc) : null
           this.closePeer()
-          notes.push(`${LABELS[transport]}: ${(error as Error).message}`)
+          notes.push(`${LABELS[transport]}: ${(error as Error).message}${detail ? `\n${detail}` : ''}`)
         }
         if (this.stopped) return
       }
@@ -610,6 +612,34 @@ export async function selectedRoute(pc: RTCPeerConnection): Promise<{ local: str
     const remote = pair && byId.get(pair.remoteCandidateId as string)
     if (!local || !remote) return null
     return { local: String(local.candidateType), remote: String(remote.candidateType) }
+  } catch {
+    return null
+  }
+}
+
+const endpoint = (c: Record<string, unknown>) =>
+  [c.candidateType, c.address && `${String(c.address)}:${String(c.port)}`].filter(Boolean).join(' ')
+
+/** Both sides' candidates and each pair's state with checks sent/answered/received, from a peer's stats; null when it has none. */
+export async function iceReport(pc: RTCPeerConnection): Promise<string | null> {
+  if (typeof pc.getStats !== 'function') return null
+  try {
+    const reports = [...(await pc.getStats()).values()] as Array<Record<string, unknown>>
+    const byId = new Map(reports.map((r) => [r.id as string, r]))
+    const list = (type: string) =>
+      reports
+        .filter((r) => r.type === type)
+        .map(endpoint)
+        .join(', ') || 'none'
+    const pairs = reports
+      .filter((r) => r.type === 'candidate-pair')
+      .map((pair) => {
+        const local = byId.get(pair.localCandidateId as string)
+        const remote = byId.get(pair.remoteCandidateId as string)
+        const checks = [pair.requestsSent, pair.responsesReceived, pair.requestsReceived].map((n) => num(n) ?? 0)
+        return `${String(local?.candidateType)} → ${remote ? endpoint(remote) : '?'} ${String(pair.state)} ${checks.join('/')}`
+      })
+    return `Browser: ${list('local-candidate')}\nDesktop: ${list('remote-candidate')}\nPairs (sent/answered/received): ${pairs.join('; ') || 'none'}`
   } catch {
     return null
   }
