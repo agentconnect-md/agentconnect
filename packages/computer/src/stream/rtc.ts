@@ -44,6 +44,8 @@ interface Session {
   // Every local candidate in gathering order, for the browser to fetch over signaling; `gathered` once gathering is done.
   candidates: CandidateInit[]
   gathered: boolean
+  // A punched session's server-reflexive candidates, withheld until the desktop has sent to the browser's public one.
+  held?: CandidateInit[]
   connected?: boolean
   unsubscribe?: () => void
 }
@@ -55,6 +57,8 @@ const TURN_GATHER_TIMEOUT_MS = 8000
 // One Binding round trip to the relay's STUN; later candidates still reach the browser by trickle.
 const STUN_GATHER_TIMEOUT_MS = 2000
 const MAX_REMOTE_CANDIDATES = 64
+// werift schedules a new pair's first check within its 20 ms loop; this leaves it time to leave before the browser learns where to knock.
+const RELEASE_DELAY_MS = 100
 const ANSWER_TIMEOUT_MS = 30_000
 // ICE-lite never notices a vanished browser, so the page pings over the DataChannel and silent sessions are closed.
 const SILENCE_TIMEOUT_MS = 10_000
@@ -139,12 +143,17 @@ export class RtcSessions {
       pc,
       lastSeen: Date.now(),
       candidates: [],
-      gathered: false
+      gathered: false,
+      ...(transport === 'stun' ? { held: [] } : {})
     }
     pc.onIceCandidate.subscribe((candidate) => {
       if (!candidate) return void (session.gathered = true)
       const { candidate: line, sdpMid, sdpMLineIndex } = candidate.toJSON()
-      session.candidates.push({ candidate: line, sdpMid, sdpMLineIndex })
+      ;(session.held && candidateType(line) === 'srflx' ? session.held : session.candidates).push({
+        candidate: line,
+        sdpMid,
+        sdpMLineIndex
+      })
     })
     pc.iceGatheringStateChange.subscribe((state) => {
       if (state === 'complete') session.gathered = true
@@ -216,7 +225,12 @@ export class RtcSessions {
     const candidates = session.candidates.length
     return {
       id: session.id,
-      sdp: transport === 'direct' && advertise ? onlyCandidatesFor(sdp, advertise) : sdp,
+      sdp:
+        transport === 'direct' && advertise
+          ? onlyCandidatesFor(sdp, advertise)
+          : transport === 'stun'
+            ? withoutReflexive(sdp)
+            : sdp,
       candidates
     }
   }
@@ -229,7 +243,8 @@ export class RtcSessions {
   addCandidate(client: string, id: string, candidate: ComputerViewerCandidate['candidate']): void {
     const session = this.owned(client, id)
     if (session.transport === 'direct') throw new Error('an ICE-lite session takes no trickled candidates')
-    if (!candidate || candidate.candidate === '') return
+    // Without a public candidate from the browser there is no mapping to open first, so the browser gets them all.
+    if (!candidate || candidate.candidate === '') return this.release(session)
     // Each one is a connectivity check the desktop sends, so a viewer cannot make it probe without bound.
     const remote = (session.remoteCandidates = (session.remoteCandidates ?? 0) + 1)
     if (remote > MAX_REMOTE_CANDIDATES) throw new Error('too many candidates')
@@ -240,13 +255,23 @@ export class RtcSessions {
         sdpMid: candidate.sdpMid ?? undefined,
         sdpMLineIndex: candidate.sdpMLineIndex ?? undefined
       })
+      .then(() => {
+        // A NAT that saw the browser knock first maps the desktop's reply to another port; once our check is out, it can't.
+        if (isPublicIpv4(candidate.candidate)) setTimeout(() => this.release(session), RELEASE_DELAY_MS).unref()
+      })
       .catch((error: Error) => this.options.log(`viewer ${client}: candidate refused: ${error.message}`))
+  }
+
+  private release(session: Session): void {
+    if (!session.held) return
+    session.candidates.push(...session.held)
+    session.held = undefined
   }
 
   /** The desktop's own candidates after the first `after`, and whether gathering is done, for the browser to trickle in. */
   candidates(client: string, id: string, after: number): { candidates: CandidateInit[]; done: boolean } {
     const session = this.owned(client, id)
-    return { candidates: session.candidates.slice(after), done: session.gathered }
+    return { candidates: session.candidates.slice(after), done: session.gathered && !session.held }
   }
 
   private owned(client: string, id: string): Session {
@@ -321,6 +346,20 @@ export function iceReport(pc: RTCPeerConnection, trickled: number): string {
       .join(', ') || 'none'
   return `ICE ${connection.state}; local ${local}; remote ${remote} (${trickled} trickled); pairs sent/answered/received ${pairs}`
 }
+
+const candidateType = (line: string): string | undefined => / typ (\w+)/.exec(line)?.[1]
+
+// A browser candidate the desktop's checks reach through the browser's NAT: server-reflexive, peer-reflexive or relayed, over IPv4.
+const isPublicIpv4 = (line: string): boolean =>
+  ['srflx', 'prflx', 'relay'].includes(candidateType(line) ?? '') &&
+  /^\d+\.\d+\.\d+\.\d+$/.test(line.split(' ')[4] ?? '')
+
+/** Drops server-reflexive candidates from an offer, so the browser cannot knock on the desktop's NAT before the desktop has sent. */
+export const withoutReflexive = (sdp: string): string =>
+  sdp
+    .split('\r\n')
+    .filter((line) => !line.startsWith('a=candidate:') || candidateType(line) !== 'srflx')
+    .join('\r\n')
 
 // Drops host candidates for interface addresses (e.g. a container IP) that a NATed browser cannot reach.
 export const onlyCandidatesFor = (sdp: string, address: string): string =>
