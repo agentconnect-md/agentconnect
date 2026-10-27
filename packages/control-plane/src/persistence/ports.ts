@@ -2655,6 +2655,10 @@ export interface AcceptWebchatMcpGrantInput {
   now: Date
 }
 
+export interface RenewWebchatMcpGrantInput extends AcceptWebchatMcpGrantInput {
+  expiresAt: Date
+}
+
 export interface RevokeWebchatMcpGrantsInput {
   authorityId: string
   authorityGeneration: number
@@ -2666,6 +2670,7 @@ export interface RevokeWebchatMcpGrantsInput {
 export interface WebchatMcpAccessGrantRepo {
   issue(input: IssueWebchatMcpGrantInput): Promise<WebchatMcpAccessGrantRecord | null>
   accept(input: AcceptWebchatMcpGrantInput): Promise<WebchatMcpAccessGrantRecord | null>
+  renew(input: RenewWebchatMcpGrantInput): Promise<WebchatMcpAccessGrantRecord | null>
   revokeAuthority(input: RevokeWebchatMcpGrantsInput): Promise<boolean>
   getByTokenHash(tokenHash: string): Promise<WebchatMcpAccessGrantRecord | null>
 }

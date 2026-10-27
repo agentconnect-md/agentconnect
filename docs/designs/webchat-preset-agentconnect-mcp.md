@@ -95,8 +95,9 @@ runtime.
 3. Every access grant is bound to one immutable logical-authority tuple:
    `(conversationId, userId, orgId, agentId, authorityGeneration)`. Multiple
    short-lived access grants may belong to the same authority generation.
-4. A grant has a short absolute expiry, can be revoked immediately, and is invalid
-   after its logical authority generation changes.
+4. A grant has a short sliding expiry capped by its logical authority, can be
+   revoked immediately, and is invalid after its logical authority generation
+   changes.
 5. The raw grant credential appears only transiently in the CP issuance reply,
    daemon memory, and runtime-private MCP transport configuration. It never crosses
    the relay and never appears in model context, tool schemas or arguments,
@@ -221,9 +222,10 @@ The raw credential is returned exactly once, in the issuance reply that begins i
 delivery to the runtime. Because the CP retains only its hash, it never attempts to
 reconstruct or re-deliver an existing credential.
 
-Whenever a daemon restart, ACP session rebuild, or scheduled credential renewal
-requires raw material, the daemon requests a fresh access grant under the current
-logical authority generation. Access-grant renewal does not rotate that generation.
+Whenever a daemon restart or ACP session rebuild requires raw material, the daemon
+requests a fresh access grant under the current logical authority generation.
+Scheduled renewal extends the installed grant in place (section 5.3) and falls back
+to a fresh grant only when the CP cannot renew it. Neither rotates that generation.
 The daemon never reinstalls previously delivered raw material into a rebuilt ACP
 session: every descriptor installation or reinstallation uses a freshly issued
 grant, so one grant identifies at most one installation into one runtime process.
@@ -274,11 +276,28 @@ access grants from the previous generation.
 
 ### 5.3 Lifetime
 
-The initial access-grant lifetime is 30 minutes. It has no refresh token. Descriptor
-replacement requests a newly issued access grant while preserving the logical
-authority generation. A runtime that cannot replace a descriptor receives a bounded
-authorization-expired tool error after expiry; reconnecting or rebuilding the ACP
-session obtains a fresh grant.
+The access-grant lifetime is 30 minutes, measured from issuance or from the last
+renewal. It has no refresh token. When a turn starts within five minutes of the
+active grant's expiry, the daemon sends `webchat/mcp-grant/renew` with the exact
+grant tuple. Under the same live authorization as issuance, the CP extends that
+grant to 30 minutes from now, never past its logical authority's expiry and never
+earlier than it already was. The reply `webchat/mcp-grant/renewed` carries the new
+`expiresAt`. The token and revision stay the same, so the runtime keeps a valid
+credential without reloading its descriptor. A grant that has expired or been
+revoked is never renewed.
+
+Renewal exists because a runtime may ignore a replaced descriptor on a session it
+still has loaded. Codex resumes a loaded thread without applying new MCP
+configuration, so a rotated grant left it holding a revoked bearer for the rest of
+the conversation. A daemon sends `renew` only to a CP that advertises
+`webchat-mcp-grant-renew-v1`. When the CP does not advertise it, refuses, or answers
+for a different tuple, the daemon falls back to issuing a replacement grant and
+reloading the session. A runtime that cannot replace a descriptor then receives a
+bounded authorization error, and rebuilding the ACP session obtains a fresh grant.
+
+An idle conversation's credential still lapses 30 minutes after its last renewal,
+and every revocation below still applies immediately. A conversation that stays
+active keeps one credential until its logical authority expires.
 
 Before implementation ships, integration tests must establish whether each curated
 runtime can install and replace the standard descriptor safely. No AgentConnect-

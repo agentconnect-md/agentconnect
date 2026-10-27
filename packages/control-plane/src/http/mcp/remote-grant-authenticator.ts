@@ -67,9 +67,13 @@ export class RemoteGrantAuthenticator {
     if (!tokenHash) return { kind: 'denied', reason: 'credential' }
     const now = new Date(this.deps.clock.now())
     const grant = await this.deps.grants.getByTokenHash(tokenHash)
-    if (!grant || grant.status !== 'active' || grant.revokedAt || grant.expiresAt <= now) {
-      return { kind: 'denied', reason: 'grant_inactive' }
+    if (!grant) return { kind: 'denied', reason: 'grant_unknown' }
+    // A revoked grant names why (e.g. `rotated`), so a runtime holding a stale bearer is told apart from an expired one.
+    if (grant.revokedAt || grant.status === 'revoked') {
+      return { kind: 'denied', reason: `grant_revoked:${grant.revokedReason ?? 'unknown'}` }
     }
+    if (grant.status !== 'active') return { kind: 'denied', reason: `grant_${grant.status}` }
+    if (grant.expiresAt <= now) return { kind: 'denied', reason: 'grant_expired' }
     const authority = await this.deps.authorities.getCurrent(grant.authorityId)
     if (!authority || authority.revokedAt || authority.expiresAt <= now) {
       return { kind: 'denied', reason: 'authority_inactive' }

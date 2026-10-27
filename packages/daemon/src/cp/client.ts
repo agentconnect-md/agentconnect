@@ -102,6 +102,8 @@ import type {
   WebchatMcpGrantIssued,
   WebchatMcpGrantAccept,
   WebchatMcpGrantActivate,
+  WebchatMcpGrantRenew,
+  WebchatMcpGrantRenewed,
   WebchatMcpGrantRevoke,
   WebchatMcpGrantRevoked,
   KnowledgeSearchReq,
@@ -169,6 +171,7 @@ import {
   SESSION_METADATA_ACK_FEATURE,
   CRON_REPORT_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
+  WEBCHAT_MCP_GRANT_RENEW_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   INTEGRATION_TENANT_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -1327,6 +1330,20 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected webchat/mcp-grant/activate, got ${rep.type}`, false)
     }
     return rep.payload as WebchatMcpGrantActivate
+  }
+
+  /** An older CP rejects the unknown frame outright, so without {@link WEBCHAT_MCP_GRANT_RENEW_FEATURE} the caller rotates instead. */
+  async renewWebchatMcpGrant(
+    payload: WebchatMcpGrantRenew,
+    orgId?: string
+  ): Promise<WebchatMcpGrantRenewed | 'unsupported'> {
+    this.requireReady('webchat/mcp-grant/renew')
+    if (!this.supportsServerFeature(WEBCHAT_MCP_GRANT_RENEW_FEATURE)) return 'unsupported'
+    const rep = await this.request('webchat/mcp-grant/renew', payload, orgId)
+    if (rep.type !== 'webchat/mcp-grant/renewed') {
+      throw new WireError('INTERNAL', `expected webchat/mcp-grant/renewed, got ${rep.type}`, false)
+    }
+    return rep.payload as WebchatMcpGrantRenewed
   }
 
   async revokeWebchatMcpGrant(payload: WebchatMcpGrantRevoke, orgId?: string): Promise<WebchatMcpGrantRevoked> {

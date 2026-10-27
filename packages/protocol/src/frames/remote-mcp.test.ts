@@ -98,6 +98,8 @@ describe('webchat remote MCP protocol', () => {
       },
       'webchat/mcp-grant/accept': { ...fence, grantId: GRANT_ID },
       'webchat/mcp-grant/activate': { ...fence, grantId: GRANT_ID, activated: true },
+      'webchat/mcp-grant/renew': { ...fence, grantId: GRANT_ID },
+      'webchat/mcp-grant/renewed': { ...fence, grantId: GRANT_ID, expiresAt: EXPIRES_AT },
       'webchat/mcp-grant/revoke': {
         authorityId: AUTHORITY_ID,
         authorityGeneration: 2,

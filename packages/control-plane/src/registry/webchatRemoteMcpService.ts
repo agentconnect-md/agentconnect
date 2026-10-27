@@ -1,6 +1,8 @@
 import type {
   WebchatMcpGrantAccept,
   WebchatMcpGrantIssue,
+  WebchatMcpGrantRenew,
+  WebchatMcpGrantRenewed,
   WebchatMcpGrantRevoke,
   WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
@@ -119,6 +121,52 @@ export class WebchatRemoteMcpService {
     if (!authority || (input.authenticatedOrgId && authority.orgId !== input.authenticatedOrgId)) return null
     if (!(await this.mayAct(authority.agentId, input.authenticatedDaemonId))) return null
     return this.deps.grants.accept({ ...input, now: new Date(this.deps.clock.now()) })
+  }
+
+  /** Slides the active grant's expiry forward, capped by its authority, under the same live checks as issuance. */
+  async renew(
+    input: WebchatMcpGrantRenew & { authenticatedDaemonId: string; authenticatedOrgId?: string }
+  ): Promise<WebchatMcpGrantRenewed | null> {
+    const now = new Date(this.deps.clock.now())
+    const authority = await this.deps.authorities.getCurrent(input.authorityId)
+    if (
+      !authority ||
+      authority.generation !== input.authorityGeneration ||
+      authority.conversationId !== input.conversationId ||
+      (input.authenticatedOrgId && authority.orgId !== input.authenticatedOrgId) ||
+      authority.revokedAt ||
+      authority.expiresAt <= now
+    ) {
+      return null
+    }
+    const live = await resolveLiveWebchatMcpAuthority(this.deps, {
+      conversationId: authority.conversationId,
+      expectedUserId: authority.userId,
+      orgId: authority.orgId,
+      agentId: authority.agentId,
+      actingDaemonId: input.authenticatedDaemonId
+    })
+    if (!live.ok) return null
+    const grant = await this.deps.grants.renew({
+      grantId: input.grantId,
+      authorityId: input.authorityId,
+      authorityGeneration: input.authorityGeneration,
+      conversationId: input.conversationId,
+      descriptorInstanceId: input.descriptorInstanceId,
+      grantRevision: input.grantRevision,
+      now,
+      expiresAt: new Date(Math.min(authority.expiresAt.getTime(), now.getTime() + WEBCHAT_MCP_GRANT_TTL_MS))
+    })
+    if (!grant) return null
+    return {
+      authorityId: input.authorityId,
+      authorityGeneration: input.authorityGeneration,
+      conversationId: input.conversationId,
+      descriptorInstanceId: input.descriptorInstanceId,
+      grantRevision: grant.grantRevision,
+      grantId: grant.id,
+      expiresAt: grant.expiresAt.toISOString()
+    }
   }
 
   async revoke(

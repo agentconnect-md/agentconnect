@@ -195,6 +195,9 @@ export const SESSION_VISIBILITY_FEATURE = 'session-visibility-v1'
 /** Daemon/runtime support private, session-scoped remote MCP headers and stable invocation ids. */
 export const WEBCHAT_REMOTE_MCP_FEATURE = 'webchat_remote_mcp_v1'
 
+/** CP answers `webchat/mcp-grant/renew`; a daemon must not send it before seeing this, since a new request type is frame-fatal to an older CP. */
+export const WEBCHAT_MCP_GRANT_RENEW_FEATURE = 'webchat-mcp-grant-renew-v1'
+
 /**
  * Daemon understands multi-agent webchat conversations: `mentions`/`post` on
  * webchat turns, the transcript-only `context` op, agent-attributed

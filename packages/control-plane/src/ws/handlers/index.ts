@@ -79,6 +79,7 @@ import {
 import {
   handleWebchatMcpGrantAccept,
   handleWebchatMcpGrantIssue,
+  handleWebchatMcpGrantRenew,
   handleWebchatMcpGrantRevoke
 } from './webchat-mcp-grant.js'
 import {
@@ -165,6 +166,7 @@ export class FrameRouter {
       'decision/get': handleDecisionRead,
       'webchat/mcp-grant/issue': handleWebchatMcpGrantIssue,
       'webchat/mcp-grant/accept': handleWebchatMcpGrantAccept,
+      'webchat/mcp-grant/renew': handleWebchatMcpGrantRenew,
       'webchat/mcp-grant/revoke': handleWebchatMcpGrantRevoke,
       'knowledge/search': handleKnowledgeSearch,
       'knowledge/list': handleKnowledgeList,
@@ -226,6 +228,7 @@ export {
   handleSessionPurged,
   handleWebchatMcpGrantIssue,
   handleWebchatMcpGrantAccept,
+  handleWebchatMcpGrantRenew,
   handleWebchatMcpGrantRevoke,
   handleKnowledgeSearch,
   handleOrganizationSuggestionsSync,

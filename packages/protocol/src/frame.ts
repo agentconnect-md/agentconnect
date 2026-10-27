@@ -328,6 +328,8 @@ import {
   WebchatMcpGrantActivate,
   WebchatMcpGrantIssue,
   WebchatMcpGrantIssued,
+  WebchatMcpGrantRenew,
+  WebchatMcpGrantRenewed,
   WebchatMcpGrantRevoke,
   WebchatMcpGrantRevoked
 } from './frames/remote-mcp.js'
@@ -526,6 +528,8 @@ export const FRAME_SCHEMAS = {
   'webchat/mcp-grant/issued': WebchatMcpGrantIssued,
   'webchat/mcp-grant/accept': WebchatMcpGrantAccept,
   'webchat/mcp-grant/activate': WebchatMcpGrantActivate,
+  'webchat/mcp-grant/renew': WebchatMcpGrantRenew,
+  'webchat/mcp-grant/renewed': WebchatMcpGrantRenewed,
   'webchat/mcp-grant/revoke': WebchatMcpGrantRevoke,
   'webchat/mcp-grant/revoked': WebchatMcpGrantRevoked,
   // ── dashboard / facts ──
@@ -928,6 +932,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('webchat/mcp-grant/issued', FRAME_SCHEMAS['webchat/mcp-grant/issued']),
   frame('webchat/mcp-grant/accept', FRAME_SCHEMAS['webchat/mcp-grant/accept']),
   frame('webchat/mcp-grant/activate', FRAME_SCHEMAS['webchat/mcp-grant/activate']),
+  frame('webchat/mcp-grant/renew', FRAME_SCHEMAS['webchat/mcp-grant/renew']),
+  frame('webchat/mcp-grant/renewed', FRAME_SCHEMAS['webchat/mcp-grant/renewed']),
   frame('webchat/mcp-grant/revoke', FRAME_SCHEMAS['webchat/mcp-grant/revoke']),
   frame('webchat/mcp-grant/revoked', FRAME_SCHEMAS['webchat/mcp-grant/revoked']),
   frame('event/session', FRAME_SCHEMAS['event/session']),

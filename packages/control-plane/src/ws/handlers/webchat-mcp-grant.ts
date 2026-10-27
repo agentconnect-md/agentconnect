@@ -34,6 +34,21 @@ export const handleWebchatMcpGrantAccept: Handler = async (frame, conn, deps) =>
   }
 }
 
+export const handleWebchatMcpGrantRenew: Handler = async (frame, conn, deps) => {
+  if (!isFrame('webchat/mcp-grant/renew')(frame)) return
+  try {
+    const renewed = await deps.webchatRemoteMcp?.renew({
+      ...frame.payload,
+      authenticatedDaemonId: conn.daemonId,
+      authenticatedOrgId: frame.orgId ?? conn.orgId ?? undefined
+    })
+    if (!renewed) return denied(frame.id, conn)
+    conn.replyTo(frame, 'webchat/mcp-grant/renewed', renewed)
+  } catch {
+    conn.sendError(frame.id, 'INTERNAL', 'remote MCP grant renewal failed', true)
+  }
+}
+
 export const handleWebchatMcpGrantRevoke: Handler = async (frame, conn, deps) => {
   if (!isFrame('webchat/mcp-grant/revoke')(frame)) return
   try {
