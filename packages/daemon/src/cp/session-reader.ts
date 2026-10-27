@@ -38,6 +38,7 @@ import { mentionedUserIds, substituteUserMentions } from '../slack/mentions.js'
 import { hasNativeMessageOrder } from '../platforms/message-ordering.js'
 import { deriveTitle } from '../session/derive-title.js'
 import { displayedSharedImage } from '../webchat/shared-image.js'
+import { canonicalPostId } from '../messages/post-id.js'
 
 /** Encoded-payload ceiling, leaving headroom under MAX_FRAME_BYTES for the
  *  envelope (id/ts/type/corr + fencing ext, well under 4 KiB). */
@@ -378,7 +379,7 @@ export function createSessionReader(
           ...(r.trustedAgentBot ? { trustedAgentBot: true } : {}),
           ts: r.ts,
           ...(r.eventTimeUs ? { eventTimeUs: r.eventTimeUs } : {}),
-          ...(r.postId ? { postId: r.postId } : {}),
+          ...(r.postId ? { postId: canonicalPostId(r.postId) } : {}),
           kind: r.kind,
           text: substituteUserMentions(withoutAttachmentMention(r.text, attachments), names),
           ...(attachments.length ? { attachments } : {}),

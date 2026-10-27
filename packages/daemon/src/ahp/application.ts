@@ -36,6 +36,7 @@ import {
   contextMetadata,
   messageAttachments
 } from './action-schema.js'
+import { canonicalPostId } from '../messages/post-id.js'
 export { ahpElicitValue } from './action-schema.js'
 
 export interface AhpActionScope {
@@ -213,7 +214,7 @@ export class AhpApplication {
       author: { ...scope.author, ...(context.timeZone ? { timeZone: context.timeZone } : {}) },
       ...(context.mentions ? { mentions: context.mentions } : {}),
       ...(attachments.length ? { attachments } : {}),
-      post: { postId: action.turnId, at: this.host.now() },
+      post: { postId: canonicalPostId(action.turnId), at: this.host.now() },
       ...(steering ? { steer: true } : {})
     }
     const continuation = scope.targetSessionId

@@ -13,6 +13,7 @@ import {
   type AhpActionScope
 } from '../../src/ahp/application.js'
 import type { ChatSessionApplication, ChatTurnRequest } from '../../src/session/chat-application.js'
+import { canonicalPostId } from '../../src/messages/post-id.js'
 import type { ChatSessionContinuation } from '../../src/session/chat-continuation.js'
 const scope: AhpActionScope = {
   agentId: 'agent',
@@ -117,6 +118,7 @@ it("runs VS Code's turn shape as plain text on a continuation, ignoring its mode
   await f.application.dispatch({ ...scope, targetSessionId: 'outward' }, vscode, origin, f.hooks)
   expect(f.prepare.mock.calls[0]?.[0]).toMatchObject({ text: 'hello' })
   expect(f.prepare.mock.calls[0]?.[0]).not.toHaveProperty('attachments')
+  expect(f.prepare.mock.calls[0]?.[0].post?.postId).toBe(canonicalPostId('turn'))
   expect(f.host.setRuntime).not.toHaveBeenCalled()
   expect(f.hooks.admitted).toHaveBeenCalledOnce()
 })
