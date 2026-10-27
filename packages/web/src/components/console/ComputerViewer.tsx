@@ -106,7 +106,7 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
 
   const status = state?.status ?? null
   const inControl = status?.inControl ?? false
-  const send = (input: ViewerInput) => void session.current?.send(input)
+  const send = (input: ViewerInput) => session.current?.send(input) ?? Promise.resolve()
   const handlers = useInputHandlers(surface, status, send)
 
   const run = (action: () => Promise<void>) => {
@@ -292,7 +292,7 @@ function StatusLine({ state }: { state: ViewerState | null }) {
 function useInputHandlers(
   surface: React.RefObject<HTMLDivElement | null>,
   status: ViewerStatus | null,
-  send: (input: ViewerInput) => void
+  send: (input: ViewerInput) => Promise<void>
 ) {
   const down = useRef<(Point & { button: (typeof BUTTONS)[number] }) | null>(null)
   const lastClick = useRef<{ at: number; button: string; timer: ReturnType<typeof setTimeout> } | null>(null)
@@ -322,18 +322,17 @@ function useInputHandlers(
   const modifiers = (event: { ctrlKey: boolean; shiftKey: boolean; altKey: boolean }) =>
     [event.ctrlKey && 'ctrl', event.shiftKey && 'shift', event.altKey && 'alt'].filter((m): m is string => Boolean(m))
 
-  // Hover sends only the latest position, never while one is in flight.
+  // Hover sends only the latest position, after the previous move is applied: inputs are serial, so a timer outruns the round trip.
   const queueMove = (p: Point) => {
     moving.current.next = p
     if (moving.current.busy) return
     moving.current.busy = true
     const target = moving.current.next
     moving.current.next = null
-    send({ type: 'move', ...target })
-    setTimeout(() => {
+    void send({ type: 'move', ...target }).finally(() => {
       moving.current.busy = false
       if (moving.current.next) queueMove(moving.current.next)
-    }, 50)
+    })
   }
 
   const flushText = () => {
