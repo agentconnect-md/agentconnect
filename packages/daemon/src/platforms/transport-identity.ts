@@ -97,8 +97,8 @@ const LIVE_TENANT_SCOPE = new Set(['slack'])
 const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integration) => Promise<string | undefined>>([
   ['qq', async (_host, int) => platformIntegrationConfig('qq', int)?.appId],
   ['dingtalk', async (_host, int) => platformIntegrationConfig('dingtalk', int)?.clientId],
-  // A bot has one counterpart, so its id scopes the owner `wechat:<botId>:<ilink_user_id>` (wechat-integration.md §4.2).
-  ['wechat', async (_host, int) => platformIntegrationConfig('wechat', int)?.botId],
+  // A re-scan mints a new bot id but keeps ilink_user_id, so the owner is `wechat:ilink:<ilink_user_id>` (wechat-integration.md §4.2).
+  ['wechat', async (host, int) => (platformIntegrationConfig('wechat', int) ? 'ilink' : await host.minted(int.id))],
   // The auth.test workspace id; a not-yet-authenticated connection falls back to the minted scope rather than throw.
   ['slack', async (host, int) => host.liveWorkspaceId(int.id) || (await host.minted(int.id))],
   // The public bot id prefix survives a BotFather token rotation.

@@ -364,19 +364,8 @@ export class ConnectionReconciler {
           onMessage: (msg) => {
             if (conn) this.host.channelNameResolver()?.noteMessage(conn, msg)
             this.host.onInbound(msg, this.host.srcIntegrationIds(conn))
-          },
-          // iLink's -14 is the only revocation signal it gives: the token is gone and a re-scan is the cure (§2.3).
-          onTokenRejected: () => {
-            const ids = conn ? this.host.srcIntegrationIds(conn) : group.integrations.map((i) => i.integrationId)
-            const integrationIds = ids.filter((id) => this.host.integrationConfigById(id)?.origin === 'cp')
-            if (!integrationIds.length) return
-            this.revocations.report(integrationIds, {
-              reason: 'tokens_revoked',
-              eventAtMs: Date.now(),
-              botUserId: group.botId,
-              workspaceId: group.botId
-            })
           }
+          // No onTokenRejected: -14 is an API error, not the lifecycle event `integration/revoked` accepts (§2.3).
         })
         try {
           await conn.start()
