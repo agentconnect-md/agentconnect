@@ -453,6 +453,9 @@ computerPool:
     - ipBlock:
         cidr: ::/0
         except: ['fc00::/7', 'fe80::/10', '::1/128']
+  # Peer-to-peer viewer media (computer-use.md §7.2): punched media goes to the browser's public address on any UDP
+  # port, so this admits UDP to egressTo. Off by default: it also lets the desktop send any UDP there.
+  viewerPeerToPeerEgress: false
   nodeSelector: {}
   tolerations: []
 
@@ -998,6 +1001,9 @@ computerViewer:
       keyId: ''
       # Key in secrets.existingSecret holding that TURN key's API token.
       apiTokenKey: COMPUTER_TURN_CLOUDFLARE_API_TOKEN
+  stun:
+    # stun: URLs (at most 2) viewers hole-punch with, in place of relay.stun; e.g. stun:stun.cloudflare.com:3478.
+    urls: []
 
 # Bootstrap/runtime roots are read from an existing Secret you create in the
 # namespace (the chart never holds their values). Provider credentials are not

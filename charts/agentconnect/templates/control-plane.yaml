@@ -314,6 +314,11 @@ spec:
                   key: {{ .secretKey | default "COMPUTER_TURN_SECRET" }}
             {{- end }}
             {{- end }}
+            {{- with .Values.computerViewer.stun.urls }}
+            # Console viewer STUN for hole punching, in place of the relays' own.
+            - name: COMPUTER_STUN_URLS
+              value: {{ join "," . | quote }}
+            {{- end }}
           # /readyz: DB ping, 503 from SIGTERM. A 2s period lists a new pod seconds after it listens; 10 misses (~20s) ride out a DB blip.
           readinessProbe:
             httpGet:

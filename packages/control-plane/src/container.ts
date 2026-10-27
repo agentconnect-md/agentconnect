@@ -247,6 +247,7 @@ import {
   relayTurnSecret,
   turnConfigFrom
 } from './computer-viewer/turn.js'
+import { stunUrlsFrom } from './computer-viewer/stun.js'
 import { OAuthService } from './registry/oauthService.js'
 import { WebchatTokenService } from './registry/webchatToken.js'
 import { AhpCatalogCursor } from './registry/ahpCatalogCursor.js'
@@ -1226,6 +1227,8 @@ export function buildContainer(
     : coturn
       ? coturnTurn(coturn)
       : undefined
+  // External STUN is the operator's explicit choice, as external TURN is; otherwise the relays' own.
+  const externalStun = stunUrlsFrom(config)
   // Relays that serve TURN check viewer credentials with this; they receive it on rc/auth/ok (computer-use.md §7.2).
   const computerRelayTurnSecret = relayTurnSecret(config.API_KEY_PEPPER)
   const computerChannelGrants = new ComputerChannelGrants(repos.computer, computerChannelKeys, clock, {
@@ -1241,7 +1244,7 @@ export function buildContainer(
       ttlSec: config.COMPUTER_TURN_TTL_SEC,
       servers: () => relayRoster.turnServers()
     },
-    stunUrls: () => relayRoster.stunUrls(),
+    stunUrls: externalStun ? () => Promise.resolve(externalStun) : () => relayRoster.stunUrls(),
     onUse: (computerId) => computerPool?.touch(computerId),
     viewerQuota: computerPlan
   })

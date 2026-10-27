@@ -1050,7 +1050,11 @@ Control Plane, which only issues credentials:
   direct step.
 - **STUN deployment.** The chart's `relay.stun` gives each relay pod a UDP `LoadBalancer` Service with
   `externalTrafficPolicy: Local` (STUN must see the client's own source address) and a per-ordinal public host;
-  `compose.stun.yaml` does the same for one relay. The relay keeps no state per client and no media.
+  `compose.stun.yaml` does the same for one relay. The relay keeps no state per client and no media. Since STUN
+  is stateless, `COMPUTER_STUN_URLS` (chart `computerViewer.stun.urls`) may name public servers instead, such as
+  Cloudflare's; like external TURN, it replaces the relays' own and deploys nothing.
+  A managed computer punches only with the chart's opt-in `computerPool.viewerPeerToPeerEgress`, which admits UDP
+  on any port to public addresses: its egress policy otherwise drops media to the browser's NAT-chosen port.
 - **TURN on the relay [implemented]** (#3236). Each relay instance with `RELAY_TURN_PORT` is a TURN server
   (RFC 8656, in process, `packages/relay/src/turn/`): UDP and TCP on that port, and TLS (`RELAY_TURN_TLS_*`) for
   networks that only let 443 out. It registers its public URLs (`RELAY_TURN_URLS`) on `rc/register` (`turnUrls`),

@@ -420,6 +420,15 @@ relays' own metering does not count.
 | `computerViewer.turn.cloudflare.keyId`       | `''`                                 | The TURN key's ID; empty leaves it off         |
 | `computerViewer.turn.cloudflare.apiTokenKey` | `COMPUTER_TURN_CLOUDFLARE_API_TOKEN` | Key in `secrets.existingSecret` with its token |
 
+Hole punching needs a STUN server both peers ask for their public address. `relay.stun` serves
+one on each relay; `computerViewer.stun.urls` names public ones instead, such as
+`stun:stun.cloudflare.com:3478`, with nothing to deploy. The Control Plane issues them only to
+viewers whose Computer's policy allows peer-to-peer media.
+
+| Value                      | Default | Meaning                                                  |
+| -------------------------- | ------- | -------------------------------------------------------- |
+| `computerViewer.stun.urls` | `[]`    | Up to two `stun:` URLs, used in place of the relays' own |
+
 A Computer's policy can set `screenshotRetentionDays`; 0 means its screenshots are never
 written. The Control Plane deletes expired screenshots itself, so the bucket needs no
 extra lifecycle rule. Its credentials need `s3:PutObject`, `s3:GetObject` and
@@ -437,25 +446,32 @@ only pool members to a desktop's bootstrap port, and turns the pool on in the me
 Control Plane. Desktops register at the public Control Plane URL, so `apiHost` or `publicUrl`
 is required.
 
-| Value                               | Default               | Meaning                                                       |
-| ----------------------------------- | --------------------- | ------------------------------------------------------------- |
-| `computerPool.warmReplicas`         | `1`                   | Prewarmed desktops, so an `ephemeral` computer starts at once |
-| `computerPool.home.size`            | `5Gi`                 | A desktop's home volume, kept while it sleeps                 |
-| `computerPool.home.storageClass`    | `standard`            | Storage class of the home volume                              |
-| `computerPool.resources`            | 500m, 1Gi / 3Gi       | One desktop's requests and memory limit                       |
-| `computerPool.ephemeralIdleSeconds` | `600`                 | Idle time before an `ephemeral` desktop is deleted            |
-| `computerPool.sleepIdleSeconds`     | `1800`                | Idle time before a `per-agent` or `manual` desktop sleeps     |
-| `computerPool.image` / `repository` | `<registry>/computer` | The desktop image, tagged like the release by default         |
-| `computerPool.egressPorts`          | `[3128, 8080]`        | TCP ports besides 443 desktops may reach, for egress proxies  |
-| `computerPool.egressTo`             | public addresses      | Where `egressPorts` may lead; private ranges are excluded     |
+| Value                                 | Default               | Meaning                                                       |
+| ------------------------------------- | --------------------- | ------------------------------------------------------------- |
+| `computerPool.warmReplicas`           | `1`                   | Prewarmed desktops, so an `ephemeral` computer starts at once |
+| `computerPool.home.size`              | `5Gi`                 | A desktop's home volume, kept while it sleeps                 |
+| `computerPool.home.storageClass`      | `standard`            | Storage class of the home volume                              |
+| `computerPool.resources`              | 500m, 1Gi / 3Gi       | One desktop's requests and memory limit                       |
+| `computerPool.ephemeralIdleSeconds`   | `600`                 | Idle time before an `ephemeral` desktop is deleted            |
+| `computerPool.sleepIdleSeconds`       | `1800`                | Idle time before a `per-agent` or `manual` desktop sleeps     |
+| `computerPool.image` / `repository`   | `<registry>/computer` | The desktop image, tagged like the release by default         |
+| `computerPool.egressPorts`            | `[3128, 8080]`        | TCP ports besides 443 desktops may reach, for egress proxies  |
+| `computerPool.egressTo`               | public addresses      | Where `egressPorts` may lead; private ranges are excluded     |
+| `computerPool.viewerPeerToPeerEgress` | `false`               | Admit UDP on any port to `egressTo`, for punched viewer media |
 
 A desktop pod may reach DNS, HTTPS, and the ports `egressPorts` lists on the addresses
 `egressTo` allows (public ones by default, so the browser cannot reach the cluster's own
 listeners on 8080; add a private proxy's address there if it needs one). With `relay.turn` or
-`relay.stun` on, or `computerViewer.turn.urls` set, the desktop template also admits those
+`relay.stun` on, or `computerViewer.turn.urls` or `computerViewer.stun.urls` set, the desktop template also admits those
 TURN and STUN ports, public and container both (in-cluster traffic to a LoadBalancer reaches the
 relay pod's port), so a managed computer's viewer works through the relay's TURN although
 its pod has no UDP a browser can reach.
+
+Hole-punched (peer-to-peer) viewer media goes from the desktop to the browser's public address on
+whatever UDP port its NAT picked, which no port list can name. `viewerPeerToPeerEgress` admits UDP on
+any port to `egressTo` for that; it also lets a desktop send any other UDP there, so it is off by
+default. Pair it with a STUN server (`relay.stun` or `computerViewer.stun.urls`) and a Computer
+policy that allows peer-to-peer viewing.
 
 `computerPlan` sets every organization's Computer quotas and egress choices, rendered as
 `AC_COMPUTER_PLAN` on the Control Plane
