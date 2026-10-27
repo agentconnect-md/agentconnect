@@ -114,7 +114,8 @@ import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
-import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
+import { splitFilesMarker, type MarkedFile } from '@/lib/webchat-file'
+import { ComposerFileChips, MessageFileCards, stageComposerFile } from '@/components/console/ComposerFiles'
 import { transferCapable, sessionFileDownload, sharedFileMarker, type SharedFile } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
@@ -2208,6 +2209,8 @@ type Turn =
       time: string
       text: string
       image?: SessionImage
+      /** The files its `[attached: …]` marker names, lifted out of `text` into cards. */
+      files?: MarkedFile[]
       isCron: boolean
       cronId: string | null
       /** Sent into the agent's running turn (#1847) rather than as a turn of its own. */
@@ -4316,7 +4319,8 @@ export default function SessionDetailView() {
       avatarInitials: turn.avatarInitials,
       isCron: turn.isCron
     })
-    turns.push(turn)
+    const { text, files } = splitFilesMarker(turn.text)
+    turns.push(files.length ? { ...turn, text, files } : turn)
   }
   const botTurnByKey = new Map<string, Extract<Turn, { kind: 'bot' }>>()
   // Another agent speaking in this session — a webchat peer participant or a
@@ -5596,20 +5600,23 @@ export default function SessionDetailView() {
                                   {turn.steered ? 'Steered' : 'Steering…'}
                                 </span>
                               )}
-                              <div className={SELF_BUBBLE}>
-                                {turn.body?.sessionMessage && (
-                                  <SessionMessageCaption facts={turn.body.sessionMessage} />
-                                )}
-                                {turn.image && (
-                                  <img
-                                    src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
-                                    alt={turn.image.name}
-                                    className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
-                                  />
-                                )}
-                                {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
-                                {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
-                              </div>
+                              {turn.files && <MessageFileCards files={turn.files} />}
+                              {(turn.text || turn.image || turn.body) && (
+                                <div className={SELF_BUBBLE}>
+                                  {turn.body?.sessionMessage && (
+                                    <SessionMessageCaption facts={turn.body.sessionMessage} />
+                                  )}
+                                  {turn.image && (
+                                    <img
+                                      src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
+                                      alt={turn.image.name}
+                                      className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
+                                    />
+                                  )}
+                                  {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
+                                  {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
+                                </div>
+                              )}
                               {/* Sent bubbles are complete by definition — the copy affordance
                         (hover-revealed, right-aligned under the bubble) always mounts.
                         Absolutely positioned into the inter-turn gap so revealing it

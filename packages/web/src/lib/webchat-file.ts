@@ -61,3 +61,24 @@ export async function uploadWebchatFile(
 export function filesMarker(files: readonly Pick<WebchatFileAttachment, 'name' | 'mimeType'>[]): string {
   return files.length ? `[attached: ${files.map((f) => `${f.name} (${f.mimeType})`).join(', ')}]` : ''
 }
+
+/** A file a sent message names in its `[attached: …]` marker. */
+export interface MarkedFile {
+  name: string
+  mimeType: string
+}
+
+/** Split a message's trailing `[attached: …]` marker into its files; an unparseable marker stays in the text. */
+export function splitFilesMarker(text: string): { text: string; files: MarkedFile[] } {
+  const marker = /(?:^|\n)\[attached: ([^\]\n]+)\]$/.exec(text)
+  if (!marker) return { text, files: [] }
+  const entry = /(.+?) \(([A-Za-z0-9][\w.+-]*\/[A-Za-z0-9][\w.+-]*)\)(?:, |$)/y
+  const files: MarkedFile[] = []
+  const list = marker[1]!
+  while (entry.lastIndex < list.length) {
+    const match = entry.exec(list)
+    if (!match) return { text, files: [] }
+    files.push({ name: match[1]!, mimeType: match[2]! })
+  }
+  return { text: text.slice(0, marker.index).trimEnd(), files }
+}
