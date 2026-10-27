@@ -70,6 +70,28 @@ describe('ComputerViewerCard', () => {
     expect(off.textContent).toContain('The viewer opens once this computer is online.')
   })
 
+  it('sends the next hover move only after the previous one is applied', async () => {
+    const { fake, create } = fakeSession()
+    let applied: () => void = () => undefined
+    fake.send.mockImplementation(() => new Promise<undefined>((resolve) => (applied = () => resolve(undefined))))
+    const el = render(<ComputerViewerCard computer={computer()} createSession={create} />)
+    await act(async () => button(el, 'Watch')!.click())
+    await act(async () => button(el, 'Take control')!.click())
+    const surface = el.querySelector<HTMLDivElement>('[data-viewer-surface]')!
+    const hover = () =>
+      surface.dispatchEvent(new PointerEvent('pointermove', { pointerType: 'mouse', bubbles: true, clientX: 1 }))
+    act(() => {
+      for (let i = 0; i < 5; i++) hover()
+    })
+    // A slow round trip must not build a backlog that later input waits behind.
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 120)))
+    expect(fake.send).toHaveBeenCalledTimes(1)
+    await act(async () => applied())
+    expect(fake.send).toHaveBeenCalledTimes(2)
+    await act(async () => applied())
+    expect(fake.send).toHaveBeenCalledTimes(2)
+  })
+
   it('watches, takes over, sends keys and text, releases and closes', async () => {
     const { fake, create } = fakeSession()
     const el = render(<ComputerViewerCard computer={computer()} createSession={create} />)
