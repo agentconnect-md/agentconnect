@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { FakeClock } from '@agentconnect.md/connection'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -1267,6 +1268,112 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await (daemon as any).interruptTurn('bot-a', KEY('T2'), 'stop', undefined, {})
     expect(hosts[1]!.cancel).toHaveBeenCalledWith('acp-1')
     expect(hosts[0]!.cancel).not.toHaveBeenCalled()
+    for (const release of releases) release()
+    await Promise.all([one, two])
+    await daemon.stop()
+  })
+
+  it('force-stops only the cancelled session’s host when its cold start outlives the backstop', async () => {
+    const root = scaffold()
+    const clock = new FakeClock()
+    let releaseLive!: () => void
+    const live = new Promise<void>((resolve) => (releaseLive = resolve))
+    const hosts: { newSession: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }[] = []
+    const factory = vi.fn(() => {
+      const index = hosts.length
+      const host = {
+        start: vi.fn(async () => {}),
+        // The second session's runtime never answers session/new: its turn stays cold.
+        newSession: vi.fn(() => (index === 0 ? Promise.resolve('acp-1') : new Promise<string>(() => {}))),
+        hasSession: vi.fn((sid: string) => sid === 'acp-1'),
+        prompt: vi.fn(async () => {
+          await live
+          return { stopReason: 'end_turn' }
+        }),
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {})
+      }
+      hosts.push(host)
+      return host as never
+    })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: factory as never,
+      sandboxMechanism: 'bwrap',
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    stubWorkspacePreparation(daemon)
+    const one = (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(1), WAIT)
+    const two = (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+    await vi.waitFor(() => expect(hosts[1]?.newSession).toHaveBeenCalledOnce(), WAIT)
+
+    await (daemon as any).interruptTurn('bot-a', KEY('T2'), 'stop', undefined, {})
+    clock.advance(30_000)
+    await expect(two).resolves.toBeNull()
+
+    expect(hosts[1]!.stop).toHaveBeenCalled()
+    expect(hosts[0]!.stop).not.toHaveBeenCalled()
+    const first = sessionHostKey('bot-a', KEY('T1'))
+    expect((daemon as any).hosts.get(first)).toBe(hosts[0])
+    expect((daemon as any).pending.get(pendingTurnKey(first, 'acp-1'))).toBeDefined()
+    releaseLive()
+    await one
+    await daemon.stop()
+  })
+
+  it('force-stops only the owning session host when a live turn ignores session/cancel past the backstop', async () => {
+    const root = scaffold()
+    const clock = new FakeClock()
+    const releases: (() => void)[] = []
+    const hosts: { stop: ReturnType<typeof vi.fn> }[] = []
+    const factory = vi.fn(() => {
+      let release!: () => void
+      const blocked = new Promise<void>((resolve) => (release = resolve))
+      releases.push(release)
+      const host = {
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => 'acp-1'),
+        hasSession: vi.fn((sid: string) => sid === 'acp-1'),
+        prompt: vi.fn(async () => {
+          await blocked
+          return { stopReason: 'end_turn' }
+        }),
+        // The runtime ignores session/cancel.
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {})
+      }
+      hosts.push(host)
+      return host as never
+    })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: factory as never,
+      sandboxMechanism: 'bwrap',
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    stubWorkspacePreparation(daemon)
+    const one = (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    const two = (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(2), WAIT)
+    const first = sessionHostKey('bot-a', KEY('T1'))
+    const second = sessionHostKey('bot-a', KEY('T2'))
+    // A turn with no selected host falls back to the host that owns it.
+    delete (daemon as any).pending.get(pendingTurnKey(second, 'acp-1')).selectedHost
+
+    await (daemon as any).interruptTurn('bot-a', KEY('T2'), 'stop', undefined, {})
+    clock.advance(30_000)
+    await vi.waitFor(() => expect(hosts[1]!.stop).toHaveBeenCalled(), WAIT)
+
+    expect(hosts[0]!.stop).not.toHaveBeenCalled()
+    expect((daemon as any).hosts.get(first)).toBe(hosts[0])
+    expect((daemon as any).pending.get(pendingTurnKey(first, 'acp-1'))).toBeDefined()
     for (const release of releases) release()
     await Promise.all([one, two])
     await daemon.stop()
