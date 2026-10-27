@@ -420,6 +420,15 @@ relays' own metering does not count.
 | `computerViewer.turn.cloudflare.keyId`       | `''`                                 | The TURN key's ID; empty leaves it off         |
 | `computerViewer.turn.cloudflare.apiTokenKey` | `COMPUTER_TURN_CLOUDFLARE_API_TOKEN` | Key in `secrets.existingSecret` with its token |
 
+Hole punching needs a STUN server both peers ask for their public address. `relay.stun` serves
+one on each relay; `computerViewer.stun.urls` names public ones instead, such as
+`stun:stun.cloudflare.com:3478`, with nothing to deploy. The Control Plane issues them only to
+viewers whose Computer's policy allows peer-to-peer media.
+
+| Value                      | Default | Meaning                                                  |
+| -------------------------- | ------- | -------------------------------------------------------- |
+| `computerViewer.stun.urls` | `[]`    | Up to two `stun:` URLs, used in place of the relays' own |
+
 A Computer's policy can set `screenshotRetentionDays`; 0 means its screenshots are never
 written. The Control Plane deletes expired screenshots itself, so the bucket needs no
 extra lifecycle rule. Its credentials need `s3:PutObject`, `s3:GetObject` and
@@ -452,7 +461,7 @@ is required.
 A desktop pod may reach DNS, HTTPS, and the ports `egressPorts` lists on the addresses
 `egressTo` allows (public ones by default, so the browser cannot reach the cluster's own
 listeners on 8080; add a private proxy's address there if it needs one). With `relay.turn` or
-`relay.stun` on, or `computerViewer.turn.urls` set, the desktop template also admits those
+`relay.stun` on, or `computerViewer.turn.urls` or `computerViewer.stun.urls` set, the desktop template also admits those
 TURN and STUN ports, public and container both (in-cluster traffic to a LoadBalancer reaches the
 relay pod's port), so a managed computer's viewer works through the relay's TURN although
 its pod has no UDP a browser can reach.

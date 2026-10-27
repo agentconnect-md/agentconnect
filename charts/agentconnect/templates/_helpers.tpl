@@ -287,7 +287,7 @@ AC_COMPUTER_PLAN (computer-use.md §15.4, §15.5): quotas, egress choices, and t
 {{- end }}
 
 {{/*
-Viewer media egress ports (computer-use.md §7.2): relay TURN/STUN public and container ports (in-cluster LB traffic is DNATed first), external TURN URLs, and Cloudflare TURN's.
+Viewer media egress ports (computer-use.md §7.2): relay TURN/STUN public and container ports (in-cluster LB traffic is DNATed first), external TURN and STUN URLs, and Cloudflare TURN's.
 */}}
 {{- define "agentconnect.computerMediaPorts" -}}
 {{- $ports := list -}}
@@ -306,6 +306,10 @@ Viewer media egress ports (computer-use.md §7.2): relay TURN/STUN public and co
 {{- $port = $port | default (ternary "5349" "3478" (hasPrefix "turns:" .)) | int -}}
 {{- $ports = append $ports (dict "protocol" "UDP" "port" $port) -}}
 {{- $ports = append $ports (dict "protocol" "TCP" "port" $port) -}}
+{{- end -}}
+{{- range .Values.computerViewer.stun.urls -}}
+{{- $port := regexFind ":[0-9]+$" (trimPrefix "stun:" .) | trimPrefix ":" | default "3478" | int -}}
+{{- $ports = append $ports (dict "protocol" "UDP" "port" $port) -}}
 {{- end -}}
 {{- if .Values.computerViewer.turn.cloudflare.keyId -}}
 {{- range (list (dict "protocol" "UDP" "port" 3478) (dict "protocol" "TCP" "port" 3478) (dict "protocol" "TCP" "port" 5349)) }}{{ $ports = append $ports . }}{{ end -}}
