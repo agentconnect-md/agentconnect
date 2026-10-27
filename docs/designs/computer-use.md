@@ -1,11 +1,12 @@
 # Computer use: the Computer resource and the desktop daemon
 
-**Status:** Draft v6, validated by a prototype, with a development plan. 2026-10-20.
+**Status:** Draft v7, validated by a prototype, with a development plan. 2026-10-27.
 The concepts are unchanged from the earlier drafts: a **Computer** resource; a **desktop daemon** that embeds Cua Driver;
 the `computer_*` tools; one control lease per Computer; the human always wins; an action with an unknown outcome is
 never replayed; an emergency stop; an audit trail. The prototype (§12) confirmed, overturned, or added to each section,
 and those results are folded in. v6 adds the Linux container form (a Docker image, §3.8) and replaces the phase table
-with a development plan: the Linux desktop daemon and Docker first, then macOS and Windows (§14).
+with a development plan: the Linux desktop daemon and Docker first, then macOS and Windows (§14). v7 (2026-10-27)
+adds a command-line and file tier beside the GUI tools, granted separately and off on a person's desktop (§5.7).
 The Chinese version lives in the extensions repository (`docs/designs/computer-use.md`, PR #147).
 
 The first source of Computers is the user's own machine (a **self-hosted computer**). A **managed computer** that
@@ -38,6 +39,7 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 17  | Development order                  | Linux desktop daemon (with the shared CP work) → Docker and the Linux managed computer → macOS → Windows (§14)                                                                                                                                    | Plan                                              |
 | 18  | Later                              | **Managed computers**: containers on Linux; the earlier VM desktop pool design for macOS and Windows (§15, appendices)                                                                                                                            | Design                                            |
 | 19  | Managed allocation and sharing     | Managed computers are `ephemeral` (per session), `per-agent` (one per agent, sleeps between uses) or `manual` (user-created, shared); shared Computers queue for the lease (§4.4, §15.1)                                                          | Design                                            |
+| 20  | Command line and files             | `computer_exec` and file tools implemented by the desktop daemon, not Cua's; policy `shell` / `files`, on for managed computers and off on a person's desktop; run as the signed-in person; no lease; stopped by pause and stop (§5.7)            | Design                                            |
 
 ## 1. Background and goals
 
@@ -104,6 +106,8 @@ interface Computer {
     textInput: 'full' | 'keymap-only' // GNOME Wayland (libei) cannot type IME text
     backgroundInput: boolean // Cua Driver's window-scoped background input (cua_* tools)
     accessibilityTree: boolean
+    exec: boolean // computer_exec can run here (§5.7); false on macOS until its TCC check is validated
+    files: boolean // the §5.7 file tools
     viewer: boolean // ffmpeg ready and one frame captured
     displays: { id: string; width: number; height: number; scale: number }[]
     permissions: { accessibility?: boolean; screenRecording?: boolean; portal?: boolean; firewall?: boolean }
@@ -624,6 +628,9 @@ interface ComputerPolicy {
   appAllowlist?: string[] // apps that may be operated (bundle id / executable name)
   redactApps: string[] // app windows masked in screenshots, such as password managers
   exposeDriverTools: boolean // expose the cua_* pass-through tools (§5.5), default false
+  shell: 'off' | 'ask' | 'on' // computer_exec (§5.7); off on a self-hosted Computer
+  files: 'off' | 'read' | 'read-write' // the file tools (§5.7); off on a self-hosted Computer
+  fileRoots?: string[] // prefixes the file tools may touch (§5.7); absent: the home directory
   quietHours?: { tz: string; ranges: string[] } // no use outside these windows
   leaseIdleSeconds: number // idle release, default 120 (validated)
   leaseMaxSeconds: number // cap on one control lease, default 1800 (validated)
@@ -731,7 +738,8 @@ Whatever the policy, the desktop daemon refuses locally:
   from answering a UAC prompt as §4.2.1 allows), the login / lock screen, the system privacy and security settings, and AgentConnect's own indicator and stop controls.
   Cua Driver itself hard-refuses known system security prompts; the desktop daemon's own window-level check is [design].
 - **Driver tools**: the script, configuration, extension, screen recording, process-kill, clipboard, and file-transfer
-  tools among the `cua_*` pass-throughs are never exposed (§5.5).
+  tools among the `cua_*` pass-throughs are never exposed (§5.5). A shell and files come only from the desktop daemon's
+  own §5.7 tools, behind their own policy, which narrows this rule on purpose.
 
 ### 4.4 Leases and concurrency [validated]
 
@@ -917,6 +925,125 @@ On Xfce, Firefox navigation, typing, scrolling, and clicking all worked. Session
 and screenshot again before clicking; press Esc before Ctrl+L while a page is still loading; screen content is
 untrusted (prompt injection). **[implemented]** `COMPUTER_USE_GUIDANCE` in `packages/daemon/src/computer/tools.ts`
 says this, and how to read each error, in the standing instructions of every session that has the tools.
+
+### 5.7 Command line and files [design]
+
+An agent already has a shell and files in its own workspace (§1.1); what it lacks is a shell and files **on the
+Computer**. Through the GUI, every step costs a screenshot (a 1280×800 image is about 1,400 input tokens) and a chance
+to misclick: "open the newest PDF in Downloads" is five to ten steps, where `ls -t ~/Downloads | head` is one call of
+about a hundred tokens with a definite answer. `computer_type` caps text at 4096 characters and types it key by key
+(on real Xorg, one character every 40 ms, §3.2.3), where a file write lands the whole text at once. So a Computer may
+also offer a **command-line tier** next to the GUI one: the agent discovers, reads, writes, and moves data through it,
+and keeps the GUI for what only the GUI can do.
+
+This tier deliberately narrows §4.3. The GUI tools inherit their safety from being visible and human-paced: the person
+sees each action, human input pre-empts it (§6), and the lease serializes it. A shell has none of that: it is invisible,
+fast, and runs as the person. On a desktop with no isolation, **turning the shell on is equivalent to handing the agent
+the person's account**: it can read `~/.ssh` and browser profiles, and it can rewrite the desktop daemon's own config,
+binaries and local audit log, so the lease, human-first arbitration and hard refusals become advisory against a hostile
+agent. The design therefore makes the tier a separate, explicit grant, off on a person's desktop, and does not open
+Cua Driver's `run_script` or file tools (§4.3) to get it: the desktop daemon implements these tools itself, so their
+identity, limits and kill path are its own.
+
+**Policy.** Two fields join `ComputerPolicy` (§4.1), on an axis separate from `agentMode`:
+
+```ts
+interface ComputerPolicy {
+  // ...
+  shell: 'off' | 'ask' | 'on' // computer_exec; anything but off requires agentMode 'control'
+  files: 'off' | 'read' | 'read-write' // the file tools below
+  fileRoots?: string[] // absolute prefixes the file tools may touch; absent: the user's home
+}
+```
+
+| Computer                                       | Default                          | Why                                                                                   |
+| ---------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------- |
+| Managed (`isolation: container` or `vm`)       | `shell: on`, `files: read-write` | An isolated, fresh desktop where nothing is a person's, as its approvals are (§15.1)  |
+| Self-hosted container (`isolation: container`) | `off`, `off`                     | The user's server; the registrant turns it on without a "no isolation" warning        |
+| Self-hosted desktop (`isolation: none`)        | `off`, `off`                     | The registrant turns it on behind a warning that states the account-equivalence above |
+
+`shell` requires `agentMode: 'control'` because a shell can drive the display anyway (`xdotool`, `osascript`); a
+`view` Computer with a shell would be `control` under another name. `files` is independent: a `view` Computer may offer
+`read`. Who may change either is who may set the whole agent access (§4.1): the registrant of a self-hosted Computer,
+any editor of a managed one. A change ends no lease but refuses the next call; the CP pushes it with `computer/policy`.
+
+**Tools.** Each takes the optional `computer` argument and resolves its target as §5.1 does.
+
+| Tool                  | Arguments                       | Needs               | Result                                                                                      |
+| --------------------- | ------------------------------- | ------------------- | ------------------------------------------------------------------------------------------- |
+| `computer_exec`       | `{ command, cwd?, timeoutMs? }` | `shell` not `off`   | `{ exitCode, signal, stdout, stderr, truncated, durationMs }`                               |
+| `computer_read_file`  | `{ path, offset?, limit? }`     | `files` not `off`   | Text by lines (at most 256 KiB); an image (≤ 5 MiB) as MCP `image`; other binary is refused |
+| `computer_list_dir`   | `{ path }`                      | `files` not `off`   | Entries with type, size and mtime, at most 1000                                             |
+| `computer_write_file` | `{ path, content }`             | `files: read-write` | Size and SHA-256; atomic (staged beside the target, then renamed)                           |
+| `computer_pull`       | `{ path, to }`                  | `files` not `off`   | Copies a Computer file into the session's workspace at `to`                                 |
+| `computer_push`       | `{ from, path }`                | `files: read-write` | Copies the workspace file `from` onto the Computer at `path`                                |
+
+- **The shell.** `computer_exec` runs the user's login shell from the account database with `-c` (falling back to
+  `/bin/sh`), and on Windows `powershell.exe -NoProfile -NonInteractive -Command`; `computer_list` reports which. There
+  is no PTY and stdin is closed, so an interactive prompt fails instead of hanging. `cwd` defaults to the home
+  directory. The environment is the graphical session's (so a launched app reaches the display) minus every
+  `AGENTCONNECT_*` variable and anything the desktop daemon holds. `timeoutMs` defaults to 30 s and is capped at 90 s,
+  inside the relay's 120 s request timeout (§3.7) and close to the 60 s some runtimes give a tool call (§4.4); a
+  command still running then is killed. stdout and stderr keep their last 32 KiB each, with the total byte counts.
+- **Whose account.** Commands run as the signed-in person, never with the daemon's privileges. On Windows the daemon is
+  SYSTEM (§3.2.2), so `computer_exec` goes through the service host's `run-as-user` mode (`WTSQueryUserToken`), as
+  `computer_launch` does, extended to pipe the output back and to start the process in a Job object. On macOS a child inherits the app's Accessibility and Screen Recording grants (§3.2.1),
+  which would let a command drive the screen around every rule here, so the command is spawned with its TCC
+  responsibility disclaimed; until that is validated, a macOS Computer reports `exec: false` [unverified]. In the
+  container image it is the `computer` user (§3.8).
+- **The file tools' fence.** A path must be absolute (or start with `~`), and is resolved through symlinks before it is
+  checked against `fileRoots`. The desktop daemon's own data directory (`~/.agentconnect/computer`, or
+  `AGENTCONNECT_COMPUTER_HOME`) is always refused, whatever the roots, because
+  a write there could loosen its own policy (§6: anything an agent can reach may only tighten). The fence binds the
+  file tools only; `computer_exec` can reach whatever the account can, which is why `shell` is the stronger switch.
+- **To and from the workspace.** `computer_pull` and `computer_push` move bytes between the Computer and the agent's
+  workspace without passing them through the model. The agent daemon reads and writes its side through its
+  `WorkspaceFs` (a local file, or the shim's workspace-fs channel for a sandboxed session), with the workspace path
+  lexically fenced as [agent-authored-attachments.md §6](agent-authored-attachments.md) does. In this design the bytes
+  ride the session channel, at most 4 MiB a file (the relay buffers 8 MiB each way, §3.7, and the body is base64);
+  larger files through the [file-transfer bucket](source-cache-file-transfer.md), with the CP signing and never seeing
+  them, are a later step (§17-17).
+
+**Semantics.** These tools reuse the rules of the GUI tools wherever the rule still means something:
+
+- **Lease.** They take no control lease and never wait in its queue (§4.4): they send no input, so they run while a
+  person or another agent uses the display, which is part of their value. A desktop runs at most 4 commands per
+  session and 8 in all, refusing more with `exec_busy`.
+- **Human first.** `human_active` and a viewer takeover (§6) block GUI input only. An owner pause, a console Stop, a
+  revoke, or a lapsed key (§8.2) refuses every new call of this tier (`human_in_control`, `unavailable`) and kills the
+  process tree of every running command (a process group, a Job object on Windows), so "stop" stops everything. The
+  tray and menu bar show the agent state while a command runs, as while a lease is held, since nothing else on screen
+  shows it.
+- **Unknown outcomes.** `computer_exec`, `computer_write_file`, and `computer_push` change state, so §5.4 applies: a
+  call that may have reached the desktop and then timed out, lost its channel, or was cancelled is never resent and
+  returns `uncertain` (without a screenshot; the agent inspects with another command). A cancelled command is killed.
+- **Approvals.** `shell: 'ask'` asks on every `computer_exec` through the §4.2 path, with the full command and its
+  `cwd` on the card and **Allow once**, **Allow for this session**, and **Deny**; the desktop refuses an exec under
+  `ask` unless the call's `_meta` approval (§8.2) is `allowed` or `allowed_session`, so the agent daemon cannot skip
+  it. A write (`computer_write_file`, `computer_push`) counts as the session's first input under
+  `firstInputPerSession` (§4.2). A pool-made computer asks nothing by default, as for its GUI input.
+- **Authority on the desktop.** The channel token (§3.7) names `shell` and `files` beside `agentMode`, and the desktop
+  registers only the tools its token allows, as a `view` token gets no input tools today; each call also checks the
+  last policy the CP pushed, so a narrowing applies to the next call rather than after the token's 120 s. The agent
+  daemon's own check is not the guard.
+- **Audit.** For `computer_exec` the command is the audit value, unlike typed text (§8.2): the entry records the
+  command (at most 4 KiB), `cwd`, exit code, duration, and output byte counts, never the output. File tools record the
+  path, size, and SHA-256, never content. The CP's copy is the record: a shell can edit the desktop's local log before
+  it is sent.
+- **Delivery.** The desktop reports `capabilities.exec` and `capabilities.files` in its heartbeat (§2.2); the CP
+  advertises `computer-exec-v1`; each entry of the spec's derived `computerUse.computers` (§4.1) gains its `shell` and
+  `files`, so an agent is offered these tools only when one of its Computers allows them (or its managed mode would
+  create one that does). Guidance joins `COMPUTER_USE_GUIDANCE` (§5.6): find, read, and move data through commands and
+  files; use the GUI for what only the GUI can do; check the GUI's state with a screenshot afterwards.
+
+**Considered and rejected.**
+
+- **Exposing Cua Driver's `run_script` and file tools.** Their surface is the driver's, runs as SYSTEM on Windows, and
+  has no fence, limit, or kill path of ours; §4.3 stands.
+- **An agent daemon or a session executor on the Computer.** The shim already carries exec and fs
+  ([session-executors.md](session-executors.md) D4), but its executor listens, the direction NAT forbids (§3.7), and it
+  would move the session onto the Computer: that is "run the agent on this machine" (§17-2), not "use this machine".
+- **A terminal driven through the GUI.** What agents do today: every keystroke and every read is a screenshot.
 
 ## 6. Sharing the desktop with a human
 
@@ -1142,7 +1269,8 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   short-lived, per session; the desktop daemon holds no runtime or organization secrets.
 - **No-isolation warning**: an agent sees and operates everything the user can (mail, chat, signed-in sites, the
   intranet). Registration and grants say so plainly and recommend trusted personal or dedicated work machines. The
-  container form (§3.8) is the isolated alternative.
+  container form (§3.8) is the isolated alternative. Turning on `shell` (§5.7) there hands over the person's account,
+  and its warning says so.
 - **Least scope**: `appAllowlist`, `redactApps` (window-level masking feasibility to be validated), granting a single display.
 - **Prompt injection**: screen content is untrusted; the session instructions say so (§5.6).
 - **Audit**: the prototype already writes a JSONL `audit.log` in its data directory, one line per call, recording only
@@ -1364,6 +1492,10 @@ registration, environment injection and publishing have since been implemented, 
   and wiped.
 - Evaluation: computer-use cases in `evals/cases`; how to adopt cua-bench (MIT) [unverified].
 - Security: prompt injection from the screen; masking effectiveness.
+- Command line and files (§5.7): commands run as the signed-in person (never SYSTEM on Windows); pause, Stop, revoke
+  and key lapse kill a running command's whole tree; the fence refuses the data directory, symlinks out of
+  `fileRoots`, and relative paths; a `view` or `shell: off` token gets no exec tool; an `ask` exec without `allowed`
+  is refused by the desktop; a timed-out exec or push returns `uncertain` and is not resent.
 
 ## 14. Development plan
 
@@ -1391,6 +1523,7 @@ Estimates assume one engineer who knows the codebase.
 | M2        | **Docker**: productized image, self-hosted containers, Linux managed computers (Kubernetes pool)                              | 4–6 engineer-weeks   | M1 (the image work can run alongside M1)         |
 | M3        | **macOS**: signing and notarization, menu bar UI, install and grant flow                                                      | 3–4 engineer-weeks   | M1                                               |
 | M4        | **Windows**: signed installer, tray UI, session and lock-screen handling                                                      | 3–4 engineer-weeks   | M1                                               |
+| M5        | **Command line and files** (§5.7): Linux and containers first, then Windows; macOS after its TCC check                        | 2–3 engineer-weeks   | M2; M4 for Windows                               |
 | Later     | Native capture and hardware encoding, multiple displays, audio / clipboard, window masking, macOS / Windows managed computers | Estimated separately | Legal conclusions                                |
 
 M1 plus M2 is the first releasable scope (about 10–14 engineer-weeks): both Linux user desktops and Docker desktops
@@ -1779,6 +1912,15 @@ desktop (a container image, §3.8).
     **Decided (§4.4)**: no. A display has one pointer, one keyboard focus, and display-wide XTest input; extra displays
     per pod are effectively separate Computers and are not offered. A shared Computer is used in turn through the FIFO
     lease queue (#3231), and parallel agents get separate Computers.
+16. Command line (§5.7): long-running commands past the 90 s cap (a background job with an id and an output tool) and
+    an interactive PTY; neither is in the first scope.
+17. Files over 4 MiB (§5.7): through the file-transfer bucket, with a Computer-side ticket like the screenshot upload's
+    (§9), or not at all?
+18. In a container the shell runs as the daemon's own user and can read the Computer's key on the volume. The key
+    serves only that Computer's own wire, and a reset or reclaim revokes it; is a separate exec user worth the
+    display and profile ownership it complicates?
+19. Command lines can carry secrets, and the audit records them (§5.7, §8.2): keep them whole, or offer a policy
+    switch that records only a hash?
 
 ## Appendix A: VM desktop pool design summary (reference for managed computers)
 
