@@ -76,6 +76,8 @@ function fakeDeps(overrides: {
   slackIdentityFor?: () => Promise<{ teamId: string; userId: string } | null>
   session?: ReturnType<typeof slackDmSession>
   plugins?: SessionAccessPlugin[]
+  /** The caller's stored sign-in subject, for a delegated call that carries none itself. */
+  oidcSubjectOf?: string
 }) {
   const listPage = vi.fn(async () => ({ sessions: [], total: 0, hasMore: false }))
   const listConversationPage = vi.fn(async () => ({ conversations: [], total: 0, hasMore: false }))
@@ -102,6 +104,7 @@ function fakeDeps(overrides: {
         listFacets: vi.fn(async () => ({ agents: [], integrations: [], channels: [], triggers: [] }))
       },
       sessionUsage: { get: vi.fn(async () => null) },
+      user: { getOidcSubject: vi.fn(async () => overrides.oidcSubjectOf ?? null) },
       hook: { getMany: vi.fn(async () => []) },
       integrationChannel: { namesForOrg: vi.fn(async () => []) }
     },
@@ -127,7 +130,10 @@ function fakeDeps(overrides: {
   return { deps, listPage, listConversationPage }
 }
 
-async function appAs(deps: HttpDeps, caller: { userId: string; oidcSubject?: string }): Promise<FastifyInstance> {
+async function appAs(
+  deps: HttpDeps,
+  caller: { userId: string; oidcSubject?: string; delegated?: boolean }
+): Promise<FastifyInstance> {
   const app = Fastify()
   installZod(app)
   // Stand-ins for humanAuth + the org-scope guard, which run before these
@@ -136,6 +142,10 @@ async function appAs(deps: HttpDeps, caller: { userId: string; oidcSubject?: str
     req.principal = { userId: caller.userId }
     req.orgCtx = { orgId: ORG_ID, role: 'collaborator', userId: caller.userId } as never
     if (caller.oidcSubject) req.oidcSubject = caller.oidcSubject
+    // An agent's console tool call made for `caller`: the projection internal-invocation-auth.ts sets.
+    if (caller.delegated) {
+      req.delegatedInvocation = { invocationId: 'inv-1', grantId: 'grant-1', agentId: 'agent-1', conversationId: 'c-1' }
+    }
   })
   await app.register(sessionRoutes(deps))
   return app
@@ -271,6 +281,35 @@ describe('session routes × viewer identity', () => {
     const slackIdentityFor = vi.fn(async () => ({ teamId: 'T024BE7LD', userId: 'U0123ABCD' }))
     const { deps } = fakeDeps({ slackIdentityFor })
     const app = await appAs(deps, { userId: 'u-1' })
+    try {
+      const res = await app.inject({ method: 'GET', url: '/sessions/sess-1' })
+      expect(res.statusCode).toBe(404)
+      expect(slackIdentityFor).not.toHaveBeenCalled()
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('serves that session to an agent calling for its linked owner, judged by who is asking', async () => {
+    // A delegated call carries the asker's user id and no sign-in; the stored
+    // subject stands in, so the agent sees what the asker sees in the console.
+    const { deps } = fakeDeps({
+      slackIdentityFor: async () => ({ teamId: 'T024BE7LD', userId: 'U0123ABCD' }),
+      oidcSubjectOf: 'logto-sub'
+    })
+    const app = await appAs(deps, { userId: 'u-1', delegated: true })
+    try {
+      const res = await app.inject({ method: 'GET', url: '/sessions/sess-1' })
+      expect(res.statusCode).toBe(200)
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('still 404s for an agent calling for a user who never signed in', async () => {
+    const slackIdentityFor = vi.fn(async () => ({ teamId: 'T024BE7LD', userId: 'U0123ABCD' }))
+    const { deps } = fakeDeps({ slackIdentityFor })
+    const app = await appAs(deps, { userId: 'u-1', delegated: true })
     try {
       const res = await app.inject({ method: 'GET', url: '/sessions/sess-1' })
       expect(res.statusCode).toBe(404)
