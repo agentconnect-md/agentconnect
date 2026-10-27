@@ -139,19 +139,21 @@ export interface CaptureInput {
 }
 
 // Capture inputs to try in order; the first that keeps running wins (ddagrab needs a GPU path that RDP sessions may lack).
-export function captureInputs(fps: number, dataDir: string, frames = 0): CaptureInput[] {
+// `cursor` false leaves the pointer out, for a viewer whose browser draws its own.
+export function captureInputs(fps: number, dataDir: string, frames = 0, cursor = true): CaptureInput[] {
+  const mouse = cursor ? '1' : '0'
   const override = process.env.AGENTCONNECT_COMPUTER_CAPTURE
   if (override) return [{ name: 'override', args: override.split(' ').filter(Boolean), filters: [] }]
   if (process.platform === 'win32') {
     return [
       {
         name: 'ddagrab',
-        args: ['-f', 'lavfi', '-i', `ddagrab=output_idx=0:framerate=${fps}:draw_mouse=1`],
+        args: ['-f', 'lavfi', '-i', `ddagrab=output_idx=0:framerate=${fps}:draw_mouse=${mouse}`],
         filters: ['hwdownload', 'format=bgra']
       },
       {
         name: 'gdigrab',
-        args: ['-f', 'gdigrab', '-framerate', String(fps), '-draw_mouse', '1', '-i', 'desktop'],
+        args: ['-f', 'gdigrab', '-framerate', String(fps), '-draw_mouse', mouse, '-i', 'desktop'],
         filters: []
       }
     ]
@@ -160,7 +162,16 @@ export function captureInputs(fps: number, dataDir: string, frames = 0): Capture
     return [
       {
         name: 'avfoundation',
-        args: ['-f', 'avfoundation', '-capture_cursor', '1', '-framerate', String(fps), '-i', 'Capture screen 0:none'],
+        args: [
+          '-f',
+          'avfoundation',
+          '-capture_cursor',
+          mouse,
+          '-framerate',
+          String(fps),
+          '-i',
+          'Capture screen 0:none'
+        ],
         filters: []
       }
     ]
@@ -172,7 +183,7 @@ export function captureInputs(fps: number, dataDir: string, frames = 0): Capture
         name: 'pipewire',
         producer: {
           command: 'python3',
-          args: [helper, screencastTokenPath(dataDir), String(fps), ...(frames ? [String(frames)] : [])]
+          args: [helper, screencastTokenPath(dataDir), String(fps), mouse, ...(frames ? [String(frames)] : [])]
         },
         args: ['-f', 'yuv4mpegpipe', '-i', 'pipe:0'],
         filters: []
@@ -182,7 +193,7 @@ export function captureInputs(fps: number, dataDir: string, frames = 0): Capture
   return [
     {
       name: 'x11grab',
-      args: ['-f', 'x11grab', '-framerate', String(fps), '-i', process.env.DISPLAY ?? ':0'],
+      args: ['-f', 'x11grab', '-draw_mouse', mouse, '-framerate', String(fps), '-i', process.env.DISPLAY ?? ':0'],
       filters: []
     }
   ]

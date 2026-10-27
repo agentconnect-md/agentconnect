@@ -7,6 +7,8 @@ export interface ScreenStreamOptions extends StreamSettings {
   dataDir: string
   // Resolved per start, so a background ffmpeg download is picked up without a restart.
   ffmpeg: () => string
+  // Whether frames include the pointer, read per start; false while a person drives with their browser's own.
+  cursor?: () => boolean
   log: (line: string) => void
 }
 
@@ -25,6 +27,9 @@ export class ScreenStream {
   private socket: Socket | undefined
   private process: ChildProcess | undefined
   private restart: NodeJS.Timeout | undefined
+  // The running capture's pointer setting, and the process being replaced because that setting changed.
+  private cursor = true
+  private swapping: ChildProcess | undefined
   private inputIndex = 0
   private running = false
   private runs = 0
@@ -73,7 +78,8 @@ export class ScreenStream {
 
   private spawn(): void {
     if (!this.running || !this.socket) return
-    const inputs = captureInputs(this.options.fps, this.options.dataDir)
+    this.cursor = this.options.cursor?.() ?? true
+    const inputs = captureInputs(this.options.fps, this.options.dataDir, 0, this.cursor)
     const input = inputs[Math.min(this.inputIndex, inputs.length - 1)]!
     const args = [
       '-hide_banner',
@@ -106,7 +112,9 @@ export class ScreenStream {
       // ffmpeg sees EOF and exits when the feeder dies, which drives the restart below.
       feeder.once('exit', () => this.children.delete(feeder))
     }
-    this.options.log(`screen stream: ffmpeg started (${input.name}, ${this.options.fps} fps)`)
+    this.options.log(
+      `screen stream: ffmpeg started (${input.name}, ${this.options.fps} fps${this.cursor ? '' : ', no pointer'})`
+    )
     child.once('error', (error) => {
       this.lastError = `ffmpeg could not start: ${error.message}`
       this.options.log(`screen stream: ${this.lastError}`)
@@ -116,12 +124,24 @@ export class ScreenStream {
       producer?.kill()
       if (this.process === child) this.process = undefined
       if (!this.running) return
+      if (this.swapping === child) {
+        this.swapping = undefined
+        return this.spawn()
+      }
       const detail = stderr.trim().split('\n').slice(-3).join(' | ')
       this.lastError = `ffmpeg (${input.name}) exited with ${code}: ${detail}`
       this.options.log(`screen stream: ${this.lastError}`)
       if (Date.now() - startedAt < EARLY_EXIT_MS && this.inputIndex < inputs.length - 1) this.inputIndex++
       this.restart = setTimeout(() => this.spawn(), RESTART_DELAY_MS)
     })
+  }
+
+  // Restarts the capture when the pointer setting changed; the next keyframe carries the new frames.
+  refresh(): void {
+    const child = this.process
+    if (!child || this.swapping || (this.options.cursor?.() ?? true) === this.cursor) return
+    this.swapping = child
+    terminate(child)
   }
 
   private get bytesPerMs(): number {
@@ -160,14 +180,18 @@ export class ScreenStream {
     this.queue.length = 0
     this.queuedBytes = 0
     clearTimeout(this.restart)
+    this.swapping = undefined
     const child = this.process
     this.process = undefined
-    child?.kill()
-    // ffmpeg can ignore SIGTERM while its capture device blocks; never leave one behind.
-    if (child)
-      setTimeout(() => child.exitCode === null && child.signalCode === null && child.kill('SIGKILL'), 2000).unref()
+    if (child) terminate(child)
     this.socket?.close()
     this.socket = undefined
     this.options.log('screen stream: stopped (no viewers)')
   }
+}
+
+// ffmpeg can ignore SIGTERM while its capture device blocks; never leave one behind.
+function terminate(child: ChildProcess): void {
+  child.kill()
+  setTimeout(() => child.exitCode === null && child.signalCode === null && child.kill('SIGKILL'), 2000).unref()
 }

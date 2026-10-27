@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RTCPeerConnection } from 'werift'
-import { iceReport, onlyCandidatesFor, withoutReflexive } from './rtc.js'
+import { continuous, iceReport, onlyCandidatesFor, withoutReflexive } from './rtc.js'
 
 describe('onlyCandidatesFor', () => {
   it('keeps only the advertised host candidate', () => {
@@ -68,5 +68,29 @@ describe('withoutReflexive', () => {
       'a=candidate:1 1 udp 2130706431 10.0.0.5 40000 typ host',
       ''
     ])
+  })
+})
+
+describe('continuous', () => {
+  const rtp = (ssrc: number, seq: number): Buffer => {
+    const packet = Buffer.alloc(13)
+    packet.writeUInt8(0x80, 0)
+    packet.writeUInt8(96, 1)
+    packet.writeUInt16BE(seq, 2)
+    packet.writeUInt32BE(seq * 3000, 4)
+    packet.writeUInt32BE(ssrc, 8)
+    return packet
+  }
+
+  it('re-anchors the track only when a restarted capture switches SSRC', () => {
+    const changes: number[] = []
+    const written: Buffer[] = []
+    const write = continuous({
+      writeRtp: (packet) => void written.push(packet as Buffer),
+      notifySourceChanged: (header) => void changes.push(header.sequenceNumber)
+    })
+    for (const packet of [rtp(1, 10), rtp(1, 11), rtp(2, 500), rtp(2, 501)]) write(packet)
+    expect(changes).toEqual([500])
+    expect(written).toHaveLength(4)
   })
 })
