@@ -37,6 +37,7 @@ import {
   AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
   APPROVAL_DM_ROUTE_V1_FEATURE,
+  WEBCHAT_MCP_GRANT_RENEW_FEATURE,
   ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
   COMPUTER_APPROVERS_V1_FEATURE,
@@ -160,6 +161,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       'agent-directory-org-scope-v1',
       // webchat-generated-images.md §5: this CP signs `image/original/put|get` and proxies `image/original/resolve`.
       WEBCHAT_IMAGES_FEATURE,
+      // webchat-preset-agentconnect-mcp.md §5.3: this CP slides an active remote MCP grant's expiry in place.
+      ...(deps.webchatRemoteMcp ? [WEBCHAT_MCP_GRANT_RENEW_FEATURE] : []),
       SESSION_LIVE_TAIL_FEATURE,
       SESSION_METADATA_ACK_FEATURE,
       SESSION_PURGE_FEATURE,

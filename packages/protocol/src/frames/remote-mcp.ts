@@ -48,6 +48,15 @@ export const WebchatMcpGrantActivate = WebchatMcpGrantAccept.extend({
 }).strict()
 export type WebchatMcpGrantActivate = z.infer<typeof WebchatMcpGrantActivate>
 
+/** Extends the active grant's expiry in place, so a runtime that cannot reload its descriptor keeps a valid credential. */
+export const WebchatMcpGrantRenew = WebchatMcpGrantAccept
+export type WebchatMcpGrantRenew = z.infer<typeof WebchatMcpGrantRenew>
+
+export const WebchatMcpGrantRenewed = WebchatMcpGrantAccept.extend({
+  expiresAt: z.string().datetime()
+}).strict()
+export type WebchatMcpGrantRenewed = z.infer<typeof WebchatMcpGrantRenewed>
+
 export const WebchatMcpGrantRevoke = z
   .object({
     authorityId: z.string().uuid(),

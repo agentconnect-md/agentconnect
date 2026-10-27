@@ -1143,6 +1143,8 @@ describe('milestone A4 gate — the CP is off the webchat hot path', () => {
       'webchat/mcp-grant/issued',
       'webchat/mcp-grant/accept',
       'webchat/mcp-grant/activate',
+      'webchat/mcp-grant/renew',
+      'webchat/mcp-grant/renewed',
       'webchat/mcp-grant/revoke',
       'webchat/mcp-grant/revoked'
     ] as const
