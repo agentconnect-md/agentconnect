@@ -23,7 +23,7 @@ export const VIEWER_PAGE = `<!doctype html>
   #screen.ctl { outline: 2px solid #4ade80; }
   video, img { max-width: 100vw; max-height: calc(100vh - 48px); display: block; }
   #surface { position: absolute; inset: 0; outline: none; }
-  #screen.ctl #surface { cursor: crosshair; }
+  #screen.ctl #surface { cursor: default; }
   #login { display: none; gap: 8px; }
   #error { color: #f87171; }
 </style>

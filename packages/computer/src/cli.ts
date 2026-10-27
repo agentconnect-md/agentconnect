@@ -572,7 +572,7 @@ function buildViewer(
   consoleViewer?: (authorization: string | undefined) => ViewerPrincipal | undefined,
   advertiseAddress?: string,
   onFfmpegInstalled?: () => void
-): Viewer {
+): Viewer & { statusChanged(): void } {
   const ffmpeg = (): string => resolveFfmpegPath(dir, config.ffmpegPath)
   let ffmpegState: 'ok' | 'missing' | 'downloading' = 'missing'
   if (config.webrtc) {
@@ -597,6 +597,8 @@ function buildViewer(
     fps: config.streamFps,
     maxWidth: config.streamMaxWidth,
     bitrateKbps: config.streamBitrateKbps,
+    // A person driving sees their browser's pointer at once, so the delayed one in the frames would be a second cursor.
+    cursor: () => computer.liveStatus() !== 'human_in_control',
     log
   })
   const rtc = config.webrtc
@@ -626,7 +628,7 @@ function buildViewer(
     streamError: () => stream.lastError,
     ...(refusal ? { refusal } : {})
   })
-  return viewer
+  return { ...viewer, statusChanged: () => stream.refresh() }
 }
 
 async function loadDriverTools(driver: CuaDriver, config: DaemonConfig): Promise<DriverTool[]> {
@@ -700,7 +702,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
   }
   // Filled once built; the authority and status callbacks below fire only after that.
   const live: {
-    viewer?: Viewer
+    viewer?: ReturnType<typeof buildViewer>
     channel?: ReturnType<typeof startCpChannel>
     local?: LocalControls
     accessibility?: AccessibilityWatch
@@ -770,6 +772,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
       setTitle(status)
       live.channel?.client.beat()
       live.local?.update()
+      live.viewer?.statusChanged()
       // An agent that just took control may be the one a waiting prompt is answered for.
       void live.computer?.adminPromptChanged()
     },

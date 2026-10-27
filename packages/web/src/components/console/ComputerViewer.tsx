@@ -221,7 +221,7 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
             tabIndex={0}
             aria-label={t('surface')}
             data-viewer-surface
-            className={inControl ? 'absolute inset-0 cursor-crosshair outline-none' : 'absolute inset-0 outline-none'}
+            className={inControl ? 'absolute inset-0 cursor-default outline-none' : 'absolute inset-0 outline-none'}
             {...handlers}
           />
         </div>

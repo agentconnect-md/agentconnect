@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { MediaStreamTrack, RTCPeerConnection, RTCRtpCodecParameters, type PeerConfig } from 'werift'
+import { MediaStreamTrack, RTCPeerConnection, RTCRtpCodecParameters, RtpPacket, type PeerConfig } from 'werift'
 import {
   ComputerViewerRenewal,
   type ComputerViewerCandidate,
@@ -189,7 +189,7 @@ export class RtcSessions {
         session.connected = true
         session.lastSeen = Date.now()
         this.options.log(`viewer ${client()}: WebRTC connected (${transport}${selectedPairType(pc)})`)
-        session.unsubscribe ??= this.options.stream.subscribe((packet) => track.writeRtp(packet))
+        session.unsubscribe ??= this.options.stream.subscribe(continuous(track))
       }
       if (state === 'failed' || state === 'closed' || state === 'disconnected') this.close(session.id)
     })
@@ -331,6 +331,20 @@ const PAIR_STATES = ['frozen', 'waiting', 'in-progress', 'succeeded', 'failed']
 const endpoint = (c: { type: string; host: string; port: number }) => `${c.type} ${c.host}:${c.port}`
 
 /** Local and remote candidates plus each pair's state and check counts (sent/answered/received), for a failed attempt's log line. */
+// A restarted ffmpeg (a crash, or the pointer setting swapped) starts a new SSRC at a random sequence and timestamp;
+// werift then re-anchors both so the browser sees one unbroken stream instead of a jump it may stall on.
+export function continuous(
+  track: Pick<MediaStreamTrack, 'writeRtp' | 'notifySourceChanged'>
+): (packet: Buffer) => void {
+  let source: number | undefined
+  return (packet) => {
+    const ssrc = packet.readUInt32BE(8)
+    if (source !== undefined && ssrc !== source) track.notifySourceChanged(RtpPacket.deSerialize(packet).header)
+    source = ssrc
+    track.writeRtp(packet)
+  }
+}
+
 export function iceReport(pc: RTCPeerConnection, trickled: number): string {
   const connection = pc.iceTransports[0]?.connection
   if (!connection) return 'no ICE transport'
