@@ -88,6 +88,8 @@ export interface ComputerDeps {
   launchApp?: (app: string) => Promise<string>
   // Windows under the service: UAC prompts on the secure desktop, and who answers them (computer-use.md §4.2.1).
   adminPrompts?: { source: AdminPromptSource; mode: () => ComputerAdminPromptMode | undefined }
+  // The owner stopped agents or the authority went away: running commands of the command-line tier are killed (§5.7).
+  onHalt?: (reason: string) => void
 }
 
 export interface ComputerProfile {
@@ -142,6 +144,7 @@ export class Computer {
   private profile: ComputerProfile | undefined
   private readonly launchApp: ((app: string) => Promise<string>) | undefined
   private readonly adminPrompts: ComputerDeps['adminPrompts']
+  private readonly onHalt: (reason: string) => void
   // The prompt already answered by the policy, so a repeated change does not answer it twice.
   private autoAnswered: string | undefined
   // The driver's screen size at startup, reported until the first capture measures it.
@@ -174,6 +177,7 @@ export class Computer {
     this.profile = deps.profile
     this.launchApp = deps.launchApp
     this.adminPrompts = deps.adminPrompts
+    this.onHalt = deps.onHalt ?? (() => undefined)
   }
 
   setScreenSize(size: ScreenSize | undefined): void {
@@ -194,6 +198,7 @@ export class Computer {
     if (this.paused?.by) this.paused = undefined
     this.stopPolling()
     this.notify()
+    this.onHalt(reason)
   }
 
   // The Control Plane granted, moved or ended the control lease; a local lease it no longer backs is dropped.
@@ -256,11 +261,21 @@ export class Computer {
   // ---- local owner controls (tray / CLI / console in the full design) ----
 
   pause(reason: string): void {
-    this.paused = { at: this.now(), reason }
+    this.pauseInput(reason)
+    this.onHalt(reason)
+  }
+
+  private pauseInput(reason: string, by?: string): void {
+    this.paused = { at: this.now(), reason, ...(by ? { by } : {}) }
     if (this.lease) this.log(`lease of ${this.lease.holder} revoked: ${reason}`)
     this.lease = undefined
     this.stopPolling()
     this.notify()
+  }
+
+  // Why the owner stopped every agent, the command line too; a viewer takeover blocks only GUI input (§5.7).
+  haltReason(): string | undefined {
+    return this.paused && !this.paused.by ? this.paused.reason : undefined
   }
 
   resume(): void {
@@ -275,9 +290,7 @@ export class Computer {
     if (this.paused && this.paused.by !== client) {
       throw new ComputerError('human_in_control', this.paused.reason, { by: this.paused.by ?? 'owner' })
     }
-    this.pause(`remote takeover by ${client}`)
-    this.paused!.by = client
-    this.notify()
+    this.pauseInput(`remote takeover by ${client}`, client)
   }
 
   handBack(client: string): boolean {

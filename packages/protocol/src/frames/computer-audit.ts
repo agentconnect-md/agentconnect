@@ -23,9 +23,11 @@ export const COMPUTER_AUDIT_BATCH_BYTES = REPLY_BUDGET
 export const COMPUTER_AUDIT_ARGS_MAX_CHARS = 2048
 
 const AUDIT_STRING_MAX = 256
+// A command is the audit value of computer_exec (§5.7), so it keeps more than other strings, within the args cap.
+const AUDIT_COMMAND_MAX = 1536
 const AUDIT_DEPTH_MAX = 6
 // Argument names whose string values are typed or written text: only their length is ever kept.
-const TEXT_KEYS = new Set(['text', 'value'])
+const TEXT_KEYS = new Set(['text', 'value', 'content'])
 // Control characters other than tab and line breaks; PostgreSQL JSONB refuses NUL outright.
 const CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g
@@ -59,7 +61,10 @@ export function computerAuditArgs(args: Record<string, unknown>): {
       textLength = (textLength ?? 0) + [...value].length
       continue
     }
-    out[computerAuditText(key.slice(0, 64))] = auditValue(value, 1)
+    out[computerAuditText(key.slice(0, 64))] =
+      key === 'command' && typeof value === 'string'
+        ? computerAuditText(value.slice(0, AUDIT_COMMAND_MAX))
+        : auditValue(value, 1)
   }
   const bounded = JSON.stringify(out).length <= COMPUTER_AUDIT_ARGS_MAX_CHARS ? out : { truncated: true }
   return { args: bounded, ...(textLength !== undefined ? { textLength } : {}) }

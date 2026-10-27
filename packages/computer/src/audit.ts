@@ -39,11 +39,14 @@ export function auditSinks(...sinks: AuditSink[]): AuditSink {
   }
 }
 
-// Typed text and clipboard values are recorded by length only.
+// Typed text, clipboard values and written file content are recorded by length only.
 export function redactArgs(args: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(args)) {
-    out[key] = (key === 'text' || key === 'value') && typeof value === 'string' ? `<${value.length} chars>` : value
+    out[key] =
+      (key === 'text' || key === 'value' || key === 'content') && typeof value === 'string'
+        ? `<${value.length} chars>`
+        : value
   }
   return out
 }
