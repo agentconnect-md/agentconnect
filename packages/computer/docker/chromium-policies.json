@@ -1,0 +1,12 @@
+{
+  "BackgroundModeEnabled": false,
+  "BrowserSignin": 0,
+  "CommandLineFlagSecurityWarningsEnabled": false,
+  "DefaultBrowserSettingEnabled": false,
+  "MetricsReportingEnabled": false,
+  "PrivacySandboxPromptEnabled": false,
+  "PromotionalTabsEnabled": false,
+  "RestoreOnStartup": 1,
+  "SyncDisabled": true,
+  "TranslateEnabled": false
+}

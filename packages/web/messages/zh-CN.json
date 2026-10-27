@@ -6532,7 +6532,7 @@
       },
       "kindHint": {
         "desktop": "需要 Node.js。请以你自己的身份运行，不要用 root 或管理员；在 macOS 上，按提示允许辅助功能和屏幕录制。",
-        "docker": "在装有 Docker 的服务器上，以容器运行带 Firefox 的 Linux 桌面，与服务器隔离。如需使用 docker compose，或让查看器直连传输画面，请参阅自托管桌面容器指南。"
+        "docker": "在装有 Docker 的服务器上，以容器运行带 Chromium 和 LibreOffice 的 Linux 桌面，与服务器隔离。如需使用 docker compose，或让查看器直连传输画面，请参阅自托管桌面容器指南。"
       },
       "name": "名称",
       "optional": "可选",
@@ -6556,7 +6556,7 @@
       "open": "打开电脑",
       "saving": "正在保存…",
       "poolTitle": "添加托管电脑",
-      "poolDescription": "从本部署的资源池创建一台带 Firefox 的 Linux 桌面，运行在独立的容器中，有自己的磁盘。获得访问权的智能体轮流使用它。空闲时休眠并保留文件和登录状态，直到你删除它。你将是它的所有者。",
+      "poolDescription": "从本部署的资源池创建一台带 Chromium 和 LibreOffice 的 Linux 桌面，运行在独立的容器中，有自己的磁盘。获得访问权的智能体轮流使用它。空闲时休眠并保留文件和登录状态，直到你删除它。你将是它的所有者。",
       "poolName": "名称",
       "poolNamePlaceholder": "共享浏览器",
       "poolAccessHint": "能看到它的成员可以在 Agent 的“工具”页把它授予自己的 Agent。智能体轮流使用：同一时间只有一个控制桌面，其他的排队等待。",

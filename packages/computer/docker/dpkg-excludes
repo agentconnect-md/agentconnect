@@ -1,9 +1,14 @@
-# Mesa's software GL stack: Xvfb runs without GLX and Firefox renders in software, so no OpenGL is needed.
-path-exclude=/usr/lib/*/libLLVM*
+# Mesa's software GL drivers: Xvfb runs without GLX and Chromium and LibreOffice render in software; rustc keeps libLLVM.
 path-exclude=/usr/lib/*/libgallium*
-path-exclude=/usr/lib/*/libz3*
 path-exclude=/usr/lib/*/dri/*
+path-exclude=/usr/lib/chromium/libVkLayer_khronos_validation.so
 # Sans CJK covers Chinese, Japanese and Korean pages; the serif faces double the font size.
 path-exclude=/usr/share/fonts/opentype/noto/NotoSerifCJK*
 path-exclude=/usr/share/man/*
 path-exclude=/usr/share/info/*
+# Go's own test suite and API lists, and gcc's sanitizer runtimes: nothing a desktop user builds needs them.
+path-exclude=/usr/share/go-*/test/*
+path-exclude=/usr/share/go-*/api/*
+path-exclude=/usr/share/go-*/src/*/testdata/*
+path-exclude=/usr/lib/*/lib*san.so*
+path-exclude=/usr/lib/gcc/*/lib*san*

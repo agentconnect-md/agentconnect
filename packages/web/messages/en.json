@@ -6532,7 +6532,7 @@
       },
       "kindHint": {
         "desktop": "Needs Node.js. Run it as yourself, not as root or administrator; on macOS, allow Accessibility and Screen Recording when asked.",
-        "docker": "On a server with Docker: a Linux desktop with Firefox in a container, isolated from the server. For docker compose, or to send the viewer's video directly, see the self-hosted desktop container guide."
+        "docker": "On a server with Docker: a Linux desktop with Chromium and LibreOffice in a container, isolated from the server. For docker compose, or to send the viewer's video directly, see the self-hosted desktop container guide."
       },
       "name": "Name",
       "optional": "optional",
@@ -6556,7 +6556,7 @@
       "open": "Open computer",
       "saving": "Saving…",
       "poolTitle": "Add managed computer",
-      "poolDescription": "A Linux desktop with Firefox from this deployment's pool, isolated in its own container with its own disk. Agents you give access share it one at a time. It sleeps when idle, keeping its files and sign-ins, and stays until you delete it. You will be its owner.",
+      "poolDescription": "A Linux desktop with Chromium and LibreOffice from this deployment's pool, isolated in its own container with its own disk. Agents you give access share it one at a time. It sleeps when idle, keeping its files and sign-ins, and stays until you delete it. You will be its owner.",
       "poolName": "Name",
       "poolNamePlaceholder": "Shared browser",
       "poolAccessHint": "Members who can see it may give it to their agents on the agent’s Tools tab. Agents take turns: one has control at a time, the others wait in line.",

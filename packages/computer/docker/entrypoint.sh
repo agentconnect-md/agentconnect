@@ -24,8 +24,10 @@ mkdir -p -m 700 "$data"
 
 # The container filesystem survives `docker restart`, and so would a stale X lock.
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
+# Chromium's profile lock names the old hostname, which a woken pod no longer has, so it would refuse the profile.
+rm -f "$HOME"/.config/chromium/Singleton{Lock,Cookie,Socket}
 # dbus-launch connects and leaves first; a reset on that last disconnect would drop the session's connection mid-handshake.
-Xvfb :1 -screen 0 "${RESOLUTION:-1600x900x24}" -nolisten tcp -noreset -dpi 96 > /tmp/xvfb.log 2>&1 &
+Xvfb :1 -screen 0 "${RESOLUTION:-1280x800x24}" -nolisten tcp -noreset -dpi 96 > /tmp/xvfb.log 2>&1 &
 xvfb=$!
 for _ in $(seq 1 50); do
   [ -S /tmp/.X11-unix/X1 ] && break
@@ -112,11 +114,11 @@ while kill -0 "$daemon" 2> /dev/null; do
   wait "$daemon" || status=$?
 done
 
-# Stop restarting the browser, then close every app gracefully so the Firefox profile is not left locked.
+# Stop restarting the browser, then close Chromium's main process gracefully so it saves the session and its tabs.
 [ -n "$browser" ] && kill -TERM "$browser" 2> /dev/null || true
-pkill -TERM -u "$(id -u)" -x firefox-esr 2> /dev/null || true
+pkill -TERM -o -u "$(id -u)" -x chromium 2> /dev/null || true
 for _ in $(seq 1 50); do
-  pgrep -u "$(id -u)" -x firefox-esr > /dev/null || break
+  pgrep -u "$(id -u)" -x chromium > /dev/null || break
   sleep 0.1
 done
 kill -TERM "$session" 2> /dev/null || true

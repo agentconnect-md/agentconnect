@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Linux desktop Computer: Xvfb + Xfce + Firefox ESR with agentconnect-computer (computer-use.md §3.8); context is the repo root.
+# Linux desktop Computer: Xvfb + Xfce + Chromium, LibreOffice and dev tools with agentconnect-computer (computer-use.md §3.8); context is the repo root.
 #   docker build -f packages/computer/docker/Dockerfile -t agentconnect-computer .
 
 # The bundle is plain JavaScript, so it is built once on the build platform for every target arch.
@@ -32,30 +32,33 @@ ARG TARGETARCH
 ARG VERSION=dev
 
 LABEL org.opencontainers.image.title="AgentConnect computer" \
-  org.opencontainers.image.description="A Linux desktop (Xvfb, Xfce, Firefox ESR) that registers as an AgentConnect Computer" \
+  org.opencontainers.image.description="A Linux desktop (Xvfb, Xfce, Chromium, LibreOffice) that registers as an AgentConnect Computer" \
   org.opencontainers.image.source="https://github.com/agentconnect-md/agentconnect" \
   org.opencontainers.image.version="${VERSION}"
 # No licenses label: the daemon is Apache-2.0, but the Debian packages keep their own (/usr/share/doc/*/copyright).
 
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
-# Nothing here renders with OpenGL (Firefox draws in software), so Mesa's LLVM backend and the CJK serif faces stay out.
+# Nothing here renders with OpenGL (Chromium and LibreOffice draw in software), so Mesa's LLVM backend and the CJK serif faces stay out.
 COPY packages/computer/docker/dpkg-excludes /etc/dpkg/dpkg.cfg.d/agentconnect-computer
 RUN apt-get update && apt-get install -y --no-install-recommends \
   xvfb x11-xserver-utils x11-utils xauth dbus-x11 at-spi2-core wmctrl \
   xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfconf thunar xfce4-terminal \
-  firefox-esr fonts-noto-cjk fonts-dejavu-core \
+  mousepad ristretto xarchiver librsvg2-common \
+  chromium libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk3 \
+  fonts-noto-cjk fonts-dejavu-core fonts-liberation \
+  python3 python3-pip python3-venv golang-go rustc cargo build-essential pkg-config \
+  git gh openssh-client curl jq poppler-utils zip unzip \
   ca-certificates tini wget xz-utils procps \
   && rm -rf /var/lib/apt/lists/* /var/cache/debconf/*-old /var/log/apt /var/log/dpkg.log
 
-# Pinned, sha256-verified official Node.js for the target arch, without npm or corepack.
+# Pinned, sha256-verified official Node.js for the target arch, with npm and corepack's pnpm and yarn shims.
 RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     case "$arch" in arm64) node=arm64; sum=$NODE_SHA256_ARM64;; amd64) node=x64; sum=$NODE_SHA256_X64;; *) echo "unsupported $arch"; exit 1;; esac; \
     wget -q -O /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node}.tar.xz"; \
     echo "$sum  /tmp/node.tar.xz" | sha256sum -c -; \
     tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
-      --exclude='*/include' --exclude='*/share' --exclude='*/lib/node_modules' \
-      --exclude='*/bin/npm' --exclude='*/bin/npx' --exclude='*/bin/corepack' --exclude='*/CHANGELOG.md' --exclude='*/README.md'; \
-    rm /tmp/node.tar.xz; node --version
+      --exclude='*/include' --exclude='*/share' --exclude='*/CHANGELOG.md' --exclude='*/README.md'; \
+    rm /tmp/node.tar.xz; corepack enable pnpm yarn; node --version; npm --version
 
 COPY --from=bundle /app/packages/computer/bundle/agentconnect-computer.mjs /app/packages/computer/bundle/agentconnect-computer.mjs.LEGAL.txt /opt/agentconnect/
 # The pinned Cua Driver lives in the image; GPL ffmpeg is not bundled, the daemon downloads it on first start (§11).
@@ -65,19 +68,24 @@ RUN AGENTCONNECT_COMPUTER_HOME=/opt/agentconnect/tools node /opt/agentconnect/ag
   && printf '#!/bin/sh\nexec node /opt/agentconnect/agentconnect-computer.mjs "$@"\n' > /usr/local/bin/agentconnect-computer \
   && chmod 755 /usr/local/bin/agentconnect-computer
 
-COPY packages/computer/docker/firefox.prefs /etc/firefox-esr/agentconnect.js
-# A managed pod's browser is locked to the daemon's egress forwarder when AGENTCONNECT_EGRESS_PORT is set (§15.4).
-COPY packages/computer/docker/firefox-autoconfig.prefs /usr/lib/firefox-esr/defaults/pref/agentconnect-autoconfig.js
-COPY packages/computer/docker/agentconnect.cfg /usr/lib/firefox-esr/agentconnect.cfg
+# Chromium's launcher sources /etc/chromium.d, which reads the egress forwarder's port in a managed pod (§15.4).
+COPY packages/computer/docker/chromium-flags /etc/chromium.d/agentconnect
+COPY packages/computer/docker/chromium-policies.json /etc/chromium/policies/managed/agentconnect.json
+# A bottom launcher dock on a dark backdrop with no desktop icons, for a profile with no Xfce settings of its own yet.
+COPY packages/computer/docker/xfce4-panel.xml /etc/xdg/xfce4/panel/default.xml
+COPY packages/computer/docker/xfce4-desktop.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
+COPY packages/computer/docker/backdrop.svg /usr/share/backgrounds/agentconnect/backdrop.svg
 RUN useradd --create-home --uid 1000 --shell /bin/bash computer && mkdir -p -m 1777 /tmp/.X11-unix
 COPY --chmod=755 packages/computer/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 USER computer
 WORKDIR /home/computer
-# The isolation is declared rather than sniffed: /.dockerenv is absent under some runtimes (Podman, Kubernetes).
-ENV RESOLUTION=1600x900x24 LISTEN_HOST=0.0.0.0 PORT=7681 BROWSER=firefox-esr \
-  AGENTCONNECT_COMPUTER_HOME=/home/computer/.agentconnect/computer AGENTCONNECT_COMPUTER_ISOLATION=container
-# Home holds the daemon data dir (config, Computer key, audit) and the browser profile.
+# 1280x800 is the screenshot size (§5.3); isolation is declared, since /.dockerenv is absent under Podman and Kubernetes.
+# npm -g, go install and cargo install land in the home volume; Debian's Go would otherwise refuse a newer go.mod.
+ENV RESOLUTION=1280x800x24 LISTEN_HOST=0.0.0.0 PORT=7681 BROWSER=chromium \
+  AGENTCONNECT_COMPUTER_HOME=/home/computer/.agentconnect/computer AGENTCONNECT_COMPUTER_ISOLATION=container \
+  NPM_CONFIG_PREFIX=/home/computer/.local GOTOOLCHAIN=auto PATH=/home/computer/.local/bin:/home/computer/go/bin:/home/computer/.cargo/bin:$PATH
+# Home holds the daemon data dir (config, Computer key, audit), the browser profile, and user-installed tools.
 VOLUME /home/computer
 EXPOSE 7681
 # Doctor inside the running daemon: display, driver, screenshot, capture, and the Computer key; unreachable is unhealthy.
