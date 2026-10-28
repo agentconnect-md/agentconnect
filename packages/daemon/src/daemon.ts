@@ -133,7 +133,9 @@ import {
   CAPABILITY_REQUESTS_FEATURE,
   CAPABILITY_REQUESTS_V2_FEATURE,
   CAPABILITY_REQUESTS_V3_FEATURE,
+  CAPABILITY_REQUESTS_V4_FEATURE,
   CAPABILITY_V1_KINDS,
+  capabilityAskNeedsV4,
   CAPABILITY_ASKERS_MAX,
   FOLLOW_UP_WATCH_FEATURE,
   parseFollowUpWatchUrl,
@@ -8630,6 +8632,8 @@ export class Daemon {
       CAPABILITY_REQUESTS_V2_FEATURE,
       // …and serves live secrets to `agentconnect-secrets` (capability-requests.md §4.9.2). Static.
       CAPABILITY_REQUESTS_V3_FEATURE,
+      // …and offers every agent-form field and the `cron` kind (capability-requests.md §4.12). Static.
+      CAPABILITY_REQUESTS_V4_FEATURE,
       // This daemon decodes the host-neutral `mode: 'git'` workspace arm; the CP
       // dual-encodes the legacy host-shaped arms to peers without this bit.
       WORKSPACE_GIT_V1_FEATURE,
@@ -10789,8 +10793,9 @@ export class Daemon {
       dispatchWake: (req, text, askers) => this.dispatchCapabilityWake(req, text, askers),
       serves: (ask) => {
         const served = (feature: string) => this.cpClient?.supportsServerFeature?.(feature) === true
-        // A live secret needs a CP that ships it on the spec; every other Phase 2 kind needs v2.
+        // A live secret needs a CP that ships it on the spec, a cron or widened setting v4, every other Phase 2 kind v2.
         if (ask.kind === 'secret' && ask.want.use.route === 'live') return served(CAPABILITY_REQUESTS_V3_FEATURE)
+        if (capabilityAskNeedsV4(ask)) return served(CAPABILITY_REQUESTS_V4_FEATURE)
         return CAPABILITY_V1_KINDS.includes(ask.kind) || served(CAPABILITY_REQUESTS_V2_FEATURE)
       },
       inline: {

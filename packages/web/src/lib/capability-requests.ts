@@ -1,6 +1,7 @@
 // Pure reads of a capability request for its page (capability-requests.md §4.5): what changes, and who asked.
 import type {
   CapabilityConnectionWant,
+  CapabilityCronWant,
   CapabilityRepositoryWant,
   CapabilityRequestAskerDto,
   CapabilityRequestDto,
@@ -12,11 +13,18 @@ import type {
 export const CAPABILITY_NOTE_MAX = 500
 
 export const CAPABILITY_SETTING_FIELDS = [
+  'runtime',
   'model',
   'reasoningEffort',
   'fastMode',
   'outputMode',
-  'permissionMode'
+  'permissionMode',
+  'execution',
+  'chatActions',
+  'introduceOnJoin',
+  'showFooter',
+  'showStatusBar',
+  'displayName'
 ] as const satisfies readonly (keyof CapabilitySettingsWant)[]
 
 export type CapabilitySettingField = (typeof CAPABILITY_SETTING_FIELDS)[number]
@@ -42,6 +50,7 @@ export type CapabilityDiffLine =
       server?: string
       present: boolean
     }
+  | { kind: 'cron'; cron: CapabilityCronWant; exists: boolean }
 
 /** A setting's value as the request page shows it; booleans and empties stay typed for the caller's wording. */
 function settingValue(value: unknown): string | boolean | null {
@@ -93,6 +102,7 @@ export function capabilityDiff(request: Pick<CapabilityRequestDto, 'kind' | 'wan
       }
     ]
   }
+  if (kind === 'cron') return [{ kind: 'cron', cron: want as CapabilityCronWant, exists: current.exists === true }]
   return [{ kind: 'skill', skill: (want as { skill: string }).skill, already: current.installed === true }]
 }
 

@@ -6972,14 +6972,24 @@
       "secretHeader": "<name>{server}</name> 的请求头 <code>{header}</code>",
       "secretLive": "设置实时密钥 <code>{secret}</code>",
       "secretPurpose": "用途：{description}",
-      "secretPresent": "已设置"
+      "secretPresent": "已设置",
+      "scheduleCron": "定时 <code>{schedule}</code>{zone}：<name>{trigger}</name>",
+      "changeCron": "把一个定时任务改为 <code>{schedule}</code>{zone}：<name>{trigger}</name>",
+      "cronExists": "已设置"
     },
     "fields": {
       "model": "模型",
       "reasoningEffort": "推理强度",
       "fastMode": "快速模式",
       "outputMode": "输出模式",
-      "permissionMode": "权限模式"
+      "permissionMode": "权限模式",
+      "runtime": "Runtime",
+      "execution": "执行方式",
+      "chatActions": "聊天中可执行的操作",
+      "introduceOnJoin": "加入频道时自我介绍",
+      "showFooter": "回复页脚",
+      "showStatusBar": "状态栏",
+      "displayName": "显示名称"
     },
     "complete": {
       "heading": "进行变更",
@@ -7019,7 +7029,10 @@
       "saveLiveSecret": "保存 {name}",
       "headerOnOauthServer": "{server} 通过 OAuth 登录，没有可设置的请求头。请拒绝此请求，或改为连接该服务器。",
       "headerHint": "该值保存在 {server} 上，并在每次调用时附加。智能体永远看不到它。",
-      "setHeader": "设置 {header}"
+      "setHeader": "设置 {header}",
+      "cronHint": "定时任务对话框会预先填好这个 Agent、时间和提示词。选好发到哪里，按需调整后保存。",
+      "reviewCron": "检查并保存定时任务",
+      "cronMissing": "这个定时任务已不存在。"
     },
     "authority": {
       "heading": "你无法进行此变更",

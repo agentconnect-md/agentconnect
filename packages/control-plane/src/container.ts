@@ -1100,7 +1100,8 @@ export function buildContainer(
       liveSecretNames: async (orgId, agentId) =>
         ((await repos.agentSecret.liveInfo(orgId, [agentId])).get(agentId) ?? []).map((secret) => secret.name),
       spawnSecretNames: async (orgId, agentId) => (await repos.agentSecret.keys(orgId, [agentId])).get(agentId) ?? [],
-      gitlabHost: gitlabHostOf(gitlabAppCfg?.baseUrl)
+      gitlabHost: gitlabHostOf(gitlabAppCfg?.baseUrl),
+      crons: repos.cron
     }),
     ...(webAppUrl ? { webAppUrl } : {}),
     placement: placementResolver,

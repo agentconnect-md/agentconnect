@@ -6972,14 +6972,24 @@
       "secretHeader": "Header <code>{header}</code> on <name>{server}</name>",
       "secretLive": "Set live secret <code>{secret}</code>",
       "secretPurpose": "For: {description}",
-      "secretPresent": "Already set"
+      "secretPresent": "Already set",
+      "scheduleCron": "Schedule <code>{schedule}</code>{zone}: <name>{trigger}</name>",
+      "changeCron": "Change a scheduled task to <code>{schedule}</code>{zone}: <name>{trigger}</name>",
+      "cronExists": "Scheduled"
     },
     "fields": {
       "model": "Model",
       "reasoningEffort": "Reasoning effort",
       "fastMode": "Fast mode",
       "outputMode": "Output mode",
-      "permissionMode": "Permission mode"
+      "permissionMode": "Permission mode",
+      "runtime": "Runtime",
+      "execution": "Execution",
+      "chatActions": "Chat actions",
+      "introduceOnJoin": "Introduce itself on join",
+      "showFooter": "Reply footer",
+      "showStatusBar": "Status bar",
+      "displayName": "Display name"
     },
     "complete": {
       "heading": "Make the change",
@@ -7019,7 +7029,10 @@
       "saveLiveSecret": "Save {name}",
       "headerOnOauthServer": "{server} signs in with OAuth, so it has no headers to set. Decline the request, or connect the server instead.",
       "headerHint": "The value is stored on {server} and added to each of its calls. The agent never sees it.",
-      "setHeader": "Set {header}"
+      "setHeader": "Set {header}",
+      "cronHint": "The cron dialog opens with this agent, schedule and prompt filled in. Choose where it posts, adjust anything you want, then save.",
+      "reviewCron": "Review and save the scheduled task",
+      "cronMissing": "This scheduled task no longer exists."
     },
     "authority": {
       "heading": "You can't make this change",

@@ -7854,16 +7854,33 @@ export function createDecisionApi(orgId: string): DecisionApi {
 
 // ── capability requests (capability-requests.md §4.5): an agent's ask, completed or declined by a person ──
 
-export type CapabilityRequestKind = 'agent-settings' | 'mcp-server' | 'skill' | 'repository' | 'connection' | 'secret'
+export type CapabilityRequestKind =
+  'agent-settings' | 'mcp-server' | 'skill' | 'repository' | 'connection' | 'secret' | 'cron'
 export type CapabilityRequestStatus = 'open' | 'completed' | 'declined' | 'expired' | 'withdrawn'
 
-/** The `agent-settings` fields an agent may ask for. */
+/** The `agent-settings` fields an agent may ask for: the agent form's plain values (§4.12). */
 export interface CapabilitySettingsWant {
   model?: string
   reasoningEffort?: string
   fastMode?: boolean
   outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
   permissionMode?: string
+  runtime?: string
+  execution?: string
+  chatActions?: 'talk' | 'approve' | 'settings'
+  introduceOnJoin?: boolean
+  showFooter?: boolean
+  showStatusBar?: boolean
+  displayName?: string
+}
+
+/** A scheduled task: a new cron of the agent, or with `cronId` a change to one of its own; `trigger` is its prompt. */
+export interface CapabilityCronWant {
+  cronId?: string
+  name?: string
+  schedule: string
+  timezone?: string
+  trigger: string
 }
 
 /** A repository on a code host and the tier wanted; `host` names a self-managed GitLab. */
@@ -7894,6 +7911,7 @@ export type CapabilityRequestWant =
   | CapabilityRepositoryWant
   | CapabilityConnectionWant
   | CapabilitySecretWant
+  | CapabilityCronWant
 
 export interface CapabilityRequestAskerDto {
   kind: 'console' | 'member'

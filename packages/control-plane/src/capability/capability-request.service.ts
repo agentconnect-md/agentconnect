@@ -92,10 +92,13 @@ export type CapabilityOrgChange =
   | { kind: 'mcp-oauth'; server: string }
   | { kind: 'mcp-headers'; server: string }
   | { kind: 'code-host'; provider: 'github' | 'gitlab' }
+  | { kind: 'cron'; agentId: string }
 
 /** Whether a settled request of this ask must reload the session before its reminder runs (§4.8). */
 export function reloadsSession(ask: CapabilityAsk | null): boolean {
   if (!ask) return false
+  // A new runtime or strategy retires the process; forgetting the session makes the reminder's turn re-attach on the new one.
+  if (ask.kind === 'agent-settings') return ask.want.runtime !== undefined || ask.want.execution !== undefined
   if (ask.kind === 'repository') return true
   if (ask.kind === 'connection') return ask.want.type === 'mcp-oauth'
   if (ask.kind === 'secret') return ask.want.use.route === 'mcp-header'
@@ -103,8 +106,13 @@ export function reloadsSession(ask: CapabilityAsk | null): boolean {
 }
 
 /** Whether an open request is one an org-level change could satisfy. */
-function touchedBy(ask: CapabilityAsk | null, change: CapabilityOrgChange): boolean {
+function touchedBy(
+  row: Pick<CapabilityRequestRecord, 'agentId'>,
+  ask: CapabilityAsk | null,
+  change: CapabilityOrgChange
+): boolean {
   if (!ask) return false
+  if (change.kind === 'cron') return ask.kind === 'cron' && row.agentId === change.agentId
   if (change.kind === 'mcp-oauth')
     return ask.kind === 'connection' && ask.want.type === 'mcp-oauth' && ask.want.server === change.server
   if (change.kind === 'mcp-headers')
@@ -394,15 +402,15 @@ export class CapabilityRequestService {
       .finally(() => this.kick())
   }
 
-  /** A change outside any agent's spec (§4.6): complete the org's open requests it satisfies, and reload the sessions that use a re-keyed MCP server. Call it only once the relay binding was pushed. */
+  /** A change outside any agent's spec (§4.6, §4.12): complete the org's open requests it satisfies, and reload the sessions that use a re-keyed MCP server. Call it only once the relay binding was pushed. */
   async orgChanged(orgId: OrgId, change: CapabilityOrgChange, by: CapabilityDecider | null): Promise<void> {
     const open = await this.deps.requests.list(orgId, { status: 'open' })
     for (const row of open) {
-      if (!touchedBy(askOf(row), change)) continue
+      if (!touchedBy(row, askOf(row), change)) continue
       const agent = await this.deps.agents.getUnscoped(row.agentId)
       if (agent && agent.orgId === orgId) await this.complete(row, agent, by, true, [], true)
     }
-    if (change.kind === 'code-host') return
+    if (change.kind === 'code-host' || change.kind === 'cron') return
     await this.rebound(orgId, change.server)
   }
 

@@ -649,4 +649,46 @@ describe('CapabilityRequestService', () => {
       expect(h.sent).toEqual([expect.objectContaining({ status: 'completed', reload: true })])
     })
   })
+
+  describe('§4.12 kinds', () => {
+    const cronAsk = (sessionId: string): CapabilityRequestReq => ({
+      ...ask(sessionId),
+      ask: { kind: 'cron', want: { schedule: '0 9 * * 1', trigger: 'send the report' } }
+    })
+    const cron = {
+      id: 'c1',
+      name: null,
+      schedule: '0 9 * * 1',
+      timezone: 'UTC',
+      trigger: 'send the report',
+      enabled: true
+    }
+
+    it('completes a cron request when one of the agent’s crons holds, at once and without a reload', async () => {
+      const h = harness()
+      const { requestId, status } = await h.service.request(h.agent(), cronAsk('s1'))
+      expect(status).toBe('pending')
+      await h.service.orgChanged(ORG, { kind: 'cron', agentId: 'another-agent' }, null)
+      expect(h.requests.rows.get(requestId!)!.status).toBe('open')
+      h.setFacts({ crons: [cron] })
+      await h.service.orgChanged(ORG, { kind: 'cron', agentId: AGENT }, null)
+      expect(h.requests.rows.get(requestId!)!).toMatchObject({ status: 'completed', settledRevision: null })
+      await h.pass()
+      expect(h.sent).toEqual([expect.objectContaining({ status: 'completed', reload: false })])
+      expect(h.rebounds).toEqual([])
+    })
+
+    it('reloads the session once a new runtime is applied', async () => {
+      const h = harness()
+      const { requestId } = await h.service.request(h.agent(), {
+        ...ask('s1'),
+        ask: { kind: 'agent-settings', want: { runtime: 'codex-acp' } }
+      })
+      h.setAgent({ runtime: 'codex-acp', configRevision: 2n })
+      await h.service.agentUpserted(h.agent(), [DAEMON])
+      await h.pass()
+      expect(h.requests.rows.get(requestId!)!.status).toBe('completed')
+      expect(h.sent).toEqual([expect.objectContaining({ status: 'completed', reload: true })])
+    })
+  })
 })

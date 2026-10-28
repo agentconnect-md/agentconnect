@@ -3,6 +3,8 @@ import {
   CAPABILITY_REQUESTS_FEATURE,
   CAPABILITY_REQUESTS_V2_FEATURE,
   CAPABILITY_REQUESTS_V3_FEATURE,
+  CAPABILITY_REQUESTS_V4_FEATURE,
+  capabilityAskNeedsV4,
   CAPABILITY_V1_KINDS,
   isFrame,
   type AnyFrame
@@ -45,9 +47,11 @@ export const handleCapabilityRequest: Handler = async (frame, conn, deps) => {
   if (!served) return
   const { agent } = served
   // A daemon that never advertised the Phase 2 kinds cannot have offered them; refuse rather than act on one.
+  // …and one that never advertised §4.12 cannot have offered a cron or a widened setting.
   if (
-    !CAPABILITY_V1_KINDS.includes(frame.payload.ask.kind) &&
-    !served.features.includes(CAPABILITY_REQUESTS_V2_FEATURE)
+    (!CAPABILITY_V1_KINDS.includes(frame.payload.ask.kind) &&
+      !served.features.includes(CAPABILITY_REQUESTS_V2_FEATURE)) ||
+    (capabilityAskNeedsV4(frame.payload.ask) && !served.features.includes(CAPABILITY_REQUESTS_V4_FEATURE))
   ) {
     conn.replyTo(frame, 'capability/request/result', {
       status: 'refused',

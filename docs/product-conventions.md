@@ -1661,10 +1661,13 @@ without reporting, uncertain) is recorded on the follow-up.
 ## Capability requests
 
 When an agent cannot do what it was asked because of how it is set up, it may ask
-for what it lacks with `requestCapability`: a change to its own model, effort, fast mode, output mode
-or permission mode, an organization MCP server, a skill, access to a GitHub or GitLab repository, a
+for what it lacks with `requestCapability`: a change to any field of its own agent form (model, effort,
+fast mode, output mode, permission mode, runtime, execution strategy, chat actions, its display name,
+footer and status bar), a scheduled task (a new cron, or a change to one of its own), an
+organization MCP server, a skill, access to a GitHub or GitLab repository, a
 connection (an MCP server's sign-in, a code host, or a chat integration), or a secret: one an MCP
-server sends as a header, or a live secret the agent loads in its own shell. A request grants nothing. Only a person
+server sends as a header, or a live secret the agent loads in its own shell. It never asks for its
+workspace, its visibility or its sharing. A request grants nothing. Only a person
 completes it, in the console, through the same dialog and under the same permissions as making that
 change without a request. A deployment offers this only once its operator turns capability requests
 on, and a follow-up's check, organization research and a getting-to-know task never get the tool.
@@ -1700,7 +1703,8 @@ elsewhere. If what was saved differs from what was asked, the request still comp
 is told what it got instead. On completion, decline or expiry the card is rewritten in place, and the
 agent continues in every conversation that asked, with the authority of the people who asked there,
 and never with another conversation's. A repository, a sign-in or a header reloads the conversation's
-session first, so the agent sees the new access or tools. That continuation is not shown as anyone's message and passes
+session first, so the agent sees the new access or tools. A new runtime continues the conversation from
+a replay of its history, and the agent is told so. That continuation is not shown as anyone's message and passes
 a mention-only trigger; it waits behind a running turn and while the agent is paused. A request the
 agent withdraws wakes nobody.
 

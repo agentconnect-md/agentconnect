@@ -10,6 +10,7 @@ import type {
   AgentInstallationAuthorizationRepo,
   AgentRecord,
   AgentRepoAuthorizationRepo,
+  CronRepo,
   GithubInstallationRepo,
   GitlabConnectionRepo,
   IntegrationRepo,
@@ -44,6 +45,8 @@ export interface RepoCapabilityFactsDeps {
   spawnSecretNames?: (orgId: OrgId, agentId: AgentRecord['id']) => Promise<readonly string[]>
   /** The deployment's GitLab host (`gitlab.com` unless self-managed). */
   gitlabHost: string
+  /** The agent's own crons, which a `cron` ask is judged against; absent ⇒ none. */
+  crons?: Pick<CronRepo, 'listForAgent'>
 }
 
 function tierOf(access: RepoAccess | undefined): 'none' | 'read' | 'write' {
@@ -119,9 +122,21 @@ export function repoCapabilityFacts(deps: RepoCapabilityFactsDeps): CapabilityFa
     return (await deps.gitlabConnections.listForOrg(orgId)).some((c) => c.state === 'connected')
   }
 
+  const cronsOf = async (agent: AgentRecord) =>
+    ((await deps.crons?.listForAgent(agent.id)) ?? []).map((c) => ({
+      id: c.id.toString(),
+      name: c.name,
+      schedule: c.schedule,
+      timezone: c.timezone,
+      trigger: c.trigger,
+      enabled: c.enabled
+    }))
+
   return {
     async load(agent, ask) {
       switch (ask.kind) {
+        case 'cron':
+          return { crons: await cronsOf(agent) }
         case 'repository':
           return { repository: await repository(agent, ask.want) }
         case 'connection': {
@@ -158,6 +173,11 @@ export function repoCapabilityFacts(deps: RepoCapabilityFactsDeps): CapabilityFa
     },
 
     async unknownTarget(agent, ask) {
+      // A change is only ever to one of the agent's own crons.
+      if (ask.kind === 'cron' && ask.want.cronId) {
+        const own = (await cronsOf(agent)).some((c) => c.id === ask.want.cronId)
+        if (!own) return `This agent has no scheduled task with id ${JSON.stringify(ask.want.cronId)}.`
+      }
       if (ask.kind === 'connection') {
         const want = ask.want
         if (want.type === 'mcp-oauth') {

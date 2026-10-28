@@ -4,6 +4,7 @@ import {
   CAPABILITY_REQUESTS_FEATURE,
   CAPABILITY_REQUESTS_V2_FEATURE,
   CAPABILITY_REQUESTS_V3_FEATURE,
+  CAPABILITY_REQUESTS_V4_FEATURE,
   isFrame
 } from '@agentconnect.md/protocol'
 import type { CapabilityFacts } from '../../src/capability/capability-wording.js'
@@ -199,5 +200,29 @@ describe('capability requests over the daemon WS edge', () => {
     ])
     const opened = await answerTo(v3.stub, v3.stub.inject('capability/request', live), 'capability/request/result')
     expect(opened.reply).toMatchObject({ status: 'pending', summary: 'set the secret "GRAFANA_TOKEN"' })
+  })
+
+  it('takes a widened setting only from a daemon that advertises v4', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const { h } = harness({ current: {} })
+    const runtime = { ...request, ask: { kind: 'agent-settings', want: { runtime: 'codex-acp' } } }
+    const v3 = await ready(h, DAEMON, [
+      CAPABILITY_REQUESTS_FEATURE,
+      CAPABILITY_REQUESTS_V2_FEATURE,
+      CAPABILITY_REQUESTS_V3_FEATURE
+    ])
+    expect(v3.serverFeatures).toContain(CAPABILITY_REQUESTS_V4_FEATURE)
+    const refused = await answerTo(v3.stub, v3.stub.inject('capability/request', runtime), 'capability/request/result')
+    expect(refused.reply).toMatchObject({ status: 'refused', refused: 'unsupported' })
+
+    const v4 = await ready(h, DAEMON, [
+      CAPABILITY_REQUESTS_FEATURE,
+      CAPABILITY_REQUESTS_V2_FEATURE,
+      CAPABILITY_REQUESTS_V3_FEATURE,
+      CAPABILITY_REQUESTS_V4_FEATURE
+    ])
+    const opened = await answerTo(v4.stub, v4.stub.inject('capability/request', runtime), 'capability/request/result')
+    expect(opened.reply).toMatchObject({ status: 'pending', summary: 'set the runtime to "codex-acp"' })
   })
 })
