@@ -1402,13 +1402,15 @@ and every `computer/policy`.
   `docker run` line on a Docker tab. An optional name joins the command as `--name` (`AGENTCONNECT_COMPUTER_NAME` for
   Docker) until the desktop registers; a changed visibility is written with `PUT …/computers/:id/sharing` when the
   owner opens the connected Computer. It follows `GET …/computers/registrations/:id`, which only the token's minter
-  may read, until the new Computer is online. The detail page shows each `doctor` check with its
-  fix (failures first), the reported capabilities, Stop / Resume (§6), Revoke and Delete, the policy form (granted
-  agents with a "no isolation" mark for another member's agent, view or control, approvals, lease limits, screenshot
-  retention, driver tools; read-only for anyone but the owner), the visibility in the details with a change dialog for
-  its editors, the **Agent access** card (display only: the selected agents, each linking to its Tools tab, or All
-  agents, with a "no isolation" mark, and a note that access is set on each agent's Tools tab; fixed for a per-agent or
-  ephemeral one), and, for the owner, the audit as recent activity. An agent's Tools tab carries its **Computers** card:
+  may read, until the new Computer is online. The detail page's header carries Stop / Resume (§6) and an actions menu
+  (Revoke and Delete), above three tabs. **Overview** holds the screen, the `doctor` checks (failures first with
+  their fixes, passing ones folded behind a count), the details (reported capabilities, and the visibility with a
+  change dialog for its editors) and the **Agent access** card (display only: the selected agents with the policy's
+  view or control, each linking to its Tools tab, or All agents, with a "no isolation" mark for another member's
+  agent, and a note that access is set on each agent's Tools tab; fixed for a per-agent or ephemeral one). **Usage
+  policy** is the policy form (view or control, approvals, the command line, lease limits, screenshot retention,
+  driver tools, peer-to-peer viewing; read-only for anyone but the owner). **Activity**, for the owner only, is the
+  audit by day, filtered to viewers or agents. An agent's Tools tab carries its **Computers** card:
   the Computers whose access grants it, each marked selected or all agents, an Add menu of the Computers visible to the
   member, and remove for any of them (§4.1). The detail page embeds the viewer (§7.2): Watch opens it, an allowed member
   may Take control and Release, and a badge names the media path (Direct, TURN relay or Screenshots).
@@ -1422,10 +1424,10 @@ and every `computer/policy`.
   computers and adds one through the same dialog. The egress card is hidden for now. That list marks a managed
   computer's allocation (Pool, Agent's own with its agent, Session desktop), shows `Asleep` and
   any pool phase in flight (Starting, Waking, Resetting, Failed, Removing), and names the agent in control and how many
-  wait. The detail page has a **Control** card for every Computer (the lease holder with its session, and the queue in
-  order, from the DTO's `lease` and `waiting`, read without a lock and leaving out lapsed rows), and, for a managed one,
-  a **Managed computer** card with its allocation, owning agent, pool phase and last error, and the actions its
-  `poolActions` allow: **Wake** (`POST …/wake`, a sleeping or failed `per-agent` or `manual` one), **Sleep**
+  wait. The detail page's screen names the lease holder for every Computer, linking its session, and how many wait
+  (from the DTO's `lease` and `waiting`, read without a lock and leaving out lapsed rows). A managed one adds a header
+  chip with its allocation and pool phase, its allocation, owning agent, pool phase and last error to the details, and
+  to the actions menu the actions its `poolActions` allow: **Wake** (`POST …/wake`, a sleeping or failed `per-agent` or `manual` one), **Sleep**
   (`POST …/sleep`, an awake one no session holds) and **Reset** (`POST …/reset`, after confirmation, any `per-agent`
   or `manual` one not being removed). An `ephemeral` computer offers none: it goes with its session. The agent's
   Computers card starts with its **managed computer** mode (Off / New each session / One for this agent, tiles or pills

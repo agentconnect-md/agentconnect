@@ -138,6 +138,9 @@ const ADMIN_PROMPT_OPTIONS: readonly ComputerAdminPromptMode[] = ['people', 'age
 
 const sameDraft = (a: PolicyDraft, b: PolicyDraft) => JSON.stringify(a) === JSON.stringify(b)
 
+const changedFields = (a: PolicyDraft, b: PolicyDraft) =>
+  (Object.keys(a) as (keyof PolicyDraft)[]).filter((key) => a[key] !== b[key]).length
+
 export function ComputerPolicyCard({
   computer,
   onSaved
@@ -162,6 +165,7 @@ export function ComputerPolicyCard({
   }, [saved, base])
   const editable = computer.canEditPolicy
   const dirty = !sameDraft(draft, saved)
+  const changes = changedFields(draft, saved)
   const result = policyFromDraft(computer.policy, draft, computer)
   const problem = 'problem' in result ? result.problem : null
   const set = <K extends keyof PolicyDraft>(key: K, value: PolicyDraft[K]) => setDraft((d) => ({ ...d, [key]: value }))
@@ -179,40 +183,58 @@ export function ComputerPolicyCard({
     }
   }
 
-  return (
-    <div className="card overflow-hidden max-desktop:rounded-lg">
-      <div className="cardhead flex-wrap gap-2">
-        <span className="cardtitle">{t('title')}</span>
-        {!editable && (
-          <span className="ml-auto font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            {t('readOnly')}
-          </span>
-        )}
-      </div>
+  const number = (key: NumberField, label: string, hint: string, unit: string, placeholder?: string) => (
+    <Row label={label} detail={hint}>
+      <span className="inline-flex h-8 items-center overflow-hidden rounded-sm border border-(--border-default) bg-(--surface-card)">
+        <input
+          className="mono h-full w-[72px] border-0 bg-transparent px-[10px] text-right text-[12.5px] text-(--text-primary) outline-none disabled:opacity-60"
+          inputMode="numeric"
+          aria-label={label}
+          disabled={!editable}
+          placeholder={placeholder}
+          value={draft[key]}
+          onChange={(e) => set(key, e.target.value)}
+        />
+        <span className="flex h-full items-center border-l border-(--border-subtle) bg-(--surface-sunken) px-[9px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+          {unit}
+        </span>
+      </span>
+    </Row>
+  )
 
-      <Section title={t('accessTitle')}>
-        <div className="grid grid-cols-1 gap-3 desktop:grid-cols-2">
-          <Field label={t('mode')} detail={t('modeHint')}>
-            <FieldSelect
-              ariaLabel={t('mode')}
-              value={draft.agentMode}
-              disabled={!editable}
-              options={[
-                { value: 'control', label: t('modeControl') },
-                { value: 'view', label: t('modeView') }
-              ]}
-              onChange={(v) => set('agentMode', v)}
-            />
-          </Field>
-          <ToggleRow
-            label={t('firstInput')}
-            detail={t('firstInputHint')}
+  return (
+    <div className="card max-w-[880px] max-desktop:rounded-lg">
+      {!editable && (
+        <div className="flex items-center gap-2 border-b border-(--border-subtle) bg-(--surface-sunken) px-[18px] py-[10px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          <Icon name="lock" size={13} className="flex-none" />
+          {t('readOnly')}
+        </div>
+      )}
+
+      <Group title={t('accessTitle')} hint={t('accessHint')}>
+        <Row label={t('mode')} detail={t('modeHint')}>
+          <Segmented
+            label={t('mode')}
+            value={draft.agentMode}
+            disabled={!editable}
+            options={[
+              { value: 'view', label: t('modeView') },
+              { value: 'control', label: t('modeControl') }
+            ]}
+            onChange={(v) => set('agentMode', v)}
+          />
+        </Row>
+        <Row label={t('firstInput')} detail={t('firstInputHint')}>
+          <Toggle
             checked={draft.firstInputPerSession}
             disabled={!editable}
             onChange={(v) => set('firstInputPerSession', v)}
+            ariaLabel={t('firstInput')}
           />
-          {computer.os === 'windows' && (
-            <Field label={t('adminPrompts')} detail={t('adminPromptsHint')}>
+        </Row>
+        {computer.os === 'windows' && (
+          <Row label={t('adminPrompts')} detail={t('adminPromptsHint')}>
+            <div className="w-full desktop:w-[220px]">
               <FieldSelect
                 ariaLabel={t('adminPrompts')}
                 value={draft.adminPrompts ?? DEFAULT_ADMIN_PROMPTS}
@@ -220,129 +242,97 @@ export function ComputerPolicyCard({
                 options={ADMIN_PROMPT_OPTIONS.map((mode) => ({ value: mode, label: t(`adminPrompt.${mode}`) }))}
                 onChange={(v) => set('adminPrompts', v)}
               />
-            </Field>
-          )}
-        </div>
-      </Section>
+            </div>
+          </Row>
+        )}
+      </Group>
 
-      <Section title={t('commandLineTitle')} hint={t('commandLineHint')}>
-        <div className="grid grid-cols-1 gap-3 desktop:grid-cols-2">
-          <Field label={t('shell')} detail={draft.agentMode === 'view' ? t('shellViewOnly') : t('shellHint')}>
-            <FieldSelect
-              ariaLabel={t('shell')}
-              value={draft.agentMode === 'view' ? 'off' : draft.shell}
-              disabled={!editable || draft.agentMode === 'view'}
-              options={SHELL_OPTIONS.map((mode) => ({ value: mode, label: t(`shellMode.${mode}`) }))}
-              onChange={(v) => set('shell', v)}
-            />
-          </Field>
-          <Field label={t('files')} detail={t('filesHint')}>
-            <FieldSelect
-              ariaLabel={t('files')}
-              value={draft.files}
-              disabled={!editable}
-              options={FILES_OPTIONS.map((mode) => ({ value: mode, label: t(`filesMode.${mode}`) }))}
-              onChange={(v) => set('files', v)}
-            />
-          </Field>
-          <Field label={t('fileRoots')} detail={t('fileRootsHint')}>
-            <textarea
-              className="inp min-h-[64px] font-mono"
-              aria-label={t('fileRoots')}
-              disabled={!editable || draft.files === 'off'}
-              placeholder="~"
-              value={draft.fileRoots}
-              onChange={(e) => set('fileRoots', e.target.value)}
-            />
-          </Field>
-        </div>
+      <Group title={t('commandLineTitle')} hint={t('commandLineHint')}>
+        <Row label={t('shell')} detail={draft.agentMode === 'view' ? t('shellViewOnly') : t('shellHint')}>
+          <Segmented
+            label={t('shell')}
+            value={draft.agentMode === 'view' ? 'off' : draft.shell}
+            disabled={!editable || draft.agentMode === 'view'}
+            options={SHELL_OPTIONS.map((mode) => ({ value: mode, label: t(`shellMode.${mode}`) }))}
+            onChange={(v) => set('shell', v)}
+          />
+        </Row>
+        <Row label={t('files')} detail={t('filesHint')}>
+          <Segmented
+            label={t('files')}
+            value={draft.files}
+            disabled={!editable}
+            options={FILES_OPTIONS.map((mode) => ({ value: mode, label: t(`filesMode.${mode}`) }))}
+            onChange={(v) => set('files', v)}
+          />
+        </Row>
+        <Row label={t('fileRoots')} detail={t('fileRootsHint')}>
+          <textarea
+            className="inp mono min-h-[64px] w-full resize-y text-[12.5px] desktop:w-[260px]"
+            rows={3}
+            spellCheck={false}
+            aria-label={t('fileRoots')}
+            disabled={!editable || draft.files === 'off'}
+            placeholder="~"
+            value={draft.fileRoots}
+            onChange={(e) => set('fileRoots', e.target.value)}
+          />
+        </Row>
         {computer.isolation === 'none' && draft.agentMode === 'control' && draft.shell !== 'off' && (
           <p
             role="note"
-            className="m-0 mt-3 flex items-start gap-2 rounded-md bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-normal leading-[1.5] text-[#9a6500]"
+            className="mx-[18px] my-2 flex items-start gap-2 rounded-md bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-normal leading-[1.5] text-[#9a6500]"
           >
             <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
             <span>{t('shellNoIsolation')}</span>
           </p>
         )}
         {computer.capabilities.exec !== true && (draft.shell !== 'off' || draft.files !== 'off') && (
-          <p className="m-0 mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+          <p className="mx-[18px] my-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
             {t('commandLineUnsupported')}
           </p>
         )}
-      </Section>
+      </Group>
 
-      <Section title={t('limitsTitle')}>
-        <div className="grid grid-cols-1 gap-3 desktop:grid-cols-2">
-          <Field label={t('idle')} detail={t('idleHint')}>
-            <input
-              className="inp"
-              inputMode="numeric"
-              aria-label={t('idle')}
-              disabled={!editable}
-              value={draft.leaseIdleSeconds}
-              onChange={(e) => set('leaseIdleSeconds', e.target.value)}
-            />
-          </Field>
-          <Field label={t('max')} detail={t('maxHint')}>
-            <input
-              className="inp"
-              inputMode="numeric"
-              aria-label={t('max')}
-              disabled={!editable}
-              value={draft.leaseMaxSeconds}
-              onChange={(e) => set('leaseMaxSeconds', e.target.value)}
-            />
-          </Field>
-          <Field label={t('wait')} detail={t('waitHint')}>
-            <input
-              className="inp"
-              inputMode="numeric"
-              aria-label={t('wait')}
-              disabled={!editable}
-              value={draft.leaseWaitSeconds}
-              onChange={(e) => set('leaseWaitSeconds', e.target.value)}
-            />
-          </Field>
-          <Field label={t('retention')} detail={t('retentionHint')}>
-            <input
-              className="inp"
-              inputMode="numeric"
-              aria-label={t('retention')}
-              disabled={!editable}
-              placeholder={t('retentionDefault')}
-              value={draft.screenshotRetentionDays}
-              onChange={(e) => set('screenshotRetentionDays', e.target.value)}
-            />
-          </Field>
-        </div>
-        <div className="mt-3 grid grid-cols-1 gap-3 desktop:grid-cols-2">
-          <ToggleRow
-            label={t('driverTools')}
-            detail={t('driverToolsHint')}
+      <Group title={t('limitsTitle')}>
+        {number('leaseIdleSeconds', t('idle'), t('idleHint'), t('unitSeconds'))}
+        {number('leaseMaxSeconds', t('max'), t('maxHint'), t('unitSeconds'))}
+        {number('leaseWaitSeconds', t('wait'), t('waitHint'), t('unitSeconds'))}
+        {number('screenshotRetentionDays', t('retention'), t('retentionHint'), t('unitDays'), t('retentionDefault'))}
+      </Group>
+
+      <Group title={t('advancedTitle')}>
+        <Row label={t('driverTools')} detail={t('driverToolsHint')}>
+          <Toggle
             checked={draft.exposeDriverTools}
             disabled={!editable}
             onChange={(v) => set('exposeDriverTools', v)}
+            ariaLabel={t('driverTools')}
           />
-          <ToggleRow
-            label={t('peerToPeer')}
-            detail={t('peerToPeerHint')}
+        </Row>
+        <Row label={t('peerToPeer')} detail={t('peerToPeerHint')}>
+          <Toggle
             checked={draft.viewerPeerToPeer}
             disabled={!editable}
             onChange={(v) => set('viewerPeerToPeer', v)}
+            ariaLabel={t('peerToPeer')}
           />
-        </div>
-      </Section>
+        </Row>
+      </Group>
 
       {editable && (
-        <div className="flex flex-wrap items-center gap-2 border-t border-(--border-subtle) px-4 py-3">
-          {(problem || error) && (
+        <div className="sticky bottom-0 flex flex-wrap items-center gap-[10px] rounded-b-[inherit] border-t border-(--border-subtle) bg-(--surface-card) px-[18px] py-3">
+          {(problem && dirty) || error ? (
             <span role="alert" className="min-w-0 flex-1 font-sans text-[12.5px] leading-[1.5] text-(--status-error)">
               {problem && dirty ? t(`problem.${problem}`) : error}
             </span>
+          ) : (
+            <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+              {dirty ? t('unsaved', { count: changes }) : t('appliesToAll')}
+            </span>
           )}
           <div className="ml-auto flex gap-2">
-            <Button variant="ghost" size="sm" disabled={!dirty || saving} onClick={() => setDraft(saved)}>
+            <Button variant="secondary" size="sm" disabled={!dirty || saving} onClick={() => setDraft(saved)}>
               {t('reset')}
             </Button>
             <Button size="sm" disabled={!dirty || saving || problem !== null} onClick={() => void save()}>
@@ -355,69 +345,70 @@ export function ComputerPolicyCard({
   )
 }
 
-function Section({
-  title,
-  hint,
-  action,
-  children
-}: {
-  title: string
-  hint?: string
-  action?: ReactNode
-  children: ReactNode
-}) {
+type NumberField = 'leaseIdleSeconds' | 'leaseMaxSeconds' | 'leaseWaitSeconds' | 'screenshotRetentionDays'
+
+function Group({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
   return (
-    <section className="border-b border-(--border-subtle) px-4 py-4 last:border-b-0">
-      <div className="mb-3 flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <h3 className="m-0 font-sans text-[13px] font-semibold leading-normal">{title}</h3>
-          {hint && (
-            <p className="m-0 mt-[2px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-              {hint}
-            </p>
-          )}
-        </div>
-        {action}
+    <section className="border-t border-(--border-subtle) pb-[6px] first:border-t-0">
+      <div className="px-[18px] pt-4 pb-[6px]">
+        <h3 className="m-0 font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">{title}</h3>
+        {hint && (
+          <p className="m-0 mt-[3px] max-w-[620px] font-sans text-[12px] font-normal leading-[1.5] text-pretty text-(--text-tertiary)">
+            {hint}
+          </p>
+        )}
       </div>
       {children}
     </section>
   )
 }
 
-function Field({ label, detail, children }: { label: string; detail: string; children: ReactNode }) {
+function Row({ label, detail, children }: { label: string; detail: string; children: ReactNode }) {
   return (
-    <div className="fld m-0 min-w-0">
-      <span className="fldlbl">{label}</span>
-      {children}
-      <span className="mt-1 block font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
-        {detail}
-      </span>
+    <div className="flex flex-col gap-[10px] px-[18px] py-3 desktop:flex-row desktop:items-start desktop:gap-6">
+      <div className="min-w-0 flex-1">
+        <div className="font-sans text-[13px] font-medium leading-normal text-(--text-primary)">{label}</div>
+        <div className="mt-[2px] max-w-[480px] font-sans text-[12px] font-normal leading-[1.5] text-pretty text-(--text-tertiary)">
+          {detail}
+        </div>
+      </div>
+      <div className="flex flex-none desktop:min-w-[220px] desktop:justify-end">{children}</div>
     </div>
   )
 }
 
-function ToggleRow({
+function Segmented<V extends string>({
   label,
-  detail,
-  checked,
+  value,
+  options,
   disabled,
   onChange
 }: {
   label: string
-  detail: string
-  checked: boolean
+  value: V
+  options: readonly { value: V; label: string }[]
   disabled: boolean
-  onChange: (next: boolean) => void
+  onChange: (next: V) => void
 }) {
   return (
-    <div className="flex items-start gap-3 rounded-md border border-(--border-subtle) px-3 py-[10px]">
-      <div className="min-w-0 flex-1">
-        <div className="font-sans text-[13px] font-medium leading-normal">{label}</div>
-        <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
-          {detail}
-        </div>
-      </div>
-      <Toggle checked={checked} disabled={disabled} onChange={onChange} ariaLabel={label} />
+    <div className="pillbar max-w-full flex-wrap" role="radiogroup" aria-label={label}>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={value === option.value}
+          disabled={disabled}
+          className={
+            value === option.value
+              ? 'pill on whitespace-nowrap disabled:cursor-default disabled:opacity-60'
+              : 'pill whitespace-nowrap disabled:cursor-default disabled:opacity-60'
+          }
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   )
 }

@@ -2,6 +2,7 @@
 
 import { useCallback } from 'react'
 import { useTranslations } from 'next-intl'
+import { agentLabel } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 
@@ -18,5 +19,18 @@ export function useMemberName(): (userId: string | null | undefined) => string {
       return member?.name || member?.email || t('unknownMember')
     },
     [members, me, t]
+  )
+}
+
+/** The agent's name, or a neutral label for one the caller cannot see. */
+export function useAgentName(): (agentId: string | null | undefined, fallback?: string | null) => string {
+  const t = useTranslations('Computers')
+  const { agents } = useConsoleData()
+  return useCallback(
+    (agentId, fallback) => {
+      const agent = agentId ? agents.find((a) => a.id === agentId) : undefined
+      return agent ? agentLabel(agent) : (fallback ?? t('hiddenAgent'))
+    },
+    [agents, t]
   )
 }

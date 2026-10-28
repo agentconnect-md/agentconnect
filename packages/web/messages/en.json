@@ -6634,7 +6634,15 @@
       "fix": "Fix:",
       "notReported": "Checks not reported",
       "failing": "{count, plural, one {# check failing} other {# checks failing}}",
-      "warning": "{count, plural, one {# warning} other {# warnings}}"
+      "warning": "{count, plural, one {# warning} other {# warnings}}",
+      "summary": {
+        "fail": "{count} failing",
+        "warn": "{count, plural, one {# warning} other {# warnings}}",
+        "ok": "{count} pass",
+        "info": "{count} info"
+      },
+      "showPassing": "Show {count, plural, one {# passing check} other {# passing checks}}",
+      "hidePassing": "Hide passing checks"
     },
     "detail": {
       "notFound": "Computer not found",
@@ -6672,7 +6680,10 @@
         "per-agent": "One per agent",
         "manual": "Pool computer, shared"
       },
-      "ownerAgent": "Made for"
+      "ownerAgent": "Made for",
+      "tabs": {
+        "overview": "Overview"
+      }
     },
     "actions": {
       "stop": "Stop",
@@ -6694,8 +6705,16 @@
       "busy": "Deleting…"
     },
     "activity": {
-      "title": "Recent activity",
-      "note": "What agents and viewers did, kept for 90 days",
+      "title": "Activity",
+      "note": "Kept for 90 days",
+      "filterLabel": "Show activity from",
+      "filter": {
+        "all": "All",
+        "viewers": "Viewers",
+        "agents": "Agents"
+      },
+      "today": "Today",
+      "yesterday": "Yesterday",
       "empty": "Nothing has happened on this computer yet.",
       "loading": "Loading activity…",
       "more": "Show older",
@@ -6712,22 +6731,21 @@
     "agentAccess": {
       "title": "Agent access",
       "ownAgentOnly": "Used only by the agent it was made for",
-      "none": "No agents",
       "noneDescription": "No agent can use it yet.",
-      "selected": "Selected agents",
       "all": "All agents",
       "allDescription": "Every agent in the organization can use it.",
       "allNoIsolation": "This includes other members' agents, and your desktop has no isolation from what they do.",
       "unknownAgent": "Agent not visible to you",
       "noIsolation": "Not your agent",
       "noIsolationHint": "This agent belongs to another member. Your desktop has no isolation from what it does.",
-      "changeOnAgent": "Which agents use this computer is set on each agent’s Tools tab, under Computers. Open one from <agents>Agents</agents> to give it this computer or take it away.",
+      "changeOnAgent": "Granted per agent, under Tools › Computers. <agents>Open Agents</agents>",
       "openAgentTools": "Open the agent’s tools"
     },
     "policy": {
       "title": "Usage policy",
       "readOnly": "Only the owner can change this",
       "accessTitle": "Control and approvals",
+      "accessHint": "One agent controls the desktop at a time; others wait in line, first come first served. Screenshots and viewers need no turn.",
       "mode": "Agents may",
       "modeHint": "View only allows screenshots; control also allows clicks and typing.",
       "modeControl": "View and control",
@@ -6749,7 +6767,7 @@
       "shellViewOnly": "A view-only computer runs no commands.",
       "shellMode": {
         "off": "Never",
-        "ask": "Ask for each command",
+        "ask": "Ask",
         "on": "Allow"
       },
       "files": "Files",
@@ -6764,19 +6782,22 @@
       "shellNoIsolation": "This is a person’s own desktop with no isolation: an agent that can run commands can do anything this account can, including reading its keys and signed-in browsers.",
       "commandLineUnsupported": "This computer’s daemon cannot run the command line yet. It works on Linux computers for now.",
       "limitsTitle": "Limits",
-      "idle": "Idle release (seconds)",
+      "idle": "Idle release",
       "idleHint": "Control is released after this long without input, 10 to 3600.",
-      "max": "Longest control (seconds)",
+      "max": "Longest control",
       "maxHint": "The most one session may hold control, 60 to 86400.",
-      "wait": "Wait in line (seconds)",
+      "wait": "Wait in line",
       "waitHint": "When another agent has control, how long an agent waits for its turn before giving up, 0 to 600.",
-      "retention": "Keep screenshots (days)",
+      "retention": "Keep screenshots",
       "retentionHint": "0 stores none; blank uses the deployment's default.",
       "retentionDefault": "Default",
+      "unitSeconds": "sec",
+      "unitDays": "days",
       "driverTools": "Expose driver tools",
       "driverToolsHint": "Also offer agents the driver's own window-level tools. Off by default.",
       "peerToPeer": "Peer-to-peer viewing",
       "peerToPeerHint": "Let the viewer’s video go straight between browser and desktop across networks. This shows viewers the desktop’s public IP address. On by default only for a self-hosted Computer that just its owner may watch.",
+      "advancedTitle": "Advanced",
       "problem": {
         "idleRange": "Idle release must be a whole number from 10 to 3600.",
         "maxRange": "Longest control must be a whole number from 60 to 86400.",
@@ -6786,15 +6807,20 @@
         "rootsInvalid": "Allowed paths must be absolute, one per line, at most 32."
       },
       "reset": "Reset",
+      "unsaved": "{count, plural, one {# unsaved change} other {# unsaved changes}}",
+      "appliesToAll": "Applies to every agent with access.",
       "save": "Save",
       "saving": "Saving…"
     },
     "viewer": {
       "title": "Screen",
       "watch": "Watch",
-      "close": "Close",
-      "idle": "Watch this computer’s screen live, and take over the mouse and keyboard when you need to. Video goes straight between your browser and the desktop (the relay only helps them find each other), or through TURN; nothing passes through AgentConnect’s servers.",
+      "close": "Stop watching",
+      "idle": "Watch to see the screen live, and take over the mouse and keyboard when you need to.",
+      "privacy": "Video goes straight between your browser and the desktop, or through TURN. It never passes through AgentConnect.",
       "offline": "The viewer opens once this computer is online.",
+      "offlineSeen": "Offline. Last seen {when}.",
+      "asleep": "Asleep. An agent’s next use wakes it, or Wake in the computer’s actions.",
       "connecting": "Connecting…",
       "failed": "The viewer stopped.",
       "watching": "Watching. Agents may keep working.",
@@ -6842,7 +6868,6 @@
       "resetting": "Resetting"
     },
     "pool": {
-      "title": "Managed computer",
       "phase": "Pool state",
       "error": "Last problem",
       "hint": {
@@ -6859,14 +6884,9 @@
       "resetBusy": "Resetting…"
     },
     "lease": {
-      "title": "Control",
-      "note": "One agent controls the desktop at a time; others wait in line, first come first served. Screenshots and viewers need no turn.",
       "free": "No agent has control",
-      "holder": "Has control",
-      "since": "since {when}",
-      "queue": "Waiting in line",
-      "queued": "waiting since {when}",
-      "openSession": "Open session"
+      "holderLine": "{agent} has control",
+      "since": "since {when}"
     },
     "egress": {
       "title": "Managed computer egress",

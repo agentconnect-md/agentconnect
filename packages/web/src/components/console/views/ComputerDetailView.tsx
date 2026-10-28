@@ -1,18 +1,22 @@
 'use client'
 
-// Computer detail (computer-use.md §10): viewer, status, doctor with fixes, agent access, policy, stop / resume, revoke, and activity.
+// Computer detail (computer-use.md §10): an overview of screen, checks, details and agent access, then policy and activity tabs.
 import { useEffect, useId, useState, type ReactNode } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import Link from 'next/link'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useFormatter, useTranslations } from 'next-intl'
 import {
   deleteComputer,
+  resetComputer,
   resumeComputer,
   revokeComputer,
   setComputerSharing,
+  sleepComputer,
   stopComputer,
+  wakeComputer,
   type ComputerDto
 } from '@/lib/api'
-import { computerStatusTone, poolPhaseNote, useComputer, useAgo } from '@/lib/computers'
+import { computerStatusTone, useComputer, useAgo } from '@/lib/computers'
 import { useOrgs } from '@/lib/org-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { NotFound } from '@/components/console/NotFound'
@@ -20,16 +24,15 @@ import { useCrumbSlot } from '@/components/console/Shell'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { Scrim } from '@/components/console/Scrim'
 import { VisibilityField, VisibilityValue, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
-import { useMemberName } from '@/components/console/computer-members'
+import { useAgentName, useMemberName } from '@/components/console/computer-members'
 import { ComputerActivityCard, ComputerDoctorCard } from '@/components/console/ComputerCards'
 import { ComputerPolicyCard } from '@/components/console/ComputerPolicyCard'
 import { ComputerAgentAccessCard } from '@/components/console/ComputerAgentAccessCard'
 import { ComputerViewerCard } from '@/components/console/ComputerViewer'
-import { AllocationBadge, ComputerLeaseCard, ComputerPoolCard } from '@/components/console/ComputerPoolCards'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
-type Confirm = 'revoke' | 'delete' | null
+type Confirm = 'revoke' | 'delete' | 'reset' | null
 
 export default function ComputerDetailView() {
   const t = useTranslations('Computers')
@@ -76,6 +79,8 @@ export default function ComputerDetailView() {
 // The desktop reports a stop or resume in the heartbeat it sends right away, so re-read shortly after one.
 const SETTLE_MS = 1500
 
+type Tab = 'overview' | 'policy' | 'activity'
+
 function ComputerDetail({
   computer,
   onChanged,
@@ -89,18 +94,32 @@ function ComputerDetail({
   const format = useFormatter()
   const ago = useAgo()
   const router = useRouter()
+  const search = useSearchParams()
   const { orgPath } = useOrgs()
   const memberName = useMemberName()
+  const agentName = useAgentName()
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<Confirm>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [editingVisibility, setEditingVisibility] = useState(false)
+  const showActivity = computer.canEditPolicy
+  const asked = search?.get('tab')
+  const [tab, setTab] = useState<Tab>(asked === 'policy' || (asked === 'activity' && showActivity) ? asked : 'overview')
+  const changeTab = (next: Tab) => {
+    setTab(next)
+    const url = new URL(window.location.href)
+    if (next === 'overview') url.searchParams.delete('tab')
+    else url.searchParams.set('tab', next)
+    window.history.replaceState(window.history.state, '', url)
+  }
   const tone = computerStatusTone(computer.status)
   const revoked = computer.status === 'revoked'
   const stopped = computer.stoppedAt !== null && !revoked
   const canStop = computer.canEdit && !revoked && !stopped
   const canResume = computer.canEditPolicy && stopped
+  const pool = computer.poolActions ?? { wake: false, sleep: false, reset: false }
+  const hasPoolActions = Boolean(computer.allocation) && (pool.wake || pool.sleep || pool.reset)
 
   const run = async (action: () => Promise<ComputerDto | void>, after?: () => void) => {
     if (busy) return
@@ -117,15 +136,21 @@ function ComputerDetail({
       setBusy(false)
     }
   }
+  const pick = (action: () => void) => () => {
+    setMenuOpen(false)
+    action()
+  }
 
   const seen = computer.lastSeenAt ? ago(computer.lastSeenAt) : t('never')
-  const poolNote = poolPhaseNote(computer)
   const display = computer.capabilities.displays[0]
+  const lease = computer.lease ?? null
+  const waiting = computer.waiting ?? []
 
   const stopButton = canStop ? (
     <Button
-      variant="danger"
+      variant="secondary"
       size="sm"
+      className="text-(--status-error) hover:border-(--status-error) hover:bg-(--status-error-soft)"
       disabled={busy}
       onClick={() =>
         void run(
@@ -134,7 +159,7 @@ function ComputerDetail({
         )
       }
     >
-      <Icon name="octagon-x" size={15} />
+      <Icon name="octagon-x" size={14} />
       {t('actions.stop')}
     </Button>
   ) : canResume ? (
@@ -149,56 +174,98 @@ function ComputerDetail({
         )
       }
     >
-      <Icon name="play" size={15} />
+      <Icon name="play" size={14} />
       {t('actions.resume')}
     </Button>
   ) : null
 
+  // Who has control and who waits (§4.4), beside the screen.
+  const control = (
+    <span className="flex min-w-0 items-center gap-[6px]" data-lease-holder={lease?.agentId}>
+      <Icon name={lease ? 'mouse-pointer-2' : 'hand'} size={13} className="flex-none" />
+      <span className="truncate">
+        {lease ? (
+          <Link
+            className="text-(--text-secondary) hover:underline"
+            href={orgPath(`/sessions/${encodeURIComponent(lease.sessionId)}`)}
+            title={t('lease.since', { when: ago(lease.acquiredAt) })}
+          >
+            {t('lease.holderLine', { agent: agentName(lease.agentId, lease.agentName) })}
+          </Link>
+        ) : (
+          t('lease.free')
+        )}
+        {' · '}
+        <span title={waiting.map((w) => agentName(w.agentId)).join('\n') || undefined} data-lease-waiting>
+          {t('waitingCount', { count: waiting.length })}
+        </span>
+      </span>
+    </span>
+  )
+
+  const tabs: { key: Tab; label: string }[] = [
+    { key: 'overview', label: t('detail.tabs.overview') },
+    { key: 'policy', label: t('policy.title') },
+    ...(showActivity ? [{ key: 'activity' as const, label: t('activity.title') }] : [])
+  ]
+
   return (
     <div className="wrap max-w-[1240px] px-4 pt-[14px] pb-6 desktop:p-0">
       {/* Header: on mobile the Shell push bar carries the name, so the title row is desktop-only. */}
-      <div className="mb-4 flex items-start gap-4 desktop:mb-5">
-        <span className="relative hidden h-13 w-13 flex-none items-center justify-center rounded-lg border border-(--border-subtle) bg-(--surface-sunken) desktop:flex">
-          <Icon name="monitor" size={26} color={revoked ? 'var(--text-tertiary)' : 'var(--brand)'} />
+      <div className="mb-[6px] flex items-start gap-[14px]">
+        <span className="relative hidden h-11 w-11 flex-none items-center justify-center rounded-[10px] border border-(--border-subtle) bg-(--surface-sunken) desktop:flex">
+          <Icon name="monitor" size={22} color={revoked ? 'var(--text-tertiary)' : 'var(--brand)'} />
           <span
-            className="absolute -right-1 -bottom-1 h-[14px] w-[14px] rounded-full border-[2.5px] border-(--surface-app)"
+            className="absolute -right-[3px] -bottom-[3px] h-[10px] w-[10px] rounded-full shadow-[0_0_0_2px_var(--surface-app)]"
             style={{ background: tone.dot }}
           />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-[10px]">
-            <h1 className="ptitle hidden desktop:block">{computer.name}</h1>
-            <span className="badge" style={{ background: tone.bg, color: tone.text }}>
+          <div className="flex min-w-0 flex-wrap items-center gap-[9px]">
+            <h1 className="m-0 hidden font-sans text-[20px] font-semibold leading-normal tracking-[-0.01em] text-(--text-primary) desktop:block">
+              {computer.name}
+            </h1>
+            <span className="badge flex-none" style={{ background: tone.bg, color: tone.text }}>
               <span className="dot h-[6px] w-[6px]" style={{ background: tone.dot }} />
               {t(`status.${computer.status}`)}
             </span>
-            {poolNote && (
-              <span className="font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-                {t(`poolPhase.${poolNote}`)}
+            {computer.allocation && (
+              <span
+                className="inline-flex h-[22px] flex-none items-center gap-[5px] rounded-full border border-(--border-default) px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
+                title={t(`pool.hint.${computer.allocation}`, { agent: agentName(computer.ownerAgentId) })}
+                data-pool-chip
+              >
+                <Icon name="layers" size={12} />
+                {t(`allocation.${computer.allocation}`)}
+                {computer.poolPhase && <> · {t(`poolPhase.${computer.poolPhase}`)}</>}
               </span>
             )}
-            <AllocationBadge computer={computer} />
           </div>
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
-            <Meta icon="monitor">
+          <div className="mt-[6px] flex flex-wrap items-center gap-x-4 gap-y-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+            <span className="mono text-(--text-secondary)">{computer.id}</span>
+            <Meta icon="cpu">
               {t(`os.${computer.os}`)} {computer.osVersion}
             </Meta>
             <Meta icon="app-window">{t(`session.${computer.session}`)}</Meta>
             <Meta icon="tag">
-              <span className="mono text-[12px]">{computer.desktopDaemonVersion}</span>
+              <span className="mono">{computer.desktopDaemonVersion}</span>
             </Meta>
-            <Meta icon="timer">{revoked ? t('revoked') : t('lastSeen', { when: seen })}</Meta>
+            <Meta icon="timer">
+              <span className="mono">{revoked ? t('revoked') : t('lastSeen', { when: seen })}</span>
+            </Meta>
           </div>
         </div>
         <div className="flex flex-none items-center gap-2">
           <span className="hidden desktop:inline-flex">{stopButton}</span>
-          {computer.canEdit && (
+          {(computer.canEdit || hasPoolActions) && (
             <div className="relative">
               <button
                 type="button"
                 className="iconbtn"
                 aria-label={t('actions.more')}
                 title={t('actions.more')}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
                 onClick={() => setMenuOpen((v) => !v)}
               >
                 <Icon name="ellipsis" size={16} />
@@ -207,30 +274,51 @@ function ComputerDetail({
                 <>
                   <div onClick={() => setMenuOpen(false)} className="fixed inset-0 z-45" />
                   <div className="dmenu right-0" role="menu" onClick={(e) => e.stopPropagation()}>
-                    {!revoked && (
-                      <button
-                        role="menuitem"
-                        className="dmi danger"
-                        onClick={() => {
-                          setMenuOpen(false)
-                          setConfirm('revoke')
-                        }}
-                      >
+                    {hasPoolActions && (
+                      <>
+                        {pool.wake && (
+                          <button
+                            role="menuitem"
+                            className="dmi"
+                            disabled={busy}
+                            onClick={pick(() => void run(() => wakeComputer(computer.id)))}
+                          >
+                            <Icon name="sunrise" size={15} />
+                            {t('pool.wake')}
+                          </button>
+                        )}
+                        {pool.sleep && (
+                          <button
+                            role="menuitem"
+                            className="dmi"
+                            disabled={busy}
+                            onClick={pick(() => void run(() => sleepComputer(computer.id)))}
+                          >
+                            <Icon name="moon" size={15} />
+                            {t('pool.sleep')}
+                          </button>
+                        )}
+                        {pool.reset && (
+                          <button role="menuitem" className="dmi" onClick={pick(() => setConfirm('reset'))}>
+                            <Icon name="rotate-ccw" size={15} />
+                            {t('pool.reset')}
+                          </button>
+                        )}
+                        {computer.canEdit && <div className="dmsep" />}
+                      </>
+                    )}
+                    {computer.canEdit && !revoked && (
+                      <button role="menuitem" className="dmi danger" onClick={pick(() => setConfirm('revoke'))}>
                         <Icon name="shield-off" size={15} />
                         {t('actions.revoke')}
                       </button>
                     )}
-                    <button
-                      role="menuitem"
-                      className="dmi danger"
-                      onClick={() => {
-                        setMenuOpen(false)
-                        setConfirm('delete')
-                      }}
-                    >
-                      <Icon name="trash" size={15} />
-                      {t('actions.delete')}
-                    </button>
+                    {computer.canEdit && (
+                      <button role="menuitem" className="dmi danger" onClick={pick(() => setConfirm('delete'))}>
+                        <Icon name="trash" size={15} />
+                        {t('actions.delete')}
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -240,9 +328,29 @@ function ComputerDetail({
       </div>
 
       {/* Mobile keeps the primary action in the body, full width and thumb-sized. */}
-      {stopButton && <div className="mb-3 flex desktop:hidden [&>button]:h-11 [&>button]:flex-1">{stopButton}</div>}
+      {stopButton && (
+        <div className="mt-3 mb-1 flex desktop:hidden [&>button]:h-11 [&>button]:flex-1">{stopButton}</div>
+      )}
 
-      {actionError && (
+      <div
+        className="mb-4 flex items-end overflow-x-auto border-b border-(--border-subtle) desktop:mb-[18px]"
+        role="tablist"
+      >
+        {tabs.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.key}
+            className={tab === item.key ? 'tab on whitespace-nowrap' : 'tab whitespace-nowrap'}
+            onClick={() => changeTab(item.key)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      {actionError && !confirm && (
         <Banner tone="error" icon="triangle-alert">
           {actionError}
         </Banner>
@@ -267,95 +375,106 @@ function ComputerDetail({
         </Banner>
       )}
 
-      <div className="mb-4 desktop:mb-[18px]">
-        <ComputerViewerCard computer={computer} />
-      </div>
-
-      <div className="grid grid-cols-1 items-start gap-4 desktop:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] desktop:gap-[18px]">
-        <ComputerDoctorCard computer={computer} />
-        <div className="card overflow-hidden max-desktop:rounded-lg">
-          <div className="cardhead">
-            <span className="cardtitle">{t('detail.details')}</span>
+      {tab === 'overview' && (
+        <div className="flex flex-wrap items-start gap-4">
+          <div className="flex min-w-0 flex-[1.55_1_460px] flex-col gap-4">
+            <ComputerViewerCard computer={computer} control={control} />
+            <ComputerDoctorCard computer={computer} />
           </div>
-          <div className="py-[6px]">
-            <Row label={t('detail.owner')}>{memberName(computer.ownerUserId)}</Row>
-            <Row label={t('detail.kind')}>
-              {t(`kind.${computer.kind}`)} · {t(`isolation.${computer.isolation}`)}
-            </Row>
-            <Row label={t('detail.display')}>
-              {display ? `${display.width}×${display.height} @${display.scale}x` : t('detail.unknown')}
-            </Row>
-            <Row label={t('detail.input')}>
-              {!computer.capabilities.input
-                ? t('detail.inputNone')
-                : computer.capabilities.textInput === 'full'
-                  ? t('detail.inputFull')
-                  : t('detail.inputKeymap')}
-            </Row>
-            <Row label={t('detail.activity')}>
-              {computer.capabilities.humanActivity === 'pointer+keyboard'
-                ? t('detail.activityKeyboard')
-                : t('detail.activityPointer')}
-            </Row>
-            <Row label={t('detail.viewer')}>
-              {computer.capabilities.viewer ? t('detail.available') : t('detail.unavailable')}
-            </Row>
-            <Row label={t('detail.driver')}>
-              <span className="mono text-[12px]">{computer.driverVersion}</span>
-            </Row>
-            <Row label={t('detail.screenshots')}>
-              {computer.screenshotRetentionDays > 0
-                ? t('detail.retention', { days: computer.screenshotRetentionDays })
-                : t('detail.notStored')}
-            </Row>
-            <Row label={t('detail.registered')}>
-              {format.dateTime(new Date(computer.createdAt), { dateStyle: 'medium', timeStyle: 'short' })}
-            </Row>
-            <Row label={t('detail.visibility')}>
-              <span className="flex items-center justify-end gap-2">
-                <VisibilityValue visibility={computer.visibility} sharedWith={computer.sharedWith} />
-                {computer.canEdit && !revoked && (
-                  <button
-                    type="button"
-                    className="iconbtn flex-none"
-                    title={t('visibilityEdit.open')}
-                    aria-label={t('visibilityEdit.open')}
-                    onClick={() => setEditingVisibility(true)}
-                  >
-                    <Icon name="pencil" size={14} />
-                  </button>
+          <div className="flex min-w-0 flex-[1_1_300px] flex-col gap-4">
+            <div className="card overflow-hidden max-desktop:rounded-lg">
+              <div className="cardhead">
+                <span className="cardtitle">{t('detail.details')}</span>
+              </div>
+              <div className="-mt-px">
+                <Row label={t('detail.owner')}>{memberName(computer.ownerUserId)}</Row>
+                <Row label={t('detail.kind')}>
+                  {t(`kind.${computer.kind}`)} · {t(`isolation.${computer.isolation}`)}
+                </Row>
+                {computer.allocation && (
+                  <>
+                    <Row label={t('detail.allocation')}>{t(`detail.allocationValue.${computer.allocation}`)}</Row>
+                    {computer.ownerAgentId && (
+                      <Row label={t('detail.ownerAgent')}>{agentName(computer.ownerAgentId)}</Row>
+                    )}
+                    <Row label={t('pool.phase')}>
+                      <span data-pool-phase={computer.poolPhase ?? ''}>
+                        {computer.poolPhase ? t(`poolPhase.${computer.poolPhase}`) : '—'}
+                      </span>
+                    </Row>
+                    {computer.poolError && (
+                      <Row label={t('pool.error')}>
+                        <span className="text-(--status-error)" title={computer.poolError}>
+                          {computer.poolError}
+                        </span>
+                      </Row>
+                    )}
+                  </>
                 )}
-              </span>
-            </Row>
+                <Row label={t('detail.display')} mono>
+                  {display ? `${display.width}×${display.height} @${display.scale}x` : t('detail.unknown')}
+                </Row>
+                <Row label={t('detail.input')}>
+                  {!computer.capabilities.input
+                    ? t('detail.inputNone')
+                    : computer.capabilities.textInput === 'full'
+                      ? t('detail.inputFull')
+                      : t('detail.inputKeymap')}
+                </Row>
+                <Row label={t('detail.activity')}>
+                  {computer.capabilities.humanActivity === 'pointer+keyboard'
+                    ? t('detail.activityKeyboard')
+                    : t('detail.activityPointer')}
+                </Row>
+                <Row label={t('detail.viewer')}>
+                  {computer.capabilities.viewer ? t('detail.available') : t('detail.unavailable')}
+                </Row>
+                <Row label={t('detail.driver')} mono>
+                  {computer.driverVersion}
+                </Row>
+                <Row label={t('detail.screenshots')}>
+                  {computer.screenshotRetentionDays > 0
+                    ? t('detail.retention', { days: computer.screenshotRetentionDays })
+                    : t('detail.notStored')}
+                </Row>
+                <Row label={t('detail.registered')}>
+                  {format.dateTime(new Date(computer.createdAt), { dateStyle: 'medium', timeStyle: 'short' })}
+                </Row>
+                <div className="flex min-h-10 items-center gap-3 border-t border-(--border-subtle) pr-[10px] pl-4">
+                  <span className="w-[108px] flex-none font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                    {t('detail.visibility')}
+                  </span>
+                  <span className="flex-1" />
+                  {computer.canEdit && !revoked ? (
+                    <button
+                      type="button"
+                      className="inline-flex h-7 min-w-0 cursor-pointer items-center gap-[6px] rounded-sm border border-transparent bg-transparent px-[9px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:border-(--border-default) hover:bg-(--surface-hover)"
+                      title={t('visibilityEdit.open')}
+                      aria-label={t('visibilityEdit.open')}
+                      onClick={() => setEditingVisibility(true)}
+                    >
+                      <VisibilityValue visibility={computer.visibility} sharedWith={computer.sharedWith} />
+                      <Icon name="pencil" size={13} color="var(--text-tertiary)" />
+                    </button>
+                  ) : (
+                    <span className="min-w-0 pr-[6px] font-sans text-[12.5px] font-medium leading-normal">
+                      <VisibilityValue visibility={computer.visibility} sharedWith={computer.sharedWith} />
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <ComputerAgentAccessCard computer={computer} />
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Who has control and who waits; a managed computer adds its pool state and actions beside it. */}
-      <div
-        className={
-          computer.allocation
-            ? 'mt-4 grid grid-cols-1 items-start gap-4 desktop:mt-[18px] desktop:grid-cols-2 desktop:gap-[18px]'
-            : 'mt-4 desktop:mt-[18px]'
-        }
-      >
-        <ComputerLeaseCard computer={computer} />
-        {computer.allocation && <ComputerPoolCard computer={computer} onChanged={onChanged} />}
-      </div>
-
-      <div className="mt-4 desktop:mt-[18px]">
-        <ComputerAgentAccessCard computer={computer} />
-      </div>
-
-      <div className="mt-4 desktop:mt-[18px]">
+      {/* Kept mounted while hidden, so an unsaved draft survives a look at another tab. */}
+      <div hidden={tab !== 'policy'}>
         <ComputerPolicyCard computer={computer} onSaved={onChanged} />
       </div>
 
-      {computer.canEditPolicy && (
-        <div className="mt-4 desktop:mt-[18px]">
-          <ComputerActivityCard computer={computer} />
-        </div>
-      )}
+      {tab === 'activity' && showActivity && <ComputerActivityCard computer={computer} />}
 
       {editingVisibility && (
         <VisibilityDialog
@@ -366,6 +485,20 @@ function ComputerDetail({
           }}
           onClose={() => setEditingVisibility(false)}
         />
+      )}
+      {confirm === 'reset' && (
+        <ConfirmationDialog
+          title={t('pool.resetTitle')}
+          confirmLabel={t('pool.resetConfirm')}
+          busyLabel={t('pool.resetBusy')}
+          busy={busy}
+          error={actionError}
+          destructive
+          onConfirm={() => void run(() => resetComputer(computer.id))}
+          onClose={() => setConfirm(null)}
+        >
+          {t('pool.resetBody', { name: computer.name })}
+        </ConfirmationDialog>
       )}
       {confirm === 'revoke' && (
         <ConfirmationDialog
@@ -473,18 +606,28 @@ function VisibilityDialog({
 
 function Meta({ icon, children }: { icon: string; children: ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-      <Icon name={icon} size={14} color="var(--text-tertiary)" />
+    <span className="inline-flex items-center gap-[5px]">
+      <Icon name={icon} size={13} />
       {children}
     </span>
   )
 }
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
+function Row({ label, mono = false, children }: { label: string; mono?: boolean; children: ReactNode }) {
   return (
-    <div className="row grid-cols-[auto_1fr] gap-3">
-      <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">{label}</span>
-      <span className="min-w-0 text-right font-sans text-[12.5px] font-medium leading-normal">{children}</span>
+    <div className="flex min-h-9 items-center gap-3 border-t border-(--border-subtle) px-4 py-[6px]">
+      <span className="w-[108px] flex-none font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+        {label}
+      </span>
+      <span
+        className={
+          mono
+            ? 'min-w-0 flex-1 truncate text-right font-mono text-[12.5px] font-medium leading-normal text-(--text-primary)'
+            : 'min-w-0 flex-1 truncate text-right font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)'
+        }
+      >
+        {children}
+      </span>
     </div>
   )
 }

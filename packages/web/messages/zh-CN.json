@@ -6634,7 +6634,15 @@
       "fix": "修复：",
       "notReported": "尚未报告检查结果",
       "failing": "{count, plural, other {# 项检查失败}}",
-      "warning": "{count, plural, other {# 项警告}}"
+      "warning": "{count, plural, other {# 项警告}}",
+      "summary": {
+        "fail": "{count} 项失败",
+        "warn": "{count, plural, other {# 项警告}}",
+        "ok": "{count} 项通过",
+        "info": "{count} 项提示"
+      },
+      "showPassing": "显示 {count, plural, other {# 项通过的检查}}",
+      "hidePassing": "隐藏通过的检查"
     },
     "detail": {
       "notFound": "找不到电脑",
@@ -6672,7 +6680,10 @@
         "per-agent": "每个智能体一台",
         "manual": "资源池计算机，共享"
       },
-      "ownerAgent": "所属智能体"
+      "ownerAgent": "所属智能体",
+      "tabs": {
+        "overview": "概览"
+      }
     },
     "actions": {
       "stop": "停止",
@@ -6694,8 +6705,16 @@
       "busy": "正在删除…"
     },
     "activity": {
-      "title": "最近活动",
-      "note": "Agent 和查看者的操作，保留 90 天",
+      "title": "活动",
+      "note": "保留 90 天",
+      "filterLabel": "显示以下来源的活动",
+      "filter": {
+        "all": "全部",
+        "viewers": "查看者",
+        "agents": "Agent"
+      },
+      "today": "今天",
+      "yesterday": "昨天",
       "empty": "这台电脑上还没有任何活动。",
       "loading": "正在加载活动…",
       "more": "显示更早的记录",
@@ -6712,22 +6731,21 @@
     "agentAccess": {
       "title": "Agent 访问",
       "ownAgentOnly": "只供创建它的 Agent 使用",
-      "none": "不允许 Agent",
       "noneDescription": "目前没有 Agent 可以使用。",
-      "selected": "指定 Agent",
       "all": "所有 Agent",
       "allDescription": "组织内的每个 Agent 都能使用。",
       "allNoIsolation": "这包括其他成员的 Agent，你的桌面与它们的操作之间没有任何隔离。",
       "unknownAgent": "你不可见的 Agent",
       "noIsolation": "不是你的 Agent",
       "noIsolationHint": "这个 Agent 属于其他成员。你的桌面与它的操作之间没有任何隔离。",
-      "changeOnAgent": "哪些 Agent 使用这台电脑，在每个 Agent 的“工具”页的“电脑”中设置。从 <agents>Agents</agents> 打开一个 Agent，即可授予或撤销这台电脑。",
+      "changeOnAgent": "按 Agent 授予，在“工具 › 电脑”中设置。<agents>打开 Agents</agents>",
       "openAgentTools": "打开 Agent 的工具"
     },
     "policy": {
       "title": "使用策略",
       "readOnly": "只有所有者可以修改",
       "accessTitle": "控制与批准",
+      "accessHint": "同一时间只有一个智能体控制桌面；其他的按先来先到排队。截图和查看无需排队。",
       "mode": "Agent 可以",
       "modeHint": "仅查看只允许截图；控制还允许点击和输入。",
       "modeControl": "查看和控制",
@@ -6749,7 +6767,7 @@
       "shellViewOnly": "仅查看的电脑不运行命令。",
       "shellMode": {
         "off": "从不",
-        "ask": "每条都询问",
+        "ask": "询问",
         "on": "允许"
       },
       "files": "文件",
@@ -6764,19 +6782,22 @@
       "shellNoIsolation": "这是一个人自己的桌面，没有隔离：能运行命令的 Agent 可以做这个账户能做的一切，包括读取它的密钥和已登录的浏览器。",
       "commandLineUnsupported": "这台电脑的守护进程暂不支持命令行，目前仅支持 Linux 电脑。",
       "limitsTitle": "限制",
-      "idle": "空闲释放（秒）",
+      "idle": "空闲释放",
       "idleHint": "无输入超过此时长后释放控制权，10 到 3600。",
-      "max": "最长控制时间（秒）",
+      "max": "最长控制时间",
       "maxHint": "单个会话最多可持有控制权的时长，60 到 86400。",
-      "wait": "排队等待（秒）",
+      "wait": "排队等待",
       "waitHint": "其他 Agent 正在控制时，Agent 排队等待的最长时间，超时后放弃，0 到 600。",
-      "retention": "截图保留（天）",
+      "retention": "截图保留",
       "retentionHint": "0 表示不保存；留空使用部署默认值。",
       "retentionDefault": "默认",
+      "unitSeconds": "秒",
+      "unitDays": "天",
       "driverTools": "开放驱动工具",
       "driverToolsHint": "同时向 Agent 提供驱动自带的窗口级工具。默认关闭。",
       "peerToPeer": "点对点观看",
       "peerToPeerHint": "允许观看画面跨网络直接在浏览器和桌面之间传输。这会向观看者暴露桌面的公网 IP 地址。默认仅对只有所有者可以观看的自托管 Computer 开启。",
+      "advancedTitle": "高级",
       "problem": {
         "idleRange": "空闲释放必须是 10 到 3600 之间的整数。",
         "maxRange": "最长控制时间必须是 60 到 86400 之间的整数。",
@@ -6786,15 +6807,20 @@
         "rootsInvalid": "允许的路径必须是绝对路径，每行一个，最多 32 个。"
       },
       "reset": "重置",
+      "unsaved": "{count, plural, other {# 项未保存的更改}}",
+      "appliesToAll": "适用于每个有访问权限的 Agent。",
       "save": "保存",
       "saving": "正在保存…"
     },
     "viewer": {
       "title": "屏幕",
       "watch": "观看",
-      "close": "关闭",
-      "idle": "实时观看这台电脑的屏幕，需要时接管鼠标和键盘。视频在你的浏览器和桌面之间直连（中继只帮助双方找到彼此）或经 TURN 传输，不经过 AgentConnect 的服务器。",
+      "close": "停止观看",
+      "idle": "实时观看屏幕，需要时接管鼠标和键盘。",
+      "privacy": "视频在你的浏览器和桌面之间直连，或经 TURN 传输，从不经过 AgentConnect。",
       "offline": "这台电脑上线后才能打开查看器。",
+      "offlineSeen": "离线。最后在线 {when}。",
+      "asleep": "已休眠。Agent 下次使用时会唤醒它，也可以在电脑操作菜单中选择“唤醒”。",
       "connecting": "正在连接…",
       "failed": "查看器已停止。",
       "watching": "正在观看，智能体可以继续工作。",
@@ -6842,7 +6868,6 @@
       "resetting": "重置中"
     },
     "pool": {
-      "title": "托管计算机",
       "phase": "资源池状态",
       "error": "最近的问题",
       "hint": {
@@ -6859,14 +6884,9 @@
       "resetBusy": "正在重置…"
     },
     "lease": {
-      "title": "控制权",
-      "note": "同一时间只有一个智能体控制桌面；其他的按先来先到排队。截图和查看无需排队。",
       "free": "没有智能体在控制",
-      "holder": "正在控制",
-      "since": "自 {when}",
-      "queue": "排队中",
-      "queued": "自 {when} 开始等待",
-      "openSession": "打开会话"
+      "holderLine": "{agent} 正在控制",
+      "since": "自 {when}"
     },
     "egress": {
       "title": "托管电脑出口",

@@ -1,10 +1,20 @@
 'use client'
 
 // The embedded viewer (computer-use.md §7, §10), on the Computer detail and in the session dock: watch, take over and release; media never crosses the CP.
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+  type WheelEvent
+} from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import { openComputerViewer, type ComputerDto } from '@/lib/api'
+import { useAgo } from '@/lib/computers'
 import {
   ComputerViewerSession,
   keyToInput,
@@ -32,22 +42,50 @@ export interface ComputerViewerProps {
   createSession?: (deps: ConstructorParameters<typeof ComputerViewerSession>[0]) => ComputerViewerSession
 }
 
-export function ComputerViewerCard({ computer, createSession }: ComputerViewerProps) {
+export function ComputerViewerCard({
+  computer,
+  createSession,
+  control
+}: ComputerViewerProps & {
+  // Who has control of the desktop, beside the title.
+  control?: ReactNode
+}) {
   const t = useTranslations('Computers.viewer')
+  const ago = useAgo()
   const [open, setOpen] = useState(false)
-  const watchable = computer.status !== 'revoked' && computer.status !== 'offline'
+  const offline = computer.status === 'revoked' || computer.status === 'offline'
+  const asleep = computer.status === 'sleeping'
+  const idle = offline
+    ? {
+        icon: 'monitor-off',
+        text:
+          computer.status === 'offline' && computer.lastSeenAt
+            ? t('offlineSeen', { when: ago(computer.lastSeenAt) })
+            : t('offline')
+      }
+    : asleep
+      ? { icon: 'moon', text: t('asleep') }
+      : { icon: 'monitor', text: t('idle') }
   return (
     <div className="card overflow-hidden max-desktop:rounded-lg" data-computer-viewer>
-      <div className="cardhead flex-wrap gap-2">
-        <span className="cardtitle">{t('title')}</span>
+      <div className="cardhead gap-2">
+        <span className="cardtitle flex-none">{t('title')}</span>
+        <span className="ml-[6px] flex min-w-0 flex-1 items-center gap-[6px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          {control}
+        </span>
         {open ? (
-          <Button variant="secondary" size="sm" className="ml-auto" onClick={() => setOpen(false)}>
-            <Icon name="x" size={14} />
+          <Button variant="secondary" size="sm" className="flex-none" onClick={() => setOpen(false)}>
             {t('close')}
           </Button>
         ) : (
-          <Button variant="primary" size="sm" className="ml-auto" disabled={!watchable} onClick={() => setOpen(true)}>
-            <Icon name="monitor-play" size={14} />
+          <Button
+            variant="primary"
+            size="sm"
+            className="flex-none"
+            disabled={offline || asleep}
+            onClick={() => setOpen(true)}
+          >
+            <Icon name="screen-share" size={14} />
             {t('watch')}
           </Button>
         )}
@@ -55,16 +93,23 @@ export function ComputerViewerCard({ computer, createSession }: ComputerViewerPr
       {open ? (
         <ComputerViewerScreen computer={computer} {...(createSession ? { createSession } : {})} />
       ) : (
-        <div className="px-4 py-5 font-sans text-[13px] font-normal leading-[1.55] text-(--text-tertiary)">
-          {watchable ? t('idle') : t('offline')}
+        <div className="flex aspect-[16/10] flex-col items-center justify-center gap-[10px] bg-[#15111a] px-6">
+          <Icon name={idle.icon} size={26} color="#6f6779" />
+          <span className="max-w-[360px] text-center font-sans text-[13px] font-normal leading-[1.5] text-[#b8b0c4]">
+            {idle.text}
+          </span>
         </div>
       )}
+      <div className="flex items-center gap-[7px] border-t border-(--border-subtle) px-4 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+        <Icon name="shield-check" size={13} className="flex-none" />
+        <span>{t('privacy')}</span>
+      </div>
     </div>
   )
 }
 
 export interface ComputerViewerScreenProps extends ComputerViewerProps {
-  // The session dock's narrow column: tighter chrome, and an expand control that fills the window.
+  // The session dock's narrow column: tighter chrome.
   compact?: boolean
 }
 
@@ -166,21 +211,19 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
                 {t('takeControl')}
               </Button>
             ))}
-          {(compact || expanded) && (
-            <span title={expanded ? t('collapse') : t('expand')} data-viewer-expand>
-              <Button
-                variant="secondary"
-                size="sm"
-                ariaLabel={expanded ? t('collapse') : t('expand')}
-                onClick={() => {
-                  setExpanded((value) => !value)
-                  surface.current?.focus()
-                }}
-              >
-                <Icon name={expanded ? 'minimize-2' : 'maximize-2'} size={14} />
-              </Button>
-            </span>
-          )}
+          <span title={expanded ? t('collapse') : t('expand')} data-viewer-expand>
+            <Button
+              variant="secondary"
+              size="sm"
+              ariaLabel={expanded ? t('collapse') : t('expand')}
+              onClick={() => {
+                setExpanded((value) => !value)
+                surface.current?.focus()
+              }}
+            >
+              <Icon name={expanded ? 'minimize-2' : 'maximize-2'} size={14} />
+            </Button>
+          </span>
         </span>
       </div>
       {state?.error && (
