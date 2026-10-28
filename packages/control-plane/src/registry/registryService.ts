@@ -121,6 +121,7 @@ function toView(d: DaemonRecord, profiles: RuntimeProfileRecord[]): DaemonView {
     visibility: d.visibility,
     sharedWith: d.sharedWith,
     sessionRetention: d.sessionRetention,
+    autoUpgrade: d.autoUpgrade,
     memberSetId: d.memberSetId
   }
 }
@@ -231,6 +232,11 @@ export class DaemonRegistryService implements DaemonRegistry {
     byUserId?: string
   ): Promise<DaemonView> {
     const d = await this.daemons.setSessionRetention(orgId, daemonId, sessionRetention, byUserId)
+    return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
+  }
+
+  async setAutoUpgrade(orgId: OrgId, daemonId: DaemonId, autoUpgrade: boolean, byUserId?: string): Promise<DaemonView> {
+    const d = await this.daemons.setAutoUpgrade(orgId, daemonId, autoUpgrade, byUserId)
     return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
   }
 

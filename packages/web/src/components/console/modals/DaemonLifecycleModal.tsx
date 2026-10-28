@@ -7,6 +7,7 @@ import { getDaemonLifecycleOp, type DaemonLifecycleOpDto } from '@/lib/api'
 import { daemonLifecycleLabel } from '../DaemonLifecycleBadge'
 import type { DaemonRow } from '@/lib/data'
 import { registerCommandedLifecycleOpId } from '@/lib/daemon-notifications'
+import { isUpgradeAvailable } from '@/lib/version'
 import { Button, Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 
@@ -93,6 +94,8 @@ export default function DaemonLifecycleModal({
   const title = isUpgrade ? t('upgradeTitle') : t('restartTitle')
   const icon = isUpgrade ? 'circle-arrow-up' : 'refresh-cw'
   const noTargets = isUpgrade && options.length === 0
+  // The CP turns auto-upgrade off with a downgrade below the announced release, so say so first.
+  const disablesAutoUpgrade = isUpgrade && daemon.autoUpgrade && isUpgradeAvailable(version, daemon.latestVersion)
   const succeeded = !gone && tracked?.status === 'succeeded'
   const failed = gone || tracked?.status === 'failed'
 
@@ -155,6 +158,12 @@ export default function DaemonLifecycleModal({
                       ))}
                     </select>
                   </div>
+                  {disablesAutoUpgrade && (
+                    <span className="mt-2 flex items-start gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
+                      <Icon name="info" size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
+                      {t('downgradeDisablesAutoUpgrade')}
+                    </span>
+                  )}
                 </div>
               ))}
           </>

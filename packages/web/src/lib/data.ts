@@ -2400,6 +2400,17 @@ export interface DaemonLifecycleOp {
   phase?: DaemonLifecyclePhase | null
   targetVersion: string | null
   outcome: string | null
+  /** Who opened the op: the owner (`manual`) or the daemon's own upgrader (`auto`); absent ⇒ manual. */
+  trigger?: 'manual' | 'auto'
+}
+
+/** The daemon's most recent automatic upgrade (daemon-auto-upgrade.md §8). */
+export interface DaemonAutoUpgradeResult {
+  id: string
+  status: 'pending' | 'succeeded' | 'failed'
+  targetVersion: string | null
+  outcome: string | null
+  settledAt: string | null
 }
 
 export interface DaemonRow {
@@ -2423,6 +2434,12 @@ export interface DaemonRow {
   lifecycleOp: DaemonLifecycleOp | null
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
+  /** The daemon installs new releases itself and restarts when idle. */
+  autoUpgrade: boolean
+  /** The daemon advertised auto-upgrade: supervised by the service or CLI, and not a pool member. */
+  autoUpgradeSupported: boolean
+  /** The most recent automatic upgrade, or null when there has been none. */
+  lastAutoUpgrade: DaemonAutoUpgradeResult | null
   /** Actual daemon connection/readiness. Never replaced by a presentation-only lifecycle state. */
   status: ConnectionStatusKey
   /** An install-wide pool member: managed infrastructure every org shares, one row per

@@ -60,7 +60,8 @@ import {
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
-  SESSION_VISIBILITY_FEATURE
+  SESSION_VISIBILITY_FEATURE,
+  DAEMON_LIFECYCLE_BEGIN_FEATURE
 } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import type { Handler } from './index.js'
@@ -121,9 +122,12 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   // register/ok grows with the daemon's agents and the org's conversations, so it is the first frame that may need fragments.
   if (req.capabilities.features.includes(FRAME_FRAGMENTS_FEATURE)) conn.enableFrameFragments()
   conn.state = 'READY'
+  const release = deps.daemonRelease?.current()
   conn.replyTo(frame, 'register/ok', {
     ...snap,
     relays,
+    // daemon-auto-upgrade.md §4.1: re-announces the release a dropped push may have missed.
+    ...(release ? { release } : {}),
     ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
     // A shared image picks its original's home at publication, before any signing (webchat-generated-images.md §5).
     ...(deps.fileTransfer ? { fileTransfer: { maxBytes: deps.fileTransfer.maxBytes } } : {}),
@@ -222,7 +226,9 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       // A daemon socket reports explicit credential-lifecycle events only to a CP that applies them.
       ...(deps.socketBotRevocation ? [INTEGRATION_REVOKED_FEATURE] : []),
       // A daemon socket reports the tenant its traffic named only to a CP that records it.
-      ...(deps.socketBotTenant ? [INTEGRATION_TENANT_FEATURE] : [])
+      ...(deps.socketBotTenant ? [INTEGRATION_TENANT_FEATURE] : []),
+      // daemon-auto-upgrade.md §6: this CP opens the record of a daemon-chosen upgrade on `daemon/lifecycle/begin`.
+      DAEMON_LIFECYCLE_BEGIN_FEATURE
     ]
   })
   deps.connReg.markReady(conn.daemonId, conn)

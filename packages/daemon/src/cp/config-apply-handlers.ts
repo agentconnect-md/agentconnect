@@ -40,6 +40,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import { mergeConfigPush, type ConfigApply } from './config-apply.js'
+import { splitAutoUpgradeKeys, type AutoUpgradeConfigSink } from '../lifecycle/auto-upgrader.js'
 import { makeLogger, type Logger } from '../log.js'
 import { formatErr } from '../daemon/text.js'
 import type { Config, RuntimeDef } from '../config/config-schema.js'
@@ -84,6 +85,8 @@ export interface ConfigApplyCoreHost {
   /** The deployment's transfer cache as this register saw it; undefined ⇒ none. */
   setFileTransfer(transfer: { maxBytes: number } | undefined): void
   flushReconcile(): Promise<void>
+  /** Where the auto-upgrade switch and announced release go instead of `cfg`. */
+  autoUpgrade?(): AutoUpgradeConfigSink | undefined
 }
 
 /** The CP-owned in-memory definition registries this daemon converges. */
@@ -196,7 +199,12 @@ export interface ConfigApplyHost
     ConfigApplyControlHost {}
 
 export function applyConfigPush(host: ConfigApplyCoreHost, keys: Record<string, unknown>): void {
-  const { applied, ignored } = mergeConfigPush(host.cfg(), keys)
+  const { upgrade, rest } = splitAutoUpgradeKeys(keys)
+  const sink = host.autoUpgrade?.()
+  const routed = sink ? sink.applyConfigKeys(upgrade) : { applied: [], ignored: Object.keys(upgrade) }
+  const merged = mergeConfigPush(host.cfg(), rest)
+  const applied = [...merged.applied, ...routed.applied]
+  const ignored = [...merged.ignored, ...routed.ignored]
   if (applied.includes('logging.level')) host.setLog(makeLogger(host.cfg().logging.level))
   if (applied.length) host.log().info(`cp: applied config keys: ${applied.join(', ')}`)
   if (ignored.length) host.log().warn(`cp: ignored config keys: ${ignored.join(', ')}`)
@@ -208,6 +216,7 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
   // Console-set finished-session retention — the reconnect baseline for the
   // `config/push` hot update. Absent (older CP) ⇒ keep the local config value.
   if (snap.sessionRetention) host.cfg().sessions.retention = snap.sessionRetention
+  host.autoUpgrade?.()?.applyRegisterOk(snap)
   // Reserve every agent drop before ANY fallible snapshot convergence.
   // Otherwise an unrelated integration/memory write could abort the frame
   // while a CP-removed agent remains live with no gate or durable marker.

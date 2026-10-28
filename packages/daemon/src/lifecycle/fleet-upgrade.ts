@@ -8,6 +8,7 @@ import type { Clock } from '@agentconnect.md/connection'
 import { cliEntryPointer, resolveRoot } from '../paths.js'
 import { readCliEntry, runCliUpgrade } from './cli-upgrade.js'
 import type { BootstrapUpgradeOutcome } from '../cp/client.js'
+import type { AutoUpgradeLifecycle } from './auto-upgrader.js'
 import type { Logger } from '../log.js'
 import { DAEMON_VERSION } from '../version.js'
 import { formatErr } from '../daemon/text.js'
@@ -48,6 +49,34 @@ export class FleetUpgradeCoordinator {
   private fleetExitStarted = false
 
   constructor(private readonly host: FleetUpgradeHost) {}
+
+  /** A CP-commanded or automatic lifecycle operation holds the guard. */
+  lifecycleBusy(): boolean {
+    return this.lifecycleInFlight
+  }
+
+  /** The AutoUpgrader's seam onto the same admission, installer and drain-and-exit path, so the two kinds exclude each other. */
+  autoUpgradeLifecycle(): AutoUpgradeLifecycle {
+    return {
+      reserve: (targetVersion) => {
+        const admission = this.admitFleetExit('upgrade', targetVersion)
+        if (!admission.accepted) return admission
+        return { accepted: true, root: admission.root, cliEntry: admission.cliEntry! }
+      },
+      release: () => {
+        if (!this.fleetExitStarted) this.lifecycleInFlight = false
+      },
+      install: (cliEntry, targetVersion, root) =>
+        (this.host.upgradeInstaller() ?? runCliUpgrade)(
+          cliEntry,
+          targetVersion,
+          root,
+          this.host.log(),
+          this.host.configPath()
+        ),
+      exit: (operationId) => this.finishFleetExit('upgrade', operationId)
+    }
+  }
 
   private admitFleetExit(kind: FleetExitKind, targetVersion?: string): FleetAdmission {
     const log = this.host.log()

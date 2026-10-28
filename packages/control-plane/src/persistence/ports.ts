@@ -271,6 +271,8 @@ export interface DaemonRecord {
   sharedWith: string[] // complete app_user.id audience when visibility='restricted'
   /** Console-set finished-session retention window ('never' | '7d' | '30d' | '90d'). */
   sessionRetention: string
+  /** Console-set auto-upgrade switch (daemon-auto-upgrade.md §3). */
+  autoUpgrade: boolean
   lastModifiedAt: Date // last human edit (provision/rename); defaults to createdAt
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
   /** The member set this daemon is in (daemon-groups.md §2); null ⇒ it owns its agents outright. */
@@ -322,6 +324,8 @@ export interface DaemonRepo {
     sessionRetention: string,
     byUserId?: string
   ): Promise<DaemonRecord>
+  /** Set the console's auto-upgrade switch (a human edit when `byUserId` is given). Org-fenced like {@link DaemonRepo.rename}. */
+  setAutoUpgrade(orgId: OrgId, daemonId: DaemonId, autoUpgrade: boolean, byUserId?: string): Promise<DaemonRecord>
   /** Set the visibility + share set (the dedicated `/sharing` write path). Stamps
    *  the last-modified audit; `byUserId` is the editing WebUI principal (absent
    *  under devAuth). Org-fenced like {@link DaemonRepo.rename}. */
@@ -390,11 +394,17 @@ export interface DaemonRepo {
 // ───────────────────────────────────────────────────────────────────────────
 
 export type DaemonLifecycleOpType = 'restart' | 'upgrade'
-export type DaemonLifecycleOpStatus = 'pending' | 'succeeded' | 'failed'
+export type DaemonLifecycleOpStatus = 'pending' | 'succeeded' | 'failed' | 'deferred'
+/** A console command (`manual`) or the daemon's own auto-upgrader (`auto`, daemon-auto-upgrade.md §6). */
+export type DaemonLifecycleOpTrigger = 'manual' | 'auto'
 
 export interface OpenLifecycleOpInput {
   daemonId: DaemonId
   op: DaemonLifecycleOpType
+  /** Defaults to `manual`. */
+  trigger?: DaemonLifecycleOpTrigger
+  /** Opened already armed — the daemon itself started an automatic op. */
+  acceptedAt?: Date
   /** The version the daemon must reach for an upgrade to close `succeeded`; omit for restart. */
   targetVersion?: string
   /** app_user.id that commanded it (audit); absent under devAuth / system. */
@@ -412,6 +422,7 @@ export interface DaemonLifecycleOpRecord {
   id: string
   daemonId: DaemonId
   op: DaemonLifecycleOpType
+  trigger: DaemonLifecycleOpTrigger
   targetVersion: string | null
   initiator: string | null
   status: DaemonLifecycleOpStatus
@@ -442,11 +453,14 @@ export interface DaemonLifecycleOpRepo {
   getById(id: string): Promise<DaemonLifecycleOpRecord | null>
   /** The single pending op for a daemon, or null. */
   pendingForDaemon(daemonId: DaemonId): Promise<DaemonLifecycleOpRecord | null>
-  /** The most recent op for a daemon (ANY status), or null — the fleet DTO reads this so
-   *  a terminal (succeeded/failed) op is still observable by the console after it settles. */
+  /** The most recent non-deferred op for a daemon, or null — terminal ops stay observable to the console. */
   latestForDaemon(daemonId: DaemonId): Promise<DaemonLifecycleOpRecord | null>
-  /** The most recent op per daemon across a set (ANY status) — the batched fleet read (no N+1). */
+  /** The most recent non-deferred op per daemon across a set — the batched fleet read (no N+1). */
   latestForDaemons(daemonIds: DaemonId[]): Promise<DaemonLifecycleOpRecord[]>
+  /** The most recent non-deferred `auto` op per daemon across a set — the console's last automatic outcome. */
+  latestAutoForDaemons(daemonIds: DaemonId[]): Promise<DaemonLifecycleOpRecord[]>
+  /** Delete `deferred` rows settled before `cutoff`; returns how many. */
+  deleteDeferredBefore(cutoff: Date): Promise<number>
   /** Fail every `pending` op past its `deadline` (optionally scoped to one daemon) — the
    *  clock-driven expiry that unblocks a daemon whose command was accepted but which never
    *  re-registered. Returns the number expired. */

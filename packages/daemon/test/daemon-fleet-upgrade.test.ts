@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RESERVED_RESTART_CODE } from '@agentconnect.md/protocol'
+import { DAEMON_AUTO_UPGRADE_FEATURE, RESERVED_RESTART_CODE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { ConfigSchema } from '../src/config/config-schema.js'
 import { FakeClock } from './cp/fake-clock.js'
 
 const roots: string[] = []
@@ -97,5 +98,32 @@ describe('daemon fleet upgrade coordination', () => {
     )
     expect(stop).not.toHaveBeenCalled()
     expect(requestExit).not.toHaveBeenCalled()
+  })
+
+  it('advertises auto-upgrade exactly when an unattended upgrade is possible', () => {
+    const root = scaffold()
+    const features = (opts: Record<string, unknown>) => {
+      const daemon = new Daemon({ root, ...opts })
+      Object.assign(daemon, { root, cfg: ConfigSchema.parse({ version: 1 }) })
+      return (daemon as any).registrationFeatures() as string[]
+    }
+    expect(features({ supervisor: 'cli' })).toContain(DAEMON_AUTO_UPGRADE_FEATURE)
+    expect(features({ supervisor: 'service' })).toContain(DAEMON_AUTO_UPGRADE_FEATURE)
+    expect(features({})).not.toContain(DAEMON_AUTO_UPGRADE_FEATURE)
+    expect(features({ supervisor: 'k8s' })).not.toContain(DAEMON_AUTO_UPGRADE_FEATURE)
+  })
+
+  it('keeps CP-commanded and automatic lifecycle operations mutually exclusive', () => {
+    const upgradeInstaller = vi.fn(() => new Promise<boolean>(() => {}))
+    const daemon = new Daemon({ root: scaffold(), supervisor: 'cli', upgradeInstaller, requestExit: vi.fn() })
+    const fleet = (daemon as any).fleetUpgrade
+    const auto = fleet.autoUpgradeLifecycle()
+    expect(auto.reserve('9.9.9')).toMatchObject({ accepted: true })
+    expect(fleet.scheduleFleetExit('restart')).toMatchObject({ accepted: false })
+    expect(auto.reserve('9.9.9')).toMatchObject({ accepted: false })
+    auto.release()
+    expect(fleet.lifecycleBusy()).toBe(false)
+    expect(fleet.scheduleFleetExit('upgrade', '9.9.9')).toMatchObject({ accepted: true })
+    expect(auto.reserve('9.9.9')).toMatchObject({ accepted: false })
   })
 })

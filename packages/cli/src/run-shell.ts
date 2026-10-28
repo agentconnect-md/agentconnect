@@ -4,6 +4,7 @@ import { repairDaemonBundleModes } from './install.js'
 import { versionDir } from './paths.js'
 import { runRecoveryFlow, shouldOfferRecovery } from './run-recovery.js'
 import { spawnDaemonViaLoginShell } from './service-spawn.js'
+import { handleTrialExit } from './upgrade-trial.js'
 import { versionInstall } from './version-commands.js'
 import { currentVersion, readMeta } from './version-store.js'
 
@@ -42,8 +43,9 @@ export async function ensureDaemonInstalled(root: string): Promise<void> {
  * as one. It spawns the daemon, and when the daemon exits with the reserved
  * restart code (a planned restart/upgrade), it re-resolves `<root>/current` and
  * respawns the (possibly upgraded) bundle. Any other exit is propagated — except
- * an interactive startup failure, where the recovery prompt (run-recovery.ts)
- * may switch versions and respawn instead.
+ * a failed start of an auto-upgrade trial (upgrade-trial.ts), and an interactive
+ * startup failure, where the recovery prompt (run-recovery.ts) may switch
+ * versions and respawn instead.
  *
  * The child runs with AGENTCONNECT_SUPERVISOR=cli so the daemon knows it is
  * shell-supervised and accepts CP-commanded restart/upgrade (§7.1).
@@ -127,14 +129,19 @@ export async function runShell(root: string, argv: string[]): Promise<never> {
       continue
     }
     if (next === 'respawn') continue // planned restart/upgrade — respawn current
+    const devEntry = Boolean(process.env.AGENTCONNECT_DAEMON_ENTRY)
+    const elapsedMs = Date.now() - spawnedAt
+    // An auto-upgrade trial owns a failed start before the interactive menu does, and never prompts.
+    if ((await handleTrialExit(root, result, { stopRequested, devEntry, elapsedMs })) === 'respawn' && !stopRequested)
+      continue
     // Startup failure in an interactive foreground run: offer rollback /
     // re-download / manual version selection instead of just dying (run-recovery.ts).
     const recoverable = shouldOfferRecovery(result, {
       stopRequested,
       supervised: process.env.AGENTCONNECT_SUPERVISOR === 'service',
-      devEntry: Boolean(process.env.AGENTCONNECT_DAEMON_ENTRY),
+      devEntry,
       interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
-      elapsedMs: Date.now() - spawnedAt
+      elapsedMs
     })
     const recovered =
       recoverable && (await runRecoveryFlow(root, result, { signal: recoveryStop.signal })) === 'respawn'

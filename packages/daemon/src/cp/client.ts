@@ -26,7 +26,10 @@ import {
   type CapabilityWithdrawReq,
   type CapabilityWithdrawResult,
   type AssistantFollowUpWatchReq,
-  type AssistantFollowUpWatchResult
+  type AssistantFollowUpWatchResult,
+  DAEMON_LIFECYCLE_BEGIN_FEATURE,
+  type DaemonLifecycleBegin,
+  type DaemonLifecycleBeginOk
 } from '@agentconnect.md/protocol'
 /**
  * `CpClient` — the daemon-side CP WebSocket client FSM (protocol §2.1). Dials
@@ -360,6 +363,8 @@ export interface CpClientDeps
    *  runtime profiles are emitted. The daemon uses this to kick off background
    *  runtime probing and push the refreshed snapshot via `emitDaemonRuntimes`. */
   onReady?: () => void | Promise<void>
+  /** The CP authenticated this daemon but refused `register` with a non-retryable error (auto-upgrade trial rollback). */
+  onRegisterRejected?: (err: WireError) => void
 }
 
 export class CpClient {
@@ -719,7 +724,12 @@ export class CpClient {
     }
     this.registerControlBarrier = barrier
     try {
-      const regOk = await this.correlator.request(register, (encoded) => expectedTransport.send(encoded))
+      const regOk = await this.correlator
+        .request(register, (encoded) => expectedTransport.send(encoded))
+        .catch((err) => {
+          if (err instanceof WireError && !err.retryable) this.deps.onRegisterRejected?.(err)
+          throw err
+        })
       if (regOk.type !== 'register/ok') throw new Error(`expected register/ok, got ${regOk.type}`)
       const snap = regOk.payload as Parameters<ConfigApply['applyReconcileSnapshot']>[0]
       this.serverFeatures = new Set((regOk.payload as { serverFeatures?: string[] }).serverFeatures ?? [])
@@ -810,6 +820,39 @@ export class CpClient {
     if (reply.type !== 'ack' || !(reply.payload as { ok?: boolean }).ok) {
       throw new Error('control plane rejected lifecycle progress')
     }
+  }
+
+  /** READY and the CP accepts `daemon/lifecycle/begin` (daemon-auto-upgrade.md §6). */
+  canBeginLifecycle(): boolean {
+    return (
+      this.state === 'READY' && this.transport !== undefined && this.serverFeatures.has(DAEMON_LIFECYCLE_BEGIN_FEATURE)
+    )
+  }
+
+  /** True between dialing and READY, when `serverFeatures` is not settled yet. */
+  handshaking(): boolean {
+    return this.state === 'CONNECTING' || this.state === 'AUTHENTICATING' || this.state === 'REGISTERING'
+  }
+
+  /** Open the CP record of an automatic upgrade; rejects with a `CONFLICT` WireError while another operation is pending. */
+  async beginLifecycle(req: DaemonLifecycleBegin): Promise<DaemonLifecycleBeginOk> {
+    const transport = this.transport
+    if (!transport || !this.canBeginLifecycle()) {
+      throw new WireError(
+        'INTERNAL',
+        `control plane unreachable for daemon/lifecycle/begin (client ${this.state})`,
+        true
+      )
+    }
+    const reply = await this.correlator.request(
+      buildEnvelope('daemon/lifecycle/begin', req),
+      (encoded) => transport.send(encoded),
+      { maxTries: 1, ackTimeoutMs: 10_000 }
+    )
+    if (reply.type !== 'daemon/lifecycle/begin/ok') {
+      throw new WireError('INTERNAL', `expected daemon/lifecycle/begin/ok, got ${reply.type}`, false)
+    }
+    return reply.payload as DaemonLifecycleBeginOk
   }
 
   /** The daemon's capabilities plus what this client itself reads off the wire. */

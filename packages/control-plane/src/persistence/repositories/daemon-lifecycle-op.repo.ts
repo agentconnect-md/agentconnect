@@ -7,6 +7,7 @@
  * route), and the row is closed out-of-band by the register→READY closure or a decline.
  */
 import type { DaemonLifecycleOp } from '../../generated/prisma/client.js'
+import { LIFECYCLE_DEFERRED_REASON } from '@agentconnect.md/protocol'
 import type { DaemonLifecyclePhase, DaemonLifecycleProgress } from '@agentconnect.md/protocol'
 import type { PrismaLike } from '../prisma.js'
 import type {
@@ -14,6 +15,7 @@ import type {
   DaemonLifecycleOpRecord,
   DaemonLifecycleOpType,
   DaemonLifecycleOpStatus,
+  DaemonLifecycleOpTrigger,
   OpenLifecycleOpInput
 } from '../ports.js'
 import { DaemonId } from '../../domain/ids.js'
@@ -23,6 +25,7 @@ function toRecord(o: DaemonLifecycleOp): DaemonLifecycleOpRecord {
     id: o.id,
     daemonId: DaemonId(o.daemonId),
     op: o.op as DaemonLifecycleOpType,
+    trigger: o.trigger as DaemonLifecycleOpTrigger,
     targetVersion: o.targetVersion,
     initiator: o.initiator,
     status: o.status as DaemonLifecycleOpStatus,
@@ -46,13 +49,24 @@ export class PgDaemonLifecycleOpRepo implements DaemonLifecycleOpRepo {
     progress: DaemonLifecycleProgress,
     at: Date
   ): Promise<boolean> {
+    const where = {
+      id: progress.operationId,
+      daemonId,
+      status: 'pending' as const,
+      commandEpoch: { lte: epoch },
+      deadline: { gt: at }
+    }
+    // An automatic upgrade put off because the daemon stayed busy is deferred, not failed (daemon-auto-upgrade.md §6).
+    if (progress.phase === 'failed' && progress.reason === LIFECYCLE_DEFERRED_REASON) {
+      const deferred = await this.db.daemonLifecycleOp.updateMany({
+        where: { ...where, trigger: 'auto' },
+        data: { status: 'deferred', outcome: progress.reason, settledAt: at }
+      })
+      if (deferred.count > 0) return true
+    }
     const result = await this.db.daemonLifecycleOp.updateMany({
       where: {
-        id: progress.operationId,
-        daemonId,
-        status: 'pending',
-        commandEpoch: { lte: epoch },
-        deadline: { gt: at },
+        ...where,
         ...(progress.phase === 'preparing'
           ? { op: 'upgrade' as const, OR: [{ phase: null }, { phase: 'preparing' }] }
           : {})
@@ -70,6 +84,8 @@ export class PgDaemonLifecycleOpRepo implements DaemonLifecycleOpRepo {
       data: {
         daemonId: input.daemonId,
         op: input.op,
+        trigger: input.trigger ?? 'manual',
+        acceptedAt: input.acceptedAt ?? null,
         targetVersion: input.targetVersion ?? null,
         initiator: input.initiator ?? null,
         commandEpoch: input.commandEpoch,
@@ -105,17 +121,33 @@ export class PgDaemonLifecycleOpRepo implements DaemonLifecycleOpRepo {
 
   async latestForDaemon(daemonId: DaemonId): Promise<DaemonLifecycleOpRecord | null> {
     const row = await this.db.daemonLifecycleOp.findFirst({
-      where: { daemonId },
+      where: { daemonId, status: { not: 'deferred' } },
       orderBy: { startedAt: 'desc' }
     })
     return row ? toRecord(row) : null
   }
 
   async latestForDaemons(daemonIds: DaemonId[]): Promise<DaemonLifecycleOpRecord[]> {
+    return this.latestPerDaemon(daemonIds, {})
+  }
+
+  async latestAutoForDaemons(daemonIds: DaemonId[]): Promise<DaemonLifecycleOpRecord[]> {
+    return this.latestPerDaemon(daemonIds, { trigger: 'auto' })
+  }
+
+  async deleteDeferredBefore(cutoff: Date): Promise<number> {
+    const res = await this.db.daemonLifecycleOp.deleteMany({ where: { status: 'deferred', settledAt: { lt: cutoff } } })
+    return res.count
+  }
+
+  private async latestPerDaemon(
+    daemonIds: DaemonId[],
+    extra: { trigger?: DaemonLifecycleOpTrigger }
+  ): Promise<DaemonLifecycleOpRecord[]> {
     if (daemonIds.length === 0) return []
     // Newest-first, then keep the first row seen per daemon — the most recent op each.
     const rows = await this.db.daemonLifecycleOp.findMany({
-      where: { daemonId: { in: daemonIds } },
+      where: { daemonId: { in: daemonIds }, status: { not: 'deferred' }, ...extra },
       orderBy: { startedAt: 'desc' }
     })
     const seen = new Set<string>()
