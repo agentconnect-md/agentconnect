@@ -326,6 +326,18 @@ async function inspectBundle(
   }
   const seen = new Set<string>()
   let entries = 0
+  // Removes `dir` bottom-up when it holds only directories; rmdir refuses one that gained an entry meanwhile.
+  const removeFileless = async (dir: string): Promise<boolean> => {
+    for (const entry of await fsp.readdir(dir, { withFileTypes: true })) {
+      entries += 1
+      if (entries > 1_024) fail('skill mutation bundle has too many entries')
+      if (!entry.isDirectory() || !(await removeFileless(join(dir, entry.name)))) return false
+    }
+    return fsp.rmdir(dir).then(
+      () => true,
+      () => false
+    )
+  }
   const walk = async (dir: string, prefix = ''): Promise<void> => {
     for (const entry of await fsp.readdir(dir, { withFileTypes: true })) {
       entries += 1
@@ -348,6 +360,9 @@ async function inspectBundle(
           await fsp.rm(abs, { recursive: true, force: true })
           continue
         }
+        // A runtime's write-staging directory (Claude Code's `.claude/.cc-writes`, made wherever a session works) holds
+        // nothing to vouch for, so a file-less directory is dropped too.
+        if (!directories.has(rel) && (await removeFileless(abs))) continue
         if (!directories.has(rel)) fail('skill mutation bundle contains an unexpected directory')
         await walk(abs, rel)
         continue
