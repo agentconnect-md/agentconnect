@@ -724,7 +724,7 @@ describe('AcpHost — account-bound app isolation', () => {
   })
 
   it("hands the agent's operator instructions to Codex's Guardian after a policy the config already set", async () => {
-    const raw = JSON.stringify({ auto_review: { extra_policy: 'Deployment policy.' } })
+    const raw = JSON.stringify({ auto_review: { policy: 'Deployment policy.' } })
     const instructions = 'Escalate by posting to Slack #support.'
     const out = await runIsolatedFixture(
       'codex-acp',
@@ -738,7 +738,7 @@ describe('AcpHost — account-bound app isolation', () => {
 
     const echoed = JSON.parse(out.find((line) => line.startsWith('env:'))?.slice('env:'.length) ?? '')
     expect(echoed.auto_review).toEqual({
-      extra_policy: `Deployment policy.\n\n${codexGuardianOperatorPolicy(instructions)}`
+      policy: `Deployment policy.\n\n${codexGuardianOperatorPolicy(instructions)}`
     })
   })
 

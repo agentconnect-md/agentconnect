@@ -3,8 +3,9 @@
 // The override must be the top-level `openai_base_url` key: Codex merges configured
 // `model_providers` with entry().or_insert(), so a `model_providers.openai` entry can never
 // replace the built-in provider and its base_url is discarded.
-// This module is import-free on purpose: the sandbox shim bundle must not drag the daemon's
+// This module imports only leaf constants on purpose: the sandbox shim bundle must not drag the daemon's
 // credential paths into the runtime image (see tsdown.shim.config.ts).
+import { CODEX_GUARDIAN_DEFAULT_POLICY } from './codex-guardian-default-policy.js'
 
 /** The runtime's own default endpoint — the third layer of the sanctioned injection precedence
  *  (issued base > deployment base > this), so an endpoint-less key still rides the gateway
@@ -114,15 +115,15 @@ export function codexGuardianOperatorPolicy(instructions: string | undefined): s
   ].join('\n')
 }
 
-/** Appends a policy to Codex's Guardian `auto_review.extra_policy`, after any the caller's CODEX_CONFIG already set. */
+/** Appends a policy to Codex's Guardian `auto_review.policy` — the caller's, else Codex's default — since the catalog template drops `extra_policy`. */
 export function codexConfigWithGuardianPolicy(raw: string | undefined, policy: string): string {
   const config = objectFromJson(raw, 'CODEX_CONFIG')
   const autoReview = record(config.auto_review, 'CODEX_CONFIG.auto_review')
-  const existing = autoReview.extra_policy
+  const existing = autoReview.policy
   if (existing !== undefined && typeof existing !== 'string')
-    throw new Error('CODEX_CONFIG.auto_review.extra_policy must be a string')
-  const extraPolicy = existing?.trim() ? `${existing}\n\n${policy}` : policy
-  return JSON.stringify({ ...config, auto_review: { ...autoReview, extra_policy: extraPolicy } })
+    throw new Error('CODEX_CONFIG.auto_review.policy must be a string')
+  const base = existing?.trim() ? existing : CODEX_GUARDIAN_DEFAULT_POLICY
+  return JSON.stringify({ ...config, auto_review: { ...autoReview, policy: `${base}\n\n${policy}` } })
 }
 
 // Codex offers `request_user_input` — the only path from a Codex turn to our ACP form elicitation — in
