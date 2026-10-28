@@ -506,6 +506,8 @@ model Daemon {
   // delivers it (register/ok baseline + config/push hot update); the daemon's hourly
   // retention sweep is what actually deletes expired sessions.
   sessionRetention String @default("7d")
+  // Auto-upgrade switch (daemon-auto-upgrade.md §3): delivered like sessionRetention; the daemon picks the moment.
+  autoUpgrade      Boolean @default(false)
 
   // ── fencing root ──
   sessionEpoch BigInt @default(0) @db.BigInt // bumped each successful (re)auth
@@ -570,12 +572,20 @@ enum DaemonLifecycleOpStatus {
   pending
   succeeded
   failed
+  deferred // an automatic upgrade the daemon put off because it stayed busy; ignored by the console badge
+}
+
+// Who started the op: a console command, or the daemon's own auto-upgrader (daemon-auto-upgrade.md §6).
+enum DaemonLifecycleOpTrigger {
+  manual
+  auto
 }
 
 model DaemonLifecycleOp {
   id            String                  @id @default(cuid())
   daemonId      String                  @db.Uuid
   op            DaemonLifecycleOpType
+  trigger       DaemonLifecycleOpTrigger @default(manual)
   targetVersion String? // the version to reach (upgrade only); null for restart
   initiator     String? // app_user.id that commanded it; null under devAuth / system
   status        DaemonLifecycleOpStatus @default(pending)

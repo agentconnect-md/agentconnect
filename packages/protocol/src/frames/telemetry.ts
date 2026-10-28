@@ -408,6 +408,18 @@ export const DaemonLifecycleProgress = z.object({
 })
 export type DaemonLifecycleProgress = z.infer<typeof DaemonLifecycleProgress>
 
+// D→C REQ: a daemon opens the record of an upgrade it chose itself; reply `daemon/lifecycle/begin/ok` or error CONFLICT.
+export const DaemonLifecycleBegin = z.object({
+  op: z.literal('upgrade'),
+  trigger: z.literal('auto'),
+  fromVersion: z.string().min(1).max(128),
+  targetVersion: z.string().min(1).max(128)
+})
+export type DaemonLifecycleBegin = z.infer<typeof DaemonLifecycleBegin>
+
+export const DaemonLifecycleBeginOk = z.object({ operationId: z.string().min(1).max(200) })
+export type DaemonLifecycleBeginOk = z.infer<typeof DaemonLifecycleBeginOk>
+
 /** Fleet: drain+exit, supervisor restarts — C→D REQ, protocol §8.3 / frame #27. */
 export const DaemonRestart = z.object({
   operationId: z.string().optional(),

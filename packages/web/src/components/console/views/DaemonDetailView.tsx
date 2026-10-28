@@ -29,6 +29,7 @@ import { useModal } from '@/components/console/ModalProvider'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import { DaemonLifecycleBadge, daemonLifecycleLabel } from '@/components/console/DaemonLifecycleBadge'
 import { DaemonUpgradeBadge } from '@/components/console/DaemonUpgradeBadge'
+import { DaemonAutoUpgradeSetting } from '@/components/console/DaemonAutoUpgradeSetting'
 import { NotFound } from '@/components/console/NotFound'
 import {
   FleetAgentsCard,
@@ -531,6 +532,7 @@ export default function DaemonDetailView() {
               </span>
             </div>
           ))}
+          <DaemonAutoUpgradeSetting daemon={daemon} mobile />
           <div className="flex items-center justify-between gap-4 border-t border-(--border-subtle) px-4 py-3">
             <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
               {t('created')}
@@ -814,6 +816,7 @@ export default function DaemonDetailView() {
             {labeled(t('status'), s.label)}
             {labeled(t('version'), daemon.version)}
             {pending && labeled(t('pending'), pendingLabel)}
+            <DaemonAutoUpgradeSetting daemon={daemon} />
             {labeled(t('lastSeen'), daemon.uptime)}
             <div className="row grid-cols-[auto_1fr] gap-3">
               <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">

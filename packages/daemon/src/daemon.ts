@@ -82,6 +82,7 @@ import {
   READ_ACCESS_LINKED_V1_FEATURE,
   READ_ACCESS_BATCH_V1_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
+  DAEMON_AUTO_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITEA_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
@@ -210,7 +211,9 @@ import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { setTimeout as sleepFor } from 'node:timers/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
-import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
+import { readCliEntry, runCliCommand, runCliUpgrade } from './lifecycle/cli-upgrade.js'
+import { AutoUpgrader, type AutoUpgradeHost } from './lifecycle/auto-upgrader.js'
+import { QuiescenceSignal } from './lifecycle/quiescence.js'
 import { FleetUpgradeCoordinator } from './lifecycle/fleet-upgrade.js'
 import { ReadinessGate, readinessSinksFromEnv, readinessState, type ReadinessState } from './readiness.js'
 import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
@@ -2223,6 +2226,9 @@ export class Daemon {
   private clock: Clock
   private requestExit: (code: number) => void
   private readonly fleetUpgrade: FleetUpgradeCoordinator
+  // Turn-end / background-lease edges and the live-work reads the AutoUpgrader waits on.
+  private readonly quiescence: QuiescenceSignal
+  private readonly autoUpgrader: AutoUpgrader
   // Whole-daemon drain gate: once set, no new turns are dispatched (SIGTERM, or a
   // scope:daemon drain). Agent-scoped drains gate just their agentId.
   private draining = false
@@ -2374,6 +2380,8 @@ export class Daemon {
       requestExit?: (code: number) => void
       /** Test seam for a blocked or failed CLI upgrade installation. */
       upgradeInstaller?: typeof runCliUpgrade
+      /** Test seam for the AutoUpgrader's `version install` / `version use` CLI calls. */
+      autoUpgradeCli?: typeof runCliCommand
       /** Who supervises this process — 'cli' (respawn shell), 'service' (launchd/systemd),
        *  or 'k8s' (the kubelet: restart only, since the version is the image). Set by the
        *  launcher via AGENTCONNECT_SUPERVISOR. Absent/unknown means no supervisor (bare
@@ -2650,8 +2658,52 @@ export class Daemon {
         await this.cpClient?.reportLifecycleProgress(progress)
       },
       stop: () => this.stop(),
+      closeAdmission: () => {
+        this.draining = true
+      },
       requestExit: (code) => this.requestExit(code)
     })
+    this.quiescence = new QuiescenceSignal(
+      {
+        // Admitted gate entries and pre-Pending dispatches count too: a cold start has no Pending yet.
+        inFlightTurns: () => this.pending.size + this.inflight.size + this.activeDispatchesByAgent.size,
+        liveBackgroundWork: () => [...this.sdkLease.values()].some(liveSdkLease),
+        lifecycleInFlight: () => this.fleetUpgrade.lifecycleBusy(),
+        draining: () => this.draining || this.shutdownDraining
+      },
+      () => this.clock
+    )
+    this.autoUpgrader = new AutoUpgrader(this.autoUpgradeHost())
+  }
+
+  /** Exactly what the AutoUpgrader touches on the Daemon (daemon-auto-upgrade.md §5). */
+  private autoUpgradeHost(): AutoUpgradeHost {
+    return {
+      log: () => this.log,
+      clock: () => this.clock,
+      root: () => this.root,
+      daemonId: () => this.cfg.daemonId,
+      version: () => DAEMON_VERSION,
+      eligible: () => this.bootstrapUpgradeCapable(),
+      quiescence: () => this.quiescence,
+      runCli: async (args) => {
+        const cliEntry = readCliEntry(this.root)
+        if (!cliEntry) return { ok: false, stderr: 'cannot locate the CLI (cli-entry missing)' }
+        return await (this.opts.autoUpgradeCli ?? runCliCommand)(cliEntry, args, this.root)
+      },
+      lifecycle: () => this.fleetUpgrade.autoUpgradeLifecycle(),
+      cp: () => {
+        const client = this.cpClient
+        if (!client) return undefined
+        return {
+          handshaking: () => client.handshaking(),
+          canBeginLifecycle: () => client.canBeginLifecycle(),
+          beginLifecycle: (req) => client.beginLifecycle(req),
+          reportProgress: (progress) => client.reportLifecycleProgress(progress)
+        }
+      },
+      exitForRollback: () => void this.fleetUpgrade.autoUpgradeLifecycle().exit(undefined, () => true)
+    }
   }
 
   /** Say what the boot probe found: missing SRT dependencies silently run agents unconfined AND fail every managed-skill install (#956). */
@@ -8541,7 +8593,7 @@ export class Daemon {
       // organization environment entry on this marker. Static — the fence is
       // unconditional daemon code, with no runtime dependency.
       AGENT_CONFIG_REVISION_FEATURE,
-      ...(this.bootstrapUpgradeCapable() ? [DAEMON_BOOTSTRAP_UPGRADE_FEATURE] : []),
+      ...(this.bootstrapUpgradeCapable() ? [DAEMON_BOOTSTRAP_UPGRADE_FEATURE, DAEMON_AUTO_UPGRADE_FEATURE] : []),
       // Multi-agent webchat conversations (webchat-multi-agents.md): mentions/post
       // on turns, the transcript-only context op, agent-attributed stream frames,
       // and rd/webchat-post reply fan-out. Static — no runtime dependency.
@@ -18359,6 +18411,7 @@ export class Daemon {
       released = true
       active.delete(done)
       if (active.size === 0) this.activeDispatchesByAgent.delete(agentId)
+      this.quiescence.notify()
       this.clearColdCancelBackstop(key, done)
       if (this.activeDispatchDoneByKey.get(key) === done) this.activeDispatchDoneByKey.delete(key)
       resolveDone()
@@ -18601,6 +18654,7 @@ export class Daemon {
       this.inflight.delete(key)
     } finally {
       this.activeGateEntries.delete(key)
+      this.quiescence.notify()
     }
   }
 
@@ -21223,6 +21277,7 @@ export class Daemon {
     if (!cleanupOutcome.blocked) {
       this.recordFooterHolder(p)
       this.pending.delete(pendingTurnKey(p.hostKey, sessionId))
+      this.quiescence.notify()
       // §7.3 prompting/cancelling → idle: the turn is over (cleanly, on error, or
       // cancelled), so the session is idle again. Without this the row stayed
       // `prompting` forever — the thread never went idle and TTL-close never fired.
@@ -25605,6 +25660,7 @@ export class Daemon {
     }
     lease.agentId = agentId
     this.sdkLease.set(leaseKey, lease)
+    this.quiescence.notify()
   }
 
   /** Project one (agent, ACP session) background-task lease for the console's `task/list` read
@@ -28282,7 +28338,8 @@ export class Daemon {
       runCronNow: (cronId) => this.runCronNow(cronId),
       runDrain: (drain, onProgress) => this.runDrain(drain, onProgress),
       scheduleFleetExit: (kind, targetVersion, operationId) =>
-        this.fleetUpgrade.scheduleFleetExit(kind, targetVersion, operationId)
+        this.fleetUpgrade.scheduleFleetExit(kind, targetVersion, operationId),
+      autoUpgrade: () => this.autoUpgrader
     }
   }
 
@@ -28352,6 +28409,7 @@ export class Daemon {
       effectiveAgents: () => this.effectiveAgents(),
       noteProjector: () => this.noteProjector,
       codeHostReviews: () => this.reviewOutbox,
+      autoUpgrade: () => this.autoUpgrader,
       cpAgents: () => this.cpAgents,
       cpIntegrations: () => this.cpIntegrations,
       cpCrons: () => this.cpCrons,
@@ -28878,6 +28936,8 @@ export class Daemon {
     // Grants this process recorded lose their descriptor and plaintext with it; a peer's are not ours to sweep.
     const orphaned = await this.store.markOwnedWebchatMcpGrantsRevoking('session_closed', this.clock.now())
     if (orphaned) this.log.info(`remote MCP: queued ${orphaned} orphaned grant revocation(s) from previous run`)
+    // Before the first register/ok, so its baseline and the persisted switch land on loaded state.
+    this.autoUpgrader.start()
     this.cpClient.start()
     this.log.info(`cp: connecting to ${url}…`)
     return initialRegistry
@@ -29453,6 +29513,7 @@ export class Daemon {
   }
 
   async stop(): Promise<void> {
+    this.autoUpgrader.stop()
     this.decisionGate.close()
     this.decisionRouter.close()
     this.decisionEvaluator.close()

@@ -246,12 +246,31 @@ export const PoolRuntimeProbeDto = z.object({
 export const DaemonLifecycleOpDto = z.object({
   id: z.string(),
   op: z.enum(['restart', 'upgrade']),
+  /** `manual` for a console command, `auto` for the daemon's own auto-upgrader (daemon-auto-upgrade.md §6). */
+  trigger: z.enum(['manual', 'auto']),
   status: z.enum(['pending', 'succeeded', 'failed']),
   phase: DaemonLifecyclePhase.nullable(),
   /** The version an `upgrade` drives toward; null for restart. */
   targetVersion: z.string().nullable(),
   /** Short closure detail (decline reason / timeout); null while pending / on success. */
   outcome: z.string().nullable()
+})
+
+/** `GET /daemons/:id/lifecycle/:opId` — any op by id, including an automatic upgrade the daemon `deferred` while busy. */
+export const DaemonLifecycleOpByIdDto = DaemonLifecycleOpDto.extend({
+  status: z.enum(['pending', 'succeeded', 'failed', 'deferred'])
+})
+
+/** The daemon's most recent automatic upgrade that ran (deferred attempts excluded), for the console's last-outcome line. */
+export const DaemonLastAutoUpgradeDto = z.object({
+  id: z.string(),
+  /** Expiry-projected like `lifecycleOp.status`. */
+  status: z.enum(['pending', 'succeeded', 'failed']),
+  targetVersion: z.string().nullable(),
+  /** Closure detail, e.g. `rolled back: …`; null while pending / on success. */
+  outcome: z.string().nullable(),
+  /** ISO-8601 when it left `pending`; null while pending. */
+  settledAt: z.string().nullable()
 })
 
 export const DaemonViewDto = z.object({
@@ -275,6 +294,12 @@ export const DaemonViewDto = z.object({
    *  still-`pending` op past its deadline reads `failed` here even before it's swept. The
    *  console tracks its OWN command by `id` and renders terminal state from `status`. */
   lifecycleOp: DaemonLifecycleOpDto.nullable(),
+  /** Console-set auto-upgrade switch (daemon-auto-upgrade.md §3). */
+  autoUpgrade: z.boolean(),
+  /** The daemon advertises `daemon-auto-upgrade-v1`, so the switch can be turned on. */
+  autoUpgradeSupported: z.boolean(),
+  /** The most recent automatic upgrade that ran, or null when none has. */
+  lastAutoUpgrade: DaemonLastAutoUpgradeDto.nullable(),
   /** Live connection status overlaid from the in-memory index (not the stale durable field). */
   status: z.string(),
   /** An install-wide pool member (`Daemon.orgId === null`, one row per pool member Pod):
@@ -388,9 +413,11 @@ export const UpdateDaemonBody = z
     /** How long the daemon keeps FINISHED sessions in its local store before its
      *  retention sweep deletes them — 'never' disables the sweep, otherwise an
      *  integer day count as '<n>d' (e.g. '7d'). */
-    sessionRetention: z.string().regex(SESSION_RETENTION_RE).optional()
+    sessionRetention: z.string().regex(SESSION_RETENTION_RE).optional(),
+    /** Follow the deployment's announced release unattended; true requires the daemon to advertise `daemon-auto-upgrade-v1`. */
+    autoUpgrade: z.boolean().optional()
   })
-  .refine((b) => b.name !== undefined || b.sessionRetention !== undefined, {
+  .refine((b) => b.name !== undefined || b.sessionRetention !== undefined || b.autoUpgrade !== undefined, {
     message: 'nothing to update'
   })
 

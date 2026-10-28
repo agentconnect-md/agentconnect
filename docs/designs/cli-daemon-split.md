@@ -566,6 +566,11 @@ Remote completion is determined by the later `READY` registration. Unlike a
 local `upgrade --restart`, the remote flow does not perform process-level
 automatic rollback after the old daemon exits.
 
+A daemon with auto-upgrade on runs this same installer itself, at an idle moment
+it chooses, and writes `<root>/upgrade-trial.json` first. While that trial marker
+is present, the run shell counts the new version's failed starts and restores the
+previous version after the third; see [daemon-auto-upgrade.md](daemon-auto-upgrade.md) §7.
+
 ### 6.3 Auth-time bootstrap recovery
 
 The installed daemon entry performs a bounded auth-only bootstrap check before

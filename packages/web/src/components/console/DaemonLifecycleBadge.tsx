@@ -3,6 +3,10 @@ import type { DaemonLifecycleOp } from '@/lib/data'
 
 // Lists show the action; detail views include the target version.
 export function daemonLifecycleLabel(op: DaemonLifecycleOp): string {
+  if (op.trigger === 'auto') {
+    const action = op.phase === 'preparing' ? 'Preparing auto-upgrade' : 'Auto-upgrading'
+    return `${action}${op.targetVersion ? ` to ${vTag(op.targetVersion)}` : ''}…`
+  }
   const action =
     op.phase === 'preparing'
       ? 'Preparing upgrade'
@@ -10,6 +14,11 @@ export function daemonLifecycleLabel(op: DaemonLifecycleOp): string {
         ? 'Restarting'
         : 'Upgrading'
   return `${action}${op.targetVersion ? ` to ${op.targetVersion}` : ''}…`
+}
+
+/** A version as the auto-upgrade copy names it: `v1.41.0`, whether or not the source carried the `v`. */
+export function vTag(version: string): string {
+  return `v${version.replace(/^v/, '')}`
 }
 
 export function DaemonLifecycleBadge({ op, size = 'sm' }: { op: DaemonLifecycleOp | null; size?: 'sm' | 'md' }) {

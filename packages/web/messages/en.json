@@ -4046,6 +4046,7 @@
     },
     "delete": "Delete",
     "doubleClickRename": "Double-click to rename",
+    "autoUpgradeOn": "Auto-upgrade on",
     "restrictedHint": "Selected — only shared members can see this daemon",
     "empty": {
       "title": "No daemons connected",
@@ -4152,7 +4153,8 @@
       "cancel": "Cancel",
       "sending": "Sending…",
       "upgrade": "Upgrade",
-      "restart": "Restart"
+      "restart": "Restart",
+      "downgradeDisablesAutoUpgrade": "Upgrading to an older version turns auto-upgrade off."
     },
     "runtimeLogin": {
       "title": "Log in to {label}",
@@ -4221,6 +4223,18 @@
         "leave": "Leave {name}",
         "join": "Join {name}",
         "deleteDaemon": "Delete daemon"
+      },
+      "autoUpgrade": {
+        "label": "Auto-upgrade",
+        "help": "Installs new releases automatically and restarts only when the daemon is idle.",
+        "unsupported": "Requires a daemon run by the agentconnect service or CLI; not available for pool members.",
+        "newRelease": "a new release",
+        "upgrading": "Auto-upgrading to {version}…",
+        "upgraded": "Upgraded to {version}",
+        "upgradedAgo": "Upgraded to {version} · {ago}",
+        "failed": "Auto-upgrade to {version} failed: {outcome}",
+        "failedNoReason": "Auto-upgrade to {version} failed",
+        "waiting": "Waiting for an idle window to upgrade to {version}"
       }
     }
   },

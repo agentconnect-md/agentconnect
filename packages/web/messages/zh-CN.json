@@ -4046,6 +4046,7 @@
     },
     "delete": "删除",
     "doubleClickRename": "双击重命名",
+    "autoUpgradeOn": "已开启自动升级",
     "restrictedHint": "已选中——只有共享成员可以查看此 Daemon",
     "empty": {
       "title": "暂无已连接的 Daemon",
@@ -4152,7 +4153,8 @@
       "cancel": "取消",
       "sending": "发送中…",
       "upgrade": "升级",
-      "restart": "重启"
+      "restart": "重启",
+      "downgradeDisablesAutoUpgrade": "升级到较旧的版本会关闭自动升级。"
     },
     "runtimeLogin": {
       "title": "登录 {label}",
@@ -4221,6 +4223,18 @@
         "leave": "离开 {name}",
         "join": "加入 {name}",
         "deleteDaemon": "删除 Daemon"
+      },
+      "autoUpgrade": {
+        "label": "自动升级",
+        "help": "自动安装新版本，并且仅在 Daemon 空闲时重启。",
+        "unsupported": "需要由 agentconnect 服务或 CLI 运行的 Daemon；不适用于资源池成员。",
+        "newRelease": "新版本",
+        "upgrading": "正在自动升级到 {version}…",
+        "upgraded": "已升级到 {version}",
+        "upgradedAgo": "已升级到 {version} · {ago}",
+        "failed": "自动升级到 {version} 失败：{outcome}",
+        "failedNoReason": "自动升级到 {version} 失败",
+        "waiting": "正在等待空闲时段以升级到 {version}"
       }
     }
   },

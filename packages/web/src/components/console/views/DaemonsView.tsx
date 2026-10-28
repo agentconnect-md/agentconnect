@@ -647,6 +647,11 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
               {m.host && m.host !== m.name && <span className="desktop:hidden">{` · ${m.host}`}</span>}
               <span className="hidden desktop:inline">{` · ${hosted} agent${hosted === 1 ? '' : 's'}`}</span>
             </span>
+            {m.autoUpgrade && (
+              <span title={t('autoUpgradeOn')} aria-label={t('autoUpgradeOn')} className="inline-flex flex-none">
+                <Icon name="circle-fading-arrow-up" size={12} color="var(--text-tertiary)" />
+              </span>
+            )}
             <DaemonUpgradeBadge
               show={!pending && m.upgradeAvailable}
               latest={m.latestVersion}

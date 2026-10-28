@@ -734,6 +734,8 @@ export class Placement implements ReconcileService {
     return {
       routingEpoch: Number(daemon.routingEpoch), // re-issue same — convergence, not bump
       ...(sessionRetention.success ? { sessionRetention: sessionRetention.data } : {}),
+      // The console's auto-upgrade switch; the config/push `upgrade.auto` hot update rides on this baseline.
+      autoUpgrade: daemon.autoUpgrade,
       // Transport capabilities are connection-level and register.ts replaces
       // this neutral snapshot value immediately before register/ok is sent.
       serverFeatures: [],

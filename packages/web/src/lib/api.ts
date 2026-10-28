@@ -1291,6 +1291,21 @@ export interface DaemonViewDto {
   canManageSharing: boolean
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
+  /** The auto-upgrade switch; absent on an older CP ⇒ off. */
+  autoUpgrade?: boolean
+  /** The daemon advertised auto-upgrade support; absent on an older CP ⇒ unsupported. */
+  autoUpgradeSupported?: boolean
+  /** The most recent automatic upgrade; absent on an older CP ⇒ none. */
+  lastAutoUpgrade?: DaemonAutoUpgradeResultDto | null
+}
+
+/** The most recent automatic upgrade on a daemon (daemon-auto-upgrade.md §8). */
+export interface DaemonAutoUpgradeResultDto {
+  id: string
+  status: 'pending' | 'succeeded' | 'failed'
+  targetVersion: string | null
+  outcome: string | null
+  settledAt: string | null
 }
 
 /** The console-settable "Expire sessions" window (PATCH /daemons/:id):
@@ -1306,6 +1321,8 @@ export interface DaemonLifecycleOpDto {
   phase?: import('@agentconnect.md/protocol').DaemonLifecyclePhase | null
   targetVersion: string | null
   outcome: string | null
+  /** Absent on an older CP ⇒ manual. */
+  trigger?: 'manual' | 'auto'
 }
 
 export interface CreateAgentInput {
@@ -2421,8 +2438,8 @@ export function daemonFromDto(
   // `cloud` is the CP DTO's field name (a REST contract); the console's own word is `pool`.
   const pool = d.cloud ?? false
   // A relaunch that has not reconnected within the offline grace is an offline daemon, however long the op's deadline still runs.
-  const lifecycleOp =
-    d.status === 'offline' && lifecycleStatus(d.lifecycleOp) === 'restarting' ? null : (d.lifecycleOp ?? null)
+  const liveOp = d.status === 'offline' && lifecycleStatus(d.lifecycleOp) === 'restarting' ? null : d.lifecycleOp
+  const lifecycleOp = liveOp ? { ...liveOp, trigger: liveOp.trigger ?? 'manual' } : null
   return {
     daemonId: d.daemonId,
     pool,
@@ -2440,6 +2457,9 @@ export function daemonFromDto(
     lifecycleOp,
     lifecycleStatus: lifecycleStatus(lifecycleOp) ?? null,
     canManageLifecycle: d.canManageLifecycle ?? false,
+    autoUpgrade: d.autoUpgrade ?? false,
+    autoUpgradeSupported: d.autoUpgradeSupported ?? false,
+    lastAutoUpgrade: d.lastAutoUpgrade ?? null,
     // Flag an available upgrade only when both versions parse and latest > running.
     upgradeAvailable: isUpgradeAvailable(d.agentVersion, d.latestVersion),
     // Operational readiness, so `connecting` stays offline for every decision; only presentation reads `reconnecting`.
@@ -4685,6 +4705,13 @@ export async function updateDaemonSessionRetention(
 ): Promise<DaemonRow> {
   return daemonFromDto(
     await apiPatch<DaemonViewDto>(`${orgBase()}/daemons/${encodeURIComponent(daemonId)}`, { sessionRetention })
+  )
+}
+
+// Turn the daemon's auto-upgrade on or off; the CP answers 409 when the daemon does not support it.
+export async function updateDaemonAutoUpgrade(daemonId: string, autoUpgrade: boolean): Promise<DaemonRow> {
+  return daemonFromDto(
+    await apiPatch<DaemonViewDto>(`${orgBase()}/daemons/${encodeURIComponent(daemonId)}`, { autoUpgrade })
   )
 }
 

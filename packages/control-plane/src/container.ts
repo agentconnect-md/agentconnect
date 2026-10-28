@@ -267,6 +267,8 @@ import { HookService } from './hooks/hook.service.js'
 import { RelayAuthService } from './registry/relayAuthService.js'
 import { DaemonRegistryService } from './registry/registryService.js'
 import { DaemonReleaseResolver } from './registry/daemonRelease.js'
+import { DaemonReleaseBroadcaster } from './registry/daemonReleaseBroadcaster.js'
+import { DeferredLifecycleOpSweeper } from './registry/deferredLifecycleOpSweeper.js'
 
 import { InMemorySessionEventSink } from './events/sink.js'
 import { SessionUsageWriter } from './usage/writer.js'
@@ -2474,6 +2476,12 @@ export function buildContainer(
     log: { warn: (obj, msg) => http.log.warn(obj, msg) }
   })
 
+  // Announces a moved dist-tag to this replica's auto-upgrade daemons (daemon-auto-upgrade.md §4.1).
+  const releaseBroadcaster = daemonRelease
+    ? new DaemonReleaseBroadcaster({ resolver: daemonRelease, connections: connReg, control: sender, log: http.log })
+    : undefined
+  const deferredLifecycleOpSweeper = new DeferredLifecycleOpSweeper(repos.daemonLifecycleOp, clock, undefined, http.log)
+
   const cronRunReaper = new CronRunReaper(
     repos.cron,
     clock,
@@ -3004,6 +3012,7 @@ export function buildContainer(
     placementResolver,
     lifecycleOps: repos.daemonLifecycleOp,
     registry,
+    ...(daemonRelease ? { daemonRelease } : {}),
     orchestrator,
     connReg,
     session: repos.session,
@@ -3586,6 +3595,9 @@ export function buildContainer(
     startBackground() {
       fileTransferBucket?.gate.start()
       cronRunReaper.start()
+      releaseBroadcaster?.start()
+      daemonRelease?.start()
+      deferredLifecycleOpSweeper.start()
       hookRunReaper.start()
       oauthReaper.start()
       computerRegistrationReaper.start()
@@ -3620,6 +3632,9 @@ export function buildContainer(
     async shutdown() {
       fileTransferBucket?.gate.stop()
       cronRunReaper.stop()
+      daemonRelease?.stop()
+      releaseBroadcaster?.stop()
+      deferredLifecycleOpSweeper.stop()
       hookRunReaper.stop()
       oauthReaper.stop()
       computerRegistrationReaper.stop()

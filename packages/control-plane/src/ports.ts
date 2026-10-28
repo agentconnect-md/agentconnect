@@ -318,6 +318,8 @@ export interface DaemonView {
   sharedWith: string[]
   /** Console-set finished-session retention window ('never' | '7d' | '30d' | '90d'). */
   sessionRetention: string
+  /** Console-set auto-upgrade switch (daemon-auto-upgrade.md §3). */
+  autoUpgrade: boolean
   /** The member set this daemon belongs to, if any (daemon-groups.md §2) — null for a machine
    *  that owns its agents outright. An install-wide daemon is always the org-less set's. */
   memberSetId: string | null
@@ -389,6 +391,8 @@ export interface DaemonRegistry {
     sessionRetention: string,
     byUserId?: string
   ): Promise<DaemonView>
+  /** Set the auto-upgrade switch; returns the updated read-model row. Org-fenced like {@link DaemonRegistry.rename}. */
+  setAutoUpgrade(orgId: OrgId, daemonId: DaemonId, autoUpgrade: boolean, byUserId?: string): Promise<DaemonView>
   /** Set the daemon's visibility + share set (the dedicated `/sharing` write path);
    *  returns the updated read-model row. `byUserId` stamps the last-modified audit.
    *  Org-fenced like {@link DaemonRegistry.rename}. */
