@@ -126,4 +126,21 @@ describe('daemon fleet upgrade coordination', () => {
     expect(fleet.scheduleFleetExit('upgrade', '9.9.9')).toMatchObject({ accepted: true })
     expect(auto.reserve('9.9.9')).toMatchObject({ accepted: false })
   })
+
+  it('closes turn admission in the same step as the final idle check of an automatic exit', () => {
+    const daemon = new Daemon({ root: scaffold(), supervisor: 'cli', requestExit: vi.fn() })
+    const stop = vi.fn(() => new Promise<void>(() => {}))
+    Object.assign(daemon, { stop })
+    const auto = (daemon as any).fleetUpgrade.autoUpgradeLifecycle()
+    expect(auto.reserve('9.9.9')).toMatchObject({ accepted: true })
+
+    // Work arrived: nothing closes, nothing exits, and the reservation stays with the upgrader.
+    expect(auto.exit('op-1', () => false)).toBe(false)
+    expect((daemon as any).draining).toBe(false)
+
+    // Still idle: admission is shut before the `restarting` report is awaited.
+    expect(auto.exit('op-1', () => true)).toBe(true)
+    expect((daemon as any).draining).toBe(true)
+    expect(stop).not.toHaveBeenCalled()
+  })
 })

@@ -3,7 +3,7 @@ import type { Clock } from '@agentconnect.md/connection'
 
 /** Exactly the live-work reads the signal needs from the Daemon. */
 export interface QuiescenceSource {
-  /** In-flight turns, including ones parked on a permission or elicitation answer. */
+  /** In-flight work: turns (incl. ones parked on a permission answer) and admitted dispatches still opening their session. */
   inFlightTurns(): number
   /** A live background-task lease or an SDK session in `running`. */
   liveBackgroundWork(): boolean
@@ -40,7 +40,7 @@ export class QuiescenceSignal implements Quiescence {
 
   busyReason(ignoreLifecycle = false): string | undefined {
     const turns = this.source.inFlightTurns()
-    if (turns > 0) return `${turns} turn(s) in flight`
+    if (turns > 0) return `${turns} turn(s) or dispatch(es) in flight`
     if (this.source.liveBackgroundWork()) return 'background work is running'
     if (!ignoreLifecycle && this.source.lifecycleInFlight()) return 'a lifecycle operation is in flight'
     if (this.source.draining()) return 'draining'

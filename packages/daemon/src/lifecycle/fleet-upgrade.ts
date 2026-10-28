@@ -29,6 +29,8 @@ export interface FleetUpgradeHost {
   upgradeInstaller: () => typeof runCliUpgrade | undefined
   reportProgress: (progress: DaemonLifecycleProgress) => Promise<void>
   stop: () => Promise<void>
+  /** Gate new turns now, before any await, so an idle-only exit cannot admit work it would then cut short. */
+  closeAdmission: () => void
   requestExit: (code: number) => void
 }
 
@@ -74,7 +76,13 @@ export class FleetUpgradeCoordinator {
           this.host.log(),
           this.host.configPath()
         ),
-      exit: (operationId) => this.finishFleetExit('upgrade', operationId)
+      exit: (operationId, stillIdle) => {
+        if (this.fleetExitStarted) return true
+        if (!stillIdle()) return false
+        this.host.closeAdmission()
+        this.finishFleetExit('upgrade', operationId)
+        return true
+      }
     }
   }
 

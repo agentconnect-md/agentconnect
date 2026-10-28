@@ -54,12 +54,18 @@ function harness(over: { version?: string; root?: string } = {}) {
     lastActivity = clock.now()
     for (const l of listeners) l()
   }
+  const exitArrival: { next?: () => void } = {}
   const cli = vi.fn(async (_args: string[]): Promise<CliRunResult> => ({ ok: true, stderr: '' }))
   const lifecycle = {
     reserve: vi.fn((_v: string) => ({ accepted: true as const, root, cliEntry: '/cli.js' })),
     release: vi.fn(),
     install: vi.fn(async (_e: string, _v: string, _r: string) => true),
-    exit: vi.fn((_op?: string) => {})
+    // Like the coordinator: a work arrival injected at exit time makes the atomic re-check fail.
+    exit: vi.fn((_op: string | undefined, stillIdle: () => boolean) => {
+      exitArrival.next?.()
+      exitArrival.next = undefined
+      return stillIdle()
+    })
   }
   const cp = {
     handshaking: vi.fn(() => false),
@@ -93,6 +99,7 @@ function harness(over: { version?: string; root?: string } = {}) {
     cp,
     host,
     activity,
+    exitArrival,
     setEligible: (v: boolean) => (eligible = v),
     installs: () => cli.mock.calls.filter(([a]) => a[0] === 'version' && a[1] === 'install').map(([a]) => a[2])
   }
@@ -137,7 +144,7 @@ describe('AutoUpgrader', () => {
     })
     expect(h.lifecycle.install).toHaveBeenCalledWith('/cli.js', '1.1.0', h.root)
     expect(h.cp.reportProgress).toHaveBeenCalledWith({ operationId: 'op-1', phase: 'preparing' })
-    expect(h.lifecycle.exit).toHaveBeenCalledWith('op-1')
+    expect(h.lifecycle.exit).toHaveBeenCalledWith('op-1', expect.any(Function))
     expect(h.lifecycle.release).not.toHaveBeenCalled()
     expect(readTrialMarker(h.root)).toMatchObject({ from: '1.0.0', to: '1.1.0', operationId: 'op-1', failures: 0 })
   })
@@ -162,6 +169,23 @@ describe('AutoUpgrader', () => {
     await h.upgrader.evaluate()
     await flush()
     expect(h.lifecycle.exit).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns to the idle wait when work arrives at the final check instead of exiting with it', async () => {
+    const h = harness()
+    h.exitArrival.next = () => h.activity('1 turn(s) or dispatch(es) in flight')
+    h.upgrader.applyConfigKeys({ 'upgrade.auto': true, 'upgrade.latest': rc('1.1.0') })
+    const run = h.upgrader.evaluate()
+    await flush()
+    expect(h.lifecycle.exit).toHaveBeenCalledTimes(1)
+    expect(h.cp.reportProgress).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'restarting' }))
+
+    h.activity(undefined)
+    h.clock.advance(AUTO_UPGRADE_QUIET_MS)
+    await run
+    expect(h.lifecycle.exit).toHaveBeenCalledTimes(2)
+    expect(h.lifecycle.exit.mock.results[1]?.value).toBe(true)
+    expect(h.lifecycle.release).not.toHaveBeenCalled()
   })
 
   it('waits out the rollout spread on a stable channel', async () => {
@@ -238,7 +262,7 @@ describe('AutoUpgrader', () => {
     h.activity(undefined)
     h.clock.advance(AUTO_UPGRADE_QUIET_MS)
     await run
-    expect(h.lifecycle.exit).toHaveBeenCalledWith('op-1')
+    expect(h.lifecycle.exit).toHaveBeenCalledWith('op-1', expect.any(Function))
     expect(h.cli).not.toHaveBeenCalledWith(['version', 'use', '1.0.0'])
   })
 
@@ -291,7 +315,7 @@ describe('AutoUpgrader', () => {
     h.clock.advance(AUTO_UPGRADE_RETRY_BASE_MS)
     await h.upgrader.evaluate()
     await flush()
-    expect(h.lifecycle.exit).toHaveBeenCalledWith(undefined)
+    expect(h.lifecycle.exit).toHaveBeenCalledWith(undefined, expect.any(Function))
     expect(readTrialMarker(h.root)?.operationId).toBeUndefined()
   })
 

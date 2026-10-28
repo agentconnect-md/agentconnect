@@ -2658,11 +2658,15 @@ export class Daemon {
         await this.cpClient?.reportLifecycleProgress(progress)
       },
       stop: () => this.stop(),
+      closeAdmission: () => {
+        this.draining = true
+      },
       requestExit: (code) => this.requestExit(code)
     })
     this.quiescence = new QuiescenceSignal(
       {
-        inFlightTurns: () => this.pending.size,
+        // Admitted gate entries and pre-Pending dispatches count too: a cold start has no Pending yet.
+        inFlightTurns: () => this.pending.size + this.inflight.size + this.activeDispatchesByAgent.size,
         liveBackgroundWork: () => [...this.sdkLease.values()].some(liveSdkLease),
         lifecycleInFlight: () => this.fleetUpgrade.lifecycleBusy(),
         draining: () => this.draining || this.shutdownDraining
@@ -2698,7 +2702,7 @@ export class Daemon {
           reportProgress: (progress) => client.reportLifecycleProgress(progress)
         }
       },
-      exitForRollback: () => this.fleetUpgrade.autoUpgradeLifecycle().exit()
+      exitForRollback: () => void this.fleetUpgrade.autoUpgradeLifecycle().exit(undefined, () => true)
     }
   }
 
@@ -18407,6 +18411,7 @@ export class Daemon {
       released = true
       active.delete(done)
       if (active.size === 0) this.activeDispatchesByAgent.delete(agentId)
+      this.quiescence.notify()
       this.clearColdCancelBackstop(key, done)
       if (this.activeDispatchDoneByKey.get(key) === done) this.activeDispatchDoneByKey.delete(key)
       resolveDone()
@@ -18649,6 +18654,7 @@ export class Daemon {
       this.inflight.delete(key)
     } finally {
       this.activeGateEntries.delete(key)
+      this.quiescence.notify()
     }
   }
 

@@ -50,8 +50,8 @@ export interface AutoUpgradeLifecycle {
   release(): void
   /** `agentconnect upgrade --to <v> --root <root>`: prepare and switch `current`. */
   install(cliEntry: string, targetVersion: string, root: string): Promise<boolean>
-  /** Drain and exit with the reserved restart code; reports `restarting` for an operation. */
-  exit(operationId?: string): void
+  /** Close admission and drain-and-exit iff `stillIdle()` holds in the same synchronous step; false ⇒ work arrived, nothing changed. */
+  exit(operationId: string | undefined, stillIdle: () => boolean): boolean
 }
 
 /** The control-plane calls the upgrader makes; absent while no CP client exists. */
@@ -434,11 +434,15 @@ export class AutoUpgrader implements AutoUpgradeConfigSink, AutoUpgradeCpHooks {
         this.retryLater(target, `could not prepare ${target}`)
         return
       }
-      const outcome = await this.waitForIdle(target)
-      if (outcome === 'idle') {
-        this.exiting = true
-        lifecycle.exit(operationId)
-        return
+      const deadline = this.host.clock().now() + AUTO_UPGRADE_IDLE_WAIT_MS
+      let outcome = await this.waitForIdle(target, deadline)
+      // The final idle check and closing admission are one synchronous step; work that slipped in sends us back to waiting.
+      while (outcome === 'idle') {
+        if (lifecycle.exit(operationId, () => this.idle(true))) {
+          this.exiting = true
+          return
+        }
+        outcome = await this.waitForIdle(target, deadline)
       }
       // A process stop mid-wait leaves the switch and the marker: the next boot is the trial.
       if (outcome === 'stopped') return
@@ -473,9 +477,8 @@ export class AutoUpgrader implements AutoUpgradeConfigSink, AutoUpgradeCpHooks {
   }
 
   /** Wait up to the idle budget for quiescence after preparing; a withdrawn release or switch-off aborts it. */
-  private async waitForIdle(target: string): Promise<IdleWaitOutcome> {
+  private async waitForIdle(target: string, deadline: number): Promise<IdleWaitOutcome> {
     const clock = this.host.clock()
-    const deadline = clock.now() + AUTO_UPGRADE_IDLE_WAIT_MS
     for (;;) {
       if (this.stopped) return 'stopped'
       if (!this.active()) return 'disabled'
