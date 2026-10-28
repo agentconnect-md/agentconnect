@@ -265,6 +265,27 @@ function DiffLine({ line, t }: { line: CapabilityDiffLine; t: Translate }) {
       </span>
     )
   }
+  if (line.kind === 'cron') {
+    const { cron } = line
+    const zone = cron.timezone ? ` (${cron.timezone})` : ''
+    return (
+      <span className="flex flex-wrap items-center gap-2">
+        {/* The prompt is the agent's words, shown as plain text. */}
+        <span className="whitespace-pre-wrap break-words">
+          {t.rich(cron.cronId ? 'page.changeCron' : 'page.scheduleCron', {
+            schedule: cron.schedule,
+            zone,
+            trigger: cron.trigger,
+            name,
+            code
+          })}
+        </span>
+        {line.exists && (
+          <span className="badge bg-(--surface-active) text-(--text-secondary)">{t('page.cronExists')}</span>
+        )}
+      </span>
+    )
+  }
   return (
     <span className="flex flex-wrap items-center gap-2">
       <span>{t.rich('page.installSkill', { skill: line.skill, name })}</span>

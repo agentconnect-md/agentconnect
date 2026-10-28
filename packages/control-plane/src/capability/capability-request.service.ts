@@ -92,19 +92,33 @@ export type CapabilityOrgChange =
   | { kind: 'mcp-oauth'; server: string }
   | { kind: 'mcp-headers'; server: string }
   | { kind: 'code-host'; provider: 'github' | 'gitlab' }
+  | { kind: 'cron'; agentId: string }
 
 /** Whether a settled request of this ask must reload the session before its reminder runs (§4.8). */
 export function reloadsSession(ask: CapabilityAsk | null): boolean {
   if (!ask) return false
+  // A new runtime or strategy retires the process; forgetting the session makes the reminder's turn re-attach on the new one.
+  if (ask.kind === 'agent-settings') return ask.want.runtime !== undefined || ask.want.execution !== undefined
   if (ask.kind === 'repository') return true
   if (ask.kind === 'connection') return ask.want.type === 'mcp-oauth'
   if (ask.kind === 'secret') return ask.want.use.route === 'mcp-header'
   return false
 }
 
+/** Whether a completed ask's change reaches the daemon through the agent's spec, so its wake waits for that to be applied (§4.7.5). */
+export function changesSpec(ask: CapabilityAsk): boolean {
+  if (ask.kind === 'cron' || ask.kind === 'connection') return false
+  return !(ask.kind === 'secret' && ask.want.use.route === 'mcp-header')
+}
+
 /** Whether an open request is one an org-level change could satisfy. */
-function touchedBy(ask: CapabilityAsk | null, change: CapabilityOrgChange): boolean {
+function touchedBy(
+  row: Pick<CapabilityRequestRecord, 'agentId'>,
+  ask: CapabilityAsk | null,
+  change: CapabilityOrgChange
+): boolean {
   if (!ask) return false
+  if (change.kind === 'cron') return ask.kind === 'cron' && row.agentId === change.agentId
   if (change.kind === 'mcp-oauth')
     return ask.kind === 'connection' && ask.want.type === 'mcp-oauth' && ask.want.server === change.server
   if (change.kind === 'mcp-headers')
@@ -278,6 +292,9 @@ export class CapabilityRequestService {
 
   /** Why the target cannot be given to this agent, or undefined when it names something the organization has. */
   private async unknownTarget(agent: AgentRecord, ask: CapabilityAsk): Promise<string | undefined> {
+    // The agents route refuses a built-in agent's display name, so asking for one could never complete.
+    if (ask.kind === 'agent-settings' && ask.want.displayName !== undefined && agent.builtin)
+      return 'A built-in agent’s display name cannot be changed.'
     if (ask.kind === 'mcp-server') {
       const providers = await this.deps.mcpProviders.listForOrg(agent.orgId)
       if (!providers.some((p) => p.name === ask.want.server))
@@ -340,10 +357,16 @@ export class CapabilityRequestService {
     settledBy: CapabilityDecider | null,
     requireSatisfied: boolean,
     appliedBy: readonly string[] = [],
-    specless = false
+    specless = false,
+    savedCronId?: string
   ): Promise<boolean> {
-    const ask = askOf(row)
-    if (!ask) return false
+    const asked = askOf(row)
+    if (!asked) return false
+    // A new task saved differently from the ask is judged by the task it was saved as.
+    const ask =
+      asked.kind === 'cron' && savedCronId && !asked.want.cronId
+        ? { ...asked, want: { ...asked.want, cronId: savedCronId } }
+        : asked
     const evaluation = evaluateCapability(ask, agent, await this.factsFor(agent, ask))
     if (requireSatisfied && !evaluation.satisfied) return false
     return this.commit(row, row.generation, {
@@ -353,7 +376,7 @@ export class CapabilityRequestService {
       note: null,
       settledBy,
       // A change outside the spec has no upsert to wait for: no revision, so its wake is not held.
-      settledRevision: specless ? null : agent.configRevision,
+      settledRevision: specless || !changesSpec(ask) ? null : agent.configRevision,
       appliedBy,
       at: this.now()
     })
@@ -394,15 +417,15 @@ export class CapabilityRequestService {
       .finally(() => this.kick())
   }
 
-  /** A change outside any agent's spec (§4.6): complete the org's open requests it satisfies, and reload the sessions that use a re-keyed MCP server. Call it only once the relay binding was pushed. */
+  /** A change outside any agent's spec (§4.6, §4.12): complete the org's open requests it satisfies, and reload the sessions that use a re-keyed MCP server. Call it only once the relay binding was pushed. */
   async orgChanged(orgId: OrgId, change: CapabilityOrgChange, by: CapabilityDecider | null): Promise<void> {
     const open = await this.deps.requests.list(orgId, { status: 'open' })
     for (const row of open) {
-      if (!touchedBy(askOf(row), change)) continue
+      if (!touchedBy(row, askOf(row), change)) continue
       const agent = await this.deps.agents.getUnscoped(row.agentId)
       if (agent && agent.orgId === orgId) await this.complete(row, agent, by, true, [], true)
     }
-    if (change.kind === 'code-host') return
+    if (change.kind === 'code-host' || change.kind === 'cron') return
     await this.rebound(orgId, change.server)
   }
 
@@ -426,7 +449,8 @@ export class CapabilityRequestService {
   async settleFromConsole(
     orgId: OrgId,
     id: string,
-    by: CapabilityDecider
+    by: CapabilityDecider,
+    savedCronId?: string
   ): Promise<CapabilityRequestRecord | CapabilityActionRefusal> {
     const row = await this.deps.requests.get(orgId, id)
     if (!row) return 'not_found'
@@ -435,7 +459,7 @@ export class CapabilityRequestService {
     if (row.status !== 'open') return 'not_open'
     const agent = await this.deps.agents.getUnscoped(row.agentId)
     if (!agent || agent.orgId !== orgId) return 'not_found'
-    if (!(await this.complete(row, agent, by, false))) {
+    if (!(await this.complete(row, agent, by, false, [], false, savedCronId))) {
       const current = await this.deps.requests.get(orgId, id)
       return current?.status === 'completed' ? current : 'not_open'
     }

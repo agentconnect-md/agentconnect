@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act } from 'react'
+import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -127,7 +127,7 @@ afterEach(async () => {
   mocks.daemon = daemon
 })
 
-async function openEditor(dto: Record<string, unknown>) {
+async function openEditor(dto: Record<string, unknown>, prefill?: ComponentProps<typeof EditAgentModal>['prefill']) {
   mocks.dto = {
     name: 'pilot',
     runtime: 'claude',
@@ -144,7 +144,7 @@ async function openEditor(dto: Record<string, unknown>) {
   await act(async () =>
     root!.render(
       <SWRConfig value={{ provider: () => new Map(), shouldRetryOnError: false }}>
-        <EditAgentModal agent={agent} onClose={vi.fn()} />
+        <EditAgentModal agent={agent} onClose={vi.fn()} {...(prefill ? { prefill } : {})} />
       </SWRConfig>
     )
   )
@@ -161,6 +161,18 @@ async function switchToVm(dto: Record<string, unknown>): Promise<HTMLButtonEleme
   await act(async () => save.click())
   return save
 }
+
+it('saves the agent-form fields a capability request prefilled', async () => {
+  await openEditor({}, { showStatusBar: true, chatActions: 'approve', displayName: 'Ops' })
+  const save = [...host!.querySelectorAll<HTMLButtonElement>('.modalfoot button')].at(-1)!
+  await act(async () => save.click())
+  await vi.waitFor(() => expect(mocks.updateAgent).toHaveBeenCalled())
+  expect(mocks.updateAgent.mock.calls[0]![1]).toMatchObject({
+    showStatusBar: true,
+    chatActions: 'approve',
+    displayName: 'Ops'
+  })
+})
 
 it('saves the model the VM’s catalog shows in place of a stored host model', async () => {
   await switchToVm({ model: 'model-host' })

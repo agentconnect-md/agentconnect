@@ -22,7 +22,9 @@ const mocks = vi.hoisted(() => ({
   repoProps: undefined as Record<string, unknown> | undefined,
   mcpEditProps: undefined as Record<string, unknown> | undefined,
   mcpProviders: [] as Array<Record<string, unknown>>,
-  saveLiveSecret: vi.fn()
+  saveLiveSecret: vi.fn(),
+  cronProps: undefined as Record<string, unknown> | undefined,
+  crons: [] as Array<Record<string, unknown>>
 }))
 
 vi.mock('next/link', () => ({
@@ -35,6 +37,7 @@ vi.mock('@/lib/data-context', () => ({
     daemons: [],
     skillSources: mocks.skillSources,
     mcpProviders: mocks.mcpProviders,
+    crons: mocks.crons,
     updateAgent: mocks.updateAgent
   })
 }))
@@ -67,6 +70,12 @@ vi.mock('@/components/console/modals/EditAgentModal', () => ({
   default: (props: Record<string, unknown>) => {
     mocks.editProps = props
     return <div data-edit-agent />
+  }
+}))
+vi.mock('@/components/console/modals/AddCronModal', () => ({
+  default: (props: Record<string, unknown>) => {
+    mocks.cronProps = props
+    return <div data-cron-modal />
   }
 }))
 vi.mock('@/components/console/AgentToolsCard', () => ({ AgentToolsCard: () => <div data-tools-card /> }))
@@ -137,6 +146,8 @@ beforeEach(() => {
   mocks.repoProps = undefined
   mocks.mcpEditProps = undefined
   mocks.mcpProviders = []
+  mocks.cronProps = undefined
+  mocks.crons = []
   onSettled.mockReset()
   onRefresh.mockReset()
 })
@@ -149,7 +160,7 @@ afterEach(async () => {
 })
 
 describe('completing a capability request', () => {
-  it('opens the agent configuration dialog on its runtime settings, prefilled, and settles once it saved', async () => {
+  it('opens the agent configuration dialog on its runtime settings, prefilled, and settles as the task it saved', async () => {
     const settled = request({ status: 'completed' })
     mocks.settle.mockResolvedValue(settled)
     const scope = await render(request({ want: { model: 'opus', fastMode: true } }))
@@ -159,8 +170,32 @@ describe('completing a capability request', () => {
     expect(mocks.editProps).toMatchObject({ focusSection: 'runtime', prefill: { model: 'opus', fastMode: true } })
     expect(mocks.settle).not.toHaveBeenCalled()
     await act(async () => (mocks.editProps!.onSaved as () => void)())
-    expect(mocks.settle).toHaveBeenCalledWith('req-1', 'org-1')
+    expect(mocks.settle).toHaveBeenCalledWith('req-1', 'org-1', undefined)
     expect(onSettled).toHaveBeenCalledWith(settled)
+  })
+
+  it('opens the cron dialog on this agent with the asked schedule and prompt, and settles as the task it saved', async () => {
+    mocks.settle.mockResolvedValue(request({ status: 'completed' }))
+    const want = { schedule: '0 9 * * 1', timezone: 'Asia/Tokyo', trigger: 'send the report' }
+    const scope = await render(request({ kind: 'cron', target: 'new:0 9 * * 1:Asia/Tokyo:', want }))
+    await act(async () => button(scope, 'Review and save the scheduled task')!.click())
+    expect(mocks.cronProps).toMatchObject({ cron: null, prefill: { agentId: 'agent-1', ...want } })
+    const saved = '2c3d4e5f-6071-4829-93a4-b5c6d7e8f9a0'
+    await act(async () => (mocks.cronProps!.onSaved as (cronId: string) => void)(saved))
+    expect(mocks.settle).toHaveBeenCalledWith('req-1', 'org-1', { cronId: saved })
+  })
+
+  it('opens a change on the agent’s own cron, and refuses one that no longer exists', async () => {
+    const cronId = '1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9'
+    const want = { cronId, schedule: '0 10 * * 1', trigger: 'send the report' }
+    const gone = await render(request({ kind: 'cron', target: `cron:${cronId}`, want }))
+    expect(button(gone, 'Review and save the scheduled task')!.disabled).toBe(true)
+    await act(async () => root!.unmount())
+    host?.remove()
+    mocks.crons = [{ id: cronId, agentId: 'agent-1', schedule: '0 9 * * 1', trigger: 'send the report' }]
+    const scope = await render(request({ kind: 'cron', target: `cron:${cronId}`, want }))
+    await act(async () => button(scope, 'Review and save the scheduled task')!.click())
+    expect(mocks.cronProps).toMatchObject({ cron: { id: cronId }, prefill: { schedule: '0 10 * * 1' } })
   })
 
   it('attaches the server beside the agent’s others, then settles', async () => {
@@ -293,7 +328,7 @@ describe('completing a capability request', () => {
     })
   })
 
-  it('asks for a header in the server’s own edit dialog and settles once it saved', async () => {
+  it('asks for a header in the server’s own edit dialog and settles as the task it saved', async () => {
     mocks.mcpProviders = [{ id: 'prov-2', name: 'Grafana', auth: 'headers', canEdit: true, headerNames: ['X-Org'] }]
     mocks.settle.mockResolvedValue(request({ status: 'completed' }))
     const scope = await render(

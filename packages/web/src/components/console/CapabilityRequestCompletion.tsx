@@ -15,6 +15,7 @@ import {
   updateAgentRepo,
   type AgentRepoAuthDto,
   type CapabilityConnectionWant,
+  type CapabilityCronWant,
   type CapabilityRepositoryWant,
   type CapabilityRequestDto,
   type CapabilitySecretWant,
@@ -33,6 +34,7 @@ import { EditMcpProviderModal } from '@/components/console/McpServersCard'
 import { InstallRegistrySkillModal } from '@/components/console/InstallRegistrySkillModal'
 import AddAgentRepoModal from '@/components/console/modals/AddAgentRepoModal'
 import EditAgentModal from '@/components/console/modals/EditAgentModal'
+import AddCronModal from '@/components/console/modals/AddCronModal'
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -47,6 +49,7 @@ export function CapabilityRequestCompletion(props: CompletionProps) {
   if (props.request.kind === 'repository') return <RepositoryCompletion {...props} />
   if (props.request.kind === 'connection') return <ConnectionCompletion {...props} />
   if (props.request.kind === 'secret') return <SecretCompletion {...props} />
+  if (props.request.kind === 'cron') return <CronCompletion {...props} />
   return <SettingsAndTools {...props} />
 }
 
@@ -57,11 +60,11 @@ function useSettling(request: CapabilityRequestDto, onSettled: (next: Capability
   const [error, setError] = useState<string | null>(null)
 
   // Runs only after a save went through; the server judges what was saved, so a refused save never settles.
-  const settle = async () => {
+  const settle = async (saved?: { cronId: string }) => {
     setBusy(true)
     setError(null)
     try {
-      onSettled(await settleCapabilityRequest(request.id, request.orgId))
+      onSettled(await settleCapabilityRequest(request.id, request.orgId, saved))
     } catch (e) {
       setError(t('settleFailed', { error: errorText(e) }))
     } finally {
@@ -96,6 +99,46 @@ function useSettling(request: CapabilityRequestDto, onSettled: (next: Capability
     </>
   )
   return { busy, setBusy, error, setError, settle, saveThenSettle, status }
+}
+
+/** A scheduled task: the cron dialog on this agent, prefilled; on a change, opened on the agent's own cron (§4.12). */
+function CronCompletion({ request, onSettled }: CompletionProps) {
+  const t = useTranslations('CapabilityRequests.complete')
+  const { crons } = useConsoleData()
+  const [open, setOpen] = useState(false)
+  const { busy, settle, status } = useSettling(request, onSettled)
+  const want = request.want as CapabilityCronWant
+  const existing = want.cronId ? crons.find((c) => c.id === want.cronId) : undefined
+  const missing = want.cronId !== undefined && !existing
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-[13px] text-(--text-secondary)">{missing ? t('cronMissing') : t('cronHint')}</p>
+      <div>
+        <Button disabled={busy || missing} onClick={() => setOpen(true)}>
+          {t('reviewCron')}
+        </Button>
+      </div>
+      {status}
+      {open && (
+        <Scrim onEscape={() => setOpen(false)}>
+          <div className="modal">
+            <AddCronModal
+              cron={existing ?? null}
+              prefill={{
+                agentId: request.agentId,
+                ...(want.name ? { name: want.name } : {}),
+                schedule: want.schedule,
+                ...(want.timezone ? { timezone: want.timezone } : {}),
+                trigger: want.trigger
+              }}
+              onSaved={(cronId) => void settle({ cronId })}
+              onClose={() => setOpen(false)}
+            />
+          </div>
+        </Scrim>
+      )}
+    </div>
+  )
 }
 
 function SettingsAndTools({ request, onSettled }: CompletionProps) {

@@ -23,6 +23,27 @@ describe('capabilityDiff', () => {
     ])
   })
 
+  it('puts a requested runtime first and lists the other agent-form fields', () => {
+    expect(
+      capabilityDiff({
+        kind: 'agent-settings',
+        want: { model: 'gpt-5', runtime: 'codex-acp', showStatusBar: true },
+        current: { model: 'opus', runtime: 'claude-acp', showStatusBar: false }
+      })
+    ).toEqual([
+      { kind: 'setting', field: 'runtime', from: 'claude-acp', to: 'codex-acp' },
+      { kind: 'setting', field: 'model', from: 'opus', to: 'gpt-5' },
+      { kind: 'setting', field: 'showStatusBar', from: false, to: true }
+    ])
+  })
+
+  it('shows a scheduled task and whether it already holds', () => {
+    const cron = { schedule: '0 9 * * 1', trigger: 'send the report' }
+    expect(capabilityDiff({ kind: 'cron', want: cron, current: { cronId: 'c1', exists: true } })).toEqual([
+      { kind: 'cron', cron, exists: true }
+    ])
+  })
+
   it('says whether a server is already attached or registered at all', () => {
     expect(
       capabilityDiff({ kind: 'mcp-server', want: { server: 'Linear' }, current: { attached: false, exists: true } })

@@ -77,13 +77,20 @@ import { useDaemonDetail } from '@/lib/use-daemon-detail'
 // editors (the Workspace card / the Memory tab), so they are NOT sections here.
 export type EditAgentSection = 'basics' | 'runtime' | 'access' | 'secrets'
 
-/** The runtime settings a dialog can open on prefilled. */
+/** The agent-form settings a dialog can open on prefilled (capability-requests.md §4.12). */
 export interface EditAgentPrefill {
   model?: string
   reasoningEffort?: string
   outputMode?: OutputMode
   fastMode?: boolean
   permissionMode?: string
+  runtime?: string
+  execution?: string
+  chatActions?: 'talk' | 'approve' | 'settings'
+  introduceOnJoin?: boolean
+  showFooter?: boolean
+  showStatusBar?: boolean
+  displayName?: string
 }
 
 // A picker row that opens the join-command dialog instead of naming a placement. Never a
@@ -310,11 +317,30 @@ export default function EditAgentModal({
           setEffort('')
         }
         // Applied after the saved values so they read as unsaved edits and Save writes them.
+        // A prefilled runtime switches as the picker would, so a model it does not offer is cleared unless one is prefilled too.
+        if (prefill?.runtime !== undefined && prefill.runtime !== (dto.runtime ?? '')) {
+          setRuntime(prefill.runtime)
+          setModel('')
+          setEffort('')
+          setPermissionMode(
+            runtimeSwitchPermissionMode(
+              daemons.find((d) => d.daemonId === placement),
+              prefill.runtime
+            )
+          )
+        }
         if (prefill?.model !== undefined) setModel(prefill.model)
         if (prefill?.reasoningEffort !== undefined) setEffort(prefill.reasoningEffort)
         if (prefill?.outputMode !== undefined) setOutputMode(prefill.outputMode)
         if (prefill?.fastMode !== undefined) setFastMode(prefill.fastMode)
         if (prefill?.permissionMode !== undefined) setPermissionMode(prefill.permissionMode)
+        if (prefill?.execution !== undefined) setExecution(prefill.execution)
+        if (prefill?.chatActions !== undefined) setChatActions(prefill.chatActions)
+        if (prefill?.introduceOnJoin !== undefined) setIntroduceOnJoin(prefill.introduceOnJoin)
+        if (prefill?.showFooter !== undefined) setShowFooter(prefill.showFooter)
+        if (prefill?.showStatusBar !== undefined) setShowStatusBar(prefill.showStatusBar)
+        // A built-in agent's name is fixed; the route refuses it, so a prefill must not make Save fail.
+        if (prefill?.displayName !== undefined && !agent.builtin) setDisplayName(prefill.displayName)
         setLoaded(true)
       },
       (e) => {

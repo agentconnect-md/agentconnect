@@ -79,7 +79,26 @@ interface Target {
 // Headless fire: no channel; the platform is a legacy sentinel the CP defaults anyway.
 const HEADLESS: Target = { platform: 'slack' }
 
-export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null; onClose: () => void }) {
+/** Values a capability request opens the dialog on, over the cron being edited (capability-requests.md §4.12). */
+export interface CronPrefill {
+  agentId: string
+  name?: string
+  schedule: string
+  timezone?: string
+  trigger: string
+}
+
+export default function AddCronModal({
+  cron,
+  prefill,
+  onSaved,
+  onClose
+}: {
+  cron?: CronDto | null
+  prefill?: CronPrefill
+  onSaved?: (cronId: string) => void
+  onClose: () => void
+}) {
   const t = useTranslations('Crons.dialog')
   const locale = useLocale()
   const { agents, integrations, saveCron, saveSharing } = useConsoleData()
@@ -87,26 +106,27 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
   // Only real agents can own a cron (a mock agent isn't on any daemon).
   const realAgents = agents.filter((a) => !a.name.startsWith(MOCK_PREFIX))
 
-  const [name, setName] = useState(cron?.name ?? '')
-  const [agentId, setAgentId] = useState(cron?.agentId ?? realAgents[0]?.id ?? '')
+  const [name, setName] = useState(prefill?.name ?? cron?.name ?? '')
+  const [agentId, setAgentId] = useState(cron?.agentId ?? prefill?.agentId ?? realAgents[0]?.id ?? '')
   const selectedAgent = realAgents.find((a) => a.id === agentId)
   // Cron state lives as builder parts. A new schedule defaults to Weekly · Mon
   // 9:00; editing parses the stored expression back to the matching preset (or
   // Custom). `customExpr` holds the raw text while Custom is active.
-  const initial = cron?.schedule
-    ? parseCron(cron.schedule)
+  const initialSchedule = prefill?.schedule ?? cron?.schedule
+  const initial = initialSchedule
+    ? parseCron(initialSchedule)
     : { mode: 'weekly' as CronMode, minute: 0, hour: 9, weekday: 1 }
   const [mode, setMode] = useState<CronMode>(initial.mode)
   const [hour, setHour] = useState(initial.hour)
   const [minute, setMinute] = useState(initial.minute)
   const [weekday, setWeekday] = useState(initial.weekday)
-  const [customExpr, setCustomExpr] = useState(cron?.schedule ?? '')
+  const [customExpr, setCustomExpr] = useState(initialSchedule ?? '')
   const [timezoneModel] = useState(() => {
     const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone
     const supportedTimezones =
       (Intl as typeof Intl & { supportedValuesOf?: (key: 'timeZone') => string[] }).supportedValuesOf?.('timeZone') ??
       []
-    return cronTimezoneSelectModel(cron?.timezone, browserTimezone, supportedTimezones)
+    return cronTimezoneSelectModel(prefill?.timezone ?? cron?.timezone, browserTimezone, supportedTimezones)
   })
   const [timezone, setTimezone] = useState(timezoneModel.initialValue)
   const [target, setTarget] = useState<Target>(
@@ -118,7 +138,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
         }
       : HEADLESS
   )
-  const [trigger, setTrigger] = useState(cron?.trigger ?? '')
+  const [trigger, setTrigger] = useState(prefill?.trigger ?? cron?.trigger ?? '')
   const [sharing, setSharing] = useState<SharingValue>({
     visibility: cron?.visibility ?? 'org',
     sharedWith: cron?.sharedWith ?? []
@@ -225,6 +245,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
           : {})
       })
       if (!creating && !sameSharing(sharing, initialSharing)) await saveSharing('crons', cronId, sharing)
+      onSaved?.(cronId)
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
