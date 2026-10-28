@@ -6570,12 +6570,12 @@
       "minting": "正在生成命令…",
       "open": "打开电脑",
       "saving": "正在保存…",
-      "poolTitle": "添加托管电脑",
+      "poolTitle": "添加云电脑",
       "poolDescription": "从本部署的资源池创建一台带 Chromium 和 LibreOffice 的 Linux 桌面，运行在独立的容器中，有自己的磁盘。获得访问权的智能体轮流使用它。空闲时休眠并保留文件和登录状态，直到你删除它。你将是它的所有者。",
       "poolName": "名称",
       "poolNamePlaceholder": "共享浏览器",
       "poolAccessHint": "能看到它的成员可以在 Agent 的“工具”页把它授予自己的 Agent。智能体轮流使用：同一时间只有一个控制桌面，其他的排队等待。",
-      "poolUnavailable": "当前没有连接的资源池成员，无法启动托管计算机。请稍后再试。",
+      "poolUnavailable": "当前没有连接的资源池成员，无法启动云电脑。请稍后再试。",
       "poolCreate": "创建计算机",
       "poolCreating": "正在创建…",
       "poolError": "无法创建计算机：{message}",
@@ -6585,22 +6585,17 @@
     "empty": {
       "description": "添加一台电脑后，Agent 可以在你选择的桌面上截图、点击和输入。控制权始终在你手中：由你授权 Agent、批准高风险操作，并可随时停止。"
     },
-    "poolEntry": {
-      "managedTitle": "AgentConnect Computers",
-      "clusterTitle": "电脑池",
+    "cloud": {
+      "title": "云电脑",
+      "description": "此部署运行的隔离 Linux 桌面，你或你的 Agent 都可以创建。空闲时休眠，下次使用时唤醒。",
+      "add": "添加云电脑",
       "meta": "{running} 台运行中 · {asleep} 台休眠",
-      "none": "还没有托管电脑",
-      "countLabel": "台托管电脑",
-      "available": "可用",
-      "unavailable": "不可用",
-      "add": "添加托管电脑",
-      "description": "此部署为你的 Agent 运行的隔离 Linux 桌面。空闲时休眠，下次使用时唤醒。"
-    },
-    "poolPage": {
-      "description": "在本部署的集群中为 Agent 启动的桌面。空闲时休眠，下次使用时唤醒。",
-      "add": "添加托管电脑",
-      "empty": "还没有托管电脑。可以在这里添加，或在 Agent 的工具页设置「托管计算机」，让系统为它创建一台。",
-      "notFound": "本部署没有运行托管电脑"
+      "unavailable": "当前没有可启动它的资源池成员",
+      "empty": "还没有云电脑。可以在这里添加，或在 Agent 的工具页设置「托管计算机」，让系统为它创建一台。",
+      "running": "运行中",
+      "by": "由 {name} 创建",
+      "byYou": "由你创建",
+      "idle": "已空闲 {when}"
     },
     "never": "从未",
     "you": "你",
@@ -6656,7 +6651,8 @@
         "info": "{count} 项提示"
       },
       "showPassing": "显示 {count, plural, other {# 项通过的检查}}",
-      "hidePassing": "隐藏通过的检查"
+      "hidePassing": "隐藏通过的检查",
+      "none": "无检查"
     },
     "detail": {
       "notFound": "找不到电脑",
@@ -6867,7 +6863,6 @@
       "per-agent": "智能体专属",
       "manual": "资源池"
     },
-    "madeFor": "属于 {agent}",
     "inUseBy": "{agent} 正在使用",
     "waitingCount": "{count, plural, other {# 个在排队}}",
     "hiddenAgent": "你看不到的智能体",

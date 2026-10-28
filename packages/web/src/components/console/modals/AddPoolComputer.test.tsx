@@ -52,7 +52,7 @@ describe('AddPoolComputer', () => {
     mocks.createPoolComputer.mockResolvedValue(computerFixture({ id: 'p1', kind: 'managed', allocation: 'manual' }))
     const onClose = vi.fn()
     const host = render(onClose)
-    expect(host.textContent).toContain('Add managed computer')
+    expect(host.textContent).toContain('Add cloud computer')
     expect(host.textContent).toContain('isolated in its own container')
     // A name is needed; agents get it on their own Tools tab.
     expect(button('Create computer').disabled).toBe(true)
