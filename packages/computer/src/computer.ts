@@ -128,6 +128,10 @@ const MAC_COMMAND_KEYS = new Set(['cmd', 'command', 'meta'])
 const HUMAN_POLL_MS = 500
 const MAX_TYPE_CHARS = 4096
 const TYPE_REMAP_PAUSE_MS = 40
+// Viewer input runs in its own driver session whose agent cursor is off: a person's click must not wait for its glide.
+const VIEWER_SESSION = 'viewer'
+// The driver ends a session after five idle minutes, taking its cursor settings and capture with it.
+const VIEWER_SESSION_REFRESH_MS = 4 * 60_000
 
 // One self-hosted Computer: a single control lease, emergency pause, human-input arbitration, and one action at a time.
 export class Computer {
@@ -156,6 +160,8 @@ export class Computer {
   // `by` is set when a remote human took over through the web viewer.
   private paused: { at: number; reason: string; by?: string } | undefined
   private capture: Capture | undefined
+  // `cursor` is false where the driver refuses cursor settings (macOS has no overlay).
+  private viewerCapture: (Capture & { usedAt: number; cursor: boolean }) | undefined
   private queue: Promise<unknown> = Promise.resolve()
   private busy = false
   private actions = 0
@@ -323,19 +329,22 @@ export class Computer {
       await this.exclusive(async () => {
         // Pause or hand-back may have happened while this input waited in the queue or for the capture.
         this.assertViewerControl(client)
-        if (!this.captureIsCurrent()) await this.captureScreen()
-        // Viewer coordinates are fractions of the frame; the driver wants pixels of its last capture.
-        const { width, height } = this.capture!
+        // Viewer coordinates are fractions of the frame; the driver wants pixels of the viewer session's last capture.
+        const { width, height } = await this.viewerSessionCapture()
         const px = (point: { x: number; y: number }) => ({
           x: Math.round(Math.min(Math.max(point.x, 0), 1) * (width - 1)),
           y: Math.round(Math.min(Math.max(point.y, 0), 1) * (height - 1))
         })
-        const call = viewerCall(input, px)
+        const viewer = viewerCall(input, px)
+        const call = { ...viewer, args: { ...viewer.args, session: VIEWER_SESSION } }
         this.assertViewerControl(client)
         await this.callDriver(call, () => {
           this.assertAuthorized()
           this.assertViewerControl(client)
         })
+        // Each action shows the session's cursor again, so it is hidden after every one.
+        if (this.viewerCapture?.cursor)
+          await this.driver.call('set_agent_cursor_enabled', { session: VIEWER_SESSION, enabled: false })
       })
       if (input.type !== 'move')
         this.audit({ client, tool: `viewer_${input.type}`, args, outcome: 'ok', ms: this.now() - started })
@@ -916,6 +925,48 @@ export class Computer {
       if (segment.length === 1 && !/[\x20-\x7e\n\t]/.test(segment)) await this.sleep(TYPE_REMAP_PAUSE_MS)
     }
     return result
+  }
+
+  // Sets up the viewer session (no glide, then a capture that maps its coordinates) whenever the driver may have lost it.
+  private async viewerSessionCapture(): Promise<Capture> {
+    const now = this.now()
+    const current = this.viewerCapture
+    if (current?.generation === this.driver.generation() && now - current.usedAt < VIEWER_SESSION_REFRESH_MS) {
+      current.usedAt = now
+      return current
+    }
+    const session = VIEWER_SESSION
+    let cursor = true
+    try {
+      await this.driver.call('set_agent_cursor_motion', {
+        session,
+        timing: 'fixed',
+        glide_duration_ms: 1,
+        dwell_after_click_ms: 0,
+        effects: { glow: 'off', ripple: 'off', squish: 'off', trail: 'off', magnet: 'off' }
+      })
+    } catch (error) {
+      // macOS runs the driver without an overlay, which refuses cursor settings; there is no glide to turn off.
+      if (!(error instanceof DriverToolError)) throw error
+      cursor = false
+    }
+    const result = await this.driver.call('get_desktop_state', {
+      max_image_dimension: this.config.maxImageDimension,
+      session
+    })
+    const meta = result.structuredContent ?? {}
+    const num = (key: string): number => (typeof meta[key] === 'number' ? (meta[key] as number) : 0)
+    this.viewerCapture = {
+      generation: this.driver.generation(),
+      width: num('screenshot_width'),
+      height: num('screenshot_height'),
+      screenWidth: num('screen_width'),
+      screenHeight: num('screen_height'),
+      scale: num('scale_factor') || 1,
+      usedAt: now,
+      cursor
+    }
+    return this.viewerCapture
   }
 
   private captureIsCurrent(): boolean {

@@ -322,14 +322,53 @@ describe('Computer', () => {
     await computer.viewerInput('alice', { type: 'key', keys: ['win'] })
     const calls = driver.calls.filter((call) => call.name === 'click' || call.name === 'press_key').slice(-2)
     expect(calls.map((call) => call.args)).toEqual([
-      { scope: 'desktop', x: 640, y: 719, button: 'right' },
-      { scope: 'desktop', key: 'win' }
+      { scope: 'desktop', x: 640, y: 719, button: 'right', session: 'viewer' },
+      { scope: 'desktop', key: 'win', session: 'viewer' }
     ])
     expect(audit.at(-1)).toMatchObject({ client: 'alice', tool: 'viewer_key', outcome: 'ok' })
 
     expect(computer.handBack('bob')).toBe(false)
     expect(computer.handBack('alice')).toBe(true)
     expect((await computer.click('claude', { x: 1, y: 1 })).isError).toBeUndefined()
+  })
+
+  it('runs viewer input in its own session with the agent cursor off, set up again when the driver may have lost it', async () => {
+    const { driver, computer, advance } = setup({ actionScreenshot: false })
+    const setupCalls = () =>
+      driver.calls.filter(
+        (call) => call.args.session === 'viewer' && ['set_agent_cursor_motion', 'get_desktop_state'].includes(call.name)
+      )
+    const hides = () => driver.calls.filter((call) => call.name === 'set_agent_cursor_enabled')
+    const lastClick = () => driver.calls.filter((call) => call.name === 'click').at(-1)
+    await computer.click('claude', { x: 1, y: 1 })
+    expect(lastClick()).toEqual({ name: 'click', args: { scope: 'desktop', x: 1, y: 1 } })
+
+    computer.takeOver('alice')
+    await computer.viewerInput('alice', { type: 'move', x: 0.5, y: 0.5 })
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    expect(setupCalls().map((call) => call.name)).toEqual(['set_agent_cursor_motion', 'get_desktop_state'])
+    // Every action shows the session's cursor again, so each one is followed by hiding it.
+    expect(hides()).toEqual(
+      Array(2).fill({ name: 'set_agent_cursor_enabled', args: { session: 'viewer', enabled: false } })
+    )
+
+    // A restarted driver, or one idle long enough to end the session, gets the set-up again.
+    driver.starts++
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    advance(4 * 60_000)
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    expect(setupCalls()).toHaveLength(6)
+
+    // macOS refuses cursor settings (it has no overlay), which must not block the click.
+    driver.starts++
+    driver.handlers.set_agent_cursor_motion = () => {
+      throw new DriverToolError('set_agent_cursor_motion', {
+        content: [{ type: 'text', text: 'facility_unavailable' }]
+      })
+    }
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    expect(lastClick()?.args.session).toBe('viewer')
+    expect(hides()).toHaveLength(4)
   })
 
   for (const [revoke, wait] of [

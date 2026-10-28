@@ -87,9 +87,7 @@ export class CuaDriver implements Driver {
           ...(this.options.wrapper?.slice(1) ?? []),
           ...(this.options.wrapper ? [this.options.command] : []),
           'mcp',
-          '--direct',
-          // The agent-cursor overlay glides ~1 s before every desktop click and draws a second cursor beside the real one.
-          '--no-overlay'
+          '--direct'
         ],
         env: {
           ...(process.env as Record<string, string>),
