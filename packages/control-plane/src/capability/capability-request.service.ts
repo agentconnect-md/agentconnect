@@ -357,10 +357,16 @@ export class CapabilityRequestService {
     settledBy: CapabilityDecider | null,
     requireSatisfied: boolean,
     appliedBy: readonly string[] = [],
-    specless = false
+    specless = false,
+    savedCronId?: string
   ): Promise<boolean> {
-    const ask = askOf(row)
-    if (!ask) return false
+    const asked = askOf(row)
+    if (!asked) return false
+    // A new task saved differently from the ask is judged by the task it was saved as.
+    const ask =
+      asked.kind === 'cron' && savedCronId && !asked.want.cronId
+        ? { ...asked, want: { ...asked.want, cronId: savedCronId } }
+        : asked
     const evaluation = evaluateCapability(ask, agent, await this.factsFor(agent, ask))
     if (requireSatisfied && !evaluation.satisfied) return false
     return this.commit(row, row.generation, {
@@ -443,7 +449,8 @@ export class CapabilityRequestService {
   async settleFromConsole(
     orgId: OrgId,
     id: string,
-    by: CapabilityDecider
+    by: CapabilityDecider,
+    savedCronId?: string
   ): Promise<CapabilityRequestRecord | CapabilityActionRefusal> {
     const row = await this.deps.requests.get(orgId, id)
     if (!row) return 'not_found'
@@ -452,7 +459,7 @@ export class CapabilityRequestService {
     if (row.status !== 'open') return 'not_open'
     const agent = await this.deps.agents.getUnscoped(row.agentId)
     if (!agent || agent.orgId !== orgId) return 'not_found'
-    if (!(await this.complete(row, agent, by, false))) {
+    if (!(await this.complete(row, agent, by, false, [], false, savedCronId))) {
       const current = await this.deps.requests.get(orgId, id)
       return current?.status === 'completed' ? current : 'not_open'
     }

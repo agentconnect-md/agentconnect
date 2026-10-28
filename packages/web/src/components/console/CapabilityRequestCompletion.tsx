@@ -60,11 +60,11 @@ function useSettling(request: CapabilityRequestDto, onSettled: (next: Capability
   const [error, setError] = useState<string | null>(null)
 
   // Runs only after a save went through; the server judges what was saved, so a refused save never settles.
-  const settle = async () => {
+  const settle = async (saved?: { cronId: string }) => {
     setBusy(true)
     setError(null)
     try {
-      onSettled(await settleCapabilityRequest(request.id, request.orgId))
+      onSettled(await settleCapabilityRequest(request.id, request.orgId, saved))
     } catch (e) {
       setError(t('settleFailed', { error: errorText(e) }))
     } finally {
@@ -131,7 +131,7 @@ function CronCompletion({ request, onSettled }: CompletionProps) {
                 ...(want.timezone ? { timezone: want.timezone } : {}),
                 trigger: want.trigger
               }}
-              onSaved={() => void settle()}
+              onSaved={(cronId) => void settle({ cronId })}
               onClose={() => setOpen(false)}
             />
           </div>

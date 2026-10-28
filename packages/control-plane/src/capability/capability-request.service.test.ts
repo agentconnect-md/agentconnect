@@ -678,16 +678,17 @@ describe('CapabilityRequestService', () => {
       expect(h.rebounds).toEqual([])
     })
 
-    it('wakes at once when a person saves a different cron, since no spec upsert carries it', async () => {
+    it('wakes at once when a person saves a different cron, judged by the task it was saved as', async () => {
       const h = harness()
       const { requestId } = await h.service.request(h.agent(), cronAsk('s1'))
       h.setFacts({ crons: [{ ...cron, schedule: '0 10 * * 1' }] })
       await h.service.orgChanged(ORG, { kind: 'cron', agentId: AGENT }, null)
       expect(h.requests.rows.get(requestId!)!.status).toBe('open')
-      await h.service.settleFromConsole(ORG, requestId!, { kind: 'console', userId: 'u1', name: 'Ada' })
+      await h.service.settleFromConsole(ORG, requestId!, { kind: 'console', userId: 'u1', name: 'Ada' }, 'c1')
       expect(h.requests.rows.get(requestId!)!).toMatchObject({
         status: 'completed',
         differs: true,
+        outcome: expect.stringContaining('runs on "0 10 * * 1" (UTC) with the prompt asked for'),
         settledRevision: null
       })
       await h.pass()

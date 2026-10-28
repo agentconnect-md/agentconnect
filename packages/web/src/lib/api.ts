@@ -8003,8 +8003,12 @@ export async function saveAgentLiveSecret(
 }
 
 /** Asks for the request to be settled once the change was saved; the outcome is what the server observes, not what was clicked. */
-export async function settleCapabilityRequest(id: string, orgId?: string): Promise<CapabilityRequestDto> {
-  return apiPost<CapabilityRequestDto>(`${capabilityRequestPath(id, orgId)}/settle`, {})
+export async function settleCapabilityRequest(
+  id: string,
+  orgId?: string,
+  saved?: { cronId: string }
+): Promise<CapabilityRequestDto> {
+  return apiPost<CapabilityRequestDto>(`${capabilityRequestPath(id, orgId)}/settle`, saved ?? {})
 }
 
 export async function declineCapabilityRequest(

@@ -680,7 +680,8 @@ dialog prefilled with the agent and those values; where it posts is the person's
 enabled cron of the agent (that one, given `cronId`) has the wanted schedule and prompt, and the time zone
 when one was asked. A cron is not part of the agent's spec, so saving one re-evaluates the agent's open
 `cron` requests directly, and the wake is not held for an upsert acknowledgement; it does not reload the
-session, and whether it completed as asked or as the person saved it. A `cronId` that is not one of the agent's
+session. Completing a new cron passes the task the dialog saved, which must be one of this agent's crons the
+person can see, so a save that differs from the ask is judged by that task and the agent is told what it got. A `cronId` that is not one of the agent's
 crons is refused as an unknown target. A built-in agent's display name cannot be changed, so it is refused too.
 
 **What stays out, and why:**

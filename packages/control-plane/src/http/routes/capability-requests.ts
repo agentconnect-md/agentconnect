@@ -31,6 +31,8 @@ const ListQuery = z.object({
 })
 const DeclineBody = z.object({ note: z.string().max(CAPABILITY_NOTE_MAX).optional() }).strict()
 const ForwardBody = z.object({ userId: z.string().min(1).max(200).optional() }).strict()
+// The task a new-cron request was saved as, so a save that differs from the ask is judged by that task (§4.12).
+const SettleBody = z.object({ cronId: z.string().uuid().optional() }).strict().nullish()
 
 const SettledByDto = z.union([
   z.object({ kind: z.literal('console'), userId: z.string(), name: z.string() }),
@@ -337,23 +339,42 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Complete a capability request',
           description:
-            'Completes an open request after its change was saved through the change’s own route. The outcome is computed from the agent as it is now, so a save that differs from what was asked still completes the request and the agent is told what it got. The conversations that asked are told once the agent’s daemon has applied the change. Only someone who can make the change may complete it: an editor of the agent, an editor of the MCP server for its connection or headers, or a member who can change the organization’s code-host connections; one no longer open answers 409.',
+            'Completes an open request after its change was saved through the change’s own route; a new scheduled task passes the `cronId` it was saved as. The outcome is computed from the agent as it is now, so a save that differs from what was asked still completes the request and the agent is told what it got. The conversations that asked are told once the agent’s daemon has applied the change. Only someone who can make the change may complete it: an editor of the agent, an editor of the MCP server for its connection or headers, or a member who can change the organization’s code-host connections; one no longer open answers 409.',
           operationId: 'settleCapabilityRequest',
           params: RequestParam,
-          response: { 200: CapabilityRequestDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+          body: SettleBody,
+          response: { 200: CapabilityRequestDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
         const admitted = await admit(req, reply, req.params.id)
         if (!admitted) return reply
         const ctx = ctxOf(req)
-        if (!(await authority(askOf(admitted.row), admitted.agent)).may(ctx))
+        const ask = askOf(admitted.row)
+        if (!(await authority(ask, admitted.agent)).may(ctx))
           return send(reply, { ...NOT_EDITOR, message: 'only someone who can make this change can complete it' })
-        const result = await service.settleFromConsole(orgOf(req), req.params.id, {
-          kind: 'console',
-          userId: ctx.userId,
-          name: await viewerName(ctx.userId)
-        })
+        const savedCronId = req.body?.cronId
+        if (savedCronId !== undefined) {
+          const saved = await deps.repos.cron.get(admitted.agent.orgId, CronId(savedCronId))
+          const fits =
+            ask?.kind === 'cron' &&
+            saved !== null &&
+            saved.agentId === admitted.agent.id &&
+            canView(saved, ctx) &&
+            (ask.want.cronId === undefined || ask.want.cronId === savedCronId)
+          if (!fits)
+            return send(reply, {
+              status: 400,
+              error: 'Bad Request',
+              message: 'cronId must name a scheduled task of this agent that this request is about'
+            })
+        }
+        const result = await service.settleFromConsole(
+          orgOf(req),
+          req.params.id,
+          { kind: 'console', userId: ctx.userId, name: await viewerName(ctx.userId) },
+          savedCronId
+        )
         if (typeof result === 'string') return send(reply, refused(result))
         return (await fresh(req, result)) ?? send(reply, NOT_FOUND)
       }

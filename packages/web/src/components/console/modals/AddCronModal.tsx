@@ -96,7 +96,7 @@ export default function AddCronModal({
 }: {
   cron?: CronDto | null
   prefill?: CronPrefill
-  onSaved?: () => void
+  onSaved?: (cronId: string) => void
   onClose: () => void
 }) {
   const t = useTranslations('Crons.dialog')
@@ -245,7 +245,7 @@ export default function AddCronModal({
           : {})
       })
       if (!creating && !sameSharing(sharing, initialSharing)) await saveSharing('crons', cronId, sharing)
-      onSaved?.()
+      onSaved?.(cronId)
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
