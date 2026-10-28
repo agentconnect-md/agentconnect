@@ -8393,7 +8393,8 @@ export class Daemon {
         model: agent.runtimeOverrides?.model,
         permissionMode: agent.permissionMode,
         reasoningEffort: agent.reasoningEffort,
-        fastMode: agent.fastMode
+        fastMode: agent.fastMode,
+        operatorInstructions: agent.description
       },
       log: opts.providerCredential
         ? {

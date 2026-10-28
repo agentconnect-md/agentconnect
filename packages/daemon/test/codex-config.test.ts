@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   CODEX_DEFAULT_ENDPOINT,
   CODEX_MCP_STARTUP_GRACE_MS,
+  codexConfigWithGuardianPolicy,
   codexConfigWithMcpStartupGrace,
+  codexConfigWithProjectDocFallback,
   codexConfigWithUserInputTool,
-  codexGatewayAuthRequest
+  codexGatewayAuthRequest,
+  codexGuardianOperatorPolicy
 } from '../src/runtimes/codex-config.js'
 
 describe('codexGatewayAuthRequest', () => {
@@ -72,5 +75,60 @@ describe('codexConfigWithMcpStartupGrace', () => {
 
   it('rejects a malformed config rather than silently dropping it', () => {
     expect(() => codexConfigWithMcpStartupGrace('not-json')).toThrow('CODEX_CONFIG must be a valid JSON object')
+  })
+})
+
+describe('codexConfigWithProjectDocFallback', () => {
+  it('lets Codex read CLAUDE.md where a directory has no AGENTS.md', () => {
+    expect(JSON.parse(codexConfigWithProjectDocFallback(JSON.stringify({ model: 'gpt-test' })))).toEqual({
+      model: 'gpt-test',
+      project_doc_fallback_filenames: ['CLAUDE.md']
+    })
+  })
+
+  it('leaves fallbacks the caller already chose, even none', () => {
+    const raw = JSON.stringify({ project_doc_fallback_filenames: [] })
+    expect(JSON.parse(codexConfigWithProjectDocFallback(raw))).toEqual({ project_doc_fallback_filenames: [] })
+  })
+})
+
+describe('codexGuardianOperatorPolicy', () => {
+  it('frames the instructions as operator authorization inside a delimited block', () => {
+    const policy = codexGuardianOperatorPolicy('  Escalate by posting to Slack #support.\n')
+    expect(policy).toContain('trusted authorization')
+    expect(policy).toContain(
+      '<operator_instructions>\nEscalate by posting to Slack #support.\n</operator_instructions>'
+    )
+  })
+
+  it('gives no policy for an agent without instructions', () => {
+    expect(codexGuardianOperatorPolicy(undefined)).toBeUndefined()
+    expect(codexGuardianOperatorPolicy('  \n')).toBeUndefined()
+  })
+})
+
+describe('codexConfigWithGuardianPolicy', () => {
+  it("sets the Guardian's extra policy and keeps every other field", () => {
+    const raw = JSON.stringify({ model: 'gpt-test', auto_review: { timeout_ms: 5000 } })
+    expect(JSON.parse(codexConfigWithGuardianPolicy(raw, 'Operator policy.'))).toEqual({
+      model: 'gpt-test',
+      auto_review: { timeout_ms: 5000, extra_policy: 'Operator policy.' }
+    })
+  })
+
+  it('appends after an extra policy the caller already set', () => {
+    const raw = JSON.stringify({ auto_review: { extra_policy: 'Deployment policy.' } })
+    expect(JSON.parse(codexConfigWithGuardianPolicy(raw, 'Operator policy.'))).toEqual({
+      auto_review: { extra_policy: 'Deployment policy.\n\nOperator policy.' }
+    })
+  })
+
+  it('rejects a malformed auto_review rather than silently dropping it', () => {
+    expect(() => codexConfigWithGuardianPolicy(JSON.stringify({ auto_review: 'on' }), 'p')).toThrow(
+      'CODEX_CONFIG.auto_review must be a JSON object'
+    )
+    expect(() => codexConfigWithGuardianPolicy(JSON.stringify({ auto_review: { extra_policy: 1 } }), 'p')).toThrow(
+      'CODEX_CONFIG.auto_review.extra_policy must be a string'
+    )
   })
 })
