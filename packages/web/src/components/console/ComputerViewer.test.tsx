@@ -67,7 +67,10 @@ describe('ComputerViewerCard', () => {
   it('opens only for a live computer', () => {
     const off = render(<ComputerViewerCard computer={computer({ status: 'offline' })} />)
     expect(button(off, 'Watch')!.disabled).toBe(true)
-    expect(off.textContent).toContain('The viewer opens once this computer is online.')
+    expect(off.textContent).toContain('Offline. Last seen')
+    const asleep = render(<ComputerViewerCard computer={computer({ status: 'sleeping' })} />)
+    expect(button(asleep, 'Watch')!.disabled).toBe(true)
+    expect(asleep.textContent).toContain('Asleep.')
   })
 
   it('sends the next hover move only after the previous one is applied', async () => {
@@ -119,7 +122,7 @@ describe('ComputerViewerCard', () => {
 
     await act(async () => button(el, 'Release')!.click())
     expect(fake.release).toHaveBeenCalled()
-    act(() => button(el, 'Close')!.click())
+    act(() => button(el, 'Stop watching')!.click())
     expect(fake.stop).toHaveBeenCalled()
   })
 

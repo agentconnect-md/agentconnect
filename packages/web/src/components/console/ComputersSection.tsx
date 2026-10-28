@@ -23,7 +23,7 @@ import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { SectionHeader } from '@/components/console/SectionHeader'
 import { FLEET_GRID, FLEET_ROW } from '@/components/console/fleet-grid'
-import { useAgentName } from '@/components/console/ComputerPoolCards'
+import { useAgentName } from '@/components/console/computer-members'
 
 export function ComputersSection() {
   const t = useTranslations('Computers')

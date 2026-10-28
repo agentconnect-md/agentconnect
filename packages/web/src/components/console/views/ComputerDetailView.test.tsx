@@ -24,7 +24,11 @@ const mocks = vi.hoisted(() => ({
   resetComputer: vi.fn()
 }))
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mocks.push }), useParams: () => ({ id: 'c1' }) }))
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: mocks.push }),
+  useParams: () => ({ id: 'c1' }),
+  useSearchParams: () => new URLSearchParams()
+}))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-1' }, orgPath: (p: string) => `/acme${p}` })
 }))
@@ -87,6 +91,10 @@ function render(c: ComputerDto): HTMLDivElement {
 const settle = () => act(async () => await new Promise((resolve) => setTimeout(resolve, 0)))
 const button = (el: HTMLElement, label: string) =>
   [...el.querySelectorAll('button')].filter((b) => b.textContent?.trim() === label)
+const openTab = (el: HTMLElement, label: string) =>
+  act(() => [...el.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((b) => b.textContent === label)!.click())
+const openMenu = (el: HTMLElement) =>
+  act(() => el.querySelector<HTMLButtonElement>('button[aria-label="Computer actions"]')!.click())
 
 beforeEach(() => {
   for (const fn of [
@@ -118,7 +126,7 @@ describe('ComputerDetailView', () => {
     expect(el.querySelector('[data-doctor-check]')).toBeNull()
   })
 
-  it('shows each doctor failure with its fix, failures first', () => {
+  it('shows each doctor failure with its fix, failures first, and passing checks on request', () => {
     const el = render(
       computer({
         doctor: {
@@ -130,8 +138,11 @@ describe('ComputerDetailView', () => {
         }
       })
     )
-    const checks = [...el.querySelectorAll('[data-doctor-check]')].map((n) => n.getAttribute('data-doctor-check'))
-    expect(checks).toEqual(['driver', 'config'])
+    const checks = () => [...el.querySelectorAll('[data-doctor-check]')].map((n) => n.getAttribute('data-doctor-check'))
+    expect(checks()).toEqual(['driver'])
+    expect(el.textContent).toContain('1 failing')
+    act(() => button(el, 'Show 1 passing check')[0]!.click())
+    expect(checks()).toEqual(['driver', 'config'])
     expect(el.querySelector('[data-doctor-check="driver"]')!.textContent).toContain('agentconnect computer setup')
   })
 
@@ -164,7 +175,7 @@ describe('ComputerDetailView', () => {
   it('revokes after confirmation', async () => {
     mocks.revokeComputer.mockResolvedValue(computer({ status: 'revoked' }))
     const el = render(computer())
-    act(() => el.querySelector<HTMLButtonElement>('button[aria-label="Computer actions"]')!.click())
+    openMenu(el)
     act(() => button(el, 'Revoke')[0]!.click())
     expect(document.body.textContent).toContain('Revoke computer')
     const confirm = button(document.body, 'Revoke').at(-1)!
@@ -178,9 +189,10 @@ describe('ComputerDetailView', () => {
     expect(el.textContent).toContain('Not your agent')
     const tools = el.querySelector<HTMLAnchorElement>('a[aria-label="Open the agent’s tools"]')!
     expect(tools.getAttribute('href')).toBe('/acme/agents/a2?tab=tools')
-    expect(el.textContent).toContain('set on each agent’s Tools tab')
+    expect(el.textContent).toContain('Granted per agent, under Tools › Computers.')
+    expect(el.textContent).toContain('View and control')
     expect([...el.querySelectorAll('[role="radio"]')].some((r) => r.textContent?.includes('All agents'))).toBe(false)
-    expect(button(el, 'Save')).toHaveLength(1) // only the policy form saves
+    expect(button(el, 'Save')).toHaveLength(0) // the policy form lives on its own tab
 
     const all = render(computer({ agentAccess: { mode: 'all', agents: [] } }))
     expect(all.textContent).toContain('Every agent in the organization can use it.')
@@ -219,12 +231,15 @@ describe('ComputerDetailView', () => {
   it('edits the usage policy and saves', async () => {
     mocks.setComputerPolicy.mockImplementation(async (_id: string, policy: unknown) => computer({ policy } as never))
     const el = render(computer())
-    const idle = el.querySelector<HTMLInputElement>('input[aria-label="Idle release (seconds)"]')!
+    openTab(el, 'Usage policy')
+    expect(el.textContent).toContain('Applies to every agent with access.')
+    const idle = el.querySelector<HTMLInputElement>('input[aria-label="Idle release"]')!
     act(() => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
       setter.call(idle, '60')
       idle.dispatchEvent(new Event('input', { bubbles: true }))
     })
+    expect(el.textContent).toContain('1 unsaved change')
     await act(async () => button(el, 'Save').at(-1)!.click())
     await settle()
     expect(mocks.setComputerPolicy).toHaveBeenCalledWith('c1', expect.objectContaining({ leaseIdleSeconds: 60 }))
@@ -232,9 +247,43 @@ describe('ComputerDetailView', () => {
 
   it('keeps the policy read-only for someone who is not the owner and hides the audit', () => {
     const el = render(computer({ canEditPolicy: false, canEditAgentAccess: false }))
+    const tabs = [...el.querySelectorAll('[role="tab"]')].map((b) => b.textContent)
+    expect(tabs).toEqual(['Overview', 'Usage policy'])
+    openTab(el, 'Usage policy')
     expect(el.textContent).toContain('Only the owner can change this')
     expect(button(el, 'Save')).toHaveLength(0)
-    expect(el.textContent).not.toContain('Recent activity')
+  })
+
+  it('lists activity by day and filters viewers from agents', async () => {
+    const at = new Date().toISOString()
+    const entry = {
+      at,
+      outcome: 'ok',
+      code: null,
+      approval: null,
+      args: {},
+      textLength: null,
+      ms: 12,
+      screenshotRef: null
+    }
+    mocks.fetchComputerAudit.mockResolvedValue({
+      entries: [
+        { ...entry, id: 'e1', tool: 'viewer_click', client: 'console:u2', agentId: null, sessionId: null },
+        { ...entry, id: 'e2', tool: 'computer_screenshot', client: 'daemon', agentId: 'a1', sessionId: 's1' }
+      ],
+      nextCursor: null
+    })
+    const el = render(computer())
+    openTab(el, 'Activity')
+    await settle()
+    const shown = () => [...el.querySelectorAll('[data-audit-entry]')].map((n) => n.getAttribute('data-audit-entry'))
+    expect(shown()).toEqual(['e1', 'e2'])
+    expect(el.textContent).toContain('Today')
+    expect(el.querySelector('[data-audit-entry="e1"]')!.textContent).toContain('Dana')
+    act(() => button(el, 'Agents')[0]!.click())
+    expect(shown()).toEqual(['e2'])
+    act(() => button(el, 'Viewers')[0]!.click())
+    expect(shown()).toEqual(['e1'])
   })
 
   it('shows a shared pool computer’s holder and line, and puts it to sleep', async () => {
@@ -252,15 +301,16 @@ describe('ComputerDetailView', () => {
       computer({ ...shared, status: 'sleeping', poolPhase: 'sleeping', lease: null, waiting: [] })
     )
     const el = render(shared)
-    expect(el.querySelector('[data-lease-holder="a1"]')!.textContent).toContain('ops')
-    expect(el.querySelector('[data-lease-waiter="a2"]')!.textContent).toContain('peer')
+    expect(el.querySelector('[data-lease-holder="a1"]')!.textContent).toContain('ops has control')
     expect(el.querySelector('[data-lease-holder="a1"] a')!.getAttribute('href')).toBe('/acme/sessions/s1')
-    const card = el.querySelector<HTMLElement>('[data-pool-card]')!
-    expect(card.textContent).toContain('Pool computer, shared')
-    expect(button(card, 'Wake')).toHaveLength(0)
-    // On a phone the actions fill the row and are thumb-sized.
-    expect(button(card, 'Sleep')[0]!.parentElement!.className).toContain('max-desktop:[&>button]:flex-1')
-    await act(async () => button(card, 'Sleep')[0]!.click())
+    const line = el.querySelector<HTMLElement>('[data-lease-waiting]')!
+    expect(line.textContent).toBe('1 waiting')
+    expect(line.title).toContain('peer')
+    expect(el.querySelector('[data-pool-chip]')!.textContent).toBe('Pool · Awake')
+    expect(el.textContent).toContain('Pool computer, shared')
+    openMenu(el)
+    expect(button(el, 'Wake')).toHaveLength(0)
+    await act(async () => button(el, 'Sleep')[0]!.click())
     await settle()
     expect(mocks.sleepComputer).toHaveBeenCalledWith('c1')
     expect(mocks.mutate).toHaveBeenCalledWith(expect.objectContaining({ poolPhase: 'sleeping' }), {
@@ -286,13 +336,14 @@ describe('ComputerDetailView', () => {
     const el = render(asleep)
     expect(el.textContent).toContain('Asleep')
     expect(el.textContent).toContain('No agent has control')
-    const card = el.querySelector<HTMLElement>('[data-pool-card]')!
-    expect(card.textContent).toContain('ops')
-    await act(async () => button(card, 'Wake')[0]!.click())
+    expect(el.textContent).toContain('Made forops')
+    openMenu(el)
+    await act(async () => button(el, 'Wake')[0]!.click())
     await settle()
     expect(mocks.wakeComputer).toHaveBeenCalledWith('c1')
 
-    act(() => button(card, 'Reset desktop')[0]!.click())
+    openMenu(el)
+    act(() => button(el, 'Reset desktop')[0]!.click())
     expect(mocks.resetComputer).not.toHaveBeenCalled()
     expect(document.body.textContent).toContain('files, browser profile and sign-ins are deleted')
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
@@ -303,8 +354,10 @@ describe('ComputerDetailView', () => {
 
   it('offers no pool actions for a self-hosted computer or an ephemeral one', () => {
     const own = render(computer())
-    expect(own.querySelector('[data-pool-card]')).toBeNull()
-    expect(own.querySelector('[data-lease-card]')).not.toBeNull()
+    expect(own.querySelector('[data-pool-chip]')).toBeNull()
+    openMenu(own)
+    expect(button(own, 'Sleep')).toHaveLength(0)
+    expect(button(own, 'Reset desktop')).toHaveLength(0)
     act(() => root.unmount())
     const session = render(
       computer({
@@ -315,8 +368,8 @@ describe('ComputerDetailView', () => {
         poolActions: { wake: false, sleep: false, reset: false }
       })
     )
-    const card = session.querySelector<HTMLElement>('[data-pool-card]')!
-    expect(card.textContent).toContain('New for each session')
-    expect(card.querySelectorAll('button')).toHaveLength(0)
+    expect(session.textContent).toContain('New for each session')
+    openMenu(session)
+    expect([...session.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual(['Revoke', 'Delete'])
   })
 })
