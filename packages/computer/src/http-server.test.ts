@@ -161,7 +161,10 @@ describe('desktop HTTP server', () => {
     expect(computer.controlledBy('claude')).toBe(true)
     expect((await post('/view/api/input', { type: 'click', x: 2, y: 0.5 })).status).toBe(400)
     expect((await post('/view/api/input', { type: 'type', text: 'hi' })).status).toBe(200)
-    expect(driver.calls.at(-1)).toEqual({ name: 'type_text', args: { scope: 'desktop', text: 'hi' } })
+    expect(driver.calls.filter((call) => call.name === 'type_text').at(-1)).toEqual({
+      name: 'type_text',
+      args: { scope: 'desktop', text: 'hi', session: 'viewer' }
+    })
 
     const frame = await fetch(`${base}/view/api/frame`, { headers: auth })
     expect(frame.headers.get('content-type')).toBe('image/png')

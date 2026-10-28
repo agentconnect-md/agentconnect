@@ -322,14 +322,87 @@ describe('Computer', () => {
     await computer.viewerInput('alice', { type: 'key', keys: ['win'] })
     const calls = driver.calls.filter((call) => call.name === 'click' || call.name === 'press_key').slice(-2)
     expect(calls.map((call) => call.args)).toEqual([
-      { scope: 'desktop', x: 640, y: 719, button: 'right' },
-      { scope: 'desktop', key: 'win' }
+      { scope: 'desktop', x: 640, y: 719, button: 'right', session: 'viewer' },
+      { scope: 'desktop', key: 'win', session: 'viewer' }
     ])
     expect(audit.at(-1)).toMatchObject({ client: 'alice', tool: 'viewer_key', outcome: 'ok' })
 
     expect(computer.handBack('bob')).toBe(false)
     expect(computer.handBack('alice')).toBe(true)
     expect((await computer.click('claude', { x: 1, y: 1 })).isError).toBeUndefined()
+  })
+
+  it('runs viewer input in its own session with the agent cursor off, set up again when the driver may have lost it', async () => {
+    const { driver, computer, advance } = setup({ actionScreenshot: false })
+    const setupCalls = () =>
+      driver.calls.filter(
+        (call) =>
+          call.args.session === 'viewer' &&
+          ['start_session', 'set_agent_cursor_motion', 'get_desktop_state'].includes(call.name)
+      )
+    const hides = () => driver.calls.filter((call) => call.name === 'set_agent_cursor_enabled')
+    const lastClick = () => driver.calls.filter((call) => call.name === 'click').at(-1)
+    await computer.click('claude', { x: 1, y: 1 })
+    expect(lastClick()).toEqual({ name: 'click', args: { scope: 'desktop', x: 1, y: 1 } })
+
+    computer.takeOver('alice')
+    await computer.viewerInput('alice', { type: 'move', x: 0.5, y: 0.5 })
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    expect(setupCalls().map((call) => call.name)).toEqual([
+      'start_session',
+      'set_agent_cursor_motion',
+      'get_desktop_state'
+    ])
+    // Every action shows the session's cursor again, so each one is followed by hiding it.
+    expect(hides()).toEqual(
+      Array(2).fill({ name: 'set_agent_cursor_enabled', args: { session: 'viewer', enabled: false } })
+    )
+
+    // A restarted driver gets the set-up again.
+    driver.starts++
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    expect(setupCalls()).toHaveLength(6)
+
+    // A named session that idled out refuses every call until start_session revives it.
+    let ended = true
+    for (const name of ['set_agent_cursor_motion', 'get_desktop_state', 'click', 'set_agent_cursor_enabled']) {
+      const ok = driver.handlers[name]
+      driver.handlers[name] = (args) => {
+        if (ended && args.session === 'viewer') {
+          throw new DriverToolError(name, { content: [{ type: 'text', text: 'session has ended' }] })
+        }
+        return ok ? ok(args) : { content: [{ type: 'text', text: `${name} ok` }] }
+      }
+    }
+    driver.handlers.start_session = () => {
+      ended = false
+      return { content: [{ type: 'text', text: 'started' }] }
+    }
+    advance(6 * 60_000)
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    expect(setupCalls()).toHaveLength(9)
+    expect(lastClick()?.args.session).toBe('viewer')
+
+    // macOS refuses cursor settings (it has no overlay), which must not block the click.
+    driver.starts++
+    driver.handlers.set_agent_cursor_motion = () => {
+      throw new DriverToolError('set_agent_cursor_motion', {
+        content: [{ type: 'text', text: 'overlay unavailable' }],
+        structuredContent: { refusal: { code: 'facility_unavailable' } }
+      })
+    }
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    expect(lastClick()?.args.session).toBe('viewer')
+    expect(hides()).toHaveLength(4)
+
+    // Any other refusal of the settings is a real failure, not a missing overlay.
+    driver.starts++
+    driver.handlers.set_agent_cursor_motion = () => {
+      throw new DriverToolError('set_agent_cursor_motion', { content: [{ type: 'text', text: 'session has ended' }] })
+    }
+    await expect(computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })).rejects.toMatchObject({
+      code: 'driver_error'
+    })
   })
 
   for (const [revoke, wait] of [
