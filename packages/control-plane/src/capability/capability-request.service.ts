@@ -105,6 +105,12 @@ export function reloadsSession(ask: CapabilityAsk | null): boolean {
   return false
 }
 
+/** Whether a completed ask's change reaches the daemon through the agent's spec, so its wake waits for that to be applied (§4.7.5). */
+export function changesSpec(ask: CapabilityAsk): boolean {
+  if (ask.kind === 'cron' || ask.kind === 'connection') return false
+  return !(ask.kind === 'secret' && ask.want.use.route === 'mcp-header')
+}
+
 /** Whether an open request is one an org-level change could satisfy. */
 function touchedBy(
   row: Pick<CapabilityRequestRecord, 'agentId'>,
@@ -286,6 +292,9 @@ export class CapabilityRequestService {
 
   /** Why the target cannot be given to this agent, or undefined when it names something the organization has. */
   private async unknownTarget(agent: AgentRecord, ask: CapabilityAsk): Promise<string | undefined> {
+    // The agents route refuses a built-in agent's display name, so asking for one could never complete.
+    if (ask.kind === 'agent-settings' && ask.want.displayName !== undefined && agent.builtin)
+      return 'A built-in agent’s display name cannot be changed.'
     if (ask.kind === 'mcp-server') {
       const providers = await this.deps.mcpProviders.listForOrg(agent.orgId)
       if (!providers.some((p) => p.name === ask.want.server))
@@ -361,7 +370,7 @@ export class CapabilityRequestService {
       note: null,
       settledBy,
       // A change outside the spec has no upsert to wait for: no revision, so its wake is not held.
-      settledRevision: specless ? null : agent.configRevision,
+      settledRevision: specless || !changesSpec(ask) ? null : agent.configRevision,
       appliedBy,
       at: this.now()
     })

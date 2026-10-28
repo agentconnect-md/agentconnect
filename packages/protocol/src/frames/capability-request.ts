@@ -65,7 +65,7 @@ export const CapabilitySettingsWant = z
     introduceOnJoin: z.boolean().optional(),
     showFooter: z.boolean().optional(),
     showStatusBar: z.boolean().optional(),
-    displayName: z.string().min(1).max(100).optional()
+    displayName: z.string().trim().min(1).max(100).optional()
   })
   .strict()
   .refine((want) => Object.values(want).some((value) => value !== undefined), { message: 'name at least one field' })

@@ -339,7 +339,8 @@ export default function EditAgentModal({
         if (prefill?.introduceOnJoin !== undefined) setIntroduceOnJoin(prefill.introduceOnJoin)
         if (prefill?.showFooter !== undefined) setShowFooter(prefill.showFooter)
         if (prefill?.showStatusBar !== undefined) setShowStatusBar(prefill.showStatusBar)
-        if (prefill?.displayName !== undefined) setDisplayName(prefill.displayName)
+        // A built-in agent's name is fixed; the route refuses it, so a prefill must not make Save fail.
+        if (prefill?.displayName !== undefined && !agent.builtin) setDisplayName(prefill.displayName)
         setLoaded(true)
       },
       (e) => {

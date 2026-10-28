@@ -678,6 +678,31 @@ describe('CapabilityRequestService', () => {
       expect(h.rebounds).toEqual([])
     })
 
+    it('wakes at once when a person saves a different cron, since no spec upsert carries it', async () => {
+      const h = harness()
+      const { requestId } = await h.service.request(h.agent(), cronAsk('s1'))
+      h.setFacts({ crons: [{ ...cron, schedule: '0 10 * * 1' }] })
+      await h.service.orgChanged(ORG, { kind: 'cron', agentId: AGENT }, null)
+      expect(h.requests.rows.get(requestId!)!.status).toBe('open')
+      await h.service.settleFromConsole(ORG, requestId!, { kind: 'console', userId: 'u1', name: 'Ada' })
+      expect(h.requests.rows.get(requestId!)!).toMatchObject({
+        status: 'completed',
+        differs: true,
+        settledRevision: null
+      })
+      await h.pass()
+      expect(h.sent).toEqual([expect.objectContaining({ status: 'completed', differs: true, reload: false })])
+    })
+
+    it('refuses a built-in agent’s display name up front', async () => {
+      const h = harness({ agent: { builtin: true } })
+      const result = await h.service.request(h.agent(), {
+        ...ask('s1'),
+        ask: { kind: 'agent-settings', want: { displayName: 'Ops' } }
+      })
+      expect(result).toMatchObject({ status: 'refused', refused: 'unknown_target' })
+    })
+
     it('reloads the session once a new runtime is applied', async () => {
       const h = harness()
       const { requestId } = await h.service.request(h.agent(), {

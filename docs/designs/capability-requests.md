@@ -160,7 +160,7 @@ requestCapability({
 | `repository`     | A repository (host + path) and the tier wanted (`read` / `write`)                                         | The repository authorization dialog                                             | An editor of the agent whose own code-host account has that access (the existing attestation) |
 | `connection`     | One of: an MCP server's OAuth connection; a code-host connection or installation; a chat integration      | The console flow that already connects it                                       | Whatever that flow requires today; installing on an organization is an owner's                |
 | `secret`         | A secret name, a description of what goes in it, and where it is used (§4.9)                              | The MCP server's header field, or a live secret field on the agent              | For a header, edit access to the server; for a live secret, an editor of the agent            |
-| `cron`           | A schedule, its time zone and the prompt it runs; with `cronId`, a change to one of the agent's own crons | The cron dialog                                                                 | Whoever may create a cron for the agent, or edit that cron                                    |
+| `cron`           | A schedule, its time zone and the prompt it runs; with `cronId`, a change to one of the agent's own crons | The cron dialog                                                                 | For a new cron, a member who can see the agent; for a change, edit access to that cron        |
 
 The `want` objects are validated with zod at the bridge and again at the Control Plane. Unknown
 fields are refused, not ignored. `agent-settings` accepts only the fields §4.12 lists: workspace,
@@ -680,7 +680,8 @@ dialog prefilled with the agent and those values; where it posts is the person's
 enabled cron of the agent (that one, given `cronId`) has the wanted schedule and prompt, and the time zone
 when one was asked. A cron is not part of the agent's spec, so saving one re-evaluates the agent's open
 `cron` requests directly, and the wake is not held for an upsert acknowledgement; it does not reload the
-session. A `cronId` that is not one of the agent's crons is refused as an unknown target.
+session, and whether it completed as asked or as the person saved it. A `cronId` that is not one of the agent's
+crons is refused as an unknown target. A built-in agent's display name cannot be changed, so it is refused too.
 
 **What stays out, and why:**
 

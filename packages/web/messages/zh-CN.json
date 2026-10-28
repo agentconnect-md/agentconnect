@@ -7032,7 +7032,7 @@
       "setHeader": "设置 {header}",
       "cronHint": "定时任务对话框会预先填好这个 Agent、时间和提示词。选好发到哪里，按需调整后保存。",
       "reviewCron": "检查并保存定时任务",
-      "cronMissing": "这个定时任务已不存在。"
+      "cronMissing": "这个定时任务已不存在，或者你没有查看它的权限。"
     },
     "authority": {
       "heading": "你无法进行此变更",

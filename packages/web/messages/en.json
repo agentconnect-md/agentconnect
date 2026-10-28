@@ -7032,7 +7032,7 @@
       "setHeader": "Set {header}",
       "cronHint": "The cron dialog opens with this agent, schedule and prompt filled in. Choose where it posts, adjust anything you want, then save.",
       "reviewCron": "Review and save the scheduled task",
-      "cronMissing": "This scheduled task no longer exists."
+      "cronMissing": "This scheduled task no longer exists, or you can't see it."
     },
     "authority": {
       "heading": "You can't make this change",

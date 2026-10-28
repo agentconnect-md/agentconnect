@@ -11,7 +11,7 @@ import { assistantResponsibleUser } from '../../agents/assistant-mode.js'
 import { canEdit, canView, type ViewCtx } from '../../authorization/policy.js'
 import { askOf, type CapabilityActionRefusal } from '../../capability/capability-request.service.js'
 import { capabilityWarnings, evaluateCapability } from '../../capability/capability-wording.js'
-import { AgentId, type OrgId } from '../../domain/ids.js'
+import { AgentId, CronId, type OrgId } from '../../domain/ids.js'
 import type {
   AgentRecord,
   CapabilityRequestRecord,
@@ -154,6 +154,20 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
           may: (who) => provider !== undefined && canEdit(provider, who),
           missing: `Only someone who can edit the MCP server ${JSON.stringify(server)} can complete this request.`
         }
+      }
+      // As the cron route judges it: a change needs edit access to that cron, a new one a non-viewer who sees the agent.
+      if (ask?.kind === 'cron') {
+        const cronId = ask.want.cronId
+        const cron = cronId ? await deps.repos.cron.get(agent.orgId, CronId(cronId)) : null
+        return cronId
+          ? {
+              may: (who) => who.role !== 'viewer' && cron !== null && canView(cron, who) && canEdit(cron, who),
+              missing: 'Only someone who can edit this scheduled task can complete this request.'
+            }
+          : {
+              may: (who) => who.role !== 'viewer' && canView(agent, who),
+              missing: 'Only an organization member who can see this agent can schedule a task for it.'
+            }
       }
       if (ask?.kind === 'connection' && ask.want.type === 'code-host')
         return {
