@@ -153,6 +153,65 @@ describe('live-turn runtime auth signal', () => {
     }
   })
 
+  const creditsSentence =
+    'Out of AgentConnect credits — this message was not processed. Add credits (https://console.example.test/example-org/billing) or run this agent on a self-hosted Daemon (https://docs.example.test/self-host). Then resend.'
+
+  // Exactly what each adapter resolves session/prompt with when the gateway answers 402 with that sentence.
+  it.each([
+    {
+      runtime: 'codex-acp 2.3',
+      category: 'connection',
+      title: `unexpected status 402 Payment Required: ${creditsSentence}, url: http://gateway.example.test/v1/responses`,
+      actions: ['retry', 'new_session']
+    },
+    {
+      runtime: 'claude-agent-acp 0.98',
+      category: 'service',
+      title: `API Error: 402 ${creditsSentence}`,
+      actions: ['retry']
+    }
+  ])(
+    'posts an out-of-credits refusal from $runtime as its own sentence, without marking the runtime logged out',
+    async (failure) => {
+      const clock = new FakeClock()
+      const fakeHost = {
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => 'acp-credits'),
+        prompt: vi.fn(async () => {
+          throw new RuntimeSessionFailure(failure)
+        }),
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {})
+      }
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root: scaffold(),
+        clock,
+        hostFactory: () => fakeHost as any
+      })
+      await daemon.start()
+      makeRoutable(daemon)
+      const conn = (daemon as any).connByIntegration.get('int-a')
+
+      try {
+        const before = clock.pending().filter((t) => t === 5_000).length
+        const turn = (daemon as any).dispatch('bot-a', dm('100', 'q1'), 'int-a')
+        const settled = expect(turn).rejects.toBeInstanceOf(RuntimeSessionFailure)
+        await vi.waitFor(() => expect(clock.pending().filter((t) => t === 5_000).length).toBeGreaterThan(before))
+        clock.advance(5_000)
+        await settled
+        const posted = conn.postMessage.mock.calls.map((call: unknown[]) => call[1])
+        expect(posted).toContain(`⚠️ Agent failed to respond: ${creditsSentence}`)
+        expect(posted.join('\n')).not.toMatch(
+          /Authentication required|API Error|unexpected status|gateway\.example\.test/
+        )
+        expect((daemon as any).runtimeFacts.profileFor('claude').authRequired).toBeUndefined()
+      } finally {
+        await daemon.stop()
+      }
+    }
+  )
+
   it('keeps the turn outcome intact when the facts emit throws (hot-path best-effort)', async () => {
     const root = scaffold()
     const behaviors: Array<'auth' | 'ok'> = ['auth', 'ok']
