@@ -21846,8 +21846,10 @@ export class Daemon {
         const turn = this.pending.get(pendingKey)
         // A successor that reused the ACP id is not the turn this backstop was armed for.
         if (!turn || (only && turn !== only)) return
-        // Force-stop the exact process selected for this turn.
-        const cleanup = turn.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)
+        // Force-stop the exact process selected for this turn, else the host that owns it, never its sibling sessions' hosts.
+        const cleanup =
+          turn.selectedHost?.stop(0) ??
+          (owner === agentHostKey(agentId) ? this.stopHost(agentId, 0) : this.stopHostByKey(owner, 0))
         const stopped = cleanup.catch((err) => {
           return this.fenceLifecycleCleanupFailure(agentId, key, turn.entry, err)
         })
@@ -21888,13 +21890,18 @@ export class Daemon {
       this.log.warn(
         `${reason}: agent "${agentId}" did not finish cold initialization within ${ms}ms — force-stopping host (${key})`
       )
-      const cleanup = entry.lifecycleCleanup ?? entry.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)
+      // A session with a host of its own stops only that host; its sibling sessions' hosts keep running.
+      const owner = this.hostKeyFor(agentId, key)
+      const cleanup =
+        entry.lifecycleCleanup ??
+        entry.selectedHost?.stop(0) ??
+        (owner === agentHostKey(agentId) ? this.stopHost(agentId, 0) : this.stopHostByKey(owner, 0))
       entry.lifecycleCleanup ??= cleanup
       const stopped = cleanup.catch((err) => {
         return this.fenceLifecycleCleanupFailure(agentId, key, entry, err)
       })
       // Abort every SessionManager cold await now; keep NEW admission gated until
-      // the host-wide stop itself settles, so the old teardown cannot kill fresh work.
+      // the stop itself settles, so the old teardown cannot kill fresh work.
       this.addSafetyDrainWait(agentId, stopped)
       void stopped.then(() => {
         entry.initAbort.abort(new Error(reason))
