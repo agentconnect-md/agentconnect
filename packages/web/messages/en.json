@@ -6570,12 +6570,12 @@
       "minting": "Creating the command…",
       "open": "Open computer",
       "saving": "Saving…",
-      "poolTitle": "Add managed computer",
+      "poolTitle": "Add cloud computer",
       "poolDescription": "A Linux desktop with Chromium and LibreOffice from this deployment's pool, isolated in its own container with its own disk. Agents you give access share it one at a time. It sleeps when idle, keeping its files and sign-ins, and stays until you delete it. You will be its owner.",
       "poolName": "Name",
       "poolNamePlaceholder": "Shared browser",
       "poolAccessHint": "Members who can see it may give it to their agents on the agent’s Tools tab. Agents take turns: one has control at a time, the others wait in line.",
-      "poolUnavailable": "No pool member is connected right now, so a managed computer cannot be started. Try again in a minute.",
+      "poolUnavailable": "No pool member is connected right now, so a cloud computer cannot be started. Try again in a minute.",
       "poolCreate": "Create computer",
       "poolCreating": "Creating…",
       "poolError": "Could not create the computer: {message}",
@@ -6585,22 +6585,17 @@
     "empty": {
       "description": "Add a computer to let agents take screenshots, click and type on a desktop you choose. You stay in control: you grant agents, approve risky actions and can stop it at any time."
     },
-    "poolEntry": {
-      "managedTitle": "AgentConnect Computers",
-      "clusterTitle": "Computer pool",
+    "cloud": {
+      "title": "Cloud computers",
+      "description": "Isolated Linux desktops this deployment runs. You or your agents can create them. They sleep when idle and wake on the next use.",
+      "add": "Add cloud computer",
       "meta": "{running} running · {asleep} asleep",
-      "none": "No managed computers yet",
-      "countLabel": "managed computers",
-      "available": "Available",
-      "unavailable": "Unavailable",
-      "add": "Add managed computer",
-      "description": "Isolated Linux desktops this deployment runs for your agents. They sleep when idle and wake on the next use."
-    },
-    "poolPage": {
-      "description": "Desktops started for your agents in this deployment's cluster. Each sleeps when idle and wakes on the next use.",
-      "add": "Add managed computer",
-      "empty": "No managed computers yet. Add one here, or set Managed computer on an agent's Tools tab to have one made for it.",
-      "notFound": "This deployment runs no managed computers"
+      "unavailable": "No pool member available to start one",
+      "empty": "No cloud computers yet. Add one here, or set Managed computer on an agent's Tools tab to have one made for it.",
+      "running": "Running",
+      "by": "by {name}",
+      "byYou": "by you",
+      "idle": "idle {when}"
     },
     "never": "never",
     "you": "You",
@@ -6656,7 +6651,8 @@
         "info": "{count} info"
       },
       "showPassing": "Show {count, plural, one {# passing check} other {# passing checks}}",
-      "hidePassing": "Hide passing checks"
+      "hidePassing": "Hide passing checks",
+      "none": "No checks"
     },
     "detail": {
       "notFound": "Computer not found",
@@ -6867,7 +6863,6 @@
       "per-agent": "Agent's own",
       "manual": "Pool"
     },
-    "madeFor": "for {agent}",
     "inUseBy": "In use by {agent}",
     "waitingCount": "{count, plural, one {# waiting} other {# waiting}}",
     "hiddenAgent": "an agent you can't see",

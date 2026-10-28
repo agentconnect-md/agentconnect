@@ -1417,14 +1417,12 @@ and every `computer/policy`.
 - **Managed computers [implemented]** (#3232). Where the deployment runs the pool (`GET …/computers/pool` answers
   `enabled` and whether a member is `available`), its own **Add managed computer** dialog takes a name and the
   visibility (Everyone by default) and creates a `manual` computer with `POST …/computers/pool`; agents get it on their Tools
-  tab. Infra shows the pool as one entry in a section of its own above Computers, like the daemon pool, with its own
-  add action: **AgentConnect Computers** on the managed install, **Computer pool** on a self-hosted cluster, with how
-  many run and sleep and whether a member is `available`; it stays while managed computers remain after the pool is
-  turned off. It opens `/computers/pool`, which lists the managed
-  computers and adds one through the same dialog. The egress card is hidden for now. That list marks a managed
-  computer's allocation (Pool, Agent's own with its agent, Session desktop), shows `Asleep` and
-  any pool phase in flight (Starting, Waking, Resetting, Failed, Removing), and names the agent in control and how many
-  wait. The detail page's screen names the lease holder for every Computer, linking its session, and how many wait
+  tab. Infra lists every managed computer as a card in a **Cloud computers** section above Computers, with how many run
+  and sleep, a note when no member is `available`, and **Add cloud computer** while the pool is enabled; the section
+  stays while managed computers remain after the pool is turned off, and the old `/computers/pool` route lands on it.
+  The egress card is hidden for now. A cloud computer's card names who made it (the member, or the agent of a
+  `per-agent` or `ephemeral` one), shows `Running`, `Asleep` with how long it has been idle, or any pool phase in flight
+  (Starting, Waking, Resetting, Failed, Removing), and names the agent in control and how many wait. The detail page's screen names the lease holder for every Computer, linking its session, and how many wait
   (from the DTO's `lease` and `waiting`, read without a lock and leaving out lapsed rows). A managed one adds a header
   chip with its allocation and pool phase, its allocation, owning agent, pool phase and last error to the details, and
   to the actions menu the actions its `poolActions` allow: **Wake** (`POST …/wake`, a sleeping or failed `per-agent` or `manual` one), **Sleep**
