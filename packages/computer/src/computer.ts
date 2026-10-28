@@ -936,6 +936,8 @@ export class Computer {
       return current
     }
     const session = VIEWER_SESSION
+    // A named session that idled out stays ended until it is started again; only unnamed ones come back by themselves.
+    await this.driver.call('start_session', { session })
     let cursor = true
     try {
       await this.driver.call('set_agent_cursor_motion', {
@@ -947,7 +949,8 @@ export class Computer {
       })
     } catch (error) {
       // macOS runs the driver without an overlay, which refuses cursor settings; there is no glide to turn off.
-      if (!(error instanceof DriverToolError)) throw error
+      const refusal = error instanceof DriverToolError ? error.result.structuredContent?.refusal : undefined
+      if ((refusal as { code?: unknown } | undefined)?.code !== 'facility_unavailable') throw error
       cursor = false
     }
     const result = await this.driver.call('get_desktop_state', {
