@@ -1325,6 +1325,73 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
+  it('force-stops only the shared host when a session on it is cancelled cold, keeping a sibling session host', async () => {
+    const root = scaffold()
+    const clock = new FakeClock()
+    let releaseLive!: () => void
+    const live = new Promise<void>((resolve) => (releaseLive = resolve))
+    const hosts: { newSession: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }[] = []
+    const factory = vi.fn(() => {
+      const index = hosts.length
+      const host = {
+        start: vi.fn(async () => {}),
+        // The shared host, started second, never answers session/new: its turn stays cold.
+        newSession: vi.fn(() => (index === 0 ? Promise.resolve('acp-1') : new Promise<string>(() => {}))),
+        hasSession: vi.fn((sid: string) => sid === 'acp-1'),
+        prompt: vi.fn(async () => {
+          await live
+          return { stopReason: 'end_turn' }
+        }),
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {})
+      }
+      hosts.push(host)
+      return host as never
+    })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: factory as never,
+      sandboxMechanism: 'bwrap',
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    stubWorkspacePreparation(daemon)
+    // T2's row reports shared isolation, so it runs on the agent's shared host while T1 gets a host of its own.
+    await (daemon as any).store.upsertSession({
+      key: KEY('T2'),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T2',
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      workspaceIsolation: 'shared'
+    })
+    const one = (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(1), WAIT)
+    const two = (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+    await vi.waitFor(() => expect(hosts[1]?.newSession).toHaveBeenCalledOnce(), WAIT)
+    const first = sessionHostKey('bot-a', KEY('T1'))
+    expect((daemon as any).hosts.get(first)).toBe(hosts[0])
+    expect((daemon as any).hosts.get(agentHostKey('bot-a'))).toBe(hosts[1])
+
+    await (daemon as any).interruptTurn('bot-a', KEY('T2'), 'stop', undefined, {})
+    clock.advance(30_000)
+    await expect(two).resolves.toBeNull()
+
+    expect(hosts[1]!.stop).toHaveBeenCalled()
+    expect(hosts[0]!.stop).not.toHaveBeenCalled()
+    expect((daemon as any).hosts.get(first)).toBe(hosts[0])
+    expect((daemon as any).pending.get(pendingTurnKey(first, 'acp-1'))).toBeDefined()
+    releaseLive()
+    await one
+    await daemon.stop()
+  })
+
   it('force-stops only the owning session host when a live turn ignores session/cancel past the backstop', async () => {
     const root = scaffold()
     const clock = new FakeClock()

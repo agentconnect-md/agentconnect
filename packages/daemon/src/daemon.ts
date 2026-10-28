@@ -21847,9 +21847,7 @@ export class Daemon {
         // A successor that reused the ACP id is not the turn this backstop was armed for.
         if (!turn || (only && turn !== only)) return
         // Force-stop the exact process selected for this turn, else the host that owns it, never its sibling sessions' hosts.
-        const cleanup =
-          turn.selectedHost?.stop(0) ??
-          (owner === agentHostKey(agentId) ? this.stopHost(agentId, 0) : this.stopHostByKey(owner, 0))
+        const cleanup = turn.selectedHost?.stop(0) ?? this.stopHostByKey(owner, 0)
         const stopped = cleanup.catch((err) => {
           return this.fenceLifecycleCleanupFailure(agentId, key, turn.entry, err)
         })
@@ -21890,12 +21888,9 @@ export class Daemon {
       this.log.warn(
         `${reason}: agent "${agentId}" did not finish cold initialization within ${ms}ms — force-stopping host (${key})`
       )
-      // A session with a host of its own stops only that host; its sibling sessions' hosts keep running.
-      const owner = this.hostKeyFor(agentId, key)
+      // Stop only the host that owns this session, shared or its own; the agent's other hosts keep running.
       const cleanup =
-        entry.lifecycleCleanup ??
-        entry.selectedHost?.stop(0) ??
-        (owner === agentHostKey(agentId) ? this.stopHost(agentId, 0) : this.stopHostByKey(owner, 0))
+        entry.lifecycleCleanup ?? entry.selectedHost?.stop(0) ?? this.stopHostByKey(this.hostKeyFor(agentId, key), 0)
       entry.lifecycleCleanup ??= cleanup
       const stopped = cleanup.catch((err) => {
         return this.fenceLifecycleCleanupFailure(agentId, key, entry, err)
