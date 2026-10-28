@@ -13,7 +13,7 @@ import {
   turnFailureReason
 } from '../src/acp/acp-host.js'
 import { RuntimeSessionFailure, sessionFailureFromMeta } from '../src/acp/session-failure.js'
-import { CODEX_MCP_STARTUP_GRACE_MS } from '../src/runtimes/codex-config.js'
+import { CODEX_MCP_STARTUP_GRACE_MS, codexGuardianOperatorPolicy } from '../src/runtimes/codex-config.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fakeAgent = join(here, 'fixtures', 'fake-acp-agent.mjs')
@@ -617,7 +617,8 @@ async function runIsolatedFixture(
   value: string,
   log?: { info: (message: string) => void; warn: (message: string) => void },
   isolateAccountApps?: boolean,
-  servicesElicitations?: boolean
+  servicesElicitations?: boolean,
+  operatorInstructions?: string
 ): Promise<string[]> {
   const updates: string[] = []
   const host = new AcpHost(
@@ -634,6 +635,7 @@ async function runIsolatedFixture(
       runtimeId,
       isolateAccountApps,
       ...(servicesElicitations ? { onElicit: async () => undefined } : {}),
+      ...(operatorInstructions ? { configPrefs: { operatorInstructions } } : {}),
       ...(log
         ? {
             log: {
@@ -663,7 +665,8 @@ describe('AcpHost — account-bound app isolation', () => {
     expect(JSON.parse(echoed ?? '')).toEqual({
       model: 'gpt-test',
       features: { fast_mode: true, apps: false },
-      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS
+      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS,
+      project_doc_fallback_filenames: ['CLAUDE.md']
     })
   })
 
@@ -677,7 +680,8 @@ describe('AcpHost — account-bound app isolation', () => {
     const echoed = out.find((line) => line.startsWith('env:'))?.slice('env:'.length)
     expect(JSON.parse(echoed ?? '')).toEqual({
       features: { apps: false },
-      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS
+      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS,
+      project_doc_fallback_filenames: ['CLAUDE.md']
     })
     expect(warns.join('\n')).toContain('ignoring unsafe inherited CODEX_CONFIG')
   })
@@ -690,7 +694,8 @@ describe('AcpHost — account-bound app isolation', () => {
     expect(JSON.parse(echoed ?? '')).toEqual({
       model: 'gpt-test',
       features: { apps: false, default_mode_request_user_input: true },
-      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS
+      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS,
+      project_doc_fallback_filenames: ['CLAUDE.md']
     })
   })
 
@@ -701,7 +706,8 @@ describe('AcpHost — account-bound app isolation', () => {
     expect(JSON.parse(echoed ?? '')).toEqual({
       model: 'gpt-test',
       features: { apps: false },
-      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS
+      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS,
+      project_doc_fallback_filenames: ['CLAUDE.md']
     })
   })
 
@@ -710,7 +716,37 @@ describe('AcpHost — account-bound app isolation', () => {
     const out = await runIsolatedFixture('codex-acp', 'CODEX_CONFIG', raw)
 
     const echoed = out.find((line) => line.startsWith('env:'))?.slice('env:'.length)
-    expect(JSON.parse(echoed ?? '')).toEqual({ features: { apps: false }, mcp_optional_startup_grace_ms: 0 })
+    expect(JSON.parse(echoed ?? '')).toEqual({
+      features: { apps: false },
+      mcp_optional_startup_grace_ms: 0,
+      project_doc_fallback_filenames: ['CLAUDE.md']
+    })
+  })
+
+  it("hands the agent's operator instructions to Codex's Guardian after a policy the config already set", async () => {
+    const raw = JSON.stringify({ auto_review: { extra_policy: 'Deployment policy.' } })
+    const instructions = 'Escalate by posting to Slack #support.'
+    const out = await runIsolatedFixture(
+      'codex-acp',
+      'CODEX_CONFIG',
+      raw,
+      undefined,
+      undefined,
+      undefined,
+      instructions
+    )
+
+    const echoed = JSON.parse(out.find((line) => line.startsWith('env:'))?.slice('env:'.length) ?? '')
+    expect(echoed.auto_review).toEqual({
+      extra_policy: `Deployment policy.\n\n${codexGuardianOperatorPolicy(instructions)}`
+    })
+  })
+
+  it('leaves the Guardian policy alone for an agent without operator instructions', async () => {
+    const out = await runIsolatedFixture('codex-acp', 'CODEX_CONFIG', JSON.stringify({ model: 'gpt-test' }))
+
+    const echoed = JSON.parse(out.find((line) => line.startsWith('env:'))?.slice('env:'.length) ?? '')
+    expect(echoed.auto_review).toBeUndefined()
   })
 
   it('forces Claude.ai MCP servers off in the spawned process', async () => {
@@ -739,7 +775,8 @@ describe('AcpHost — account-bound app isolation', () => {
     expect(JSON.parse(echoed ?? '')).toEqual({
       model: 'gpt-test',
       features: { apps: true },
-      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS
+      mcp_optional_startup_grace_ms: CODEX_MCP_STARTUP_GRACE_MS,
+      project_doc_fallback_filenames: ['CLAUDE.md']
     })
     expect(warns.join('\n')).toContain('account-app isolation disabled by daemon config')
   })
