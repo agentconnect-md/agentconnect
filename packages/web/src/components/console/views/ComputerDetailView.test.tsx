@@ -192,7 +192,8 @@ describe('ComputerDetailView', () => {
     expect(el.textContent).toContain('Granted per agent, under Tools › Computers.')
     expect(el.textContent).toContain('View and control')
     expect([...el.querySelectorAll('[role="radio"]')].some((r) => r.textContent?.includes('All agents'))).toBe(false)
-    expect(button(el, 'Save')).toHaveLength(0) // the policy form lives on its own tab
+    // The policy form lives on its own tab, hidden here.
+    expect(button(el, 'Save').every((b) => b.closest('[hidden]'))).toBe(true)
 
     const all = render(computer({ agentAccess: { mode: 'all', agents: [] } }))
     expect(all.textContent).toContain('Every agent in the organization can use it.')
@@ -240,6 +241,10 @@ describe('ComputerDetailView', () => {
       idle.dispatchEvent(new Event('input', { bubbles: true }))
     })
     expect(el.textContent).toContain('1 unsaved change')
+    // A look at another tab keeps the draft.
+    openTab(el, 'Overview')
+    openTab(el, 'Usage policy')
+    expect(el.querySelector<HTMLInputElement>('input[aria-label="Idle release"]')!.value).toBe('60')
     await act(async () => button(el, 'Save').at(-1)!.click())
     await settle()
     expect(mocks.setComputerPolicy).toHaveBeenCalledWith('c1', expect.objectContaining({ leaseIdleSeconds: 60 }))

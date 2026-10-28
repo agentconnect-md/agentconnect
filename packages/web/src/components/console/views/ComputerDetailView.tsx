@@ -469,7 +469,10 @@ function ComputerDetail({
         </div>
       )}
 
-      {tab === 'policy' && <ComputerPolicyCard computer={computer} onSaved={onChanged} />}
+      {/* Kept mounted while hidden, so an unsaved draft survives a look at another tab. */}
+      <div hidden={tab !== 'policy'}>
+        <ComputerPolicyCard computer={computer} onSaved={onChanged} />
+      </div>
 
       {tab === 'activity' && showActivity && <ComputerActivityCard computer={computer} />}
 
