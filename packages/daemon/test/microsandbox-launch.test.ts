@@ -15,6 +15,7 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { prepareMicrosandboxLaunch, type PrepareMicrosandboxLaunchOptions } from '../src/microsandbox/launch.js'
+import { skillLedgerLocation } from '../src/skills/skill-install-ledger.js'
 import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
 import { gitcredShimPath } from '../src/cp/gitcred-server.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
@@ -53,6 +54,21 @@ afterEach(() => {
 })
 
 describe('prepareMicrosandboxLaunch', () => {
+  it('keeps the daemon-installed skill bundles read-only to the model tools', async () => {
+    const opts = fixture()
+    const owned = join(opts.cwd, '.agents', 'skills', 'installed')
+    mkdirSync(owned, { recursive: true })
+    writeFileSync(join(owned, 'SKILL.md'), '# installed')
+    mkdirSync(join(opts.cwd, '.agents', 'skills', 'committed'))
+    const location = await skillLedgerLocation(opts.cwd, join(opts.scopeDir, '.agentconnect', 'skill-installer'))
+    writeFileSync(
+      location.file,
+      JSON.stringify({ version: 3, phase: 'ready', owned: [{ relativeRoot: '.agents/skills/installed' }] })
+    )
+    const launch = prepareMicrosandboxLaunch(opts)
+    expect(launch.toolSandbox?.readOnlyStateRoots).toEqual([owned])
+  })
+
   function openCodeFixture(auth: Record<string, unknown>) {
     const opts = { ...fixture(), runtimeId: 'opencode' }
     const source = join(opts.hostHome, '.local', 'share', 'opencode', 'auth.json')

@@ -23,6 +23,7 @@ import {
 import { sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
 import { runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
 import { CLAUDE_STATE_SECRETS, CODEX_STATE_SECRETS, privateRuntimeState } from '../runtimes/private-runtime-state.js'
+import { installedSkillRoots, skillLedgerStateDirs } from '../skills/installed-skill-roots.js'
 import { SANDBOX_TUNNEL_PATHS } from '../shim/sandbox-paths.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
 import { OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT } from './overlay.js'
@@ -269,7 +270,11 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
       )
     )
   ])
-  const readOnlyStateRoots = runtimeState.readOnly
+  // Installed skill bundles are read-only to the model's tools for the same reason as the runtime's state (prepare.ts).
+  const readOnlyStateRoots = [
+    ...runtimeState.readOnly,
+    ...installedSkillRoots(opts.cwd, skillLedgerStateDirs(opts.cwd, scopeDir, opts.daemonRoot))
+  ]
   const sharedWriteRoots = configured
     .filter(
       ({ mode, target }) =>

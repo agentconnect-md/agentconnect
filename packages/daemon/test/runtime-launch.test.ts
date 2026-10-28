@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { effectiveRunInSandbox, prepareRuntimeLaunch, privateRuntimeHomeFor } from '../src/launch/prepare.js'
+import { skillLedgerLocation } from '../src/skills/skill-install-ledger.js'
 import { composeRuntimeLaunch, runtimeSandboxReadRoots } from '../src/launch/compose.js'
 import { agentHostKey, hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { sandboxTempDirFor, SANDBOX_TEMP_DIR_ENV } from '../src/acp/sandbox-temp.js'
@@ -70,6 +71,48 @@ const PLACED = sessionHostKey('bot-a', 'slack:C1:placed')
 const PLACED_HOME = `/srv/agentconnect/sessions/${hostKeyDirName(PLACED)}/home`
 
 describe('prepareRuntimeLaunch', () => {
+  it('keeps the daemon-installed skill bundles read-only to the model tools, under every root that reaches them', async () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const daemonRoot = dirname(scopeDir)
+    const owned = join(cwd, '.claude', 'skills', 'installed')
+    const committed = join(cwd, '.claude', 'skills', 'committed')
+    mkdirSync(owned, { recursive: true })
+    mkdirSync(committed)
+    writeFileSync(join(owned, 'SKILL.md'), '# installed')
+    writeFileSync(join(committed, 'SKILL.md'), '# committed')
+    mkdirSync(join(cwd, '.agents'))
+    symlinkSync(join(cwd, '.claude', 'skills'), join(cwd, '.agents', 'skills'))
+    const stateDir = join(daemonRoot, 'skill-installs')
+    const location = await skillLedgerLocation(cwd, stateDir)
+    writeFileSync(
+      location.file,
+      JSON.stringify({ version: 3, phase: 'ready', owned: [{ relativeRoot: '.claude/skills/installed' }] })
+    )
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: 'node', args: ['claude-agent-acp'], env: [] },
+      scopeDir,
+      cwd,
+      daemonRoot,
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      inheritRuntimeCredentials: false,
+      explicitEnv: { ANTHROPIC_API_KEY: 'organization-key' },
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+    const cwdReal = realpathSync(cwd)
+    expect(launch.toolSandbox!.readOnlyStateRoots).toEqual(
+      expect.arrayContaining([
+        join(cwdReal, '.claude', 'skills', 'installed'),
+        join(cwdReal, '.agents', 'skills', 'installed')
+      ])
+    )
+    // A bundle the ledger does not own (committed to the checkout) stays the agent's to edit.
+    expect(launch.toolSandbox!.readOnlyStateRoots).not.toContainEqual(expect.stringContaining('committed'))
+    expect(launch.toolSandbox!.readOnlyStateRoots).not.toContain(join(cwdReal, '.claude', 'skills'))
+  })
+
   it('uses organization credentials without reading or migrating a host login', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     const loginDir = join(hostHome, '.claude')

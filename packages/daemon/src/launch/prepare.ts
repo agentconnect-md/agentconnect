@@ -30,6 +30,7 @@ import {
   isClaudeRuntimeDef
 } from '../runtime-defs/claude-runtime.js'
 import { applyCodexPermissionProfile } from '../acp/codex-permission-profiles.js'
+import { installedSkillRoots, skillLedgerStateDirs } from '../skills/installed-skill-roots.js'
 import type { AcpToolSandbox } from '../acp/acp-host.js'
 
 /** Canonicalize the deepest existing prefix, so a path below a symlink still reads as the kernel sees it. */
@@ -538,7 +539,10 @@ export function prepareRuntimeLaunch(opts: {
       ? privateRuntimeState(join(runtimeHome, '.codex'), CODEX_STATE_SECRETS)
       : { readOnly: [], secret: [] }
   const privateCodexStateRoots = codexState.secret
-  const readOnlyStateRoots = [...claudeState.readOnly, ...codexState.readOnly]
+  // The skill bundles the daemon installed into the workspace are the runtime's to read and run, never to change:
+  // an edit is lost at the next publication and a directory left behind makes that publication refuse the bundle.
+  const installedSkills = installedSkillRoots(opts.cwd, skillLedgerStateDirs(opts.cwd, opts.scopeDir, opts.daemonRoot))
+  const readOnlyStateRoots = [...claudeState.readOnly, ...codexState.readOnly, ...installedSkills]
 
   const boundary = sandboxBoundary({
     agentDir: opts.scopeDir,
