@@ -9,6 +9,7 @@ import {
   codexGatewayAuthRequest,
   codexGuardianOperatorPolicy
 } from '../src/runtimes/codex-config.js'
+import { CODEX_GUARDIAN_DEFAULT_POLICY } from '../src/runtimes/codex-guardian-default-policy.js'
 
 describe('codexGatewayAuthRequest', () => {
   it('carries the pair as one gateway grant — base routed, key in the auth header', () => {
@@ -108,18 +109,23 @@ describe('codexGuardianOperatorPolicy', () => {
 })
 
 describe('codexConfigWithGuardianPolicy', () => {
-  it("sets the Guardian's extra policy and keeps every other field", () => {
+  it("appends to Codex's default Guardian policy and keeps every other field", () => {
     const raw = JSON.stringify({ model: 'gpt-test', auto_review: { timeout_ms: 5000 } })
     expect(JSON.parse(codexConfigWithGuardianPolicy(raw, 'Operator policy.'))).toEqual({
       model: 'gpt-test',
-      auto_review: { timeout_ms: 5000, extra_policy: 'Operator policy.' }
+      auto_review: { timeout_ms: 5000, policy: `${CODEX_GUARDIAN_DEFAULT_POLICY}\n\nOperator policy.` }
     })
   })
 
-  it('appends after an extra policy the caller already set', () => {
-    const raw = JSON.stringify({ auto_review: { extra_policy: 'Deployment policy.' } })
+  it('restates the default policy, which the catalog template keys on', () => {
+    expect(CODEX_GUARDIAN_DEFAULT_POLICY).toMatch(/^## Environment Profile\n/)
+    expect(CODEX_GUARDIAN_DEFAULT_POLICY).toContain('## Risk Taxonomy and Allow/Deny Rules')
+  })
+
+  it('appends after a policy the caller already set, and leaves extra_policy alone', () => {
+    const raw = JSON.stringify({ auto_review: { policy: 'Deployment policy.', extra_policy: 'Extra.' } })
     expect(JSON.parse(codexConfigWithGuardianPolicy(raw, 'Operator policy.'))).toEqual({
-      auto_review: { extra_policy: 'Deployment policy.\n\nOperator policy.' }
+      auto_review: { policy: 'Deployment policy.\n\nOperator policy.', extra_policy: 'Extra.' }
     })
   })
 
@@ -127,8 +133,8 @@ describe('codexConfigWithGuardianPolicy', () => {
     expect(() => codexConfigWithGuardianPolicy(JSON.stringify({ auto_review: 'on' }), 'p')).toThrow(
       'CODEX_CONFIG.auto_review must be a JSON object'
     )
-    expect(() => codexConfigWithGuardianPolicy(JSON.stringify({ auto_review: { extra_policy: 1 } }), 'p')).toThrow(
-      'CODEX_CONFIG.auto_review.extra_policy must be a string'
+    expect(() => codexConfigWithGuardianPolicy(JSON.stringify({ auto_review: { policy: 1 } }), 'p')).toThrow(
+      'CODEX_CONFIG.auto_review.policy must be a string'
     )
   })
 })
