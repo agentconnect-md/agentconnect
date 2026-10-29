@@ -218,7 +218,7 @@ import { AutoUpgrader, type AutoUpgradeHost } from './lifecycle/auto-upgrader.js
 import { QuiescenceSignal } from './lifecycle/quiescence.js'
 import { FleetUpgradeCoordinator } from './lifecycle/fleet-upgrade.js'
 import { ReadinessGate, readinessSinksFromEnv, readinessState, type ReadinessState } from './readiness.js'
-import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
+import { sessionRetentionMs, workspaceRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
@@ -1312,7 +1312,7 @@ import {
   UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS,
   WEBCHAT_MCP_GRANT_RENEW_SWEEP_MS
 } from './daemon/constants.js'
-import { nextRetentionRecheck, retentionRecheckPending } from './daemon/retention-recheck.js'
+import { nextRetentionRecheck, retentionRecheckPending, workspaceReclaimed } from './daemon/retention-recheck.js'
 import {
   observeStartup,
   withStartupPhase,
@@ -5543,7 +5543,7 @@ export class Daemon {
         return this.cpClient.agentsExist(agentIds)
       },
       // This machine's own retention, the second backstop rule: no store is read, so sharing compute needs no shared store (§7).
-      retentionMs: () => sessionRetentionMs(this.cfg.sessions.retention),
+      retentionMs: () => workspaceRetentionMs(this.cfg.sessions),
       log: this.log,
       clock: this.clock
     })
@@ -26327,7 +26327,10 @@ export class Daemon {
     this.sessionRetentionSweepInFlight = true
     try {
       // Orphans too, whatever the window: a VM whose row is gone serves nothing and still pins its image.
-      const discarded = (await this.sweepExpiredSessions()) + (await this.retireOrphanSessionVms())
+      const discarded =
+        (await this.sweepExpiredSessions()) +
+        (await this.sweepExpiredWorkspaces()) +
+        (await this.retireOrphanSessionVms())
       // A discarded VM may have been the last pin on a retired release's image, which startup alone keeps until a restart.
       if (discarded && !this.draining) {
         try {
@@ -26389,7 +26392,10 @@ export class Daemon {
     let discarded = 0
     for (const rec of expired) {
       if (this.draining) return 0
-      const res = await this.cleanupSessionWorktree(rec)
+      // A reclaimed workspace has nothing left to judge, and judging it would wake a pod for nothing.
+      const res: SessionWorktreeCleanupResult = workspaceReclaimed(rec)
+        ? { outcome: 'absent' }
+        : await this.cleanupSessionWorktree(rec)
       if (res.outcome === 'active') {
         active += 1
         continue
@@ -26465,6 +26471,68 @@ export class Daemon {
         (failed ? `, ${failed} failed` : '')
     )
     if (removed) void this.drainSessionPurges()
+    return discarded
+  }
+
+  /** Reclaim the workspace, sandbox and runtime home of each finished session past the workspace window, keeping its row and transcript; returns how many session VMs it discarded. */
+  private async sweepExpiredWorkspaces(): Promise<number> {
+    const windowMs = workspaceRetentionMs(this.cfg.sessions)
+    if (windowMs === null) return 0
+    const now = this.clock.now()
+    const rowWindowMs = sessionRetentionMs(this.cfg.sessions.retention)
+    const expired: SessionRecord[] = []
+    for (const rec of await this.store.listExpiredSessions(now - windowMs)) {
+      // A row past its own window is the purge's to judge, which takes the workspace with it.
+      if (rowWindowMs !== null && rec.updatedAt < now - rowWindowMs) continue
+      if (workspaceReclaimed(rec) || retentionRecheckPending(rec, now)) continue
+      if (this.judgesStoredSessions(rec.agentId) && !(await this.keepsAppendSession(rec))) expired.push(rec)
+    }
+    if (!expired.length) return 0
+    const reclaimedAt = this.clock.now()
+    let reclaimed = 0
+    let retained = 0
+    let failed = 0
+    let discarded = 0
+    for (const rec of expired) {
+      if (this.draining) return 0
+      const res = await this.cleanupSessionWorktree(rec)
+      if (res.outcome === 'active') continue
+      if (res.outcome === 'retained' || res.outcome === 'failed') {
+        if (res.outcome === 'retained') retained += 1
+        else failed += 1
+        await this.keepExpiredSession(rec, reclaimedAt)
+        continue
+      }
+      // Inside the admission fence, which a turn must pass first: the row stays, so a new turn could otherwise start in the sandbox going away.
+      await this.withWorkspaceAdmissionFence(rec.agentId, async () => {
+        if (await this.sessionRetentionActive(rec)) return
+        // A legacy session shares its agent's VM, which only its row's purge may retire.
+        const ownSandbox = !this.legacyMicrosandboxSessions.has(sessionHostKey(rec.agentId, rec.key))
+        try {
+          if (ownSandbox) {
+            await this.stopSessionHost(rec.agentId, rec.key, {
+              ...this.sessionHostFence(rec.agentId, rec.key),
+              row: rec
+            })
+            await this.discardSessionSandbox(rec.agentId, rec.key)
+          }
+        } catch (err) {
+          failed += 1
+          this.log.warn(
+            `retention: keeping the workspace of session ${rec.key} — sandbox cleanup failed (${formatErr(err)})`
+          )
+          await this.keepExpiredSession(rec, reclaimedAt)
+          return
+        }
+        if (ownSandbox && this.microsandbox) discarded += 1
+        if (await this.store.markSessionWorkspaceReclaimed(rec.key, rec.updatedAt, reclaimedAt)) reclaimed += 1
+      })
+    }
+    this.log.info(
+      `retention: reclaimed the workspaces of ${reclaimed}/${expired.length} idle session(s)` +
+        (retained ? `, ${retained} retained (dirty/unique commits)` : '') +
+        (failed ? `, ${failed} failed` : '')
+    )
     return discarded
   }
 

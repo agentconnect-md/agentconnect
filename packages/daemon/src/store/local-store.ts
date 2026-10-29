@@ -348,6 +348,8 @@ export interface SessionRecord {
   // When the retention sweep last kept this expired session, and when it may judge it again; written by `markSessionRetentionKept`.
   retentionKeptAt?: number | null
   retentionRecheckAt?: number | null
+  // When retention reclaimed its workspace and sandbox while keeping the row; written by `markSessionWorkspaceReclaimed`.
+  workspaceReclaimedAt?: number | null
 }
 
 /** A session's birth verdict (session-executors.md §5, §7): where it executes or why it stayed home, and the strategy it was born with. */
@@ -1323,7 +1325,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 69
+export const SCHEMA_VERSION = 70
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2067,7 +2069,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
     ),
   // v69 tells the turn's own editor-path notice from a sub-session's, so a restart's sweep settles each in its own words.
-  async (db, store) => await addColumn(db, store.postgres, 'permission_requests', 'noticeKind', 'TEXT')
+  async (db, store) => await addColumn(db, store.postgres, 'permission_requests', 'noticeKind', 'TEXT'),
+  // v70 records when retention reclaimed a finished session's workspace while keeping its row, so a pass does not judge it again.
+  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'workspaceReclaimedAt', 'INTEGER')
 ]
 
 // Binds a platform's recorded conversations to their tenant, then hands each conversation's audience to its inherited children.
@@ -2779,7 +2783,8 @@ export class LocalStore {
         platformStanding TEXT,
         executorDaemonId TEXT, stayedHomeReason TEXT,
         onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyThread TEXT,
-        standingDigest TEXT, toolDigests TEXT, retentionKeptAt INTEGER, retentionRecheckAt INTEGER
+        standingDigest TEXT, toolDigests TEXT, retentionKeptAt INTEGER, retentionRecheckAt INTEGER,
+        workspaceReclaimedAt INTEGER
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -4468,6 +4473,16 @@ export class LocalStore {
         "UPDATE sessions SET retentionKeptAt = ?, retentionRecheckAt = ? WHERE key = ? AND updatedAt = ? AND state IN ('idle', 'closed')"
       )
       .run(keptAt, recheckAt, key, updatedAt)
+    return Number(res.changes) > 0
+  }
+
+  /** Record that retention reclaimed this session's workspace, only while it is still the row that was judged; false when it moved on. */
+  async markSessionWorkspaceReclaimed(key: string, updatedAt: number, reclaimedAt: number): Promise<boolean> {
+    const res = await this.db
+      .prepare(
+        "UPDATE sessions SET workspaceReclaimedAt = ? WHERE key = ? AND updatedAt = ? AND state IN ('idle', 'closed')"
+      )
+      .run(reclaimedAt, key, updatedAt)
     return Number(res.changes) > 0
   }
 

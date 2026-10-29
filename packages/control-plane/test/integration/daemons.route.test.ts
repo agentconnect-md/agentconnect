@@ -711,6 +711,37 @@ describe('PATCH /daemons/:id — rename', () => {
     expect(pushes).toEqual([{ id: DAEMON, keys: { 'sessions.retention': '90d' } }])
   })
 
+  it('persists workspaceRetention and hot-pushes it to the connected daemon (config/push)', async () => {
+    await seedDaemon()
+    const pushes: { id: string; keys: Record<string, unknown> }[] = []
+    const control = {
+      configPush: (id: string, keys: Record<string, unknown>) => {
+        pushes.push({ id, keys })
+      }
+    } as unknown as ControlSender
+    running = buildHttpApp(prisma, undefined, liveness({ [DAEMON]: { state: 'READY', reachable: true } }), control)
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/daemons/${DAEMON}`,
+      payload: { workspaceRetention: '3d' }
+    })
+    expect(res.statusCode).toBe(200)
+    // The row window keeps its new default.
+    expect(res.json()).toMatchObject({ sessionRetention: '90d', workspaceRetention: '3d' })
+    const row = await prisma.daemon.findUnique({ where: { id: DAEMON } })
+    expect(row?.workspaceRetention).toBe('3d')
+    expect(row?.sessionRetention).toBe('90d')
+    expect(pushes).toEqual([{ id: DAEMON, keys: { 'sessions.workspaceRetention': '3d' } }])
+
+    const bad = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/daemons/${DAEMON}`,
+      payload: { workspaceRetention: '0d' }
+    })
+    expect(bad.statusCode).toBe(400)
+  })
+
   it('still 200s a retention change when the daemon is offline (push is best-effort)', async () => {
     await seedDaemon()
     running = buildHttpApp(prisma) // empty liveness ⇒ configPush throws NoConnection internally

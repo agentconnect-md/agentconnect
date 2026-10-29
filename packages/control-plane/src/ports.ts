@@ -316,8 +316,10 @@ export interface DaemonView {
   visibility: ResourceVisibility
   /** Explicit app_user.id audience when restricted; organization owners also have access. */
   sharedWith: string[]
-  /** Console-set finished-session retention window ('never' | '7d' | '30d' | '90d'). */
+  /** Console-set retention of a finished session's row and transcript ('never' | '<n>d'). */
   sessionRetention: string
+  /** Console-set retention of a finished session's workspace and sandbox ('never' | '<n>d'). */
+  workspaceRetention: string
   /** Console-set auto-upgrade switch (daemon-auto-upgrade.md §3). */
   autoUpgrade: boolean
   /** The member set this daemon belongs to, if any (daemon-groups.md §2) — null for a machine
@@ -389,6 +391,13 @@ export interface DaemonRegistry {
     orgId: OrgId,
     daemonId: DaemonId,
     sessionRetention: string,
+    byUserId?: string
+  ): Promise<DaemonView>
+  /** Set the console's workspace retention window; returns the updated read-model row. Org-fenced like {@link DaemonRegistry.rename}. */
+  setWorkspaceRetention(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    workspaceRetention: string,
     byUserId?: string
   ): Promise<DaemonView>
   /** Set the auto-upgrade switch; returns the updated read-model row. Org-fenced like {@link DaemonRegistry.rename}. */

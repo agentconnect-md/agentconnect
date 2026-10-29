@@ -216,6 +216,7 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
   // Console-set finished-session retention — the reconnect baseline for the
   // `config/push` hot update. Absent (older CP) ⇒ keep the local config value.
   if (snap.sessionRetention) host.cfg().sessions.retention = snap.sessionRetention
+  if (snap.workspaceRetention) host.cfg().sessions.workspaceRetention = snap.workspaceRetention
   host.autoUpgrade?.()?.applyRegisterOk(snap)
   // Reserve every agent drop before ANY fallible snapshot convergence.
   // Otherwise an unrelated integration/memory write could abort the frame

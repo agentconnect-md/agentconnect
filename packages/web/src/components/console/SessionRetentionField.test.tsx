@@ -28,9 +28,9 @@ describe('parseCustomDays', () => {
 })
 
 describe('SessionRetentionField', () => {
-  it('renders presets and marks the 7d default', () => {
-    const html = renderToStaticMarkup(<SessionRetentionField value="7d" onChange={() => undefined} />)
-    expect(html).toContain('After 7 days')
+  it('renders presets and marks the 90d default', () => {
+    const html = renderToStaticMarkup(<SessionRetentionField value="90d" onChange={() => undefined} />)
+    expect(html).toContain('After 90 days')
     expect(html).toContain('· default')
     expect(html).toContain('Custom…')
     // Preset value ⇒ the custom day input stays hidden.
@@ -45,6 +45,15 @@ describe('SessionRetentionField', () => {
     expect(input).toContain('min="1"')
     expect(input).toContain('max="9999"') // client-side mirror of the protocol cap
     expect(input).toContain('value="45"')
+  })
+
+  it('renders the workspace window with its own label, default and never', () => {
+    const html = renderToStaticMarkup(<SessionRetentionField kind="workspace" value="7d" onChange={() => undefined} />)
+    expect(html).toContain('Clean up workspaces')
+    expect(html).toContain('After 7 days')
+    expect(html).toContain('· default')
+    expect(html).toContain('After 3 days')
+    expect(html).toContain('With the session')
   })
 
   it("renders 'Never' without the day input", () => {

@@ -86,6 +86,7 @@ import {
   provisionDaemon as apiProvisionDaemon,
   renameDaemon as apiRenameDaemon,
   updateDaemonSessionRetention as apiUpdateDaemonSessionRetention,
+  updateDaemonWorkspaceRetention as apiUpdateDaemonWorkspaceRetention,
   updateDaemonAutoUpgrade as apiUpdateDaemonAutoUpgrade,
   type DaemonSessionRetention,
   deleteDaemon as apiDeleteDaemon,
@@ -287,6 +288,7 @@ interface ConsoleData {
   renameDaemon: (daemonId: string, name: string) => Promise<void>
   /** Set the daemon's finished-session retention window ("Expire sessions"), then re-pull. */
   setDaemonSessionRetention: (daemonId: string, retention: DaemonSessionRetention) => Promise<void>
+  setDaemonWorkspaceRetention: (daemonId: string, retention: DaemonSessionRetention) => Promise<void>
   /** Turn a daemon's auto-upgrade on or off, then re-pull. */
   setDaemonAutoUpgrade: (daemonId: string, enabled: boolean) => Promise<void>
   /** Mint a fresh key for an existing (offline) daemon — the reconnect command. */
@@ -1685,6 +1687,15 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateDaemons]
   )
 
+  // Set how long a finished session's workspace stays ("Clean up workspaces"), then re-pull.
+  const setDaemonWorkspaceRetention = useCallback(
+    async (daemonId: string, retention: DaemonSessionRetention) => {
+      await apiUpdateDaemonWorkspaceRetention(daemonId, retention)
+      settleInBackground(mutateDaemons())
+    },
+    [mutateDaemons]
+  )
+
   // Project the PATCH's own answer onto the fleet row at once, then re-pull.
   const setDaemonAutoUpgrade = useCallback(
     async (daemonId: string, enabled: boolean) => {
@@ -1840,6 +1851,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       provisionDaemon,
       renameDaemon,
       setDaemonSessionRetention,
+      setDaemonWorkspaceRetention,
       setDaemonAutoUpgrade,
       reconnectDaemon,
       deleteDaemon,
@@ -1928,6 +1940,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       provisionDaemon,
       renameDaemon,
       setDaemonSessionRetention,
+      setDaemonWorkspaceRetention,
       setDaemonAutoUpgrade,
       reconnectDaemon,
       deleteDaemon,

@@ -29,7 +29,7 @@ const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest(
 
 /** A daemon root with one DM-less agent (we attach routing + a fake conn by hand,
  *  exactly like daemon-commands.test.ts). `limits` overrides the lifecycle tunables. */
-function scaffold(limits: Record<string, number> = {}): string {
+function scaffold(limits: Record<string, number> = {}, sessions?: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-life-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -37,7 +37,8 @@ function scaffold(limits: Record<string, number> = {}): string {
       version: 1,
       controlPlane: { enabled: false },
       runtimes: { claude: { command: 'node', args: ['unused'] } },
-      limits
+      limits,
+      ...(sessions ? { sessions } : {})
     })
   )
   const adir = join(root, 'agents', 'bot-a')
@@ -3409,7 +3410,7 @@ describe('Daemon session retention GC (#485)', () => {
     const clock = new FakeClock()
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
-      root: scaffold(),
+      root: scaffold({}, { retention: '7d' }),
       hostFactory: () => quietHost() as any,
       clock
     })
@@ -3437,7 +3438,7 @@ describe('Daemon session retention GC (#485)', () => {
     const clock = new FakeClock()
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
-      root: scaffold(),
+      root: scaffold({}, { retention: '7d' }),
       hostFactory: () => quietHost() as any,
       clock
     })
@@ -3471,7 +3472,7 @@ describe('Daemon session retention GC (#485)', () => {
   it('keeps the session row until VM destruction succeeds, retries the next sweep, then collects images', async () => {
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
-      root: scaffold(),
+      root: scaffold({}, { retention: '7d' }),
       hostFactory: () => quietHost() as any,
       clock: new FakeClock()
     })
@@ -3513,7 +3514,7 @@ describe('Daemon session retention GC (#485)', () => {
     const clock = new FakeClock()
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
-      root: scaffold(),
+      root: scaffold({}, { retention: '7d' }),
       hostFactory: () => quietHost() as any,
       clock
     })
@@ -3576,7 +3577,7 @@ describe('Daemon session retention GC (#485)', () => {
     const startDaemon = async (): Promise<Daemon> => {
       const daemon = new Daemon({
         slackAppFactory: fakeSlackAppFactory(),
-        root: scaffold(),
+        root: scaffold({}, { retention: '7d' }),
         hostFactory: () => quietHost() as any,
         clock: new FakeClock()
       })
@@ -3682,7 +3683,7 @@ describe('Daemon session retention GC (#485)', () => {
     const startDaemon = async (): Promise<Daemon> => {
       const daemon = new Daemon({
         slackAppFactory: fakeSlackAppFactory(),
-        root: scaffold(),
+        root: scaffold({}, { retention: '7d' }),
         hostFactory: () => quietHost() as any,
         clock: new FakeClock()
       })
@@ -3816,7 +3817,7 @@ describe('Daemon session retention GC (#485)', () => {
     const clock = new FakeClock()
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
-      root: scaffold(),
+      root: scaffold({}, { retention: '7d' }),
       hostFactory: () => quietHost() as any,
       clock
     })
@@ -3835,7 +3836,7 @@ describe('Daemon session retention GC (#485)', () => {
     const clock = new FakeClock()
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
-      root: scaffold(),
+      root: scaffold({}, { retention: '7d' }),
       hostFactory: () => quietHost() as any,
       clock
     })
@@ -3865,7 +3866,7 @@ describe('Daemon session retention GC (#485)', () => {
     const clock = new FakeClock()
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
-      root: scaffold(),
+      root: scaffold({}, { retention: '7d' }),
       hostFactory: () => quietHost() as any,
       clock
     })
@@ -3904,7 +3905,7 @@ describe('Daemon session retention GC (#485)', () => {
     const clock = new FakeClock()
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
-      root: scaffold(),
+      root: scaffold({}, { retention: '7d' }),
       hostFactory: () => quietHost() as any,
       clock
     })
@@ -3928,7 +3929,7 @@ describe('Daemon session retention GC (#485)', () => {
     const clock = new FakeClock()
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
-      root: scaffold(),
+      root: scaffold({}, { retention: '7d' }),
       hostFactory: () => quietHost() as any,
       clock
     })
@@ -3968,7 +3969,7 @@ describe('Daemon session retention GC (#485)', () => {
     const clock = new FakeClock()
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
-      root: scaffold(),
+      root: scaffold({}, { retention: '7d' }),
       hostFactory: () => quietHost() as any,
       clock
     })
@@ -3987,5 +3988,117 @@ describe('Daemon session retention GC (#485)', () => {
     expect(await (daemon as any).store.getSession('expired-queued')).toBeDefined()
 
     await daemon.stop()
+  })
+
+  describe('the workspace window (two-tier retention)', () => {
+    const DAY = 24 * 3_600_000
+    const fakeMicrosandbox = (daemon: Daemon) => {
+      const discard = vi.fn(async (_id: string) => {})
+      ;(daemon as any).microsandbox = {
+        discard,
+        collectImages: vi.fn(async () => {}),
+        environmentIds: async () => [],
+        environment: () => undefined,
+        stopAll: vi.fn(async () => {})
+      }
+      return discard
+    }
+
+    it('reclaims an idle session’s sandbox once, keeps its row until the row window, then purges it without judging again', async () => {
+      const clock = new FakeClock()
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root: scaffold({}, { retention: '90d', workspaceRetention: '7d' }),
+        hostFactory: () => quietHost() as any,
+        clock
+      })
+      await daemon.start()
+      await sweepRetention(daemon)
+      const discard = fakeMicrosandbox(daemon)
+      const cleanup = vi.spyOn(daemon as any, 'cleanupSessionWorktree')
+      try {
+        await seedSession(daemon, 'idle-ws', 'closed', clock.now())
+        clock.advance(6 * DAY)
+        await sweepRetention(daemon)
+        expect(discard).not.toHaveBeenCalled()
+
+        clock.advance(2 * DAY)
+        await sweepRetention(daemon)
+        expect(discard).toHaveBeenCalledExactlyOnceWith(`bot-a/${sessionKeyDirName('idle-ws')}`)
+        const kept = await (daemon as any).store.getSession('idle-ws')
+        expect(kept.workspaceReclaimedAt).toBe(clock.now())
+        expect(cleanup).toHaveBeenCalledTimes(1)
+
+        // A reclaimed workspace is not judged again, so no pod is woken for it.
+        clock.advance(DAY)
+        await sweepRetention(daemon)
+        expect(cleanup).toHaveBeenCalledTimes(1)
+        expect(discard).toHaveBeenCalledTimes(1)
+
+        clock.advance(90 * DAY)
+        await sweepRetention(daemon)
+        expect(await (daemon as any).store.getSession('idle-ws')).toBeUndefined()
+        expect(cleanup).toHaveBeenCalledTimes(1)
+      } finally {
+        await daemon.stop()
+      }
+    })
+
+    it('judges a session again after new activity, and keeps a workspace holding work with its sandbox', async () => {
+      const clock = new FakeClock()
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root: scaffold({}, { retention: '90d', workspaceRetention: '7d' }),
+        hostFactory: () => quietHost() as any,
+        clock
+      })
+      await daemon.start()
+      await sweepRetention(daemon)
+      const discard = fakeMicrosandbox(daemon)
+      const cleanup = vi.spyOn(daemon as any, 'cleanupSessionWorktree')
+      try {
+        await seedSession(daemon, 'reused', 'closed', clock.now())
+        clock.advance(8 * DAY)
+        await sweepRetention(daemon)
+        expect(discard).toHaveBeenCalledTimes(1)
+
+        clock.advance(1)
+        await seedSession(daemon, 'reused', 'closed', clock.now())
+        cleanup.mockResolvedValue({ outcome: 'retained', reason: 'dirty' })
+        clock.advance(8 * DAY)
+        await sweepRetention(daemon)
+        expect(cleanup).toHaveBeenCalledTimes(2)
+        expect(discard).toHaveBeenCalledTimes(1)
+        const row = await (daemon as any).store.getSession('reused')
+        expect(row.workspaceReclaimedAt).toBeLessThan(row.updatedAt)
+        expect(row.retentionKeptAt).toBe(clock.now())
+      } finally {
+        await daemon.stop()
+      }
+    })
+
+    it('leaves the workspace to the purge when both windows are the same', async () => {
+      const clock = new FakeClock()
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root: scaffold({}, { retention: '7d', workspaceRetention: '7d' }),
+        hostFactory: () => quietHost() as any,
+        clock
+      })
+      await daemon.start()
+      await sweepRetention(daemon)
+      const reclaim = vi.spyOn(daemon as any, 'sweepExpiredWorkspaces')
+      const mark = vi.spyOn((daemon as any).store, 'markSessionWorkspaceReclaimed')
+      try {
+        await seedSession(daemon, 'same-window', 'closed', clock.now())
+        clock.advance(8 * DAY)
+        await sweepRetention(daemon)
+        expect(reclaim).toHaveBeenCalled()
+        expect(mark).not.toHaveBeenCalled()
+        expect(await (daemon as any).store.getSession('same-window')).toBeUndefined()
+      } finally {
+        await daemon.stop()
+      }
+    })
   })
 })

@@ -23,3 +23,11 @@ export function nextRetentionRecheck(rec: KeptSession, keptAt: number): number {
   )
   return keptAt + wait
 }
+
+/** Whether retention reclaimed this session's workspace since its last activity, so it has no directory or sandbox left to judge. */
+export function workspaceReclaimed({
+  updatedAt,
+  workspaceReclaimedAt
+}: Pick<SessionRecord, 'updatedAt' | 'workspaceReclaimedAt'>): boolean {
+  return workspaceReclaimedAt != null && workspaceReclaimedAt >= updatedAt
+}
