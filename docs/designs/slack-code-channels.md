@@ -440,7 +440,11 @@ one Slack agent identity (§7 Q3).
 3. **Multiple agents.** `setCommands` limits commands "across all agents in the channel", so
    Slack expects several agents in one code channel; how a second agent joins and whether it can
    write views is undocumented.
-4. **Rate limits.** The Java SDK lists `archive` at tier 2 and `setView` / `getCanvas` at tier 3;
+4. **Stop settlement.** The `agent_session_stopped` reference says the app must move the
+   session out of `processing` itself; the code-channel lifecycle guide says Slack updates the
+   status and forbids further lifecycle calls for that context. §5.8 follows the event reference
+   and Slack's sample; verify on a live code channel that the `active` write is accepted.
+5. **Rate limits.** The Java SDK lists `archive` at tier 2 and `setView` / `getCanvas` at tier 3;
    the plan and diff writers debounce to stay well under them.
 
 ## 8. Risks
