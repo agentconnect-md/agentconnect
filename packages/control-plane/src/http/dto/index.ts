@@ -3169,6 +3169,8 @@ export const CreateGithubHookBody = HookBodyBase.extend({
   // so a row carrying such a subscription must scope it to its own family.
   commentFamilies: GithubCommentFamilies.default([]),
   labelFilter: HookLabelFilter.default([]),
+  // Pull-request rows only: draft revisions do not fire, and marking the PR ready reviews its head.
+  skipDrafts: z.boolean().default(false),
   // P3 summon mode: every event's authored text must @-mention the assigned
   // agent or the App (thread actors also pass the relay's live maintainer gate).
   mentionOnly: z.boolean().default(false),
@@ -3258,6 +3260,7 @@ export const UpdateHookBody = z.union([
     // preserve the stored enablement state. Old web clients did not echo it.
     enabled: z.boolean().optional(),
     commentFamilies: GithubCommentFamilies.optional(),
+    skipDrafts: z.boolean().optional(),
     mentionOnly: z.boolean().optional(),
     // Whole-definition PUT remains backward-compatible: clients predating R1
     // omit these keys and the route preserves the stored policy.
@@ -3299,6 +3302,7 @@ export const HookDto = z.object({
   // The stored union across code hosts; each row carries its own host's subset.
   commentFamilies: z.array(z.enum(['issues', 'pull_request', 'merge_request'])),
   labelFilter: z.array(z.string()),
+  skipDrafts: z.boolean(),
   mentionOnly: z.boolean(),
   configRevision: z.string(),
   reviewPolicy: HookReviewPolicyEnum,

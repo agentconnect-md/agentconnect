@@ -103,6 +103,11 @@ describe('R1/R2a hook control schemas', () => {
     expect(isGithubPullRequestRevisionEvent('pull_request:edited', { baseChanged: false })).toBe(false)
   })
 
+  it('counts a PR leaving draft as a revision of its head', () => {
+    expect(isGithubPullRequestRevisionEvent('pull_request:ready_for_review')).toBe(true)
+    expect(isGithubPullRequestRevisionEvent('pull_request:converted_to_draft')).toBe(false)
+  })
+
   it('keeps legacy hook/report decodable while carrying submitted metadata for recovery', () => {
     expect(
       HookReport.safeParse({

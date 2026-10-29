@@ -5004,6 +5004,7 @@ export interface HookDto {
   events: string[] // 'issues:*' / 'issue_comment:created' / 'merge_request:*' / …
   commentFamilies: HookCommentFamily[] // thread kinds whose replies may fire this hook
   labelFilter: string[]
+  skipDrafts: boolean // GitHub pull-request rows: draft revisions wait until the PR is marked ready
   mentionOnly: boolean // P3: authored event text must @-mention the agent or App
   configRevision: string // BigInt JSON/wire form; CP-owned, monotonic
   reviewPolicy: HookReviewPolicy
@@ -5054,6 +5055,7 @@ export interface CreateGithubHookInput {
   events: string[] // 'issues:*' etc — at least one
   commentFamilies?: GithubCommentFamily[]
   labelFilter?: string[]
+  skipDrafts?: boolean // pull-request rows only
   mentionOnly?: boolean // require authored event text to @-mention the agent or App
   reviewPolicy?: HookReviewPolicy
   reportingMode?: HookReportingMode

@@ -4571,7 +4571,7 @@ describe('buildHookMessage', () => {
       expect(buildHookText(ghFire())).not.toContain('gh issue view')
     })
 
-    it('reviews draft PRs and keeps draft/ready transitions status-only', async () => {
+    it('reviews draft PRs, keeps converting to draft status-only, and reviews the head a PR leaves draft at', async () => {
       const github = {
         repoId: '123',
         repoFullName: 'acme/infra',
@@ -4609,7 +4609,8 @@ describe('buildHookMessage', () => {
           { reviewPolicy: 'full', github: { ...github, isDraft: false } }
         )
       )
-      expect(readyText).not.toContain('opens a review generation for the current PR revision')
+      // Only a draft-skipping rule delivers it, standing in for the draft revisions that rule held back.
+      expect(readyText).toContain('opens a review generation for the current PR revision')
     })
 
     it('no excerpt ⇒ header only, no fence at all', async () => {

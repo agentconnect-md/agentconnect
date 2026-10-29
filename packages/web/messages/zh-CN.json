@@ -72,7 +72,8 @@
       "addLabel": "添加标签",
       "addAnother": "再添加一个…",
       "typeLabel": "输入标签，按 Enter 添加",
-      "limitReached": "已达到标签上限，请移除一个后再添加。"
+      "limitReached": "已达到标签上限，请移除一个后再添加。",
+      "skipDrafts": "草稿 PR 标记为可审查后再触发"
     },
     "beta": "Beta",
     "language": {

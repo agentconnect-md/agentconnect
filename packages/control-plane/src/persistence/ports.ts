@@ -3204,6 +3204,7 @@ export interface UpsertHookInput {
   /** Scopes GitHub's shared issue_comment subscription to this row's family. */
   commentFamilies?: HookCommentFamily[]
   labelFilter?: string[]
+  skipDrafts?: boolean
   mentionOnly?: boolean
   reviewPolicy?: HookReviewPolicy
   reportingMode?: HookReportingMode
@@ -3246,6 +3247,8 @@ export interface HookRecord {
   /** Empty = legacy repo-wide comments; non-empty scopes comments to these subjects. */
   commentFamilies: HookCommentFamily[]
   labelFilter: string[]
+  /** GitHub pull-request rows: draft revisions do not fire, and leaving draft reviews the head. */
+  skipDrafts: boolean
   mentionOnly: boolean
   configRevision: bigint
   dispatchRevision: bigint

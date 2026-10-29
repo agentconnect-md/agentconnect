@@ -100,6 +100,7 @@ function toDto(h: HookRecord, publicRelayUrl?: string): HookDtoT {
     events: h.events,
     commentFamilies: h.commentFamilies,
     labelFilter: h.labelFilter,
+    skipDrafts: h.skipDrafts,
     mentionOnly: h.mentionOnly,
     configRevision: h.configRevision.toString(),
     reviewPolicy: h.reviewPolicy,
@@ -248,6 +249,7 @@ export function hookRoutes(deps: HttpDeps) {
       reviewPolicy?: string
       reportingMode?: string
       gateMode?: string
+      skipDrafts?: boolean
     }): string | null =>
       hookFamilyShapeError({
         kind: body.kind,
@@ -256,7 +258,8 @@ export function hookRoutes(deps: HttpDeps) {
         commentFamilies: body.commentFamilies ?? [],
         reviewPolicy: body.reviewPolicy ?? 'off',
         reportingMode: body.reportingMode ?? 'off',
-        gateMode: body.gateMode ?? 'informational'
+        gateMode: body.gateMode ?? 'informational',
+        skipDrafts: body.skipDrafts ?? false
       })
 
     // Sibling rows of one (agent, repo) answer the same threads, so they must
@@ -729,7 +732,8 @@ export function hookRoutes(deps: HttpDeps) {
             family: req.body.family,
             events: req.body.events,
             commentFamilies: req.body.commentFamilies,
-            ...effects!
+            ...effects!,
+            ...(req.body.kind === 'github' ? { skipDrafts: req.body.skipDrafts } : {})
           })
           if (shapeError) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: shapeError })
@@ -893,6 +897,7 @@ export function hookRoutes(deps: HttpDeps) {
                   events: req.body.events,
                   commentFamilies: req.body.commentFamilies,
                   labelFilter: req.body.labelFilter,
+                  skipDrafts: req.body.skipDrafts,
                   mentionOnly: req.body.mentionOnly,
                   reviewPolicy: req.body.reviewPolicy,
                   reportingMode: req.body.reportingMode,
@@ -1078,6 +1083,7 @@ export function hookRoutes(deps: HttpDeps) {
           events: string[]
           commentFamilies: HookRecord['commentFamilies']
           labelFilter: string[]
+          skipDrafts: boolean
           mentionOnly: boolean
           reviewPolicy: HookRecord['reviewPolicy']
           reportingMode: HookRecord['reportingMode']
@@ -1090,6 +1096,7 @@ export function hookRoutes(deps: HttpDeps) {
             reportingMode: req.body.reportingMode ?? existing.reportingMode,
             gateMode: req.body.gateMode ?? existing.gateMode
           }
+          const skipDrafts = req.body.skipDrafts ?? existing.skipDrafts
           // The family is immutable, so the edit is re-shaped against the STORED
           // one. A legacy row the split could not place has none and is grandfathered.
           const shapeError = existing.family
@@ -1098,7 +1105,8 @@ export function hookRoutes(deps: HttpDeps) {
                 family: existing.family as HookFamily,
                 events: req.body.events,
                 commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
-                ...effectConfig
+                ...effectConfig,
+                skipDrafts
               })
             : null
           if (shapeError) {
@@ -1173,6 +1181,7 @@ export function hookRoutes(deps: HttpDeps) {
               events: req.body.events,
               commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
               labelFilter: req.body.labelFilter,
+              skipDrafts,
               mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
               ...effectConfig
             }
@@ -1242,6 +1251,7 @@ export function hookRoutes(deps: HttpDeps) {
               // Optional on UPDATE so old clients preserve the stored scope.
               commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
               labelFilter: req.body.labelFilter,
+              skipDrafts,
               mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
               ...effectConfig
             }
