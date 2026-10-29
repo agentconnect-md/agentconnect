@@ -26,6 +26,14 @@ function worldStub(overrides: Partial<VirtualConnectionWorldPort> = {}) {
 }
 
 describe('VirtualSlackConnection — the concrete-connection surface the daemon consumes', () => {
+  it('counts native report blocks as authored replies with their response metadata', async () => {
+    const { port, recorded } = worldStub()
+    const conn = new VirtualSlackConnection('int-1', { workspaceId: 'T-EVAL' }, port)
+    const response = { responseId: 'r1', deliveryState: 'final' as const, hopCount: 2, mentionedAgentIds: [] }
+    await conn.postBlocks('C-KNOWN', [], 'Report', '1700.000001', { agentAuthorId: 'agent-1', response })
+    expect(recorded).toEqual([expect.objectContaining({ kind: 'reply', text: 'Report', response })])
+    await expect(conn.codeChannelApi()).rejects.toThrow('not modelled')
+  })
   it('routes the ordinary reply path to the world as a reply effect and returns the message id', async () => {
     const { port, recorded } = worldStub()
     const conn = new VirtualSlackConnection('int-1', { workspaceId: 'T-EVAL' }, port)

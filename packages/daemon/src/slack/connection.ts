@@ -648,6 +648,10 @@ export type AppLike = {
           user?: string
           topic?: { value?: string }
           purpose?: { value?: string }
+          properties?: {
+            record_channel?: { record_type?: string }
+            agent_session?: { encoded_agent_bot_user_ids?: string[] }
+          }
         }
       }>
       members: (a: unknown) => Promise<{ members?: string[]; response_metadata?: { next_cursor?: string } }>
@@ -734,6 +738,10 @@ export type AppLike = {
       }
     }
     agents: {
+      conversations?: Pick<
+        WebClient['agents']['conversations'],
+        'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView'
+      >
       sessions: {
         setStatus: (a: unknown) => Promise<unknown>
         rename: (a: unknown) => Promise<unknown>
@@ -961,7 +969,7 @@ function classifySlackUploadError(err: unknown): UploadFailReason {
 
 function proxyDispatcher(): ProxyAgent | undefined {
   const url = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
-  return url ? new ProxyAgent(url) : undefined
+  return url ? new ProxyAgent({ uri: url, requestTls: { allowH2: false } }) : undefined
 }
 
 // Keep Slack independent of the Undici version that claims the process-wide dispatcher.
@@ -1048,6 +1056,53 @@ export class SlackConnection implements PlatformConnection {
   /** Last title written per `channel:thread` — every turn re-pushes the stored title, so
    *  unchanged repeats must not spend an API call. Grows like sessionLifecycle: unevicted. */
   private lastTitles = new Map<string, string>()
+  private readonly codeChannels = new Map<string, { at: number; value: Promise<{ code: boolean; owners: string[] }> }>()
+
+  async codeChannel(channel: string): Promise<{ code: boolean; owners: string[] }> {
+    const cached = this.codeChannels.get(channel)
+    if (cached && Date.now() - cached.at < 60000) return cached.value
+    const value = this.app.client.conversations.info({ channel }).then(({ channel: info }) => ({
+      code: info?.properties?.record_channel?.record_type === 'agent_channel',
+      owners: info?.properties?.agent_session?.encoded_agent_bot_user_ids ?? []
+    }))
+    const entry = { at: Date.now(), value }
+    if (this.codeChannels.size >= 1000) this.codeChannels.delete(this.codeChannels.keys().next().value!)
+    this.codeChannels.set(channel, entry)
+    try {
+      return await value
+    } catch (err) {
+      if (this.codeChannels.get(channel) === entry) this.codeChannels.delete(channel)
+      throw err
+    }
+  }
+
+  async prepareInboundMessage(msg: NormalizedMessage): Promise<void> {
+    if (msg.isDm || msg.isGroupDm) return
+    const info = await this.codeChannel(msg.channel).catch(() => {
+      this.deps.log?.debug('slack: channel discovery unavailable; retaining inbound coordinates')
+      return undefined
+    })
+    if (!info) return
+    delete msg.conversationBotId
+    if (!info.code) return
+    msg.thread = msg.channel
+    if (info.owners.includes(this.botUserId)) msg.conversationBotId = this.botUserId
+  }
+
+  async codeChannelApi<K extends 'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView'>(
+    method: K,
+    args: Parameters<WebClient['agents']['conversations'][K]>[0]
+  ): Promise<unknown> {
+    const api = this.app.client.agents.conversations
+    if (!api) throw new Error('This Slack client does not support code channels')
+    try {
+      return await this.queue.enqueue(() => (api[method] as (args: unknown) => Promise<unknown>)(args))
+    } catch (err) {
+      if (isSendQueueTimeout(err))
+        throw new Error('Slack did not answer in time; the code channel operation may have completed')
+      throw this.toolFailure(err, `agents.conversations.${method}`)
+    }
+  }
   /** Slack app/workspace ids are public metadata used only for the OAuth settings link. */
   private appId = ''
   private teamId = ''
@@ -1218,8 +1273,8 @@ export class SlackConnection implements PlatformConnection {
     // Native stop button, Socket Mode arm. The HTTP arm reaches the same method through the relay.
     this.app.event('agent_session_stopped', async ({ event }) => {
       const ev = event as { channel?: string; thread_ts?: string; user?: string }
-      if (!ev.channel || !ev.thread_ts) return
-      await this.agentSessionStopped(ev.channel, ev.thread_ts, ev.user)
+      if (!ev.channel) return
+      await this.agentSessionStopped(ev.channel, ev.thread_ts ?? ev.channel, ev.user)
     })
     // The bot joining (its own member_joined_channel) or leaving (channel_left / group_left) re-lists membership.
     this.app.event('member_joined_channel', async ({ event, body }) => {
@@ -1492,7 +1547,7 @@ export class SlackConnection implements PlatformConnection {
     threadTs: string | undefined,
     payload: Record<string, unknown>
   ): Promise<{ ts?: string } | undefined> {
-    if (threadTs) {
+    if (threadTs && threadTs !== channel) {
       try {
         await this.app.client.chat.getPermalink({ channel, message_ts: threadTs })
       } catch (err) {
@@ -1501,7 +1556,10 @@ export class SlackConnection implements PlatformConnection {
         return undefined
       }
     }
-    return this.markingNotJoined(channel, () => this.app.client.chat.postMessage(payload))
+    const { thread_ts: thread, ...body } = payload
+    return this.markingNotJoined(channel, () =>
+      this.app.client.chat.postMessage({ ...body, ...(thread && thread !== channel ? { thread_ts: thread } : {}) })
+    )
   }
 
   /** Run one call against a conversation; a `not_in_channel` refusal is tagged so core can ask before the bot joins (#2979). */
@@ -1825,8 +1883,7 @@ export class SlackConnection implements PlatformConnection {
    * SDK, the workspace, or this channel cannot stream, and §7 has already decided whether
    * that latches the capability off or degrades only this turn.
    *
-   * `thread_ts` is REQUIRED — omitting it fails `invalid_thread_ts`, in DMs too (verified
-   * live 2026-08-28; the documented "omit for a top-level message" does not hold).
+   * Ordinary sessions require a thread timestamp; a code channel uses its channel coordinate.
    */
   async startTurnStream(
     channel: string,
@@ -1880,7 +1937,7 @@ export class SlackConnection implements PlatformConnection {
     // `plan_update` title. `timeline` — the default — renders each card flat and separate.
     const payload: Record<string, unknown> = {
       channel,
-      thread_ts: threadTs,
+      ...(threadTs !== channel ? { thread_ts: threadTs } : {}),
       task_display_mode: 'plan',
       ...(recipient ? { recipient_user_id: recipient } : {}),
       ...(recipient && this.teamId ? { recipient_team_id: this.teamId } : {})
@@ -2164,10 +2221,14 @@ export class SlackConnection implements PlatformConnection {
     let cursor: string | undefined
     try {
       do {
+        const read =
+          threadTs === channel
+            ? (this.app.client.conversations.history as AppLike['client']['conversations']['replies'])
+            : this.app.client.conversations.replies
         const res = await this.markingNotJoined(channel, () =>
-          this.app.client.conversations.replies({
+          read({
             channel,
-            ts: threadTs,
+            ...(threadTs !== channel ? { ts: threadTs } : {}),
             limit: 200,
             // Without it Slack omits the metadata payload that carries the stable agent author id.
             include_all_metadata: true,
@@ -2216,7 +2277,7 @@ export class SlackConnection implements PlatformConnection {
             if (window?.readState && (index < messages.length - 1 || Boolean(res.has_more))) {
               window.readState.truncated = true
             }
-            return out
+            return out.sort((a, b) => a.ts.localeCompare(b.ts))
           }
         }
         cursor = res.has_more ? res.response_metadata?.next_cursor : undefined
@@ -2227,7 +2288,7 @@ export class SlackConnection implements PlatformConnection {
       )
       if (window?.throwOnError) throw err
     }
-    return out
+    return out.sort((a, b) => a.ts.localeCompare(b.ts))
   }
 
   /** Fetch one bounded, cursor-paginated page of Slack channel messages. */
@@ -2341,7 +2402,7 @@ export class SlackConnection implements PlatformConnection {
           file: file.bytes,
           filename: file.name,
           channel_id: channel,
-          ...(threadTs ? { thread_ts: threadTs } : {}),
+          ...(threadTs && threadTs !== channel ? { thread_ts: threadTs } : {}),
           ...(comment ? { initial_comment: comment } : {})
         })) as SlackUploadV2Result
         // `uploadV2` answers with one completion response per file, each carrying the FILE.
@@ -2396,7 +2457,7 @@ export class SlackConnection implements PlatformConnection {
       {
         files: [{ id: fileId, title: file.name }],
         channel_id: channel,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
+        ...(threadTs && threadTs !== channel ? { thread_ts: threadTs } : {}),
         ...(comment ? { initial_comment: comment } : {})
       },
       options
@@ -3357,7 +3418,7 @@ export class SlackConnection implements PlatformConnection {
     try {
       await this.app.client.agents.sessions.setStatus({
         channel_id: channel,
-        thread_ts: threadTs,
+        ...(threadTs !== channel ? { thread_ts: threadTs } : {}),
         status,
         ...(username ? { username } : {}),
         ...(iconUrl ? { icon_url: iconUrl } : {})
@@ -3392,7 +3453,7 @@ export class SlackConnection implements PlatformConnection {
       await this.queue.enqueue(() =>
         this.app.client.agents.sessions.rename({
           channel_id: channel,
-          thread_ts: threadTs,
+          ...(threadTs !== channel ? { thread_ts: threadTs } : {}),
           title
         })
       )

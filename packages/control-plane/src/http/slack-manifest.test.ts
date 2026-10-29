@@ -108,6 +108,7 @@ describe('buildInstallManifest', () => {
       'channels:read',
       'commands',
       'chat:write',
+      'code_channels:manage',
       'chat:write.customize',
       'files:write',
       'groups:history',

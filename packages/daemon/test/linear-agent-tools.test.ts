@@ -59,8 +59,16 @@ const run = (
   name: string,
   args: Record<string, unknown>,
   c: LinearToolClient,
-  env: Omit<PlatformSessionToolEnv, 'connection'> = {}
-) => LINEAR_SESSION_TOOLS.execute(name, ctx, args, { connection: c, ...env })
+  env: Partial<Omit<PlatformSessionToolEnv, 'connection'>> = {}
+) =>
+  LINEAR_SESSION_TOOLS.execute(name, ctx, args, {
+    connection: c,
+    deliveryThread: ctx.deliveryThread,
+    judgeWrite: async () => undefined,
+    postIdentity: () => ({}),
+    recordPost: async () => undefined,
+    ...env
+  })
 
 /** The turn's footer identity, as `sessionToolAttributionFor` resolves it in `daemon.ts`. */
 const attribution = {

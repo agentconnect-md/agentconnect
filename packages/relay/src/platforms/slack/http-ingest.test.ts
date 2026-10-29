@@ -816,7 +816,10 @@ describe('SlackHttpIngest events', () => {
   })
 
   it('marks a message from a Slack Connect channel as externally shared', async () => {
-    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: 'BBOT' })) } }
+    const web = {
+      auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: 'BBOT' })) },
+      conversations: { info: async () => ({ channel: {} }) }
+    }
     const d = deps(web)
     const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
     await ingest.start()
@@ -827,6 +830,59 @@ describe('SlackHttpIngest events', () => {
 
     const forwarded = (d.onMessage as ReturnType<typeof vi.fn>).mock.calls.map(([msg]) => msg.externallyShared)
     expect(forwarded).toEqual([true, undefined])
+  })
+
+  it('forwards consecutive code channel messages with one coordinate and the provider-owned recipient', async () => {
+    const info = vi.fn(async () => ({
+      channel: {
+        properties: {
+          record_channel: { record_type: 'agent_channel' },
+          agent_session: { encoded_agent_bot_user_ids: ['UBOT'] }
+        }
+      }
+    }))
+    const d = deps({ auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { info } })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    for (const ts of ['1.001', '1.002'])
+      await ingest.handleEvent({ type: 'message', channel: 'C1', user: 'U1', text: 'Continue', ts })
+    expect(d.onMessage).toHaveBeenCalledTimes(2)
+    for (const [msg] of (d.onMessage as ReturnType<typeof vi.fn>).mock.calls)
+      expect(msg).toMatchObject({ channel: 'C1', thread: 'C1', conversationBotId: 'UBOT', isDm: false })
+    expect(info).toHaveBeenCalledOnce()
+    await ingest.stop()
+  })
+
+  it('still forwards ordinary channel messages when discovery fails and bounds the API budget', async () => {
+    const web = {
+      auth: { test: async () => ({ user_id: 'UBOT' }) },
+      conversations: {
+        info: vi.fn(async () => {
+          throw new Error('lookup unavailable')
+        })
+      }
+    }
+    const factory = vi.fn(() => web as never)
+    const d = deps(web, { webClientFactory: factory })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    await ingest.handleEvent({
+      type: 'message',
+      channel: 'C1',
+      thread_ts: '1.001',
+      ts: '1.002',
+      user: 'U1',
+      text: 'Hello'
+    })
+    expect(factory).toHaveBeenCalledWith(
+      'xoxb',
+      expect.objectContaining({ timeout: 3000, retryConfig: { retries: 0 }, rejectRateLimitedCalls: true })
+    )
+    expect(d.onMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'C1', thread: '1.001', text: 'Hello' }),
+      undefined
+    )
+    await ingest.stop()
   })
 
   it.each(['channel_left', 'group_left'])('refreshes after the self-scoped %s event', async (type) => {
@@ -873,7 +929,7 @@ describe('SlackHttpIngest events', () => {
     expect(onMessage).not.toHaveBeenCalled()
   })
 
-  it('omits the actor when the stop names none, and drops one without a thread', async () => {
+  it('omits the actor when the stop names none and uses channel coordinates for code channel stops', async () => {
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
     const onSessionStopped = vi.fn()
     const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onSessionStopped }))
@@ -882,8 +938,9 @@ describe('SlackHttpIngest events', () => {
     await ingest.handleEvent({ type: 'agent_session_stopped', channel: 'C1', thread_ts: '200.1' }, undefined, 'Ev124')
     await ingest.handleEvent({ type: 'agent_session_stopped', channel: 'C1' }, undefined, 'Ev125')
 
-    expect(onSessionStopped).toHaveBeenCalledTimes(1)
+    expect(onSessionStopped).toHaveBeenCalledTimes(2)
     expect(onSessionStopped.mock.calls[0]![0]).not.toHaveProperty('userId')
+    expect(onSessionStopped.mock.calls[1]![0]).toEqual({ channelId: 'C1', threadTs: 'C1', interactionId: 'Ev125' })
   })
 
   // Subscribed so a future feature needs no manifest-refresh cycle, but nothing acts on them:
@@ -1089,7 +1146,10 @@ describe('SlackHttpIngest message events', () => {
   it('drops self and Slack system messages while forwarding peer app text', async () => {
     const onMessage = vi.fn<SlackHttpIngestDeps['onMessage']>(async () => 'accepted')
     const botIds = [undefined, 'BSELF']
-    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: botIds.shift() })) } }
+    const web = {
+      auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: botIds.shift() })) },
+      conversations: { info: async () => ({ channel: {} }) }
+    }
     const ingest = new SlackHttpIngest(
       'bot',
       { botToken: 'xoxb', signingSecret: 's' },

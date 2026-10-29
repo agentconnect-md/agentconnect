@@ -13354,6 +13354,8 @@ export class Daemon {
     const agentAuthored = this.isAgentBotMessage(msg)
     await this.observedChannelsSync.clearRetractionOnTraffic(msg, srcIntegrationIds)
     msg.transportScope ??= this.transportScopeForIntegrationIds(srcIntegrationIds)
+    const ingressConnection = srcIntegrationIds?.map((id) => this.anyConnForIntegration(id)).find(Boolean)
+    await (ingressConnection as ContractConnection | undefined)?.prepareInboundMessage?.(msg)
     if (msg.sender.avatarUrl && msg.transportScope)
       await this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
     // Above the record: it produces the physical thread step 1 writes, and has no store writes.
@@ -14085,6 +14087,7 @@ export class Daemon {
     // Mirror the lookup here so session metadata/history can label the sender.
     const conn = this.connByIntegration.get(msg.integrationId)
     if (conn) this.nameResolver?.noteMessage(conn, normalized)
+    await conn?.prepareInboundMessage?.(normalized)
     // The relay saw the provider event, so it forwarded the ephemeral search credential
     // beside the payload. Hand it to the adapter and keep no copy — it is never persisted,
     // logged, or reported onward, and `normalized` (which IS persisted) never carries it.

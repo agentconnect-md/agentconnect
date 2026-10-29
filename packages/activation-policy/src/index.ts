@@ -52,6 +52,7 @@ export interface ActivationMessageFacts {
   text: string
   isDm: boolean
   mentionedBots: string[]
+  conversationBotId?: string
   sender: { isBot: boolean }
 }
 
@@ -220,6 +221,11 @@ export function routeRules(
     if (kind === 'mention') continue
     const r = layer.find((x) => x.match.kind === kind)
     if (r) return pickRule(r, kind)
+  }
+  // Provider ownership supplies an implicit recipient after configured routes and thread continuity.
+  if (msg.conversationBotId && !msg.sender.isBot) {
+    const owner = scopeCandidates.find((r) => r.botUserId === msg.conversationBotId)
+    if (owner) return pickRule(owner, 'auto')
   }
   return null
 }
@@ -665,7 +671,12 @@ export function arbitrateSharedBotResult(
   // 3. Keyword disambiguation (§10.2): "@bot <slug> …" → that agent. Only when the
   //    bot was actually addressed (a mention or a DM), so a stray slug substring in
   //    a normal channel message doesn't trigger it.
-  const addressed = msg.isDm || (verifiedAgentAuthor === undefined && explicitlyMentioned)
+  const conversationAddressed =
+    !msg.sender.isBot &&
+    a.botUserId !== undefined &&
+    msg.conversationBotId === a.botUserId &&
+    msg.mentionedBots.length === 0
+  const addressed = msg.isDm || conversationAddressed || (verifiedAgentAuthor === undefined && explicitlyMentioned)
   if (addressed) {
     const kw = routes.find((r) => r.match.kind === 'keyword' && !r.scope && sharedBotKindMatches(r, msg, a.botUserId))
     if (kw) return hit(sharedBotTarget(kw))

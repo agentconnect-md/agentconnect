@@ -1769,10 +1769,17 @@ describe('SlackConnection agent_session_stopped', () => {
   it('ignores a payload without session coordinates', async () => {
     const { handlers, lifecycle, actions } = await started(['slack:C1:200.1:bot-a'])
 
-    await handlers.get('agent_session_stopped')!(stopped({ thread_ts: undefined }))
+    await handlers.get('agent_session_stopped')!(stopped({ channel: undefined }))
 
     expect(actions).toEqual([])
     expect(lifecycle).toEqual([])
+  })
+
+  it('uses channel coordinates for a native code channel Stop', async () => {
+    const { handlers, actions, resolved } = await started(['slack:C1:C1:bot-a'])
+    await handlers.get('agent_session_stopped')!(stopped({ thread_ts: undefined }))
+    expect(resolved).toEqual([{ channel: 'C1', thread: 'C1' }])
+    expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:C1:bot-a', actor: { userId: 'U1' } }])
   })
 
   // The relay-forwarded arm. The same event reaches EVERY participant daemon, and per-daemon

@@ -319,6 +319,8 @@ export interface PlatformCanvasEdit {
  * not of contract, and belongs with the registry.
  */
 export interface PlatformConnection {
+  /** Resolve provider-owned conversation coordinates before admission, for either ingress transport. */
+  prepareInboundMessage?(msg: NormalizedMessage): Promise<void>
   // ── 1. transport lifecycle ──
   start(): Promise<void>
   stop(): Promise<void>

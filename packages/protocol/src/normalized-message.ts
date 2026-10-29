@@ -133,6 +133,8 @@ export const NormalizedPlatformMessageSchema = z.object({
   }),
   text: z.string(),
   mentionedBots: z.array(z.string()),
+  /** Provider-confirmed bot owning a conversation; an implicit address that does not bypass a muted session. */
+  conversationBotId: z.string().optional(),
   /** Platform ids of the people a message mentions, where the platform marks mentions; absent means unknown. */
   mentionedUsers: z.array(z.string().min(1).max(256)).max(100).optional(),
   /** The mentions `text` opens with, in order, where it reads a mention by label: each one's platform id and literal text. */

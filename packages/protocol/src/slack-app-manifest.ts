@@ -14,6 +14,7 @@ export const SLACK_BOT_SCOPES = [
   'channels:read',
   'commands',
   'chat:write',
+  'code_channels:manage',
   'chat:write.customize',
   'files:write',
   'groups:history',
@@ -71,6 +72,7 @@ export const DEFAULT_SLACK_APP_NAME = 'agentconnect'
 export interface SlackAppManifest extends Record<string, unknown> {
   display_information: { name: string; background_color?: string }
   features: {
+    code_channels: { enabled: boolean }
     bot_user: { display_name: string; always_online: boolean }
     app_home: { home_tab_enabled: boolean; messages_tab_enabled: boolean; messages_tab_read_only_enabled: boolean }
     agent_view: { agent_description: string; suggested_prompts: { title: string; message: string }[] }
@@ -125,6 +127,7 @@ export function buildSlackAppManifest(name: string, options: SlackAppManifestOpt
       ...(options.backgroundColor ? { background_color: options.backgroundColor } : {})
     },
     features: {
+      code_channels: { enabled: true },
       bot_user: { display_name: displayName, always_online: true },
       app_home: { home_tab_enabled: true, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
       agent_view: {
