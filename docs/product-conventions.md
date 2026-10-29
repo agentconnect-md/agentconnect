@@ -321,6 +321,10 @@ acknowledged before it is answered"), which names no phase and never outlives th
 code-host turn adds no startup comment. Status publication is best-effort and never
 holds up initialization.
 
+While a running turn waits on a person — an approval, or a question asked through an approval
+card — Slack shows the session as waiting (its _Needs attention_ state, `suspended`) instead of
+working, and returns it to working once the last such request is answered or released.
+
 Startup notices are not recorded in the AgentConnect transcript. On success or
 cancellation, the console clears the wait. A failed console turn may retain its last
 phase beside the error. Standing notices, such as an unavailable approval, survive

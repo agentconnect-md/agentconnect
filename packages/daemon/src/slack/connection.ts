@@ -301,7 +301,12 @@ export interface SlackStatusOptions {
   /** Logical session this write acts for — recorded as the slot's displayed owner, so the
    *  native Stop can target the turn the user is actually looking at. */
   sessionKey?: string
+  /** `suspended` marks a non-empty status as waiting on a person (Slack's "Needs attention") rather than working. */
+  lifecycle?: 'suspended'
 }
+
+/** The Agent Sessions states `agents.sessions.setStatus` accepts. */
+export type SlackSessionLifecycle = 'processing' | 'active' | 'suspended' | 'closed'
 
 /** Slack message `metadata.event_type` marking a message as daemon chrome (see
  *  `SlackPostOptions.chrome`). Exported so the backfill can recognize it. */
@@ -3303,7 +3308,7 @@ export class SlackConnection implements PlatformConnection {
    *  (docs/product-conventions.md, "A trigger is acknowledged before it is answered"). */
   async setStatus(channel: string, threadTs: string, status: string, options?: SlackStatusOptions): Promise<boolean> {
     return this.queue.enqueue(() =>
-      this.setSessionLifecycle(channel, threadTs, status ? 'processing' : 'active', options)
+      this.setSessionLifecycle(channel, threadTs, status ? (options?.lifecycle ?? 'processing') : 'active', options)
     )
   }
 
@@ -3343,12 +3348,14 @@ export class SlackConnection implements PlatformConnection {
   private async setSessionLifecycle(
     channel: string,
     threadTs: string,
-    status: 'processing' | 'active',
+    status: SlackSessionLifecycle,
     options?: SlackStatusOptions
   ): Promise<boolean> {
     const key = `${channel}:${threadTs}`
-    const username = status === 'processing' && !this.statusIdentityUnsupported ? options?.username?.trim() : undefined
-    const iconUrl = status === 'processing' && !this.statusIdentityUnsupported ? options?.icon_url?.trim() : undefined
+    // A waiting session keeps the identity of the agent that is waiting, like a working one.
+    const owned = (status === 'processing' || status === 'suspended') && !this.statusIdentityUnsupported
+    const username = owned ? options?.username?.trim() : undefined
+    const iconUrl = owned ? options?.icon_url?.trim() : undefined
     // The owner joins the dedupe key: an identity-identical handover between two turns must
     // still refire, or the slot's displayed owner would keep pointing the Stop at the old one.
     const signature = `${status}|${username ?? ''}|${iconUrl ?? ''}|${options?.sessionKey ?? ''}`
@@ -3363,8 +3370,9 @@ export class SlackConnection implements PlatformConnection {
         ...(iconUrl ? { icon_url: iconUrl } : {})
       })
       this.sessionLifecycle.set(key, signature)
-      if (status === 'processing' && options?.sessionKey) this.slotOwner.set(key, options.sessionKey)
-      else if (status === 'active') this.slotOwner.delete(key)
+      if ((status === 'processing' || status === 'suspended') && options?.sessionKey)
+        this.slotOwner.set(key, options.sessionKey)
+      else if (status === 'active' || status === 'closed') this.slotOwner.delete(key)
       return true
     } catch (err) {
       // Identity needs chat:write.customize (the enum alone runs on chat:write). A manually

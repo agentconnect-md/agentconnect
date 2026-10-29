@@ -73,7 +73,8 @@ export type SlackAction =
   // `notice` is a system line the daemon posts but must NOT record — recording it would
   // replay daemon chrome back to agents as thread context.
   | { kind: 'notice'; text: string }
-  | { kind: 'set-status'; text: string }
+  // `lifecycle: 'suspended'` shows the session as waiting on a person instead of working.
+  | { kind: 'set-status'; text: string; lifecycle?: 'suspended' }
   | { kind: 'set-title'; text: string }
   | { kind: 'progress'; text: string }
   | { kind: 'reasoning'; text: string }
@@ -2987,6 +2988,13 @@ export class OutputConverger {
     if (this.lastActivity === label) return []
     this.lastActivity = label
     return [{ kind: 'set-status', text: label }]
+  }
+
+  /** A human wait opened (`suspended`) or its last gate settled (`processing` again); none mode shows nothing. */
+  onHumanWait(waiting: boolean): SlackAction[] {
+    if (this.mode === 'none') return []
+    const text = this.lastActivity || 'working…'
+    return [waiting ? { kind: 'set-status', text, lifecycle: 'suspended' } : { kind: 'set-status', text }]
   }
 
   /** Resolve a tool call's display label, reusing a known title when an update omits it. */
