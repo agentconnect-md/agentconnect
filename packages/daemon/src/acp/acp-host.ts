@@ -207,8 +207,10 @@ export class ModelSelectionError extends Error {
   }
 }
 
-/** The runtime no longer knows the prompted session (claude-agent-acp: -32603 "Session not found"); retrying cannot help (#1915). */
+/** The runtime no longer knows the prompted session; retrying cannot help (#1915). */
 export function isRuntimeSessionGone(err: unknown): boolean {
+  const e = err as { code?: unknown; data?: { sessionId?: unknown } } | null | undefined
+  if (e?.code === -32002 && typeof e.data?.sessionId === 'string') return true
   return failureSignals(err).some((signal) => /\bsession not found\b/i.test(signal))
 }
 
