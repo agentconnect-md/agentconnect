@@ -2223,6 +2223,7 @@ model HookDef {
   events                             String[]          @default([]) // "issues:opened" / "pull_request:*" / "issue_comment:created"
   commentFamilies                    String[]          @default([]) // empty = legacy repo-wide comments; otherwise issues/pull_request scope
   labelFilter                        String[]          @default([]) // non-empty ⇒ issue/PR must carry one of these labels
+  skipDrafts                         Boolean           @default(false) // github PR rows: draft revisions wait for ready_for_review
   mentionOnly                        Boolean           @default(false) // P3 summon mode: authored event text must @<agent-name> or @<app-slug>
   // Durable configuration/dispatch fences.  configRevision changes whenever
   // the compiled definition changes; dispatchRevision additionally changes

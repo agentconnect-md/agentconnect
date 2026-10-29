@@ -266,6 +266,7 @@ interface CodeHostReviewSettingsDraft {
   reviewPolicy: HookReviewPolicy
   reportingMode: HookReportingMode
   labelFilter: string[]
+  skipDrafts: boolean
 }
 
 // The review dialog's host plate on the inverse surface — each host keeps its own fill and color.
@@ -312,6 +313,7 @@ function AgentDetail() {
   const permissionT = useTranslations('Common.permissionModes')
   const strategyT = useTranslations('Common.executionStrategy')
   const chatActionsT = useTranslations('Common.chatActions')
+  const labelFilterT = useTranslations('Common.labelFilter')
   const strategyNames = useStrategyNames()
   const { orgPath, activeOrg, myRole } = useOrgs()
   const { me } = useProfile()
@@ -559,7 +561,8 @@ function AgentDetail() {
       kind: hook.kind,
       reviewPolicy: hook.reviewPolicy,
       reportingMode: hook.reportingMode,
-      labelFilter: hook.labelFilter
+      labelFilter: hook.labelFilter,
+      skipDrafts: hook.skipDrafts
     })
   }
 
@@ -575,10 +578,9 @@ function AgentDetail() {
     }
     const agentId = reviewSettingsHook.agentId
     const hook = reviewSettingsHook
-    const { reviewPolicy, reportingMode, labelFilter } = reviewSettingsDraft
+    const { reviewPolicy, reportingMode, labelFilter, skipDrafts } = reviewSettingsDraft
     const common = { agentId, name: hook.name, enabled: hook.enabled, events: hook.events, labelFilter }
-    // Each host's PUT re-sends its own whole block; only the effect axes and the label filter move. Total
-    // over the providers, so a new host writes through its own endpoint instead of GitHub's.
+    // Each host's PUT re-sends its whole block through its own endpoint; only the dialog's fields move.
     const writers: Record<CodeHostProvider, (() => Promise<HookDto>) | null> = {
       gitea: hook.repoId
         ? () =>
@@ -601,7 +603,8 @@ function AgentDetail() {
                 mentionOnly: hook.mentionOnly,
                 reviewPolicy,
                 reportingMode,
-                gateMode: 'informational'
+                gateMode: 'informational',
+                skipDrafts
               })
           : null,
       gitlab: hook.repoId
@@ -690,6 +693,23 @@ function AgentDetail() {
               setReviewSettingsDraft((current) => (current ? { ...current, labelFilter } : current))
             }}
           />
+        )}
+        {carriesReviews && draft.kind === 'github' && (
+          <label className="flex min-w-0 items-center gap-[7px]">
+            <input
+              type="checkbox"
+              checked={draft.skipDrafts}
+              onChange={(event) => {
+                const skipDrafts = event.target.checked
+                setReviewSettingsError(null)
+                setReviewSettingsDraft((current) => (current ? { ...current, skipDrafts } : current))
+              }}
+              className="accent-(--brand)"
+            />
+            <span className="font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
+              {labelFilterT('skipDrafts')}
+            </span>
+          </label>
         )}
       </div>
     )

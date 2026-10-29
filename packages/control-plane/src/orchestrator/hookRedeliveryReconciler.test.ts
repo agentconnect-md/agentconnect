@@ -41,6 +41,7 @@ function ghHook(over: Partial<HookRecord> = {}): HookRecord {
     events: ['issues:opened'],
     commentFamilies: [],
     labelFilter: [],
+    skipDrafts: false,
     mentionOnly: false,
     targetPlatform: 'slack',
     targetChannel: null,

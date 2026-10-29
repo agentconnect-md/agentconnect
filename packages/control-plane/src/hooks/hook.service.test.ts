@@ -44,6 +44,7 @@ function hook(over: Partial<HookRecord> = {}): HookRecord {
     events: [],
     commentFamilies: [],
     labelFilter: [],
+    skipDrafts: false,
     mentionOnly: false,
     targetPlatform: 'slack',
     targetChannel: null,
@@ -338,6 +339,12 @@ describe('HookService.compile', () => {
     expect(rule?.github?.appSlug).toBe('example-review-app')
     expect(rule?.github?.agentName).toBe('review-agent')
     expect(rule?.github?.mentionOnly).toBe(false)
+  })
+
+  it('carries draft skipping only when the row sets it', async () => {
+    const { svc } = make({ installations: [installation(1234567n)] })
+    expect((await svc.compile(ghHook({ skipDrafts: true })))?.github?.skipDrafts).toBe(true)
+    expect((await svc.compile(ghHook()))?.github).not.toHaveProperty('skipDrafts')
   })
 
   it('carries a non-empty comment family scope and omits the legacy empty scope', async () => {

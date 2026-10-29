@@ -372,6 +372,42 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       expect(catalog.cloneUrl).toBe('https://github.com/acme/infra')
     })
 
+    it('stores draft skipping on a pull-request row, keeps it across a PUT that omits it, and refuses it elsewhere', async () => {
+      const agentId = await githubAgent()
+      await seedRelay()
+      await seedInstallation()
+      const a = ghApp()
+
+      const issues = await a.app.inject({
+        method: 'POST',
+        url: `${ORG}/hooks`,
+        payload: ghBody(agentId, { skipDrafts: true })
+      })
+      expect(issues.statusCode).toBe(400)
+      expect((issues.json() as { message: string }).message).toMatch(/skipDrafts/)
+
+      const created = await a.app.inject({
+        method: 'POST',
+        url: `${ORG}/hooks`,
+        payload: prBody(agentId, { skipDrafts: true })
+      })
+      expect(created.statusCode).toBe(200)
+      const hookId = (created.json() as { id: string; skipDrafts: boolean }).id
+      expect((created.json() as { skipDrafts: boolean }).skipDrafts).toBe(true)
+
+      const kept = await a.app.inject({ method: 'PUT', url: `${ORG}/hooks/${hookId}`, payload: prBody(agentId) })
+      expect(kept.statusCode).toBe(200)
+      expect((kept.json() as { skipDrafts: boolean }).skipDrafts).toBe(true)
+
+      const cleared = await a.app.inject({
+        method: 'PUT',
+        url: `${ORG}/hooks/${hookId}`,
+        payload: prBody(agentId, { skipDrafts: false })
+      })
+      expect((cleared.json() as { skipDrafts: boolean }).skipDrafts).toBe(false)
+      expect((await prisma.hookDef.findUniqueOrThrow({ where: { id: hookId } })).skipDrafts).toBe(false)
+    })
+
     it('POST and PUT reject reserved required/status modes without persisting them', async () => {
       const agentId = await githubAgent()
       await seedRelay()

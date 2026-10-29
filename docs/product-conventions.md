@@ -2319,11 +2319,16 @@ output, and removes intermediate queued revisions. A head change arrives as
 signed `changes.base` metadata. Revision identity includes both base and head, so retargeting
 an unchanged head still preempts work for the old diff. Relay ingest time determines
 recency even if asynchronous authorization reorders delivery; the delivery key breaks
-same-timestamp ties deterministically. Draft state does not change review eligibility: an
-open draft PR follows the same formal review path as a ready PR, including approval when
-the current revision passes. Transitions between draft and ready are status-only and do
-not start another review generation. Explicit comments, review requests, and Check reruns
-remain ordered work and are never discarded by revision supersession.
+same-timestamp ties deterministically. By default draft state does not change review
+eligibility: an open draft PR follows the same formal review path as a ready PR, including
+approval when the current revision passes, and transitions between draft and ready are
+status-only. A pull-request integration can instead skip drafts until they are marked
+ready. Its draft revisions then start no run and leave no Check, so an agent that declines
+drafts never posts a failed one, and marking the PR ready for review starts a review
+generation for its current head under both the Opened and the Any update cadence.
+Converting back to draft stays status-only either way. Explicit comments, review requests,
+and Check reruns still review a draft, and they remain ordered work that revision
+supersession never discards.
 The trusted pull-request lane spans per-delivery anchor session keys but remains isolated by
 the configured output platform, channel, and integration.
 
