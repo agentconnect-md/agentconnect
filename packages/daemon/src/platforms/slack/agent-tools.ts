@@ -80,7 +80,7 @@ export function slackReport(args: z.infer<typeof reportArgs>): { blocks: unknown
 const descriptor: ToolDescriptor = {
   name: 'presentSlackReport',
   description:
-    'Publish a report in this Slack conversation with native collapsible sections and a sortable, paginated data table. Use sections.text as Slack mrkdwn. String cells are plain text; numeric cells sort numerically. Ordinary replies can keep Markdown tables. This posts immediately; do not repeat the report in your final reply.',
+    'Publish substantial findings or multi-row comparisons in this Slack conversation with native collapsible sections and a sortable, paginated data table. Choose this when the results benefit from expandable details or sorting, even if the user did not request a format. Use sections.text as Slack mrkdwn. String cells are plain text; numeric cells sort numerically. Keep short answers and small tables in ordinary replies. This posts immediately; do not repeat the report in your final reply.',
   inputSchema: z.toJSONSchema(reportArgs, { unrepresentable: 'any' }) as ToolDescriptor['inputSchema']
 }
 
@@ -140,19 +140,19 @@ const codeTools: ToolDescriptor[] = [
   {
     name: 'createSlackCodeChannel',
     description:
-      'Create one task channel linked to the current triggering message. Slack preserves origin privacy and invites its author. Repeating this call for the same trigger returns the same channel. Continue this turn here; use sendMessage to share context in the new channel and tell the user where to continue. Their messages there share one channel session.',
+      'Start requested coding work needing several steps, edits, tests or a PR in a dedicated Slack channel, unless the user asks to stay here or the task needs earlier discussion that would be lost. Quick questions stay here. Slack preserves origin privacy, invites its author and copies only the originating message into the new channel. Repeating the same trigger returns the same channel; inside a code channel this reuses the current channel. After creating one, link it and end this turn without duplicating work or asking the user to repeat the task. Follow-ups there share one channel session. If creation is unavailable, use the ordinary task workflow here.',
     inputSchema: z.toJSONSchema(createArgs) as ToolDescriptor['inputSchema']
   },
   {
     name: 'setSlackCodeView',
     description:
-      'Publish or update a native HTML preview, unified diff, or PR tab in a code channel. channelId defaults to this conversation. HTML must be self-contained with a stable viewKey; diffs use diff --git headers. Content is limited to 1000000 UTF-8 bytes. No external HTML resources are enabled.',
+      'Keep the code channel review surfaces current: publish a unified diff after meaningful edits, a PR tab when a PR opens, or a self-contained HTML preview when it helps review the result. Do this as part of the task without requiring a separate user request. channelId defaults to this conversation. HTML needs a stable viewKey; diffs use diff --git headers and baseBranch/headBranch labels. Content is limited to 1000000 UTF-8 bytes. No external HTML resources are enabled.',
     inputSchema: z.toJSONSchema(viewArgs) as ToolDescriptor['inputSchema']
   },
   {
     name: 'manageSlackCodeChannel',
     description:
-      'Manage a code channel: replace its context bar (max 5 informational links), list/remove view tabs, or archive a completed task. channelId defaults to this conversation. Archive only when requested; summaryMessageTs references an existing message in that channel and Slack echoes the summary to the origin. Native Working, Stop and titles follow the normal turn lifecycle.',
+      'Keep a code channel oriented as you work: set its context bar when repository, branch, PR or test status becomes known, and update it as they change. context replaces all items (max 5), so retain the ones still relevant. Also list/remove view tabs or archive a completed task. channelId defaults to this conversation. Archive only when requested; summaryMessageTs references an existing message in that channel and Slack echoes the summary to the origin. Native Working, Stop and titles follow the normal turn lifecycle.',
     inputSchema: z.toJSONSchema(manageArgs) as ToolDescriptor['inputSchema']
   }
 ]
@@ -169,6 +169,8 @@ async function execute(
     const origin = env.originMsgId?.split(':')
     if (origin?.length !== 3 || origin[0] !== 'slack' || origin[1] !== ctx.channel || !/^\d+\.\d+$/.test(origin[2]!))
       throw new Error('A code channel requires a live Slack message as its origin')
+    if (!ctx.isDm && (await conn.codeChannel(ctx.channel)).code)
+      return { ok: true, channel_id: ctx.channel, already_exists: true }
     await env.judgeWrite({ kind: 'new', platform: ctx.platform, integrationId: ctx.integrationId, users: [] })
     const sessionId = createHash('sha256').update(`${ctx.agentId}:${env.originMsgId}`).digest('hex')
     return conn.codeChannelApi('create', {

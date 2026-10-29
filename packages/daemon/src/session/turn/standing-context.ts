@@ -290,6 +290,7 @@ function onDemandCloneTarget(dir: string, repoFullName: string): string {
 // Standing collaboration guidance in `sendMessage`'s action forms; the current conversation is always an ordinary reply.
 const COLLAB_BEFORE_SELF =
   `# Collaborating with other agents\n` +
+  `Follow the current platform's task workflow when its standing instructions provide one; the delegation defaults below apply otherwise.\n` +
   `- Every \`sendMessage\` call names an \`action\`; \`getToolGuide\` \`{"tool":"sendMessage"}\` lists them with ` +
   `examples. To reach a specific agent privately, call \`sendMessage\` with ` +
   `\`{"action":"callAgent","toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly ` +
