@@ -5,6 +5,7 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { slackThreadUrl } from '../src/platforms/slack/permalink.js'
+import { planCanvasMarkdown } from '../src/slack/render.js'
 
 const ctx: SessionContext = {
   agentId: 'a1',
@@ -37,7 +38,8 @@ async function fixture(code = true) {
     setView: vi.fn(async (_args: unknown) => ({})),
     setProperties: vi.fn(async (_args: unknown) => ({})),
     archive: vi.fn(async (_args: unknown) => ({})),
-    listViews: vi.fn(async (_args: unknown) => ({})),
+    listViews: vi.fn(async (_args: unknown): Promise<{ views?: { view_key?: string; file_id?: string }[] }> => ({})),
+    setCanvasContent: vi.fn(async (_args: unknown) => ({})),
     removeView: vi.fn(async (_args: unknown) => ({}))
   }
   Object.assign(app.client.agents, { conversations: api })
@@ -215,5 +217,66 @@ describe('Slack native surfaces', () => {
       expect.objectContaining({ channel_id: 'C1', type: 'diff', content: diff })
     )
     await f.conn.stop()
+  })
+
+  it('renders the plan as a canvas checklist with the step in progress in bold', () => {
+    expect(
+      planCanvasMarkdown([
+        { content: 'Read the code', status: 'completed' },
+        { content: 'Fix  the\nbug', status: 'in_progress' },
+        { content: 'Open a PR', status: 'pending' }
+      ] as never)
+    ).toBe('# Plan\n\n- [x] Read the code\n- [ ] **Fix the bug**\n- [ ] Open a PR')
+  })
+
+  it('attaches the plan as a comment-only Plan tab once, then rewrites only its newest content', async () => {
+    const f = await fixture()
+    const create = vi.spyOn(f.app.client.canvases, 'create')
+    f.conn.writePlanCanvas('C1', '# Plan\n\n- [ ] one')
+    await vi.waitFor(() => expect(f.api.setView).toHaveBeenCalled())
+    expect(create).toHaveBeenCalledWith({
+      title: 'Plan',
+      document_content: { type: 'markdown', markdown: '# Plan\n\n- [ ] one' }
+    })
+    expect(f.api.setView).toHaveBeenCalledWith({
+      channel_id: 'C1',
+      type: 'canvas',
+      view_key: 'plan',
+      name: 'Plan',
+      canvas_id: 'F_FAKE_CANVAS',
+      access_level: 'comment'
+    })
+    f.conn.writePlanCanvas('C1', 'two')
+    f.conn.writePlanCanvas('C1', 'three')
+    f.conn.writePlanCanvas('C1', 'four')
+    await vi.waitFor(() =>
+      expect(f.api.setCanvasContent).toHaveBeenLastCalledWith({
+        channel: 'C1',
+        canvas_id: 'F_FAKE_CANVAS',
+        content: 'four'
+      })
+    )
+    expect(f.api.setCanvasContent.mock.calls.length).toBeLessThan(3)
+    expect(create).toHaveBeenCalledOnce()
+    await f.conn.stop()
+  })
+
+  it('reuses the Plan tab a restarted daemon attached earlier, and writes nothing in a channel it does not own', async () => {
+    const f = await fixture()
+    f.api.listViews.mockResolvedValue({ views: [{ view_key: 'plan', file_id: 'F_EARLIER' }] })
+    f.conn.writePlanCanvas('C1', 'plan')
+    await vi.waitFor(() =>
+      expect(f.api.setCanvasContent).toHaveBeenCalledWith({ channel: 'C1', canvas_id: 'F_EARLIER', content: 'plan' })
+    )
+    expect(f.api.setView).not.toHaveBeenCalled()
+    await f.conn.stop()
+
+    const other = await fixture(false)
+    other.conn.writePlanCanvas('C1', 'plan')
+    await vi.waitFor(() => expect(other.info).toHaveBeenCalled())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(other.api.listViews).not.toHaveBeenCalled()
+    expect(other.api.setView).not.toHaveBeenCalled()
+    await other.conn.stop()
   })
 })

@@ -571,6 +571,9 @@ export class VirtualSlackConnection implements PlatformConnection {
     this.unmodelled('code channels')
   }
 
+  // The Arena has no code channels, so no Plan tab exists to mirror the plan into.
+  writePlanCanvas(): void {}
+
   async searchPublicMessages(): Promise<never> {
     this.unmodelled('workspace searches')
   }

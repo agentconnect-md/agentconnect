@@ -59,8 +59,19 @@ Creation leaves the current runtime turn in its original conversation. The agent
 publish context into the new channel through `sendMessage`, link it for the user, and
 continue there when the user speaks. It does not silently copy private transcript
 history, move an existing runtime, or auto-archive a channel at the end of a turn.
-Views initially cover diffs, HTML and PR links. Canvas tabs, arbitrary interactive
-Block Kit views, and runtime-registered slash commands are follow-up capabilities.
+Views initially cover diffs, HTML and PR links, plus the Plan tab below. Arbitrary
+interactive Block Kit views and runtime-registered slash commands are follow-up
+capabilities.
+
+The Plan tab is written by the daemon, not by a tool. In a code channel this bot owns,
+each ACP `plan` update is rendered as a markdown checklist and kept in a canvas
+attached as view `plan` with comment access: the team can read and comment, and only
+the agent edits. The first update creates and attaches the canvas; later updates
+replace its content through `agents.conversations.setCanvasContent`, which rewrites
+only changed sections so comments on unchanged steps survive. Updates that arrive
+during a write collapse into the newest one. After a restart the canvas is found again
+through `agents.conversations.listViews`. The in-conversation plan message is
+unchanged.
 
 All message content, API egress and ACP execution stay on the daemon/relay data plane.
 The Control Plane continues to hold control metadata only.

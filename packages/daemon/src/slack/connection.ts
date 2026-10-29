@@ -308,6 +308,9 @@ export interface SlackStatusOptions {
 /** The Agent Sessions states `agents.sessions.setStatus` accepts. */
 export type SlackSessionLifecycle = 'processing' | 'active' | 'suspended' | 'closed'
 
+/** The `view_key` of a code channel's Plan tab. */
+export const SLACK_PLAN_VIEW_KEY = 'plan'
+
 /** Slack message `metadata.event_type` marking a message as daemon chrome (see
  *  `SlackPostOptions.chrome`). Exported so the backfill can recognize it. */
 export const SLACK_CHROME_EVENT_TYPE = 'agentconnect_chrome'
@@ -745,7 +748,7 @@ export type AppLike = {
     agents: {
       conversations?: Pick<
         WebClient['agents']['conversations'],
-        'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView'
+        'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView' | 'setCanvasContent'
       >
       sessions: {
         setStatus: (a: unknown) => Promise<unknown>
@@ -1092,6 +1095,62 @@ export class SlackConnection implements PlatformConnection {
     if (!info.code) return
     msg.thread = msg.channel
     if (info.owners.includes(this.botUserId)) msg.conversationBotId = this.botUserId
+  }
+
+  /** A code channel's Plan tab canvas, its newest unwritten plan, and the writer draining it. */
+  private readonly planCanvases = new Map<string, { canvasId?: string; pending?: string; running?: Promise<void> }>()
+
+  /** Mirror the plan into the code channel's Plan tab: a canvas the team comments on and only the agent edits. */
+  writePlanCanvas(channel: string, markdown: string): void {
+    let slot = this.planCanvases.get(channel)
+    if (!slot) this.planCanvases.set(channel, (slot = {}))
+    slot.pending = markdown
+    const writing = slot
+    writing.running ??= this.drainPlanCanvas(channel, writing).finally(() => (writing.running = undefined))
+  }
+
+  // Only the newest plan is written: updates that arrive during a write collapse into the next one.
+  private async drainPlanCanvas(channel: string, slot: { canvasId?: string; pending?: string }): Promise<void> {
+    while (slot.pending !== undefined) {
+      const markdown = slot.pending
+      slot.pending = undefined
+      try {
+        await this.putPlanCanvas(channel, slot, markdown)
+      } catch (err) {
+        slot.canvasId = undefined
+        this.deps.log?.debug(`slack: plan canvas write failed (ch=${channel}): ${(err as Error).message}`)
+      }
+    }
+  }
+
+  private async putPlanCanvas(channel: string, slot: { canvasId?: string }, markdown: string): Promise<void> {
+    const api = this.app.client.agents.conversations
+    const info = await this.codeChannel(channel)
+    if (!api || !info.code || !info.owners.includes(this.botUserId)) return
+    // A restarted daemon finds the canvas it attached earlier through the channel's views.
+    slot.canvasId ??= (await this.queue.enqueue(() => api.listViews({ channel_id: channel }))).views?.find(
+      (view) => view.view_key === SLACK_PLAN_VIEW_KEY
+    )?.file_id
+    if (slot.canvasId) {
+      const canvasId = slot.canvasId
+      await this.queue.enqueue(() => api.setCanvasContent({ channel, canvas_id: canvasId, content: markdown }))
+      return
+    }
+    const document_content = { type: 'markdown' as const, markdown }
+    const created = await this.queue.enqueue(() => this.app.client.canvases.create({ title: 'Plan', document_content }))
+    if (!created.canvas_id) throw new Error('Slack canvas creation returned no canvas_id')
+    const canvasId = created.canvas_id
+    await this.queue.enqueue(() =>
+      api.setView({
+        channel_id: channel,
+        type: 'canvas',
+        view_key: SLACK_PLAN_VIEW_KEY,
+        name: 'Plan',
+        canvas_id: canvasId,
+        access_level: 'comment'
+      })
+    )
+    slot.canvasId = canvasId
   }
 
   async codeChannelApi<K extends 'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView'>(
