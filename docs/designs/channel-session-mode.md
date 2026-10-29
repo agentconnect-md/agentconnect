@@ -1,7 +1,7 @@
 # Per-Conversation Session Mode
 
 > Status: Implemented on the daemon, the Control Plane and the console (§8); the unbounded
-> read §10 once called for does not exist. `auto` remains reserved (§12).
+> read §10 once called for does not exist. `auto` is designed in [auto-session-mode.md](auto-session-mode.md) (§12).
 > The transcript layout of §6.2 and the retention question of §12.2 are superseded by
 > [message-intake.md](message-intake.md); the sections say so inline.
 > Scope: chat conversations that are channels, on every platform that has them, over
@@ -17,11 +17,11 @@ session** an activation joins — that is hardcoded by the session key.
 
 This design adds a second per-conversation setting, the **session mode**:
 
-| Mode        | Meaning                                                                                                                                                               |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createNew` | Default, today's behavior. A new message opens a new session; a reply inside a thread the agent already owns continues that thread's session.                         |
-| `append`    | Every admitted message in this conversation — top-level or inside a thread — joins **one** long-lived session belonging to the conversation.                          |
-| `auto`      | Reserved. A classifier would decide between continuing and opening a new session. Not implemented; the enum leaves room so the wire does not change again when it is. |
+| Mode        | Meaning                                                                                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createNew` | Default, today's behavior. A new message opens a new session; a reply inside a thread the agent already owns continues that thread's session. |
+| `append`    | Every admitted message in this conversation — top-level or inside a thread — joins **one** long-lived session belonging to the conversation.  |
+| `auto`      | Designed, not implemented: a coordinator session decides where each root message goes ([auto-session-mode.md](auto-session-mode.md)).         |
 
 The trigger and the session mode are orthogonal: the trigger decides whether a message
 activates the agent at all, the session mode decides which session the activation joins.
@@ -671,8 +671,8 @@ open question about transcript retention in §12, not to a read that does not ex
 
 ## 12. Open questions
 
-1. **`auto`.** Deliberately unimplemented. When it arrives it is a third enum value and a
-   daemon-side classifier; nothing above changes shape to accommodate it.
+1. **`auto`.** _Designed in [auto-session-mode.md](auto-session-mode.md)._ A third enum value whose
+   decider is a coordinator session rather than a classifier.
 2. **Retention of retired coordinates.** _Resolved by [message-intake.md](message-intake.md) §8._ Superseded `append` sessions age out through the
    ordinary retention window, and their transcript rows remain on disk indefinitely like
    every other conversation's. Reads are bounded already (§10), so this is a question about

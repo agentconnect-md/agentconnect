@@ -90,6 +90,7 @@ the picture it draws.
 - [message-intake.md](designs/message-intake.md) — Record first, judge second, admit last: the channel record every IM message enters, per-agent admissions into sessions, the Decision gate's place in the ladder, the relay evaluation host, and retention.
 - [code-host-decisions.md](designs/code-host-decisions.md) — Decision routing across the agents watching a GitHub repository, judged once on an evaluation host, and By decision on Linear team conversations.
 - [channel-session-mode.md](designs/channel-session-mode.md) — The per-conversation session mode: whether a message opens a new session or appends to the conversation's one session.
+- [auto-session-mode.md](designs/auto-session-mode.md) — Proposed `auto` session mode: a coordinator session hands each channel-root message to a task, opens one, replies, or ignores it; tasks and delegated tasks become one concept.
 - [turn-final-context-refresh.md](designs/turn-final-context-refresh.md) — Turn-final context refresh and answer regeneration on IM turns.
 - [transcript-full-tool-body.md](designs/transcript-full-tool-body.md) — Complete tool-call bodies in transcripts.
 - [agent-authored-attachments.md](designs/agent-authored-attachments.md) — Outbound agent-authored files across platforms.
