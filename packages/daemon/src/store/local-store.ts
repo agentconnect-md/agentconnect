@@ -8570,20 +8570,7 @@ export class LocalStore {
     return inserted.changes === 1
   }
 
-  /**
-   * Admit a message and mint its permanent DELIVERY RECEIPT in ONE transaction.
-   *
-   * The receipt is a born-completed row recording that this delivery was served; the ordinary
-   * row is the replay queue entry, which is deleted the moment the turn settles. A provider
-   * whose redelivery ladder outlives the turn needs both, and needs them to share one fate:
-   *
-   *  - written separately, a crash between them leaves an ordinary row that replays with no
-   *    receipt, so the next redelivery is unrecognizable and runs the turn a second time;
-   *  - committed together, an ordinary row can only exist where its receipt does.
-   *
-   * `admitted` is false when the receipt was already there — the delivery has been served
-   * before, and the caller must run nothing, not merely stay quiet.
-   */
+  /** Atomically admit a message and its permanent receipt; an existing receipt admits nothing. */
   async appendInboxWithReceipt(row: InboxRow, receipt: InboxRow): Promise<{ admitted: boolean }> {
     return await this.transaction(async (raw) => {
       const tx = accessOf(raw)
@@ -8613,11 +8600,10 @@ export class LocalStore {
             loopGuardCounted: r.loopGuardCounted ?? 0,
             enqueuedAt: r.enqueuedAt
           })
-      // The receipt is the CAS. Losing it means another delivery of the same event owns this
-      // work, so the ordinary row is never written and no turn is admitted for this copy.
+      // The receipt is the CAS: a duplicate receipt admits no new work.
       const minted = await insert(receipt)
       if (minted.changes !== 1) return { admitted: false }
-      await insert(row)
+      if ((await insert(row)).changes !== 1) throw new Error('inbox admission row was not inserted')
       return { admitted: true }
     })
   }
