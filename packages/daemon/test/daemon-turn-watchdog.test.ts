@@ -400,10 +400,13 @@ describe('turn stall watchdog', () => {
     }
   })
 
-  it('clears a session the runtime no longer has, so the next message opens a fresh one', async () => {
+  it.each([
+    Object.assign(new Error('Internal error'), { code: -32603, data: { details: 'Session not found' } }),
+    Object.assign(new Error('Resource not found'), { code: -32002, data: { sessionId: 'acp-1' } })
+  ])('clears a session the runtime no longer has (%s)', async (error) => {
     const { daemon, host } = await startDaemon()
     host.prompt.mockImplementationOnce(async () => {
-      throw Object.assign(new Error('Internal error'), { code: -32603, data: { details: 'Session not found' } })
+      throw error
     })
     const first = (daemon as any).dispatch(AGENT_ID, dm('C1', 'T1', '100', 'first'))
     try {
