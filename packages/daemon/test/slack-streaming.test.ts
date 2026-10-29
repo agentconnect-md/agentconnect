@@ -1117,6 +1117,20 @@ describe('SlackConnection chrome streaming', () => {
 
   const readFile: SlackStreamChunk = { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' }
 
+  it('streams a code channel at channel level with the same settlement protocol', async () => {
+    const { conn, app } = await connect()
+    const stream = await conn.startTurnStream('C1', 'C1', { recipientUserId: 'U9' })
+    expect(stream?.threadTs).toBe('C1')
+    expect(app.client.chat.startStream.mock.calls[0]![0]).not.toHaveProperty('thread_ts')
+    expect(app.client.chat.startStream).toHaveBeenCalledWith(
+      expect.objectContaining({ recipient_user_id: 'U9', recipient_team_id: 'T123' })
+    )
+    await conn.appendTurnStream(stream!, [readFile])
+    await conn.stopTurnStream(stream!)
+    expect(app.client.chat.stopStream).toHaveBeenCalledWith(expect.objectContaining({ channel: 'C1', ts: '900.1' }))
+    await conn.stop()
+  })
+
   it('opens, appends and settles one cards-only message through the typed SDK methods', async () => {
     const { conn, app } = await connect()
     expect(conn.streamingLikely()).toBe(true)
@@ -1124,7 +1138,7 @@ describe('SlackConnection chrome streaming', () => {
     expect(stream).toEqual({ channel: 'C1', threadTs: 'T1', ts: '900.1' })
     expect(app.client.chat.startStream).toHaveBeenCalledWith({
       channel: 'C1',
-      // thread_ts is REQUIRED live, in DMs too — omitting it fails invalid_thread_ts.
+      // Ordinary sessions require a physical thread, including DMs.
       thread_ts: 'T1',
       // The collapsed container: every task card folded behind one chevron.
       task_display_mode: 'plan',

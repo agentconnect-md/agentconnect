@@ -18,6 +18,7 @@ describe('manifest parity with the Control Plane', () => {
       'channels:read',
       'commands',
       'chat:write',
+      'code_channels:manage',
       'chat:write.customize',
       'files:write',
       'groups:history',

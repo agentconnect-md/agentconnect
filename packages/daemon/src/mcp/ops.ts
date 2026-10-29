@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import {
   listDecisions,
   evaluateDecision,
@@ -557,8 +558,28 @@ async function executeRegisteredTool(
     const conn = ctx.integrationId ? deps.sessionToolConnectionFor(ctx.integrationId) : undefined
     if (!conn) throw new Error(`no live ${owner.label} connection for integration ${ctx.integrationId ?? '(none)'}`)
     const attribution = deps.sessionToolAttributionFor
+    const deliveryThread = deps.deliveryThreadNow?.(ctx) ?? ctx.deliveryThread
     return await owner.sessionTools.execute(name, ctx, args, {
       connection: conn,
+      deliveryThread,
+      originMsgId: deps.searchOrigin?.(ctx),
+      judgeWrite: (target) => {
+        const publication = deps.shareTarget?.(ctx)
+        if (!publication?.ok) throw new Error(`${name}: this turn has no visible conversation to publish into`)
+        return judgePlaceWrite(ctx, name, target, deps)
+      },
+      postIdentity: () => ({
+        username: ctx.agentName,
+        icon_url: ctx.iconUrl,
+        agentAuthorId: ctx.agentId,
+        response: {
+          responseId: randomUUID(),
+          deliveryState: 'final',
+          hopCount: deps.currentHopCount?.(ctx) ?? 0,
+          mentionedAgentIds: []
+        }
+      }),
+      recordPost: (text, ts) => deps.recordOutbound(ctx, ctx.channel, deliveryThread, text, ts, ctx.integrationId!),
       ...(attribution ? { attribution: () => attribution(ctx) } : {})
     })
   }

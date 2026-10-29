@@ -617,4 +617,17 @@ describe('platform session tools (read-ports.ts `sessionTools`)', () => {
   it('reserves every platform’s session tool name in the auto-allow set', () => {
     for (const name of LINEAR_TOOL_NAMES) expect(ALL_TOOL_NAMES).toContain(name)
   })
+
+  it('offers native Slack tools only in Slack sessions', () => {
+    const names = ['presentSlackReport', 'createSlackCodeChannel', 'setSlackCodeView', 'manageSlackCodeChannel']
+    expect(toolsForIntegrations([slackInt], { currentPlatform: 'slack' }).map((t) => t.name)).toEqual(
+      expect.arrayContaining(names)
+    )
+    for (const tool of names) {
+      expect(ALL_TOOL_NAMES).toContain(tool)
+      expect(
+        toolsForIntegrations([slackInt, linearInt], { currentPlatform: 'linear' }).map((t) => t.name)
+      ).not.toContain(tool)
+    }
+  })
 })

@@ -6,6 +6,7 @@ export function slackThreadUrl(
 ): string | undefined {
   if (!workspaceUrl || !channel || !threadTs) return undefined
   const base = workspaceUrl.replace(/\/+$/, '') // auth.test's url has a trailing slash
+  if (threadTs === channel) return `${base}/archives/${channel}`
   const p = `p${threadTs.replace('.', '')}`
   return `${base}/archives/${channel}/${p}`
 }
@@ -18,6 +19,6 @@ export function slackMessageUrl(
   threadTs?: string
 ): string | undefined {
   const url = slackThreadUrl(workspaceUrl, channel, ts)
-  if (!url || !threadTs || threadTs === ts) return url
+  if (!url || !threadTs || threadTs === ts || threadTs === channel) return url
   return `${url}?${new URLSearchParams({ thread_ts: threadTs, cid: channel }).toString()}`
 }

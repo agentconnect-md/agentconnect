@@ -3255,6 +3255,44 @@ describe('executeTool: replyGithubReviewThreads', () => {
 })
 
 describe('executeTool: platform session tools', () => {
+  it('refuses native reports from a headless turn before any publication', async () => {
+    const postBlocks = vi.fn(async () => '1.001')
+    const d = makeDeps({
+      sessionToolConnectionFor: () => ({ postBlocks }),
+      shareTarget: () => ({ ok: false, reason: 'headless' })
+    })
+    await expect(
+      executeTool(ctx, 'presentSlackReport', { title: 'Report', sections: [{ title: 'Details', text: 'Done' }] }, d)
+    ).rejects.toThrow('no visible conversation')
+    expect(postBlocks).not.toHaveBeenCalled()
+  })
+
+  it('records native reports in the live delivery thread with finalized authorship and the current hop', async () => {
+    const postBlocks = vi.fn(async (..._args: unknown[]) => '1.001')
+    const recordOutbound = vi.fn(async () => undefined)
+    const d = makeDeps({
+      recordOutbound,
+      sessionToolConnectionFor: () => ({ postBlocks }),
+      deliveryThreadNow: () => '2.002',
+      currentHopCount: () => 2,
+      shareTarget: () => ({ ok: true, platform: ctx.platform, channel: ctx.channel, thread: '2.002' })
+    })
+    await executeTool(ctx, 'presentSlackReport', { title: 'Report', sections: [{ title: 'Details', text: 'Done' }] }, d)
+    expect(postBlocks.mock.calls[0]![3]).toBe('2.002')
+    expect(postBlocks.mock.calls[0]![4]).toMatchObject({
+      agentAuthorId: ctx.agentId,
+      response: { deliveryState: 'final', hopCount: 2 }
+    })
+    expect(recordOutbound).toHaveBeenCalledWith(
+      ctx,
+      ctx.channel,
+      '2.002',
+      expect.stringContaining('Report'),
+      '1.001',
+      ctx.integrationId
+    )
+  })
+
   const linearCtx: SessionContext = {
     ...ctx,
     platform: 'linear',

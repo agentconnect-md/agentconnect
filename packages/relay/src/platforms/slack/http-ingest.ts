@@ -451,6 +451,39 @@ export interface SlackHttpIngestDeps {
 }
 
 export class SlackHttpIngest {
+  private readonly codeChannels = new Map<string, { at: number; value: Promise<{ code: boolean; owners: string[] }> }>()
+
+  private async prepareCodeChannel(msg: WireNormalizedMessage): Promise<void> {
+    if (!this.web || msg.isDm || msg.isGroupDm) return
+    let entry = this.codeChannels.get(msg.channel)
+    if (!entry || Date.now() - entry.at >= 60000) {
+      const value = this.web.conversations.info({ channel: msg.channel }).then((result) => {
+        const properties = result.channel?.properties as
+          | {
+              record_channel?: { record_type?: string }
+              agent_session?: { encoded_agent_bot_user_ids?: string[] }
+            }
+          | undefined
+        return {
+          code: properties?.record_channel?.record_type === 'agent_channel',
+          owners: properties?.agent_session?.encoded_agent_bot_user_ids ?? []
+        }
+      })
+      entry = { at: Date.now(), value }
+      if (this.codeChannels.size >= 1000) this.codeChannels.delete(this.codeChannels.keys().next().value!)
+      this.codeChannels.set(msg.channel, entry)
+    }
+    let info: { code: boolean; owners: string[] }
+    try {
+      info = await entry.value
+    } catch (err) {
+      if (this.codeChannels.get(msg.channel) === entry) this.codeChannels.delete(msg.channel)
+      throw err
+    }
+    if (!info.code) return
+    msg.thread = msg.channel
+    if (info.owners.includes(this.botUserId)) msg.conversationBotId = this.botUserId
+  }
   private web?: WebClient // bot-token Web API client (auth.test + views.open for the modal)
   private botUserId = ''
   private slackBotId = ''
@@ -592,13 +625,13 @@ export class SlackHttpIngest {
       // The native Stop button — not chat either, and the one non-chat event this transport
       // forwards to a daemon, which cancels the turn its conversation owns.
       if (event?.type === 'agent_session_stopped') {
-        if (event.channel && event.thread_ts)
+        if (event.channel)
           this.deps.onSessionStopped({
             channelId: event.channel,
-            threadTs: event.thread_ts,
+            threadTs: event.thread_ts ?? event.channel,
             // No event id ⇒ fall back to the thread + envelope time; a second stop within the
             // same second then dedups, which is harmless — the turn is already cancelled.
-            interactionId: eventId ?? `${event.thread_ts}:${eventAtMs ?? ''}`,
+            interactionId: eventId ?? `${event.thread_ts ?? event.channel}:${eventAtMs ?? ''}`,
             ...(event.user ? { userId: event.user } : {})
           })
         return
@@ -636,7 +669,10 @@ export class SlackHttpIngest {
       // Recognition is by daemon-written metadata, so mid-answer `streaming` edits and
       // ordinary human edits still return null here and stay filtered.
       const finalization = normalizeSlackResponseFinalization(event)
-      if (finalization) return await this.deps.onMessage(finalization)
+      if (finalization) {
+        await this.prepareCodeChannel(finalization)
+        return await this.deps.onMessage(finalization)
+      }
       const ownMessage = event.user === this.botUserId || event.bot_id === this.slackBotId
       if (ownMessage || !isRoutableEvent(event)) return
       if (event.type !== 'message' && event.type !== 'app_mention') return
@@ -652,6 +688,7 @@ export class SlackHttpIngest {
         return
       }
       const msg = normalizeSlackMessage(event)
+      if (msg) await this.prepareCodeChannel(msg)
       // The envelope says the conversation is shared with another organization (assistant-mode.md §5.3).
       if (msg && externallyShared) msg.externallyShared = true
       if (msg)
