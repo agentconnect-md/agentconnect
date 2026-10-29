@@ -283,6 +283,23 @@ a core policy:
 - A channel created from Slack's sidebar has no origin; the first human message in it starts the
   session.
 
+How the agent decides is two layers, both outside core:
+
+- **Whether it can.** The `code` option is offered in the tool's schema only when the agent's
+  _code channels_ setting is on and the install holds `code_channels:manage`; otherwise the model
+  never sees it and answers in place.
+- **Whether it should.** The tool description carries the criteria Slack's reference agent uses:
+  open a channel when the work takes more than one message — several steps or back-and-forth,
+  changing code, running builds or tests, opening a pull request, long output that would crowd
+  the thread, or an explicit ask for a working space; answer in place for a question, a short
+  explanation, or anything about the surrounding conversation; when unsure, answer in place and
+  offer to go deeper. Unlike Slack's sample, which routes through a tool-less model that cannot
+  read the repository, the origin turn is the full agent with its workspace, so it can look
+  before deciding.
+
+The deterministic parts stay in code: the `session_id`, privacy inheritance, and the tool result
+that tells the model the work moved and to reply with the link only.
+
 ```mermaid
 sequenceDiagram
     participant U as Team member
