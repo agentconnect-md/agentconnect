@@ -45,7 +45,7 @@ the picture it draws.
 - [telegram-discord-permission-sync.md](designs/telegram-discord-permission-sync.md) — Shared login applications (Telegram, Discord, Microsoft) and conversation permission checks for Telegram and Discord.
 - [slack-approval-dm.md](designs/slack-approval-dm.md) — DM-ing a linked agent editor to decide a pending approval from Slack, the editor check on synced platforms' in-chat cards, and one settle path for every approval surface.
 - [slack-streaming-turn-output.md](designs/slack-streaming-turn-output.md) — Streaming a Slack turn's tool-call chrome over one native card stream.
-- **(draft)** [slack-code-channels.md](designs/slack-code-channels.md) — Slack Code code channels: what is buildable now on generally available primitives, and what waits on the partner-only API.
+- **(draft)** [slack-code-channels.md](designs/slack-code-channels.md) — Slack Code code channels on the generally available `agents.conversations.*` API: the channel-scoped session, views, context bar, and archive.
 - [feishu-integration.md](designs/feishu-integration.md) — The Lark / Feishu integration, international and CN variants.
 - [qq-integration.md](designs/qq-integration.md) — Official QQ bot integration, attachment support, the shared group-context dependency, and why QQ has no approval card.
 - [dingtalk-integration.md](designs/dingtalk-integration.md) — DingTalk integration: per-organization internal apps over Stream, never-redelivered messages, a thinking reaction with Markdown answers, question cards answered by a tap, and the edition quota.
