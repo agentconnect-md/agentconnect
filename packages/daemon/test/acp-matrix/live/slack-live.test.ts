@@ -41,6 +41,7 @@ const SHORT: Record<FeatureId, string> = {
   mcp: 'mcp',
   skills: 'skills',
   sendMessage: 'send',
+  coordinator: 'co',
   web: 'web'
 }
 const CELL: Record<FeatureOutcome['status'], string> = { ok: '✓', degrade: '·', na: '~', fail: '✗' }
