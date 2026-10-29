@@ -2,7 +2,7 @@
 
 ## Reports
 
-Slack sessions expose `presentSlackReport` for explicitly structured output. Sections
+Slack sessions expose `presentSlackReport` for substantial findings and comparisons. Sections
 use native collapsible Container blocks; tables use Data Table blocks with pagination
 and numeric sorting. Ordinary replies retain Markdown, including Markdown tables.
 Sections accept Slack mrkdwn, while table strings are plain text. The tool validates
@@ -10,6 +10,8 @@ row widths and message limits before posting. Reports use the current turn's phy
 delivery thread and the configured agent identity and attribution.
 They carry finalized authorship with the live turn's hop count and enter the normal
 outbound transcript. A headless or ended turn cannot publish through this surface.
+The agent chooses this format when expandable details or sortable rows help the reader;
+the user does not need to name the tool or request a particular format.
 
 ## Code channels
 
@@ -44,7 +46,9 @@ The platform-owned session tool registry exposes four tools only to Slack sessio
 - `presentSlackReport`: publish collapsible sections and a paginated table here.
 - `createSlackCodeChannel`: create a task channel linked to the current live triggering
   message. Slack matches origin privacy and invites its author. An origin-derived
-  idempotency key prevents duplicate channels when a call is retried.
+  idempotency key prevents duplicate channels when a call is retried. Creation inside
+  an existing code channel returns that channel without creating another one, including
+  when the copied origin request arrives under a new message timestamp.
 - `setSlackCodeView`: publish a unified diff, self-contained HTML preview, or PR tab.
   HTML keys are stable upsert identities; content is bounded by UTF-8 bytes.
 - `manageSlackCodeChannel`: replace informational context links, list/remove tabs, or
@@ -55,10 +59,21 @@ something new requires an eligible human asker. Cross-channel view/context/archi
 writes require that every asker may access the target, and the provider must report
 that this bot owns it. Tools never accept a privacy override or an arbitrary origin.
 
-Creation leaves the current runtime turn in its original conversation. The agent can
-publish context into the new channel through `sendMessage`, link it for the user, and
-continue there when the user speaks. It does not silently copy private transcript
-history, move an existing runtime, or auto-archive a channel at the end of a turn.
+Requested coding work with multiple steps uses a code channel unless the user asks
+to stay in the original conversation or the task needs earlier discussion that the
+originating message does not contain; quick answers stay in place. This platform
+workflow takes precedence over delegating the same work to a background task.
+Creation leaves the current runtime turn in its original conversation. Slack brings
+the originating request into the new channel, whose session continues the task. The
+original turn links the channel and ends without repeating the work or requiring
+the user to repeat the request. No additional transcript history is copied. Work
+that needs the existing context, or cannot create a channel, uses ordinary delegation.
+
+Channel discovery supplies standing context identifying an existing code channel.
+The agent continues work there, maintains repository/branch/PR context items, and
+publishes diffs after meaningful edits, PR views when opened, and useful HTML previews.
+These are agent tool calls within the task, not an automatic upload of workspace files.
+The agent does not auto-archive a channel at the end of a turn.
 Views initially cover diffs, HTML and PR links. Canvas tabs, arbitrary interactive
 Block Kit views, and runtime-registered slash commands are follow-up capabilities.
 
