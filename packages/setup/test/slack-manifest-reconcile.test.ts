@@ -34,6 +34,13 @@ describe('reconcileSlackManifest', () => {
     const reconciled = reconcileSlackManifest(stale, expected)
 
     expect(diffSlackManifest(reconciled, expected)).toEqual([])
+    expect(diffSlackManifest(stale, expected)).toContainEqual({
+      id: 'features.code_channels.enabled',
+      field: 'Slack Code enabled',
+      current: null,
+      expected: true
+    })
+    expect(reconciled.features).toEqual({ ...stale.features, code_channels: { enabled: true } })
     const display = reconciled.display_information as Record<string, unknown>
     expect(display.description).toBe('hand-written, keep me')
     const scopes = (reconciled.oauth_config as { scopes: { bot: string[]; user: string[] } }).scopes
@@ -48,5 +55,21 @@ describe('reconcileSlackManifest', () => {
   it('is a no-op on a manifest that already matches', () => {
     expect(diffSlackManifest(expected, expected)).toEqual([])
     expect(reconcileSlackManifest(expected, expected)).toEqual(expected)
+  })
+
+  it('re-enables code channels without replacing unrelated feature settings', () => {
+    const disabled = {
+      ...expected,
+      features: { ...stale.features, code_channels: { enabled: false, custom_future_field: true } }
+    }
+    expect(diffSlackManifest(disabled, expected)).toEqual([
+      { id: 'features.code_channels.enabled', field: 'Slack Code enabled', current: false, expected: true }
+    ])
+    const reconciled = reconcileSlackManifest(disabled, expected)
+    expect(reconciled.features).toEqual({
+      ...stale.features,
+      code_channels: { enabled: true, custom_future_field: true }
+    })
+    expect(diffSlackManifest(reconciled, expected)).toEqual([])
   })
 })
