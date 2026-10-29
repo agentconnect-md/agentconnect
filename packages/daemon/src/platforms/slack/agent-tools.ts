@@ -91,7 +91,7 @@ const viewArgs = z
     type: z.enum(['html', 'diff', 'pull_request']),
     viewKey: text.max(255).optional(),
     name: text.max(150).optional(),
-    content: text.max(1000000).optional(),
+    content: z.string().min(1).max(1000000).optional(),
     prUrl: z.url({ protocol: /^https$/ }).optional(),
     baseBranch: text.max(255).optional(),
     headBranch: text.max(255).optional()

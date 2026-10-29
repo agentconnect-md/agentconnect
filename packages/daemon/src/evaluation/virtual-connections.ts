@@ -357,8 +357,7 @@ export class VirtualSlackConnection implements PlatformConnection {
     threadTs?: string,
     options?: VirtualPostOptions
   ): Promise<string | undefined> {
-    const result = await this.record('chrome', channel, text, threadTs, identityOf(options))
-    return result.status === 'delivered' ? result.messageId : undefined
+    return this.postMessage(channel, text, threadTs, options)
   }
 
   async updateBlocks(channel: string, _ts: string, _blocks: unknown[], text?: string): Promise<boolean> {
@@ -560,6 +559,16 @@ export class VirtualSlackConnection implements PlatformConnection {
 
   async createConversation(): Promise<never> {
     this.unmodelled('new conversations')
+  }
+
+  async prepareInboundMessage(): Promise<void> {}
+
+  async codeChannel(): Promise<{ code: boolean; owners: string[] }> {
+    return { code: false, owners: [] }
+  }
+
+  async codeChannelApi(): Promise<never> {
+    this.unmodelled('code channels')
   }
 
   async searchPublicMessages(): Promise<never> {

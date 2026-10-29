@@ -1077,9 +1077,13 @@ export class SlackConnection implements PlatformConnection {
   }
 
   async prepareInboundMessage(msg: NormalizedMessage): Promise<void> {
-    delete msg.conversationBotId
     if (msg.isDm || msg.isGroupDm) return
-    const info = await this.codeChannel(msg.channel)
+    const info = await this.codeChannel(msg.channel).catch(() => {
+      this.deps.log?.debug('slack: channel discovery unavailable; retaining inbound coordinates')
+      return undefined
+    })
+    if (!info) return
+    delete msg.conversationBotId
     if (!info.code) return
     msg.thread = msg.channel
     if (info.owners.includes(this.botUserId)) msg.conversationBotId = this.botUserId

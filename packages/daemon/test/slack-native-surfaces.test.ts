@@ -171,6 +171,18 @@ describe('Slack native surfaces', () => {
     await f.conn.stop()
   })
 
+  it('retains inbound coordinates when channel discovery fails, including trusted relay hints', async () => {
+    const f = await fixture()
+    f.info.mockRejectedValue(new Error('lookup unavailable'))
+    const ordinary = { channel: 'C1', thread: '1.001', isDm: false } as NormalizedMessage
+    const relayed = { ...ordinary, thread: 'C1', conversationBotId: 'U_FAKE_BOT' }
+    await expect(f.conn.prepareInboundMessage(ordinary)).resolves.toBeUndefined()
+    await expect(f.conn.prepareInboundMessage(relayed)).resolves.toBeUndefined()
+    expect(ordinary).toMatchObject({ channel: 'C1', thread: '1.001' })
+    expect(relayed).toMatchObject({ channel: 'C1', thread: 'C1', conversationBotId: 'U_FAKE_BOT' })
+    await f.conn.stop()
+  })
+
   it('backfills code channels from chronological channel history without calling thread replies', async () => {
     const f = await fixture()
     const replies = vi.spyOn(f.app.client.conversations, 'replies')
@@ -197,9 +209,10 @@ describe('Slack native surfaces', () => {
       )
     ).rejects.toThrow('UTF-8')
     expect(f.api.setView).not.toHaveBeenCalled()
-    await SLACK_SESSION_TOOLS.execute('setSlackCodeView', ctx, { type: 'diff', content: 'diff --git a/a b/a' }, f.env)
+    const diff = 'diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -0,0 +1 @@\n+  \n'
+    await SLACK_SESSION_TOOLS.execute('setSlackCodeView', ctx, { type: 'diff', content: diff }, f.env)
     expect(f.api.setView).toHaveBeenCalledWith(
-      expect.objectContaining({ channel_id: 'C1', type: 'diff', content: 'diff --git a/a b/a' })
+      expect.objectContaining({ channel_id: 'C1', type: 'diff', content: diff })
     )
     await f.conn.stop()
   })

@@ -853,6 +853,38 @@ describe('SlackHttpIngest events', () => {
     await ingest.stop()
   })
 
+  it('still forwards ordinary channel messages when discovery fails and bounds the API budget', async () => {
+    const web = {
+      auth: { test: async () => ({ user_id: 'UBOT' }) },
+      conversations: {
+        info: vi.fn(async () => {
+          throw new Error('lookup unavailable')
+        })
+      }
+    }
+    const factory = vi.fn(() => web as never)
+    const d = deps(web, { webClientFactory: factory })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    await ingest.handleEvent({
+      type: 'message',
+      channel: 'C1',
+      thread_ts: '1.001',
+      ts: '1.002',
+      user: 'U1',
+      text: 'Hello'
+    })
+    expect(factory).toHaveBeenCalledWith(
+      'xoxb',
+      expect.objectContaining({ timeout: 3000, retryConfig: { retries: 0 }, rejectRateLimitedCalls: true })
+    )
+    expect(d.onMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'C1', thread: '1.001', text: 'Hello' }),
+      undefined
+    )
+    await ingest.stop()
+  })
+
   it.each(['channel_left', 'group_left'])('refreshes after the self-scoped %s event', async (type) => {
     const conversations = vi.fn(async () => ({ channels: [{ id: 'C1', name: 'remaining' }] }))
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) }, users: { conversations } }

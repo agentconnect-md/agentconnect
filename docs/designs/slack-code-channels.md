@@ -21,8 +21,9 @@ use the existing message subscriptions; no new public callback is required.
 A code channel is recognized only from `conversations.info` reporting
 `properties.record_channel.record_type == "agent_channel"`. Assigned bot IDs come
 from `properties.agent_session.encoded_agent_bot_user_ids`. Each host caches that
-provider answer for one minute. Lookup failures stop admission rather than starting a
-thread session with uncertain coordinates.
+provider answer for one minute. Discovery is best effort: lookup failures preserve the
+existing coordinates and allow ordinary message admission to continue. Relay API calls
+have a short timeout, no automatic retries, and fail immediately on rate limiting.
 
 The canonical thread coordinate of a code channel is its channel ID. Every message in
 that channel therefore reaches the same active channel session. At the Slack API

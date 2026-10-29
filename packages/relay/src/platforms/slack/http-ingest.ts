@@ -476,9 +476,10 @@ export class SlackHttpIngest {
     let info: { code: boolean; owners: string[] }
     try {
       info = await entry.value
-    } catch (err) {
+    } catch {
       if (this.codeChannels.get(msg.channel) === entry) this.codeChannels.delete(msg.channel)
-      throw err
+      this.deps.log.debug('slack: channel discovery unavailable; retaining inbound coordinates')
+      return
     }
     if (!info.code) return
     msg.thread = msg.channel
@@ -547,7 +548,12 @@ export class SlackHttpIngest {
   /** Build the Web API client and run the first credential probe; inbound arrives on the pool-wide HTTP routes, so no socket opens. */
   async start(): Promise<void> {
     const dispatcher = proxyDispatcher()
-    const options: WebClientOptions = { fetch: fetchWithDispatcher(dispatcher) }
+    const options: WebClientOptions = {
+      fetch: fetchWithDispatcher(dispatcher),
+      timeout: 3000,
+      retryConfig: { retries: 0 },
+      rejectRateLimitedCalls: true
+    }
     this.web = this.deps.webClientFactory
       ? this.deps.webClientFactory(this.secrets.botToken, options)
       : new WebClient(this.secrets.botToken, options)
