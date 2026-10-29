@@ -4077,6 +4077,37 @@ describe('Daemon session retention GC (#485)', () => {
       }
     })
 
+    it('retries a sandbox the cluster failed to delete instead of marking the workspace reclaimed', async () => {
+      const clock = new FakeClock()
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root: scaffold({}, { retention: '90d', workspaceRetention: '7d' }),
+        hostFactory: () => quietHost() as any,
+        clock
+      })
+      await daemon.start()
+      await sweepRetention(daemon)
+      const discardSession = vi.fn(async () => {}).mockRejectedValueOnce(new Error('cluster API unavailable'))
+      vi.spyOn(daemon as any, 'cleanupSessionWorktree').mockResolvedValue({ outcome: 'not_applicable' })
+      vi.spyOn(daemon as any, 'stopSessionHost').mockResolvedValue(undefined)
+      ;(daemon as any).k8sPlane = { discardSession, driver: { claimName: () => 'claim' } }
+      try {
+        await seedSession(daemon, 'pod-ws', 'closed', clock.now())
+        clock.advance(8 * DAY)
+        await sweepRetention(daemon)
+        expect(discardSession).toHaveBeenCalledTimes(1)
+        expect((await (daemon as any).store.getSession('pod-ws')).workspaceReclaimedAt ?? null).toBeNull()
+
+        clock.advance(2 * 3_600_000)
+        await sweepRetention(daemon)
+        expect(discardSession).toHaveBeenCalledTimes(2)
+        expect((await (daemon as any).store.getSession('pod-ws')).workspaceReclaimedAt).toBe(clock.now())
+      } finally {
+        ;(daemon as any).k8sPlane = undefined
+        await daemon.stop()
+      }
+    })
+
     it('leaves the workspace to the purge when both windows are the same', async () => {
       const clock = new FakeClock()
       const daemon = new Daemon({

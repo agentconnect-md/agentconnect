@@ -26514,7 +26514,7 @@ export class Daemon {
               ...this.sessionHostFence(rec.agentId, rec.key),
               row: rec
             })
-            await this.discardSessionSandbox(rec.agentId, rec.key)
+            await this.discardSessionSandbox(rec.agentId, rec.key, { rowStays: true })
           }
         } catch (err) {
           failed += 1
@@ -27447,7 +27447,11 @@ export class Daemon {
   }
 
   // Retire a session's VM and HOME with its row; a legacy shared VM lives until its last session retires.
-  private async discardSessionSandbox(agentId: string, sessionKey: string): Promise<void> {
+  private async discardSessionSandbox(
+    agentId: string,
+    sessionKey: string,
+    opts?: { rowStays?: boolean }
+  ): Promise<void> {
     const key = sessionHostKey(agentId, sessionKey)
     const leaf = hostKeyDirName(key)
     // A session on another machine is retired by naming the launch this holder prepared; what it cannot name, that executor's backstop collects (§7).
@@ -27469,6 +27473,8 @@ export class Daemon {
     try {
       await plane.discardSession(agentId, leaf)
     } catch (err) {
+      // The orphan reconciler only collects a claim whose row is gone, so a kept row's caller must retry it.
+      if (opts?.rowStays) throw err
       this.log.warn(
         `cluster: could not delete the sandbox of retired session ${sessionKey} (${formatErr(err)}) — ` +
           `sandboxclaim "${plane.driver.claimName(sessionSandboxSubject(agentId, leaf))}" is left for the orphan reconciler`
