@@ -3768,8 +3768,8 @@ describe('githubRuleVerdict (pure predicate)', () => {
   })
 
   it('holds draft revisions back on a draft-skipping rule and reviews the head when the PR leaves draft', () => {
-    const pr = { ...ctx, event: 'pull_request' }
-    const draft = { ...pr, isDraft: true }
+    const pr: GithubMatchCtx = { ...ctx, event: 'pull_request' }
+    const draft: GithubMatchCtx = { ...pr, isDraft: true }
     const ready = { ...pr, eventAction: 'pull_request:ready_for_review', isDraft: false }
     const everyUpdate = rule({}, { events: ['pull_request:*'], skipDrafts: true })
     const opened = rule({}, { events: ['pull_request:opened'], skipDrafts: true })
@@ -3778,14 +3778,18 @@ describe('githubRuleVerdict (pure predicate)', () => {
       verdict: 'no-match',
       reason: 'draft'
     })
-    expect(matches(everyUpdate, { ...draft, eventAction: 'pull_request:synchronize' })).toBe(false)
-    expect(matches(everyUpdate, { ...draft, eventAction: 'pull_request:edited', baseChanged: true })).toBe(false)
+    expect(githubRuleVerdict(everyUpdate, { ...draft, eventAction: 'pull_request:synchronize' })).toBe('no-match')
+    expect(githubRuleVerdict(everyUpdate, { ...draft, eventAction: 'pull_request:edited', baseChanged: true })).toBe(
+      'no-match'
+    )
     expect(githubRuleVerdict(everyUpdate, { ...pr, eventAction: 'pull_request:synchronize', isDraft: false })).toBe(
       'needs-authz'
     )
     expect(githubRuleVerdict(everyUpdate, ready)).toBe('needs-authz')
     expect(githubRuleVerdict(opened, ready)).toBe('needs-authz')
-    expect(matches(everyUpdate, { ...pr, eventAction: 'pull_request:converted_to_draft', isDraft: true })).toBe(false)
+    expect(
+      githubRuleVerdict(everyUpdate, { ...pr, eventAction: 'pull_request:converted_to_draft', isDraft: true })
+    ).toBe('no-match')
     // Without the setting a draft is reviewed as before, and leaving draft stays status-only.
     expect(
       githubRuleVerdict(rule({}, { events: ['pull_request:*'] }), { ...draft, eventAction: 'pull_request:opened' })
