@@ -1291,6 +1291,12 @@ export class SlackConnection implements PlatformConnection {
       if (!ev.channel) return
       await this.agentSessionStopped(ev.channel, ev.thread_ts ?? ev.channel, ev.user)
     })
+    // A person archiving a code channel stops its channel session; any other archive is ignored there.
+    for (const type of ['channel_archive', 'group_archive'] as const)
+      this.app.event(type, async ({ event }) => {
+        const ev = event as { channel?: string; user?: string }
+        if (ev.channel) await this.agentSessionStopped(ev.channel, ev.channel, ev.user)
+      })
     // The bot joining (its own member_joined_channel) or leaving (channel_left / group_left) re-lists membership.
     this.app.event('member_joined_channel', async ({ event, body }) => {
       const ev = event as { user?: string; channel?: string; inviter?: string }
@@ -3397,6 +3403,8 @@ export class SlackConnection implements PlatformConnection {
    *  Both arms also stop the delegated tasks holding the thread's indicator, so one Stop ends all its work. */
   async agentSessionStopped(channel: string, threadTs: string, userId?: string): Promise<void> {
     this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
+    // The channel coordinate names a session only in a code channel; an archive of a channel known not to be one is ignored.
+    if (threadTs === channel && (await this.codeChannel(channel).catch(() => undefined))?.code === false) return
     const cancel = (sessionKey: string) =>
       this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
     if (this.deps.sendOnly) {
@@ -3411,6 +3419,11 @@ export class SlackConnection implements PlatformConnection {
     const tasks = this.deps.onStopThreadTasks?.({ channel, thread: threadTs }) ?? []
     for (const sessionKey of new Set([...(target ? [target] : []), ...tasks])) cancel(sessionKey)
     this.deps.onSlotSettle?.({ channel, thread: threadTs, ...(target ? { exclude: target } : {}) })
+  }
+
+  /** Mark a code channel's session Done (`closed`) before the channel is archived. */
+  async closeCodeSession(channel: string): Promise<boolean> {
+    return this.queue.enqueue(() => this.setSessionLifecycle(channel, channel, 'closed'))
   }
 
   // The lifecycle half of setStatus. Posting a message does NOT end the loading UX — only `active` does.

@@ -34,6 +34,14 @@ status updates and renames omit `thread_ts`. Ordinary thread coordinates retain 
 existing behavior. Native Stop without a thread timestamp addresses the same channel
 coordinate on both ingress transports. History reads use channel history.
 
+Archiving ends the channel session. The agent's archive first marks the session
+`closed` (Slack's _Done_), then archives with the optional summary. When a person
+archives the channel instead, `channel_archive` / `group_archive` arrive on either
+transport as a Stop at the channel coordinate: running work in that session is
+cancelled. An archive of a channel the provider reports is not a code channel is
+ignored. A turn waiting on an approval shows the session as `suspended` (_Needs
+attention_) until the last request settles, as in ordinary threads.
+
 An assigned bot is an implicit recipient of human messages in its code channel. This
 does not count as an explicit mention: session mute still applies, other explicit
 mentions take precedence, and the conversation's Off fence remains authoritative.

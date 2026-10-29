@@ -20,8 +20,10 @@ const ctx: SessionContext = {
   tools: []
 }
 
-async function fixture(code = true) {
+async function fixture(code = true, deps: Record<string, unknown> = {}) {
   const app = fakeSlackAppFactory()({} as never)
+  const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+  app.event = ((type: string, h: (a: { event: unknown }) => unknown) => void handlers.set(type, h)) as typeof app.event
   const post = vi.spyOn(app.client.chat, 'postMessage')
   const info = vi.spyOn(app.client.conversations, 'info').mockResolvedValue({
     channel: {
@@ -48,7 +50,8 @@ async function fixture(code = true) {
       group: { appToken: 'xapp', botToken: 'xoxb', integrations: [] },
       onMessage: () => {},
       newTraceId: () => 'trace',
-      sendIntervalMs: 0
+      sendIntervalMs: 0,
+      ...deps
     },
     () => app
   )
@@ -63,7 +66,7 @@ async function fixture(code = true) {
     recordPost,
     postIdentity: () => ({ agentAuthorId: ctx.agentId, username: ctx.agentName })
   }
-  return { conn, app, post, info, api, env, judgeWrite }
+  return { conn, app, post, info, api, env, judgeWrite, handlers }
 }
 
 describe('Slack native surfaces', () => {
@@ -359,5 +362,38 @@ describe('Slack native surfaces', () => {
       expect.objectContaining({ channel_id: 'C1', type: 'diff', content: diff })
     )
     await f.conn.stop()
+  })
+
+  it('marks the session Done before the agent archives its code channel', async () => {
+    const f = await fixture()
+    const status = vi.spyOn(f.app.client.agents.sessions, 'setStatus')
+    await SLACK_SESSION_TOOLS.execute(
+      'manageSlackCodeChannel',
+      ctx,
+      { action: 'archive', summaryMessageTs: '1.003' },
+      f.env
+    )
+    expect(status).toHaveBeenCalledWith({ channel_id: 'C1', status: 'closed' })
+    expect(status.mock.invocationCallOrder[0]!).toBeLessThan(f.api.archive.mock.invocationCallOrder[0]!)
+    expect(f.api.archive).toHaveBeenCalledWith({ channel_id: 'C1', summary_message_ts: '1.003' })
+    await f.conn.stop()
+  })
+
+  it('stops the channel session when a person archives a code channel, and ignores other archives', async () => {
+    const actions: unknown[] = []
+    const deps = {
+      onThreadSessions: async () => ['slack:C1:C1:a1'],
+      onStatusAction: (a: unknown) => void actions.push(a)
+    }
+    const f = await fixture(true, deps)
+    await f.handlers.get('channel_archive')!({ event: { channel: 'C1', user: 'U1' } })
+    expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:C1:a1', actor: { userId: 'U1' } }])
+    await f.conn.stop()
+
+    const ordinary = await fixture(false, deps)
+    actions.length = 0
+    await ordinary.handlers.get('group_archive')!({ event: { channel: 'C1', user: 'U1' } })
+    expect(actions).toEqual([])
+    await ordinary.conn.stop()
   })
 })
