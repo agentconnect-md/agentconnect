@@ -1,0 +1,677 @@
+// The runtime matrix's coordinator probe: an injected coordinator prompt and tool surface, judged per channel message.
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import type { McpServer } from '@agentclientprotocol/sdk/unstable'
+import { z } from 'zod'
+import type { AcpHost } from '../../src/acp/acp-host.js'
+import { NO_RESPONSE_SENTINEL } from '../../src/session/no-response.js'
+import type { ToolDescriptor } from '../../src/tool-schema/descriptor.js'
+import type { ProbeSupport, SendMessageVerdict } from './send-message-probe.js'
+
+/** Synthetic identities every coordinator scenario shares. */
+export const CO_IDS = {
+  self: 'matrix-agent',
+  selfBot: 'U0EXAMPLEBOT',
+  peer: 'peer-agent',
+  peerBot: 'U0EXAMPLEPEER',
+  alice: 'U0EXAMPLE1',
+  bob: 'U0EXAMPLE2',
+  channel: 'C0EXAMPLE1',
+  channelName: 'eng-platform',
+  checkoutTask: 'task-checkout-flake'
+} as const
+
+/** One channel-root message a coordinator turn decides on; `id` is the platform message id it names in its calls. */
+export interface ChannelMessage {
+  id: string
+  from: string
+  mentionsYou: boolean
+  text: string
+}
+
+/** An open task as `listTasks` reports it. */
+export interface ProbeTask {
+  taskId: string
+  title: string
+  threaded: boolean
+  owner: string
+  lastActive: string
+  running: boolean
+  summary: { scope: string; status: string; next: string }
+  summaryUpdatedAt: string
+}
+
+const CHECKOUT_TASK: ProbeTask = {
+  taskId: CO_IDS.checkoutTask,
+  title: 'Flaky checkout e2e test',
+  threaded: true,
+  owner: `<@${CO_IDS.alice}>`,
+  lastActive: '2026-10-29T09:40:00Z',
+  running: false,
+  summary: {
+    scope: 'Investigating why the checkout.spec.ts end-to-end test times out intermittently on CI, and fixing it.',
+    status: 'Fix is up as PR #4821 (raises the payment-iframe wait and stubs the slow tax call); waiting for review.',
+    next: 'Merge after review, then watch main CI for a day.'
+  },
+  summaryUpdatedAt: '2026-10-29T09:40:00Z'
+}
+
+const SEND_MESSAGE_DESCRIPTION =
+  'Act on a channel message delivered to you as the coordinator. Every call names the message it decides on by messageId. ' +
+  'action "delegateTask" opens a new task for the message: the task receives the original message verbatim and answers in its ' +
+  'thread; give a short title and, only when needed, background in message. action "messageTask" hands the message to one of ' +
+  'your open tasks by taskId; that task answers in the message thread. action "replyToMessage" posts your own short reply in ' +
+  'the message thread. A message you make no call for is ignored. Each message takes at most one of these calls.'
+
+const LIST_TASKS_DESCRIPTION =
+  "List your open tasks: id, title, whether a thread is attached, owner, last activity, whether it is running, and the task's " +
+  'own summary (scope, status, next step) with when it was last updated. Use it to tell whether a message belongs to existing ' +
+  'work and to answer status questions.'
+
+const str = (description: string) => ({ type: 'string', description })
+
+/** The coordinator's tool surface: a coordinator `sendMessage` and `listTasks`. */
+export function coordinatorTools(): ToolDescriptor[] {
+  return [
+    {
+      name: 'sendMessage',
+      description: SEND_MESSAGE_DESCRIPTION,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['delegateTask', 'messageTask', 'replyToMessage'] },
+          messageId: str('Id of the delivered channel message this call decides on.'),
+          taskId: str('messageTask only: the open task to hand the message to.'),
+          title: str('delegateTask only: a short name for the new task, at most eight words.'),
+          message: str(
+            'replyToMessage: the reply text. delegateTask/messageTask: optional background the task cannot see in the message itself.'
+          )
+        },
+        required: ['action', 'messageId'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'listTasks',
+      description: LIST_TASKS_DESCRIPTION,
+      inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false }
+    }
+  ]
+}
+
+/** The coordinator session's standing instructions, as the daemon would give them. */
+export function coordinatorPrompt(): string {
+  return [
+    '# You are the coordinator',
+    `You coordinate the agent "${CO_IDS.self}" in Slack channel #${CO_IDS.channelName} (${CO_IDS.channel}). Your Slack user ` +
+      `is <@${CO_IDS.selfBot}>. Channel messages are delivered to you, one or several per turn. You never do the work ` +
+      'yourself: you have no workspace, and you must not read files, run commands, search the web, or use any tool other ' +
+      'than sendMessage and listTasks. For every delivered message you choose exactly one outcome:',
+    '',
+    '1. Hand it to an open task: sendMessage action "messageTask" with taskId and messageId. Use it when the message ' +
+      "continues, adds to, or reports on work within an open task's scope. The task answers in the message's thread.",
+    '2. Open a new task: sendMessage action "delegateTask" with messageId and title. Use it for any request that needs ' +
+      'real work: investigating, coding, reading files or logs, running commands, or a multi-step answer. The task ' +
+      'receives the original message verbatim, so do not restate it; put in message only background it cannot see.',
+    '3. Reply yourself: sendMessage action "replyToMessage" with messageId and message, which posts a visible reply in ' +
+      "the message's thread. Use it only for what you can " +
+      "answer in one or two sentences without any work: greetings, thanks, or a status question answered from a task's summary.",
+    '4. Ignore it: make no call for it. Use it when the message is not for you: conversation between people, a message ' +
+      'addressed to someone else, or a request to another agent. Ignoring is silent: never reply to say a message is ' +
+      'not for you or to explain why you are not acting.',
+    '',
+    '# Rules',
+    '- Each call names its message by its id, copied exactly as a string, and each message gets at most one outcome.',
+    '- A message marked mentions-you="yes" is addressed to you and must not be ignored.',
+    '- Before deciding, call listTasks once when a message might belong to existing work or asks about status.',
+    "- Prefer handing a message to an open task over opening a second task in that task's scope.",
+    `- Other agents in this channel: ${CO_IDS.peer} (Slack user <@${CO_IDS.peerBot}>), which owns billing, credentials, ` +
+      'and infrastructure access. A message addressed to it is not for you.',
+    `- Your final text is never shown to anyone. After your calls, end the turn with exactly ${NO_RESPONSE_SENTINEL}.`
+  ].join('\n')
+}
+
+/** One coordinator turn's input: the delivered channel-root messages. */
+export function renderBatch(messages: ChannelMessage[]): string {
+  const blocks = messages.map(
+    (message) =>
+      `<message id="${message.id}" from="<@${message.from}>" mentions-you="${message.mentionsYou ? 'yes' : 'no'}">\n` +
+      `${message.text}\n</message>`
+  )
+  const count = messages.length === 1 ? 'One new channel-root message' : `${messages.length} new channel-root messages`
+  return `[${count} in #${CO_IDS.channelName} (${CO_IDS.channel})]\n${blocks.join('\n')}`
+}
+
+/** What one coordinator call decided, or why it is not a decision. */
+export type CoOutcome =
+  | { kind: 'delegate'; messageId: string; title: string }
+  | { kind: 'route'; messageId: string; taskId: string }
+  | { kind: 'reply'; messageId: string; text: string }
+
+const outcomeArgs = z.discriminatedUnion('action', [
+  z.strictObject({
+    action: z.literal('delegateTask'),
+    messageId: z.string().min(1),
+    title: z.string().trim().min(1, 'delegateTask needs a title'),
+    message: z.string().optional()
+  }),
+  z.strictObject({
+    action: z.literal('messageTask'),
+    messageId: z.string().min(1),
+    taskId: z.string().min(1),
+    message: z.string().optional()
+  }),
+  z.strictObject({
+    action: z.literal('replyToMessage'),
+    messageId: z.string().min(1),
+    message: z.string().trim().min(1, 'replyToMessage needs a message')
+  })
+])
+
+/** What a scenario's turn may name: the delivered messages and the open tasks. */
+export interface CoScope {
+  messages: string[]
+  tasks: ProbeTask[]
+}
+
+/** Check one `sendMessage` call against the turn: its outcome, or the error text the model reads. */
+export function decide(
+  args: Record<string, unknown>,
+  scope: CoScope,
+  decided: ReadonlySet<string>
+): { outcome: CoOutcome } | { error: string } {
+  const parsed = outcomeArgs.safeParse(args)
+  if (!parsed.success) return { error: `sendMessage: ${parsed.error.issues.map((issue) => issue.message).join('; ')}` }
+  const call = parsed.data
+  if (!scope.messages.includes(call.messageId))
+    return { error: `sendMessage: messageId ${call.messageId} is not a message delivered in this turn` }
+  if (decided.has(call.messageId))
+    return { error: `sendMessage: message ${call.messageId} already has an outcome; each message takes one` }
+  switch (call.action) {
+    case 'delegateTask':
+      return { outcome: { kind: 'delegate', messageId: call.messageId, title: call.title } }
+    case 'messageTask':
+      return scope.tasks.some((task) => task.taskId === call.taskId)
+        ? { outcome: { kind: 'route', messageId: call.messageId, taskId: call.taskId } }
+        : { error: `sendMessage: ${call.taskId} is not one of your open tasks; listTasks lists them` }
+    case 'replyToMessage':
+      return { outcome: { kind: 'reply', messageId: call.messageId, text: call.message } }
+  }
+}
+
+function receipt(outcome: CoOutcome): unknown {
+  switch (outcome.kind) {
+    case 'delegate':
+      return { ok: true, taskId: `task-${outcome.messageId}`, thread: outcome.messageId, title: outcome.title }
+    case 'route':
+      return { ok: true, taskId: outcome.taskId, attachedThread: outcome.messageId }
+    case 'reply':
+      return { ok: true, posted: { channel: CO_IDS.channel, thread: outcome.messageId } }
+  }
+}
+
+export interface CoRecordedCall {
+  tool: string
+  args: Record<string, unknown>
+  outcome?: CoOutcome
+  error?: string
+}
+
+export interface CoordinatorFixture {
+  server: Server
+  descriptor: (key: string, scope: CoScope) => McpServer
+  calls: (key: string) => CoRecordedCall[]
+}
+
+type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: true }
+const text = (value: unknown, isError = false): ToolResult => ({
+  content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }],
+  ...(isError ? { isError: true as const } : {})
+})
+
+function callTool(
+  name: string,
+  args: Record<string, unknown>,
+  scope: CoScope,
+  previous: CoRecordedCall[]
+): { result: ToolResult; call: CoRecordedCall } {
+  if (name === 'listTasks') return { result: text({ tasks: scope.tasks }), call: { tool: name, args } }
+  if (name !== 'sendMessage') {
+    const error = `${name} is not available to the coordinator`
+    return { result: text(error, true), call: { tool: name, args, error } }
+  }
+  const decided = new Set(previous.flatMap((call) => (call.outcome ? [call.outcome.messageId] : [])))
+  const verdict = decide(args, scope, decided)
+  if ('error' in verdict) return { result: text(verdict.error, true), call: { tool: name, args, error: verdict.error } }
+  return { result: text(receipt(verdict.outcome)), call: { tool: name, args, outcome: verdict.outcome } }
+}
+
+/** The coordinator's HTTP MCP fixture: one recorded call log and scope per path. */
+export function coordinatorFixture(tools: ToolDescriptor[] = coordinatorTools()): Promise<CoordinatorFixture> {
+  const log = new Map<string, CoRecordedCall[]>()
+  const scopes = new Map<string, CoScope>()
+  const server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (chunk: Buffer) => (body += chunk.toString('utf8')))
+    req.on('end', () => {
+      if (req.method !== 'POST') {
+        res.writeHead(405).end()
+        return
+      }
+      let rpc: { id?: string | number; method?: string; params?: { name?: string; arguments?: unknown } }
+      try {
+        rpc = JSON.parse(body) as typeof rpc
+      } catch {
+        res.writeHead(400).end()
+        return
+      }
+      if (rpc.id === undefined) {
+        res.writeHead(202).end()
+        return
+      }
+      const key = decodeURIComponent((req.url ?? '').replace(/^\/mcp\/?/, ''))
+      const reply = (result: unknown) =>
+        res
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result }))
+      if (rpc.method === 'initialize') {
+        reply({
+          protocolVersion: '2025-06-18',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'agentconnect', version: '1' }
+        })
+      } else if (rpc.method === 'tools/list') {
+        reply({ tools })
+      } else if (rpc.method === 'tools/call') {
+        const raw = rpc.params?.arguments
+        const args = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+        const calls = log.get(key) ?? []
+        const { result, call } = callTool(
+          String(rpc.params?.name ?? ''),
+          args,
+          scopes.get(key) ?? { messages: [], tasks: [] },
+          calls
+        )
+        calls.push(call)
+        log.set(key, calls)
+        reply(result)
+      } else {
+        reply({})
+      }
+    })
+  })
+  return new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo
+      resolve({
+        server,
+        descriptor: (key, scope) => {
+          scopes.set(key, scope)
+          return {
+            type: 'http',
+            name: 'agentconnect',
+            url: `http://127.0.0.1:${port}/mcp/${encodeURIComponent(key)}`,
+            headers: []
+          }
+        },
+        calls: (key) => log.get(key) ?? []
+      })
+    })
+  })
+}
+
+/** The outcome a message should get; `alternatives` are acceptable but weaker, and score DEGRADED. */
+export interface Expectation {
+  kind: 'delegate' | 'route' | 'reply' | 'ignore' | 'any'
+  taskId?: string
+  /** A reply must contain this, case-insensitively. */
+  mentions?: string
+  alternatives?: Array<'delegate' | 'route' | 'reply'>
+}
+
+export type CoScenarioId =
+  | 'new-work'
+  | 'route-to-task'
+  | 'status-reply'
+  | 'greeting'
+  | 'ignore-chatter'
+  | 'ignore-peer'
+  | 'mention-vague'
+  | 'no-self-work'
+  | 'batch-mixed'
+  | 'batch-route-and-new'
+
+export interface CoordinatorScenario {
+  id: CoScenarioId
+  messages: ChannelMessage[]
+  tasks: ProbeTask[]
+  expect: Record<string, Expectation>
+}
+
+const msg = (id: string, from: string, mentionsYou: boolean, body: string): ChannelMessage => ({
+  id,
+  from,
+  mentionsYou,
+  text: mentionsYou ? `<@${CO_IDS.selfBot}> ${body}` : body
+})
+
+export const CO_SCENARIOS: CoordinatorScenario[] = [
+  {
+    id: 'new-work',
+    tasks: [],
+    messages: [
+      msg(
+        'msg-1700000100.000100',
+        CO_IDS.alice,
+        true,
+        'staging deploys have been failing since this morning, the api pod sits in ImagePullBackOff. Can you dig into it?'
+      )
+    ],
+    expect: { 'msg-1700000100.000100': { kind: 'delegate' } }
+  },
+  {
+    id: 'route-to-task',
+    tasks: [CHECKOUT_TASK],
+    messages: [
+      msg(
+        'msg-1700000200.000100',
+        CO_IDS.bob,
+        false,
+        'checkout e2e timed out on main again just now: https://ci.example.test/runs/8812'
+      )
+    ],
+    expect: { 'msg-1700000200.000100': { kind: 'route', taskId: CO_IDS.checkoutTask } }
+  },
+  {
+    id: 'status-reply',
+    tasks: [CHECKOUT_TASK],
+    messages: [msg('msg-1700000300.000100', CO_IDS.bob, true, 'where are we on the flaky checkout test?')],
+    expect: { 'msg-1700000300.000100': { kind: 'reply', mentions: '4821', alternatives: ['route'] } }
+  },
+  {
+    id: 'greeting',
+    tasks: [],
+    messages: [msg('msg-1700000400.000100', CO_IDS.alice, true, 'good morning!')],
+    expect: { 'msg-1700000400.000100': { kind: 'reply' } }
+  },
+  {
+    id: 'ignore-chatter',
+    tasks: [CHECKOUT_TASK],
+    messages: [msg('msg-1700000500.000100', CO_IDS.alice, false, `<@${CO_IDS.bob}> lunch at 12:30 today?`)],
+    expect: { 'msg-1700000500.000100': { kind: 'ignore' } }
+  },
+  {
+    id: 'ignore-peer',
+    tasks: [],
+    messages: [
+      msg(
+        'msg-1700000600.000100',
+        CO_IDS.bob,
+        false,
+        `<@${CO_IDS.peerBot}> can you rotate the staging database credentials before the audit?`
+      )
+    ],
+    expect: { 'msg-1700000600.000100': { kind: 'ignore' } }
+  },
+  {
+    id: 'mention-vague',
+    tasks: [],
+    messages: [msg('msg-1700000700.000100', CO_IDS.alice, true, 'thoughts?')],
+    expect: { 'msg-1700000700.000100': { kind: 'any' } }
+  },
+  {
+    id: 'no-self-work',
+    tasks: [],
+    messages: [msg('msg-1700000800.000100', CO_IDS.alice, true, "please fix the typo 'recieve' in README.md")],
+    expect: { 'msg-1700000800.000100': { kind: 'delegate' } }
+  },
+  {
+    id: 'batch-mixed',
+    tasks: [CHECKOUT_TASK],
+    messages: [
+      msg('msg-1700000900.000100', CO_IDS.bob, false, 'morning all'),
+      msg(
+        'msg-1700000900.000200',
+        CO_IDS.alice,
+        true,
+        'can you add retry with backoff to the webhook sender in services/notify? it drops events on 502s'
+      ),
+      msg(
+        'msg-1700000900.000300',
+        CO_IDS.bob,
+        false,
+        `<@${CO_IDS.peerBot}> please check the billing dashboard numbers`
+      ),
+      msg('msg-1700000900.000400', CO_IDS.bob, true, "thanks for yesterday's fix btw!")
+    ],
+    expect: {
+      'msg-1700000900.000100': { kind: 'ignore' },
+      'msg-1700000900.000200': { kind: 'delegate' },
+      'msg-1700000900.000300': { kind: 'ignore' },
+      'msg-1700000900.000400': { kind: 'reply' }
+    }
+  },
+  {
+    id: 'batch-route-and-new',
+    tasks: [CHECKOUT_TASK],
+    messages: [
+      msg('msg-1700001000.000100', CO_IDS.bob, false, 'checkout e2e flaked again: https://ci.example.test/runs/8813'),
+      msg(
+        'msg-1700001000.000200',
+        CO_IDS.alice,
+        true,
+        'separate thing: the disk usage alert for db-2 is firing, can you check what is filling it up?'
+      )
+    ],
+    expect: {
+      'msg-1700001000.000100': { kind: 'route', taskId: CO_IDS.checkoutTask },
+      'msg-1700001000.000200': { kind: 'delegate' }
+    }
+  }
+]
+
+/** A single-message turn's final text counts as a reply to it, unless it is the silence sentinel. */
+const textReply = (finalText: string): string | undefined => {
+  const trimmed = finalText.trim()
+  return trimmed === '' || trimmed.startsWith(NO_RESPONSE_SENTINEL) ? undefined : trimmed
+}
+
+/** PASS when every message got its expected outcome and no call was refused; DEGRADED on an alternative or a refusal; FAIL otherwise. */
+export function judgeCoordinator(
+  scenario: CoordinatorScenario,
+  calls: CoRecordedCall[],
+  finalText: string
+): { verdict: SendMessageVerdict; notes: string[] } {
+  const outcomes = new Map<string, CoOutcome>()
+  for (const call of calls) if (call.outcome) outcomes.set(call.outcome.messageId, call.outcome)
+  const notes: string[] = []
+  let degraded = false
+  let failed = false
+  for (const message of scenario.messages) {
+    const expected = scenario.expect[message.id]!
+    let outcome = outcomes.get(message.id)
+    const spoken = scenario.messages.length === 1 ? textReply(finalText) : undefined
+    if (!outcome && spoken !== undefined) outcome = { kind: 'reply', messageId: message.id, text: spoken }
+    const got = outcome?.kind ?? 'ignore'
+    if (expected.kind === 'any' ? got !== 'ignore' : got === expected.kind) {
+      if (outcome?.kind === 'route' && expected.taskId && outcome.taskId !== expected.taskId) {
+        failed = true
+        notes.push(`${message.id}: routed to ${outcome.taskId}, expected ${expected.taskId}`)
+      } else if (
+        outcome?.kind === 'reply' &&
+        expected.mentions &&
+        !outcome.text.toLowerCase().includes(expected.mentions.toLowerCase())
+      ) {
+        degraded = true
+        notes.push(`${message.id}: reply lacks "${expected.mentions}"`)
+      }
+    } else if (got !== 'ignore' && expected.alternatives?.includes(got)) {
+      degraded = true
+      notes.push(`${message.id}: ${got}, preferred ${expected.kind}`)
+    } else {
+      failed = true
+      notes.push(`${message.id}: ${got}, expected ${expected.kind}`)
+    }
+  }
+  const refused = calls.filter((call) => call.error !== undefined)
+  if (refused.length > 0) {
+    degraded = true
+    notes.push(
+      `${refused.length} refused call(s): ${refused
+        .map((call) => call.error)
+        .join(' | ')
+        .slice(0, 300)}`
+    )
+  }
+  return { verdict: failed ? 'FAIL' : degraded ? 'DEGRADED' : 'PASS', notes }
+}
+
+export interface CoordinatorRun {
+  runtime: string
+  scenario: CoScenarioId
+  rep: number
+  verdict: SendMessageVerdict
+  comparable: true
+  outcomes: string[]
+  /** Every runtime tool call's title, in order, so a native tool the coordinator should not use shows up. */
+  toolCalls: string[]
+  counts: { sendMessage: number; listTasks: number; refused: number; acpToolCalls: number }
+  ms: number
+  tokens?: unknown
+  notes: string[]
+}
+
+export const describeOutcome = (outcome: CoOutcome): string =>
+  outcome.kind === 'delegate'
+    ? `delegate(${outcome.messageId},"${outcome.title}")`
+    : outcome.kind === 'route'
+      ? `route(${outcome.messageId}->${outcome.taskId})`
+      : `reply(${outcome.messageId},${JSON.stringify(outcome.text.slice(0, 60))})`
+
+/** Run every selected scenario `reps` times, each in a fresh coordinator session on an already-started host. */
+export async function runCoordinatorScenarios(input: {
+  runtime: string
+  host: AcpHost
+  cwd: string
+  fixture: CoordinatorFixture
+  scenarios: CoordinatorScenario[]
+  reps: number
+  updates: Array<{ sessionId: string; update: any }>
+  support: ProbeSupport
+  onRun?: (run: CoordinatorRun) => void
+}): Promise<CoordinatorRun[]> {
+  const { runtime, host, cwd, fixture, support } = input
+  const usesMeta = host.usesMetaSystemPrompt()
+  const prompt = coordinatorPrompt()
+  const runs: CoordinatorRun[] = []
+  for (let rep = 1; rep <= input.reps; rep++) {
+    for (const scenario of input.scenarios) {
+      const key = `${runtime}/co/${scenario.id}/${rep}`
+      const scope: CoScope = { messages: scenario.messages.map((message) => message.id), tasks: scenario.tasks }
+      const started = Date.now()
+      let sessionId: string | undefined
+      let tokens: unknown
+      let failure: unknown
+      try {
+        sessionId = await support.withTimeout(
+          host.newSession(cwd, [fixture.descriptor(key, scope)], undefined, usesMeta ? prompt : undefined),
+          `${runtime}/coordinator ${scenario.id} session`
+        )
+        const blocks = [
+          ...(usesMeta ? [] : [{ type: 'text' as const, text: prompt }]),
+          { type: 'text' as const, text: renderBatch(scenario.messages) }
+        ]
+        tokens = (await support.withTimeout(host.prompt(sessionId, blocks), `${runtime}/coordinator ${scenario.id}`))
+          .usage
+      } catch (error) {
+        failure = error
+      }
+      const ms = Date.now() - started
+      const calls = fixture.calls(key)
+      const sessionUpdates = input.updates.filter((entry) => entry.sessionId === sessionId)
+      const finalText = sessionUpdates
+        .filter(
+          (entry) => entry.update?.sessionUpdate === 'agent_message_chunk' && entry.update?.content?.type === 'text'
+        )
+        .map((entry) => String(entry.update.content.text))
+        .join('')
+      const notes: string[] = []
+      let verdict: SendMessageVerdict
+      if (failure !== undefined && support.providerUnavailable(failure)) {
+        verdict = 'UNAVAILABLE'
+        notes.push(support.errorReason(failure))
+      } else {
+        const judged = judgeCoordinator(scenario, calls, finalText)
+        verdict = failure !== undefined ? 'FAIL' : judged.verdict
+        notes.push(...judged.notes)
+        if (failure !== undefined) notes.push(`turn error: ${support.errorReason(failure)}`)
+      }
+      const run: CoordinatorRun = {
+        runtime,
+        scenario: scenario.id,
+        rep,
+        verdict,
+        comparable: true,
+        outcomes: calls.flatMap((call) => (call.outcome ? [describeOutcome(call.outcome)] : [])),
+        toolCalls: sessionUpdates
+          .filter((entry) => entry.update?.sessionUpdate === 'tool_call')
+          .map((entry) => String(entry.update.title ?? entry.update.kind ?? 'tool')),
+        counts: {
+          sendMessage: calls.filter((call) => call.tool === 'sendMessage').length,
+          listTasks: calls.filter((call) => call.tool === 'listTasks').length,
+          refused: calls.filter((call) => call.error !== undefined).length,
+          acpToolCalls: sessionUpdates.filter((entry) => entry.update?.sessionUpdate === 'tool_call').length
+        },
+        ms,
+        ...(tokens !== undefined ? { tokens } : {}),
+        notes: [...notes, ...(finalText.trim() ? [`final=${JSON.stringify(finalText.trim().slice(0, 160))}`] : [])]
+      }
+      runs.push(run)
+      input.onRun?.(run)
+      if (sessionId && host.deleteSupported()) {
+        await support
+          .withTimeout(host.deleteSession(sessionId), `${runtime}/coordinator ${scenario.id} delete`)
+          .catch(() => {})
+      }
+    }
+  }
+  return runs
+}
+
+/** Every run of a runtime that never got a session. */
+export function unreachableCoordinatorRuns(
+  runtime: string,
+  scenarios: CoordinatorScenario[],
+  reps: number,
+  verdict: 'UNAVAILABLE' | 'FAIL',
+  note: string
+): CoordinatorRun[] {
+  return Array.from({ length: reps }, (_, index) =>
+    scenarios.map((scenario) => ({
+      runtime,
+      scenario: scenario.id,
+      rep: index + 1,
+      verdict,
+      comparable: true as const,
+      outcomes: [],
+      toolCalls: [],
+      counts: { sendMessage: 0, listTasks: 0, refused: 0, acpToolCalls: 0 },
+      ms: 0,
+      notes: [note]
+    }))
+  ).flat()
+}
+
+/** Scenarios selected by `AC_RUNTIME_MATRIX_COORDINATOR_SCENARIOS` (comma list), else all. */
+export function selectedCoordinatorScenarios(filter: string | undefined): CoordinatorScenario[] {
+  const wanted = new Set(
+    (filter ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+  )
+  const unknown = [...wanted].filter((id) => !CO_SCENARIOS.some((scenario) => scenario.id === id))
+  if (unknown.length > 0) throw new Error(`unknown coordinator scenario(s): ${unknown.join(', ')}`)
+  return wanted.size === 0 ? CO_SCENARIOS : CO_SCENARIOS.filter((scenario) => wanted.has(scenario.id))
+}
