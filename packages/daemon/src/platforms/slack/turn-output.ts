@@ -494,12 +494,10 @@ export async function applySlackAction<TTurn extends SlackTurn>(
   switch (action.kind) {
     case 'set-status':
       if (p.plan.thread) {
-        await conn.setStatus(
-          p.plan.channel,
-          p.plan.thread,
-          action.text,
-          slackStatusOptions(p.plan.platform, p.plan.agentName, p.plan.iconUrl, p.plan.sessionKey)
-        )
+        await conn.setStatus(p.plan.channel, p.plan.thread, action.text, {
+          ...slackStatusOptions(p.plan.platform, p.plan.agentName, p.plan.iconUrl, p.plan.sessionKey),
+          ...(action.lifecycle ? { lifecycle: action.lifecycle } : {})
+        })
         await flushSessionTitle(conn, p)
       }
       return

@@ -16759,6 +16759,13 @@ export class Daemon {
     }
   }
 
+  /** Show a live turn's wait on a person on its own surface — Slack's session state (slack-code-channels.md §5.1). */
+  private showHumanWait(owner: HostKey, acpSessionId: string, waiting: boolean): void {
+    const p = this.pending.get(pendingTurnKey(owner, acpSessionId))
+    if (!p || !(p.conv instanceof OutputConverger)) return
+    for (const action of p.conv.onHumanWait(waiting)) this.enqueueApply(p, action)
+  }
+
   /** The turn's OWN gate notice — only Linear has one; false means post the neutral chat notice (§5.1, §10.4). */
   private openApprovalGateSurface(p: Pending, gateId: string, request: ApprovalRequestParts): boolean {
     if (!(p.conv instanceof LinearConverger)) return false
@@ -16779,6 +16786,7 @@ export class Daemon {
   /** D→C `agent/activity` for the approval bell (slack-approval-dm.md §7); best-effort, the reconnect replay converges it. */
   private emitApprovalActivity(owner: HostKey, acpSessionId: string, state: 'awaiting_permission' | 'idle'): void {
     const agentId = hostKeyAgentId(owner)
+    this.showHumanWait(owner, acpSessionId, state === 'awaiting_permission')
     this.approvalActivityChain = this.approvalActivityChain.then(async () => {
       try {
         const sessionId = (await this.outwardSessionIdForAcp(agentId, acpSessionId, owner)) ?? acpSessionId

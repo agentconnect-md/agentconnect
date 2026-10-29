@@ -73,7 +73,8 @@ export type SlackAction =
   // `notice` is a system line the daemon posts but must NOT record — recording it would
   // replay daemon chrome back to agents as thread context.
   | { kind: 'notice'; text: string }
-  | { kind: 'set-status'; text: string }
+  // `lifecycle: 'suspended'` shows the session as waiting on a person instead of working.
+  | { kind: 'set-status'; text: string; lifecycle?: 'suspended' }
   | { kind: 'set-title'; text: string }
   | { kind: 'progress'; text: string }
   | { kind: 'reasoning'; text: string }
@@ -2566,6 +2567,8 @@ export class OutputConverger {
   // Last activity label (tool title / "is thinking…") — only for consecutive-collapse:
   // the label is never displayed, a non-empty set-status just keeps the session `processing`.
   private lastActivity = ''
+  // Set while a person is being waited on, so every activity status keeps the session `suspended`.
+  private humanWaiting = false
   // Remember each tool's last known title so a title-less tool_call_update reuses it
   // (and is collapsed by consecutive-dedup) instead of surfacing the raw toolCallId.
   private toolTitles = new Map<string, string>()
@@ -2986,7 +2989,15 @@ export class OutputConverger {
     const label = clampTo(raw, MAX_STATUS)
     if (this.lastActivity === label) return []
     this.lastActivity = label
-    return [{ kind: 'set-status', text: label }]
+    return [{ kind: 'set-status', text: label, ...(this.humanWaiting ? { lifecycle: 'suspended' as const } : {}) }]
+  }
+
+  /** A human wait opened (`suspended`) or its last gate settled (`processing` again); none mode shows nothing. */
+  onHumanWait(waiting: boolean): SlackAction[] {
+    this.humanWaiting = waiting
+    if (this.mode === 'none') return []
+    const text = this.lastActivity || 'working…'
+    return [waiting ? { kind: 'set-status', text, lifecycle: 'suspended' } : { kind: 'set-status', text }]
   }
 
   /** Resolve a tool call's display label, reusing a known title when an update omits it. */

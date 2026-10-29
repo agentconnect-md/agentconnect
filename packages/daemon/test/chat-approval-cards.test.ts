@@ -14,6 +14,7 @@ import { PermissionCoordinator, type PermissionHost } from '../src/permissions/c
 import type { SubsessionApprovalRoute } from '../src/permissions/subsession-approval.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
 import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
+import { OutputConverger } from '../src/slack/render.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
 import { TELEGRAM_CALLBACK_ANSWER_LIMIT } from '../src/telegram/render.js'
 import { TURN_NOTICE_TEXT } from '../src/platforms/approval-card.js'
@@ -783,5 +784,33 @@ describe('Discord interactions on approval cards', () => {
     const c = clicked('ac_el:abc-1:ac_o0', 'refused')
     await c.conn.onElicitInteraction(c.interaction, { requestId: 'abc-1', token: 'ac_o0' })
     expect(c.interaction.followUp).toHaveBeenCalledWith({ content: 'refused', flags: MessageFlags.Ephemeral })
+  })
+})
+
+// slack-code-channels.md §5.1: a turn waiting on a person shows Slack's "Needs attention", then working again.
+describe('a Slack turn waiting on a person', () => {
+  const world = (conv: unknown) => {
+    const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const applied: unknown[] = []
+    daemon.enqueueApply = (_p: unknown, action: unknown) => void applied.push(action)
+    daemon.pending.set(pendingTurnKey(agentHostKey('agent-a'), 's1'), { plan: { platform: 'slack' }, conv })
+    return { daemon, applied }
+  }
+
+  it('suspends the session while an approval waits and resumes it once settled', () => {
+    const { daemon, applied } = world(new OutputConverger('low'))
+    daemon.emitApprovalActivity(agentHostKey('agent-a'), 's1', 'awaiting_permission')
+    daemon.emitApprovalActivity(agentHostKey('agent-a'), 's1', 'idle')
+    expect(applied).toEqual([
+      { kind: 'set-status', text: 'working…', lifecycle: 'suspended' },
+      { kind: 'set-status', text: 'working…' }
+    ])
+  })
+
+  it('leaves other platforms and finished turns alone', () => {
+    const { daemon, applied } = world({ onUpdate: () => [] })
+    daemon.emitApprovalActivity(agentHostKey('agent-a'), 's1', 'awaiting_permission')
+    daemon.emitApprovalActivity(agentHostKey('agent-a'), 's-gone', 'awaiting_permission')
+    expect(applied).toEqual([])
   })
 })

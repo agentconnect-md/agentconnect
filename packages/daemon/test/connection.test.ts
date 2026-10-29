@@ -1531,6 +1531,22 @@ describe('SlackConnection.setStatus', () => {
     ])
   })
 
+  it('writes suspended for a waiting status, keeping identity and the displayed owner', async () => {
+    const lifecycle: any[] = []
+    const conn = lifecycleConn((a) => lifecycle.push(a))
+
+    await conn.setStatus('C1', '123.45', 'Run tests', { username: 'Agent A', sessionKey: 'k1' })
+    await conn.setStatus('C1', '123.45', 'Run tests', { username: 'Agent A', sessionKey: 'k1', lifecycle: 'suspended' })
+    await conn.setStatus('C1', '123.45', 'Run tests', { username: 'Agent A', sessionKey: 'k1' })
+
+    expect(lifecycle).toEqual([
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing', username: 'Agent A' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'suspended', username: 'Agent A' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing', username: 'Agent A' }
+    ])
+    expect((conn as any).slotOwner.get('C1:123.45')).toBe('k1')
+  })
+
   // Slack keeps username/icon STICKY on the session, so a same-state write from a different
   // agent must refire — the dedupe key includes the identity, not just the enum.
   it('refires a same-state write when the acting identity changes', async () => {

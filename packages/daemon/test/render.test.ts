@@ -121,6 +121,39 @@ describe('OutputConverger', () => {
     ])
   })
 
+  // slack-code-channels.md §5.1: a person being waited on reads as "Needs attention", not as working.
+  it('marks a human wait suspended and resumes processing under the last activity', () => {
+    const c = new OutputConverger('low')
+    c.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Run tests', status: 'pending' } as any)
+    expect(c.onHumanWait(true)).toEqual([{ kind: 'set-status', text: 'Run tests', lifecycle: 'suspended' }])
+    expect(c.onHumanWait(false)).toEqual([{ kind: 'set-status', text: 'Run tests' }])
+    expect(new OutputConverger('low').onHumanWait(true)).toEqual([
+      { kind: 'set-status', text: 'working…', lifecycle: 'suspended' }
+    ])
+    expect(new OutputConverger('none').onHumanWait(true)).toEqual([])
+  })
+
+  it('keeps a waiting session suspended through another tool’s activity until the wait settles', () => {
+    const c = new OutputConverger('low')
+    c.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Run tests', status: 'pending' } as any)
+    c.onHumanWait(true)
+    const during = c.onUpdate({
+      sessionUpdate: 'tool_call',
+      toolCallId: 't2',
+      title: 'Read file',
+      status: 'pending'
+    } as any)
+    expect(setStatuses(during)).toEqual([{ kind: 'set-status', text: 'Read file', lifecycle: 'suspended' }])
+    c.onHumanWait(false)
+    const after = c.onUpdate({
+      sessionUpdate: 'tool_call',
+      toolCallId: 't3',
+      title: 'Edit file',
+      status: 'pending'
+    } as any)
+    expect(setStatuses(after)).toEqual([{ kind: 'set-status', text: 'Edit file' }])
+  })
+
   // A runtime links the file it wrote by its absolute path, which is clickable in its own UI and
   // nowhere else. Slack turns the destination into a real `<target|label>` link, so the daemon's
   // filesystem layout becomes the link target of a message in a shared channel.
