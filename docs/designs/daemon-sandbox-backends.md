@@ -1458,7 +1458,8 @@ consent must still let a holder clean up what it placed.
 which is labelled by agent id and session leaf and nothing else. It reads **no
 store**: it discards an environment whose agent the Control Plane's `agent/exists`
 no longer knows, or that neither a `prepare` nor a dial has touched within this
-machine's own `sessions.retention` window (`never` ⇒ never) — only when it is older
+machine's own workspace retention window (`sessions.workspaceRetention`, never past
+`sessions.retention`; both `never` ⇒ never) — only when it is older
 than ten minutes, has no live shim and no admitted pipe, and was not touched since
 the lookup. Last use is stamped in the record, so a restart does not reset that
 clock. It never judges dirtiness, and it retains everything when the Control Plane

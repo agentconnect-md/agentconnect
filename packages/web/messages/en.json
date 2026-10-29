@@ -4120,13 +4120,13 @@
       "reconnectingStatus": "Reconnecting",
       "save": "Save",
       "createGroup": "Create group",
-      "expireSessions": "Expire sessions",
       "visibility": "Visibility",
       "editDaemon": "Edit daemon",
       "daemonPlaceholder": "edge-1",
       "saveChanges": "Save changes",
       "groupPlaceholder": "edge-pool",
       "sessionRetention": {
+        "label": "Expire sessions",
         "afterDays": "After {count, plural, one {# day} other {# days}}",
         "never": "Never",
         "default": "default",
@@ -4135,7 +4135,13 @@
         "daysSuffix": "days",
         "daysAriaLabel": "Expire sessions after (days)",
         "invalidDays": "Enter a whole number of days (1–9999).",
-        "hint": "Finished sessions older than this are deleted from the daemon, including their workspaces."
+        "hint": "Finished sessions older than this are deleted from the daemon, with their transcripts."
+      },
+      "workspaceRetention": {
+        "label": "Clean up workspaces",
+        "never": "With the session",
+        "daysAriaLabel": "Clean up workspaces after (days)",
+        "hint": "Finished sessions idle this long lose their workspace and sandbox but keep the conversation. Work not yet pushed is kept."
       }
     },
     "lifecycleDialog": {

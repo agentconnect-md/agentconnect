@@ -212,6 +212,7 @@ export const canonicalColumns = [
   'windowStartedAt',
   'workspaceIncarnation',
   'workspaceIsolation',
+  'workspaceReclaimedAt',
   'writeMarker',
   'decisionId',
   'unavailableReason',

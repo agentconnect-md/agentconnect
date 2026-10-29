@@ -4120,13 +4120,13 @@
       "reconnectingStatus": "重连中",
       "save": "保存",
       "createGroup": "创建组",
-      "expireSessions": "过期会话",
       "editDaemon": "编辑 Daemon",
       "daemonPlaceholder": "edge-1",
       "saveChanges": "保存更改",
       "groupPlaceholder": "edge-pool",
       "visibility": "可见范围",
       "sessionRetention": {
+        "label": "过期会话",
         "afterDays": "{count, plural, other {# 天后}}",
         "never": "永不过期",
         "default": "默认",
@@ -4135,7 +4135,13 @@
         "daysSuffix": "天",
         "daysAriaLabel": "会话过期天数",
         "invalidDays": "请输入 1–9999 之间的整数天数。",
-        "hint": "早于该保留期限的已完成会话及其工作区会从该 Daemon 中删除。"
+        "hint": "早于该保留期限的已完成会话及其记录会从该 Daemon 中删除。"
+      },
+      "workspaceRetention": {
+        "label": "清理工作区",
+        "never": "随会话删除",
+        "daysAriaLabel": "工作区清理天数",
+        "hint": "已完成会话闲置超过该时长后，工作区和沙箱会被清理，对话记录保留；尚未推送的改动不会删除。"
       }
     },
     "lifecycleDialog": {

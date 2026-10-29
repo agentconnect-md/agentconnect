@@ -725,15 +725,14 @@ export class Placement implements ReconcileService {
       .filter((local) => local.origin === 'cp' || orgIntegrationIds.has(local.integrationId))
       .map((local) => local.integrationId)
 
-    // Console-set finished-session retention — the daemon's reconnect baseline for
-    // the config/push hot update. Parsed defensively: an unexpected stored value
-    // (never written by the validated PATCH route) is simply omitted, which the
-    // daemon reads as "keep local config".
+    // Console-set retention, the reconnect baseline for the config/push hot update; an unexpected stored value is omitted ("keep local config").
     const sessionRetention = SessionRetentionSetting.safeParse(daemon.sessionRetention)
+    const workspaceRetention = SessionRetentionSetting.safeParse(daemon.workspaceRetention)
 
     return {
       routingEpoch: Number(daemon.routingEpoch), // re-issue same — convergence, not bump
       ...(sessionRetention.success ? { sessionRetention: sessionRetention.data } : {}),
+      ...(workspaceRetention.success ? { workspaceRetention: workspaceRetention.data } : {}),
       // The console's auto-upgrade switch; the config/push `upgrade.auto` hot update rides on this baseline.
       autoUpgrade: daemon.autoUpgrade,
       // Transport capabilities are connection-level and register.ts replaces

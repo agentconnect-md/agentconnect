@@ -501,11 +501,10 @@ model Daemon {
   sharedWith String[]           @default([]) // complete app_user.id audience when visibility='restricted'
 
   // ── console-set daemon settings ──
-  // Retention window for FINISHED sessions on the daemon's LOCAL store (the console's
-  // "Expire sessions" option): 'never' | '7d' | '30d' | '90d'. The CP only stores and
-  // delivers it (register/ok baseline + config/push hot update); the daemon's hourly
-  // retention sweep is what actually deletes expired sessions.
-  sessionRetention String @default("7d")
+  // How long a finished session's row and transcript stay on the daemon ('never' | '<n>d'); the CP only stores and delivers it.
+  sessionRetention   String @default("90d")
+  // How long a finished session's workspace, sandbox and runtime home stay, never past its row; delivered the same way.
+  workspaceRetention String @default("7d")
   // Auto-upgrade switch (daemon-auto-upgrade.md §3): delivered like sessionRetention; the daemon picks the moment.
   autoUpgrade      Boolean @default(false)
 

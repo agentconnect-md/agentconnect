@@ -198,7 +198,8 @@ function toDto(
     // Defensive read-time normalization: the PATCH route only writes validated
     // values, so a fallback here just keeps an unexpected stored value from
     // failing the whole response's schema serialization.
-    sessionRetention: SESSION_RETENTION_RE.test(view.sessionRetention) ? view.sessionRetention : '7d',
+    sessionRetention: SESSION_RETENTION_RE.test(view.sessionRetention) ? view.sessionRetention : '90d',
+    workspaceRetention: SESSION_RETENTION_RE.test(view.workspaceRetention) ? view.workspaceRetention : '7d',
     memberSetId: view.memberSetId,
     // Identity, not membership — the predicate `assertDaemonNotInSet` enforces, so this is what a pin will accept.
     pinnable: orgOwned,
@@ -434,7 +435,7 @@ export function daemonRoutes(deps: HttpDeps) {
         if (!canEdit(existing, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this daemon' })
         }
-        const { name, sessionRetention, autoUpgrade } = req.body
+        const { name, sessionRetention, workspaceRetention, autoUpgrade } = req.body
         // Refused before any write so a rejected body changes nothing: no daemon could honour the switch.
         if (autoUpgrade === true && !existing.capabilities.features.includes(DAEMON_AUTO_UPGRADE_FEATURE)) {
           return reply.code(409).send({
@@ -453,6 +454,14 @@ export function daemonRoutes(deps: HttpDeps) {
           // snapshot on its next connect.
           try {
             deps.control.configPush(req.params.id, { 'sessions.retention': sessionRetention })
+          } catch {
+            // NoConnection — the reconnect snapshot is the backstop
+          }
+        }
+        if (workspaceRetention !== undefined) {
+          view = await deps.registry.setWorkspaceRetention(orgOf(req), did, workspaceRetention, req.principal?.userId)
+          try {
+            deps.control.configPush(req.params.id, { 'sessions.workspaceRetention': workspaceRetention })
           } catch {
             // NoConnection — the reconnect snapshot is the backstop
           }

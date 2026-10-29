@@ -8,7 +8,11 @@ import { daemonCommands } from '@/lib/daemon-commands'
 import { Button, Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
-import { SessionRetentionField, SESSION_RETENTION_DEFAULT } from '@/components/console/SessionRetentionField'
+import {
+  SessionRetentionField,
+  SESSION_RETENTION_DEFAULT,
+  WORKSPACE_RETENTION_DEFAULT
+} from '@/components/console/SessionRetentionField'
 import { useTranslations } from 'next-intl'
 
 /** What the CP already gave the provisioned row — skip the /sharing write when the
@@ -100,8 +104,16 @@ export default function AddDaemonModal({
   registerDismiss: (handler: () => void) => () => void
 }) {
   const t = useTranslations('Daemons.dialog')
-  const { provisionDaemon, daemons, refresh, deleteDaemon, renameDaemon, setDaemonSessionRetention, saveSharing } =
-    useConsoleData()
+  const {
+    provisionDaemon,
+    daemons,
+    refresh,
+    deleteDaemon,
+    renameDaemon,
+    setDaemonSessionRetention,
+    setDaemonWorkspaceRetention,
+    saveSharing
+  } = useConsoleData()
   const { me } = useProfile()
   const [connect, setConnect] = useState<DaemonConnectDto | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -110,6 +122,7 @@ export default function AddDaemonModal({
   // reported one, and the default sharing/retention skip their writes entirely.
   const [name, setName] = useState('')
   const [retention, setRetention] = useState(SESSION_RETENTION_DEFAULT)
+  const [workspaceRetention, setWorkspaceRetention] = useState(WORKSPACE_RETENTION_DEFAULT)
   const [sharing, setSharing] = useState<SharingValue>(DEFAULT_SHARING)
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState<string | null>(null)
@@ -180,6 +193,8 @@ export default function AddDaemonModal({
       const next = name.trim()
       if (next && next !== row?.name) await renameDaemon(connect.daemonId, next)
       if (retention !== SESSION_RETENTION_DEFAULT) await setDaemonSessionRetention(connect.daemonId, retention)
+      if (workspaceRetention !== WORKSPACE_RETENTION_DEFAULT)
+        await setDaemonWorkspaceRetention(connect.daemonId, workspaceRetention)
       if (!sameSharing(sharing, DEFAULT_SHARING)) await saveSharing('daemons', connect.daemonId, sharing)
       // A dialog dismissed while this was in flight must stay dismissed — closing
       // again is harmless, but chaining into Edit agent would reopen a surface the
@@ -269,6 +284,7 @@ export default function AddDaemonModal({
           />
         </div>
         <SessionRetentionField value={retention} onChange={setRetention} />
+        <SessionRetentionField kind="workspace" value={workspaceRetention} onChange={setWorkspaceRetention} />
         <VisibilityField value={sharing} onChange={setSharing} label={t('visibility')} />
         {saveErr && (
           <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">

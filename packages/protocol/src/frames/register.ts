@@ -133,6 +133,8 @@ export const RegisterOk = z.object({
   // Console-set finished-session retention for this daemon's local store —
   // optional so new daemons still accept an older CP (absent ⇒ keep local config).
   sessionRetention: SessionRetentionSetting.optional(),
+  // Console-set retention of a finished session's workspace and sandbox, same format; absent ⇒ keep local config.
+  workspaceRetention: SessionRetentionSetting.optional(),
   // Console-set auto-upgrade switch; absent ⇒ an older CP, and the daemon keeps its persisted value.
   autoUpgrade: z.boolean().optional(),
   // The deployment's announced daemon release (the console's upgrade hint); absent ⇒ not resolved yet.

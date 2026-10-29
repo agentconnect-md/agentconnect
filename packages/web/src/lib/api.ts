@@ -1282,9 +1282,10 @@ export interface DaemonViewDto {
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
   lastModifiedAt: string // ISO-8601
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
-  /** How long the daemon keeps FINISHED sessions in its local store before its
-   *  retention sweep deletes them ("Expire sessions"); 'never' disables the sweep. */
+  /** How long a finished session's row and transcript stay on the daemon ("Expire sessions"). */
   sessionRetention: DaemonSessionRetention
+  /** How long a finished session's workspace and sandbox stay, never past its row ("Clean up workspaces"). */
+  workspaceRetention: DaemonSessionRetention
   visibility: ResourceVisibility
   sharedWith: string[]
   canEdit: boolean
@@ -2496,7 +2497,8 @@ export function daemonFromDto(
     createdAt: fmtDate(d.createdAt),
     lastModifiedBy: d.lastModifiedBy ?? '', // editor userId; creatorLabel resolves it to a name / "You" at render
     lastModifiedAt: fmtDate(d.lastModifiedAt),
-    sessionRetention: d.sessionRetention ?? '7d', // absent from an older CP ⇒ the daemon-side default
+    sessionRetention: d.sessionRetention,
+    workspaceRetention: d.workspaceRetention,
     visibility: d.visibility,
     sharedWith: d.sharedWith,
     canEdit: d.canEdit,
@@ -4705,6 +4707,16 @@ export async function updateDaemonSessionRetention(
 ): Promise<DaemonRow> {
   return daemonFromDto(
     await apiPatch<DaemonViewDto>(`${orgBase()}/daemons/${encodeURIComponent(daemonId)}`, { sessionRetention })
+  )
+}
+
+// Set how long a finished session's workspace and sandbox stay ("Clean up workspaces"); the CP hot-pushes it.
+export async function updateDaemonWorkspaceRetention(
+  daemonId: string,
+  workspaceRetention: DaemonSessionRetention
+): Promise<DaemonRow> {
+  return daemonFromDto(
+    await apiPatch<DaemonViewDto>(`${orgBase()}/daemons/${encodeURIComponent(daemonId)}`, { workspaceRetention })
   )
 }
 

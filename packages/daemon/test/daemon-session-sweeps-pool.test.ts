@@ -34,6 +34,8 @@ function scaffold(): string {
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      // These cases judge the row purge on the 7-day window it had before workspaces got their own.
+      sessions: { retention: '7d' },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )

@@ -1004,10 +1004,11 @@ environment:
   reconciler (`cli/reconcile.ts`) already sends, which an org-scoped connection
   answers for its own organization's agents. An agent the CP no longer knows has no
   sessions to retain.
-- _Nothing has used it within this machine's session retention._ Neither a `prepare`
-  nor an admitted dial for longer than the daemon's existing `sessions.retention`
-  window, measured from a last-use stamp kept in the inventory record so a restart
-  does not reset the clock. `retention: never` never discards.
+- _Nothing has used it within this machine's workspace retention._ Neither a `prepare`
+  nor an admitted dial for longer than the daemon's `sessions.workspaceRetention`
+  window (never longer than `sessions.retention`), measured from a last-use stamp kept
+  in the inventory record so a restart does not reset the clock. Both set to `never`
+  never discards.
 
 The CP is deliberately not asked about sessions: its `SessionMeta` row is created
 asynchronously from daemon reports and is kept after the session's content is

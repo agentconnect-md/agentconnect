@@ -66,6 +66,7 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
     visibility: d.visibility,
     sharedWith: d.sharedWith,
     sessionRetention: d.sessionRetention,
+    workspaceRetention: d.workspaceRetention,
     autoUpgrade: d.autoUpgrade,
     lastModifiedAt: d.lastModifiedAt,
     lastModifiedBy: d.lastModifiedBy
@@ -279,6 +280,20 @@ export class PgDaemonRepo implements DaemonRepo {
     const daemon = await this.db.daemon.update({
       where: { id: daemonId, orgId },
       data: { sessionRetention, lastModifiedAt: new Date(), ...(byUserId ? { lastModifiedByUserId: byUserId } : {}) },
+      include: withUsers
+    })
+    return toRecord(daemon)
+  }
+
+  async setWorkspaceRetention(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    workspaceRetention: string,
+    byUserId?: string
+  ): Promise<DaemonRecord> {
+    const daemon = await this.db.daemon.update({
+      where: { id: daemonId, orgId },
+      data: { workspaceRetention, lastModifiedAt: new Date(), ...(byUserId ? { lastModifiedByUserId: byUserId } : {}) },
       include: withUsers
     })
     return toRecord(daemon)

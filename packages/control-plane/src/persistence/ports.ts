@@ -269,8 +269,10 @@ export interface DaemonRecord {
   createdByUserId: string | null
   visibility: ResourceVisibility
   sharedWith: string[] // complete app_user.id audience when visibility='restricted'
-  /** Console-set finished-session retention window ('never' | '7d' | '30d' | '90d'). */
+  /** Console-set retention of a finished session's row and transcript ('never' | '<n>d'). */
   sessionRetention: string
+  /** Console-set retention of a finished session's workspace and sandbox ('never' | '<n>d'). */
+  workspaceRetention: string
   /** Console-set auto-upgrade switch (daemon-auto-upgrade.md §3). */
   autoUpgrade: boolean
   lastModifiedAt: Date // last human edit (provision/rename); defaults to createdAt
@@ -322,6 +324,13 @@ export interface DaemonRepo {
     orgId: OrgId,
     daemonId: DaemonId,
     sessionRetention: string,
+    byUserId?: string
+  ): Promise<DaemonRecord>
+  /** Set the console's workspace retention window (a human edit — stamps last-modified audit). Org-fenced like {@link DaemonRepo.rename}. */
+  setWorkspaceRetention(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    workspaceRetention: string,
     byUserId?: string
   ): Promise<DaemonRecord>
   /** Set the console's auto-upgrade switch (a human edit when `byUserId` is given). Org-fenced like {@link DaemonRepo.rename}. */

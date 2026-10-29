@@ -324,11 +324,10 @@ export const DaemonViewDto = z.object({
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for CLI/self-registered
   lastModifiedAt: z.string(), // ISO-8601; last human edit, defaults to createdAt
   lastModifiedBy: z.string().nullable(), // editor's userId (web resolves to a name / "You"); null for system rows
-  /** Console-set finished-session retention window on the daemon's local store
-   *  ("Expire sessions"): how long finished sessions are kept before the daemon's
-   *  retention sweep deletes them — 'never' disables the sweep, otherwise an
-   *  integer day count as '<n>d' (e.g. '7d'). */
+  /** How long a finished session's row and transcript stay on the daemon: 'never' or a day count as '<n>d'. */
   sessionRetention: z.string().regex(SESSION_RETENTION_RE),
+  /** How long a finished session's workspace, sandbox and runtime home stay, never past its row: 'never' or '<n>d'. */
+  workspaceRetention: z.string().regex(SESSION_RETENTION_RE),
   /** The member set this daemon belongs to (docs/designs/daemon-groups.md §2), or null when it
    *  owns its agents outright. A member serves only what it holds a duty lease for, so this is
    *  what says whether an agent may be pinned here or must be placed on the set. */
@@ -410,16 +409,21 @@ export const MemberSetMemberParams = z.object({ id: z.string(), daemonId: z.stri
 export const UpdateDaemonBody = z
   .object({
     name: z.string().trim().min(1).max(64).optional(),
-    /** How long the daemon keeps FINISHED sessions in its local store before its
-     *  retention sweep deletes them — 'never' disables the sweep, otherwise an
-     *  integer day count as '<n>d' (e.g. '7d'). */
+    /** How long a finished session's row and transcript stay: 'never' or '<n>d'. */
     sessionRetention: z.string().regex(SESSION_RETENTION_RE).optional(),
+    /** How long a finished session's workspace and sandbox stay, never past its row: 'never' or '<n>d'. */
+    workspaceRetention: z.string().regex(SESSION_RETENTION_RE).optional(),
     /** Follow the deployment's announced release unattended; true requires the daemon to advertise `daemon-auto-upgrade-v1`. */
     autoUpgrade: z.boolean().optional()
   })
-  .refine((b) => b.name !== undefined || b.sessionRetention !== undefined || b.autoUpgrade !== undefined, {
-    message: 'nothing to update'
-  })
+  .refine(
+    (b) =>
+      b.name !== undefined ||
+      b.sessionRetention !== undefined ||
+      b.workspaceRetention !== undefined ||
+      b.autoUpgrade !== undefined,
+    { message: 'nothing to update' }
+  )
 
 /** `POST /daemons/:id/upgrade` — the version the daemon should install + relaunch on. */
 // The version is forwarded to the daemon, which spawns the CLI with it as the

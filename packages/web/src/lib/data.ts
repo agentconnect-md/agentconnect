@@ -2502,9 +2502,10 @@ export interface DaemonRow {
   /** Last editor's userId — resolved to a name / "You" at render via creatorLabel; '' for CLI/self-registered. */
   lastModifiedBy: string
   lastModifiedAt: string
-  /** How long the daemon keeps finished sessions before deleting them ("Expire
-   *  sessions"); 'never' disables the retention sweep. */
+  /** How long a finished session's row and transcript stay ("Expire sessions"); 'never' disables the sweep. */
   sessionRetention: DaemonSessionRetention
+  /** How long a finished session's workspace and sandbox stay ("Clean up workspaces"), never past its row. */
+  workspaceRetention: DaemonSessionRetention
   /** 'org' = all members; 'restricted' = sharedWith plus organization owners. */
   visibility: ResourceVisibility
   /** Explicit app_user.id audience when restricted. */

@@ -121,6 +121,7 @@ function toView(d: DaemonRecord, profiles: RuntimeProfileRecord[]): DaemonView {
     visibility: d.visibility,
     sharedWith: d.sharedWith,
     sessionRetention: d.sessionRetention,
+    workspaceRetention: d.workspaceRetention,
     autoUpgrade: d.autoUpgrade,
     memberSetId: d.memberSetId
   }
@@ -232,6 +233,16 @@ export class DaemonRegistryService implements DaemonRegistry {
     byUserId?: string
   ): Promise<DaemonView> {
     const d = await this.daemons.setSessionRetention(orgId, daemonId, sessionRetention, byUserId)
+    return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
+  }
+
+  async setWorkspaceRetention(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    workspaceRetention: string,
+    byUserId?: string
+  ): Promise<DaemonView> {
+    const d = await this.daemons.setWorkspaceRetention(orgId, daemonId, workspaceRetention, byUserId)
     return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
   }
 
