@@ -101,6 +101,16 @@ export interface SlackManifestDiff {
 /** Returns only public App settings; secrets never appear in this diff. */
 export function diffSlackManifest(actual: SlackManifest, expected: SlackManifest): SlackManifestDiff[] {
   const diff: SlackManifestDiff[] = []
+  const actualCodeChannels = asRecord(asRecord(actual.features).code_channels)
+  const expectedCodeChannels = asRecord(asRecord(expected.features).code_channels)
+  if (actualCodeChannels.enabled !== expectedCodeChannels.enabled) {
+    diff.push({
+      id: 'features.code_channels.enabled',
+      field: 'Slack Code enabled',
+      current: actualCodeChannels.enabled ?? null,
+      expected: expectedCodeChannels.enabled ?? null
+    })
+  }
   const actualOauth = asRecord(actual.oauth_config)
   const expectedOauth = asRecord(expected.oauth_config)
   const actualScopes = asRecord(actualOauth.scopes)
@@ -154,6 +164,8 @@ export function diffSlackManifest(actual: SlackManifest, expected: SlackManifest
 
 /** `actual` with every field `diffSlackManifest` inspects brought to `expected`, everything else kept, so reconcile-then-diff is empty. */
 export function reconcileSlackManifest(actual: SlackManifest, expected: SlackManifest): SlackManifest {
+  const actualFeatures = asRecord(actual.features)
+  const expectedFeatures = asRecord(expected.features)
   const actualOauth = asRecord(actual.oauth_config)
   const expectedOauth = asRecord(expected.oauth_config)
   const actualScopes = asRecord(actualOauth.scopes)
@@ -168,6 +180,13 @@ export function reconcileSlackManifest(actual: SlackManifest, expected: SlackMan
   const urlOf = (value: unknown, key: string) => (typeof value === 'string' ? { [key]: value } : {})
   return {
     ...actual,
+    features: {
+      ...actualFeatures,
+      code_channels: {
+        ...asRecord(actualFeatures.code_channels),
+        enabled: asRecord(expectedFeatures.code_channels).enabled
+      }
+    },
     oauth_config: {
       ...actualOauth,
       // The redirect list is fully managed (the diff wants set equality); scopes and events are additive.
