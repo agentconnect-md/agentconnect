@@ -308,6 +308,7 @@ export class HookService {
       events: cadence.events,
       ...(commentFamilies.length > 0 ? { commentFamilies } : {}),
       labelFilter: hook.labelFilter,
+      ...(hook.skipDrafts ? { skipDrafts: true } : {}),
       mentionOnly: cadence.mentionOnly,
       ...(this.appSlug ? { appSlug: this.appSlug } : {}),
       agentName: agent.name

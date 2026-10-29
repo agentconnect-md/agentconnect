@@ -13,14 +13,18 @@ describe('githubProjectionIntent', () => {
     expect(githubProjectionIntent('pull_request:edited', unchangedBase)).toBe('review_action_only')
   })
 
-  it.each([
-    'pull_request:reopened',
-    'pull_request:closed',
-    'pull_request:ready_for_review',
-    'pull_request:converted_to_draft'
-  ])('keeps silent lifecycle event %s out of revision projection', (event) => {
-    expect(githubProjectionIntent(event, { subjectKind: 'pull_request' })).toBe('review_action_only')
+  it('opens a fresh generation when a PR leaves draft, which only a draft-skipping rule delivers', () => {
+    expect(githubProjectionIntent('pull_request:ready_for_review', { subjectKind: 'pull_request' })).toBe(
+      'revision_event'
+    )
   })
+
+  it.each(['pull_request:reopened', 'pull_request:closed', 'pull_request:converted_to_draft'])(
+    'keeps silent lifecycle event %s out of revision projection',
+    (event) => {
+      expect(githubProjectionIntent(event, { subjectKind: 'pull_request' })).toBe('review_action_only')
+    }
+  )
 
   it('opens a new revision-style generation for an explicit Check rerequest', () => {
     expect(githubProjectionIntent('check_run:rerequested', { subjectKind: 'pull_request' })).toBe('revision_event')

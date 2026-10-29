@@ -434,6 +434,8 @@ export const RcGithubHookRule = z.object({
   sessionKeyPrefix: z.string().min(1).optional(),
   events: z.array(z.string()), // 'issues:opened' / 'pull_request:*' / …
   labelFilter: z.array(z.string()),
+  // Draft PR revisions do not fire; `ready_for_review` reviews the head instead. Absent on a CP that predates it.
+  skipDrafts: z.boolean().optional(),
   // Scopes GitHub's shared issue_comment event to the console-selected thread families; absent or empty keeps the legacy repo-wide meaning.
   commentFamilies: z.array(z.enum(['issues', 'pull_request'])).optional(),
   // P3 summon mode: authored text must @-mention this agent or the App; thread events still pass the live maintainer gate.

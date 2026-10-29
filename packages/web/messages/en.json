@@ -72,7 +72,8 @@
       "addLabel": "Add a label",
       "addAnother": "add another…",
       "typeLabel": "type a label, Enter adds it",
-      "limitReached": "Label limit reached — remove one to add another."
+      "limitReached": "Label limit reached — remove one to add another.",
+      "skipDrafts": "Skip drafts until marked ready for review"
     },
     "beta": "Beta",
     "language": {
