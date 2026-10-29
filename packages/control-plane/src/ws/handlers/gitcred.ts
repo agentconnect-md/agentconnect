@@ -326,6 +326,7 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
       conn.sendError(frame.id, e.code, e.message, e.retryable)
       return
     }
+    deps.log.warn?.({ err: e, agentId }, 'gitcred mint failed')
     conn.sendError(frame.id, 'INTERNAL', 'gitcred mint failed', true)
   }
 }

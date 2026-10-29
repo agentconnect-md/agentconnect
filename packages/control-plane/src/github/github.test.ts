@@ -1012,10 +1012,28 @@ describe('InstallationTokenService.mintLevels — per-capability levels (issue #
         { status: 201, headers: { 'content-type': 'application/json' } }
       )
     )
-    await expect(first).rejects.toBeInstanceOf(InstallationTokenInvalidatedError)
+    // The crossed mint discards its stale token and is served the post-invalidation one.
+    await expect(first).resolves.toMatchObject({ token: 'ghs_2' })
     // The stale completion did not overwrite the fresh post-invalidation entry.
     await expect(svc.mintChecks(IID, 'acme/tools', 777n)).resolves.toMatchObject({ token: 'ghs_2' })
     expect(calls).toBe(2)
+  })
+
+  it('a mint crossed by an invalidation on every attempt gives up after the retry budget', async () => {
+    const clock = new FakeClock(1_700_000_000_000)
+    let calls = 0
+    const fetchImpl = vi.fn(async () => {
+      calls += 1
+      svc.invalidateInstallation(IID)
+      return new Response(
+        JSON.stringify({ token: `ghs_${calls}`, expires_at: new Date(clock.now() + 3_600_000).toISOString() }),
+        { status: 201, headers: { 'content-type': 'application/json' } }
+      )
+    })
+    const svc = new InstallationTokenService(cfg(), clock, fetchImpl)
+
+    await expect(svc.mintChecks(IID, 'acme/tools', 777n)).rejects.toBeInstanceOf(InstallationTokenInvalidatedError)
+    expect(calls).toBe(3)
   })
 })
 
