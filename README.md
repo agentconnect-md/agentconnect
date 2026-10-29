@@ -238,7 +238,7 @@ If AgentConnect looks useful, here's how you can support the project:
 
 ## Contributing
 
-Contributions are welcome. Development needs Node >= 24.12.0 and pnpm 11;
+Contributions are welcome. Development needs Node >= 26.0.0 and pnpm 11;
 `pnpm install && pnpm dev` runs every package in watch mode. The
 [contributing guide](CONTRIBUTING.md) covers the full setup, the pull request
 conventions, the monorepo layout, and the deeper design documentation.

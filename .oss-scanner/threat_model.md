@@ -10,7 +10,7 @@ AgentConnect connects chat platforms (Slack, Telegram, Discord, Lark/Feishu, Goo
 (GitHub, GitLab, Gitea), Linear, generic webhooks and a browser webchat to AI coding agents (Claude,
 Codex and other ACP runtimes). An organization enrols its own bots and apps, picks which agents answer
 where, and the agents run code on machines the organization chooses. It is a pnpm monorepo under
-`/src/packages/`; every package is TypeScript on Node 24.
+`/src/packages/`; every package is TypeScript on Node 26.
 
 ## Components
 

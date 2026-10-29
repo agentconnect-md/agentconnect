@@ -44,7 +44,7 @@
     "routing"
   ],
   "engines": {
-    "node": ">=24.12.0"
+    "node": ">=26.0.0"
   },
   "publishConfig": {
     "access": "public"

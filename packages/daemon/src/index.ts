@@ -2,10 +2,10 @@
 import { startDaemonOpenTelemetry } from './observability.js'
 import { DAEMON_VERSION } from './version.js'
 
-const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split('.').map(Number)
-if (!(nodeMajor > 24 || (nodeMajor === 24 && nodeMinor >= 12))) {
+const nodeMajor = Number(process.versions.node.split('.')[0])
+if (nodeMajor < 26) {
   console.error(
-    `agentconnect: Node.js >=24.12.0 is required; found ${process.versions.node} at ${process.execPath}. Upgrade Node.js before starting AgentConnect (reinstall the background service after changing Node).`
+    `agentconnect: Node.js >=26.0.0 is required; found ${process.versions.node} at ${process.execPath}. Upgrade Node.js before starting AgentConnect (reinstall the background service after changing Node).`
   )
   process.exit(1)
 }

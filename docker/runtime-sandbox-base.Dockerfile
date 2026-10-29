@@ -2,7 +2,7 @@
 
 # Build and publish these dependency images manually; release builds use pinned digests.
 # ───────────────────────────── gh CLI fetch ─────────────────────────────────
-FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS gh-cli
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS gh-cli
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
@@ -25,7 +25,7 @@ RUN set -eu; \
   /out/gh --version
 
 # ─────────────────────────── Chrome for Testing ─────────────────────────────
-FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS chrome
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS chrome
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl unzip \
   && rm -rf /var/lib/apt/lists/*
@@ -44,7 +44,7 @@ RUN set -eu; \
   chmod -R a-w /out
 
 # ─────────────────────────────── runtime ────────────────────────────────────
-FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS runtime-base
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS runtime-base
 
 # Install the baseline Git, Python and native build toolchain.
 RUN apt-get update \
@@ -52,6 +52,8 @@ RUN apt-get update \
     ca-certificates git openssh-client tini \
     build-essential curl pkg-config python3 python3-dev python3-pip python3-venv \
   && rm -rf /var/lib/apt/lists/*
+RUN npm install --global corepack@0.36.0 && corepack enable
+
 # `python` as well as `python3` — plenty of tooling still spawns the unsuffixed name.
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 
@@ -105,7 +107,7 @@ USER 10001:10001
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentconnect/shim/index.js"]
 
 # Codex needs --argv0 to re-enter its sandbox while its credential directory stays hidden.
-FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS bubblewrap-builder
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS bubblewrap-builder
 ARG BUBBLEWRAP_VERSION=0.11.2
 ARG BUBBLEWRAP_SHA256=69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6
 RUN apt-get update \
