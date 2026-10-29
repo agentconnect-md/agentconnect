@@ -4,6 +4,7 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFil
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { removeTree, writableTree, writableTreeSync } from './tree-support.js'
 import { detectSandbox } from '../src/acp/sandbox.js'
 import { legacySandboxSkillLedger } from '../src/skills/sandbox-skill-ledger.js'
 import {
@@ -71,7 +72,7 @@ describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
   })
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   })
 
   async function writeApplying(
@@ -309,7 +310,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
   })
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   })
 
   const reconcile = (fingerprint: string) =>
@@ -471,7 +472,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     expect(first.installed).toEqual([BUNDLE])
 
     // A resumed session clone whose bundles vanished from disk while the ledger naming them stays.
-    await rm(join(cwd, '.claude'), { recursive: true, force: true })
+    await removeTree(join(cwd, '.claude'))
     const second = trusted
       ? await reconcileSkillBundles({
           cwd,
@@ -495,7 +496,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
 
   it('leaves no journal artifact behind after reinstalling over a vanished record', async () => {
     await reconcile('v1')
-    await rm(join(cwd, '.claude'), { recursive: true, force: true })
+    await removeTree(join(cwd, '.claude'))
     await reconcile('v1')
 
     const entries = await readdir(join(cwd, '.claude/skills'))
@@ -506,7 +507,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
   // not survive the prune: an interrupted reinstall would otherwise commit "unchanged" over a short set.
   it('reinstalls after a reinstall over a vanished record is interrupted', async () => {
     await reconcile('v1')
-    await rm(join(cwd, '.claude'), { recursive: true, force: true })
+    await removeTree(join(cwd, '.claude'))
 
     await expect(
       reconcileSkillBundles({
@@ -536,7 +537,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
   it('skips a recorded path that now holds content it does not own', async () => {
     await reconcile('v1')
     const target = join(cwd, ...BUNDLE.split('/'))
-    await rm(target, { recursive: true, force: true })
+    await removeTree(target)
     await mkdir(target, { recursive: true })
     await writeFile(join(target, 'manual'), 'do not delete')
 
@@ -554,6 +555,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     await reconcile('v1')
     const target = join(cwd, ...BUNDLE.split('/'))
     const recorded = await pathIdentity(target)
+    await writableTree(target)
     await writeFile(join(target, 'manual'), 'do not delete')
     expect(await pathIdentity(target)).toEqual(recorded)
 
@@ -576,6 +578,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
       ]
     })
     const edited = join(cwd, ...editedRoot.split('/'))
+    await writableTree(edited)
     await writeFile(join(edited, 'SKILL.md'), `${BODY}Local notes\n`)
     await mkdir(join(edited, 'references'))
     await writeFile(join(edited, 'references/notes.md'), 'kept')
@@ -620,6 +623,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
   it('leaves an edited skill in place when it is no longer desired', async () => {
     await reconcile('v1')
     const target = join(cwd, ...BUNDLE.split('/'))
+    await writableTree(target)
     await writeFile(join(target, 'SKILL.md'), 'modified')
 
     const result = await reconcileSkillBundles({
@@ -661,6 +665,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
           const quarantine = readdirSync(skills).find((name) => name.startsWith('.agentconnect-skill-old-'))
           if (!quarantine) return
           // Tamper with the quarantined prior so recovery cannot put it back either.
+          writableTreeSync(join(skills, quarantine))
           writeFileSync(join(skills, quarantine, 'extra'), 'tampered')
           throw new Error('publication authority lost after quarantine')
         }
@@ -698,6 +703,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     const quarantine = join(dirname(target), interrupted.quarantineName)
     await rename(target, quarantine)
     // The quarantined bundle is still there, and is no longer the set the receipt describes.
+    await writableTree(quarantine)
     await writeFile(join(quarantine, 'extra'), 'tampered')
     await writeApplyingOver([old], [interrupted])
 
@@ -741,6 +747,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     const location = await writeApplyingOver(installed.owned, [])
     const applying = await readSkillLedger(location)
     const target = join(cwd, BUNDLE, 'SKILL.md')
+    await writableTree(join(cwd, BUNDLE))
     await writeFile(target, 'modified')
 
     const recovered = await recover(location, applying!)
@@ -751,7 +758,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     expect((await reconcile('v1')).conflicts).toEqual([BUNDLE])
     expect(await readFile(target, 'utf8')).toBe('modified')
 
-    await rm(join(cwd, '.claude'), { recursive: true, force: true })
+    await removeTree(join(cwd, '.claude'))
     const retried = await reconcile('v1')
     expect(retried.installed).toEqual([BUNDLE])
     expect(await readFile(target, 'utf8')).toBe(BODY)
@@ -761,6 +768,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
   it('recovers a journal whose prior was edited in place and never quarantined', async () => {
     const installed = await reconcile('v1')
     const target = join(cwd, BUNDLE)
+    await writableTree(target)
     await mkdir(join(target, 'references'))
     await writeFile(join(target, 'references/notes.md'), 'kept')
     const location = await writeApplyingOver(installed.owned, [operation(BUNDLE)])
@@ -780,7 +788,7 @@ describe.skipIf(process.platform !== 'win32')('skill install ledger on Windows',
   let root: string
 
   afterEach(async () => {
-    if (root) await rm(root, { recursive: true, force: true })
+    if (root) await removeTree(root)
   })
 
   // Intermittent on Windows — passed one run, failed the next: `stdin.on('error')` in

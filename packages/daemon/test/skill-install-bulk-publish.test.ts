@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { removeTree } from './tree-support.js'
 import {
   readSkillLedger,
   reconcileSkillBundles,
@@ -61,7 +62,7 @@ describe.skipIf(process.platform === 'win32')('skill publication in batched help
   })
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   })
 
   /** `count` one-file skills whose body carries `version`, each from its own source directory. */

@@ -67,6 +67,7 @@ import type { SourceCacheShape } from '../source-cache/keys.js'
 import type { SourceCacheWorkspaceReader, WorkspaceCachePlan } from '../source-cache/read-plan.js'
 import type { SourceCacheWriteRequest, SourceCacheWriter } from '../source-cache/write-back.js'
 import { localWorkspaceFs, type WorkspaceFs } from './workspace-fs.js'
+import { removeTreeSync } from './remove-tree.js'
 import { WorkspaceViolationError } from './workspace-files.js'
 import { githubSubmoduleRepo, gitmoduleRepos } from './gitmodules.js'
 import {
@@ -1766,8 +1767,8 @@ export class WorkspaceManager {
 
   /** Discard every per-session directory of the agent — the worktrees parent and every session's own clones (§11) alike, since a replaced workspace makes both describe a repository the agent no longer has. An `rmSync`, so its subject can only ever be this daemon's own disk. */
   clearSessionWorktrees(agent: Agent): void {
-    rmSync(this.localWorktreesPathFor(agent), { recursive: true, force: true })
-    rmSync(sessionsDirIn(this.agentRootFor(agent)), { recursive: true, force: true })
+    removeTreeSync(this.localWorktreesPathFor(agent))
+    removeTreeSync(sessionsDirIn(this.agentRootFor(agent)))
   }
 
   sessionWorktreeId(sessionKey: string): string {
@@ -3506,7 +3507,7 @@ export class WorkspaceManager {
 
     if (previous !== undefined) {
       try {
-        rmSync(previous, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+        removeTreeSync(previous, { maxRetries: 10, retryDelay: 100 })
       } catch (err) {
         workspaceLog.warn(`workspace: could not remove replaced directory "${previous}" (${formatErr(err)})`)
       }
@@ -3553,13 +3554,13 @@ export class WorkspaceManager {
     if (agent.workspace.mode === 'from-scratch') {
       if (replace) {
         this.clearSessionWorktrees(agent)
-        rmSync(cwd, { recursive: true, force: true })
+        removeTreeSync(cwd)
         mkdirSync(cwd, { recursive: true })
       }
       if (reconcileMaterialization) this.recordWorkspaceMaterialization(agent)
       return () => {
         if (replace) {
-          rmSync(cwd, { recursive: true, force: true })
+          removeTreeSync(cwd)
           mkdirSync(cwd, { recursive: true })
         }
         restoreMarker()
@@ -3603,13 +3604,13 @@ export class WorkspaceManager {
         try {
           this.recordWorkspaceMaterialization(agent)
         } catch (err) {
-          rmSync(cwd, { recursive: true, force: true })
+          removeTreeSync(cwd)
           mkdirSync(cwd, { recursive: true })
           restoreMarker()
           throw err
         }
         return () => {
-          rmSync(cwd, { recursive: true, force: true })
+          removeTreeSync(cwd)
           mkdirSync(cwd, { recursive: true })
           restoreMarker()
         }
@@ -3628,7 +3629,7 @@ export class WorkspaceManager {
     if (reconcileMaterialization) this.recordWorkspaceMaterialization(agent)
 
     return () => {
-      rmSync(cwd, { recursive: true, force: true })
+      removeTreeSync(cwd)
       mkdirSync(cwd, { recursive: true })
       restoreMarker()
     }

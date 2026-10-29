@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { removeTree } from './tree-support.js'
 import type { ShimRequester } from '../src/shim/channels.js'
 import { ClusterSkillClient } from '../src/shim/skill-client.js'
 import { ClusterSkillHandler } from '../src/shim/skill-handler.js'
@@ -97,7 +98,7 @@ describe('cluster skill shim staging', () => {
       expect(reply.skipped).toEqual([{ sourceId: 'source', reason: expect.stringContaining('too many bundles') }])
       expect(await readdir(workspace)).toEqual([])
     } finally {
-      await rm(root, { recursive: true, force: true })
+      await removeTree(root)
     }
   })
 
@@ -151,7 +152,7 @@ describe('cluster skill shim staging', () => {
       expect(Object.keys(reply.skipped![0]!).sort()).toEqual(['reason', 'sourceId'])
       expect(reply.roots.map((entry) => [entry.sourceId, entry.path.split('/').at(-1)])).toEqual([['good', 'good']])
     } finally {
-      await rm(root, { recursive: true, force: true })
+      await removeTree(root)
     }
   })
 
@@ -215,7 +216,7 @@ describe('cluster skill shim staging', () => {
       )
       expect(await readdir(workspace)).toEqual([])
     } finally {
-      await rm(root, { recursive: true, force: true })
+      await removeTree(root)
     }
   })
 
@@ -291,7 +292,7 @@ describe('cluster skill shim staging', () => {
       expect((await store.clusterSkillLedger('a', 'workspace'))?.revision).toBe(2)
     } finally {
       await store.close()
-      await rm(root, { recursive: true, force: true })
+      await removeTree(root)
     }
   }, 120_000)
 
@@ -563,8 +564,8 @@ describe('cluster skill shim staging', () => {
       conflicts: []
     })
     if (process.platform !== 'win32') {
-      expect((await lstat(join(workspace, '.agents/skills/cluster-golden/run.sh'))).mode & 0o777).toBe(0o700)
-      expect((await lstat(join(workspace, '.agents/skills/cluster-golden/SKILL.md'))).mode & 0o777).toBe(0o600)
+      expect((await lstat(join(workspace, '.agents/skills/cluster-golden/run.sh'))).mode & 0o777).toBe(0o500)
+      expect((await lstat(join(workspace, '.agents/skills/cluster-golden/SKILL.md'))).mode & 0o777).toBe(0o400)
     }
     const replay = new ClusterSkillHandler({
       stagingRoot: join(root, 'staging-replay'),
@@ -656,7 +657,7 @@ describe('cluster skill shim staging', () => {
     expect(reply.roots.map((r) => r.path)).toEqual(['.agents/skills/with-asset'])
     expect(reply.roots[0]!.files.find((f) => f.path === 'assets/photo.bin')?.size).toBe(asset.length)
     expect((await readFile(join(workspace, '.agents/skills/with-asset/assets/photo.bin'))).length).toBe(asset.length)
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   }, 120_000)
 
   it('keeps a skipped Git source’s PREVIOUS revision installed, even though its source id changed', async () => {
@@ -728,7 +729,7 @@ describe('cluster skill shim staging', () => {
       expect.objectContaining({ path: '.agents/skills/keep-me', sourceId: firstId, sourceKind: 'agent' })
     ])
     expect(await readFile(join(workspace, '.agents/skills/keep-me/SKILL.md'), 'utf8')).toContain('# Keep')
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   }, 120_000)
 
   it('uses the durable receipt to remove an owned root after pod-local state is lost', async () => {
@@ -1065,7 +1066,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(r.calls.every((call) => call.env.AC_GITCRED_CAPABILITY === undefined)).toBe(true)
       expect(await readdir(w.staging)).toEqual([])
     } finally {
-      await rm(w.root, { recursive: true, force: true })
+      await removeTree(w.root)
     }
   }, 120_000)
 
@@ -1079,7 +1080,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(reply.roots.map((root) => [root.sourceId, root.path])).toEqual([['managed:m', '.agents/skills/alpha']])
       expect(existsSync(join(w.workspace, '.agents/skills/alpha/notes.md'))).toBe(false)
     } finally {
-      await rm(w.root, { recursive: true, force: true })
+      await removeTree(w.root)
     }
   }, 120_000)
 
@@ -1113,7 +1114,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
           ])
         )
       } finally {
-        await rm(w.root, { recursive: true, force: true })
+        await removeTree(w.root)
       }
     },
     120_000
@@ -1134,7 +1135,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(second.skipped).toEqual([expect.objectContaining({ sourceId: 'managed:m', code: 'limits_exceeded' })])
       expect(existsSync(join(w.workspace, '.agents/skills/mskill'))).toBe(false)
     } finally {
-      await rm(w.root, { recursive: true, force: true })
+      await removeTree(w.root)
     }
   }, 120_000)
 
@@ -1164,7 +1165,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
         expect(await readFile(join(w.workspace, '.agents/skills/alpha/SKILL.md'), 'utf8')).toBe(body('alpha'))
         expect(await readdir(w.staging)).toEqual([])
       } finally {
-        await rm(w.root, { recursive: true, force: true })
+        await removeTree(w.root)
       }
     },
     120_000
@@ -1184,7 +1185,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(reply.skipped).toBeUndefined()
       expect(reply.gitSources).toEqual([{ sourceId: gitId(w.tip), resolvedCommit: w.tip, leaves: ['alpha'] }])
     } finally {
-      await rm(w.root, { recursive: true, force: true })
+      await removeTree(w.root)
     }
   }, 120_000)
 
@@ -1196,7 +1197,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(Object.keys(reply).sort()).toEqual(['conflicts', 'roots'])
       expect(r.calls).toEqual([])
     } finally {
-      await rm(w.root, { recursive: true, force: true })
+      await removeTree(w.root)
     }
   }, 120_000)
 
@@ -1246,7 +1247,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(after.calls.length).toBeGreaterThan(0)
       expect(after.calls.every((call) => call.env.AC_GITCRED_CAPABILITY === undefined)).toBe(true)
     } finally {
-      await rm(w.root, { recursive: true, force: true })
+      await removeTree(w.root)
     }
   }, 120_000)
 
@@ -1284,7 +1285,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(existsSync(join(w.staging, handle, createHash('sha256').update(gitId(w.tip)).digest('hex')))).toBe(false)
       expect(await readdir(w.workspace)).toEqual([])
     } finally {
-      await rm(w.root, { recursive: true, force: true })
+      await removeTree(w.root)
     }
   }, 120_000)
 
@@ -1321,7 +1322,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(reply.gitSources ?? []).toEqual([])
       expect(await readdir(w.staging)).toEqual([])
     } finally {
-      await rm(w.root, { recursive: true, force: true })
+      await removeTree(w.root)
     }
   }, 120_000)
 
@@ -1338,7 +1339,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
       expect(r.stalled.some((call) => call.args.includes(`${HOST}stall5.git`))).toBe(false)
       expect(await readdir(w.staging)).toEqual([])
     } finally {
-      await rm(w.root, { recursive: true, force: true })
+      await removeTree(w.root)
     }
   }, 120_000)
 
@@ -1354,7 +1355,7 @@ describe.skipIf(process.platform === 'win32')('cluster skill shim Git plan sourc
         { sourceId: gitId(w.tip), reason: 'no installed revision to keep', code: 'commit_unavailable' }
       ])
     } finally {
-      await rm(w.root, { recursive: true, force: true })
+      await removeTree(w.root)
     }
   }, 120_000)
 

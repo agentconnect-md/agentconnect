@@ -6,10 +6,11 @@
  * lane rather than only where bwrap exists.
  */
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { removeTree } from './tree-support.js'
 import {
   installSkills,
   type SkillsCliInvocation,
@@ -74,7 +75,7 @@ describe('tracking and pinned Git skill refs', () => {
   })
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   })
 
   // A tracking ref (a branch, or none at all) is what "keep my skills current"

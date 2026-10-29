@@ -7,10 +7,11 @@
  * content active is what the clearing pass exists for.
  */
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { removeTree } from './tree-support.js'
 import {
   installSkills,
   type SkillsCliInvocation,
@@ -75,7 +76,7 @@ describe('a failed install keeps what is still desired', () => {
   })
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   })
 
   const FIRST = 'a'.repeat(40)

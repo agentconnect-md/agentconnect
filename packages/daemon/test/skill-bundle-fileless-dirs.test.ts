@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { removeTree, writableTree } from './tree-support.js'
 import {
   reconcileSkillBundles,
   treeDigest,
@@ -45,7 +46,7 @@ describe.skipIf(process.platform === 'win32')('file-less directories in an insta
   })
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   })
 
   it('drops the write-staging directories a runtime left behind and still updates the skill', async () => {
@@ -55,7 +56,8 @@ describe.skipIf(process.platform === 'win32')('file-less directories in an insta
       candidates: [await candidate(join(root, 'v1'), 'doc:v1', { 'SKILL.md': SKILL, 'references/a.md': 'a1\n' })]
     })
     const target = join(cwd, ...BUNDLE.split('/'))
-    // What Claude Code leaves in each directory a session works in.
+    // What Claude Code leaves in each directory a session works in, once a bundle has owner-write again.
+    await writableTree(target)
     for (const staging of ['.claude/.cc-writes', 'references/.claude/.cc-writes']) {
       await mkdir(join(target, staging), { recursive: true })
     }
@@ -83,6 +85,7 @@ describe.skipIf(process.platform === 'win32')('file-less directories in an insta
       candidates: [await candidate(join(root, 'v1'), 'doc:v1', { 'SKILL.md': SKILL, 'references/a.md': 'a1\n' })]
     })
     const target = join(cwd, ...BUNDLE.split('/'))
+    await writableTree(target)
     await mkdir(join(target, 'notes/empty'), { recursive: true })
     await writeFile(join(target, 'notes/kept.md'), 'mine\n')
 
