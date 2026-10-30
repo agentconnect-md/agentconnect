@@ -299,8 +299,14 @@ describe('a threaded task (auto-session-mode.md §6)', () => {
     await d.closeIdleThreadedTasks()
     expect(await index.taskOfThread('bot-a', at('5.1'))).toBe(taskKey)
     clock.advance(120_000)
+    const emit = vi.spyOn(d.sessionMetadataOutbox, 'emitSessionMetadataSnapshot')
     await d.closeIdleThreadedTasks()
     expect(await index.get('bot-a', taskKey)).toBeUndefined()
+    // §6.2: closed, its metadata names no owner any more.
+    expect(emit.mock.calls.map(([snapshot]: any[]) => [snapshot.sessionKey, snapshot.ordered])).toEqual([
+      [taskKey, true]
+    ])
+    emit.mockRestore()
     expect(await index.taskOfThread('bot-a', at('5.1'))).toBeUndefined()
     // Its session stays, an ordinary thread session; a reply in either thread reaches the coordinator.
     expect(await d.store.getSession(taskKey)).toBeDefined()

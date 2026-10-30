@@ -129,6 +129,11 @@ export class SessionMetadataOutbox {
       ts: now
     }
     if (row?.parentSessionId !== undefined) event.parentSessionId = row.parentSessionId
+    // The session owning this one as a task now, or none; the Control Plane locks a task's visibility (auto-session-mode.md §6.2).
+    const taskKey = input.sessionKey ?? slot?.key
+    if (taskKey !== undefined)
+      event.taskParentSessionId =
+        (await store.assistantSubsessions.get(input.agentId, taskKey))?.parentSessionId ?? null
     // Visibility-classification inputs (session-visibility.md §4.1), read from
     // the session row so every re-emit carries them. Absent fields make the CP
     // fail closed (no owner) rather than guess — never send a placeholder.

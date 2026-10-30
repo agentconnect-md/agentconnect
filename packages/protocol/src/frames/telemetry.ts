@@ -85,6 +85,8 @@ export const EventSession = z.object({
   // Stable ACP session id of the session that spawned this one. Absent for roots.
   // Stored as metadata so the console can navigate the session family.
   parentSessionId: z.string().optional(),
+  // The session that owns this one as a task now (auto-session-mode.md §6.2); null for none, absent from an older daemon.
+  taskParentSessionId: z.string().min(1).nullable().optional(),
   agentId: z.string().uuid(),
   launchId: z.string().uuid().optional(), // 🅰️ CP launch fence — absent for sessions created on the Slack/Discord→daemon path (no CP-initiated launch)
   phase: z.enum(['start', 'plan', 'problem', 'end']),

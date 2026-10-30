@@ -1991,6 +1991,7 @@ export class Daemon {
     post: (agentId, integrationId, msg, text) => this.postCoordinatorReply(agentId, integrationId, msg, text),
     showTriaging: (agentId, message) => this.showTriaging(agentId, message),
     sessionLink: (sessionId) => this.sessionLink(sessionId),
+    reportTaskOwners: async (agentId, keys) => await this.reportTaskOwners(agentId, keys),
     warn: (message) => this.log.warn(message)
   })
   // Latched for the WHOLE drain handoff, including the window after `draining`
@@ -13712,8 +13713,10 @@ export class Daemon {
     for (const agentId of this.agents.keys()) {
       if (this.draining) return
       if (!this.servesAgent(agentId)) continue
-      for (const key of await this.store.assistantSubsessions.closeIdleThreaded(agentId, idleBefore))
+      const closed = await this.store.assistantSubsessions.closeIdleThreaded(agentId, idleBefore)
+      for (const key of closed)
         this.log.info(`task ${key} closed after a week idle; its threads go back to the coordinator`)
+      await this.reportTaskOwners(agentId, closed)
     }
   }
 
@@ -13725,8 +13728,10 @@ export class Daemon {
       const index = this.store.assistantSubsessions
       for (const at of await index.threadedConversations(agentId)) {
         if (this.conversationRunsAuto(agentId, at) || this.webchatRunsCoordinator(at)) continue
-        for (const key of await index.releaseThreaded(agentId, at))
+        const released = await index.releaseThreaded(agentId, at)
+        for (const key of released)
           this.log.info(`task ${key} is an ordinary thread session again: its conversation left auto`)
+        await this.reportTaskOwners(agentId, released)
       }
       for (const { channel, transportScope, coordinate } of await this.store.coordinatorReservations(agentId)) {
         if (this.conversationRunsAuto(agentId, { channel, transportScope }) || this.webchatRunsCoordinator({ channel }))
@@ -13760,6 +13765,27 @@ export class Daemon {
         (!at.transportScope || this.transportScopeForIntegration(int) === at.transportScope) &&
         (conversationSessionMode(int, at.channel) === 'auto' || unseen(int))
     )
+  }
+
+  /** Re-send these sessions' metadata, which names the session owning each as a task now; one that never ran reports it with its first turn (auto-session-mode.md §6.2). */
+  private async reportTaskOwners(agentId: string, keys: readonly string[]): Promise<void> {
+    for (const key of keys) {
+      const rec = await this.store.getSession(key).catch(() => undefined)
+      if (!rec?.acpSessionId) continue
+      await this.sessionMetadataOutbox
+        .emitSessionMetadataSnapshot({
+          sessionId: rec.acpSessionId,
+          sessionKey: key,
+          agentId,
+          phase: 'plan',
+          // Durably queued: a release during a Control Plane outage must still clear the lock once it reconnects.
+          ordered: true,
+          platform: rec.platform as SessionKey['platform'],
+          channel: rec.channel,
+          thread: rec.thread
+        })
+        .catch((err) => this.log.warn(`task ${key}: reporting its owner failed: ${formatErr(err)}`))
+    }
   }
 
   /** A threaded task's turn starts, a page task's too: it runs again until the turn ends (auto-session-mode.md §6.2, §10). */

@@ -176,6 +176,7 @@ describe('the coordinator’s outcomes', () => {
     const dispatched: { msg: NormalizedMessage; integrationId?: string }[] = []
     const posted: { msg: NormalizedMessage; text: string }[] = []
     const triaging: string[] = []
+    const reported: string[] = []
     const sessions = new CoordinatorSessions({
       store: () => store,
       now: () => 1_000,
@@ -188,6 +189,7 @@ describe('the coordinator’s outcomes', () => {
         return () => triaging.push(`-${message.id}`)
       },
       sessionLink: (sessionId) => `https://console.example.test/sessions/${sessionId}`,
+      reportTaskOwners: async (_agentId, keys) => void reported.push(...keys),
       warn: () => {}
     })
     const ctx: SessionContext = {
@@ -199,7 +201,7 @@ describe('the coordinator’s outcomes', () => {
       isDm: false,
       tools: coordinatorSessionTools([])
     }
-    return { store, sessions, ctx, dispatched, posted, triaging }
+    return { store, sessions, ctx, dispatched, posted, triaging, reported }
   }
 
   const begin = (sessions: CoordinatorSessions, ...msgs: NormalizedMessage[]) =>
@@ -410,15 +412,18 @@ describe('the coordinator’s outcomes', () => {
   })
 
   it('hands its threaded tasks to the coordinator a root !new starts (§8)', async () => {
-    const { store, sessions, ctx } = await setup()
+    const { store, sessions, ctx, reported } = await setup()
     begin(sessions, slack('1.1'))
     const { taskId } = (await sessions.decide(ctx, {
       action: 'delegateTask',
       messageId: 'msg-1.1',
       title: 'Work'
     })) as { taskId: string }
+    // §6.2: each change of a task's owner is reported, so the Control Plane keeps its visibility locked to it.
+    expect(reported).toEqual([taskId])
     const successor = sessionKey('slack', 'C1', coordinatorCoordinate(2), 'bot-a')
     await sessions.handOver('bot-a', coordinatorKey, successor)
+    expect(reported).toEqual([taskId, taskId])
     expect(await store.assistantSubsessions.get('bot-a', taskId)).toMatchObject({
       parentSessionKey: successor,
       parentSessionId: await store.ensureOutwardSessionId(successor, 'bot-a')

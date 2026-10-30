@@ -35,6 +35,8 @@ export interface CoordinatorSessionsHost {
   showTriaging(agentId: string, message: DeliveredMessage): () => void
   /** The console page of a session, by its outward id. */
   sessionLink(sessionId: string): string
+  /** Tell the Control Plane which session owns each of these tasks now, which locks a task's visibility (§6.2). */
+  reportTaskOwners(agentId: string, keys: readonly string[]): Promise<void>
   warn(message: string): void
 }
 
@@ -253,6 +255,8 @@ export class CoordinatorSessions {
       sinceRound: 1,
       now
     })
+    // A thread whose session already ran becomes a task now; a new session reports its owner with its first turn.
+    await this.host.reportTaskOwners(agentId, [taskKey])
     this.host.dispatch(
       agentId,
       messageForTask(msg, { title, ...(background ? { background } : {}) }),
@@ -437,7 +441,7 @@ export class CoordinatorSessions {
     const sessions = await index.unownedThreadSessions(agentId, at, now - THREADED_TASK_IDLE_CLOSE_MS)
     if (sessions.length === 0) return 0
     const parentSessionId = await store.ensureOutwardSessionId(coordinatorKey, agentId, now)
-    let adopted = 0
+    const adopted: string[] = []
     for (const session of sessions) {
       const opened = await index.adoptThreadSession({
         agentId,
@@ -450,16 +454,18 @@ export class CoordinatorSessions {
         running: session.running,
         now
       })
-      if (opened) adopted += 1
+      if (opened) adopted.push(session.key)
     }
-    return adopted
+    await this.host.reportTaskOwners(agentId, adopted)
+    return adopted.length
   }
 
   /** A coordinator's `!new`: the session succeeding it takes over its threaded tasks, which keep their threads (§8). */
   async handOver(agentId: string, fromKey: string, toKey: string): Promise<void> {
     const store = this.host.store()
     const sessionId = await store.ensureOutwardSessionId(toKey, agentId, this.host.now())
-    await store.assistantSubsessions.adoptThreaded(agentId, fromKey, { sessionId, key: toKey })
+    const moved = await store.assistantSubsessions.adoptThreaded(agentId, fromKey, { sessionId, key: toKey })
+    await this.host.reportTaskOwners(agentId, moved)
   }
 
   /** End a coordinator turn: a one-message turn's text is its reply, and a mention left without an outcome goes to a task (§4.3, §4.5). */

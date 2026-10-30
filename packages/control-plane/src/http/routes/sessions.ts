@@ -1058,11 +1058,13 @@ export function sessionRoutes(deps: HttpDeps) {
         const orgAgentIdSet = new Set<string>(orgAgentIds)
         const agentNames = new Map(orgAgents.map((agent) => [agent.id, agentDisplayName(agent)]))
         const ctx = ctxOf(req)
+        // A threaded task's parent is the session owning it now, which its lineage does not record (auto-session-mode.md §6.2).
+        const parentId = s.parentSessionId ?? s.taskParentSessionId ?? null
         const [parent, children, siblingCandidates, usage, webchatRoster, hookMetadata, channelNames] =
           await Promise.all([
-            s.parentSessionId ? deps.repos.session.get(orgOf(req), s.parentSessionId) : Promise.resolve(null),
+            parentId ? deps.repos.session.get(orgOf(req), parentId) : Promise.resolve(null),
             deps.repos.session.listChildren(SessionId(s.id), orgAgentIds),
-            s.parentSessionId ? deps.repos.session.listChildren(s.parentSessionId, orgAgentIds) : Promise.resolve([]),
+            parentId ? deps.repos.session.listChildren(parentId, orgAgentIds) : Promise.resolve([]),
             deps.repos.sessionUsage.get(s.agentId, s.id),
             // A webchat session's channel IS its conversation id; the roster feeds
             // the adopted-session composer/header, which has no relay socket.

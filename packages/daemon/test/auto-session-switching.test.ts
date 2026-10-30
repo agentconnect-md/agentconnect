@@ -148,9 +148,12 @@ describe('switching into auto (auto-session-mode.md §3.5)', () => {
     await seed('subsession:d1', { title: 'A background task' })
     await seed('4.1', { channel: 'C2', title: 'Elsewhere' })
     setMode('auto')
+    const emit = vi.spyOn(d.sessionMetadataOutbox, 'emitSessionMetadataSnapshot')
 
     // A reply in a thread from before the switch reaches its own session, now a task.
     await route(slack('1.5', { thread: '1.1' }))
+    // §6.2: the adopted session's metadata names its coordinator now.
+    expect(emit.mock.calls.map(([snapshot]: any[]) => snapshot.sessionKey)).toEqual([keyAt('1.1')])
     expect(calls[0]).toMatchObject({ thread: '1.1' })
     expect(calls[0]!.sessionThread).toBeUndefined()
     const parent = (await coordinatorKey())!
@@ -231,8 +234,14 @@ describe('switching out of auto (auto-session-mode.md §3.5)', () => {
     await d.leaveAutoConversations()
     expect(await index.get('bot-a', keyAt('1.1'))).toBeDefined()
     setMode('createNew')
+    const emit = vi.spyOn(d.sessionMetadataOutbox, 'emitSessionMetadataSnapshot')
     await d.leaveAutoConversations()
     expect(await index.get('bot-a', keyAt('1.1'))).toBeUndefined()
+    // §6.2: released, its metadata names no owner, so its visibility is its sender's again; queued durably.
+    expect(emit.mock.calls.map(([snapshot]: any[]) => [snapshot.sessionKey, snapshot.ordered])).toEqual([
+      [keyAt('1.1'), true]
+    ])
+    emit.mockRestore()
     expect(await index.taskOfThread('bot-a', at('5.1'))).toBeUndefined()
     expect(await coordinatorKey()).toBeUndefined()
     expect(await d.store.getSession(keyAt('1.1'))).toBeDefined()
