@@ -151,7 +151,13 @@ import {
   type PlatformReadDeps
 } from './ops/platform-reads.js'
 import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
-import { assertPlaceRead, isPlatformPost, judgePlaceWrite, type PlaceAccessDeps } from './ops/place-gate.js'
+import {
+  assertPlaceRead,
+  isPlatformPost,
+  judgePlaceWrite,
+  type PlaceAccessDeps,
+  type WriteTarget
+} from './ops/place-gate.js'
 import { resolveChannelArg } from './ops/channel-names.js'
 import { recall, RECALL_ARGS } from './ops/recall.js'
 import { askingToJoin, parkingOnJoin, type JoinAskDeps, type JoinParked } from './ops/join-ask.js'
@@ -419,11 +425,19 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ...allAttachmentReadTools().map((tool) => [tool.name, READ_ATTACHMENT_ARGS] as [string, ZodType])
 ])
 
-/**
- * Execute one tool call inside the daemon and return a plain result object (the
- * bridge wraps it into an MCP `CallToolResult`). Throws on bad input or a
- * missing connection — the caller turns that into an MCP `isError` result.
- */
+// Both model tools and automatic task output use the live-turn gate and the same conversation write policy.
+export async function authorizeSessionPublication(
+  ctx: SessionContext,
+  name: string,
+  target: WriteTarget,
+  deps: OpsDeps
+): Promise<void> {
+  if (deps.canRun && !(await deps.canRun(ctx))) throw new Error('this agent turn has been stopped')
+  if (!deps.shareTarget?.(ctx)?.ok) throw new Error(`${name}: this turn has no visible conversation to publish into`)
+  await judgePlaceWrite(ctx, name, target, deps)
+}
+
+// Execute a daemon tool; the bridge wraps its result or error as an MCP response.
 export async function executeTool(
   ctx: SessionContext,
   name: string,
@@ -563,11 +577,7 @@ async function executeRegisteredTool(
       connection: conn,
       deliveryThread,
       originMsgId: deps.searchOrigin?.(ctx),
-      judgeWrite: (target) => {
-        const publication = deps.shareTarget?.(ctx)
-        if (!publication?.ok) throw new Error(`${name}: this turn has no visible conversation to publish into`)
-        return judgePlaceWrite(ctx, name, target, deps)
-      },
+      judgeWrite: (target) => authorizeSessionPublication(ctx, name, target, deps),
       postIdentity: () => ({
         username: ctx.agentName,
         icon_url: ctx.iconUrl,

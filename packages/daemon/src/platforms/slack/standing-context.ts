@@ -21,8 +21,9 @@ export const SLACK_CODE_CHANNEL_CONTEXT =
   'channel has already been fulfilled. If it contains a task, begin that task here; otherwise acknowledge ' +
   'that this channel is ready. Reply normally and accept follow-ups here without requiring mentions.\n' +
   'Keep the native work surfaces current as part of doing the task, without waiting for a separate request: ' +
-  'use manageSlackCodeChannel with action context for the repository, branch and PR once known; use ' +
-  'setSlackCodeView with type diff after meaningful edits, including baseBranch and headBranch; publish a ' +
+  'use manageSlackCodeChannel with action context for the repository, branch and PR once known; ' +
+  'let automatic task diff updates maintain the Code view when the platform announces them; otherwise use ' +
+  'setSlackCodeView with type diff only for authorized changes, including baseBranch and headBranch. Publish a ' +
   'pull_request view when you open a PR, and an html view when a self-contained preview helps review the result. ' +
   'Use actual changes and verified links, stable view keys, and update existing views. A chat message or ' +
   'pasted diff does not populate these surfaces. Archive only when the user requests it. ' +

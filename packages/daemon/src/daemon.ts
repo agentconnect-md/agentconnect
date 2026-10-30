@@ -186,6 +186,7 @@ import { recordedImageModels, type MicrosandboxManager, type MicrosandboxEnviron
 import { probeImageModels } from './microsandbox/model-probe.js'
 import { localShimGitRunner } from './execution/local-git.js'
 import type { GitRunner } from './workspace/git-runner.js'
+import { openTaskDiff, TaskDiffUnavailable, type TaskDiff } from './workspace/task-diff.js'
 import {
   localMicrosandboxEnvironment,
   localMicrosandboxPlacement,
@@ -598,6 +599,7 @@ import {
   slackAgentIdentityOptions,
   slackAgentPostOptions,
   slackStreamRecipient,
+  startSlackCodeDiff,
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
 import { slackElicitCards } from './platforms/slack/elicit-card.js'
@@ -1759,23 +1761,49 @@ export class Daemon {
           return recipient ? { recipient } : {}
         },
         apply: (p, action) => this.applySlackAction(p, action as SlackAction),
+        onStart: (p, created) =>
+          startSlackCodeDiff(p, turnState<SlackTurnState>(p), {
+            open: () => this.turnTaskDiff(p, created),
+            authorize: async () => {
+              try {
+                await this.mcp.authorizeConversationOutput({
+                  agentId: p.plan.agentId,
+                  integrationId: p.plan.integrationId,
+                  platform: p.plan.platform,
+                  channel: p.plan.channel,
+                  thread: p.plan.sessionThread,
+                  transportScope: p.entry.msg.transportScope
+                })
+              } catch {
+                throw new TaskDiffUnavailable(
+                  'Publication is not authorized for this task. Automatic updates have stopped.'
+                )
+              }
+            },
+            active: () => !p.outputSuppressed && this.pending.get(pendingTurnKey(p.hostKey, p.acpSessionId)) === p,
+            mask: (content) => this.maskAgentSecrets(p.plan.agentId, content),
+            notice: async (text) => {
+              this.enqueueApply(p, { kind: 'post', text, attributed: false })
+              await p.signals.applyChain
+            },
+            debug: (message) => this.log.debug(message)
+          }),
         // §5.5: resolve the closing routing facts before the final body flush, so a
         // terminal section posted at finalization is born `final` (no closing edit).
         prepareResponseClosure: (p) => this.prepareSlackResponseClosure(p),
         // §5.5: re-stamp the delivered answer as this response's one `final` event.
         closeResponse: (p) => this.closeSlackResponse(p),
-        // Suppression teardown: stop the append timer and settle the chrome stream mid-flight
-        // (native Stop, an explicit cancel, displacement, loop protection, shutdown). Slack
-        // does NOT end the stream itself on a Stop click, so this is what closes it.
+        // Stop both publishers when the turn is cancelled, displaced, fenced or shut down.
         onSuppress: (p) => {
+          turnState<SlackTurnState>(p).codeDiff?.stop()
           this.clearSlackStream(p)
           if (p.conv instanceof OutputConverger)
             for (const action of p.conv.settleStream('stopped'))
               this.enqueueApply(p, action, { allowWhenSuppressed: true })
         },
-        // Terminal settlement: a chrome stream must never be left open (§5), and stale footer
-        // removals the final attribution action may have bypassed still need retrying.
+        // Drain task output and settle chrome before releasing the turn's transport.
         onSettle: async (p) => {
+          await turnState<SlackTurnState>(p).codeDiff?.settle()
           // A turn that died before its own settle still owes the stream one. An unresolved
           // stop is NOT retried here — the connection owns that, because it outlives Pending.
           if (p.conn && turnState<SlackTurnState>(p).stream) {
@@ -18895,6 +18923,8 @@ export class Daemon {
       }
       turnModel = await this.captureTurnModel(run, host, sessionId, modelOverride)
       await this.openTurnChrome(p, run, currentAttributionInfo)
+      const surfaceContext = await this.turnSurfaces.exact(p.plan.platform)?.onStart?.(p, created)
+      if (surfaceContext) handled.blocks.push({ type: 'text', text: surfaceContext })
       const prompt = await this.prePromptContextRefresh(p, run, sessionId, handled)
       this.emitTurnStarted(run, host, sessionId, created, prompt.finalCaptureInput, turnModel)
       const outcome = await this.runPromptLoop(p, run, {
@@ -19768,6 +19798,41 @@ export class Daemon {
     } catch {
       return undefined
     }
+  }
+
+  // Resolve only isolated repositories assigned to this session, on the execution plane that owns them.
+  private async turnTaskDiff(p: Pending, created: boolean): Promise<TaskDiff> {
+    const agent = this.agents.get(p.plan.agentId)
+    const session = await this.store.getSession(p.plan.sessionKey)
+    if (!agent || session?.workspaceIsolation !== 'session')
+      throw new TaskDiffUnavailable('Automatic diff updates need a repository isolated for this task.')
+    const scope = createWorkspaceScope({
+      workspaces: this.workspaces,
+      agentOf: (id) => this.agents.get(id),
+      sessionOf: (id, outwardId) => this.store.getSessionByOutwardId(outwardId, id),
+      runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
+    })
+    const roots: Array<{ path: string; name: string }> = []
+    if (agent.workspace.mode === 'git-repo') {
+      const primary = await scope.location(agent.id, p.outwardSessionId)
+      if (primary) roots.push({ path: primary.root, name: 'workspace' })
+    }
+    for (const root of await this.workspaces.sessionAdditionalRoots(agent, {
+      sessionKey: session.key,
+      isolation: 'session'
+    })) {
+      if (!roots.some((existing) => existing.path === root.path))
+        roots.push({ path: root.path, name: root.repoFullName })
+    }
+    return openTaskDiff(
+      roots.map((root) => {
+        const git = this.workspaces.consoleWorkspaceGitRunner(agent.id, root.path, undefined, session.key)
+        if (!git) throw new TaskDiffUnavailable('The task workspace is unavailable.')
+        return { git, name: root.name }
+      }),
+      session.key,
+      created && session.lastTurnOutcome == null
+    )
   }
 
   /** Build this turn's live record from its plan and register it as the session's Pending turn. */
