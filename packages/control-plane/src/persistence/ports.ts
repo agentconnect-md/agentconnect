@@ -2902,6 +2902,8 @@ export interface UsageAggregate {
    *  plug figure that would absorb any attribution bug and leave the caller adding up
    *  perfectly, where an independent sum makes the equality a checkable invariant. */
   unattributed?: Omit<AgentUsageAggregate, 'agentId'>
+  /** Each agent's coordinator sessions (auto-session-mode.md §4.6), a part of its `agents` row the reader may attribute, so the console can show it. */
+  coordinators: AgentUsageAggregate[]
   /** Viewer-scoped, splits and per-bucket total alike, so a bucket never hands over
    *  withheld spend resolved in time. It therefore does NOT sum to `totals` — see
    *  `unattributed`. This is a convenience boundary, NOT a security one: `from`/`to` are

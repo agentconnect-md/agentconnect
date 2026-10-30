@@ -4543,6 +4543,8 @@ export const UsageDto = z.object({
   // Usage withheld from attribution by either resource or session access; absent for owners and settlement workloads.
   // The independent rollup has no agent or session IDs and is present even when withheld rows cost zero.
   unattributed: UsageAgentDto.omit({ agentId: true }).optional(),
+  // Each agent's coordinator sessions under Auto, a part of that agent's row, only where the reader may attribute them.
+  coordinators: z.array(UsageAgentDto).optional(),
   // Zero-filled hourly (up to two days) or daily buckets; start is a UTC ISO instant and model '' means unreported.
   // Agent and model groupings include only nonzero deltas.
   // Series follows attribution: complete for owners, otherwise excluding the unattributed residual from every bucket.

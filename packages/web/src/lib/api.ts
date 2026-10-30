@@ -4245,6 +4245,8 @@ export interface UsageDto {
   // Usage withheld by resource or session access, with no IDs; owners receive complete attribution and no residual.
   // Attributed agents/models plus this independently summed rollup equal totals, including zero-cost withheld rows.
   unattributed?: Omit<UsageAgentDto, 'agentId'>
+  /** The part of each agent's row its Auto coordinators spent (auto-session-mode.md §4.6); absent from an older Control Plane. */
+  coordinators?: UsageAgentDto[]
   // Zero-filled hourly (up to two days) or daily buckets; start is a UTC ISO instant and model '' means unreported.
   // Optional agent/model groupings preserve compatibility with older servers.
   // Series follows attribution: complete for owners, otherwise excluding the unattributed residual from every bucket.

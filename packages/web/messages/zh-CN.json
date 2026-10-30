@@ -4596,6 +4596,7 @@
     "loadError": "无法加载用量：{error}",
     "emptyState": "此时间范围内暂无用量记录。Agent 运行会话后，Token 用量会显示在这里。",
     "tokensAndSessions": "{tokens} tokens · {sessions} 个会话",
+    "coordinatorPart": "协调会话：{tokens} tokens · {spend}",
     "computers": {
       "title": "电脑",
       "runningHours": "托管电脑时长",
