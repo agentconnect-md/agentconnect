@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } fr
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import {
+  agentCapabilitySource,
   agentLabel,
   conversationGate,
   isDirectConversation,
@@ -35,6 +36,7 @@ import { useHoverCard } from '@/components/ui/HoverCard'
 import { SelfAgentTag } from '@/components/console/SelfAgentTag'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
+import { autoSessionModeSupported } from '@/lib/session-mode'
 import type { WebChannelListMessage } from '@/components/console/platforms/contract'
 
 type ChannelListTranslator = (key: string, values?: Record<string, string | number>) => string
@@ -75,6 +77,8 @@ function RowSettings({
   trigger,
   gateOwnsTrigger = false,
   assistantMode = false,
+  autoReady = false,
+  routed = false,
   onTrigger,
   onSessionMode
 }: {
@@ -82,6 +86,10 @@ function RowSettings({
   gateOwnsTrigger?: boolean
   /** The agent is in assistant mode: a place that can hold one session keeps it (assistant-mode.md §5.2). */
   assistantMode?: boolean
+  /** The conversation's consumer runs on a daemon that reads Auto (auto-session-mode.md §3.1). */
+  autoReady?: boolean
+  /** A shared bot's By decision routing owns the row, which Auto never runs behind (§3.3). */
+  routed?: boolean
   channel: IntegrationChannelRow
   /** Names the room the way its platform does — one noun per card. */
   platform?: string
@@ -97,7 +105,7 @@ function RowSettings({
   const here = translate('thisRoom', { noun: localNoun(translate, rowNoun(channel.kind, platform)) })
   const semantics = channelListSemantics(platform)
   // Only a 1:1 DM is On/Off; a group DM keeps a channel's choices (several people share it), and every agent gets Off.
-  const respond: ChannelSettingsOption<RowTrigger>[] =
+  const plainRespond: ChannelSettingsOption<RowTrigger>[] =
     channel.kind === 'im'
       ? [
           { value: 'any', label: translate('trigger.on'), hint: translate('trigger.dmOnHint') },
@@ -138,6 +146,13 @@ function RowSettings({
       : isDirectConversation(channel.kind)
         ? []
         : semantics.sessionModes
+  const autoOption: ChannelSettingsOption<SessionMode> = {
+    value: 'auto',
+    label: translate('sessionMode.auto'),
+    hint: translate('sessionMode.autoHint', { room: here })
+  }
+  // Auto only where the consumer's daemon reads it and never behind By decision or routing (auto-session-mode.md §3.3); a row on it keeps it listed.
+  const autoOffered = channel.sessionMode === 'auto' || (autoReady && trigger !== 'decision' && !routed)
   const sessions = (
     [
       {
@@ -155,11 +170,33 @@ function RowSettings({
             code: (chunks: ReactNode) => <span className="mono">{chunks}</span>
           } as never
         )
-      }
+      },
+      autoOption
     ] satisfies ChannelSettingsOption<SessionMode>[]
-  ).filter((o) => !offered || offered.includes(o.value))
-  // Mirrors the projection: an assistant-mode place appends wherever it can, unless a decision gates it.
-  const fixedSession = assistantMode && trigger !== 'decision' && sessions.some((o) => o.value === 'append')
+  ).filter((o) => (!offered || offered.includes(o.value)) && (o.value !== 'auto' || autoOffered))
+  // Mirrors the projection: an assistant-mode place runs on its coordinator where the daemon reads Auto, else on one session, unless a decision gates it.
+  const fixedSession: SessionMode | null =
+    assistantMode && trigger !== 'decision' && sessions.some((o) => o.value === 'append')
+      ? autoReady
+        ? 'auto'
+        : 'append'
+      : null
+  // Under Auto the coordinator decides which messages get a reply, so Off is the one choice left (auto-session-mode.md §3.3).
+  const coordinated = (fixedSession ?? channel.sessionMode) === 'auto' && trigger !== 'decision'
+  const decided: RowTrigger =
+    trigger === 'mention' || trigger === 'any'
+      ? trigger
+      : (plainRespond.find((o) => o.value === 'mention' || o.value === 'any')?.value ?? 'mention')
+  const respond: ChannelSettingsOption<RowTrigger>[] = coordinated
+    ? [
+        {
+          value: decided,
+          label: translate('trigger.coordinator'),
+          hint: translate('trigger.coordinatorHint', { room: here })
+        },
+        ...plainRespond.filter((o) => o.value === 'off')
+      ]
+    : plainRespond
   // While a decision owns the trigger, the plain choices stay listed but inert, and the footer says how to get them back.
   const groups: ChannelSettingsGroup[] = [
     {
@@ -167,6 +204,8 @@ function RowSettings({
       label: translate('settings.respondTo'),
       options: gateOwnsTrigger ? respond.filter((o) => o.value !== 'decision') : respond,
       value: trigger,
+      // Under Auto the button reads the mode alone until the row is Off.
+      summarize: (chosen) => chosen.session !== 'auto' || chosen.trigger === 'off',
       onPick: (value) => onTrigger(value as RowTrigger),
       ...(gateOwnsTrigger && {
         locked: { label: translate('settings.respondLocked'), hint: translate('settings.respondLockedHint') }
@@ -178,8 +217,8 @@ function RowSettings({
     groups.push({
       id: 'session',
       label: translate('settings.sessionMode'),
-      options: sessions.filter((o) => o.value === 'append'),
-      value: 'append',
+      options: fixedSession === 'auto' ? [autoOption] : sessions.filter((o) => o.value === 'append'),
+      value: fixedSession,
       summarize: (chosen) => chosen.trigger !== 'off',
       onPick: () => undefined
     })
@@ -805,6 +844,8 @@ export function IntegrationChannelList({
     refresh,
     bots,
     agents,
+    daemons,
+    memberSets,
     integrations
   } = useConsoleData()
   const ownerGuard = useOwnerChangeGuard()
@@ -867,6 +908,15 @@ export function IntegrationChannelList({
   const defaultAgent = (c: IntegrationChannelRow) => {
     const explicit = c.agentId ?? owners?.get(c.channelId)
     return (explicit ? members.find((m) => m.id === explicit) : undefined) ?? members[0]
+  }
+  // Auto reaches the conversation's consumer, a shared bot's row owner or else this page's agent, only on a daemon that reads it.
+  const autoReady = (c: IntegrationChannelRow) => {
+    const consumerId = shareable ? (defaultAgent(c)?.id ?? agentId) : agentId
+    const consumer = consumerId ? agents.find((a) => a.id === consumerId) : undefined
+    return (
+      !!consumer &&
+      autoSessionModeSupported(agentCapabilitySource(consumer, daemons ?? [], memberSets ?? [])?.caps.features)
+    )
   }
   const channelRows = channels.filter((c) => !c.isCodeSession && !isDirectConversation(c.kind))
   const codeRows = channels.filter((c) => c.isCodeSession)
@@ -971,7 +1021,13 @@ export function IntegrationChannelList({
                 viewer={viewer}
                 disabled={!integrationId}
                 routing={
-                  decisionsOffered && decisionTriggers && botId && !ownGate && !isDirectConversation(c.kind)
+                  decisionsOffered &&
+                  decisionTriggers &&
+                  botId &&
+                  !ownGate &&
+                  !isDirectConversation(c.kind) &&
+                  // Auto never runs behind routing (auto-session-mode.md §3.3).
+                  (c.sessionMode !== 'auto' || managedByRouting(c))
                     ? {
                         name: c.decision?.name ?? null,
                         active: managedByRouting(c),
@@ -1008,6 +1064,8 @@ export function IntegrationChannelList({
                   trigger === 'decision' && ((!!decisions && ownGate) || (shareable && managedByRouting(c)))
                 }
                 assistantMode={assistantMode}
+                autoReady={autoReady(c)}
+                routed={shareable && managedByRouting(c)}
                 onTrigger={(next) => pickTrigger(c, next)}
                 onSessionMode={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}
               />

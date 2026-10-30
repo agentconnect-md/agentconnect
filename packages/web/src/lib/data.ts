@@ -2253,10 +2253,8 @@ export interface IntegrationChannelRow {
   trigger: 'off' | 'mention' | 'any' | 'decision'
   decisionBinding?: ChannelDecisionBinding | null
   decision?: ChannelDecisionView | null
-  /** Which session a message here joins: a new one per thread, or the conversation's one
-   *  ongoing session. Channel rows only — a direct conversation is not a place this choice
-   *  means anything. */
-  sessionMode?: 'createNew' | 'append'
+  /** Which session a message here joins: one per thread, the conversation's one session, or the coordinator's choice (`auto`). */
+  sessionMode?: 'createNew' | 'append' | 'auto'
   /** Effective per-conversation owner for a shared bot. */
   agentId?: string | null
 }
