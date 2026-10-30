@@ -213,17 +213,43 @@ export class CoordinatorSessions {
         sinceRound: (row.round ?? 1) + 1,
         now: this.host.now()
       })
-    // The task keeps its own session; the message's thread stays where it answers (§6.4).
-    const sessionThread = (await store.getSession(row.childSessionKey))?.thread ?? threads[0]!.thread
-    this.host.dispatch(
-      agentId,
-      messageForTask(msg, { sessionThread, ...(background ? { background } : {}) }),
-      message.integrationId
-    )
+    await this.deliverToTask(agentId, row.childSessionKey, message, background)
     return row.childSessionKey
   }
 
-  /** End a coordinator turn: a one-message turn's text is its reply, and a mention left without an outcome opens a task (§4.3, §4.5). */
+  /** Dispatch a message to a threaded task: the task keeps its own session, the message's thread stays where it answers (§6.4). */
+  private async deliverToTask(
+    agentId: string,
+    taskKey: string,
+    message: DeliveredMessage,
+    background?: string
+  ): Promise<void> {
+    const store = this.host.store()
+    const sessionThread =
+      (await store.getSession(taskKey))?.thread ??
+      (await store.assistantSubsessions.threadsOf(agentId, taskKey))[0]?.thread
+    this.host.dispatch(
+      agentId,
+      messageForTask(message.msg, {
+        ...(sessionThread ? { sessionThread } : {}),
+        ...(background ? { background } : {})
+      }),
+      message.integrationId
+    )
+  }
+
+  /** A mention left without an outcome reaches the task its thread now belongs to, else opens one (§4.5). */
+  private async fallBack(key: string, agentId: string, message: DeliveredMessage): Promise<void> {
+    const { msg } = message
+    const at = { platform: msg.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
+    const owner = await this.host
+      .store()
+      .assistantSubsessions.taskOfThread(agentId, { ...at, thread: replyThreadOf(msg) })
+    if (owner !== undefined) await this.deliverToTask(agentId, owner, message)
+    else await this.openTask(key, agentId, message, fallbackTitle(msg))
+  }
+
+  /** End a coordinator turn: a one-message turn's text is its reply, and a mention left without an outcome goes to a task (§4.3, §4.5). */
   async settleTurn(key: string, agentId: string, ended: 'answered' | 'failed' | 'stopped'): Promise<void> {
     const settled = this.turns.end(key, isNoResponsePrefix)
     // A stopped turn was stopped on purpose: nothing it left undecided is acted on.
@@ -237,8 +263,8 @@ export class CoordinatorSessions {
     }
     for (const message of settled.undecided) {
       if (!message.mentionsYou) continue
-      await this.openTask(key, agentId, message, fallbackTitle(message.msg)).catch((err: unknown) =>
-        this.host.warn(`coordinator ${key}: fallback task for ${message.id} failed (${String(err)})`)
+      await this.fallBack(key, agentId, message).catch((err: unknown) =>
+        this.host.warn(`coordinator ${key}: fallback for ${message.id} failed (${String(err)})`)
       )
     }
   }

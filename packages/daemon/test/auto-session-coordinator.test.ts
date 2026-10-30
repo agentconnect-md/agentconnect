@@ -283,6 +283,19 @@ describe('the coordinator’s outcomes', () => {
     expect(dispatched).toHaveLength(1)
   })
 
+  it('hands a fallback mention to the task its thread was attached to earlier in the batch', async () => {
+    const { sessions, ctx, dispatched } = await setup()
+    begin(sessions, slack('1.1'))
+    const task = (await sessions.decide(ctx, { action: 'delegateTask', messageId: 'msg-1.1', title: 'Work' })) as {
+      taskId: string
+    }
+    begin(sessions, slack('2.2', { thread: '2.1' }), slack('2.3', { thread: '2.1', trigger: 'mention' }))
+    await sessions.decide(ctx, { action: 'messageTask', messageId: 'msg-2.2', taskId: task.taskId })
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'failed')
+    expect(dispatched.map((one) => one.msg.msgId)).toEqual(['slack:C1:1.1', 'slack:C1:2.2', 'slack:C1:2.3'])
+    expect(dispatched[2]!.msg).toMatchObject({ thread: '2.1', sessionThread: '1.1' })
+  })
+
   it('keeps a task’s original message intact under the coordinator’s background', () => {
     const msg = slack('1.1', { text: 'original', sessionThread: COORDINATOR, headless: true })
     expect(messageForTask(msg, {})).not.toHaveProperty('sessionThread')
