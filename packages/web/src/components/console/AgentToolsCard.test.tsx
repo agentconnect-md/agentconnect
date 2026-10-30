@@ -27,6 +27,11 @@ vi.mock('@/lib/api', () => ({
   repoWebUrl: () => undefined
 }))
 vi.mock('@/components/marks', () => ({ GithubMark: () => null }))
+vi.mock('@/components/console/McpServersCard', () => ({
+  CreateMcpProviderModal: () => null,
+  EditMcpProviderModal: ({ provider }: { provider: { name: string } }) => <div>edit-mcp:{provider.name}</div>,
+  EditConnectorModal: ({ provider }: { provider: { name: string } }) => <div>edit-connector:{provider.name}</div>
+}))
 
 import { AgentToolsCard } from './AgentToolsCard'
 
@@ -124,6 +129,28 @@ describe('AgentToolsCard', () => {
     try {
       await render(undefined)
       expect(await openAddMenu()).toContain('already attached')
+    } finally {
+      mocks.mcpProviders = saved
+    }
+  })
+
+  // An attached registry server opens the same dialog its registry tile does, but only for a caller who may edit it.
+  it('opens the registry edit dialog from an attached row the caller may edit', async () => {
+    const saved = mocks.mcpProviders
+    mocks.mcpProviders = [
+      { name: 'grafana', visibility: 'org', kind: 'custom', canEdit: true },
+      { name: 'linear', visibility: 'org', kind: 'custom', canEdit: false }
+    ]
+    mocks.saved = ['grafana', 'linear']
+    try {
+      await render(undefined)
+      const open = host!.querySelectorAll('button[title="View or edit this server"]')
+      expect(open).toHaveLength(1)
+      expect(open[0]!.textContent).toContain('grafana')
+      await act(async () => {
+        ;(open[0] as HTMLButtonElement).click()
+      })
+      expect(host!.textContent).toContain('edit-mcp:grafana')
     } finally {
       mocks.mcpProviders = saved
     }

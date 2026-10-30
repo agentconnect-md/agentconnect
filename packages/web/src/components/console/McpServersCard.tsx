@@ -804,7 +804,7 @@ export function EditMcpProviderModal({
 // The auth type comes from the catalog: a single-method service is definitive; a rare
 // multi-method one is ambiguous (the row doesn't record which was used), so we let the
 // user pick. Visibility stays editable regardless.
-function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; onClose: () => void }) {
+export function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; onClose: () => void }) {
   const t = useTranslations('Tools.mcp.editConnector')
   const { reconnectConnectorConnection, saveSharing } = useConsoleData()
   const { data: catalog, error: catalogErr } = useSWR('connector-catalog', () => fetchConnectorCatalog(), {
