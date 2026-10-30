@@ -102,6 +102,38 @@ afterEach(async () => {
 })
 
 describe('McpControlServer IPC', () => {
+  it('requires a registered, live, visible session for automatic conversation output', async () => {
+    let live = true
+    let visible = true
+    server = new McpControlServer(
+      controlDeps({
+        socketPath: socketPath(),
+        gatewayFor: gateway,
+        recordOutbound: async () => {},
+        now: () => 0,
+        canRun: () => live,
+        shareTarget: () =>
+          visible
+            ? { ok: true, platform: 'slack', channel: 'C1', integrationId: 'int-1' }
+            : { ok: false, reason: 'headless' }
+      })
+    )
+    const binding = ctx({ transportScope: 'bot-scope' })
+    await expect(server.authorizeConversationOutput(binding)).rejects.toThrow('No registered session')
+    const token = server.register(binding)
+    await expect(server.authorizeConversationOutput(binding)).resolves.toBeUndefined()
+    await expect(server.authorizeConversationOutput({ ...binding, transportScope: 'another-bot' })).rejects.toThrow(
+      'No registered session'
+    )
+    live = false
+    await expect(server.authorizeConversationOutput(binding)).rejects.toThrow('stopped')
+    live = true
+    visible = false
+    await expect(server.authorizeConversationOutput(binding)).rejects.toThrow('no visible conversation')
+    server.unregister(token)
+    await expect(server.authorizeConversationOutput(binding)).rejects.toThrow('No registered session')
+  })
+
   it('listTools returns the registered session tools', async () => {
     const path = socketPath()
     server = new McpControlServer(

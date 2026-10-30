@@ -1102,12 +1102,16 @@ export class SlackConnection implements PlatformConnection {
 
   async codeChannelApi<K extends 'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView'>(
     method: K,
-    args: Parameters<WebClient['agents']['conversations'][K]>[0]
+    args: Parameters<WebClient['agents']['conversations'][K]>[0],
+    signal?: AbortSignal
   ): Promise<unknown> {
     const api = this.app.client.agents.conversations
     if (!api) throw new Error('This Slack client does not support code channels')
     try {
-      return await this.queue.enqueue(() => (api[method] as (args: unknown) => Promise<unknown>)(args))
+      return await this.queue.enqueue(() => {
+        signal?.throwIfAborted()
+        return (api[method] as (args: unknown) => Promise<unknown>)(args)
+      })
     } catch (err) {
       if (isSendQueueTimeout(err))
         throw new Error('Slack did not answer in time; the code channel operation may have completed')

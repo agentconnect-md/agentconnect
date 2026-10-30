@@ -146,7 +146,7 @@ const codeTools: ToolDescriptor[] = [
   {
     name: 'setSlackCodeView',
     description:
-      'Keep the code channel review surfaces current: publish a unified diff after meaningful edits, a PR tab when a PR opens, or a self-contained HTML preview when it helps review the result. Do this as part of the task without requiring a separate user request. channelId defaults to this conversation. HTML needs a stable viewKey; diffs use diff --git headers and baseBranch/headBranch labels. Content is limited to 1000000 UTF-8 bytes. No external HTML resources are enabled.',
+      'Publish a PR tab when a PR opens or a self-contained HTML preview when it helps review the result. The platform maintains the task diff when automatic updates are active; do not overwrite that Code view. Otherwise this tool can publish an authorized unified diff with diff --git headers and baseBranch/headBranch labels. channelId defaults to this conversation. HTML needs a stable viewKey. Content is limited to 1000000 UTF-8 bytes. No external HTML resources are enabled.',
     inputSchema: z.toJSONSchema(viewArgs) as ToolDescriptor['inputSchema']
   },
   {

@@ -126,6 +126,8 @@ export interface TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
   /** Seed the opaque per-turn state slot. Core stores the result on the turn
    *  record and NEVER reads it — only this surface's `apply` does. */
   initialTurnState(ctx: TurnOutputContext<TMessage>): unknown
+  // Bind task output before the runtime can edit files; the returned block describes what the surface owns.
+  onStart?(turn: TTurn, created: boolean): Promise<string | undefined>
   /** Apply one renderer action to the platform. Core has already decided the
    *  action is allowed to publish (suppression re-check) and serialized it. */
   apply(turn: TTurn, action: TAction): Promise<void>

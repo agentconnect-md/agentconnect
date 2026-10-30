@@ -71,11 +71,34 @@ that needs the existing context, or cannot create a channel, uses ordinary deleg
 
 Channel discovery supplies standing context identifying an existing code channel.
 The agent continues work there, maintains repository/branch/PR context items, and
-publishes diffs after meaningful edits, PR views when opened, and useful HTML previews.
-These are agent tool calls within the task, not an automatic upload of workspace files.
+publishes PR views when opened and useful HTML previews.
 The agent does not auto-archive a channel at the end of a turn.
 Views initially cover diffs, HTML and PR links. Canvas tabs, arbitrary interactive
 Block Kit views, and runtime-registered slash commands are follow-up capabilities.
+
+### Automatic task diffs
+
+The daemon maintains the Code view for a task with isolated, assigned Git repositories.
+Before its first runtime prompt it pins each clean repository's HEAD under a session-scoped
+Git ref. Later turns and daemon restarts reuse that ref. Commits made during the task remain
+in the diff, alongside staged, unstaged and untracked files; ignored files are excluded.
+Reads use the session's execution-plane Git runner and never change its working tree or index.
+Other directories and shared checkouts are not scanned. An existing task without a saved
+baseline is not adopted automatically, and a dirty initial checkout is refused. These
+ineligible sessions retain their existing output path without a recurring error message.
+
+One serialized publisher samples the workspace every five seconds while the turn runs and
+flushes once at settlement. Unchanged content is deduplicated, secrets are masked, and oversized
+patches are refused instead of displayed as complete. Reverting all changes removes the stale
+Code view. Stop discards in-flight read results and cancels queued publications before the turn
+releases its connection; an HTTP request already accepted by Slack cannot be recalled.
+
+Only the current owned Code channel is eligible. The registered session's live-turn and
+conversation-write authorization is checked before opening the workspace and before every
+publication. A refusal or synchronization failure stops updates for the turn and produces a
+visible reason. Moving output into the platform does not authorize a previously refused send.
+The runtime is told when the platform owns its diff; it retains the HTML/PR tools and manual
+diff publication for separately authorized work outside automatic synchronization.
 
 All message content, API egress and ACP execution stay on the daemon/relay data plane.
 The Control Plane continues to hold control metadata only.
