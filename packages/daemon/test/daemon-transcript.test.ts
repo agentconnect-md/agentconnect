@@ -854,7 +854,13 @@ describe('Daemon transcript records the agent reply', () => {
       ...streaming.appendTurnStream.mock.calls.flatMap((call) => call[1]),
       ...streaming.settleAndStop.mock.calls.flatMap((call) => call[1])
     ]
-    expect(chunks).toContainEqual({ type: 'task_update', id: 'reply-1', title: 'Looking into it.', status: 'complete' })
+    expect(chunks).toContainEqual({
+      type: 'task_update',
+      id: 'reply-1',
+      title: 'Looking into it.',
+      status: 'complete',
+      icon: { type: 'icon', name: 'comment' }
+    })
     expect(chunks).toContainEqual({ type: 'plan_update', title: '1 earlier reply' })
     expect(chunks.every((c) => (c as { type: string }).type !== 'markdown_text')).toBe(true)
     // Both segments are in the transcript, in order.

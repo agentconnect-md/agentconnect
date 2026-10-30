@@ -2057,7 +2057,12 @@ export class SlackConnection implements PlatformConnection {
   async startTurnStream(
     channel: string,
     threadTs: string,
-    options: { isDm?: boolean; recipientUserId?: string; identity?: SlackPostOptions } = {}
+    options: {
+      isDm?: boolean
+      recipientUserId?: string
+      identity?: SlackPostOptions
+      taskDisplayMode?: 'timeline' | 'plan'
+    } = {}
   ): Promise<SlackTurnStream | undefined> {
     const start = this.app.client.chat.startStream
     if (typeof start !== 'function') {
@@ -2079,7 +2084,7 @@ export class SlackConnection implements PlatformConnection {
       .enqueue(async () => {
         let result: SlackTurnStream | undefined
         try {
-          result = await this.openStream(start, channel, threadTs, recipient, options.identity)
+          result = await this.openStream(start, channel, threadTs, recipient, options.identity, options.taskDisplayMode)
           return result
         } finally {
           publish(result)
@@ -2093,21 +2098,20 @@ export class SlackConnection implements PlatformConnection {
       })
   }
 
-  /** The `chat.startStream` call itself. Runs inside the send queue's task, so it never
-   *  enqueues again; the caller owns the timeout semantics. */
+  /** Start inside the existing send-queue task; the caller owns the timeout. */
   private async openStream(
     start: (a: unknown) => Promise<{ ts?: string }>,
     channel: string,
     threadTs: string,
     recipient: string | undefined,
-    identity?: SlackPostOptions
+    identity?: SlackPostOptions,
+    taskDisplayMode: 'timeline' | 'plan' = 'timeline'
   ): Promise<SlackTurnStream | undefined> {
-    // `plan` folds every task card into ONE collapsed-by-default container labelled by the
-    // `plan_update` title. `timeline` — the default — renders each card flat and separate.
+    // Work steps render individually; minimal mode keeps interim replies in a folded plan.
     const payload: Record<string, unknown> = {
       channel,
       ...(threadTs !== channel ? { thread_ts: threadTs } : {}),
-      task_display_mode: 'plan',
+      task_display_mode: taskDisplayMode,
       ...(recipient ? { recipient_user_id: recipient } : {}),
       ...(recipient && this.teamId ? { recipient_team_id: this.teamId } : {})
     }
