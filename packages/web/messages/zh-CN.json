@@ -10,7 +10,8 @@
     },
     "pendingActions": {
       "waiting": "{label} 正等待你的操作",
-      "show": "查看"
+      "show": "查看",
+      "dismiss": "关闭"
     },
     "modelProvider": {
       "label": "凭据",

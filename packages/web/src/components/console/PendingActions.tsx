@@ -150,25 +150,38 @@ export function PendingActionsBanner({ className = '' }: { className?: string })
     for (const entry of entries) observer.observe(entry.el)
     return () => observer.disconnect()
   }, [entries])
-  const item = hidden[0]
+  // Dismissing covers what is waiting now; only an item that starts waiting later brings it back.
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set())
+  const shown = hidden.filter((entry) => !dismissed.has(entry.key))
+  const item = shown[0]
   if (!item) return null
-  const more = hidden.length - 1
+  const more = shown.length - 1
   return (
     <div className={`mx-auto w-full min-w-0 max-w-[880px] flex-none pt-2 ${className}`}>
-      <button
-        type="button"
-        className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-2 text-left"
-        onClick={() => item.el.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-      >
-        <Icon name="clock" size={13} className="flex-none text-(--amber-500)" />
-        <span className="min-w-0 flex-1 truncate font-sans text-[13px] font-medium leading-normal text-(--amber-500)">
-          {t('waiting', { label: item.label })}
-          {more > 0 ? ` (+${more} more)` : ''}
-        </span>
-        <span className="flex-none font-sans text-[12px] font-semibold leading-normal text-(--amber-500)">
-          {t('show')}
-        </span>
-      </button>
+      <div className="flex w-full min-w-0 items-center rounded-md border border-(--amber-500) bg-(--status-paused-soft)">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-2 pl-3 pr-2 text-left"
+          onClick={() => item.el.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+        >
+          <Icon name="clock" size={13} className="flex-none text-(--amber-500)" />
+          <span className="min-w-0 flex-1 truncate font-sans text-[13px] font-medium leading-normal text-(--amber-500)">
+            {t('waiting', { label: item.label })}
+            {more > 0 ? ` (+${more} more)` : ''}
+          </span>
+          <span className="flex-none font-sans text-[12px] font-semibold leading-normal text-(--amber-500)">
+            {t('show')}
+          </span>
+        </button>
+        <button
+          type="button"
+          aria-label={t('dismiss')}
+          className="flex flex-none cursor-pointer items-center self-stretch pl-1 pr-3 text-(--amber-500)"
+          onClick={() => setDismissed(new Set((entries ?? []).map((entry) => entry.key)))}
+        >
+          <Icon name="x" size={13} />
+        </button>
+      </div>
     </div>
   )
 }
