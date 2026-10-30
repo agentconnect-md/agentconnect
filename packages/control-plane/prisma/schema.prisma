@@ -2981,6 +2981,7 @@ model IntegrationChannel {
   url           String?
   isPrivate     Boolean          @default(false)
   kind          ConversationKind @default(channel)
+  isCodeSession Boolean          @default(false)
   // The 1:1 DM counterpart's platform member id (resource-visibility.md §14.8). Control
   // metadata of the same class as `name` — it says WHO the row is with, which is what
   // lets a private agent's DM follow that person's linked console identity instead of

@@ -838,6 +838,7 @@ export function IntegrationChannelList({
   // last-member channel tells the operator what to do — so it is shown verbatim
   // rather than collapsed into "something went wrong".
   const [error, setError] = useState<string | null>(null)
+  const [codeChannelsOpen, setCodeChannelsOpen] = useState(false)
   const act = useCallback(async (action: () => Promise<void>) => {
     setError(null)
     try {
@@ -867,7 +868,8 @@ export function IntegrationChannelList({
     const explicit = c.agentId ?? owners?.get(c.channelId)
     return (explicit ? members.find((m) => m.id === explicit) : undefined) ?? members[0]
   }
-  const channelRows = channels.filter((c) => !isDirectConversation(c.kind))
+  const channelRows = channels.filter((c) => !c.isCodeSession && !isDirectConversation(c.kind))
+  const codeRows = channels.filter((c) => c.isCodeSession)
   // Direct rows keep their compact On/Off trigger control; shared bots project it
   // bot-wide just like channels.
   const dmRows = channels.filter((c) => isDirectConversation(c.kind))
@@ -996,18 +998,20 @@ export function IntegrationChannelList({
                 }
               />
             )}
-            <RowSettings
-              channel={c}
-              platform={platform}
-              disabled={!integrationId || gates.busy(botId, c)}
-              trigger={trigger}
-              gateOwnsTrigger={
-                trigger === 'decision' && ((!!decisions && ownGate) || (shareable && managedByRouting(c)))
-              }
-              assistantMode={assistantMode}
-              onTrigger={(next) => pickTrigger(c, next)}
-              onSessionMode={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}
-            />
+            {!c.isCodeSession && (
+              <RowSettings
+                channel={c}
+                platform={platform}
+                disabled={!integrationId || gates.busy(botId, c)}
+                trigger={trigger}
+                gateOwnsTrigger={
+                  trigger === 'decision' && ((!!decisions && ownGate) || (shareable && managedByRouting(c)))
+                }
+                assistantMode={assistantMode}
+                onTrigger={(next) => pickTrigger(c, next)}
+                onSessionMode={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}
+              />
+            )}
             {/* Demo rows carry no button rather than an inert one, and a derived roster none at all — the
               platform owns the list. Which of the two callbacks a row spends is `rowMenuAction`'s call. */}
             {integrationId && !derivedRoster && (
@@ -1056,6 +1060,22 @@ export function IntegrationChannelList({
       ))}
       {dmRows.length > 0 && groupHeader(translate('directMessages'), padX)}
       {dmRows.map(row)}
+      {codeRows.length > 0 && (
+        <>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary) uppercase hover:text-(--text-primary)"
+            style={{ padding: `6px ${padX}px` }}
+            aria-expanded={codeChannelsOpen}
+            onClick={() => setCodeChannelsOpen((open) => !open)}
+          >
+            <Icon name={codeChannelsOpen ? 'chevron-down' : 'chevron-right'} size={13} />
+            <span>{translate('codeChannels')}</span>
+            <span className="ml-auto tabular-nums">{codeRows.length}</span>
+          </button>
+          {codeChannelsOpen && codeRows.map(row)}
+        </>
+      )}
       {ownerGuard.dialog}
       {routingRow && decisions && (
         <DecisionRoutingModal

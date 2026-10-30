@@ -613,7 +613,7 @@ export class CommandHandlers {
     // Where the command was sent — the reply lands here (Slack thread_ts; Telegram
     // replies to the command message via its chrome surface's reply anchor). Kept separate from the session the
     // command ACTS on, resolved just below.
-    const replyThread = msg.thread ?? msg.msgId
+    const replyThread = msg.replyThread ?? msg.thread ?? msg.msgId
     // Resolve the session the command acts on. A command that isn't in a session's own
     // thread — notably ANY bare Telegram command, which keys to its own fresh reply
     // thread — falls back to the agent's latest session in this channel, so /stop
@@ -635,7 +635,7 @@ export class CommandHandlers {
     // fallback below must still not fire there — its candidates are createNew-era threads.
     // So the MODE is asked directly rather than inferred from the read coming back empty.
     const appendConversation = this.host.conversationAppends(target.agentId, target.integrationId, msg)
-    let thread = appendCoordinate ?? replyThread
+    let thread = appendCoordinate ?? msg.thread ?? msg.msgId
     let key = sessionKey(msg.platform, msg.channel, thread, target.agentId, msg.transportScope)
     let rec = await this.host.store().getSession(key)
     // A cold turn owns its logical key before SessionManager persists the session row.

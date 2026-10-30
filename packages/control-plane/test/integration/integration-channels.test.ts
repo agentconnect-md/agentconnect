@@ -335,6 +335,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         kind: 'channel',
         sessionMode: 'createNew',
         trigger: 'mention',
+        isCodeSession: false,
         decisionBinding: null,
         decision: null,
         agentId: null,
@@ -353,6 +354,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         kind: 'channel',
         sessionMode: 'createNew',
         trigger: 'mention',
+        isCodeSession: false,
         decisionBinding: null,
         decision: null,
         agentId: null,
@@ -383,6 +385,24 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     const [dto] = res.json() as { channels: { channelId: string; space: string | null }[] }[]
     expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'C1', spaceId: 'G1', space: 'Acme HQ' })])
+  })
+
+  it('preserves Code session classification across observations and removes archived memberships', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', isCodeSession: true }, { id: 'C2' }])
+    await report(DAEMON, id, [{ id: 'C1', name: 'Task' }], undefined, undefined, false)
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    expect(res.json()[0].channels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ channelId: 'C1', isCodeSession: true }),
+        expect.objectContaining({ channelId: 'C2', isCodeSession: false })
+      ])
+    )
+    await report(DAEMON, id, [{ id: 'C2' }])
+    const refreshed = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    expect(refreshed.json()[0].channels).toEqual([expect.objectContaining({ channelId: 'C2' })])
   })
 
   it('keeps a reported glyph, exposes it on the DTO, and never blanks it on a report without one', async () => {
@@ -1912,6 +1932,7 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       kind: 'channel',
       sessionMode: 'createNew',
       trigger: 'any',
+      isCodeSession: false,
       decisionBinding: null,
       decision: null,
       agentId: null,

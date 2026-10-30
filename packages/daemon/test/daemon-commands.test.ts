@@ -1102,6 +1102,14 @@ describe('Daemon in-conversation commands', () => {
     await (daemon as any).onInboundOutcome(dm('200', '!status'))
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining(':bar_chart:'), 'T1', CHROME_REPLY)
 
+    await (daemon as any).onInboundOutcome({ ...dm('300', '!status'), replyThread: 'T-reply' })
+    expect(conn.postMessage).toHaveBeenLastCalledWith(
+      'C1',
+      expect.stringContaining(':bar_chart:'),
+      'T-reply',
+      CHROME_REPLY
+    )
+
     // another thread in the SAME channel with no session of its own → falls back to the
     // channel's latest session (still reports the status line, not "nothing here")
     await (daemon as any).onInboundOutcome({ ...dm('400', '!status'), thread: 'T9' })
@@ -3119,7 +3127,7 @@ describe('Slack status-slot settlement', () => {
         statusOptions: { username: 'Agent A', sessionKey: key }
       }
     })
-    const withTask = (state: string | undefined | Error) => {
+    const withTask = (state: string | undefined | Error, statusThread = 'T1') => {
       const c = { setStatus: vi.fn(async () => true) }
       const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
       const get = vi.fn(async () => {
@@ -3127,18 +3135,20 @@ describe('Slack status-slot settlement', () => {
         return state === undefined ? undefined : { state }
       })
       ;(daemon as any).store = { assistantSubsessions: { get } }
-      ;(daemon as any).pending.set('p-0', turn(c, 'parent'))
+      const parent = turn(c, 'parent')
+      parent.plan.statusThread = statusThread
+      ;(daemon as any).pending.set('p-0', parent)
       ;(daemon as any).holdSlackForTask('child', 'parent')
       ;(daemon as any).pending.clear()
       return { c, daemon, get }
     }
     const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
-    it('keeps the thread working after the delegating turn ends, owned by the task', async () => {
-      const { c, daemon } = withTask('open')
-      ;(daemon as any).settleSlackSlot(c, 'C1', 'T1', 'parent')
+    it.each(['T1', 'C1'])('keeps lifecycle slot %s working after the delegating turn ends', async (statusThread) => {
+      const { c, daemon } = withTask('open', statusThread)
+      ;(daemon as any).settleSlackSlot(c, 'C1', statusThread, 'parent')
       await flush()
-      expect(c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', 'is thinking…', {
+      expect(c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', statusThread, 'is thinking…', {
         username: 'Agent A',
         sessionKey: 'child'
       })

@@ -6211,6 +6211,7 @@ export interface IntegrationChannelRecord {
   key: string | null
   url: string | null
   isPrivate: boolean
+  isCodeSession?: boolean
   kind: ConversationKind
   /** Repeated across shared-bot sibling rows; per-integration for non-shared bots. */
   trigger: ChannelTrigger
@@ -6255,6 +6256,7 @@ export interface ReportedChannel {
   key?: string | null
   url?: string | null
   isPrivate?: boolean
+  isCodeSession?: boolean
   /** Absent = 'channel' (wire compatibility). */
   kind?: ConversationKind
   /** The 1:1 DM counterpart's platform member id — reported for `kind:'im'` only. */

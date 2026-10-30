@@ -1201,6 +1201,7 @@ export class HttpBotOrchestrator {
       space: first((row) => row.space),
       dmUserId: first((row) => row.dmUserId),
       isPrivate: first((row) => row.isPrivate) ?? false,
+      isCodeSession: knownRows.some((row) => row.isCodeSession),
       kind: knownRows.find((row) => row.kind !== 'channel')?.kind ?? knownRows[0]?.kind ?? 'channel'
     }
     for (const integration of installs) {
@@ -1230,6 +1231,7 @@ export class HttpBotOrchestrator {
             ...(template.space ? { space: template.space } : {}),
             ...(template.dmUserId ? { dmUserId: template.dmUserId } : {}),
             isPrivate: template.isPrivate,
+            isCodeSession: template.isCodeSession,
             kind: template.kind
           },
           // A backfill is created Off and then carries the binding in setTrigger, so the CHECK always holds.

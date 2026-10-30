@@ -188,7 +188,7 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
     if (!owner) throw new RoutingChannelInvalid(removal.channelId, 'missing')
     const template = await tx.integrationChannel.findFirst({
       where: { channelId: removal.channelId, integration: { botId, orgId, status: 'active' } },
-      select: { kind: true, name: true, isPrivate: true, sessionMode: true }
+      select: { kind: true, name: true, isPrivate: true, isCodeSession: true, sessionMode: true }
     })
     await tx.integrationChannel.upsert({
       where: { integrationId_channelId: { integrationId: owner.id, channelId: removal.channelId } },
@@ -203,6 +203,7 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
               kind: template.kind,
               name: template.name,
               isPrivate: template.isPrivate,
+              isCodeSession: template.isCodeSession,
               sessionMode: template.sessionMode
             }
           : {})

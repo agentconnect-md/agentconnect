@@ -111,6 +111,8 @@ export const NormalizedPlatformMessageSchema = z.object({
   /** Stable logical thread id within `channel`. The output adapter maps this
    * provider-neutral pair onto the provider's concrete send target. */
   thread: z.string().optional(),
+  // Physical reply parent when the provider's session spans the whole conversation.
+  replyThread: z.string().optional(),
   /** Platform-native HTTPS link for the integration represented by this
    *  message's session coordinates. The adapter owns construction; core only
    *  persists and forwards it as session metadata. Optional because some

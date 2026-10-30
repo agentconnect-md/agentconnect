@@ -56,9 +56,9 @@ export interface TurnPlan {
   readonly platform: string
   readonly isDm: boolean
   readonly channel: string
-  /** The platform thread posts, chrome and thread reads address; absent, the turn speaks at the conversation root. */
+  /** The physical reply target for message bodies, streams and shares; absent means the conversation root. */
   readonly thread?: string
-  /** The delivery's transcript coordinate: `thread`, else the message's own id, which names no platform thread. */
+  /** Transcript coordinate; also the provider lifecycle target when a physical reply target exists. */
   readonly statusThread: string
   /** The SESSION coordinate this turn was admitted on (channel-session-mode.md §3.1),
    *  carried from the per-target resolution rather than re-derived. Matches `statusThread`
@@ -99,6 +99,11 @@ export interface TurnPlan {
   readonly githubTurnEligible: boolean
   readonly githubReplyBatchActive: boolean
   readonly deliveryBinding: SessionDeliveryBinding
+}
+
+/** Root posts without a native session have no activity slot; their transcript key is internal. */
+export function activityThreadOf(plan: { thread?: string; statusThread?: string }): string | undefined {
+  return plan.thread === undefined ? undefined : plan.statusThread
 }
 
 /** Decide everything this turn can decide before it runs. Total over its input. */
@@ -148,7 +153,7 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     platform: msg.platform,
     isDm: msg.isDm,
     channel: msg.channel,
-    ...(msg.thread !== undefined ? { thread: msg.thread } : {}),
+    ...((msg.replyThread ?? msg.thread) !== undefined ? { thread: msg.replyThread ?? msg.thread } : {}),
     statusThread: msg.thread ?? msg.msgId,
     sessionThread: sessionThreadOf(msg),
     transcriptChannel: transcriptChannelKey(msg.channel, msg.transportScope),

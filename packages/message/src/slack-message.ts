@@ -187,6 +187,7 @@ export function normalizeSlackMessage(
     platform: 'slack',
     channel: message.channel,
     thread: message.thread_ts ?? message.ts,
+    ...(message.thread_ts && message.thread_ts !== message.ts ? { replyThread: message.thread_ts } : {}),
     sender: {
       id: message.user ?? message.bot_id ?? 'unknown',
       isBot: isSlackBotPost(message),

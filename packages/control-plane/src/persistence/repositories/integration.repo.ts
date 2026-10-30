@@ -938,6 +938,7 @@ function toChannelRecord(
     key: c.key,
     url: c.url,
     isPrivate: c.isPrivate,
+    isCodeSession: c.isCodeSession,
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
     sessionMode: c.sessionMode as ChannelSessionMode,
@@ -1035,11 +1036,11 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
           ("integrationId", "channelId", "name", "spaceId", "space", "icon", "color", "key", "url",
-           "isPrivate", "kind", "trigger", "dmUserId", "externalReason", "firstSeenAt", "updatedAt")
+           "isPrivate", "isCodeSession", "kind", "trigger", "dmUserId", "externalReason", "firstSeenAt", "updatedAt")
         VALUES (
           ${integrationId}::uuid, ${c.id}, ${c.name ?? null}, ${c.spaceId ?? null}, ${c.space ?? null},
           ${c.icon ?? null}, ${c.color ?? null}, ${c.key ?? null}, ${c.url ?? null},
-          ${c.isPrivate ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
+          ${c.isPrivate ?? false}, ${c.isCodeSession ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
           ${createTrigger}::"ChannelTrigger", ${c.dmUserId ?? null}, ${c.externalReason ?? null}, NOW(), NOW()
         )
         ON CONFLICT ("integrationId", "channelId") DO UPDATE SET
@@ -1067,6 +1068,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
                        ELSE "integration_channel"."url" END,
           "isPrivate" = CASE WHEN ${setPrivate}::boolean THEN EXCLUDED."isPrivate"
                              ELSE "integration_channel"."isPrivate" END,
+          "isCodeSession" = CASE WHEN ${c.isCodeSession !== undefined}::boolean THEN EXCLUDED."isCodeSession"
+                                 ELSE "integration_channel"."isCodeSession" END,
           -- Learned once and never unlearned: an omitting report (a channel snapshot, an
           -- older reporter) must not blank the member a DM row is with.
           "dmUserId" = CASE WHEN ${c.dmUserId !== undefined}::boolean THEN EXCLUDED."dmUserId"
@@ -1189,6 +1192,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         key: conversation.key ?? null,
         url: conversation.url ?? null,
         isPrivate: conversation.isPrivate ?? false,
+        isCodeSession: conversation.isCodeSession ?? false,
         kind: conversation.kind ?? 'channel',
         dmUserId: conversation.dmUserId ?? null,
         externalReason: conversation.externalReason ?? null,
@@ -1206,6 +1210,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         ...(conversation.color !== undefined ? { color: conversation.color } : {}),
         ...(conversation.key !== undefined ? { key: conversation.key } : {}),
         ...(conversation.url !== undefined ? { url: conversation.url } : {}),
+        ...(conversation.isCodeSession !== undefined ? { isCodeSession: conversation.isCodeSession } : {}),
         ...(conversation.dmUserId ? { dmUserId: conversation.dmUserId } : {})
       }
     })

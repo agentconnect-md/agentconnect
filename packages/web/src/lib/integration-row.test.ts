@@ -33,8 +33,9 @@ const dto = (over: Partial<IntegrationDto['channels'][number]> = {}, status = 'a
 
 describe('integrationRowFromDto', () => {
   it('carries the conversation session mode through to the row', () => {
-    const row = integrationRowFromDto(dto({ sessionMode: 'append' }), new Map(), new Map())
+    const row = integrationRowFromDto(dto({ sessionMode: 'append', isCodeSession: true }), new Map(), new Map())
     expect(row.channels[0]?.sessionMode).toBe('append')
+    expect(row.channels[0]?.isCodeSession).toBe(true)
   })
 
   it('carries the default just as literally, rather than leaving it undefined', () => {

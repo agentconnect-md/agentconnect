@@ -998,6 +998,7 @@ export interface IntegrationChannelDto {
   key: string | null // the conversation's short platform handle — a Linear team's "ENG"; null elsewhere
   url: string | null // the page it opens on the platform; null elsewhere
   isPrivate: boolean
+  isCodeSession?: boolean
   kind: 'channel' | 'im' | 'mpim'
   // 'decision' is By decision; the same PATCH sets it together with its complete gate binding.
   trigger: ChannelTrigger | 'decision'

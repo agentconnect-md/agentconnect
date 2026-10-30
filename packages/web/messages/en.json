@@ -1682,6 +1682,7 @@
         "leaveConfirm": "Leave {space}? A {platform} bot cannot leave one {noun} — it leaves the whole server, and every {nounPlural} of it disappears from this list. Re-invite it to undo."
       },
       "directMessages": "Direct messages",
+      "codeChannels": "Code channels",
       "openIn": "Open {name} in {platform}",
       "ownerChange": {
         "title": "Move this team’s default?",

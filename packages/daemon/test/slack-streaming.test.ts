@@ -901,6 +901,32 @@ describe('applySlackAction — chrome stream actions', () => {
     status
   })
 
+  it.each(['C1', 'append:1'])(
+    'keeps native lifecycle and the Plan tab on the channel with session coordinate %s',
+    async (sessionThread) => {
+      const writePlanCanvas = vi.fn()
+      const postBlocks = vi.fn()
+      const { apply, conn } = fixture(
+        { writePlanCanvas, postBlocks },
+        {
+          thread: '1.001',
+          statusThread: 'C1',
+          sessionThread
+        }
+      )
+      await apply({ kind: 'set-status', text: 'Working' })
+      await apply({ kind: 'set-title', text: 'Task' })
+      await apply({ kind: 'post', text: 'Thread answer' })
+      await apply({ kind: 'stream-start' })
+      await apply({ kind: 'plan', text: 'Plan', markdown: '- [ ] Work', blocks: [] })
+      expect(conn.setStatus).toHaveBeenCalledWith('C1', 'C1', 'Working', expect.anything())
+      expect(conn.setTitle).toHaveBeenCalledWith('C1', 'C1', 'Task')
+      expect(conn.postMessage).toHaveBeenCalledWith('C1', 'Thread answer', '1.001', expect.anything())
+      expect(conn.startTurnStream).toHaveBeenCalledWith('C1', '1.001', expect.anything())
+      expect(writePlanCanvas).toHaveBeenCalledWith('C1', '- [ ] Work')
+    }
+  )
+
   it('flushes the stored session title after the first registering write, exactly once', async () => {
     // An earlier rename is refused (`not_authorized` until the thread is a registered agent
     // session), so the title rides the queue BEHIND the status/stream write that registers it.

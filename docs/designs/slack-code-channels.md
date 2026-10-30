@@ -20,7 +20,7 @@ The app manifest enables `features.code_channels.enabled` and requests
 app reauthorized before code channel management works. Socket Mode and HTTP delivery
 use the existing message subscriptions; no new public callback is required.
 
-A code channel is recognized only from `conversations.info` reporting
+A code channel is recognized from the provider's conversation metadata reporting
 `properties.record_channel.record_type == "agent_channel"`. Assigned bot IDs come
 from `properties.agent_session.encoded_agent_bot_user_ids`. Each host caches that
 provider answer for one minute. Discovery is best effort: lookup failures preserve the
@@ -28,11 +28,17 @@ existing coordinates and allow ordinary message admission to continue. Relay API
 have a short timeout, no automatic retries, and fail immediately on rate limiting.
 
 The canonical thread coordinate of a code channel is its channel ID. Every message in
-that channel therefore reaches the same active channel session. At the Slack API
-boundary this coordinate means channel-level output: posts, streams, file shares,
-status updates and renames omit `thread_ts`. Ordinary thread coordinates retain their
-existing behavior. Native Stop without a thread timestamp addresses the same channel
-coordinate on both ingress transports. History reads use channel history.
+that channel therefore reaches the same active channel session. Ingress also preserves
+an actual thread reply's parent as `replyThread`: reply bodies, streams and file shares
+return there, while a top-level request receives a top-level response. Native status,
+renames and views remain channel-scoped and omit `thread_ts`. Native Stop without a
+thread timestamp addresses the same channel coordinate on both ingress transports.
+History reads use channel history.
+
+The console groups these conversations under Code channels, below direct messages and collapsed by default,
+without per-row trigger or session-mode controls. Membership snapshots carry the
+provider's classification and exclude archived channels; archive events refresh that
+snapshot so completed sessions disappear from the list.
 
 Archiving ends the channel session. The agent's archive first marks the session
 `closed` (Slack's _Done_), then archives with the optional summary. When a person

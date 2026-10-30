@@ -1193,7 +1193,7 @@ import type {
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { HostPasses } from './daemon/host-passes.js'
 import { isBuiltinSystemToolCall, rememberToolCall, type ApprovalRequestParts } from './daemon/tool-classification.js'
-import { buildTurnPlan, type TurnPlan } from './daemon/turn-plan.js'
+import { activityThreadOf, buildTurnPlan, type TurnPlan } from './daemon/turn-plan.js'
 import { turnEvaluationReporter, type TurnEvaluationReporter } from './daemon/turn-evaluation.js'
 import {
   isTrustedHumanTurn,
@@ -11510,21 +11510,20 @@ export class Daemon {
   /** A running task shows the thread of the turn that asked for it as working, until its row leaves `open`. */
   private holdSlackForTask(childKey: string, parentKey: string): void {
     for (const p of this.pending.values()) {
-      if (p.plan.sessionKey !== parentKey || p.plan.platform !== 'slack' || !p.conn || !p.plan.thread) continue
+      if (p.plan.sessionKey !== parentKey || p.plan.platform !== 'slack' || !p.conn) continue
+      const thread = activityThreadOf(p.plan)
+      if (thread === undefined) continue
       const previous = this.taskSlackHolds.get(childKey)
       this.taskSlackHolds.set(childKey, {
         agentId: p.plan.agentId,
         integrationId: p.plan.integrationId,
         conn: p.conn,
         channel: p.plan.channel,
-        thread: p.plan.thread,
+        thread,
         options: { ...p.plan.statusOptions, sessionKey: childKey }
       })
       // A round asked for from another thread moves the hold, so the thread it leaves is settled.
-      if (
-        previous &&
-        (previous.conn !== p.conn || previous.channel !== p.plan.channel || previous.thread !== p.plan.thread)
-      )
+      if (previous && (previous.conn !== p.conn || previous.channel !== p.plan.channel || previous.thread !== thread))
         this.settleSlackSlot(previous.conn, previous.channel, previous.thread)
       return
     }
@@ -16389,7 +16388,7 @@ export class Daemon {
     const physical = !isAppendCoordinate(sessionThread) && !isSubsessionCoordinate(sessionThread)
     const snapshot =
       includeProviderSnapshot && physical && thread !== undefined
-        ? this.finalThreadSnapshot(pending, thread, providerCheckpoint)
+        ? this.finalThreadSnapshot(pending, pending.plan.statusThread, providerCheckpoint)
         : undefined
     const refresh = await this.threadContext.refresh({
       scope: {
@@ -17366,7 +17365,7 @@ export class Daemon {
     const replaced = (await ctx.acknowledgement?.replace(notice).catch(() => false)) === true
     if (ctx.replyConn) {
       // Settle the Slack slot (a sibling may still be working); Telegram's typing hint expires on its own.
-      this.settleSlackSlot(ctx.replyConn, ctx.channel, ctx.thread, ctx.sessionKey)
+      this.settleSlackSlot(ctx.replyConn, ctx.channel, activityThreadOf(ctx), ctx.sessionKey)
       const chrome = turnChromeFor(ctx.platform).chromeMarkedNotices
       if (!replaced && chrome)
         void (ctx.replyConn as SlackConnection).postMessage(ctx.channel, notice, ctx.thread, {
@@ -19073,7 +19072,7 @@ export class Daemon {
     const indicatorShown = this.showActivity(
       replyConn,
       msg.channel,
-      plan.thread,
+      activityThreadOf(plan),
       plan.startupActivityLabel,
       plan.statusOptions
     )
@@ -19258,7 +19257,7 @@ export class Daemon {
   /** Done with the activity indicator: settle the Slack slot, unless a newer turn displaced this one and owns it. */
   private clearTurnActivity(run: TurnRun): void {
     if (run.entry.displacedByNewerTurn) return
-    this.settleSlackSlot(run.replyConn, run.plan.channel, run.plan.thread, run.plan.sessionKey)
+    this.settleSlackSlot(run.replyConn, run.plan.channel, activityThreadOf(run.plan), run.plan.sessionKey)
   }
 
   /**
@@ -19355,7 +19354,7 @@ export class Daemon {
       // Only a human ingress gets a repair notice; a rejected A2A wake stays postless so no workflow state leaks.
       if (!callMeta && msg.source === 'user') {
         try {
-          await conn?.postMessage(msg.channel, reason, msg.thread ?? msg.msgId)
+          await conn?.postMessage(msg.channel, reason, msg.replyThread ?? msg.thread ?? msg.msgId)
         } catch (err) {
           this.log.warn(`session source: could not post rejection (${formatErr(err)})`)
         }
@@ -19568,7 +19567,7 @@ export class Daemon {
             channel: msg.channel,
             sessionKey: plan.sessionKey,
             transcriptChannel: plan.transcriptChannel,
-            thread: msg.thread,
+            thread: plan.thread,
             statusThread: plan.statusThread,
             sessionThread: plan.sessionThread,
             ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {})
@@ -19996,7 +19995,7 @@ export class Daemon {
       replyConn,
       channel: msg.channel,
       transcriptChannel: plan.transcriptChannel,
-      thread: msg.thread,
+      thread: plan.thread,
       statusThread: plan.statusThread,
       sessionKey: plan.sessionKey
     })
@@ -20648,7 +20647,7 @@ export class Daemon {
     }
     // Startup observers have settled; a cold host's initial activity now yields to its ordinary turn.
     if (!plan.hostAlreadyRunning)
-      void this.showActivity(replyConn, plan.channel, plan.thread, 'is thinking…', plan.statusOptions)
+      void this.showActivity(replyConn, plan.channel, activityThreadOf(plan), 'is thinking…', plan.statusOptions)
     // Post/refresh the session status bar up front — with the model now known (session
     // created) plus any usage carried over from prior turns — so it sits at the top of
     // the thread before the reply streams in.
@@ -21441,7 +21440,7 @@ export class Daemon {
         channel: msg.channel,
         sessionKey: plan.sessionKey,
         transcriptChannel: plan.transcriptChannel,
-        thread: msg.thread,
+        thread: plan.thread,
         statusThread: plan.statusThread,
         sessionThread: plan.sessionThread
       })
@@ -21837,7 +21836,7 @@ export class Daemon {
       // cancels the CardKit entity. Exact lookup — no core fallback.
       this.turnSurfaces.exact(live.plan.platform)?.onSuppress?.(live)
       if (!live.entry.displacedByNewerTurn)
-        this.settleSlackSlot(live.conn, live.plan.channel, live.plan.thread, live.plan.sessionKey)
+        this.settleSlackSlot(live.conn, live.plan.channel, activityThreadOf(live.plan), live.plan.sessionKey)
       if (live.webchat && !live.webchat.doneSent) {
         live.webchat.doneSent = true
         live.webchat.sink.done({
@@ -21957,12 +21956,13 @@ export class Daemon {
     const { msg } = p.entry
     try {
       if (p.conn && turnChromeFor(p.plan.platform).chromeMarkedNotices)
-        await (p.conn as SlackConnection).postMessage(msg.channel, text, msg.thread, {
+        await (p.conn as SlackConnection).postMessage(msg.channel, text, msg.replyThread ?? msg.thread, {
           ...(slackAgentIdentityOptions(p.plan) ?? {}),
           chrome: true
         })
-      else if (p.conn) await p.conn.postMessage(msg.channel, text, msg.thread)
-      else if (!p.plan.suppressReplyConn) await this.chromeNotice(p.plan.platform, p.egress, msg, msg.thread, text)
+      else if (p.conn) await p.conn.postMessage(msg.channel, text, msg.replyThread ?? msg.thread)
+      else if (!p.plan.suppressReplyConn)
+        await this.chromeNotice(p.plan.platform, p.egress, msg, msg.replyThread ?? msg.thread, text)
       await this.store.appendTranscript({
         channel: p.plan.transcriptChannel,
         thread: p.plan.sessionThread,
@@ -23401,7 +23401,7 @@ export class Daemon {
       if (p.outputSuppressed && !opts.allowWhenSuppressed) return
       // The turn-final status clear settles the ONE shared Slack slot: a surviving sibling's `processing` takes it over.
       if (action.kind === 'set-status' && action.text === '' && p.plan.platform === 'slack') {
-        this.settleSlackSlot(p.conn, p.plan.channel, p.plan.thread, p.plan.sessionKey)
+        this.settleSlackSlot(p.conn, p.plan.channel, activityThreadOf(p.plan), p.plan.sessionKey)
         return
       }
       return this.turnSurfaces
@@ -25439,7 +25439,7 @@ export class Daemon {
       if (this.gatedNoticesSent.has(latch)) return
       const text =
         '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.'
-      const thread = isDm ? undefined : msg.thread
+      const thread = isDm ? undefined : (msg.replyThread ?? msg.thread)
       const conn = this.connForIntegration(integrationId)
       // Chrome-marked so peer daemons' thread backfill never re-ingests the notice.
       const post = !conn
@@ -27311,7 +27311,7 @@ export class Daemon {
       channel: msg.channel,
       sessionKey,
       transcriptChannel: p.plan.transcriptChannel,
-      thread: msg.thread,
+      thread: p.plan.thread,
       statusThread: p.plan.statusThread,
       sessionThread: p.plan.sessionThread,
       ...(p.entry.acknowledgement ? { acknowledgement: p.entry.acknowledgement.handle } : {})

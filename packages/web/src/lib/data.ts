@@ -2224,6 +2224,7 @@ export function getSessions(agentId: string): Session[] {
 /** One conversation the integration's bot is in + how it activates there. */
 export interface IntegrationChannelRow {
   channelId: string
+  isCodeSession?: boolean
   /** Bare channel name, no hash (e.g. "deploys"); the UI renders the leading "#".
    *  For a DM row (kind 'im') the counterpart's name. Falls back to the raw id. */
   name: string
