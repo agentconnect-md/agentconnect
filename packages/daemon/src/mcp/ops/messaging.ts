@@ -248,6 +248,8 @@ export interface MessageAgentReq {
   targetSessionId?: string
   /** The transport's stable id of this call, so a replay of it keeps its message id (send-message-guide.md §9.3). */
   submissionId?: string
+  /** A self-delegation's task title (auto-session-mode.md §5.1); derived from `text` when absent. */
+  title?: string
 }
 
 /** The guidance a started task's receipt hands back (send-message-guide.md §8.6). */
@@ -565,7 +567,8 @@ async function openDirectMessage(gateway: MessageGateway, user: string, platform
 export async function deliverSendMessage(
   ctx: SessionContext,
   args: Record<string, unknown>,
-  deps: MessagingDeps
+  deps: MessagingDeps,
+  task?: { title: string }
 ): Promise<unknown> {
   const message = parseArgs(messageField, args.message)
 
@@ -647,6 +650,7 @@ export async function deliverSendMessage(
           ...(needsReply ? { needsReply: true } : {}),
           // §3.1: no `channel` ⇒ the postless form, whose child is headless.
           ...(channel === undefined ? { postless: true } : {}),
+          ...(task !== undefined ? { title: task.title } : {}),
           ...(deps.callId !== undefined ? { submissionId: deps.callId } : {})
         }
       : undefined

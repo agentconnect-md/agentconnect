@@ -35,8 +35,8 @@ const isAction = (value: unknown): value is SendMessageAction =>
 /** Each action's target requirement and accepted keys, besides `action` and `message`. */
 const ACTION_KEYS: Record<SendMessageAction, { requires: readonly string[]; accepts: readonly string[] }> = {
   callAgent: { requires: ['toAgent'], accepts: ['toAgent', 'channel', 'platform', 'integrationId', 'sessionId'] },
-  delegateTask: { requires: [], accepts: [] },
-  messageTask: { requires: ['taskId'], accepts: ['taskId'] },
+  delegateTask: { requires: ['title'], accepts: ['title', 'messageId'] },
+  messageTask: { requires: ['taskId'], accepts: ['taskId', 'messageId'] },
   replyToSession: { requires: ['messageId'], accepts: ['messageId'] },
   postMessage: {
     requires: ['toUser|channel'],
@@ -45,6 +45,20 @@ const ACTION_KEYS: Record<SendMessageAction, { requires: readonly string[]; acce
 }
 
 const action = <A extends SendMessageAction>(name: A) => z.literal(name, `argument action must be ${name}`)
+
+/** A task's title is one line of at most this many characters (auto-session-mode.md §5.1). */
+export const TASK_TITLE_MAX_CHARS = 80
+const titleField = z
+  .string('argument title must be a string')
+  .transform((title) => title.replace(/\s+/g, ' ').trim())
+  .pipe(
+    z
+      .string()
+      .min(1, 'argument title must name the task')
+      .refine((title) => [...title].length <= TASK_TITLE_MAX_CHARS, {
+        message: `argument title must be at most ${TASK_TITLE_MAX_CHARS} characters`
+      })
+  )
 
 /** Every action's runtime validator: the strict field types its arguments must satisfy once the keys check out. */
 export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
@@ -57,7 +71,7 @@ export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
     sessionId: requiredString('sessionId').optional(),
     message: messageField
   }),
-  delegateTask: z.strictObject({ action: action('delegateTask'), message: messageField }),
+  delegateTask: z.strictObject({ action: action('delegateTask'), title: titleField, message: messageField }),
   messageTask: z.strictObject({
     action: action('messageTask'),
     taskId: requiredString('taskId'),
@@ -98,12 +112,22 @@ const guided = (text: string, action: SendMessageAction) =>
 
 /** The `delegateTask` call to make instead, with the `delegateTask` guide inline, never echoing the message (send-message-guide.md §3.5). */
 const DELEGATE_TASK_INSTEAD =
-  'Retry as:\n  sendMessage {"action":"delegateTask","message":"<the same message>"}\ndelegateTask guide:\n' +
+  'Retry as:\n  sendMessage {"action":"delegateTask","title":"<a short name for the work>","message":"<the same message>"}' +
+  '\ndelegateTask guide:\n' +
   DELEGATE_TASK_GUIDE_TEXT
 /** `startTask`, the action's release-candidate name, has no alias: its call fails with the exact `delegateTask` call. */
 const START_TASK_RENAMED =
-  'action `startTask` is now `delegateTask`, with the same arguments. Nothing was sent and no task was started. ' +
+  'action `startTask` is now `delegateTask`, which also takes a `title`. Nothing was sent and no task was started. ' +
   DELEGATE_TASK_INSTEAD
+/** auto-session-mode.md §5.1: `messageId` names a platform message only a coordinator session hands over, so every other session is refused it. */
+const COORDINATOR_MESSAGE_ID = (named: 'delegateTask' | 'messageTask') =>
+  guided(
+    `action \`${named}\` takes \`messageId\` only in a coordinator session, which hands a platform message to a ` +
+      'task; this session opens background tasks only. Nothing was sent' +
+      (named === 'delegateTask' ? ' and no task was started' : '') +
+      '. Omit `messageId` and pass what the task needs in `message`',
+    named
+  )
 const TASK_ID_NEEDED = (unexpected: readonly string[]) =>
   'action `messageTask` requires `taskId`, the nonempty `taskId` a delegateTask call in this session returned' +
   (unexpected.length > 0 ? `, and does not accept ${quoted(unexpected)}` : '') +
@@ -149,6 +173,8 @@ export interface ValidatedSendMessage {
   taskId?: string
   /** `callAgent` into an existing session of the target agent: its handle (send-message-guide.md §9.2). */
   peerSessionId?: string
+  /** `delegateTask`: the new task's title, one line. */
+  title?: string
 }
 
 /** Check a `sendMessage` call's action and argument combination before any lookup or effect (send-message-guide.md §3.3). */
@@ -157,6 +183,8 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
   if (!present(named)) throw new ToolArgumentError([MISSING_ACTION])
   if (named === 'startTask') throw new ToolArgumentError([START_TASK_RENAMED])
   if (!isAction(named)) throw new ToolArgumentError([UNKNOWN_ACTION])
+  if ((named === 'delegateTask' || named === 'messageTask') && present(args.messageId))
+    throw new ToolArgumentError([COORDINATOR_MESSAGE_ID(named)])
   const spec = ACTION_KEYS[named]
   const keys = Object.keys(args).filter((key) => key !== 'action' && key !== 'message')
   const unexpected = keys.filter((key) => !spec.accepts.includes(key))
@@ -202,7 +230,7 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
       `action \`${named}\` ${clauses.join(' and ')}. ${strip(sendMessageGuidePointer(named))}`
     ])
   }
-  parseArgs(SEND_MESSAGE_ACTION_SCHEMAS[named], args)
+  const parsed = parseArgs(SEND_MESSAGE_ACTION_SCHEMAS[named], args) as { title?: string }
   const target = named === 'callAgent' ? parseAgentTarget(args.toAgent) : undefined
   const { action: _validated, ...rest } = args
   if (named === 'postMessage') {
@@ -211,7 +239,8 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
     if (Array.isArray(args.toUser) && !present(args.channel))
       throw new ToolArgumentError([`${USER_ARRAY_NEEDS_CHANNEL}. ${strip(sendMessageGuidePointer('postMessage'))}`])
   }
-  if (named === 'delegateTask') return { action: named, delivery: { toAgent: ctx.agentId, message: args.message } }
+  if (named === 'delegateTask')
+    return { action: named, delivery: { toAgent: ctx.agentId, message: args.message }, title: parsed.title! }
   if (named === 'messageTask') return { action: named, delivery: {}, taskId: args.taskId as string }
   if (target?.toAgent === ctx.agentId && typeof args.sessionId === 'string') throw new ToolArgumentError([SELF_SESSION])
   if (target?.toAgent === ctx.agentId && !present(args.channel)) {
@@ -233,7 +262,12 @@ export async function sendMessage(
   const validated = validateSendMessageAction(ctx, args)
   if (validated.taskId !== undefined) return await messageTask(ctx, validated.taskId, args, deps)
   if (validated.peerSessionId !== undefined) return await callPeerSession(ctx, validated.peerSessionId, args, deps)
-  return await deliverSendMessage(ctx, validated.delivery, deps)
+  return await deliverSendMessage(
+    ctx,
+    validated.delivery,
+    deps,
+    validated.title !== undefined ? { title: validated.title } : undefined
+  )
 }
 
 /** The guidance a delivered call into an existing peer session hands back when a reply was asked for. */

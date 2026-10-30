@@ -80,3 +80,13 @@ export const RESEARCH_SESSION_KEY_PATTERN = `%:${RESEARCH_COORDINATE_PREFIX}%`
 export function isDelegationCoordinate(thread: string | null | undefined): boolean {
   return isSubsessionCoordinate(thread) && !isCheckCoordinate(thread) && !isTaskCoordinate(thread)
 }
+
+/** Whether a logical session key names a sub-session of any kind. */
+export function isSubsessionKey(key: string | null | undefined): boolean {
+  return typeof key === 'string' && key.includes(`:${SUBSESSION_COORDINATE_PREFIX}`)
+}
+
+/** Whether a session on this coordinate may open tasks at all (auto-session-mode.md §6.3): any but a follow-up's check, an approved proposal or research; a task's own level is read from its index row. */
+export function mayOpenTasksAt(thread: string | null | undefined): boolean {
+  return !isSubsessionCoordinate(thread) || (isDelegationCoordinate(thread) && !isResearchCoordinate(thread))
+}

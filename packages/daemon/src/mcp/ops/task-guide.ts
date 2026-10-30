@@ -20,7 +20,7 @@ export const DELEGATE_TASK_GUIDE: TaskActionGuide = {
   action: 'delegateTask',
   purpose:
     'Delegate long work of your own to a task of this session that outlives this turn, which people can see and stop.',
-  required: ['action', 'message'],
+  required: ['action', 'title', 'message'],
   optional: [],
   rules: [
     'Work you can finish within this turn, even split into parallel parts, goes to your runtime’s own subagent ' +
@@ -41,10 +41,14 @@ export const DELEGATE_TASK_GUIDE: TaskActionGuide = {
     'Order tasks by what they need: start independent tasks together, and start a task that needs another’s ' +
       'result only once that result has arrived.',
     'Say in its message which language the people here use, so it reports in that language.',
-    'Only `action` and `message` are accepted; the daemon derives you from trusted context.',
-    'A task cannot start tasks of its own, and only a few run at once. Refusals arrive as `wake.delivered: false` ' +
-      'with a `wake.reason` and `wake.message`: `task_nesting` (this session is itself a task) and `task_limit` ' +
-      '(too many tasks running at once; a finished task holds no slot).',
+    '`title` is a short name for the work, one line of at most 80 characters; people see it in the console, and ' +
+      'listTasks shows it. Write it in the language the people here use.',
+    'Only `action`, `title` and `message` are accepted; the daemon derives you from trusted context. `messageId` ' +
+      'is refused here: only a coordinator session hands a platform message to a task.',
+    'A task may delegate tasks of its own, which report back to it; a task that another task started cannot, and ' +
+      'only a few run at once. Refusals arrive as `wake.delivered: false` with a `wake.reason` and `wake.message`: ' +
+      '`task_nesting` (this session is a task another task started, a follow-up’s check or an approved proposal) ' +
+      'and `task_limit` (too many tasks running at once; a finished task holds no slot).',
     'The result carries `taskId`, the handle messageTask, viewSessionStatus and stopTask take; listTasks shows ' +
       'every task of this session with it. It is not a message id for replyToSession or a session id for callAgent.',
     'To work visibly as yourself in a channel instead, use callAgent with your own id and `channel`: that is a ' +
@@ -55,6 +59,7 @@ export const DELEGATE_TASK_GUIDE: TaskActionGuide = {
       use: 'Delegate a task',
       arguments: {
         action: 'delegateTask',
+        title: 'Investigate the flaky checkout test',
         message: 'Investigate the flaky test in the background and report your findings.'
       }
     }
@@ -73,7 +78,8 @@ export const MESSAGE_TASK_GUIDE: TaskActionGuide = {
       'message to a task that is still working waits for its next turn and does not interrupt it; one that already ' +
       'finished starts a new round of work in the same context, which reports back again.',
     'Only the session that started a task can message it. Not accepted: `toAgent`, `channel`, `thread`, ' +
-      '`platform`, `integrationId`, `attachment`, `sessionId`, `messageId`, `needsReply`.',
+      '`platform`, `integrationId`, `attachment`, `sessionId`, `title`, `needsReply`; `messageId` only in a ' +
+      'coordinator session, which hands a platform message to a task.',
     'Refusals arrive as `wake.delivered: false` with a `wake.reason` and `wake.message`: `task_not_found` (this ' +
       'session started no task with that id), `task_reporting` (its previous report is still on its way; message ' +
       'it again after it arrives), and `task_limit`.',

@@ -309,7 +309,7 @@ const COLLAB_BEFORE_SELF =
 // send-message-guide.md §2.1: every agent's long work of its own is a task delegated by the session that starts it.
 const COLLAB_SELF_DELEGATION =
   `For long work of your own ("fix this bug and open a PR") that spans turns, may run a long time, or that people ` +
-  `should be able to see and stop, \`{"action":"delegateTask","message":"..."}\` delegates it to a TASK of this ` +
+  `should be able to see and stop, \`{"action":"delegateTask","title":"<a short name>","message":"..."}\` delegates it to a TASK of this ` +
   `session: it works in a context of its own, posts nothing, and reports back into this ` +
   `session each time a round of its work finishes or fails. Work you can finish within this turn, even split into ` +
   `parallel parts, goes to your runtime's own subagent or Task tool instead. A task serves the request you are ` +
@@ -324,7 +324,8 @@ const COLLAB_SELF_DELEGATION =
   `\`listTasks\` lists this session's tasks. When a task is no longer needed — the plan changed, or a task it ` +
   `depended on failed — stop it with \`stopTask\` and its taskId. Say in its message which language the people here use, so it reports in that ` +
   `language, and answer them in it whatever language a report comes back in. Keep ordinary conversation here — ` +
-  `questions, lookups and short answers never need a task. A task cannot start tasks of its own. `
+  `questions, lookups and short answers never need a task. A task may delegate tasks of its own, but a task ` +
+  `that another task started cannot. `
 const COLLAB_AFTER_SELF =
   `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
   `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +

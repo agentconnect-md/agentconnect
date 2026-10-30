@@ -477,7 +477,7 @@ describe('stopTask in a Slack DM conversation', () => {
 })
 
 describe('who is offered stopTask', () => {
-  it('is every session that can start a task, of every agent, and never a task, a follow-up’s check or an approved proposal', async () => {
+  it('is every session that can start a task, a task included, of every agent, and never a follow-up’s check or an approved proposal', async () => {
     const h = await boot()
     try {
       const tool = (agent: Record<string, unknown>, session: Record<string, unknown>) => {
@@ -531,15 +531,16 @@ describe('who is offered stopTask', () => {
       expect(offered(on, { platform: 'webchat', channel: 'conv-1', thread: 'conv-1', integrationId: undefined })).toBe(
         true
       )
-      // Never a task, a follow-up's check or an approved proposal; a hook run or a scheduled run may own tasks too.
-      for (const thread of ['subsession:d-1', 'subsession:check-d-1', 'subsession:task-d-1'])
-        expect(offered(on, { thread })).toBe(false)
+      // A task may own tasks of its own (auto-session-mode.md §6.3); a follow-up's check or an approved proposal never.
+      expect(offered(on, { thread: 'subsession:d-1' })).toBe(true)
+      for (const thread of ['subsession:check-d-1', 'subsession:task-d-1']) expect(offered(on, { thread })).toBe(false)
+      // A hook run or a scheduled run may own tasks too.
       expect(offered(on, { platform: 'hook', channel: 'hook:h-1', thread: 'd-1', integrationId: undefined })).toBe(true)
       expect(offered(on, { channel: 'cron:c-1', thread: 'cron:c-1:t-1', integrationId: undefined })).toBe(true)
       // An agent outside assistant mode is offered the same tool.
       expect(tool({}, {})).toEqual(tool(on, {}))
       expect(tool({ assistantMode: { enabled: false } }, {})).toEqual(tool(on, {}))
-      expect(offered({}, { thread: 'subsession:d-1' })).toBe(false)
+      expect(offered({}, { thread: 'subsession:d-1' })).toBe(true)
     } finally {
       await h.close()
     }
@@ -829,12 +830,12 @@ describe('listTasks kinds, states and results, from the index rows alone', () =>
     expect(res.more).toBe(2)
   })
 
-  it('lists nothing for a session with no outward id, or inside a task, a follow-up’s check or an approved proposal', async () => {
+  it('lists nothing for a session with no outward id, or inside a follow-up’s check or an approved proposal', async () => {
     const empty = { tasks: [], note: 'This session has no tasks.' }
     const none = deps(undefined)
     expect(await executeTool(ctx, 'listTasks', {}, none.deps as never)).toEqual(empty)
     expect(none.listForOwner).not.toHaveBeenCalled()
-    for (const thread of ['subsession:d-1', 'subsession:check-d-1', 'subsession:task-d-1']) {
+    for (const thread of ['subsession:check-d-1', 'subsession:task-d-1']) {
       const owned = deps('sid-owner')
       // A follow-up's check runs only the tools it was offered, so the handler is asked as if it had been.
       const inside = { ...ctx, thread, tools: [LIST_TASKS_TOOL] }

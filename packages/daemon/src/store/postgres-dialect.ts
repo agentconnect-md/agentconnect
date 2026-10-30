@@ -335,6 +335,11 @@ export const canonicalColumns = [
   'subsessionKey',
   'endReport',
   'reportAttempts',
+  // assistant_subsession's task model (auto-session-mode.md §6)
+  'summaryUpdatedAt',
+  'turnsSinceSummary',
+  'sinceRound',
+  'attachedAt',
   'submissionId',
   'sourceAgentId',
   'deliveryId',

@@ -75,6 +75,12 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
           description: 'callAgent only: that agent’s existing session (a childSessionId), instead of channel.'
         },
         taskId: { type: 'string', minLength: 1, description: 'messageTask only: the taskId delegateTask returned.' },
+        title: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 80,
+          description: 'delegateTask only: a short name for the task, shown to people.'
+        },
         messageId: {
           type: 'string',
           minLength: 1,

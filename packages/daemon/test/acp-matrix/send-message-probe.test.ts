@@ -58,7 +58,14 @@ describe('runtime matrix sendMessage probe', () => {
   it('returns the daemon validation error a model reads', async () => {
     const tools = probeTools()
     expect(await validateSendMessage({ action: 'callAgent', toAgent: IDS.peer, message: 'm' }, tools)).toBeUndefined()
-    expect(await validateSendMessage({ action: 'delegateTask', message: 'm' }, tools)).toBeUndefined()
+    expect(await validateSendMessage({ action: 'delegateTask', title: 't', message: 'm' }, tools)).toBeUndefined()
+    // A task needs its title, and a platform message id belongs to the coordinator alone.
+    expect(await validateSendMessage({ action: 'delegateTask', message: 'm' }, tools)).toMatch(
+      /action `delegateTask` requires `title`/
+    )
+    expect(
+      await validateSendMessage({ action: 'delegateTask', title: 't', messageId: 'msg-1', message: 'm' }, tools)
+    ).toMatch(/takes `messageId` only in a coordinator session/)
     // The release-candidate name fails with the exact call to make, so a model still using it is judged a correction.
     const renamed = await validateSendMessage({ action: 'startTask', message: 'm' }, tools)
     expect(renamed).toMatch(/action `startTask` is now `delegateTask`/)
@@ -66,7 +73,7 @@ describe('runtime matrix sendMessage probe', () => {
     expect(
       judge(background, [
         { tool: 'sendMessage', args: { action: 'startTask', message: 'm' }, error: renamed! },
-        { tool: 'sendMessage', args: { action: 'delegateTask', message: 'm' } }
+        { tool: 'sendMessage', args: { action: 'delegateTask', title: 't', message: 'm' } }
       ]).verdict
     ).toBe('DEGRADED')
     expect(
@@ -147,7 +154,7 @@ describe('runtime matrix sendMessage probe', () => {
     expect(judge(peer, [{ tool: 'sendMessage', args: legacy, error: error! }]).verdict).toBe('FAIL')
     expect(await validateSendMessage({ ...legacy, action: 'wakeAgent' }, tools)).toMatch(/`action` must be one of/)
     expect(await validateSendMessage({ action: 'callAgent', toAgent: IDS.self, message: 'm' }, tools)).toMatch(
-      /sendMessage \{"action":"delegateTask","message":"<the same message>"\}/
+      /sendMessage \{"action":"delegateTask","title":"<a short name for the work>","message":"<the same message>"\}/
     )
     expect(
       await validateSendMessage(
