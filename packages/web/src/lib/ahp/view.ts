@@ -182,7 +182,8 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
         })
       }
     }
-    for (const { turnId, ...capability } of meta?.capabilities ?? [])
+    // Settlement is read from the request itself: the daemon cannot update an idle session's cached outcome.
+    for (const { turnId, resolved: _resolved, ...capability } of meta?.capabilities ?? [])
       if (turnId === turn.id)
         steps.push({ ...base, kind: 'capability', text: capability.summary, capability, boundary: true })
   }

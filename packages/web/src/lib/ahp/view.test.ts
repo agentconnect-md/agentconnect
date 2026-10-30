@@ -50,7 +50,7 @@ describe('standard AHP view', () => {
       _meta: {
         'agentconnect.md': {
           capabilities: [
-            { ...card, turnId: 'turn' },
+            { ...card, turnId: 'turn', resolved: { status: 'declined', text: 'Declined' } },
             { ...card, requestId: 'x', turnId: 'other' }
           ]
         }
@@ -59,6 +59,8 @@ describe('standard AHP view', () => {
     const steps = ahpSteps(state, 'agent', session)
     expect(steps.map((step) => step.kind)).toEqual(['msg', 'done', 'capability'])
     expect(steps.at(-1)).toMatchObject({ text: 'Add repo', capability: card, boundary: true })
+    // A reopen or settle outside a turn never reaches the cached outcome, so the card reads the request instead.
+    expect(steps.at(-1)?.capability).not.toHaveProperty('resolved')
   })
   it('projects the status snapshot onto session usage, keeping fields it omits', () => {
     expect(ahpUsageFields(undefined, { totalTokens: 1 })).toEqual({})

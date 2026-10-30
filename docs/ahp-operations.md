@@ -148,7 +148,8 @@ carries the latest turn's ACP plan as `plan` (at most 50 entries of 500
 characters) and the status snapshot, including token and cost totals, as
 `status`, and the session's capability request cards as `capabilities` (at most
 16, settled cards evicted first). Generic clients ignore these; the console's
-AHP Webchat renders them.
+AHP Webchat renders them, reading each card's outcome from the request itself
+because a card settled or reopened between turns is not updated there.
 
 Set `AHP_AUTHORIZATION_SERVER` to the `issuer` the CP serves at
 `/.well-known/oauth-authorization-server` (the `PUBLIC_MCP_URL` origin when set,
