@@ -27,6 +27,8 @@ interface Registry {
 
 const Ctx = createContext<Registry | null>(null)
 const Waiting = createContext<Pending[] | null>(null)
+// Held by the provider, not the banner, so the banner unmounting (the file viewer) does not forget it.
+const Dismissal = createContext<{ dismissed: ReadonlySet<string>; dismiss: (keys: string[]) => void } | null>(null)
 
 /**
  * Registration is a REF CALLBACK rather than an effect, because the node is what the banner
@@ -74,9 +76,17 @@ export function PendingActionsProvider({ children }: { children: ReactNode }) {
     [resync]
   )
   const registry = useMemo<Registry>(() => ({ hold, release }), [hold, release])
+  // Dismissing covers what is waiting now; only an item that starts waiting later brings it back.
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set())
+  const dismissal = useMemo(
+    () => ({ dismissed, dismiss: (keys: string[]) => setDismissed(new Set(keys)) }),
+    [dismissed]
+  )
   return (
     <Ctx.Provider value={registry}>
-      <Waiting.Provider value={entries}>{children}</Waiting.Provider>
+      <Dismissal.Provider value={dismissal}>
+        <Waiting.Provider value={entries}>{children}</Waiting.Provider>
+      </Dismissal.Provider>
     </Ctx.Provider>
   )
 }
@@ -150,9 +160,8 @@ export function PendingActionsBanner({ className = '' }: { className?: string })
     for (const entry of entries) observer.observe(entry.el)
     return () => observer.disconnect()
   }, [entries])
-  // Dismissing covers what is waiting now; only an item that starts waiting later brings it back.
-  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set())
-  const shown = hidden.filter((entry) => !dismissed.has(entry.key))
+  const dismissal = useContext(Dismissal)
+  const shown = hidden.filter((entry) => !dismissal?.dismissed.has(entry.key))
   const item = shown[0]
   if (!item) return null
   const more = shown.length - 1
@@ -177,7 +186,7 @@ export function PendingActionsBanner({ className = '' }: { className?: string })
           type="button"
           aria-label={t('dismiss')}
           className="flex flex-none cursor-pointer items-center self-stretch pl-1 pr-3 text-(--amber-500)"
-          onClick={() => setDismissed(new Set((entries ?? []).map((entry) => entry.key)))}
+          onClick={() => dismissal?.dismiss((entries ?? []).map((entry) => entry.key))}
         >
           <Icon name="x" size={13} />
         </button>
