@@ -37,6 +37,29 @@ describe('standard AHP view', () => {
     expect(ahpSteps(state, 'agent', session('turn'))[1]).toMatchObject({ turnId: 'turn', plan: entries })
     expect(ahpSteps(state, 'agent', session('other')).map((step) => step.kind)).toEqual(['msg', 'tool'])
   })
+  it('renders capability request cards at the end of their turn', () => {
+    const state = chat([{ kind: 'markdown', id: 'one', content: 'I need a repository' }])
+    const card = {
+      requestId: 'r',
+      generation: 1,
+      summary: 'Add repo',
+      reason: 'Needed',
+      link: 'https://console.example.test/r'
+    }
+    const session = {
+      _meta: {
+        'agentconnect.md': {
+          capabilities: [
+            { ...card, turnId: 'turn' },
+            { ...card, requestId: 'x', turnId: 'other' }
+          ]
+        }
+      }
+    } as unknown as SessionState
+    const steps = ahpSteps(state, 'agent', session)
+    expect(steps.map((step) => step.kind)).toEqual(['msg', 'done', 'capability'])
+    expect(steps.at(-1)).toMatchObject({ text: 'Add repo', capability: card, boundary: true })
+  })
   it('projects the status snapshot onto session usage, keeping fields it omits', () => {
     expect(ahpUsageFields(undefined, { totalTokens: 1 })).toEqual({})
     expect(ahpUsageFields({ costAmount: 0.5, costCurrency: 'USD' }, { totalTokens: 1200, contextUsed: 9 })).toEqual({

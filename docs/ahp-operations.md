@@ -146,7 +146,9 @@ larger than one AHP message is refused rather than truncated. Other
 AHP has no task-list or cost channel. The session's `_meta['agentconnect.md']`
 carries the latest turn's ACP plan as `plan` (at most 50 entries of 500
 characters) and the status snapshot, including token and cost totals, as
-`status`. Generic clients ignore both; the console's AHP Webchat renders them.
+`status`, and the session's capability request cards as `capabilities` (at most
+16, settled cards evicted first). Generic clients ignore these; the console's
+AHP Webchat renders them.
 
 Set `AHP_AUTHORIZATION_SERVER` to the `issuer` the CP serves at
 `/.well-known/oauth-authorization-server` (the `PUBLIC_MCP_URL` origin when set,
@@ -231,11 +233,11 @@ stream cursors or automatically resend an uncertain action across protocols.
 - **Approval parity caveat:** when `callerApproves=false`, an ordinary caller's
   standard `ChatToolCallConfirmed` (`chat/toolCallConfirmed`) with `approved: true`
   is rejected. The host does not emit an accepted confirmation; the AHP UI keeps
-  the pending card and displays the caller's rejection notice. Legacy's “request
-  editor approval” escalation has no negotiated AHP counterpart yet. Authorized
+  the pending card and displays the caller's rejection notice. Authorized
   editors can settle actual approvals through the existing policy and pending
-  request owner. Keep explicit legacy attachments available for the escalation
-  workflow; do not claim complete approval parity or silently switch adapters.
+  request owner. Capability request cards, the escalation to whoever can make
+  the change, reach AHP Webchat through session metadata (below) and are
+  declined or completed over the same console REST routes as in legacy.
 - **Optional Apps:** the presentation helper permits at most 16 cards and 16 KiB
   encoded metadata, including pending HTML; only complete HTML reaches clients.
   Settled cards may be evicted. RPC results remain private. These individual

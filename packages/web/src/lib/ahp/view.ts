@@ -12,7 +12,14 @@ import type {
   ToolCallConfirmationReason,
   ToolCallCancellationReason
 } from '@microsoft/agent-host-protocol'
-import type { ElicitAnswerValue, ElicitFieldSpec, Session, SessionStep, SessionUsage } from '@/lib/data'
+import type {
+  CapabilityCardBody,
+  ElicitAnswerValue,
+  ElicitFieldSpec,
+  Session,
+  SessionStep,
+  SessionUsage
+} from '@/lib/data'
 import { fmtCost, fmtCountCompact } from '@/lib/api'
 import type { McpAppCard, McpAppOutcome } from '@agentconnect.md/protocol'
 
@@ -71,6 +78,7 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
         sessionId?: string
         apps?: Array<{ turnId: string; card: McpAppCard; html?: string; outcome?: McpAppOutcome }>
         plan?: { turnId: string; entries: NonNullable<SessionStep['plan']> }
+        capabilities?: Array<CapabilityCardBody & { turnId: string }>
       }
     | undefined
   const turns = [...chat.turns, ...(chat.activeTurn ? [chat.activeTurn] : [])]
@@ -174,6 +182,9 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
         })
       }
     }
+    for (const { turnId, ...capability } of meta?.capabilities ?? [])
+      if (turnId === turn.id)
+        steps.push({ ...base, kind: 'capability', text: capability.summary, capability, boundary: true })
   }
   if (chat.steeringMessage)
     steps.push({
