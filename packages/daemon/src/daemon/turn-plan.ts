@@ -58,7 +58,7 @@ export interface TurnPlan {
   readonly channel: string
   /** The physical reply target for message bodies, streams and shares; absent means the conversation root. */
   readonly thread?: string
-  /** The provider's lifecycle and transcript coordinate, independent of a physical reply override. */
+  /** Transcript coordinate; also the provider lifecycle target when a physical reply target exists. */
   readonly statusThread: string
   /** The SESSION coordinate this turn was admitted on (channel-session-mode.md §3.1),
    *  carried from the per-target resolution rather than re-derived. Matches `statusThread`
@@ -99,6 +99,11 @@ export interface TurnPlan {
   readonly githubTurnEligible: boolean
   readonly githubReplyBatchActive: boolean
   readonly deliveryBinding: SessionDeliveryBinding
+}
+
+/** Root posts without a native session have no activity slot; their transcript key is internal. */
+export function activityThreadOf(plan: { thread?: string; statusThread?: string }): string | undefined {
+  return plan.thread === undefined ? undefined : plan.statusThread
 }
 
 /** Decide everything this turn can decide before it runs. Total over its input. */
