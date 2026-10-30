@@ -19,6 +19,8 @@ interface Turn {
   outcomes: Map<string, CoordinatorOutcome | 'pending'>
   /** The text after the turn's last tool call, which a one-message turn answers with. */
   tail: string
+  /** Takes back what shows the turn's messages are being decided (§4.4). */
+  clearFeedback: () => void
 }
 
 /** How a turn ended for its messages without an outcome. */
@@ -61,9 +63,10 @@ export function coordinatorView(message: DeliveredMessage, text: string): Coordi
 export class CoordinatorTurns {
   private readonly turns = new Map<string, Turn>()
 
-  /** Open a turn on its batch, replacing any turn the session left behind. */
-  begin(key: string, messages: DeliveredMessage[]): void {
-    this.turns.set(key, { messages, outcomes: new Map(), tail: '' })
+  /** Open a turn on its batch, replacing any turn the session left behind; `clearFeedback` runs once the turn ends. */
+  begin(key: string, messages: DeliveredMessage[], clearFeedback: () => void = () => {}): void {
+    this.turns.get(key)?.clearFeedback()
+    this.turns.set(key, { messages, outcomes: new Map(), tail: '', clearFeedback })
   }
 
   has(key: string): boolean {
@@ -114,6 +117,7 @@ export class CoordinatorTurns {
     const turn = this.turns.get(key)
     if (!turn) return undefined
     this.turns.delete(key)
+    turn.clearFeedback()
     const undecided = turn.messages.filter((message) => !turn.outcomes.has(message.id))
     const text = turn.tail.trim()
     // A turn's final text answers its message only when there is exactly one (§4.3).

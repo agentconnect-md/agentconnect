@@ -1036,7 +1036,7 @@ import {
   deliveredMessage,
   THREADED_TASK_IDLE_CLOSE_MS
 } from './auto-session/coordinator-sessions.js'
-import { coordinatorView, inThread, replyThreadOf } from './auto-session/coordinator-turns.js'
+import { coordinatorView, inThread, replyThreadOf, type DeliveredMessage } from './auto-session/coordinator-turns.js'
 import {
   isGettingToKnowCoordinate,
   isCheckCoordinate,
@@ -1972,6 +1972,7 @@ export class Daemon {
       )
     },
     post: (agentId, integrationId, msg, text) => this.postCoordinatorReply(agentId, integrationId, msg, text),
+    showTriaging: (agentId, message) => this.showTriaging(agentId, message),
     warn: (message) => this.log.warn(message)
   })
   // Latched for the WHOLE drain handoff, including the window after `draining`
@@ -2889,6 +2890,8 @@ export class Daemon {
       sessionCoordinateFor: async (agentId, integrationId, msg, opts) =>
         await this.sessionCoordinateFor(agentId, integrationId, msg, opts),
       conversationAppends: (agentId, integrationId, msg) => this.conversationAppends(agentId, integrationId, msg),
+      adoptCoordinatorTasks: async (agentId, fromKey, toKey) =>
+        await this.coordinators.handOver(agentId, fromKey, toKey),
       mergedRulesForSource: (srcIntegrationIds) => this.mergedRulesForSource(srcIntegrationIds),
       transportScopeForIntegrationIds: (integrationIds) => this.transportScopeForIntegrationIds(integrationIds),
       integrationBelongsToSource: (integrationId, srcIntegrationIds) =>
@@ -13436,13 +13439,12 @@ export class Daemon {
    * several agents and two of them in one conversation may not share a mode. The same
    * placement, and the same reason, as the target's own `muteKey` and transport scope.
    */
-  /** Whether this conversation appends for this target. The mode alone — no store read —
-   *  so a caller can tell "nobody has spoken here yet" from "this is not an append
-   *  conversation", which decide opposite things about the latest-session fallback. */
+  /** Whether this conversation's root is one session for this target (append, or the coordinator under `auto`), from the mode alone so "nobody spoke yet" differs from "not one". */
   private conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean {
     if (integrationId === undefined) return false
     const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
-    return int !== undefined && this.sessionModeFor(agentId, int, msg) === 'append'
+    const mode = int === undefined ? undefined : this.sessionModeFor(agentId, int, msg)
+    return mode === 'append' || (mode === 'auto' && this.cfg.features.autoSessionMode)
   }
 
   /** A target's session mode where a message arrived; an assistant-mode place appends before its row reaches the spec (assistant-mode.md §5.2). */
@@ -13532,7 +13534,7 @@ export class Daemon {
     }
     entry.coordinatorBatch = batch
     const messages = [entry, ...batch].map((one) => deliveredMessage(one.msg, one.integrationId))
-    this.coordinators.turns.begin(key, messages)
+    this.coordinators.beginTurn(key, entry.agentId, messages)
     const { channel } = entry.msg
     const channelName = (await this.store.getDisplayNames([channel])).get(channel)
     entry.coordinatorPrompt = renderCoordinatorBatch(
@@ -13604,6 +13606,17 @@ export class Daemon {
       return {}
     }
     return { bareCwd: dir }
+  }
+
+  /** auto-session-mode.md §4.4: 🤔 on a message while a coordinator turn decides it, taken back after its placement settles. */
+  private showTriaging(agentId: string, message: DeliveredMessage): () => void {
+    const conn: Partial<ContractConnection> | undefined =
+      message.integrationId === undefined ? undefined : this.replyConnFor(agentId, message.integrationId)
+    const at = nativeMessageCoordinates(message.msg)
+    const react = conn?.react
+    if (!conn || !react || !at) return () => {}
+    const placed = react.call(conn, at.channel, at.messageId, 'triaging').catch(() => {})
+    return () => void placed.then(() => conn.unreact?.call(conn, at.channel, at.messageId, 'triaging')).catch(() => {})
   }
 
   /** The coordinator's own reply in a message's thread (auto-session-mode.md §4.2 (d)). */

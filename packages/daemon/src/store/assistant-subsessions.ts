@@ -741,6 +741,21 @@ export class AssistantSubsessionIndex {
     return closed
   }
 
+  /** Hand one parent's threaded tasks to another, as a coordinator's `!new` does (auto-session-mode.md §8); how many moved. */
+  async adoptThreaded(
+    agentId: string,
+    fromParentKey: string,
+    owner: { sessionId: string; key: string }
+  ): Promise<number> {
+    return (
+      await this.db.query(
+        `UPDATE assistant_subsession SET parentSessionId = ?, parentSessionKey = ?
+          WHERE agentId = ? AND parentSessionKey = ? AND kind = 'delegation' AND ${THREADED('assistant_subsession')}`,
+        [owner.sessionId, owner.key, agentId, fromParentKey]
+      )
+    ).changes
+  }
+
   /** Whether a task's `round` reports to its parent: a background task's always, a threaded one's only before its first thread (§6.2, §6.6). */
   async reportsRound(agentId: string, childSessionKey: string, round: number): Promise<boolean> {
     const row = (

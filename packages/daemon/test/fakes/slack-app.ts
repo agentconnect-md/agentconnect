@@ -72,7 +72,7 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           info: async () => ({}),
           conversations: async () => ({ channels: [] })
         },
-        reactions: { add: ok, get: async () => ({ message: { reactions: [] } }) },
+        reactions: { add: ok, remove: ok, get: async () => ({ message: { reactions: [] } }) },
         canvases: {
           create: async () => ({ canvas_id: 'F_FAKE_CANVAS' }),
           edit: ok,

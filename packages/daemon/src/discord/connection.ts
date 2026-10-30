@@ -6,6 +6,7 @@ import {
   Events,
   MessageFlags,
   PermissionFlagsBits,
+  Routes,
   messageLink,
   type Message,
   type Channel,
@@ -43,7 +44,7 @@ import type {
 } from '../platforms/contract.js'
 
 /** Core names the intent; Discord's alphabet is literal unicode emoji. */
-const DISCORD_REACTION_EMOJI: Record<PlatformReactionIntent, string> = { seen: '👀' }
+const DISCORD_REACTION_EMOJI: Record<PlatformReactionIntent, string> = { seen: '👀', triaging: '🤔' }
 
 /**
  * §Discord edge unit. Mirrors slack/connection.ts + telegram/connection.ts but over
@@ -879,6 +880,16 @@ export class DiscordConnection implements PlatformConnection {
     } catch (err) {
       this.rememberPermissionIssue(err, container)
       this.deps.log?.debug(`discord: react failed (ch=${container} msg=${messageId}): ${(err as Error).message}`)
+    }
+  }
+
+  /** Take back this bot's own reaction for `intent`, by REST so a reaction the message cache never saw still goes. */
+  async unreact(container: string, messageId: string, intent: PlatformReactionIntent): Promise<void> {
+    try {
+      const emoji = encodeURIComponent(DISCORD_REACTION_EMOJI[intent])
+      await this.client.rest.delete(Routes.channelMessageOwnReaction(container, messageId, emoji))
+    } catch (err) {
+      this.deps.log?.debug(`discord: unreact failed (ch=${container} msg=${messageId}): ${(err as Error).message}`)
     }
   }
 

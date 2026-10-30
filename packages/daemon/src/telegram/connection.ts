@@ -16,7 +16,13 @@ import { TELEGRAM_CALLBACK_ANSWER_LIMIT } from './render.js'
 import type { PlatformConnection, PlatformReactionIntent } from '../platforms/contract.js'
 
 /** Core names the intent; Telegram's alphabet is a fixed set of literal emoji. */
-const TELEGRAM_REACTION_EMOJI: Record<PlatformReactionIntent, ReactionTypeEmoji['emoji']> = { seen: '👀' }
+const TELEGRAM_REACTION_EMOJI: Record<PlatformReactionIntent, ReactionTypeEmoji['emoji']> = {
+  seen: '👀',
+  triaging: '🤔'
+}
+
+/** How many recently reacted messages a connection remembers the one reaction it shows on. */
+const TELEGRAM_REACTION_MEMORY = 1000
 
 /** Map a Telegram Bot API error to the port's typed failure vocabulary, from its description. */
 function classifyTelegramUploadError(err: unknown): UploadFailReason {
@@ -325,6 +331,8 @@ export class TelegramConnection implements PlatformConnection {
   /** No workspace permalink base on Telegram (unlike Slack's workspaceUrl); '' so the
    *  daemon's deep-link base falls through to the configured / CP / local default Web App URL. */
   readonly workspaceUrl = ''
+  /** A bot shows one reaction per message: the intent it shows on each recent one, and that message's calls in order. */
+  private readonly reactions = new Map<string, { shown?: PlatformReactionIntent; tail: Promise<void> }>()
 
   constructor(
     private deps: TelegramDeps,
@@ -693,17 +701,46 @@ export class TelegramConnection implements PlatformConnection {
     }
   }
 
-  /** Turn-start acknowledgement on the message that fired the turn. Not queued, for the
-   *  same reason the typing hint is not: its whole value is arriving before the answer.
-   *  A chat that forbids bot reactions degrades to nothing visible. */
+  /** A reaction on an inbound message, kept off the send queue so it lands before the answer; a chat forbidding it shows nothing. */
   async react(channel: string, messageId: string, intent: PlatformReactionIntent): Promise<void> {
+    await this.setReaction(channel, messageId, { show: intent })
+  }
+
+  /** Clear this bot's reaction only while it still shows `intent`: a later one (a task's 👀) replaced it and stays. */
+  async unreact(channel: string, messageId: string, intent: PlatformReactionIntent): Promise<void> {
+    await this.setReaction(channel, messageId, { clear: intent })
+  }
+
+  /** Show or clear the bot's one reaction on a message, after that message's earlier calls. */
+  private setReaction(
+    channel: string,
+    messageId: string,
+    next: { show: PlatformReactionIntent } | { clear: PlatformReactionIntent }
+  ): Promise<void> {
     const id = Number(messageId)
-    if (!Number.isSafeInteger(id)) return
-    try {
-      await this.bot.api.setMessageReaction(channel, id, [{ type: 'emoji', emoji: TELEGRAM_REACTION_EMOJI[intent] }])
-    } catch (err) {
-      this.deps.log?.debug(`telegram: setMessageReaction failed (ch=${channel} msg=${id}): ${(err as Error).message}`)
-    }
+    if (!Number.isSafeInteger(id)) return Promise.resolve()
+    const key = `${channel}:${id}`
+    const entry = this.reactions.get(key) ?? { tail: Promise.resolve() }
+    // Re-inserted so the map runs oldest first, and the oldest goes past the bound.
+    this.reactions.delete(key)
+    this.reactions.set(key, entry)
+    const oldest = this.reactions.size > TELEGRAM_REACTION_MEMORY ? this.reactions.keys().next().value : undefined
+    if (oldest !== undefined) this.reactions.delete(oldest)
+    entry.tail = entry.tail.then(async () => {
+      if ('clear' in next && entry.shown !== next.clear) return
+      const shown = 'show' in next ? next.show : undefined
+      try {
+        await this.bot.api.setMessageReaction(
+          channel,
+          id,
+          shown ? [{ type: 'emoji', emoji: TELEGRAM_REACTION_EMOJI[shown] }] : []
+        )
+        entry.shown = shown
+      } catch (err) {
+        this.deps.log?.debug(`telegram: setMessageReaction failed (ch=${channel} msg=${id}): ${(err as Error).message}`)
+      }
+    })
+    return entry.tail
   }
 
   /**

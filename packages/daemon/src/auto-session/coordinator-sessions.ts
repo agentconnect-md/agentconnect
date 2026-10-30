@@ -21,6 +21,8 @@ export interface CoordinatorSessionsHost {
   dispatch(agentId: string, msg: NormalizedMessage, integrationId?: string): void
   /** Post the agent's own text in a message's thread. */
   post(agentId: string, integrationId: string | undefined, msg: NormalizedMessage, text: string): Promise<void>
+  /** Show on a message that a turn is deciding it (🤔, §4.4); the returned call takes that back. */
+  showTriaging(agentId: string, message: DeliveredMessage): () => void
   warn(message: string): void
 }
 
@@ -91,6 +93,14 @@ export class CoordinatorSessions {
   readonly turns = new CoordinatorTurns()
 
   constructor(private readonly host: CoordinatorSessionsHost) {}
+
+  /** Open a coordinator turn on its batch, each message marked as being decided until the turn ends, whatever its outcome (§4.3, §4.4). */
+  beginTurn(key: string, agentId: string, messages: DeliveredMessage[]): void {
+    const clears = messages.map((message) => this.host.showTriaging(agentId, message))
+    this.turns.begin(key, messages, () => {
+      for (const clear of clears) clear()
+    })
+  }
 
   /** The coordinator's `sendMessage`: one outcome for one delivered message. */
   async decide(ctx: SessionContext, args: Record<string, unknown>): Promise<unknown> {
@@ -250,6 +260,13 @@ export class CoordinatorSessions {
       .assistantSubsessions.taskOfThread(agentId, { ...at, thread: replyThreadOf(msg) })
     if (owner !== undefined) await this.deliverToTask(agentId, owner, message)
     else await this.openTask(key, agentId, message, fallbackTitle(msg))
+  }
+
+  /** A coordinator's `!new`: the session succeeding it takes over its threaded tasks, which keep their threads (§8). */
+  async handOver(agentId: string, fromKey: string, toKey: string): Promise<void> {
+    const store = this.host.store()
+    const sessionId = await store.ensureOutwardSessionId(toKey, agentId, this.host.now())
+    await store.assistantSubsessions.adoptThreaded(agentId, fromKey, { sessionId, key: toKey })
   }
 
   /** End a coordinator turn: a one-message turn's text is its reply, and a mention left without an outcome goes to a task (§4.3, §4.5). */
