@@ -108,7 +108,7 @@ const channel = (
   channelId: string,
   trigger: 'off' | 'mention' | 'any',
   kind: 'channel' | 'im' | 'mpim' = 'channel',
-  sessionMode: 'createNew' | 'append' = 'createNew'
+  sessionMode: IntegrationChannelRecord['sessionMode'] = 'createNew'
 ): IntegrationChannelRecord => ({
   integrationId: INTEGRATION.id,
   channelId,
@@ -147,6 +147,12 @@ describe('integrationToSpec sessionModes', () => {
       { channel: 'C2', mode: 'append' },
       { channel: 'C3', mode: 'append' }
     ])
+  })
+
+  // auto-session-mode.md §3.1: the projection passes auto through; the per-peer encoder decides who may read it.
+  it('passes auto through like any other departure', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'mention'), channel('C2', 'any', 'channel', 'auto')])
+    expect(spec.core.sessionModes).toEqual([{ channel: 'C2', mode: 'auto' }])
   })
 
   // Unlike bindRules, this ships for a gated agent too: session keying is the daemon's

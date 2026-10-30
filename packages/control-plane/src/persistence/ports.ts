@@ -6179,8 +6179,8 @@ export type ChannelActivation =
       decisionNeedsReview: boolean
     }
 
-/** Which session an activation in a conversation joins (channel-session-mode.md §5). */
-export type ChannelSessionMode = 'createNew' | 'append'
+/** Which session an activation in a conversation joins (channel-session-mode.md §5, auto-session-mode.md §3.1). */
+export type ChannelSessionMode = import('@agentconnect.md/protocol').ChannelSessionMode
 
 /** Member channel vs direct conversation (resource-visibility.md §14.3). `mpim` is a
  *  Slack group DM: observed like an `im`, mention-gated like a channel. */

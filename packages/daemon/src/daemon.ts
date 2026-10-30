@@ -116,6 +116,7 @@ import {
   FOLLOW_UP_TASKS_V1_FEATURE,
   CONVERSATION_PERMISSION_REQUESTS_FEATURE,
   ACTIVITY_EVERY_AGENT_V1_FEATURE,
+  SESSION_MODE_AUTO_V1_FEATURE,
   AUTO_MERGE_FEATURE,
   AUTO_MERGE_SESSION_FEATURE,
   SANDBOX_KEEP_ALIVE_FEATURE,
@@ -8603,6 +8604,8 @@ export class Daemon {
       CONVERSATION_PERMISSION_REQUESTS_FEATURE,
       // Serves Activity's permission requests, sub-sessions and drafts for an agent outside assistant mode too; static.
       ACTIVITY_EVERY_AGENT_V1_FEATURE,
+      // Reads the `auto` session mode; until the coordinator lands it routes as Per thread, so only an opted-in daemon says so.
+      ...(this.cfg.features.autoSessionMode ? [SESSION_MODE_AUTO_V1_FEATURE] : []),
       // Keeps follow-ups in place of items: Activity carries them as tasks and answers no items; static.
       FOLLOW_UP_TASKS_V1_FEATURE,
       // Ends a follow-up by its id before its first check, and reads one task by its session; static.

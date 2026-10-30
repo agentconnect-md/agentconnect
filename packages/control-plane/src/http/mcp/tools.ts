@@ -1188,7 +1188,7 @@ export const MCP_TOOLS: McpToolDef[] = [
           'Required with, and only with, trigger "decision"'
         ),
         sessionMode: UpdateIntegrationChannelBody.shape.sessionMode.describe(
-          'createNew opens a session per thread; append joins the conversation’s one long-lived session'
+          'createNew opens a session per thread; append joins the conversation’s one long-lived session; auto, where the daemon supports it, lets a coordinator session route each message'
         ),
         agentId: z.string().min(1).optional().describe('Owning agent for this channel (from listAgents)')
       })

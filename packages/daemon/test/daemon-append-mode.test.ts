@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
+import { SESSION_MODE_AUTO_V1_FEATURE } from '@agentconnect.md/protocol'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,13 +19,16 @@ import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
  * against an implementation that resolved it too late to matter.
  */
 
-function scaffold(mode: 'createNew' | 'append', agents: string[] = ['bot-a']): string {
+type Mode = 'createNew' | 'append' | 'auto'
+
+function scaffold(mode: Mode, agents: string[] = ['bot-a'], features?: Record<string, unknown>): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-append-'))
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      ...(features ? { features } : {}),
       // These cases judge the row purge on the 7-day window it had before workspaces got their own.
       sessions: { retention: '7d' },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
@@ -50,7 +54,7 @@ function scaffold(mode: 'createNew' | 'append', agents: string[] = ['bot-a']): s
               // Only a conversation that departs from the default is listed, so `createNew`
               // exercises the absent-entry path rather than an explicit one. A SECOND agent
               // always stays on the default — that is what makes per-target resolution visible.
-              ...(mode === 'append' && id === 'bot-a' ? { sessionModes: [{ channel: 'C1', mode: 'append' }] } : {})
+              ...(mode !== 'createNew' && id === 'bot-a' ? { sessionModes: [{ channel: 'C1', mode }] } : {})
             },
             config: { botToken: 'xoxb', appToken: 'xapp' }
           }
@@ -62,9 +66,14 @@ function scaffold(mode: 'createNew' | 'append', agents: string[] = ['bot-a']): s
   return root
 }
 
-async function boot(mode: 'createNew' | 'append', realDispatch = false, agents: string[] = ['bot-a']) {
+async function boot(
+  mode: Mode,
+  realDispatch = false,
+  agents: string[] = ['bot-a'],
+  features?: Record<string, unknown>
+) {
   const daemon = new Daemon({
-    root: scaffold(mode, agents),
+    root: scaffold(mode, agents, features),
     hostFactory: () =>
       ({
         __started: true,
@@ -234,6 +243,34 @@ describe('append mode keys one session per conversation', () => {
     expect(calls).toHaveLength(2)
     expect(calls.every((c) => c.msg.sessionThread === undefined)).toBe(true)
     await daemon.stop()
+  })
+})
+
+// auto-session-mode.md §3.1: until the coordinator lands, an auto conversation routes as Per thread.
+describe('auto mode before the coordinator', () => {
+  it('keys on its thread, as a createNew conversation does', async () => {
+    const { daemon, calls } = await boot('auto')
+
+    await route(daemon, human({ ts: '1720000000.000100' }))
+    await route(
+      daemon,
+      human({ ts: '1720000000.000300', msgId: 'slack:C1:1720000000.000300', thread: '1720000000.000100' })
+    )
+
+    expect(calls).toHaveLength(2)
+    expect(calls.every((c) => c.msg.sessionThread === undefined)).toBe(true)
+    await daemon.stop()
+  })
+
+  it('advertises the mode only when the operator opts in', async () => {
+    const featuresOf = async (features?: Record<string, unknown>) => {
+      const { daemon } = await boot('auto', false, ['bot-a'], features)
+      const advertised = (daemon as never as { registrationFeatures: () => string[] }).registrationFeatures()
+      await daemon.stop()
+      return advertised
+    }
+    expect(await featuresOf()).not.toContain(SESSION_MODE_AUTO_V1_FEATURE)
+    expect(await featuresOf({ autoSessionMode: true })).toContain(SESSION_MODE_AUTO_V1_FEATURE)
   })
 })
 
