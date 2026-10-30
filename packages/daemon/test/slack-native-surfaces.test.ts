@@ -6,6 +6,8 @@ import type { SessionContext } from '../src/mcp/ops/context.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { slackThreadUrl } from '../src/platforms/slack/permalink.js'
 import { planCanvasMarkdown } from '../src/slack/render.js'
+import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../src/platforms/slack/standing-context.js'
+import { startSlackCodeDiff, type SlackTurn, type SlackTurnState } from '../src/platforms/slack/turn-output.js'
 
 const ctx: SessionContext = {
   agentId: 'a1',
@@ -38,7 +40,9 @@ async function fixture(code = true) {
     setView: vi.fn(async (_args: unknown) => ({})),
     setProperties: vi.fn(async (_args: unknown) => ({})),
     archive: vi.fn(async (_args: unknown) => ({})),
-    listViews: vi.fn(async (_args: unknown): Promise<{ views?: { view_key?: string; file_id?: string }[] }> => ({})),
+    listViews: vi.fn(
+      async (_args: unknown): Promise<{ views?: { view_id?: string; view_key?: string; file_id?: string }[] }> => ({})
+    ),
     setCanvasContent: vi.fn(async (_args: unknown) => ({})),
     removeView: vi.fn(async (_args: unknown) => ({}))
   }
@@ -67,6 +71,108 @@ async function fixture(code = true) {
 }
 
 describe('Slack native surfaces', () => {
+  it('drops a queued diff when Stop arrives before Slack can send it', async () => {
+    const f = await fixture()
+    let release!: () => void
+    let entered!: () => void
+    const started = new Promise<void>((done) => {
+      entered = done
+    })
+    f.api.setView.mockImplementationOnce(async () => {
+      entered()
+      await new Promise<void>((done) => {
+        release = done
+      })
+      return {}
+    })
+    const first = f.conn.codeChannelApi('setView', { channel_id: 'C1', type: 'diff', content: 'first' })
+    await started
+    const abort = new AbortController()
+    const queued = f.conn.codeChannelApi(
+      'setView',
+      { channel_id: 'C1', type: 'diff', content: 'stopped' },
+      abort.signal
+    )
+    const rejected = expect(queued).rejects.toThrow()
+    abort.abort()
+    release()
+    try {
+      await first
+      await rejected
+      expect(f.api.setView).toHaveBeenCalledTimes(1)
+    } finally {
+      await f.conn.stop()
+    }
+  })
+
+  it('updates the owned channel through the authorized platform output without a model tool call', async () => {
+    const f = await fixture()
+    const state: SlackTurnState = {}
+    const authorize = vi.fn(async () => {})
+    let content = 'diff --git a/a b/a\n'
+    const turn = { conn: f.conn, plan: { channel: 'C1', sessionThread: 'C1', isDm: false } } as SlackTurn
+    const context = await startSlackCodeDiff(turn, state, {
+      authorize,
+      open: async () => ({ read: async () => content }),
+      active: () => true,
+      mask: (text) => text,
+      notice: async () => {},
+      debug: () => {}
+    })
+    try {
+      expect(context).toContain('platform maintains')
+      await state.codeDiff!.settle()
+      expect(authorize).toHaveBeenCalledTimes(2)
+      expect(f.api.setView).toHaveBeenCalledExactlyOnceWith({
+        channel_id: 'C1',
+        type: 'diff',
+        content: 'diff --git a/a b/a\n',
+        base_branch: 'Task start',
+        head_branch: 'Current workspace'
+      })
+      f.api.listViews.mockResolvedValue({ views: [{ view_id: 'code' }] })
+      content = ''
+      await startSlackCodeDiff(turn, state, {
+        authorize,
+        open: async () => ({ read: async () => content }),
+        active: () => true,
+        mask: (text) => text,
+        notice: async () => {},
+        debug: () => {}
+      })
+      await state.codeDiff!.settle()
+      expect(f.api.removeView).toHaveBeenCalledExactlyOnceWith({ channel_id: 'C1', view_id: 'code' })
+    } finally {
+      state.codeDiff?.stop()
+      await f.conn.stop()
+    }
+  })
+
+  it('does not open workspaces or publish in an ordinary channel', async () => {
+    const f = await fixture(false)
+    const open = vi.fn()
+    try {
+      expect(
+        await startSlackCodeDiff(
+          { conn: f.conn, plan: { channel: 'C1', sessionThread: 'C1', isDm: false } } as SlackTurn,
+          {},
+          {
+            open,
+            authorize: async () => {},
+            active: () => true,
+            mask: (text) => text,
+            notice: async () => {},
+            debug: () => {}
+          }
+        )
+      ).toBeUndefined()
+      expect(open).not.toHaveBeenCalled()
+      expect(f.api.setView).not.toHaveBeenCalled()
+    } finally {
+      await f.conn.stop()
+    }
+  })
+
   it('posts native containers and numeric table cells in the current delivery thread', async () => {
     const f = await fixture()
     await SLACK_SESSION_TOOLS.execute(
@@ -108,7 +214,7 @@ describe('Slack native surfaces', () => {
   })
 
   it('refuses malformed table dimensions before posting and preserves write refusals', async () => {
-    const f = await fixture()
+    const f = await fixture(false)
     await expect(
       SLACK_SESSION_TOOLS.execute(
         'presentSlackReport',
@@ -127,7 +233,7 @@ describe('Slack native surfaces', () => {
   })
 
   it('keeps creation idempotent and origin privacy under Slack control', async () => {
-    const f = await fixture()
+    const f = await fixture(false)
     await SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Task' }, f.env)
     await SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Task' }, f.env)
     expect(f.api.create.mock.calls[0]).toEqual(f.api.create.mock.calls[1])
@@ -135,6 +241,40 @@ describe('Slack native surfaces', () => {
       expect.objectContaining({ origin_channel_id: 'C1', origin_message_ts: '1.002' })
     ])
     expect(f.api.create.mock.calls[0]![0]).not.toHaveProperty('is_private')
+    await f.conn.stop()
+  })
+
+  it('reuses the code channel when Slack delivers the copied origin as a new request', async () => {
+    const f = await fixture()
+    const msg = { channel: 'C1', thread: '1.002', isDm: false } as NormalizedMessage
+    await f.conn.prepareInboundMessage(msg)
+    const result = await SLACK_SESSION_TOOLS.execute(
+      'createSlackCodeChannel',
+      { ...ctx, thread: msg.thread! },
+      { name: 'Task' },
+      f.env
+    )
+    expect(result).toMatchObject({ channel_id: 'C1', already_exists: true })
+    expect(msg.standingContext).toBe(SLACK_CODE_CHANNEL_CONTEXT)
+    expect(f.api.create).not.toHaveBeenCalled()
+    expect(f.judgeWrite).not.toHaveBeenCalled()
+    await f.conn.stop()
+  })
+
+  it('allows DM creation without requiring conversation discovery scopes', async () => {
+    const f = await fixture(false)
+    f.info.mockRejectedValue(new Error('missing_scope'))
+    const msg = { channel: 'D1', thread: '1.001', isDm: true } as NormalizedMessage
+    await f.conn.prepareInboundMessage(msg)
+    await SLACK_SESSION_TOOLS.execute(
+      'createSlackCodeChannel',
+      { ...ctx, channel: 'D1', isDm: true },
+      { name: 'Task' },
+      { ...f.env, originMsgId: 'slack:D1:1.002' }
+    )
+    expect(msg.standingContext).toBe(SLACK_CONVERSATION_CONTEXT)
+    expect(f.info).not.toHaveBeenCalled()
+    expect(f.api.create).toHaveBeenCalledOnce()
     await f.conn.stop()
   })
 
@@ -166,6 +306,7 @@ describe('Slack native surfaces', () => {
     const msg = { channel: 'C1', thread: '1.001', isDm: false } as NormalizedMessage
     await f.conn.prepareInboundMessage(msg)
     expect(msg.thread).toBe('1.001')
+    expect(msg.standingContext).toBe(SLACK_CONVERSATION_CONTEXT)
     await expect(
       SLACK_SESSION_TOOLS.execute('setSlackCodeView', ctx, { type: 'diff', content: 'diff --git a/a b/a' }, f.env)
     ).rejects.toThrow('does not own')
@@ -177,11 +318,16 @@ describe('Slack native surfaces', () => {
     const f = await fixture()
     f.info.mockRejectedValue(new Error('lookup unavailable'))
     const ordinary = { channel: 'C1', thread: '1.001', isDm: false } as NormalizedMessage
-    const relayed = { ...ordinary, thread: 'C1', conversationBotId: 'U_FAKE_BOT' }
+    const relayed: NormalizedMessage = { ...ordinary, thread: 'C1', conversationBotId: 'U_FAKE_BOT' }
     await expect(f.conn.prepareInboundMessage(ordinary)).resolves.toBeUndefined()
     await expect(f.conn.prepareInboundMessage(relayed)).resolves.toBeUndefined()
     expect(ordinary).toMatchObject({ channel: 'C1', thread: '1.001' })
     expect(relayed).toMatchObject({ channel: 'C1', thread: 'C1', conversationBotId: 'U_FAKE_BOT' })
+    expect(relayed.standingContext).toBe(SLACK_CODE_CHANNEL_CONTEXT)
+    await expect(SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Task' }, f.env)).rejects.toThrow(
+      'lookup unavailable'
+    )
+    expect(f.api.create).not.toHaveBeenCalled()
     await f.conn.stop()
   })
 

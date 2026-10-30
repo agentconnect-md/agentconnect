@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
-ARG RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-20261022-002733@sha256:c7df1f23734ee56eb7e55247d156f9757c42df244fdaaf8addba54b503d17528
-ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-20261022-002733@sha256:6b4f3c12ba0dbfcd80f66c2f15a484e6439dd239469c7b315c3973a2031bb993
+ARG RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-20261029-233713@sha256:c6aab2632b8fa5c8dba84b891b05a21d5bd810b3d42b0333983b887dbb6055c9
+ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-20261029-233713@sha256:15374558d1ec9e99d752e62eeac89008e93d03a3a9b00009ccb05eea3cae2ec7
 
 ARG AGENT_BROWSER_VERSION=0.40.0
 ARG CLAUDE_ACP_VERSION=0.99.0
@@ -13,11 +13,11 @@ ARG OPENCODE_VERSION=1.19.4
 
 # ───────────────────────────── shim builder ─────────────────────────────────
 # The shim build inlines its dependencies so runtime images need no daemon node_modules.
-FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS shim-builder
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS shim-builder
 WORKDIR /build
 ENV PNPM_HOME=/pnpm \
   PATH=/pnpm:$PATH
-RUN corepack enable
+RUN npm install --global corepack@0.36.0 && corepack enable
 RUN printf 'fetch-retries=5\nfetch-retry-maxtimeout=600000\nfetch-retry-mintimeout=20000\nfetch-timeout=600000\nnetwork-concurrency=8\n' >> /root/.npmrc
 
 # .pnpmfile.mjs is checksummed INTO the lockfile, so a frozen install without it is refused.
@@ -62,7 +62,7 @@ FROM scratch AS runtime-payload-digest-export
 COPY --from=runtime-payload-digest /payload-digest /
 
 # Antigravity is the first, independently cached application layer in the full image.
-FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS antigravity
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS antigravity
 ARG ANTIGRAVITY_VERSION=1.4.3
 ARG ANTIGRAVITY_SHA256_AMD64=0634ce5306ba92c932945455e7a83fda78e2d99c33fa8aa6ee0566206a382714
 ARG TARGETARCH
@@ -98,7 +98,7 @@ RUN curl --retry 5 -fsSL -o /tmp/muse-acp.tar.gz \
   && cp LICENSE NOTICE /out/licenses/muse-acp/
 
 # Other native harness downloads are independent of Antigravity and agent-browser.
-FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS full-native-runtimes
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS full-native-runtimes
 ARG OMP_VERSION=18.13.1
 ARG OMP_SHA256_AMD64=ee2961c7da02e514a2475ee958c2fd85dbabf4d0907949ba5022edb2951f84b5
 ARG DEVIN_VERSION=3000.11.228

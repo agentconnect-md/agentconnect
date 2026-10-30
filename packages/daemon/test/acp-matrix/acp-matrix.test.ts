@@ -53,8 +53,21 @@ import {
   unreachableRuns,
   type SendMessageFixture,
   type SendMessageRun,
+  type ScoredRun,
   type SendMessageScenario
 } from './send-message-probe.js'
+import {
+  CO_SCENARIOS,
+  coordinatorFixture,
+  coordinatorPrompt,
+  coordinatorTools,
+  runCoordinatorScenarios,
+  selectedCoordinatorScenarios,
+  unreachableCoordinatorRuns,
+  type CoordinatorFixture,
+  type CoordinatorRun,
+  type CoordinatorScenario
+} from './coordinator-probe.js'
 import { FEATURES, type FeatureId } from './support-matrix.js'
 import { autoOrFullAccessPermissionMode } from '@agentconnect.md/protocol'
 
@@ -63,6 +76,7 @@ const TURN_TIMEOUT = 180_000
 const SUITE_TIMEOUT = 30 * 60_000
 // The sendMessage probe runs targets × scenarios × reps sessions, each bounded by a session and a prompt timeout.
 const SEND_MESSAGE_TIMEOUT = sendMessageBudget()
+const COORDINATOR_TIMEOUT = coordinatorBudget()
 const SKILL_NAME = 'runtime-matrix-probe'
 const DEBUG_CHILD = process.env.AC_RUNTIME_MATRIX_DEBUG === '1'
 // Kept between runs so the msb package and the image are pulled once; short because VM socket paths must fit 108 bytes.
@@ -198,6 +212,7 @@ function providerUnavailable(error: unknown): boolean {
     'authentication required',
     'authenticate first',
     'credit usage limit',
+    'insufficient balance',
     'requires usage credits',
     'weekly limit',
     'usage limit',
@@ -761,15 +776,16 @@ async function runIsolatedProbe(feature: IsolatedFeature, target: RuntimeTarget)
   }
 }
 
-/** The `sendMessage` probe on one runtime: a host started once, a fresh session per scenario and repetition. */
-async function runSendMessageRuntime(
+/** One probe on one runtime: a host started once, a fresh session per scenario and repetition. */
+async function runProbeRuntime<R extends ScoredRun>(
   target: RuntimeTarget,
-  fixture: SendMessageFixture,
-  tools: ReturnType<typeof probeTools>,
-  scenarios: SendMessageScenario[],
-  reps: number,
-  onRun: (run: SendMessageRun) => void
-): Promise<{ result: RuntimeResult; runs: SendMessageRun[] }> {
+  feature: 'sendMessage' | 'coordinator',
+  probe: {
+    run: (host: AcpHost, cwd: string, updates: Array<{ sessionId: string; update: any }>) => Promise<R[]>
+    skipped: (note: string) => R[]
+    unreachable: (verdict: 'UNAVAILABLE' | 'FAIL', note: string) => R[]
+  }
+): Promise<{ result: RuntimeResult; runs: R[] }> {
   const result: RuntimeResult = {
     id: target.id,
     reachable: false,
@@ -778,7 +794,7 @@ async function runSendMessageRuntime(
     modes: [],
     mcp: { http: false, sse: false }
   }
-  const root = mkdtempSync(join(tmpdir(), `ac-runtime-matrix-send-${target.id.replace(/[^a-z0-9-]/gi, '-')}-`))
+  const root = mkdtempSync(join(tmpdir(), `ac-runtime-matrix-${feature}-${target.id.replace(/[^a-z0-9-]/gi, '-')}-`))
   const cwd = join(root, 'workspace')
   mkdirSync(cwd, { recursive: true })
   const updates: Array<{ sessionId: string; update: any }> = []
@@ -788,48 +804,94 @@ async function runSendMessageRuntime(
     onUpdate: (sessionId, update) => updates.push({ sessionId, update }),
     onPermission: async (_sessionId, params) => selectAllowOption(params)
   })
-  let runs: SendMessageRun[]
+  let runs: R[]
   try {
     await withTimeout(host.start(), `${target.id}/start`)
     result.reachable = true
     result.mcp = host.mcpCapabilities() ?? { http: false, sse: false }
-    runs = result.mcp.http
-      ? await runSendMessageScenarios({
-          runtime: target.id,
-          host,
-          cwd,
-          fixture,
-          tools,
-          scenarios,
-          reps,
-          updates,
-          support: { withTimeout, providerUnavailable, errorReason: turnFailureReason },
-          onRun
-        })
-      : scenarios.map((scenario) => ({
-          runtime: target.id,
-          scenario: scenario.id,
-          rep: 1,
-          comparable: scenario.newOnly !== true,
-          verdict: 'SKIPPED' as const,
-          ops: [],
-          counts: { sendMessage: 0, getToolGuide: 0, otherMcp: 0, acpToolCalls: 0 },
-          ms: 0,
-          notes: ['runtime does not advertise HTTP MCP']
-        }))
-    result.features.sendMessage = result.mcp.http
+    runs = result.mcp.http ? await probe.run(host, cwd, updates) : probe.skipped('runtime does not advertise HTTP MCP')
+    result.features[feature] = result.mcp.http
       ? aggregate(runs)
       : { status: 'degrade', detail: 'HTTP MCP not advertised' }
   } catch (error) {
     result.error = turnFailureReason(error)
     const unavailable = providerUnavailable(error)
-    runs = unreachableRuns(target.id, scenarios, reps, unavailable ? 'UNAVAILABLE' : 'FAIL', result.error)
-    result.features.sendMessage = { status: unavailable ? 'unavailable' : 'fail', detail: result.error }
+    runs = probe.unreachable(unavailable ? 'UNAVAILABLE' : 'FAIL', result.error)
+    result.features[feature] = { status: unavailable ? 'unavailable' : 'fail', detail: result.error }
   } finally {
     await host.stop().catch(() => {})
     rmSync(root, { recursive: true, force: true })
   }
   return { result, runs }
+}
+
+/** The `sendMessage` probe on one runtime. */
+function runSendMessageRuntime(
+  target: RuntimeTarget,
+  fixture: SendMessageFixture,
+  tools: ReturnType<typeof probeTools>,
+  scenarios: SendMessageScenario[],
+  reps: number,
+  onRun: (run: SendMessageRun) => void
+): Promise<{ result: RuntimeResult; runs: SendMessageRun[] }> {
+  return runProbeRuntime(target, 'sendMessage', {
+    run: (host, cwd, updates) =>
+      runSendMessageScenarios({
+        runtime: target.id,
+        host,
+        cwd,
+        fixture,
+        tools,
+        scenarios,
+        reps,
+        updates,
+        support: { withTimeout, providerUnavailable, errorReason: turnFailureReason },
+        onRun
+      }),
+    skipped: (note) =>
+      scenarios.map((scenario) => ({
+        runtime: target.id,
+        scenario: scenario.id,
+        rep: 1,
+        comparable: scenario.newOnly !== true,
+        verdict: 'SKIPPED' as const,
+        ops: [],
+        counts: { sendMessage: 0, getToolGuide: 0, otherMcp: 0, acpToolCalls: 0 },
+        ms: 0,
+        notes: [note]
+      })),
+    unreachable: (verdict, note) => unreachableRuns(target.id, scenarios, reps, verdict, note)
+  })
+}
+
+/** The coordinator probe on one runtime. */
+function runCoordinatorRuntime(
+  target: RuntimeTarget,
+  fixture: CoordinatorFixture,
+  scenarios: CoordinatorScenario[],
+  reps: number,
+  onRun: (run: CoordinatorRun) => void
+): Promise<{ result: RuntimeResult; runs: CoordinatorRun[] }> {
+  return runProbeRuntime(target, 'coordinator', {
+    run: (host, cwd, updates) =>
+      runCoordinatorScenarios({
+        runtime: target.id,
+        host,
+        cwd,
+        fixture,
+        scenarios,
+        reps,
+        updates,
+        support: { withTimeout, providerUnavailable, errorReason: turnFailureReason },
+        onRun
+      }),
+    skipped: (note) =>
+      unreachableCoordinatorRuns(target.id, scenarios, 1, 'FAIL', note).map((run) => ({
+        ...run,
+        verdict: 'SKIPPED' as const
+      })),
+    unreachable: (verdict, note) => unreachableCoordinatorRuns(target.id, scenarios, reps, verdict, note)
+  })
 }
 
 const SHORT: Record<FeatureId, string> = {
@@ -846,6 +908,7 @@ const SHORT: Record<FeatureId, string> = {
   mcp: 'mcp',
   skills: 'skills',
   sendMessage: 'send',
+  coordinator: 'co',
   web: 'web'
 }
 const CELL: Record<Status, string> = { ok: '✓', degrade: '·', na: '~', unavailable: 'U', fail: '✗' }
@@ -878,6 +941,61 @@ function sendMessageBudget(): number {
   }
   const perTarget = TURN_TIMEOUT * (2 + 3 * scenarios * reps)
   return Math.max(SUITE_TIMEOUT, (named || 12) * perTarget)
+}
+
+/** The coordinator mode's test budget, sized like the sendMessage one. */
+function coordinatorBudget(): number {
+  const named = (process.env.AC_RUNTIME_MATRIX_TARGETS ?? '').split(',').filter((id) => id.trim() !== '').length
+  const reps = Math.max(1, Number.parseInt(process.env.AC_RUNTIME_MATRIX_COORDINATOR_REPS ?? '1', 10) || 1)
+  let scenarios = CO_SCENARIOS.length
+  try {
+    scenarios = selectedCoordinatorScenarios(process.env.AC_RUNTIME_MATRIX_COORDINATOR_SCENARIOS).length
+  } catch {
+    // An unknown scenario id fails in the test itself, with its message.
+  }
+  return Math.max(SUITE_TIMEOUT, (named || 12) * TURN_TIMEOUT * (2 + 3 * scenarios * reps))
+}
+
+/** Run the coordinator probe across targets, print its scenario grid, and always write the JSON report when asked. */
+async function runCoordinatorMatrix(targets: RuntimeTarget[], results: RuntimeResult[]): Promise<void> {
+  const scenarios = selectedCoordinatorScenarios(process.env.AC_RUNTIME_MATRIX_COORDINATOR_SCENARIOS)
+  const reps = Math.max(1, Number.parseInt(process.env.AC_RUNTIME_MATRIX_COORDINATOR_REPS ?? '1', 10) || 1)
+  const out = process.env.AC_RUNTIME_MATRIX_COORDINATOR_OUT?.trim()
+  const fixture = await coordinatorFixture()
+  const runs: CoordinatorRun[] = []
+  const write = (current: CoordinatorRun[]) => {
+    if (!out) return
+    mkdirSync(dirname(out), { recursive: true })
+    writeFileSync(
+      out,
+      `${JSON.stringify({ prompt: coordinatorPrompt(), tools: coordinatorTools(), runs: current }, null, 2)}\n`
+    )
+  }
+  try {
+    for (const target of targets) {
+      const live: CoordinatorRun[] = []
+      const probe = await runCoordinatorRuntime(target, fixture, scenarios, reps, (run) => {
+        live.push(run)
+        write([...runs, ...live])
+      })
+      results.push(probe.result)
+      runs.push(...probe.runs)
+      write(runs)
+      console.info(
+        `[runtime-matrix] ${target.id}: ${probe.result.features.coordinator?.detail ?? 'no result'}${probe.result.error ? ` — ${probe.result.error}` : ''}`
+      )
+    }
+  } finally {
+    fixture.server.close()
+    if (out) console.info(`[runtime-matrix] coordinator report written to ${out}`)
+  }
+  console.info(`\ncoordinator scenarios:\n${scenarioGrid(runs, scenarios)}\n`)
+  for (const run of runs) {
+    if (run.verdict === 'SKIPPED') continue
+    console.info(
+      `[runtime-matrix] coordinator ${run.verdict} ${run.runtime}/${run.scenario}#${run.rep}: ${run.outcomes.join(' ') || '-'} tools=[${run.toolCalls.join(', ')}] ${(run.ms / 1000).toFixed(1)}s ${run.notes.join('; ')}`
+    )
+  }
 }
 
 /** Run the `sendMessage` probe across targets, print its scenario grid, and always write the JSON report when asked. */
@@ -945,11 +1063,11 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
       .sort((a, b) => a.id.localeCompare(b.id))
     const only = process.env.AC_RUNTIME_MATRIX_ONLY?.trim()
     if (only) {
-      if (!(only in ISOLATED_PROBES) && only !== 'sendMessage')
+      if (!(only in ISOLATED_PROBES) && only !== 'sendMessage' && only !== 'coordinator')
         throw new Error(
-          `AC_RUNTIME_MATRIX_ONLY must be one of: ${[...Object.keys(ISOLATED_PROBES), 'sendMessage'].join(', ')}`
+          `AC_RUNTIME_MATRIX_ONLY must be one of: ${[...Object.keys(ISOLATED_PROBES), 'sendMessage', 'coordinator'].join(', ')}`
         )
-      features = [only as IsolatedFeature | 'sendMessage']
+      features = [only as IsolatedFeature | 'sendMessage' | 'coordinator']
     }
     if (features.includes('vm')) await startVm(config, catalog)
   }, SUITE_TIMEOUT)
@@ -963,6 +1081,8 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
       const results: RuntimeResult[] = []
       if (features.length === 1 && features[0] === 'sendMessage') {
         await runSendMessageMatrix(targets, results)
+      } else if (features.length === 1 && features[0] === 'coordinator') {
+        await runCoordinatorMatrix(targets, results)
       } else {
         for (const target of targets) {
           const isolated =
@@ -1000,6 +1120,8 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
       }
       expect(failures, `real runtime failures:\n${failures.join('\n')}`).toEqual([])
     },
-    process.env.AC_RUNTIME_MATRIX_ONLY?.trim() === 'sendMessage' ? SEND_MESSAGE_TIMEOUT : SUITE_TIMEOUT
+    ({ sendMessage: SEND_MESSAGE_TIMEOUT, coordinator: COORDINATOR_TIMEOUT } as Record<string, number>)[
+      process.env.AC_RUNTIME_MATRIX_ONLY?.trim() ?? ''
+    ] ?? SUITE_TIMEOUT
   )
 })

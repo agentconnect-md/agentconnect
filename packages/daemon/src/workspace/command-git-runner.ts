@@ -154,6 +154,10 @@ export class CommandGitRunner implements GitRunner {
     try {
       result = await this.exec(args)
     } catch (err) {
+      if (args[0] === 'diff' && args.includes('--no-index') && err instanceof GitExecError && err.code === 1) {
+        const out = Buffer.from(err.stdout, 'utf8')
+        return { out: out.subarray(0, maxBytes), overflow: out.byteLength > maxBytes }
+      }
       // A transport overflow may leave no partial output to return.
       if (err instanceof Error && /more than \d+ bytes on one stream/.test(err.message)) {
         return { out: Buffer.alloc(0), overflow: true }

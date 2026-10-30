@@ -121,7 +121,7 @@ passes on the result, and a checkout fetches only the blobs it needs.
   security releases (2.39.4, 2.40.2, 2.41.1, 2.42.2, 2.43.4, 2.44.1, 2.45.1+);
   2.38.0 and 2.39.3 ignore it.
 
-The daemon image is `node:24-bookworm-slim` (Git 2.39). The runtime sandbox image
+The daemon image is `node:26-bookworm-slim` (Git 2.39). The runtime sandbox image
 is built separately. Its pinned dependency base was run on 2026-10-01 and ships
 Git 2.39.5, which honors `GIT_NO_LAZY_FETCH`. The image verifier requires a
 `GIT_NO_LAZY_FETCH`-honoring release and behaviorally pins `--bundle-uri`, a

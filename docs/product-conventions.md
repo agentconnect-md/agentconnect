@@ -1321,7 +1321,25 @@ an approved proposal (see "Assistant-mode proposals"). What the agent's runtime 
 for the current turn, a long command or one of the runtime's own subagents, is not a task of the
 conversation; the session page shows it as this turn's tasks.
 
-Every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
+When the current platform provides a dedicated task conversation, the agent follows that
+workflow. In Slack, requested coding work with several steps opens a Code channel unless
+the user asks to stay in place or the task needs earlier discussion that would be lost.
+If channel creation is unavailable, ordinary delegation remains available.
+Work already in a Code channel continues there and keeps
+its repository, branch, diff and PR surfaces current; it never creates a second channel
+or delegates the same work merely because the original request was copied into it.
+Quick questions stay in their original conversation.
+
+In a Code channel, the platform keeps the task's assigned, isolated repositories visible
+as a diff while work runs and when it finishes. The comparison starts from the clean
+repository state before the task, so committing changes does not hide them. The agent
+still explains the work and publishes useful HTML previews and PR links. If enabled
+diff updates fail, the conversation says why. Existing tasks
+without a saved starting point, shared checkouts and unrelated directories are not
+silently published or given repeated eligibility warnings; the same conversation-write
+authorization applies to automatic output.
+
+Otherwise every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
 delegated task of its own: `sendMessage` with action `delegateTask` and only a `message`. Work it
 splits up and can finish within the current turn goes to its runtime's own subagents instead;
 delegating is for work that spans turns, may run a long time, or that people should be able to

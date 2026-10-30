@@ -90,3 +90,24 @@ AC_RUNTIME_MATRIX_ONLY=sendMessage \
   sizes and tool names, and per run the verdict, classified operations, call counts,
   wall time, and token usage — even when cells fail. It is rewritten after every run,
   and this mode's test timeout grows with targets × scenarios × repetitions.
+
+## Coordinator probe
+
+`AC_RUNTIME_MATRIX_ONLY=coordinator` checks whether each runtime's model can act as the
+`auto` session mode's coordinator ([auto-session-mode.md](../../../../docs/designs/auto-session-mode.md)).
+It injects the candidate coordinator prompt and tool surface from `coordinator-probe.ts`
+(`sendMessage` with `delegateTask`, `messageTask` and `replyToMessage`, plus `listTasks`)
+through its own HTTP MCP fixture, delivers channel-root messages one or several per turn,
+and judges each message's outcome: handed to an open task, a new task, a direct reply, or
+ignored. A refused call (an unknown message or task id, a second outcome for a message)
+reads the fixture's error and degrades the run. Nothing is posted or started.
+
+```bash
+AC_RUNTIME_MATRIX_ONLY=coordinator AC_RUNTIME_MATRIX_TARGETS=claude-acp,codex-acp \
+  pnpm --filter @agentconnect.md/daemon test:runtime-matrix
+```
+
+- `AC_RUNTIME_MATRIX_COORDINATOR_REPS` repeats every scenario (default 1).
+- `AC_RUNTIME_MATRIX_COORDINATOR_SCENARIOS` limits the run to a comma list of scenario ids.
+- `AC_RUNTIME_MATRIX_COORDINATOR_OUT` receives the JSON report: the prompt, the tools, and
+  per run the verdict, outcomes, every tool call's title, wall time and token usage.

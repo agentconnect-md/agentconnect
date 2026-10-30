@@ -23,6 +23,8 @@ export type FeatureId =
   | 'mcp'
   | 'skills'
   | 'sendMessage'
+  // The coordinator session's prompt and tools (auto session mode), run only when asked for by name.
+  | 'coordinator'
   // Organization research's web reach (assistant-mode.md §9 Q29), run only when asked for by name.
   | 'web'
 
@@ -47,6 +49,7 @@ export function verdictFor(feature: FeatureId, p: Profile): Verdict {
       return p.caps.usage ? 'run' : 'degrade'
     case 'mcp':
     case 'sendMessage':
+    case 'coordinator':
       return p.caps.mcp.http || p.caps.mcp.sse ? 'run' : 'degrade'
     case 'skills':
       return p.caps.skillsAgentId ? 'run' : 'degrade'

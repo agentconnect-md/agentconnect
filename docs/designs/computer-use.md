@@ -475,7 +475,7 @@ Where there is no physical desktop (a server, a NAS, Kubernetes), a "Linux deskt
 image running **the same desktop daemon**. The prototype was built and run on a Mac with OrbStack:
 
 - **Image**: Debian trixie-slim, Xvfb, a lean Xfce, Chromium, LibreOffice, Noto CJK fonts, Debian's Python, Go and
-  Rust toolchains, pinned Node 24, and the desktop daemon; Cua Driver is downloaded and checksummed at build time. ffmpeg (GPL) is not in the published image: the
+  Rust toolchains, pinned Node 26, and the desktop daemon; Cua Driver is downloaded and checksummed at build time. ffmpeg (GPL) is not in the published image: the
   daemon downloads the pinned build on first start into the volume, as on desktops (§7.4, §11). It runs as the non-root user `computer`,
   without systemd. `/home/computer` is a volume holding the token, config, audit log, and browser profile. The image is
   1.26 GB and builds in about 100 s.

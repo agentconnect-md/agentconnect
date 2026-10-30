@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM node:24-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 WORKDIR /app
-RUN corepack enable
+RUN npm install --global corepack@0.36.0 && corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json .npmrc .pnpmfile.mjs ./
 COPY packages/protocol/package.json packages/protocol/tsconfig.json ./packages/protocol/
 COPY packages/protocol/src ./packages/protocol/src
@@ -10,10 +10,10 @@ COPY packages/memory-plugin-mem0/src ./packages/memory-plugin-mem0/src
 RUN pnpm install --frozen-lockfile --ignore-scripts --filter @agentconnect.md/memory-plugin-mem0...
 RUN pnpm --filter @agentconnect.md/memory-plugin-mem0 build
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:26-bookworm-slim AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8788 MEM0_DIALECT=cloud MCP_TRANSPORT=http
 WORKDIR /app
-RUN corepack enable
+RUN npm install --global corepack@0.36.0 && corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc .pnpmfile.mjs ./
 COPY packages/protocol/package.json ./packages/protocol/package.json
 COPY packages/memory-plugin-mem0/package.json ./packages/memory-plugin-mem0/package.json

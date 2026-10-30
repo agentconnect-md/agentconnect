@@ -189,6 +189,9 @@ export class LocalGitRunner implements GitRunner {
         },
         (err, stdout) => {
           if (!err) return resolve({ out: stdout, overflow: false })
+          // A no-index diff exits 1 when the requested files differ.
+          if (args[0] === 'diff' && args.includes('--no-index') && (err as { code?: unknown }).code === 1)
+            return resolve({ out: stdout, overflow: false })
           // The ceiling was hit: the child is already dead and `stdout` holds the head slice.
           if ((err as NodeJS.ErrnoException).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
             return resolve({ out: stdout, overflow: true })

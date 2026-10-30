@@ -38,6 +38,7 @@ import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import { markNotJoined } from '../platforms/not-joined.js'
 import { slackMessageUrl } from '../platforms/slack/permalink.js'
+import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../platforms/slack/standing-context.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
@@ -1085,12 +1086,17 @@ export class SlackConnection implements PlatformConnection {
   }
 
   async prepareInboundMessage(msg: NormalizedMessage): Promise<void> {
-    if (msg.isDm || msg.isGroupDm) return
+    if (msg.isDm || msg.isGroupDm) {
+      msg.standingContext = SLACK_CONVERSATION_CONTEXT
+      return
+    }
+    if (msg.thread === msg.channel) msg.standingContext = SLACK_CODE_CHANNEL_CONTEXT
     const info = await this.codeChannel(msg.channel).catch(() => {
       this.deps.log?.debug('slack: channel discovery unavailable; retaining inbound coordinates')
       return undefined
     })
     if (!info) return
+    msg.standingContext = info.code ? SLACK_CODE_CHANNEL_CONTEXT : SLACK_CONVERSATION_CONTEXT
     delete msg.conversationBotId
     if (!info.code) return
     msg.thread = msg.channel
@@ -1155,12 +1161,16 @@ export class SlackConnection implements PlatformConnection {
 
   async codeChannelApi<K extends 'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView'>(
     method: K,
-    args: Parameters<WebClient['agents']['conversations'][K]>[0]
+    args: Parameters<WebClient['agents']['conversations'][K]>[0],
+    signal?: AbortSignal
   ): Promise<unknown> {
     const api = this.app.client.agents.conversations
     if (!api) throw new Error('This Slack client does not support code channels')
     try {
-      return await this.queue.enqueue(() => (api[method] as (args: unknown) => Promise<unknown>)(args))
+      return await this.queue.enqueue(() => {
+        signal?.throwIfAborted()
+        return (api[method] as (args: unknown) => Promise<unknown>)(args)
+      })
     } catch (err) {
       if (isSendQueueTimeout(err))
         throw new Error('Slack did not answer in time; the code channel operation may have completed')

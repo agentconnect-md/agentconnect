@@ -708,6 +708,15 @@ export function standingContext(scenario: SendMessageScenario, usesMeta: boolean
 
 export type SendMessageVerdict = 'PASS' | 'DEGRADED' | 'FAIL' | 'UNAVAILABLE' | 'INFO' | 'SKIPPED'
 
+/** The fields the matrix cell and the scenario grid read from any probe's run. */
+export interface ScoredRun {
+  runtime: string
+  scenario: string
+  rep: number
+  verdict: SendMessageVerdict
+  comparable: boolean
+}
+
 export interface SendMessageRun {
   runtime: string
   scenario: ScenarioId
@@ -913,7 +922,7 @@ export function unreachableRuns(
 }
 
 /** The runtime-level matrix cell over comparable scored runs: ✗ on any FAIL, · on any DEGRADED, U when nothing ran. */
-export function aggregate(runs: SendMessageRun[]): {
+export function aggregate(runs: ScoredRun[]): {
   status: 'ok' | 'degrade' | 'unavailable' | 'fail'
   detail: string
 } {
@@ -941,7 +950,7 @@ const VERDICT_CELL: Record<SendMessageVerdict, string> = {
 }
 
 /** Per-scenario grid: one row per runtime and repetition. */
-export function scenarioGrid(runs: SendMessageRun[], scenarios: SendMessageScenario[]): string {
+export function scenarioGrid(runs: ScoredRun[], scenarios: Array<{ id: string }>): string {
   const rows = [...new Set(runs.map((run) => `${run.runtime}#${run.rep}`))]
   const idWidth = Math.max(9, ...rows.map((row) => row.length))
   const head = 'runtime#r'.padEnd(idWidth) + ' | ' + scenarios.map((scenario) => scenario.id).join(' ')

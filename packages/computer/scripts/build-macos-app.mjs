@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // Official Node.js build (no Homebrew dylibs), pinned; changing it changes the app and, unsigned, costs every grant.
-const NODE_VERSION = 'v24.22.0'
+const NODE_VERSION = 'v26.13.0'
 const BUNDLE_ID = 'md.agentconnect.computer'
 const APP_NAME = 'AgentConnect Computer'
 const EXECUTABLE = 'agentconnect-computer'

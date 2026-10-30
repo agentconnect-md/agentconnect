@@ -5,12 +5,12 @@ here=$(cd "$(dirname "$0")" && pwd)
 node_bin=$(command -v node || true)
 [ -z "$node_bin" ] && [ -x "$HOME/.local/node/bin/node" ] && node_bin="$HOME/.local/node/bin/node"
 if [ -z "$node_bin" ]; then
-  echo 'Node.js >= 24.12 is required: https://nodejs.org/ (the macOS .pkg, or the tarball unpacked to ~/.local/node)' >&2
+  echo 'Node.js >= 26.0 is required: https://nodejs.org/ (the macOS .pkg, or the tarball unpacked to ~/.local/node)' >&2
   exit 1
 fi
-"$node_bin" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>24||(a===24&&b>=12)?0:1)' \
+"$node_bin" -e 'process.exit(Number(process.versions.node.split(".")[0])>=26?0:1)' \
   || {
-    echo "Node.js >= 24.12 is required, found $("$node_bin" -v)" >&2
+    echo "Node.js >= 26.0 is required, found $("$node_bin" -v)" >&2
     exit 1
   }
 
