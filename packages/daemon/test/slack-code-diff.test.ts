@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { startCodeDiff, type CodeDiffHost } from '../src/platforms/slack/code-diff.js'
+import { TaskDiffIneligible } from '../src/workspace/task-diff.js'
 
 afterEach(() => vi.useRealTimers())
 
@@ -29,6 +30,16 @@ function setup() {
 }
 
 describe('Slack task diff publisher', () => {
+  it('quietly leaves ineligible sessions on their existing output path across turns', async () => {
+    const { host } = setup()
+    vi.mocked(host.open).mockRejectedValue(new TaskDiffIneligible('No saved baseline'))
+    expect(await startCodeDiff(host)).toBeUndefined()
+    expect(await startCodeDiff(host)).toBeUndefined()
+    expect(host.notice).not.toHaveBeenCalled()
+    expect(host.publish).not.toHaveBeenCalled()
+    expect(host.debug).toHaveBeenCalledTimes(2)
+  })
+
   it('coalesces changes, masks content, reauthorizes publications and flushes the final state', async () => {
     vi.useFakeTimers()
     const { host, change } = setup()

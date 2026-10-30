@@ -7,6 +7,7 @@ export interface TaskDiff {
 }
 
 export class TaskDiffUnavailable extends Error {}
+export class TaskDiffIneligible extends TaskDiffUnavailable {}
 
 const DIFF_LIMIT = 180_000
 const PATHS_LIMIT = 16_000
@@ -18,7 +19,7 @@ export async function openTaskDiff(
   sessionKey: string,
   initialize: boolean
 ): Promise<TaskDiff> {
-  if (!roots.length) throw new TaskDiffUnavailable('No task repository is available for automatic diff updates.')
+  if (!roots.length) throw new TaskDiffIneligible('No task repository is available for automatic diff updates.')
   const ref = `refs/agentconnect/task-diff/${createHash('sha256').update(sessionKey).digest('hex')}`
   const sources: Array<{ git: GitRunner; base: string; prefix: string }> = []
   for (const root of roots) {
@@ -29,12 +30,12 @@ export async function openTaskDiff(
     let base = existing
     if (!base) {
       if (!initialize)
-        throw new TaskDiffUnavailable(
+        throw new TaskDiffIneligible(
           'This task has no saved starting point; its earlier changes will not be published automatically.'
         )
       const status = await git.readBounded(['status', '--porcelain', '-uall'], PATHS_LIMIT)
       if (status.overflow || status.out.length)
-        throw new TaskDiffUnavailable(
+        throw new TaskDiffIneligible(
           'The task repository already has changes, so an automatic diff cannot safely choose a starting point.'
         )
       base = (await git.readBounded(['rev-parse', '--verify', 'HEAD'], 256)).out.toString().trim()

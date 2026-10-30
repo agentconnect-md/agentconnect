@@ -38,7 +38,9 @@ export async function startSlackCodeDiff(
     hasPublished = existing.views?.some((view) => view.view_id === 'code') === true
   } catch {
     if (host.active())
-      await host.notice('Code diff is not updating. Slack could not confirm this code channel and its views.')
+      await host
+        .notice('Code diff is not updating. Slack could not confirm this code channel and its views.')
+        .catch(() => {})
     return undefined
   }
   state.codeDiff = await startCodeDiff({

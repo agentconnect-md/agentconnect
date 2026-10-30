@@ -186,7 +186,7 @@ import { recordedImageModels, type MicrosandboxManager, type MicrosandboxEnviron
 import { probeImageModels } from './microsandbox/model-probe.js'
 import { localShimGitRunner } from './execution/local-git.js'
 import type { GitRunner } from './workspace/git-runner.js'
-import { openTaskDiff, TaskDiffUnavailable, type TaskDiff } from './workspace/task-diff.js'
+import { openTaskDiff, TaskDiffIneligible, TaskDiffUnavailable, type TaskDiff } from './workspace/task-diff.js'
 import {
   localMicrosandboxEnvironment,
   localMicrosandboxPlacement,
@@ -19805,7 +19805,7 @@ export class Daemon {
     const agent = this.agents.get(p.plan.agentId)
     const session = await this.store.getSession(p.plan.sessionKey)
     if (!agent || session?.workspaceIsolation !== 'session')
-      throw new TaskDiffUnavailable('Automatic diff updates need a repository isolated for this task.')
+      throw new TaskDiffIneligible('Automatic diff updates need a repository isolated for this task.')
     const scope = createWorkspaceScope({
       workspaces: this.workspaces,
       agentOf: (id) => this.agents.get(id),

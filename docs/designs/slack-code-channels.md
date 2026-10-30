@@ -84,7 +84,8 @@ Git ref. Later turns and daemon restarts reuse that ref. Commits made during the
 in the diff, alongside staged, unstaged and untracked files; ignored files are excluded.
 Reads use the session's execution-plane Git runner and never change its working tree or index.
 Other directories and shared checkouts are not scanned. An existing task without a saved
-baseline is not adopted automatically, and a dirty initial checkout is refused.
+baseline is not adopted automatically, and a dirty initial checkout is refused. These
+ineligible sessions retain their existing output path without a recurring error message.
 
 One serialized publisher samples the workspace every five seconds while the turn runs and
 flushes once at settlement. Unchanged content is deduplicated, secrets are masked, and oversized

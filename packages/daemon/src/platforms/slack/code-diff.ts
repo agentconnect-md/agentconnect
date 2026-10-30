@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { TaskDiffUnavailable, type TaskDiff } from '../../workspace/task-diff.js'
+import { TaskDiffIneligible, TaskDiffUnavailable, type TaskDiff } from '../../workspace/task-diff.js'
 
 const SYNC_INTERVAL_MS = 5000
 
@@ -24,7 +24,10 @@ export async function startCodeDiff(host: CodeDiffHost): Promise<CodeDiffOutput 
   let source: TaskDiff
   const notice = async (error: unknown): Promise<void> => {
     const reason = error instanceof TaskDiffUnavailable ? error.message : 'The workspace or Slack could not be reached.'
-    host.debug(`slack: automatic code diff unavailable (${error instanceof Error ? error.name : 'unknown'})`)
+    host.debug(
+      `slack: automatic code diff unavailable (${error instanceof TaskDiffUnavailable ? reason : 'read failed'})`
+    )
+    if (error instanceof TaskDiffIneligible) return
     if (host.active()) await host.notice(`Code diff is not updating. ${reason}`).catch(() => {})
   }
   try {
