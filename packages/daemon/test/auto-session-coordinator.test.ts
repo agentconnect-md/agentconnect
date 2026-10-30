@@ -186,6 +186,7 @@ describe('the coordinator’s outcomes', () => {
         triaging.push(`+${message.id}`)
         return () => triaging.push(`-${message.id}`)
       },
+      sessionLink: (sessionId) => `https://console.example.test/sessions/${sessionId}`,
       warn: () => {}
     })
     const ctx: SessionContext = {

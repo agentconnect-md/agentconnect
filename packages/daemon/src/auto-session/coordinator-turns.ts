@@ -11,6 +11,8 @@ export interface DeliveredMessage {
   mentionsYou: boolean
   /** A report, a follow-up's result or another agent's answer rather than a channel message: it is answered, never handed to a task (§3.4). */
   report?: true
+  /** Its turn streams to a webchat browser, which commits the turn's text as the reply. */
+  streamed?: true
 }
 
 /** What a message's one call did. */
@@ -34,26 +36,33 @@ export interface SettledCoordinatorTurn {
   undecided: DeliveredMessage[]
 }
 
-/** The platform message id inside a normalized message id (`slack:<channel>:<ts>` → `<ts>`). */
-export function platformMessageIdOf(msg: Pick<NormalizedMessage, 'msgId' | 'transcriptTs'>): string {
-  return msg.transcriptTs ?? msg.msgId.split(':').at(-1) ?? msg.msgId
+type MessageIdentity = Pick<NormalizedMessage, 'msgId' | 'transcriptTs' | 'transcriptPostId'>
+
+/** The platform message id inside a normalized message id (`slack:<channel>:<ts>` → `<ts>`); a webchat post is named by its post id. */
+export function platformMessageIdOf(msg: MessageIdentity): string {
+  return msg.transcriptPostId ?? msg.transcriptTs ?? msg.msgId.split(':').at(-1) ?? msg.msgId
+}
+
+/** Whether a message's conversation has no threads, so a task opened for it continues on its own console page (auto-session-mode.md §10). */
+export function threadless(msg: Pick<NormalizedMessage, 'platform'>): boolean {
+  return msg.platform === 'webchat'
 }
 
 /** Whether a message sits in a thread under another message, rather than at the conversation root. */
-export function inThread(msg: Pick<NormalizedMessage, 'thread' | 'msgId' | 'transcriptTs'>): boolean {
+export function inThread(msg: Pick<NormalizedMessage, 'thread'> & MessageIdentity): boolean {
   return msg.thread !== undefined && msg.thread !== platformMessageIdOf(msg)
 }
 
-/** The thread a message's replies go to: its own thread, or the one it starts at the root. */
-export function replyThreadOf(msg: Pick<NormalizedMessage, 'thread' | 'msgId' | 'transcriptTs'>): string {
+/** The thread a message's replies go to: its own thread, or the one it starts at the root; a threadless message's own id stands for one. */
+export function replyThreadOf(msg: Pick<NormalizedMessage, 'thread'> & MessageIdentity): string {
   return msg.thread ?? platformMessageIdOf(msg)
 }
 
 /** Where an answer to a delivered entry goes: a channel message's thread, else a report's reply thread or the conversation root. */
 export function answerThreadOf(
-  msg: Pick<NormalizedMessage, 'source' | 'thread' | 'msgId' | 'transcriptTs'>
+  msg: Pick<NormalizedMessage, 'source' | 'thread' | 'platform'> & MessageIdentity
 ): string | undefined {
-  return msg.source === 'user' ? replyThreadOf(msg) : msg.thread
+  return msg.source === 'user' && !threadless(msg) ? replyThreadOf(msg) : msg.thread
 }
 
 /** The message as the coordinator's batch shows it. */

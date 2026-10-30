@@ -117,6 +117,7 @@ import {
   CONVERSATION_PERMISSION_REQUESTS_FEATURE,
   ACTIVITY_EVERY_AGENT_V1_FEATURE,
   SESSION_MODE_AUTO_V1_FEATURE,
+  coordinatorConversationId,
   TASK_PAGE_MESSAGES_FEATURE,
   AUTO_MERGE_FEATURE,
   AUTO_MERGE_SESSION_FEATURE,
@@ -1037,8 +1038,15 @@ import {
   deliveredMessage,
   THREADED_TASK_IDLE_CLOSE_MS
 } from './auto-session/coordinator-sessions.js'
-import { answerThreadOf, coordinatorView, inThread, type DeliveredMessage } from './auto-session/coordinator-turns.js'
 import {
+  answerThreadOf,
+  coordinatorView,
+  inThread,
+  threadless,
+  type DeliveredMessage
+} from './auto-session/coordinator-turns.js'
+import {
+  isDelegationCoordinate,
   isGettingToKnowCoordinate,
   isCheckCoordinate,
   isResearchCoordinate,
@@ -1976,6 +1984,7 @@ export class Daemon {
     },
     post: (agentId, integrationId, msg, text) => this.postCoordinatorReply(agentId, integrationId, msg, text),
     showTriaging: (agentId, message) => this.showTriaging(agentId, message),
+    sessionLink: (sessionId) => this.sessionLink(sessionId),
     warn: (message) => this.log.warn(message)
   })
   // Latched for the WHOLE drain handoff, including the window after `draining`
@@ -3426,8 +3435,25 @@ export class Daemon {
       botUserIds: () => this.botUserIds,
       resolveCpAgent: (agentId, platform) => this.resolveCpAgent(agentId, platform),
       sendWebchatPost: (post) => this.relays?.sendWebchatPost(post),
-      collabAdmits: (fromAgentId, toAgentId) => this.cpCollab.admits(fromAgentId, toAgentId)
+      collabAdmits: (fromAgentId, toAgentId) => this.cpCollab.admits(fromAgentId, toAgentId),
+      coordinatorCoordinate: (agentId, conversationId, authorId) =>
+        this.webchatCoordinator(agentId, conversationId, authorId)
     }
+  }
+
+  /** auto-session-mode.md §10: the coordinator a member's private conversation with an agent keys on, minted by its first message; undefined for any other conversation. */
+  private async webchatCoordinator(
+    agentId: string,
+    conversationId: string,
+    authorId: string,
+    mint = true
+  ): Promise<string | undefined> {
+    if (!this.cfg.features.autoSessionMode) return undefined
+    const orgId = this.orgForAgent(agentId)
+    if (orgId === undefined || conversationId !== coordinatorConversationId(orgId, authorId, agentId)) return undefined
+    return mint
+      ? await this.store.resolveAppendCoordinate(agentId, conversationId, null, this.clock.now(), 'coordinator')
+      : await this.store.currentAppendCoordinate(agentId, conversationId, null, 'coordinator')
   }
 
   private webchatMcpRevocationHost(): WebchatMcpRevocationHost {
@@ -13599,13 +13625,14 @@ export class Daemon {
   /** Open a coordinator turn on its batch: the trigger and every channel message queued behind it, each under its own id (auto-session-mode.md §4.3). */
   private async beginCoordinatorTurn(entry: QueueEntry, key: string): Promise<void> {
     const queued = this.serialQueue.get(key) ?? []
-    // A queued report keeps a turn of its own, whose metadata it needs, such as a getting-to-know report's proposals (§3.4).
-    const reports = queued.filter((next) => next.msg.source !== 'user')
-    if (reports.length > 0) this.serialQueue.set(key, reports)
+    // A queued report keeps a turn of its own, whose metadata it needs, such as a getting-to-know report's proposals (§3.4); so does a webchat message, whose reply streams to its own browser turn (§10).
+    const ownTurn = (next: QueueEntry) => next.msg.source !== 'user' || next.webchat !== undefined
+    const kept = queued.filter(ownTurn)
+    if (kept.length > 0) this.serialQueue.set(key, kept)
     else this.serialQueue.delete(key)
     const batch: QueueEntry[] = []
     for (const next of queued) {
-      if (next.msg.source !== 'user') continue
+      if (ownTurn(next)) continue
       // The same holds the runner honors before it starts a queued entry.
       const verdict = next.admissionHold ? await next.admissionHold : 'run'
       next.admissionHold = undefined
@@ -13621,7 +13648,9 @@ export class Daemon {
       batch.push(next)
     }
     entry.coordinatorBatch = batch
-    const messages = [entry, ...batch].map((one) => deliveredMessage(one.msg, one.integrationId))
+    const messages = [entry, ...batch].map((one) =>
+      deliveredMessage(one.msg, one.integrationId, one.webchat !== undefined)
+    )
     this.coordinators.beginTurn(key, entry.agentId, messages)
     const { channel } = entry.msg
     const channelName = (await this.store.getDisplayNames([channel])).get(channel)
@@ -13672,16 +13701,23 @@ export class Daemon {
       if (!this.servesAgent(agentId)) continue
       const index = this.store.assistantSubsessions
       for (const at of await index.threadedConversations(agentId)) {
-        if (this.conversationRunsAuto(agentId, at)) continue
+        if (this.conversationRunsAuto(agentId, at) || this.webchatRunsCoordinator(at)) continue
         for (const key of await index.releaseThreaded(agentId, at))
           this.log.info(`task ${key} is an ordinary thread session again: its conversation left auto`)
       }
       for (const { channel, transportScope, coordinate } of await this.store.coordinatorReservations(agentId)) {
-        if (this.conversationRunsAuto(agentId, { channel, transportScope })) continue
+        if (this.conversationRunsAuto(agentId, { channel, transportScope }) || this.webchatRunsCoordinator({ channel }))
+          continue
         if (await this.store.retireCoordinator(agentId, channel, transportScope, coordinate))
           this.log.info(`coordinator ${coordinate} of ${agentId} in ${channel} retired: the conversation left auto`)
       }
     }
+  }
+
+  /** Whether a webchat conversation keeps its coordinator: only a member's coordinator conversation mints one, and a reservation, which names no platform, is told by its conversation's UUID (§10). */
+  private webchatRunsCoordinator(at: { channel: string; platform?: string }): boolean {
+    if (!this.cfg.features.autoSessionMode) return false
+    return at.platform === undefined ? UUID_RE.test(at.channel) : at.platform === 'webchat'
   }
 
   /** Whether a conversation may run its coordinator: the switch on and the integration its rows' transport scope names listing it `auto`, or an assistant-mode place it does not list yet (§3.4). */
@@ -13703,10 +13739,10 @@ export class Daemon {
     )
   }
 
-  /** A threaded task's turn starts: it runs again until the turn ends (auto-session-mode.md §6.2). */
+  /** A threaded task's turn starts, a page task's too: it runs again until the turn ends (auto-session-mode.md §6.2, §10). */
   private async resumeThreadedTaskTurn(entry: QueueEntry, key: string): Promise<void> {
     const thread = sessionThreadOf(entry.msg)
-    if (isAppendCoordinate(thread) || isSubsessionCoordinate(thread)) return
+    if (isAppendCoordinate(thread) || (isSubsessionCoordinate(thread) && !isDelegationCoordinate(thread))) return
     await this.store.assistantSubsessions
       .resumeThreaded(entry.agentId, key)
       .catch((err) => this.log.warn(`task ${key}: marking its turn running failed: ${formatErr(err)}`))
@@ -13754,6 +13790,7 @@ export class Daemon {
     msg: NormalizedMessage,
     text: string
   ): Promise<void> {
+    if (threadless(msg)) return await this.postWebchatAgentMessage(agentId, msg, text)
     const gateway: MessageGateway | undefined =
       integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
     if (!gateway) throw new Error('the conversation is not connected right now; nothing was posted')
@@ -13763,6 +13800,35 @@ export class Daemon {
       ...(name ? { username: name } : {}),
       ...(agent?.iconUrl ? { icon_url: agent.iconUrl } : {}),
       agentAuthorId: agentId
+    })
+  }
+
+  /** The coordinator's own post in a webchat conversation, recorded in its session and shown live (auto-session-mode.md §10). */
+  private async postWebchatAgentMessage(agentId: string, msg: NormalizedMessage, text: string): Promise<void> {
+    const conversationId = msg.channel
+    if (!UUID_RE.test(conversationId))
+      throw new Error('the conversation is no webchat conversation; nothing was posted')
+    const postId = randomUUID()
+    const at = await chatTurnOutput.appendChatTextRow(
+      this.store,
+      transcriptChannelKey(conversationId, undefined),
+      `webchat:${conversationId}`,
+      monotonicTs(),
+      {
+        postId,
+        sender: agentId,
+        admission: {
+          agentId,
+          sessionKey: sessionKey(msg.platform, conversationId, sessionThreadOf(msg), agentId, msg.transportScope)
+        },
+        text
+      }
+    )
+    this.relays?.sendWebchatPost({
+      conversationId,
+      agentId,
+      post: { postId, conversationId, author: { kind: 'agent', agentId }, text, at: Number(at) },
+      initiator: 'agent'
     })
   }
 
@@ -15999,9 +16065,15 @@ export class Daemon {
     }
     const op = msg.payload
     const key = (): string => this.webchatTransport.webchatSessionKey(msg.chatId, msg.agentId)
+    // A member's coordinator conversation holds its content on the coordinator's session (auto-session-mode.md §10).
+    const coordinate =
+      op.op === 'turn'
+        ? await this.webchatCoordinator(msg.agentId, msg.chatId, webchatAuthorOf(op).id, false)
+        : undefined
+    const contentKey = coordinate === undefined ? key() : sessionKey('webchat', msg.chatId, coordinate, msg.agentId)
     // The conversation's content is another member's, and this one has none of it: opening a fresh
     // session under the same conversation would answer the user without the transcript they see (#2218).
-    if ((op.op === 'turn' || op.op === 'context') && (await this.webchatContentIsElsewhere(msg, key()))) {
+    if ((op.op === 'turn' || op.op === 'context') && (await this.webchatContentIsElsewhere(msg, contentKey))) {
       return {
         msgId: msg.msgId,
         accepted: false,

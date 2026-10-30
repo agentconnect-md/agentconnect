@@ -130,6 +130,8 @@ export interface WebchatHost {
   sendWebchatPost(post: RdWebchatPost): void
   /** The directional call policy for an agent → agent edge. */
   collabAdmits(fromAgentId: string, toAgentId: string): boolean
+  /** A member's private coordinator conversation, which keys its turns on the coordinator (auto-session-mode.md §10). */
+  coordinatorCoordinate?(agentId: string, conversationId: string, authorId: string): Promise<string | undefined>
 }
 
 export class WebchatTransport {
@@ -222,7 +224,10 @@ export class WebchatTransport {
       }
       return { accepted: false, turnId, reason: 'busy' }
     }
-    const initialRuntime = this.application.canChangeRuntime(targetAgentId) ? requestedRuntime : undefined
+    // A coordinator follows the agent's own settings and has no workspace (auto-session-mode.md §5.4).
+    const coordinated = msg.sessionThread !== undefined
+    const initialRuntime =
+      !coordinated && this.application.canChangeRuntime(targetAgentId) ? requestedRuntime : undefined
     const stream = this.createWebchatTurnStream(
       targetAgentId,
       chatId,
@@ -230,7 +235,7 @@ export class WebchatTransport {
       sink,
       initialRuntime,
       remoteMcp,
-      requestedWorktree
+      coordinated ? undefined : requestedWorktree
     )
     // Broadcast the reconciliation post daemon-wide so a cold attach through another relay receives it.
     stream.postSink = (p) => this.host.sendWebchatPost(p)

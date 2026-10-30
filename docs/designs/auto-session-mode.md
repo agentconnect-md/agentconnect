@@ -35,8 +35,11 @@
 > names the coordinator it belongs to now, read from the owning daemon by the task's session (§11).
 > The console's Usage page names, under each agent, what its coordinators spent (§4.6). A delegated
 > task's page takes messages from whoever may continue its owning session, where the daemon
-> advertises `task-page-messages-v1`, which its Auto switch also turns on (§10). The visibility lock
-> for threaded tasks and the rest of webchat (§10) are not implemented.
+> advertises `task-page-messages-v1`, which its Auto switch also turns on (§10). With the switch on, a
+> daemon runs a member's private coordinator conversation in webchat (§10): it knows the conversation
+> by its derived id, every message reaches the coordinator addressed to it, and a task the coordinator
+> opens there continues on its own page, which the conversation links to. The console's entry into
+> that conversation and the visibility lock for threaded tasks are not implemented.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -366,6 +369,18 @@ not addressed to this agent. Cost grows with the number of agents.
 
 - Opening an agent from the home page or the playground enters **that member's private coordinator**
   with the agent, like a DM.
+  - Its conversation id is derived from the organization, the member and the agent (a version 5
+    UUID, `coordinatorConversationId` in `packages/protocol`). The Control Plane creates the
+    conversation when the console mints with the `coordinator` flag, and the daemon recognizes it
+    from the turn's author, agent and organization, so neither the relay nor the Control Plane's
+    schema carries a marker. Only its owner resumes it, and it takes no other participants.
+  - Every message in it goes to the conversation's coordinator coordinate and counts as addressed to
+    the agent, so a message left without an outcome opens a task (§4.5). A message's id is its
+    webchat post id.
+  - Each message runs as a turn of its own, never batched (§4.3's one-message form): its text streams
+    to the browser and is its reply. `replyToMessage` and the link cards below are the coordinator's
+    own posts in the conversation.
+  - It runs over the legacy webchat protocol; an AHP conversation stays an ordinary one for now.
 - New session opens an **ordinary webchat session** without the coordinator, as today.
 - Every task's page accepts messages (today it is read-only), for whoever may continue the parent.
   - A threaded task's page is its thread's session, which the console already continues. A background
@@ -378,11 +393,19 @@ not addressed to this agent. Cost grows with the number of agents.
     steered into a round whose output goes to the parent. A round still open reports to the parent as
     usual; a settled task's parent hears nothing, since the person read the answer on the page.
   - The task's standing context says people may write to it from its page.
-- Webchat has no threads, so a threaded task appears as its own webchat conversation:
-  - `delegateTask` with a `messageId` opens a task conversation; the coordinator posts a card with its
-    title and link, and people continue there without the coordinator.
-  - `messageTask` with a `messageId` moves the message into that conversation, which answers there;
-    the coordinator posts a link card.
+- Webchat has no threads, so a task the coordinator opens for a webchat message continues on its own
+  page, which is its conversation. This replaces an earlier plan in which each task had its own
+  webchat conversation (decided 2026-10-30).
+  - `delegateTask` with a `messageId` opens the task on a background coordinate of its own
+    (`subsession:<id>`, off the conversation's channel, as a background task of a webchat session
+    is) and attaches the message's id as a thread from the first round. The task therefore follows
+    the threaded rules: it never reports to the coordinator and is outside the concurrency cap. It
+    receives the original message, records the coordinator as its parent, and is told that its
+    person reads it on its page.
+  - The coordinator posts a link card: an agent post with a Markdown link, titled with the task's
+    title, to the task's page.
+  - `messageTask` with a `messageId` moves the message into the task's conversation, which answers on
+    its page, and attaches its id as one more thread; the coordinator posts a link card.
 - Existing ordinary webchat conversations stay as they are.
 
 ## 11. Console

@@ -142,7 +142,11 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     !githubReply &&
     originKindOf(msg.platform) === 'chat' &&
     !isCoordinatorCoordinate(sessionThreadOf(msg))
-  const webchatRefresh = input.features.turnFinalContextRefresh && !!webchat && msg.platform === 'webchat'
+  const webchatRefresh =
+    input.features.turnFinalContextRefresh &&
+    !!webchat &&
+    msg.platform === 'webchat' &&
+    !isCoordinatorCoordinate(sessionThreadOf(msg))
   const stageAnswer =
     chatContextRefresh && (suppressReplyConn || turnSurfaces.exact(msg.platform)?.answerDelivery?.(turnCtx) !== 'live')
   return {
