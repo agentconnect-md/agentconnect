@@ -309,6 +309,8 @@ export class SessionManager {
         isDm: boolean
         /** The logical session: its runtime may execute somewhere this agent's others do not (session-executors.md §5). */
         sessionKey: string
+        /** A task the coordinator opened on a platform thread (auto-session-mode.md §6.2). */
+        threadedTask?: boolean
       }) => SessionToolContext
       /**
        * Download an inbound attachment's bytes (§9.2) — resolved by the daemon
@@ -397,6 +399,13 @@ export class SessionManager {
     // mute check downstream (onInbound) keeps a muted thread suppressed regardless.
     const dormant = await this.deps.store.closedSessionAgents(channel, thread, transportScope)
     return dormant.length === 1 ? dormant[0]! : null
+  }
+
+  /** Whether a session on a platform thread is a task the coordinator opened there; a failed read counts as not. */
+  private async isThreadedTask(agentId: string, key: string, thread: string): Promise<boolean> {
+    if (isSubsessionCoordinate(thread) || isAppendCoordinate(thread)) return false
+    const row = await this.deps.store.assistantSubsessions.get(agentId, key).catch(() => undefined)
+    return row !== undefined && row.kind !== 'follow-up'
   }
 
   async handle(
@@ -495,6 +504,8 @@ export class SessionManager {
     const transportScope = msg.transportScope
     const key = sessionKey(msg.platform, msg.channel, thread, agentId, transportScope)
     let rec = await this.deps.store.getSession(key)
+    // A task the coordinator opened on a platform thread keeps a summary as a delegated one does (auto-session-mode.md §6.7).
+    const threadedTask = await this.isThreadedTask(agentId, key, thread)
     const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
     // Affinity is the PHYSICAL thread's (channel-session-mode.md §6.4), which is what the
     // routing ladder looks this agent up by — `upsertSession` can only derive the session's
@@ -686,7 +697,8 @@ export class SessionManager {
       ...(integrationId !== undefined ? { integrationId } : {}),
       ...(transportScope !== undefined ? { transportScope } : {}),
       isDm: msg.isDm,
-      sessionKey: key
+      sessionKey: key,
+      ...(threadedTask ? { threadedTask } : {})
     })
 
     let standing: Promise<StandingContext> | undefined
@@ -702,6 +714,7 @@ export class SessionManager {
           slackSelfId:
             msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
           thread,
+          ...(threadedTask ? { threadedTask } : {}),
           sessionId: rec?.sessionId,
           originSessionId: creatorSessionId,
           envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
@@ -1099,7 +1112,7 @@ export class SessionManager {
       if (running?.text) promptPrelude.push({ type: 'text', text: running.text })
     }
     // A task counts its turns and is reminded of a missing or stale summary (auto-session-mode.md §6.7); a failed read skips it.
-    if (keepsTaskSummaryAt(thread)) {
+    if (keepsTaskSummaryAt(thread) || threadedTask) {
       const due = await taskSummaryReminder(this.deps.store.assistantSubsessions, agentId, key).catch(() => undefined)
       if (due) promptPrelude.push({ type: 'text', text: due })
     }

@@ -4,8 +4,8 @@
 > matrix (§12). The task index of §6.1, the task action shapes of §5.1 with `messageId` refused,
 > two-level nesting (§6.3) and the threaded rules of §6.2 that key on an attached thread are
 > implemented; `stopTask` stays a tool of its own with the shape of §5.1. `listTasks` (§5.2) and
-> `updateTask` (§5.3) with the summary and its reminder (§6.7) are implemented; the cap of 20
-> threaded tasks waits for the coordinator. The `auto` value (§3.1) exists on the wire and in the
+> `updateTask` (§5.3) with the summary and its reminder (§6.7) are implemented; `listTasks` lists the
+> 20 most recently active. The `auto` value (§3.1) exists on the wire and in the
 > Control Plane, behind the `session-mode-auto-v1` capability, which a daemon advertises only with
 > its `features.autoSessionMode` switch; with the switch off it routes `auto` as Per thread. With it
 > on, the coordinator session runs (`packages/daemon/src/auto-session/`): root and unowned-thread
@@ -15,9 +15,12 @@
 > turn, opens a threaded task (§4.5). It runs read-only, and in an empty working directory where its
 > runtime reads the daemon's own disk (elsewhere it opens in the agent's). Its tools are the decision
 > tools, `listTasks` and memory; `postMessage`, `callAgent` and the follow-up tools of §5.4 wait for
-> P3. A threaded task is a session on its message's thread, attached in the task index; a background
-> task cannot take a channel message yet (§6.6). Feedback (§4.4), task lifetime (§6.5), the
-> visibility lock for threaded tasks, and webchat (§10) are not implemented.
+> P3. A threaded task is a session on its message's thread, attached in the task index. It answers
+> each message in the thread the message came from (§6.4), counts as running while a turn of it runs,
+> keeps a summary with `updateTask`, and closes after 7 idle days or with its purged session (§6.5). A
+> background task cannot take a channel message yet (§6.6): the coordinator opens no background task
+> before P3. Feedback (§4.4), the visibility lock for threaded tasks, and webchat (§10) are not
+> implemented.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).

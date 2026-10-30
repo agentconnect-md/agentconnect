@@ -169,7 +169,10 @@ describe('the coordinator’s outcomes', () => {
 
   it('opens a threaded task on the message’s thread and hands it the original message', async () => {
     const { store, sessions, ctx, dispatched } = await setup()
-    begin(sessions, slack('1.1', { text: 'fix the flaky test' }))
+    const attachments = [
+      { id: 'F1', name: 'trace.log', mimeType: 'text/plain', sourceUrl: 'https://files.example.test/F1' }
+    ]
+    begin(sessions, slack('1.1', { text: 'fix the flaky test', sender: { id: 'U2', isBot: false }, attachments }))
     const receipt = (await executeTool(
       ctx,
       'sendMessage',
@@ -190,10 +193,13 @@ describe('the coordinator’s outcomes', () => {
     expect(dispatched).toHaveLength(1)
     const { msg, integrationId } = dispatched[0]!
     expect(integrationId).toBe('int-bot-a')
+    // §5.1: the original message as it arrived, its sender and attachments included.
     expect(msg).toMatchObject({
       msgId: 'slack:C1:1.1',
       thread: '1.1',
       text: 'fix the flaky test',
+      sender: { id: 'U2' },
+      attachments,
       initialSessionTitle: 'Flaky test'
     })
     expect(msg.sessionThread).toBeUndefined()

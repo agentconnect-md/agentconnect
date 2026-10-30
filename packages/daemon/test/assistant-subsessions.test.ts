@@ -226,6 +226,23 @@ describe('the assistant sub-session index', () => {
     ])
     const capped = await index.listForOwner(a, owner, 1)
     expect([keys(capped.rows), capped.total]).toEqual([[childKey(a, 'task-approved')], 4])
+    // Past the running ones, a task whose session changed last comes first, however long ago it opened.
+    await s.upsertSession({
+      key: childKey(a, 'done'),
+      agentId: a,
+      platform: 'slack',
+      channel: 'C0GENERAL',
+      thread: subsessionCoordinate('done'),
+      transportScope: 'T0EXAMPLE',
+      acpSessionId: 'acp-done',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 9_000
+    })
+    expect(keys((await index.listForOwner(a, owner, 10)).rows).slice(2)).toEqual([
+      childKey(a, 'done'),
+      childKey(a, 'check-1')
+    ])
     expect(await index.listForOwner(a, { ...owner, sessionId: 'sid-unknown' }, 10)).toEqual({ rows: [], total: 0 })
     expect(await index.listForOwner(b, owner, 10)).toEqual({ rows: [], total: 0 })
   })
@@ -473,6 +490,60 @@ describe('the task model: title, summary and attached threads (auto-session-mode
     expect(await index.hasRunningChildren(a, parentKey)).toBe(false)
   })
 
+  it('runs a threaded task again on its next turn, in its next round, and leaves a background one to its parent', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    await index.open(row(a, '1'))
+    await index.open(row(a, '2'))
+    await index.attachThread(thread(a, '1', '100.1'))
+    // Already running.
+    expect(await index.resumeThreaded(a, childKey(a, '1'))).toBe(false)
+    await index.finish(a, childKey(a, '1'), 'done')
+    await index.finish(a, childKey(a, '2'), 'done')
+    expect(await index.resumeThreaded(a, childKey(a, '1'))).toBe(true)
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({ state: 'open', round: 2 })
+    expect(await index.resumeThreaded(a, childKey(a, '2'))).toBe(false)
+    expect(await index.get(a, childKey(a, '2'))).toMatchObject({ state: 'done' })
+    expect(await index.resumeThreaded(a, childKey(a, 'missing'))).toBe(false)
+  })
+
+  it('closes the settled threaded tasks idle past a time, whose threads become unowned (auto-session-mode.md §6.5)', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    const ids = ['idle', 'unstarted', 'active', 'running', 'background']
+    for (const id of ids) await index.open({ ...row(a, id), now: 1_000 })
+    for (const [n, id] of ['idle', 'unstarted', 'active', 'running'].entries())
+      await index.attachThread(thread(a, id, `100.${n}`))
+    for (const id of ['idle', 'unstarted', 'active', 'background']) await index.finish(a, childKey(a, id), 'done')
+    for (const [id, updatedAt] of [
+      ['idle', 2_000],
+      ['active', 9_000]
+    ] as const)
+      await s.upsertSession({
+        key: childKey(a, id),
+        agentId: a,
+        platform: 'slack',
+        channel: 'C0GENERAL',
+        thread: subsessionCoordinate(id),
+        transportScope: 'T0EXAMPLE',
+        acpSessionId: `acp-${id}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt
+      })
+    expect((await index.closeIdleThreaded(a, 5_000)).sort()).toEqual(
+      [childKey(a, 'idle'), childKey(a, 'unstarted')].sort()
+    )
+    expect(await index.get(a, childKey(a, 'idle'))).toBeUndefined()
+    const at = { platform: 'slack', channel: 'C0GENERAL', transportScope: 'T0EXAMPLE', thread: '100.0' }
+    expect(await index.taskOfThread(a, at)).toBeUndefined()
+    for (const id of ['active', 'running', 'background']) expect(await index.get(a, childKey(a, id))).toBeDefined()
+    expect(await index.taskOfThread(a, { ...at, thread: '100.2' })).toBe(childKey(a, 'active'))
+    expect(await index.closeIdleThreaded(a, 5_000)).toEqual([])
+  })
+
   it('drops a task’s threads with its agent and with its purged session', async () => {
     const s = await open()
     const a = agent()
@@ -493,6 +564,32 @@ describe('the task model: title, summary and attached threads (auto-session-mode
     })
     expect(await s.deleteSession(childKey(a, '1'))).toBe(true)
     expect(await index.threadsOf(a, childKey(a, '1'))).toEqual([])
+    // A threaded task on its own platform thread leaves the index with its purged session too (auto-session-mode.md §6.5).
+    const onThread = sessionKey('slack', 'C0GENERAL', '100.5', a, 'T0EXAMPLE')
+    await index.open({ ...row(a, 'x'), childSessionKey: onThread })
+    await index.attachThread({ ...thread(a, 'x', '100.5'), childSessionKey: onThread })
+    await s.upsertSession({
+      key: onThread,
+      agentId: a,
+      platform: 'slack',
+      channel: 'C0GENERAL',
+      thread: '100.5',
+      transportScope: 'T0EXAMPLE',
+      acpSessionId: 'acp-5',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    expect(await s.deleteSession(onThread)).toBe(true)
+    expect(await index.get(a, onThread)).toBeUndefined()
+    expect(
+      await index.taskOfThread(a, {
+        platform: 'slack',
+        channel: 'C0GENERAL',
+        transportScope: 'T0EXAMPLE',
+        thread: '100.5'
+      })
+    ).toBeUndefined()
     await index.open(row(a, '2'))
     await index.attachThread(thread(a, '2', '100.2'))
     await index.deleteForAgent(a)

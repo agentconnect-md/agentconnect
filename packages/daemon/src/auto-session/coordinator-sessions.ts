@@ -10,6 +10,9 @@ import { sessionKey, type LocalStore } from '../store/local-store.js'
 import { coordinatorMessageId } from './coordinator-prompt.js'
 import { CoordinatorTurns, platformMessageIdOf, replyThreadOf, type DeliveredMessage } from './coordinator-turns.js'
 
+/** A threaded task whose session has been idle this long closes, and its threads become unowned (auto-session-mode.md §6.5). */
+export const THREADED_TASK_IDLE_CLOSE_MS = 7 * 24 * 60 * 60_000
+
 /** What the coordinator module needs from its daemon. */
 export interface CoordinatorSessionsHost {
   store(): LocalStore

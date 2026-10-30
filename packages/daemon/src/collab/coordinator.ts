@@ -610,8 +610,15 @@ export class CollabCoordinator {
   private async mayOpenTasks(agentId: string, thread: string, key: string): Promise<boolean> {
     if (!mayOpenTasksAt(thread)) return false
     if (!isSubsessionCoordinate(thread)) return true
-    const row = await this.host.store().assistantSubsessions.get(agentId, key)
-    return row !== undefined && row.kind !== 'follow-up' && !isSubsessionKey(row.parentSessionKey)
+    const index = this.host.store().assistantSubsessions
+    const row = await index.get(agentId, key)
+    if (row === undefined || row.kind === 'follow-up') return false
+    return !(await this.isTaskKey(agentId, row.parentSessionKey))
+  }
+
+  /** Whether a session is itself a task: a sub-session, or a threaded task on its own platform thread (auto-session-mode.md §6.2). */
+  private async isTaskKey(agentId: string, key: string): Promise<boolean> {
+    return isSubsessionKey(key) || (await this.host.store().assistantSubsessions.get(agentId, key)) !== undefined
   }
 
   /** assistant-mode.md §5.6: how many sub-sessions the agent may have running at once, its assistant-mode limit else the default. */
@@ -824,7 +831,7 @@ export class CollabCoordinator {
           ? { platform: parent.platform, channel: parent.channel, transportScope: parent.transportScope ?? null }
           : report.caller,
         // A task's own task reports to that task, never to its place's session (auto-session-mode.md §6.3).
-        ...(isSubsessionKey(row.parentSessionKey) ? { toRecordedParent: true } : {}),
+        ...((await this.isTaskKey(agentId, row.parentSessionKey)) ? { toRecordedParent: true } : {}),
         parentSessionId: row.parentSessionId,
         text: report.text,
         ...(report.shown !== undefined ? { shown: report.shown } : {}),
@@ -931,6 +938,12 @@ export class CollabCoordinator {
       const claimed = await this.withSubsessionReportLock(key, async () => {
         const current = await index.get(agentId, key)
         if (current?.state !== 'open' || this.subsessionRunning(agentId, key)) return false
+        const round = current.round ?? 1
+        // A threaded round, a task's on its own thread included, answers in its threads and reports nothing (auto-session-mode.md §6.2).
+        if (!(await index.reportsRound(agentId, key, round))) {
+          await index.finish(agentId, key, isSubsessionKey(key) ? 'failed' : 'done', round)
+          return false
+        }
         if (!caller) {
           await index.finish(agentId, key, 'failed')
           this.host
@@ -939,11 +952,6 @@ export class CollabCoordinator {
           return false
         }
         const ended = { outcome: 'interrupted' as const, reason: 'no longer running' }
-        const round = current.round ?? 1
-        if (isDelegationCoordinate(caller.thread) && !(await index.reportsRound(agentId, key, round))) {
-          await index.finish(agentId, key, 'failed', round)
-          return false
-        }
         if (!isDelegationCoordinate(caller.thread)) {
           const text = subsessionEndReport(ended, await this.taskLabel(key))
           return await index.claimReport(agentId, key, JSON.stringify({ text, hopCount: 0, caller }))
