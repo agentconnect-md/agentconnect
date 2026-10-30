@@ -7171,6 +7171,8 @@ export class Daemon {
     const key = sessionHostKey(agentId, sessionKey)
     // Organization research launches without the agent's tool credentials, so it never shares a host that has them (assistant-mode.md §5.15).
     if (isResearchSessionKey(sessionKey)) return key
+    // An srt shim hides this daemon's own directories, so a coordinator starts its empty directory on a host of its own (auto-session-mode.md §5.4).
+    if (isCoordinatorSessionKey(sessionKey) && !this.k8s && this.agentStrategy(agent) === 'srt') return key
     if (this.sessionRuntimes.has(sessionKey) || this.confinedSession(agent, sessionKey)) return key
     // An isolated session born in another strategy than the agent's now keeps its own host in its birth strategy (session-executors.md §5).
     if (this.bornInOtherStrategy(agent, sessionKey)) return key

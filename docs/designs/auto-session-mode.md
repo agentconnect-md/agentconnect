@@ -270,9 +270,10 @@ together with the summary. Only a task calls it, for itself; both kinds can.
   - Its workspace isolation is always shared, so it never gets a checkout, a session pod or an
     executor of its own.
   - On the daemon's disk a coordinator on the agent's shared host opens in
-    `<daemon root>/coordinators/<agent>`. A host of its own (a runtime with per-process MCP servers,
-    a microsandbox VM or a model-session host) launches in `<agent dir>/coordinator`, inside the
-    directory a sandbox boundary admits. On the pool it opens in `.agentconnect/coordinator` on the
+    `<daemon root>/coordinators/<agent>`. An srt shim hides that directory, so under srt the
+    coordinator always gets a host of its own. A host of its own (under srt, for a runtime with
+    per-process MCP servers, in a microsandbox VM, or as a model-session host) launches in
+    `<agent dir>/coordinator`, inside the directory a sandbox boundary admits. On the pool it opens in `.agentconnect/coordinator` on the
     agent's pod volume, made through the pod's files once the pod is bound. Where none of these can be
     made, it opens in the agent's directory with no workspace roots.
 - An ACP session on the agent's own runtime with the coordinator's own prompt. In the first version

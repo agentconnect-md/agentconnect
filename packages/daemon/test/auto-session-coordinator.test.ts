@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
 import {
   coordinatorPrompt,
   coordinatorSessionTools,
@@ -642,6 +643,17 @@ describe('auto conversations route to the coordinator', () => {
       workspaceIsolation: 'shared'
     })
     expect((host.newSession.mock.calls[0] as unknown[])[0]).toBe(join(root, 'coordinators', 'bot-a'))
+    await daemon.stop()
+  })
+
+  it('starts on a host of its own under srt, whose shim hides the daemon’s directories', async () => {
+    const { daemon, d } = await boot(async () => 'end_turn')
+    const coordinator = sessionKey('slack', 'C1', coordinatorCoordinate(1), 'bot-a')
+    const thread = sessionKey('slack', 'C1', '1.1', 'bot-a')
+    expect(d.hostKeyFor('bot-a', coordinator)).toBe(agentHostKey('bot-a'))
+    d.agents.get('bot-a').execution = 'srt'
+    expect(d.hostKeyFor('bot-a', coordinator)).toBe(sessionHostKey('bot-a', coordinator))
+    expect(d.hostKeyFor('bot-a', thread)).toBe(agentHostKey('bot-a'))
     await daemon.stop()
   })
 
