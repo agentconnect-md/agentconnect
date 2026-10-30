@@ -452,11 +452,11 @@ export async function executeTool(
   // assistant-mode.md §5.15: organization research reads and writes memory only; nothing it calls posts, whatever name the runtime sends.
   if (isResearchCoordinate(ctx.thread) && !ctx.tools.some((tool) => tool.name === name))
     throw new Error(`${name} is not available to organization research, which cannot post or act anywhere`)
-  // auto-session-mode.md §5.4: a coordinator runs only the tools it was offered, and its sendMessage decides on delivered messages.
+  // auto-session-mode.md §5.4: a coordinator runs only the tools it was offered; its sendMessage decides on delivered messages, or posts and calls as any session's does.
   if (isCoordinatorCoordinate(ctx.thread)) {
     if (!ctx.tools.some((tool) => tool.name === name))
       throw new Error(`${name} is not available to the coordinator, which only decides where each message goes`)
-    if (name === 'sendMessage') {
+    if (name === 'sendMessage' && args.action !== 'postMessage' && args.action !== 'callAgent') {
       if (!deps.coordinatorDecision) throw new Error('sendMessage: the coordinator is not available on this daemon')
       return await deps.coordinatorDecision(ctx, args)
     }

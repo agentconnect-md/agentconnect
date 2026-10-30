@@ -1036,7 +1036,7 @@ import {
   deliveredMessage,
   THREADED_TASK_IDLE_CLOSE_MS
 } from './auto-session/coordinator-sessions.js'
-import { coordinatorView, inThread, replyThreadOf, type DeliveredMessage } from './auto-session/coordinator-turns.js'
+import { answerThreadOf, coordinatorView, inThread, type DeliveredMessage } from './auto-session/coordinator-turns.js'
 import {
   isGettingToKnowCoordinate,
   isCheckCoordinate,
@@ -10362,8 +10362,16 @@ export class Daemon {
         ? conversationSessionMode(int, place.channel)
         : this.sessionModeFor(agentId, int, { channel: place.channel, isDm })
       : undefined
-    if (!int || mode !== 'append') return undefined
-    const thread = await this.store.resolveAppendCoordinate(agentId, place.channel, place.transportScope)
+    // Under `auto` the place's long session is its coordinator (auto-session-mode.md §3.4).
+    const coordinator = mode === 'auto' && this.cfg.features.autoSessionMode
+    if (!int || (mode !== 'append' && !coordinator)) return undefined
+    const thread = coordinator
+      ? await this.resolveCoordinator(agentId, {
+          platform: place.platform,
+          channel: place.channel,
+          transportScope: place.transportScope ?? null
+        })
+      : await this.store.resolveAppendCoordinate(agentId, place.channel, place.transportScope)
     return {
       key: sessionKey(place.platform, place.channel, thread, agentId, place.transportScope),
       agentId,
@@ -13465,7 +13473,11 @@ export class Daemon {
     // A coordinate with no message behind it (an agent call) has no kind to default by, so only its listed mode counts.
     if (msg.isDm === undefined && msg.isGroupDm === undefined) return conversationSessionMode(int, msg.channel)
     const kind = conversationKindOf({ ...msg, platform: int.platform })
-    return conversationSessionMode(int, msg.channel, { assistantMode: assistantModeOn(this.agents.get(agentId)), kind })
+    return conversationSessionMode(int, msg.channel, {
+      assistantMode: assistantModeOn(this.agents.get(agentId)),
+      kind,
+      auto: this.cfg.features.autoSessionMode
+    })
   }
 
   private async sessionCoordinateFor(
@@ -13585,6 +13597,8 @@ export class Daemon {
     const channelName = (await this.store.getDisplayNames([channel])).get(channel)
     entry.coordinatorPrompt = renderCoordinatorBatch(
       messages.map((message) => {
+        // A report reads as its session input does, header and guidance included.
+        if (message.report) return coordinatorView(message, message.msg.turnBody?.prompt ?? message.msg.text)
         const mention = attachmentMention(message.msg.attachments)
         return coordinatorView(message, mention ? `${message.msg.text}\n${mention}`.trim() : message.msg.text)
       }),
@@ -13640,17 +13654,22 @@ export class Daemon {
     }
   }
 
-  /** Whether a conversation may run its coordinator: the switch on and the integration its rows' transport scope names listing it `auto`. */
+  /** Whether a conversation may run its coordinator: the switch on and the integration its rows' transport scope names listing it `auto`, or an assistant-mode place it does not list yet (§3.4). */
   private conversationRunsAuto(
     agentId: string,
     at: { channel: string; transportScope?: string | null; platform?: string }
   ): boolean {
     if (!this.cfg.features.autoSessionMode) return false
-    return (this.agents.get(agentId)?.integrations ?? []).some(
+    const agent = this.agents.get(agentId)
+    const unseen = (int: Integration) =>
+      assistantModeOn(agent) &&
+      manifestFor(int.platform).appendKinds.length > 0 &&
+      !integrationCore(int).sessionModes.some((entry) => entry.channel === at.channel)
+    return (agent?.integrations ?? []).some(
       (int) =>
         (at.platform === undefined || int.platform === at.platform) &&
         (!at.transportScope || this.transportScopeForIntegration(int) === at.transportScope) &&
-        conversationSessionMode(int, at.channel) === 'auto'
+        (conversationSessionMode(int, at.channel) === 'auto' || unseen(int))
     )
   }
 
@@ -13710,7 +13729,7 @@ export class Daemon {
     if (!gateway) throw new Error('the conversation is not connected right now; nothing was posted')
     const agent = this.agents.get(agentId)
     const name = agent?.displayName?.trim() || agent?.name
-    await gateway.postMessage(msg.channel, text, replyThreadOf(msg), {
+    await gateway.postMessage(msg.channel, text, answerThreadOf(msg), {
       ...(name ? { username: name } : {}),
       ...(agent?.iconUrl ? { icon_url: agent.iconUrl } : {}),
       agentAuthorId: agentId

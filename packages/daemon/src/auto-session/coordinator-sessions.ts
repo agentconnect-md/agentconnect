@@ -8,7 +8,13 @@ import { deriveTitle } from '../session/derive-title.js'
 import { isNoResponsePrefix } from '../session/no-response.js'
 import { sessionKey, type LocalStore } from '../store/local-store.js'
 import { coordinatorMessageId } from './coordinator-prompt.js'
-import { CoordinatorTurns, platformMessageIdOf, replyThreadOf, type DeliveredMessage } from './coordinator-turns.js'
+import {
+  answerThreadOf,
+  CoordinatorTurns,
+  platformMessageIdOf,
+  replyThreadOf,
+  type DeliveredMessage
+} from './coordinator-turns.js'
 
 /** A threaded task whose session has been idle this long closes, and its threads become unowned (auto-session-mode.md §6.5). */
 export const THREADED_TASK_IDLE_CLOSE_MS = 7 * 24 * 60 * 60_000
@@ -94,9 +100,11 @@ export class CoordinatorSessions {
 
   constructor(private readonly host: CoordinatorSessionsHost) {}
 
-  /** Open a coordinator turn on its batch, each message marked as being decided until the turn ends, whatever its outcome (§4.3, §4.4). */
+  /** Open a coordinator turn on its batch, each channel message marked as being decided until the turn ends, whatever its outcome (§4.3, §4.4); a report is no platform message to mark. */
   beginTurn(key: string, agentId: string, messages: DeliveredMessage[]): void {
-    const clears = messages.map((message) => this.host.showTriaging(agentId, message))
+    const clears = messages
+      .filter((message) => !message.report)
+      .map((message) => this.host.showTriaging(agentId, message))
     this.turns.begin(key, messages, () => {
       for (const clear of clears) clear()
     })
@@ -115,6 +123,11 @@ export class CoordinatorSessions {
     const held = this.turns.reserve(key, call.messageId)
     if ('error' in held) throw new Error(`sendMessage: ${held.error}`)
     try {
+      if (held.message.report && call.action !== 'replyToMessage')
+        throw new Error(
+          `sendMessage: ${call.messageId} is a report, not a channel message: answer it with action "replyToMessage", or ` +
+            'leave it; no task was opened or messaged'
+        )
       switch (call.action) {
         case 'delegateTask': {
           const owner = await this.taskOwner(ctx.agentId, ctx, key)
@@ -131,7 +144,11 @@ export class CoordinatorSessions {
         case 'replyToMessage': {
           await this.host.post(ctx.agentId, held.message.integrationId, held.message.msg, call.message)
           this.turns.settle(key, call.messageId, 'reply')
-          return { ok: true, posted: { channel: ctx.channel, thread: call.messageId } }
+          const thread = answerThreadOf(held.message.msg)
+          return {
+            ok: true,
+            posted: { channel: ctx.channel, ...(thread ? { thread: coordinatorMessageId(thread) } : { at: 'root' }) }
+          }
         }
       }
     } catch (err) {
@@ -335,12 +352,14 @@ export class CoordinatorSessions {
   }
 }
 
-/** The delivered-message entry for one admitted coordinator message. */
+/** The delivered-message entry for one admitted coordinator message; anything but a channel message is a report (§3.4). */
 export function deliveredMessage(msg: NormalizedMessage, integrationId?: string): DeliveredMessage {
+  const report = msg.source !== 'user'
   return {
     id: coordinatorMessageId(platformMessageIdOf(msg)),
     msg,
     ...(integrationId !== undefined ? { integrationId } : {}),
-    mentionsYou: msg.trigger === 'mention'
+    mentionsYou: !report && msg.trigger === 'mention',
+    ...(report ? { report: true as const } : {})
   }
 }

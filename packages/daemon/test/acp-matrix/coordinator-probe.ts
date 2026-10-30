@@ -32,6 +32,8 @@ export interface ChannelMessage {
   from: string
   mentionsYou: boolean
   text: string
+  /** A report delivered to the coordinator rather than a channel message (auto-session-mode.md §3.4). */
+  report?: boolean
 }
 
 /** An open task as `listTasks` reports it. */
@@ -118,9 +120,10 @@ const outcomeArgs = z.discriminatedUnion('action', [
   })
 ])
 
-/** What a scenario's turn may name: the delivered messages and the open tasks. */
+/** What a scenario's turn may name: the delivered messages, the reports among them, and the open tasks. */
 export interface CoScope {
   messages: string[]
+  reports?: string[]
   tasks: ProbeTask[]
 }
 
@@ -137,6 +140,10 @@ export function decide(
     return { error: `sendMessage: messageId ${call.messageId} is not a message delivered in this turn` }
   if (decided.has(call.messageId))
     return { error: `sendMessage: message ${call.messageId} already has an outcome; each message takes one` }
+  if (scope.reports?.includes(call.messageId) && call.action !== 'replyToMessage')
+    return {
+      error: `sendMessage: ${call.messageId} is a report, not a channel message: answer it with action "replyToMessage", or leave it`
+    }
   switch (call.action) {
     case 'delegateTask':
       return { outcome: { kind: 'delegate', messageId: call.messageId, title: call.title } }
@@ -291,6 +298,7 @@ export type CoScenarioId =
   | 'no-self-work'
   | 'batch-mixed'
   | 'batch-route-and-new'
+  | 'report-reply'
 
 export interface CoordinatorScenario {
   id: CoScenarioId
@@ -418,6 +426,23 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
       'msg-1700001000.000100': { kind: 'route', taskId: CO_IDS.checkoutTask },
       'msg-1700001000.000200': { kind: 'delegate' }
     }
+  },
+  {
+    // auto-session-mode.md §3.4: a follow-up's report is told to the people it concerns, never handed to a task.
+    id: 'report-reply',
+    tasks: [CHECKOUT_TASK],
+    messages: [
+      {
+        id: 'msg-1700001100.000100',
+        from: CO_IDS.self,
+        mentionsYou: false,
+        report: true,
+        text:
+          `[follow-up] "Watch PR #4821" checked: PR #4821 merged and the checkout e2e test passed on main ten times ` +
+          `in a row. <@${CO_IDS.alice}> asked to hear when it lands. Answer your people in their language.`
+      }
+    ],
+    expect: { 'msg-1700001100.000100': { kind: 'reply', mentions: '4821' } }
   }
 ]
 
@@ -518,7 +543,11 @@ export async function runCoordinatorScenarios(input: {
   for (let rep = 1; rep <= input.reps; rep++) {
     for (const scenario of input.scenarios) {
       const key = `${runtime}/co/${scenario.id}/${rep}`
-      const scope: CoScope = { messages: scenario.messages.map((message) => message.id), tasks: scenario.tasks }
+      const scope: CoScope = {
+        messages: scenario.messages.map((message) => message.id),
+        reports: scenario.messages.filter((message) => message.report).map((message) => message.id),
+        tasks: scenario.tasks
+      }
       const started = Date.now()
       let sessionId: string | undefined
       let tokens: unknown

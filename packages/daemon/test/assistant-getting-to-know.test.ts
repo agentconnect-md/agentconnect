@@ -50,6 +50,8 @@ describe('which places take a getting-to-know task', () => {
     expect(joinVerdict(ON, integration(), 'C9')).toBe('wait')
     expect(joinVerdict(ON, integration({ mutedChannels: ['C1'] }), 'C1')).toBe('drop')
     expect(joinVerdict(ON, integration({ sessionModes: [{ channel: 'C1', mode: 'createNew' }] }), 'C1')).toBe('drop')
+    // Under auto the place's long session is its coordinator (auto-session-mode.md §3.4).
+    expect(joinVerdict(ON, integration({ sessionModes: [{ channel: 'C1', mode: 'auto' }] }), 'C1')).toBe('take')
     expect(joinVerdict(OFF, integration(), 'C1')).toBe('drop')
     expect(joinVerdict(ON, integration({}, 'telegram'), 'C1')).toBe('drop')
   })

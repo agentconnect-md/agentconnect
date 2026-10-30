@@ -72,17 +72,18 @@ export function integrationRouting(int: Integration): {
   }
 }
 
-/** How this integration keys sessions in one conversation (channel-session-mode.md §4): the listed mode, else `createNew`, except an assistant-mode place the CP has not listed yet (`unseen`), which appends where its platform appends that kind (assistant-mode.md §5.2). */
+/** How this integration keys sessions in one conversation (channel-session-mode.md §4): the listed mode, else `createNew`, except an assistant-mode place the CP has not listed yet (`unseen`), which keeps one long session where its platform appends that kind (assistant-mode.md §5.2): the coordinator where `auto` runs (auto-session-mode.md §3.4), else `append`. */
 export function conversationSessionMode(
   int: Integration,
   channel: string,
-  unseen?: { assistantMode: boolean; kind: AppendConversationKind }
+  unseen?: { assistantMode: boolean; kind: AppendConversationKind; auto?: boolean }
 ): ChannelSessionMode {
   const listed = integrationCore(int).sessionModes.find((entry) => entry.channel === channel)?.mode
   // By decision and shared-bot routing never run under `auto` (auto-session-mode.md §3.3), so such a row keys Per thread.
   if (listed === 'auto' && integrationRouting(int).decisionBound(channel)) return 'createNew'
   if (listed) return listed
-  return unseen?.assistantMode && manifestFor(int.platform).appendKinds.includes(unseen.kind) ? 'append' : 'createNew'
+  if (!unseen?.assistantMode || !manifestFor(int.platform).appendKinds.includes(unseen.kind)) return 'createNew'
+  return unseen.auto ? 'auto' : 'append'
 }
 
 /** A message's conversation kind, as the CP seeds its row: a 1:1 DM (by flag or the platform's DM id syntax), a group DM, else a room. */

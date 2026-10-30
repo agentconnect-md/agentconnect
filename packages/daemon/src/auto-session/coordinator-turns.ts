@@ -9,6 +9,8 @@ export interface DeliveredMessage {
   msg: NormalizedMessage
   integrationId?: string
   mentionsYou: boolean
+  /** A report, a follow-up's result or another agent's answer rather than a channel message: it is answered, never handed to a task (§3.4). */
+  report?: true
 }
 
 /** What a message's one call did. */
@@ -47,9 +49,17 @@ export function replyThreadOf(msg: Pick<NormalizedMessage, 'thread' | 'msgId' | 
   return msg.thread ?? platformMessageIdOf(msg)
 }
 
+/** Where an answer to a delivered entry goes: a channel message's thread, else a report's reply thread or the conversation root. */
+export function answerThreadOf(
+  msg: Pick<NormalizedMessage, 'source' | 'thread' | 'msgId' | 'transcriptTs'>
+): string | undefined {
+  return msg.source === 'user' ? replyThreadOf(msg) : msg.thread
+}
+
 /** The message as the coordinator's batch shows it. */
 export function coordinatorView(message: DeliveredMessage, text: string): CoordinatorMessage {
   const { msg } = message
+  if (message.report) return { id: message.id, from: msg.sender.id, mentionsYou: false, text, report: true }
   return {
     id: message.id,
     from: msg.sender.id,

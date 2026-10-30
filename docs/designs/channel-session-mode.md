@@ -565,7 +565,8 @@ projection lists every known row, `createNew` ones included, and the daemon give
 conversation it does not list yet (one whose row has not reached the spec) `append` where the
 platform's `appendKinds` holds the kind of the message: a 1:1 DM, a group DM, else a room. So the
 first message of a new place already keys the one session, and the default never overrides a
-known row such as a By decision room.
+known row such as a By decision room. Where the daemon reads `auto`, that one session is the
+place's coordinator ([auto-session-mode.md](auto-session-mode.md) §3.4).
 
 **Linear declares `createNew` only.** A Linear row is a team and every issue in it is its own
 thread, so appending would pool a whole team into one session — a meaning this setting has
