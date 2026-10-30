@@ -62,7 +62,10 @@ describe('sendMessage self-delegation wording', () => {
       'reports back into this session automatically each time a round of its work finishes or fails'
     )
     expect(text).toContain('Questions, lookups and short answers never need a task')
-    expect(text).toContain('A task cannot start tasks of its own')
+    expect(text).toContain(
+      'A task may delegate tasks of its own, which report back to it; a task that another task started cannot'
+    )
+    expect(text).toContain('`title` is a short name for the work')
     expect(text).toContain('your own id without `channel` is refused — work of your own that needs no conversation')
     expect(text).not.toMatch(/sub-session|messageSubsession/)
     expect(text).toContain('Your own id (bot-a) with `channel` opens and activates a visible conversation of your own')

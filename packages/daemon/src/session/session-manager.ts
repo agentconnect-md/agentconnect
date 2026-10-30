@@ -1,6 +1,11 @@
 import { agentWithRuntime } from '../decisions/model-selection.js'
 import { isAppendCoordinate } from './append-coordinate.js'
-import { isCheckCoordinate, isResearchCoordinate, isSubsessionCoordinate } from './subsession-coordinate.js'
+import {
+  isCheckCoordinate,
+  isResearchCoordinate,
+  isSubsessionCoordinate,
+  mayOpenTasksAt
+} from './subsession-coordinate.js'
 import { researchRunningLine } from '../assistant/research.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../runtime-defs/claude-runtime.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
@@ -1060,8 +1065,8 @@ export class SessionManager {
       if (none) this.noFollowUpsSaid.add(key)
       else if (summary) this.noFollowUpsSaid.delete(key)
     }
-    // Every session that can own tasks: its running tasks ride the same points, and any turn after that list changed (send-message-guide.md §8.7).
-    if (rec.sessionId && !isSubsessionCoordinate(thread)) {
+    // Every session that can own tasks, a task included: its running tasks ride the same points, and any turn after that list changed (send-message-guide.md §8.7).
+    if (rec.sessionId && mayOpenTasksAt(thread)) {
       // A list that cannot be read is left for a later turn, never a reason to fail this one.
       const running = await runningSubsessionsBlock(
         this.deps.store,

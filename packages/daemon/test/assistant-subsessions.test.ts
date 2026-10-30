@@ -344,6 +344,256 @@ describe('the thread a task’s round reports in (assistant-mode.md §5.7)', () 
   })
 })
 
+describe('the task model: title, summary and attached threads (auto-session-mode.md §6)', () => {
+  const thread = (a: string, id: string, ts: string, sinceRound = 1) => ({
+    agentId: a,
+    childSessionKey: childKey(a, id),
+    platform: 'slack',
+    channel: 'C0GENERAL',
+    transportScope: 'T0EXAMPLE',
+    thread: ts,
+    sinceRound,
+    now: 2_000
+  })
+
+  it('keeps the title a task opened with, and its summary with the turns since', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    await index.openWithinLimit({ ...row(a, '1'), title: 'Fix the flaky test' }, { limit: 3, startedSince: 0 })
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({ title: 'Fix the flaky test' })
+    expect(await index.get(a, childKey(a, '1'))).not.toHaveProperty('summary')
+    expect(await index.countTurn(a, childKey(a, '1'))).toBe(1)
+    expect(await index.countTurn(a, childKey(a, '1'))).toBe(2)
+    expect(
+      await index.setSummary(a, childKey(a, '1'), { summary: 'Scope: the e2e test. Status: in progress.', now: 3_000 })
+    ).toBe(true)
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({
+      title: 'Fix the flaky test',
+      summary: 'Scope: the e2e test. Status: in progress.',
+      summaryUpdatedAt: 3_000
+    })
+    expect(await index.get(a, childKey(a, '1'))).not.toHaveProperty('turnsSinceSummary')
+    // The title changes only together with the summary.
+    await index.setSummary(a, childKey(a, '1'), { summary: 'Done.', title: 'Flaky test fixed', now: 4_000 })
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({ title: 'Flaky test fixed', summary: 'Done.' })
+    await expect(index.setSummary(a, childKey(a, '1'), { summary: 'x'.repeat(501), now: 5_000 })).rejects.toThrow(
+      /at most 500/
+    )
+    expect(await index.setSummary(a, childKey(a, 'missing'), { summary: 'x', now: 5_000 })).toBe(false)
+    expect(await index.countTurn(a, childKey(a, 'missing'))).toBeUndefined()
+  })
+
+  it('attaches a thread to one task only, finds the task by its thread, and releases them', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    await index.open(row(a, '1'))
+    await index.open(row(a, '2'))
+    expect(await index.attachThread(thread(a, '1', '100.1'))).toBe(true)
+    expect(await index.attachThread({ ...thread(a, '1', '100.2'), now: 3_000 })).toBe(true)
+    // A thread already attached stays with its task, and an unknown task takes none.
+    expect(await index.attachThread(thread(a, '2', '100.1'))).toBe(false)
+    expect(await index.attachThread(thread(a, 'missing', '100.3'))).toBe(false)
+    expect((await index.threadsOf(a, childKey(a, '1'))).map((t) => t.thread)).toEqual(['100.1', '100.2'])
+    expect(await index.threadsOf(a, childKey(a, '1'))).toContainEqual({
+      agentId: a,
+      childSessionKey: childKey(a, '1'),
+      platform: 'slack',
+      channel: 'C0GENERAL',
+      transportScope: 'T0EXAMPLE',
+      thread: '100.1',
+      sinceRound: 1,
+      attachedAt: 2_000
+    })
+    const at = { platform: 'slack', channel: 'C0GENERAL', transportScope: 'T0EXAMPLE', thread: '100.2' }
+    expect(await index.taskOfThread(a, at)).toBe(childKey(a, '1'))
+    expect(await index.taskOfThread(a, { ...at, transportScope: null })).toBeUndefined()
+    expect(await index.taskOfThread(agent(), at)).toBeUndefined()
+    expect(await index.detachThreads(a, childKey(a, '1'))).toBe(2)
+    expect(await index.taskOfThread(a, at)).toBeUndefined()
+    // A released thread can be attached again.
+    expect(await index.attachThread(thread(a, '2', '100.1'))).toBe(true)
+  })
+
+  it('keeps a threaded task out of the cap and its reports, from the round its first thread names', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    const cap = { limit: 1, startedSince: 0 }
+    expect(await index.openWithinLimit(row(a, '1'), cap)).toBe(true)
+    expect(await index.openWithinLimit(row(a, '2'), cap)).toBe(false)
+    expect(await index.reportsRound(a, childKey(a, '1'), 1)).toBe(true)
+    // The round running when the thread attaches still reports once; later rounds do not.
+    expect(await index.attachThread(thread(a, '1', '100.1', 2))).toBe(true)
+    expect(await index.reportsRound(a, childKey(a, '1'), 1)).toBe(true)
+    expect(await index.reportsRound(a, childKey(a, '1'), 2)).toBe(false)
+    expect(await index.openWithinLimit(row(a, '2'), cap)).toBe(true)
+    // A threaded task's next round opens whatever runs; a background one's still waits for a slot.
+    await index.finish(a, childKey(a, '1'), 'done')
+    expect(await index.reopenWithinLimit(a, childKey(a, '1'), 1, cap)).toBe('opened')
+    expect(await index.open(row(a, '3'))).toBe(true)
+    await index.finish(a, childKey(a, '3'), 'done')
+    expect(await index.reopenWithinLimit(a, childKey(a, '3'), 1, cap)).toBe('limit')
+  })
+
+  it('knows a session still has a background task of its own running or reporting', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    const parentKey = childKey(a, 'parent')
+    const nested = (id: string) => ({ ...row(a, id), parentSessionKey: parentKey })
+    expect(await index.hasRunningChildren(a, parentKey)).toBe(false)
+    await index.open(nested('1'))
+    expect(await index.hasRunningChildren(a, parentKey)).toBe(true)
+    expect(await index.hasRunningChildren(agent(), parentKey)).toBe(false)
+    await index.claimReport(a, childKey(a, '1'), '{"text":"ended"}')
+    expect(await index.hasRunningChildren(a, parentKey)).toBe(true)
+    await index.settleReport(a, childKey(a, '1'), 'done')
+    expect(await index.hasRunningChildren(a, parentKey)).toBe(false)
+    // A threaded child reports to its threads, never to this session.
+    await index.open(nested('2'))
+    await index.attachThread(thread(a, '2', '100.1'))
+    expect(await index.hasRunningChildren(a, parentKey)).toBe(false)
+  })
+
+  it('drops a task’s threads with its agent and with its purged session', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    await index.open(row(a, '1'))
+    await index.attachThread(thread(a, '1', '100.1'))
+    await s.upsertSession({
+      key: childKey(a, '1'),
+      agentId: a,
+      platform: 'slack',
+      channel: 'C0GENERAL',
+      thread: subsessionCoordinate('1'),
+      transportScope: 'T0EXAMPLE',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1_000
+    })
+    expect(await s.deleteSession(childKey(a, '1'))).toBe(true)
+    expect(await index.threadsOf(a, childKey(a, '1'))).toEqual([])
+    await index.open(row(a, '2'))
+    await index.attachThread(thread(a, '2', '100.2'))
+    await index.deleteForAgent(a)
+    expect(await index.threadsOf(a, childKey(a, '2'))).toEqual([])
+  })
+})
+
+describe.skipIf(usingPostgresStore())('the v70 → v71 task model on SQLite', () => {
+  it('adds the columns and the thread table, titling each task from its session', async () => {
+    const path = tempStorePath('ac-assistant-v70-')
+    await (await LocalStore.open(path)).close()
+    const a = agent()
+    const old = new DatabaseSync(path)
+    old.exec(`DROP TABLE assistant_subsession_thread;
+      ALTER TABLE assistant_subsession DROP COLUMN title;
+      ALTER TABLE assistant_subsession DROP COLUMN summary;
+      ALTER TABLE assistant_subsession DROP COLUMN summaryUpdatedAt;
+      ALTER TABLE assistant_subsession DROP COLUMN turnsSinceSummary;
+      PRAGMA user_version = 70`)
+    const insert = old.prepare(
+      `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
+       VALUES (?, ?, 'sid-parent-1', 'parent', 'done', 1000)`
+    )
+    insert.run(a, childKey(a, 'titled'))
+    insert.run(a, childKey(a, 'untitled'))
+    old
+      .prepare(
+        "INSERT INTO sessions (key, agentId, platform, channel, thread, title) VALUES (?, ?, 'slack', 'C0GENERAL', ?, ?)"
+      )
+      .run(childKey(a, 'titled'), a, subsessionCoordinate('titled'), 'fix the flaky test and open a PR')
+    old.close()
+
+    const upgraded = await LocalStore.open(path)
+    try {
+      const index = upgraded.assistantSubsessions
+      expect(await index.get(a, childKey(a, 'titled'))).toMatchObject({ title: 'fix the flaky test and open a PR' })
+      expect(await index.get(a, childKey(a, 'untitled'))).not.toHaveProperty('title')
+      expect(await index.attachThread({ ...threadAt(a, 'titled'), now: 2_000 })).toBe(true)
+      expect(await index.setSummary(a, childKey(a, 'untitled'), { summary: 'Done.', now: 2_000 })).toBe(true)
+    } finally {
+      await upgraded.close()
+    }
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
+    db.close()
+  })
+
+  const threadAt = (a: string, id: string) => ({
+    agentId: a,
+    childSessionKey: childKey(a, id),
+    platform: 'slack',
+    channel: 'C0GENERAL',
+    thread: '100.1',
+    sinceRound: 1
+  })
+})
+
+describe.skipIf(!usingPostgresStore())('the v70 → v71 task model on PostgreSQL', () => {
+  it('adds the columns and the thread table, titling each task from its session', async () => {
+    const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
+    const schema = `mig_${randomUUID().replace(/-/g, '')}`
+    const config = { version: 1 as const, databaseUrl, maxConnections: 2 }
+    const orgForAgent = (): string => 'org-a'
+    const admin = new pg.Client({ connectionString: databaseUrl })
+    await admin.connect()
+    const a = agent()
+    try {
+      const fresh = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await fresh.finishSchemaInitialization()
+      await (await LocalStore.open({ database: fresh, shared: true, ownerId: 'm1', orgForAgent })).close()
+
+      await admin.query(`SET search_path TO ${schema}`)
+      await admin.query('DROP TABLE assistant_subsession_thread')
+      await admin.query(
+        'ALTER TABLE assistant_subsession DROP COLUMN title, DROP COLUMN summary, DROP COLUMN summaryUpdatedAt, DROP COLUMN turnsSinceSummary'
+      )
+      await admin.query(
+        `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
+         VALUES ($1, $2, 'sid-parent-1', 'parent', 'done', 1000)`,
+        [a, childKey(a, '1')]
+      )
+      await admin.query(
+        "INSERT INTO sessions (key, agentId, platform, channel, thread, title) VALUES ($1, $2, 'slack', 'C0GENERAL', $3, $4)",
+        [childKey(a, '1'), a, subsessionCoordinate('1'), 'fix the flaky test and open a PR']
+      )
+      await admin.query('UPDATE _local_store_schema_version SET version = 70 WHERE singleton = true')
+
+      const database = await PostgresAsyncDatabase.open(config, () => undefined, schema)
+      await database.finishSchemaInitialization()
+      const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
+      try {
+        const index = upgraded.assistantSubsessions
+        expect(await index.get(a, childKey(a, '1'))).toMatchObject({ title: 'fix the flaky test and open a PR' })
+        expect(
+          await index.attachThread({
+            agentId: a,
+            childSessionKey: childKey(a, '1'),
+            platform: 'slack',
+            channel: 'C0GENERAL',
+            thread: '100.1',
+            sinceRound: 2,
+            now: 2_000
+          })
+        ).toBe(true)
+        expect(await index.reportsRound(a, childKey(a, '1'), 2)).toBe(false)
+      } finally {
+        await upgraded.close()
+      }
+      const version = await admin.query('SELECT version FROM _local_store_schema_version')
+      expect(Number(version.rows[0].version)).toBe(SCHEMA_VERSION)
+    } finally {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined)
+      await admin.end()
+    }
+  })
+})
+
 describe.skipIf(usingPostgresStore())('the v59 → v60 reply thread column on SQLite', () => {
   it('adds the column to a v59 index, its rows with no thread', async () => {
     const path = tempStorePath('ac-assistant-v59-')
@@ -520,7 +770,9 @@ describe.skipIf(usingPostgresStore())('the v37 → v38 sub-session index on SQLi
       'assistant_subsession',
       'assistant_subsession_by_parent',
       'assistant_subsession_input',
-      'assistant_subsession_input_by_child'
+      'assistant_subsession_input_by_child',
+      'assistant_subsession_thread',
+      'assistant_subsession_thread_by_child'
     ])
     expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
     db.close()

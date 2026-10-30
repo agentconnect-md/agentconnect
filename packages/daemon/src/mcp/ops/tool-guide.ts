@@ -1,6 +1,6 @@
 // `getToolGuide`: on-demand usage rules and runnable examples, so `sendMessage` keeps a short description (send-message-guide.md §3.4).
 import { z } from 'zod'
-import { isSubsessionCoordinate, isTaskCoordinate } from '../../session/subsession-coordinate.js'
+import { isSubsessionCoordinate, isTaskCoordinate, mayOpenTasksAt } from '../../session/subsession-coordinate.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { offersThreadUpdates } from '../../platforms/thread-keys.js'
 import { offersDirectMessages, platformLabel } from '../../platforms/read-ports.js'
@@ -261,12 +261,16 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
 function availability(ctx: SessionContext): Partial<Record<SendMessageAction, string>> {
   const platforms = [...new Set((ctx.integrations ?? []).map((integration) => integration.platform))]
   const notes: Partial<Record<SendMessageAction, string>> = {}
-  if (isSubsessionCoordinate(ctx.thread)) {
+  if (!mayOpenTasksAt(ctx.thread)) {
     const unavailable =
-      'Unavailable here: this session is itself a task, a follow-up’s check or an approved proposal and cannot delegate or ' +
-      'message tasks. Do the work here, or report back with replyToSession and let the session that started it decide.'
+      'Unavailable here: this session is a follow-up’s check or an approved proposal and cannot delegate or message ' +
+      'tasks. Do the work here, or report back with replyToSession and let the session that started it decide.'
     notes.delegateTask = unavailable
     notes.messageTask = unavailable
+  } else if (isSubsessionCoordinate(ctx.thread)) {
+    notes.delegateTask =
+      'This session is a task: it may delegate tasks of its own, which report back here, unless another task ' +
+      'started it (`task_nesting`). Do the work here when that is refused.'
   }
   if (isTaskCoordinate(ctx.thread)) {
     notes.replyToSession =

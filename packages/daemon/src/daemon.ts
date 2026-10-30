@@ -1030,6 +1030,7 @@ import {
   isResearchCoordinate,
   isResearchSessionKey,
   isSubsessionCoordinate,
+  isSubsessionKey,
   isTaskCoordinate,
   researchThreadOf
 } from './session/subsession-coordinate.js'
@@ -11501,7 +11502,9 @@ export class Daemon {
   private noteSubsessionOpener(childKey: string, parentKey: string): void {
     this.holdSlackForTask(childKey, parentKey)
     this.subsessionOpeners.delete(childKey)
-    this.subsessionOpeners.set(childKey, this.askersOfKey(parentKey, undefined))
+    // A task's own task reads for whoever its parent task reads for (auto-session-mode.md §6.3).
+    const inherited = isSubsessionKey(parentKey) ? this.subsessionOpeners.get(parentKey) : undefined
+    this.subsessionOpeners.set(childKey, this.askersOfKey(parentKey, undefined, inherited))
     if (this.subsessionOpeners.size > 512) {
       const oldest = this.subsessionOpeners.keys().next().value
       if (oldest !== undefined) this.subsessionOpeners.delete(oldest)

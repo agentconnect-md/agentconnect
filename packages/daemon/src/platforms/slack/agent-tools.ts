@@ -152,7 +152,7 @@ const codeTools: ToolDescriptor[] = [
   {
     name: 'manageSlackCodeChannel',
     description:
-      'Keep a code channel oriented as you work: set its context bar when repository, branch, PR or test status becomes known, and update it as they change. context replaces all items (max 5), so retain the ones still relevant. Also list/remove view tabs or archive a completed task. channelId defaults to this conversation. Archive only when requested; summaryMessageTs references an existing message in that channel and Slack echoes the summary to the origin. Native Working, Stop and titles follow the normal turn lifecycle.',
+      'Keep a code channel oriented as you work: set its context bar when repository, branch, PR or test status becomes known, and update it as they change. context replaces all items (max 5), so retain the ones still relevant. Also list/remove view tabs or archive a completed task. channelId defaults to this conversation. Archive only when requested: post the wrap-up first and pass its ts as summaryMessageTs so Slack echoes it to the origin; an archived channel accepts no further posts, so end the turn without another reply there. Native Working, Stop and titles follow the normal turn lifecycle.',
     inputSchema: z.toJSONSchema(manageArgs) as ToolDescriptor['inputSchema']
   }
 ]
@@ -203,8 +203,10 @@ async function execute(
         channel_id: channel,
         code_channel: { context_bar_items: a.items! }
       })
-    if (a.action === 'archive')
+    if (a.action === 'archive') {
+      await conn.closeCodeSession(channel)
       return conn.codeChannelApi('archive', { channel_id: channel, summary_message_ts: a.summaryMessageTs })
+    }
     if (a.action === 'removeView') return conn.codeChannelApi('removeView', { channel_id: channel, view_id: a.viewId! })
     return conn.codeChannelApi('listViews', { channel_id: channel })
   }

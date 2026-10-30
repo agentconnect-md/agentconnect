@@ -21,8 +21,10 @@ const ctx: SessionContext = {
   tools: []
 }
 
-async function fixture(code = true) {
+async function fixture(code = true, deps: Record<string, unknown> = {}) {
   const app = fakeSlackAppFactory()({} as never)
+  const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+  app.event = ((type: string, h: (a: { event: unknown }) => unknown) => void handlers.set(type, h)) as typeof app.event
   const post = vi.spyOn(app.client.chat, 'postMessage')
   const info = vi.spyOn(app.client.conversations, 'info').mockResolvedValue({
     channel: {
@@ -52,7 +54,8 @@ async function fixture(code = true) {
       group: { appToken: 'xapp', botToken: 'xoxb', integrations: [] },
       onMessage: () => {},
       newTraceId: () => 'trace',
-      sendIntervalMs: 0
+      sendIntervalMs: 0,
+      ...deps
     },
     () => app
   )
@@ -67,7 +70,7 @@ async function fixture(code = true) {
     recordPost,
     postIdentity: () => ({ agentAuthorId: ctx.agentId, username: ctx.agentName })
   }
-  return { conn, app, post, info, api, env, judgeWrite }
+  return { conn, app, post, info, api, env, judgeWrite, handlers }
 }
 
 describe('Slack native surfaces', () => {
@@ -424,5 +427,61 @@ describe('Slack native surfaces', () => {
     expect(other.api.listViews).not.toHaveBeenCalled()
     expect(other.api.setView).not.toHaveBeenCalled()
     await other.conn.stop()
+  })
+
+  it('marks the session Done before the agent archives its code channel', async () => {
+    const f = await fixture()
+    const status = vi.spyOn(f.app.client.agents.sessions, 'setStatus')
+    await SLACK_SESSION_TOOLS.execute(
+      'manageSlackCodeChannel',
+      ctx,
+      { action: 'archive', summaryMessageTs: '1.003' },
+      f.env
+    )
+    expect(status).toHaveBeenCalledWith({ channel_id: 'C1', status: 'closed' })
+    expect(status.mock.invocationCallOrder[0]!).toBeLessThan(f.api.archive.mock.invocationCallOrder[0]!)
+    expect(f.api.archive).toHaveBeenCalledWith({ channel_id: 'C1', summary_message_ts: '1.003' })
+    await f.conn.stop()
+  })
+
+  it.each(['channel_archive', 'group_archive'] as const)(
+    '%s stops every channel session and delegated task',
+    async (type) => {
+      const actions: unknown[] = []
+      const deps = {
+        onThreadSessions: async () => ['slack:C1:C1:a1', 'slack:C1:C1:a2'],
+        onStopThreadTasks: () => ['slack:C1:task:a1', 'slack:C1:C1:a2'],
+        onStatusAction: (a: unknown) => void actions.push(a)
+      }
+      const f = await fixture(true, deps)
+      await f.conn.setStatus('C1', 'C1', 'working', { sessionKey: 'slack:C1:C1:a2' })
+      await f.handlers.get(type)!({ event: { channel: 'C1', user: 'U1' } })
+      expect(actions).toEqual([
+        { kind: 'cancel', sessionKey: 'slack:C1:C1:a1', actor: { userId: 'U1' } },
+        { kind: 'cancel', sessionKey: 'slack:C1:C1:a2', actor: { userId: 'U1' } },
+        { kind: 'cancel', sessionKey: 'slack:C1:task:a1', actor: { userId: 'U1' } }
+      ])
+      await f.conn.stop()
+
+      const ordinary = await fixture(false, deps)
+      actions.length = 0
+      await ordinary.handlers.get(type)!({ event: { channel: 'C1', user: 'U1' } })
+      expect(actions).toEqual([])
+      await ordinary.conn.stop()
+    }
+  )
+
+  it('native Stop in a code channel still targets only the displayed agent', async () => {
+    const onStatusAction = vi.fn()
+    const f = await fixture(true, {
+      onThreadSessions: async () => ['slack:C1:C1:a1', 'slack:C1:C1:a2'],
+      onStatusAction
+    })
+    await f.conn.setStatus('C1', 'C1', 'working', { sessionKey: 'slack:C1:C1:a2' })
+    await f.handlers.get('agent_session_stopped')!({ event: { channel: 'C1', user: 'U1' } })
+    expect(onStatusAction.mock.calls).toEqual([
+      [{ kind: 'cancel', sessionKey: 'slack:C1:C1:a2', actor: { userId: 'U1' } }]
+    ])
+    await f.conn.stop()
   })
 })

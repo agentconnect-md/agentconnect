@@ -289,7 +289,11 @@ const finished = (label: string) => `[task finished] Task "${label}" finished th
 
 /** Start one task through the tool and let its first round finish. */
 async function startAndFinish(h: Awaited<ReturnType<typeof boot>>, caller: { scope: string; coordinate: string }) {
-  const created = await send(h.d, caller, { action: 'delegateTask', message: 'investigate the flaky test' })
+  const created = await send(h.d, caller, {
+    action: 'delegateTask',
+    title: 'investigate the flaky test',
+    message: 'investigate the flaky test'
+  })
   expect(created.wake).toMatchObject({ delivered: true, subsession: true })
   const child: string = created.taskId
   await vi.waitFor(async () => expect((await rowOf(h.d, child))?.state).toBe('done'), WAIT)
@@ -311,7 +315,11 @@ describe('messageTask continues an existing task of this session', () => {
         synthetic: false
       })
     asking('200.1')
-    const created = await send(h.d, caller, { action: 'delegateTask', message: 'investigate the flaky test' })
+    const created = await send(h.d, caller, {
+      action: 'delegateTask',
+      title: 'investigate the flaky test',
+      message: 'investigate the flaky test'
+    })
     const child: string = created.taskId
     await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
     await h.settled()
@@ -497,12 +505,18 @@ describe('a work round, its slot and its outcome', () => {
       await new Promise<void>((resolve) => (finish = resolve))
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'delegateTask', message: 'repair the parser' })
+    const created = await send(h.d, caller, {
+      action: 'delegateTask',
+      title: 'repair the parser',
+      message: 'repair the parser'
+    })
     const child: string = created.taskId
     await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
     expect(await rowOf(h.d, child)).toMatchObject({ state: 'open' })
     // Its slot is still held: a second task is refused.
-    expect((await send(h.d, caller, { action: 'delegateTask', message: 'another' })).wake).toMatchObject({
+    expect(
+      (await send(h.d, caller, { action: 'delegateTask', title: 'another', message: 'another' })).wake
+    ).toMatchObject({
       delivered: false,
       reason: 'task_limit'
     })
@@ -530,7 +544,11 @@ describe('a work round, its slot and its outcome', () => {
       await new Promise<void>((resolve) => (finish = resolve))
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'delegateTask', message: 'repair the parser' })
+    const created = await send(h.d, caller, {
+      action: 'delegateTask',
+      title: 'repair the parser',
+      message: 'repair the parser'
+    })
     const child: string = created.taskId
     await vi.waitFor(() => expect(h.rt.subPrompts).toHaveLength(1), WAIT)
 
@@ -605,7 +623,7 @@ describe('a work round, its slot and its outcome', () => {
     const first = await startAndFinish(h, caller)
     // The finished child holds no slot, so a new one starts; while that one runs, the first cannot reopen.
     h.rt.behavior.subQueue.push('hang')
-    const second = await send(h.d, caller, { action: 'delegateTask', message: 'second task' })
+    const second = await send(h.d, caller, { action: 'delegateTask', title: 'second task', message: 'second task' })
     expect(second.wake).toMatchObject({ delivered: true })
     await vi.waitFor(() => expect(h.rt.subPrompts).toHaveLength(2), WAIT)
     const refused = await send(h.d, caller, { action: 'messageTask', taskId: first, message: 'more' })
@@ -684,7 +702,11 @@ describe('a work round, its slot and its outcome', () => {
       expect(call.wake).toMatchObject({ delivered: true })
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'delegateTask', message: 'ask bot-b about the schema' })
+    const created = await send(h.d, caller, {
+      action: 'delegateTask',
+      title: 'ask bot-b about the schema',
+      message: 'ask bot-b about the schema'
+    })
     const child: string = created.taskId
     await vi.waitFor(() => expect(told(h.rt.hosts, 'PEER-TASK')).toBeGreaterThanOrEqual(1), WAIT)
     // The child's turn ended while the peer still works: its round stays open and nothing is reported.
@@ -731,7 +753,11 @@ describe('a work round, its slot and its outcome', () => {
       expect(call.wake).toMatchObject({ delivered: true })
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'delegateTask', message: 'ask bot-remote about the schema' })
+    const created = await send(h.d, caller, {
+      action: 'delegateTask',
+      title: 'ask bot-remote about the schema',
+      message: 'ask bot-remote about the schema'
+    })
     const child: string = created.taskId
     await vi.waitFor(() => expect(sent).toHaveLength(1), WAIT)
     await subInputs(h.dispatched)[0]!.turn
@@ -773,7 +799,7 @@ describe('a work round, its slot and its outcome', () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
     h.rt.behavior.subQueue.push('hang')
-    const created = await send(h.d, caller, { action: 'delegateTask', message: 'long task' })
+    const created = await send(h.d, caller, { action: 'delegateTask', title: 'long task', message: 'long task' })
     const child: string = created.taskId
     await vi.waitFor(() => expect(h.rt.subPrompts).toHaveLength(1), WAIT)
     expect((await h.d.collab.continueSubsession(continuation(caller, child, 'queued'))).delivered).toBe(true)
@@ -797,6 +823,158 @@ describe('a work round, its slot and its outcome', () => {
     await h.settled()
     expect(h.rt.subPrompts).toHaveLength(2)
     expect(await rowOf(h.d, child)).toMatchObject({ state: 'done', round: 2 })
+    await h.daemon.stop()
+  })
+})
+
+describe('a task’s own background tasks (auto-session-mode.md §6.3)', () => {
+  /** The MCP context of a task's own turn, on its coordinate. */
+  const inTask = (caller: { scope: string; coordinate: string }, thread: string) => ({
+    ...toolContext(caller),
+    thread
+  })
+  const taskSend = async (h: Awaited<ReturnType<typeof boot>>, ctx: object, args: Record<string, unknown>) =>
+    (await executeTool(ctx as never, 'sendMessage', args, { ...h.d.mcp.deps, canRun: () => true })) as any
+
+  it('reports a task’s task into that task, which keeps its round open until then and reports once itself', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(h.d)
+    let levelOneThread = ''
+    let nested: any
+    let releaseLevelTwo!: () => void
+    const levelTwoDone = new Promise<void>((resolve) => (releaseLevelTwo = resolve))
+    h.rt.behavior.byText.push(
+      [
+        /LEVEL-ONE-WORK/,
+        async () => {
+          levelOneThread = subInputs(h.dispatched).find((c) => c.msg.text.includes('LEVEL-ONE-WORK'))!.msg.thread!
+          nested = await taskSend(h, inTask(caller, levelOneThread), {
+            action: 'delegateTask',
+            title: 'Level two',
+            message: 'LEVEL-TWO-WORK'
+          })
+          // A restart forgets the in-memory link; the index alone keeps level one's round open.
+          h.d.collab.childSessionLinks.clear()
+          return 'end_turn'
+        }
+      ],
+      [
+        /LEVEL-TWO-WORK/,
+        async () => {
+          await levelTwoDone
+          return 'end_turn'
+        }
+      ]
+    )
+    const created = await send(h.d, caller, { action: 'delegateTask', title: 'Level one', message: 'LEVEL-ONE-WORK' })
+    const levelOne: string = created.taskId
+    await vi.waitFor(() => expect(nested?.wake).toMatchObject({ delivered: true, subsession: true }), WAIT)
+    const levelTwo: string = nested.taskId
+    expect(await rowOf(h.d, levelTwo)).toMatchObject({ parentSessionKey: levelOne, title: 'Level two', state: 'open' })
+    // Level one's turn ended, but its own task still runs, so its round stays open and nothing reaches the root.
+    await subInputs(h.dispatched).find((c) => c.msg.text.includes('LEVEL-ONE-WORK'))!.turn
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(await rowOf(h.d, levelOne)).toMatchObject({ state: 'open' })
+    expect(h.reports()).toHaveLength(0)
+    // The level-one task lists and messages its own task, and nobody else's.
+    const listed = await executeTool(inTask(caller, levelOneThread) as never, 'listTasks', {}, {
+      ...h.d.mcp.deps,
+      canRun: () => true
+    } as never)
+    expect((listed as any).tasks).toEqual([expect.objectContaining({ taskId: levelTwo, label: 'Level two' })])
+
+    releaseLevelTwo()
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
+    await h.settled()
+    const [intoLevelOne, intoRoot] = h.reports()
+    // Level two's report reaches level one, never the conversation's own session.
+    expect(intoLevelOne!.msg.thread).toBe(levelOneThread)
+    expect(modelText(intoLevelOne!.msg)).toContain(finished('Level two'))
+    expect(intoRoot!.msg.sessionThread).toBe(caller.coordinate)
+    expect(modelText(intoRoot!.msg)).toContain(finished('Level one'))
+    await vi.waitFor(async () => expect(await rowOf(h.d, levelOne)).toMatchObject({ state: 'done' }), WAIT)
+    expect(await rowOf(h.d, levelTwo)).toMatchObject({ state: 'done' })
+    await h.daemon.stop()
+  })
+
+  it('lets a task message and stop its own task, and never another session’s', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]), { spy: true })
+    const caller = await seedCaller(h.d)
+    const levelOne = await send(h.d, caller, { action: 'delegateTask', title: 'Level one', message: 'one' })
+    const levelOneThread = h.dispatched[0]!.msg.thread!
+    await h.d.store.upsertSession({
+      key: levelOne.taskId,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: levelOneThread,
+      transportScope: caller.scope,
+      acpSessionId: 'acp-level-one',
+      sessionId: 'sid-level-one',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const ctx = inTask(caller, levelOneThread)
+    const levelTwo = await taskSend(h, ctx, { action: 'delegateTask', title: 'Level two', message: 'two' })
+    expect(levelTwo.wake).toMatchObject({ delivered: true, subsession: true })
+    expect(await taskSend(h, ctx, { action: 'messageTask', taskId: levelTwo.taskId, message: 'more' })).toMatchObject({
+      wake: { delivered: true }
+    })
+    // The root's task is not level one's to message.
+    expect(await taskSend(h, ctx, { action: 'messageTask', taskId: levelOne.taskId, message: 'more' })).toMatchObject({
+      wake: { delivered: false, reason: 'task_not_found' }
+    })
+    const deps = { ...h.d.mcp.deps, canRun: () => true }
+    expect(await executeTool(ctx as never, 'stopTask', { taskId: levelOne.taskId }, deps)).toMatchObject({
+      result: 'refused'
+    })
+    expect(await executeTool(ctx as never, 'stopTask', { taskId: levelTwo.taskId }, deps)).toMatchObject({
+      taskId: levelTwo.taskId
+    })
+    await h.daemon.stop()
+  })
+})
+
+describe('a task with a thread attached (auto-session-mode.md §6.2, §6.6)', () => {
+  it('reports the round running when its thread attaches once, and no later round', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(h.d)
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    h.rt.behavior.byText.push([
+      /THREADED-WORK/,
+      async () => {
+        await held
+        return 'end_turn'
+      }
+    ])
+    const created = await send(h.d, caller, { action: 'delegateTask', title: 'Threaded', message: 'THREADED-WORK' })
+    const child: string = created.taskId
+    // The thread attaches while round 1 runs, so round 2 is the first that answers only in the thread.
+    expect(
+      await h.d.store.assistantSubsessions.attachThread({
+        agentId: 'bot-a',
+        childSessionKey: child,
+        platform: 'slack',
+        channel: 'C1',
+        transportScope: caller.scope,
+        thread: '1700000900.000100',
+        sinceRound: 2,
+        now: Date.now()
+      })
+    ).toBe(true)
+    release()
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
+    await h.settled()
+    await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done' }), WAIT)
+
+    expect((await send(h.d, caller, { action: 'messageTask', taskId: child, message: 'more' })).wake).toMatchObject({
+      delivered: true
+    })
+    await vi.waitFor(async () => expect(await rowOf(h.d, child)).toMatchObject({ state: 'done', round: 2 }), WAIT)
+    await h.settled()
+    expect(h.reports()).toHaveLength(1)
     await h.daemon.stop()
   })
 })
@@ -826,7 +1004,7 @@ describe('one delegateTask submission, one task', () => {
   it('returns the first receipt for a replayed delegateTask, in process and from the recorded message', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)
-    const args = { action: 'delegateTask', message: 'investigate the flaky test' }
+    const args = { action: 'delegateTask', title: 'investigate the flaky test', message: 'investigate the flaky test' }
     const first = await send(h.d, caller, args, 'nonce-1:7')
     expect(first.wake).toMatchObject({ delivered: true, subsession: true })
     expect(await send(h.d, caller, args, 'nonce-1:7')).toEqual(first)
@@ -863,7 +1041,7 @@ describe('admission that cannot be decided yet', () => {
   it('opens no round while the previous round’s report still waits for admission', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]), { spy: true })
     const caller = await seedCaller(h.d)
-    const created = await send(h.d, caller, { action: 'delegateTask', message: 'task' })
+    const created = await send(h.d, caller, { action: 'delegateTask', title: 'task', message: 'task' })
     const child: string = created.taskId
     expect(await h.d.store.assistantSubsessions.claimReport('bot-a', child, '{"text":"held"}')).toBe(true)
     const res = await h.d.collab.continueSubsession(continuation(caller, child))
@@ -1005,7 +1183,7 @@ describe('the owning session and its task answer each other’s messages', () =>
       await new Promise<void>((resolve) => (settleRound = resolve))
       return 'end_turn'
     })
-    const created = await send(h.d, caller, { action: 'delegateTask', message: 'long work' })
+    const created = await send(h.d, caller, { action: 'delegateTask', title: 'long work', message: 'long work' })
     const child: string = created.taskId
     await vi.waitFor(() => expect(h.reports()).toHaveLength(1), WAIT)
     const input = await lastReceived(h.d, child, 'taskInput')

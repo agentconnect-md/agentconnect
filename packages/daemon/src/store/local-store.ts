@@ -10,7 +10,11 @@ import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js
 import { ASSISTANT_CHECK_SCHEMA, AssistantCheckLedger } from './assistant-checks.js'
 import { ASSISTANT_REMINDER_SCHEMA, AssistantReminderLedger } from './assistant-reminders.js'
 import { ASSISTANT_ONBOARDING_SCHEMA, AssistantOnboardingLedger } from './assistant-onboarding.js'
-import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
+import {
+  ASSISTANT_SUBSESSION_SCHEMA,
+  ASSISTANT_SUBSESSION_THREAD_SCHEMA,
+  AssistantSubsessionIndex
+} from './assistant-subsessions.js'
 import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
 import { newSessionMessageId, SESSION_MESSAGE_SCHEMA, SessionMessages } from './session-messages.js'
 import { CAPABILITY_CARD_SCHEMA, CapabilityCardLedger } from './capability-cards.js'
@@ -1325,7 +1329,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 70
+export const SCHEMA_VERSION = 71
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2071,8 +2075,27 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v69 tells the turn's own editor-path notice from a sub-session's, so a restart's sweep settles each in its own words.
   async (db, store) => await addColumn(db, store.postgres, 'permission_requests', 'noticeKind', 'TEXT'),
   // v70 records when retention reclaimed a finished session's workspace while keeping its row, so a pass does not judge it again.
-  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'workspaceReclaimedAt', 'INTEGER')
+  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'workspaceReclaimedAt', 'INTEGER'),
+  // v71 gives tasks a title, a summary and attached threads (auto-session-mode.md §6.1).
+  async (db, store) => await migrateTaskModel(db, store.postgres)
 ]
+
+/** Tasks gain a title, taken from their session's first-message title, a summary and the threads attached to them. */
+async function migrateTaskModel(db: StoreTx, postgres: boolean): Promise<void> {
+  await db.exec(ASSISTANT_SUBSESSION_THREAD_SCHEMA)
+  if (!(await tableExists(db, postgres, 'assistant_subsession'))) return
+  for (const [column, type] of [
+    ['title', 'TEXT'],
+    ['summary', 'TEXT'],
+    ['summaryUpdatedAt', 'INTEGER'],
+    ['turnsSinceSummary', 'INTEGER NOT NULL DEFAULT 0']
+  ] as const)
+    await addColumn(db, postgres, 'assistant_subsession', column, type)
+  if (!(await tableExists(db, postgres, 'sessions'))) return
+  await db.exec(`UPDATE assistant_subsession
+    SET title = (SELECT s.title FROM sessions s WHERE s.key = assistant_subsession.childSessionKey)
+    WHERE title IS NULL AND kind = 'delegation'`)
+}
 
 // Binds a platform's recorded conversations to their tenant, then hands each conversation's audience to its inherited children.
 async function bindChatAudience(
@@ -5301,6 +5324,9 @@ export class LocalStore {
           .run(rec.agentId, key)
         await tx
           .prepare('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?')
+          .run(rec.agentId, key)
+        await tx
+          .prepare('DELETE FROM assistant_subsession_thread WHERE agentId = ? AND childSessionKey = ?')
           .run(rec.agentId, key)
       }
       // A purged session neither answers nor is answered: its messages go with it (send-message-guide.md §9.3).

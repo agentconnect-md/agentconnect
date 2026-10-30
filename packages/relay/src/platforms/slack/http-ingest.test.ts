@@ -943,6 +943,29 @@ describe('SlackHttpIngest events', () => {
     expect(onSessionStopped.mock.calls[1]![0]).toEqual({ channelId: 'C1', threadTs: 'C1', interactionId: 'Ev125' })
   })
 
+  it.each(['channel_archive', 'group_archive'] as const)(
+    'forwards %s as a stop of the channel session',
+    async (type) => {
+      const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
+      const onSessionStopped = vi.fn()
+      const ingest = new SlackHttpIngest(
+        'bot',
+        { botToken: 'xoxb', signingSecret: 's' },
+        deps(web, { onSessionStopped })
+      )
+      await ingest.start()
+
+      await ingest.handleEvent({ type, channel: 'C1', user: 'U-ALICE' }, undefined, 'Ev126')
+
+      expect(onSessionStopped).toHaveBeenCalledWith({
+        channelId: 'C1',
+        threadTs: 'C1',
+        interactionId: 'Ev126',
+        userId: 'U-ALICE'
+      })
+    }
+  )
+
   // Subscribed so a future feature needs no manifest-refresh cycle, but nothing acts on them:
   // they fall through to the same drop every unrecognized event takes.
   it.each(['agent_session_title_changed', 'assistant_thread_context_changed'] as const)(

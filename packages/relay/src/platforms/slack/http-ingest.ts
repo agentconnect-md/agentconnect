@@ -642,6 +642,16 @@ export class SlackHttpIngest {
           })
         return
       }
+      // An archive is a Stop for the channel's session; the daemon ignores it unless the channel is a code channel.
+      if ((event?.type === 'channel_archive' || event?.type === 'group_archive') && event.channel) {
+        this.deps.onSessionStopped({
+          channelId: event.channel,
+          threadTs: event.channel,
+          interactionId: eventId ?? `${event.type}:${event.channel}:${eventAtMs ?? ''}`,
+          ...(event.user ? { userId: event.user } : {})
+        })
+        return
+      }
       if (event && this.isOwnMembershipChange(event)) {
         if (event.type === 'member_joined_channel' && event.channel)
           this.deps.onBotJoined?.({

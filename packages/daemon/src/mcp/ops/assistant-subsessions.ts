@@ -4,8 +4,8 @@ import { stopIndexedSubsession } from '../../cp/assistant-activity.js'
 import { subsessionLabel } from '../../permissions/subsession-approval.js'
 import {
   isDelegationCoordinate,
-  isSubsessionCoordinate,
   isTaskCoordinate,
+  mayOpenTasksAt,
   SUBSESSION_COORDINATE_PREFIX
 } from '../../session/subsession-coordinate.js'
 import type { AssistantItem } from '../../store/assistant-items.js'
@@ -82,9 +82,9 @@ export const LIST_TASKS_TOOL: ToolDescriptor = {
   inputSchema: obj({})
 }
 
-/** The tools every session that can delegate a task is offered: never inside a task, a follow-up's check or an approved proposal itself. */
+/** The tools every session that can delegate a task is offered, a task included: never a follow-up's check or an approved proposal (auto-session-mode.md §6.3). */
 export function stopTaskToolsFor(session: { thread: string }): ToolDescriptor[] {
-  return isSubsessionCoordinate(session.thread) ? [] : [LIST_TASKS_TOOL, STOP_TASK_TOOL]
+  return mayOpenTasksAt(session.thread) ? [LIST_TASKS_TOOL, STOP_TASK_TOOL] : []
 }
 
 const NOTHING = 'Nothing was stopped.'
@@ -113,8 +113,8 @@ export const stopTask: ToolHandler<AssistantSubsessionDeps> = async (ctx, args, 
   const { taskId } = parseArgs(STOP_TASK_ARGS, args)
   const port = deps.assistantSubsessions
   if (!port) return refused('Stopping a task is not available on this daemon.')
-  // A task, a follow-up's check and an approved proposal own no task, so they get the unknown-id answer too.
-  if (isSubsessionCoordinate(ctx.thread)) return refused(NOT_OWNED)
+  // A follow-up's check and an approved proposal own no task, so they get the unknown-id answer too.
+  if (!mayOpenTasksAt(ctx.thread)) return refused(NOT_OWNED)
   const here = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
   const row = await port.find(ctx.agentId, taskId)
   if (row?.kind === 'follow-up') return await stopFollowUp(ctx, row, port)
@@ -228,8 +228,8 @@ export const listTasks: ToolHandler<AssistantSubsessionDeps> = async (ctx, args,
   parseArgs(LIST_TASKS_ARGS, args)
   const port = deps.assistantSubsessions
   if (!port?.listForOwner) throw new Error('listTasks: listing tasks is not available on this daemon')
-  // A task, a follow-up's check and an approved proposal own no task.
-  if (isSubsessionCoordinate(ctx.thread)) return NO_TASKS
+  // A follow-up's check and an approved proposal own no task.
+  if (!mayOpenTasksAt(ctx.thread)) return NO_TASKS
   const here = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
   // The place's current long session takes its follow-ups over first, so they are listed here and nowhere else.
   const owns = (await port.followUps?.own(ctx)) ?? false
@@ -260,7 +260,7 @@ export const listTasks: ToolHandler<AssistantSubsessionDeps> = async (ctx, args,
           handedBackResult: (await port.followUps?.reported(item)) ?? false
         }
       }
-      const label = subsessionLabel(session?.title, undefined)
+      const label = subsessionLabel(row.title ?? session?.title, undefined)
       const state = STATES[row.state]
       return {
         ...(kind === 'delegated task' ? { taskId: row.childSessionKey } : {}),
