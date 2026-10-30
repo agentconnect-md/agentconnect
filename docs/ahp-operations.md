@@ -44,7 +44,9 @@ cross-service synchronization. An older daemon cannot gain a serving host by
 setting a flag. Check the actual capability after registration and reconnection.
 
 CP `WEBCHAT_PROTOCOL=ahp` requires `AHP_MODE=on`; invalid combinations fail at
-startup. The design's logical `features.webchat.protocol` maps to that CP
+startup. It is a preference: a new Webchat whose participants are not all on a
+ready daemon advertising `api-ahp-v1` attaches over legacy instead. Each agent's
+`ahpWebchat` field reports that per agent, and the console follows it. The design's logical `features.webchat.protocol` maps to that CP
 environment variable. The runtime-config `ahp.enabled` and `ahp.publicAccess`
 fields disclose only availability, never key IDs or credentials.
 

@@ -382,6 +382,8 @@ export interface AgentDto {
   // Placement is a TARGET: `set` names a member set through `setId` and carries no member id.
   placementKind?: PlacementKindValue
   placementReady?: boolean
+  // Can a new Webchat with this agent attach over AHP? Absent from an older CP, which reads as no.
+  ahpWebchat?: boolean
   // A group agent's confirmed duty holder; absent for a daemon or pool placement and from an older CP.
   holderDaemonId?: string | null
   daemonId: string | null
@@ -2141,6 +2143,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // that a rollout invalidates.
     placementKind: d.placementKind ?? 'daemon',
     placementReady: d.placementReady ?? false,
+    ahpWebchat: d.ahpWebchat === true,
     // The set id rides along: `daemon` alone cannot tell the pool from one of the org's own groups,
     // and only a caller holding the org's set list can (daemon-groups.md §2).
     setId: d.setId ?? null,

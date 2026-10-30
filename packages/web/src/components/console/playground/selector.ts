@@ -1,14 +1,29 @@
+import type { Agent } from '@/lib/data'
 import type { PlaygroundData } from './contract'
 export type PlaygroundProtocol = 'legacy' | 'ahp'
 export const webchatProtocol = (): PlaygroundProtocol =>
   typeof window !== 'undefined' && window.__AC_ENV?.WEBCHAT_PROTOCOL === 'ahp' ? 'ahp' : 'legacy'
+
+// A new attachment's participants: openPlayground names them; any other first touch knows only its session id.
+export type ProtocolTarget = { agents: readonly Agent[] } | { sessionId: string }
+export type ProtocolChoice = (target: ProtocolTarget) => PlaygroundProtocol
+
+// AHP only where the deployment prefers it and the CP reports every participant can attach over it.
+export function protocolFor(
+  agents: ReadonlyArray<Pick<Agent, 'ahpWebchat'> | undefined>,
+  preferred: PlaygroundProtocol = webchatProtocol()
+): PlaygroundProtocol {
+  return preferred === 'ahp' && agents.length > 0 && agents.every((agent) => agent?.ahpWebchat === true)
+    ? 'ahp'
+    : 'legacy'
+}
 
 // Attachment identity pins the adapter; runtime changes only select new attachments.
 export function selectPlayground(
   legacy: PlaygroundData,
   ahp: PlaygroundData,
   pins: Map<string, PlaygroundProtocol>,
-  preferred: () => PlaygroundProtocol = webchatProtocol
+  preferred: ProtocolChoice = webchatProtocol
 ): PlaygroundData {
   return createPlaygroundSelector(pins, preferred)(legacy, ahp)
 }
@@ -16,7 +31,7 @@ export function selectPlayground(
 // One selector per pin map: its methods keep their identity across renders and always reach the latest adapters.
 export function createPlaygroundSelector(
   pins: Map<string, PlaygroundProtocol>,
-  preferred: () => PlaygroundProtocol = webchatProtocol
+  preferred: ProtocolChoice = webchatProtocol
 ): (legacy: PlaygroundData, ahp: PlaygroundData) => PlaygroundData {
   let adapters!: { legacy: PlaygroundData; ahp: PlaygroundData }
   let sessions:
@@ -32,7 +47,7 @@ export function createPlaygroundSelector(
     let protocol = pins.get(id)
     const known = protocol ? adapters[protocol].getPgSession(id) : (ahp.getPgSession(id) ?? legacy.getPgSession(id))
     if (!protocol && known) protocol = ahp.getPgSession(id) ? 'ahp' : 'legacy'
-    protocol ??= preferred()
+    protocol ??= preferred({ sessionId: id })
     const key = known?.id ?? id
     if (claim) {
       pins.set(id, protocol)
@@ -43,7 +58,8 @@ export function createPlaygroundSelector(
   const method = (property: keyof PlaygroundData): unknown => {
     if (property === 'openPlayground')
       return (...args: Parameters<PlaygroundData['openPlayground']>) => {
-        const protocol = preferred(),
+        const [agent, members] = args,
+          protocol = preferred({ agents: [agent, ...(members ?? [])] }),
           id = adapters[protocol].openPlayground(...args)
         pins.set(id, protocol)
         return id
