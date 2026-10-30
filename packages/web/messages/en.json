@@ -10,7 +10,8 @@
     },
     "pendingActions": {
       "waiting": "{label} is waiting for your action",
-      "show": "Show"
+      "show": "Show",
+      "dismiss": "Dismiss"
     },
     "modelProvider": {
       "label": "Credentials",

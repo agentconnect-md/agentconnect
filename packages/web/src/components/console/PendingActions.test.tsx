@@ -151,6 +151,50 @@ describe('the waiting banner', () => {
     expect(banner()).toBeNull()
   })
 
+  it('stays dismissed until something new starts waiting', async () => {
+    const render = (ids: string[]) =>
+      act(() => {
+        root.render(
+          <PendingActionsProvider>
+            <PendingActionsBanner />
+            {ids.map((id) => (
+              <Waiter key={id} id={id} label={`Card ${id}`} waiting />
+            ))}
+          </PendingActionsProvider>
+        )
+      })
+    await render(['a'])
+    visible([])
+    expect(banner()).not.toBeNull()
+    act(() => (element.querySelector('button[aria-label="Dismiss"]') as HTMLButtonElement).click())
+    expect(banner()).toBeNull()
+    visible([])
+    expect(banner()).toBeNull()
+    await render(['a', 'b'])
+    visible([])
+    expect(banner()?.textContent).toContain('Card b is waiting for your action')
+  })
+
+  // The session view unmounts the banner while its file viewer is open; dismissal must outlive that.
+  it('stays dismissed after the banner itself remounts', async () => {
+    const render = (withBanner: boolean) =>
+      act(() => {
+        root.render(
+          <PendingActionsProvider>
+            {withBanner ? <PendingActionsBanner /> : null}
+            <Waiter id="a" label="Card a" waiting />
+          </PendingActionsProvider>
+        )
+      })
+    await render(true)
+    visible([])
+    act(() => (element.querySelector('button[aria-label="Dismiss"]') as HTMLButtonElement).click())
+    await render(false)
+    await render(true)
+    visible([])
+    expect(banner()).toBeNull()
+  })
+
   it('registers nothing outside a provider', async () => {
     await act(async () => {
       root.render(<Waiter id="a" label="Create agent" waiting />)
