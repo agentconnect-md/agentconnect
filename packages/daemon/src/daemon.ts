@@ -13531,20 +13531,21 @@ export class Daemon {
     )
   }
 
-  /** End a coordinator turn: settle the entries its batch took, then act on what it left undecided (§4.3, §4.5). */
+  /** End a coordinator turn: settle the entries its batch took, then act on what it left undecided (§4.3, §4.5); a turn startup replays keeps every row and acts on nothing. */
   private async settleCoordinatorTurn(
     entry: QueueEntry,
     key: string,
     ended: 'answered' | 'failed' | 'stopped',
-    sessionId: string | null
+    sessionId: string | null,
+    opts: { replayed: boolean }
   ): Promise<void> {
     if (entry.coordinatorBatch === undefined) return
     for (const taken of entry.coordinatorBatch) {
-      if (!this.retainsInboxRow(taken, false)) await this.removeInbox(taken)
-      taken.resolve(sessionId)
+      if (!opts.replayed && !this.retainsInboxRow(taken, false)) await this.removeInbox(taken)
+      taken.resolve(opts.replayed ? null : sessionId)
     }
     await this.coordinators
-      .settleTurn(key, entry.agentId, ended)
+      .settleTurn(key, entry.agentId, opts.replayed ? 'stopped' : ended)
       .catch((err) => this.log.warn(`coordinator ${key}: settling the turn failed: ${formatErr(err)}`))
   }
 
@@ -18893,7 +18894,9 @@ export class Daemon {
             if (isSubsessionCoordinate(sessionThreadOf(entry.msg)))
               await this.settleSubsessionTurn(entry, key, ended === 'completed' ? 'completed' : 'interrupted')
             else if (this.cfg.features.autoSessionMode) await this.settleThreadedTaskTurn(entry, key)
-            await this.settleCoordinatorTurn(entry, key, entry.coordinatorEnded ?? 'stopped', sessionId)
+            await this.settleCoordinatorTurn(entry, key, entry.coordinatorEnded ?? 'stopped', sessionId, {
+              replayed: this.retainsInboxRow(entry, false)
+            })
             entry.resolve(sessionId)
           } else {
             await this.removeInbox(entry)
@@ -18905,7 +18908,7 @@ export class Daemon {
           if (!this.retainsInboxRow(entry, true)) await this.removeInbox(entry)
           if (isSubsessionCoordinate(sessionThreadOf(entry.msg))) await this.settleSubsessionTurn(entry, key, 'failed')
           else if (this.cfg.features.autoSessionMode) await this.settleThreadedTaskTurn(entry, key)
-          await this.settleCoordinatorTurn(entry, key, 'failed', null)
+          await this.settleCoordinatorTurn(entry, key, 'failed', null, { replayed: this.retainsInboxRow(entry, true) })
           entry.reject(err)
           // A coordinator's queue holds separate people's messages, never follow-ups of the failed one: they still run (§4.3).
           if (isCoordinatorCoordinate(sessionThreadOf(entry.msg))) {
