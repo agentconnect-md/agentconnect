@@ -531,4 +531,10 @@ describe('append session labelling', () => {
   it('names the stretch, not a person', () => {
     expect(appendSessionLabel(new Date(1700000000000))).toMatch(/^Since /)
   })
+
+  // auto-session-mode.md §4: a coordinator's coordinate is an append one of its own family.
+  it('reads a coordinator’s mint time too', () => {
+    expect(appendSessionStartedAt('append:coordinator-1700000000000')?.getTime()).toBe(1700000000000)
+    expect(appendSessionStartedAt('append:coordinator-')).toBeUndefined()
+  })
 })

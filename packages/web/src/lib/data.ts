@@ -1411,6 +1411,8 @@ export interface Session {
   threadUrl?: string
   /** Runs on a reserved background-work coordinate (a task, a follow-up or approved work), so no one continues it from its own page. */
   subsession?: true
+  /** An Auto conversation's coordinator session (auto-session-mode.md §11), labeled wherever sessions are listed. */
+  coordinator?: true
   user: string
   /** Raw platform sender id behind `user` — e.g. `cron:<id>` for a scheduled
    *  fire. Lets the Sessions list link a run back to its schedule. */

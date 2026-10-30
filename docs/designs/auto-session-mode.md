@@ -31,7 +31,9 @@
 > the daemon reads `auto`, and it takes their reports (§3.4). The console's session-mode menu offers
 > Auto in a room whose consumer's daemon reads it, outside By decision and shared-bot routing, and
 > under Auto its trigger menu offers only Off beside "Decided by the coordinator" (§3.3, §11). The
-> visibility lock for threaded tasks and webchat (§10) are not implemented.
+> console labels the coordinator in the session list and on its page, and a threaded task's page
+> names the coordinator it belongs to now, read from the owning daemon by the task's session (§11).
+> The visibility lock for threaded tasks and webchat (§10) are not implemented.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).

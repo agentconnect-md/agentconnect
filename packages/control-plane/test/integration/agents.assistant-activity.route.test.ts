@@ -908,17 +908,50 @@ describe('a follow-up before its first check, and one task by its session', () =
     })
     expect(control.reads).toEqual([{ agentId: AGENT, operation: 'task', sessionId: teamChild }])
 
-    // A task the member may not view, an ordinary thread, another agent's task, or none is never read.
+    // A task the member may not view, another agent's task, or none is never read.
     control.reads = []
-    for (const id of [dmChild, plain, foreign, randomUUID()]) {
+    for (const id of [dmChild, foreign, randomUUID()]) {
       expect((await get(app(control, member), `/subsessions/${id}`)).statusCode).toBe(404)
     }
     expect(control.reads).toEqual([])
-    // A task the daemon no longer holds, or an answer about another session, reads as absent.
+    // A task the daemon no longer holds, an ordinary thread it holds no task on, or an answer about another session, reads as absent.
     control.task = null
     expect((await get(app(control, member), `/subsessions/${teamChild}`)).statusCode).toBe(404)
+    expect((await get(app(control, member), `/subsessions/${plain}`)).statusCode).toBe(404)
     control.task = { ...unchecked(team), sessionId: dmChild }
     expect((await get(app(control, member), `/subsessions/${teamChild}`)).statusCode).toBe(404)
+  })
+
+  // auto-session-mode.md §11: a coordinator's threaded task lives on a platform thread, and its page leads back to the coordinator.
+  it('reads a coordinator’s threaded task by its own session on its platform thread', async () => {
+    await seedAssistant({ features: HANDLE })
+    const { team, plain } = await seedConversations()
+    const member = await makeUser(`threaded-reader-${randomUUID()}`, 'collaborator')
+    const control = new ActivitySpy()
+    control.task = {
+      sessionId: plain,
+      parentSessionId: team,
+      state: 'done',
+      createdAt: '2026-10-09T08:00:00.000Z',
+      kind: 'delegated',
+      title: 'Webhook retries',
+      summary: 'Scope: webhook retries. Status: in review.',
+      threaded: true
+    }
+
+    const res = await get(app(control, member), `/subsessions/${plain}`)
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json()).toMatchObject({
+      sessionId: plain,
+      title: 'Webhook retries',
+      state: 'done',
+      visible: true,
+      canStop: false,
+      parent: { sessionId: team },
+      threaded: true,
+      summary: 'Scope: webhook retries. Status: in review.'
+    })
+    expect(control.reads).toEqual([{ agentId: AGENT, operation: 'task', sessionId: plain }])
   })
 })
 

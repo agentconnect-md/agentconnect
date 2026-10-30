@@ -14,11 +14,15 @@
  * forward, so a coordinate minted after a purge is one that has never been used.
  */
 
-import { APPEND_COORDINATE_PREFIX, isAppendCoordinate } from '@agentconnect.md/protocol'
+import {
+  APPEND_COORDINATE_PREFIX,
+  COORDINATOR_COORDINATE_PREFIX,
+  isAppendCoordinate,
+  isCoordinatorCoordinate
+} from '@agentconnect.md/protocol'
 
-// The prefix and its test live in the protocol package so the Control Plane can recognize an
-// append session too; the prefix is re-exported so the store migration can match on it.
-export { APPEND_COORDINATE_PREFIX, isAppendCoordinate }
+// The prefixes and their tests live in the protocol package so the Control Plane and the console recognize these sessions too.
+export { APPEND_COORDINATE_PREFIX, COORDINATOR_COORDINATE_PREFIX, isAppendCoordinate, isCoordinatorCoordinate }
 
 const PREFIX = APPEND_COORDINATE_PREFIX
 
@@ -27,17 +31,9 @@ export function appendCoordinate(ts: number): string {
   return `${PREFIX}${ts}`
 }
 
-// The coordinator session (auto-session-mode.md §4) is a conversation's session too, so its coordinate is an append one of its own family.
-export const COORDINATOR_COORDINATE_PREFIX = `${PREFIX}coordinator-`
-
-/** The coordinator session's coordinate for a given mint time. */
+/** The coordinator session's coordinate for a given mint time (auto-session-mode.md §4). */
 export function coordinatorCoordinate(ts: number): string {
   return `${COORDINATOR_COORDINATE_PREFIX}${ts}`
-}
-
-/** Whether a session's thread segment is a coordinator session's (auto-session-mode.md §4). */
-export function isCoordinatorCoordinate(thread: string | null | undefined): boolean {
-  return typeof thread === 'string' && thread.startsWith(COORDINATOR_COORDINATE_PREFIX)
 }
 
 /** Which session a conversation coordinate names: the one `append` session or the `auto` coordinator. */

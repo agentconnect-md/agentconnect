@@ -659,6 +659,10 @@
       "all": "全部",
       "noMatchesShort": "无匹配项"
     },
+    "coordinator": {
+      "label": "协调会话",
+      "hint": "在自动模式下决定此对话中每条消息的去向：交给任务、直接回复或略过。"
+    },
     "visibility": {
       "private": "私密",
       "everyone": "所有人",
