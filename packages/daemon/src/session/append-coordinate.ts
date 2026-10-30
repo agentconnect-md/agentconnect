@@ -27,25 +27,44 @@ export function appendCoordinate(ts: number): string {
   return `${PREFIX}${ts}`
 }
 
+// The coordinator session (auto-session-mode.md §4) is a conversation's session too, so its coordinate is an append one of its own family.
+const COORDINATOR_PREFIX = `${PREFIX}coordinator-`
+
+/** The coordinator session's coordinate for a given mint time. */
+export function coordinatorCoordinate(ts: number): string {
+  return `${COORDINATOR_PREFIX}${ts}`
+}
+
+/** Whether a session's thread segment is a coordinator session's (auto-session-mode.md §4). */
+export function isCoordinatorCoordinate(thread: string | null | undefined): boolean {
+  return typeof thread === 'string' && thread.startsWith(COORDINATOR_PREFIX)
+}
+
+/** Which session a conversation coordinate names: the one `append` session or the `auto` coordinator. */
+export type ConversationCoordinateKind = 'append' | 'coordinator'
+
+/** The kind of session a conversation coordinate names. */
+export function coordinateKind(thread: string | undefined): ConversationCoordinateKind {
+  return isCoordinatorCoordinate(thread) ? 'coordinator' : 'append'
+}
+
 /** The mint time a coordinate carries; undefined when it is not one, or its payload is not a timestamp. */
 export function appendCoordinateTs(thread: string | undefined): number | undefined {
   if (!isAppendCoordinate(thread)) return undefined
-  // Digits only, and at least one: `Number('')` is 0, which would read an empty payload as
-  // a valid coordinate minted at the epoch and let it win every comparison.
-  const payload = thread!.slice(PREFIX.length)
+  // Digits only, and at least one: `Number('')` is 0, an epoch coordinate that would win every comparison.
+  const payload = thread!.slice(isCoordinatorCoordinate(thread) ? COORDINATOR_PREFIX.length : PREFIX.length)
   if (!/^\d+$/.test(payload)) return undefined
   const ts = Number(payload)
   return Number.isSafeInteger(ts) ? ts : undefined
 }
 
-/**
- * The next coordinate after `current`, minted monotonically.
- *
- * `max(now, current + 1)` so a clock moved backwards cannot mint below the coordinate in
- * force, which would make `!new` silently no-op — the rotation would appear to succeed
- * while every later message still resolved to the coordinate it was meant to retire.
- */
-export function nextAppendCoordinate(current: string | undefined, now: number): string {
+/** The next coordinate after `current`, of its kind unless told: `max(now, current + 1)`, so a clock moved back cannot make `!new` a no-op. */
+export function nextAppendCoordinate(
+  current: string | undefined,
+  now: number,
+  kind: ConversationCoordinateKind = coordinateKind(current)
+): string {
   const currentTs = appendCoordinateTs(current)
-  return appendCoordinate(currentTs === undefined ? now : Math.max(now, currentTs + 1))
+  const ts = currentTs === undefined ? now : Math.max(now, currentTs + 1)
+  return kind === 'coordinator' ? coordinatorCoordinate(ts) : appendCoordinate(ts)
 }

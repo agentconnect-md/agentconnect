@@ -20,9 +20,10 @@ import { newSessionMessageId, SESSION_MESSAGE_SCHEMA, SessionMessages } from './
 import { CAPABILITY_CARD_SCHEMA, CapabilityCardLedger } from './capability-cards.js'
 import {
   APPEND_COORDINATE_PREFIX,
-  appendCoordinate,
+  coordinateKind,
   isAppendCoordinate,
-  nextAppendCoordinate
+  nextAppendCoordinate,
+  type ConversationCoordinateKind
 } from '../session/append-coordinate.js'
 import {
   GETTING_TO_KNOW_COORDINATE_PREFIX,
@@ -4306,48 +4307,43 @@ export class LocalStore {
     })
   }
 
-  /**
-   * The append coordinate in force for a conversation, minting one when there is none
-   * (channel-session-mode.md §3.3).
-   *
-   * `INSERT OR IGNORE` then read back, the shape `mintOutwardId` already uses: every
-   * concurrent caller converges on whichever insert won, and nobody trusts the value it
-   * proposed. Without that, two messages arriving together into a conversation with no
-   * append session would both read nothing and both mint — two coordinates, two sessions,
-   * for one conversation.
-   */
+  /** The conversation coordinate in force, minted when there is none (channel-session-mode.md §3.3): insert-or-ignore then read back, so concurrent callers converge. */
   async resolveAppendCoordinate(
     agentId: string,
     channel: string,
     transportScope?: string | null,
-    now = Date.now()
+    now = Date.now(),
+    kind: ConversationCoordinateKind = 'append'
   ): Promise<string> {
     const scope = transportScope ?? ''
+    const minted = nextAppendCoordinate(undefined, now, kind)
     await this.db
       .prepare(
         `INSERT OR IGNORE INTO append_reservation (agentId, channel, transportScope, coordinate, updatedAt)
          VALUES (?, ?, ?, ?, ?)`
       )
-      .run(agentId, channel, scope, appendCoordinate(now), now)
+      .run(agentId, channel, scope, minted, now)
     const row = (await this.db
       .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
       .get(agentId, channel, scope)) as { coordinate: string } | undefined
     // The read cannot miss: the insert either created the row or lost to one that exists.
-    return row?.coordinate ?? appendCoordinate(now)
+    const current = row?.coordinate ?? minted
+    // A switch between `append` and `auto` retires the other kind's session: it takes no new messages (auto-session-mode.md §3.5).
+    if (coordinateKind(current) === kind) return current
+    return await this.advanceAppendCoordinate(agentId, channel, current, scope, now, kind)
   }
 
-  /** The coordinate in force, WITHOUT minting one. For readers that must not create a
-   *  conversation by asking about it — a command typed before anyone spoke, or the observer
-   *  recording traffic that routed to nobody. */
+  /** The coordinate in force WITHOUT minting one, for a reader that must not create a conversation by asking; with `kind`, the other kind's reads as none. */
   async currentAppendCoordinate(
     agentId: string,
     channel: string,
-    transportScope?: string | null
+    transportScope?: string | null,
+    kind?: ConversationCoordinateKind
   ): Promise<string | undefined> {
     const row = (await this.db
       .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
       .get(agentId, channel, transportScope ?? '')) as { coordinate: string } | undefined
-    return row?.coordinate
+    return row && (kind === undefined || coordinateKind(row.coordinate) === kind) ? row.coordinate : undefined
   }
 
   /** A place's one long session (assistant-mode.md §5.2): the append session in force, else the place's only
@@ -4370,24 +4366,17 @@ export class LocalStore {
     return rows.length === 1 ? rows[0] : undefined
   }
 
-  /**
-   * Rotate a conversation onto its next coordinate (`!new`), from the one the caller read.
-   *
-   * A caller that loses the compare-and-set does NOT advance again: it re-reads, finds a
-   * coordinate minted after its own, and concludes the rotation it wanted already happened.
-   * So two `!new` commands issued simultaneously rotate once while two issued in sequence
-   * rotate twice — which is what each pair of users meant. Retrying would rotate a second
-   * time and leave a coordinate nobody ever posts into.
-   */
+  /** Rotate a conversation onto its next coordinate (`!new`) by compare-and-set from the one the caller read; a loser reads the winner's rotation instead of rotating again. */
   async advanceAppendCoordinate(
     agentId: string,
     channel: string,
     from: string,
     transportScope?: string | null,
-    now = Date.now()
+    now = Date.now(),
+    kind: ConversationCoordinateKind = coordinateKind(from)
   ): Promise<string> {
     const scope = transportScope ?? ''
-    const minted = nextAppendCoordinate(from, now)
+    const minted = nextAppendCoordinate(from, now, kind)
     const res = await this.db
       .prepare(
         `UPDATE append_reservation SET coordinate = ?, updatedAt = ?
@@ -4395,9 +4384,11 @@ export class LocalStore {
       )
       .run(minted, now, agentId, channel, scope, from)
     if (Number(res.changes) > 0) return minted
-    // Lost the CAS, or there was no reservation to rotate. Either way the current value is
-    // the answer — a rotation someone else just performed, or a freshly minted coordinate.
-    return await this.resolveAppendCoordinate(agentId, channel, scope, now)
+    // Lost the CAS or nothing to rotate: the current value answers, read as-is so two opposite mode switches cannot rotate forever.
+    return (
+      (await this.currentAppendCoordinate(agentId, channel, scope)) ??
+      (await this.resolveAppendCoordinate(agentId, channel, scope, now, kind))
+    )
   }
 
   /**

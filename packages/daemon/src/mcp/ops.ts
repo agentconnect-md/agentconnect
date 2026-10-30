@@ -31,6 +31,7 @@ import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
 import { isGettingToKnowCoordinate, isCheckCoordinate, isResearchCoordinate } from '../session/subsession-coordinate.js'
+import { isCoordinatorCoordinate } from '../session/append-coordinate.js'
 import { gettingToKnowReadRefusal } from '../assistant/getting-to-know.js'
 import { ToolArgumentError } from './ops/args.js'
 import { describeToolArgumentFailure } from './ops/argument-error.js'
@@ -451,6 +452,15 @@ export async function executeTool(
   // assistant-mode.md §5.15: organization research reads and writes memory only; nothing it calls posts, whatever name the runtime sends.
   if (isResearchCoordinate(ctx.thread) && !ctx.tools.some((tool) => tool.name === name))
     throw new Error(`${name} is not available to organization research, which cannot post or act anywhere`)
+  // auto-session-mode.md §5.4: a coordinator runs only the tools it was offered, and its sendMessage decides on delivered messages.
+  if (isCoordinatorCoordinate(ctx.thread)) {
+    if (!ctx.tools.some((tool) => tool.name === name))
+      throw new Error(`${name} is not available to the coordinator, which only decides where each message goes`)
+    if (name === 'sendMessage') {
+      if (!deps.coordinatorDecision) throw new Error('sendMessage: the coordinator is not available on this daemon')
+      return await deps.coordinatorDecision(ctx, args)
+    }
+  }
   // assistant-mode.md §5.13: a getting-to-know task reads only its own place, whatever the arguments name.
   const elsewhere = isGettingToKnowCoordinate(ctx.thread) ? gettingToKnowReadRefusal(ctx, name, args) : undefined
   if (elsewhere) throw new Error(elsewhere)

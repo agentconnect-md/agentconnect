@@ -4,6 +4,7 @@ import { MEMORY_FORMAT_GUIDANCE } from '../../memory/frontmatter.js'
 import { MAX_INDEX_INJECT_BYTES } from '../../memory/store.js'
 import { NO_RESPONSE_RULE } from '../no-response.js'
 import { isDelegationCoordinate, keepsTaskSummaryAt } from '../subsession-coordinate.js'
+import { isCoordinatorCoordinate } from '../append-coordinate.js'
 import { TASK_SUMMARY_MAX_CHARS } from '../../store/assistant-subsessions.js'
 import type { ReceivedSessionMessage } from '../../store/session-messages.js'
 
@@ -421,17 +422,23 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const taskReportingAppend = isDelegationCoordinate(input.thread)
     ? buildTaskReportingAppend(input.originSessionId, keepsTaskSummaryAt(input.thread))
     : ''
+  // A coordinator's own instructions replace the reply and collaboration rules: it only decides where messages go (auto-session-mode.md §5.4).
+  const coordinator = isCoordinatorCoordinate(input.thread)
   const assemble = (meta: string) => {
-    const resume = [
-      meta,
-      workspaceRootsAppend,
-      platformAppend,
-      COLLAB_APPEND,
-      taskReportingAppend,
-      input.taskInstructions,
-      NO_RESPONSE_RULE,
-      memoryGuidance
-    ]
+    const resume = (
+      coordinator
+        ? [meta, platformAppend, input.taskInstructions, memoryGuidance]
+        : [
+            meta,
+            workspaceRootsAppend,
+            platformAppend,
+            COLLAB_APPEND,
+            taskReportingAppend,
+            input.taskInstructions,
+            NO_RESPONSE_RULE,
+            memoryGuidance
+          ]
+    )
       .filter(Boolean)
       .join('\n\n')
     return { resume, session: [resume, memoryAppend].filter(Boolean).join('\n\n') }

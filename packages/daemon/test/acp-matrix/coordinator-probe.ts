@@ -4,6 +4,11 @@ import type { AddressInfo } from 'node:net'
 import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import { z } from 'zod'
 import type { AcpHost } from '../../src/acp/acp-host.js'
+import {
+  coordinatorPrompt as shippedCoordinatorPrompt,
+  coordinatorTools as shippedCoordinatorTools,
+  renderCoordinatorBatch
+} from '../../src/auto-session/coordinator-prompt.js'
 import { NO_RESPONSE_SENTINEL } from '../../src/session/no-response.js'
 import type { ToolDescriptor } from '../../src/tool-schema/descriptor.js'
 import type { ProbeSupport, SendMessageVerdict } from './send-message-probe.js'
@@ -56,90 +61,35 @@ const CHECKOUT_TASK: ProbeTask = {
   summaryUpdatedAt: '2026-10-29T09:40:00Z'
 }
 
-const SEND_MESSAGE_DESCRIPTION =
-  'Act on a channel message delivered to you as the coordinator. Every call names the message it decides on by messageId. ' +
-  'action "delegateTask" opens a new task for the message: the task receives the original message verbatim and answers in its ' +
-  'thread; give a short title and, only when needed, background in message. action "messageTask" hands the message to one of ' +
-  'your open tasks by taskId; that task answers in the message thread. action "replyToMessage" posts your own short reply in ' +
-  'the message thread. A message you make no call for is ignored. Each message takes at most one of these calls.'
-
-const LIST_TASKS_DESCRIPTION =
-  "List your open tasks: id, title, whether a thread is attached, owner, last activity, whether it is running, and the task's " +
-  'own summary (scope, status, next step) with when it was last updated. Use it to tell whether a message belongs to existing ' +
-  'work and to answer status questions.'
-
-const str = (description: string) => ({ type: 'string', description })
-
-/** The coordinator's tool surface: a coordinator `sendMessage` and `listTasks`. */
+/** The coordinator's tool surface, as the daemon ships it. */
 export function coordinatorTools(): ToolDescriptor[] {
-  return [
-    {
-      name: 'sendMessage',
-      description: SEND_MESSAGE_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          action: { type: 'string', enum: ['delegateTask', 'messageTask', 'replyToMessage'] },
-          messageId: str('Id of the delivered channel message this call decides on.'),
-          taskId: str('messageTask only: the open task to hand the message to.'),
-          title: str('delegateTask only: a short name for the new task, at most eight words.'),
-          message: str(
-            'replyToMessage: the reply text. delegateTask/messageTask: optional background the task cannot see in the message itself.'
-          )
-        },
-        required: ['action', 'messageId'],
-        additionalProperties: false
-      }
-    },
-    {
-      name: 'listTasks',
-      description: LIST_TASKS_DESCRIPTION,
-      inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false }
-    }
-  ]
+  return shippedCoordinatorTools()
 }
 
-/** The coordinator session's standing instructions, as the daemon would give them. */
+/** The coordinator session's standing instructions, as the daemon ships them, for the scenarios' channel. */
 export function coordinatorPrompt(): string {
-  return [
-    '# You are the coordinator',
-    `You coordinate the agent "${CO_IDS.self}" in Slack channel #${CO_IDS.channelName} (${CO_IDS.channel}). Your Slack user ` +
-      `is <@${CO_IDS.selfBot}>. Channel messages are delivered to you, one or several per turn. You never do the work ` +
-      'yourself: you have no workspace, and you must not read files, run commands, search the web, or use any tool other ' +
-      'than sendMessage and listTasks. For every delivered message you choose exactly one outcome:',
-    '',
-    '1. Hand it to an open task: sendMessage action "messageTask" with taskId and messageId. Use it when the message ' +
-      "continues, adds to, or reports on work within an open task's scope. The task answers in the message's thread.",
-    '2. Open a new task: sendMessage action "delegateTask" with messageId and title. Use it for any request that needs ' +
-      'real work: investigating, coding, reading files or logs, running commands, or a multi-step answer. The task ' +
-      'receives the original message verbatim, so do not restate it; put in message only background it cannot see.',
-    '3. Reply yourself: sendMessage action "replyToMessage" with messageId and message, which posts a visible reply in ' +
-      "the message's thread. Use it only for what you can " +
-      "answer in one or two sentences without any work: greetings, thanks, or a status question answered from a task's summary.",
-    '4. Ignore it: make no call for it. Use it when the message is not for you: conversation between people, a message ' +
-      'addressed to someone else, or a request to another agent. Ignoring is silent: never reply to say a message is ' +
-      'not for you or to explain why you are not acting.',
-    '',
-    '# Rules',
-    '- Each call names its message by its id, copied exactly as a string, and each message gets at most one outcome.',
-    '- A message marked mentions-you="yes" is addressed to you and must not be ignored.',
-    '- Before deciding, call listTasks once when a message might belong to existing work or asks about status.',
-    "- Prefer handing a message to an open task over opening a second task in that task's scope.",
-    `- Other agents in this channel: ${CO_IDS.peer} (Slack user <@${CO_IDS.peerBot}>), which owns billing, credentials, ` +
-      'and infrastructure access. A message addressed to it is not for you.',
-    `- Your final text is never shown to anyone. After your calls, end the turn with exactly ${NO_RESPONSE_SENTINEL}.`
-  ].join('\n')
+  return shippedCoordinatorPrompt({
+    agentName: CO_IDS.self,
+    platform: 'Slack',
+    channelId: CO_IDS.channel,
+    channelName: CO_IDS.channelName,
+    selfAddress: `<@${CO_IDS.selfBot}>`,
+    peers: [
+      {
+        name: CO_IDS.peer,
+        address: `<@${CO_IDS.peerBot}>`,
+        description: 'owns billing, credentials, and infrastructure access'
+      }
+    ]
+  })
 }
 
-/** One coordinator turn's input: the delivered channel-root messages. */
+/** One coordinator turn's input: the delivered channel-root messages, rendered as the daemon renders them. */
 export function renderBatch(messages: ChannelMessage[]): string {
-  const blocks = messages.map(
-    (message) =>
-      `<message id="${message.id}" from="<@${message.from}>" mentions-you="${message.mentionsYou ? 'yes' : 'no'}">\n` +
-      `${message.text}\n</message>`
+  return renderCoordinatorBatch(
+    messages.map((message) => ({ ...message, from: `<@${message.from}>` })),
+    { channelId: CO_IDS.channel, channelName: CO_IDS.channelName }
   )
-  const count = messages.length === 1 ? 'One new channel-root message' : `${messages.length} new channel-root messages`
-  return `[${count} in #${CO_IDS.channelName} (${CO_IDS.channel})]\n${blocks.join('\n')}`
 }
 
 /** What one coordinator call decided, or why it is not a decision. */

@@ -10,6 +10,7 @@
  * without booting a daemon.
  */
 import { sessionThreadOf } from '../messages/normalized.js'
+import { isCoordinatorCoordinate } from '../session/append-coordinate.js'
 import { hasReachedAgentCallHopLimit, originKindOf } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
@@ -129,8 +130,13 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
   }
   const sourceHopCount = callMeta?.hopCount ?? 0
   const githubReplyBatch = hookContext?.githubReviewBatch
+  // A coordinator's calls act as they are made, so new messages wait for its next turn instead of regenerating this one (auto-session-mode.md §4.3).
   const chatContextRefresh =
-    input.features.turnFinalContextRefresh && !webchat && !githubReply && originKindOf(msg.platform) === 'chat'
+    input.features.turnFinalContextRefresh &&
+    !webchat &&
+    !githubReply &&
+    originKindOf(msg.platform) === 'chat' &&
+    !isCoordinatorCoordinate(sessionThreadOf(msg))
   const webchatRefresh = input.features.turnFinalContextRefresh && !!webchat && msg.platform === 'webchat'
   const stageAnswer =
     chatContextRefresh && (suppressReplyConn || turnSurfaces.exact(msg.platform)?.answerDelivery?.(turnCtx) !== 'live')
