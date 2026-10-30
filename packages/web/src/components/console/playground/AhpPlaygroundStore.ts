@@ -1,9 +1,17 @@
 import type { ActionType } from '@microsoft/agent-host-protocol'
-import { agentLabel, isGitWorkspace, type Agent, type Session, type SessionImage, type SessionStep } from '@/lib/data'
+import {
+  agentLabel,
+  isGitWorkspace,
+  type Agent,
+  type Session,
+  type SessionImage,
+  type SessionStep,
+  type SessionUsage
+} from '@/lib/data'
 import { addWebchatConversationAgent, removeWebchatConversationAgent, type SessionMessageDto } from '@/lib/api'
 import { randomUuid } from '@/lib/random-uuid'
 import { reconcilePersistedLiveSteps } from '@/lib/session-transcript'
-import { ahpAnswer, ahpSteps } from '@/lib/ahp/view'
+import { ahpAnswer, ahpSteps, ahpUsageFields } from '@/lib/ahp/view'
 import type { ComposerFile } from '@/lib/webchat-file'
 import type { PlaygroundData, QueuedTurn, WebchatRuntimeConfig } from './contract'
 import { AhpConversation } from './AhpConversation'
@@ -90,7 +98,12 @@ export class AhpPlaygroundStore {
     if (entry.session) {
       const primary = connection.peers.get(connection.agentId)?.snapshot
       const meta = primary?.session?._meta?.['agentconnect.md'] as
-        { sessionId?: string; steerable?: boolean } | undefined
+        | {
+            sessionId?: string
+            steerable?: boolean
+            status?: SessionUsage
+          }
+        | undefined
       const config = primary?.session?.config,
         values = config?.values ?? {}
       const choices = (key: string) =>
@@ -108,6 +121,7 @@ export class AhpPlaygroundStore {
         availablePermissionModes: choices('permissionMode'),
         fastModeAvailable: !!config?.schema.properties.fastMode,
         steerable: meta?.steerable,
+        ...ahpUsageFields(meta?.status, entry.session.usage),
         ...(typeof values.model === 'string' ? { model: values.model } : {}),
         ...(typeof values.runtime === 'string' ? { runtime: values.runtime, runtimePending: false } : {}),
         ...(typeof values.effort === 'string' ? { effort: values.effort } : {}),

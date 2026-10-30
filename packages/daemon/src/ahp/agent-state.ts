@@ -25,6 +25,9 @@ import { AhpChatProjection } from './chat-projection.js'
 import type { AhpCatalogNotification } from './connection.js'
 import { AhpAppsProjection, type AhpAppEntry } from './apps.js'
 
+const MAX_PLAN_ENTRIES = 50
+const MAX_PLAN_TEXT = 500
+
 export class AhpStateCapacityError extends Error {
   constructor() {
     super('AHP state exceeds the wire capacity')
@@ -265,7 +268,16 @@ export class AhpAgentState {
       if (output.status.steerable !== undefined) fields.steerable = output.status.steerable
       changed = true
     }
-    if (output.event) {
+    if (output.event?.kind === 'plan') {
+      // AHP has no task-list channel, so the turn's latest plan snapshot rides session metadata.
+      fields.plan = {
+        turnId: output.turnId,
+        entries: output.event.entries
+          .slice(0, MAX_PLAN_ENTRIES)
+          .map((entry) => ({ ...entry, content: entry.content.slice(0, MAX_PLAN_TEXT) }))
+      }
+      changed = true
+    } else if (output.event) {
       entry.apps ??= new AhpAppsProjection()
       const update = entry.apps.update(output.turnId, output.event)
       if (update) {

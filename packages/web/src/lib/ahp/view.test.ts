@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatState, SessionState } from '@microsoft/agent-host-protocol'
-import { ahpAnswer, ahpSteps } from './view'
+import { ahpAnswer, ahpSteps, ahpUsageFields } from './view'
 const chat = (parts: unknown[]): ChatState =>
   ({
     resource: 'ahp-chat:/test',
@@ -27,6 +27,23 @@ describe('standard AHP view', () => {
     expect(steps.map((step) => step.kind)).toEqual(['msg', 'done', 'plan', 'done', 'tool'])
     expect(steps.filter((step) => step.kind === 'done').map((step) => step.segmentId)).toEqual(['one', 'two'])
     expect(steps.at(-1)).toMatchObject({ toolCallId: 'tool', toolSessionId: 'outward' })
+  })
+  it('places the turn plan snapshot ahead of its work', () => {
+    const state = chat([{ kind: 'toolCall', toolCall: { toolCallId: 'tool', displayName: 'Read', status: 'running' } }])
+    const entries = [{ content: 'Read', status: 'in_progress' }]
+    const session = (turnId: string) =>
+      ({ _meta: { 'agentconnect.md': { plan: { turnId, entries } } } }) as unknown as SessionState
+    expect(ahpSteps(state, 'agent', session('turn')).map((step) => step.kind)).toEqual(['msg', 'planblock', 'tool'])
+    expect(ahpSteps(state, 'agent', session('turn'))[1]).toMatchObject({ turnId: 'turn', plan: entries })
+    expect(ahpSteps(state, 'agent', session('other')).map((step) => step.kind)).toEqual(['msg', 'tool'])
+  })
+  it('projects the status snapshot onto session usage, keeping fields it omits', () => {
+    expect(ahpUsageFields(undefined, { totalTokens: 1 })).toEqual({})
+    expect(ahpUsageFields({ costAmount: 0.5, costCurrency: 'USD' }, { totalTokens: 1200, contextUsed: 9 })).toEqual({
+      usage: { totalTokens: 1200, contextUsed: 9, costAmount: 0.5, costCurrency: 'USD' },
+      tokens: expect.any(String),
+      cost: expect.stringContaining('0.5')
+    })
   })
   it('answers approval choices and structured inputs through standard actions', () => {
     const state = chat([
