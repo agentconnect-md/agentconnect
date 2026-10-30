@@ -11,7 +11,8 @@ import { executeTool } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { isSubsessionCoordinate, checkCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
-import { buildStandingContext } from '../src/session/turn/standing-context.js'
+import { buildStandingContext, TASK_SUMMARY_REQUEST } from '../src/session/turn/standing-context.js'
+import { UPDATE_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -877,11 +878,15 @@ describe('a task’s own background tasks (auto-session-mode.md §6.3)', () => {
     expect(await rowOf(h.d, levelOne)).toMatchObject({ state: 'open' })
     expect(h.reports()).toHaveLength(0)
     // The level-one task lists and messages its own task, and nobody else's.
+    await h.d.store.upsertSession({ ...(await h.d.store.getSession(caller.key)), triggeredBy: 'U0ALICE' })
     const listed = await executeTool(inTask(caller, levelOneThread) as never, 'listTasks', {}, {
       ...h.d.mcp.deps,
       canRun: () => true
     } as never)
-    expect((listed as any).tasks).toEqual([expect.objectContaining({ taskId: levelTwo, label: 'Level two' })])
+    // A task's task works for the person behind the root session (auto-session-mode.md §6.2).
+    expect((listed as any).tasks).toEqual([
+      expect.objectContaining({ taskId: levelTwo, title: 'Level two', owner: 'U0ALICE', running: true })
+    ])
 
     releaseLevelTwo()
     await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
@@ -1222,5 +1227,113 @@ describe('a task’s standing context', () => {
     expect(standing.taskReportingAppend).toContain('You are a task your own session sid-parent-1 delegated')
     expect(standing.taskReportingAppend).toContain('the daemon tells that session automatically')
     expect(standing.taskReportingAppend).not.toContain('Send it exactly once')
+    // It keeps a summary of scope, status and next step with updateTask (auto-session-mode.md §6.7).
+    expect(standing.taskReportingAppend).toContain(TASK_SUMMARY_REQUEST)
+    expect(TASK_SUMMARY_REQUEST).toContain('at most 500 characters in three parts: its scope')
+  })
+
+  it('asks only a task that keeps a summary for one, never research or an ordinary session', () => {
+    const standing = (thread: string) =>
+      buildStandingContext({
+        agentName: 'bot-a',
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread,
+        sessionId: 'sid-child-1',
+        originSessionId: 'sid-parent-1',
+        envSecretNames: [],
+        fileSecrets: [],
+        memoryIndex: '',
+        usesMeta: true
+      }).sessionContext
+    expect(standing('subsession:1')).toContain(TASK_SUMMARY_REQUEST)
+    for (const thread of ['subsession:research-1', 'subsession:check-1', 'append:1'])
+      expect(standing(thread)).not.toContain('# Your task summary')
+  })
+})
+
+describe('a task’s own summary (auto-session-mode.md §5.3, §6.7)', () => {
+  /** Whatever the runtimes were handed, the session metadata included. */
+  const handed = (h: Awaited<ReturnType<typeof boot>>, text: string): number =>
+    h.rt.hosts
+      .flatMap((host) => [...host.newSession.mock.calls, ...host.prompt.mock.calls])
+      .filter((c: unknown) => JSON.stringify(c).includes(text)).length
+
+  it('reminds a task with no summary from its second turn, and lists what it writes to its owning session', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(h.d)
+    const deps = { ...h.d.mcp.deps, canRun: () => true }
+    const child = await startAndFinish(h, caller)
+    // The first turn is asked for a summary in its standing context, and counted, with no reminder yet.
+    expect(handed(h, '# Your task summary')).toBeGreaterThan(0)
+    expect(handed(h, 'This task has no summary yet')).toBe(0)
+    expect(await rowOf(h.d, child)).toMatchObject({ turnsSinceSummary: 1 })
+    let listed = (await executeTool(toolContext(caller), 'listTasks', {}, deps)) as any
+    expect(listed.tasks[0]).toMatchObject({ taskId: child, background: 'investigate the flaky test' })
+
+    await send(h.d, caller, { action: 'messageTask', taskId: child, message: 'also Windows' })
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
+    await h.settled()
+    expect(handed(h, 'This task has no summary yet')).toBe(1)
+    expect(await rowOf(h.d, child)).toMatchObject({ turnsSinceSummary: 2 })
+
+    // The task writes its summary and renames itself; the owning session lists both, and the session takes the title.
+    const { thread } = await h.d.store.getSession(child)
+    const summary = 'Scope: the flaky e2e test. Status: in progress, Linux fixed. Next: Windows.'
+    expect(
+      await executeTool(
+        { ...toolContext(caller), thread },
+        'updateTask',
+        { summary, title: '  Fix the flaky\ntest  ' },
+        deps
+      )
+    ).toMatchObject({ result: 'updated', title: 'Fix the flaky test' })
+    expect(await rowOf(h.d, child)).not.toHaveProperty('turnsSinceSummary')
+    expect((await h.d.store.getSession(child))?.title).toBe('Fix the flaky test')
+    listed = (await executeTool(toolContext(caller), 'listTasks', {}, deps)) as any
+    expect(listed.tasks[0]).toMatchObject({
+      taskId: child,
+      title: 'Fix the flaky test',
+      summary,
+      summaryUpdatedAt: expect.any(String)
+    })
+    expect(listed.tasks[0]).not.toHaveProperty('background')
+
+    // The owning session is no task, so it keeps no summary.
+    expect(await executeTool(toolContext(caller), 'updateTask', { summary: 'mine' }, deps)).toEqual({
+      result: 'refused',
+      reason: 'Only a task keeps a summary, and this session is not one. Nothing was saved.'
+    })
+    await h.daemon.stop()
+  })
+
+  it('refuses a summary over 500 characters, a title over 80, and a title alone', async () => {
+    const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
+    const caller = await seedCaller(h.d)
+    const deps = { ...h.d.mcp.deps, canRun: () => true }
+    const child = await startAndFinish(h, caller)
+    const { thread } = await h.d.store.getSession(child)
+    const inTask = { ...toolContext(caller), thread }
+    await expect(executeTool(inTask, 'updateTask', { summary: 'x'.repeat(501) }, deps)).rejects.toThrow(
+      /argument summary must be at most 500 characters/
+    )
+    await expect(executeTool(inTask, 'updateTask', { summary: 'ok', title: 'x'.repeat(81) }, deps)).rejects.toThrow(
+      /argument title must be at most 80 characters/
+    )
+    await expect(executeTool(inTask, 'updateTask', { title: 'Renamed' }, deps)).rejects.toThrow(
+      /missing required string argument: summary/
+    )
+    // 500 characters of any script are allowed.
+    expect(await executeTool(inTask, 'updateTask', { summary: '修'.repeat(500) }, deps)).toMatchObject({
+      result: 'updated'
+    })
+    expect(await rowOf(h.d, child)).toMatchObject({ title: 'investigate the flaky test' })
+    // A follow-up's check and an approved proposal keep no summary.
+    for (const other of [checkCoordinate('d-1'), taskCoordinate('d-1')])
+      expect(
+        await executeTool({ ...inTask, thread: other, tools: [UPDATE_TASK_TOOL] }, 'updateTask', { summary: 'x' }, deps)
+      ).toMatchObject({ result: 'refused' })
+    await h.daemon.stop()
   })
 })

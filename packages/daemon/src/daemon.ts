@@ -407,6 +407,7 @@ import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
 import { stopTaskToolsFor } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
+import type { AssistantSubsession } from './store/assistant-subsessions.js'
 import {
   askerKey,
   askerOf,
@@ -5073,6 +5074,20 @@ export class Daemon {
         sessionOf: async (key) => {
           const rec = await this.store.getSession(key)
           return rec ? { title: rec.title ?? null, updatedAt: rec.updatedAt } : undefined
+        },
+        ownerOf: (row) => this.taskOwnerName(row),
+        threadsOf: async (agentId, key) =>
+          (await this.store.assistantSubsessions.threadsOf(agentId, key)).map((t) => {
+            const integrationId = this.integrationIdForSessionTransport(agentId, t.platform, t.transportScope)
+            const link = sessionThreadUrlFor(t, integrationId ? this.connForIntegration(integrationId) : undefined)
+            return { channel: t.channel, thread: t.thread, ...(link ? { link } : {}) }
+          }),
+        // A new title names the task's session too, so the console shows what listTasks does.
+        setSummary: async (agentId, key, update) => {
+          const saved = await this.store.assistantSubsessions.setSummary(agentId, key, update)
+          const rec = saved && update.title !== undefined ? await this.store.getSession(key) : undefined
+          if (rec && update.title !== undefined) await this.persistSessionTitle(rec, update.title)
+          return saved
         },
         now: () => this.clock.now()
       },
@@ -11496,6 +11511,29 @@ export class Daemon {
     )
     // Bounded, so a slow Slack never eats the drain budget.
     await Promise.race([cleared, new Promise((resolve) => setTimeout(resolve, TASK_HOLD_CLEAR_MS).unref())])
+  }
+
+  /** Who a task works for (auto-session-mode.md §6.2): a follow-up's asker, else the opener of the first session above it that is no task. */
+  private async taskOwnerName(row: AssistantSubsession): Promise<string | undefined> {
+    let id: string | undefined
+    if (row.kind === 'follow-up') {
+      const asker = (await this.store.assistantItems.byTaskKey(row.agentId, row.childSessionKey))?.asker
+      // A platform asker is `<platform>:<scope>:<uid>`; a console asker's `user:<id>` names no one people know.
+      id = asker && !asker.startsWith('user:') ? asker.slice(asker.lastIndexOf(':') + 1) : undefined
+    } else {
+      let key = row.childSessionKey
+      let parent: string | undefined = row.parentSessionKey
+      // Nesting is two levels deep (§6.3), so this climbs at most twice.
+      for (let hops = 0; isSubsessionKey(key) && parent !== undefined && hops < 4; hops++) {
+        key = parent
+        parent = isSubsessionKey(key)
+          ? (await this.store.assistantSubsessions.get(row.agentId, key))?.parentSessionKey
+          : undefined
+      }
+      id = isSubsessionKey(key) ? undefined : ((await this.store.getSession(key))?.triggeredBy ?? undefined)
+    }
+    if (!id) return undefined
+    return (await this.store.getDisplayNames([id])).get(id) ?? id
   }
 
   /** A sub-session reads as the people whose turn opened it; a restart forgets them, so it then reads as nobody. */

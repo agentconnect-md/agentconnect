@@ -10,7 +10,7 @@ import { createAssistantActivity } from '../src/cp/assistant-activity.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq, type SessionContext } from '../src/mcp/ops.js'
 import { FOLLOW_UP_TOOL } from '../src/mcp/ops/assistant-items.js'
-import { LIST_TASKS_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
+import { LIST_TASKS_TOOL, stopTaskToolsFor, UPDATE_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -500,6 +500,10 @@ describe('who is offered stopTask', () => {
         // listTasks is offered exactly where stopTask is, right before it.
         expect(tools.find((t) => t.name === 'listTasks')).toEqual(stopTool ? LIST_TASKS_TOOL : undefined)
         if (stopTool) expect(tools[tools.indexOf(stopTool) - 1]!.name).toBe('listTasks')
+        // updateTask only inside a task, which keeps its own summary (auto-session-mode.md §5.3).
+        const thread = String(session.thread ?? 'append:1')
+        const summaryKept = thread.startsWith('subsession:') && !/^subsession:(check|task|research)-/.test(thread)
+        expect(tools.find((t) => t.name === 'updateTask')).toEqual(summaryKept ? UPDATE_TASK_TOOL : undefined)
         return stopTool
       }
       const offered = (agent: Record<string, unknown>, session: Record<string, unknown>): boolean =>
@@ -512,7 +516,7 @@ describe('who is offered stopTask', () => {
           'when it is no longer needed: the plan changed, a task it depended on failed, or its result is not wanted any ' +
           'more. Stopping a follow-up ends it: no further checks run. What it already did is not undone, and a process ' +
           'its runtime started in the background (a build, a dev server) may keep running; the result says so. When it ' +
-          'is not clear which task a person means, ask them, naming each by its label and never by its taskId, before ' +
+          'is not clear which task a person means, ask them, naming each by its title and never by its taskId, before ' +
           'stopping one.',
         inputSchema: {
           type: 'object',
@@ -534,6 +538,13 @@ describe('who is offered stopTask', () => {
       // A task may own tasks of its own (auto-session-mode.md §6.3); a follow-up's check or an approved proposal never.
       expect(offered(on, { thread: 'subsession:d-1' })).toBe(true)
       for (const thread of ['subsession:check-d-1', 'subsession:task-d-1']) expect(offered(on, { thread })).toBe(false)
+      // Research keeps no summary and owns no task.
+      expect(stopTaskToolsFor({ thread: 'subsession:research-1' })).toEqual([])
+      expect(stopTaskToolsFor({ thread: 'subsession:d-1' }).map((t) => t.name)).toEqual([
+        'listTasks',
+        'stopTask',
+        'updateTask'
+      ])
       // A hook run or a scheduled run may own tasks too.
       expect(offered(on, { platform: 'hook', channel: 'hook:h-1', thread: 'd-1', integrationId: undefined })).toBe(true)
       expect(offered(on, { channel: 'cron:c-1', thread: 'cron:c-1:t-1', integrationId: undefined })).toBe(true)
@@ -694,19 +705,38 @@ describe('listTasks (send-message-guide.md §8.7)', () => {
       const other = await conversation(h, OTHER_DM)
       await liveTurn(h, other, { sender: { id: 'U0BOB', isBot: false, name: 'Bob' } })
       const theirs = await delegate(h, other, 'sort the backlog')
+      await h.d.store.setDisplayName('U0ALICE', 'Alice', Date.now())
 
       const mine = await list(h, dm)
       expect(mine.tasks.map((t: { taskId?: string }) => t.taskId)).toEqual([second, first])
       for (const task of mine.tasks) {
-        expect(task).toMatchObject({ kind: 'delegated task', state: 'running', handedBackResult: false })
+        expect(task).toMatchObject({
+          kind: 'delegated task',
+          state: 'running',
+          running: true,
+          // A background task works for its parent's owner (auto-session-mode.md §6.2).
+          owner: 'Alice',
+          threaded: false,
+          handedBackResult: false
+        })
         expect(task.elapsed).toMatch(/min|under a minute/)
         expect(Date.parse(task.startedAt)).not.toBeNaN()
-        expect(task).not.toHaveProperty('endedAt')
+        expect(Date.parse(task.lastActivity)).not.toBeNaN()
+        expect(task).not.toHaveProperty('summary')
+        expect(task).not.toHaveProperty('threads')
       }
+      // Before its first summary, a task shows the message it was opened with (§6.7).
+      expect(mine.tasks.map((t: { background?: string }) => t.background)).toEqual([
+        'update the changelog',
+        'write the release notes'
+      ])
       expect(mine.note).toContain('A delegated task or a follow-up has a taskId')
-      expect(mine.note).toContain('never shown to people, who know it by its label')
+      expect(mine.note).toContain('never shown to people, who know it by its title')
       expect(JSON.stringify(mine)).not.toContain(theirs)
-      expect((await list(h, other)).tasks.map((t: { taskId?: string }) => t.taskId)).toEqual([theirs])
+      // An owner with no known name is listed by id.
+      expect((await list(h, other)).tasks.map((t: { taskId?: string; owner?: string }) => [t.taskId, t.owner])).toEqual(
+        [[theirs, 'U0BOB']]
+      )
 
       // A stopped task stays listed as ended, with no result handed back.
       expect(await stop(h, dm, first)).toMatchObject({ result: 'stopped' })
@@ -716,7 +746,11 @@ describe('listTasks (send-message-guide.md §8.7)', () => {
         [second, 'running'],
         [first, 'ended']
       ])
-      expect(after.tasks[1]).toMatchObject({ handedBackResult: false, endedAt: expect.any(String) })
+      expect(after.tasks[1]).toMatchObject({
+        running: false,
+        handedBackResult: false,
+        lastActivity: expect.any(String)
+      })
       expect(after.tasks[1]).not.toHaveProperty('elapsed')
     } finally {
       await h.close()
@@ -754,19 +788,24 @@ describe('listTasks kinds, states and results, from the index rows alone', () =>
   const parent = sessionKey('slack', DM, '100.1', AGENT)
   const child = (thread: string) => sessionKey('slack', DM, thread, AGENT)
   const NOW = Date.parse('2026-01-01T12:00:00Z')
-  const row = (thread: string, state: string, createdAt: number, kind?: 'follow-up') => ({
+  const row = (thread: string, state: string, createdAt: number, extra: Record<string, unknown> = {}) => ({
     agentId: AGENT,
     childSessionKey: child(thread),
     parentSessionKey: parent,
     parentSessionId: 'sid-owner',
     state,
     createdAt,
-    ...(kind ? { kind } : {})
+    ...extra
   })
   const rows = [
     row('subsession:d-run', 'open', NOW - 75 * 60_000),
-    row('subsession:d-done', 'done', NOW - 3 * 3_600_000),
-    row('subsession:d-failed', 'failed', NOW - 4 * 3_600_000),
+    row('subsession:d-done', 'done', NOW - 3 * 3_600_000, {
+      title: 'Ship the release notes',
+      summary: 'Release notes for 2.4. Done: drafted and posted. Next: nothing.',
+      summaryUpdatedAt: NOW - 2 * 3_600_000,
+      background: 'write the release notes for 2.4'
+    }),
+    row('subsession:d-failed', 'failed', NOW - 4 * 3_600_000, { background: 'bisect the flaky test' }),
     row('subsession:d-reporting', 'reporting', NOW - 5 * 3_600_000),
     row('subsession:task-t-1', 'failed', NOW - 7 * 3_600_000)
   ]
@@ -789,6 +828,18 @@ describe('listTasks kinds, states and results, from the index rows alone', () =>
                   updatedAt: NOW
                 }
               : { title: `Title of ${key.split(':')[3]}`, updatedAt: NOW - 60_000 },
+          ownerOf: async (r: { childSessionKey: string }) =>
+            r.childSessionKey === child('subsession:d-reporting') ? undefined : 'Alice',
+          threadsOf: async (_agentId: string, key: string) =>
+            key === child('subsession:d-done')
+              ? [
+                  {
+                    channel: 'C0ENG',
+                    thread: '1700000000.000200',
+                    link: 'https://example.test/C0ENG/p1700000000000200'
+                  }
+                ]
+              : [],
           now: () => NOW
         }
       }
@@ -804,29 +855,55 @@ describe('listTasks kinds, states and results, from the index rows alone', () =>
       {
         taskId: child('subsession:d-run'),
         kind: 'delegated task',
-        label: 'fix the flaky test',
+        title: 'fix the flaky test',
         state: 'running',
+        running: true,
+        owner: 'Alice',
         startedAt: new Date(NOW - 75 * 60_000).toISOString(),
         elapsed: '1 h 15 min',
+        lastActivity: new Date(NOW).toISOString(),
+        threaded: false,
         handedBackResult: false
       },
-      expect.objectContaining({
+      {
         taskId: child('subsession:d-done'),
+        kind: 'delegated task',
+        // The index row's title wins over its session's.
+        title: 'Ship the release notes',
         state: 'finished',
-        endedAt: ended,
+        running: false,
+        owner: 'Alice',
+        startedAt: new Date(NOW - 3 * 3_600_000).toISOString(),
+        lastActivity: ended,
+        // A summary replaces the opening message (auto-session-mode.md §6.7).
+        summary: 'Release notes for 2.4. Done: drafted and posted. Next: nothing.',
+        summaryUpdatedAt: new Date(NOW - 2 * 3_600_000).toISOString(),
+        threaded: true,
+        threads: [
+          { channel: 'C0ENG', thread: '1700000000.000200', link: 'https://example.test/C0ENG/p1700000000000200' }
+        ],
         handedBackResult: true
+      },
+      expect.objectContaining({
+        taskId: child('subsession:d-failed'),
+        state: 'ended',
+        running: false,
+        background: 'bisect the flaky test',
+        handedBackResult: false
       }),
-      expect.objectContaining({ taskId: child('subsession:d-failed'), state: 'ended', handedBackResult: false }),
-      expect.objectContaining({ taskId: child('subsession:d-reporting'), state: 'reporting', handedBackResult: false }),
+      expect.not.objectContaining({ owner: expect.anything() }),
       {
         kind: 'approved proposal',
-        label: 'Title of task-t-1',
+        title: 'Title of task-t-1',
         state: 'ended',
+        running: false,
+        owner: 'Alice',
         startedAt: expect.any(String),
-        endedAt: ended,
+        lastActivity: ended,
         handedBackResult: false
       }
     ])
+    expect(res.tasks[3]).toMatchObject({ taskId: child('subsession:d-reporting'), state: 'reporting', running: false })
     expect(res.more).toBe(2)
   })
 

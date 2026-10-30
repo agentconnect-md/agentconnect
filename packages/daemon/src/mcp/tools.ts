@@ -14,7 +14,7 @@ import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
 import { RECALL_TOOL } from './recall-tool.js'
 import { FOLLOW_UP_TOOL, PROPOSE_TOOL, RECORD_CHECK_TOOL } from './ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from './ops/assistant-reminders.js'
-import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from './ops/assistant-subsessions.js'
+import { LIST_TASKS_TOOL, STOP_TASK_TOOL, UPDATE_TASK_TOOL } from './ops/assistant-subsessions.js'
 import { CAPABILITY_REQUEST_TOOLS } from './ops/capability-requests.js'
 import { CODE_HOST_RESEARCH_TOOLS } from './ops/code-host-research.js'
 import { GETTING_TO_KNOW_TOOL } from './ops/getting-to-know.js'
@@ -1131,6 +1131,7 @@ export const ALL_TOOL_NAMES = [
       ...ASSISTANT_REMINDER_TOOLS,
       LIST_TASKS_TOOL,
       STOP_TASK_TOOL,
+      UPDATE_TASK_TOOL,
       ...CAPABILITY_REQUEST_TOOLS
     ]
       .map((t) => t.name)

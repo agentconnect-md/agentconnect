@@ -1138,7 +1138,7 @@ waiting for it. Only approved proposals carry no `taskId` and keep their existin
 console's Stop among them.
 
 Standing context reminds the owning session which delegated tasks it has running, by id and
-label, refreshed on the next turn after one starts or ends, and states that it may stop one when
+title, refreshed on the next turn after one starts or ends, and states that it may stop one when
 it is no longer needed. The tool's description tells the agent to ask which task a person means
 only when that is not clear.
 
@@ -1148,15 +1148,19 @@ only when that is not clear.
 place's follow-ups when it is the place's current long session, and the approved proposals that
 report to it. Each entry carries:
 
-| Field            | Meaning                                                                                           |
-| ---------------- | ------------------------------------------------------------------------------------------------- |
-| `taskId`         | Delegated tasks and follow-ups: the handle `messageTask`, `stopTask` and `viewSessionStatus` take |
-| Kind             | Delegated task, follow-up, or approved proposal                                                   |
-| Label            | The task's title (its session's title on rows from before titles), or the proposal's title        |
-| State            | Running, or how it ended                                                                          |
-| Started          | When it started                                                                                   |
-| Elapsed or ended | The running time so far, or when it ended                                                         |
-| Handed back      | Whether it has handed back a result for its latest round                                          |
+| Field                         | Meaning                                                                                                   |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `taskId`                      | Delegated tasks and follow-ups: the handle `messageTask`, `stopTask` and `viewSessionStatus` take         |
+| `kind`                        | Delegated task, follow-up, or approved proposal                                                           |
+| `title`                       | The task's title (its session's title on rows from before titles), or the follow-up's or proposal's       |
+| `state`, `running`            | Running, or how it ended; `running` while a turn or a check of it runs                                    |
+| `owner`                       | Who it works for, by name where known: a background task its root session's opener, a follow-up its asker |
+| `startedAt`, `elapsed`        | When it started, and the running time so far while it runs                                                |
+| `lastActivity`                | When its session last changed                                                                             |
+| `summary`, `summaryUpdatedAt` | The task's own summary (auto-session-mode.md §6.7) and when it wrote it; a follow-up's summary            |
+| `background`                  | Before a delegated task's first summary, the start of the message it was opened with                      |
+| `threaded`, `threads`         | Delegated tasks: whether a platform thread is attached, and each thread with its link                     |
+| `handedBackResult`            | Whether it has handed back a result for its latest round                                                  |
 
 It is read-only and changes nothing. Its scope is exactly the running-tasks reminder's and
 §8.2's ownership: a delegated task appears only to the session the ownership record names, and
@@ -1166,6 +1170,17 @@ including the one after `!new`, and another agent see none of them; a task sees 
 delegated itself ([auto-session-mode.md](auto-session-mode.md) §6.3). Like the other
 task tools it needs no IM integration. It does not list this turn's tasks, which the runtime
 reports to the console rather than to the agent (§2.1).
+
+#### A task's summary
+
+`updateTask {summary, title?}` is offered only inside a delegated task, never to research, a
+follow-up's check or an approved proposal, and acts on the calling task alone. `summary` is at
+most 500 characters; `title`, one line of at most 80, changes only together with it and renames
+the task's session too. The task's standing context asks for its scope, its status and its next
+step and open questions, written as soon as the scope is known and updated when either changes.
+The daemon counts the task's turns since its summary; from the second turn without one, and on
+every turn once it is 5 turns old, the turn carries a reminder to update it. The summary lives
+only in the daemon's task index ([auto-session-mode.md](auto-session-mode.md) §6.7).
 
 ### 8.8 Acceptance boundary
 
@@ -1240,9 +1255,10 @@ Storage keeps its internal names (`assistant_subsession*`, the `subsession:` coo
   never into its place's current long session, and a task whose own background task still runs
   or reports keeps its round open until that report's turn ends, read from the index so a
   restart keeps it.
-- **Titles and threads (store schema v71).** The index row carries the task's `title`, born from
-  `delegateTask`'s `title` (rows from before take their session's first-message title), its
-  `summary` with its update time and the turns since, and the platform threads attached to it.
+- **Titles and threads (store schema v71, v72).** The index row carries the task's `title`, born
+  from `delegateTask`'s `title` (rows from before take their session's first-message title), the
+  start of its opening message as `background` (v72), its `summary` with its update time and the
+  turns since, and the platform threads attached to it.
   A task with a thread is outside the concurrency cap, and only rounds before its first thread's
   round report to the owning session (auto-session-mode.md §6.2, §6.6).
 - **Round state.** The task's index row carries `round` (store schema v51). `open` is a

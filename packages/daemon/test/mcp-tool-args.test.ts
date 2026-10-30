@@ -5,7 +5,7 @@ import { CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, toolsForIntegrations } fro
 import { externalMemoryTools } from '../src/memory/tools.js'
 import { FOLLOW_UP_WATCH_TOOL, PROPOSE_WATCH_TOOL, RECORD_CHECK_WATCH_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
-import { LIST_TASKS_TOOL, STOP_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
+import { LIST_TASKS_TOOL, STOP_TASK_TOOL, UPDATE_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { GETTING_TO_KNOW_TOOL } from '../src/mcp/ops/getting-to-know.js'
 import { CODE_HOST_RESEARCH_TOOLS } from '../src/mcp/ops/code-host-research.js'
 import { CAPABILITY_REQUEST_TOOLS } from '../src/mcp/ops/capability-requests.js'
@@ -100,6 +100,7 @@ const advertised: ToolDescriptor[] = [
   ...ASSISTANT_REMINDER_TOOLS,
   LIST_TASKS_TOOL,
   STOP_TASK_TOOL,
+  UPDATE_TASK_TOOL,
   ...CAPABILITY_REQUEST_TOOLS
 ]
 
