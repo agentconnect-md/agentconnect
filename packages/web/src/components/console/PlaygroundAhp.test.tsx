@@ -8,7 +8,15 @@ const { received, fixture } = vi.hoisted(() => ({
   received: [] as Array<{ method: string; params: Record<string, unknown> }>,
   fixture: { parts: [] as unknown[], rejection: undefined as string | undefined }
 }))
-vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ agents: [], daemons: [], refreshSessions: vi.fn() }) }))
+vi.mock('@/lib/data-context', () => ({
+  useConsoleData: () => ({
+    agents: [],
+    daemons: [],
+    allSessions: [],
+    getAgent: () => undefined,
+    refreshSessions: vi.fn()
+  })
+}))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org' } }) }))
 vi.mock('@/lib/api', () => ({
   mintWebchatToken: vi.fn(async () => ({
@@ -143,7 +151,7 @@ it('routes the real React playground through the official AHP SDK and common mes
   )
   let id = ''
   await act(async () => {
-    id = ui.openPlayground({ id: 'a', name: 'Alpha' } as Agent)
+    id = ui.openPlayground({ id: 'a', name: 'Alpha', ahpWebchat: true } as Agent)
   })
   await vi.waitFor(() => expect(ui.getPgSession(id)?.realSessionId).toBe('canonical'))
   window.__AC_ENV = { WEBCHAT_PROTOCOL: 'legacy' }
@@ -183,7 +191,7 @@ it('keeps a rejected approval pending and displays the server refusal', async ()
     )
     let id = ''
     await act(async () => {
-      id = ui.openPlayground({ id: 'a', name: 'Alpha' } as Agent)
+      id = ui.openPlayground({ id: 'a', name: 'Alpha', ahpWebchat: true } as Agent)
     })
     await vi.waitFor(() => expect(host.textContent).toContain('Allow write?'))
     await act(async () => {
