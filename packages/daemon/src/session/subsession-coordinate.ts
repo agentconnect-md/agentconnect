@@ -1,5 +1,12 @@
 // The assistant-mode sub-session coordinate (assistant-mode.md §5.6): a reserved thread segment of its own, minted per delegation.
-import { SUBSESSION_COORDINATE_PREFIX, isSubsessionCoordinate } from '@agentconnect.md/protocol'
+import {
+  APPROVED_TASK_COORDINATE_PREFIX,
+  CHECK_COORDINATE_PREFIX,
+  RESEARCH_COORDINATE_PREFIX,
+  SUBSESSION_COORDINATE_PREFIX,
+  isDelegatedTaskCoordinate,
+  isSubsessionCoordinate
+} from '@agentconnect.md/protocol'
 
 export { SUBSESSION_COORDINATE_PREFIX, isSubsessionCoordinate }
 
@@ -12,8 +19,6 @@ export function subsessionCoordinate(deliveryId: string): string {
 }
 
 // A follow-up (assistant-mode.md §5.12) runs its checks in one sub-session of its own, read-only, under the `check-` segment.
-const CHECK_COORDINATE_PREFIX = `${SUBSESSION_COORDINATE_PREFIX}check-`
-
 /** The coordinate of the sub-session a follow-up keeps for its checks, minted when it is taken. */
 export function checkCoordinate(deliveryId: string): string {
   return `${CHECK_COORDINATE_PREFIX}${deliveryId}`
@@ -38,21 +43,17 @@ export function isGettingToKnowCoordinate(thread: string | null | undefined): bo
 }
 
 // An approved proposal (assistant-mode.md §5.10) runs in a sub-session of its own kind, never replayed after a cut (§5.7 step 1).
-const TASK_COORDINATE_PREFIX = `${SUBSESSION_COORDINATE_PREFIX}task-`
-
 /** The coordinate of the sub-session an approved proposal runs in. */
 export function taskCoordinate(deliveryId: string): string {
-  return `${TASK_COORDINATE_PREFIX}${deliveryId}`
+  return `${APPROVED_TASK_COORDINATE_PREFIX}${deliveryId}`
 }
 
 /** Whether a session's thread segment is an approved proposal's: run once, with the agent's own permissions. */
 export function isTaskCoordinate(thread: string | null | undefined): boolean {
-  return typeof thread === 'string' && thread.startsWith(TASK_COORDINATE_PREFIX)
+  return typeof thread === 'string' && thread.startsWith(APPROVED_TASK_COORDINATE_PREFIX)
 }
 
 // Organization research (assistant-mode.md §5.15) is a delegated task of its own segment: narrowed tools, the shared layer, its own host.
-const RESEARCH_COORDINATE_PREFIX = `${SUBSESSION_COORDINATE_PREFIX}research-`
-
 /** The coordinate of an agent's organization research task, minted at onboarding. */
 export function researchCoordinate(deliveryId: string): string {
   return `${RESEARCH_COORDINATE_PREFIX}${deliveryId}`
@@ -93,5 +94,5 @@ export function mayOpenTasksAt(thread: string | null | undefined): boolean {
 
 /** Whether a session on this coordinate is a task that keeps its own summary (auto-session-mode.md §6.7): a delegated task's, never research's. */
 export function keepsTaskSummaryAt(thread: string | null | undefined): boolean {
-  return isDelegationCoordinate(thread) && !isResearchCoordinate(thread)
+  return isDelegatedTaskCoordinate(thread)
 }

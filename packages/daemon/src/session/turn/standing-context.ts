@@ -75,6 +75,8 @@ export type StandingContextInput = {
   thread: string
   /** A task the coordinator opened on a platform thread (auto-session-mode.md §6.2). */
   threadedTask?: boolean
+  /** People may write to a delegated task from its console page (auto-session-mode.md §10). */
+  taskPageMessages?: boolean
   /** This session's OUTWARD id (session-concept.md §1.1), absent on the turn that opens it. */
   sessionId?: string | null
   /** The session that created this one (send-message-guide.md §9.6): a record only, never a reply address. */
@@ -368,7 +370,16 @@ export const TASK_SUMMARY_REQUEST =
   `changes. \`title\` renames the task, and changes only together with a summary.`
 
 // send-message-guide.md §8.3: a task messages its owning session any time, and the daemon reports each round's end.
-export function buildTaskReportingAppend(ownerSessionId: string | null | undefined, summary = false): string {
+// auto-session-mode.md §10: a person who may continue the owning session can write to the task from its console page.
+export const TASK_PAGE_MESSAGES =
+  `People who may continue that session can also write to you from your page in the console; their messages arrive ` +
+  `here with their name. Answer such a message in your response, which they read on that page.`
+
+export function buildTaskReportingAppend(
+  ownerSessionId: string | null | undefined,
+  summary = false,
+  pageMessages = false
+): string {
   if (!ownerSessionId) return ''
   return (
     `# Reporting back to the session that started this task\n` +
@@ -380,6 +391,7 @@ export function buildTaskReportingAppend(ownerSessionId: string | null | undefin
     `failure, what went wrong). When this round of work ends, the daemon tells that session automatically and ` +
     `forwards your final response, so end with one short line rather than repeating the result. If you asked a ` +
     `question, end your turn; the answer arrives as a new message.` +
+    (pageMessages ? ` ${TASK_PAGE_MESSAGES}` : '') +
     (summary ? `\n\n${TASK_SUMMARY_REQUEST}` : '')
   )
 }
@@ -429,7 +441,11 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
   const taskReportingAppend = isDelegationCoordinate(input.thread)
-    ? buildTaskReportingAppend(input.originSessionId, keepsTaskSummaryAt(input.thread))
+    ? buildTaskReportingAppend(
+        input.originSessionId,
+        keepsTaskSummaryAt(input.thread),
+        input.taskPageMessages === true && keepsTaskSummaryAt(input.thread)
+      )
     : input.threadedTask
       ? THREADED_TASK_APPEND
       : ''

@@ -3,8 +3,11 @@ import {
   API_AHP_V1_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
-  continuableOrigin,
+  continuableSession,
+  isDelegatedTaskCoordinate,
+  isSubsessionCoordinate,
   originKindOf,
+  TASK_PAGE_MESSAGES_FEATURE,
   type ChatCallerRole,
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
@@ -17,6 +20,7 @@ import {
   type SessionViewable
 } from '../authorization/policy.js'
 import { chatApprovalsAllowed, chatCallerRole } from '../domain/chat-actions.js'
+import { continuationAudience, continuationParentId } from '../domain/continuation-audience.js'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import type {
   AhpSessionBindingRecord,
@@ -130,11 +134,13 @@ export class AhpAuthorization {
     const viewer = { userId: claims.userId, role }
     for (const id of binding.currentSessionIds) {
       const session = await this.deps.sessions.getUnscoped(SessionId(id!))
+      const audience = session ? await this.continuationAudienceOf(session) : null
       if (
         !session ||
+        !audience ||
         session.orgId !== claims.orgId ||
         session.contentPurgedAt !== null ||
-        !canContinueSession(session as SessionViewable, viewer, identitySetOf(viewer))
+        !canContinueSession(audience as SessionViewable, viewer, identitySetOf(viewer))
       )
         return null
     }
@@ -186,6 +192,12 @@ export class AhpAuthorization {
     }
   }
 
+  /** A task is continued by whoever may continue its owning session (auto-session-mode.md §10). */
+  private async continuationAudienceOf<S extends Parameters<typeof continuationAudience>[0]>(session: S) {
+    const parentId = continuationParentId(session)
+    return continuationAudience(session, parentId ? await this.deps.sessions.getUnscoped(SessionId(parentId)) : null)
+  }
+
   private async sessionAllowed(
     claims: AhpGrantClaims,
     access: NonNullable<Awaited<ReturnType<AhpAuthorization['agentAccess']>>>,
@@ -196,12 +208,14 @@ export class AhpAuthorization {
   ): Promise<boolean> {
     if (session.orgId !== claims.orgId || session.agentId !== claims.agentId || session.contentPurgedAt !== null)
       return false
-    const audience = await this.deps.sessionAccess(claims, session as SessionViewable)
+    const subject = continued ? await this.continuationAudienceOf(session) : session
+    if (!subject) return false
+    const audience = await this.deps.sessionAccess(claims, subject as SessionViewable)
     const allowed = ownConversation ? canViewSession : canContinueSession
-    if (!allowed(session as SessionViewable, access.viewer, audience.identitySet, audience.externalAccess)) return false
+    if (!allowed(subject as SessionViewable, access.viewer, audience.identitySet, audience.externalAccess)) return false
     if (!(await this.deps.reachesContent(OrgId(claims.orgId), [SessionId(sessionId)]))) return false
     if (continued) {
-      if (session.platform === 'webchat') {
+      if (session.platform === 'webchat' && !isSubsessionCoordinate(session.thread)) {
         const source = await this.deps.conversations.target(session.channel ?? '')
         const roster = await this.deps.conversations.participants(OrgId(claims.orgId), session.channel ?? '')
         if (
@@ -212,10 +226,10 @@ export class AhpAuthorization {
           return false
       }
       const features = this.deps.daemons.get(access.daemonId)?.capabilities?.features ?? []
-      if (!continuableOrigin(session.platform ?? '') || !features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE))
-        return false
+      if (!continuableSession(session) || !features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE)) return false
       if (originKindOf(session.platform ?? '') === 'hook' && !features.includes(WEBCHAT_HOOK_CONTINUATION_FEATURE))
         return false
+      if (isDelegatedTaskCoordinate(session.thread) && !features.includes(TASK_PAGE_MESSAGES_FEATURE)) return false
     }
     return true
   }
@@ -226,7 +240,8 @@ export class AhpAuthorization {
     const session = await this.deps.sessions.getUnscoped(SessionId(sessionId))
     if (!access || !session) return false
     let ownConversation = false
-    const continued = session.platform !== 'webchat'
+    // A webchat conversation's task is no member of it, so it is continued by target too (auto-session-mode.md §10).
+    const continued = session.platform !== 'webchat' || isSubsessionCoordinate(session.thread)
     if (!continued) {
       const conversation = await this.deps.conversations.target(session.channel ?? '')
       if (!conversation || conversation.targetSessionId !== null) return false

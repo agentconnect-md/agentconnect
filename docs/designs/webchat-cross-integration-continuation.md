@@ -1,6 +1,7 @@
 # Webchat Continuation of Other Integrations' Sessions
 
-**Status:** Implemented (v1 chat origins, v2 hook origins — §9, v3 multi-agent hook conversations — §10)
+**Status:** Implemented (v1 chat origins, v2 hook origins — §9, v3 multi-agent hook conversations — §10;
+delegated tasks continue console-only, judged by their parent — [auto-session-mode.md](auto-session-mode.md) §10)
 **Owner:** console/web + control plane + relay + daemon
 **Related:** issue #180 (webchat could continue other integration's session),
 [webchat-multi-agents.md](webchat-multi-agents.md),

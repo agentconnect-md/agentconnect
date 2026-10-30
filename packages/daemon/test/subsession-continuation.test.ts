@@ -11,7 +11,7 @@ import { executeTool } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { isSubsessionCoordinate, checkCoordinate, taskCoordinate } from '../src/session/subsession-coordinate.js'
-import { buildStandingContext, TASK_SUMMARY_REQUEST } from '../src/session/turn/standing-context.js'
+import { buildStandingContext, TASK_PAGE_MESSAGES, TASK_SUMMARY_REQUEST } from '../src/session/turn/standing-context.js'
 import { UPDATE_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -1250,6 +1250,27 @@ describe('a task’s standing context', () => {
     expect(standing('subsession:1')).toContain(TASK_SUMMARY_REQUEST)
     for (const thread of ['subsession:research-1', 'subsession:check-1', 'append:1'])
       expect(standing(thread)).not.toContain('# Your task summary')
+  })
+
+  it('tells a delegated task that people may write to it from its page only while the daemon lets them (auto-session-mode.md §10)', () => {
+    const standing = (thread: string, taskPageMessages?: boolean) =>
+      buildStandingContext({
+        agentName: 'bot-a',
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread,
+        sessionId: 'sid-child-1',
+        originSessionId: 'sid-parent-1',
+        envSecretNames: [],
+        fileSecrets: [],
+        memoryIndex: '',
+        usesMeta: true,
+        ...(taskPageMessages ? { taskPageMessages } : {})
+      }).sessionContext
+    expect(standing('subsession:1', true)).toContain(TASK_PAGE_MESSAGES)
+    expect(standing('subsession:1')).not.toContain(TASK_PAGE_MESSAGES)
+    expect(standing('subsession:research-1', true)).not.toContain(TASK_PAGE_MESSAGES)
   })
 })
 

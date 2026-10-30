@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { API_AHP_V1_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE } from '@agentconnect.md/protocol'
+import {
+  API_AHP_V1_FEATURE,
+  TASK_PAGE_MESSAGES_FEATURE,
+  WEBCHAT_SESSION_CONTINUATION_FEATURE
+} from '@agentconnect.md/protocol'
 import { AhpAuthorization, type AhpAuthorizationDeps } from './ahpAuthorization.js'
 import { AhpCatalogCursor } from './ahpCatalogCursor.js'
 import { AhpSessionService } from './ahpSessions.js'
@@ -358,6 +362,39 @@ describe('AHP client authority', () => {
       expect(await service.list({ ...req, limit: 10 })).toEqual({ ok: true, sessions: [] })
     }
   )
+
+  // auto-session-mode.md §10: a webchat conversation's task is continued by its target, judged by its owning session.
+  it("continues a webchat conversation's task by its target once the daemon advertises task pages", async () => {
+    const f = fixture()
+    const parent = {
+      id: 'parent',
+      orgId: 'org',
+      agentId: AGENT,
+      platform: 'webchat',
+      channel: CONVERSATION,
+      thread: `webchat:${CONVERSATION}`,
+      daemonId: 'daemon',
+      contentSetId: null,
+      contentStoreId: null,
+      visibility: 'private',
+      ownerIdentity: 'user:user',
+      contentPurgedAt: null
+    }
+    const task = { ...parent, id: 'task', thread: 'subsession:42', parentSessionId: 'parent', visibility: 'org' }
+    f.deps.sessions.getUnscoped = async (id: string) => (id === 'parent' ? parent : id === 'task' ? task : null)
+    const features = [API_AHP_V1_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE]
+    f.deps.daemons.get = () => ({
+      state: 'READY',
+      capabilities: { platforms: [], runtimes: [], acp: true, features }
+    })
+    const claims = (await f.grants.verify((await grant(f)).token))!
+    expect(await f.auth.authorizeExisting(claims, 'task')).toBe(false)
+    features.push(TASK_PAGE_MESSAGES_FEATURE)
+    expect(await f.auth.authorizeExisting(claims, 'task')).toBe(true)
+    // The task reads org-visible, but its owning session is someone else's private one.
+    parent.ownerIdentity = 'user:other'
+    expect(await f.auth.authorizeExisting(claims, 'task')).toBe(false)
+  })
 
   it('derives owner authority only for the native empty conversation, never from the API key alone', async () => {
     const f = fixture()

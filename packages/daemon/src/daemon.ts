@@ -11,7 +11,7 @@ import { dispatchAhpAction, type AhpDispatchEnvironment } from './ahp/dispatch.j
 import { LocalAhpCheckpoints } from './ahp/checkpoint-store.js'
 import { readAhpHistory } from './ahp/history.js'
 import { ChatSessionApplication, chatSessionKey, type ChatApplicationHost } from './session/chat-application.js'
-import { ChatSessionContinuation } from './session/chat-continuation.js'
+import { ChatSessionContinuation, continuedByTarget } from './session/chat-continuation.js'
 import { observeChatTurn } from './session/chat-observer.js'
 import { memorySourceTurnId } from './memory/source-turn.js'
 import { codeHostExternalSource } from './codehost/session-audience.js'
@@ -117,6 +117,7 @@ import {
   CONVERSATION_PERMISSION_REQUESTS_FEATURE,
   ACTIVITY_EVERY_AGENT_V1_FEATURE,
   SESSION_MODE_AUTO_V1_FEATURE,
+  TASK_PAGE_MESSAGES_FEATURE,
   AUTO_MERGE_FEATURE,
   AUTO_MERGE_SESSION_FEATURE,
   SANDBOX_KEEP_ALIVE_FEATURE,
@@ -3271,7 +3272,7 @@ export class Daemon {
       sessionConfig: async (binding, auth) => {
         if (!application.canChangeRuntime(auth.agentId)) return
         const local = await this.store.getSessionByOutwardId(binding.sessionId, auth.agentId)
-        if (auth.targetSessionId || (local && local.platform !== 'webchat')) return
+        if (auth.targetSessionId || (local && continuedByTarget(local))) return
         const key = local?.key ?? chatSessionKey(binding.conversationId, auth.agentId)
         const [model, effort, permissionMode, fastMode] = await Promise.all([
           this.store.getModelOverride(key),
@@ -5425,6 +5426,7 @@ export class Daemon {
       // The session integration's own bot identity (auth.test-resolved on both
       // socket and send-only connections) for the `# Agent` Slack-identity line.
       slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
+      taskPagesTakeMessages: () => this.cfg.features.autoSessionMode,
       senderTimeZoneFor: (msg, integrationId) => this.profileTimeZone(integrationId, msg.sender.id),
       startedByTimeZone: (agentId, key) => this.startedByTimeZone(agentId, key),
       notePersonTimeZone: (key, zone) => this.notePersonTimeZone(key, zone),
@@ -8656,6 +8658,8 @@ export class Daemon {
       ACTIVITY_EVERY_AGENT_V1_FEATURE,
       // Reads the `auto` session mode; until the coordinator lands it routes as Per thread, so only an opted-in daemon says so.
       ...(this.cfg.features.autoSessionMode ? [SESSION_MODE_AUTO_V1_FEATURE] : []),
+      // Continues a delegated task from its console page (auto-session-mode.md §10); Auto's switch keeps the composer hidden until it ships.
+      ...(this.cfg.features.autoSessionMode ? [TASK_PAGE_MESSAGES_FEATURE] : []),
       // Keeps follow-ups in place of items: Activity carries them as tasks and answers no items; static.
       FOLLOW_UP_TASKS_V1_FEATURE,
       // Ends a follow-up by its id before its first check, and reads one task by its session; static.
@@ -24764,8 +24768,9 @@ export class Daemon {
     callMeta: CallMeta | undefined,
     hookContext: HookDispatchContext | undefined
   ): Promise<'unchanged' | 'mismatch' | 'unavailable'> {
-    // A console continuation onto a hook session is not a new audience claiming a runtime — it IS that session, and nothing re-derives a hook audience without the delivery's trusted metadata, so the row keeps its binding (§9).
-    if (msg.adoptedSession && originKindOf(msg.platform) === 'hook') return 'unchanged'
+    // A console continuation onto a hook session or a task is not a new audience claiming a runtime — it IS that session, whose audience its delivery cannot re-derive, so the row keeps its binding (§9; auto-session-mode.md §10).
+    if (msg.adoptedSession && (originKindOf(msg.platform) === 'hook' || isSubsessionCoordinate(sessionThreadOf(msg))))
+      return 'unchanged'
     const direct =
       codeHostExternalSource(hookContext) ??
       (await this.conversationExternalSource(agentId, msg, postlessCall(callMeta)))

@@ -33,8 +33,10 @@
 > under Auto its trigger menu offers only Off beside "Decided by the coordinator" (§3.3, §11). The
 > console labels the coordinator in the session list and on its page, and a threaded task's page
 > names the coordinator it belongs to now, read from the owning daemon by the task's session (§11).
-> The console's Usage page names, under each agent, what its coordinators spent (§4.6). The
-> visibility lock for threaded tasks and webchat (§10) are not implemented.
+> The console's Usage page names, under each agent, what its coordinators spent (§4.6). A delegated
+> task's page takes messages from whoever may continue its owning session, where the daemon
+> advertises `task-page-messages-v1`, which its Auto switch also turns on (§10). The visibility lock
+> for threaded tasks and the rest of webchat (§10) are not implemented.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -366,6 +368,16 @@ not addressed to this agent. Cost grows with the number of agents.
   with the agent, like a DM.
 - New session opens an **ordinary webchat session** without the coordinator, as today.
 - Every task's page accepts messages (today it is read-only), for whoever may continue the parent.
+  - A threaded task's page is its thread's session, which the console already continues. A background
+    task's coordinate is no platform thread, so its page continues it console-only: nothing is mirrored
+    to the platform, and the answer streams to the page.
+  - The Control Plane judges the composer, the token and every dial by the parent session's audience.
+    A task without a recorded parent of its own agent stays read-only, and so do a follow-up's checks,
+    an approved proposal and research.
+  - A person's message waits for the task's running turn and runs as a turn of its own, so it is never
+    steered into a round whose output goes to the parent. A round still open reports to the parent as
+    usual; a settled task's parent hears nothing, since the person read the answer on the page.
+  - The task's standing context says people may write to it from its page.
 - Webchat has no threads, so a threaded task appears as its own webchat conversation:
   - `delegateTask` with a `messageId` opens a task conversation; the coordinator posts a card with its
     title and link, and people continue there without the coordinator.

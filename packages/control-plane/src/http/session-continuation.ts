@@ -1,5 +1,7 @@
 import {
+  isDelegatedTaskCoordinate,
   originKindOf,
+  TASK_PAGE_MESSAGES_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE
 } from '@agentconnect.md/protocol'
@@ -16,7 +18,7 @@ export type ContinuationHost = { ok: true; daemonId: string } | { ok: false; rea
 /** The ONE answer to "which daemon continues this session" — the detail projection (`canContinue`) and the session-target mint both read it, so they cannot disagree. The daemon a turn reaches (`dispatchDaemon`) must be the recorder or a holder of the shared store the rows went to (`domain/session-content.ts`); keying on `session.daemonId` alone read as "agent moved" for every pooled agent once its recorder pod rolled. */
 export async function resolveContinuationHost(
   deps: Pick<HttpDeps, 'placementResolver' | 'daemonConns' | 'repos' | 'config'>,
-  session: { platform: string | null; daemonId: string | null } & SessionContentStore,
+  session: { platform: string | null; thread?: string | null; daemonId: string | null } & SessionContentStore,
   agent: ResolvableAgent
 ): Promise<ContinuationHost> {
   const daemonId = await deps.placementResolver.dispatchDaemon(agent)
@@ -36,6 +38,10 @@ export async function resolveContinuationHost(
     originKindOf(session.platform ?? '') === 'hook' &&
     !daemon.capabilities.features.includes(WEBCHAT_HOOK_CONTINUATION_FEATURE)
   ) {
+    return { ok: false, reason: 'unavailable' }
+  }
+  // A task's page runs console-only, which only a daemon advertising it serves (auto-session-mode.md §10).
+  if (isDelegatedTaskCoordinate(session.thread) && !daemon.capabilities.features.includes(TASK_PAGE_MESSAGES_FEATURE)) {
     return { ok: false, reason: 'unavailable' }
   }
   if (!deps.config.PUBLIC_RELAY_URL) return { ok: false, reason: 'unavailable' }

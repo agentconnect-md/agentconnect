@@ -3742,7 +3742,7 @@ export default function SessionDetailView() {
   const continuableSessionId =
     session &&
     session.platform !== 'playground' &&
-    session.platform !== 'webchat' &&
+    (session.platform !== 'webchat' || session.subsession === true) &&
     composerDetail?.canContinue === true
       ? session.id
       : null
@@ -3923,18 +3923,20 @@ export default function SessionDetailView() {
       />
     ) : null
   const isPg = session.platform === 'playground'
+  // A task (follow-up, approved proposal or delegated task) is never its conversation's own session.
+  const taskPage = session.subsession === true
   // A persisted webchat session is the same surface as the live playground — continue
   // it in place. `isLive` gates the composer/typing affordance for both.
-  const isWebchat = session.platform === 'webchat'
+  const isWebchat = session.platform === 'webchat' && !taskPage
   const sessionIntegration = sessionPlatform(session)
   // Header channel chip — resolves a headless `cron:<id>` channel to its schedule.
   const channelDisplay = sessionChannelDisplay(session, (id) => crons.find((c) => c.id === id)?.name)
   const usesIntegrationAvatar = session.platform === 'hook' && sessionIntegration === 'github'
-  // A task's channel is synthetic and its thread no platform thread, so its page is read-only; it is stopped from its owning session's Tasks tab.
-  const readOnlySubsession = session.subsession === true
+  // A task's thread is no platform thread, so only a delegated task the server lets this caller continue takes messages, console-only (auto-session-mode.md §10).
+  const readOnlySubsession = taskPage && composerDetail?.canContinue !== true
   // A follow-up's own page also shows its state and checks, read by its session from a daemon that can.
   const followUpPageAgentId =
-    readOnlySubsession &&
+    taskPage &&
     !MOCK_MODE &&
     owner &&
     agentCapabilitySource(owner, daemons, memberSets)?.caps.features?.includes(ASSISTANT_TASK_HANDLE_FEATURE)
@@ -3951,7 +3953,7 @@ export default function SessionDetailView() {
         i.channels.some((c) => c.channelId === currentSessionDetail?.channel && c.sessionMode === 'auto')
     )
   const threadedTaskAgentId =
-    !readOnlySubsession &&
+    !taskPage &&
     !MOCK_MODE &&
     !isPg &&
     !isWebchat &&
@@ -5083,7 +5085,7 @@ export default function SessionDetailView() {
   const ownerApprovals = Boolean(
     !canReviewApprovals &&
     (isWebchat || (isPg && session.realSessionId)) &&
-    !readOnlySubsession &&
+    !taskPage &&
     ownsThisConversation === true &&
     owner &&
     !owner.name.startsWith(MOCK_PREFIX)
@@ -5091,7 +5093,7 @@ export default function SessionDetailView() {
   // A webchat conversation's proposals, the live Playground's included (assistant-mode.md §5.10): whoever may continue it and editors decide them here; the CP refuses anyone else.
   const conversationProposals = Boolean(
     (isWebchat || (isPg && session.realSessionId)) &&
-    !readOnlySubsession &&
+    !taskPage &&
     owner?.assistantMode?.enabled === true &&
     !owner.name.startsWith(MOCK_PREFIX)
   )
@@ -5155,7 +5157,7 @@ export default function SessionDetailView() {
         <div className="mx-auto w-full min-w-0 max-w-[880px] flex-none">
           <div>
             {/* A task's own page names the session it belongs to and leads back there; its tool calls stay in its transcript. */}
-            {readOnlySubsession && currentSessionDetail ? (
+            {taskPage && currentSessionDetail ? (
               <div
                 data-task-owner=""
                 className="flex min-w-0 items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) max-desktop:border-b max-desktop:border-(--border-subtle) max-desktop:bg-(--surface-card) max-desktop:px-4 max-desktop:py-2 desktop:mb-[6px]"

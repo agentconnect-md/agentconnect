@@ -20,6 +20,7 @@ import {
   FOLLOW_UP_WATCH_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+  TASK_PAGE_MESSAGES_FEATURE,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
@@ -1546,6 +1547,82 @@ describe('webchat session-continuation mint + verify', () => {
 
     relayWs.close()
     daemonWs.close()
+  })
+
+  // auto-session-mode.md §10: a delegated task's page takes messages, console-only, from whoever may continue its owning session.
+  describe("a delegated task's page", () => {
+    const PARENT_ID = 'acp-continuation-parent-1'
+    const TASK_ID = 'acp-continuation-task-1'
+    const CHECK_ID = 'acp-continuation-check-1'
+    const detail = async (app: App, id: string) =>
+      (await app.http.inject({ method: 'GET', url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/${id}` })).json()
+
+    async function seedTask(parent: { visibility?: 'org' | 'private'; ownerIdentity?: string } = {}): Promise<void> {
+      await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+      await seedSessionMeta(prisma, PARENT_ID, AGENT, { daemonId: DAEMON, channel: 'C123', thread: '100.1', ...parent })
+      for (const [id, thread] of [
+        [TASK_ID, 'subsession:4242'],
+        [CHECK_ID, 'subsession:check-7']
+      ] as const)
+        await seedSessionMeta(prisma, id, AGENT, {
+          daemonId: DAEMON,
+          channel: 'C123',
+          thread,
+          parentSessionId: PARENT_ID
+        })
+    }
+
+    it('stays read-only until the daemon advertises task pages', async () => {
+      const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+      const { ws: relayWs } = await openRelay(base, 'pod-task-1', 'wss://pod-task-1.example.test', CONTINUATION)
+      const daemonWs = await connectDaemonReady(base, CONTINUATION)
+      await seedTask()
+
+      expect((await mintSessionToken(app, TASK_ID)).statusCode).toBe(409)
+      expect(await detail(app, TASK_ID)).toMatchObject({
+        canContinue: false,
+        continuationUnavailableReason: 'unavailable'
+      })
+
+      relayWs.close()
+      daemonWs.close()
+    })
+
+    it("mints and verifies a task by its owning session's audience, and keeps a follow-up's check closed", async () => {
+      const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+      const { ws: relayWs } = await openRelay(base, 'pod-task-2', 'wss://pod-task-2.example.test', CONTINUATION)
+      const daemonWs = await connectDaemonReady(base, [...CONTINUATION, TASK_PAGE_MESSAGES_FEATURE])
+      await seedTask({ visibility: 'private', ownerIdentity: 'user:someone-else' })
+
+      // The task's own row reads org-visible, but its owning session is someone else's private one.
+      expect((await mintSessionToken(app, TASK_ID)).statusCode).toBe(403)
+      expect(await detail(app, TASK_ID)).toMatchObject({
+        canContinue: false,
+        continuationUnavailableReason: 'unauthorized'
+      })
+
+      await prisma.sessionMeta.update({ where: { id: PARENT_ID }, data: { visibility: 'org', ownerIdentity: null } })
+      expect(await detail(app, TASK_ID)).toMatchObject({ canContinue: true, continuationUnavailableReason: null })
+      const minted = await mintSessionToken(app, TASK_ID)
+      expect(minted.statusCode).toBe(200)
+      sendFrame(relayWs, 'rc/verify', {
+        kind: 'webchat-token',
+        credential: (minted.json() as { token: string }).token,
+        conversationBinding: 'v1'
+      })
+      const verdict = (await nextFrame(relayWs, 'rc/verify/ok')).payload as RcVerifyResult
+      expect(verdict).toMatchObject({ ok: true, targetSessionId: TASK_ID })
+
+      // A follow-up's check never takes messages, whoever asks.
+      expect((await mintSessionToken(app, CHECK_ID)).statusCode).toBe(409)
+      expect(await detail(app, CHECK_ID)).toMatchObject({
+        canContinue: false,
+        continuationUnavailableReason: 'unsupported_platform'
+      })
+
+      relayWs.close()
+      daemonWs.close()
+    })
   })
 
   it('caps the peers a mint carries so the verdict never exceeds its participant limit', async () => {
