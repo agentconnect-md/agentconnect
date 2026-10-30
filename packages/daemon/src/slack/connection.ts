@@ -202,7 +202,7 @@ const SEARCH_TOKEN_TTL_MS = 30 * 60 * 1000
  * rather than given a key that would be refused.
  */
 /** Core names the intent; Slack's alphabet is emoji shortcodes. */
-const SLACK_REACTION_NAMES: Record<PlatformReactionIntent, string> = { seen: 'eyes' }
+const SLACK_REACTION_NAMES: Record<PlatformReactionIntent, string> = { seen: 'eyes', triaging: 'thinking_face' }
 
 export interface ConsolidatedGroup {
   appToken: string
@@ -729,6 +729,7 @@ export type AppLike = {
     }
     reactions: {
       add: (a: unknown) => Promise<unknown>
+      remove: (a: unknown) => Promise<unknown>
       // reactions.get needs `reactions:read`, a capability scope — an installation that
       // predates it fails here with missing_scope rather than being marked broken.
       get: (a: unknown) => Promise<{ message?: { reactions?: { name?: string; count?: number; users?: string[] }[] } }>
@@ -2247,6 +2248,21 @@ export class SlackConnection implements PlatformConnection {
         } catch (err) {
           this.rememberMissingScopes(err)
           this.deps.log?.debug(`slack: reactions.add failed (ch=${channel} ts=${messageId}): ${(err as Error).message}`)
+        }
+      })
+      .catch(() => {})
+  }
+
+  /** Take back this app's reaction for `intent` (`reactions.remove`), queued behind the `react` that placed it. */
+  async unreact(channel: string, messageId: string, intent: PlatformReactionIntent): Promise<void> {
+    await this.queue
+      .enqueue(async () => {
+        try {
+          await this.app.client.reactions.remove({ channel, timestamp: messageId, name: SLACK_REACTION_NAMES[intent] })
+        } catch (err) {
+          this.deps.log?.debug(
+            `slack: reactions.remove failed (ch=${channel} ts=${messageId}): ${(err as Error).message}`
+          )
         }
       })
       .catch(() => {})

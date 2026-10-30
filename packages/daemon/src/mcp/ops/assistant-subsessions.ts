@@ -34,6 +34,8 @@ export interface AssistantSubsessionDeps {
     stopSession(key: string, actor: { userId: string; name?: string; isBot?: boolean }): Promise<boolean>
     /** The rows whose reports go to one owning session, as the running-tasks reminder scopes them. */
     listForOwner?: AssistantSubsessionIndex['listForOwner']
+    /** For a coordinator, the one owning its conversation's tasks now, a successor after a root `!new` (auto-session-mode.md §8). */
+    coordinatorOf?(ctx: SessionContext): Promise<{ key: string; sessionId?: string } | undefined>
     /** A task's own session: its title and when it last changed; undefined before it exists. */
     sessionOf?(key: string): Promise<{ title?: string | null; updatedAt: number } | undefined>
     /** Who a task works for (auto-session-mode.md §6.2), by name where one is known. */
@@ -314,11 +316,11 @@ export const listTasks: ToolHandler<AssistantSubsessionDeps> = async (ctx, args,
   const here = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
   // The place's current long session takes its follow-ups over first, so they are listed here and nowhere else.
   const owns = (await port.followUps?.own(ctx)) ?? false
-  const owner = await port.sessionIdOf(here)
+  const coordinator = await port.coordinatorOf?.(ctx)
+  const owner = coordinator ? coordinator.sessionId : await port.sessionIdOf(here)
   if (owner === undefined) return NO_TASKS
-  const { rows, total } = await port.listForOwner(ctx.agentId, { sessionId: owner, key: here }, LIST_TASKS_LIMIT, {
-    followUps: owns
-  })
+  const parent = { sessionId: owner, key: coordinator?.key ?? here }
+  const { rows, total } = await port.listForOwner(ctx.agentId, parent, LIST_TASKS_LIMIT, { followUps: owns })
   if (total === 0) return NO_TASKS
   const now = port.now?.() ?? Date.now()
   const listed = await Promise.all(

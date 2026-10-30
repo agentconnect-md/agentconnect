@@ -59,16 +59,8 @@ export interface ChatRefusal {
   thread?: string
 }
 
-/**
- * What a reaction placed on an INBOUND message means.
- *
- * Core names the intent; the platform picks the glyph, because a reaction
- * vocabulary is platform vocabulary — Slack takes a shortcode (`eyes`), Telegram
- * a literal emoji from a fixed allowed set, Lark an `emoji_type` key (`GLANCE`).
- * Naming the glyph in core would put a platform's alphabet where core can read
- * it; naming the intent keeps the mapping inside the module that owns it.
- */
-export type PlatformReactionIntent = 'seen'
+/** What a reaction on an INBOUND message means (`seen` 👀, `triaging` 🤔); core names the intent and each platform picks its glyph. */
+export type PlatformReactionIntent = 'seen' | 'triaging'
 
 /** One conversation as the platform describes it. Members beyond `id` are
  *  optional because no platform reports all of them (`isMpim`/`user` are Slack's;
@@ -386,6 +378,8 @@ export interface PlatformConnection {
    *  normalized `channel`: only the native pair addresses a Discord message inside a
    *  thread, whose normalized channel is the parent. */
   react?(container: string, messageId: string, intent: PlatformReactionIntent): Promise<void>
+  /** Take back this bot's reaction for `intent` on an inbound message, as `triaging` ends with its turn (auto-session-mode.md §4.4); best-effort, never throws. */
+  unreact?(container: string, messageId: string, intent: PlatformReactionIntent): Promise<void>
   /** Place an ARBITRARY reaction, for the agent-callable tool rather than turn chrome.
    *
    *  Distinct from {@link react} on purpose: that one takes an INTENT because core names it

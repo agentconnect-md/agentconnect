@@ -28,7 +28,7 @@ import {
   type RoutingRule
 } from '../router/routing-rule.js'
 import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
-import { appendCoordinateTs, isAppendCoordinate } from '../session/append-coordinate.js'
+import { appendCoordinateTs, isAppendCoordinate, isCoordinatorCoordinate } from '../session/append-coordinate.js'
 import { transcriptCoords } from '../session/session-manager.js'
 import {
   CommandChromeRegistry,
@@ -90,7 +90,7 @@ export interface CommandHost {
     key: string,
     reason: TurnInterruptReason,
     acpSessionId?: string,
-    opts?: { actor?: InteractionActor }
+    opts?: { actor?: InteractionActor; preserveQueued?: boolean }
   ): Promise<void>
   /** `!queue` admission through the unified per-sessionKey gate — it decides run-now vs enqueue; `admission` makes the write required and reports it. */
   dispatchQueueCommand(
@@ -118,10 +118,10 @@ export interface CommandHost {
     msg: NormalizedMessage,
     opts?: { mint?: boolean }
   ): Promise<string | undefined>
-  /** Whether this conversation appends for this target — the MODE, read from the
-   *  integration and touching no store, so a command can tell "no coordinate yet" from
-   *  "not an append conversation". */
+  /** Whether this conversation's root is one session for this target (append, or `auto`'s coordinator), read from the mode alone. */
   conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean
+  /** A coordinator's `!new` hands its threaded tasks to the session that succeeds it (auto-session-mode.md §8). */
+  adoptCoordinatorTasks(agentId: string, fromKey: string, toKey: string): Promise<void>
   mergedRulesForSource(srcIntegrationIds?: readonly string[]): RoutingRule[]
   transportScopeForIntegrationIds(integrationIds?: readonly string[]): string | undefined
   integrationBelongsToSource(integrationId: string, srcIntegrationIds?: readonly string[]): boolean
@@ -162,6 +162,11 @@ export interface QueueAdmission {
   }) => void | Promise<void>
   /** The dispatch promise, so a dispatch that ends before admission still settles the caller. */
   onDispatched?: (turn: Promise<unknown>) => void
+}
+
+/** A coordinator's queue holds other people's messages, not follow-ups of the stopped turn, so they are still decided (auto-session-mode.md §4.3). */
+function keepsCoordinatorQueue(thread: string): { preserveQueued?: true } {
+  return isCoordinatorCoordinate(thread) ? { preserveQueued: true } : {}
 }
 
 /** The human behind a chat command, in the shape a click reports: with the cross-app id a synced platform matches by. */
@@ -777,16 +782,24 @@ export class CommandHandlers {
   private async runNew(ctx: CommandContext): Promise<CommandEffect> {
     const { target, msg, key, thread, typedKey, rec, inflight, reply } = ctx
     if (isAppendCoordinate(thread)) {
-      // Rotating does not touch a running turn: it finishes on the old coordinate and posts
-      // to its own thread, while later messages resolve to the new one. Refusing here would
-      // be friction with nothing behind it (§7.3).
-      // A caller that loses the CAS does not advance again — it reports the rotation someone
-      // else just performed, which is the same answer from this user's point of view (§3.3).
-      await this.host.store().advanceAppendCoordinate(target.agentId, msg.channel, thread, msg.transportScope)
+      // A running turn finishes on the old coordinate (§7.3); a lost CAS reports the rotation that won (§3.3).
+      const next = await this.host
+        .store()
+        .advanceAppendCoordinate(target.agentId, msg.channel, thread, msg.transportScope)
+      const coordinator = isCoordinatorCoordinate(thread)
+      if (coordinator && isCoordinatorCoordinate(next) && next !== thread)
+        await this.host.adoptCoordinatorTasks(
+          target.agentId,
+          key,
+          sessionKey(msg.platform, msg.channel, next, target.agentId, msg.transportScope)
+        )
       this.logSessionAction('new', key, senderActor(msg))
-      // Deliberately not "the next message": coordinates are resolved at ingress, so a turn
-      // already running and anything queued behind it finish on the retired coordinate.
-      reply('🆕 Started a new session. New messages from here on begin it.')
+      // Not "the next message": a running turn and anything queued behind it finish on the retired coordinate.
+      reply(
+        coordinator
+          ? '🆕 Started a new session for new messages here. Tasks keep working in their threads.'
+          : '🆕 Started a new session. New messages from here on begin it.'
+      )
       return 'applied'
     }
     // BEFORE the in-flight check: a retargeted command would otherwise be told to `!cancel`
@@ -845,18 +858,16 @@ export class CommandHandlers {
     const { target, key, thread, rec, acpSessionId, inflight, reply } = ctx
     // decisions.md §8.3: a stop never waits on Jev, so pending verdicts go first.
     const canceled = (await this.host.cancelDecisionVerdicts?.(target.agentId, ctx.msg, 'stop')) ?? 0
-    // A conversation that appends has ONE session, so the mute latch would silence the
-    // whole room until someone @mentions — a blast radius nobody typing `!stop` in a thread
-    // is asking for. There it interrupts the turn and nothing else (channel-session-mode.md
-    // §6.3); silencing the agent in such a conversation is the console's Off trigger.
+    // Where the conversation appends, a mute would silence its one session for the whole room, so `!stop` only interrupts (§6.3).
     const mutes = !isAppendCoordinate(thread)
-    // Mute the session's thread whether or not a turn is in flight: `!stop` is an
-    // explicit stand-down — implicit routing (thread affinity / keyword / auto)
-    // stays off until the user @mentions the agent again (onInbound clears it).
+    const coordinator = isCoordinatorCoordinate(thread)
+    // A thread stays muted, running turn or not, until someone @mentions the agent there (onInbound clears it).
     if (mutes && (rec || inflight)) await this.setSessionMuted(key, true)
     const muteNote = mutes
       ? 'Muted in this thread — @mention me to resume.'
-      : 'This conversation keeps one session, so nothing is muted.'
+      : coordinator
+        ? 'Tasks keep working; `!stop` in a task’s thread stops that task.'
+        : 'This conversation keeps one session, so nothing is muted.'
     if (!inflight) {
       if (canceled > 0) reply(`🛑 Stopped.${rec ? ` ${muteNote}` : ''}`)
       else reply(rec ? `${mutes ? '🔇 ' : ''}Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
@@ -864,7 +875,8 @@ export class CommandHandlers {
       return canceled > 0 || (mutes && rec !== undefined) ? 'applied' : 'consumed'
     }
     await this.host.interruptTurn(target.agentId, key, mutes ? 'stop' : 'cancel', acpSessionId ?? undefined, {
-      actor: senderActor(ctx.msg)
+      actor: senderActor(ctx.msg),
+      ...keepsCoordinatorQueue(thread)
     })
     reply(`🛑 Stopped. ${muteNote}`)
     return 'applied'
@@ -872,16 +884,16 @@ export class CommandHandlers {
 
   /** `!cancel` — interrupt the in-flight turn without muting the session. */
   private async runCancel(ctx: CommandContext): Promise<CommandEffect> {
-    const { target, key, acpSessionId, inflight, reply } = ctx
+    const { target, key, thread, acpSessionId, inflight, reply } = ctx
     const canceled = (await this.host.cancelDecisionVerdicts?.(target.agentId, ctx.msg, 'cancel')) ?? 0
-    // `!cancel` interrupts the in-flight turn but does NOT mute — the session stays
-    // live so a follow-up message dispatches normally. No-op (with a note) when idle.
+    // No mute, so a follow-up message dispatches normally; idle, it only says so.
     if (!inflight) {
       reply(canceled > 0 ? '🛑 Cancelled.' : 'Nothing is running to cancel.')
       return canceled > 0 ? 'applied' : 'consumed'
     }
     await this.host.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined, {
-      actor: senderActor(ctx.msg)
+      actor: senderActor(ctx.msg),
+      ...keepsCoordinatorQueue(thread)
     })
     reply('🛑 Cancelled.')
     return 'applied'

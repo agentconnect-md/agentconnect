@@ -19,8 +19,9 @@
 > each message in the thread the message came from (§6.4), counts as running while a turn of it runs,
 > keeps a summary with `updateTask`, and closes after 7 idle days or with its purged session (§6.5). A
 > background task cannot take a channel message yet (§6.6): the coordinator opens no background task
-> before P3. Feedback (§4.4), the visibility lock for threaded tasks, and webchat (§10) are not
-> implemented.
+> before P3. Each message a coordinator turn decides shows 🤔 until the turn ends (§4.4), and `!new`
+> and `!stop` act on a task in its threads and on the coordinator at the root (§8). The visibility
+> lock for threaded tasks and webchat (§10) are not implemented.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -151,10 +152,14 @@ A message that mentions the agent and has no outcome when the turn ends (a one-m
 
 ### 4.4 Feedback
 
-- A new reaction intent, `triaging` (`PlatformReactionIntent` has only `seen` today), shown as 🤔,
-  which is in Telegram's allowed set.
+- A reaction intent, `triaging` (`PlatformReactionIntent`, beside `seen`), shown as 🤔, which is in
+  Telegram's allowed set. Every platform that implements `react` maps it and takes it back with
+  `unreact`.
 - Placed on each message the coordinator is deciding when its turn starts, and removed when the turn
-  ends, whatever the outcome.
+  ends, whatever the outcome. A message still waiting in the queue shows nothing until the turn that
+  decides it starts.
+- A Telegram bot shows one reaction per message, so 🤔 comes off only while it is still the one shown;
+  the 👀 of a task that answers the message replaces it and stays.
 - A threaded task's turns show 👀 as usual. Google Chat cannot react, so it shows nothing here.
 
 ### 4.5 Failure
@@ -292,6 +297,18 @@ place new messages.
 | A task's thread | Restarts the task's session in place (Per thread's `!new`)           | Stops the task's current turn |
 | Root            | Resets the coordinator (Single session's new coordinate); tasks stay | Stops the coordinator's turn  |
 
+- **In a task's thread**, any of its threads: the commands act on the task's session, as Per thread's
+  do, so `!stop` also mutes the task until someone mentions the agent there.
+- **`!new` at the root** hands the coordinator's threaded tasks to the new coordinator, which lists
+  them and hands messages to them; their threads keep reaching them. A turn still running on the old
+  coordinator, and the messages queued behind it, act for the new one: they list the same tasks, and a
+  task they open belongs to the new coordinator.
+- **`!stop` and `!cancel` at the root** mute nothing and keep the messages queued behind the stopped
+  turn: they are other people's messages, and the next turn decides them (§4.3). The stopped turn acts
+  on none of its messages (§4.5).
+- An unowned thread routes to the coordinator (§7), so a command there acts on the coordinator too.
+  At a root with no coordinator yet, a command finds nothing rather than an older thread session.
+
 ## 9. Several agents
 
 Each agent has its own coordinator, and each decides independently. The prompt lists the other
@@ -342,6 +359,10 @@ Results on 2026-10-29 (scenario passes per runtime, repetitions included):
 | `github-copilot-cli`    | 9 / 10, 1 degraded      | Tried an empty `replyToMessage` before ignoring a message for another agent                                                                                                                                                                         |
 | `qoder-cli`, `qoder`    | 9 / 10 and 8 / 10       | Replied to a message for another agent; `qoder` also answered "morning all"                                                                                                                                                                         |
 | Not measured            | —                       | `dsh-acp`, `omp`: provider balance; `grok-build`, `kimi`: not signed in; `antigravity-acp`: adapter missing; `qwen-code`: every turn fails with an internal error; `devin`: its MCP calls never reached the fixture; `cline`, `pi-acp`: no HTTP MCP |
+
+On 2026-10-30 the shipped prompt and tools (`packages/daemon/src/auto-session/coordinator-prompt.ts`)
+passed 30 / 30 again on `claude-acp` and `codex-acp` (3 repetitions each); the other runtimes were not
+rerun.
 
 The candidate prompt asks the coordinator to express every outcome as a call and to end its turn
 with `AC_NO_RESPONSE`; the judge still accepts a one-message turn's text as its reply (§4.3).

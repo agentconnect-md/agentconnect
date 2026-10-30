@@ -508,6 +508,22 @@ describe('the task model: title, summary and attached threads (auto-session-mode
     expect(await index.resumeThreaded(a, childKey(a, 'missing'))).toBe(false)
   })
 
+  it('hands one parent’s threaded tasks to another and leaves its background ones (auto-session-mode.md §8)', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    for (const id of ['threaded', 'background']) await index.open(row(a, id))
+    await index.attachThread(thread(a, 'threaded', '100.1'))
+    const successor = { sessionId: 'sid-parent-2', key: sessionKey('slack', 'C0GENERAL', 'append:2', a, 'T0EXAMPLE') }
+    expect(await index.adoptThreaded(a, row(a, 'threaded').parentSessionKey, successor)).toBe(1)
+    expect(await index.get(a, childKey(a, 'threaded'))).toMatchObject({
+      parentSessionId: successor.sessionId,
+      parentSessionKey: successor.key
+    })
+    expect(await index.get(a, childKey(a, 'background'))).toMatchObject({ parentSessionId: 'sid-parent-1' })
+    expect(await index.adoptThreaded(agent(), successor.key, successor)).toBe(0)
+  })
+
   it('closes the settled threaded tasks idle past a time, whose threads become unowned (auto-session-mode.md §6.5)', async () => {
     const s = await open()
     const a = agent()

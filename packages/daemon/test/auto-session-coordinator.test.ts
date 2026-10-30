@@ -107,6 +107,17 @@ describe('a coordinator turn', () => {
     expect(turns.end('k', isNoResponsePrefix)).toBeUndefined()
   })
 
+  it('takes back its messages’ feedback once, when it ends or a later turn replaces it', () => {
+    const turns = new CoordinatorTurns()
+    const cleared: string[] = []
+    turns.begin('k', [delivered('1.1')], () => cleared.push('first'))
+    turns.begin('k', [delivered('1.2')], () => cleared.push('second'))
+    expect(cleared).toEqual(['first'])
+    turns.end('k', isNoResponsePrefix)
+    turns.end('k', isNoResponsePrefix)
+    expect(cleared).toEqual(['first', 'second'])
+  })
+
   it('counts a one-message turn’s text after its last call as the reply, and AC_NO_RESPONSE as none', () => {
     const turns = new CoordinatorTurns()
     turns.begin('k', [delivered('1.1')])
@@ -140,12 +151,17 @@ describe('the coordinator’s outcomes', () => {
     })
     const dispatched: { msg: NormalizedMessage; integrationId?: string }[] = []
     const posted: { msg: NormalizedMessage; text: string }[] = []
+    const triaging: string[] = []
     const sessions = new CoordinatorSessions({
       store: () => store,
       now: () => 1_000,
       dispatch: (_agentId, msg, integrationId) => dispatched.push({ msg, ...(integrationId ? { integrationId } : {}) }),
       post: async (_agentId, _integrationId, msg, text) => {
         posted.push({ msg, text })
+      },
+      showTriaging: (_agentId, message) => {
+        triaging.push(`+${message.id}`)
+        return () => triaging.push(`-${message.id}`)
       },
       warn: () => {}
     })
@@ -158,7 +174,7 @@ describe('the coordinator’s outcomes', () => {
       isDm: false,
       tools: coordinatorSessionTools([])
     }
-    return { store, sessions, ctx, dispatched, posted }
+    return { store, sessions, ctx, dispatched, posted, triaging }
   }
 
   const begin = (sessions: CoordinatorSessions, ...msgs: NormalizedMessage[]) =>
@@ -302,6 +318,45 @@ describe('the coordinator’s outcomes', () => {
     expect(dispatched[2]!.msg).toMatchObject({ thread: '2.1', sessionThread: '1.1' })
   })
 
+  it('marks every message of a turn as being decided until the turn ends, however it ends (§4.4)', async () => {
+    const { sessions, ctx, triaging } = await setup()
+    const delivered = (ts: string) =>
+      deliveredMessage({ ...slack(ts), sessionThread: COORDINATOR, headless: true }, 'int-bot-a')
+    sessions.beginTurn(coordinatorKey, 'bot-a', [delivered('1.1'), delivered('1.2')])
+    expect(triaging).toEqual(['+msg-1.1', '+msg-1.2'])
+    await sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-1.1', message: 'Morning!' })
+    expect(triaging).toHaveLength(2)
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
+    expect(triaging.slice(2)).toEqual(['-msg-1.1', '-msg-1.2'])
+    sessions.beginTurn(coordinatorKey, 'bot-a', [delivered('2.1')])
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'stopped')
+    expect(triaging.slice(4)).toEqual(['+msg-2.1', '-msg-2.1'])
+  })
+
+  it('hands its threaded tasks to the coordinator a root !new starts (§8)', async () => {
+    const { store, sessions, ctx } = await setup()
+    begin(sessions, slack('1.1'))
+    const { taskId } = (await sessions.decide(ctx, {
+      action: 'delegateTask',
+      messageId: 'msg-1.1',
+      title: 'Work'
+    })) as { taskId: string }
+    const successor = sessionKey('slack', 'C1', coordinatorCoordinate(2), 'bot-a')
+    await sessions.handOver('bot-a', coordinatorKey, successor)
+    expect(await store.assistantSubsessions.get('bot-a', taskId)).toMatchObject({
+      parentSessionKey: successor,
+      parentSessionId: await store.ensureOutwardSessionId(successor, 'bot-a')
+    })
+    // The successor places the next message of that thread's conversation into the task.
+    const next = coordinatorCoordinate(2)
+    sessions.turns.begin(successor, [
+      deliveredMessage({ ...slack('2.1'), sessionThread: next, headless: true }, 'int-bot-a')
+    ])
+    await expect(
+      sessions.decide({ ...ctx, thread: next }, { action: 'messageTask', messageId: 'msg-2.1', taskId })
+    ).resolves.toMatchObject({ ok: true, taskId })
+  })
+
   it('keeps a task’s original message intact under the coordinator’s background', () => {
     const msg = slack('1.1', { text: 'original', sessionThread: COORDINATOR, headless: true })
     expect(messageForTask(msg, {})).not.toHaveProperty('sessionThread')
@@ -354,10 +409,10 @@ function scaffold(features: Record<string, unknown> = { autoSessionMode: true })
           id: 'int-bot-a',
           platform: 'slack',
           core: {
-            bindRules: [{ match: { kind: 'auto' }, channel: 'C1' }],
+            bindRules: [{ match: { kind: 'mention' } }, { match: { kind: 'auto' }, channel: 'C1' }],
             sessionModes: [{ channel: 'C1', mode: 'auto' }]
           },
-          config: { botToken: 'xoxb', appToken: 'xapp' }
+          config: { botToken: 'xoxb', appToken: 'xapp', botUserId: 'U_FAKE_BOT' }
         }
       ],
       output: { mode: 'low' }
@@ -366,17 +421,37 @@ function scaffold(features: Record<string, unknown> = { autoSessionMode: true })
   return root
 }
 
-async function boot(prompt: (sessionId: string, blocks: { type: string; text?: string }[]) => Promise<unknown>) {
+async function boot(
+  prompt: (
+    sessionId: string,
+    blocks: { type: string; text?: string }[],
+    say: (text: string) => void
+  ) => Promise<unknown>,
+  cancel: (sessionId: string) => void = () => {}
+) {
+  let sessions = 0
+  let onUpdate: (sessionId: string, update: unknown) => void = () => {}
   const host = {
     __started: true,
     start: vi.fn(async () => {}),
-    newSession: vi.fn(async () => 'acp-1'),
-    prompt: vi.fn(prompt),
-    cancel: vi.fn(),
+    newSession: vi.fn(async () => `acp-${++sessions}`),
+    prompt: vi.fn(async (sessionId: string, blocks: { type: string; text?: string }[]) =>
+      prompt(sessionId, blocks, (text) =>
+        onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+      )
+    ),
+    cancel: vi.fn(async (sessionId: string) => cancel(sessionId)),
     stop: vi.fn()
   }
   const root = scaffold()
-  const daemon = new Daemon({ root, hostFactory: () => host as never, slackAppFactory: fakeSlackAppFactory() })
+  const daemon = new Daemon({
+    root,
+    hostFactory: (_agent, update) => {
+      onUpdate = update
+      return host as never
+    },
+    slackAppFactory: fakeSlackAppFactory()
+  })
   await daemon.start()
   const d = daemon as any
   // The harness has no real platform audience to bind a session to.
@@ -489,6 +564,386 @@ describe('auto conversations route to the coordinator', () => {
     expect(prompts.some((text) => text.includes('[U1] fix the build'))).toBe(true)
     expect(prompts.some((text) => text.includes('<message id="msg-2.1"'))).toBe(true)
     expect(host.prompt).toHaveBeenCalledTimes(3)
+    await daemon.stop()
+  })
+})
+
+describe('a coordinator driven through every outcome (auto-session-mode.md §4.2, §4.5)', () => {
+  it('opens a task, hands it a thread, replies by call and by text, ignores, and falls back for a mention', async () => {
+    // The coordinator's tool context, set once the daemon is up.
+    const live: { d?: any; ctx?: SessionContext } = {}
+    let taskId = ''
+    const tasks: string[] = []
+    const decided: string[][] = []
+    // What the coordinator does with each message, as a runtime would through its tools and final text.
+    const script: Record<string, { call?: () => Record<string, unknown>; text?: string }> = {
+      'msg-1.1': { call: () => ({ action: 'delegateTask', messageId: 'msg-1.1', title: 'Flaky test' }) },
+      'msg-2.1': { call: () => ({ action: 'messageTask', messageId: 'msg-2.1', taskId }) },
+      'msg-3.1': { text: 'Good morning!' },
+      'msg-4.1': { text: 'AC_NO_RESPONSE' },
+      'msg-5.1': { text: 'AC_NO_RESPONSE' },
+      'msg-6.1': { call: () => ({ action: 'replyToMessage', messageId: 'msg-6.1', message: 'Glad it helped.' }) }
+    }
+    const booted = await boot(async (_id, blocks, say) => {
+      const prompt = blocks.map((block) => block.text ?? '').join('\n')
+      const ids = [...prompt.matchAll(/<message id="(msg-[^"]+)"/g)].map((match) => match[1]!)
+      if (ids.length > 0) decided.push(ids)
+      if (ids.length === 0) {
+        tasks.push(prompt)
+        say(`task answer ${tasks.length}`)
+        return 'end_turn'
+      }
+      for (const id of ids) {
+        const step = script[id]
+        if (step?.call) {
+          const receipt = (await live.d.coordinators.decide(live.ctx, step.call())) as { taskId?: string }
+          if (receipt.taskId) taskId = receipt.taskId
+        }
+        if (step?.text) say(step.text)
+      }
+      return 'end_turn'
+    })
+    const d = booted.d
+    live.d = d
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    live.ctx = {
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinator,
+      transportScope: scope,
+      isDm: false,
+      tools: coordinatorSessionTools([])
+    } as SessionContext
+    const taskPosts: { thread?: string; text: string }[] = []
+    vi.spyOn(d, 'replyConnFor').mockReturnValue({
+      setStatus: vi.fn(async () => true),
+      setTitle: vi.fn(async () => {}),
+      getThreadReplies: vi.fn(async () => []),
+      postMessage: vi.fn(async (_channel: string, text: string, thread?: string) => {
+        taskPosts.push({ thread, text })
+        return `1700000100.00000${taskPosts.length}`
+      }),
+      postBlocks: vi.fn(async () => '1700000200.000001'),
+      updateMessage: vi.fn(async () => true),
+      updateBlocks: vi.fn(async () => true),
+      deleteMessage: vi.fn(async () => true),
+      postContext: vi.fn(async () => {})
+    })
+    const coordinatorPosts: { thread?: string; text: string }[] = []
+    vi.spyOn(d, 'gatewayForIntegration').mockReturnValue({
+      postMessage: vi.fn(async (_channel: string, text: string, thread?: string) => {
+        coordinatorPosts.push({ thread, text })
+      })
+    })
+    const idle = async () => await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+    // Each message is decided in a turn of its own, the one-message form of §4.3.
+    const send = async (ts: string, over: Partial<NormalizedMessage> = {}) => {
+      await booted.route(slack(ts, over))
+      await vi.waitFor(() => expect(decided.at(-1)).toEqual([`msg-${ts}`]), WAIT)
+      await idle()
+    }
+    const mention = { mentionedBots: ['U_FAKE_BOT'] }
+    await send('1.1', { ...mention, text: '<@U_FAKE_BOT> fix the flaky test' })
+    await vi.waitFor(() => expect(taskPosts).toHaveLength(1), WAIT)
+    await send('2.1', { text: 'is the flaky test fixed yet?' })
+    await vi.waitFor(() => expect(taskPosts).toHaveLength(2), WAIT)
+    await send('3.1', { text: 'morning all' })
+    await vi.waitFor(() => expect(coordinatorPosts).toHaveLength(1), WAIT)
+    await send('4.1', { text: 'lunch?' })
+    await send('5.1', { ...mention, text: '<@U_FAKE_BOT> thoughts?' })
+    await vi.waitFor(() => expect(taskPosts).toHaveLength(3), WAIT)
+    await send('6.1', { text: 'thanks, that helped' })
+    await vi.waitFor(() => expect(coordinatorPosts).toHaveLength(2), WAIT)
+    await idle()
+
+    const firstTask = sessionKey('slack', 'C1', '1.1', 'bot-a', scope)
+    expect(taskId).toBe(firstTask)
+    // The tasks answer in the threads their messages came from (§6.4), each from the original message.
+    expect(taskPosts.map((post) => post.thread)).toEqual(['1.1', '2.1', '5.1'])
+    expect(tasks[0]).toContain('fix the flaky test')
+    expect(tasks[1]).toContain('is the flaky test fixed yet?')
+    expect(tasks[2]).toContain('thoughts?')
+    expect(coordinatorPosts).toEqual([
+      { thread: '3.1', text: 'Good morning!' },
+      { thread: '6.1', text: 'Glad it helped.' }
+    ])
+    const index = d.store.assistantSubsessions
+    expect((await index.threadsOf('bot-a', firstTask)).map((one: { thread: string }) => one.thread)).toEqual([
+      '1.1',
+      '2.1'
+    ])
+    const at = { platform: 'slack', channel: 'C1', transportScope: scope }
+    expect(await index.taskOfThread('bot-a', { ...at, thread: '4.1' })).toBeUndefined()
+    expect(await index.taskOfThread('bot-a', { ...at, thread: '5.1' })).toBe(
+      sessionKey('slack', 'C1', '5.1', 'bot-a', scope)
+    )
+    const coordinatorKey = sessionKey('slack', 'C1', coordinator, 'bot-a', scope)
+    expect(await index.get('bot-a', sessionKey('slack', 'C1', '5.1', 'bot-a', scope))).toMatchObject({
+      parentSessionKey: coordinatorKey,
+      title: '<@U_FAKE_BOT> thoughts?'
+    })
+    await booted.daemon.stop()
+  })
+})
+
+describe('feedback and commands under auto (auto-session-mode.md §4.4, §8)', () => {
+  const text = (blocks: { text?: string }[]) => blocks.map((block) => block.text ?? '').join('\n')
+
+  /** A turn that blocks until released, for the prompts `blocks` picks out. */
+  function gate() {
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    return { held, release: () => release() }
+  }
+
+  /** Every reaction the conversation's connection places or takes back, and the command replies it posts. */
+  function watch(d: any) {
+    const conn = d.connForIntegration('int-bot-a')
+    const reactions: string[] = []
+    conn.react = vi.fn(async (_channel: string, id: string, intent: string) => void reactions.push(`+${intent} ${id}`))
+    conn.unreact = vi.fn(
+      async (_channel: string, id: string, intent: string) => void reactions.push(`-${intent} ${id}`)
+    )
+    const replies: string[] = []
+    conn.postMessage = vi.fn(async (_channel: string, body: string) => void replies.push(body))
+    return { reactions, replies }
+  }
+
+  /** A threaded task on `thread`, owned by the conversation's coordinator. */
+  async function threadedTask(d: any, thread: string): Promise<{ taskKey: string; coordinatorKey: string }> {
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    const coordinatorKey = sessionKey('slack', 'C1', coordinator, 'bot-a', scope)
+    const taskKey = sessionKey('slack', 'C1', thread, 'bot-a', scope)
+    await d.store.assistantSubsessions.open({
+      agentId: 'bot-a',
+      childSessionKey: taskKey,
+      parentSessionId: await d.store.ensureOutwardSessionId(coordinatorKey, 'bot-a', 1),
+      parentSessionKey: coordinatorKey,
+      title: 'Task'
+    })
+    await d.store.assistantSubsessions.attachThread({
+      agentId: 'bot-a',
+      childSessionKey: taskKey,
+      platform: 'slack',
+      channel: 'C1',
+      transportScope: scope,
+      thread,
+      sinceRound: 1,
+      now: 1
+    })
+    return { taskKey, coordinatorKey }
+  }
+
+  it('shows 🤔 on each message a coordinator turn decides, from its start to its end', async () => {
+    const first = gate()
+    const prompts: string[] = []
+    const { daemon, d, route } = await boot(async (_id, blocks) => {
+      prompts.push(text(blocks))
+      if (prompts.length === 1) await first.held
+      return 'end_turn'
+    })
+    const { reactions } = watch(d)
+    await route(slack('1.1', { text: 'first' }))
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+    expect(reactions).toEqual(['+triaging 1.1'])
+    await route(slack('1.2', { text: 'second' }))
+    await route(slack('1.3', { text: 'third' }))
+    // Waiting in the queue is not being decided yet.
+    expect(reactions).toEqual(['+triaging 1.1'])
+    first.release()
+    await vi.waitFor(() => expect(prompts).toHaveLength(2), WAIT)
+    await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+    await vi.waitFor(() => expect(reactions).toHaveLength(6), WAIT)
+    expect(reactions.slice(0, 2)).toEqual(['+triaging 1.1', '-triaging 1.1'])
+    expect(reactions.slice(2, 4).sort()).toEqual(['+triaging 1.2', '+triaging 1.3'])
+    expect(reactions.slice(4).sort()).toEqual(['-triaging 1.2', '-triaging 1.3'])
+    await daemon.stop()
+  })
+
+  it('!stop at the root stops the coordinator’s turn without a mute, and still decides the messages queued behind it', async () => {
+    const first = gate()
+    const prompts: string[] = []
+    const { daemon, d, host, route } = await boot(
+      async (_id, blocks) => {
+        prompts.push(text(blocks))
+        if (prompts.length === 1) await first.held
+        return 'end_turn'
+      },
+      () => first.release()
+    )
+    const { reactions, replies } = watch(d)
+    await route(slack('1.1', { trigger: 'mention', text: 'fix the build' }))
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+    await route(slack('2.1', { text: 'lunch?' }))
+    await route(slack('3.1', { text: '!stop' }))
+    await vi.waitFor(() => expect(host.cancel).toHaveBeenCalledTimes(1), WAIT)
+    await vi.waitFor(() => expect(prompts).toHaveLength(2), WAIT)
+    await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+    expect(prompts[1]).toContain('<message id="msg-2.1"')
+    expect(replies).toEqual(['🛑 Stopped. Tasks keep working; `!stop` in a task’s thread stops that task.'])
+    // A stopped turn acts on nothing it took: the mention opens no task.
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    const at = { platform: 'slack', channel: 'C1', transportScope: scope }
+    expect(await d.store.assistantSubsessions.taskOfThread('bot-a', { ...at, thread: '1.1' })).toBeUndefined()
+    const coordinator = await d.store.currentAppendCoordinate('bot-a', 'C1', scope, 'coordinator')
+    expect(await d.commands.isSessionMuted(sessionKey('slack', 'C1', coordinator, 'bot-a', scope))).toBe(false)
+    await vi.waitFor(() => expect(reactions).toContain('-triaging 1.1'), WAIT)
+    await daemon.stop()
+  })
+
+  it('!stop at the root with no coordinator yet reaches no thread session', async () => {
+    const { daemon, d, route } = await boot(async () => 'end_turn')
+    const { replies } = watch(d)
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    const earlier = sessionKey('slack', 'C1', '0.1', 'bot-a', scope)
+    await d.store.upsertSession({
+      key: earlier,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '0.1',
+      transportScope: scope,
+      acpSessionId: 'acp-old',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    await route(slack('3.1', { text: '!stop' }))
+    await vi.waitFor(() => expect(replies).toEqual(['Nothing is running to stop.']), WAIT)
+    expect(await d.commands.isSessionMuted(earlier)).toBe(false)
+    await daemon.stop()
+  })
+
+  it('!new at the root starts a new coordinator that keeps the tasks, whose threads still reach them', async () => {
+    const { daemon, d, route } = await boot(async () => 'end_turn')
+    const { replies } = watch(d)
+    const calls: NormalizedMessage[] = []
+    d.dispatch = vi.fn(async (_agentId: string, msg: NormalizedMessage) => {
+      calls.push(msg)
+      return null
+    })
+    const { taskKey, coordinatorKey } = await threadedTask(d, '1.1')
+    await route(slack('2.1', { text: '!new' }))
+    await vi.waitFor(() => expect(replies).toHaveLength(1), WAIT)
+    expect(replies[0]).toBe('🆕 Started a new session for new messages here. Tasks keep working in their threads.')
+    await route(slack('3.1', { text: 'next' }))
+    const next = calls[0]!.sessionThread
+    expect(isCoordinatorCoordinate(next)).toBe(true)
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    const successor = sessionKey('slack', 'C1', next!, 'bot-a', scope)
+    expect(successor).not.toBe(coordinatorKey)
+    expect(await d.store.assistantSubsessions.get('bot-a', taskKey)).toMatchObject({
+      parentSessionKey: successor,
+      parentSessionId: await d.store.ensureOutwardSessionId(successor, 'bot-a')
+    })
+    await route(slack('3.2', { thread: '1.1' }))
+    expect(calls[1]!.sessionThread).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('lets a turn still running on the coordinator a root !new retired list, hand to and open tasks', async () => {
+    const { daemon, d, route } = await boot(async () => 'end_turn')
+    const { replies } = watch(d)
+    d.dispatch = vi.fn(async () => null)
+    const { taskKey, coordinatorKey } = await threadedTask(d, '1.1')
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    const retired = await d.store.currentAppendCoordinate('bot-a', 'C1', scope, 'coordinator')
+    const at = (ts: string) =>
+      deliveredMessage({ ...slack(ts), transportScope: scope, sessionThread: retired, headless: true }, 'int-bot-a')
+    // Its turn took two messages before the rotation.
+    d.coordinators.turns.begin(coordinatorKey, [at('2.1'), at('3.1')])
+    await route(slack('4.1', { text: '!new' }))
+    await vi.waitFor(() => expect(replies).toHaveLength(1), WAIT)
+    const successor = sessionKey(
+      'slack',
+      'C1',
+      await d.store.currentAppendCoordinate('bot-a', 'C1', scope, 'coordinator'),
+      'bot-a',
+      scope
+    )
+    expect(successor).not.toBe(coordinatorKey)
+    const deps = { ...d.mcp.deps, canRun: () => true }
+    const ctx = (thread: string) =>
+      ({
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread,
+        transportScope: scope,
+        isDm: false,
+        tools: coordinatorSessionTools([])
+      }) as SessionContext
+    const listed = async (thread: string) =>
+      ((await executeTool(ctx(thread), 'listTasks', {}, deps)) as { tasks: { taskId: string }[] }).tasks.map(
+        (task) => task.taskId
+      )
+    expect(await listed(retired)).toEqual([taskKey])
+    await expect(
+      executeTool(ctx(retired), 'sendMessage', { action: 'messageTask', messageId: 'msg-2.1', taskId: taskKey }, deps)
+    ).resolves.toMatchObject({ ok: true, taskId: taskKey })
+    const opened = (await executeTool(
+      ctx(retired),
+      'sendMessage',
+      { action: 'delegateTask', messageId: 'msg-3.1', title: 'Later' },
+      deps
+    )) as { taskId: string }
+    // What the retired turn opens belongs to the successor too.
+    expect(await d.store.assistantSubsessions.get('bot-a', opened.taskId)).toMatchObject({
+      parentSessionKey: successor
+    })
+    const next = successor.split(':').slice(2, 4).join(':')
+    expect((await listed(next)).sort()).toEqual([taskKey, opened.taskId].sort())
+    await daemon.stop()
+  })
+
+  it('!stop and !new in a task’s thread act on the task alone', async () => {
+    const task = gate()
+    const prompts: string[] = []
+    const { daemon, d, host, route } = await boot(
+      async (_id, blocks) => {
+        prompts.push(text(blocks))
+        if (prompts.length === 1) await task.held
+        return 'end_turn'
+      },
+      () => task.release()
+    )
+    const { replies } = watch(d)
+    const { taskKey, coordinatorKey } = await threadedTask(d, '1.1')
+    // A later thread of the task keys on the task's session too.
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    await d.store.assistantSubsessions.attachThread({
+      agentId: 'bot-a',
+      childSessionKey: taskKey,
+      platform: 'slack',
+      channel: 'C1',
+      transportScope: scope,
+      thread: '5.1',
+      sinceRound: 2,
+      now: 1
+    })
+    await route(slack('1.2', { thread: '1.1', text: 'keep going' }))
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+    await route(slack('5.2', { thread: '5.1', text: '!stop' }))
+    await vi.waitFor(() => expect(host.cancel).toHaveBeenCalledTimes(1), WAIT)
+    await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+    expect(replies).toEqual(['🛑 Stopped. Muted in this thread — @mention me to resume.'])
+    expect(await d.commands.isSessionMuted(taskKey)).toBe(true)
+    expect(await d.commands.isSessionMuted(coordinatorKey)).toBe(false)
+
+    const before = await d.store.getSession(taskKey)
+    expect(before?.acpSessionId).toBeTruthy()
+    await route(slack('1.4', { thread: '1.1', text: '!new' }))
+    await vi.waitFor(() => expect(replies).toHaveLength(2), WAIT)
+    expect(replies[1]).toBe('🆕 Cleared. This thread continues with a fresh context.')
+    expect(await d.store.getSession(taskKey)).toMatchObject({ acpSessionId: null, lastDeliveredTs: '1.4' })
+    // The task keeps its row and threads, and the coordinator was not rotated.
+    expect(await d.store.assistantSubsessions.threadsOf('bot-a', taskKey)).toHaveLength(2)
+    expect(await d.store.currentAppendCoordinate('bot-a', 'C1', scope, 'coordinator')).toBe(
+      coordinatorKey.split(':').slice(2, 4).join(':')
+    )
     await daemon.stop()
   })
 })

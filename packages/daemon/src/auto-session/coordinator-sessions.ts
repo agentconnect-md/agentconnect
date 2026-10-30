@@ -21,6 +21,8 @@ export interface CoordinatorSessionsHost {
   dispatch(agentId: string, msg: NormalizedMessage, integrationId?: string): void
   /** Post the agent's own text in a message's thread. */
   post(agentId: string, integrationId: string | undefined, msg: NormalizedMessage, text: string): Promise<void>
+  /** Show on a message that a turn is deciding it (🤔, §4.4); the returned call takes that back. */
+  showTriaging(agentId: string, message: DeliveredMessage): () => void
   warn(message: string): void
 }
 
@@ -92,6 +94,14 @@ export class CoordinatorSessions {
 
   constructor(private readonly host: CoordinatorSessionsHost) {}
 
+  /** Open a coordinator turn on its batch, each message marked as being decided until the turn ends, whatever its outcome (§4.3, §4.4). */
+  beginTurn(key: string, agentId: string, messages: DeliveredMessage[]): void {
+    const clears = messages.map((message) => this.host.showTriaging(agentId, message))
+    this.turns.begin(key, messages, () => {
+      for (const clear of clears) clear()
+    })
+  }
+
   /** The coordinator's `sendMessage`: one outcome for one delivered message. */
   async decide(ctx: SessionContext, args: Record<string, unknown>): Promise<unknown> {
     let call: z.output<typeof CALL>
@@ -107,12 +117,14 @@ export class CoordinatorSessions {
     try {
       switch (call.action) {
         case 'delegateTask': {
-          const taskId = await this.openTask(key, ctx.agentId, held.message, call.title, call.message)
+          const owner = await this.taskOwner(ctx.agentId, ctx, key)
+          const taskId = await this.openTask(owner, ctx.agentId, held.message, call.title, call.message)
           this.turns.settle(key, call.messageId, 'delegate')
           return { ok: true, taskId, title: call.title, note: "Task opened; it answers in the message's thread." }
         }
         case 'messageTask': {
-          const taskId = await this.handTo(key, ctx.agentId, call.taskId, held.message, call.message)
+          const owners = new Set([key, await this.taskOwner(ctx.agentId, ctx, key)])
+          const taskId = await this.handTo(owners, ctx.agentId, call.taskId, held.message, call.message)
           this.turns.settle(key, call.messageId, 'route')
           return { ok: true, taskId, attachedThread: call.messageId }
         }
@@ -126,6 +138,18 @@ export class CoordinatorSessions {
       this.turns.release(key, call.messageId)
       throw err
     }
+  }
+
+  /** The coordinator that owns the conversation's tasks: the current one, for which a turn still running on a retired one acts (§8). */
+  async taskOwner(
+    agentId: string,
+    at: { platform: string; channel: string; transportScope?: string | null },
+    callerKey: string
+  ): Promise<string> {
+    const current = await this.host
+      .store()
+      .currentAppendCoordinate(agentId, at.channel, at.transportScope, 'coordinator')
+    return current === undefined ? callerKey : sessionKey(at.platform, at.channel, current, agentId, at.transportScope)
   }
 
   /** Open a threaded task for a message (§5.1): its session is the message's thread, which it holds from now on. */
@@ -180,7 +204,7 @@ export class CoordinatorSessions {
 
   /** Hand a message to one of the coordinator's threaded tasks and attach its thread (§5.1, §6.4). */
   private async handTo(
-    coordinatorKey: string,
+    owners: ReadonlySet<string>,
     agentId: string,
     taskId: string,
     message: DeliveredMessage,
@@ -192,7 +216,7 @@ export class CoordinatorSessions {
     const row =
       (await index.get(agentId, taskId)) ??
       (await store.getSessionByOutwardIdOnly(taskId, agentId).then((s) => (s ? index.get(agentId, s.key) : undefined)))
-    if (!row || row.kind === 'follow-up' || row.parentSessionKey !== coordinatorKey)
+    if (!row || row.kind === 'follow-up' || !owners.has(row.parentSessionKey))
       throw new Error(`sendMessage: ${taskId} is not one of your open tasks; listTasks lists them`)
     const threads = await index.threadsOf(agentId, row.childSessionKey)
     if (threads.length === 0)
@@ -249,7 +273,14 @@ export class CoordinatorSessions {
       .store()
       .assistantSubsessions.taskOfThread(agentId, { ...at, thread: replyThreadOf(msg) })
     if (owner !== undefined) await this.deliverToTask(agentId, owner, message)
-    else await this.openTask(key, agentId, message, fallbackTitle(msg))
+    else await this.openTask(await this.taskOwner(agentId, msg, key), agentId, message, fallbackTitle(msg))
+  }
+
+  /** A coordinator's `!new`: the session succeeding it takes over its threaded tasks, which keep their threads (§8). */
+  async handOver(agentId: string, fromKey: string, toKey: string): Promise<void> {
+    const store = this.host.store()
+    const sessionId = await store.ensureOutwardSessionId(toKey, agentId, this.host.now())
+    await store.assistantSubsessions.adoptThreaded(agentId, fromKey, { sessionId, key: toKey })
   }
 
   /** End a coordinator turn: a one-message turn's text is its reply, and a mention left without an outcome goes to a task (§4.3, §4.5). */
