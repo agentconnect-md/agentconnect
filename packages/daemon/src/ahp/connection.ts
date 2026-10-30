@@ -48,7 +48,7 @@ export interface AhpHostPort {
   fetchTurns?(params: FetchTurnsParams): Promise<ChatTurnsLoadedAction | undefined>
   customRequest?(method: 'agentconnect/appRpc' | 'agentconnect/appClose', params: unknown): Promise<unknown>
   readFileEdit?(ref: FileEditRef): Promise<string | undefined>
-  subscribeNotification?(listener: (notification: AhpCatalogNotification) => void): () => void
+  subscribeNotification?(listener: (notification: AhpCatalogNotification) => void, wanted: () => boolean): () => void
 }
 
 const root = 'ahp-root://' as const
@@ -101,7 +101,12 @@ const dispatch = z.object({
   action: z.object({ type: identifier }).passthrough()
 })
 type Request = z.infer<typeof request>
-type Options = { port: AhpHostPort; send(message: string): void; close(reason: RdAhpClose['reason']): void }
+type Options = {
+  port: AhpHostPort
+  send(message: string): void
+  close(reason: RdAhpClose['reason']): void
+  warn?(message: string): void
+}
 
 export class AhpHostConnection {
   private readonly port: AhpHostPort
@@ -128,14 +133,16 @@ export class AhpHostConnection {
       },
       () => this.stop('unavailable')
     )
+    const wanted = () => Boolean(this.clientId) && this.subscriptions.has(root)
     this.unsubscribeNotification = this.port.subscribeNotification?.((notification) => {
-      if (this.clientId && this.subscriptions.has(root)) this.send({ jsonrpc: '2.0', ...notification })
-    })
+      if (wanted()) this.send({ jsonrpc: '2.0', ...notification })
+    }, wanted)
   }
 
   receive(frame: string): Promise<void> {
     if (this.disposed) return Promise.resolve()
     if (++this.queued > 16) {
+      this.options.warn?.(`more than 16 client frames queued`)
       this.stop('overloaded')
       return Promise.resolve()
     }
@@ -394,7 +401,10 @@ export class AhpHostConnection {
     if (this.disposed) return
     if (!this.port.isAuthorized()) return this.stop('unauthorized')
     const text = JSON.stringify(message)
-    if (!AhpMessageText.safeParse(text).success) return this.stop('overloaded')
+    if (!AhpMessageText.safeParse(text).success) {
+      this.options.warn?.(`outbound message of ${Buffer.byteLength(text)} bytes exceeds the frame limit`)
+      return this.stop('overloaded')
+    }
     try {
       this.options.send(text)
     } catch {

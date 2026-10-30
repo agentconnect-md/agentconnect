@@ -42,6 +42,7 @@ export interface AhpActionContext {
 }
 export interface AhpServiceOptions {
   enabled(): boolean
+  warn?(message: string): void
   available(auth: Pick<AhpAttachmentAuthorization, 'orgId' | 'agentId'>): boolean
   initializeMetadata?: Record<string, unknown>
   now(): number
@@ -74,6 +75,7 @@ export interface AhpServiceOptions {
   ): Promise<unknown>
 }
 interface Attachment {
+  id: string
   authorization: AhpAttachmentAuthorization
   bindings: Map<string, BoundAhpSession>
   state?: AhpAgentState
@@ -97,7 +99,12 @@ export class AhpService {
   ): Promise<boolean> {
     const key = attachmentKey(connectionId, input.attachmentId)
     if (this.attachments.has(key) || !this.authorized(input.authorization)) return false
-    const attachment: Attachment = { authorization: input.authorization, bindings: new Map(), close: wire.close }
+    const attachment: Attachment = {
+      id: input.attachmentId,
+      authorization: input.authorization,
+      bindings: new Map(),
+      close: wire.close
+    }
     this.attachments.set(key, attachment)
     const valid = () => this.attachments.get(key) === attachment && this.authorized(attachment.authorization)
     try {
@@ -250,13 +257,11 @@ export class AhpService {
           try {
             await this.options.dispatch(params, origin, context(params.channel))
           } catch (error) {
-            if (!(error instanceof AhpProtocolError))
-              this.closeAgent(
-                scope().orgId,
-                scope().agentId,
-                error instanceof AhpStateCapacityError ? 'overloaded' : 'unavailable',
-                owner
-              )
+            if (!(error instanceof AhpProtocolError)) {
+              const capacity = error instanceof AhpStateCapacityError
+              if (capacity) this.warn(attachment, `dispatch: ${error.message}`)
+              this.closeAgent(scope().orgId, scope().agentId, capacity ? 'overloaded' : 'unavailable', owner)
+            }
             throw error
           }
         },
@@ -296,31 +301,57 @@ export class AhpService {
                 this.options.customRequest!(method, params, context((params as { channel: string }).channel), valid)
             }
           : {}),
-        subscribeNotification: (listener) => {
-          let pending = 0
+        subscribeNotification: (listener, wanted) => {
           let active = true
+          // One CP check per session and grant; later notifications queue behind it in order.
+          let checked = attachment.authorization
+          let inflight = 0
+          const checks = new Map<string, Promise<boolean>>()
           const unsubscribe = state.subscribeNotifications((notification) => {
-            if (!valid() || !active) return
-            if (++pending > 16) {
-              this.remove(key, attachment, 'overloaded')
-              return
-            }
+            if (!valid() || !active || !wanted()) return
             const uri =
               notification.method === 'root/sessionAdded'
                 ? notification.params.summary.resource
                 : notification.params.session
             const auth = attachment.authorization
-            void this.options.registry
-              .resolve({ orgId: auth.orgId, agentId: auth.agentId, grant: auth.grant.token, sessionUri: uri })
-              .then((result) => {
-                if (!active || !valid() || auth !== attachment.authorization) return
-                if (result.ok && result.sessionUri === uri) listener(notification)
-                else if (allowed.has(uri)) this.remove(key, attachment, 'unauthorized')
-              })
-              .catch(() => {})
-              .finally(() => {
-                pending--
-              })
+            if (checked !== auth) {
+              checked = auth
+              checks.clear()
+            }
+            const deliver = () => {
+              if (active && valid() && auth === attachment.authorization && wanted()) listener(notification)
+            }
+            let check = checks.get(uri)
+            if (!check && allowed.has(uri)) return deliver()
+            if (!check) {
+              if (inflight >= 64) {
+                this.warn(attachment, 'more than 64 catalog sessions awaiting CP resolution')
+                this.remove(key, attachment, 'overloaded')
+                return
+              }
+              if (checks.size >= 1024) checks.clear()
+              inflight++
+              check = this.options.registry
+                .resolve({ orgId: auth.orgId, agentId: auth.agentId, grant: auth.grant.token, sessionUri: uri })
+                .then((result) => {
+                  const ok = result.ok && result.sessionUri === uri
+                  if (!ok && allowed.has(uri) && auth === attachment.authorization)
+                    this.remove(key, attachment, 'unauthorized')
+                  if (!ok && checks.get(uri) === check) checks.delete(uri)
+                  return ok
+                })
+                .catch(() => {
+                  if (checks.get(uri) === check) checks.delete(uri)
+                  return false
+                })
+                .finally(() => {
+                  inflight--
+                })
+              checks.set(uri, check)
+            }
+            void check.then((ok) => {
+              if (ok) deliver()
+            })
           })
           return () => {
             active = false
@@ -331,7 +362,8 @@ export class AhpService {
       attachment.connection = new AhpHostConnection({
         port,
         send: wire.send,
-        close: (reason) => this.remove(key, attachment, reason)
+        close: (reason) => this.remove(key, attachment, reason),
+        warn: (message) => this.warn(attachment, message)
       })
       if (input.handshake) await attachment.connection.adopt(input.handshake)
       if (!valid()) {
@@ -420,6 +452,7 @@ export class AhpService {
     const bytes = Buffer.byteLength(JSON.stringify(value))
     const queue = this.observationQueues.get(key) ?? { count: 0, bytes: 0 }
     if (++queue.count > 256 || (queue.bytes += bytes) > 1024 * 1024) {
+      this.options.warn?.(`ahp: agent ${agentId} overloaded: ${queue.count} observations (${queue.bytes} bytes) queued`)
       this.closeAgent(orgId, agentId, 'overloaded', owner)
       return
     }
@@ -430,9 +463,11 @@ export class AhpService {
           if (this.agents.get(key) === owner) await apply(state)
         })
       )
-      .catch((error) =>
-        this.closeAgent(orgId, agentId, error instanceof AhpStateCapacityError ? 'overloaded' : 'unavailable', owner)
-      )
+      .catch((error) => {
+        const capacity = error instanceof AhpStateCapacityError
+        if (capacity) this.options.warn?.(`ahp: agent ${agentId} overloaded: ${error.message}`)
+        this.closeAgent(orgId, agentId, capacity ? 'overloaded' : 'unavailable', owner)
+      })
       .finally(() => {
         if (this.observationQueues.get(key) === queue) {
           queue.count--
@@ -468,6 +503,11 @@ export class AhpService {
       })
     }
     return state
+  }
+  private warn(attachment: Attachment, message: string): void {
+    this.options.warn?.(
+      `ahp: attachment ${attachment.id} (agent ${attachment.authorization.agentId}) overloaded: ${message}`
+    )
   }
   private authorized(auth: AhpAttachmentAuthorization): boolean {
     return this.options.enabled() && this.options.available(auth) && auth.grant.expiresAtMs > this.options.now()

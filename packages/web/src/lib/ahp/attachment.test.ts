@@ -144,6 +144,14 @@ describe('official SDK attachment', () => {
     await f.action(start, 53)
     await vi.waitFor(() => expect(f.attachment.snapshot.chat?.activeTurn?.id).toBe('turn'))
   })
+  it('clears the interruption error once a reconnect attaches', async () => {
+    const f = fixture()
+    await f.attachment.attach(SESSION)
+    await f.servers.at(-1)!.close()
+    await vi.waitFor(() => expect(f.attachment.snapshot.error).toMatch('Connection interrupted'))
+    await f.attachment.attach()
+    expect(f.attachment.snapshot).toEqual(expect.objectContaining({ connected: true, error: undefined }))
+  })
   it('does not resend an unknown delivery and reconciles only snapshot evidence', async () => {
     let snapshot = empty()
     const f = fixture(() => snapshot)

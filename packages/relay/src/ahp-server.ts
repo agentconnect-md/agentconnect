@@ -4,7 +4,7 @@ import type { Duplex } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
 import { WebSocketServer, type RawData, type WebSocket } from 'ws'
 import { z } from 'zod'
-import { attachKeepalive } from '@agentconnect.md/connection'
+import { attachKeepalive, WireError } from '@agentconnect.md/connection'
 import {
   AhpAttachmentAuthorization,
   AhpMessageText,
@@ -65,6 +65,7 @@ export interface AhpServerDeps {
   daemon(daemonId: string): RelayDaemonConnection | undefined
   now?: () => number
   authorizationServer?: string
+  log?: { warn(message: string): void }
   preauth?: { deadlineMs: number; maxMessages: number; maxBytes?: number }
 }
 interface Opened {
@@ -293,11 +294,21 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
         close('unauthorized')
       }
     }
+    const overloaded = (message: string) =>
+      deps.log?.warn(
+        `ahp: attachment ${attachmentId} (agent ${agentId}, daemon ${opened.daemonId}) overloaded: ${message}`
+      )
     const deliver = (event: DaemonEvent) => {
-      if ('reason' in event) return close(event.reason, false)
+      if ('reason' in event) {
+        if (event.reason === 'overloaded') overloaded('closed by the daemon')
+        return close(event.reason, false)
+      }
       if (!valid()) return
       if (!AhpMessageText.safeParse(event.message).success) return close('invalid_message')
-      if (ws.bufferedAmount + Buffer.byteLength(event.message) > MAX_BUFFER_BYTES) return close('overloaded')
+      if (ws.bufferedAmount + Buffer.byteLength(event.message) > MAX_BUFFER_BYTES) {
+        overloaded(`browser socket backed up (${ws.bufferedAmount} bytes)`)
+        return close('overloaded')
+      }
       ws.send(event.message, (error) => {
         if (error) close('unavailable')
       })
@@ -306,7 +317,10 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
       if (!valid()) return
       try {
         conn.sendAhp({ attachmentId, message })
-      } catch {
+      } catch (error) {
+        // Only daemon-link backpressure is overload; a link that is going away is unavailable.
+        if (!(error instanceof WireError && error.code === 'OVERLOADED')) return close('unavailable')
+        overloaded('daemon link backed up')
         close('overloaded')
       }
     }

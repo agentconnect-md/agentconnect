@@ -21,6 +21,7 @@ export interface AhpCarrierDeps {
   onAhpMessage?(input: RdAhpMessage, connectionId: string): Promise<void> | void
   onAhpClose?(input: RdAhpClose, connectionId: string): void
   onAhpRelayLost?(connectionId: string): void
+  log?: { warn(message: string): void }
 }
 export function ahpAvailable(deps: AhpCarrierDeps): boolean {
   return Boolean(
@@ -88,6 +89,7 @@ export class AhpCarrier {
       attachment.bytes + bytes > 256 * 1024 ||
       this.bytes + bytes > MAX_BYTES
     ) {
+      this.warn(`attachment ${id} inbound queue full (${attachment.queue.length} frames, ${attachment.bytes} bytes)`)
       this.close(attachment, 'overloaded')
       return true
     }
@@ -131,8 +133,12 @@ export class AhpCarrier {
                         if (!AhpMessageText.safeParse(message).success) return this.close(attachment, 'invalid_message')
                         if (
                           !this.send(buildRelayDaemonFrame('rd/ahp/message', { attachmentId: attachment.id, message }))
-                        )
+                        ) {
+                          this.warn(
+                            `attachment ${attachment.id} relay link backed up (${this.transport.bufferedAmount ?? 0} bytes)`
+                          )
                           this.close(attachment, 'overloaded')
+                        }
                       },
                       close: (reason) => this.close(attachment, reason)
                     },
@@ -194,11 +200,16 @@ export class AhpCarrier {
     }
   }
 
+  private warn(message: string): void {
+    this.deps.log?.warn(`ahp carrier ${this.connectionId}: overloaded: ${message}`)
+  }
+
   private send(frame: RelayDaemonFrame, control = false): boolean {
     if (this.disposed) return false
     const text = JSON.stringify(frame)
     if ((this.transport.bufferedAmount ?? 0) + Buffer.byteLength(text) > MAX_BYTES + (control ? CONTROL_RESERVE : 0)) {
       if (control) {
+        this.warn(`relay link backed up (${this.transport.bufferedAmount ?? 0} bytes); closing the carrier`)
         this.dispose()
         this.transport.close(1013, 'AHP carrier overloaded')
       }
