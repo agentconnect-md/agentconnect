@@ -223,9 +223,9 @@ registration; a desktop installed by the retired Control Plane `install.sh` keep
 moves its service onto the store. `AGENTCONNECT_NPM_REGISTRY` points the CLI at another registry.
 
 Building from source requires Node.js ≥ 26.0; the bundle runs on Node.js ≥ 24.12. A logged-in
-graphical session, and `setup` run inside it. Over SSH, export the session's `WAYLAND_DISPLAY`,
-`XDG_RUNTIME_DIR`, and `DBUS_SESSION_BUS_ADDRESS` first. `setup` downloads Cua Driver and a pinned
-static ffmpeg (6.0, libx264).
+graphical session is also required, and `setup` must run inside it. Over SSH, export the
+session's `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, and `DBUS_SESSION_BUS_ADDRESS` first. `setup`
+downloads Cua Driver and a pinned static ffmpeg (6.0, libx264).
 
 - **X11**: Cua Driver captures and injects through X11/XTest, and the viewer uses ffmpeg `x11grab`.
   Nothing needs approving.
