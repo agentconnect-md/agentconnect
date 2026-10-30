@@ -1,6 +1,6 @@
 'use client'
 
-// The Tasks tab's Tasks and Follow-ups groups (assistant-mode.md §1.3, §5.6, §5.12): this conversation's delegated tasks, approved proposals and follow-ups, read from the agent's daemon and kept nowhere else.
+// The Tasks tab's task and follow-up groups (assistant-mode.md §1.3, §5.6, §5.12; auto-session-mode.md §11): this conversation's tasks with their summaries, approved proposals and follow-ups, read from the agent's daemon and kept nowhere else.
 // Each row links to its own page where the reader may open it; Stop interrupts its current turn exactly as the composer's stop would, and undoes nothing it already did.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -223,7 +223,9 @@ export function SubsessionsPanel({
   // Open rows lead each group; finished ones follow, dimmed, once the toggle is open.
   const shown = [...rows.filter((row) => !taskFinished(row)), ...(showFinished ? rows.filter(taskFinished) : [])]
   const followUps = shown.filter((row) => followUpOf(row) !== null)
-  const tasks = shown.filter((row) => followUpOf(row) === null)
+  // Threaded and background tasks are grouped apart; with no threaded one the background group keeps the plain name.
+  const threaded = shown.filter((row) => followUpOf(row) === null && row.threaded)
+  const tasks = shown.filter((row) => followUpOf(row) === null && !row.threaded)
   const drawRow = (row: AssistantSubsessionDto, i: number) => (
     <BackgroundTaskRow
       key={`${row.startedAt}:${row.sessionId ?? 'hidden'}:${i}`}
@@ -243,8 +245,17 @@ export function SubsessionsPanel({
           warn={current.error.status !== 503}
         />
       ) : null}
+      {threaded.length > 0 ? (
+        <TaskGroup id="threaded" title={tl('groups.threaded')} count={threaded.length}>
+          {threaded.map(drawRow)}
+        </TaskGroup>
+      ) : null}
       {tasks.length > 0 ? (
-        <TaskGroup id="tasks" title={tl('groups.tasks')} count={tasks.length}>
+        <TaskGroup
+          id="tasks"
+          title={threaded.length > 0 ? tl('groups.background') : tl('groups.tasks')}
+          count={tasks.length}
+        >
           {tasks.map(drawRow)}
         </TaskGroup>
       ) : null}

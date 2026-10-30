@@ -131,6 +131,9 @@ export const AssistantActivityFollowUp = z.object({
 })
 export type AssistantActivityFollowUp = z.infer<typeof AssistantActivityFollowUp>
 
+/** The longest task summary the daemon keeps is 500 characters (auto-session-mode.md §6.7); this bounds it in UTF-16 units. */
+const TASK_TEXT_MAX = 2_000
+
 export const AssistantActivitySubsession = z.object({
   /** The background work's outward session id; null until its session exists. */
   sessionId: ref.nullable(),
@@ -140,7 +143,16 @@ export const AssistantActivitySubsession = z.object({
   createdAt: time,
   kind: AssistantActivityTaskKind.optional(),
   /** Present on a follow-up, from a daemon with `follow-up-tasks-v1`. */
-  followUp: AssistantActivityFollowUp.optional()
+  followUp: AssistantActivityFollowUp.optional(),
+  /** A task's title as its index keeps it (auto-session-mode.md §5.1); absent from an older daemon. */
+  title: z.string().max(300).optional(),
+  /** Its own summary and when it wrote it (§6.7); conversation content the Control Plane only passes through. */
+  summary: z.string().max(TASK_TEXT_MAX).optional(),
+  summaryUpdatedAt: time.optional(),
+  /** The start of the message it was opened with, shown until it writes a summary (§6.7). */
+  background: z.string().max(TASK_TEXT_MAX).optional(),
+  /** A platform thread is attached, so people talk to it there and it reports nothing to its parent (§6.2). */
+  threaded: z.boolean().optional()
 })
 export type AssistantActivitySubsession = z.infer<typeof AssistantActivitySubsession>
 

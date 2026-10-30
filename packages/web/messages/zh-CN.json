@@ -263,6 +263,8 @@
     "taskList": {
       "groups": {
         "tasks": "任务",
+        "threaded": "话题任务",
+        "background": "后台任务",
         "followUps": "跟进",
         "subagents": "子 Agent",
         "commands": "后台命令"
@@ -271,7 +273,8 @@
       "state": {
         "open": "运行中",
         "done": "已回报",
-        "failed": "失败"
+        "failed": "失败",
+        "idle": "空闲"
       },
       "runtimeState": {
         "running": "运行中",
@@ -279,6 +282,7 @@
         "failed": "失败"
       },
       "started": "{time}开始",
+      "summarized": "摘要更新于{time}",
       "lastCheck": "上次 {time}",
       "expires": "{time} 过期",
       "untitled": "未命名的任务",

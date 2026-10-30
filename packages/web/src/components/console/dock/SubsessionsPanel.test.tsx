@@ -576,6 +576,49 @@ describe('SubsessionsPanel', () => {
     expect(rows()[0]?.querySelector('[data-subsession-state]')?.textContent).toBe('Stopped')
   })
 
+  // auto-session-mode.md §11: threaded and background tasks are grouped apart, each with its summary.
+  it('groups threaded tasks apart from background ones, each with its summary', async () => {
+    wire.pages = [
+      page([
+        row({
+          sessionId: 'threaded-1',
+          title: 'Webhook retries',
+          state: 'done',
+          threaded: true,
+          summary: 'Scope: webhook retries. Status: waiting on review.',
+          summaryUpdatedAt: '2026-10-09T09:30:00.000Z',
+          background: 'can you add retry with backoff?'
+        }),
+        row({ sessionId: 'background-1', title: 'Check the flaky test', background: 'why does the e2e suite flake?' }),
+        row({ sessionId: 'background-2', title: 'Old task', state: 'done' })
+      ])
+    ]
+    await render({ showFinished: false })
+    expect(headings()).toEqual(['Threaded tasks1', 'Background tasks1'])
+    const threaded = rowOf('threaded-1')!
+    expect(threaded.closest('[data-task-group]')?.getAttribute('data-task-group')).toBe('threaded')
+    // A threaded task lives on between its turns: idle, never behind the finished toggle.
+    expect(threaded.querySelector('[data-subsession-state]')?.textContent).toBe('Idle')
+    expect(threaded.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('open')
+    expect(threaded.querySelector('[data-preview-line]')?.textContent).toBe(
+      'Scope: webhook retries. Status: waiting on review.'
+    )
+    expect(threaded.textContent).toContain('summary ')
+    // Until a task writes a summary, the message it was opened with stands in.
+    expect(rowOf('background-1')?.querySelector('[data-preview-line]')?.textContent).toBe(
+      'why does the e2e suite flake?'
+    )
+    expect(rowOf('background-2')).toBeUndefined()
+    expect(last()).toMatchObject({ count: 3, running: 1, finished: 1 })
+  })
+
+  it('keeps the plain Tasks name with no threaded task, and shows no summary of a task the reader may not see', async () => {
+    wire.pages = [page([row({ sessionId: null, visible: false, title: null, background: 'not for this reader' })])]
+    await render()
+    expect(headings()).toEqual(['Tasks1'])
+    expect(text()).not.toContain('not for this reader')
+  })
+
   it('starts over for another conversation, never showing the previous one’s rows', async () => {
     wire.pages = [page([row()])]
     await render()

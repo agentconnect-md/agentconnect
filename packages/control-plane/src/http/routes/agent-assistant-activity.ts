@@ -134,7 +134,15 @@ const SubsessionDto = z.object({
   /** Which kind of task it is; absent from an agent version that does not say. */
   kind: AssistantActivityTaskKind.optional(),
   /** Present on a follow-up (`kind: 'follow-up'`). */
-  followUp: FollowUpDto.optional()
+  followUp: FollowUpDto.optional(),
+  /** The task's own summary of its scope, status and next step, read from the agent's daemon and stored nowhere here; only where `visible`. */
+  summary: z.string().optional(),
+  /** When the task last wrote its summary. */
+  summaryUpdatedAt: z.string().optional(),
+  /** The start of the message the task was opened with, shown until it writes a summary; only where `visible`. */
+  background: z.string().optional(),
+  /** A platform thread is attached: people there talk to the task, and it reports nothing to the conversation that opened it. */
+  threaded: z.boolean().optional()
 })
 const SubsessionsPageDto = z.object({
   subsessions: z.array(SubsessionDto),
@@ -448,8 +456,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       const byId = endsById && !ownRow && !!followUp?.id && parent !== undefined
       return {
         sessionId: child ? String(child.id) : null,
-        // A follow-up's label, like a session's title, only where its conversation may be seen.
-        title: followUp ? (visible ? followUp.title : null) : (child?.title ?? null),
+        // A follow-up's label, like a session's title, only where its conversation may be seen; a task's own before its session exists.
+        title: followUp ? (visible ? followUp.title : null) : (child?.title ?? (visible ? (s.title ?? null) : null)),
         state: s.state,
         startedAt: s.createdAt,
         visible,
@@ -458,6 +466,11 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         // A getting-to-know task runs before its place's long session exists, so its own row names the place; never its title.
         ...(!parent && child ? { place: { platform: child.platform, channelName: child.channelName } } : {}),
         ...(s.kind ? { kind: s.kind } : {}),
+        ...(s.threaded ? { threaded: true } : {}),
+        // Conversation content, passed through from the daemon only to a caller who may view the task (auto-session-mode.md §6.7).
+        ...(visible && s.summary ? { summary: s.summary } : {}),
+        ...(visible && s.summary && s.summaryUpdatedAt ? { summaryUpdatedAt: s.summaryUpdatedAt } : {}),
+        ...(visible && s.background ? { background: s.background } : {}),
         ...(followUp
           ? {
               followUp: {
@@ -612,7 +625,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an agent’s tasks',
-          description: `Lists the tasks the agent started (its delegated tasks, follow-ups and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. From an agent whose daemon keeps follow-ups, each row names its \`kind\` and the page says \`followUps: true\`; a follow-up carries its status (waiting, checking, paused after five failed checks, done or stopped) and next check, and, where the caller may view its conversation, what counts as done, its newest checks with what started each (its time, a message, or events on what it watches), the pull request, merge request or issue it watches with that watch's state, and, from a daemon that ends one by it, its \`id\` for \`stopAssistantFollowUp\`: until its first check runs it has no session, and \`canStop\` follows its conversation. A follow-up is listed under its place’s current long session. Nothing is stored by this call.`,
+          description: `Lists the tasks the agent started (its delegated tasks, follow-ups and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. From an agent whose daemon keeps follow-ups, each row names its \`kind\` and the page says \`followUps: true\`; a follow-up carries its status (waiting, checking, paused after five failed checks, done or stopped) and next check, and, where the caller may view its conversation, what counts as done, its newest checks with what started each (its time, a message, or events on what it watches), the pull request, merge request or issue it watches with that watch's state, and, from a daemon that ends one by it, its \`id\` for \`stopAssistantFollowUp\`: until its first check runs it has no session, and \`canStop\` follows its conversation. A follow-up is listed under its place’s current long session. A task carries \`threaded\` when a platform thread is attached and, where the caller may view it, its own \`summary\` with \`summaryUpdatedAt\` and the \`background\` it was opened with, from a daemon that keeps them; each call reads them from the daemon again. Nothing is stored by this call.`,
           operationId: 'listAssistantSubsessions',
           params: IdParam,
           querystring: SubsessionsQuery,

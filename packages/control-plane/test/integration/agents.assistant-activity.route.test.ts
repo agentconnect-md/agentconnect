@@ -742,6 +742,73 @@ const unchecked = (parentSessionId: string, id = 'item-1') => ({
   }
 })
 
+/** Every table holding `needle` anywhere in a row, so a read that must keep content nowhere is checked against the whole schema. */
+async function tablesHolding(needle: string): Promise<string[]> {
+  const tables = await prisma.$queryRaw<Array<{ table_name: string }>>`
+    SELECT table_name FROM information_schema.tables
+    WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'`
+  const hits: string[] = []
+  for (const { table_name } of tables) {
+    const [row] = await prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT count(*) AS n FROM "${table_name}" t WHERE t::text LIKE $1`,
+      `%${needle}%`
+    )
+    if (Number(row?.n ?? 0) > 0) hits.push(table_name)
+  }
+  return hits
+}
+
+// auto-session-mode.md §6.7: a task's summary is conversation content, read through from the daemon and never stored here.
+describe('a task’s summary', () => {
+  it('is passed through to whoever may view the task, and stored nowhere', async () => {
+    await seedAssistant()
+    const { team, teamChild, dm, dmChild } = await seedConversations()
+    const member = await makeUser(`summary-member-${randomUUID()}`, 'collaborator')
+    const summary = `Scope: webhook retries ${randomUUID()}. Status: in review.`
+    const background = `can you add retry with backoff ${randomUUID()}?`
+    const control = new ActivitySpy()
+    const task = {
+      sessionId: teamChild,
+      parentSessionId: team,
+      state: 'open' as const,
+      createdAt: '2026-10-09T09:00:00.000Z',
+      kind: 'delegated' as const,
+      title: 'Webhook retries',
+      summary,
+      summaryUpdatedAt: '2026-10-09T10:00:00.000Z',
+      background,
+      threaded: true
+    }
+    control.subsessions = [task, { ...task, sessionId: dmChild, parentSessionId: dm }]
+
+    const listed = await get(app(control, member), `/subsessions?parentSessionId=${team}`)
+    expect(listed.statusCode, listed.body).toBe(200)
+    expect(listed.json().subsessions).toEqual([
+      expect.objectContaining({
+        sessionId: teamChild,
+        title: 'Fix the flaky test',
+        visible: true,
+        summary,
+        summaryUpdatedAt: '2026-10-09T10:00:00.000Z',
+        background,
+        threaded: true
+      })
+    ])
+
+    // A task in a conversation the caller may not view shows that it is threaded, and none of its content.
+    const hidden = (await get(app(control, member), '/subsessions')).json().subsessions[1]
+    expect(hidden).toMatchObject({ sessionId: null, title: null, visible: false, threaded: true })
+    expect(hidden).not.toHaveProperty('summary')
+    expect(hidden).not.toHaveProperty('summaryUpdatedAt')
+    expect(hidden).not.toHaveProperty('background')
+
+    // The scan finds what is stored (the child's title), so finding neither text means neither was kept.
+    expect(await tablesHolding('Fix the flaky test')).toContain('session_meta')
+    expect(await tablesHolding(summary)).toEqual([])
+    expect(await tablesHolding(background)).toEqual([])
+  })
+})
+
 describe('a follow-up before its first check, and one task by its session', () => {
   const HANDLE = [...CAPABILITIES.features, FOLLOW_UP_TASKS_V1_FEATURE, ASSISTANT_TASK_HANDLE_FEATURE]
 

@@ -461,6 +461,69 @@ describe('the Activity view: sub-sessions', () => {
     expect((await read(activity, { agentId: a, operation: 'subsessions', limit: 2 })).truncated).toBe(true)
   })
 
+  // auto-session-mode.md §6.7, §11: the Tasks tab shows each task's title and summary, threaded and background apart.
+  it('carries each task’s title, summary, background and whether a thread is attached', async () => {
+    const { s, a, activity } = await setup()
+    const parentKey = sessionKey('slack', 'C0SUPPORT', 'append:coordinator-1', a, 'T0EXAMPLE')
+    const background = sessionKey('slack', 'C0SUPPORT', subsessionCoordinate('bg'), a, 'T0EXAMPLE')
+    const threaded = sessionKey('slack', 'C0SUPPORT', '1700000000.000100', a, 'T0EXAMPLE')
+    const open = { agentId: a, parentSessionId: 'sid-parent', parentSessionKey: parentKey }
+    await s.assistantSubsessions.open({
+      ...open,
+      childSessionKey: background,
+      title: 'Check the flaky test',
+      background: 'look at why the e2e suite flakes',
+      now: 1_000
+    })
+    await s.assistantSubsessions.open({
+      ...open,
+      childSessionKey: threaded,
+      title: 'Webhook retries',
+      background: 'can you add retry with backoff?',
+      replyThread: '1700000000.000100',
+      now: 2_000
+    })
+    await s.assistantSubsessions.attachThread({
+      agentId: a,
+      childSessionKey: threaded,
+      platform: 'slack',
+      channel: 'C0SUPPORT',
+      transportScope: 'T0EXAMPLE',
+      thread: '1700000000.000100',
+      sinceRound: 1,
+      now: 2_000
+    })
+    await s.assistantSubsessions.setSummary(a, threaded, {
+      summary: 'Scope: webhook retries. Status: in review.',
+      title: 'Webhook retries with backoff',
+      now: 3_000
+    })
+
+    const page = await read(activity, {
+      agentId: a,
+      operation: 'subsessions',
+      limit: 10,
+      parent: { sessionId: 'sid-parent' }
+    })
+    expect(page.subsessions).toEqual([
+      expect.objectContaining({
+        createdAt: '1970-01-01T00:00:02.000Z',
+        title: 'Webhook retries with backoff',
+        summary: 'Scope: webhook retries. Status: in review.',
+        summaryUpdatedAt: '1970-01-01T00:00:03.000Z',
+        background: 'can you add retry with backoff?',
+        threaded: true
+      }),
+      expect.objectContaining({
+        createdAt: '1970-01-01T00:00:01.000Z',
+        title: 'Check the flaky test',
+        background: 'look at why the e2e suite flakes'
+      })
+    ])
+    expect(page.subsessions[1]).not.toHaveProperty('summary')
+    expect(page.subsessions[1]).not.toHaveProperty('threaded')
+  })
+
   it('lists only the sub-sessions one conversation opened, newest first, a page at a time', async () => {
     const { s, a, b, activity } = await setup()
     const parentKey = sessionKey('slack', 'C0SUPPORT', 'append:1', a, 'T0EXAMPLE')

@@ -4410,6 +4410,13 @@ export interface AssistantSubsessionDto {
   kind?: 'delegated' | 'follow-up' | 'approved-proposal'
   /** Present on a follow-up. */
   followUp?: AssistantFollowUpDto
+  /** The task's own summary and when it wrote it (auto-session-mode.md §6.7), read from its daemon; only where `visible`. */
+  summary?: string
+  summaryUpdatedAt?: string
+  /** The start of the message it was opened with, shown until it writes a summary; only where `visible`. */
+  background?: string
+  /** A platform thread is attached: people talk to it there, and it reports nothing to this conversation. */
+  threaded?: boolean
 }
 
 export interface AssistantSubsessionsPageDto {

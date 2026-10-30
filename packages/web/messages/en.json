@@ -263,6 +263,8 @@
     "taskList": {
       "groups": {
         "tasks": "Tasks",
+        "threaded": "Threaded tasks",
+        "background": "Background tasks",
         "followUps": "Follow-ups",
         "subagents": "Subagents",
         "commands": "Commands"
@@ -271,7 +273,8 @@
       "state": {
         "open": "Running",
         "done": "Reported",
-        "failed": "Failed"
+        "failed": "Failed",
+        "idle": "Idle"
       },
       "runtimeState": {
         "running": "Running",
@@ -279,6 +282,7 @@
         "failed": "Failed"
       },
       "started": "started {time}",
+      "summarized": "summary {time}",
       "lastCheck": "last {time}",
       "expires": "expires {time}",
       "untitled": "Untitled task",
