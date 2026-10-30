@@ -3109,6 +3109,7 @@
         "allSourcesEnabled": "组织中的所有来源都已启用。",
         "noSkillsEnabled": "此 Agent 尚未启用技能。",
         "removeFromAgent": "从此 Agent 移除",
+        "editServer": "查看或编辑此服务器",
         "chooseIndividualSkills": "选择单个技能",
         "loadingSkills": "正在加载技能…",
         "noSkillManifest": "此来源中没有找到 SKILL.md。",

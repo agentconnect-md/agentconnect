@@ -3109,6 +3109,7 @@
         "allSourcesEnabled": "Every source in your organization is already enabled.",
         "noSkillsEnabled": "This agent has no skills enabled.",
         "removeFromAgent": "Remove from this agent",
+        "editServer": "View or edit this server",
         "chooseIndividualSkills": "Choose individual skills",
         "loadingSkills": "Loading skills…",
         "noSkillManifest": "No SKILL.md found in this source.",

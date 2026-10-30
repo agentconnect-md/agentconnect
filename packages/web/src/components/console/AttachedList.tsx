@@ -22,6 +22,8 @@ export function AttachedRow({
   meta,
   badge,
   actions,
+  onOpen,
+  openTitle,
   onRemove,
   removeTitle,
   dimmed,
@@ -35,6 +37,9 @@ export function AttachedRow({
   badge?: ReactNode
   /** Extra controls left of the remove button (the skills card's expand chevron). */
   actions?: ReactNode
+  /** Opens the thing's own view/edit dialog; makes the name and meta lines one button. */
+  onOpen?: () => void
+  openTitle?: string
   onRemove?: () => void
   removeTitle?: string
   /** A saved name this agent can no longer attach — shown only so it can be removed. */
@@ -46,10 +51,24 @@ export function AttachedRow({
     <div className={`border-b border-(--border-subtle) last:border-b-0 ${dimmed ? 'opacity-60' : ''}`}>
       <div className="flex items-center gap-[11px] px-4 py-3">
         {mark}
-        <div className="min-w-0 flex-1">
-          <div className="mono truncate text-[12.5px] text-(--text-primary)">{name}</div>
-          <div className="mono truncate text-[11px] text-(--text-tertiary)">{meta}</div>
-        </div>
+        {onOpen ? (
+          <button
+            type="button"
+            className="group min-w-0 flex-1 cursor-pointer border-0 bg-transparent p-0 text-left"
+            title={openTitle}
+            onClick={onOpen}
+          >
+            <div className="mono truncate text-[12.5px] text-(--text-primary) group-hover:text-(--brand) group-hover:underline">
+              {name}
+            </div>
+            <div className="mono truncate text-[11px] text-(--text-tertiary)">{meta}</div>
+          </button>
+        ) : (
+          <div className="min-w-0 flex-1">
+            <div className="mono truncate text-[12.5px] text-(--text-primary)">{name}</div>
+            <div className="mono truncate text-[11px] text-(--text-tertiary)">{meta}</div>
+          </div>
+        )}
         {badge}
         {actions}
         {onRemove && (
