@@ -982,10 +982,8 @@ export interface SlackConfigInput {
 // gating for restricted agents), only when @-mentioned, or on any message.
 export type ChannelTrigger = 'off' | 'mention' | 'any'
 
-/** Which session an activation in a conversation joins (channel-session-mode.md). Orthogonal
- *  to the trigger: that decides WHETHER the agent responds, this decides which session it
- *  responds in. */
-export type ChannelSessionMode = 'createNew' | 'append'
+/** Which session a conversation's message joins (channel-session-mode.md); `auto` hands each to the coordinator (auto-session-mode.md). */
+export type ChannelSessionMode = 'createNew' | 'append' | 'auto'
 
 // One conversation the integration's bot is in (daemon-reported) + its trigger
 // choice. kind 'im' rows are DM conversations and 'mpim' rows are Slack group DMs;

@@ -580,12 +580,10 @@ export interface WebChannelListSemantics {
   mentionHint?: WebChannelListMessage
   /** Where a shared bot's By decision lives: `'router'` (absent) is the bot's router, `'conversation'` each row's own gate. */
   sharedDecision?: 'router' | 'conversation'
-  /** Session modes this platform's channel rows offer. Absent ⇒ both, which is every
-   *  platform that has channels. A platform opts out by omitting one rather than core
-   *  branching on a platform name. */
-  sessionModes?: readonly ('createNew' | 'append')[]
+  /** Session modes this platform's channel rows offer; absent ⇒ all three, and a platform opts out by omitting one. */
+  sessionModes?: readonly ('createNew' | 'append' | 'auto')[]
   /** Session modes a 1:1 DM row offers. Absent ⇒ none: the platform's DMs are one continuous session already. */
-  dmSessionModes?: readonly ('createNew' | 'append')[]
+  dmSessionModes?: readonly ('createNew' | 'append' | 'auto')[]
   /** Confirmation before a default seat moves off a gated agent, whose only grant it is (body gets `owner`, `room`); absent ⇒ no warning. */
   ownerChangeWarning?: {
     title: WebChannelListMessage
