@@ -169,6 +169,30 @@ describe('switching into auto (auto-session-mode.md §3.5)', () => {
   })
 })
 
+describe('switching into auto while messages arrive', () => {
+  it('holds a message that arrives while a new coordinator adopts until the adoption is done', async () => {
+    const { daemon, d, calls, route, setMode, seed } = await boot('createNew')
+    await seed('1.1', { title: 'Old thread' })
+    setMode('auto')
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const adopt = d.coordinators.adoptThreadSessions.bind(d.coordinators)
+    const adopting = vi.spyOn(d.coordinators, 'adoptThreadSessions').mockImplementation(async (...args: unknown[]) => {
+      await held
+      return await adopt(...args)
+    })
+    const root = route(slack('9.1'))
+    await vi.waitFor(() => expect(adopting).toHaveBeenCalledTimes(1))
+    const reply = route(slack('1.5', { thread: '1.1' }))
+    await new Promise((resolve) => setImmediate(resolve))
+    release()
+    await Promise.all([root, reply])
+    expect(adopting).toHaveBeenCalledTimes(1)
+    expect(calls.find((msg) => msg.msgId === 'slack:C1:1.5')!.sessionThread).toBeUndefined()
+    await daemon.stop()
+  })
+})
+
 describe('switching out of auto (auto-session-mode.md §3.5)', () => {
   async function withTask(mode: Mode = 'auto') {
     const booted = await boot(mode)
@@ -225,6 +249,37 @@ describe('switching out of auto (auto-session-mode.md §3.5)', () => {
     const next = (await coordinatorKey())!
     expect(next).not.toBe(parent)
     expect((await tasksOf(next)).map((row) => row.childSessionKey)).toEqual([keyAt('1.1')])
+    await daemon.stop()
+  })
+
+  it('judges each conversation by the integration its transport scope names', async () => {
+    const { daemon, d, keyAt, index, coordinatorKey } = await withTask()
+    // Another bot of the agent, no longer listed in auto, left a task and a coordinator in the same channel id.
+    const elsewhere = 'slack:another-bot'
+    const foreignTask = sessionKey('slack', 'C1', '8.1', 'bot-a', elsewhere)
+    await index.open({
+      agentId: 'bot-a',
+      childSessionKey: foreignTask,
+      parentSessionId: 'sid-elsewhere',
+      parentSessionKey: 'elsewhere-coordinator',
+      now: 1
+    })
+    await index.attachThread({
+      agentId: 'bot-a',
+      childSessionKey: foreignTask,
+      platform: 'slack',
+      channel: 'C1',
+      transportScope: elsewhere,
+      thread: '8.1',
+      sinceRound: 1,
+      now: 1
+    })
+    await d.store.resolveAppendCoordinate('bot-a', 'C1', elsewhere, 1, 'coordinator')
+    await d.leaveAutoConversations()
+    expect(await index.get('bot-a', foreignTask)).toBeUndefined()
+    expect(await d.store.currentAppendCoordinate('bot-a', 'C1', elsewhere)).toBeUndefined()
+    expect(await index.get('bot-a', keyAt('1.1'))).toBeDefined()
+    expect(await coordinatorKey()).toBeDefined()
     await daemon.stop()
   })
 

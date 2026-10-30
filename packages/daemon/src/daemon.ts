@@ -1959,6 +1959,8 @@ export class Daemon {
 
   // Agent→agent collaboration: A2A wake/reply/status (src/collab/).
   private readonly collab = new CollabCoordinator(this.collabHost())
+  // A conversation's coordinator lookup in flight, so a message arriving meanwhile waits for its adoption (auto-session-mode.md §3.5).
+  private readonly coordinatorLookups = new Map<string, Promise<string>>()
   // The `auto` mode's coordinator sessions and their live turns (auto-session-mode.md §4).
   private readonly coordinators = new CoordinatorSessions({
     store: () => this.store,
@@ -13515,8 +13517,24 @@ export class Daemon {
     return coordinator
   }
 
-  /** The conversation's coordinator, minted when it has none; a new one adopts the thread sessions from before `auto` (auto-session-mode.md §3.5). */
+  /** The conversation's coordinator, minted when it has none; a new one adopts the thread sessions from before `auto` before anyone else reads it (auto-session-mode.md §3.5). */
   private async resolveCoordinator(
+    agentId: string,
+    at: { platform: string; channel: string; transportScope: string | null }
+  ): Promise<string> {
+    const slot = `${agentId}\u001f${at.channel}\u001f${at.transportScope ?? ''}`
+    const inFlight = this.coordinatorLookups.get(slot)
+    if (inFlight) return await inFlight
+    const lookup = this.lookUpCoordinator(agentId, at)
+    this.coordinatorLookups.set(slot, lookup)
+    try {
+      return await lookup
+    } finally {
+      if (this.coordinatorLookups.get(slot) === lookup) this.coordinatorLookups.delete(slot)
+    }
+  }
+
+  private async lookUpCoordinator(
     agentId: string,
     at: { platform: string; channel: string; transportScope: string | null }
   ): Promise<string> {
@@ -13610,23 +13628,29 @@ export class Daemon {
       if (!this.servesAgent(agentId)) continue
       const index = this.store.assistantSubsessions
       for (const at of await index.threadedConversations(agentId)) {
-        if (this.conversationRunsAuto(agentId, at.channel, at.platform)) continue
+        if (this.conversationRunsAuto(agentId, at)) continue
         for (const key of await index.releaseThreaded(agentId, at))
           this.log.info(`task ${key} is an ordinary thread session again: its conversation left auto`)
       }
       for (const { channel, transportScope, coordinate } of await this.store.coordinatorReservations(agentId)) {
-        if (this.conversationRunsAuto(agentId, channel)) continue
+        if (this.conversationRunsAuto(agentId, { channel, transportScope })) continue
         if (await this.store.retireCoordinator(agentId, channel, transportScope, coordinate))
           this.log.info(`coordinator ${coordinate} of ${agentId} in ${channel} retired: the conversation left auto`)
       }
     }
   }
 
-  /** Whether a conversation may run its coordinator: the switch on and an integration of the agent listing it `auto`. */
-  private conversationRunsAuto(agentId: string, channel: string, platform?: string): boolean {
+  /** Whether a conversation may run its coordinator: the switch on and the integration its rows' transport scope names listing it `auto`. */
+  private conversationRunsAuto(
+    agentId: string,
+    at: { channel: string; transportScope?: string | null; platform?: string }
+  ): boolean {
     if (!this.cfg.features.autoSessionMode) return false
     return (this.agents.get(agentId)?.integrations ?? []).some(
-      (int) => (platform === undefined || int.platform === platform) && conversationSessionMode(int, channel) === 'auto'
+      (int) =>
+        (at.platform === undefined || int.platform === at.platform) &&
+        (!at.transportScope || this.transportScopeForIntegration(int) === at.transportScope) &&
+        conversationSessionMode(int, at.channel) === 'auto'
     )
   }
 
