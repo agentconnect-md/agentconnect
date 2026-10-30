@@ -201,7 +201,7 @@ export class RelayDaemonConnection {
       throw new WireError('INTERNAL', 'AHP service unavailable', true)
     }
     if ((this.deps.bufferedAmount?.() ?? 0) + Buffer.byteLength(text) > 1024 * 1024) {
-      throw new WireError('INTERNAL', 'AHP carrier overloaded', true)
+      throw new WireError('OVERLOADED', 'AHP carrier overloaded', true)
     }
     this.transport.send(text)
   }

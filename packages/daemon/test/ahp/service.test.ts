@@ -314,3 +314,31 @@ it('bounds queued observations and waits for a fresh attachment before recoverin
   expect(peer.close).not.toHaveBeenCalled()
   expect(reserveSequence).toHaveBeenCalledTimes(2)
 })
+
+it('streams a turn while the CP is slow to resolve catalog notifications', async () => {
+  const { connect, service, options, binding, auth } = fixture()
+  const browser = await connect({ ...auth, conversationId: binding.conversationId })
+  await browser.initialize()
+  await browser.request('subscribe', { channel: chatChannel(binding.sessionUri) })
+  const catalog = await connect()
+  await catalog.initialize()
+  await catalog.request('subscribe', { channel: 'ahp-root://' })
+  let settle!: () => void
+  const resolve = vi.fn(() => new Promise<any>((done) => (settle = () => done({ ok: true, ...binding }))))
+  options.registry.resolve = resolve
+  const event = { sessionId: binding.sessionId, turnId: 'turn', generation: 0, at: Date.now() }
+  service.observe(auth.orgId, auth.agentId, { ...event, kind: 'started', text: 'Hello', origin: 'user' })
+  for (let index = 0; index < 40; index++)
+    service.observe(auth.orgId, auth.agentId, { ...event, kind: 'text', text: `${index}` })
+  await vi.waitFor(() => expect(browser.messages.filter((m) => m.method === 'action').length).toBeGreaterThan(40))
+  expect(browser.close).not.toHaveBeenCalled()
+  expect(catalog.close).not.toHaveBeenCalled()
+  expect(resolve).toHaveBeenCalledOnce()
+  const summaries = () => catalog.messages.filter((m) => m.method === 'root/sessionSummaryChanged')
+  expect(summaries()).toHaveLength(0)
+  settle()
+  await vi.waitFor(() => expect(summaries().length).toBeGreaterThan(16))
+  const times = summaries().map((m) => m.params.changes.modifiedAt)
+  expect(times).toEqual([...times].sort())
+  expect(resolve).toHaveBeenCalledOnce()
+})

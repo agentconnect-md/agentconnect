@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http'
 import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'
 import { WebSocket } from 'ws'
+import { WireError } from '@agentconnect.md/connection'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { AhpMode, RcVerifyResult, RdAhpClose, RdAhpMessage } from '@agentconnect.md/protocol'
 import { createAhpServer } from './ahp-server.js'
@@ -200,6 +201,22 @@ it('closes on daemon hop loss without requesting execution cancellation', async 
   host.lose()
   expect((await close)[0]).toBe(1013)
   expect(host.conn.sendAhp).not.toHaveBeenCalled()
+})
+it('names a failed forward unavailable unless the daemon link reports backpressure', async () => {
+  const host = await fixture()
+  for (const [error, reason] of [
+    [new Error('socket closed'), 'unavailable'],
+    [new WireError('OVERLOADED', 'AHP carrier overloaded', true), 'overloaded']
+  ] as const) {
+    const socket = await dial(host.url)
+    host.conn.sendAhp.mockImplementationOnce(() => {
+      throw error
+    })
+    const close = once(socket, 'close')
+    socket.send('{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}')
+    const [code, why] = await close
+    expect([code, String(why)]).toEqual([1013, reason])
+  }
 })
 
 const RESOURCE = (url: string) => url.replace('ws://', 'https://')

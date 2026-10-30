@@ -37,6 +37,7 @@ export class AhpConversation {
   private attached = false
   private reconnectTimer?: ReturnType<typeof setTimeout>
   private reconnectAttempts = 0
+  private readonly connectionNotices = new Set<string>()
   constructor(
     readonly orgId: string,
     public agentId: string,
@@ -51,11 +52,14 @@ export class AhpConversation {
       [...this.peers.values()].some((peer) => !!peer.snapshot.chat?.activeTurn || peer.snapshot.uncertain)
     )
   }
-  warn(error: unknown): void {
+  warn(error: unknown, connection = false): void {
     if (this.closed) return
     const text = error instanceof Error ? error.message : 'The conversation could not be updated.'
-    if (this.notices.at(-1)?.text !== text)
-      this.notices.push({ kind: 'notice', turnId: `local:${randomUuid()}`, text, standing: true })
+    if (this.notices.at(-1)?.text !== text) {
+      const turnId = `local:${randomUuid()}`
+      this.notices.push({ kind: 'notice', turnId, text, standing: true })
+      if (connection) this.connectionNotices.add(turnId)
+    }
     this.onChange()
   }
   private changed(): void {
@@ -103,7 +107,7 @@ export class AhpConversation {
             this.peers.set(target.agentId, peer)
             peer.subscribe((view) => {
               if (this.closed) return
-              if (view.error) this.warn(new Error(view.error))
+              if (view.error) this.warn(new Error(view.error), true)
               this.changed()
               if (!view.connected && this.attached && !this.connecting) this.reconnect()
             })
@@ -114,6 +118,9 @@ export class AhpConversation {
       if (this.closed) return
       this.attached = true
       this.reconnectAttempts = 0
+      // A successful reconnect retires the interruption notices it answers.
+      for (let index = this.notices.length - 1; index >= 0; index--)
+        if (this.connectionNotices.delete(this.notices[index]!.turnId)) this.notices.splice(index, 1)
       this.changed()
     })().finally(() => {
       this.connecting = undefined
@@ -126,7 +133,7 @@ export class AhpConversation {
       () => {
         this.reconnectTimer = undefined
         void this.connect().catch((error) => {
-          this.warn(error)
+          this.warn(error, true)
           this.reconnect()
         })
       },

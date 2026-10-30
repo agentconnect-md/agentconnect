@@ -380,7 +380,8 @@ async function main(): Promise<void> {
     mode: () => config.AHP_MODE,
     ...(config.AHP_AUTHORIZATION_SERVER ? { authorizationServer: config.AHP_AUTHORIZATION_SERVER } : {}),
     verify: (credential, agentId, kind) => client.verifyAhpCredential(credential, agentId, kind),
-    daemon: (daemonId) => held.rdServer?.get(daemonId)
+    daemon: (daemonId) => held.rdServer?.get(daemonId),
+    log
   })
   // Desktop daemons dial in beside the daemons, and agent daemons' MCP for them is forwarded (computer-use.md §3.7).
   const computerRelay = createComputerRelay(server, {

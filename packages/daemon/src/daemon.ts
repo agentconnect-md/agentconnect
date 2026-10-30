@@ -3211,6 +3211,7 @@ export class Daemon {
     }
     return new AhpService({
       enabled: () => this.cfg.features.ahp.mode === 'on',
+      warn: (message) => this.log.warn(message),
       available: (auth) =>
         this.servesAgent(auth.agentId) && this.orgForAgent(auth.agentId) === auth.orgId && !this.draining,
       initializeMetadata: { 'agentconnect.md': { webchat: true, files: true, steering: true, mcpApps: true } },

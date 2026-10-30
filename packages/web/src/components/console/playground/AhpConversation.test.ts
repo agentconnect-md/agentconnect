@@ -79,6 +79,23 @@ describe('AHP conversation engine', () => {
     await vi.waitFor(() => expect(attachments[1]!.actions).toHaveLength(2))
     expect(attachments[0]!.actions).toHaveLength(1)
   })
+  it('retires the interruption notice once the automatic reconnect succeeds', async () => {
+    vi.useFakeTimers()
+    try {
+      const entry = open()
+      await entry.connect()
+      entry.warn(new Error('Turn refused'))
+      const peer = attachments[0]!
+      peer.emit({ connected: false, error: 'Connection interrupted.' })
+      expect(entry.notices.map((notice) => notice.text)).toEqual(['Turn refused', 'Connection interrupted.'])
+      vi.spyOn(peer, 'attach').mockImplementationOnce(async () => peer.emit({ connected: true, error: undefined }))
+      await vi.advanceTimersByTimeAsync(500)
+      await vi.waitFor(() => expect(peer.snapshot.connected).toBe(true))
+      await vi.waitFor(() => expect(entry.notices.map((notice) => notice.text)).toEqual(['Turn refused']))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('uses negotiated steering but queues a continuation', async () => {
     const entry = open()
     await entry.connect()
