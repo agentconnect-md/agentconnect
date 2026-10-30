@@ -148,6 +148,25 @@ describe('AHP checkpoint integration', () => {
     })
   })
 
+  it('keeps only the latest bounded plan snapshot on the session channel', async () => {
+    const { state } = await fixture()
+    await state.add(binding)
+    const plan = (turnId: string, entries: { content: string; status: string }[]) =>
+      state.output('physical', { conversationId: 'c', turnId, index: 1, event: { kind: 'plan', entries } })
+    await plan('first', [{ content: 'Read', status: 'completed' }])
+    await plan('second', [
+      { content: 'x'.repeat(600), status: 'in_progress' },
+      ...Array.from({ length: 60 }, (_, i) => ({ content: `step ${i}`, status: 'pending' }))
+    ])
+    const fields = (state.snapshot(binding.sessionUri) as { _meta: Record<string, { plan: unknown }> })._meta[
+      'agentconnect.md'
+    ]!.plan as { turnId: string; entries: { content: string }[] }
+    expect(fields.turnId).toBe('second')
+    expect(fields.entries).toHaveLength(50)
+    expect(fields.entries[0]!.content).toHaveLength(500)
+    expect(JSON.stringify(state.snapshot(chat))).not.toContain('step 1')
+  })
+
   it('continues from the last archive page into existing transcript history', async () => {
     const { checkpoints } = await fixture()
     const value: ChatState = {

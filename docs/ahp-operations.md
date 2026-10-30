@@ -142,6 +142,11 @@ snapshots survive daemon restarts and never pass through the CP. A snapshot
 larger than one AHP message is refused rather than truncated. Other
 `resource*` methods and the workspace file system are not served.
 
+AHP has no task-list or cost channel. The session's `_meta['agentconnect.md']`
+carries the latest turn's ACP plan as `plan` (at most 50 entries of 500
+characters) and the status snapshot, including token and cost totals, as
+`status`. Generic clients ignore both; the console's AHP Webchat renders them.
+
 Set `AHP_AUTHORIZATION_SERVER` to the `issuer` the CP serves at
 `/.well-known/oauth-authorization-server` (the `PUBLIC_MCP_URL` origin when set,
 otherwise `PUBLIC_CP_URL`). VS Code's Agents window can then resolve an auth
