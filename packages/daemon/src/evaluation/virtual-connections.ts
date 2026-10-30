@@ -568,6 +568,10 @@ export class VirtualSlackConnection implements PlatformConnection {
     return { code: false, owners: [] }
   }
 
+  async updateCodeContext(): Promise<boolean> {
+    return false
+  }
+
   async codeChannelApi(): Promise<never> {
     this.unmodelled('code channels')
   }
