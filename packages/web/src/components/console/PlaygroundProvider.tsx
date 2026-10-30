@@ -39,7 +39,7 @@ function AdapterBoundary({ children }: { children: ReactNode }) {
         const { getAgent, allSessions } = directory.current
         if ('agents' in target) return protocolFor(target.agents)
         // Until the session and its agent are loaded the choice stays open, so an early write does not pin legacy.
-        const agentId = allSessions.find((session) => session.id === target.sessionId)?.agentId
+        const agentId = allSessions.find((session) => session.id === target.sessionId)?.agentId ?? target.agentId
         const agent = agentId ? getAgent(agentId) : undefined
         return agent ? protocolFor([agent]) : undefined
       }),

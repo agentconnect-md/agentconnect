@@ -84,18 +84,33 @@ describe('attachment protocol selector', () => {
     expect(ahp.openPlayground).toHaveBeenCalledTimes(1)
     expect(legacy.openPlayground).toHaveBeenCalledWith(agent, [peer])
   })
-  it('leaves a session unpinned until its participants are known', () => {
-    const legacy = adapter('old'),
-      ahp = adapter('new'),
+  it('lets composer writes wait for the choice but pins an attachment started before it', () => {
+    const legacy = { ...adapter('old'), setPgImage: vi.fn(), pgAttach: vi.fn() } as unknown as PlaygroundData,
+      ahp = { ...adapter('new'), setPgImage: vi.fn(), pgAttach: vi.fn() } as unknown as PlaygroundData,
       pins = new Map<string, PlaygroundProtocol>()
     const choice: { protocol?: PlaygroundProtocol } = {}
     const ui = selectPlayground(legacy, ahp, pins, () => choice.protocol)
-    ui.pgSend('session', 'a', 'Early')
-    expect(legacy.pgSend).toHaveBeenCalledWith('session', 'a', 'Early')
-    expect(pins.has('session')).toBe(false)
+    ui.setPgImage('draft')
+    expect(pins.has('draft')).toBe(false)
+    ui.pgAttach('live', 'a', 'conv')
+    expect(pins.get('live')).toBe('legacy')
     choice.protocol = 'ahp'
-    ui.pgSend('session', 'a', 'Later')
-    expect(ahp.pgSend).toHaveBeenCalledWith('session', 'a', 'Later')
+    ui.setPgImage('draft')
+    ui.pgSend('live', 'a', 'Continue')
+    expect(ahp.setPgImage).toHaveBeenCalledWith('draft')
+    expect(pins.get('draft')).toBe('ahp')
+    expect(legacy.pgSend).toHaveBeenCalledWith('live', 'a', 'Continue')
+    expect(ahp.pgSend).not.toHaveBeenCalled()
+  })
+  it('decides an attach from the agent it names before the session list loads', () => {
+    const legacy = { ...adapter('old'), pgAttach: vi.fn() } as unknown as PlaygroundData,
+      ahp = { ...adapter('new'), pgAttach: vi.fn() } as unknown as PlaygroundData,
+      pins = new Map<string, PlaygroundProtocol>()
+    const ui = selectPlayground(legacy, ahp, pins, (target) =>
+      'sessionId' in target && target.agentId === 'capable' ? 'ahp' : undefined
+    )
+    ui.pgAttach('session', 'capable', 'conv')
+    expect(ahp.pgAttach).toHaveBeenCalledWith('session', 'capable', 'conv')
     expect(pins.get('session')).toBe('ahp')
   })
 })
