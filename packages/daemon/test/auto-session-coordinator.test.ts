@@ -252,13 +252,20 @@ describe('the coordinator’s outcomes', () => {
   it('posts and calls agents as any session does, and decides on delivered messages', async () => {
     const { ctx } = await setup()
     const decision = vi.fn(async () => ({ ok: true }))
-    const deps = { coordinatorDecision: decision } as never
+    const asked: { needsReply?: boolean }[] = []
+    const messageAgent = vi.fn(async (req: { needsReply?: boolean }) => {
+      asked.push(req)
+      return { delivered: true }
+    })
+    const deps = { coordinatorDecision: decision, messageAgent } as never
     for (const args of [
       { action: 'postMessage', channel: 'C1', message: 'Heads-up: the deploy is done.' },
       { action: 'callAgent', toAgent: 'billing', message: 'Is the invoice run done?' }
     ])
       await executeTool(ctx, 'sendMessage', args, deps).catch(() => undefined)
     expect(decision).not.toHaveBeenCalled()
+    // Its question always asks for the answer, which comes back to it as a report.
+    expect(asked).toEqual([expect.objectContaining({ needsReply: true })])
     await executeTool(ctx, 'sendMessage', { action: 'replyToMessage', messageId: 'msg-1.1', message: 'hi' }, deps)
     expect(decision).toHaveBeenCalledTimes(1)
   })

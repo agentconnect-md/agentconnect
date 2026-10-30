@@ -63,7 +63,8 @@ import {
   WRITE_MEMORY_ARGS,
   type MemoryOpsDeps
 } from './ops/memory.js'
-import type { MessagingDeps } from './ops/messaging.js'
+import { parseAgentTarget, type MessagingDeps } from './ops/messaging.js'
+import { COORDINATOR_MESSAGE_TOOLS } from '../auto-session/coordinator-prompt.js'
 import { sendMessage, validateSendMessageAction } from './ops/send-message-actions.js'
 import { getToolGuide, GET_TOOL_GUIDE_ARGS } from './ops/tool-guide.js'
 import {
@@ -438,6 +439,16 @@ export async function authorizeSessionPublication(
   await judgePlaceWrite(ctx, name, target, deps)
 }
 
+/** A coordinator's `callAgent` target with the answer requested (auto-session-mode.md §5.4); a malformed one is left for the call's own validation. */
+function askingForAnswer(target: unknown): unknown {
+  try {
+    const { toAgent } = parseAgentTarget(target)
+    return toAgent === undefined ? target : { agentId: toAgent, needsReply: true }
+  } catch {
+    return target
+  }
+}
+
 // Execute a daemon tool; the bridge wraps its result or error as an MCP response.
 export async function executeTool(
   ctx: SessionContext,
@@ -459,6 +470,17 @@ export async function executeTool(
     if (name === 'sendMessage' && args.action !== 'postMessage' && args.action !== 'callAgent') {
       if (!deps.coordinatorDecision) throw new Error('sendMessage: the coordinator is not available on this daemon')
       return await deps.coordinatorDecision(ctx, args)
+    }
+    // Its question to another agent always asks for the answer, which comes back to it as a report.
+    if (name === 'sendMessage' && args.action === 'callAgent')
+      args = { ...args, toAgent: askingForAnswer(args.toAgent) }
+    // A place tool that acts for a person names their message, whose sender and thread it acts on.
+    if (COORDINATOR_MESSAGE_TOOLS.has(name)) {
+      const { messageId, ...rest } = args
+      const found = deps.coordinatorMessage?.(ctx, messageId) ?? { error: 'is not available on this daemon' }
+      if ('error' in found) throw new Error(`${name}: ${found.error}`)
+      ctx = { ...ctx, forMessage: found.msg }
+      args = rest
     }
   }
   // assistant-mode.md §5.13: a getting-to-know task reads only its own place, whatever the arguments name.

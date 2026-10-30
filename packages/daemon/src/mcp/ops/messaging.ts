@@ -364,6 +364,11 @@ export interface MessagingDeps extends GatewayDeps {
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
   /** Backs a coordinator session's `sendMessage` (auto-session-mode.md §5.1); absent ⇒ unavailable. */
   coordinatorDecision?: (ctx: SessionContext, args: Record<string, unknown>) => Promise<unknown>
+  /** The person's message a coordinator's place-tool call names, or why it names none (§5.4); absent ⇒ unavailable. */
+  coordinatorMessage?: (
+    ctx: SessionContext,
+    messageId: unknown
+  ) => { msg: NonNullable<SessionContext['forMessage']> } | { error: string }
   /** Backs `messageTask` (send-message-guide.md §8): the caller's own task only; absent ⇒ unavailable. */
   continueSubsession?: (req: ContinueSubsessionReq) => Promise<MessageAgentResult>
   /** The transport's stable id of this tool call, when it has one, so a resent call is one submission. */

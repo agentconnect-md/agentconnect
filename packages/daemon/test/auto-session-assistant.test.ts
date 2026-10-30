@@ -7,6 +7,8 @@ import { Daemon } from '../src/daemon.js'
 import { coordinatorSessionTools } from '../src/auto-session/coordinator-prompt.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
+import { executeTool } from '../src/mcp/ops.js'
+import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
 import { isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { checkCoordinate } from '../src/session/subsession-coordinate.js'
 import { sessionKey } from '../src/store/local-store.js'
@@ -137,6 +139,85 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     )
     expect(opened).toMatchObject({ opening: true })
     expect(isCoordinatorCoordinate(opened.thread)).toBe(true)
+    await daemon.stop()
+  })
+
+  // A batch can start with a report; a place tool acts for the person whose message it names, never for the turn's first entry.
+  it('binds a place tool to the person’s message it names, in a batch that starts with a report', async () => {
+    const live: { d?: any; ctx?: SessionContext } = {}
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const results: unknown[] = []
+    let turns = 0
+    const at = new Date(Date.now() + 86_400_000).toISOString()
+    const { daemon, d, scope, route } = await boot(async (blocks) => {
+      turns += 1
+      if (turns === 1) return await held
+      const prompt = blocks.map((block) => block.text ?? '').join('\n')
+      const report = /<report id="(msg-[^"]+)">/.exec(prompt)![1]!
+      const deps = { ...live.d.mcp.deps, canRun: () => true }
+      const call = (name: string, args: Record<string, unknown>) =>
+        executeTool(live.ctx!, name, args, deps).catch((err: Error) => err.message)
+      results.push(await call('remind', { messageId: report, message: 'standup', at }))
+      results.push(await call('remind', { message: 'standup', at }))
+      results.push(await call('remind', { messageId: 'msg-3.1', message: 'standup', at }))
+    })
+    live.d = d
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    const coordinatorKey = sessionKey('slack', 'C1', coordinator, 'bot-a', scope)
+    await d.store.upsertSession({
+      key: coordinatorKey,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinator,
+      transportScope: scope,
+      acpSessionId: 'acp-coordinator',
+      sessionId: 'sid-coordinator',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    live.ctx = {
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinator,
+      transportScope: scope,
+      integrationId: 'int-bot-a',
+      isDm: false,
+      tools: coordinatorSessionTools(ASSISTANT_REMINDER_TOOLS)
+    } as SessionContext
+    expect(live.ctx.tools.find((tool) => tool.name === 'remind')!.inputSchema).toMatchObject({
+      required: expect.arrayContaining(['messageId'])
+    })
+    vi.spyOn(d, 'gatewayForIntegration').mockReturnValue({ postMessage: vi.fn(async () => {}) })
+    vi.spyOn(d, 'replyConnFor').mockReturnValue({ react: vi.fn(async () => {}), setStatus: vi.fn(async () => true) })
+
+    await route(slack('1.1', { sender: { id: 'U1', isBot: false } }))
+    await vi.waitFor(() => expect(turns).toBe(1), WAIT)
+    await d.collab.deliverDaemonReport({
+      agentId: 'bot-a',
+      caller: { platform: 'slack', channel: 'C1', thread: checkCoordinate('p-1'), transportScope: scope },
+      place: { platform: 'slack', channel: 'C1', transportScope: scope },
+      parentSessionId: 'sid-coordinator',
+      text: '[follow-up] nothing changed',
+      reportId: 'follow-up:p-1'
+    })
+    await route(slack('3.1', { sender: { id: 'U3', isBot: false }, text: 'remind me about standup tomorrow' }))
+    release()
+    await vi.waitFor(() => expect(results).toHaveLength(3), WAIT)
+    await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+    expect(results[0]).toMatch(/is a report/)
+    expect(results[1]).toMatch(/needs messageId/)
+    expect(results[2]).toMatchObject({ note: expect.stringContaining('Set.') })
+    const [reminder] = await d.store.assistantReminders.listOpen('bot-a', {
+      platform: 'slack',
+      channel: 'C1',
+      transportScope: scope
+    })
+    // Asked by the person whose message it named, and posted in that message's thread.
+    expect(reminder).toMatchObject({ requesterId: 'U3', targetThread: '3.1' })
     await daemon.stop()
   })
 

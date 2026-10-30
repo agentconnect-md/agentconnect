@@ -94,6 +94,11 @@ export class CoordinatorTurns {
     if (turn) turn.tail = ''
   }
 
+  /** A delivered message of the live turn, without holding it; undefined when the turn has none by that id. */
+  find(key: string, messageId: string): DeliveredMessage | undefined {
+    return this.turns.get(key)?.messages.find((candidate) => candidate.id === messageId)
+  }
+
   /** Hold a message for one call, or say why the call may not act on it. */
   reserve(key: string, messageId: string): { message: DeliveredMessage } | { error: string } {
     const turn = this.turns.get(key)

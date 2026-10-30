@@ -157,6 +157,17 @@ export class CoordinatorSessions {
     }
   }
 
+  /** The person's message a place-tool call acts for (§5.4): a channel message of the live turn, never a report. */
+  messageFor(ctx: SessionContext, messageId: unknown): { msg: NormalizedMessage } | { error: string } {
+    if (typeof messageId !== 'string' || messageId.trim() === '')
+      return { error: 'needs messageId: the id of the delivered channel message whose sender asked for this' }
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const message = this.turns.find(key, messageId)
+    if (!message) return { error: `messageId ${messageId} is not a channel message delivered in this turn` }
+    if (message.report) return { error: `${messageId} is a report; this acts only for a person's channel message` }
+    return { msg: message.msg }
+  }
+
   /** The coordinator that owns the conversation's tasks: the current one, for which a turn still running on a retired one acts (§8). */
   async taskOwner(
     agentId: string,

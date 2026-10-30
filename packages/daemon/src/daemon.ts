@@ -5003,6 +5003,7 @@ export class Daemon {
       replyToSession: (req) => this.collab.replyToSession(req),
       continueSubsession: (req) => this.collab.continueSubsession(req),
       coordinatorDecision: (ctx, args) => this.coordinators.decide(ctx, args),
+      coordinatorMessage: (ctx, messageId) => this.coordinators.messageFor(ctx, messageId),
       viewSessionStatus: (req) => Promise.resolve(this.collab.viewSessionStatus(req)),
       rootPostRelation: (req) => this.collab.rootPostRelation(req),
       spawnChannelRootSession: (req) => this.collab.spawnChannelRootSession(req),
@@ -5042,8 +5043,8 @@ export class Daemon {
         take: async (ctx, input) => {
           const key = this.sessionKeyOf(ctx)
           const sessionId = await this.store.ensureOutwardSessionId(key, ctx.agentId, this.clock.now())
-          // The thread the taking turn replies in, where the follow-up's reports reply too.
-          const replyThread = this.activeTurnShare.get(key)?.thread
+          // The thread the taking turn replies in, where the follow-up's reports reply too; a coordinator's, the asking message's.
+          const replyThread = ctx.forMessage ? answerThreadOf(ctx.forMessage) : this.activeTurnShare.get(key)?.thread
           return await this.followUpChecks.take({
             agentId: ctx.agentId,
             origin: placeOfSession(ctx),
@@ -5078,7 +5079,7 @@ export class Daemon {
       assistantReminders: {
         ledger: this.store.assistantReminders,
         requesterFor: async (ctx) => {
-          const msg = this.liveTurn(ctx)?.msg
+          const msg = ctx.forMessage ?? this.liveTurn(ctx)?.msg
           return msg && msg.source === 'user' && !msg.sender.isBot && msg.sender.id ? msg.sender.id : undefined
         },
         now: () => this.clock.now()
@@ -5159,8 +5160,13 @@ export class Daemon {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
         const t = this.activeTurnShare.get(key)
         if (!t) return { ok: false, reason: 'no-turn' }
-        // §3.2's two coordinate gates, checked BEFORE any file I/O: a headless turn must
-        // post nothing, and a postless A2A child has no conversation despite a live gateway.
+        // A coordinator's place tool acts for one delivered message, so it targets that message's thread (auto-session-mode.md §5.4).
+        if (ctx.forMessage) {
+          const { headless: _h, synthetic: _s, replyTo: _r, ...place } = t
+          const thread = answerThreadOf(ctx.forMessage)
+          return { ok: true, ...place, ...(thread !== undefined ? { thread } : {}) }
+        }
+        // §3.2's two coordinate gates, checked before any file I/O: a headless turn posts nothing, a postless A2A child has no conversation.
         if (t.headless) return { ok: false, reason: 'headless' }
         if (t.synthetic) return { ok: false, reason: 'no-conversation' }
         const { headless: _headless, synthetic: _synthetic, ...target } = t
@@ -11782,7 +11788,9 @@ export class Daemon {
   /** The person whose message started the session's live turn, as an item follower identity (assistant-mode.md §5.4). */
   private async assistantAskerFor(ctx: SessionContext): Promise<string | undefined> {
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-    const msg = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)?.entry.msg
+    // A coordinator's place tool names the message it acts for (auto-session-mode.md §5.4).
+    const msg =
+      ctx.forMessage ?? [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)?.entry.msg
     if (!msg) return undefined
     const integration = ctx.integrationId ? this.integrationConfigById(ctx.integrationId) : undefined
     return askerIdentity(msg, integration ? await this.tenantScopeForIntegration(integration) : undefined)
@@ -13473,10 +13481,11 @@ export class Daemon {
     // A coordinate with no message behind it (an agent call) has no kind to default by, so only its listed mode counts.
     if (msg.isDm === undefined && msg.isGroupDm === undefined) return conversationSessionMode(int, msg.channel)
     const kind = conversationKindOf({ ...msg, platform: int.platform })
+    const assistantMode = assistantModeOn(this.agents.get(agentId))
     return conversationSessionMode(int, msg.channel, {
-      assistantMode: assistantModeOn(this.agents.get(agentId)),
+      assistantMode,
       kind,
-      auto: this.cfg.features.autoSessionMode
+      auto: assistantMode && this.cfg.features.autoSessionMode
     })
   }
 

@@ -239,10 +239,13 @@ together with the summary. Only a task calls it, for itself; both kinds can.
 
 - Only AgentConnect tools: `sendMessage` (the task actions and `replyToMessage`, plus `postMessage`
   and `callAgent`), `listTasks`, memory, and assistant mode's follow-up tools.
-  - `postMessage` and `callAgent` run as they do in any session; `callAgent`'s answer comes back as a
-    report.
+  - `postMessage` and `callAgent` run as they do in any session. `callAgent` always asks for an
+    answer, which comes back as a report.
   - The place tools are those its place's long session is offered: `followUp`, `getToKnow`, `propose`,
     `remind`, `listReminders` and `cancelReminder`.
+  - A batch can hold several people's messages and reports, so `followUp`, `getToKnow` and `remind`,
+    which act for the person who asked, name that person's message by `messageId`. They act for its
+    sender and answer in its thread; a report or an unknown id is refused.
 - A read-only runtime mode and no workspace (an empty directory). Anything that needs work becomes a
   task.
 - An ACP session on the agent's own runtime with the coordinator's own prompt. In the first version
@@ -395,7 +398,9 @@ On 2026-10-30 the shipped prompt and tools (`packages/daemon/src/auto-session/co
 passed 30 / 30 again on `claude-acp` and `codex-acp` (3 repetitions each); the other runtimes were not
 rerun. The same day, with reports, `postMessage`, `callAgent` and the place tools added to the prompt
 and the report scenario added to the probe, both passed 33 / 33 (3 repetitions each); every report was
-answered with `replyToMessage` naming the PR it reported.
+answered with `replyToMessage` naming the PR it reported. After the place tools came to name their
+message by `messageId`, `codex-acp` passed 33 / 33 again and `claude-acp` 32 / 33. Its one failure was
+an `ignore-chatter` turn that timed out after 180 s with no call; that scenario passed 3 / 3 on a rerun.
 
 The candidate prompt asks the coordinator to express every outcome as a call and to end its turn
 with `AC_NO_RESPONSE`; the judge still accepts a one-message turn's text as its reply (§4.3).

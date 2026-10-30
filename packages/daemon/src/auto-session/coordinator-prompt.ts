@@ -1,7 +1,7 @@
 // The coordinator session's prompt, tool surface and turn input (auto-session-mode.md §4, §5.4, §9); the runtime matrix probes these texts.
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
 import { NO_RESPONSE_SENTINEL } from '../session/no-response.js'
-import type { ToolDescriptor } from '../tool-schema/descriptor.js'
+import { obj, type ToolDescriptor } from '../tool-schema/descriptor.js'
 
 /** A delivered message's id is its platform id behind this prefix, so a bare timestamp is never read as a number (§4.3). */
 export const COORDINATOR_MESSAGE_ID_PREFIX = 'msg-'
@@ -108,11 +108,27 @@ export function coordinatorTools(): ToolDescriptor[] {
 // What the coordinator keeps for its place as assistant mode's long session: follow-ups, proposals and reminders (§3.4, §5.4).
 const PLACE_TOOLS = new Set(['followUp', 'getToKnow', 'propose', 'remind', 'listReminders', 'cancelReminder'])
 
+/** The place tools that act for one person's request, so in a batch each call names that person's message by `messageId`. */
+export const COORDINATOR_MESSAGE_TOOLS: ReadonlySet<string> = new Set(['followUp', 'getToKnow', 'remind'])
+
+/** A place tool as the coordinator is offered it: one acting for a person names their message. */
+function placeTool(tool: ToolDescriptor): ToolDescriptor {
+  const schema = tool.inputSchema
+  if (!COORDINATOR_MESSAGE_TOOLS.has(tool.name) || 'oneOf' in schema) return tool
+  const messageId = str('Id of the delivered channel message whose sender asked for this, copied exactly.')
+  return {
+    ...tool,
+    inputSchema: obj({ ...schema.properties, messageId }, [...schema.required, 'messageId'])
+  }
+}
+
 /** A coordinator session's whole tool set: its decision tools, and the memory and place tools among the session's own. */
 export function coordinatorSessionTools(tools: readonly ToolDescriptor[]): ToolDescriptor[] {
   return [
     ...coordinatorTools(),
-    ...tools.filter((tool) => MEMORY_TOOL_ACCESS_MODES[tool.name] !== undefined || PLACE_TOOLS.has(tool.name))
+    ...tools.flatMap((tool) =>
+      MEMORY_TOOL_ACCESS_MODES[tool.name] !== undefined ? [tool] : PLACE_TOOLS.has(tool.name) ? [placeTool(tool)] : []
+    )
   ]
 }
 
@@ -159,7 +175,7 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '- Each call names its message by its id, copied exactly as a string, and each message gets at most one outcome.',
     '- A message marked mentions-you="yes" is addressed to you and must not be ignored.',
     '- When someone asks you to follow up on, propose or remind them of something and you are given the tool for it, ' +
-      'call it and reply to their message as well.',
+      "call it with their message's id as messageId and reply to their message as well.",
     '- Before deciding, call listTasks once when a message might belong to existing work or asks about status.',
     "- Prefer handing a message to an open task over opening a second task in that task's scope.",
     peersLine(input),
