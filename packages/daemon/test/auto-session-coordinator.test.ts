@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
 import {
   coordinatorPrompt,
   coordinatorSessionTools,
@@ -458,7 +459,13 @@ describe('the coordinate reservation', () => {
   })
 })
 
-function scaffold(features: Record<string, unknown> = { autoSessionMode: true }): string {
+/** What a test changes in the agent's runtime definition or workspace. */
+interface Setup {
+  runtime?: Record<string, unknown>
+  workspace?: Record<string, unknown>
+}
+
+function scaffold(features: Record<string, unknown> = { autoSessionMode: true }, setup: Setup = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-coordinator-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -466,7 +473,7 @@ function scaffold(features: Record<string, unknown> = { autoSessionMode: true })
       version: 1,
       controlPlane: { enabled: false },
       features,
-      runtimes: { claude: { command: 'node', args: ['unused'] } }
+      runtimes: { claude: { command: 'node', args: ['unused'], ...setup.runtime } }
     })
   )
   const adir = join(root, 'agents', 'bot-a')
@@ -478,7 +485,7 @@ function scaffold(features: Record<string, unknown> = { autoSessionMode: true })
       name: 'bot-a',
       status: 'active',
       runtime: 'claude',
-      workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
+      workspace: { mode: 'from-scratch', path: join(adir, 'workspace'), ...setup.workspace },
       integrations: [
         {
           id: 'int-bot-a',
@@ -502,7 +509,8 @@ async function boot(
     blocks: { type: string; text?: string }[],
     say: (text: string) => void
   ) => Promise<unknown>,
-  cancel: (sessionId: string) => void = () => {}
+  cancel: (sessionId: string) => void = () => {},
+  setup: Setup = {}
 ) {
   let sessions = 0
   let onUpdate: (sessionId: string, update: unknown) => void = () => {}
@@ -518,7 +526,7 @@ async function boot(
     cancel: vi.fn(async (sessionId: string) => cancel(sessionId)),
     stop: vi.fn()
   }
-  const root = scaffold()
+  const root = scaffold(undefined, setup)
   const daemon = new Daemon({
     root,
     hostFactory: (_agent, update) => {
@@ -600,6 +608,78 @@ describe('auto conversations route to the coordinator', () => {
     expect(prompts[1]).not.toContain('[U1] second')
     expect(host.prompt).toHaveBeenCalledTimes(2)
     expect((host.newSession.mock.calls[0] as unknown[])[0]).toBe(join(root, 'coordinators', 'bot-a'))
+    await daemon.stop()
+  })
+
+  it('opens a host of its own in an empty directory inside the agent’s, with no workspace roots', async () => {
+    // A runtime whose MCP servers are per process gives each session a host of its own.
+    const { daemon, d, host, route, root } = await boot(
+      async () => 'end_turn',
+      () => {},
+      { runtime: { sessionMcpServers: 'per-process' } }
+    )
+    await route(slack('1.1', { text: 'first' }))
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
+    await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+    const dir = join(root, 'agents', 'bot-a', 'coordinator')
+    expect((host.newSession.mock.calls[0] as unknown[])[0]).toBe(dir)
+    expect([...d.hostLaunch.values()].map((launch: { cwd: string }) => launch.cwd)).toContain(dir)
+    await daemon.stop()
+  })
+
+  it('takes shared isolation where the agent isolates its sessions, so it never has a checkout of its own', async () => {
+    const { daemon, d, host, route, root } = await boot(
+      async () => 'end_turn',
+      () => {},
+      { workspace: { mode: 'git-repo', gitRepo: 'https://example.test/repo.git', isolation: 'session' } }
+    )
+    d.prepareAgentWorkspace = vi.fn(async () => join(root, 'agents', 'bot-a', 'workspace'))
+    await route(slack('1.1', { text: 'first' }))
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
+    await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    const coordinator = await d.store.currentAppendCoordinate('bot-a', 'C1', scope, 'coordinator')
+    expect(await d.store.getSession(sessionKey('slack', 'C1', coordinator, 'bot-a', scope))).toMatchObject({
+      workspaceIsolation: 'shared'
+    })
+    expect((host.newSession.mock.calls[0] as unknown[])[0]).toBe(join(root, 'coordinators', 'bot-a'))
+    await daemon.stop()
+  })
+
+  it('starts on a host of its own under srt, whose shim hides the daemon’s directories', async () => {
+    const { daemon, d } = await boot(async () => 'end_turn')
+    const coordinator = sessionKey('slack', 'C1', coordinatorCoordinate(1), 'bot-a')
+    const thread = sessionKey('slack', 'C1', '1.1', 'bot-a')
+    expect(d.hostKeyFor('bot-a', coordinator)).toBe(agentHostKey('bot-a'))
+    d.agents.get('bot-a').execution = 'srt'
+    expect(d.hostKeyFor('bot-a', coordinator)).toBe(sessionHostKey('bot-a', coordinator))
+    expect(d.hostKeyFor('bot-a', thread)).toBe(agentHostKey('bot-a'))
+    await daemon.stop()
+  })
+
+  it('makes its empty directory in the agent’s pod on the pool, once the pod is bound, and never on an executor', async () => {
+    const { daemon, d } = await boot(async () => 'end_turn')
+    const key = sessionKey('slack', 'C1', coordinatorCoordinate(1), 'bot-a')
+    const made: string[] = []
+    const workspaces = d.workspaces
+    const fs = { mkdir: vi.fn(async (path: string) => void made.push(path)) }
+    const plane = d.k8sPlane
+    try {
+      d.k8sPlane = {}
+      d.workspaces = { ...workspaces, offDiskFsFor: () => fs, sandboxMountFor: () => '/agent/' }
+      expect(await d.coordinatorDir('bot-a', key, false)).toBe('/agent/.agentconnect/coordinator')
+      expect(made).toEqual(['/agent/.agentconnect/coordinator'])
+      // A pod not bound yet makes nothing on this disk: the session opens in the agent's directory.
+      d.workspaces = { ...workspaces, offDiskFsFor: () => 'unbound', sandboxMountFor: () => undefined }
+      expect(await d.coordinatorDir('bot-a', key, true)).toBeUndefined()
+    } finally {
+      d.k8sPlane = plane
+      d.workspaces = workspaces
+    }
+    const placed = d.placedSession
+    d.placedSession = () => ({ subject: 'placed' })
+    expect(await d.coordinatorDir('bot-a', key, true)).toBeUndefined()
+    d.placedSession = placed
     await daemon.stop()
   })
 

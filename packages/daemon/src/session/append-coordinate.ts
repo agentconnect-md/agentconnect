@@ -36,6 +36,11 @@ export function coordinatorCoordinate(ts: number): string {
   return `${COORDINATOR_COORDINATE_PREFIX}${ts}`
 }
 
+/** Whether a session key is a coordinator's, its coordinate inside the key (auto-session-mode.md §4). */
+export function isCoordinatorSessionKey(key: string | null | undefined): boolean {
+  return typeof key === 'string' && key.includes(`:${COORDINATOR_COORDINATE_PREFIX}`)
+}
+
 /** Which session a conversation coordinate names: the one `append` session or the `auto` coordinator. */
 export type ConversationCoordinateKind = 'append' | 'coordinator'
 

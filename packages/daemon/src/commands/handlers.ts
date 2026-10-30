@@ -21,14 +21,14 @@ import type { Logger } from '../log.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import { routeRules, type RouteVia } from '../router/routing-table.js'
-import {
-  conversationAdmitted,
-  conversationSessionMode,
-  integrationRouting,
-  type RoutingRule
-} from '../router/routing-rule.js'
+import { conversationAdmitted, integrationRouting, type RoutingRule } from '../router/routing-rule.js'
 import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
-import { appendCoordinateTs, isAppendCoordinate, isCoordinatorCoordinate } from '../session/append-coordinate.js'
+import {
+  appendCoordinateTs,
+  isAppendCoordinate,
+  isCoordinatorCoordinate,
+  type ConversationCoordinateKind
+} from '../session/append-coordinate.js'
 import { transcriptCoords } from '../session/session-manager.js'
 import {
   CommandChromeRegistry,
@@ -121,6 +121,12 @@ export interface CommandHost {
   ): Promise<string | undefined>
   /** Whether this conversation's root is one session for this target (append, or `auto`'s coordinator), read from the mode alone. */
   conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean
+  /** The one session a conversation's root keys on for this target: its append session, its coordinator under `auto`, or none. */
+  rootCoordinateKind(
+    agentId: string,
+    integrationId: string | undefined,
+    at: Pick<NormalizedMessage, 'channel'> & Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm'>>
+  ): ConversationCoordinateKind | undefined
   /** A coordinator's `!new` hands its threaded tasks to the session that succeeds it (auto-session-mode.md §8). */
   adoptCoordinatorTasks(agentId: string, fromKey: string, toKey: string): Promise<void>
   mergedRulesForSource(srcIntegrationIds?: readonly string[]): RoutingRule[]
@@ -1238,7 +1244,7 @@ export class CommandHandlers {
     )?.key
   }
 
-  /** A platform's own "new chat" gesture: rotate each append conversation it reaches, as `!new` does; returns how many rotated. */
+  /** A platform's own "new chat" gesture: rotate each append conversation or coordinator it reaches, as `!new` does; returns how many rotated. */
   async startNewAppendSessions(
     platform: string,
     channel: string,
@@ -1252,16 +1258,26 @@ export class CommandHandlers {
       const integration = agent.integrations.find(
         (candidate) => candidate.platform === platform && srcIntegrationIds.includes(candidate.id)
       )
-      if (!integration || conversationSessionMode(integration, channel) !== 'append') continue
-      if (!conversationAdmitted(integrationRouting(integration), channel)) continue
+      if (!integration) continue
+      // The gesture names no message, so the channel id alone tells a DM from a room.
+      const kind = this.host.rootCoordinateKind(agentId, integration.id, { channel, isDm: false, isGroupDm: false })
+      if (kind === undefined || !conversationAdmitted(integrationRouting(integration), channel)) continue
       // Read-only first: a conversation nobody has spoken in has nothing to rotate, and its first message mints anyway.
-      const current = await this.host.store().currentAppendCoordinate(agentId, channel, transportScope)
+      const current = await this.host.store().currentAppendCoordinate(agentId, channel, transportScope, kind)
       if (current === undefined) continue
       // A coordinate minted at or after the new conversation began already belongs to it: a replayed event rotates nothing.
       if (notBefore !== undefined && (appendCoordinateTs(current) ?? 0) >= notBefore) continue
       const now = notBefore === undefined ? Date.now() : Math.max(Date.now(), notBefore)
-      await this.host.store().advanceAppendCoordinate(agentId, channel, current, transportScope, now)
-      this.logSessionAction('new', sessionKey(platform, channel, current, agentId, transportScope), actor)
+      const next = await this.host.store().advanceAppendCoordinate(agentId, channel, current, transportScope, now)
+      const key = sessionKey(platform, channel, current, agentId, transportScope)
+      // A new chat resets the coordinator as a root `!new` does: its threaded tasks keep working (auto-session-mode.md §8).
+      if (kind === 'coordinator' && isCoordinatorCoordinate(next) && next !== current)
+        await this.host.adoptCoordinatorTasks(
+          agentId,
+          key,
+          sessionKey(platform, channel, next, agentId, transportScope)
+        )
+      this.logSessionAction('new', key, actor)
       rotated++
     }
     return rotated
