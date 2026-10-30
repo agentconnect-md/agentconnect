@@ -307,7 +307,7 @@ describe('SlackConnection.listBotChannels', () => {
     }
   }
 
-  it('paginates users.conversations and maps to {id,name,isPrivate}, skipping DMs', async () => {
+  it('paginates membership and identifies Code sessions, excluding DMs and archived channels', async () => {
     const conn = new SlackConnection(
       deps() as any,
       () =>
@@ -320,14 +320,19 @@ describe('SlackConnection.listBotChannels', () => {
             ],
             response_metadata: { next_cursor: 'page2' }
           },
-          { channels: [{ id: 'C3', name: 'releases' }] }
+          {
+            channels: [
+              { id: 'C3', name: 'code-task', properties: { record_channel: { record_type: 'agent_channel' } } },
+              { id: 'C4', name: 'archived-task', is_archived: true }
+            ]
+          }
         ]) as any
     )
     const channels = await conn.listBotChannels()
     expect(channels).toEqual([
-      { id: 'C1', name: 'deploys', isPrivate: false, externalReason: null },
-      { id: 'C2', name: 'ops', isPrivate: true, externalReason: null },
-      { id: 'C3', name: 'releases', isPrivate: false, externalReason: null }
+      { id: 'C1', name: 'deploys', isPrivate: false, isCodeSession: false, externalReason: null },
+      { id: 'C2', name: 'ops', isPrivate: true, isCodeSession: false, externalReason: null },
+      { id: 'C3', name: 'code-task', isPrivate: false, isCodeSession: true, externalReason: null }
     ])
   })
 

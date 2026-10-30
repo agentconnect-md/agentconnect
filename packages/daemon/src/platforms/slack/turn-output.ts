@@ -606,8 +606,8 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       return
     }
     case 'plan':
-      // A code channel (its session coordinate is the channel) also keeps the plan in its Plan tab.
-      if (p.plan.sessionThread === p.plan.channel) conn.writePlanCanvas(p.plan.channel, action.markdown)
+      // A code channel keeps its lifecycle and Plan tab on the channel, independent of the reply target.
+      if (p.plan.statusThread === p.plan.channel) conn.writePlanCanvas(p.plan.channel, action.markdown)
       // Block Kit, not text: the checklist is a native checkbox list (slack/render.ts
       // renderPlan). Same post-once/edit-thereafter contract as `progress` — `action.text`
       // rides along as the notification/fallback string only.

@@ -56,7 +56,7 @@ export interface TurnPlan {
   readonly platform: string
   readonly isDm: boolean
   readonly channel: string
-  /** The platform thread posts, chrome and thread reads address; absent, the turn speaks at the conversation root. */
+  /** The physical reply target for message bodies, streams and shares; absent means the conversation root. */
   readonly thread?: string
   /** The provider's lifecycle and transcript coordinate, independent of a physical reply override. */
   readonly statusThread: string

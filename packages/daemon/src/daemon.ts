@@ -11497,20 +11497,20 @@ export class Daemon {
   /** A running task shows the thread of the turn that asked for it as working, until its row leaves `open`. */
   private holdSlackForTask(childKey: string, parentKey: string): void {
     for (const p of this.pending.values()) {
-      if (p.plan.sessionKey !== parentKey || p.plan.platform !== 'slack' || !p.conn || !p.plan.thread) continue
+      if (p.plan.sessionKey !== parentKey || p.plan.platform !== 'slack' || !p.conn) continue
       const previous = this.taskSlackHolds.get(childKey)
       this.taskSlackHolds.set(childKey, {
         agentId: p.plan.agentId,
         integrationId: p.plan.integrationId,
         conn: p.conn,
         channel: p.plan.channel,
-        thread: p.plan.thread,
+        thread: p.plan.statusThread,
         options: { ...p.plan.statusOptions, sessionKey: childKey }
       })
       // A round asked for from another thread moves the hold, so the thread it leaves is settled.
       if (
         previous &&
-        (previous.conn !== p.conn || previous.channel !== p.plan.channel || previous.thread !== p.plan.thread)
+        (previous.conn !== p.conn || previous.channel !== p.plan.channel || previous.thread !== p.plan.statusThread)
       )
         this.settleSlackSlot(previous.conn, previous.channel, previous.thread)
       return
@@ -17333,7 +17333,7 @@ export class Daemon {
     const replaced = (await ctx.acknowledgement?.replace(notice).catch(() => false)) === true
     if (ctx.replyConn) {
       // Settle the Slack slot (a sibling may still be working); Telegram's typing hint expires on its own.
-      this.settleSlackSlot(ctx.replyConn, ctx.channel, ctx.thread, ctx.sessionKey)
+      this.settleSlackSlot(ctx.replyConn, ctx.channel, ctx.statusThread, ctx.sessionKey)
       const chrome = turnChromeFor(ctx.platform).chromeMarkedNotices
       if (!replaced && chrome)
         void (ctx.replyConn as SlackConnection).postMessage(ctx.channel, notice, ctx.thread, {
@@ -19039,7 +19039,7 @@ export class Daemon {
     const indicatorShown = this.showActivity(
       replyConn,
       msg.channel,
-      plan.thread,
+      plan.statusThread,
       plan.startupActivityLabel,
       plan.statusOptions
     )
@@ -19224,7 +19224,7 @@ export class Daemon {
   /** Done with the activity indicator: settle the Slack slot, unless a newer turn displaced this one and owns it. */
   private clearTurnActivity(run: TurnRun): void {
     if (run.entry.displacedByNewerTurn) return
-    this.settleSlackSlot(run.replyConn, run.plan.channel, run.plan.thread, run.plan.sessionKey)
+    this.settleSlackSlot(run.replyConn, run.plan.channel, run.plan.statusThread, run.plan.sessionKey)
   }
 
   /**
@@ -20614,7 +20614,7 @@ export class Daemon {
     }
     // Startup observers have settled; a cold host's initial activity now yields to its ordinary turn.
     if (!plan.hostAlreadyRunning)
-      void this.showActivity(replyConn, plan.channel, plan.thread, 'is thinking…', plan.statusOptions)
+      void this.showActivity(replyConn, plan.channel, plan.statusThread, 'is thinking…', plan.statusOptions)
     // Post/refresh the session status bar up front — with the model now known (session
     // created) plus any usage carried over from prior turns — so it sits at the top of
     // the thread before the reply streams in.
@@ -21803,7 +21803,7 @@ export class Daemon {
       // cancels the CardKit entity. Exact lookup — no core fallback.
       this.turnSurfaces.exact(live.plan.platform)?.onSuppress?.(live)
       if (!live.entry.displacedByNewerTurn)
-        this.settleSlackSlot(live.conn, live.plan.channel, live.plan.thread, live.plan.sessionKey)
+        this.settleSlackSlot(live.conn, live.plan.channel, live.plan.statusThread, live.plan.sessionKey)
       if (live.webchat && !live.webchat.doneSent) {
         live.webchat.doneSent = true
         live.webchat.sink.done({
@@ -23368,7 +23368,7 @@ export class Daemon {
       if (p.outputSuppressed && !opts.allowWhenSuppressed) return
       // The turn-final status clear settles the ONE shared Slack slot: a surviving sibling's `processing` takes it over.
       if (action.kind === 'set-status' && action.text === '' && p.plan.platform === 'slack') {
-        this.settleSlackSlot(p.conn, p.plan.channel, p.plan.thread, p.plan.sessionKey)
+        this.settleSlackSlot(p.conn, p.plan.channel, p.plan.statusThread, p.plan.sessionKey)
         return
       }
       return this.turnSurfaces
