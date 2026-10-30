@@ -18,6 +18,10 @@ import {
 /** POST JSON-RPC bodies are small; cap generously. GET (SSE) carries no body. */
 const MCP_BODY_LIMIT = 4 * 1024 * 1024
 
+// Relay-made failures avoid 502/504: a CDN in front of the relay swaps those for its own body, hiding the reason.
+const MISCONFIGURED = 424 // the binding cannot work until an admin repairs it
+const UNAVAILABLE = 503 // transient; a retry can succeed
+
 // Hop-by-hop headers (RFC 7230 §6.1) + auth/host, stripped before forwarding upstream.
 const STRIP_REQUEST_HEADERS = new Set([
   'connection',
@@ -133,7 +137,7 @@ async function serveOpenConnector(
   const profile = readBindingHeader(up.headers, OPEN_CONNECTOR_ALIAS_HEADER)
   if (!service || !profile) {
     return reply
-      .code(502)
+      .code(MISCONFIGURED)
       .send({ jsonrpc: '2.0', id: null, error: { code: -32603, message: 'incomplete connector binding' } })
   }
 
@@ -153,7 +157,7 @@ async function serveOpenConnector(
   } catch (e) {
     deps.log.warn(`${deps.logPrefix}: open-connector request failed: ${e instanceof Error ? e.message : String(e)}`)
     return reply
-      .code(502)
+      .code(UNAVAILABLE)
       .send({ jsonrpc: '2.0', id: null, error: { code: -32603, message: 'open-connector unavailable' } })
   }
 }
@@ -165,9 +169,7 @@ async function serveOpenConnector(
  * the agent bearer for the real upstream headers, and streams the exchange through (SSE
  * passthrough). The relay does NOT parse MCP — it is a byte/stream reverse proxy.
  * Supports Streamable HTTP (single endpoint) only; legacy HTTP+SSE is out of scope.
- * Two upstream statuses are contained rather than relayed — 3xx and 401/403 — because each
- * lets the upstream route the caller past this boundary (around the SSRF gate, or into the
- * upstream's own OAuth). Both surface as an opaque 502; the relay's own 401s stay 401.
+ * Upstream 3xx and 401/403 are contained as a 424, never relayed; the relay's own 401s stay 401.
  */
 function registerGrantProxy(app: FastifyInstance, deps: GrantProxyDeps): void {
   void app.register(async (scope) => {
@@ -203,30 +205,25 @@ function registerGrantProxy(app: FastifyInstance, deps: GrantProxyDeps): void {
         try {
           target = new URL(up.upstreamUrl)
         } catch {
-          return reply.code(502).send({ error: 'bad upstream url' })
+          return reply.code(MISCONFIGURED).send({ error: 'bad upstream url' })
         }
         if (target.protocol !== 'http:' && target.protocol !== 'https:') {
-          return reply.code(502).send({ error: 'unsupported upstream scheme' })
+          return reply.code(MISCONFIGURED).send({ error: 'unsupported upstream scheme' })
         }
-        // URL userinfo is an implicit Authorization source in Node's client and
-        // bypasses the reviewed header-injection contract. New CP writes reject
-        // it too; enforce again at the egress boundary for legacy/stale bindings.
+        // URL userinfo would be implicit upstream auth outside the injected headers; stale bindings can still carry it.
         if (target.username || target.password) {
-          return reply.code(502).send({ error: 'upstream url credentials rejected' })
+          return reply.code(MISCONFIGURED).send({ error: 'upstream url credentials rejected' })
         }
         // Forward the incoming query string (rare for MCP) when the upstream url has none.
         const qi = (req.raw.url ?? '').indexOf('?')
         if (qi >= 0 && !target.search) target.search = (req.raw.url ?? '').slice(qi)
 
-        // URL.hostname keeps the brackets on an IPv6 literal (`[::1]`), which isIP()
-        // rejects — strip them so the literal check below actually fires.
+        // Strip IPv6-literal brackets (`[::1]`), which isIP() rejects, so the literal check fires.
         const host = target.hostname.replace(/^\[|\]$/g, '')
         const allowPrivate = deps.allowlist.has(host.toLowerCase())
-        // An IP-LITERAL host is never passed to `lookup` (node connects directly), so the
-        // guarded-lookup pinning wouldn't run — validate literals here or the SSRF guard is
-        // bypassed by e.g. http://169.254.169.254 or http://[::1]. Hostnames are guarded+pinned below.
+        // An IP literal never reaches the guarded `lookup`, so check it here; hostnames are guarded and pinned below.
         if (!allowPrivate && isIP(host) && isBlockedIp(host)) {
-          return reply.code(502).send({ error: 'blocked upstream address' })
+          return reply.code(MISCONFIGURED).send({ error: 'blocked upstream address' })
         }
         const requestFn = target.protocol === 'https:' ? httpsRequest : httpRequest
 
@@ -244,23 +241,20 @@ function registerGrantProxy(app: FastifyInstance, deps: GrantProxyDeps): void {
             },
             (upstreamRes) => {
               const status = upstreamRes.statusCode ?? 502
-              // Never relay Location to the MCP client. `fetch` follows 3xx by
-              // default, which would let an upstream redirect the daemon around
-              // this proxy's DNS/private-address guard. MCP endpoints are pinned
-              // installation metadata; owners must register the final URL.
+              // Never relay a redirect: the client would follow it around the SSRF guard; register the final URL.
               if (status >= 300 && status < 400) {
                 upstreamRes.resume()
-                void reply.code(502).send({ error: 'upstream redirect rejected' })
+                void reply.code(MISCONFIGURED).send({ error: 'upstream redirect rejected' })
                 resolve()
                 return
               }
-              // Never relayed (as with 3xx): the upstream challenge would pull the caller's MCP client into
-              // the upstream's own OAuth against this proxy url, and the token it wins is stripped as the
-              // grant key. The rejected credential is the binding's — the CP repairs it, never the caller.
+              // Never relayed: the challenge would start the upstream's own OAuth; an admin repairs the credential.
               if (status === 401 || status === 403) {
                 upstreamRes.resume()
                 deps.log.warn(`${deps.logPrefix}: upstream rejected the binding credential (${status})`)
-                void reply.code(502).send({ error: 'upstream authorization failed' })
+                void reply.code(MISCONFIGURED).send({
+                  error: `upstream rejected this ${deps.noun}'s configured credential; an admin must update it`
+                })
                 resolve()
                 return
               }
@@ -280,15 +274,14 @@ function registerGrantProxy(app: FastifyInstance, deps: GrantProxyDeps): void {
             }
           )
           upstreamReq.on('error', (err) => {
-            // SSRF block surfaces here (guarded lookup errors the connection) — never leak the url/headers.
-            // Do not include the upstream URL, DNS error, headers, or body: all can
-            // contain connection-specific secret material. The opaque id is enough.
-            void err
+            // A guarded-lookup SSRF block lands here too; log only the opaque id, never the url, DNS error or headers.
             deps.log.warn(`${deps.logPrefix}: upstream request failed for ${deps.noun} ${resourceId}`)
             if (hijacked) {
               if (!reply.raw.writableEnded) reply.raw.destroy()
+            } else if (err.message.startsWith('ssrf: blocked address')) {
+              void reply.code(MISCONFIGURED).send({ error: 'blocked upstream address' })
             } else {
-              void reply.code(502).send({ error: 'upstream unreachable' })
+              void reply.code(UNAVAILABLE).send({ error: 'upstream unreachable' })
             }
             resolve()
           })
