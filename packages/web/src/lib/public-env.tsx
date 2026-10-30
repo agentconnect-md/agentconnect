@@ -96,7 +96,26 @@ interface DeploymentEnv {
   topology: Record<string, string>
 }
 
+// The CP's runtime switches (Webchat protocol, AHP access) reach a running console within this window.
+const DEPLOYMENT_ENV_TTL_MS = 30_000
 let deploymentEnv: Promise<DeploymentEnv | null> | undefined
+let deploymentSnapshot: { env: DeploymentEnv | null; at: number } | undefined
+
+// A stale snapshot serves while one refresh runs, so a CP outage never stalls a page; none yet means wait for it.
+function currentDeploymentEnv(): DeploymentEnv | null | Promise<DeploymentEnv | null> {
+  if (deploymentSnapshot && Date.now() - deploymentSnapshot.at < DEPLOYMENT_ENV_TTL_MS) return deploymentSnapshot.env
+  if (!deploymentEnv) {
+    const pending = loadDeploymentEnv()
+    deploymentEnv = pending
+    pending
+      .then((env) => (deploymentSnapshot = { env, at: Date.now() }))
+      .catch(() => {})
+      .finally(() => {
+        if (deploymentEnv === pending) deploymentEnv = undefined
+      })
+  }
+  return deploymentSnapshot ? deploymentSnapshot.env : deploymentEnv
+}
 
 async function loadDeploymentEnv(): Promise<DeploymentEnv | null> {
   const base = process.env.CP_INTERNAL_URL
@@ -137,16 +156,11 @@ export const resolvePublicEnv = cache(async (): Promise<Record<string, string>> 
   const relayUrl = process.env.RELAY_URL ?? process.env.PUBLIC_RELAY_URL ?? process.env.NEXT_PUBLIC_RELAY_URL
   if (relayUrl) env.RELAY_URL = relayUrl
 
-  // Cache a successful CP snapshot (including configured absence) but retry transient startup failures.
   if (process.env.CP_INTERNAL_URL) {
-    deploymentEnv ??= loadDeploymentEnv()
-    const pending = deploymentEnv
     let persisted: DeploymentEnv | null = null
     try {
-      persisted = await pending
-    } catch {
-      if (deploymentEnv === pending) deploymentEnv = undefined
-    }
+      persisted = await currentDeploymentEnv()
+    } catch {}
     if (persisted?.config) {
       for (const key of ['LOGTO_ENDPOINT', 'LOGTO_APP_ID', 'LOGTO_API_RESOURCE', 'SOCIAL_PROVIDERS']) {
         delete env[key]

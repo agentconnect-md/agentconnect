@@ -254,8 +254,9 @@ bootstrap; do not reinterpret an AHP socket as legacy.
 
 ## Rollback
 
-1. Apply CP `WEBCHAT_PROTOCOL=legacy` first. New attachments choose legacy;
-   existing AHP attachments remain pinned until detached.
+1. Apply CP `WEBCHAT_PROTOCOL=legacy` first. Running consoles pick it up within
+   30 seconds, then new attachments choose legacy; existing AHP attachments
+   remain pinned until detached.
 2. Stop widening public access. Set `AHP_PUBLIC_ACCESS=false` and remove canary
    key IDs when withdrawing that audience. Disable CP and relay AHP admission
    when shutting down the service. Shutdown closes attachments; CP policy also
