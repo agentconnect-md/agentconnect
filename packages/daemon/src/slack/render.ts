@@ -1,7 +1,8 @@
 import type {
   CreateElicitationRequest,
   RequestPermissionRequest,
-  SessionUpdate
+  SessionUpdate,
+  ToolKind
 } from '@agentclientprotocol/sdk/unstable'
 import {
   ELICIT_ACTION_PREFIX,
@@ -103,7 +104,7 @@ export type SlackAction =
   // `chat.startStream` stream; on a minimal turn the same stream holds the interim reply
   // segments as history cards. The final answer never rides it: posts, the footer, the
   // transcript and the status calls are all unchanged.
-  | { kind: 'stream-start' }
+  | { kind: 'stream-start'; taskDisplayMode?: 'timeline' | 'plan' }
   // `progressText` is the same in-place `progress` rendering this batch would have
   // produced, so a turn whose stream never opened degrades to today's message.
   | { kind: 'stream-append'; chunks: SlackStreamChunk[]; progressText?: string }
@@ -112,32 +113,18 @@ export type SlackAction =
   // "Something went wrong", so a refused settle has to hold its own stop back.
   | { kind: 'stream-stop'; settle: SlackStreamChunk[]; progressText?: string }
 
-/**
- * The chunk vocabulary `chat.appendStream` accepts, as `@slack/types` declares it. No
- * `markdown_text` is ever sent — this stream carries chrome only.
- *
- * The FIELD SEMANTICS are not uniform, and that is the load-bearing fact here: `title` and
- * `status` REPLACE per id, while `details` and `output` APPEND server-side. Refreshing an
- * appending field per update concatenates on Slack's side rather than replacing — which is
- * how repeated `**bold**` fragments once ran together into literal `****`. So both bodies are
- * written EXACTLY ONCE, when the call completes; only `title` and `status` are ever refreshed.
- *
- * Both bodies are markdown (verified live 2026-08-29): a fenced value renders as a real code
- * block, which is what puts the command in `details` and its result in `output`. Slack accepts
- * far more than the documented 256 characters but SILENTLY DROPS an oversized field, so
- * everything is capped here rather than trusting an error.
- */
+/** Native progress chunks replace titles, statuses and icons; each bounded body field appends once. */
 export type SlackStreamChunk =
   | {
       type: 'task_update'
       id: string
       title: string
       status: 'in_progress' | 'complete' | 'error'
+      icon?: { type: 'icon'; name: string }
       details?: string
       output?: string
     }
-  // The collapsed container's own label. `plan` display mode renders every task card inside
-  // one collapsed-by-default block, and this is the line the reader sees on it (§4).
+  // Minimal mode uses this title for its folded reply history; timeline mode ignores it.
   | { type: 'plan_update'; title: string }
 
 /** Dynamic identity shown under the last reply section. All Slack integration modes use
@@ -169,6 +156,18 @@ const MAX_COMMAND_TITLE = 48
 const SHELL_SEPARATOR = / (?:&&|\|\||;|\|) /
 /** The card that stands for one thinking run until its first line names it. */
 const THINKING_CARD = 'Thinking'
+const TASK_ICONS: Record<ToolKind, string> = {
+  read: 'file',
+  edit: 'edit',
+  delete: 'trash',
+  move: 'folder',
+  search: 'sparkle',
+  execute: 'code',
+  think: 'lightbulb',
+  fetch: 'globe',
+  switch_mode: 'gear',
+  other: 'gear'
+}
 /** minimal: the history card for an interim reply whose first line yields no title. */
 const REPLY_CARD = 'Reply'
 // How much of a thinking run to hold while waiting for its first line to end. A runtime opens
@@ -2606,8 +2605,10 @@ export class OutputConverger {
   private emittedTasks = new Map<string, string>()
   private taskTitles = new Map<string, string>()
   private openTasks = new Set<string>()
-  /** Cards whose write-once body has been sent, so a later update cannot append a second. */
+  /** Slack appends each body field, so details and results are each written once. */
+  private detailsWritten = new Set<string>()
   private outputWritten = new Set<string>()
+  private taskIcons = new Map<string, string>()
   /** Tool calls ACP reported failed — counted into the closing label, never the model's to
    *  narrate, and deliberately NOT the cards' status (see FAILED_PREFIX). */
   private failedTasks = new Set<string>()
@@ -2688,7 +2689,7 @@ export class OutputConverger {
     const out: SlackAction[] = []
     if (!this.streamOpened) {
       this.streamOpened = true
-      out.push({ kind: 'stream-start' })
+      out.push({ kind: 'stream-start', ...(this.mode === 'minimal' ? { taskDisplayMode: 'plan' as const } : {}) })
     }
     out.push({ kind: 'stream-append', chunks, ...(progressText ? { progressText } : {}) })
     return out
@@ -2723,7 +2724,7 @@ export class OutputConverger {
     const out: SlackAction[] = []
     if (!this.streamOpened) {
       this.streamOpened = true
-      out.push({ kind: 'stream-start' })
+      out.push({ kind: 'stream-start', ...(this.mode === 'minimal' ? { taskDisplayMode: 'plan' as const } : {}) })
     }
     out.push({ kind: 'stream-stop', settle, ...(progressText ? { progressText } : {}) })
     return out
@@ -2739,36 +2740,33 @@ export class OutputConverger {
     return chunks
   }
 
-  /**
-   * Queue one task card, keyed by id so streamed updates edit the same card and an unchanged
-   * repeat emits nothing. `title` and `status` may be re-sent freely — Slack REPLACES them per
-   * id. The body may not: `details` and `output` both append, so they are written together
-   * exactly once, at completion. Callers pass their text RAW — the cap and the code fence
-   * belong here, where the wire limit is known. `command` is fenced into a code block;
-   * `details` is prose (a thinking run) and takes the same slot unfenced.
-   */
+  /** Coalesce replaceable card fields while retaining each write-once body field until the next flush. */
   private queueTask(
     id: string,
     title: string,
     status: 'in_progress' | 'complete' | 'error',
-    body: { command?: string; details?: string; output?: string } = {}
+    body: { command?: string; details?: string; output?: string; icon?: string } = {}
   ): void {
     const clamped = clampTo(plainCardText(title), MAX_CARD_TITLE) || 'tool'
-    const fresh = !this.outputWritten.has(id)
     const above = body.command ? codeSpan(capOutput(body.command), true) : capOutput(body.details ?? '')
-    const details = fresh ? above : ''
-    const output = fresh && body.output ? capOutput(body.output) : ''
+    const details = this.detailsWritten.has(id) ? '' : above
+    const output = !this.outputWritten.has(id) && body.output ? capOutput(body.output) : ''
+    if (body.icon) this.taskIcons.set(id, body.icon)
+    const icon = this.taskIcons.get(id) ?? 'gear'
     const chunk: Extract<SlackStreamChunk, { type: 'task_update' }> = {
+      ...this.pendingTasks.get(id),
       type: 'task_update',
       id,
       title: clamped,
       status,
+      icon: { type: 'icon', name: icon },
       ...(details ? { details } : {}),
       ...(output ? { output } : {})
     }
-    const signature = `${chunk.title} ${chunk.status}`
+    const signature = `${chunk.title} ${chunk.status} ${icon}`
     if (!details && !output && this.emittedTasks.get(id) === signature) return
-    if (details || output) this.outputWritten.add(id)
+    if (details) this.detailsWritten.add(id)
+    if (output) this.outputWritten.add(id)
     this.emittedTasks.set(id, signature)
     this.taskTitles.set(id, clamped)
     if (status === 'in_progress') this.openTasks.add(id)
@@ -2847,7 +2845,7 @@ export class OutputConverger {
   private closeThinkingRun(status: 'complete' | 'error' = 'complete'): void {
     if (!this.thinkingActive) return
     const title = this.thinkingTitleFrom(true) || THINKING_CARD
-    this.queueTask(this.thinkingId(), title, status, { details: this.thinkingRunBody(title) })
+    this.queueTask(this.thinkingId(), title, status, { details: this.thinkingRunBody(title), icon: 'lightbulb' })
     this.thinkingActive = false
     this.thinkingRun += 1
     this.thinkingHead = ''
@@ -2935,7 +2933,10 @@ export class OutputConverger {
     this.replyCards += 1
     const body = text.trim()
     const title = replyCardTitle(body)
-    this.queueTask(`reply-${this.replyCards}`, title, 'complete', { details: bodyUnderTitle(body, title) })
+    this.queueTask(`reply-${this.replyCards}`, title, 'complete', {
+      details: bodyUnderTitle(body, title),
+      icon: 'comment'
+    })
   }
 
   /** Drain reasoning buffered since the last flush into a 0-or-1-length action list (only
@@ -3124,7 +3125,7 @@ export class OutputConverger {
         if (this.streaming && thought && this.mode !== 'minimal') {
           if (!this.thinkingActive) {
             this.thinkingActive = true
-            this.queueTask(this.thinkingId(), THINKING_CARD, 'in_progress')
+            this.queueTask(this.thinkingId(), THINKING_CARD, 'in_progress', { icon: 'lightbulb' })
           }
           this.noteThinkingTitle(thought)
           if (this.mode === 'high') this.appendThinkingBody(thought)
@@ -3141,6 +3142,7 @@ export class OutputConverger {
           toolCallId?: string
           title?: string
           status?: string
+          kind?: ToolKind | null
           content?: unknown
           rawInput?: unknown
           rawOutput?: unknown
@@ -3174,24 +3176,20 @@ export class OutputConverger {
           // and `error` is reserved for the cancel path, where a red container is the truth.
           const failed = u.status === 'failed'
           if (failed) this.failedTasks.add(u.toolCallId)
-          // The card's BODY is HIGH only — medium keeps one line per step, matching the legacy
-          // pipeline where tool output is a high-mode rung. The body cannot start collapsed
-          // (Slack has no such field), so on medium a step stays a step.
-          //
-          // Tracked on EVERY update, not just the terminal one: ACP output arrives as deltas, so
-          // the text can land while the call is still `in_progress` and the update that finishes
-          // it carry nothing but the status. Reading only the last one writes a blank body — and
-          // on a streaming turn nothing else would carry that output.
+          // High mode shows the command immediately and retains the latest result until completion.
           if (this.mode === 'high') this.noteToolOutput(u)
           const body =
-            terminal && this.mode === 'high'
-              ? { command: this.cardCommand(u.toolCallId, label), output: this.toolOutputs.get(u.toolCallId) ?? '' }
+            this.mode === 'high'
+              ? {
+                  command: this.cardCommand(u.toolCallId, label),
+                  ...(terminal ? { output: this.toolOutputs.get(u.toolCallId) ?? '' } : {})
+                }
               : {}
           this.queueTask(
             u.toolCallId,
             (failed ? FAILED_PREFIX : '') + this.cardTitle(u.toolCallId, label),
             terminal ? 'complete' : 'in_progress',
-            body
+            { ...body, ...(u.kind ? { icon: TASK_ICONS[u.kind] ?? 'gear' } : {}) }
           )
           if (terminal) this.toolOutputs.delete(u.toolCallId)
           this.pendingProgress = progressText

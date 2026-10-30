@@ -3,7 +3,9 @@
 **Status:** Implemented — **chrome only**. A Slack turn's TOOL-CALL CHROME rides one native
 `chat.startStream` card stream; the agent's answer does not, and the body pipeline is unchanged.
 What came back is the _progress message_, rendered as a native plan card instead of a
-`chat.postMessage` the daemon edits in place — not body streaming (§1). `minimal` mode later
+`chat.postMessage` the daemon edits in place — not body streaming (§1). Work steps use native
+`timeline` cards in every supported Slack conversation: ordinary channel threads, DMs and
+code channels. `minimal` keeps a folded `plan` containing earlier replies. `minimal` mode later
 joined the stream with its INTERIM reply segments as history cards, posting only its final
 segment as a message (§5.2), which retired that mode's in-place live reply. Layer 0's Agent Sessions
 control surface ([#1462](https://github.com/agentconnect-md/agentconnect/pull/1462),
@@ -31,7 +33,7 @@ in order to move an answer between transports is gone with it (§9).
 
 ## 2. Goals / Non-goals
 
-**Goals.** Replace the in-place `progress` message with a native collapsed plan card on
+**Goals.** Replace the in-place `progress` message with individual native task cards on
 medium/high turns; change **nothing** about the body (post,
 response finalization by edit, the attribution footer, the transcript, the status bar, the
 transient status text, permission and elicitation cards, attachments, the ACP plan message);
@@ -152,11 +154,13 @@ Four more from the 2026-08-29 pass, which is where the card BODY was settled:
     12,000 the append still answers `ok: true` and the field comes back empty. Long bodies do
     get a native "Show more" after roughly six rendered lines, so height is Slack's problem —
     length is ours.
-13. **`hide_title` and `icon` exist but are not for us.** `hide_title: true` replaces the row's
-    title with its details text and takes the chevron away; `icon` is an object
-    (`{ type, name }` where `name` is an image URL), and the plausible string form is rejected
-    outright. `@slack/types` 2.22.0 declares neither — the published reference is ahead of the
-    SDK, so neither is safe to take on type inference alone.
+13. **Native task icons work.** Rechecked on 2026-10-30: `icon: { type: "icon", name: "lightbulb" }`
+    and `sparkle` are accepted on streaming task updates and retained in the resulting task cards.
+    The SDK chunk type still omits this optional field. The daemon maps ACP tool kinds to Slack's
+    documented icon names, and retains the icon when later updates omit the kind. Unknown kinds
+    use `gear`; thought runs use `lightbulb` and interim replies use `comment`. The tested client
+    still displays its own running/completed status glyphs; API persistence does not prove that
+    every client renders the supplied action glyph.
 
 ## 5. ACP → card mapping
 
@@ -173,7 +177,11 @@ twice comes back concatenated with no separator, and a second `sources` entry la
 first). Refreshing an appending field per update therefore concatenates on Slack's side instead
 of replacing it — which is how repeated `**bold**` fragments once ran together into literal
 `****`. The rule is **write-once for anything that appends**: the whole card body is emitted in
-ONE chunk, at completion, and everything live is expressed through `title` / `status`.
+one chunk per field: high mode sends the command as soon as it is available and the result
+at completion. Later status-only updates preserve pending bodies until the next flush. A tool
+that completes before that flush therefore delivers both fields once. Titles, statuses and icons
+can be replaced throughout the call. Thought bodies remain high-only and arrive at the end of
+the thought run.
 
 `details` and `output` are **markdown**, not plain text — the earlier reading of the `****`
 incident was wrong. A fenced value renders as a real code block, backticks as inline code,
@@ -197,17 +205,16 @@ tighter one (below).
 | tool output, terminal (`high`)   | separate code-block message                        | the command and its result become the card's body (`details` + `output`, high only); the separate code-block message is **dropped on a streaming turn**, which would otherwise say it twice                                                                                                 |
 | `usage_update`                   | dropped                                            | dropped                                                                                                                                                                                                                                                                                     |
 
-**`task_display_mode: 'plan'`, fixed, never configurable.** Every task card is collected into
-ONE collapsed-by-default container, and `{ type: 'plan_update', title }` is the line printed on
-it. `timeline` — the API default — renders each card flat and separate, which is the shape the
-first attempt shipped and then abandoned after seeing it: a column of tool chrome buries
-everything around it. The container's own arc:
+**Display mode follows output detail, not conversation type.** Medium/high use `timeline`:
+each tool or thought is a separate task card with its own icon and disclosure. Medium remains
+compact; high adds the command while it runs and the bounded result when it finishes. Normal
+channel threads, DMs and code channels use the same path. Unsupported surfaces keep the existing
+in-place progress fallback.
 
-- **while working** — `Working…`, written on the first card;
-- **at the terminal stop** — `Completed 3 steps`, or `Completed 3 steps · 1 failed`.
-
-Counted rather than narrated, deliberately: it is derived from the cards the turn actually
-emitted, so it needs no second model call and cannot disagree with what is inside the container.
+Minimal uses `plan` so its interim replies remain folded above the final answer. Its container
+starts at `Working…` and ends with a counted earlier-reply label, or `Stopped` / `Failed`.
+`plan_update` titles are ignored by Slack in timeline mode. No model call generates labels or
+invents result summaries; visible text comes from the runtime's own title, description and output.
 
 **A card title is one line, and the daemon is what makes it one.** Slack wraps a long title
 into a paragraph instead of truncating it, offers no hover and no per-title disclosure, so a
@@ -269,17 +276,11 @@ it degraded (§7: the applier owns the whole degrade), so it loses the reasoning
 as it loses the tool-output block. Both are chrome, and this design accepts chrome as lossy;
 the reasoning still reaches the transcript either way.
 
-**Output modes.** `none`, `minimal` and `low` have no tool chrome today and gain none: they
-never take the axis. `medium` gets card titles and statuses — one line per step; `high` adds
-the card body, the command as a code block and its result beneath. This is the same ladder the
-modes already express — the stream changes the transport of the medium/high rung, not which
-rung shows what. It also decides how tall the container is once opened, and that is the only
-control there is: a card body cannot start collapsed. The reader can fold each one away, and
-the container itself is still collapsed by default, but no chunk field sets the initial state
-(§4 fact 10), so on `medium` a step stays a step.
-
-**DM and channel take the same code path.** The only difference is the recipient argument
-(§4 fact 9).
+**Output modes.** `none` and `low` have no tool cards. `minimal` shows only its folded reply
+history (§5.2), without tool names or thinking. `medium` gets individual task titles, icons and
+statuses; `high` also gets bounded details and output. Each field is written once because Slack
+appends it, and the reader can expand a card for its body. The implementation does not widen the
+mode's content policy or move the agent's answer onto the progress stream.
 
 ### 5.1 What `error` means, and how a failure is said
 
@@ -482,10 +483,6 @@ every channel-root turn, every `low` turn and every turn that runs no tools; the
 promotion gate already provides the temporal separation a flag would buy; and a flag's "off" state
 is indistinguishable from `streamingUnavailableUntil` being set.
 
-Two cosmetic questions stay open. **Does the counted label read well after a long turn?**
-`Completed 41 steps` is honest but not informative; a model-narrated label was rejected (a second
-call, and a label that can disagree with the cards), and the next candidate is the last tool's
-title. **Should a `failed` card carry its error text as `output` on medium?** Today the body is a
-high-only rung, matching the legacy pipeline; the card already says `(failed)`, and a body
-cannot start collapsed (§4 fact 10), so granting one to medium would cost every medium step its
-single line — the failed one included.
+Medium continues to keep tool output and thought bodies off the conversation. Richer result
+summaries on that rung would be a separate content-policy change. Native icon rendering remains
+a client concern: the API retains the supplied glyph, but the client may display its status glyph.
