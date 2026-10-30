@@ -1831,7 +1831,8 @@ export interface SessionQuery {
 
 export interface SessionFilterQuery extends SessionQuery {
   integration?: Platform | CodeHostProvider
-  triggeredBy?: string
+  /** Rows started by any of these senders — one person's ids, e.g. a member's user id and email. */
+  triggeredBy?: readonly string[]
   /** Live wait state (slack-approval-dm.md §7) — the console bell asks for `awaiting_permission`. */
   activityState?: ActivityState
   /** Leave out tasks: rows whose thread is a `subsession:` coordinate. */

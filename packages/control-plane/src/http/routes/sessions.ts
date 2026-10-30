@@ -161,6 +161,17 @@ function requestedAgentIds(query: z.infer<typeof SessionFilterQueryDto>): string
 const HOOK_TRIGGER_PREFIX = 'hook:'
 const HookIdString = z.string().uuid()
 
+/** The `triggeredBy` values one filter pick stands for: a member's sessions are filed under their user id or, on older rows, their email. */
+async function triggeredByFilter(
+  deps: HttpDeps,
+  orgId: OrgId,
+  value: string | undefined
+): Promise<string[] | undefined> {
+  if (!value) return undefined
+  const member = (await deps.repos.user.listMembers(orgId)).find((m) => m.userId === value || m.email === value)
+  return member ? [member.userId, ...(member.email ? [member.email] : [])] : [value]
+}
+
 /** Which code-host hook definitions this request has to resolve, keyed by provider. A
  *  repository filter stays GitHub-only — the numeric repo id is GitHub's alone; otherwise
  *  each host's ids are read when the facet projection classifies everything, when that
@@ -799,6 +810,7 @@ export function sessionRoutes(deps: HttpDeps) {
           req.query,
           true
         )
+        const triggeredBy = await triggeredByFilter(deps, orgOf(req), req.query.triggeredBy)
         // A multi-agent request narrows to the qualifying CONVERSATIONS and then
         // reads facets off every member row the caller can see, rather than only
         // the selected agents' rows: a facet answers "what else can I narrow by",
@@ -810,7 +822,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
-          ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
+          ...(triggeredBy ? { triggeredBy } : {}),
           ...(req.query.tasks === 'exclude' ? { excludeSubsessions: true } : {}),
           codeHostHookIds,
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
@@ -896,6 +908,7 @@ export function sessionRoutes(deps: HttpDeps) {
           req.query,
           false
         )
+        const triggeredBy = await triggeredByFilter(deps, orgOf(req), req.query.triggeredBy)
         // Two or more selected agents ask for the threads they SHARE. The rows stay
         // scoped to those agents (`agentIds`), so `?agentId=a` keeps returning
         // exactly what it always did. Every branch below reads this one binding —
@@ -914,7 +927,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
-          ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
+          ...(triggeredBy ? { triggeredBy } : {}),
           ...(req.query.activityState ? { activityState: req.query.activityState } : {}),
           ...(req.query.tasks === 'exclude' ? { excludeSubsessions: true } : {}),
           ...(Object.keys(codeHostHookIds).length > 0 ? { codeHostHookIds } : {}),

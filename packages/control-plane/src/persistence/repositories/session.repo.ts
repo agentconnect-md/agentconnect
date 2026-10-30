@@ -347,7 +347,7 @@ function pageWhereSql(
   const integration = integrationSql(q, a)
   if (integration) filters.push(integration)
   if (q.channel) filters.push(Prisma.sql`${a}."channel" = ${q.channel}`)
-  if (q.triggeredBy) filters.push(Prisma.sql`${a}."triggeredBy" = ${q.triggeredBy}`)
+  if (q.triggeredBy?.length) filters.push(Prisma.sql`${a}."triggeredBy" IN (${Prisma.join(q.triggeredBy)})`)
   if (q.activityState) filters.push(Prisma.sql`${a}."activityState" = ${q.activityState}::"ActivityState"`)
   if (q.excludeSubsessions) {
     filters.push(Prisma.sql`(${a}."thread" IS NULL OR ${a}."thread" NOT LIKE ${`${SUBSESSION_COORDINATE_PREFIX}%`})`)

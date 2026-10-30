@@ -613,6 +613,7 @@
       "agents": "Agents",
       "agentSummary": "{count} agents: {names}",
       "people": "People",
+      "mine": "{name} (me)",
       "schedules": "Schedules",
       "count": "{count, plural, one {# session} other {# sessions}}",
       "schedule": "Schedule",
