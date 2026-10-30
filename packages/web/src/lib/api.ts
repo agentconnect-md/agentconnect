@@ -122,6 +122,8 @@ export interface WebchatTokenDto {
   token: string
   relayUrl: string
   conversationId: string
+  /** A coordinator conversation's current session, once it has one. */
+  sessionId?: string
   protocol?: 'legacy' | 'ahp'
   ahp?: { url: string; sessionUri?: string; peers?: Array<{ agentId: string; url: string; sessionUri?: string }> }
 }
@@ -188,6 +190,18 @@ export function mintWebchatToken(
     `/orgs/${encodeURIComponent(orgId)}/agents/${encodeURIComponent(agentId)}/webchat/token`,
     { conversationId, protocol }
   )
+}
+
+/** The member's private coordinator conversation with an agent, created on first use, with its current session once it has one (auto-session-mode.md §10). */
+export async function openCoordinatorConversation(
+  orgId: string,
+  agentId: string
+): Promise<{ conversationId: string; sessionId?: string }> {
+  const minted = await apiPost<WebchatTokenDto>(
+    `/orgs/${encodeURIComponent(orgId)}/agents/${encodeURIComponent(agentId)}/webchat/token`,
+    { coordinator: true, protocol: 'legacy' }
+  )
+  return { conversationId: minted.conversationId, ...(minted.sessionId ? { sessionId: minted.sessionId } : {}) }
 }
 
 /**

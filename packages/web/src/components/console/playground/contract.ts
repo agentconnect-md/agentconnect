@@ -25,8 +25,9 @@ export interface PlaygroundData {
   isPgBusy: (id: string) => boolean
   /** Create a new sandbox session and return its id. Does not navigate. `members`
    *  adds more participants — the conversation's roster is fixed at creation
-   *  (webchat-multi-agents.md §3.1); the first agent is the primary. */
-  openPlayground: (agent: Agent, members?: Agent[], options?: { worktree?: boolean }) => string
+   *  (webchat-multi-agents.md §3.1); the first agent is the primary. `conversationId`
+   *  opens it on a conversation that exists already, such as the member's coordinator. */
+  openPlayground: (agent: Agent, members?: Agent[], options?: { worktree?: boolean; conversationId?: string }) => string
   /** Add a participant to a LIVE conversation (mid-conversation join,
    *  webchat-multi-agents.md §3.1). Registers the agent with the CP, then
    *  rebuilds the socket so the relay re-verifies and caches the grown roster.

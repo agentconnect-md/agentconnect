@@ -20,7 +20,15 @@ const mocks = vi.hoisted(() => ({
   pgStageRuntime: vi.fn(),
   pgSetEffort: vi.fn(),
   pgSetPermissionPreset: vi.fn(),
-  push: vi.fn()
+  push: vi.fn(),
+  openCoordinator: vi.fn(async (): Promise<{ conversationId: string; sessionId?: string }> => ({
+    conversationId: 'conv-co'
+  }))
+}))
+
+vi.mock('@/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api')>()),
+  openCoordinatorConversation: mocks.openCoordinator
 }))
 
 vi.mock('@/lib/decisions/provider', () => ({ useDecisionsPrototype: () => ({ decisions: [] }) }))
@@ -186,6 +194,7 @@ beforeEach(() => {
   mocks.pgSetEffort.mockClear()
   mocks.pgSetPermissionPreset.mockClear()
   mocks.push.mockClear()
+  mocks.openCoordinator.mockClear()
 })
 afterEach(() => {
   act(() => root.unmount())
@@ -674,5 +683,73 @@ describe('HomeView Recent', () => {
     await render()
     expect(host.textContent).toContain('Release checklist')
     expect(host.textContent).not.toContain('Follow-up check on the release')
+  })
+})
+
+// auto-session-mode.md §10: one agent whose daemon reads Auto opens the member's private coordinator with it.
+describe('HomeView coordinator entry', () => {
+  const autoDaemon = () => daemon({ caps: { features: ['session-mode-auto-v1'] } })
+  const sendText = async (text: string) => {
+    const ta = host.querySelector('textarea')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(ta, text)
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('button.sendbtn')!.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+  }
+
+  it('sends into the coordinator session it already has, with none of the run choices', async () => {
+    mocks.agents = [agent()]
+    mocks.daemons = [autoDaemon()]
+    mocks.openCoordinator.mockResolvedValueOnce({ conversationId: 'conv-co', sessionId: 'sess-co' })
+    await render()
+    expect(menu('Model')).toBeUndefined()
+    await sendText('fix the retry')
+    expect(mocks.openCoordinator).toHaveBeenCalledWith('org-1', 'a1')
+    expect(mocks.openPlayground).not.toHaveBeenCalled()
+    expect(mocks.pgSetModel).not.toHaveBeenCalled()
+    expect(mocks.pgSend).toHaveBeenCalledWith(
+      'sess-co',
+      'a1',
+      'fix the retry',
+      'conv-co',
+      undefined,
+      undefined,
+      undefined,
+      []
+    )
+    expect(mocks.push).toHaveBeenCalledWith('/acme/sessions/sess-co')
+  })
+
+  it('opens a live session on the coordinator conversation before it has one', async () => {
+    mocks.agents = [agent()]
+    mocks.daemons = [autoDaemon()]
+    await render()
+    await sendText('hello')
+    expect(mocks.openPlayground).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }), undefined, {
+      conversationId: 'conv-co'
+    })
+    expect(mocks.pgSend).toHaveBeenCalledWith('pg_1', 'a1', 'hello', 'conv-co', undefined, undefined, undefined, [])
+    expect(mocks.push).toHaveBeenCalledWith('/acme/sessions/pg_1')
+  })
+
+  it('falls back to a session of its own when the coordinator is refused, and leaves other agents ordinary', async () => {
+    mocks.agents = [agent()]
+    mocks.daemons = [autoDaemon()]
+    mocks.openCoordinator.mockRejectedValueOnce(new Error('409'))
+    await render()
+    await sendText('hello')
+    expect(mocks.openPlayground).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }), undefined, undefined)
+    expect(mocks.pgSend).toHaveBeenCalledWith('pg_1', 'a1', 'hello', undefined, undefined, undefined, undefined, [])
+    act(() => root.unmount())
+    mocks.openCoordinator.mockClear()
+    mocks.daemons = [daemon()]
+    await render()
+    expect(menu('Model')).toBeTruthy()
+    await sendText('hello')
+    expect(mocks.openCoordinator).not.toHaveBeenCalled()
   })
 })

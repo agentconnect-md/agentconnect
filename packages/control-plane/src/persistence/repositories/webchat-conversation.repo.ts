@@ -56,7 +56,7 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
     })
   }
 
-  async ensure(binding: WebchatConversationBinding, apiKeyId: string): Promise<void> {
+  async ensure(binding: WebchatConversationBinding, apiKeyId?: string): Promise<void> {
     try {
       await this.create(binding, [], apiKeyId)
     } catch (err) {

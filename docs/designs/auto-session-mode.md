@@ -38,8 +38,10 @@
 > advertises `task-page-messages-v1`, which its Auto switch also turns on (§10). With the switch on, a
 > daemon runs a member's private coordinator conversation in webchat (§10): it knows the conversation
 > by its derived id, every message reaches the coordinator addressed to it, and a task the coordinator
-> opens there continues on its own page, which the conversation links to. The console's entry into
-> that conversation and the visibility lock for threaded tasks are not implemented.
+> opens there continues on its own page, which the conversation links to. The console's home and an
+> agent's Playground open that conversation where the agent's daemon reads Auto and its webchat runs
+> the legacy protocol, and the Control Plane keeps it its owner's with one agent; New session stays an
+> ordinary webchat session. The visibility lock for threaded tasks is not implemented.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).

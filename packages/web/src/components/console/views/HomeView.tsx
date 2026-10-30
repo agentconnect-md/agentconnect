@@ -71,6 +71,8 @@ import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 import { agentStrategyValue, HOST_STRATEGY, strategyModelSource, strategyUsesImage } from '@/lib/execution-strategy'
+import { openCoordinatorConversation } from '@/lib/api'
+import { opensCoordinator } from '@/components/console/playground/coordinator'
 
 // Design composer selectors: agent/model are "pills" (rounded, with a leading
 // mark), effort/permission are plain "chips". Full literal strings so Tailwind's
@@ -366,6 +368,8 @@ export default function HomeView() {
   // readiness can change mid-compose regardless of how a member was added.
   const canSend = !!agent && blocked === null && members.every(agentReady)
   const notReadyMember = members.find((m) => !agentReady(m))
+  // auto-session-mode.md §10: one agent opens the member's private coordinator with it, which follows the agent's own settings.
+  const coordinated = !multi && !!agent && !MOCK_MODE && opensCoordinator(agent, daemons, memberSets)
 
   const onImageFile = async (file: File | undefined): Promise<void> => {
     if (!file || imagePreparing) return
@@ -400,10 +404,39 @@ export default function HomeView() {
     if (imageInputRef.current) imageInputRef.current.value = ''
   }
 
+  const clearComposer = (): void => {
+    setInput('')
+    mention.close()
+    setImage(undefined)
+    setFiles([])
+    setImageError(null)
+  }
+
+  /** The message goes to the member's coordinator conversation, opened on its session once it has one; a refused mint falls back to a session of its own. */
+  const sendToCoordinator = async (
+    target: Agent,
+    orgId: string,
+    text: string,
+    attached: SessionImage | undefined,
+    uploaded: typeof readyFiles
+  ): Promise<void> => {
+    const entry = await openCoordinatorConversation(orgId, target.id).catch(() => undefined)
+    const id =
+      entry?.sessionId ??
+      openPlayground(target, undefined, entry ? { conversationId: entry.conversationId } : undefined)
+    pgSend(id, target.id, text, entry?.conversationId, undefined, attached, undefined, uploaded)
+    router.push(orgPath(`/sessions/${id}`))
+  }
+
   const send = () => {
     const text = input.trim()
     if ((!text && !image && !readyFiles.length) || imagePreparing || filesUploading || mention.joining) return
     if (!agent || !canSend) return // offline / unsigned-in agents can't take a session
+    if (coordinated && activeOrg) {
+      void sendToCoordinator(agent, activeOrg.id, text, image, readyFiles)
+      clearComposer()
+      return
+    }
     const id = openPlayground(agent, members, !multi && gitWorkspace ? { worktree } : undefined)
     // Stage the EFFECTIVE (displayed) runtime before the turn — not just explicit
     // overrides — so the session runs exactly what the composer showed. stageRuntimeChange
@@ -424,11 +457,7 @@ export default function HomeView() {
     // The image rides as an explicit argument: the session id was just minted, so
     // a setPgImage(id) state write could not land before this same-tick send.
     pgSend(id, agent.id, text, undefined, undefined, image, undefined, readyFiles)
-    setInput('')
-    mention.close()
-    setImage(undefined)
-    setFiles([])
-    setImageError(null)
+    clearComposer()
     router.push(orgPath(`/sessions/${id}`))
   }
 
@@ -740,7 +769,7 @@ export default function HomeView() {
                     onChange={(v) => setMemberIds((cur) => (cur.includes(v) ? cur : [...cur, v]))}
                   />
                 )}
-                {!multi && (modelChoices.length > 0 || byDecision) && (
+                {!multi && !coordinated && (modelChoices.length > 0 || byDecision) && (
                   <RuntimeModelSelect
                     compact
                     readOnly={!runtimeChangesAllowed}
@@ -789,7 +818,7 @@ export default function HomeView() {
                     onChange={(target) => setRuntime({ ...target, fastMode: runtime.fastMode })}
                   />
                 )}
-                {!multi && gitWorkspace && (
+                {!multi && !coordinated && gitWorkspace && (
                   <label className={`${CHIP} min-w-0 cursor-pointer`}>
                     <input
                       type="checkbox"
