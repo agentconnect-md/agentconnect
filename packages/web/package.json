@@ -37,7 +37,7 @@
     "@opentelemetry/resources": "^2.12.0",
     "@opentelemetry/sdk-trace-web": "^2.12.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",
-    "croner": "^10.0.1",
+    "croner": "^11.0.0",
     "cronstrue": "^3.37.0",
     "highlight.js": "^11.11.1",
     "lucide-react": "^1.60.0",
