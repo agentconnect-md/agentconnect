@@ -485,6 +485,7 @@ describe('conversationSessionMode for an unlisted conversation', () => {
     expect(conversationSessionMode(int('slack', [{ channel: 'C1', mode: 'createNew' }]), 'C1', on('channel'))).toBe(
       'createNew'
     )
+    expect(conversationSessionMode(int('slack', [{ channel: 'C1', mode: 'auto' }]), 'C1', on('channel'))).toBe('auto')
     expect(conversationSessionMode(int('slack'), 'C1', { assistantMode: false, kind: 'channel' })).toBe('createNew')
     expect(conversationSessionMode(int('slack'), 'C1')).toBe('createNew')
   })

@@ -43,6 +43,7 @@ import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { NoConnection } from '../../src/orchestrator/outbound.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import type { RelayControlSender } from '../../src/orchestrator/relayControl.js'
+import { SESSION_MODE_AUTO_V1_FEATURE } from '@agentconnect.md/protocol'
 import type { AnyFrame, CollabRoutesSnapshot, IntegrationUpsert, IntegrationChannel } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
@@ -2082,6 +2083,40 @@ describe('PATCH /integrations/:id/channels/:channelId — session mode', () => {
     running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
     const id = await install(running)
     expect(await new PgIntegrationChannelRepo(prisma).setSessionMode(IntegrationId(id), 'C_GONE', 'append')).toBeNull()
+  })
+
+  // auto-session-mode.md §3.1: auto is accepted only while the serving daemon advertises it.
+  it('refuses auto until every connected daemon serving the agent advertises it, then pushes it', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    let conn: { state: string; capabilities: { features: string[] } } | undefined
+    running = buildHttpApp(prisma, undefined, { get: () => conn } as never, spy as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+    spy.upserts.length = 0
+    const setAuto = () =>
+      running!.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/integrations/${id}/channels/C1`,
+        payload: { sessionMode: 'auto' }
+      })
+
+    const offline = await setAuto()
+    expect(offline.statusCode).toBe(409)
+    expect(offline.json()).toMatchObject({ code: 'SESSION_MODE_UNSUPPORTED' })
+    conn = { state: 'READY', capabilities: { features: [] } }
+    const older = await setAuto()
+    expect(older.statusCode).toBe(409)
+    expect(older.json()).toMatchObject({ code: 'SESSION_MODE_UNSUPPORTED', message: 'Upgrade the daemon to use Auto.' })
+    expect((await modesOf(id)).get('C1')).toBe('createNew')
+    expect(spy.upserts).toEqual([])
+
+    conn = { state: 'READY', capabilities: { features: [SESSION_MODE_AUTO_V1_FEATURE] } }
+    const res = await setAuto()
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ channelId: 'C1', sessionMode: 'auto' })
+    expect((await modesOf(id)).get('C1')).toBe('auto')
+    expect(spy.upserts.at(-1)!.u.core!.sessionModes).toEqual([{ channel: 'C1', mode: 'auto' }])
   })
 })
 

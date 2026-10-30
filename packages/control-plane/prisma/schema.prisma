@@ -2938,12 +2938,11 @@ enum ChannelTrigger {
   decision
 }
 
-// Which session an activation in a conversation joins (channel-session-mode.md §5).
-// `createNew` is today's behavior; `append` joins the conversation's one long-lived
-// session. `auto` is reserved by the design and deliberately absent until it exists.
+// Which session an activation joins (channel-session-mode.md §5); `auto` needs a daemon advertising it (auto-session-mode.md §3.1).
 enum ChannelSessionMode {
   createNew
   append
+  auto
 }
 
 // Conversation kind (resource-visibility.md §14.3): a member channel vs a direct

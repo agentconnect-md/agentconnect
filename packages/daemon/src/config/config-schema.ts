@@ -259,9 +259,11 @@ export const ConfigSchema = z.object({
       turnFinalContextRefresh: z.boolean().default(true),
       ahp: z.object({ mode: AhpMode.default('off') }).default({ mode: 'off' }),
       // Steer a message into the live turn over `_session/steering` instead of queueing it.
-      sessionSteering: z.boolean().default(true)
+      sessionSteering: z.boolean().default(true),
+      // Advertise the `auto` session mode (auto-session-mode.md §3.1); off until the coordinator ships.
+      autoSessionMode: z.boolean().default(false)
     })
-    .default({ turnFinalContextRefresh: true, sessionSteering: true, ahp: { mode: 'off' } }),
+    .default({ turnFinalContextRefresh: true, sessionSteering: true, ahp: { mode: 'off' }, autoSessionMode: false }),
   sessions: z
     .object({
       // A finished session untouched this long loses its row and transcript (#485); legacy '2weeks'/'1month' normalize to days.

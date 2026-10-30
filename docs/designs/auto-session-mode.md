@@ -5,7 +5,10 @@
 > two-level nesting (§6.3) and the threaded rules of §6.2 that key on an attached thread are
 > implemented; `stopTask` stays a tool of its own with the shape of §5.1. `listTasks` (§5.2) and
 > `updateTask` (§5.3) with the summary and its reminder (§6.7) are implemented; the cap of 20
-> threaded tasks waits for the coordinator. Nothing else is.
+> threaded tasks waits for the coordinator. The `auto` value (§3.1) exists on the wire and in the
+> Control Plane, behind the `session-mode-auto-v1` capability, which a daemon advertises only with
+> its `features.autoSessionMode` switch; until the coordinator lands it routes `auto` as Per thread.
+> Nothing else is.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -42,8 +45,10 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
 ### 3.1 Value and capability
 
 - `ChannelSessionMode` gains `auto` (`packages/protocol/src/frames/integration.ts` and the Prisma enum).
-- The daemon advertises support for `auto`; the Control Plane refuses `auto` on a row served by a
-  daemon that does not.
+- The daemon advertises support for `auto` (`session-mode-auto-v1`); the Control Plane refuses `auto`
+  on a row served by a daemon that does not (409 `SESSION_MODE_UNSUPPORTED`).
+- A daemon without the capability that still serves an `auto` row, after a move or a downgrade, is
+  sent `createNew` for it: a new enum value would make the whole frame unreadable to it.
 
 ### 3.2 Defaults
 

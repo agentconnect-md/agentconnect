@@ -43,6 +43,7 @@ import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { DecisionBindingDenied } from '../../persistence/decision-binding-fence.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import {
+  autoSessionModeRefusal,
   decisionChannelView,
   decisionGateReadiness,
   routedChannelReadiness,
@@ -859,7 +860,7 @@ export function integrationRoutes(deps: HttpDeps) {
           tags: [Tag.Integrations],
           summary: 'Update a conversation',
           description:
-            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding. By decision refusals carry `code` DECISION_NOT_FOUND (404) or DECISION_UNSUPPORTED_CONSUMER (409).",
+            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding. By decision refusals carry `code` DECISION_NOT_FOUND (404) or DECISION_UNSUPPORTED_CONSUMER (409); session mode `auto` is refused with SESSION_MODE_UNSUPPORTED (409) unless every connected daemon serving the conversation supports it.",
           operationId: 'updateIntegrationChannel',
           params: IdParam.extend({ channelId: z.string().min(1) }),
           body: UpdateIntegrationChannelBody,
@@ -954,6 +955,14 @@ export function integrationRoutes(deps: HttpDeps) {
               message: 'cannot edit the current or selected conversation owner'
             })
           }
+        }
+        // Auto reaches only a daemon that reads it; the conversation's consumer must be served by one now.
+        if (req.body.sessionMode === 'auto') {
+          const refusal = await autoSessionModeRefusal(deps, selectedOwner ?? agent)
+          if (refusal)
+            return reply
+              .code(409)
+              .send({ error: 'Conflict', statusCode: 409, message: refusal, code: 'SESSION_MODE_UNSUPPORTED' })
         }
         // The consumer is the owner the relay route is compiled for, not necessarily the URL install's agent.
         if (gate) {

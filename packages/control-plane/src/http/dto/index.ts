@@ -51,6 +51,7 @@ import {
   MemoryPluginHistoryEvent,
   MemoryPluginOperation,
   PlaceExternalReason,
+  ChannelSessionMode,
   RESERVED_MCP_SERVER_NAME,
   SESSION_RETENTION_RE,
   GitCloneUrlError,
@@ -1082,9 +1083,8 @@ export const IntegrationChannelDto = z.object({
       })
     })
     .nullable(),
-  /** Which session a message here joins (channel-session-mode.md): a new one per thread,
-   *  or the conversation's one long-lived session. */
-  sessionMode: z.enum(['createNew', 'append']),
+  /** Which session a message here joins: one per thread, the conversation's one session, or the coordinator's pick (auto-session-mode.md). */
+  sessionMode: ChannelSessionMode,
   /** Effective per-conversation owner for a shared bot (§10.1); null before convergence
    *  or when ownership does not apply. */
   agentId: z.string().nullable(),
@@ -2054,7 +2054,8 @@ export const UpdateIntegrationChannelBody = z
     trigger: z.enum(['off', 'mention', 'any', 'decision']).optional(),
     // The complete By decision gate; required with, and only with, trigger 'decision'.
     decisionBinding: ChannelDecisionGate.safeExtend({ decisionId: z.string().uuid() }).optional(),
-    sessionMode: z.enum(['createNew', 'append']).optional(),
+    // `auto` is refused (409 SESSION_MODE_UNSUPPORTED) unless every connected daemon serving the conversation advertises it.
+    sessionMode: ChannelSessionMode.optional(),
     agentId: z.string().min(1).optional()
   })
   .refine((b) => b.trigger !== undefined || b.sessionMode !== undefined || b.agentId !== undefined, {

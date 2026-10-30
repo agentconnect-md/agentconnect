@@ -59,7 +59,16 @@ describe('IntegrationCoreEnvelope sessionModes', () => {
   })
 
   it('rejects a mode outside the enum rather than silently defaulting it', () => {
-    expect(() => IntegrationCoreEnvelope.parse({ ...base, sessionModes: [{ channel: 'C1', mode: 'auto' }] })).toThrow()
+    expect(() =>
+      IntegrationCoreEnvelope.parse({ ...base, sessionModes: [{ channel: 'C1', mode: 'coordinator' }] })
+    ).toThrow()
+  })
+
+  // auto-session-mode.md §3.1: the third value parses; why an older daemon must never see it is the CP's encoder test.
+  it('round-trips the auto mode', () => {
+    expect(
+      IntegrationCoreEnvelope.parse({ ...base, sessionModes: [{ channel: 'C1', mode: 'auto' }] }).sessionModes
+    ).toEqual([{ channel: 'C1', mode: 'auto' }])
   })
 })
 

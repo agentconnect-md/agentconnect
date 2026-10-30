@@ -12,7 +12,7 @@ import {
   type DecisionDefinition
 } from '@agentconnect.md/protocol'
 import { canView } from '../authorization/policy.js'
-import { decisionTriggerSupported } from '../domain/decision-trigger-features.js'
+import { autoSessionModeSupported, decisionTriggerSupported } from '../domain/decision-trigger-features.js'
 import type { AgentRecord, BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
 import { conversationOwnerRow, pickConversationOwner } from '../orchestrator/httpBot.js'
 import type { OrgId } from '../domain/ids.js'
@@ -116,6 +116,17 @@ async function servingDaemonFeatures(
     .map((daemonId) => deps.daemonConns.get(daemonId))
     .filter((conn) => conn?.state === 'READY')
     .map((conn) => conn?.capabilities?.features ?? [])
+}
+
+/** Why a conversation this agent serves cannot be set to `auto` (auto-session-mode.md §3.1): no connected daemon, or one that does not read it. */
+export async function autoSessionModeRefusal(
+  deps: Pick<HttpDeps, 'placementResolver' | 'daemonConns'>,
+  agent: AgentRecord
+): Promise<string | undefined> {
+  const served = await servingDaemonFeatures(deps, agent)
+  if (served.length === 0) return 'No daemon serving this agent is connected.'
+  if (served.some((features) => !autoSessionModeSupported(features))) return 'Upgrade the daemon to use Auto.'
+  return undefined
 }
 
 /** Whether a connected daemon serving this agent lacks the feature `protocol` needs (shared-bot-relay.md §10.4). */
