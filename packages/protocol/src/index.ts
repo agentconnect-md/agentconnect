@@ -258,6 +258,7 @@ export {
   isAppendCoordinate,
   isCoordinatorCoordinate
 } from './append-coordinate.js'
+export { coordinatorConversationId } from './coordinator-conversation.js'
 export {
   APPROVED_TASK_COORDINATE_PREFIX,
   CHECK_COORDINATE_PREFIX,

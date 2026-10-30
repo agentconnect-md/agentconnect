@@ -55,6 +55,8 @@ export interface ChatApplicationHost {
   queueFull(sessionKey: string): boolean
   turnFinalContextRefresh(): boolean
   holdContextForOwnTurn(sessionKey: string, ts: string): void
+  /** The coordinate of a member's private coordinator conversation with the agent, undefined for any other conversation (auto-session-mode.md §10). */
+  coordinatorCoordinate?(agentId: string, conversationId: string, authorId: string): Promise<string | undefined>
 }
 
 // Public protocol choice does not change the durable conversation's existing coordinates.
@@ -108,7 +110,11 @@ export class ChatSessionApplication {
       return { accepted: false, reason: 'draining' }
     }
     await this.rememberAuthorName(author)
-    const key = chatSessionKey(conversationId, result.agentId)
+    // A member's coordinator conversation keys every message on its coordinator, each one addressed to the agent.
+    const coordinate = await this.host.coordinatorCoordinate?.(result.agentId, conversationId, author.id)
+    const key = coordinate
+      ? sessionKey('webchat', conversationId, coordinate, result.agentId)
+      : chatSessionKey(conversationId, result.agentId)
     // Keep the message id stable per conversation so every protocol enters the same logical session.
     const message: NormalizedMessage = {
       msgId: `webchat:${conversationId}`,
@@ -116,6 +122,7 @@ export class ChatSessionApplication {
       source: 'user',
       platform: 'webchat',
       channel: conversationId,
+      ...(coordinate ? { sessionThread: coordinate } : {}),
       sender: { id: author.id, isBot: false, name: author.name },
       ...(author.timeZone ? { senderTimeZone: author.timeZone } : {}),
       text,
@@ -123,7 +130,7 @@ export class ChatSessionApplication {
       ...(post ? { transcriptTs: String(post.at), transcriptPostId: post.postId } : {}),
       ...(attachments?.length ? { attachments } : {}),
       isDm: true,
-      trigger: mentions?.includes(agentId) ? 'mention' : 'dm'
+      trigger: coordinate || mentions?.includes(agentId) ? 'mention' : 'dm'
     }
     return { accepted: true, turn: { agentId: result.agentId, sessionKey: key, message } }
   }

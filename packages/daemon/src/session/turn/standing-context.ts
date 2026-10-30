@@ -75,6 +75,8 @@ export type StandingContextInput = {
   thread: string
   /** A task the coordinator opened on a platform thread (auto-session-mode.md §6.2). */
   threadedTask?: boolean
+  /** A task the coordinator opened for a message of a conversation without threads, whose page is its conversation (§10). */
+  pageTask?: boolean
   /** People may write to a delegated task from its console page (auto-session-mode.md §10). */
   taskPageMessages?: boolean
   /** This session's OUTWARD id (session-concept.md §1.1), absent on the turn that opens it. */
@@ -403,6 +405,13 @@ export const THREADED_TASK_APPEND =
   `the coordinator may hand you more messages, each from a thread it attaches to you; your answer goes to the ` +
   `thread each message came from. Nothing is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
 
+// auto-session-mode.md §10: a task for a console message answers on its own page and reports nothing to the coordinator.
+export const PAGE_TASK_APPEND =
+  `# You are a task\n` +
+  `The coordinator of a person's console conversation opened you for a message there. They talk to you on your own ` +
+  `page in the console, and the coordinator may move more of their messages to you; they read your answers on that ` +
+  `page. Nothing is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
+
 /** The most answerable messages one turn lists; the rest stay valid and are counted (send-message-guide.md §9.5). */
 export const MAX_LISTED_SESSION_MESSAGES = 8
 
@@ -440,15 +449,17 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots, input.onDemandClones)
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
-  const taskReportingAppend = isDelegationCoordinate(input.thread)
-    ? buildTaskReportingAppend(
-        input.originSessionId,
-        keepsTaskSummaryAt(input.thread),
-        input.taskPageMessages === true && keepsTaskSummaryAt(input.thread)
-      )
-    : input.threadedTask
-      ? THREADED_TASK_APPEND
-      : ''
+  const taskReportingAppend = input.pageTask
+    ? PAGE_TASK_APPEND
+    : isDelegationCoordinate(input.thread)
+      ? buildTaskReportingAppend(
+          input.originSessionId,
+          keepsTaskSummaryAt(input.thread),
+          input.taskPageMessages === true && keepsTaskSummaryAt(input.thread)
+        )
+      : input.threadedTask
+        ? THREADED_TASK_APPEND
+        : ''
   // A coordinator's own instructions replace the reply and collaboration rules: it only decides where messages go (auto-session-mode.md §5.4).
   const coordinator = isCoordinatorCoordinate(input.thread)
   const assemble = (meta: string) => {

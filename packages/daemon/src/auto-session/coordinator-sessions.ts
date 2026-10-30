@@ -7,12 +7,16 @@ import { taskTitleField, TASK_TITLE_MAX_CHARS } from '../mcp/ops/send-message-ac
 import { deriveTitle } from '../session/derive-title.js'
 import { isNoResponsePrefix } from '../session/no-response.js'
 import { sessionKey, type LocalStore } from '../store/local-store.js'
+import { monotonicTs } from '../store/monotonic-ts.js'
+import { a2aCoordChannel } from '../cp/cp-collab-routes.js'
+import { isSubsessionCoordinate, subsessionCoordinate } from '../session/subsession-coordinate.js'
 import { coordinatorMessageId } from './coordinator-prompt.js'
 import {
   answerThreadOf,
   CoordinatorTurns,
   platformMessageIdOf,
   replyThreadOf,
+  threadless,
   type DeliveredMessage
 } from './coordinator-turns.js'
 
@@ -29,6 +33,8 @@ export interface CoordinatorSessionsHost {
   post(agentId: string, integrationId: string | undefined, msg: NormalizedMessage, text: string): Promise<void>
   /** Show on a message that a turn is deciding it (🤔, §4.4); the returned call takes that back. */
   showTriaging(agentId: string, message: DeliveredMessage): () => void
+  /** The console page of a session, by its outward id. */
+  sessionLink(sessionId: string): string
   warn(message: string): void
 }
 
@@ -87,6 +93,27 @@ export function messageForTask(
   }
 }
 
+/** The message a task on its own page receives (§10): the original, moved to the task's coordinate and out of its conversation's posts. */
+export function messageForPageTask(
+  msg: NormalizedMessage,
+  at: { channel: string; sessionThread: string },
+  opts: { title?: string; background?: string }
+): NormalizedMessage {
+  const { transcriptPostId: _post, ...moved } = messageForTask(msg, opts)
+  return { ...moved, channel: at.channel, sessionThread: at.sessionThread }
+}
+
+/** A page task's background coordinate, read from its session key since the session may not exist yet; undefined for any other task. */
+function pageTaskCoordinate(key: string, platform: string, agentId: string): string | undefined {
+  const head = `${platform}:${a2aCoordChannel(agentId)}:`
+  const tail = `:${agentId}`
+  const coordinate = key.startsWith(head) && key.endsWith(tail) ? key.slice(head.length, -tail.length) : undefined
+  return isSubsessionCoordinate(coordinate) ? coordinate : undefined
+}
+
+// A link a title cannot break out of.
+const linkText = (title: string): string => title.replace(/[[\]\\]/g, (char) => `\\${char}`)
+
 /** A task title the daemon gives: the text's first line, cut to a task title's length. */
 function taskTitleFrom(text: string | undefined, otherwise: string): string {
   const line = deriveTitle(text)?.replace(/\s+/g, ' ').trim() || otherwise
@@ -133,7 +160,10 @@ export class CoordinatorSessions {
           const owner = await this.taskOwner(ctx.agentId, ctx, key)
           const taskId = await this.openTask(owner, ctx.agentId, held.message, call.title, call.message)
           this.turns.settle(key, call.messageId, 'delegate')
-          return { ok: true, taskId, title: call.title, note: "Task opened; it answers in the message's thread." }
+          const note = threadless(held.message.msg)
+            ? 'Task opened; it answers on its own page, which the conversation now links to.'
+            : "Task opened; it answers in the message's thread."
+          return { ok: true, taskId, title: call.title, note }
         }
         case 'messageTask': {
           const owners = new Set([key, await this.taskOwner(ctx.agentId, ctx, key)])
@@ -199,6 +229,7 @@ export class CoordinatorSessions {
         `sendMessage: the thread of ${message.id} already belongs to task ${owner}; hand the message to it with action ` +
           `"messageTask" and that taskId`
       )
+    if (threadless(msg)) return await this.openPageTask(coordinatorKey, agentId, message, title, background)
     const taskKey = sessionKey(msg.platform, msg.channel, thread, agentId, msg.transportScope)
     const now = this.host.now()
     const parentSessionId = await store.ensureOutwardSessionId(coordinatorKey, agentId, now)
@@ -230,6 +261,72 @@ export class CoordinatorSessions {
     return taskKey
   }
 
+  /** A task for a message of a conversation without threads (§10): a background coordinate whose page is its conversation, holding the message's id as its thread so it never reports. */
+  private async openPageTask(
+    coordinatorKey: string,
+    agentId: string,
+    message: DeliveredMessage,
+    title: string,
+    background?: string
+  ): Promise<string> {
+    const { msg } = message
+    const store = this.host.store()
+    const index = store.assistantSubsessions
+    // Off the conversation's own channel, as a background task of it is, so the task is never the conversation's session.
+    const at = { channel: a2aCoordChannel(agentId), sessionThread: subsessionCoordinate(monotonicTs()) }
+    const taskKey = sessionKey(msg.platform, at.channel, at.sessionThread, agentId)
+    const now = this.host.now()
+    const parentSessionId = await store.ensureOutwardSessionId(coordinatorKey, agentId, now)
+    await index.open({
+      agentId,
+      childSessionKey: taskKey,
+      parentSessionId,
+      parentSessionKey: coordinatorKey,
+      title,
+      background: background?.trim() || msg.text,
+      now
+    })
+    await index.attachThread({
+      agentId,
+      childSessionKey: taskKey,
+      platform: msg.platform,
+      channel: msg.channel,
+      transportScope: msg.transportScope ?? '',
+      thread: replyThreadOf(msg),
+      sinceRound: 1,
+      now
+    })
+    this.host.dispatch(
+      agentId,
+      messageForPageTask(msg, at, { title, ...(background ? { background } : {}) }),
+      message.integrationId
+    )
+    await this.postTaskLink(agentId, message, taskKey, title, 'opened')
+    return taskKey
+  }
+
+  /** The link a conversation without threads gets to the task its message went to (§10). */
+  private async postTaskLink(
+    agentId: string,
+    message: DeliveredMessage,
+    taskKey: string,
+    title: string | undefined,
+    how: 'opened' | 'handed'
+  ): Promise<void> {
+    const sessionId = await this.host.store().ensureOutwardSessionId(taskKey, agentId, this.host.now())
+    const link = `[${linkText(title?.trim() || 'the task')}](${this.host.sessionLink(sessionId)})`
+    await this.host
+      .post(
+        agentId,
+        message.integrationId,
+        message.msg,
+        how === 'opened' ? `Started a task: ${link}` : `Passed to ${link}`
+      )
+      .catch((err: unknown) =>
+        this.host.warn(`coordinator: linking ${message.id} to ${taskKey} failed (${String(err)})`)
+      )
+  }
+
   /** Hand a message to one of the coordinator's threaded tasks and attach its thread (§5.1, §6.4). */
   private async handTo(
     owners: ReadonlySet<string>,
@@ -244,7 +341,13 @@ export class CoordinatorSessions {
     const row =
       (await index.get(agentId, taskId)) ??
       (await store.getSessionByOutwardIdOnly(taskId, agentId).then((s) => (s ? index.get(agentId, s.key) : undefined)))
-    if (!row || row.kind === 'follow-up' || !owners.has(row.parentSessionKey))
+    // A message without a thread moves only to a task on its own page (§10).
+    if (
+      !row ||
+      row.kind === 'follow-up' ||
+      !owners.has(row.parentSessionKey) ||
+      (threadless(msg) && pageTaskCoordinate(row.childSessionKey, msg.platform, agentId) === undefined)
+    )
       throw new Error(`sendMessage: ${taskId} is not one of your open tasks; listTasks lists them`)
     const threads = await index.threadsOf(agentId, row.childSessionKey)
     if (threads.length === 0)
@@ -280,6 +383,23 @@ export class CoordinatorSessions {
     background?: string
   ): Promise<void> {
     const store = this.host.store()
+    if (threadless(message.msg)) {
+      // A page task's message moves into its conversation, which the coordinator links to (§10).
+      const sessionThread = pageTaskCoordinate(taskKey, message.msg.platform, agentId)
+      if (sessionThread === undefined) throw new Error(`sendMessage: ${taskKey} has no page this message can move to`)
+      this.host.dispatch(
+        agentId,
+        messageForPageTask(
+          message.msg,
+          { channel: a2aCoordChannel(agentId), sessionThread },
+          background ? { background } : {}
+        ),
+        message.integrationId
+      )
+      const title = (await store.assistantSubsessions.get(agentId, taskKey))?.title
+      await this.postTaskLink(agentId, message, taskKey, title, 'handed')
+      return
+    }
     const sessionThread =
       (await store.getSession(taskKey))?.thread ??
       (await store.assistantSubsessions.threadsOf(agentId, taskKey))[0]?.thread
@@ -349,6 +469,8 @@ export class CoordinatorSessions {
     if (!settled || ended === 'stopped') return
     if (ended === 'answered' && settled.reply !== undefined) {
       const [message] = settled.undecided
+      // A reply a browser already streamed is committed with its turn.
+      if (message!.streamed) return
       await this.host
         .post(agentId, message!.integrationId, message!.msg, settled.reply)
         .catch((err: unknown) => this.host.warn(`coordinator ${key}: reply to ${message!.id} failed (${String(err)})`))
@@ -364,13 +486,14 @@ export class CoordinatorSessions {
 }
 
 /** The delivered-message entry for one admitted coordinator message; anything but a channel message is a report (§3.4). */
-export function deliveredMessage(msg: NormalizedMessage, integrationId?: string): DeliveredMessage {
+export function deliveredMessage(msg: NormalizedMessage, integrationId?: string, streamed = false): DeliveredMessage {
   const report = msg.source !== 'user'
   return {
     id: coordinatorMessageId(platformMessageIdOf(msg)),
     msg,
     ...(integrationId !== undefined ? { integrationId } : {}),
     mentionsYou: !report && msg.trigger === 'mention',
-    ...(report ? { report: true as const } : {})
+    ...(report ? { report: true as const } : {}),
+    ...(streamed ? { streamed: true as const } : {})
   }
 }
