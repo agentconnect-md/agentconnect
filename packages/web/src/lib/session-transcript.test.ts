@@ -50,7 +50,12 @@ describe('reconcilePersistedLiveSteps', () => {
   it('preserves an unpersisted failed turn when a tail refresh is empty', () => {
     const live = [
       prompt('ship it', 1_785_000_000_000),
-      { kind: 'done', turnId: 'warn-1', text: '⚠️ Could not reach the agent.', observedAtMs: 1_785_000_000_100 }
+      {
+        kind: 'done',
+        turnId: 'warn-1',
+        text: '⚠️ Your browser couldn’t connect to the chat server — check your network connection and try again.',
+        observedAtMs: 1_785_000_000_100
+      }
     ] satisfies SessionStep[]
 
     expect(reconcilePersistedLiveSteps(live, [], agentId)).toBe(live)
@@ -61,7 +66,12 @@ describe('reconcilePersistedLiveSteps', () => {
     const retriedAt = failedAt + 30_000
     const live = [
       prompt('ship it', failedAt),
-      { kind: 'done', turnId: 'warn-1', text: '⚠️ Could not reach the agent.', observedAtMs: failedAt + 100 },
+      {
+        kind: 'done',
+        turnId: 'warn-1',
+        text: '⚠️ Your browser couldn’t connect to the chat server — check your network connection and try again.',
+        observedAtMs: failedAt + 100
+      },
       prompt('ship it', retriedAt),
       { kind: 'done', turnId: 'ok-1', text: 'deployed', observedAtMs: retriedAt + 1_000 }
     ] satisfies SessionStep[]
@@ -77,7 +87,12 @@ describe('reconcilePersistedLiveSteps', () => {
     const at = 1_785_000_000_000
     const live = [
       prompt('yes', at),
-      { kind: 'done', turnId: 'warn-2', text: '⚠️ Could not reach the agent.', observedAtMs: at + 100 }
+      {
+        kind: 'done',
+        turnId: 'warn-2',
+        text: '⚠️ Your browser couldn’t connect to the chat server — check your network connection and try again.',
+        observedAtMs: at + 100
+      }
     ] satisfies SessionStep[]
     const peerRows = [
       { seq: 1, ts: String(at + 50), text: 'yes', sender: 'bot-b', kind: 'text' }

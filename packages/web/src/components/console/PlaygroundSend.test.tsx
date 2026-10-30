@@ -2249,7 +2249,7 @@ describe('a dial that dies before the turn reaches the socket', () => {
     })
     const turnId = getLiveSteps('s1').find((s) => s.text === 'hello')?.turnId
     expect(JSON.parse(String(live.send.mock.calls[0]?.[0]))).toMatchObject({ text: 'hello', turnId })
-    expect(getLiveSteps('s1').some((s) => String(s.text).includes('Could not reach the agent'))).toBe(false)
+    expect(getLiveSteps('s1').some((s) => String(s.text).includes('couldn’t connect to the chat server'))).toBe(false)
   })
 
   it('reports the turn unsent when the rebuilt dial dies too', async () => {
@@ -2265,7 +2265,7 @@ describe('a dial that dies before the turn reaches the socket', () => {
     })
     await settle()
     expect(DyingSocket.instances).toHaveLength(2)
-    expect(getLiveSteps('s1').some((s) => String(s.text).includes('Could not reach the agent'))).toBe(true)
+    expect(getLiveSteps('s1').some((s) => String(s.text).includes('couldn’t connect to the chat server'))).toBe(true)
   })
 
   it('does not rebuild on a CP verdict — a refusal is an answer, not a blip', async () => {
