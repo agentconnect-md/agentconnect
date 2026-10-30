@@ -14,6 +14,15 @@ export default defineConfig([
   importX.flatConfigs.typescript,
   eslintConfigPrettier,
   {
+    // These rebuild every module's export map (6.5 GB heap for the repo) to repeat checks tsc already makes.
+    rules: {
+      'import-x/named': 'off',
+      'import-x/namespace': 'off',
+      'import-x/default': 'off',
+      'import-x/export': 'off'
+    }
+  },
+  {
     ignores: [
       '.claude/**',
       '**/dist/**',
