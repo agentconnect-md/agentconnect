@@ -77,6 +77,12 @@
       "import": "./dist/provider-key.js",
       "default": "./dist/provider-key.js"
     },
+    "./append-coordinate": {
+      "development": "./src/append-coordinate.ts",
+      "types": "./dist/append-coordinate.d.ts",
+      "import": "./dist/append-coordinate.js",
+      "default": "./dist/append-coordinate.js"
+    },
     "./subsession-coordinate": {
       "development": "./src/subsession-coordinate.ts",
       "types": "./dist/subsession-coordinate.d.ts",

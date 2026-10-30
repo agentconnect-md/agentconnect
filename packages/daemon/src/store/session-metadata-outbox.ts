@@ -9,6 +9,8 @@ import type { Clock, TimerHandle } from '@agentconnect.md/connection'
 import {
   ConversationSessionAudience,
   EventSession as EventSessionSchema,
+  isAppendCoordinate,
+  isSubsessionCoordinate,
   SESSION_METADATA_ACK_FEATURE,
   type EventSession,
   type SessionKey,
@@ -27,6 +29,18 @@ import {
 } from '../daemon/constants.js'
 import { formatErr } from '../daemon/text.js'
 import type { LocalStore, SessionMetadataOutboxRow, SessionRecord } from './local-store.js'
+
+/** The coordinator session a threaded task belongs to, by its outward id; undefined for any other session. */
+async function threadedTaskParent(
+  store: LocalStore,
+  agentId: string,
+  slot: SessionRecord
+): Promise<string | undefined> {
+  if (isAppendCoordinate(slot.thread) || isSubsessionCoordinate(slot.thread)) return undefined
+  const task = await store.assistantSubsessions.get(agentId, slot.key)
+  if (!task || task.kind === 'follow-up') return undefined
+  return (await store.assistantSubsessions.threadsOf(agentId, slot.key)).length > 0 ? task.parentSessionId : undefined
+}
 
 /** Exactly what the outbox touches on the Daemon — nothing wider. */
 export interface SessionMetadataHost {
@@ -148,6 +162,14 @@ export class SessionMetadataOutbox {
     // §4.2: this row's coordinates are its own conversation, so `parentSessionId` below is
     // lineage and the CP classifies the row instead of inheriting the parent's audience.
     if (classification?.directDestination) event.directDestination = true
+    // A threaded task names the coordinator that opened it as lineage; it lives in its own room's thread (auto-session-mode.md §6.2, §11).
+    if (event.parentSessionId === undefined && slot && classification?.conversationKind !== 'dm') {
+      const coordinator = await threadedTaskParent(store, input.agentId, slot)
+      if (coordinator !== undefined) {
+        event.parentSessionId = coordinator
+        event.directDestination = true
+      }
+    }
     // Only a direct trusted ingress reports a credential locator. A2A children
     // persist the same source tuple for the local gate but let the CP inherit
     // the already-validated parent scope instead of presenting the parent's bot

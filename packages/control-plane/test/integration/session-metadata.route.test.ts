@@ -312,7 +312,8 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         agentName: defaultAgentName(AGENT),
         platform: 'telegram',
         title: 'Check the database',
-        subsession: false
+        subsession: false,
+        coordinator: false
       },
       {
         id: secondChild,
@@ -320,7 +321,8 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         agentName: defaultAgentName(AGENT),
         platform: 'discord',
         title: 'Check the API',
-        subsession: false
+        subsession: false,
+        coordinator: false
       }
     ])
     expect((parentRes.json() as { parentSession: unknown }).parentSession).toBeNull()
@@ -337,7 +339,8 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       agentName: defaultAgentName(AGENT),
       platform: 'slack',
       title: 'Coordinate the rollout',
-      subsession: false
+      subsession: false,
+      coordinator: false
     })
     expect((childRes.json() as { siblingSessions: unknown[] }).siblingSessions).toEqual([
       {
@@ -346,10 +349,45 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         agentName: defaultAgentName(AGENT),
         platform: 'discord',
         title: 'Check the API',
-        subsession: false
+        subsession: false,
+        coordinator: false
       }
     ])
     expect((childRes.json() as { childSessions: unknown[] }).childSessions).toEqual([])
+  })
+
+  // auto-session-mode.md §6.2, §11: a threaded task names its coordinator as lineage, so each page links to the other.
+  it('links a threaded task and its coordinator, and marks the coordinator', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+    const coordinator = 'acp-coordinator'
+    const task = 'acp-threaded-task'
+    const base = { agentId: AGENT, phase: 'start', platform: 'slack', channel: 'C1', conversationKind: 'channel' }
+    await reportSession({
+      ...base,
+      sessionId: coordinator,
+      thread: 'append:coordinator-1700000000000',
+      title: 'morning all',
+      ts: '2026-07-05T00:00:00.000Z'
+    })
+    await reportSession({
+      ...base,
+      sessionId: task,
+      parentSessionId: coordinator,
+      directDestination: true,
+      thread: '1700000000.000100',
+      title: 'Webhook retries',
+      triggeredBy: 'U0ALICE',
+      ts: '2026-07-05T00:01:00.000Z'
+    })
+
+    const child = (await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${task}` })).json()
+    expect(child.parentSession).toMatchObject({ id: coordinator, subsession: false, coordinator: true })
+    expect(child).toMatchObject({ title: 'Webhook retries', visibility: 'org', canChangeVisibility: false })
+    const parent = (await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${coordinator}` })).json()
+    expect(parent.childSessions).toEqual([expect.objectContaining({ id: task, subsession: false, coordinator: false })])
+    expect(parent.parentSession).toBeNull()
   })
 
   it('marks a task among the links and leaves tasks out of the list, its total and its facets on request', async () => {

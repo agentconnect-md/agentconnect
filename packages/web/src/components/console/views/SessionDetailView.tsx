@@ -81,6 +81,7 @@ import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
 import { FollowUpTaskSummary } from '@/components/console/follow-up'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { SessionModelSelectionResult } from '@/components/console/decisions/SessionModelSelectionResult'
+import { CoordinatorTag } from '@/components/console/CoordinatorTag'
 import { agentToneColor } from '@/lib/agent-tone'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
@@ -5126,8 +5127,9 @@ export default function SessionDetailView() {
         the flush divider with the transcript, with no blank gap under the line. */}
         <div className="mx-auto w-full min-w-0 max-w-[880px] flex-none">
           <div>
-            {/* A task's own page names the session it belongs to and leads back there; its tool calls stay in its transcript. */}
-            {readOnlySubsession && currentSessionDetail ? (
+            {/* A task's own page, a coordinator's threaded task's too, names the session it belongs to and leads back there. */}
+            {(readOnlySubsession || currentSessionDetail?.parentSession?.coordinator === true) &&
+            currentSessionDetail ? (
               <div
                 data-task-owner=""
                 className="flex min-w-0 items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) max-desktop:border-b max-desktop:border-(--border-subtle) max-desktop:bg-(--surface-card) max-desktop:px-4 max-desktop:py-2 desktop:mb-[6px]"
@@ -5166,6 +5168,7 @@ export default function SessionDetailView() {
               >
                 {session.title}
               </h1>
+              <CoordinatorTag show={session.coordinator} />
               {headerStatusLabel && (
                 <span className="badge flex-none" style={{ background: headerStatus.bg, color: headerStatus.text }}>
                   <span className="dot h-[6px] w-[6px]" style={{ background: headerStatus.dot }} />
@@ -5341,6 +5344,7 @@ export default function SessionDetailView() {
                 onChange={(agentId) => changeHeaderFocus(agentId)}
               />
             </span>
+            <CoordinatorTag show={session.coordinator} />
             {workspaceHref ? (
               // Borderless on purpose (no `iconbtn`): a boxed button in this strip of
               // plain text triggers reads as the odd one out and eats width.

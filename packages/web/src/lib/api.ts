@@ -65,6 +65,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { isSubsessionCoordinate } from '@agentconnect.md/protocol/subsession-coordinate'
+import { isCoordinatorCoordinate } from '@agentconnect.md/protocol/append-coordinate'
 import {
   appendSessionLabel,
   appendSessionStartedAt,
@@ -627,6 +628,8 @@ export interface SessionRelationDto {
   title: string | null
   /** A task (delegated task, follow-up or approved proposal) rather than a conversation; absent on older Control Planes. */
   subsession?: boolean
+  /** A conversation's coordinator under Auto, a threaded task's parent; absent on older Control Planes. */
+  coordinator?: boolean
 }
 
 export interface SessionDetailDto {
@@ -2275,6 +2278,7 @@ export function sessionFromDto(d: SessionDto): Session {
     ...((isWebchat || isHook || d.channelName || dmFallback) && rawChannel ? { channelId: rawChannel } : {}),
     ...(d.threadUrl ? { threadUrl: d.threadUrl } : {}),
     ...(isSubsessionCoordinate(d.sessionKey.thread) ? { subsession: true as const } : {}),
+    ...(isCoordinatorCoordinate(d.sessionKey.thread) ? { coordinator: true as const } : {}),
     user,
     ...(d.triggeredBy ? { triggeredBy: d.triggeredBy } : {}),
     ...(d.hookKind ? { hookKind: d.hookKind } : {}),

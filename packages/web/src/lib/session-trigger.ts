@@ -158,7 +158,8 @@ export function sessionTriggerKind(
  */
 export function appendSessionStartedAt(thread: string | undefined): Date | undefined {
   if (thread === undefined || !thread.startsWith('append:')) return undefined
-  const payload = thread.slice('append:'.length)
+  // A coordinator's coordinate is an append one of its own family (auto-session-mode.md §4).
+  const payload = thread.slice('append:'.length).replace(/^coordinator-/, '')
   if (!/^\d+$/.test(payload)) return undefined
   const ms = Number(payload)
   return Number.isSafeInteger(ms) ? new Date(ms) : undefined

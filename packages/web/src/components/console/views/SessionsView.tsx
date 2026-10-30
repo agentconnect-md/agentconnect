@@ -40,6 +40,7 @@ import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useMobileFilterSlot } from '@/components/console/Shell'
 import { AgentIconView, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { RestrictedLock } from '@/components/console/VisibilityField'
+import { CoordinatorTag } from '@/components/console/CoordinatorTag'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
@@ -694,6 +695,7 @@ export default function SessionsView() {
                 <span className="min-w-0 truncate font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
                   {s.title}
                 </span>
+                <CoordinatorTag show={s.coordinator} />
                 <RestrictedLock show={s.visibility === 'private'} title={t('privateSession')} />
                 <PurgedMark session={s} />
                 {/* Status as a compact pill — the design's badge, driven by the real
@@ -735,6 +737,7 @@ export default function SessionsView() {
                   <span className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
                     {s.title}
                   </span>
+                  <CoordinatorTag show={s.coordinator} />
                   <RestrictedLock show={s.visibility === 'private'} title={t('privateSession')} />
                   <PurgedMark session={s} />
                 </div>

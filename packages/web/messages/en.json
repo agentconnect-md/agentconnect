@@ -659,6 +659,10 @@
       "all": "All",
       "noMatchesShort": "No matches"
     },
+    "coordinator": {
+      "label": "Coordinator",
+      "hint": "Decides where this conversation’s messages go under Auto: it hands each to a task, answers it, or lets it pass."
+    },
     "visibility": {
       "private": "Private",
       "everyone": "Everyone",

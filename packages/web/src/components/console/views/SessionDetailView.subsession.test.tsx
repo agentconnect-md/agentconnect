@@ -424,6 +424,25 @@ describe.each([
     expect(container?.querySelector('[data-task-owner]')).toBeNull()
     expect(container?.querySelector('[data-related-row="startedBy"]')).not.toBeNull()
   })
+
+  // auto-session-mode.md §11: a coordinator's threaded task links back to it and stays a conversation people continue.
+  it('names the coordinator a threaded task belongs to, and keeps its composer', async () => {
+    await open(SLACK, { parent: { ...OWNER, title: 'morning all', coordinator: true } })
+
+    const owner = container?.querySelector('[data-task-owner]')
+    expect(owner?.textContent).toBe('Belongs to morning all · task')
+    expect(owner?.querySelector('a')?.getAttribute('href')).toMatch(/\/sessions\/owner-1$/)
+    expect(composer()).not.toBeNull()
+    expect(container?.querySelector('[data-coordinator-tag]')).toBeNull()
+  })
+
+  it('marks a coordinator’s own page in the desktop title row and the phone header alike', async () => {
+    await open({ platform: 'slack', channel: 'C0123', thread: 'append:coordinator-1700000000000' })
+
+    const tags = [...(container?.querySelectorAll('[data-coordinator-tag]') ?? [])]
+    expect(tags.map((tag) => tag.textContent)).toEqual(['Coordinator', 'Coordinator'])
+    expect(container?.querySelector('[data-task-owner]')).toBeNull()
+  })
 })
 
 /** A follow-up's row as the single-task read answers it. */

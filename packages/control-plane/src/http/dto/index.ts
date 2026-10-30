@@ -3507,6 +3507,11 @@ export const SessionRelationDto = z.object({
     .boolean()
     .describe(
       'True when the linked session is a task (a delegated task, a follow-up (including a getting-to-know task) or an approved proposal) running on a `subsession:` thread rather than a conversation of its own.'
+    ),
+  coordinator: z
+    .boolean()
+    .describe(
+      'True when the linked session is a conversation’s coordinator under the Auto session mode, which opens a threaded task for a message and is that task’s parent.'
     )
 })
 
