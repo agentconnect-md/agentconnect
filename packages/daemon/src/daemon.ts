@@ -1027,7 +1027,13 @@ import {
   sessionThreadOf,
   wakeThreadFields
 } from './messages/normalized.js'
-import { appendCoordinate, isAppendCoordinate, isCoordinatorCoordinate } from './session/append-coordinate.js'
+import {
+  appendCoordinate,
+  isAppendCoordinate,
+  isCoordinatorCoordinate,
+  isCoordinatorSessionKey,
+  type ConversationCoordinateKind
+} from './session/append-coordinate.js'
 import {
   coordinatorPrompt,
   coordinatorSessionTools,
@@ -2914,6 +2920,7 @@ export class Daemon {
       sessionCoordinateFor: async (agentId, integrationId, msg, opts) =>
         await this.sessionCoordinateFor(agentId, integrationId, msg, opts),
       conversationAppends: (agentId, integrationId, msg) => this.conversationAppends(agentId, integrationId, msg),
+      rootCoordinateKind: (agentId, integrationId, at) => this.rootCoordinateKind(agentId, integrationId, at),
       adoptCoordinatorTasks: async (agentId, fromKey, toKey) =>
         await this.coordinators.handOver(agentId, fromKey, toKey),
       mergedRulesForSource: (srcIntegrationIds) => this.mergedRulesForSource(srcIntegrationIds),
@@ -8844,11 +8851,15 @@ export class Daemon {
       const hostKey = sessionHostKey(agent.id, entry.sessionKey)
       // Organization research starts in its own empty directory here too (assistant-mode.md §5.15).
       const researchDir = isResearchSessionKey(entry.sessionKey) ? await this.researchCwd(agent, hostKey) : undefined
-      const cwd =
+      const workspaceCwd =
         researchDir ??
         (inSessionPod
           ? await this.prepareSessionPodLaunch(agent, entry.sessionKey)
           : await this.prepareAgentWorkspace(agent, undefined, undefined))
+      // A coordinator starts in its empty directory in the agent's pod once the preparation bound it (auto-session-mode.md §5.4).
+      const cwd = isCoordinatorSessionKey(entry.sessionKey)
+        ? ((await this.coordinatorDir(agent.id, entry.sessionKey, true)) ?? workspaceCwd)
+        : workspaceCwd
       // The clones it holds on that pod, as an ordinary start lists them.
       const sessionGitDirs = inSessionPod
         ? await this.listSessionGitDirs(agent, entry.sessionKey, hostKeyLabel(hostKey))
@@ -13509,10 +13520,20 @@ export class Daemon {
    */
   /** Whether this conversation's root is one session for this target (append, or the coordinator under `auto`), from the mode alone so "nobody spoke yet" differs from "not one". */
   private conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean {
-    if (integrationId === undefined) return false
+    return this.rootCoordinateKind(agentId, integrationId, msg) !== undefined
+  }
+
+  /** The one session a conversation's root keys on for this target: its append session, its coordinator under `auto`, or none. */
+  private rootCoordinateKind(
+    agentId: string,
+    integrationId: string | undefined,
+    msg: Pick<NormalizedMessage, 'channel'> & Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm'>>
+  ): ConversationCoordinateKind | undefined {
+    if (integrationId === undefined) return undefined
     const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
     const mode = int === undefined ? undefined : this.sessionModeFor(agentId, int, msg)
-    return mode === 'append' || (mode === 'auto' && this.cfg.features.autoSessionMode)
+    if (mode === 'append') return 'append'
+    return mode === 'auto' && this.cfg.features.autoSessionMode ? 'coordinator' : undefined
   }
 
   /** A target's session mode where a message arrived; an assistant-mode place appends before its row reaches the spec (assistant-mode.md §5.2). */
@@ -13756,20 +13777,30 @@ export class Daemon {
       .catch((err) => this.log.warn(`task ${key}: settling its turn failed: ${formatErr(err)}`))
   }
 
-  /** An empty directory a coordinator's runtime session opens in, where its runtime reads this daemon's disk (auto-session-mode.md §5.4). */
-  private coordinatorCwd(agentId: string, key: string): { bareCwd?: string } {
-    if (this.k8sPlane || this.modelSessions.enabled) return {}
-    const scope = { sessionKey: key }
-    if (this.workspaces.sandboxMountFor(agentId, scope) !== undefined) return {}
-    if (this.workspaces.offDiskFsFor(agentId, scope) !== undefined) return {}
-    const dir = join(this.root, 'coordinators', agentId)
+  /** The coordinator's empty working directory where its runtime reads files, made there; undefined opens it in the agent's (auto-session-mode.md §5.4). */
+  private async coordinatorDir(agentId: string, key: string, ownHost: boolean): Promise<string | undefined> {
+    const agent = this.agents.get(agentId)
+    // Shared isolation keeps a coordinator off executors; one placed before that keeps its own preparation.
+    if (!agent || this.placedSession(key)) return undefined
     try {
-      mkdirSync(dir, { recursive: true })
+      if (this.k8sPlane) {
+        // In the agent's pod, beside its checkout, made through the pod's own files once the pod is bound.
+        const fs = this.workspaces.offDiskFsFor(agentId, { sessionKey: key })
+        const mount = this.workspaces.sandboxMountFor(agentId, { sessionKey: key })
+        if (fs === undefined || fs === 'unbound' || mount === undefined) return undefined
+        const dir = `${mount.replace(/\/+$/, '')}/.agentconnect/coordinator`
+        await fs.mkdir(dir)
+        return dir
+      }
+      // A host of its own launches inside the agent's directory, as a sandbox boundary requires; a shared host's sandbox hides that directory, and a shared VM mounts neither.
+      if (!ownHost && this.usesMicrosandbox(agent)) return undefined
+      const dir = ownHost ? join(agent.dir, 'coordinator') : join(this.root, 'coordinators', agentId)
+      await mkdir(dir, { recursive: true, mode: 0o700 })
+      return dir
     } catch (err) {
       this.log.warn(`coordinator ${key}: no empty working directory (${formatErr(err)}); it opens in the agent's`)
-      return {}
+      return undefined
     }
-    return { bareCwd: dir }
   }
 
   /** auto-session-mode.md §4.4: 🤔 on a message while a coordinator turn decides it, taken back after its placement settles. */
@@ -19606,14 +19637,15 @@ export class Daemon {
     let agent = run.agent
     const { agentId, msg, integrationId, webchat, callMeta, hookContext } = entry
     // The per-conversation Worktree choice this turn carries, in the isolation vocabulary the row, the host key and the pod claim all speak.
-    // Organization research needs no checkout of its own: it reads through bridge tools only (assistant-mode.md §5.15).
-    const webchatIsolation = isResearchSessionKey(key)
-      ? ('shared' as const)
-      : webchat?.worktree === undefined
-        ? undefined
-        : webchat.worktree
-          ? ('session' as const)
-          : ('shared' as const)
+    // Organization research and a coordinator need no checkout of their own (assistant-mode.md §5.15, auto-session-mode.md §5.4).
+    const webchatIsolation =
+      isResearchSessionKey(key) || isCoordinatorSessionKey(key)
+        ? ('shared' as const)
+        : webchat?.worktree === undefined
+          ? undefined
+          : webchat.worktree
+            ? ('session' as const)
+            : ('shared' as const)
     // Install the exact route before session/new|load: adapters may emit metadata
     // (including a restored title) while SessionManager is still initializing.
     const previousDeliveryBinding = this.sessionDeliveryBindings.get(key)
@@ -19724,7 +19756,9 @@ export class Daemon {
           ...reviewWorkspace,
           ...(launchWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: launchWorkspaceCwd } : {}),
           ...(entry.coordinatorPrompt !== undefined ? { coordinatorBatch: entry.coordinatorPrompt } : {}),
-          ...(entry.coordinatorPrompt !== undefined ? this.coordinatorCwd(agentId, key) : {})
+          ...(entry.coordinatorPrompt !== undefined
+            ? { bareCwd: async () => await this.coordinatorDir(agentId, key, false) }
+            : {})
         }
       )
       const target = this.sessionRuntimes.get(key)
@@ -24531,7 +24565,7 @@ export class Daemon {
       const researchDir = isResearchSessionKey(boundKey || undefined) ? await this.researchCwd(agent, key) : undefined
       // The cold gate, before every fresh spawn: a failed child had write authority, so its replacement re-verifies the skill receipts; a review in its own pod needs only that, its cwd already prepared.
       // A shared host started for a session prepares that session's share too (its on-demand clone directory), since the session consumes this one preparation.
-      const prepared =
+      const workspaceCwd =
         researchDir ??
         (bound?.cwd !== undefined && this.runsInSessionPod(agent, boundKey)
           ? await this.prepareSessionPodLaunch(agent, boundKey, allowAgentDrain)
@@ -24541,6 +24575,11 @@ export class Daemon {
               session && session.cwd === undefined ? session.workspace : undefined,
               allowAgentDrain
             ))
+      // A coordinator's host of its own prepares as any launch does, then starts in its empty directory (auto-session-mode.md §5.4).
+      const prepared =
+        boundKey && isCoordinatorSessionKey(boundKey)
+          ? ((await this.coordinatorDir(agentId, boundKey, true)) ?? workspaceCwd)
+          : workspaceCwd
       if (!this.usesMicrosandbox(agent))
         await withStartupPhase('runtime', () => this.ensureRuntimeInstalled(agent.runtime, true))
       const sessionGitDirs = boundKey ? await this.listSessionGitDirs(agent, boundKey, label) : undefined

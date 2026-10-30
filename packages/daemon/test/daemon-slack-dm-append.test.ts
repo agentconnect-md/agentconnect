@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import type { SlackAppFactory } from '../src/slack/connection.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-import { isAppendCoordinate } from '../src/session/append-coordinate.js'
+import { isAppendCoordinate, isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
+import { sessionKey } from '../src/store/local-store.js'
 
 // assistant-mode.md §5.2: a Slack DM on `append` keys every message onto one session, and each answer
 // still lands in the physical thread its question came from. Driven from raw Slack events, so the
@@ -13,14 +14,17 @@ import { isAppendCoordinate } from '../src/session/append-coordinate.js'
 
 type Handler = (args: { event?: unknown; message?: unknown }) => Promise<void>
 
-function scaffold(mode: 'createNew' | 'append'): string {
+type Mode = 'createNew' | 'append' | 'auto'
+
+function scaffold(mode: Mode): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-slack-dm-append-'))
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      runtimes: { claude: { command: 'node', args: [] } }
+      runtimes: { claude: { command: 'node', args: [] } },
+      ...(mode === 'auto' ? { features: { autoSessionMode: true } } : {})
     })
   )
   const adir = join(root, 'agents', 'bot-a')
@@ -39,7 +43,7 @@ function scaffold(mode: 'createNew' | 'append'): string {
           platform: 'slack',
           core: {
             bindRules: [{ match: { kind: 'dm' } }],
-            ...(mode === 'append' ? { sessionModes: [{ channel: 'D1', mode: 'append' }] } : {})
+            ...(mode !== 'createNew' ? { sessionModes: [{ channel: 'D1', mode }] } : {})
           },
           config: { botToken: 'xoxb', appToken: 'xapp' }
         }
@@ -50,7 +54,7 @@ function scaffold(mode: 'createNew' | 'append'): string {
   return root
 }
 
-async function boot(mode: 'createNew' | 'append') {
+async function boot(mode: Mode) {
   const handlers = new Map<string, Handler>()
   const base = fakeSlackAppFactory()
   const factory: SlackAppFactory = (opts) => {
@@ -272,6 +276,57 @@ describe('a relay-forwarded new Assistant thread', () => {
       () => {}
     )
     expect(await inner.store.currentAppendCoordinate('bot-a', 'D1', scope)).toBe(after)
+    await daemon.stop()
+  })
+})
+
+// auto-session-mode.md §8: under Auto a new chat resets the coordinator as a root `!new` does, and its tasks stay.
+describe('a Slack DM under auto', () => {
+  it('starts a new coordinator when a new Assistant thread opens, and hands it the threaded tasks', async () => {
+    const { daemon, handlers, store, scope } = await boot('auto')
+    const before = await store.resolveAppendCoordinate('bot-a', 'D1', scope, 1, 'coordinator')
+    const coordinatorKey = sessionKey('slack', 'D1', before, 'bot-a', scope)
+    const taskKey = sessionKey('slack', 'D1', '1720000000.000100', 'bot-a', scope)
+    await store.assistantSubsessions.open({
+      agentId: 'bot-a',
+      childSessionKey: taskKey,
+      parentSessionId: await store.ensureOutwardSessionId(coordinatorKey, 'bot-a', 1),
+      parentSessionKey: coordinatorKey,
+      title: 'Task'
+    })
+    await store.assistantSubsessions.attachThread({
+      agentId: 'bot-a',
+      childSessionKey: taskKey,
+      platform: 'slack',
+      channel: 'D1',
+      transportScope: scope,
+      thread: '1720000000.000100',
+      sinceRound: 1,
+      now: 1
+    })
+    const started = {
+      event: { assistant_thread: { user_id: 'U1', channel_id: 'D1', thread_ts: threadRootAfterNow() } }
+    }
+
+    await handlers.get('assistant_thread_started')!(started)
+    const after = await store.currentAppendCoordinate('bot-a', 'D1', scope)
+    expect(isCoordinatorCoordinate(after)).toBe(true)
+    expect(after).not.toBe(before)
+    const successor = sessionKey('slack', 'D1', after, 'bot-a', scope)
+    expect(await store.assistantSubsessions.get('bot-a', taskKey)).toMatchObject({ parentSessionKey: successor })
+
+    // A redelivered event names the same thread root and leaves the new coordinator alone.
+    await handlers.get('assistant_thread_started')!(started)
+    expect(await store.currentAppendCoordinate('bot-a', 'D1', scope)).toBe(after)
+    await daemon.stop()
+  })
+
+  it('mints no coordinator when a new Assistant thread opens before anyone spoke', async () => {
+    const { daemon, handlers, store, scope } = await boot('auto')
+    await handlers.get('assistant_thread_started')!({
+      event: { assistant_thread: { user_id: 'U1', channel_id: 'D1', thread_ts: '1720000000.000500' } }
+    })
+    expect(await store.currentAppendCoordinate('bot-a', 'D1', scope)).toBeUndefined()
     await daemon.stop()
   })
 })

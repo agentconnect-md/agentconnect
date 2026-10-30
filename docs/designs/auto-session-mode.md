@@ -12,8 +12,8 @@
 > messages reach it in batches (§4.3), its prompt and tools are the ones §12 probes, it decides with
 > `delegateTask` and `messageTask` carrying `messageId` and with `replyToMessage` (§4.2, §5.1), a
 > task's threads reach that task (§7), and a mention left without an outcome, or caught by a failed
-> turn, opens a threaded task (§4.5). It runs read-only, and in an empty working directory where its
-> runtime reads the daemon's own disk (elsewhere it opens in the agent's). Its tools are the decision
+> turn, opens a threaded task (§4.5). It runs read-only with shared workspace isolation, so it never
+> has a checkout of its own or an executor, in an empty working directory (§5.4). Its tools are the decision
 > tools with `postMessage` and `callAgent`, `listTasks`, memory, and the follow-up, proposal and
 > reminder tools its place is offered (§5.4). A threaded task is a session on its message's thread, attached in the task index. It answers
 > each message in the thread the message came from (§6.4), counts as running while a turn of it runs,
@@ -23,7 +23,8 @@
 > and the Control Plane stores nowhere (§6.7, §11). A
 > background task cannot take a channel message yet (§6.6): the coordinator opens no background task
 > before P3. Each message a coordinator turn decides shows 🤔 until the turn ends (§4.4), and `!new`
-> and `!stop` act on a task in its threads and on the coordinator at the root (§8). Under `auto` every
+> and `!stop` act on a task in its threads and on the coordinator at the root, where Slack's new chat
+> acts as `!new` does (§8). Under `auto` every
 > message of a conversation that is not Off reaches the coordinator, and `auto` is refused together
 > with By decision and shared-bot routing (§3.3). Switching into `auto` makes the conversation's recent
 > thread sessions the coordinator's tasks; switching out retires the coordinator and hands its tasks
@@ -266,6 +267,14 @@ together with the summary. Only a task calls it, for itself; both kinds can.
     sender and answer in its thread; a report or an unknown id is refused.
 - A read-only runtime mode and no workspace (an empty directory). Anything that needs work becomes a
   task.
+  - Its workspace isolation is always shared, so it never gets a checkout, a session pod or an
+    executor of its own.
+  - On the daemon's disk a coordinator on the agent's shared host opens in
+    `<daemon root>/coordinators/<agent>`. A host of its own (a runtime with per-process MCP servers,
+    a microsandbox VM or a model-session host) launches in `<agent dir>/coordinator`, inside the
+    directory a sandbox boundary admits. On the pool it opens in `.agentconnect/coordinator` on the
+    agent's pod volume, made through the pod's files once the pod is bound. Where none of these can be
+    made, it opens in the agent's directory with no workspace roots.
 - An ACP session on the agent's own runtime with the coordinator's own prompt. In the first version
   every runtime setting, the model included, follows the agent.
 
@@ -360,6 +369,8 @@ place new messages.
   on none of its messages (§4.5).
 - An unowned thread routes to the coordinator (§7), so a command there acts on the coordinator too.
   At a root with no coordinator yet, a command finds nothing rather than an older thread session.
+- A platform's own "new chat" gesture (Slack's Assistant thread) is a root `!new`: it starts a new
+  coordinator, which takes the threaded tasks over. A conversation with no coordinator yet mints none.
 
 ## 9. Several agents
 

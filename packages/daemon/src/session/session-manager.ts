@@ -464,8 +464,8 @@ export class SessionManager {
       preparedWorkspaceCwd?: string
       /** A coordinator turn's rendered batch, which replaces the trigger and its replayed context (auto-session-mode.md §4.3). */
       coordinatorBatch?: string
-      /** An empty directory a runtime session on a shared host opens in, with no workspace roots (auto-session-mode.md §5.4). */
-      bareCwd?: string
+      /** A session with no workspace roots, opening on a shared host in the empty directory this resolves once the host is up (auto-session-mode.md §5.4). */
+      bareCwd?: () => Promise<string | undefined>
     } = {}
   ): Promise<{
     sessionId: string
@@ -636,7 +636,9 @@ export class SessionManager {
     const expectedWarmHost = options.host ? undefined : host
     const hostBoundCwd = options.host ? undefined : this.deps.boundHostCwd?.(agentId, workspaceRequest)
     // A host launched in a session's own directory keeps its runtime sessions there.
-    const bareCwd = hostBoundCwd === undefined ? options.bareCwd : undefined
+    const bare = options.bareCwd !== undefined
+    const bareCwd =
+      hostBoundCwd === undefined ? await abortable(async () => await options.bareCwd?.(), signal) : undefined
     const sessionCwd = options.preparedWorkspaceCwd ?? bareCwd
     if (
       hostBoundCwd !== undefined &&
@@ -742,8 +744,8 @@ export class SessionManager {
           liveSecretNames: (agent.liveSecrets ?? []).map((s) => s.name),
           // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
           // accessor, so the prompt names exactly the directories the session got.
-          workspaceRoots: bareCwd ? [] : await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
-          onDemandClones: bareCwd ? undefined : await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
+          workspaceRoots: bare ? [] : await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
+          onDemandClones: bare ? undefined : await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
           memoryIndex,
           ...(memoryGuidance ? { memoryGuidance } : {}),
           usesMeta,
@@ -793,7 +795,7 @@ export class SessionManager {
           this.deps.prepareWorkspace?.(a, warmHost, workspaceRequest) ?? this.workspaces.prepareWorkspace(a)
         ),
       workspaceDirectories: async (cwd) => {
-        if (bareCwd) return []
+        if (bare) return []
         const scope = { sessionKey: key, isolation: workspaceIsolation }
         const directories = await this.workspaces.additionalWorkspaceDirectories(agent, cwd, scope)
         const onDemand = await this.workspaces.sessionOnDemandClones(agent, scope)
