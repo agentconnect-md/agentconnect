@@ -5093,6 +5093,13 @@ export class Daemon {
         stopSession: (key, actor) => this.stopSessionByKey(key, actor),
         listForOwner: (agentId, parent, limit, opts) =>
           this.store.assistantSubsessions.listForOwner(agentId, parent, limit, opts),
+        coordinatorOf: async (ctx) => {
+          if (!isCoordinatorCoordinate(ctx.thread)) return undefined
+          const here = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+          const key = await this.coordinators.taskOwner(ctx.agentId, ctx, here)
+          const sessionId = await this.store.outwardSessionIdFor(key, ctx.agentId)
+          return { key, ...(sessionId ? { sessionId } : {}) }
+        },
         // A follow-up belongs to its place's current long session (assistant-mode.md §5.12).
         followUps: {
           own: async (ctx) =>

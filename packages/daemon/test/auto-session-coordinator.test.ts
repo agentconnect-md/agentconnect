@@ -844,6 +844,61 @@ describe('feedback and commands under auto (auto-session-mode.md §4.4, §8)', (
     await daemon.stop()
   })
 
+  it('lets a turn still running on the coordinator a root !new retired list, hand to and open tasks', async () => {
+    const { daemon, d, route } = await boot(async () => 'end_turn')
+    const { replies } = watch(d)
+    d.dispatch = vi.fn(async () => null)
+    const { taskKey, coordinatorKey } = await threadedTask(d, '1.1')
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    const retired = await d.store.currentAppendCoordinate('bot-a', 'C1', scope, 'coordinator')
+    const at = (ts: string) =>
+      deliveredMessage({ ...slack(ts), transportScope: scope, sessionThread: retired, headless: true }, 'int-bot-a')
+    // Its turn took two messages before the rotation.
+    d.coordinators.turns.begin(coordinatorKey, [at('2.1'), at('3.1')])
+    await route(slack('4.1', { text: '!new' }))
+    await vi.waitFor(() => expect(replies).toHaveLength(1), WAIT)
+    const successor = sessionKey(
+      'slack',
+      'C1',
+      await d.store.currentAppendCoordinate('bot-a', 'C1', scope, 'coordinator'),
+      'bot-a',
+      scope
+    )
+    expect(successor).not.toBe(coordinatorKey)
+    const deps = { ...d.mcp.deps, canRun: () => true }
+    const ctx = (thread: string) =>
+      ({
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread,
+        transportScope: scope,
+        isDm: false,
+        tools: coordinatorSessionTools([])
+      }) as SessionContext
+    const listed = async (thread: string) =>
+      ((await executeTool(ctx(thread), 'listTasks', {}, deps)) as { tasks: { taskId: string }[] }).tasks.map(
+        (task) => task.taskId
+      )
+    expect(await listed(retired)).toEqual([taskKey])
+    await expect(
+      executeTool(ctx(retired), 'sendMessage', { action: 'messageTask', messageId: 'msg-2.1', taskId: taskKey }, deps)
+    ).resolves.toMatchObject({ ok: true, taskId: taskKey })
+    const opened = (await executeTool(
+      ctx(retired),
+      'sendMessage',
+      { action: 'delegateTask', messageId: 'msg-3.1', title: 'Later' },
+      deps
+    )) as { taskId: string }
+    // What the retired turn opens belongs to the successor too.
+    expect(await d.store.assistantSubsessions.get('bot-a', opened.taskId)).toMatchObject({
+      parentSessionKey: successor
+    })
+    const next = successor.split(':').slice(2, 4).join(':')
+    expect((await listed(next)).sort()).toEqual([taskKey, opened.taskId].sort())
+    await daemon.stop()
+  })
+
   it('!stop and !new in a task’s thread act on the task alone', async () => {
     const task = gate()
     const prompts: string[] = []

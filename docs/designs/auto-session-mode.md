@@ -300,7 +300,9 @@ place new messages.
 - **In a task's thread**, any of its threads: the commands act on the task's session, as Per thread's
   do, so `!stop` also mutes the task until someone mentions the agent there.
 - **`!new` at the root** hands the coordinator's threaded tasks to the new coordinator, which lists
-  them and hands messages to them; their threads keep reaching them.
+  them and hands messages to them; their threads keep reaching them. A turn still running on the old
+  coordinator, and the messages queued behind it, act for the new one: they list the same tasks, and a
+  task they open belongs to the new coordinator.
 - **`!stop` and `!cancel` at the root** mute nothing and keep the messages queued behind the stopped
   turn: they are other people's messages, and the next turn decides them (§4.3). The stopped turn acts
   on none of its messages (§4.5).
