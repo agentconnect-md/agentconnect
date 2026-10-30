@@ -23,6 +23,7 @@ describe('turn-start reactions', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           client: {
             auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
             chat: { postMessage: async () => ({}) },
@@ -50,6 +51,7 @@ describe('turn-start reactions', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           client: {
             auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
             chat: { postMessage: async () => ({}) },
@@ -190,6 +192,7 @@ describe('the triaging reaction', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           client: {
             auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
             chat: { postMessage: async () => ({}) },

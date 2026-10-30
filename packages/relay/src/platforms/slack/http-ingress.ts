@@ -94,13 +94,13 @@ export function registerSlackHttpIngress(
     scope.post('/slack/interactions', { bodyLimit: SLACK_BODY_LIMIT }, async (req, reply) => {
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
 
-      // The interaction payload is urlencoded `payload=<json>`. The HMAC is over the
-      // RAW urlencoded bytes (not the decoded JSON).
-      const encoded = new URLSearchParams(raw.toString('utf8')).get('payload')
-      if (!encoded) return reply.code(400).send({ error: 'Bad Request', statusCode: 400 })
+      // Block actions wrap JSON; native code-channel actions are slash-command form fields. Verify the original bytes.
+      const form = new URLSearchParams(raw.toString('utf8'))
+      const encoded = form.get('payload')
       let body: SlackInteractiveBody
       try {
-        body = JSON.parse(encoded) as SlackInteractiveBody
+        if (!encoded && !form.get('command')) return reply.code(400).send({ error: 'Bad Request', statusCode: 400 })
+        body = encoded ? (JSON.parse(encoded) as SlackInteractiveBody) : Object.fromEntries(form)
       } catch {
         return reply.code(400).send({ error: 'Bad Request', statusCode: 400 })
       }

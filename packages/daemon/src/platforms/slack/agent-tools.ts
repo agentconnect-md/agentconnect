@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { createHash } from 'node:crypto'
+import { SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY } from '@agentconnect.md/protocol'
 import { parseArgs } from '../../mcp/ops/args.js'
 import type { SessionContext } from '../../mcp/ops/context.js'
 import { buildAttributionBlocks } from '../../slack/render.js'
@@ -112,8 +113,33 @@ const manageArgs = z
       .array(
         z
           .object({
-            key: text.max(64),
+            key: text
+              .max(64)
+              .refine(
+                (key) => key !== SLACK_CODE_MODEL_KEY && key !== SLACK_CODE_CONTEXT_KEY,
+                'Reserved session control key'
+              ),
             label: text.max(128),
+            icon: z
+              .enum([
+                'branch',
+                'folder',
+                'hierarchy',
+                'life-ring',
+                'link',
+                'globe',
+                'terminal',
+                'code',
+                'search',
+                'lock'
+              ])
+              .optional(),
+            status: z
+              .enum(['pending', 'passed', 'failed'])
+              .optional()
+              .describe(
+                'Current check result; overrides icon with a monochrome status symbol. Omit when unknown or no checks exist.'
+              ),
             url: z
               .url({ protocol: /^https$/ })
               .max(2048)
@@ -121,7 +147,7 @@ const manageArgs = z
           })
           .strict()
       )
-      .max(5)
+      .max(3)
       .optional(),
     viewId: text.optional(),
     summaryMessageTs: z
@@ -132,7 +158,7 @@ const manageArgs = z
   .strict()
   .superRefine((a, ctx) => {
     if (a.action === 'context' && !a.items)
-      ctx.addIssue({ code: 'custom', message: 'context needs items (an empty array clears the bar)' })
+      ctx.addIssue({ code: 'custom', message: 'context needs items (an empty array clears informational items)' })
     if (a.action === 'removeView' && !a.viewId) ctx.addIssue({ code: 'custom', message: 'removeView needs viewId' })
   })
 
@@ -152,7 +178,7 @@ const codeTools: ToolDescriptor[] = [
   {
     name: 'manageSlackCodeChannel',
     description:
-      'Keep a code channel oriented as you work: set its context bar when repository, branch, PR or test status becomes known, and update it as they change. context replaces all items (max 5), so retain the ones still relevant. Also list/remove view tabs or archive a completed task. channelId defaults to this conversation. Archive only when requested: post the wrap-up first and pass its ts as summaryMessageTs so Slack echoes it to the origin; an archived channel accepts no further posts, so end the turn without another reply there. Native Working, Stop and titles follow the normal turn lifecycle.',
+      'Keep a code channel oriented as you work: set its context bar when repository, branch, PR or test status becomes known, and update it as they change. context replaces informational items (max 3), preserving the platform-managed model/effort and context controls. Retain links still relevant. Use icon: branch for repositories; for PRs, set status from checks on the current head: failed if any failed, otherwise pending if any are unfinished, passed only when all checks pass. Omit status when unknown or no checks exist. Labels omit leading icons. Also list/remove view tabs or archive a completed task. channelId defaults to this conversation. Archive only when requested: post the wrap-up first and pass its ts as summaryMessageTs so Slack echoes it to the origin; an archived channel accepts no further posts, so end the turn without another reply there. Native Working, Stop and titles follow the normal turn lifecycle.',
     inputSchema: z.toJSONSchema(manageArgs) as ToolDescriptor['inputSchema']
   }
 ]
@@ -198,11 +224,18 @@ async function execute(
         base_branch: a.baseBranch,
         head_branch: a.headBranch
       })
-    if (a.action === 'context')
-      return conn.codeChannelApi('setProperties', {
-        channel_id: channel,
-        code_channel: { context_bar_items: a.items! }
+    if (a.action === 'context') {
+      const symbols = { pending: '◷', passed: '✓', failed: '✕' }
+      const updated = await conn.updateCodeContext(channel, {
+        items: a.items!.map(({ status, icon, label, ...item }) => ({
+          ...item,
+          label: status ? `${symbols[status]} ${label}`.slice(0, 128) : label,
+          ...(status ? {} : { icon: icon ?? 'link' })
+        }))
       })
+      if (!updated) throw new Error('This bot does not own that Slack code channel')
+      return { ok: true }
+    }
     if (a.action === 'archive') {
       await conn.closeCodeSession(channel)
       return conn.codeChannelApi('archive', { channel_id: channel, summary_message_ts: a.summaryMessageTs })

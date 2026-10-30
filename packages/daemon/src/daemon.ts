@@ -2865,6 +2865,18 @@ export class Daemon {
       statusInfoFrom: async (agentId, sessionKey, acpSessionId) =>
         await this.statusInfoFrom(agentId, sessionKey, acpSessionId),
       emitStatusBar: (p) => this.emitStatusBar(p),
+      refreshIdleStatusBar: async (rec) => {
+        const surface = this.commandChrome.for(rec.platform)
+        if (surface.platform !== rec.platform || !surface.refreshStatus) return
+        const integrationId = this.integrationIdForSessionTransport(rec.agentId, rec.platform, rec.transportScope)
+        const conn = integrationId ? this.connForIntegration(integrationId) : undefined
+        if (conn)
+          await surface.refreshStatus(
+            conn,
+            { channel: rec.channel, replyThread: rec.thread, sessionKey: rec.key },
+            await this.statusInfoFrom(rec.agentId, rec.key, rec.acpSessionId ?? undefined)
+          )
+      },
       interruptTurn: (agentId, key, reason, acpSessionId, opts) =>
         this.interruptTurn(agentId, key, reason, acpSessionId, opts),
       dispatchQueueCommand: async (agentId, msg, integrationId, admission) => {
@@ -23377,25 +23389,18 @@ export class Daemon {
     if (turnChromeFor(p.plan.platform).statusSurface === 'turn-bar' && emitted) await this.emitStatusBar(p, true, true)
   }
 
-  /** Emit/refresh the session's status bar (model / context / tokens / cost). Called at
-   *  turn start (model + carried-over usage), on each `usage_update` (live context/cost),
-   *  and at turn end (token totals). Deduped against the last snapshot so an unchanged
-   *  update is a no-op. Webchat emits a status-only `WebchatOutput` payload through
-   *  the relay reply sink; Slack gets the session-scoped in-place `status-bar` action.
-   *  Telegram has NO status bar — state is queried on
-   *  demand via `/status` (see handleCommand) — so it's skipped here. Headless no-ops in
-   *  applyAction (no connection), which is fine. */
+  // Refresh the platform's status surface at turn boundaries and usage updates, deduping unchanged snapshots.
   private async emitStatusBar(p: Pending, allowWhenSuppressed = false, terminal = false): Promise<void> {
     if (p.outputSuppressed && !allowWhenSuppressed) return
     const statusSurface = turnChromeFor(p.plan.platform).statusSurface
+    const info = await this.buildStatusInfo(p)
     if (statusSurface === 'turn-bar' && !p.plan.showStatusBar) {
-      const key = 'status-bar:hidden'
+      const key = JSON.stringify(['status-bar:hidden', info, terminal])
       if (key === p.chrome.lastStatusBar) return
       p.chrome.lastStatusBar = key
-      this.enqueueApply(p, { kind: 'clear-status-bar' }, { allowWhenSuppressed })
+      this.enqueueApply(p, { kind: 'clear-status-bar', info }, { allowWhenSuppressed })
       return
     }
-    const info = await this.buildStatusInfo(p)
     // `terminal` keeps the turn's closing write distinct from every in-turn one, so it always
     // lands: it carries the final usage and reposts a bar whose ts an edit proved dead.
     const key = JSON.stringify([info, terminal])
@@ -23443,6 +23448,7 @@ export class Daemon {
         p,
         {
           kind: 'status-bar',
+          info,
           text: renderStatusBar(info),
           blocks: buildStatusBlocks(info, p.plan.sessionKey, link, shared)
         },

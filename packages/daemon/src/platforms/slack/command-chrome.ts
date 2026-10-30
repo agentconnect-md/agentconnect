@@ -28,6 +28,10 @@ export const slackCommandChrome: CommandChromeSurface<unknown, StatusBarInfo> = 
     // surface.)
     const text = link ? `${renderStatusBar(info)}  ·  <${link}|View session>` : renderStatusBar(info)
     this.reply(conn, msg, ctx, text)
+  },
+
+  async refreshStatus(conn, ctx, info): Promise<void> {
+    if (ctx.channel === ctx.replyThread) await (conn as SlackConnection).updateCodeContext(ctx.channel, { info })
   }
 
   // No selectCard: Slack lists options as a numbered text reply (the shared

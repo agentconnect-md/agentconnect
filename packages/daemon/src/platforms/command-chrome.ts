@@ -69,6 +69,8 @@ export interface CommandChromeSurface<TMsg, TInfo> {
   reply(conn: unknown, msg: TMsg, ctx: CommandChromeContext, text: string): void
   /** Render the `/status` line (+ session deep link when known). */
   status(conn: unknown, msg: TMsg, ctx: CommandChromeContext, info: TInfo, link?: string): void
+  // Refresh persistent platform controls after a setting changes while the session is idle.
+  refreshStatus?(conn: unknown, ctx: CommandChromeContext, info: TInfo): Promise<void>
   /** Render the tappable select card. `false` means the card cannot be rendered
    *  here (no options / over a button ceiling) and the caller must fall back to
    *  the shared numbered text list. Omitted entirely by platforms with no

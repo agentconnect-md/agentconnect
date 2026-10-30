@@ -752,6 +752,7 @@ describe('a channel named by its name resolves among the channels the bot lists,
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: {
             conversations: { list },

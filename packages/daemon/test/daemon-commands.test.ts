@@ -1967,11 +1967,49 @@ describe('Slack interactive status bar', () => {
     await daemon.stop()
   })
 
-  it('removes the persisted session status line after the Agent disables it', async () => {
-    // Exercise the hidden branch without starting the daemon's unrelated file watchers.
-    // Config/default replication is covered separately; this proves the Slack cleanup
-    // action deletes the remembered row and dedupes later usage/turn-end refreshes.
+  it('refreshes idle code-channel controls without enabling the message header', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+    await daemon.start()
+    try {
+      const conn = makeRoutable(daemon)
+      const updateCodeContext = vi.fn(async () => true)
+      Object.assign(conn, { updateCodeContext })
+      const agent = (daemon as any).agents.get('bot-a')
+      agent.chatActions = 'settings'
+      agent.output.showStatusBar = false
+      const key = sessionKey('slack', 'C1', 'C1', 'bot-a', TRANSPORT_SCOPE)
+      const store = (daemon as any).store
+      await store.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: 'C1',
+        transportScope: TRANSPORT_SCOPE,
+        acpSessionId: null,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+      const commands = (daemon as any).commands
+      expect(await commands.setModelByKey(key, 'sonnet')).toBe(true)
+      expect(await commands.setEffortByKey(key, 'high')).toBe(true)
+      expect(updateCodeContext).toHaveBeenLastCalledWith('C1', {
+        info: expect.objectContaining({ model: 'sonnet', effort: 'high' })
+      })
+      expect(conn.postMessage).not.toHaveBeenCalled()
+      updateCodeContext.mockRejectedValueOnce(new Error('temporary Slack failure'))
+      expect(await commands.setOutputModeByKey(key, 'high')).toBe(true)
+      expect(await store.getOutputModeOverride(key)).toBe('high')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('removes the persisted session status line after the Agent disables it', async () => {
+    // Verify hidden-header cleanup without starting unrelated file watchers.
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+    vi.spyOn(daemon as any, 'buildStatusInfo').mockResolvedValue({})
     const conn = {
       deleteMessage: vi.fn(async () => true),
       getThreadReplies: vi.fn(async () => [{ ts: 'legacy', text: ':bar_chart: legacy', isBot: true }])
@@ -1986,20 +2024,19 @@ describe('Slack interactive status bar', () => {
       signals: { applyChain: Promise.resolve() }
     }
 
-    ;(daemon as any).emitStatusBar(pending)
+    await (daemon as any).emitStatusBar(pending)
     await pending.signals.applyChain
     expect(conn.deleteMessage).toHaveBeenCalledWith('C1', 'sb1')
     expect(pending.chrome.statusBarTs).toBeUndefined()
     expect(clearStatusBarTs).toHaveBeenCalledWith(SESSION_KEY)
 
-    ;(daemon as any).emitStatusBar(pending)
+    await (daemon as any).emitStatusBar(pending)
     await pending.signals.applyChain
     expect(conn.deleteMessage).toHaveBeenCalledTimes(1)
 
-    // Never adopt an unowned legacy row for deletion: a shared Slack thread may contain
-    // another Agent's status bar.
+    // Never delete an unowned legacy row from a shared thread.
     const unowned = { ...pending, chrome: {}, signals: { applyChain: Promise.resolve() } }
-    ;(daemon as any).emitStatusBar(unowned)
+    await (daemon as any).emitStatusBar(unowned)
     await unowned.signals.applyChain
     expect(conn.getThreadReplies).not.toHaveBeenCalled()
     expect(conn.deleteMessage).toHaveBeenCalledTimes(1)

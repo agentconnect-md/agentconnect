@@ -85,6 +85,7 @@ export interface CommandHost {
   sessionOwnerKey(agentId: string, sessionKey: string): HostKey
   statusInfoFrom(agentId: string, sessionKey: string, acpSessionId?: string): Promise<StatusBarInfo>
   emitStatusBar(p: Pending): Promise<void>
+  refreshIdleStatusBar(rec: SessionRecord): Promise<void>
   interruptTurn(
     agentId: string,
     key: string,
@@ -237,10 +238,7 @@ export class CommandHandlers {
       : undefined
   }
 
-  /** Switch a session's model by its local key — the core shared by the webchat
-   *  `set-model` frame and the Slack status-bar select. Records the sticky per-session
-   *  override (re-applied on every turn by dispatch) and, if the ACP session is warm,
-   *  applies it live now and re-pushes the status bar. Never changes the agent default. */
+  // Persist the session model override, apply it to a warm runtime, and refresh its controls.
   async setModelByKey(key: string, model: string): Promise<boolean> {
     const rec = await this.chatRuntimeSession(key)
     if (!rec) return false
@@ -258,16 +256,19 @@ export class CommandHandlers {
     // what the next start reads, so the switch lands there instead of live.
     if (crossProvider) {
       this.host.log().info(`session ${key}: provider change applies when its credential host next starts`)
+      await this.refreshStatusBarForKey(key)
       return true
     }
     const acpSessionId = rec.acpSessionId
     const host = acpSessionId ? this.host.hostForSession(rec.agentId, rec.key) : undefined
-    if (!acpSessionId || !host?.hasSession(acpSessionId)) return true // no live session — applies next turn
+    if (!acpSessionId || !host?.hasSession(acpSessionId)) {
+      await this.refreshStatusBarForKey(key)
+      return true
+    }
     void host
       .setSessionModel(acpSessionId, model)
       .then(async (applied) => {
-        const p = this.host.pending().get(pendingTurnKey(this.host.sessionOwnerKey(rec.agentId, rec.key), acpSessionId))
-        if (applied && p) await this.host.emitStatusBar(p) // reflect the new model on the status bar
+        if (applied) await this.refreshStatusBarForKey(key)
       })
       .catch((err) => this.host.log().warn(`set-model failed: ${(err as Error).message}`))
     return true
@@ -356,14 +357,17 @@ export class CommandHandlers {
     return true
   }
 
-  /** Re-emit the status bar for a session's in-flight turn (if any) so a config change
-   *  (model / effort / fast) is reflected. No-op when the session is idle. */
+  // Refresh active turn chrome or the platform's persistent controls after a settings change.
   async refreshStatusBarForKey(key: string): Promise<void> {
     const rec = await this.host.store().getSession(key)
     const p = rec?.acpSessionId
       ? this.host.pending().get(pendingTurnKey(this.host.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
       : undefined
     if (p) await this.host.emitStatusBar(p)
+    else if (rec)
+      await this.host
+        .refreshIdleStatusBar(rec)
+        .catch((err) => this.host.log().warn(`session controls refresh failed: ${(err as Error).message}`))
   }
 
   /** Set a session's Slack output verbosity by its local key. Purely daemon-side (no ACP):

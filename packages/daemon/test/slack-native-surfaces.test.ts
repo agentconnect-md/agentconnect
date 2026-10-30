@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { normalizeSlackMessage } from '@agentconnect.md/message'
+import { SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY } from '@agentconnect.md/protocol'
 import { SlackConnection } from '../src/slack/connection.js'
 import { SLACK_SESSION_TOOLS } from '../src/platforms/slack/agent-tools.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -8,7 +9,12 @@ import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { slackThreadUrl } from '../src/platforms/slack/permalink.js'
 import { planCanvasMarkdown } from '../src/slack/render.js'
 import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../src/platforms/slack/standing-context.js'
-import { startSlackCodeDiff, type SlackTurn, type SlackTurnState } from '../src/platforms/slack/turn-output.js'
+import {
+  applySlackAction,
+  startSlackCodeDiff,
+  type SlackTurn,
+  type SlackTurnState
+} from '../src/platforms/slack/turn-output.js'
 
 const ctx: SessionContext = {
   agentId: 'a1',
@@ -25,6 +31,8 @@ const ctx: SessionContext = {
 async function fixture(code = true, deps: Record<string, unknown> = {}) {
   const app = fakeSlackAppFactory()({} as never)
   const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+  const commands = new Map<string, Parameters<typeof app.command>[1]>()
+  app.command = (name, handler) => void commands.set(name, handler)
   app.event = ((type: string, h: (a: { event: unknown }) => unknown) => void handlers.set(type, h)) as typeof app.event
   const post = vi.spyOn(app.client.chat, 'postMessage')
   const info = vi.spyOn(app.client.conversations, 'info').mockResolvedValue({
@@ -71,10 +79,122 @@ async function fixture(code = true, deps: Record<string, unknown> = {}) {
     recordPost,
     postIdentity: () => ({ agentAuthorId: ctx.agentId, username: ctx.agentName })
   }
-  return { conn, app, post, info, api, env, judgeWrite, handlers }
+  return { conn, app, post, info, api, env, judgeWrite, handlers, commands }
 }
 
 describe('Slack native surfaces', () => {
+  it('keeps header-free controls and informational links intact across usage and tool updates', async () => {
+    const f = await fixture()
+    let items: { key: string; label: string; icon?: string; item_type?: string }[] = [
+      { key: 'repo', label: 'example-repo', icon: 'branch' }
+    ]
+    f.info.mockImplementation(async () => ({
+      channel: {
+        properties: {
+          record_channel: { record_type: 'agent_channel' },
+          agent_session: { encoded_agent_bot_user_ids: ['U_FAKE_BOT'] },
+          code_channel: { context_bar_items: items }
+        }
+      }
+    }))
+    f.api.setProperties.mockImplementation(async (args) => {
+      items = (args as { code_channel: { context_bar_items: typeof items } }).code_channel.context_bar_items
+      return {}
+    })
+    const info = { model: 'gpt-6-sol', effort: 'high', contextUsed: 42000, contextSize: 200000, totalTokens: 900000 }
+    const turn = {
+      conn: f.conn,
+      chrome: {},
+      reply: {},
+      plan: {
+        platform: 'slack',
+        channel: 'C1',
+        sessionThread: 'C1',
+        sessionKey: 'session',
+        isDm: false
+      }
+    } as SlackTurn
+    const host = {
+      recordReplySegment: vi.fn(),
+      appendTranscript: vi.fn(),
+      getStatusBarTs: vi.fn(async () => undefined),
+      setStatusBarTs: vi.fn(),
+      clearStatusBarTs: vi.fn(),
+      monotonicTs: () => '',
+      debug: vi.fn()
+    }
+    try {
+      await applySlackAction(host, turn, {}, { kind: 'clear-status-bar', info })
+      expect(f.post).not.toHaveBeenCalled()
+      expect(items).toEqual([
+        { key: SLACK_CODE_MODEL_KEY, label: 'gpt-6-sol · high', icon: 'code', item_type: 'action' },
+        { key: SLACK_CODE_CONTEXT_KEY, label: '42k/200k', icon: 'terminal', item_type: 'action' },
+        expect.objectContaining({ key: 'repo', icon: 'branch' })
+      ])
+      await Promise.all([
+        f.conn.updateCodeContext('C1', { info: { ...info, contextUsed: 84000 } }),
+        SLACK_SESSION_TOOLS.execute(
+          'manageSlackCodeChannel',
+          ctx,
+          {
+            action: 'context',
+            items: [
+              { key: 'repo', label: 'example-repo', icon: 'branch' },
+              {
+                key: 'pr',
+                label: 'PR #42',
+                status: 'failed',
+                url: 'https://github.com/example-org/example-repo/pull/42'
+              }
+            ]
+          },
+          f.env
+        )
+      ])
+      expect(items.map((item) => item.label)).toEqual(['gpt-6-sol · high', '84k/200k', 'example-repo', '✕ PR #42'])
+      expect(items.at(-1)).not.toHaveProperty('icon', 'link')
+      const calls = f.api.setProperties.mock.calls.length
+      await f.conn.updateCodeContext('C1', { info: { ...info, contextUsed: 84000, totalTokens: 999999 } })
+      expect(f.api.setProperties).toHaveBeenCalledTimes(calls)
+      await SLACK_SESSION_TOOLS.execute('manageSlackCodeChannel', ctx, { action: 'context', items: [] }, f.env)
+      expect(items.map((item) => item.key)).toEqual([SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY])
+      await f.conn.updateCodeContext('C1', { info: { model: 'gpt-6-sol', contextUsed: 42000 } })
+      expect(items[1]?.label).toBe('42k')
+      await f.conn.updateCodeContext('C1', { info: { model: 'gpt-6-sol', totalTokens: 900000 } })
+      expect(items.map((item) => item.key)).toEqual([SLACK_CODE_MODEL_KEY])
+    } finally {
+      await f.conn.stop()
+    }
+  })
+
+  it.each([true, false])('opens only the owned code channel session from a native action (code=%s)', async (code) => {
+    const onMessageShortcut = vi.fn(async () => 'code-session')
+    const f = await fixture(code, {
+      onMessageShortcut,
+      onStatusInfo: async () => ({ info: { model: 'gpt-6-sol', outputMode: 'medium' } })
+    })
+    const open = vi.spyOn(f.app.client.views, 'open')
+    const ack = vi.fn(async () => {})
+    try {
+      for (const key of [SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY]) {
+        await f.commands.get(`/${key}`)!({ ack, command: { channel_id: 'C1', user_id: 'U1', trigger_id: 'trigger' } })
+      }
+      expect(ack).toHaveBeenCalledTimes(2)
+      if (code) {
+        expect(onMessageShortcut).toHaveBeenCalledWith({ channel: 'C1', thread: 'C1', userId: 'U1' })
+        expect(open).toHaveBeenCalledWith(
+          expect.objectContaining({ view: expect.objectContaining({ private_metadata: 'code-session' }) })
+        )
+        expect(JSON.stringify(open.mock.calls[0])).toContain('Output')
+      } else {
+        expect(onMessageShortcut).not.toHaveBeenCalled()
+        expect(JSON.stringify(open.mock.calls[0])).toContain('No AgentConnect session')
+      }
+    } finally {
+      await f.conn.stop()
+    }
+  })
+
   it('drops a queued diff when Stop arrives before Slack can send it', async () => {
     const f = await fixture()
     let release!: () => void

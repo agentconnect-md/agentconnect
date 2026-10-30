@@ -111,6 +111,14 @@ export function diffSlackManifest(actual: SlackManifest, expected: SlackManifest
       expected: expectedCodeChannels.enabled ?? null
     })
   }
+  if (actualCodeChannels.slash_command_url !== expectedCodeChannels.slash_command_url) {
+    diff.push({
+      id: 'features.code_channels.slash_command_url',
+      field: 'Code channel actions URL',
+      current: actualCodeChannels.slash_command_url ?? null,
+      expected: expectedCodeChannels.slash_command_url ?? null
+    })
+  }
   const actualOauth = asRecord(actual.oauth_config)
   const expectedOauth = asRecord(expected.oauth_config)
   const actualScopes = asRecord(actualOauth.scopes)
@@ -184,7 +192,8 @@ export function reconcileSlackManifest(actual: SlackManifest, expected: SlackMan
       ...actualFeatures,
       code_channels: {
         ...asRecord(actualFeatures.code_channels),
-        enabled: asRecord(expectedFeatures.code_channels).enabled
+        enabled: asRecord(expectedFeatures.code_channels).enabled,
+        slash_command_url: asRecord(expectedFeatures.code_channels).slash_command_url
       }
     },
     oauth_config: {

@@ -505,6 +505,18 @@ export async function applySlackAction<TTurn extends SlackTurn>(
   // Chrome variant of the identity: marks status/progress/plan/reasoning/notice/card
   // messages so a peer daemon's thread backfill skips them (they are not conversation).
   const chromeOptions: SlackPostOptions = { ...(identity ?? {}), chrome: true }
+  if (
+    (action.kind === 'status-bar' || action.kind === 'clear-status-bar') &&
+    action.info &&
+    !p.plan.isDm &&
+    p.plan.sessionThread === p.plan.channel
+  ) {
+    const native = await conn.updateCodeContext(p.plan.channel, { info: action.info }).catch(() => {
+      host.debug('slack: native session controls update failed')
+      return false
+    })
+    if (native) action = { kind: 'clear-status-bar' }
+  }
   switch (action.kind) {
     case 'set-status':
       if (p.plan.thread) {

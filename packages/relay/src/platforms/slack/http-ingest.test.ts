@@ -500,6 +500,56 @@ describe('SlackHttpIngest.handleInteraction', () => {
       userId: 'U-ALICE'
     })
   })
+
+  it.each([true, false])('routes native action forms only for owned code channels (owned=%s)', async (owned) => {
+    const open = vi.fn()
+    const onSessionShortcut = vi.fn(() => true)
+    const d = ingestDeps({
+      onSessionShortcut,
+      webClientFactory: () =>
+        ({
+          auth: { test: async () => ({ user_id: 'UBOT' }) },
+          conversations: {
+            info: async () => ({
+              channel: {
+                properties: {
+                  record_channel: { record_type: 'agent_channel' },
+                  agent_session: { encoded_agent_bot_user_ids: [owned ? 'UBOT' : 'UOTHER'] }
+                }
+              }
+            })
+          },
+          views: { open }
+        }) as never
+    })
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, d)
+    await ingest.start()
+    expect(
+      await ingest.handleInteraction({
+        command: '/ac_session_model',
+        channel_id: 'C1',
+        user_id: 'U1',
+        trigger_id: 'trigger'
+      })
+    ).toBe('')
+    if (owned)
+      await vi.waitFor(() =>
+        expect(onSessionShortcut).toHaveBeenCalledWith({
+          channelId: 'C1',
+          threadTs: 'C1',
+          userId: 'U1',
+          triggerId: 'trigger',
+          interactionId: 'trigger'
+        })
+      )
+    else {
+      await vi.waitFor(() => expect(open).toHaveBeenCalled())
+      expect(onSessionShortcut).not.toHaveBeenCalled()
+    }
+    expect(d.onMessage).not.toHaveBeenCalled()
+    await ingest.handleInteraction({ command: '/unrelated', channel_id: 'C1', user_id: 'U1', trigger_id: 'other' })
+    expect(onSessionShortcut).toHaveBeenCalledTimes(owned ? 1 : 0)
+  })
 })
 
 describe('SlackHttpIngest events', () => {

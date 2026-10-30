@@ -13,6 +13,7 @@ const expected = buildInstallManifest(
     ]
   }
 )
+const expectedCodeChannels = { enabled: true, slash_command_url: 'https://relay.example.test/slack/interactions' }
 
 /** A deployment app created by an older release: fewer scopes and events, Socket Mode, a hand-edited description. */
 const stale = {
@@ -40,7 +41,7 @@ describe('reconcileSlackManifest', () => {
       current: null,
       expected: true
     })
-    expect(reconciled.features).toEqual({ ...stale.features, code_channels: { enabled: true } })
+    expect(reconciled.features).toEqual({ ...stale.features, code_channels: expectedCodeChannels })
     const display = reconciled.display_information as Record<string, unknown>
     expect(display.description).toBe('hand-written, keep me')
     const scopes = (reconciled.oauth_config as { scopes: { bot: string[]; user: string[] } }).scopes
@@ -60,7 +61,10 @@ describe('reconcileSlackManifest', () => {
   it('re-enables code channels without replacing unrelated feature settings', () => {
     const disabled = {
       ...expected,
-      features: { ...stale.features, code_channels: { enabled: false, custom_future_field: true } }
+      features: {
+        ...stale.features,
+        code_channels: { ...expectedCodeChannels, enabled: false, custom_future_field: true }
+      }
     }
     expect(diffSlackManifest(disabled, expected)).toEqual([
       { id: 'features.code_channels.enabled', field: 'Slack Code enabled', current: false, expected: true }
@@ -68,7 +72,7 @@ describe('reconcileSlackManifest', () => {
     const reconciled = reconcileSlackManifest(disabled, expected)
     expect(reconciled.features).toEqual({
       ...stale.features,
-      code_channels: { enabled: true, custom_future_field: true }
+      code_channels: { ...expectedCodeChannels, custom_future_field: true }
     })
     expect(diffSlackManifest(reconciled, expected)).toEqual([])
   })
