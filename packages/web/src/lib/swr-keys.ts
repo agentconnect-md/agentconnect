@@ -63,6 +63,7 @@ export const consoleKeys = {
   msTeamsApp: (orgId: string | null | undefined) => consoleKey(orgId, 'msteams-app'),
   /** The deployment GitHub App enabled-probe (`GET /github/installations`, 404 ⇒ off). */
   githubApp: (orgId: string | null | undefined) => consoleKey(orgId, 'github-app'),
+  githubApps: (orgId: string | null | undefined) => consoleKey(orgId, 'github-apps'),
   connectorsConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'connectors-config'),
   memoryPluginInstallations: (orgId: string | null | undefined) => consoleKey(orgId, 'memory-plugin-installations'),
   externalMemoryConnections: (orgId: string | null | undefined) => consoleKey(orgId, 'external-memory-connections'),

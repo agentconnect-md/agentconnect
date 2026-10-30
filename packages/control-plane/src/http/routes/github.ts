@@ -19,7 +19,8 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import type { GithubInstallationRecord } from '../../persistence/ports.js'
+import type { GithubAppRecord, GithubInstallationRecord } from '../../persistence/ports.js'
+import { GithubAppRegistrationError } from '../../github/apps.service.js'
 import { OrgId } from '../../domain/ids.js'
 import { GithubApiError } from '../../github/api.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
@@ -36,7 +37,10 @@ import {
   GithubRepoDto,
   GithubRepoPageDto,
   GithubRepoPageQuery,
-  IdParam
+  GithubRegisteredAppDto,
+  GithubRegisteredAppListDto,
+  IdParam,
+  RegisterGithubAppBody
 } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import { resolveWebAppUrl } from '../../config/env.js'
@@ -437,6 +441,142 @@ export function githubRoutes(deps: HttpDeps) {
             if (e instanceof UserAuthzDeniedError) return userAuthzDenied(reply, e)
             return githubUpstreamFailure(reply, e)
           }
+        }
+      )
+    }
+
+    // ── Organization-registered Apps (github-app-git-credentials.md §Dedicated Apps) ──
+    const apps = deps.githubApps
+    if (apps) {
+      const registeredAppDto = async (app: GithubAppRecord) => ({
+        id: app.id,
+        appId: Number(app.appId),
+        slug: app.slug,
+        clientId: app.clientId,
+        botUserId: app.botUserId === null ? null : Number(app.botUserId),
+        installations: (await apps.installationsOf(app.orgId, app.id)).map((i) => ({
+          installationId: Number(i.installationId),
+          accountLogin: i.accountLogin,
+          suspended: i.suspendedAt !== null
+        })),
+        createdAt: app.createdAt.toISOString()
+      })
+      const registrationFailure = (reply: FastifyReply, e: unknown) => {
+        if (e instanceof GithubAppRegistrationError) {
+          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message })
+        }
+        return githubUpstreamFailure(reply, e)
+      }
+
+      r.get(
+        '/github/apps',
+        {
+          schema: {
+            tags: [Tag.GitHub],
+            summary: 'List registered GitHub Apps',
+            description:
+              "GitHub Apps the organization registered beside the deployment App. An agent bound to one acts as that App's bot — pushes, `gh`, formal reviews and Checks — so two agents on one repository can carry distinct GitHub identities. Org-level infrastructure: visible to every member.",
+            operationId: 'listGithubApps',
+            response: { 200: GithubRegisteredAppListDto }
+          }
+        },
+        async (req) => Promise.all((await apps.list(orgOf(req))).map(registeredAppDto))
+      )
+
+      r.post(
+        '/github/apps',
+        {
+          schema: {
+            tags: [Tag.GitHub],
+            summary: 'Register a GitHub App',
+            description:
+              "Verifies the private key against GitHub (it must belong to the given App id), stores it write-only, and claims the App's installations for this org. Install the App on the same GitHub accounts and repositories as the deployment App first; events keep arriving through the deployment App, so the new App needs no webhook. Owner-only.",
+            operationId: 'registerGithubApp',
+            body: RegisterGithubAppBody,
+            response: { 201: GithubRegisteredAppDto, 403: ErrorDto, 409: ErrorDto, 429: ErrorDto, 502: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          if (denyNonOwner(req, reply)) return
+          const key = req.body.privateKey.trim()
+          const privateKeyB64 = key.startsWith('-----') ? Buffer.from(key, 'utf8').toString('base64') : key
+          try {
+            const { app } = await apps.register(orgOf(req), {
+              appId: req.body.appId,
+              clientId: req.body.clientId ?? null,
+              privateKeyB64
+            })
+            return reply.code(201).send(await registeredAppDto(app))
+          } catch (e) {
+            if (e instanceof GithubApiError && e.status === 401) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'GitHub rejected the private key for this App id'
+              })
+            }
+            if ((e as { code?: string }).code === 'P2002') {
+              return reply
+                .code(409)
+                .send({ error: 'Conflict', statusCode: 409, message: 'this App is already registered' })
+            }
+            return registrationFailure(reply, e)
+          }
+        }
+      )
+
+      r.post(
+        '/github/apps/:id/sync',
+        {
+          schema: {
+            tags: [Tag.GitHub],
+            summary: 'Sync a registered GitHub App',
+            description: "Re-pull the App's installation roster from GitHub. Owner-only.",
+            operationId: 'syncGithubApp',
+            params: IdParam,
+            response: {
+              200: GithubRegisteredAppDto,
+              403: ErrorDto,
+              404: ErrorDto,
+              409: ErrorDto,
+              429: ErrorDto,
+              502: ErrorDto
+            }
+          }
+        },
+        async (req, reply) => {
+          if (denyNonOwner(req, reply)) return
+          const app = await apps.get(orgOf(req), req.params.id)
+          if (!app)
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'github app not found' })
+          try {
+            await apps.sync(orgOf(req), app.id)
+          } catch (e) {
+            return registrationFailure(reply, e)
+          }
+          return registeredAppDto(app)
+        }
+      )
+
+      r.delete(
+        '/github/apps/:id',
+        {
+          schema: {
+            tags: [Tag.GitHub],
+            summary: 'Remove a registered GitHub App',
+            description:
+              'Forgets the App and its installations; agents bound to it return to the deployment App. The App itself stays installed on GitHub. Owner-only.',
+            operationId: 'deleteGithubApp',
+            params: IdParam,
+            response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          if (denyNonOwner(req, reply)) return
+          if (!(await apps.delete(orgOf(req), req.params.id))) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'github app not found' })
+          }
+          return reply.code(204).send(null)
         }
       )
     }

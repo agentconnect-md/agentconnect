@@ -72,6 +72,7 @@ import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { OutputModeField } from '@/components/console/OutputModeField'
 import { ChatActionsField } from '@/components/console/ChatActionsField'
 import { ExecutionStrategyField } from '@/components/console/ExecutionStrategyField'
+import { GithubIdentityField } from '@/components/console/GithubIdentityField'
 import {
   EnvSecretsFields,
   envRecordFromRows,
@@ -188,6 +189,8 @@ export default function AddAgentModal({
   const [daemonId, setDaemonId] = useState(seed.daemonValue)
   // '' until the user picks one, so the placement's default applies.
   const [execution, setExecution] = useState('')
+  // '' keeps the deployment App.
+  const [githubAppId, setGithubAppId] = useState('')
   const [wsMode, setWsMode] = useState<WsMode>(seed.wsMode)
   const [repo, setRepo] = useState(seed.repo)
   const [branch, setBranch] = useState(seed.branch)
@@ -880,6 +883,7 @@ export default function AddAgentModal({
             ? { memory: { provider: memoryProvider as 'native' | 'none' } }
             : {}),
         ...(effectiveExecution ? executionAsk(placementStrategies, effectiveExecution) : {}),
+        ...(githubAppId ? { githubAppId } : {}),
         ...(Object.keys(envRecord).length ? { env: envRecord } : {}),
         ...(Object.keys(secretsRecord).length ? { secrets: secretsRecord } : {}),
         permissionMode: selectedPermissionMode,
@@ -1091,6 +1095,7 @@ export default function AddAgentModal({
               {placementStrategies.kind !== 'pool' && (
                 <ExecutionStrategyField options={executionOptions} value={effectiveExecution} onChange={setExecution} />
               )}
+              <GithubIdentityField value={githubAppId} onChange={setGithubAppId} />
               <OutputModeField
                 className="desktop:col-span-2"
                 value={outputMode}
