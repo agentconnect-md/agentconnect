@@ -230,11 +230,12 @@ describe('assistant-mode places', () => {
   // The list is complete in assistant mode, so the daemon's append default for an unseen place never overrides a known row.
   it('keys rooms and Slack DMs on one session, listing group DMs and Decision rows on their own mode', async () => {
     const spec = await specOf(INTEGRATION, SECRET, rows(), ASSISTANT)
+    // Marked for the coordinator where the daemon reads `auto` (auto-session-mode.md §3.4).
     expect(spec.core.sessionModes).toEqual([
-      { channel: 'C1', mode: 'append' },
-      { channel: 'C2', mode: 'append' },
-      { channel: 'C3', mode: 'append' },
-      { channel: 'D1', mode: 'append' },
+      { channel: 'C1', mode: 'append', assistantPlace: true },
+      { channel: 'C2', mode: 'append', assistantPlace: true },
+      { channel: 'C3', mode: 'append', assistantPlace: true },
+      { channel: 'D1', mode: 'append', assistantPlace: true },
       { channel: 'G1', mode: 'createNew' },
       { channel: 'C4', mode: 'createNew' },
       { channel: 'C5', mode: 'append' }
@@ -279,7 +280,7 @@ describe('assistant-mode places', () => {
       ASSISTANT
     )
     expect(spec.core.sessionModes).toEqual([
-      { channel: '-100', mode: 'append' },
+      { channel: '-100', mode: 'append', assistantPlace: true },
       { channel: '42', mode: 'createNew' }
     ])
   })

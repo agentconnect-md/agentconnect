@@ -15,6 +15,9 @@ import {
 const scenario = (id: string) => CO_SCENARIOS.find((entry) => entry.id === id)!
 const scopeOf = (id: string): CoScope => ({
   messages: scenario(id).messages.map((message) => message.id),
+  reports: scenario(id)
+    .messages.filter((message) => message.report)
+    .map((message) => message.id),
   tasks: scenario(id).tasks
 })
 const recorded = (id: string, calls: Array<Record<string, unknown>>): CoRecordedCall[] => {
@@ -89,6 +92,19 @@ describe('runtime matrix coordinator probe', () => {
     } finally {
       fixture.server.close()
     }
+  })
+
+  it('takes only a reply for a report, and passes one that names what it reported', () => {
+    const [report] = scopeOf('report-reply').messages
+    expect(
+      decide({ action: 'delegateTask', messageId: report, title: 'PR' }, scopeOf('report-reply'), new Set())
+    ).toMatchObject({ error: expect.stringContaining('is a report') })
+    const told = recorded('report-reply', [
+      { action: 'replyToMessage', messageId: report, message: '<@U0EXAMPLE1> PR #4821 merged and main is green.' }
+    ])
+    expect(judgeCoordinator(scenario('report-reply'), told, 'AC_NO_RESPONSE').verdict).toBe('PASS')
+    expect(judgeCoordinator(scenario('report-reply'), [], 'AC_NO_RESPONSE').verdict).toBe('FAIL')
+    expect(renderBatch(scenario('report-reply').messages)).toContain('<report id="msg-1700001100.000100">')
   })
 
   it('renders ids and mentions, and rejects unknown scenario ids', () => {

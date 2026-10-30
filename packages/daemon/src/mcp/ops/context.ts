@@ -1,6 +1,7 @@
 import type { MemoryWriteSource } from '../../memory/store.js'
 import type { MemoryLayerChoice, MemoryScope } from '../../memory/types.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
+import type { NormalizedMessage } from '../../messages/normalized.js'
 import type {
   PlatformCanvas,
   PlatformCanvasEdit,
@@ -259,6 +260,8 @@ export interface SessionContext {
   agentName?: string
   /** The agent's public avatar URL, sibling of {@link agentName}. */
   iconUrl?: string
+  /** The delivered message a coordinator's place-tool call acts for: its sender asks, its thread answers (auto-session-mode.md §5.4). */
+  forMessage?: NormalizedMessage
 }
 
 /** One tool handler in the pre-gateway registry: the trusted session context, the raw

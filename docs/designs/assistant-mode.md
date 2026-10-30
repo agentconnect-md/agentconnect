@@ -399,6 +399,9 @@ conversation. Each place has exactly one long session:
   before the row's projection does not open a thread session of its own
   ([channel-session-mode.md](channel-session-mode.md)).
 
+Where the place's daemon runs the `auto` session mode, the long session is the place's coordinator
+instead of an `append` session ([auto-session-mode.md](auto-session-mode.md) §3.4).
+
 Long sessions are kept per §4.2. Context relies on the runtime's own compaction; the standing
 summary rides the existing reminder path (§5.4). The trigger for an automatic rollover (reopening
 the context with the standing list and summary as a handover note) is an open question (§9).

@@ -14,8 +14,8 @@
 > task's threads reach that task (§7), and a mention left without an outcome, or caught by a failed
 > turn, opens a threaded task (§4.5). It runs read-only, and in an empty working directory where its
 > runtime reads the daemon's own disk (elsewhere it opens in the agent's). Its tools are the decision
-> tools, `listTasks` and memory; `postMessage`, `callAgent` and the follow-up tools of §5.4 wait for
-> P3. A threaded task is a session on its message's thread, attached in the task index. It answers
+> tools with `postMessage` and `callAgent`, `listTasks`, memory, and the follow-up, proposal and
+> reminder tools its place is offered (§5.4). A threaded task is a session on its message's thread, attached in the task index. It answers
 > each message in the thread the message came from (§6.4), counts as running while a turn of it runs,
 > keeps a summary with `updateTask`, and closes after 7 idle days or with its purged session (§6.5). A
 > background task cannot take a channel message yet (§6.6): the coordinator opens no background task
@@ -24,8 +24,9 @@
 > message of a conversation that is not Off reaches the coordinator, and `auto` is refused together
 > with By decision and shared-bot routing (§3.3). Switching into `auto` makes the conversation's recent
 > thread sessions the coordinator's tasks; switching out retires the coordinator and hands its tasks
-> back as ordinary thread sessions (§3.5). The visibility lock for threaded tasks, assistant mode's
-> move to `auto` (§3.4) and webchat (§10) are not implemented.
+> back as ordinary thread sessions (§3.5). Assistant mode's places run through the coordinator where
+> the daemon reads `auto`, and it takes their reports (§3.4). The visibility lock for threaded tasks
+> and webchat (§10) are not implemented.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -95,6 +96,18 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
 - An assistant-mode agent's existing rows move to `auto` once their daemon supports it. The old
   `append` session takes no new messages and ages out through retention. Its context is not carried
   over; the coordinator starts empty and relies on memory.
+- The Control Plane's spec projection marks each place assistant mode forces onto one session, and
+  the spec sent to a daemon advertising `session-mode-auto-v1` lists such a place as `auto`; any
+  other daemon receives `append`. The stored rows are not rewritten. A daemon with the switch on also
+  gives an assistant-mode place it does not list yet `auto` where the platform appends its kind.
+- The place's long session is its coordinator: a report, a follow-up's result or another agent's
+  answer reaches its batch as a `<report>`. The coordinator answers a report with `replyToMessage`,
+  which posts in the report's thread or at the conversation's root; a report never opens a task and
+  is never handed to one, and shows no 🤔. Its own follow-ups and proposals, made with the place
+  tools of §5.4, belong to it as they belong to an `append` session.
+- A report queued behind a running turn is never absorbed into the next batch. It starts a turn of its
+  own, which keeps the report's own metadata (a getting-to-know report's proposals ride on it); the
+  channel messages queued behind it join that turn.
 
 ### 3.5 Switching
 
@@ -229,6 +242,13 @@ together with the summary. Only a task calls it, for itself; both kinds can.
 
 - Only AgentConnect tools: `sendMessage` (the task actions and `replyToMessage`, plus `postMessage`
   and `callAgent`), `listTasks`, memory, and assistant mode's follow-up tools.
+  - `postMessage` and `callAgent` run as they do in any session. `callAgent` always asks for an
+    answer, which comes back as a report.
+  - The place tools are those its place's long session is offered: `followUp`, `getToKnow`, `propose`,
+    `remind`, `listReminders` and `cancelReminder`.
+  - A batch can hold several people's messages and reports, so `followUp`, `getToKnow` and `remind`,
+    which act for the person who asked, name that person's message by `messageId`. They act for its
+    sender and answer in its thread; a report or an unknown id is refused.
 - A read-only runtime mode and no workspace (an empty directory). Anything that needs work becomes a
   task.
 - An ACP session on the agent's own runtime with the coordinator's own prompt. In the first version
@@ -358,7 +378,7 @@ tool surface (`sendMessage` with `delegateTask`, `messageTask` and `replyToMessa
 into a real runtime session over an HTTP MCP fixture, delivers channel messages in the format of
 §4.3, and judges each message's outcome. Its scenarios: new work, a message for an open task, a
 status question, a greeting, chatter between people, a request to another agent, a vague mention, a
-small edit the coordinator must not do itself, and two mixed batches.
+small edit the coordinator must not do itself, two mixed batches, and a follow-up's report (§3.4).
 
 ```bash
 AC_RUNTIME_MATRIX_ONLY=coordinator AC_RUNTIME_MATRIX_TARGETS=claude-acp,codex-acp \
@@ -379,7 +399,11 @@ Results on 2026-10-29 (scenario passes per runtime, repetitions included):
 
 On 2026-10-30 the shipped prompt and tools (`packages/daemon/src/auto-session/coordinator-prompt.ts`)
 passed 30 / 30 again on `claude-acp` and `codex-acp` (3 repetitions each); the other runtimes were not
-rerun.
+rerun. The same day, with reports, `postMessage`, `callAgent` and the place tools added to the prompt
+and the report scenario added to the probe, both passed 33 / 33 (3 repetitions each); every report was
+answered with `replyToMessage` naming the PR it reported. After the place tools came to name their
+message by `messageId`, `codex-acp` passed 33 / 33 again and `claude-acp` 32 / 33. Its one failure was
+an `ignore-chatter` turn that timed out after 180 s with no call; that scenario passed 3 / 3 on a rerun.
 
 The candidate prompt asks the coordinator to express every outcome as a call and to end its turn
 with `AC_NO_RESPONSE`; the judge still accepts a one-message turn's text as its reply (§4.3).

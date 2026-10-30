@@ -533,6 +533,17 @@ describe('conversationSessionMode for an unlisted conversation', () => {
     expect(conversationSessionMode(int('slack'), 'C1')).toBe('createNew')
   })
 
+  // auto-session-mode.md §3.4: where the daemon runs `auto`, an assistant-mode place's one long session is its coordinator.
+  it('runs an unlisted assistant-mode place through the coordinator where auto runs', () => {
+    const auto = (kind: 'channel' | 'im' | 'mpim') => ({ assistantMode: true, kind, auto: true })
+    expect(conversationSessionMode(int('slack'), 'C1', auto('channel'))).toBe('auto')
+    expect(conversationSessionMode(int('slack'), 'D1', auto('im'))).toBe('auto')
+    expect(conversationSessionMode(int('slack'), 'G1', auto('mpim'))).toBe('createNew')
+    expect(conversationSessionMode(int('slack', [{ channel: 'C1', mode: 'append' }]), 'C1', auto('channel'))).toBe(
+      'append'
+    )
+  })
+
   it('keys a By decision or routed conversation listed `auto` Per thread, which never runs behind them', () => {
     const bound = {
       id: 'i-mode',

@@ -1029,9 +1029,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(alice.core.gated).toBe(false)
       // Every room of the bot is replicated onto her install, so each keys one session for her alone.
       expect(alice.core.sessionModes).toEqual([
-        { channel: 'C9', mode: 'append' },
-        { channel: 'D9', mode: 'append' },
-        { channel: 'C1', mode: 'append' }
+        { channel: 'C9', mode: 'append', assistantPlace: true },
+        { channel: 'D9', mode: 'append', assistantPlace: true },
+        { channel: 'C1', mode: 'append', assistantPlace: true }
       ])
       const bob = upserts.find((u) => u.daemonId === D2)!.spec as never as { core: { sessionModes: unknown[] } }
       expect(bob.core.sessionModes).toEqual([])

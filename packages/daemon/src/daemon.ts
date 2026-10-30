@@ -1036,7 +1036,7 @@ import {
   deliveredMessage,
   THREADED_TASK_IDLE_CLOSE_MS
 } from './auto-session/coordinator-sessions.js'
-import { coordinatorView, inThread, replyThreadOf, type DeliveredMessage } from './auto-session/coordinator-turns.js'
+import { answerThreadOf, coordinatorView, inThread, type DeliveredMessage } from './auto-session/coordinator-turns.js'
 import {
   isGettingToKnowCoordinate,
   isCheckCoordinate,
@@ -5003,6 +5003,7 @@ export class Daemon {
       replyToSession: (req) => this.collab.replyToSession(req),
       continueSubsession: (req) => this.collab.continueSubsession(req),
       coordinatorDecision: (ctx, args) => this.coordinators.decide(ctx, args),
+      coordinatorMessage: (ctx, messageId) => this.coordinators.messageFor(ctx, messageId),
       viewSessionStatus: (req) => Promise.resolve(this.collab.viewSessionStatus(req)),
       rootPostRelation: (req) => this.collab.rootPostRelation(req),
       spawnChannelRootSession: (req) => this.collab.spawnChannelRootSession(req),
@@ -5042,8 +5043,8 @@ export class Daemon {
         take: async (ctx, input) => {
           const key = this.sessionKeyOf(ctx)
           const sessionId = await this.store.ensureOutwardSessionId(key, ctx.agentId, this.clock.now())
-          // The thread the taking turn replies in, where the follow-up's reports reply too.
-          const replyThread = this.activeTurnShare.get(key)?.thread
+          // The thread the taking turn replies in, where the follow-up's reports reply too; a coordinator's, the asking message's.
+          const replyThread = ctx.forMessage ? answerThreadOf(ctx.forMessage) : this.activeTurnShare.get(key)?.thread
           return await this.followUpChecks.take({
             agentId: ctx.agentId,
             origin: placeOfSession(ctx),
@@ -5078,7 +5079,7 @@ export class Daemon {
       assistantReminders: {
         ledger: this.store.assistantReminders,
         requesterFor: async (ctx) => {
-          const msg = this.liveTurn(ctx)?.msg
+          const msg = ctx.forMessage ?? this.liveTurn(ctx)?.msg
           return msg && msg.source === 'user' && !msg.sender.isBot && msg.sender.id ? msg.sender.id : undefined
         },
         now: () => this.clock.now()
@@ -5159,8 +5160,13 @@ export class Daemon {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
         const t = this.activeTurnShare.get(key)
         if (!t) return { ok: false, reason: 'no-turn' }
-        // §3.2's two coordinate gates, checked BEFORE any file I/O: a headless turn must
-        // post nothing, and a postless A2A child has no conversation despite a live gateway.
+        // A coordinator's place tool acts for one delivered message, so it targets that message's thread (auto-session-mode.md §5.4).
+        if (ctx.forMessage) {
+          const { headless: _h, synthetic: _s, replyTo: _r, ...place } = t
+          const thread = answerThreadOf(ctx.forMessage)
+          return { ok: true, ...place, ...(thread !== undefined ? { thread } : {}) }
+        }
+        // §3.2's two coordinate gates, checked before any file I/O: a headless turn posts nothing, a postless A2A child has no conversation.
         if (t.headless) return { ok: false, reason: 'headless' }
         if (t.synthetic) return { ok: false, reason: 'no-conversation' }
         const { headless: _headless, synthetic: _synthetic, ...target } = t
@@ -10362,8 +10368,16 @@ export class Daemon {
         ? conversationSessionMode(int, place.channel)
         : this.sessionModeFor(agentId, int, { channel: place.channel, isDm })
       : undefined
-    if (!int || mode !== 'append') return undefined
-    const thread = await this.store.resolveAppendCoordinate(agentId, place.channel, place.transportScope)
+    // Under `auto` the place's long session is its coordinator (auto-session-mode.md §3.4).
+    const coordinator = mode === 'auto' && this.cfg.features.autoSessionMode
+    if (!int || (mode !== 'append' && !coordinator)) return undefined
+    const thread = coordinator
+      ? await this.resolveCoordinator(agentId, {
+          platform: place.platform,
+          channel: place.channel,
+          transportScope: place.transportScope ?? null
+        })
+      : await this.store.resolveAppendCoordinate(agentId, place.channel, place.transportScope)
     return {
       key: sessionKey(place.platform, place.channel, thread, agentId, place.transportScope),
       agentId,
@@ -11774,7 +11788,9 @@ export class Daemon {
   /** The person whose message started the session's live turn, as an item follower identity (assistant-mode.md §5.4). */
   private async assistantAskerFor(ctx: SessionContext): Promise<string | undefined> {
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-    const msg = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)?.entry.msg
+    // A coordinator's place tool names the message it acts for (auto-session-mode.md §5.4).
+    const msg =
+      ctx.forMessage ?? [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)?.entry.msg
     if (!msg) return undefined
     const integration = ctx.integrationId ? this.integrationConfigById(ctx.integrationId) : undefined
     return askerIdentity(msg, integration ? await this.tenantScopeForIntegration(integration) : undefined)
@@ -13465,7 +13481,12 @@ export class Daemon {
     // A coordinate with no message behind it (an agent call) has no kind to default by, so only its listed mode counts.
     if (msg.isDm === undefined && msg.isGroupDm === undefined) return conversationSessionMode(int, msg.channel)
     const kind = conversationKindOf({ ...msg, platform: int.platform })
-    return conversationSessionMode(int, msg.channel, { assistantMode: assistantModeOn(this.agents.get(agentId)), kind })
+    const assistantMode = assistantModeOn(this.agents.get(agentId))
+    return conversationSessionMode(int, msg.channel, {
+      assistantMode,
+      kind,
+      auto: assistantMode && this.cfg.features.autoSessionMode
+    })
   }
 
   private async sessionCoordinateFor(
@@ -13558,12 +13579,16 @@ export class Daemon {
     return minted
   }
 
-  /** Open a coordinator turn on its batch: the trigger and every entry queued behind it, each under its own id (auto-session-mode.md §4.3). */
+  /** Open a coordinator turn on its batch: the trigger and every channel message queued behind it, each under its own id (auto-session-mode.md §4.3). */
   private async beginCoordinatorTurn(entry: QueueEntry, key: string): Promise<void> {
     const queued = this.serialQueue.get(key) ?? []
-    this.serialQueue.delete(key)
+    // A queued report keeps a turn of its own, whose metadata it needs, such as a getting-to-know report's proposals (§3.4).
+    const reports = queued.filter((next) => next.msg.source !== 'user')
+    if (reports.length > 0) this.serialQueue.set(key, reports)
+    else this.serialQueue.delete(key)
     const batch: QueueEntry[] = []
     for (const next of queued) {
+      if (next.msg.source !== 'user') continue
       // The same holds the runner honors before it starts a queued entry.
       const verdict = next.admissionHold ? await next.admissionHold : 'run'
       next.admissionHold = undefined
@@ -13585,6 +13610,8 @@ export class Daemon {
     const channelName = (await this.store.getDisplayNames([channel])).get(channel)
     entry.coordinatorPrompt = renderCoordinatorBatch(
       messages.map((message) => {
+        // A report reads as its session input does, header and guidance included.
+        if (message.report) return coordinatorView(message, message.msg.turnBody?.prompt ?? message.msg.text)
         const mention = attachmentMention(message.msg.attachments)
         return coordinatorView(message, mention ? `${message.msg.text}\n${mention}`.trim() : message.msg.text)
       }),
@@ -13640,17 +13667,22 @@ export class Daemon {
     }
   }
 
-  /** Whether a conversation may run its coordinator: the switch on and the integration its rows' transport scope names listing it `auto`. */
+  /** Whether a conversation may run its coordinator: the switch on and the integration its rows' transport scope names listing it `auto`, or an assistant-mode place it does not list yet (§3.4). */
   private conversationRunsAuto(
     agentId: string,
     at: { channel: string; transportScope?: string | null; platform?: string }
   ): boolean {
     if (!this.cfg.features.autoSessionMode) return false
-    return (this.agents.get(agentId)?.integrations ?? []).some(
+    const agent = this.agents.get(agentId)
+    const unseen = (int: Integration) =>
+      assistantModeOn(agent) &&
+      manifestFor(int.platform).appendKinds.length > 0 &&
+      !integrationCore(int).sessionModes.some((entry) => entry.channel === at.channel)
+    return (agent?.integrations ?? []).some(
       (int) =>
         (at.platform === undefined || int.platform === at.platform) &&
         (!at.transportScope || this.transportScopeForIntegration(int) === at.transportScope) &&
-        conversationSessionMode(int, at.channel) === 'auto'
+        (conversationSessionMode(int, at.channel) === 'auto' || unseen(int))
     )
   }
 
@@ -13710,7 +13742,7 @@ export class Daemon {
     if (!gateway) throw new Error('the conversation is not connected right now; nothing was posted')
     const agent = this.agents.get(agentId)
     const name = agent?.displayName?.trim() || agent?.name
-    await gateway.postMessage(msg.channel, text, replyThreadOf(msg), {
+    await gateway.postMessage(msg.channel, text, answerThreadOf(msg), {
       ...(name ? { username: name } : {}),
       ...(agent?.iconUrl ? { icon_url: agent.iconUrl } : {}),
       agentAuthorId: agentId

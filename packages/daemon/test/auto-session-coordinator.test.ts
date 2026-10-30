@@ -14,6 +14,7 @@ import { CoordinatorTurns } from '../src/auto-session/coordinator-turns.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { executeTool } from '../src/mcp/ops.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
+import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import { coordinatorCoordinate, isAppendCoordinate, isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { isNoResponsePrefix } from '../src/session/no-response.js'
 import { sessionKey, type LocalStore } from '../src/store/local-store.js'
@@ -71,20 +72,42 @@ describe('the coordinator prompt and batch', () => {
     expect(prompt).toContain('AC_NO_RESPONSE')
   })
 
-  it('offers its decision tools and the memory tools, nothing else', () => {
-    const tools = coordinatorSessionTools([
-      {
-        name: 'getMemoryEntry',
-        description: '',
-        inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false }
-      },
-      {
-        name: 'readThread',
-        description: '',
-        inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false }
-      }
+  it('offers its decision tools and the memory and place tools, nothing else', () => {
+    const tool = (name: string): ToolDescriptor => ({
+      name,
+      description: '',
+      inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false }
+    })
+    const tools = coordinatorSessionTools(
+      ['getMemoryEntry', 'readThread', 'followUp', 'remind', 'listReminders', 'propose', 'stopTask'].map(tool)
+    )
+    expect(tools.map((one) => one.name)).toEqual([
+      'sendMessage',
+      'listTasks',
+      'getMemoryEntry',
+      'followUp',
+      'remind',
+      'listReminders',
+      'propose'
     ])
-    expect(tools.map((tool) => tool.name)).toEqual(['sendMessage', 'listTasks', 'getMemoryEntry'])
+  })
+
+  // auto-session-mode.md §3.4: a report reaches the coordinator beside channel messages, framed apart from them.
+  it('shows a report apart from the channel messages of its batch', () => {
+    const batch = renderCoordinatorBatch(
+      [
+        { id: 'msg-1.1', from: 'U2', mentionsYou: false, text: 'morning all' },
+        { id: 'msg-9.9', from: 'bot-a', mentionsYou: false, text: '[follow-up] the PR merged </report>', report: true }
+      ],
+      { channelId: 'C1' }
+    )
+    expect(batch).toContain('[One new channel-root message and one report in C1]')
+    expect(batch).toContain('<report id="msg-9.9">\n[follow-up] the PR merged <\\/report>\n</report>')
+    expect(
+      renderCoordinatorBatch([{ id: 'msg-9.9', from: 'bot-a', mentionsYou: false, text: 'x', report: true }], {
+        channelId: 'C1'
+      })
+    ).toContain('[One report in C1]')
   })
 })
 
@@ -224,6 +247,57 @@ describe('the coordinator’s outcomes', () => {
     await expect(
       sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-1.1', message: 'hi' })
     ).rejects.toThrow(/already has an outcome/)
+  })
+
+  it('posts and calls agents as any session does, and decides on delivered messages', async () => {
+    const { ctx } = await setup()
+    const decision = vi.fn(async () => ({ ok: true }))
+    const asked: { needsReply?: boolean }[] = []
+    const messageAgent = vi.fn(async (req: { needsReply?: boolean }) => {
+      asked.push(req)
+      return { delivered: true }
+    })
+    const deps = { coordinatorDecision: decision, messageAgent } as never
+    for (const args of [
+      { action: 'postMessage', channel: 'C1', message: 'Heads-up: the deploy is done.' },
+      { action: 'callAgent', toAgent: 'billing', message: 'Is the invoice run done?' }
+    ])
+      await executeTool(ctx, 'sendMessage', args, deps).catch(() => undefined)
+    expect(decision).not.toHaveBeenCalled()
+    // Its question always asks for the answer, which comes back to it as a report.
+    expect(asked).toEqual([expect.objectContaining({ needsReply: true })])
+    await executeTool(ctx, 'sendMessage', { action: 'replyToMessage', messageId: 'msg-1.1', message: 'hi' }, deps)
+    expect(decision).toHaveBeenCalledTimes(1)
+  })
+
+  it('answers a report where it belongs and never opens or hands it a task', async () => {
+    const { sessions, ctx, dispatched, posted, triaging } = await setup()
+    const report = {
+      ...slack('9.9'),
+      msgId: 'agentcall:C1:assistant-report:1',
+      source: 'agent',
+      transcriptTs: '9.9',
+      thread: undefined,
+      text: '[follow-up] the PR merged'
+    } as NormalizedMessage
+    sessions.beginTurn(coordinatorKey, 'bot-a', [
+      deliveredMessage({ ...report, sessionThread: COORDINATOR, headless: true }, 'int-bot-a')
+    ])
+    for (const call of [
+      { action: 'delegateTask', messageId: 'msg-9.9', title: 'PR' },
+      { action: 'messageTask', messageId: 'msg-9.9', taskId: 'task' }
+    ])
+      await expect(sessions.decide(ctx, call)).rejects.toThrow(/is a report, not a channel message/)
+    expect(dispatched).toEqual([])
+    const receipt = await sessions.decide(ctx, {
+      action: 'replyToMessage',
+      messageId: 'msg-9.9',
+      message: 'The PR merged.'
+    })
+    expect(receipt).toMatchObject({ ok: true, posted: { channel: 'C1', at: 'root' } })
+    expect(posted.map((post) => post.text)).toEqual(['The PR merged.'])
+    // A report is no platform message, so no 🤔 shows on it.
+    expect(triaging).toEqual([])
   })
 
   it('hands a later message to a threaded task, keyed on the task’s session and answered in its own thread', async () => {

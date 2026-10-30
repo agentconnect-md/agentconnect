@@ -8,6 +8,7 @@ import {
   OWNER_DEFAULT_DECISION_V1_FEATURE,
   SESSION_MODE_AUTO_V1_FEATURE,
   type AttributedRoute,
+  type IntegrationSessionMode,
   type IntegrationSpec,
   type RcRoutedConversation
 } from '@agentconnect.md/protocol'
@@ -92,6 +93,19 @@ export function autoSessionModeSupported(features: readonly string[] | undefined
   return advertises(features, [SESSION_MODE_AUTO_V1_FEATURE])
 }
 
+/** A projected session mode; an assistant-mode place is marked so a peer that reads `auto` runs it through the coordinator (auto-session-mode.md §3.4). */
+export type ProjectedSessionMode = IntegrationSessionMode & { assistantPlace?: true }
+
+/** An assistant-mode place is `auto` for a peer with session-mode-auto-v1 and stays `append` for one without; the mark never leaves the CP. */
+function settleAssistantPlaces(spec: IntegrationSpec, auto: boolean): IntegrationSpec {
+  const modes: readonly ProjectedSessionMode[] = spec.core.sessionModes ?? []
+  if (!modes.some((m) => m.assistantPlace)) return spec
+  const sessionModes = modes.map(({ assistantPlace, ...entry }) =>
+    assistantPlace && auto ? { ...entry, mode: 'auto' as const } : entry
+  )
+  return { ...spec, core: { ...spec.core, sessionModes } }
+}
+
 /** A daemon without session-mode-auto-v1 would refuse the whole frame on `auto`, so it gets `createNew` there instead. */
 function downgradeAutoForPeer(spec: IntegrationSpec): IntegrationSpec {
   const modes = spec.core.sessionModes ?? []
@@ -100,11 +114,12 @@ function downgradeAutoForPeer(spec: IntegrationSpec): IntegrationSpec {
   return { ...spec, core: { ...spec.core, sessionModes } }
 }
 
-/** The spec a daemon may receive: `auto` as `createNew` without auto-v1, routing stripped without routing-v1, every decision rule without trigger-v1, held Off. */
+/** The spec a daemon may receive: assistant-mode places `auto` with auto-v1, other `auto` as `createNew` without it, routing stripped without routing-v1, every decision rule without trigger-v1, held Off. */
 export function encodeIntegrationSpecForPeer(
   spec: IntegrationSpec,
   features: readonly string[] | undefined
 ): IntegrationSpec {
+  spec = settleAssistantPlaces(spec, autoSessionModeSupported(features))
   if (!autoSessionModeSupported(features)) spec = downgradeAutoForPeer(spec)
   if (!features?.includes(DECISION_CHAIN_V1_FEATURE)) spec = stripChainsForPeer(spec)
   if (!decisionRoutingSupported(features)) spec = stripRoutingForPeer(spec)
