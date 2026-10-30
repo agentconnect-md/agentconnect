@@ -105,6 +105,9 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
   which posts in the report's thread or at the conversation's root; a report never opens a task and
   is never handed to one, and shows no 🤔. Its own follow-ups and proposals, made with the place
   tools of §5.4, belong to it as they belong to an `append` session.
+- A report queued behind a running turn is never absorbed into the next batch. It starts a turn of its
+  own, which keeps the report's own metadata (a getting-to-know report's proposals ride on it); the
+  channel messages queued behind it join that turn.
 
 ### 3.5 Switching
 

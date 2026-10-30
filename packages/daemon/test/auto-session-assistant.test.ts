@@ -221,6 +221,55 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     await daemon.stop()
   })
 
+  // A report's turn carries its own metadata, such as a getting-to-know report's proposals, so no batch absorbs one.
+  it('keeps each report queued behind a turn on a turn of its own, with the channel messages behind it', async () => {
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const prompts: string[] = []
+    const { daemon, d, scope, route } = await boot(async (blocks) => {
+      prompts.push(blocks.map((block) => block.text ?? '').join('\n'))
+      if (prompts.length === 1) await held
+    })
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    await d.store.upsertSession({
+      key: sessionKey('slack', 'C1', coordinator, 'bot-a', scope),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinator,
+      transportScope: scope,
+      acpSessionId: 'acp-coordinator',
+      sessionId: 'sid-coordinator',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    vi.spyOn(d, 'replyConnFor').mockReturnValue({ react: vi.fn(async () => {}), setStatus: vi.fn(async () => true) })
+    const report = async (id: string, text: string) =>
+      await d.collab.deliverDaemonReport({
+        agentId: 'bot-a',
+        caller: { platform: 'slack', channel: 'C1', thread: checkCoordinate(id), transportScope: scope },
+        place: { platform: 'slack', channel: 'C1', transportScope: scope },
+        parentSessionId: 'sid-coordinator',
+        text,
+        reportId: `follow-up:${id}`
+      })
+    await route(slack('1.1', { text: 'first' }))
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+    await report('p-1', '[follow-up] first report')
+    await report('p-2', '[follow-up] second report')
+    await route(slack('3.1', { text: 'after the reports' }))
+    release()
+    await vi.waitFor(() => expect(prompts).toHaveLength(3), WAIT)
+    await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+    expect(prompts[1]).toContain('[follow-up] first report')
+    expect(prompts[1]).toContain('after the reports')
+    expect(prompts[1]).not.toContain('second report')
+    expect(prompts[2]).toContain('[follow-up] second report')
+    expect(prompts[2]).toContain('[One report in C1]')
+    await daemon.stop()
+  })
+
   it('takes a follow-up’s report into the coordinator, which answers it in the place', async () => {
     const live: { d?: any; ctx?: SessionContext } = {}
     const seen: string[] = []

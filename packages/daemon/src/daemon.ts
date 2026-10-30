@@ -13579,12 +13579,16 @@ export class Daemon {
     return minted
   }
 
-  /** Open a coordinator turn on its batch: the trigger and every entry queued behind it, each under its own id (auto-session-mode.md §4.3). */
+  /** Open a coordinator turn on its batch: the trigger and every channel message queued behind it, each under its own id (auto-session-mode.md §4.3). */
   private async beginCoordinatorTurn(entry: QueueEntry, key: string): Promise<void> {
     const queued = this.serialQueue.get(key) ?? []
-    this.serialQueue.delete(key)
+    // A queued report keeps a turn of its own, whose metadata it needs, such as a getting-to-know report's proposals (§3.4).
+    const reports = queued.filter((next) => next.msg.source !== 'user')
+    if (reports.length > 0) this.serialQueue.set(key, reports)
+    else this.serialQueue.delete(key)
     const batch: QueueEntry[] = []
     for (const next of queued) {
+      if (next.msg.source !== 'user') continue
       // The same holds the runner honors before it starts a queued entry.
       const verdict = next.admissionHold ? await next.admissionHold : 'run'
       next.admissionHold = undefined
