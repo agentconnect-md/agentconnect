@@ -21,7 +21,7 @@ transport, authenticate in-band with the standard `authenticate` command.
 | Control Plane        | `AHP_TEST_KEY_IDS`              | empty                           | Comma-separated API-key row IDs for the canary audience; never secret key values.          |
 | Control Plane        | `PUBLIC_RELAY_URL`              | unset                           | Public relay origin used for bootstrap; use HTTPS/WSS in deployment.                       |
 | Every relay replica  | `AHP_AUTHORIZATION_SERVER`      | unset                           | OAuth issuer advertised beside the endpoint for discovery; tokens are not accepted yet.    |
-| Each agent           | AHP API entry                   | absent                          | Explicitly permits this protocol for the agent.                                            |
+| Each agent           | AHP API entry                   | absent                          | Explicitly permits key-authenticated clients for the agent; Webchat does not need it.      |
 | Serving daemon       | `api-ahp-v1` capability         | absent unless wired and enabled | Independently checked during admission and placement resolution.                           |
 | Serving daemon       | `api-ahp-handshake-v1`          | advertised with `api-ahp-v1`    | Required for in-band `authenticate`; header and browser-token attachments do not need it.  |
 
@@ -50,7 +50,8 @@ fields disclose only availability, never key IDs or credentials.
 
 Public-key admission and the browser default are independent. Third-party
 canaries can use AHP while Webchat remains legacy. Every participant of an AHP
-browser roster needs an AHP API entry and a READY, capable serving daemon.
+browser roster needs a READY, capable serving daemon, but not an AHP API entry:
+switching Webchat's transport exposes no agent to key-authenticated clients.
 Bootstrap refuses unavailable rosters; it does not send the same action through
 another protocol. Membership, resource audience and continuation policy still apply.
 
@@ -183,7 +184,7 @@ stream cursors or automatically resend an uncertain action across protocols.
 
 - **Revocation and CP outage:** grants last at most 60 seconds, capped by source
   credential expiry. Renewal starts five seconds before expiry and rechecks
-  credential validity, membership, visibility, API entry, placement and capability.
+  credential validity, membership, visibility, key API entry, placement and capability.
   A separate deadline closes the attachment even if renewal hangs. Revocation
   takes effect within the remaining grant lifetime, at most 60 seconds. Discovery
   and creation may fail sooner; no expired grant or new registry fact is invented.

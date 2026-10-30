@@ -50,13 +50,17 @@ const denied = (): RcVerifyResult => ({ ok: false, reason: 'AHP access unavailab
 export class AhpAuthorization {
   constructor(private readonly deps: AhpAuthorizationDeps) {}
 
-  private async agentAccess(claims: Pick<AhpGrantClaims, 'orgId' | 'agentId' | 'userId'>) {
+  private async agentAccess(claims: Pick<AhpGrantClaims, 'orgId' | 'agentId' | 'userId' | 'apiKeyId'>) {
     const d = this.deps
     if (d.config.AHP_MODE !== 'on') return null
     const role = (await d.orgs.roleOf(claims.orgId, claims.userId)) as OrgMemberRole | null
     const agent = await d.agents.getUnscoped(AgentId(claims.agentId))
     if (!role || !agent || agent.orgId !== claims.orgId || !canView(agent, { userId: claims.userId, role })) return null
-    if (!(await d.apiEntries.listForAgent(AgentId(claims.agentId))).some((entry) => entry.protocol === 'ahp'))
+    // The API entry opts an agent into key-driven clients; the console's own Webchat is not one of them.
+    if (
+      claims.apiKeyId &&
+      !(await d.apiEntries.listForAgent(AgentId(claims.agentId))).some((entry) => entry.protocol === 'ahp')
+    )
       return null
     const daemonId = await d.placement.dispatchDaemon(agent)
     const daemon = daemonId ? d.daemons.get(daemonId) : undefined

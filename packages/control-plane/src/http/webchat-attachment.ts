@@ -47,8 +47,6 @@ export async function webchatAttachment(
   for (const id of agentIds) {
     const agent = await deps.repos.agent.get(input.orgId, AgentId(id))
     if (!agent || agent.orgId !== input.orgId) return null
-    const entries = await deps.repos.agentApiEntry.listForAgent(agent.id)
-    if (!entries.some((entry) => entry.protocol === 'ahp')) return null
     const daemonId = await deps.placementResolver.dispatchDaemon(agent)
     const daemon = daemonId ? deps.daemonConns.get(daemonId) : undefined
     if (daemon?.state !== 'READY' || !daemon.capabilities?.features?.includes(API_AHP_V1_FEATURE)) return null
