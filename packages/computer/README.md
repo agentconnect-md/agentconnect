@@ -94,7 +94,7 @@ devices.
 
 ## Run on Windows
 
-Requirements: Windows 10/11 x64 or arm64, a logged-in desktop session, Node.js ≥ 26.0
+Requirements: Windows 10/11 x64 or arm64, a logged-in desktop session, Node.js ≥ 24.12
 (`winget install OpenJS.NodeJS`).
 
 1. Build the bundle on a dev machine (`pnpm --filter @agentconnect.md/computer bundle`) and copy
@@ -140,7 +140,7 @@ once the service holds the config).
 
 ## Run on macOS
 
-Requirements: Node.js ≥ 26.0. No Homebrew or sudo is needed: the official tarball unpacked to
+Requirements: Node.js ≥ 24.12. No Homebrew or sudo is needed: the official tarball unpacked to
 `~/.local/node` works. In **Terminal on the Mac** (not over SSH: macOS grants the permissions to
 the app that starts the daemon), copy the `bundle/` directory to the Mac and run:
 
@@ -193,7 +193,7 @@ npx -y @agentconnect.md/cli@latest computer install --register <token> --cp-url 
 ## Run on Linux
 
 **Install** (what the console's **Computers → Add Computer** shows for every desktop OS): run it in a terminal
-inside the desktop session, as the desktop user, not root. It needs Node.js ≥ 26.0 (the official
+inside the desktop session, as the desktop user, not root. It needs Node.js ≥ 24.12 (the official
 tarball or your distribution's package).
 
 ```bash
@@ -222,7 +222,7 @@ Computer key and the grants stay in `~/.agentconnect/computer`, so an upgrade ke
 registration; a desktop installed by the retired Control Plane `install.sh` keeps its data, and `computer install`
 moves its service onto the store. `AGENTCONNECT_NPM_REGISTRY` points the CLI at another registry.
 
-Requirements for running from source: Node.js ≥ 26.0 (the official tarball in `~/.local/node` works), a logged-in
+Building from source requires Node.js ≥ 26.0; the bundle runs on Node.js ≥ 24.12. A logged-in
 graphical session, and `setup` run inside it. Over SSH, export the session's `WAYLAND_DISPLAY`,
 `XDG_RUNTIME_DIR`, and `DBUS_SESSION_BUS_ADDRESS` first. `setup` downloads Cua Driver and a pinned
 static ffmpeg (6.0, libx264).
