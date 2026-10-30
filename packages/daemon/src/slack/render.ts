@@ -78,7 +78,8 @@ export type SlackAction =
   | { kind: 'set-title'; text: string }
   | { kind: 'progress'; text: string }
   | { kind: 'reasoning'; text: string }
-  | { kind: 'plan'; text: string; blocks: unknown[] }
+  // `markdown` is the same plan for a code channel's Plan tab canvas.
+  | { kind: 'plan'; text: string; blocks: unknown[]; markdown: string }
   // `tool-output` posts a finished tool's output (code block) but is NOT recorded — same
   // post-but-don't-record contract as `notice`.
   | { kind: 'tool-output'; text: string }
@@ -358,7 +359,7 @@ const MAX_PLAN_LABEL = 150
  *  than truncated. A struck-through line says "done" just as plainly and promises nothing.
  *
  *  `text` is the notification/fallback string, never displayed when the blocks render. */
-function renderPlan(entries: PlanEntry[]): { text: string; blocks: unknown[] } {
+function renderPlan(entries: PlanEntry[]): { text: string; blocks: unknown[]; markdown: string } {
   const done = entries.filter((e) => e.status === 'completed').length
   const item = (entry: PlanEntry) => ({
     type: 'rich_text_section',
@@ -386,6 +387,7 @@ function renderPlan(entries: PlanEntry[]): { text: string; blocks: unknown[] } {
       `Plan · ${done}/${entries.length}`,
       ...entries.map((e) => `${spoken(e.status)}: ${clampTo(e.content ?? '', MAX_PLAN_LABEL)}`)
     ].join('\n'),
+    markdown: planCanvasMarkdown(entries),
     blocks: [
       { type: 'divider' },
       { type: 'context', elements: [{ type: 'mrkdwn', text: `*Plan* · ${done}/${entries.length}` }] },
@@ -393,6 +395,16 @@ function renderPlan(entries: PlanEntry[]): { text: string; blocks: unknown[] } {
       { type: 'divider' }
     ]
   }
+}
+
+/** The plan as canvas markdown: a checklist, the step in progress in bold. Canvases nest no lists inside numbered ones. */
+export function planCanvasMarkdown(entries: PlanEntry[]): string {
+  const line = (entry: PlanEntry) => {
+    const content = (entry.content ?? '').replace(/\s+/g, ' ').trim()
+    if (entry.status === 'completed') return `- [x] ${content}`
+    return entry.status === 'in_progress' ? `- [ ] **${content}**` : `- [ ] ${content}`
+  }
+  return ['# Plan', '', ...entries.map(line)].join('\n')
 }
 
 /** Render the accumulated reasoning trace (high mode) as one in-place message. Posted as
