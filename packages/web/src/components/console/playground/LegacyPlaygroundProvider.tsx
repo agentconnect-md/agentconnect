@@ -61,6 +61,7 @@ import {
   bindWebchatTurn,
   createWebchatCursor,
   webchatCursorHasGap,
+  WEBCHAT_CONNECT_FAILED,
   type OrderedWebchatCursor,
   type OrderedWebchatResult
 } from '@/lib/webchat-stream'
@@ -2077,7 +2078,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               ? `⚠️ ${conflict}`
               : notYours
                 ? '⚠️ You can’t continue this conversation — it is private to the person who started it, or includes an agent you can’t view.'
-                : '⚠️ Could not reach the agent.'
+                : `⚠️ ${WEBCHAT_CONNECT_FAILED}`
         })
         pendingTurnFrames.current.delete(id)
         dropLanes(id)

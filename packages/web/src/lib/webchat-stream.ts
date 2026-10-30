@@ -26,6 +26,10 @@ export interface OrderedWebchatResult<Output, Done> {
   overflow?: true
 }
 
+// The browser's own socket to the chat server failed to open; the agent may be perfectly healthy.
+export const WEBCHAT_CONNECT_FAILED =
+  'Your browser couldn’t connect to the chat server — check your network connection and try again.'
+
 const MAX_PENDING_OUTPUTS = 512
 
 export function createWebchatCursor<Output extends OrderedWebchatOutput, Done extends OrderedWebchatDone>(
