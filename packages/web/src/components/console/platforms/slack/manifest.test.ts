@@ -62,6 +62,8 @@ describe('manifest parity with the Control Plane', () => {
       'member_joined_channel',
       'channel_left',
       'group_left',
+      'channel_archive',
+      'group_archive',
       'tokens_revoked'
     ])
   })

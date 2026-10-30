@@ -571,6 +571,10 @@ export class VirtualSlackConnection implements PlatformConnection {
     this.unmodelled('code channels')
   }
 
+  async closeCodeSession(): Promise<boolean> {
+    this.unmodelled('code channels')
+  }
+
   async searchPublicMessages(): Promise<never> {
     this.unmodelled('workspace searches')
   }

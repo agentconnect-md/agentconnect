@@ -64,6 +64,9 @@ export const SLACK_BOT_EVENTS = [
   'member_joined_channel',
   'channel_left',
   'group_left',
+  // A person archiving a code channel ends its session.
+  'channel_archive',
+  'group_archive',
   'tokens_revoked'
 ] as const
 

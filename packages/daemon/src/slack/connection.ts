@@ -1291,6 +1291,12 @@ export class SlackConnection implements PlatformConnection {
       if (!ev.channel) return
       await this.agentSessionStopped(ev.channel, ev.thread_ts ?? ev.channel, ev.user)
     })
+    // Archiving a code channel stops every session sharing it.
+    for (const type of ['channel_archive', 'group_archive'] as const)
+      this.app.event(type, async ({ event }) => {
+        const ev = event as { channel?: string; user?: string }
+        if (ev.channel) await this.agentSessionStopped(ev.channel, ev.channel, ev.user, true)
+      })
     // The bot joining (its own member_joined_channel) or leaving (channel_left / group_left) re-lists membership.
     this.app.event('member_joined_channel', async ({ event, body }) => {
       const ev = event as { user?: string; channel?: string; inviter?: string }
@@ -3383,23 +3389,14 @@ export class SlackConnection implements PlatformConnection {
     )
   }
 
-  /** The native Stop. Socket arm — the daemon holding this socket owns every turn the bot runs,
-   *  so the stop targets the turn the user is looking at: the slot's displayed owner (the last
-   *  `processing` writer), falling back to the thread's newest addressable session. Settlement
-   *  is the daemon's: a surviving sibling's `processing` takes the row over (Slack resolves the
-   *  transient "Stopping…" into it), and only an empty thread transitions to `active` — Slack
-   *  leaves the session in `processing` on its own.
-   *  Relay-forwarded arm (send-only): the same event reaches EVERY participant daemon and
-   *  per-daemon survivor settlement could disagree — one daemon's `active` racing another's
-   *  `processing` re-assert for Slack's one global slot. Until displayed ownership has a
-   *  cross-daemon authority, this arm keeps the globally consistent all-stop: every local turn
-   *  cancels and every daemon's final write is `active`.
-   *  Both arms also stop the delegated tasks holding the thread's indicator, so one Stop ends all its work. */
-  async agentSessionStopped(channel: string, threadTs: string, userId?: string): Promise<void> {
+  // Native Stop targets the displayed socket owner; forwarded stops and archives cancel every local session and task.
+  async agentSessionStopped(channel: string, threadTs: string, userId?: string, allSessions = false): Promise<void> {
     this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
+    // The channel coordinate names a session only in a code channel; an archive of a channel known not to be one is ignored.
+    if (threadTs === channel && (await this.codeChannel(channel).catch(() => undefined))?.code === false) return
     const cancel = (sessionKey: string) =>
       this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
-    if (this.deps.sendOnly) {
+    if (this.deps.sendOnly || allSessions) {
       const sessionKeys = (await this.deps.onThreadSessions?.({ channel, thread: threadTs })) ?? []
       const tasks = this.deps.onStopThreadTasks?.({ channel, thread: threadTs }) ?? []
       for (const sessionKey of new Set([...sessionKeys, ...tasks])) cancel(sessionKey)
@@ -3411,6 +3408,11 @@ export class SlackConnection implements PlatformConnection {
     const tasks = this.deps.onStopThreadTasks?.({ channel, thread: threadTs }) ?? []
     for (const sessionKey of new Set([...(target ? [target] : []), ...tasks])) cancel(sessionKey)
     this.deps.onSlotSettle?.({ channel, thread: threadTs, ...(target ? { exclude: target } : {}) })
+  }
+
+  /** Mark a code channel's session Done (`closed`) before the channel is archived. */
+  async closeCodeSession(channel: string): Promise<boolean> {
+    return this.queue.enqueue(() => this.setSessionLifecycle(channel, channel, 'closed'))
   }
 
   // The lifecycle half of setStatus. Posting a message does NOT end the loading UX — only `active` does.
