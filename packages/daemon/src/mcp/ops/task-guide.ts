@@ -51,6 +51,8 @@ export const DELEGATE_TASK_GUIDE: TaskActionGuide = {
       'and `task_limit` (too many tasks running at once; a finished task holds no slot).',
     'The result carries `taskId`, the handle messageTask, viewSessionStatus and stopTask take; listTasks shows ' +
       'every task of this session with it. It is not a message id for replyToSession or a session id for callAgent.',
+    'The task keeps its own summary of its scope, status and next step, which listTasks shows with when it was ' +
+      'written; until its first one, listTasks shows the start of your message.',
     'To work visibly as yourself in a channel instead, use callAgent with your own id and `channel`: that is a ' +
       'conversation, not a task.'
   ],

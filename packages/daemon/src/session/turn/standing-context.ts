@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { MEMORY_FORMAT_GUIDANCE } from '../../memory/frontmatter.js'
 import { MAX_INDEX_INJECT_BYTES } from '../../memory/store.js'
 import { NO_RESPONSE_RULE } from '../no-response.js'
-import { isDelegationCoordinate } from '../subsession-coordinate.js'
+import { isDelegationCoordinate, keepsTaskSummaryAt } from '../subsession-coordinate.js'
+import { TASK_SUMMARY_MAX_CHARS } from '../../store/assistant-subsessions.js'
 import type { ReceivedSessionMessage } from '../../store/session-messages.js'
 
 // Opening lines of the inlined agent-meta block (`# Agent\n- Name: …`). The standing
@@ -354,8 +355,17 @@ const COLLAB_AFTER_SELF =
 /** The collaboration guidance, the same for every agent. */
 export const COLLAB_APPEND = COLLAB_BEFORE_SELF + COLLAB_SELF_DELEGATION + COLLAB_AFTER_SELF
 
+// auto-session-mode.md §6.7: the parts a task's summary keeps, which its owning session reads in listTasks.
+export const TASK_SUMMARY_REQUEST =
+  `# Your task summary\n` +
+  `Keep a summary of this task with \`updateTask\`, at most ${TASK_SUMMARY_MAX_CHARS} characters in three parts: its scope (what this ` +
+  `task is about), its status (in progress, waiting on someone, done or blocked), and its next step and open ` +
+  `questions. The session that started this task reads it in listTasks to see how the work stands and what to send ` +
+  `you next. Write the first one as soon as you know the scope, and update it in any turn where the scope or status ` +
+  `changes. \`title\` renames the task, and changes only together with a summary.`
+
 // send-message-guide.md §8.3: a task messages its owning session any time, and the daemon reports each round's end.
-export function buildTaskReportingAppend(ownerSessionId: string | null | undefined): string {
+export function buildTaskReportingAppend(ownerSessionId: string | null | undefined, summary = false): string {
   if (!ownerSessionId) return ''
   return (
     `# Reporting back to the session that started this task\n` +
@@ -366,7 +376,8 @@ export function buildTaskReportingAppend(ownerSessionId: string | null | undefin
     `work. Send your result that way before you finish, saying whether you succeeded and what the result was (on ` +
     `failure, what went wrong). When this round of work ends, the daemon tells that session automatically and ` +
     `forwards your final response, so end with one short line rather than repeating the result. If you asked a ` +
-    `question, end your turn; the answer arrives as a new message.`
+    `question, end your turn; the answer arrives as a new message.` +
+    (summary ? `\n\n${TASK_SUMMARY_REQUEST}` : '')
   )
 }
 
@@ -408,7 +419,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
   const taskReportingAppend = isDelegationCoordinate(input.thread)
-    ? buildTaskReportingAppend(input.originSessionId)
+    ? buildTaskReportingAppend(input.originSessionId, keepsTaskSummaryAt(input.thread))
     : ''
   const assemble = (meta: string) => {
     const resume = [

@@ -380,8 +380,24 @@ describe('the task model: title, summary and attached threads (auto-session-mode
     await expect(index.setSummary(a, childKey(a, '1'), { summary: 'x'.repeat(501), now: 5_000 })).rejects.toThrow(
       /at most 500/
     )
+    // The summary replaces the opening message's start, which is kept beside it.
+    expect(await index.get(a, childKey(a, '1'))).not.toHaveProperty('background')
     expect(await index.setSummary(a, childKey(a, 'missing'), { summary: 'x', now: 5_000 })).toBe(false)
     expect(await index.countTurn(a, childKey(a, 'missing'))).toBeUndefined()
+  })
+
+  it('keeps the start of the message a task opened with, cut to a summary’s length', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    await index.open({ ...row(a, '1'), background: '  write the release notes\n' })
+    await index.openWithinLimit({ ...row(a, '2'), background: 'é'.repeat(600) }, { limit: 3, startedSince: 0 })
+    await index.open({ ...row(a, '3'), background: '   ' })
+    expect(await index.get(a, childKey(a, '1'))).toMatchObject({ background: 'write the release notes' })
+    const cut = (await index.get(a, childKey(a, '2')))!.background!
+    expect([...cut]).toHaveLength(500)
+    expect(cut.endsWith('é…')).toBe(true)
+    expect(await index.get(a, childKey(a, '3'))).not.toHaveProperty('background')
   })
 
   it('attaches a thread to one task only, finds the task by its thread, and releases them', async () => {
@@ -484,7 +500,7 @@ describe('the task model: title, summary and attached threads (auto-session-mode
   })
 })
 
-describe.skipIf(usingPostgresStore())('the v70 → v71 task model on SQLite', () => {
+describe.skipIf(usingPostgresStore())('the v70 → v72 task model on SQLite', () => {
   it('adds the columns and the thread table, titling each task from its session', async () => {
     const path = tempStorePath('ac-assistant-v70-')
     await (await LocalStore.open(path)).close()
@@ -495,6 +511,7 @@ describe.skipIf(usingPostgresStore())('the v70 → v71 task model on SQLite', ()
       ALTER TABLE assistant_subsession DROP COLUMN summary;
       ALTER TABLE assistant_subsession DROP COLUMN summaryUpdatedAt;
       ALTER TABLE assistant_subsession DROP COLUMN turnsSinceSummary;
+      ALTER TABLE assistant_subsession DROP COLUMN background;
       PRAGMA user_version = 70`)
     const insert = old.prepare(
       `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
@@ -516,6 +533,8 @@ describe.skipIf(usingPostgresStore())('the v70 → v71 task model on SQLite', ()
       expect(await index.get(a, childKey(a, 'untitled'))).not.toHaveProperty('title')
       expect(await index.attachThread({ ...threadAt(a, 'titled'), now: 2_000 })).toBe(true)
       expect(await index.setSummary(a, childKey(a, 'untitled'), { summary: 'Done.', now: 2_000 })).toBe(true)
+      await index.open({ ...row(a, 'new'), background: 'sort the backlog' })
+      expect(await index.get(a, childKey(a, 'new'))).toMatchObject({ background: 'sort the backlog' })
     } finally {
       await upgraded.close()
     }
@@ -534,7 +553,7 @@ describe.skipIf(usingPostgresStore())('the v70 → v71 task model on SQLite', ()
   })
 })
 
-describe.skipIf(!usingPostgresStore())('the v70 → v71 task model on PostgreSQL', () => {
+describe.skipIf(!usingPostgresStore())('the v70 → v72 task model on PostgreSQL', () => {
   it('adds the columns and the thread table, titling each task from its session', async () => {
     const databaseUrl = process.env.DATA_PLANE_TEST_DATABASE_URL!
     const schema = `mig_${randomUUID().replace(/-/g, '')}`
@@ -551,7 +570,7 @@ describe.skipIf(!usingPostgresStore())('the v70 → v71 task model on PostgreSQL
       await admin.query(`SET search_path TO ${schema}`)
       await admin.query('DROP TABLE assistant_subsession_thread')
       await admin.query(
-        'ALTER TABLE assistant_subsession DROP COLUMN title, DROP COLUMN summary, DROP COLUMN summaryUpdatedAt, DROP COLUMN turnsSinceSummary'
+        'ALTER TABLE assistant_subsession DROP COLUMN title, DROP COLUMN summary, DROP COLUMN summaryUpdatedAt, DROP COLUMN turnsSinceSummary, DROP COLUMN background'
       )
       await admin.query(
         `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
@@ -582,6 +601,14 @@ describe.skipIf(!usingPostgresStore())('the v70 → v71 task model on PostgreSQL
           })
         ).toBe(true)
         expect(await index.reportsRound(a, childKey(a, '1'), 2)).toBe(false)
+        await index.open({
+          agentId: a,
+          childSessionKey: childKey(a, '2'),
+          parentSessionId: 'sid-parent-1',
+          parentSessionKey: 'parent',
+          background: 'sort the backlog'
+        })
+        expect(await index.get(a, childKey(a, '2'))).toMatchObject({ background: 'sort the backlog' })
       } finally {
         await upgraded.close()
       }

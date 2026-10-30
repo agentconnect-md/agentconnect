@@ -28,6 +28,8 @@ export interface AssistantSubsession {
   replyThread?: string
   /** Its name in the console and in `listTasks` (auto-session-mode.md §5.1). */
   title?: string
+  /** The start of the message it was opened with, which `listTasks` shows until it writes a summary (§6.7). */
+  background?: string
   /** The task's own account of its scope, status and next step (auto-session-mode.md §6.7). */
   summary?: string
   summaryUpdatedAt?: number
@@ -88,6 +90,7 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         round INTEGER NOT NULL DEFAULT 1,
         replyThread TEXT,
         title TEXT,
+        background TEXT,
         summary TEXT,
         summaryUpdatedAt INTEGER,
         turnsSinceSummary INTEGER NOT NULL DEFAULT 0,
@@ -152,6 +155,7 @@ function subsessionOf(row: Row): AssistantSubsession {
     ...(Number(row.round ?? 1) > 1 ? { round: Number(row.round) } : {}),
     ...(row.replyThread != null ? { replyThread: String(row.replyThread) } : {}),
     ...(row.title != null ? { title: String(row.title) } : {}),
+    ...(row.background != null ? { background: String(row.background) } : {}),
     ...(row.summary != null ? { summary: String(row.summary) } : {}),
     ...(row.summaryUpdatedAt != null ? { summaryUpdatedAt: Number(row.summaryUpdatedAt) } : {}),
     ...(Number(row.turnsSinceSummary ?? 0) > 0 ? { turnsSinceSummary: Number(row.turnsSinceSummary) } : {})
@@ -173,6 +177,15 @@ function threadOf(row: Row): AssistantSubsessionThread {
 
 /** A task's summary is at most this long (auto-session-mode.md §6.7). */
 export const TASK_SUMMARY_MAX_CHARS = 500
+
+// The opening message's start, cut to a summary's length, since it stands in for one until the task writes its own.
+const backgroundOf = (text: string | undefined): string | null => {
+  const chars = [...(text ?? '').trim()]
+  if (chars.length === 0) return null
+  return chars.length > TASK_SUMMARY_MAX_CHARS
+    ? `${chars.slice(0, TASK_SUMMARY_MAX_CHARS - 1).join('')}…`
+    : chars.join('')
+}
 
 // A guard on one round, when the caller names it.
 const inRound = (round: number | undefined) => (round === undefined ? '' : ' AND round = ?')
@@ -197,8 +210,8 @@ export class AssistantSubsessionIndex {
   async open(input: OpenInput): Promise<boolean> {
     const { changes } = await this.db.query(
       `INSERT OR IGNORE INTO assistant_subsession
-         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread, title)
-       VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`,
+         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread, title, background)
+       VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
       [
         input.agentId,
         input.childSessionKey,
@@ -206,7 +219,8 @@ export class AssistantSubsessionIndex {
         input.parentSessionKey,
         input.now ?? Date.now(),
         input.replyThread ?? null,
-        input.title ?? null
+        input.title ?? null,
+        backgroundOf(input.background)
       ]
     )
     return changes > 0
@@ -246,9 +260,9 @@ export class AssistantSubsessionIndex {
   ): Promise<boolean> {
     const { changes } = await db.query(
       `INSERT OR IGNORE INTO assistant_subsession
-         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread, title)
+         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread, title, background)
        SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER), CAST(? AS TEXT),
-              CAST(? AS TEXT)
+              CAST(? AS TEXT), CAST(? AS TEXT)
         WHERE ${RUNNING_DELEGATIONS} < ?`,
       [
         input.agentId,
@@ -258,6 +272,7 @@ export class AssistantSubsessionIndex {
         input.now ?? Date.now(),
         input.replyThread ?? null,
         input.title ?? null,
+        backgroundOf(input.background),
         input.agentId,
         cap.startedSince,
         cap.limit

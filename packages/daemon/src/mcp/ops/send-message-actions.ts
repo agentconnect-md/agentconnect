@@ -48,7 +48,7 @@ const action = <A extends SendMessageAction>(name: A) => z.literal(name, `argume
 
 /** A task's title is one line of at most this many characters (auto-session-mode.md §5.1). */
 export const TASK_TITLE_MAX_CHARS = 80
-const titleField = z
+export const taskTitleField = z
   .string('argument title must be a string')
   .transform((title) => title.replace(/\s+/g, ' ').trim())
   .pipe(
@@ -71,7 +71,7 @@ export const SEND_MESSAGE_ACTION_SCHEMAS: Record<SendMessageAction, ZodType> = {
     sessionId: requiredString('sessionId').optional(),
     message: messageField
   }),
-  delegateTask: z.strictObject({ action: action('delegateTask'), title: titleField, message: messageField }),
+  delegateTask: z.strictObject({ action: action('delegateTask'), title: taskTitleField, message: messageField }),
   messageTask: z.strictObject({
     action: action('messageTask'),
     taskId: requiredString('taskId'),

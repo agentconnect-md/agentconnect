@@ -1329,7 +1329,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 71
+export const SCHEMA_VERSION = 72
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2077,7 +2077,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v70 records when retention reclaimed a finished session's workspace while keeping its row, so a pass does not judge it again.
   async (db, store) => await addColumn(db, store.postgres, 'sessions', 'workspaceReclaimedAt', 'INTEGER'),
   // v71 gives tasks a title, a summary and attached threads (auto-session-mode.md §6.1).
-  async (db, store) => await migrateTaskModel(db, store.postgres)
+  async (db, store) => await migrateTaskModel(db, store.postgres),
+  // v72 keeps the start of a task's opening message, which listTasks shows until it writes a summary (auto-session-mode.md §6.7).
+  async (db, store) => await addColumn(db, store.postgres, 'assistant_subsession', 'background', 'TEXT')
 ]
 
 /** Tasks gain a title, taken from their session's first-message title, a summary and the threads attached to them. */

@@ -1567,6 +1567,7 @@ export class CollabCoordinator {
           parentSessionKey: callerKey,
           now,
           ...(subsessionTitle !== undefined ? { title: subsessionTitle } : {}),
+          background: req.text,
           // Its round's report replies where the delegating turn did.
           ...replyThreadOf(this.host.activeTurnThread?.(callerKey))
         },

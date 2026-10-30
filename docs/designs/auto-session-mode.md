@@ -3,7 +3,9 @@
 > Status: Design. The coordinator's prompt and tool surface are validated in the local runtime
 > matrix (§12). The task index of §6.1, the task action shapes of §5.1 with `messageId` refused,
 > two-level nesting (§6.3) and the threaded rules of §6.2 that key on an attached thread are
-> implemented; `stopTask` stays a tool of its own with the shape of §5.1. Nothing else is.
+> implemented; `stopTask` stays a tool of its own with the shape of §5.1. `listTasks` (§5.2) and
+> `updateTask` (§5.3) with the summary and its reminder (§6.7) are implemented; the cap of 20
+> threaded tasks waits for the coordinator. Nothing else is.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).

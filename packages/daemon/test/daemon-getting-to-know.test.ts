@@ -241,7 +241,7 @@ describe('a getting-to-know task someone asks for', () => {
     ])
     const listed = (await executeTool(placeCtx(place), 'listTasks', {}, deps)) as any
     expect(listed.tasks).toEqual([
-      expect.objectContaining({ kind: 'getting to know', state: 'done', label: 'Getting to know fake' })
+      expect.objectContaining({ kind: 'getting to know', state: 'done', title: 'Getting to know fake' })
     ])
     const messaged = await d.collab.continueSubsession({
       callerAgentId: 'bot-a',

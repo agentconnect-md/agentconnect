@@ -90,3 +90,8 @@ export function isSubsessionKey(key: string | null | undefined): boolean {
 export function mayOpenTasksAt(thread: string | null | undefined): boolean {
   return !isSubsessionCoordinate(thread) || (isDelegationCoordinate(thread) && !isResearchCoordinate(thread))
 }
+
+/** Whether a session on this coordinate is a task that keeps its own summary (auto-session-mode.md §6.7): a delegated task's, never research's. */
+export function keepsTaskSummaryAt(thread: string | null | undefined): boolean {
+  return isDelegationCoordinate(thread) && !isResearchCoordinate(thread)
+}

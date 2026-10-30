@@ -4,6 +4,7 @@ import {
   isCheckCoordinate,
   isResearchCoordinate,
   isSubsessionCoordinate,
+  keepsTaskSummaryAt,
   mayOpenTasksAt
 } from './subsession-coordinate.js'
 import { researchRunningLine } from '../assistant/research.js'
@@ -54,7 +55,12 @@ import { openRuntimeSession } from './turn/runtime-session.js'
 import { toolDefinitionsBlock, toolDigests, type SessionToolContext } from './turn/tool-context.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
-import { NO_FOLLOW_UPS, runningSubsessionsBlock, standingSummaryFor } from '../assistant/standing-summary.js'
+import {
+  NO_FOLLOW_UPS,
+  runningSubsessionsBlock,
+  standingSummaryFor,
+  taskSummaryReminder
+} from '../assistant/standing-summary.js'
 import { renderLocalNow } from './local-time.js'
 import { knownTimeZone, TIME_ZONE_LOOKUP_WAIT_MS, within } from '../messages/time-zone.js'
 import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
@@ -1076,6 +1082,11 @@ export class SessionManager {
       ).catch(() => undefined)
       if (running) this.runningSubsessionsShown.set(key, running.shown)
       if (running?.text) promptPrelude.push({ type: 'text', text: running.text })
+    }
+    // A task counts its turns and is reminded of a missing or stale summary (auto-session-mode.md §6.7); a failed read skips it.
+    if (keepsTaskSummaryAt(thread)) {
+      const due = await taskSummaryReminder(this.deps.store.assistantSubsessions, agentId, key).catch(() => undefined)
+      if (due) promptPrelude.push({ type: 'text', text: due })
     }
     // send-message-guide.md §9.5: the messages this session may still answer, refreshed like the running tasks.
     const messages = await this.sessionMessagesBlock(key, options.messageId)
