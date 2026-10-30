@@ -294,7 +294,8 @@ describe('an owning session’s running tasks in the standing summary', () => {
       hasSession: () => true,
       usesMetaSystemPrompt: () => false
     } as any
-    const manager = () => new SessionManager({ store: s, hostFor: async () => host, agentById: () => agent, memory })
+    const manager = (extra: { tasksCoordinatorOnly?: () => boolean } = {}) =>
+      new SessionManager({ store: s, hostFor: async () => host, agentById: () => agent, memory, ...extra })
     /** A task started from `parent`, its session titled by its task; `legacy` titles it as a released daemon did, by its wrapped message. */
     const delegate = async (parent: string, id: string, now: number, task?: string, legacy = false) => {
       const child = sessionKey('slack', 'D0ALICE', `subsession:${id}`, 'bot-a')
@@ -397,6 +398,27 @@ describe('an owning session’s running tasks in the standing summary', () => {
       await store?.close()
       store = undefined
     }
+  })
+
+  it('is shown only to the coordinator, without stopTask, once only it delegates (auto-session-mode.md §5.1)', async () => {
+    const { manager, delegate } = await harness(ON)
+    const sm = manager({ tasksCoordinatorOnly: () => true })
+    const reminderOf = (blocks: { type: string; text?: string }[]) =>
+      blocks.find((b) => /[Tt]asks? this session delegated/.test(b.text ?? ''))?.text
+    // A task this DM delegated before runs to its end, and the DM is no longer reminded of it.
+    await sm.handle('bot-a', dm('200.1'), undefined, INT)
+    await delegate(DM_KEY, 'd-1', 1_000, 'write the release notes')
+    expect(reminderOf((await sm.handle('bot-a', dm('200.2'), undefined, INT)).blocks)).toBeUndefined()
+    const coordinator = 'append:coordinator-1'
+    const at = (ts: string) => dm(ts, { sessionThread: coordinator })
+    await sm.handle('bot-a', at('200.3'), undefined, INT)
+    const child = await delegate(sessionKey('slack', 'D0ALICE', coordinator, 'bot-a'), 'd-2', 2_000, 'fix the build')
+    expect(reminderOf((await sm.handle('bot-a', at('200.4'), undefined, INT)).blocks)).toBe(
+      `<system-reminder>\n${HEAD.replace(
+        '; you may stop one with stopTask and its taskId once it is no longer needed',
+        ''
+      )}\n- ${child} — fix the build\n</system-reminder>`
+    )
   })
 
   it('says the list emptied on a refresh too, and only once', async () => {

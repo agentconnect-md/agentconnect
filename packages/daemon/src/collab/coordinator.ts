@@ -4,6 +4,7 @@ import { deriveTitle } from '../session/derive-title.js'
 import { subsessionLabel } from '../permissions/subsession-approval.js'
 import {
   SUBSESSION_COORDINATE_PREFIX,
+  isDelegatedTaskKey,
   isDelegationCoordinate,
   isResearchCoordinate,
   isSubsessionCoordinate,
@@ -79,6 +80,11 @@ const TASK_NESTING_MESSAGE =
   'This session cannot start tasks: tasks go two levels deep at most, and this is a task another task started, a ' +
   'follow-up’s check or an approved proposal. Do this work here, or report back to the session that started you ' +
   'and let it decide.'
+/** auto-session-mode.md §5.1: once only the coordinator delegates, any other session's delegation or message to a delegated task is refused. */
+export const TASKS_COORDINATOR_ONLY = 'tasks_coordinator_only'
+const TASKS_COORDINATOR_ONLY_MESSAGE =
+  'Only an Auto conversation’s coordinator delegates tasks and gives them more work, so nothing was sent. Do this ' +
+  'work here; a task this session delegated before finishes on its own and reports here.'
 /** assistant-mode.md §5.6: the refusal once `maxConcurrentSubsessions` tasks are running; nothing is queued yet. */
 export const TASK_LIMIT = 'task_limit'
 export const DEFAULT_MAX_CONCURRENT_SUBSESSIONS = 3
@@ -91,6 +97,9 @@ export const TASK_NOT_FOUND = 'task_not_found'
 export const TASK_NOT_FOUND_MESSAGE =
   'This session started no task with that id. Nothing was sent. Pass the `taskId` a delegateTask call in this ' +
   'session returned (listTasks shows them), or use delegateTask to delegate a new task.'
+const ASSISTANT_TASK_NOT_FOUND_MESSAGE =
+  'This session has no follow-up or organization research with that id. Nothing was sent. Pass the `taskId` ' +
+  'listTasks shows.'
 /** The previous round's end report is still on its way to the owning session, so no new round opens yet. */
 export const TASK_REPORTING = 'task_reporting'
 /** send-message-guide.md §8.5: a settled round's late reply is refused, never a second report. */
@@ -358,6 +367,8 @@ export interface CollabCoreHost {
   activeTurnThread?(sessionKey: string): string | undefined
   /** assistant-mode.md §5.12: a message to a follow-up from its place's current long session; anything else names nothing. */
   messageFollowUp?(req: ContinueSubsessionReq, taskKey: string, callerKey: string): Promise<MessageAgentResult>
+  /** auto-session-mode.md §5.1: only a coordinator delegates, and it never self-delegates through a wake; absent ⇒ every session may. */
+  tasksCoordinatorOnly?(): boolean
   /** Background SDK tasks a child may still legitimately be waiting on. */
   sdkLease(): ReadonlyMap<string, { tasks: ReadonlyMap<string, unknown>; armedWakes: number }>
   /** Resolves once no interrupt is still unwinding the agent's turns, so a fresh delivery is admitted again. */
@@ -1236,6 +1247,7 @@ export class CollabCoordinator {
       return 'invalid_target'
     }
     // A channel-root self wake preflights before its post exists; messageAgent checks the post and its pairing id.
+    if (this.selfDelegation(req) && this.host.tasksCoordinatorOnly?.() === true) return TASKS_COORDINATOR_ONLY
     if (this.selfDelegation(req) && !mayOpenTasksAt(req.callerThread)) return TASK_NESTING
     const callerKey = sessionKey(
       platform,
@@ -1331,6 +1343,16 @@ export class CollabCoordinator {
         delivered: false,
         targetSession: sessionKey(platform, req.channel, fallbackThread, req.toAgentId),
         reason: 'self'
+      })
+    }
+    // auto-session-mode.md §5.1: the coordinator opens its tasks itself, so no session delegates through a wake.
+    if (selfDelegation && this.host.tasksCoordinatorOnly?.() === true) {
+      const fallbackThread = req.thread ?? `agentcall:${req.channel}:subsession`
+      return observe('collaboration.delivery.rejected', {
+        delivered: false,
+        targetSession: sessionKey(platform, req.channel, fallbackThread, req.toAgentId),
+        reason: TASKS_COORDINATOR_ONLY,
+        message: TASKS_COORDINATOR_ONLY_MESSAGE
       })
     }
     // auto-session-mode.md §6.3: two levels at most, so only a session that is no task's task opens one.
@@ -2302,7 +2324,11 @@ export class CollabCoordinator {
       reason,
       message
     })
-    const notFound = () => refuse(TASK_NOT_FOUND, TASK_NOT_FOUND_MESSAGE)
+    const notFound = () =>
+      refuse(
+        TASK_NOT_FOUND,
+        req.assistantTasksOnly === true ? ASSISTANT_TASK_NOT_FOUND_MESSAGE : TASK_NOT_FOUND_MESSAGE
+      )
     // A task messages the tasks it opened (auto-session-mode.md §6.3); a check or an approved proposal opened none.
     if (!mayOpenTasksAt(req.callerThread)) return notFound()
     // A follow-up is owned by its place, which the host judges (assistant-mode.md §5.12).
@@ -2310,6 +2336,9 @@ export class CollabCoordinator {
     const followUp = indexed?.kind === 'follow-up' && this.host.messageFollowUp ? indexed : undefined
     const owned = followUp ? undefined : await this.ownedSubsession(agentId, req.sessionId, callerKey)
     if (!followUp && !owned) return notFound()
+    // auto-session-mode.md §5.1: a session that delegates no task still messages its research, never a delegated task.
+    if (owned && req.assistantTasksOnly === true && isDelegatedTaskKey(owned.row.childSessionKey))
+      return refuse(TASKS_COORDINATOR_ONLY, TASKS_COORDINATOR_ONLY_MESSAGE)
     const key = followUp?.childSessionKey ?? owned!.row.childSessionKey
     const index = this.host.store().assistantSubsessions
     const submissionId = req.submissionId ?? randomUUID()

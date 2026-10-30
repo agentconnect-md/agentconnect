@@ -2,8 +2,9 @@
 
 > Status: Design. The coordinator's prompt and tool surface are validated in the local runtime
 > matrix (§12). The task index of §6.1, the task action shapes of §5.1 with `messageId` refused,
-> two-level nesting (§6.3) and the threaded rules of §6.2 that key on an attached thread are
-> implemented; `stopTask` stays a tool of its own with the shape of §5.1. `listTasks` (§5.2) and
+> the two-level nesting a daemon keeps with its Auto switch off (§6.3) and the threaded rules of
+> §6.2 that key on an attached thread are implemented; `stopTask` stays a tool of its own with the
+> shape of §5.1. `listTasks` (§5.2) and
 > `updateTask` (§5.3) with the summary and its reminder (§6.7) are implemented; `listTasks` lists the
 > 20 most recently active. The `auto` value (§3.1) exists on the wire and in the
 > Control Plane, behind the `session-mode-auto-v1` capability, which a daemon advertises only with
@@ -44,7 +45,10 @@
 > the legacy protocol, and the Control Plane keeps it its owner's with one agent; New session stays an
 > ordinary webchat session. A threaded task's visibility is locked while a coordinator owns it: its
 > daemon reports the owner to the Control Plane each time it changes, and the coordinator's page lists
-> its threaded tasks among its related sessions (§6.2).
+> its threaded tasks among its related sessions (§6.2). With the switch on, only the coordinator
+> delegates (§5.1): no other session is offered `delegateTask`, a task opens none (§6.3), and only
+> an assistant-mode place's own session keeps `messageTask`, `listTasks` and `stopTask`, for its
+> follow-ups, research and approved proposals; the daemon refuses the rest.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -65,14 +69,14 @@ Single session keeps its current meaning: root and thread messages all join one 
 
 ## 2. Vocabulary
 
-| Term                | Meaning                                                                                                                                 |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Auto                | The session mode that turns the coordinator on                                                                                          |
-| Coordinator session | One long session per agent per conversation. It receives root messages and messages in unowned threads, and only decides where they go  |
-| Task                | A child session a session opens with `delegateTask`, with a title and a link to its parent. It replaces both topics and delegated tasks |
-| Threaded task       | A task with one or more platform threads attached; people in those threads talk to it directly                                          |
-| Background task     | A task with no thread; only its parent talks to it, and it reports to the parent at the end of each round                               |
-| Owned thread        | A thread attached to a task that still exists                                                                                           |
+| Term                | Meaning                                                                                                                                  |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Auto                | The session mode that turns the coordinator on                                                                                           |
+| Coordinator session | One long session per agent per conversation. It receives root messages and messages in unowned threads, and only decides where they go   |
+| Task                | A child session the coordinator opens with `delegateTask`, with a title and a link to its parent. It replaces topics and delegated tasks |
+| Threaded task       | A task with one or more platform threads attached; people in those threads talk to it directly                                           |
+| Background task     | A task with no thread; only its parent talks to it, and it reports to the parent at the end of each round                                |
+| Owned thread        | A thread attached to a task that still exists                                                                                            |
 
 Assistant mode's follow-ups and approved proposals stay the other kinds of task, unchanged.
 
@@ -232,23 +236,41 @@ The existing names stay, with `messageId` added (`SEND_MESSAGE_ACTIONS` in
 - `delegateTask {title, message?, messageId?}`: `message` or `messageId` is required.
   - With `messageId`: a threaded task. It receives the original message as it arrived (sender, text,
     attachments); `message` is the coordinator's background.
-  - Without: a background task, as today.
+  - Without: a background task, as today. The coordinator's tool always names a message for now
+    (§6.6).
   - `title` is required and shown in the console and in `listTasks`.
 - `messageTask {taskId, message?, messageId?}`: with `messageId`, hands that platform message to the
   task and attaches its thread; a background task becomes threaded this way (§6.6).
-- `stopTask {taskId}`: stops a task's current turn, either kind.
+- `stopTask {taskId}`: stops a task's current turn, either kind. The coordinator is not offered it
+  yet; `!stop` in a task's thread stops a threaded task (§8), and the console stops either kind.
 - `replyToMessage {messageId, message}`: the coordinator's own reply, in the message's thread.
 
 `messageId` names a platform message the coordinator received, so calls carrying it, and
-`replyToMessage`, are the coordinator's alone. Every other session (Per thread, Single session, a
-threaded task) opens background tasks only.
+`replyToMessage`, are the coordinator's alone.
+
+Only the coordinator delegates (decided 2026-10-30). No other session is offered `delegateTask`,
+`messageTask`, `listTasks` or `stopTask`, and the daemon refuses them there: Per thread, Single
+session, an ordinary webchat session, and a task of either kind.
+
+- An assistant-mode place's session that is not a coordinator, such as a DM on a platform whose DMs
+  never run Auto or a webchat conversation, keeps `messageTask`, `listTasks` and `stopTask` for what
+  assistant mode gives it: its follow-ups, its organization research and the approved proposals that
+  report to it. A delegated task is not listed there, messaged or stopped.
+- A task a session delegated before this rule runs and reports to that session until it ends. A
+  person stops it from the console. The session is no longer reminded of it.
+- `updateTask` stays a task's own (§5.3). `followUp`, `propose`, research, `callAgent` and
+  `postMessage` are unchanged.
+- The daemon applies the rule with its Auto switch on, which P6 turns on by default. With the switch
+  off, every session keeps the task tools of P1 (§6.3).
 
 ### 5.2 `listTasks`
 
-A tool of its own, not a `sendMessage` action. It lists the caller's tasks, follow-ups and approved
-proposals included, and at most the 20 most recently active threaded tasks. Each entry: id, title,
-whether a thread is attached, thread links, owner, last activity, whether it is running, and the
-task's summary with its update time (§6.7). The coordinator uses it to place a new message and to
+A tool of its own, not a `sendMessage` action, and the coordinator's (§5.1). It lists the caller's
+tasks, follow-ups and approved proposals included, and at most the 20 most recently active threaded
+tasks. An assistant-mode place's session that is not a coordinator lists with it only its
+follow-ups, research and approved proposals. Each entry: id, title, whether a thread is attached,
+thread links, owner, last activity, whether it is running, and the task's summary with its update
+time (§6.7). The coordinator uses it to place a new message and to
 answer "how is that going".
 
 ### 5.3 `updateTask`
@@ -319,9 +341,10 @@ Both kinds inherit the parent's visibility and refuse changes to it.
 
 ### 6.3 Nesting
 
-Two levels at most: a task opened by the coordinator or by any ordinary session may open background
-tasks of its own, and those may not open more. This replaces today's "a task cannot delegate", for
-every agent.
+One level: only the coordinator opens tasks (§5.1), and a task opens none, threaded or background.
+
+A daemon with its Auto switch off keeps the two levels of P1: a task an ordinary session opened may
+open background tasks of its own, and those may not open more.
 
 ### 6.4 Several threads
 
@@ -340,6 +363,9 @@ the coordinator, which may open a task again.
 `messageTask` with a `messageId` on a background task attaches the thread, and from then on the task
 follows the threaded rules: no reports to the parent, outside the concurrency cap. The round running
 when the thread attaches still reports once when it ends.
+
+Since only the coordinator delegates (§5.1) and its `delegateTask` always carries a `messageId`, no
+background task of a coordinator exists to gain a thread until the coordinator may open one.
 
 ### 6.7 The task summary
 

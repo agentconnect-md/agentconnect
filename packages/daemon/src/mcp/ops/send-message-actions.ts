@@ -18,6 +18,8 @@ import {
   type MessagingDeps
 } from './messaging.js'
 import { DELEGATE_TASK_GUIDE_TEXT } from './task-guide.js'
+import { mayOpenTasksAt, type TaskReach } from '../../session/subsession-coordinate.js'
+import { taskReachOf } from './task-reach.js'
 
 /** The operations `sendMessage` performs, one required `action` each (send-message-guide.md §3.1). */
 export const SEND_MESSAGE_ACTIONS = [
@@ -115,10 +117,20 @@ const DELEGATE_TASK_INSTEAD =
   'Retry as:\n  sendMessage {"action":"delegateTask","title":"<a short name for the work>","message":"<the same message>"}' +
   '\ndelegateTask guide:\n' +
   DELEGATE_TASK_GUIDE_TEXT
+/** auto-session-mode.md §5.1: only an Auto conversation's coordinator delegates, so any other session does its work itself. */
+const WORK_HERE =
+  'Only an Auto conversation’s coordinator delegates tasks, so this session does its own work: do it here, and hand ' +
+  'parts you can finish within this turn to your runtime’s own subagent or Task tool'
+const NO_DELEGATION = `action \`delegateTask\` is not available in this session. Nothing was sent and no task was started. ${WORK_HERE}`
+const NO_TASK_MESSAGES =
+  'action `messageTask` is not available in this session, which has no task it can message: only an Auto ' +
+  'conversation’s coordinator delegates tasks and gives them more work. Nothing was sent'
 /** `startTask`, the action's release-candidate name, has no alias: its call fails with the exact `delegateTask` call. */
-const START_TASK_RENAMED =
-  'action `startTask` is now `delegateTask`, which also takes a `title`. Nothing was sent and no task was started. ' +
-  DELEGATE_TASK_INSTEAD
+const START_TASK_RENAMED = (delegates: boolean) =>
+  delegates
+    ? 'action `startTask` is now `delegateTask`, which also takes a `title`. Nothing was sent and no task was started. ' +
+      DELEGATE_TASK_INSTEAD
+    : `action \`startTask\` no longer exists. Nothing was sent and no task was started. ${WORK_HERE}.`
 /** auto-session-mode.md §5.1: `messageId` names a platform message only a coordinator session hands over, so every other session is refused it. */
 const COORDINATOR_MESSAGE_ID = (named: 'delegateTask' | 'messageTask') =>
   guided(
@@ -128,11 +140,16 @@ const COORDINATOR_MESSAGE_ID = (named: 'delegateTask' | 'messageTask') =>
       '. Omit `messageId` and pass what the task needs in `message`',
     named
   )
-const TASK_ID_NEEDED = (unexpected: readonly string[]) =>
-  'action `messageTask` requires `taskId`, the nonempty `taskId` a delegateTask call in this session returned' +
-  (unexpected.length > 0 ? `, and does not accept ${quoted(unexpected)}` : '') +
-  '. Nothing was sent, and a missing, null or empty `taskId` never starts a task. To delegate a new task, ' +
-  DELEGATE_TASK_INSTEAD
+const TASK_ID_NEEDED = (unexpected: readonly string[], delegates: boolean) =>
+  delegates
+    ? 'action `messageTask` requires `taskId`, the nonempty `taskId` a delegateTask call in this session returned' +
+      (unexpected.length > 0 ? `, and does not accept ${quoted(unexpected)}` : '') +
+      '. Nothing was sent, and a missing, null or empty `taskId` never starts a task. To delegate a new task, ' +
+      DELEGATE_TASK_INSTEAD
+    : 'action `messageTask` requires `taskId`, the nonempty `taskId` listTasks shows for a follow-up or your ' +
+      'organization research' +
+      (unexpected.length > 0 ? `, and does not accept ${quoted(unexpected)}` : '') +
+      '. Nothing was sent, and a missing, null or empty `taskId` never starts a task.'
 /** §3.5: a reply names the message it answers, never a session; a missing, empty or session-addressed one is an argument error. */
 const MESSAGE_ID_NEEDED = (unexpected: readonly string[]) =>
   'action `replyToSession` requires `messageId`' +
@@ -160,10 +177,13 @@ const SELF_SESSION =
   'action `callAgent` with `sessionId` reaches another agent’s session, never one of yours. Nothing was sent and no ' +
   'agent was woken. To message a task you delegated, call getToolGuide ' +
   '{"tool":"sendMessage","action":"messageTask"} and retry with action `messageTask` and its `taskId`'
-const SELF_CALL =
-  'action `callAgent` with your own agent id needs `channel`. Work of your own that needs no conversation is a ' +
-  `delegated task. Nothing was sent and no agent was woken. ${DELEGATE_TASK_INSTEAD}\nTo work visibly in a channel ` +
-  'instead, keep callAgent and add `channel`'
+const SELF_CALL = (delegates: boolean) =>
+  delegates
+    ? 'action `callAgent` with your own agent id needs `channel`. Work of your own that needs no conversation is a ' +
+      `delegated task. Nothing was sent and no agent was woken. ${DELEGATE_TASK_INSTEAD}\nTo work visibly in a channel ` +
+      'instead, keep callAgent and add `channel`'
+    : 'action `callAgent` with your own agent id needs `channel`. Nothing was sent and no agent was woken. ' +
+      `${WORK_HERE}. To work visibly in a channel instead, keep callAgent and add \`channel\``
 
 /** The validated action and the target-shaped arguments its existing delivery path takes. */
 export interface ValidatedSendMessage {
@@ -177,12 +197,23 @@ export interface ValidatedSendMessage {
   title?: string
 }
 
-/** Check a `sendMessage` call's action and argument combination before any lookup or effect (send-message-guide.md §3.3). */
-export function validateSendMessageAction(ctx: SessionContext, args: Record<string, unknown>): ValidatedSendMessage {
+/** Whether this session would open tasks but for the rule that only the coordinator delegates (auto-session-mode.md §5.1); a check, an approved proposal or research keeps its own refusals. */
+const onlyCoordinatorDelegates = (ctx: SessionContext, reach: TaskReach): boolean =>
+  reach !== 'delegate' && mayOpenTasksAt(ctx.thread)
+
+/** Check a `sendMessage` call's action and argument combination before any lookup or effect (send-message-guide.md §3.3); `reach` is what the session may do with tasks (auto-session-mode.md §5.1). */
+export function validateSendMessageAction(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  reach: TaskReach = 'delegate'
+): ValidatedSendMessage {
   const named = args.action
+  const delegates = !onlyCoordinatorDelegates(ctx, reach)
   if (!present(named)) throw new ToolArgumentError([MISSING_ACTION])
-  if (named === 'startTask') throw new ToolArgumentError([START_TASK_RENAMED])
+  if (named === 'startTask') throw new ToolArgumentError([START_TASK_RENAMED(delegates)])
   if (!isAction(named)) throw new ToolArgumentError([UNKNOWN_ACTION])
+  if (named === 'delegateTask' && !delegates) throw new ToolArgumentError([NO_DELEGATION])
+  if (named === 'messageTask' && !delegates && reach === 'none') throw new ToolArgumentError([NO_TASK_MESSAGES])
   if ((named === 'delegateTask' || named === 'messageTask') && present(args.messageId))
     throw new ToolArgumentError([COORDINATOR_MESSAGE_ID(named)])
   const spec = ACTION_KEYS[named]
@@ -190,7 +221,7 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
   const unexpected = keys.filter((key) => !spec.accepts.includes(key))
   // §8.1: a missing, null or empty task id is an argument error that names delegateTask, never a start.
   if (named === 'messageTask' && (typeof args.taskId !== 'string' || args.taskId.trim() === ''))
-    throw new ToolArgumentError([TASK_ID_NEEDED(unexpected)])
+    throw new ToolArgumentError([TASK_ID_NEEDED(unexpected, delegates)])
   // §9.4: a reply without a nonempty `messageId`, or addressed by `sessionId`, names nothing to answer.
   if (
     named === 'replyToSession' &&
@@ -244,7 +275,7 @@ export function validateSendMessageAction(ctx: SessionContext, args: Record<stri
   if (named === 'messageTask') return { action: named, delivery: {}, taskId: args.taskId as string }
   if (target?.toAgent === ctx.agentId && typeof args.sessionId === 'string') throw new ToolArgumentError([SELF_SESSION])
   if (target?.toAgent === ctx.agentId && !present(args.channel)) {
-    throw new ToolArgumentError([SELF_CALL])
+    throw new ToolArgumentError([SELF_CALL(delegates)])
   }
   if (named === 'callAgent' && typeof args.sessionId === 'string') {
     const { sessionId, ...call } = rest
@@ -259,8 +290,9 @@ export async function sendMessage(
   args: Record<string, unknown>,
   deps: MessagingDeps
 ): Promise<unknown> {
-  const validated = validateSendMessageAction(ctx, args)
-  if (validated.taskId !== undefined) return await messageTask(ctx, validated.taskId, args, deps)
+  const reach = await taskReachOf(ctx, deps)
+  const validated = validateSendMessageAction(ctx, args, reach)
+  if (validated.taskId !== undefined) return await messageTask(ctx, validated.taskId, args, deps, reach)
   if (validated.peerSessionId !== undefined) return await callPeerSession(ctx, validated.peerSessionId, args, deps)
   return await deliverSendMessage(
     ctx,
@@ -323,7 +355,8 @@ async function messageTask(
   ctx: SessionContext,
   taskId: string,
   args: Record<string, unknown>,
-  deps: MessagingDeps
+  deps: MessagingDeps,
+  reach: TaskReach
 ): Promise<unknown> {
   if (!deps.continueSubsession) throw new Error('sendMessage: messaging a task is not available on this daemon')
   const wake = await deps.continueSubsession({
@@ -334,7 +367,8 @@ async function messageTask(
     callerThread: ctx.thread,
     sessionId: taskId,
     text: parseArgs(messageField, args.message),
-    ...(deps.callId !== undefined ? { submissionId: deps.callId } : {})
+    ...(deps.callId !== undefined ? { submissionId: deps.callId } : {}),
+    ...(onlyCoordinatorDelegates(ctx, reach) ? { assistantTasksOnly: true } : {})
   })
   if (!wake.delivered) return { ok: true, wake }
   if (wake.followUp)

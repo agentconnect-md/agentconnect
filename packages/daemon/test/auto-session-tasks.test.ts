@@ -180,6 +180,10 @@ describe('a threaded task (auto-session-mode.md §6)', () => {
       'stopTask',
       'updateTask'
     ])
+    // §5.1: once only the coordinator delegates, a task keeps its summary and nothing else.
+    expect(stopTaskToolsFor({ ...thread, threadedTask: true, reach: 'none' }).map((tool) => tool.name)).toEqual([
+      'updateTask'
+    ])
     const base = {
       agentName: 'bot-a',
       agentId: 'bot-a',
@@ -209,7 +213,7 @@ describe('a threaded task (auto-session-mode.md §6)', () => {
     await daemon.stop()
   })
 
-  it('opens background tasks of its own, which report to it, not the coordinator, and open none (§6.3)', async () => {
+  it('opens no task of its own, and one it opened before reports to it, not the coordinator (§5.1, §6.3)', async () => {
     const { daemon, d, scope, taskKey, coordinator, coordinatorKey } = await boot()
     const seed = async (key: string, thread: string, id: string) =>
       await d.store.upsertSession({
@@ -241,32 +245,39 @@ describe('a threaded task (auto-session-mode.md §6)', () => {
         return 'acp-1'
       }
     )
-    const delegate = (callerThread: string) =>
-      d.collab.messageAgent({
-        callerAgentId: 'bot-a',
-        platform: 'slack',
-        callerChannel: 'C1',
-        callerThread,
-        callerTransportScope: scope,
-        toAgentId: 'bot-a',
-        text: 'check the Windows leg',
-        title: 'Windows leg',
-        channel: 'C1',
-        thread: '1.1',
-        postless: true
-      })
-    const opened = await delegate('1.1')
-    expect(opened).toMatchObject({ delivered: true, subsession: true })
-    const child = await d.store.assistantSubsessions.get('bot-a', opened.targetSession)
-    expect(child).toMatchObject({ parentSessionKey: taskKey })
-    const childThread = calls[0]!.msg.thread!
-    await seed(opened.targetSession, childThread, 'child')
-    expect(await delegate(childThread)).toMatchObject({ delivered: false, reason: 'task_nesting' })
+    const delegated = await d.collab.messageAgent({
+      callerAgentId: 'bot-a',
+      platform: 'slack',
+      callerChannel: 'C1',
+      callerThread: '1.1',
+      callerTransportScope: scope,
+      toAgentId: 'bot-a',
+      text: 'check the Windows leg',
+      title: 'Windows leg',
+      channel: 'C1',
+      thread: '1.1',
+      postless: true
+    })
+    expect(delegated).toMatchObject({ delivered: false, reason: 'tasks_coordinator_only' })
+    expect(calls).toHaveLength(0)
+
+    // A background task it opened before only the coordinator delegated runs to its end.
+    const childThread = 'subsession:1700000000000'
+    const childKey = sessionKey('slack', 'C1', childThread, 'bot-a', scope)
+    await d.store.assistantSubsessions.open({
+      agentId: 'bot-a',
+      childSessionKey: childKey,
+      parentSessionId: 'sid-task',
+      parentSessionKey: taskKey,
+      title: 'Windows leg',
+      now: Date.now()
+    })
+    await seed(childKey, childThread, 'child')
 
     // Its report reaches the task that opened it, though the conversation's place session is the coordinator.
     await d.store.assistantSubsessions.claimReport(
       'bot-a',
-      opened.targetSession,
+      childKey,
       JSON.stringify({
         text: 'ended',
         hopCount: 0,
@@ -275,7 +286,7 @@ describe('a threaded task (auto-session-mode.md §6)', () => {
     )
     await d.collab.resendSubsessionReports(['bot-a'])
     const report = calls.at(-1)!.msg
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(1)
     expect(report.sessionThread ?? report.thread).toBe('1.1')
     await daemon.stop()
   })

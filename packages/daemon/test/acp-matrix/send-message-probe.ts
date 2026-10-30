@@ -21,6 +21,7 @@ import { TASK_STARTED } from '../../src/mcp/ops/messaging.js'
 import { PEER_SESSION_CALLED, TASK_MESSAGED } from '../../src/mcp/ops/send-message-actions.js'
 import { toolsForIntegrations } from '../../src/mcp/tools.js'
 import { buildStandingContext } from '../../src/session/turn/standing-context.js'
+import type { TaskReach } from '../../src/session/subsession-coordinate.js'
 import type { ToolDescriptor } from '../../src/tool-schema/descriptor.js'
 
 /** Synthetic identities every scenario's standing context and expectations share. */
@@ -56,14 +57,14 @@ const TELEGRAM_INTEGRATION = 'int-telegram-example'
 /** The session platform a scenario runs on: a Slack thread, or a console webchat with no bot of its own. */
 export type ProbePlatform = 'slack' | 'webchat'
 
-/** The real tool list for an agent with Slack and Telegram integrations, in a session on `platform`. */
-export function probeTools(platform: ProbePlatform = 'slack'): ToolDescriptor[] {
+/** The real tool list for an agent with Slack and Telegram integrations, in a session on `platform` with `reach` over tasks. */
+export function probeTools(platform: ProbePlatform = 'slack', reach: TaskReach = 'delegate'): ToolDescriptor[] {
   return toolsForIntegrations(
     [
       IntegrationSchema.parse({ id: SLACK_INTEGRATION, platform: 'slack' }),
       IntegrationSchema.parse({ id: TELEGRAM_INTEGRATION, platform: 'telegram' })
     ],
-    { currentPlatform: platform }
+    { currentPlatform: platform, taskReach: reach }
   )
 }
 
@@ -191,6 +192,8 @@ export function describeOp(op: SemanticOp): string {
 export interface ProbeScope {
   /** The session's platform; absent ⇒ Slack. */
   platform?: ProbePlatform
+  /** What the session may do with tasks (auto-session-mode.md §5.1); absent ⇒ every task action. */
+  reach?: TaskReach
   message?: string
   task?: string
   peerSession?: string
@@ -206,21 +209,22 @@ const PRE_CHECKS: Partial<OpsDeps> = {
 }
 
 /** Deps whose first use ends the call, except the pre-checks, which are own keys so `writeDeps`'s spread keeps them. */
-const EFFECT_BOUNDARY = new Proxy({ ...PRE_CHECKS } as OpsDeps, {
-  get: (target, key) =>
-    key in target
-      ? target[key as keyof OpsDeps]
-      : key === 'canRun' ||
-          key === 'evaluationTool' ||
-          key === 'appTool' ||
-          key === 'computerTool' ||
-          key === 'log' ||
-          key === 'then'
-        ? undefined
-        : () => {
-            throw new ReachedEffect(String(key))
-          }
-})
+const effectBoundary = (reach: TaskReach): OpsDeps =>
+  new Proxy({ ...PRE_CHECKS, taskReach: () => Promise.resolve(reach) } as OpsDeps, {
+    get: (target, key) =>
+      key in target
+        ? target[key as keyof OpsDeps]
+        : key === 'canRun' ||
+            key === 'evaluationTool' ||
+            key === 'appTool' ||
+            key === 'computerTool' ||
+            key === 'log' ||
+            key === 'then'
+          ? undefined
+          : () => {
+              throw new ReachedEffect(String(key))
+            }
+  })
 
 // A handler reached a dependency that `writeDeps`'s spread dropped from the proxy: also the effect boundary.
 const reachedEffect = (error: unknown): boolean =>
@@ -232,10 +236,11 @@ const reachedEffect = (error: unknown): boolean =>
 async function daemonRejection(
   args: Record<string, unknown>,
   tools: ToolDescriptor[],
-  platform: ProbePlatform
+  platform: ProbePlatform,
+  reach: TaskReach
 ): Promise<string | undefined> {
   try {
-    await executeTool(probeContext(tools, platform), 'sendMessage', args, EFFECT_BOUNDARY)
+    await executeTool(probeContext(tools, platform), 'sendMessage', args, effectBoundary(reach))
     return undefined
   } catch (error) {
     if (reachedEffect(error)) return undefined
@@ -257,7 +262,7 @@ export async function validateSendMessage(
   tools: ToolDescriptor[],
   scope: ProbeScope = {}
 ): Promise<string | undefined> {
-  return await daemonRejection(args, tools, scope.platform ?? 'slack')
+  return await daemonRejection(args, tools, scope.platform ?? 'slack', scope.reach ?? 'delegate')
 }
 
 /** A plausible delivery receipt for a validated call; nothing is posted, woken, or injected. */
@@ -434,7 +439,8 @@ async function callTool(
       return {
         result: text(
           await executeTool(probeContext(tools, scope.platform), name, args, {
-            gatewayFor: () => undefined
+            gatewayFor: () => undefined,
+            taskReach: () => Promise.resolve(scope.reach ?? 'delegate')
           } as unknown as OpsDeps)
         )
       }
@@ -447,9 +453,14 @@ async function callTool(
 
 /** The matrix's HTTP MCP fixture serving the real AgentConnect tools, one recorded call log per path. */
 export function sendMessageFixture(tools: ToolDescriptor[]): Promise<SendMessageFixture> {
-  // A webchat session is served the tools the daemon gives one; every other scenario gets `tools`.
+  // A webchat session, or one that delegates no task, is served the tools the daemon gives it; every other scenario gets `tools`.
   const webchatTools = probeTools('webchat')
-  const toolsFor = (scope: ProbeScope) => (scope.platform === 'webchat' ? webchatTools : tools)
+  const toolsFor = (scope: ProbeScope) =>
+    scope.reach !== undefined
+      ? probeTools(scope.platform ?? 'slack', scope.reach)
+      : scope.platform === 'webchat'
+        ? webchatTools
+        : tools
   const log = new Map<string, RecordedCall[]>()
   const scopes = new Map<string, ProbeScope>()
   const server = createServer((req, res) => {
@@ -533,6 +544,7 @@ export type ScenarioId =
   | 'message-task'
   | 'peer-by-bot-mention'
   | 'peer-in-slack-from-webchat'
+  | 'own-work-without-tasks'
 
 export interface SendMessageScenario {
   id: ScenarioId
@@ -546,6 +558,8 @@ export interface SendMessageScenario {
   task?: boolean
   /** The session's platform; absent ⇒ a Slack thread. */
   platform?: ProbePlatform
+  /** What the session may do with tasks; absent ⇒ every task action. */
+  reach?: TaskReach
   /** Recorded only; never fails the cell. */
   informational?: boolean
   /** Only meaningful against the `action` tool shape; excluded from old/new comparisons. */
@@ -681,6 +695,16 @@ export const SCENARIOS: SendMessageScenario[] = [
       op.platform === 'slack' &&
       isChannel(op.channel, IDS.workChannel, IDS.workChannelName),
     expected: `agent-call(${IDS.peer},needsReply,channel=${IDS.workChannel},platform=slack)`
+  },
+  {
+    // auto-session-mode.md §5.1: where only the coordinator delegates, a Per thread session does long work itself.
+    id: 'own-work-without-tasks',
+    newOnly: true,
+    reach: 'none',
+    prompt: humanMessage(
+      'Please migrate every integration test in this repository to the new fixtures and open a PR. It will take a while, so run it in the background and let me know here when it is done.'
+    ),
+    expected: 'no sendMessage call'
   }
 ]
 
@@ -696,6 +720,7 @@ export function standingContext(scenario: SendMessageScenario, usesMeta: boolean
     thread: webchat ? `webchat:${IDS.webchat}` : IDS.thread,
     sessionId: IDS.session,
     originSessionId: scenario.origin ? IDS.origin : null,
+    ...(scenario.reach !== undefined && scenario.reach !== 'delegate' ? { tasksCoordinatorOnly: true } : {}),
     envSecretNames: [],
     fileSecrets: [],
     memoryIndex: '',
@@ -811,7 +836,8 @@ export async function runSendMessageScenarios(input: {
       const scope: ProbeScope = {
         ...(scenario.platform ? { platform: scenario.platform } : {}),
         ...(scenario.origin ? { message: IDS.message } : {}),
-        ...(scenario.task ? { task: IDS.task } : {})
+        ...(scenario.task ? { task: IDS.task } : {}),
+        ...(scenario.reach ? { reach: scenario.reach } : {})
       }
       const standing = standingContext(scenario, usesMeta)
       const started = Date.now()

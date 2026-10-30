@@ -1345,7 +1345,11 @@ silently published or given repeated eligibility warnings; the same conversation
 authorization applies to automatic output.
 
 Otherwise every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
-delegated task of its own: `sendMessage` with action `delegateTask` and only a `message`. Work it
+delegated task of its own: `sendMessage` with action `delegateTask` and only a `message`. Where the
+daemon's Auto switch is on, only an Auto conversation's coordinator delegates: every other
+conversation, and every task, does its long work itself and is not told about `delegateTask`, and a
+task it delegated before runs and reports until it ends. A place's long session there still lists,
+messages and ends its follow-ups and its organization research. Work it
 splits up and can finish within the current turn goes to its runtime's own subagents instead;
 delegating is for work that spans turns, may run a long time, or that people should be able to
 see and stop. A task serves the request the agent is answering: its independent parts, or long

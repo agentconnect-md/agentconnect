@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { MessageGateway, SendIdentity, SessionContext } from './context.js'
 import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
+import type { TaskReachDeps } from './task-reach.js'
 import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
 import { optionalString, parseArgs, requiredString } from './args.js'
 import { assertChannelReachable } from './channel-reach.js'
@@ -269,6 +270,8 @@ export interface ContinueSubsessionReq {
   text: string
   /** A stable id of this submission, so a replay of it is admitted once; minted by the daemon when absent. */
   submissionId?: string
+  /** The caller delegates no task (auto-session-mode.md §5.1), so only a follow-up or research takes the message. */
+  assistantTasksOnly?: boolean
 }
 
 /** The result of an agent→agent delivery. `delivered:false` carries a typed `reason`
@@ -327,7 +330,7 @@ export interface ReplyToSessionResult {
 
 /** The deps of the unified outbound send: peer wake, session reply, the visible post, and
  *  the daemon-side session bookkeeping a root post triggers. */
-export interface MessagingDeps extends GatewayDeps {
+export interface MessagingDeps extends GatewayDeps, TaskReachDeps {
   /**
    * The exact platform-native `@mention` addressing `agentId` in one conversation
    * (send-message-routing-rework.md §8.5), or undefined when it has none there.

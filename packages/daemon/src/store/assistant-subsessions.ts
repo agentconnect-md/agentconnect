@@ -1,5 +1,10 @@
 // The persistent parent–child index of assistant-mode sub-sessions (assistant-mode.md §5.6), partitioned by agent.
 import { APPEND_COORDINATE_PREFIX } from '../session/append-coordinate.js'
+import {
+  APPROVED_TASK_COORDINATE_PREFIX,
+  CHECK_COORDINATE_PREFIX,
+  RESEARCH_COORDINATE_PREFIX
+} from '@agentconnect.md/protocol'
 import { RESEARCH_SESSION_KEY_PATTERN, SUBSESSION_COORDINATE_PREFIX } from '../session/subsession-coordinate.js'
 import { AsyncMutex } from './async-mutex.js'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
@@ -126,6 +131,17 @@ type Row = Record<string, unknown>
 
 // A listing's filter that leaves follow-ups out (assistant-mode.md §5.12).
 const DELEGATIONS = " AND kind = 'delegation'"
+
+// A row a delegation opened, as isDelegatedTaskKey reads its key: a background coordinate other than a check's, an approved proposal's or research's.
+const NOT_DELEGATED_TASKS =
+  " AND NOT (kind = 'delegation' AND childSessionKey LIKE ? AND childSessionKey NOT LIKE ? AND childSessionKey NOT LIKE ?" +
+  ' AND childSessionKey NOT LIKE ?)'
+const NOT_DELEGATED_TASK_PARAMS = [
+  `%:${SUBSESSION_COORDINATE_PREFIX}%`,
+  `%:${CHECK_COORDINATE_PREFIX}%`,
+  `%:${APPROVED_TASK_COORDINATE_PREFIX}%`,
+  `%:${RESEARCH_COORDINATE_PREFIX}%`
+]
 
 type OpenInput = Omit<
   AssistantSubsession,
@@ -593,12 +609,18 @@ export class AssistantSubsessionIndex {
     agentId: string,
     parent: { sessionId: string; key: string },
     limit: number,
-    opts: { followUps?: boolean } = {}
+    opts: { followUps?: boolean; delegatedTasks?: boolean } = {}
   ): Promise<{ rows: AssistantSubsession[]; total: number }> {
     const where =
       'WHERE agentId = ? AND parentSessionId = ? AND parentSessionKey = ?' +
-      (opts.followUps === false ? DELEGATIONS : '')
-    const params = [agentId, parent.sessionId, parent.key]
+      (opts.followUps === false ? DELEGATIONS : '') +
+      (opts.delegatedTasks === false ? NOT_DELEGATED_TASKS : '')
+    const params = [
+      agentId,
+      parent.sessionId,
+      parent.key,
+      ...(opts.delegatedTasks === false ? NOT_DELEGATED_TASK_PARAMS : [])
+    ]
     const count = (await this.db.query(`SELECT COUNT(*) AS n FROM assistant_subsession ${where}`, params)).rows[0] as
       Row | undefined
     const total = Number(count?.n ?? 0)

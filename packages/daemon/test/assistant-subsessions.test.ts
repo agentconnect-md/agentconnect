@@ -246,6 +246,29 @@ describe('the assistant sub-session index', () => {
     expect(await index.listForOwner(a, { ...owner, sessionId: 'sid-unknown' }, 10)).toEqual({ rows: [], total: 0 })
     expect(await index.listForOwner(b, owner, 10)).toEqual({ rows: [], total: 0 })
   })
+
+  it('leaves out what a delegation opened for a session that delegates no task (auto-session-mode.md §5.1)', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    const owner = { sessionId: 'sid-parent-1', key: row(a, 'x').parentSessionKey }
+    await index.open({ ...row(a, 'delegated'), now: 1_000 })
+    await index.open({ ...row(a, 'research-1'), now: 2_000 })
+    await index.open({ ...row(a, 'task-approved'), now: 3_000 })
+    await index.openFollowUp({ ...row(a, 'check-1'), now: 4_000 })
+    const keys = (rows: { childSessionKey: string }[]) => rows.map((r) => r.childSessionKey).sort()
+    const own = await index.listForOwner(a, owner, 10, { delegatedTasks: false })
+    expect([keys(own.rows), own.total]).toEqual([
+      [childKey(a, 'check-1'), childKey(a, 'research-1'), childKey(a, 'task-approved')].sort(),
+      3
+    ])
+    const delegations = await index.listForOwner(a, owner, 10, { followUps: false, delegatedTasks: false })
+    expect([keys(delegations.rows), delegations.total]).toEqual([
+      [childKey(a, 'research-1'), childKey(a, 'task-approved')].sort(),
+      2
+    ])
+    expect((await index.listForOwner(a, owner, 10)).total).toBe(4)
+  })
 })
 
 describe('the failure report a sub-session index row holds (assistant-mode.md §5.7)', () => {

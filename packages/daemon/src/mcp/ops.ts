@@ -66,6 +66,7 @@ import {
 import { parseAgentTarget, type MessagingDeps } from './ops/messaging.js'
 import { COORDINATOR_MESSAGE_TOOLS } from '../auto-session/coordinator-prompt.js'
 import { sendMessage, validateSendMessageAction } from './ops/send-message-actions.js'
+import { taskReachOf } from './ops/task-reach.js'
 import { getToolGuide, GET_TOOL_GUIDE_ARGS } from './ops/tool-guide.js'
 import {
   addReaction,
@@ -578,7 +579,7 @@ async function executeRegisteredTool(
   deps: OpsDeps
 ): Promise<unknown> {
   // send-message-guide.md §3.3: the action and its arguments are checked before any lookup or effect.
-  if (name === 'sendMessage') validateSendMessageAction(ctx, given)
+  if (name === 'sendMessage') validateSendMessageAction(ctx, given, await taskReachOf(ctx, deps))
   // A channel named by its name is judged and acted on by the one id it resolves to.
   const args = await resolveChannelArg(ctx, name, given, deps)
   // Every agent's reads of another conversation and platform writes are judged by who is asking (§5.5).

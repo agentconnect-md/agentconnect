@@ -1060,7 +1060,9 @@ import {
   isSubsessionCoordinate,
   isSubsessionKey,
   isTaskCoordinate,
-  researchThreadOf
+  researchThreadOf,
+  taskReachAt,
+  type TaskReach
 } from './session/subsession-coordinate.js'
 import {
   GITHUB_API_BASE,
@@ -5050,6 +5052,7 @@ export class Daemon {
       preflightWake: (req) => this.collab.wakeRejectionReason(req),
       replyToSession: (req) => this.collab.replyToSession(req),
       continueSubsession: (req) => this.collab.continueSubsession(req),
+      taskReach: (ctx) => this.taskReach(ctx),
       coordinatorDecision: (ctx, args) => this.coordinators.decide(ctx, args),
       coordinatorMessage: (ctx, messageId) => this.coordinators.messageFor(ctx, messageId),
       viewSessionStatus: (req) => Promise.resolve(this.collab.viewSessionStatus(req)),
@@ -5474,6 +5477,7 @@ export class Daemon {
       // socket and send-only connections) for the `# Agent` Slack-identity line.
       slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
       taskPagesTakeMessages: () => this.cfg.features.autoSessionMode,
+      tasksCoordinatorOnly: () => this.cfg.features.autoSessionMode,
       senderTimeZoneFor: (msg, integrationId) => this.profileTimeZone(integrationId, msg.sender.id),
       startedByTimeZone: (agentId, key) => this.startedByTimeZone(agentId, key),
       notePersonTimeZone: (key, zone) => this.notePersonTimeZone(key, zone),
@@ -10327,6 +10331,20 @@ export class Daemon {
     }
   }
 
+  /** What a tool call's session may do with tasks (auto-session-mode.md §5.1), as its offered tools say. */
+  private async taskReach(ctx: SessionContext): Promise<TaskReach> {
+    const coordinatorOnly = this.cfg.features.autoSessionMode
+    const assistantMode = assistantModeOn(this.agents.get(ctx.agentId))
+    // A task on a platform thread keeps nothing; its row is read only where that decides the reach.
+    const decides =
+      coordinatorOnly && assistantMode && !isSubsessionCoordinate(ctx.thread) && !isAppendCoordinate(ctx.thread)
+    const row = decides
+      ? await this.store.assistantSubsessions.get(ctx.agentId, this.sessionKeyOf(ctx)).catch(() => undefined)
+      : undefined
+    const threadedTask = row !== undefined && row.kind !== 'follow-up'
+    return taskReachAt(ctx.thread, { coordinatorOnly, assistantMode, threadedTask })
+  }
+
   /** The AgentConnect tools a session at these coordinates is offered, before a check's filter. */
   private sessionBridgeTools(
     agent: Agent,
@@ -10340,13 +10358,20 @@ export class Daemon {
     }
   ): ToolDescriptor[] {
     const { platform, thread, integrationId } = at
+    // auto-session-mode.md §5.1: what this session may do with tasks; execution re-checks it.
+    const reach = taskReachAt(thread, {
+      coordinatorOnly: this.cfg.features.autoSessionMode,
+      assistantMode: assistantModeOn(agent),
+      ...(at.threadedTask ? { threadedTask: true } : {})
+    })
     let tools = toolsForIntegrations(agent.integrations, {
       organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true,
       decisions:
         !!agent.decisionIds?.length && this.cpClient?.supportsServerFeature?.(DECISION_TOOLS_V1_FEATURE) === true,
       currentPlatform: platform,
       // Static descriptor, dynamic authority: a console turn may reach any session, and execution re-checks it.
-      consoleImages: this.relays?.advertisesWebchatImages?.() === true
+      consoleImages: this.relays?.advertisesWebchatImages?.() === true,
+      taskReach: reach
     })
     // Static descriptor, dynamic authority: the call resolves the current daemon-private turn and fails closed elsewhere.
     tools = [...tools, ...GITHUB_REVIEW_TOOLS]
@@ -10362,8 +10387,8 @@ export class Daemon {
     ]
     // Its reminders (§5.9), in a platform conversation of the session's own only.
     tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
-    // Listing and stopping its tasks (send-message-guide.md §8.7), in every session that can delegate one.
-    tools = [...tools, ...stopTaskToolsFor({ thread, ...(at.threadedTask ? { threadedTask: true } : {}) })]
+    // Listing and stopping its tasks (send-message-guide.md §8.7), where the session may.
+    tools = [...tools, ...stopTaskToolsFor({ thread, reach, ...(at.threadedTask ? { threadedTask: true } : {}) })]
     // Capability requests (capability-requests.md §4.1, §5): any agent toward a CP that serves them; execution re-checks.
     tools = [
       ...tools,
@@ -17385,6 +17410,7 @@ export class Daemon {
       noteSubsessionRound: (childKey, parentKey) => this.holdSlackForTask(childKey, parentKey),
       activeTurnThread: (key) => this.activeTurnShare.get(key)?.thread,
       messageFollowUp: (req, taskKey, callerKey) => this.messageFollowUp(req, taskKey, callerKey),
+      tasksCoordinatorOnly: () => this.cfg.features.autoSessionMode,
       sdkLease: () => this.sdkLease,
       safetyDrained: (agentId) => this.waitForSafetyDrain(agentId),
       callerAskers: async (agentId, key, thread, integrationId) =>

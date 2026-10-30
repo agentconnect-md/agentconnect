@@ -13,6 +13,7 @@ import { FOLLOW_UP_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { LIST_TASKS_TOOL, stopTaskToolsFor, UPDATE_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
+import type { TaskReach } from '../src/session/subsession-coordinate.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -664,7 +665,7 @@ describe('the stop note and authority, from the index row alone', () => {
     tools: []
   } as unknown as SessionContext
   const parent = sessionKey('slack', DM, '100.1', AGENT)
-  const resultFor = async (thread: string, kind?: 'follow-up') => {
+  const resultFor = async (thread: string, kind?: 'follow-up', reach?: TaskReach) => {
     const childSessionKey = sessionKey('slack', DM, thread, AGENT)
     const row = {
       agentId: AGENT,
@@ -675,6 +676,7 @@ describe('the stop note and authority, from the index row alone', () => {
       ...(kind ? { kind } : {})
     }
     const deps = {
+      ...(reach ? { taskReach: async () => reach } : {}),
       assistantSubsessions: {
         actor: () => ({ userId: 'u-1' }),
         sessionIdOf: async () => 'sid-owner',
@@ -689,6 +691,17 @@ describe('the stop note and authority, from the index row alone', () => {
     expect((await resultFor('subsession:d-1')).note).toContain('message it with messageTask')
     expect(await resultFor('subsession:task-d-1')).toEqual(NOT_OWNED)
     expect(await resultFor('subsession:check-d-1', 'follow-up')).toEqual(NOT_OWNED)
+  })
+
+  it('leaves a delegated task to run to its end where only the coordinator delegates, but stops research (auto-session-mode.md §5.1)', async () => {
+    for (const reach of ['assistant', 'none'] as const) {
+      const refused = await resultFor('subsession:d-1', undefined, reach)
+      expect(refused).toMatchObject({ result: 'refused' })
+      expect(refused.reason).toMatch(/^Only an Auto conversation’s coordinator stops a delegated task\./)
+      expect(refused.reason).toContain('finishes on its own and reports here')
+    }
+    expect(await resultFor('subsession:research-d-1', undefined, 'assistant')).toMatchObject({ result: 'stopped' })
+    expect(await resultFor('subsession:d-1', undefined, 'delegate')).toMatchObject({ result: 'stopped' })
   })
 })
 
@@ -905,6 +918,15 @@ describe('listTasks kinds, states and results, from the index rows alone', () =>
     ])
     expect(res.tasks[3]).toMatchObject({ taskId: child('subsession:d-reporting'), state: 'reporting', running: false })
     expect(res.more).toBe(2)
+  })
+
+  it('lists no delegated task where only the coordinator delegates (auto-session-mode.md §5.1)', async () => {
+    const { deps: d, listForOwner } = deps('sid-owner')
+    await executeTool(ctx, 'listTasks', {}, { ...d, taskReach: async () => 'assistant' } as never)
+    expect(listForOwner).toHaveBeenCalledWith(AGENT, { sessionId: 'sid-owner', key: parent }, 20, {
+      followUps: false,
+      delegatedTasks: false
+    })
   })
 
   it('lists nothing for a session with no outward id, or inside a follow-up’s check or an approved proposal', async () => {
