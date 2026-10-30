@@ -71,14 +71,7 @@ export interface NormalizedMessage extends Omit<
    * It is internal metadata: user-facing channel/thread coordinates stay unchanged.
    */
   transportScope?: string
-  /**
-   * The SESSION coordinate when it differs from the delivery thread (channel-session-mode.md
-   * §3.1). Resolved per target, after routing picks it and before anything keys on the
-   * result — the inbox lane, the serial gate, the observer, the turn plan — and carried from
-   * there rather than re-derived, since one inbound message reaches several agents that may
-   * not share a mode. `thread` stays the delivery coordinate: an answer posts where the
-   * message that started the turn came from, in every mode.
-   */
+  // Per-target session coordinate, resolved after routing; delivery uses replyThread when present, otherwise thread.
   sessionThread?: string
   /** Ingress-derived title applied only when this message creates a logical
    *  session. A later runtime title remains authoritative and replaces it. */

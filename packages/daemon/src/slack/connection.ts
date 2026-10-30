@@ -20,6 +20,7 @@ import {
   isSlackBotPost,
   isSlackSystemMessage,
   normalizeSlackResponseFinalization,
+  slackCodeChannelInfo,
   slackEnvelopeExternallyShared,
   slackExternalReason,
   slackFullMember,
@@ -714,7 +715,15 @@ export type AppLike = {
       // users.conversations — channels the AUTHED BOT is a member of (not the
       // workspace-wide conversations.list). Needs channels:read / groups:read.
       conversations: (a: unknown) => Promise<{
-        channels?: { id?: string; name?: string; is_private?: boolean; is_im?: boolean; is_mpim?: boolean }[]
+        channels?: {
+          id?: string
+          name?: string
+          is_private?: boolean
+          is_im?: boolean
+          is_mpim?: boolean
+          is_archived?: boolean
+          properties?: unknown
+        }[]
         response_metadata?: { next_cursor?: string }
       }>
     }
@@ -1070,10 +1079,9 @@ export class SlackConnection implements PlatformConnection {
   async codeChannel(channel: string): Promise<{ code: boolean; owners: string[] }> {
     const cached = this.codeChannels.get(channel)
     if (cached && Date.now() - cached.at < 60000) return cached.value
-    const value = this.app.client.conversations.info({ channel }).then(({ channel: info }) => ({
-      code: info?.properties?.record_channel?.record_type === 'agent_channel',
-      owners: info?.properties?.agent_session?.encoded_agent_bot_user_ids ?? []
-    }))
+    const value = this.app.client.conversations
+      .info({ channel })
+      .then(({ channel: info }) => slackCodeChannelInfo(info))
     const entry = { at: Date.now(), value }
     if (this.codeChannels.size >= 1000) this.codeChannels.delete(this.codeChannels.keys().next().value!)
     this.codeChannels.set(channel, entry)
@@ -1354,7 +1362,11 @@ export class SlackConnection implements PlatformConnection {
     for (const type of ['channel_archive', 'group_archive'] as const)
       this.app.event(type, async ({ event }) => {
         const ev = event as { channel?: string; user?: string }
-        if (ev.channel) await this.agentSessionStopped(ev.channel, ev.channel, ev.user, true)
+        try {
+          if (ev.channel) await this.agentSessionStopped(ev.channel, ev.channel, ev.user, true)
+        } finally {
+          this.deps.onChannelsChanged?.()
+        }
       })
     // The bot joining (its own member_joined_channel) or leaving (channel_left / group_left) re-lists membership.
     this.app.event('member_joined_channel', async ({ event, body }) => {
@@ -2788,12 +2800,13 @@ export class SlackConnection implements PlatformConnection {
           ...(cursor ? { cursor } : {})
         })
         for (const c of res.channels ?? []) {
-          if (!c.id || c.is_im || c.is_mpim) continue
+          if (!c.id || c.is_im || c.is_mpim || c.is_archived) continue
           out.push({
             id: c.id,
             ...(c.name ? { name: c.name } : {}),
             // Explicit either way, so the membership snapshot answers privacy without a lookup.
             isPrivate: c.is_private === true,
+            isCodeSession: slackCodeChannelInfo(c).code,
             externalReason: slackExternalReason(c)
           })
         }

@@ -376,6 +376,7 @@ export function integrationRowFromDto(
     credentialCode: (revoked ? bot?.revokedCode : bot?.credentialRejectedCode) ?? null,
     channels: d.channels.map((c) => ({
       channelId: c.channelId,
+      isCodeSession: c.isCodeSession ?? false,
       name: c.name || c.channelId,
       ...(c.spaceId ? { spaceId: c.spaceId } : {}),
       ...(c.space ? { space: c.space } : {}),

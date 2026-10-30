@@ -717,7 +717,13 @@ describe('SlackHttpIngest events', () => {
             channels: [
               { id: 'C1', name: 'deploys' },
               { id: 'D1', is_im: true },
-              { id: 'C2', name: 'ops', is_private: true }
+              {
+                id: 'C2',
+                name: 'ops',
+                is_private: true,
+                properties: { record_channel: { record_type: 'agent_channel' } }
+              },
+              { id: 'C4', is_archived: true }
             ],
             response_metadata: { next_cursor: 'page-2' }
           }
@@ -737,9 +743,9 @@ describe('SlackHttpIngest events', () => {
     await ingest.handleEvent({ type: 'member_joined_channel', user: 'UBOT', channel: 'C1' })
     expect(conversations).toHaveBeenCalledTimes(2)
     expect(onChannelsChanged).toHaveBeenCalledWith([
-      { id: 'C1', name: 'deploys', externalReason: null },
-      { id: 'C2', name: 'ops', isPrivate: true, externalReason: null },
-      { id: 'C3', externalReason: null }
+      { id: 'C1', name: 'deploys', isCodeSession: false, externalReason: null },
+      { id: 'C2', name: 'ops', isPrivate: true, isCodeSession: true, externalReason: null },
+      { id: 'C3', isCodeSession: false, externalReason: null }
     ])
   })
 
@@ -760,8 +766,8 @@ describe('SlackHttpIngest events', () => {
     await ingest.handleEvent({ type: 'member_joined_channel', user: 'UBOT', channel: 'C1' })
 
     expect(onChannelsChanged).toHaveBeenCalledWith([
-      { id: 'C1', name: 'partners', externalReason: 'externallyShared' },
-      { id: 'C2', externalReason: null }
+      { id: 'C1', name: 'partners', isCodeSession: false, externalReason: 'externallyShared' },
+      { id: 'C2', isCodeSession: false, externalReason: null }
     ])
   })
 
@@ -849,6 +855,18 @@ describe('SlackHttpIngest events', () => {
     expect(d.onMessage).toHaveBeenCalledTimes(2)
     for (const [msg] of (d.onMessage as ReturnType<typeof vi.fn>).mock.calls)
       expect(msg).toMatchObject({ channel: 'C1', thread: 'C1', conversationBotId: 'UBOT', isDm: false })
+    await ingest.handleEvent({
+      type: 'message',
+      channel: 'C1',
+      user: 'U1',
+      text: 'Question',
+      ts: '1.003',
+      thread_ts: '1.001'
+    })
+    expect(d.onMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ thread: 'C1', replyThread: '1.001' }),
+      undefined
+    )
     expect(info).toHaveBeenCalledOnce()
     await ingest.stop()
   })
@@ -898,7 +916,9 @@ describe('SlackHttpIngest events', () => {
 
     await ingest.handleEvent({ type, channel: 'CLEFT' })
 
-    expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', name: 'remaining', externalReason: null }])
+    expect(onChannelsChanged).toHaveBeenCalledWith([
+      { id: 'C1', name: 'remaining', isCodeSession: false, externalReason: null }
+    ])
   })
 
   // The native Stop. Also not a chat event, and the event id is the receipt a Slack
@@ -944,14 +964,18 @@ describe('SlackHttpIngest events', () => {
   })
 
   it.each(['channel_archive', 'group_archive'] as const)(
-    'forwards %s as a stop of the channel session',
+    'forwards %s as a stop and refreshes the channel list',
     async (type) => {
-      const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
+      const web = {
+        auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) },
+        users: { conversations: vi.fn(async () => ({ channels: [{ id: 'C2' }] })) }
+      }
       const onSessionStopped = vi.fn()
+      const onChannelsChanged = vi.fn()
       const ingest = new SlackHttpIngest(
         'bot',
         { botToken: 'xoxb', signingSecret: 's' },
-        deps(web, { onSessionStopped })
+        deps(web, { onSessionStopped, onChannelsChanged })
       )
       await ingest.start()
 
@@ -963,6 +987,7 @@ describe('SlackHttpIngest events', () => {
         interactionId: 'Ev126',
         userId: 'U-ALICE'
       })
+      expect(onChannelsChanged).toHaveBeenCalledWith([expect.objectContaining({ id: 'C2' })])
     }
   )
 

@@ -5,6 +5,7 @@ import {
   isSlackSystemMessage,
   normalizeSlackMessage,
   normalizeSlackResponseFinalization,
+  slackCodeChannelInfo,
   slackExternalReason,
   type SlackMessageLike
 } from '@agentconnect.md/message'
@@ -406,6 +407,7 @@ export interface SlackReportedChannel {
   id: string
   name?: string
   isPrivate?: boolean
+  isCodeSession?: boolean
   externalReason?: PlaceExternalReason | null
 }
 
@@ -457,18 +459,9 @@ export class SlackHttpIngest {
     if (!this.web || msg.isDm || msg.isGroupDm) return
     let entry = this.codeChannels.get(msg.channel)
     if (!entry || Date.now() - entry.at >= 60000) {
-      const value = this.web.conversations.info({ channel: msg.channel }).then((result) => {
-        const properties = result.channel?.properties as
-          | {
-              record_channel?: { record_type?: string }
-              agent_session?: { encoded_agent_bot_user_ids?: string[] }
-            }
-          | undefined
-        return {
-          code: properties?.record_channel?.record_type === 'agent_channel',
-          owners: properties?.agent_session?.encoded_agent_bot_user_ids ?? []
-        }
-      })
+      const value = this.web.conversations
+        .info({ channel: msg.channel })
+        .then((result) => slackCodeChannelInfo(result.channel))
       entry = { at: Date.now(), value }
       if (this.codeChannels.size >= 1000) this.codeChannels.delete(this.codeChannels.keys().next().value!)
       this.codeChannels.set(msg.channel, entry)
@@ -650,6 +643,7 @@ export class SlackHttpIngest {
           interactionId: eventId ?? `${event.type}:${event.channel}:${eventAtMs ?? ''}`,
           ...(event.user ? { userId: event.user } : {})
         })
+        await this.refreshChannels()
         return
       }
       if (event && this.isOwnMembershipChange(event)) {
@@ -762,11 +756,12 @@ export class SlackHttpIngest {
         ...(cursor ? { cursor } : {})
       })
       for (const channel of res.channels ?? []) {
-        if (!channel.id || channel.is_im || channel.is_mpim) continue
+        if (!channel.id || channel.is_im || channel.is_mpim || channel.is_archived) continue
         channels.push({
           id: channel.id,
           ...(channel.name ? { name: channel.name } : {}),
           ...(channel.is_private ? { isPrivate: true } : {}),
+          isCodeSession: slackCodeChannelInfo(channel).code,
           externalReason: slackExternalReason(channel)
         })
       }

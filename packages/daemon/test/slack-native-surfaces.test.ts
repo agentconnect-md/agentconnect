@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { normalizeSlackMessage } from '@agentconnect.md/message'
 import { SlackConnection } from '../src/slack/connection.js'
 import { SLACK_SESSION_TOOLS } from '../src/platforms/slack/agent-tools.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -285,12 +286,23 @@ describe('Slack native surfaces', () => {
     const f = await fixture()
     const status = vi.spyOn(f.app.client.agents.sessions, 'setStatus')
     const rename = vi.spyOn(f.app.client.agents.sessions, 'rename')
-    const first = { channel: 'C1', thread: '1.001', isDm: false } as NormalizedMessage
-    const next = { ...first, thread: '1.002' }
+    const first = normalizeSlackMessage({ type: 'message', channel: 'C1', ts: '1.001', user: 'U1', text: 'Start' })!
+    const next = normalizeSlackMessage({ type: 'message', channel: 'C1', ts: '1.002', user: 'U1', text: 'Continue' })!
+    const reply = normalizeSlackMessage({
+      type: 'message',
+      channel: 'C1',
+      ts: '1.003',
+      thread_ts: '1.001',
+      user: 'U1',
+      text: 'Question'
+    })!
     await f.conn.prepareInboundMessage(first)
     await f.conn.prepareInboundMessage(next)
+    await f.conn.prepareInboundMessage(reply)
     expect(first.thread).toBe('C1')
     expect(next.thread).toBe(first.thread)
+    expect(reply).toMatchObject({ thread: 'C1', replyThread: '1.001' })
+    expect(first.replyThread).toBeUndefined()
     expect(slackThreadUrl('https://workspace.example.test', 'C1', next.thread!)).toBe(
       'https://workspace.example.test/archives/C1'
     )
@@ -301,6 +313,24 @@ describe('Slack native surfaces', () => {
     await f.conn.postMessage('C1', 'Done', first.thread)
     for (const call of [status.mock.calls[0], rename.mock.calls[0], f.post.mock.calls[0]])
       expect(call![0]).not.toHaveProperty('thread_ts')
+    await f.conn.postMessage('C1', 'Thread answer', reply.replyThread)
+    expect(f.post).toHaveBeenLastCalledWith(expect.objectContaining({ thread_ts: '1.001' }))
+    await f.conn.stop()
+  })
+
+  it('lists Code sessions separately and excludes archived memberships', async () => {
+    const f = await fixture()
+    vi.spyOn(f.app.client.users, 'conversations').mockResolvedValue({
+      channels: [
+        { id: 'C1', properties: { record_channel: { record_type: 'agent_channel' } } },
+        { id: 'C2' },
+        { id: 'C3', is_archived: true, properties: { record_channel: { record_type: 'agent_channel' } } }
+      ]
+    })
+    expect(await f.conn.listBotChannels()).toEqual([
+      expect.objectContaining({ id: 'C1', isCodeSession: true }),
+      expect.objectContaining({ id: 'C2', isCodeSession: false })
+    ])
     await f.conn.stop()
   })
 

@@ -58,7 +58,7 @@ export interface TurnPlan {
   readonly channel: string
   /** The platform thread posts, chrome and thread reads address; absent, the turn speaks at the conversation root. */
   readonly thread?: string
-  /** The delivery's transcript coordinate: `thread`, else the message's own id, which names no platform thread. */
+  /** The provider's lifecycle and transcript coordinate, independent of a physical reply override. */
   readonly statusThread: string
   /** The SESSION coordinate this turn was admitted on (channel-session-mode.md §3.1),
    *  carried from the per-target resolution rather than re-derived. Matches `statusThread`
@@ -148,7 +148,7 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     platform: msg.platform,
     isDm: msg.isDm,
     channel: msg.channel,
-    ...(msg.thread !== undefined ? { thread: msg.thread } : {}),
+    ...((msg.replyThread ?? msg.thread) !== undefined ? { thread: msg.replyThread ?? msg.thread } : {}),
     statusThread: msg.thread ?? msg.msgId,
     sessionThread: sessionThreadOf(msg),
     transcriptChannel: transcriptChannelKey(msg.channel, msg.transportScope),

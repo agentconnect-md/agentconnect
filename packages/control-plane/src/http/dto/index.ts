@@ -1065,6 +1065,7 @@ export const IntegrationChannelDto = z.object({
   key: z.string().nullable(),
   url: z.string().nullable(),
   isPrivate: z.boolean(),
+  isCodeSession: z.boolean(),
   kind: z.enum(['channel', 'im', 'mpim']),
   trigger: z.enum(['off', 'mention', 'any', 'decision']),
   /** The By decision consumer (a gate, or the bot's shared router); present exactly when `trigger` is 'decision'. */

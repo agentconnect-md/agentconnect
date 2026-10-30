@@ -445,9 +445,9 @@ async function postSlackReply<TTurn extends SlackTurn>(
 /** Push the stored session title once the status or stream write that just landed registered the thread (an earlier rename is refused). */
 async function flushSessionTitle(conn: SlackConnection, p: SlackTurn): Promise<void> {
   const title = p.chrome.sessionTitleToPush
-  if (!title || !p.plan.thread) return
+  if (!title) return
   p.chrome.sessionTitleToPush = undefined
-  await conn.setTitle(p.plan.channel, p.plan.thread, title)
+  await conn.setTitle(p.plan.channel, p.plan.statusThread, title)
 }
 
 /** The single in-place tool-activity message: post once, then edit. Shared by the legacy
@@ -508,7 +508,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
   switch (action.kind) {
     case 'set-status':
       if (p.plan.thread) {
-        await conn.setStatus(p.plan.channel, p.plan.thread, action.text, {
+        await conn.setStatus(p.plan.channel, p.plan.statusThread, action.text, {
           ...slackStatusOptions(p.plan.platform, p.plan.agentName, p.plan.iconUrl, p.plan.sessionKey),
           ...(action.lifecycle ? { lifecycle: action.lifecycle } : {})
         })
@@ -518,7 +518,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     case 'set-title':
       // A live runtime title supersedes any stored title still waiting on its first status.
       p.chrome.sessionTitleToPush = undefined
-      if (p.plan.thread) await conn.setTitle(p.plan.channel, p.plan.thread, action.text)
+      if (p.plan.thread) await conn.setTitle(p.plan.channel, p.plan.statusThread, action.text)
       return
     case 'post': {
       const trackReply = action.attributed !== false
@@ -607,7 +607,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     }
     case 'plan':
       // A code channel (its session coordinate is the channel) also keeps the plan in its Plan tab.
-      if (p.plan.thread === p.plan.channel) conn.writePlanCanvas(p.plan.channel, action.markdown)
+      if (p.plan.sessionThread === p.plan.channel) conn.writePlanCanvas(p.plan.channel, action.markdown)
       // Block Kit, not text: the checklist is a native checkbox list (slack/render.ts
       // renderPlan). Same post-once/edit-thereafter contract as `progress` — `action.text`
       // rides along as the notification/fallback string only.

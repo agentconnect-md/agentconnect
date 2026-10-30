@@ -370,6 +370,7 @@ export const IntegrationChannel = z.object({
   space: z.string().optional(), // that space's display name; absent until resolved
   isPrivate: z.boolean().optional(),
   kind: z.enum(['channel', 'im', 'mpim']).optional(), // absent = 'channel'
+  isCodeSession: z.boolean().optional(),
   // The conversation's own glyph and tint, where the platform gives one — a Linear team's
   // `icon` (a provider icon name such as "Feather", or an emoji) and `color` (a hex string).
   // Display only: bounded so a hostile provider cannot grow a row, and never parsed for routing.

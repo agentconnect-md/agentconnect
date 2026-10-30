@@ -1102,6 +1102,14 @@ describe('Daemon in-conversation commands', () => {
     await (daemon as any).onInboundOutcome(dm('200', '!status'))
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining(':bar_chart:'), 'T1', CHROME_REPLY)
 
+    await (daemon as any).onInboundOutcome({ ...dm('300', '!status'), replyThread: 'T-reply' })
+    expect(conn.postMessage).toHaveBeenLastCalledWith(
+      'C1',
+      expect.stringContaining(':bar_chart:'),
+      'T-reply',
+      CHROME_REPLY
+    )
+
     // another thread in the SAME channel with no session of its own → falls back to the
     // channel's latest session (still reports the status line, not "nothing here")
     await (daemon as any).onInboundOutcome({ ...dm('400', '!status'), thread: 'T9' })

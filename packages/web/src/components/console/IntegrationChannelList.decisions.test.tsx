@@ -197,6 +197,22 @@ async function pick(label: string) {
 }
 
 describe('IntegrationChannelList By decision', () => {
+  it('collapses Code sessions separately and expands them without trigger or session-mode settings', async () => {
+    await render([group(), group({ channelId: 'C2', name: 'Build the page', isCodeSession: true })])
+    const toggle = all('button[aria-expanded]').find((node) => node.textContent?.includes('Code sessions'))!
+    expect(toggle.textContent).toContain('Code sessions')
+    expect(container!.textContent).toContain('general')
+    expect(container!.textContent).not.toContain('Build the page')
+    const settings = all('button').filter((node) => node.textContent?.includes('Per thread')).length
+    expect(settings).toBe(1)
+    await click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(container!.textContent).toContain('Build the page')
+    expect(all('button').filter((node) => node.textContent?.includes('Per thread'))).toHaveLength(settings)
+    await click(toggle)
+    expect(container!.textContent).not.toContain('Build the page')
+  })
+
   it('leaves By decision out of Respond to on a single-owner row, whose + Decision entry adds a gate', async () => {
     await render([group()])
     expect(Boolean(document.body.querySelector('button[aria-label="Add decision"]'))).toBe(true)

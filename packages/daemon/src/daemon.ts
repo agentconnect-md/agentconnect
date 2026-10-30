@@ -16356,7 +16356,7 @@ export class Daemon {
     const physical = !isAppendCoordinate(sessionThread) && !isSubsessionCoordinate(sessionThread)
     const snapshot =
       includeProviderSnapshot && physical && thread !== undefined
-        ? this.finalThreadSnapshot(pending, thread, providerCheckpoint)
+        ? this.finalThreadSnapshot(pending, pending.plan.statusThread, providerCheckpoint)
         : undefined
     const refresh = await this.threadContext.refresh({
       scope: {
@@ -19321,7 +19321,7 @@ export class Daemon {
       // Only a human ingress gets a repair notice; a rejected A2A wake stays postless so no workflow state leaks.
       if (!callMeta && msg.source === 'user') {
         try {
-          await conn?.postMessage(msg.channel, reason, msg.thread ?? msg.msgId)
+          await conn?.postMessage(msg.channel, reason, msg.replyThread ?? msg.thread ?? msg.msgId)
         } catch (err) {
           this.log.warn(`session source: could not post rejection (${formatErr(err)})`)
         }
@@ -19534,7 +19534,7 @@ export class Daemon {
             channel: msg.channel,
             sessionKey: plan.sessionKey,
             transcriptChannel: plan.transcriptChannel,
-            thread: msg.thread,
+            thread: plan.thread,
             statusThread: plan.statusThread,
             sessionThread: plan.sessionThread,
             ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {})
@@ -19962,7 +19962,7 @@ export class Daemon {
       replyConn,
       channel: msg.channel,
       transcriptChannel: plan.transcriptChannel,
-      thread: msg.thread,
+      thread: plan.thread,
       statusThread: plan.statusThread,
       sessionKey: plan.sessionKey
     })
@@ -21407,7 +21407,7 @@ export class Daemon {
         channel: msg.channel,
         sessionKey: plan.sessionKey,
         transcriptChannel: plan.transcriptChannel,
-        thread: msg.thread,
+        thread: plan.thread,
         statusThread: plan.statusThread,
         sessionThread: plan.sessionThread
       })
@@ -21923,12 +21923,13 @@ export class Daemon {
     const { msg } = p.entry
     try {
       if (p.conn && turnChromeFor(p.plan.platform).chromeMarkedNotices)
-        await (p.conn as SlackConnection).postMessage(msg.channel, text, msg.thread, {
+        await (p.conn as SlackConnection).postMessage(msg.channel, text, msg.replyThread ?? msg.thread, {
           ...(slackAgentIdentityOptions(p.plan) ?? {}),
           chrome: true
         })
-      else if (p.conn) await p.conn.postMessage(msg.channel, text, msg.thread)
-      else if (!p.plan.suppressReplyConn) await this.chromeNotice(p.plan.platform, p.egress, msg, msg.thread, text)
+      else if (p.conn) await p.conn.postMessage(msg.channel, text, msg.replyThread ?? msg.thread)
+      else if (!p.plan.suppressReplyConn)
+        await this.chromeNotice(p.plan.platform, p.egress, msg, msg.replyThread ?? msg.thread, text)
       await this.store.appendTranscript({
         channel: p.plan.transcriptChannel,
         thread: p.plan.sessionThread,
@@ -25405,7 +25406,7 @@ export class Daemon {
       if (this.gatedNoticesSent.has(latch)) return
       const text =
         '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.'
-      const thread = isDm ? undefined : msg.thread
+      const thread = isDm ? undefined : (msg.replyThread ?? msg.thread)
       const conn = this.connForIntegration(integrationId)
       // Chrome-marked so peer daemons' thread backfill never re-ingests the notice.
       const post = !conn
@@ -27277,7 +27278,7 @@ export class Daemon {
       channel: msg.channel,
       sessionKey,
       transcriptChannel: p.plan.transcriptChannel,
-      thread: msg.thread,
+      thread: p.plan.thread,
       statusThread: p.plan.statusThread,
       sessionThread: p.plan.sessionThread,
       ...(p.entry.acknowledgement ? { acknowledgement: p.entry.acknowledgement.handle } : {})

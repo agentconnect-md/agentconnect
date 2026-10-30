@@ -87,6 +87,7 @@ function toChannelDto(c: IntegrationChannelRecord, view?: DecisionView): Integra
     key: c.key,
     url: c.url,
     isPrivate: c.isPrivate,
+    isCodeSession: c.isCodeSession ?? false,
     kind: c.kind,
     trigger: c.trigger,
     decisionBinding: c.trigger === 'decision' ? c.decisionBinding : null,
