@@ -294,35 +294,90 @@ describe('self-delegation: every agent opens a sub-session', () => {
 
 describe('self-delegation: what stays refused', () => {
   it.each(MODES)(
-    'refuses a sub-session’s own delegation %s in the preflight and at admission',
+    'lets a task %s delegate one level down, and refuses that task’s task and a task with no index row',
     async (_mode, assistantMode) => {
       const { daemon, d, calls, call } = await boot(scaffold([agentIn(assistantMode)]))
       const caller = await seedCaller(d)
       const opened = await call(delegation(caller))
-      const nested = delegation(caller, { callerThread: subsessionCoordinate('999000111') })
+      expect(opened.subsession).toBe(true)
+      const levelOne = await d.store.getSession(opened.targetSession)
+      const taskThread = calls[0]!.msg.thread as string
       await d.store.upsertSession({
-        key: sessionKey('slack', 'C1', nested.callerThread, 'bot-a', caller.scope),
+        key: opened.targetSession,
         agentId: 'bot-a',
         platform: 'slack',
         channel: 'C1',
-        thread: nested.callerThread,
+        thread: taskThread,
         transportScope: caller.scope,
         acpSessionId: 'acp-child-1',
         sessionId: 'sid-child-1',
         state: 'prompting',
         lastDeliveredTs: null,
-        updatedAt: Date.now()
+        updatedAt: Date.now(),
+        ...(levelOne ?? {})
       })
 
-      expect(d.collab.wakeRejectionReason(nested)).toBe('task_nesting')
-      const res = await call(nested)
-      expect(res).toMatchObject({ delivered: false, reason: 'task_nesting' })
-      expect(res.message).toMatch(/cannot start another task/)
-      expect(calls).toHaveLength(1)
-      expect(opened.subsession).toBe(true)
+      // auto-session-mode.md §6.3: a task an ordinary session opened may open background tasks of its own.
+      const fromTask = delegation(caller, { callerThread: taskThread, text: 'check the Windows leg' })
+      expect(d.collab.wakeRejectionReason(fromTask)).toBeNull()
+      const nested = await call(fromTask)
+      expect(nested).toMatchObject({ delivered: true, subsession: true })
+      expect(await d.store.assistantSubsessions.get('bot-a', nested.targetSession)).toMatchObject({
+        parentSessionKey: opened.targetSession,
+        title: 'check the Windows leg'
+      })
+
+      // Its own task may not: two levels at most.
+      const grandThread = calls[1]!.msg.thread as string
+      await d.store.upsertSession({
+        key: nested.targetSession,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: grandThread,
+        transportScope: caller.scope,
+        acpSessionId: 'acp-grandchild-1',
+        sessionId: 'sid-grandchild-1',
+        state: 'prompting',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+      const tooDeep = await call(delegation(caller, { callerThread: grandThread }))
+      expect(tooDeep).toMatchObject({ delivered: false, reason: 'task_nesting' })
+      expect(tooDeep.message).toMatch(/tasks go two levels deep at most/)
+
+      // A task coordinate with no index row names no level, so it opens nothing either.
+      const unindexed = delegation(caller, { callerThread: subsessionCoordinate('999000111') })
+      await d.store.upsertSession({
+        key: sessionKey('slack', 'C1', unindexed.callerThread, 'bot-a', caller.scope),
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: unindexed.callerThread,
+        transportScope: caller.scope,
+        acpSessionId: 'acp-child-2',
+        sessionId: 'sid-child-2',
+        state: 'prompting',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+      expect(await call(unindexed)).toMatchObject({ delivered: false, reason: 'task_nesting' })
+      expect(calls).toHaveLength(2)
       await daemon.stop()
     }
   )
+
+  it('refuses a follow-up’s check and an approved proposal in the preflight and at admission', async () => {
+    const { daemon, d, calls, call } = await boot(scaffold([agentIn(ON)]))
+    const caller = await seedCaller(d)
+    for (const thread of ['subsession:check-1', 'subsession:task-1', 'subsession:research-1']) {
+      const req = delegation(caller, { callerThread: thread })
+      expect(d.collab.wakeRejectionReason(req)).toBe('task_nesting')
+      expect(await call(req)).toMatchObject({ delivered: false, reason: 'task_nesting' })
+    }
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
 
   it('refuses a delegation with no parent session to inherit from', async () => {
     const { daemon, d, calls, call } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
@@ -394,7 +449,7 @@ describe('self-delegation: through the sendMessage tool', () => {
       const started = (await executeTool(
         ctx(caller),
         'sendMessage',
-        { action: 'delegateTask', message: 'fix it' },
+        { action: 'delegateTask', title: 'fix it', message: 'fix it' },
         deps
       )) as any
       expect(started).toMatchObject({
@@ -411,7 +466,7 @@ describe('self-delegation: through the sendMessage tool', () => {
       const nested = (await executeTool(
         inside,
         'sendMessage',
-        { action: 'delegateTask', message: 'and this' },
+        { action: 'delegateTask', title: 'and this', message: 'and this' },
         deps
       )) as any
       expect(nested.wake).toMatchObject({ delivered: false, reason: 'task_nesting' })

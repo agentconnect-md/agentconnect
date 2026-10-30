@@ -24,7 +24,7 @@ describe('standing collaboration guidance', () => {
       'a session of that conversation, not a task: use your own ID from the # Agent block (also included by ' +
         '`listAgents`), never your platform bot identity. For long work of your own ("fix this bug and open a PR") ' +
         'that spans turns, may run a long time, or that people should be able to see and stop, ' +
-        '`{"action":"delegateTask","message":"..."}` delegates it to a TASK of this session'
+        '`{"action":"delegateTask","title":"<a short name>","message":"..."}` delegates it to a TASK of this session'
     )
     expect(context.collabAppend).toContain(
       'reports back into this session each time a round of its work finishes or fails'
@@ -44,7 +44,8 @@ describe('standing collaboration guidance', () => {
         'here use'
     )
     expect(context.collabAppend).toContain(
-      'A task cannot start tasks of its own. To speak in the conversation you are already in'
+      'A task may delegate tasks of its own, but a task that another task started cannot. To speak in the ' +
+        'conversation you are already in'
     )
     for (const text of [context.resumeSystemContext, context.sessionContext, context.metaContext!])
       expect(text).toContain(context.collabAppend)

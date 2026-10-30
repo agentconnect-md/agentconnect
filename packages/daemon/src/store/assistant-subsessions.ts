@@ -26,6 +26,26 @@ export interface AssistantSubsession {
   round?: number
   /** The platform thread of the turn that last asked it for work, where its round's report replies. */
   replyThread?: string
+  /** Its name in the console and in `listTasks` (auto-session-mode.md §5.1). */
+  title?: string
+  /** The task's own account of its scope, status and next step (auto-session-mode.md §6.7). */
+  summary?: string
+  summaryUpdatedAt?: number
+  /** Turns it ran since it last wrote its summary; read back only when nonzero. */
+  turnsSinceSummary?: number
+}
+
+/** One platform thread attached to a task (auto-session-mode.md §6.1): people there talk to the task directly. */
+export interface AssistantSubsessionThread {
+  agentId: string
+  childSessionKey: string
+  platform: string
+  channel: string
+  transportScope?: string
+  thread: string
+  /** The first work round that no longer reports to the parent (§6.6). */
+  sinceRound: number
+  attachedAt: number
 }
 
 /** One parent message admitted into a sub-session, by its submission id, with the receipt a replay of it gets. */
@@ -36,6 +56,23 @@ export interface AssistantSubsessionInput {
   round: number
   receipt?: string
 }
+
+// The platform threads attached to tasks (auto-session-mode.md §6.1): a thread belongs to one task at most.
+export const ASSISTANT_SUBSESSION_THREAD_SCHEMA = `
+      CREATE TABLE IF NOT EXISTS assistant_subsession_thread (
+        agentId TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        transportScope TEXT NOT NULL DEFAULT '',
+        thread TEXT NOT NULL,
+        childSessionKey TEXT NOT NULL,
+        sinceRound INTEGER NOT NULL DEFAULT 1,
+        attachedAt INTEGER NOT NULL,
+        PRIMARY KEY (agentId, platform, channel, transportScope, thread)
+      );
+      CREATE INDEX IF NOT EXISTS assistant_subsession_thread_by_child
+        ON assistant_subsession_thread (agentId, childSessionKey);
+`
 
 export const ASSISTANT_SUBSESSION_SCHEMA = `
       CREATE TABLE IF NOT EXISTS assistant_subsession (
@@ -50,6 +87,10 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         reportAttempts INTEGER NOT NULL DEFAULT 0,
         round INTEGER NOT NULL DEFAULT 1,
         replyThread TEXT,
+        title TEXT,
+        summary TEXT,
+        summaryUpdatedAt INTEGER,
+        turnsSinceSummary INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (agentId, childSessionKey)
       );
       CREATE INDEX IF NOT EXISTS assistant_subsession_by_parent
@@ -65,6 +106,7 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
       );
       CREATE INDEX IF NOT EXISTS assistant_subsession_input_by_child
         ON assistant_subsession_input (agentId, childSessionKey);
+      ${ASSISTANT_SUBSESSION_THREAD_SCHEMA}
 `
 
 /** What the index needs from the store; a capped open that claims something else at once needs its transaction. */
@@ -83,7 +125,15 @@ const DELEGATIONS = " AND kind = 'delegation'"
 
 type OpenInput = Omit<
   AssistantSubsession,
-  'state' | 'createdAt' | 'kind' | 'endReport' | 'reportAttempts' | 'round'
+  | 'state'
+  | 'createdAt'
+  | 'kind'
+  | 'endReport'
+  | 'reportAttempts'
+  | 'round'
+  | 'summary'
+  | 'summaryUpdatedAt'
+  | 'turnsSinceSummary'
 > & {
   now?: number
 }
@@ -100,17 +150,41 @@ function subsessionOf(row: Row): AssistantSubsession {
     ...(row.endReport != null ? { endReport: String(row.endReport) } : {}),
     ...(Number(row.reportAttempts ?? 0) > 0 ? { reportAttempts: Number(row.reportAttempts) } : {}),
     ...(Number(row.round ?? 1) > 1 ? { round: Number(row.round) } : {}),
-    ...(row.replyThread != null ? { replyThread: String(row.replyThread) } : {})
+    ...(row.replyThread != null ? { replyThread: String(row.replyThread) } : {}),
+    ...(row.title != null ? { title: String(row.title) } : {}),
+    ...(row.summary != null ? { summary: String(row.summary) } : {}),
+    ...(row.summaryUpdatedAt != null ? { summaryUpdatedAt: Number(row.summaryUpdatedAt) } : {}),
+    ...(Number(row.turnsSinceSummary ?? 0) > 0 ? { turnsSinceSummary: Number(row.turnsSinceSummary) } : {})
   }
 }
+
+function threadOf(row: Row): AssistantSubsessionThread {
+  return {
+    agentId: String(row.agentId),
+    childSessionKey: String(row.childSessionKey),
+    platform: String(row.platform),
+    channel: String(row.channel),
+    ...(row.transportScope != null && row.transportScope !== '' ? { transportScope: String(row.transportScope) } : {}),
+    thread: String(row.thread),
+    sinceRound: Number(row.sinceRound ?? 1),
+    attachedAt: Number(row.attachedAt)
+  }
+}
+
+/** A task's summary is at most this long (auto-session-mode.md §6.7). */
+export const TASK_SUMMARY_MAX_CHARS = 500
 
 // A guard on one round, when the caller names it.
 const inRound = (round: number | undefined) => (round === undefined ? '' : ' AND round = ?')
 const roundParam = (round: number | undefined) => (round === undefined ? [] : [round])
 
-// The agent's running delegations, the count a capped open or a reopened round is checked against.
+// Whether a task row has a thread attached, which keeps it out of the cap and its reports (auto-session-mode.md §6.2).
+const THREADED = (alias: string) =>
+  `EXISTS (SELECT 1 FROM assistant_subsession_thread t WHERE t.agentId = ${alias}.agentId AND t.childSessionKey = ${alias}.childSessionKey)`
+
+// The agent's running background delegations, the count a capped open or a reopened round is checked against.
 const RUNNING_DELEGATIONS = `(SELECT COUNT(*) FROM assistant_subsession a
-                WHERE a.agentId = ? AND a.state = 'open' AND a.kind = 'delegation'
+                WHERE a.agentId = ? AND a.state = 'open' AND a.kind = 'delegation' AND NOT ${THREADED('a')}
                   AND (a.createdAt >= ? OR EXISTS (SELECT 1 FROM sessions s WHERE s.key = a.childSessionKey)))`
 
 export class AssistantSubsessionIndex {
@@ -123,15 +197,16 @@ export class AssistantSubsessionIndex {
   async open(input: OpenInput): Promise<boolean> {
     const { changes } = await this.db.query(
       `INSERT OR IGNORE INTO assistant_subsession
-         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread)
-       VALUES (?, ?, ?, ?, 'open', ?, ?)`,
+         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread, title)
+       VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`,
       [
         input.agentId,
         input.childSessionKey,
         input.parentSessionId,
         input.parentSessionKey,
         input.now ?? Date.now(),
-        input.replyThread ?? null
+        input.replyThread ?? null,
+        input.title ?? null
       ]
     )
     return changes > 0
@@ -171,8 +246,9 @@ export class AssistantSubsessionIndex {
   ): Promise<boolean> {
     const { changes } = await db.query(
       `INSERT OR IGNORE INTO assistant_subsession
-         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread)
-       SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER), CAST(? AS TEXT)
+         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread, title)
+       SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), 'open', CAST(? AS INTEGER), CAST(? AS TEXT),
+              CAST(? AS TEXT)
         WHERE ${RUNNING_DELEGATIONS} < ?`,
       [
         input.agentId,
@@ -181,6 +257,7 @@ export class AssistantSubsessionIndex {
         input.parentSessionKey,
         input.now ?? Date.now(),
         input.replyThread ?? null,
+        input.title ?? null,
         input.agentId,
         cap.startedSince,
         cap.limit
@@ -189,7 +266,7 @@ export class AssistantSubsessionIndex {
     return changes > 0
   }
 
-  /** Open the next work round of a settled delegation in `round` only below `limit` running ones (send-message-guide.md §8.4). */
+  /** Open the next work round of a settled delegation in `round`, below `limit` running ones unless a thread is attached (send-message-guide.md §8.4). */
   async reopenWithinLimit(
     agentId: string,
     childSessionKey: string,
@@ -200,7 +277,7 @@ export class AssistantSubsessionIndex {
       const { changes } = await this.db.query(
         `UPDATE assistant_subsession SET state = 'open', round = round + 1, endReport = NULL, reportAttempts = 0
           WHERE agentId = ? AND childSessionKey = ? AND round = ? AND state IN ('done', 'failed')
-            AND ${RUNNING_DELEGATIONS} < ?`,
+            AND (${THREADED('assistant_subsession')} OR ${RUNNING_DELEGATIONS} < ?)`,
         [agentId, childSessionKey, round, agentId, cap.startedSince, cap.limit]
       )
       if (changes > 0) return 'opened'
@@ -516,7 +593,117 @@ export class AssistantSubsessionIndex {
     return { rows: rows.map(subsessionOf), total }
   }
 
+  /** Set a task's summary, and its title when given, and restart its turn count (auto-session-mode.md §6.7); false when it is not indexed. */
+  async setSummary(
+    agentId: string,
+    childSessionKey: string,
+    update: { summary: string; title?: string; now: number }
+  ): Promise<boolean> {
+    if ([...update.summary].length > TASK_SUMMARY_MAX_CHARS)
+      throw new Error(`a task summary is at most ${TASK_SUMMARY_MAX_CHARS} characters`)
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET summary = ?, summaryUpdatedAt = ?, turnsSinceSummary = 0, title = COALESCE(?, title)
+        WHERE agentId = ? AND childSessionKey = ? AND kind = 'delegation'`,
+      [update.summary, update.now, update.title ?? null, agentId, childSessionKey]
+    )
+    return changes > 0
+  }
+
+  /** Count one turn of a task since its summary; the new count, or undefined when it is not indexed. */
+  async countTurn(agentId: string, childSessionKey: string): Promise<number | undefined> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET turnsSinceSummary = turnsSinceSummary + 1
+        WHERE agentId = ? AND childSessionKey = ? AND kind = 'delegation'`,
+      [agentId, childSessionKey]
+    )
+    return changes > 0 ? ((await this.get(agentId, childSessionKey))?.turnsSinceSummary ?? 0) : undefined
+  }
+
+  /** Attach a platform thread to a task; rounds from `sinceRound` on no longer report to its parent. False when the thread is another task's or the task is not indexed. */
+  async attachThread(input: Omit<AssistantSubsessionThread, 'attachedAt'> & { now: number }): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `INSERT OR IGNORE INTO assistant_subsession_thread
+         (agentId, platform, channel, transportScope, thread, childSessionKey, sinceRound, attachedAt)
+       SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT),
+              CAST(? AS INTEGER), CAST(? AS INTEGER)
+        WHERE EXISTS (SELECT 1 FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? AND kind = 'delegation')`,
+      [
+        input.agentId,
+        input.platform,
+        input.channel,
+        input.transportScope ?? '',
+        input.thread,
+        input.childSessionKey,
+        input.sinceRound,
+        input.now,
+        input.agentId,
+        input.childSessionKey
+      ]
+    )
+    return changes > 0
+  }
+
+  /** The threads attached to one task, oldest first. */
+  async threadsOf(agentId: string, childSessionKey: string): Promise<AssistantSubsessionThread[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT * FROM assistant_subsession_thread WHERE agentId = ? AND childSessionKey = ? ORDER BY attachedAt, thread`,
+        [agentId, childSessionKey]
+      )
+    ).rows as Row[]
+    return rows.map(threadOf)
+  }
+
+  /** The task a platform thread is attached to, if any. */
+  async taskOfThread(
+    agentId: string,
+    at: { platform: string; channel: string; transportScope?: string | null; thread: string }
+  ): Promise<string | undefined> {
+    const row = (
+      await this.db.query(
+        `SELECT childSessionKey FROM assistant_subsession_thread
+          WHERE agentId = ? AND platform = ? AND channel = ? AND transportScope = ? AND thread = ?`,
+        [agentId, at.platform, at.channel, at.transportScope ?? '', at.thread]
+      )
+    ).rows[0] as Row | undefined
+    return row ? String(row.childSessionKey) : undefined
+  }
+
+  /** Release every thread of a task, which become unowned again (auto-session-mode.md §6.5). */
+  async detachThreads(agentId: string, childSessionKey: string): Promise<number> {
+    return (
+      await this.db.query('DELETE FROM assistant_subsession_thread WHERE agentId = ? AND childSessionKey = ?', [
+        agentId,
+        childSessionKey
+      ])
+    ).changes
+  }
+
+  /** Whether a task's `round` reports to its parent: a background task's always, a threaded one's only before its first thread (§6.2, §6.6). */
+  async reportsRound(agentId: string, childSessionKey: string, round: number): Promise<boolean> {
+    const row = (
+      await this.db.query(
+        'SELECT MIN(sinceRound) AS quiet FROM assistant_subsession_thread WHERE agentId = ? AND childSessionKey = ?',
+        [agentId, childSessionKey]
+      )
+    ).rows[0] as Row | undefined
+    return row?.quiet === null || row?.quiet === undefined || round < Number(row.quiet)
+  }
+
+  /** Whether a session has a background task of its own still running or reporting, which keeps its own round open (auto-session-mode.md §6.3). */
+  async hasRunningChildren(agentId: string, parentSessionKey: string): Promise<boolean> {
+    const row = (
+      await this.db.query(
+        `SELECT 1 AS one FROM assistant_subsession a WHERE a.agentId = ? AND a.parentSessionKey = ?
+            AND a.kind = 'delegation' AND a.state IN ('open', 'reporting') AND NOT ${THREADED('a')} LIMIT 1`,
+        [agentId, parentSessionKey]
+      )
+    ).rows[0] as Row | undefined
+    return row !== undefined
+  }
+
   async deleteForAgent(agentId: string): Promise<number> {
+    await this.db.query('DELETE FROM assistant_subsession_thread WHERE agentId = ?', [agentId])
     await this.db.query('DELETE FROM assistant_subsession_input WHERE agentId = ?', [agentId])
     return (await this.db.query('DELETE FROM assistant_subsession WHERE agentId = ?', [agentId])).changes
   }

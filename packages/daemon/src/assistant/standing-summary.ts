@@ -114,7 +114,7 @@ export async function runningSubsessionsBlock(
   const running = await Promise.all(
     rows.map(async (row) => ({
       id: row.childSessionKey,
-      label: subsessionLabel((await store.getSession(row.childSessionKey))?.title, undefined)
+      label: subsessionLabel(row.title ?? (await store.getSession(row.childSessionKey))?.title, undefined)
     }))
   )
   return { shown, text: renderRunningSubsessions(running, total) }

@@ -284,7 +284,7 @@ describe('the research task’s session', () => {
       const deps = { ...(d.mcp.deps as OpsDeps), canRun: () => true }
       // The bridge refuses any other name the runtime sends.
       await expect(
-        executeTool(ctx, 'sendMessage', { action: 'delegateTask', message: 'post this' }, deps)
+        executeTool(ctx, 'sendMessage', { action: 'delegateTask', title: 'post this', message: 'post this' }, deps)
       ).rejects.toThrow('not available to organization research')
       // A write lands in the shared layer, and says so; a `layer` argument is refused.
       const written = (await executeTool(
