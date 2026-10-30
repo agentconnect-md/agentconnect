@@ -4596,6 +4596,7 @@
     "loadError": "Couldn't load usage: {error}",
     "emptyState": "No usage recorded in this range yet. Token usage appears here once agents run sessions.",
     "tokensAndSessions": "{tokens} tok · {sessions} sessions",
+    "coordinatorPart": "Coordinator: {tokens} tokens · {spend}",
     "computers": {
       "title": "Computers",
       "runningHours": "Managed computer hours",

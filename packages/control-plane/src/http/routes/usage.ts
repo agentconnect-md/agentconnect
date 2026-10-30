@@ -27,7 +27,7 @@ export function usageRoutes(deps: HttpDeps) {
           tags: [Tag.Usage],
           summary: 'Get token usage',
           description:
-            'Sums persisted token usage over the half-open [from, to) window. Organization owners receive complete agent, model, and time-series attribution; other members receive access-scoped attribution and an unattributed residual. Totals and metering-source totals stay organization-wide. Optionally scoped to one metering source.',
+            'Sums persisted token usage over the half-open [from, to) window. Organization owners receive complete agent, model, and time-series attribution; other members receive access-scoped attribution and an unattributed residual. Totals and metering-source totals stay organization-wide. `coordinators` repeats, per agent, the part of its row spent by the coordinator sessions of its Auto conversations. Optionally scoped to one metering source.',
           operationId: 'getUsage',
           querystring: UsageQueryDto,
           response: { 200: UsageDto }
@@ -53,6 +53,7 @@ export function usageRoutes(deps: HttpDeps) {
             agents: agg.agents,
             models: agg.models,
             sources: agg.sources,
+            coordinators: agg.coordinators,
             series: agg.series
           }
         }
@@ -82,6 +83,7 @@ export function usageRoutes(deps: HttpDeps) {
           agents: agg.agents,
           models: agg.models,
           sources: agg.sources,
+          coordinators: agg.coordinators,
           ...(agg.unattributed ? { unattributed: agg.unattributed } : {}),
           series: agg.series
         }

@@ -109,6 +109,8 @@ export default function UsageView() {
   const skelBars = range === 'd1' ? 24 : range === 'd7' ? 7 : range === 'd90' ? 90 : 30
   // Join the CP aggregate (agentId + numbers) with the console's agent list for
   // the display name/runtime; fall back to a short id if the agent isn't loaded.
+  // What each agent's Auto coordinators spent, a part of its row (auto-session-mode.md §4.6).
+  const coordinatorOf = new Map((data?.coordinators ?? []).map((c) => [c.agentId, c]))
   const enriched = (data?.agents ?? []).map((a) => {
     const meta = agents.find((x) => x.id === a.agentId)
     return {
@@ -145,6 +147,8 @@ export default function UsageView() {
      *  navigates, never carries an icon, and is pinned last however large it is. */
     residual?: true
     navId?: string
+    /** An agent row's coordinator part, said beneath its name. */
+    coordinator?: { totalTokens: number; costAmount: string }
     name: string
     icon?: (typeof enriched)[number]['icon']
     runtime: string
@@ -186,7 +190,17 @@ export default function UsageView() {
     }
     entries = [...byRuntime.values()].sort((a, b) => b.totalTokens - a.totalTokens)
   } else {
-    entries = enriched.map((e) => ({ ...e, key: e.agentId, kind: 'agent', navId: e.agentId, model: '' }))
+    entries = enriched.map((e) => {
+      const coordinator = coordinatorOf.get(e.agentId)
+      return {
+        ...e,
+        key: e.agentId,
+        kind: 'agent',
+        navId: e.agentId,
+        model: '',
+        ...(coordinator ? { coordinator } : {})
+      }
+    })
   }
   // The totals are the ORG's; these rows are only what this viewer may attribute. Without
   // this line the table silently fails to add up to the card above it and the % column
@@ -232,6 +246,12 @@ export default function UsageView() {
     sessions: formatNumber(format, e.sessions),
     tokens: fmtCompact(e.totalTokens),
     spend: fmtCost(amountToNumber(e.costAmount), currency),
+    coordinator: e.coordinator
+      ? t('coordinatorPart', {
+          tokens: fmtCompact(e.coordinator.totalTokens),
+          spend: fmtCost(amountToNumber(e.coordinator.costAmount), currency)
+        })
+      : null,
     pct: totalTokens > 0 ? Math.round((e.totalTokens / totalTokens) * 100) : 0,
     barPct: Math.round((e.totalTokens / maxTok) * 100)
   }))
@@ -651,6 +671,14 @@ export default function UsageView() {
               <span className="pl-[34px] font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
                 {t('tokensAndSessions', { tokens: r.tokens, sessions: r.sessions })}
               </span>
+              {r.coordinator ? (
+                <span
+                  data-coordinator-usage=""
+                  className="pl-[34px] font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)"
+                >
+                  {r.coordinator}
+                </span>
+              ) : null}
               <span className="ml-[34px] block h-1 w-[calc(100%_-_34px)] overflow-hidden rounded-[2px] bg-(--surface-active)">
                 <span className="block h-full rounded-[2px] bg-(--brand)" style={{ width: `${r.barPct}%` }} />
               </span>
@@ -674,7 +702,17 @@ export default function UsageView() {
                     <AgentIconView icon={r.icon} runtime={r.runtime} size={28} />
                   )}
                 </span>
-                <span className="font-sans text-[13px] font-semibold leading-normal">{r.name}</span>
+                <span className="flex min-w-0 flex-col">
+                  <span className="font-sans text-[13px] font-semibold leading-normal">{r.name}</span>
+                  {r.coordinator ? (
+                    <span
+                      data-coordinator-usage=""
+                      className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)"
+                    >
+                      {r.coordinator}
+                    </span>
+                  ) : null}
+                </span>
               </div>
               <span className="mono text-right text-[13px]">{r.sessions}</span>
               <span className="mono text-right text-[13px]">{r.tokens}</span>
