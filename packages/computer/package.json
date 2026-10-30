@@ -33,10 +33,10 @@
   "dependencies": {
     "@agentconnect.md/connection": "workspace:*",
     "@agentconnect.md/protocol": "workspace:*",
-    "@modelcontextprotocol/client": "2.3.1",
-    "@modelcontextprotocol/node": "2.1.1",
-    "@modelcontextprotocol/server": "2.3.1",
-    "werift": "0.25.1",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/node": "2.1.2",
+    "@modelcontextprotocol/server": "2.4.0",
+    "werift": "0.25.2",
     "ws": "^8.22.0",
     "zod": "^4.6.7"
   },
