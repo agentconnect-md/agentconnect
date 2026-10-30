@@ -10,9 +10,9 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $node = Get-Command node -ErrorAction SilentlyContinue
-if (-not $node) { throw 'Node.js >= 24.12 is required: https://nodejs.org/ (or: winget install OpenJS.NodeJS)' }
+if (-not $node) { throw 'Node.js >= 26.0 is required: https://nodejs.org/ (or: winget install OpenJS.NodeJS)' }
 $version = [version]((& node -p 'process.versions.node').Trim())
-if ($version -lt [version]'24.12.0') { throw "Node.js >= 24.12 is required, found $version" }
+if ($version -lt [version]'26.0.0') { throw "Node.js >= 26.0 is required, found $version" }
 
 $installDir = Join-Path $env:LOCALAPPDATA 'AgentConnect\computer\app'
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null

@@ -4,14 +4,15 @@
 # holds platform binaries) and installed there once; pass `--fresh` to redo the install.
 set -e
 cd "$(dirname "$0")/../../.."
-volume=agentconnect-linux-test
+volume=agentconnect-linux-test-node26
 if [ "$1" = "--fresh" ]; then
   shift
   docker volume rm -f "$volume" > /dev/null 2>&1 || true
 fi
-docker run --rm -v "$PWD":/src:ro -v "$volume":/work -w /work node:24 sh -c '
+docker run --rm -v "$PWD":/src:ro -v "$volume":/work -w /work node:26 sh -c '
   set -e
   if [ ! -f /work/.installed ]; then
+    npm install --global corepack@0.36.0 >/dev/null 2>&1
     corepack enable >/dev/null 2>&1
     (cd /src && tar --exclude=node_modules --exclude=.git -cf - .) | tar -xf - -C /work
     corepack pnpm install --frozen-lockfile --prefer-offline >/dev/null

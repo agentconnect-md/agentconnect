@@ -42,7 +42,7 @@ function pack(v: FakeVersion): Buffer {
   mkdirSync(join(dir, 'package', 'dist'), { recursive: true })
   writeFileSync(
     join(dir, 'package', 'package.json'),
-    JSON.stringify({ name: COMPUTER_PKG, version: v.version, engines: { node: v.engines ?? '>=24.12.0' } })
+    JSON.stringify({ name: COMPUTER_PKG, version: v.version, engines: { node: v.engines ?? '>=26.0.0' } })
   )
   if (v.entry !== false) writeFileSync(join(dir, 'package', 'dist', 'agentconnect-computer.mjs'), `// ${v.version}\n`)
   const buf = execFileSync('tar', ['-czf', '-', '-C', dir, 'package'])
@@ -60,7 +60,7 @@ function publish(versions: FakeVersion[], tags: Record<string, string>): void {
       .digest('base64')}`
     entries[v.version] = {
       version: v.version,
-      engines: { node: v.engines ?? '>=24.12.0' },
+      engines: { node: v.engines ?? '>=26.0.0' },
       dist: { tarball: `${base}/tarballs/${v.version}.tgz`, integrity }
     }
   }

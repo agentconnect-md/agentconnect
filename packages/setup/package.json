@@ -38,7 +38,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^24.19.2",
+    "@types/node": "^26.6.6",
     "json": "^11.0.0",
     "tsdown": "^0.23.1",
     "tsx": "^4.23.15",
@@ -51,7 +51,7 @@
     "setup-server"
   ],
   "engines": {
-    "node": ">=24.12.0"
+    "node": ">=26.0.0"
   },
   "publishConfig": {
     "access": "public"

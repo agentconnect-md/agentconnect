@@ -3,10 +3,10 @@
 #   docker build -f packages/computer/docker/Dockerfile -t agentconnect-computer .
 
 # The bundle is plain JavaScript, so it is built once on the build platform for every target arch.
-FROM --platform=$BUILDPLATFORM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS bundle
+FROM --platform=$BUILDPLATFORM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS bundle
 WORKDIR /app
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
-RUN corepack enable \
+RUN npm install --global corepack@0.36.0 && corepack enable \
   && printf 'fetch-retries=5\nfetch-retry-maxtimeout=600000\nfetch-retry-mintimeout=20000\nfetch-timeout=600000\n' >> /root/.npmrc
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .pnpmfile.mjs ./
 COPY patches/ patches/
@@ -25,9 +25,9 @@ RUN pnpm --filter @agentconnect.md/computer bundle
 FROM debian:trixie-slim AS computer
 
 # Dependabot can't see these ARGs: bump the version and both SHASUMS256 sums together with the bundle stage's node FROM.
-ARG NODE_VERSION=24.22.1
-ARG NODE_SHA256_ARM64=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e
-ARG NODE_SHA256_X64=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6
+ARG NODE_VERSION=26.13.0
+ARG NODE_SHA256_ARM64=406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92
+ARG NODE_SHA256_X64=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997
 ARG TARGETARCH
 ARG VERSION=dev
 
@@ -58,7 +58,7 @@ RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     echo "$sum  /tmp/node.tar.xz" | sha256sum -c -; \
     tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
       --exclude='*/include' --exclude='*/share' --exclude='*/CHANGELOG.md' --exclude='*/README.md'; \
-    rm /tmp/node.tar.xz; corepack enable pnpm yarn; node --version; npm --version
+    rm /tmp/node.tar.xz; npm install --global corepack@0.36.0; corepack enable pnpm yarn; node --version; npm --version
 
 COPY --from=bundle /app/packages/computer/bundle/agentconnect-computer.mjs /app/packages/computer/bundle/agentconnect-computer.mjs.LEGAL.txt /opt/agentconnect/
 # The pinned Cua Driver lives in the image; GPL ffmpeg is not bundled, the daemon downloads it on first start (§11).

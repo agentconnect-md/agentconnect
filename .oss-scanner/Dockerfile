@@ -1,6 +1,6 @@
 # Build for Anthropic's OSS Scanner (https://github.com/anthropics/oss-scanner): built online, scanned with no network.
-# Node 24.12 is the floor in .nvmrc and package.json#engines; pnpm 11.19.0 is the packageManager pin.
-FROM node:24.12-bookworm
+# Node 26.0 is the floor in .nvmrc and package.json#engines; pnpm 11.19.0 is the packageManager pin.
+FROM node:26.13.0-bookworm
 ENV CI=true \
   DEBIAN_FRONTEND=noninteractive \
   NEXT_TELEMETRY_DISABLED=1 \
@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 # pnpm comes from corepack at the pinned version, cached in COREPACK_HOME so it keeps resolving offline.
-RUN corepack enable && corepack install --global pnpm@11.19.0 && pnpm --version
+RUN npm install --global corepack@0.36.0 && corepack enable && corepack install --global pnpm@11.19.0 && pnpm --version
 
 # scanner contract: the checkout lives inside the image, at /src
 COPY . /src

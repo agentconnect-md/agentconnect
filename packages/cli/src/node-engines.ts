@@ -1,11 +1,5 @@
-/**
- * Minimal `engines.node` range check (cli-daemon-split.md §5.1 step 3) — enough
- * for the simple ranges npm packages actually use (`>=24.12.0`, `24 || 25`)
- * without pulling in a full semver dependency. Comparators within a group are
- * ANDed; `||` separates OR groups. Pre-release tags on the Node version are
- * ignored. An unparseable range returns `true` (accept) rather than blocking on
- * an exotic spec the caller never emits.
- */
+// Accept the simple engines.node ranges emitted by AgentConnect and npm packages.
+
 function parseVersion(v: string): [number, number, number] | null {
   const m = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(v.trim())
   if (!m) return null
