@@ -362,6 +362,8 @@ export interface MessagingDeps extends GatewayDeps {
   preflightWake?: (req: MessageAgentReq) => string | null
   /** Backs `replyToSession`: a reply to one message the caller received, routed by that message's record (send-message-guide.md §9.4). */
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
+  /** Backs a coordinator session's `sendMessage` (auto-session-mode.md §5.1); absent ⇒ unavailable. */
+  coordinatorDecision?: (ctx: SessionContext, args: Record<string, unknown>) => Promise<unknown>
   /** Backs `messageTask` (send-message-guide.md §8): the caller's own task only; absent ⇒ unavailable. */
   continueSubsession?: (req: ContinueSubsessionReq) => Promise<MessageAgentResult>
   /** The transport's stable id of this tool call, when it has one, so a resent call is one submission. */

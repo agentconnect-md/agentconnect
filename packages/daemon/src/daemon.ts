@@ -1025,7 +1025,14 @@ import {
   sessionThreadOf,
   wakeThreadFields
 } from './messages/normalized.js'
-import { appendCoordinate, isAppendCoordinate } from './session/append-coordinate.js'
+import { appendCoordinate, isAppendCoordinate, isCoordinatorCoordinate } from './session/append-coordinate.js'
+import {
+  coordinatorPrompt,
+  coordinatorSessionTools,
+  renderCoordinatorBatch
+} from './auto-session/coordinator-prompt.js'
+import { CoordinatorSessions, deliveredMessage } from './auto-session/coordinator-sessions.js'
+import { coordinatorView, inThread, replyThreadOf } from './auto-session/coordinator-turns.js'
 import {
   isGettingToKnowCoordinate,
   isCheckCoordinate,
@@ -1948,6 +1955,21 @@ export class Daemon {
 
   // Agent→agent collaboration: A2A wake/reply/status (src/collab/).
   private readonly collab = new CollabCoordinator(this.collabHost())
+  // The `auto` mode's coordinator sessions and their live turns (auto-session-mode.md §4).
+  private readonly coordinators = new CoordinatorSessions({
+    store: () => this.store,
+    now: () => this.clock.now(),
+    dispatch: (agentId, msg, integrationId) => {
+      // Its own inbox row beside the coordinator's, which the coordinator's turn still holds.
+      const taskKey = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
+      const deliveryId = `${stableMessageId(msg)}\u001f${taskKey}`
+      void this.dispatch(agentId, msg, integrationId, undefined, undefined, { deliveryId }).catch((err) =>
+        this.log.warn(`coordinator: handing ${msg.msgId} to its task failed: ${formatErr(err)}`)
+      )
+    },
+    post: (agentId, integrationId, msg, text) => this.postCoordinatorReply(agentId, integrationId, msg, text),
+    warn: (message) => this.log.warn(message)
+  })
   // Latched for the WHOLE drain handoff, including the window after `draining`
   // reopens and before the leases are surrendered — a claim landing there would
   // install a grant the release snapshot has already passed by.
@@ -4971,6 +4993,7 @@ export class Daemon {
       preflightWake: (req) => this.collab.wakeRejectionReason(req),
       replyToSession: (req) => this.collab.replyToSession(req),
       continueSubsession: (req) => this.collab.continueSubsession(req),
+      coordinatorDecision: (ctx, args) => this.coordinators.decide(ctx, args),
       viewSessionStatus: (req) => Promise.resolve(this.collab.viewSessionStatus(req)),
       rootPostRelation: (req) => this.collab.rootPostRelation(req),
       spawnChannelRootSession: (req) => this.collab.spawnChannelRootSession(req),
@@ -5412,9 +5435,12 @@ export class Daemon {
         const check = isCheckCoordinate(thread)
         // §5.15: organization research gets memory, knowledge, the channel listing and the code-host reads, nothing that posts.
         const research = isResearchCoordinate(thread)
-        const narrowed = check || research
+        // auto-session-mode.md §5.4: a coordinator gets its decision tools and memory, nothing that reads or works elsewhere.
+        const coordinator = isCoordinatorCoordinate(thread)
+        const narrowed = check || research || coordinator
         // A getting-to-know task (§5.13) gets only its own place's reads, memory reads and writes (§5.15), and recordCheck.
-        if (isGettingToKnowCoordinate(thread)) tools = gettingToKnowTools(tools)
+        if (coordinator) tools = coordinatorSessionTools(tools)
+        else if (isGettingToKnowCoordinate(thread)) tools = gettingToKnowTools(tools)
         else if (check) tools = checkTools(tools, { watch: this.followUpWatches.offered() })
         else if (research) tools = researchTools(this.researchBridgeTools(agent, tools))
         // Evaluation tools follow product tools, filtered by the agent's current visibility.
@@ -5435,6 +5461,7 @@ export class Daemon {
         const instructions =
           [
             research ? this.organizationResearchPrompt(agent, tools) : undefined,
+            coordinator ? this.coordinatorInstructions(agent, { platform, channel, integrationId }) : undefined,
             computers && tools.length > 0
               ? [COMPUTER_USE_GUIDANCE, ...(commandLine ? [COMPUTER_COMMAND_LINE_GUIDANCE] : [])].join('\n')
               : undefined
@@ -9716,6 +9743,35 @@ export class Daemon {
     }
   }
 
+  /** A coordinator's standing instructions for one conversation, naming the other agents in it (auto-session-mode.md §9). */
+  private coordinatorInstructions(
+    agent: Agent,
+    at: { platform: string; channel: string; integrationId?: string }
+  ): string {
+    const orgId = this.cpCollab.orgForAgent(agent.id)
+    const addressOf = (agentId: string) =>
+      orgId ? this.cpCollab.mentionAddress(orgId, at.platform, at.channel, agentId) : undefined
+    const peers = (orgId ? this.cpCollab.mentionDirectory(orgId, at.platform, at.channel) : [])
+      .filter((entry) => entry.agentId !== agent.id)
+      .map((entry) => {
+        const local = this.agents.get(entry.agentId)
+        const address = addressOf(entry.agentId)
+        return {
+          name: local?.displayName?.trim() || local?.name || entry.name || entry.agentId,
+          ...(address ? { address } : {}),
+          ...(local?.description ? { description: local.description } : {})
+        }
+      })
+    const selfAddress = addressOf(agent.id)
+    return coordinatorPrompt({
+      agentName: agent.displayName?.trim() || agent.name,
+      platform: platformLabel(at.platform),
+      channelId: at.channel,
+      ...(selfAddress ? { selfAddress } : {}),
+      peers
+    })
+  }
+
   // Rules come from the same tool snapshot that the research session receives.
   private organizationResearchPrompt(agent: Agent, tools: ToolDescriptor[]): string {
     const hints = agent.assistantOnboarding?.hints ?? {}
@@ -13391,17 +13447,148 @@ export class Daemon {
   private async sessionCoordinateFor(
     agentId: string,
     integrationId: string | undefined,
-    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'> & Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm'>>,
+    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'> &
+      Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm' | 'thread' | 'msgId' | 'transcriptTs' | 'source'>>,
     opts: { mint?: boolean } = {}
   ): Promise<string | undefined> {
     if (integrationId === undefined) return undefined
     const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
-    if (!int || this.sessionModeFor(agentId, int, msg) !== 'append') return undefined
-    // A delivery mints the coordinate; a reader only asks. Otherwise a `/status` typed into
-    // a conversation nobody has spoken in would create the reservation it reports on.
+    if (!int) return undefined
+    const mode = this.sessionModeFor(agentId, int, msg)
+    // Until the operator turns the coordinator on, `auto` keys on the thread as Per thread does.
+    if (mode === 'auto' && this.cfg.features.autoSessionMode)
+      return await this.autoCoordinateFor(agentId, int, msg, opts.mint !== false)
+    if (mode !== 'append') return undefined
+    // A delivery mints the coordinate; a reader only asks, so a `/status` cannot create what it reports on.
     return opts.mint === false
       ? await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope)
       : await this.store.resolveAppendCoordinate(agentId, msg.channel, msg.transportScope)
+  }
+
+  /** auto-session-mode.md §4.1, §7: a platform message in a task's thread goes to that task, any other to the conversation's coordinator. */
+  private async autoCoordinateFor(
+    agentId: string,
+    int: Integration,
+    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'> &
+      Partial<Pick<NormalizedMessage, 'thread' | 'msgId' | 'transcriptTs' | 'source'>>,
+    mint: boolean
+  ): Promise<string | undefined> {
+    // A scheduled run, a hook or another agent's call names no platform message to decide on, so it keeps its own session.
+    if (msg.source !== 'user') return undefined
+    if (msg.thread !== undefined && msg.msgId !== undefined && inThread({ ...msg, msgId: msg.msgId })) {
+      const index = this.store.assistantSubsessions
+      const at = { platform: int.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
+      const task = await index.taskOfThread(agentId, { ...at, thread: msg.thread })
+      if (task !== undefined) {
+        // The task's session stays where it opened; every thread it holds reaches it (§6.4).
+        const coordinate =
+          (await this.store.getSession(task))?.thread ?? (await index.threadsOf(agentId, task))[0]?.thread
+        return coordinate === msg.thread ? undefined : coordinate
+      }
+    }
+    return mint
+      ? await this.store.resolveAppendCoordinate(
+          agentId,
+          msg.channel,
+          msg.transportScope,
+          this.clock.now(),
+          'coordinator'
+        )
+      : await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope, 'coordinator')
+  }
+
+  /** Open a coordinator turn on its batch: the trigger and every entry queued behind it, each under its own id (auto-session-mode.md §4.3). */
+  private async beginCoordinatorTurn(entry: QueueEntry, key: string): Promise<void> {
+    const queued = this.serialQueue.get(key) ?? []
+    this.serialQueue.delete(key)
+    const batch: QueueEntry[] = []
+    for (const next of queued) {
+      // The same holds the runner honors before it starts a queued entry.
+      const verdict = next.admissionHold ? await next.admissionHold : 'run'
+      next.admissionHold = undefined
+      if (verdict !== 'run') continue
+      if (next.admissionWait !== undefined && !(await next.admissionWait)) {
+        await this.removeInbox(next)
+        await this.releaseReceipt(next)
+        next.resolve(null)
+        continue
+      }
+      next.admissionWait = undefined
+      if (next.deferObservedInbound) await this.admitInbound(next.msg, next.agentId)
+      batch.push(next)
+    }
+    entry.coordinatorBatch = batch
+    const messages = [entry, ...batch].map((one) => deliveredMessage(one.msg, one.integrationId))
+    this.coordinators.turns.begin(key, messages)
+    const { channel } = entry.msg
+    const channelName = (await this.store.getDisplayNames([channel])).get(channel)
+    entry.coordinatorPrompt = renderCoordinatorBatch(
+      messages.map((message) => {
+        const mention = attachmentMention(message.msg.attachments)
+        return coordinatorView(message, mention ? `${message.msg.text}\n${mention}`.trim() : message.msg.text)
+      }),
+      { channelId: channel, ...(channelName ? { channelName } : {}) }
+    )
+  }
+
+  /** End a coordinator turn: settle the entries its batch took, then act on what it left undecided (§4.3, §4.5). */
+  private async settleCoordinatorTurn(
+    entry: QueueEntry,
+    key: string,
+    ended: 'answered' | 'failed' | 'stopped',
+    sessionId: string | null
+  ): Promise<void> {
+    if (entry.coordinatorBatch === undefined) return
+    for (const taken of entry.coordinatorBatch) {
+      if (!this.retainsInboxRow(taken, false)) await this.removeInbox(taken)
+      taken.resolve(sessionId)
+    }
+    await this.coordinators
+      .settleTurn(key, entry.agentId, ended)
+      .catch((err) => this.log.warn(`coordinator ${key}: settling the turn failed: ${formatErr(err)}`))
+  }
+
+  /** A threaded task's turn ended: it is idle until its threads speak again (auto-session-mode.md §6.2). */
+  private async settleThreadedTaskTurn(entry: QueueEntry, key: string): Promise<void> {
+    if (isAppendCoordinate(sessionThreadOf(entry.msg))) return
+    await this.store.assistantSubsessions
+      .finish(entry.agentId, key, 'done')
+      .catch((err) => this.log.warn(`task ${key}: settling its turn failed: ${formatErr(err)}`))
+  }
+
+  /** An empty directory a coordinator's runtime session opens in, where its runtime reads this daemon's disk (auto-session-mode.md §5.4). */
+  private coordinatorCwd(agentId: string, key: string): { bareCwd?: string } {
+    if (this.k8sPlane || this.modelSessions.enabled) return {}
+    const scope = { sessionKey: key }
+    if (this.workspaces.sandboxMountFor(agentId, scope) !== undefined) return {}
+    if (this.workspaces.offDiskFsFor(agentId, scope) !== undefined) return {}
+    const dir = join(this.root, 'coordinators', agentId)
+    try {
+      mkdirSync(dir, { recursive: true })
+    } catch (err) {
+      this.log.warn(`coordinator ${key}: no empty working directory (${formatErr(err)}); it opens in the agent's`)
+      return {}
+    }
+    return { bareCwd: dir }
+  }
+
+  /** The coordinator's own reply in a message's thread (auto-session-mode.md §4.2 (d)). */
+  private async postCoordinatorReply(
+    agentId: string,
+    integrationId: string | undefined,
+    msg: NormalizedMessage,
+    text: string
+  ): Promise<void> {
+    const gateway: MessageGateway | undefined =
+      integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
+    if (!gateway) throw new Error('the conversation is not connected right now; nothing was posted')
+    const agent = this.agents.get(agentId)
+    const name = agent?.displayName?.trim() || agent?.name
+    await gateway.postMessage(msg.channel, text, replyThreadOf(msg), {
+      ...(name ? { username: name } : {}),
+      ...(agent?.iconUrl ? { icon_url: agent.iconUrl } : {}),
+      agentAuthorId: agentId
+    })
   }
 
   private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
@@ -17877,8 +18064,9 @@ export class Daemon {
     if (integrationId !== undefined) {
       msg.transportScope ??= this.transportScopeForIntegrationIds([integrationId])
     }
-    // A sub-session never speaks on the platform, whichever turn wakes it (assistant-mode.md §5.7).
-    if (isSubsessionCoordinate(sessionThreadOf(msg))) msg.headless = true
+    // A sub-session never speaks on the platform, whichever turn wakes it (assistant-mode.md §5.7); a coordinator speaks only through its outcomes (auto-session-mode.md §4.2).
+    if (isSubsessionCoordinate(sessionThreadOf(msg)) || isCoordinatorCoordinate(sessionThreadOf(msg)))
+      msg.headless = true
     // An agent-initiated wake's INBOUND message posts live too (#807 only posted the woken
     // REPLY, so the sender's message appeared on refresh but never in the live view). Mint
     // its canonical post identity before the inbox row persists so a replay reuses it and
@@ -18704,6 +18892,8 @@ export class Daemon {
             if (!this.retainsInboxRow(entry, false)) await this.removeInbox(entry)
             if (isSubsessionCoordinate(sessionThreadOf(entry.msg)))
               await this.settleSubsessionTurn(entry, key, ended === 'completed' ? 'completed' : 'interrupted')
+            else if (this.cfg.features.autoSessionMode) await this.settleThreadedTaskTurn(entry, key)
+            await this.settleCoordinatorTurn(entry, key, entry.coordinatorEnded ?? 'stopped', sessionId)
             entry.resolve(sessionId)
           } else {
             await this.removeInbox(entry)
@@ -18714,10 +18904,15 @@ export class Daemon {
           // A shutdown drain's throw is the deadline-cancel of an admitted turn, whose row startup replay recovers.
           if (!this.retainsInboxRow(entry, true)) await this.removeInbox(entry)
           if (isSubsessionCoordinate(sessionThreadOf(entry.msg))) await this.settleSubsessionTurn(entry, key, 'failed')
+          else if (this.cfg.features.autoSessionMode) await this.settleThreadedTaskTurn(entry, key)
+          await this.settleCoordinatorTurn(entry, key, 'failed', null)
           entry.reject(err)
-          // Fail-stop: do NOT auto-continue draining onto a session whose turn just failed.
-          // Reject every queued follow-up with a clear notice (their own promises) and drop
-          // them; explicit retry/`!queue`/`!cancel` re-admits fresh. Then release the key.
+          // A coordinator's queue holds separate people's messages, never follow-ups of the failed one: they still run (§4.3).
+          if (isCoordinatorCoordinate(sessionThreadOf(entry.msg))) {
+            entry = await this.nextRunnableEntry(key)
+            continue
+          }
+          // Fail-stop: reject every queued follow-up of a failed turn with a notice; a retry, `!queue` or `!cancel` re-admits fresh.
           const rest = this.serialQueue.get(key) ?? []
           this.serialQueue.delete(key)
           for (const e of rest) {
@@ -18792,6 +18987,8 @@ export class Daemon {
       }
     }
     await this.confirmPlaceBeforeTurn(agentId, integrationId, msg, webchat, key)
+    // auto-session-mode.md §4.3: a coordinator turn decides every message queued behind it too.
+    if (isCoordinatorCoordinate(sessionThreadOf(msg))) await this.beginCoordinatorTurn(entry, key)
     // Every decision this turn can make before it touches a host, a row or a connection.
     const plan = buildTurnPlan({
       entry,
@@ -18999,6 +19196,13 @@ export class Daemon {
       observedError = this.maskAgentSecrets(agentId, turnFailureReason(err))
       throw err
     } finally {
+      if (entry.coordinatorBatch !== undefined)
+        entry.coordinatorEnded =
+          observedOutcome === 'complete'
+            ? 'answered'
+            : observedOutcome === 'failed' || settlement.finalPhase === 'problem'
+              ? 'failed'
+              : 'stopped'
       try {
         await this.settleTurn(p, run, sessionId, settlement, releaseReplyConn, activeTurn)
       } finally {
@@ -19266,7 +19470,9 @@ export class Daemon {
           ...(entry.selectedHost ? { host: entry.selectedHost.host } : {}),
           ...(webchatIsolation ? { workspaceIsolation: webchatIsolation } : {}),
           ...reviewWorkspace,
-          ...(launchWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: launchWorkspaceCwd } : {})
+          ...(launchWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: launchWorkspaceCwd } : {}),
+          ...(entry.coordinatorPrompt !== undefined ? { coordinatorBatch: entry.coordinatorPrompt } : {}),
+          ...(entry.coordinatorPrompt !== undefined ? this.coordinatorCwd(agentId, key) : {})
         }
       )
       const target = this.sessionRuntimes.get(key)
@@ -20300,10 +20506,10 @@ export class Daemon {
         .catch((err) => this.log.debug(`effort override "${effortOverride}" not applied: ${(err as Error).message}`))
     }
     const permissionModeOverride = settingsInChat ? await this.store.getPermissionModeOverride(key) : undefined
-    // assistant-mode.md §5.12: a check runs in the runtime's own read-only mode, never the agent's.
-    const check = isCheckCoordinate(p.plan.sessionThread)
+    // assistant-mode.md §5.12: a check runs in the runtime's own read-only mode, never the agent's; so does a coordinator (auto-session-mode.md §5.4).
+    const check = isCheckCoordinate(p.plan.sessionThread) || isCoordinatorCoordinate(p.plan.sessionThread)
     const checkMode = check ? readOnlyExtractionMode(host.permissionModeOptions?.(sessionId)?.modes ?? []) : undefined
-    if (check && !checkMode) this.log.warn(`check ${key}: the runtime offers no read-only mode; check degraded`)
+    if (check && !checkMode) this.log.warn(`session ${key}: the runtime offers no read-only mode; it runs in its own`)
     const effectivePermissionMode = check
       ? checkMode
       : (permissionModeOverride ??
@@ -23835,6 +24041,11 @@ export class Daemon {
       return
     }
     const isAnswerChunk = update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text'
+    // A one-message coordinator turn answers with the text after its last call (auto-session-mode.md §4.3).
+    if (isCoordinatorCoordinate(p.plan.sessionThread)) {
+      if (isAnswerChunk) this.coordinators.turns.noteText(p.plan.sessionKey, String(update.content.text ?? ''))
+      else if (update?.sessionUpdate === 'tool_call') this.coordinators.turns.noteToolCall(p.plan.sessionKey)
+    }
     if (isAnswerChunk) {
       const text = String(update.content.text ?? '')
       if (p.plan.stageAnswer) {
@@ -26469,12 +26680,13 @@ export class Daemon {
     }
   }
 
-  /** A conversation's current append session skips idle retention (channel-session-mode.md §6.3); removing the agent or integration, leaving `append`, or `!new` ends it. */
+  /** A conversation's current append session, or its coordinator under `auto`, skips idle retention (channel-session-mode.md §6.3); removing the agent or integration, leaving the mode, or `!new` ends it. */
   private async keepsAppendSession(rec: SessionRecord): Promise<boolean> {
     if (!isAppendCoordinate(rec.thread)) return false
     const integrationId = this.integrationIdForSessionTransport(rec.agentId, rec.platform, rec.transportScope)
     const int = this.agents.get(rec.agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
-    if (!int || conversationSessionMode(int, rec.channel) !== 'append') return false
+    const mode = isCoordinatorCoordinate(rec.thread) ? 'auto' : 'append'
+    if (!int || conversationSessionMode(int, rec.channel) !== mode) return false
     return (await this.store.currentAppendCoordinate(rec.agentId, rec.channel, rec.transportScope)) === rec.thread
   }
 

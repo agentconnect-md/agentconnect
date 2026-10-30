@@ -1,5 +1,5 @@
 import { agentWithRuntime } from '../decisions/model-selection.js'
-import { isAppendCoordinate } from './append-coordinate.js'
+import { isAppendCoordinate, isCoordinatorCoordinate } from './append-coordinate.js'
 import {
   isCheckCoordinate,
   isResearchCoordinate,
@@ -437,6 +437,10 @@ export class SessionManager {
       forceWorkspaceIsolation?: boolean
       /** A daemon-verified cwd prepared before handle() (GitHub exact-ref turns). */
       preparedWorkspaceCwd?: string
+      /** A coordinator turn's rendered batch, which replaces the trigger and its replayed context (auto-session-mode.md §4.3). */
+      coordinatorBatch?: string
+      /** An empty directory a runtime session on a shared host opens in, with no workspace roots (auto-session-mode.md §5.4). */
+      bareCwd?: string
     } = {}
   ): Promise<{
     sessionId: string
@@ -476,6 +480,8 @@ export class SessionManager {
     const memScope = (): Promise<MemoryScope> =>
       (memScopeOnce ??= Promise.resolve(this.deps.memoryScopeFor?.(agentId, msg, integrationId, rec) ?? { agentId }))
     const { thread, ts: coordTs } = transcriptCoords(msg)
+    // A coordinator's own instructions carry its rules; the per-message reply reminders would contradict them (auto-session-mode.md §4.3).
+    const coordinator = isCoordinatorCoordinate(thread)
     // webchat's msgId is stable per-conversation, so transcriptCoords yields the SAME ts
     // for every turn — the transcript's (channel,thread,ts) unique index would then dedup
     // every follow-up user message (only the first turn is ever recorded). Prefer the
@@ -600,6 +606,9 @@ export class SessionManager {
     // preparation seam; its daemon can then reject a late post-stop mutation.
     const expectedWarmHost = options.host ? undefined : host
     const hostBoundCwd = options.host ? undefined : this.deps.boundHostCwd?.(agentId, workspaceRequest)
+    // A host launched in a session's own directory keeps its runtime sessions there.
+    const bareCwd = hostBoundCwd === undefined ? options.bareCwd : undefined
+    const sessionCwd = options.preparedWorkspaceCwd ?? bareCwd
     if (
       hostBoundCwd !== undefined &&
       options.preparedWorkspaceCwd !== undefined &&
@@ -700,8 +709,8 @@ export class SessionManager {
           liveSecretNames: (agent.liveSecrets ?? []).map((s) => s.name),
           // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
           // accessor, so the prompt names exactly the directories the session got.
-          workspaceRoots: await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
-          onDemandClones: await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
+          workspaceRoots: bareCwd ? [] : await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
+          onDemandClones: bareCwd ? undefined : await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
           memoryIndex,
           ...(memoryGuidance ? { memoryGuidance } : {}),
           usesMeta,
@@ -742,7 +751,7 @@ export class SessionManager {
       ...(this.deps.prepareOutwardBinding
         ? { prepareOutwardBinding: () => this.deps.prepareOutwardBinding!(agentId, key) }
         : {}),
-      ...(options.preparedWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: options.preparedWorkspaceCwd } : {}),
+      ...(sessionCwd !== undefined ? { preparedWorkspaceCwd: sessionCwd } : {}),
       ...(hostBoundCwd !== undefined ? { hostBoundCwd } : {}),
       ...(preparedCwd !== undefined ? { preparedCwd } : {}),
       ...(expectedWarmHost !== undefined ? { expectedWarmHost } : {}),
@@ -751,6 +760,7 @@ export class SessionManager {
           this.deps.prepareWorkspace?.(a, warmHost, workspaceRequest) ?? this.workspaces.prepareWorkspace(a)
         ),
       workspaceDirectories: async (cwd) => {
+        if (bareCwd) return []
         const scope = { sessionKey: key, isolation: workspaceIsolation }
         const directories = await this.workspaces.additionalWorkspaceDirectories(agent, cwd, scope)
         const onDemand = await this.workspaces.sessionOnDemandClones(agent, scope)
@@ -913,7 +923,7 @@ export class SessionManager {
       })
       const renderContext = (entries: readonly TranscriptEntry[]): string =>
         renderReplayContext(entries, this.deps.quoteForContextEvent, opened.historyLost ? agentId : undefined)
-      if (plan.shape === 'skip') {
+      if (plan.shape === 'skip' && options.coordinatorBatch === undefined) {
         rec.lastDeliveredTs = plan.deliveredThrough
         rec.state = 'idle'
         rec.updatedAt = Date.now()
@@ -927,7 +937,11 @@ export class SessionManager {
         }
       }
       const context = plan.context
-      if (plan.shape === 'batch') {
+      if (options.coordinatorBatch !== undefined) {
+        // A coordinator turn reads its whole batch, each message under its own id (auto-session-mode.md §4.3).
+        blocks.push({ type: 'text', text: options.coordinatorBatch })
+        contextEvents = [...context.map((entry) => ({ ts: entry.ts, text: entry.text })), { ts, text: msg.text }]
+      } else if (plan.shape === 'batch') {
         blocks.push({ type: 'text', text: `${plan.head}\n${renderContext(context)}` })
         evidenceAt = blocks.length
         contextEvents = context.map((entry) => ({ ts: entry.ts, text: entry.text }))
@@ -970,7 +984,8 @@ export class SessionManager {
     }
 
     // §9.2 attachments on the current message → image/resource/resource_link blocks.
-    if (ingested.attachments?.length) {
+    // A coordinator only places messages; the task it hands one to receives the attachments.
+    if (ingested.attachments?.length && options.coordinatorBatch === undefined) {
       const attBlocks = await abortable(
         () =>
           buildAttachmentBlocks(ingested.attachments!, {
@@ -1049,7 +1064,7 @@ export class SessionManager {
         standingDigest = preludeStanding.sessionDigest
         promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
       }
-    } else if (await this.shouldRemind(key)) {
+    } else if (!coordinator && (await this.shouldRemind(key))) {
       // A long-running or just-compacted session gets the no-response rule again; a new one already carries it.
       promptPrelude.push({ type: 'text', text: NO_RESPONSE_REMINDER })
       reminded = true
@@ -1103,22 +1118,15 @@ export class SessionManager {
       const since = await this.deps.store.assistantSubsessions.researchRunningSince(agentId).catch(() => undefined)
       if (since !== undefined) promptPrelude.push({ type: 'text', text: researchRunningLine(since, now.zone) })
     }
-    // A trusted direct agent call is addressed to this agent regardless of names
-    // or quoted mentions in its body. State that routing fact per turn so the
-    // generic no-response rule cannot mistake the caller label for an addressee.
-    if (options.directAgentCall === true) {
+    // A trusted direct agent call is addressed to this agent whatever its body names, so the no-response rule cannot misread it.
+    if (options.directAgentCall === true && !coordinator) {
       promptPrelude.push({ type: 'text', text: DIRECT_AGENT_CALL_REMINDER })
     }
-    if (options.outsideHumanScope === true) {
+    if (options.outsideHumanScope === true && !coordinator) {
       promptPrelude.push({ type: 'text', text: OUTSIDE_HUMAN_SCOPE_REMINDER })
     }
-    // The router has already matched the raw platform token against THIS integration's
-    // resolved bot identity. Preserve that trusted fact for the model: an opaque Slack
-    // `<@U…>` id otherwise looks unrelated to the AgentConnect name in standing context,
-    // which can make the agent incorrectly classify its own explicit mention as foreign.
-    // Keep this separate from user text (no rewriting) and only assert it for the router's
-    // explicit-mention rung — never for thread/keyword/auto routing.
-    if (msg.trigger === 'mention') {
+    // Only the router's explicit-mention rung matched this bot's own token, a fact an opaque `<@U…>` id hides from the model.
+    if (msg.trigger === 'mention' && !coordinator) {
       promptPrelude.push({ type: 'text', text: EXPLICIT_MENTION_REMINDER })
     }
     if (promptPrelude.length > 0) blocks.unshift(...promptPrelude)

@@ -247,7 +247,7 @@ describe('append mode keys one session per conversation', () => {
 })
 
 // auto-session-mode.md §3.1: until the coordinator lands, an auto conversation routes as Per thread.
-describe('auto mode before the coordinator', () => {
+describe('auto mode with the coordinator switched off', () => {
   it('keys on its thread, as a createNew conversation does', async () => {
     const { daemon, calls } = await boot('auto')
 
