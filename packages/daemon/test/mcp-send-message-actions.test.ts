@@ -6,7 +6,7 @@ import { isPlatformPost } from '../src/mcp/ops/place-gate.js'
 import { SEND_MESSAGE_ACTIONS, validateSendMessageAction } from '../src/mcp/ops/send-message-actions.js'
 import { sendMessageGuide, type GuideExample } from '../src/mcp/ops/tool-guide.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
-import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
+import { subsessionCoordinate, type TaskReach } from '../src/session/subsession-coordinate.js'
 import type { Integration } from '../src/agents/agent-schema.js'
 
 const slack = { id: 'int-1', platform: 'slack' }
@@ -23,17 +23,20 @@ const ctx: SessionContext = {
 }
 
 /** Deps whose every use is recorded and refused: a rejected call must touch none of them. */
-function effectBoundary(): { deps: OpsDeps; touched: string[] } {
+function effectBoundary(reach?: TaskReach): { deps: OpsDeps; touched: string[] } {
   const touched: string[] = []
   const deps = new Proxy({} as OpsDeps, {
     get: (_target, key) => {
+      if (key === 'taskReach' && reach !== undefined) return async () => reach
+      // The caller's own reach over tasks words a refusal; it reaches no target.
       if (
         key === 'canRun' ||
         key === 'evaluationTool' ||
         key === 'appTool' ||
         key === 'computerTool' ||
         key === 'log' ||
-        key === 'then'
+        key === 'then' ||
+        key === 'taskReach'
       )
         return undefined
       touched.push(String(key))
@@ -45,8 +48,8 @@ function effectBoundary(): { deps: OpsDeps; touched: string[] } {
   return { deps, touched }
 }
 
-async function rejection(args: Record<string, unknown>, at: SessionContext = ctx): Promise<string> {
-  const { deps, touched } = effectBoundary()
+async function rejection(args: Record<string, unknown>, at: SessionContext = ctx, reach?: TaskReach): Promise<string> {
+  const { deps, touched } = effectBoundary(reach)
   const error = (await executeTool(at, 'sendMessage', args, deps).then(
     () => undefined,
     (err: Error) => err
@@ -379,6 +382,63 @@ describe('messageTask', () => {
     } as OpsDeps)
     // A refusal keeps the start family's shape and promises nothing.
     expect(refused).toEqual({ ok: true, wake: refusal })
+  })
+})
+
+describe('where only the coordinator delegates (auto-session-mode.md §5.1)', () => {
+  it('refuses delegateTask in every other session, without effects, and says to do the work here', async () => {
+    for (const reach of ['assistant', 'none'] as const) {
+      const message = await rejection({ action: 'delegateTask', title: 'Release notes', message: 'm' }, ctx, reach)
+      expect(message).toContain('action `delegateTask` is not available in this session')
+      expect(message).toContain('Only an Auto conversation’s coordinator delegates tasks')
+      expect(message).toContain('do it here')
+      expect(message).not.toContain('"action":"delegateTask"')
+    }
+  })
+
+  it('leaves an approved proposal its own refusal, whatever the switch', () => {
+    const proposal = { ...ctx, thread: 'subsession:task-1' }
+    expect(() =>
+      validateSendMessageAction(proposal, { action: 'delegateTask', title: 'Release notes', message: 'm' }, 'none')
+    ).not.toThrow()
+  })
+
+  it('refuses messageTask where the session has no task it can message', async () => {
+    const message = await rejection(
+      { action: 'messageTask', taskId: 'slack:C_HERE:subsession:1:x', message: 'm' },
+      ctx,
+      'none'
+    )
+    expect(message).toContain('action `messageTask` is not available in this session')
+    expect(message).not.toContain('"action":"delegateTask"')
+  })
+
+  it('words startTask, a missing taskId and a self call without pointing at delegateTask', async () => {
+    const renamed = await rejection({ action: 'startTask', message: 'secret body' }, ctx, 'none')
+    expect(renamed).toContain('action `startTask` no longer exists')
+    expect(renamed).not.toContain('secret body')
+    const missing = await rejection({ action: 'messageTask', message: 'm' }, ctx, 'assistant')
+    expect(missing).toContain('the nonempty `taskId` listTasks shows for a follow-up or your organization research')
+    const self = await rejection({ action: 'callAgent', toAgent: 'agent-self', message: 'm' }, ctx, 'none')
+    expect(self).toContain('action `callAgent` with your own agent id needs `channel`')
+    expect(self).toContain('Only an Auto conversation’s coordinator delegates tasks')
+    for (const text of [renamed, missing, self]) expect(text).not.toContain('"action":"delegateTask"')
+  })
+
+  it('hands a place session’s messageTask on only for assistant mode’s own tasks', async () => {
+    const { deps } = wakeDeps()
+    const continued: Record<string, unknown>[] = []
+    const task = 'slack:C_HERE:subsession:research-1:agent-self'
+    const withTask = {
+      ...deps,
+      taskReach: async () => 'assistant' as const,
+      continueSubsession: async (req: Record<string, unknown>) => {
+        continued.push(req)
+        return { delivered: true, targetSession: task, subsession: true as const }
+      }
+    } as unknown as OpsDeps
+    await executeTool(ctx, 'sendMessage', { action: 'messageTask', taskId: task, message: 'again' }, withTask)
+    expect(continued).toEqual([expect.objectContaining({ sessionId: task, assistantTasksOnly: true })])
   })
 })
 

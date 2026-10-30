@@ -68,7 +68,9 @@ does not pretend to defend against effects it cannot defend against.
 
 - A delegated task is **work the conversation hands off on demand**, in a context of its own — "fix
   this bug and open a PR". Ordinary conversation stays in the main conversation.
-- Every agent has them, in assistant mode or not (§5.6). Follow-ups and approved proposals are
+- Every agent has them, in assistant mode or not (§5.6). Where the daemon's Auto switch is on, only
+  an Auto conversation's coordinator delegates them
+  ([auto-session-mode.md](auto-session-mode.md) §5.1). Follow-ups and approved proposals are
   tasks of the conversation they report to as well, but no conversation delegates them, and they
   stay assistant mode's.
 - In an IM: the main conversation says "started", then reports the result with a console link.
@@ -790,6 +792,14 @@ messaged and ended by `taskId` (§5.12); an approved proposal runs once, is not 
 `messageTask` or stopped with `stopTask`, and stays assistant mode's. Delegated tasks, follow-ups
 and approved proposals together are a session's **tasks**, the name the console and the limits
 that count all of them use.
+
+**Only the coordinator delegates where the Auto switch is on**
+([auto-session-mode.md](auto-session-mode.md) §5.1, §6.3). An ordinary session no longer delegates:
+no session but an Auto conversation's coordinator is offered `delegateTask`, a task opens none, and
+`messageTask`, `listTasks` and `stopTask` stay only with a place's long session for its follow-ups,
+its organization research and its approved proposals. A task an ordinary session delegated before
+runs and reports to it until it ends. The rest of this section describes a daemon with the switch
+off, the default until Auto is turned on.
 
 **P0b shipped the minimal form**: self-delegation as below, a failure report the daemon sends
 when a task ends without reporting (§5.7), and a concurrency cap that refuses beyond

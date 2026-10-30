@@ -3,12 +3,14 @@ import { z } from 'zod'
 import { stopIndexedSubsession } from '../../cp/assistant-activity.js'
 import { subsessionLabel } from '../../permissions/subsession-approval.js'
 import {
+  isDelegatedTaskKey,
   isDelegationCoordinate,
   isSubsessionCoordinate,
   isTaskCoordinate,
   keepsTaskSummaryAt,
   mayOpenTasksAt,
-  SUBSESSION_COORDINATE_PREFIX
+  subsessionCoordinateOf,
+  type TaskReach
 } from '../../session/subsession-coordinate.js'
 import type { AssistantItem } from '../../store/assistant-items.js'
 import {
@@ -21,8 +23,9 @@ import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { parseArgs, requiredString } from './args.js'
 import type { SessionContext, ToolHandler } from './context.js'
 import { TASK_TITLE_MAX_CHARS, taskTitleField } from './send-message-actions.js'
+import { taskReachOf, type TaskReachDeps } from './task-reach.js'
 
-export interface AssistantSubsessionDeps {
+export interface AssistantSubsessionDeps extends TaskReachDeps {
   assistantSubsessions?: {
     /** Who the stop is logged as: the person behind the live turn, else the agent itself. */
     actor(ctx: SessionContext): { userId: string; name?: string; isBot?: boolean }
@@ -84,6 +87,21 @@ export const STOP_TASK_TOOL: ToolDescriptor = {
   )
 }
 
+// A place's session that delegates nothing still ends its follow-ups and research (auto-session-mode.md §5.1).
+const ASSISTANT_STOP_TASK_TOOL: ToolDescriptor = {
+  name: 'stopTask',
+  description:
+    'End a follow-up of this conversation, or stop your organization research, when it is no longer needed. Ending ' +
+    'a follow-up stops its checks for good. What it already did is not undone. When it is not clear which one a ' +
+    'person means, ask them, naming each by its title and never by its taskId, before stopping one.',
+  inputSchema: obj(
+    {
+      taskId: { type: 'string', minLength: 1, description: 'The `taskId` followUp returned, or one listTasks shows.' }
+    },
+    ['taskId']
+  )
+}
+
 export const LIST_TASKS_ARGS = z.object({})
 
 export const LIST_TASKS_TOOL: ToolDescriptor = {
@@ -96,6 +114,16 @@ export const LIST_TASKS_TOOL: ToolDescriptor = {
     'status and next step with when it wrote it (until then, the start of the message it was opened with), and ' +
     'whether a thread is attached, with its links. A delegated task or a follow-up has the `taskId` messageTask ' +
     'and stopTask take, and a follow-up its next check. Read-only.',
+  inputSchema: obj({})
+}
+
+const ASSISTANT_LIST_TASKS_TOOL: ToolDescriptor = {
+  name: 'listTasks',
+  description:
+    'List the follow-ups of this conversation, your organization research and the approved proposals that report ' +
+    'here, running first. Each has its kind, title, state, whether it is running now, when it started and was last ' +
+    'active, and whether its latest round handed back a result; a follow-up also has its summary and next check. A ' +
+    'follow-up or research has the `taskId` messageTask and stopTask take. Read-only.',
   inputSchema: obj({})
 }
 
@@ -140,10 +168,16 @@ export const UPDATE_TASK_TOOL: ToolDescriptor = {
   )
 }
 
-/** The tools every session that can delegate a task is offered, a task included: never a follow-up's check or an approved proposal (auto-session-mode.md §6.3); a task, threaded too, also keeps its summary. */
-export function stopTaskToolsFor(session: { thread: string; threadedTask?: boolean }): ToolDescriptor[] {
+/** Listing and stopping tasks where the session may (auto-session-mode.md §5.1, §6.3), never in a follow-up's check or an approved proposal; a task, threaded too, also keeps its summary. */
+export function stopTaskToolsFor(session: {
+  thread: string
+  threadedTask?: boolean
+  reach?: TaskReach
+}): ToolDescriptor[] {
+  const reach = session.reach ?? (mayOpenTasksAt(session.thread) ? 'delegate' : 'none')
   return [
-    ...(mayOpenTasksAt(session.thread) ? [LIST_TASKS_TOOL, STOP_TASK_TOOL] : []),
+    ...(reach === 'delegate' ? [LIST_TASKS_TOOL, STOP_TASK_TOOL] : []),
+    ...(reach === 'assistant' ? [ASSISTANT_LIST_TASKS_TOOL, ASSISTANT_STOP_TASK_TOOL] : []),
     ...(keepsTaskSummaryAt(session.thread) || session.threadedTask === true ? [UPDATE_TASK_TOOL] : [])
   ]
 }
@@ -155,11 +189,12 @@ const refused = (reason: string) => ({ result: 'refused' as const, reason: `${re
 // One answer for an unknown id and every task this session does not own, so a refusal names nothing (send-message-guide.md §8.7).
 const NOT_OWNED = 'This session started no task with that id.'
 
-/** The child key's coordinate, from its reserved prefix on. */
-const coordinateOf = (key: string): string | undefined => {
-  const at = key.indexOf(`:${SUBSESSION_COORDINATE_PREFIX}`)
-  return at >= 0 ? key.slice(at + 1) : undefined
-}
+// auto-session-mode.md §5.1: a task this session delegated before only the coordinator delegated runs to its end.
+const COORDINATOR_ONLY =
+  'Only an Auto conversation’s coordinator stops a delegated task. This one finishes on its own and reports here, ' +
+  'or a person stops it from the console.'
+
+const coordinateOf = subsessionCoordinateOf
 
 /** Whether the child key's coordinate is a task's, never a follow-up's or an approved proposal's. */
 const taskCoordinateOf = (key: string): boolean => isDelegationCoordinate(coordinateOf(key))
@@ -183,6 +218,8 @@ export const stopTask: ToolHandler<AssistantSubsessionDeps> = async (ctx, args, 
   // The recorded owner by outward id too: a session recreated on the same key did not start it.
   const owner = await port.sessionIdOf(here)
   if (owner === undefined || row.parentSessionId !== owner) return refused(NOT_OWNED)
+  if (isDelegatedTaskKey(row.childSessionKey) && (await taskReachOf(ctx, deps)) !== 'delegate')
+    return refused(COORDINATOR_ONLY)
   const id = row.childSessionKey
   if (row.state !== 'open') return { result: 'not_running', taskId: id, note: `It has already ended. ${NOTHING}` }
   if ((await stopIndexedSubsession(row, port.stopSession, port.actor(ctx))) === 'stopped') {
@@ -320,7 +357,12 @@ export const listTasks: ToolHandler<AssistantSubsessionDeps> = async (ctx, args,
   const owner = coordinator ? coordinator.sessionId : await port.sessionIdOf(here)
   if (owner === undefined) return NO_TASKS
   const parent = { sessionId: owner, key: coordinator?.key ?? here }
-  const { rows, total } = await port.listForOwner(ctx.agentId, parent, LIST_TASKS_LIMIT, { followUps: owns })
+  // A session that delegates nothing lists only assistant mode's own tasks; one it delegated before runs to its end (auto-session-mode.md §5.1).
+  const delegatedTasks = (await taskReachOf(ctx, deps)) === 'delegate'
+  const { rows, total } = await port.listForOwner(ctx.agentId, parent, LIST_TASKS_LIMIT, {
+    followUps: owns,
+    ...(delegatedTasks ? {} : { delegatedTasks: false })
+  })
   if (total === 0) return NO_TASKS
   const now = port.now?.() ?? Date.now()
   const listed = await Promise.all(

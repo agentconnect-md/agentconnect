@@ -102,7 +102,9 @@ Creation leaves the current runtime turn in its original conversation. Slack bri
 the originating request into the new channel, whose session continues the task. The
 original turn links the channel and ends without repeating the work or requiring
 the user to repeat the request. No additional transcript history is copied. Work
-that needs the existing context, or cannot create a channel, uses ordinary delegation.
+that needs the existing context, or cannot create a channel, is handled as it would be
+without a code channel: by a delegated task, or in the conversation itself where only an
+Auto conversation's coordinator delegates ([auto-session-mode.md](auto-session-mode.md) §5.1).
 
 Channel discovery supplies standing context identifying an existing code channel.
 The agent continues work there, maintains repository/branch/PR context items, and

@@ -4,6 +4,7 @@ import {
   CHECK_COORDINATE_PREFIX,
   RESEARCH_COORDINATE_PREFIX,
   SUBSESSION_COORDINATE_PREFIX,
+  isCoordinatorCoordinate,
   isDelegatedTaskCoordinate,
   isSubsessionCoordinate
 } from '@agentconnect.md/protocol'
@@ -90,6 +91,30 @@ export function isSubsessionKey(key: string | null | undefined): boolean {
 /** Whether a session on this coordinate may open tasks at all (auto-session-mode.md §6.3): any but a follow-up's check, an approved proposal or research; a task's own level is read from its index row. */
 export function mayOpenTasksAt(thread: string | null | undefined): boolean {
   return !isSubsessionCoordinate(thread) || (isDelegationCoordinate(thread) && !isResearchCoordinate(thread))
+}
+
+/** What a session may do with tasks (auto-session-mode.md §5.1): open and manage them, manage only assistant mode's own, or neither. */
+export type TaskReach = 'delegate' | 'assistant' | 'none'
+
+/** A session's {@link TaskReach}: once only the coordinator delegates, another place's session keeps its follow-ups, research and approved proposals, and a task keeps nothing. */
+export function taskReachAt(
+  thread: string,
+  at: { coordinatorOnly: boolean; assistantMode: boolean; threadedTask?: boolean }
+): TaskReach {
+  if (!at.coordinatorOnly) return mayOpenTasksAt(thread) ? 'delegate' : 'none'
+  if (isCoordinatorCoordinate(thread)) return 'delegate'
+  return at.assistantMode && !isSubsessionCoordinate(thread) && at.threadedTask !== true ? 'assistant' : 'none'
+}
+
+/** The child key's coordinate, from its reserved prefix on; undefined for a task on a platform thread. */
+export function subsessionCoordinateOf(key: string): string | undefined {
+  const at = key.indexOf(`:${SUBSESSION_COORDINATE_PREFIX}`)
+  return at >= 0 ? key.slice(at + 1) : undefined
+}
+
+/** Whether a task's child key names one a delegation opened, which only a session of reach `delegate` manages: never a follow-up, research or an approved proposal. */
+export function isDelegatedTaskKey(key: string): boolean {
+  return isDelegatedTaskCoordinate(subsessionCoordinateOf(key))
 }
 
 /** Whether a session on this coordinate is a task that keeps its own summary (auto-session-mode.md §6.7): a delegated task's, never research's. */

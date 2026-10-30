@@ -90,6 +90,24 @@ describe('runtime matrix sendMessage probe', () => {
     ).toMatch(/sendMessage: invalid arguments — action `callAgent` does not accept `thread`/)
   })
 
+  it('serves a session that delegates no task its own tools and refusals (auto-session-mode.md §5.1)', async () => {
+    const own = scenario('own-work-without-tasks')
+    expect(own).toMatchObject({ reach: 'none', newOnly: true })
+    const tools = probeTools('slack', own.reach)
+    expect(toolShape(tools)).toBe('action')
+    const send = tools.find((tool) => tool.name === 'sendMessage')!
+    expect(JSON.stringify(send)).not.toMatch(/delegateTask|messageTask/)
+    const refused = await validateSendMessage({ action: 'delegateTask', title: 't', message: 'm' }, tools, {
+      reach: 'none'
+    })
+    expect(refused).toMatch(/action `delegateTask` is not available in this session/)
+    expect(judge(own, []).verdict).toBe('PASS')
+    expect(
+      judge(own, [{ tool: 'sendMessage', args: { action: 'delegateTask', title: 't', message: 'm' }, error: refused! }])
+        .verdict
+    ).toBe('FAIL')
+  })
+
   it('refuses a post that addresses a peer by its bot, and a reply asked of a post, with the daemon’s error', async () => {
     const tools = probeTools()
     const byBot = await validateSendMessage(

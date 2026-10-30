@@ -8,7 +8,8 @@ Both halves are implemented: delegated tasks (§12 items 1–4 and 11, recorded 
 and message-addressed replies (§12 items 5–9, recorded in §7.8, §8.9 and §9.8). Visible text
 no longer says sub-session (§11 questions 10–11): "task" is the umbrella for a session's
 delegated tasks, its follow-ups and the approved proposals that report to it; what the runtime itself
-reports for the current turn is "this turn's tasks"; internal names are unchanged.
+reports for the current turn is "this turn's tasks"; internal names are unchanged. A daemon with its
+Auto switch on lets only an Auto conversation's coordinator delegate (§2.1).
 
 Keep one agent-facing `sendMessage` tool, add a required `action` discriminator,
 and move detailed argument documentation into an on-demand `getToolGuide` tool. Existing
@@ -113,6 +114,14 @@ Three things are kept apart:
   off, beside its tool calls, with `delegateTask`. Assistant mode's follow-ups (assistant-mode.md
   §5.12) and approved proposals (§5.10) are tasks of the conversation they report to too.
 
+**Only the coordinator delegates.** Where the daemon's Auto switch is on, only an Auto
+conversation's coordinator delegates tasks ([auto-session-mode.md](auto-session-mode.md) §5.1).
+Every other session, a task included, is offered neither `delegateTask` nor, for a delegated task,
+`messageTask`, `listTasks` and `stopTask`, and the daemon refuses them. An assistant-mode place's
+session keeps those three for its follow-ups, its organization research and its approved
+proposals. A task delegated before runs and reports to its owning session until it ends. Elsewhere
+in this document the owning session is any session, as it is with the switch off.
+
 In this document, "task" alone means a delegated task unless a follow-up or an approved proposal
 is named. A delegated task has these properties:
 
@@ -181,7 +190,7 @@ task. The `delegateTask` description and guide say so (§3.2, §3.4).
 | `action`         | Purpose                                                                    | Required target       | Optional arguments                                                                                                             |
 | ---------------- | -------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `callAgent`      | Call a peer, optionally in an existing session, or yourself into a channel | `toAgent`             | `channel` or `sessionId` (mutually exclusive), `platform` and `integrationId` with `channel`; a self target requires `channel` |
-| `delegateTask`   | Hand off long work to a delegated task of your current session             | `title`               | `messageId`, a coordinator session's only; refused everywhere until the coordinator ships                                      |
+| `delegateTask`   | Hand off long work to a delegated task of your current session             | `title`               | `messageId`, a coordinator session's only; the coordinator's alone where the Auto switch is on (§2.1)                          |
 | `messageTask`    | Send more work or an answer to a task your current session delegated       | `taskId`              | `messageId`, as for `delegateTask`                                                                                             |
 | `replyToSession` | Answer a message another session sent you                                  | `messageId`           | None                                                                                                                           |
 | `postMessage`    | Post to a person, channel, or another existing thread                      | `toUser` or `channel` | `thread`, `attachment`, `platform`, `integrationId`, subject to existing branch rules                                          |
@@ -1119,6 +1128,7 @@ explicit `messageTask` opens another round.
 | The task itself, or another task of the same owning session      | Refused                                                      |
 | Another session of the agent, including the one after `!new`     | Refused, but for a follow-up of the place's new long session |
 | Another agent, a follow-up's check, an approved proposal, a hook | Refused                                                      |
+| Any session but the coordinator, with the Auto switch on (§2.1)  | Refused for a delegated task, allowed for its own research   |
 
 "Any of its turns" includes a turn a person started, a task's report, a reply from a peer, a
 reminder, and a scheduled run. The owning session is the authority because the task is its own
@@ -1168,7 +1178,9 @@ It is read-only and changes nothing. Its scope is exactly the running-tasks remi
 a follow-up only to its place's current long session, and an approved proposal only to the
 session it reports to; another session of the agent,
 including the one after `!new`, and another agent see none of them; a task sees only the tasks it
-delegated itself ([auto-session-mode.md](auto-session-mode.md) §6.3). Like the other
+delegated itself ([auto-session-mode.md](auto-session-mode.md) §6.3). With the Auto switch on, only
+the coordinator lists delegated tasks, and a place's other session lists its follow-ups, research
+and approved proposals (§2.1). Like the other
 task tools it needs no IM integration. It does not list this turn's tasks, which the runtime
 reports to the console rather than to the agent (§2.1).
 

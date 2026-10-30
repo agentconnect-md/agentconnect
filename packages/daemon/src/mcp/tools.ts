@@ -19,27 +19,41 @@ import { CAPABILITY_REQUEST_TOOLS } from './ops/capability-requests.js'
 import { CODE_HOST_RESEARCH_TOOLS } from './ops/code-host-research.js'
 import { GETTING_TO_KNOW_TOOL } from './ops/getting-to-know.js'
 import { SEND_MESSAGE_ACTIONS } from './ops/send-message-actions.js'
+import type { TaskReach } from '../session/subsession-coordinate.js'
 import { GET_TOOL_GUIDE_TOOL } from './ops/tool-guide.js'
 
-/** The one send tool (send-message-guide.md §3.2): a required `action`, one flat schema, and the details in `getToolGuide`; `platform` narrows to the agent's own platforms. */
-function buildSendMessageTool(platforms: string[]): ToolDescriptor {
+// What the description says of tasks, by what the session may do with them (auto-session-mode.md §5.1).
+const SEND_MESSAGE_TASKS: Record<TaskReach, string> = {
+  delegate:
+    'delegateTask hands long work of your own, spanning turns, to a task of this session that people can see and ' +
+    'stop: call it before exploring, say so, end your turn. Work you finish within this turn goes to your runtime’s ' +
+    'own subagent tool. messageTask sends a task more (taskId); a task reports each round itself; listTasks lists ' +
+    'them, stopTask stops one. ',
+  assistant:
+    'messageTask gives a follow-up of this conversation new instructions, or your organization research another ' +
+    'round (taskId); listTasks lists them, stopTask ends one. ',
+  none: ''
+}
+
+/** The one send tool (send-message-guide.md §3.2): a required `action`, one flat schema, and the details in `getToolGuide`; `platform` narrows to the agent's own platforms, and the task actions to what the session may do. */
+function buildSendMessageTool(platforms: string[], reach: TaskReach = 'delegate'): ToolDescriptor {
   const agentId = { type: 'string', minLength: 1, description: 'AgentConnect agent id, never a platform member id.' }
+  const actions = SEND_MESSAGE_ACTIONS.filter(
+    (action) => (action !== 'delegateTask' || reach === 'delegate') && (action !== 'messageTask' || reach !== 'none')
+  )
   return {
     name: 'sendMessage',
     description:
       'Send outside your current conversation. Required action: callAgent asks a peer to work or answer you ' +
       '(sessionId continues an existing peer session); calling yourself needs channel and starts visible work ' +
-      'there. delegateTask hands long work of your own, spanning turns, to a task of this session that people can ' +
-      'see and stop: call it before exploring, say so, end your turn. Work you finish within this turn goes to your ' +
-      'runtime’s own subagent tool. messageTask sends a task more (taskId); a task reports each round itself; ' +
-      'listTasks lists them, stopTask stops one. replyToSession answers a message another session sent you, by its ' +
+      `there. ${SEND_MESSAGE_TASKS[reach]}replyToSession answers a message another session sent you, by its ` +
       'messageId; replies are not broadcast. postMessage reaches a person, channel, or another thread; it starts no ' +
       'work and gets no reply. For your current conversation, write your ordinary reply. To get a peer’s result, ' +
       'use toAgent: {agentId: "...", needsReply: true}. Call getToolGuide {"tool":"sendMessage"} for arguments and ' +
       'examples. Calls without action fail without sending anything.',
     inputSchema: obj(
       {
-        action: { type: 'string', enum: [...SEND_MESSAGE_ACTIONS] },
+        action: { type: 'string', enum: actions },
         message: { type: 'string', minLength: 1, description: 'Message body in Markdown.' },
         toAgent: {
           description: 'callAgent only: the agent to call.',
@@ -74,13 +88,28 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
           minLength: 1,
           description: 'callAgent only: that agent’s existing session (a childSessionId), instead of channel.'
         },
-        taskId: { type: 'string', minLength: 1, description: 'messageTask only: the taskId delegateTask returned.' },
-        title: {
-          type: 'string',
-          minLength: 1,
-          maxLength: 80,
-          description: 'delegateTask only: a short name for the task, shown to people.'
-        },
+        ...(reach === 'none'
+          ? {}
+          : {
+              taskId: {
+                type: 'string',
+                minLength: 1,
+                description:
+                  reach === 'delegate'
+                    ? 'messageTask only: the taskId delegateTask returned.'
+                    : 'messageTask only: the taskId listTasks shows.'
+              }
+            }),
+        ...(reach === 'delegate'
+          ? {
+              title: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 80,
+                description: 'delegateTask only: a short name for the task, shown to people.'
+              }
+            }
+          : {}),
         messageId: {
           type: 'string',
           minLength: 1,
@@ -815,7 +844,7 @@ const LIST_AGENTS_INPUT_SCHEMA = () =>
     }
   })
 
-const LIST_AGENTS_DESCRIPTION =
+const LIST_AGENTS_DESCRIPTION = (delegates: boolean) =>
   'List the AI agents you can work with — INCLUDING YOURSELF — with their id, name, displayName, description, and ' +
   'status, so you ' +
   'can discover peers to collaborate with. By DEFAULT this lists every agent in your organization that you are ' +
@@ -827,37 +856,44 @@ const LIST_AGENTS_DESCRIPTION =
   '@mentioning member ids in a channel post. Pass `channel` only as a FILTER, to narrow the list to the agents ' +
   'present in that channel. Only agents you are allowed to reach are returned. Your own entry is included so you ' +
   'can use its agent id in `callAgent` with `channel` to open and activate a new channel-root conversation with ' +
-  'yourself; to hand long work of your own to a task, use `delegateTask` instead (see `getToolGuide`).'
+  (delegates
+    ? 'yourself; to hand long work of your own to a task, use `delegateTask` instead (see `getToolGuide`).'
+    : 'yourself.')
 
-export const COLLABORATION_TOOLS: ToolDescriptor[] = [
-  {
-    name: 'listAgents',
-    description: LIST_AGENTS_DESCRIPTION,
-    inputSchema: LIST_AGENTS_INPUT_SCHEMA()
-  },
-  {
-    // Kept so a session already warm with the old tool set (and prompts/skills that
-    // learned the old name) keeps working; the daemon routes both names to one handler.
-    name: 'listChannelAgents',
-    description: `Deprecated alias of \`listAgents\` — prefer that name. ${LIST_AGENTS_DESCRIPTION}`,
-    inputSchema: LIST_AGENTS_INPUT_SCHEMA()
-  },
-  {
-    name: 'viewSessionStatus',
-    description:
-      'Read execution and reply-delivery state for a task or session YOU started. Pass the `taskId` a delegateTask ' +
-      'returned, or the `childSessionId` a callAgent returned as `sessionId`, then follow the returned `nextAction`. ' +
-      'This is diagnostic only; it never returns the reply body.',
-    inputSchema: obj({
-      taskId: { type: 'string', minLength: 1, description: 'The `taskId` a `sendMessage` delegateTask returned.' },
-      sessionId: {
-        type: 'string',
-        minLength: 1,
-        description: 'The `childSessionId` a `sendMessage` callAgent returned.'
-      }
-    })
-  }
-]
+/** The collaboration tools; a session that delegates no task (auto-session-mode.md §5.1) is not pointed at `delegateTask`. */
+export function collaborationTools(delegates = true): ToolDescriptor[] {
+  return [
+    {
+      name: 'listAgents',
+      description: LIST_AGENTS_DESCRIPTION(delegates),
+      inputSchema: LIST_AGENTS_INPUT_SCHEMA()
+    },
+    {
+      // Kept so a session already warm with the old tool set (and prompts/skills that
+      // learned the old name) keeps working; the daemon routes both names to one handler.
+      name: 'listChannelAgents',
+      description: `Deprecated alias of \`listAgents\` — prefer that name. ${LIST_AGENTS_DESCRIPTION(delegates)}`,
+      inputSchema: LIST_AGENTS_INPUT_SCHEMA()
+    },
+    {
+      name: 'viewSessionStatus',
+      description:
+        'Read execution and reply-delivery state for a task or session YOU started. Pass the `taskId` a delegateTask ' +
+        'returned, or the `childSessionId` a callAgent returned as `sessionId`, then follow the returned `nextAction`. ' +
+        'This is diagnostic only; it never returns the reply body.',
+      inputSchema: obj({
+        taskId: { type: 'string', minLength: 1, description: 'The `taskId` a `sendMessage` delegateTask returned.' },
+        sessionId: {
+          type: 'string',
+          minLength: 1,
+          description: 'The `childSessionId` a `sendMessage` callAgent returned.'
+        }
+      })
+    }
+  ]
+}
+
+export const COLLABORATION_TOOLS: ToolDescriptor[] = collaborationTools()
 
 /**
  * Formal code-host review effect (gitlab-com-integration.md §15). The descriptor
@@ -1157,8 +1193,11 @@ export function toolsForIntegrations(
     currentPlatform?: string
     /** The console can show shared images, so a session with no IM integration still gets `shareFile`. */
     consoleImages?: boolean
+    /** What the session may do with tasks (auto-session-mode.md §5.1); every task action when absent. */
+    taskReach?: TaskReach
   } = {}
 ): ToolDescriptor[] {
+  const reach = options.taskReach ?? 'delegate'
   const tools: ToolDescriptor[] = []
   const seen = new Set<string>()
   const add = (set: ToolDescriptor[]) => {
@@ -1171,12 +1210,12 @@ export function toolsForIntegrations(
   add(MEMORY_TOOLS)
   if (options.organizationKnowledge) add(KNOWLEDGE_TOOLS)
   if (options.decisions) add(DECISION_TOOLS)
-  add(COLLABORATION_TOOLS)
+  add(reach === 'delegate' ? COLLABORATION_TOOLS : collaborationTools(false))
   // Every agent's cross-place recall, under the read rule (assistant-mode.md §5.4 ③, §5.5).
   add([RECALL_TOOL])
   // `sendMessage` and its guide are ALWAYS present: postless calls, tasks and origin replies need no platform (send-message-guide.md §3.2).
   const platforms = [...new Set(integrations.map((i) => i.platform))]
-  add([buildSendMessageTool(platforms), GET_TOOL_GUIDE_TOOL])
+  add([buildSendMessageTool(platforms, reach), GET_TOOL_GUIDE_TOOL])
   // Platform read helpers only make sense once the agent has at least one integration.
   if (platforms.length > 0) {
     add(buildReadTools(platforms, options.currentPlatform))

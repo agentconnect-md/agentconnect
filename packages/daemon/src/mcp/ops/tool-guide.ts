@@ -1,6 +1,11 @@
 // `getToolGuide`: on-demand usage rules and runnable examples, so `sendMessage` keeps a short description (send-message-guide.md §3.4).
 import { z } from 'zod'
-import { isSubsessionCoordinate, isTaskCoordinate, mayOpenTasksAt } from '../../session/subsession-coordinate.js'
+import {
+  isSubsessionCoordinate,
+  isTaskCoordinate,
+  mayOpenTasksAt,
+  type TaskReach
+} from '../../session/subsession-coordinate.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { offersThreadUpdates } from '../../platforms/thread-keys.js'
 import { offersDirectMessages, platformLabel } from '../../platforms/read-ports.js'
@@ -8,6 +13,7 @@ import { optionalEnum, parseArgs, requiredEnum } from './args.js'
 import type { SessionContext, ToolHandler } from './context.js'
 import { SEND_MESSAGE_ACTIONS, type SendMessageAction } from './send-message-actions.js'
 import { DELEGATE_TASK_GUIDE, MESSAGE_TASK_GUIDE, type GuideExample } from './task-guide.js'
+import { taskReachOf, type TaskReachDeps } from './task-reach.js'
 
 export type { GuideExample }
 
@@ -43,7 +49,8 @@ interface ActionGuide {
 }
 
 /** Every action's complete rules, with this session's own agent id in the examples that need it. */
-function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuide> {
+function actionGuides(ctx: SessionContext, reach: TaskReach): Record<SendMessageAction, ActionGuide> {
+  const delegates = reach === 'delegate' || !mayOpenTasksAt(ctx.thread)
   return {
     callAgent: {
       action: 'callAgent',
@@ -60,8 +67,8 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           'conversation, so without needsReply nothing comes back, not even a failure. A bare id asks for no report ' +
           'on this call; it does not forbid one or clear an earlier request.',
         'Without `channel` the call is postless: nothing is posted anywhere. It reaches a peer only; your own id ' +
-          'without `channel` is refused — work of your own that needs no conversation is a delegated task: use ' +
-          'delegateTask.',
+          'without `channel` is refused — work of your own that needs no conversation ' +
+          (delegates ? 'is a delegated task: use delegateTask.' : 'is done in this session.'),
         'With `channel` it also posts one visible message at that channel’s root, @-mentions the target, and ' +
           `anchors the target to that post. Your own id (${ctx.agentId}) with \`channel\` opens and activates a ` +
           'visible conversation of your own there, where people can follow and respond. That session belongs to the ' +
@@ -75,7 +82,7 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
           'yours or one someone shared with you — and delivers into exactly that session: nothing is posted, and it keeps ' +
           'its context and its other callers. Every call, even a repeat into the same session, is a new message it ' +
           'answers by that message’s id. It cannot be combined ' +
-          'with `channel`, never names your own sessions (use messageTask for your task), and never ' +
+          `with \`channel\`, never names your own sessions${delegates ? ' (use messageTask for your task)' : ''}, and never ` +
           'falls back to another session: an unknown id, another agent’s id, a task, or a ' +
           'conversation the people asking you may not read returns `wake.delivered: false` with `wake.reason: ' +
           '"session_not_found"`.',
@@ -258,10 +265,20 @@ function actionGuides(ctx: SessionContext): Record<SendMessageAction, ActionGuid
 }
 
 /** Availability notes from trusted session context; execution still decides every call. */
-function availability(ctx: SessionContext): Partial<Record<SendMessageAction, string>> {
+function availability(ctx: SessionContext, reach: TaskReach): Partial<Record<SendMessageAction, string>> {
   const platforms = [...new Set((ctx.integrations ?? []).map((integration) => integration.platform))]
   const notes: Partial<Record<SendMessageAction, string>> = {}
-  if (!mayOpenTasksAt(ctx.thread)) {
+  if (reach !== 'delegate' && mayOpenTasksAt(ctx.thread)) {
+    // auto-session-mode.md §5.1: only an Auto conversation's coordinator delegates.
+    notes.delegateTask =
+      'Unavailable here: only an Auto conversation’s coordinator delegates tasks. Do the work here, handing parts ' +
+      'you can finish within this turn to your runtime’s own subagent or Task tool.'
+    notes.messageTask =
+      reach === 'assistant'
+        ? 'Here it reaches only a follow-up of this conversation or your organization research, by the taskId ' +
+          'listTasks shows.'
+        : 'Unavailable here: this session has no task it can message.'
+  } else if (!mayOpenTasksAt(ctx.thread)) {
     const unavailable =
       'Unavailable here: this session is a follow-up’s check or an approved proposal and cannot delegate or message ' +
       'tasks. Do the work here, or report back with replyToSession and let the session that started it decide.'
@@ -297,9 +314,13 @@ function availability(ctx: SessionContext): Partial<Record<SendMessageAction, st
 }
 
 /** The whole guide for one action, or the overview of every action with one minimal example each. */
-export function sendMessageGuide(ctx: SessionContext, action?: SendMessageAction): Record<string, unknown> {
-  const guides = actionGuides(ctx)
-  const notes = availability(ctx)
+export function sendMessageGuide(
+  ctx: SessionContext,
+  action?: SendMessageAction,
+  reach: TaskReach = mayOpenTasksAt(ctx.thread) ? 'delegate' : 'none'
+): Record<string, unknown> {
+  const guides = actionGuides(ctx, reach)
+  const notes = availability(ctx, reach)
   if (action !== undefined) {
     const guide = guides[action]
     return { tool: 'sendMessage', ...guide, ...(notes[action] ? { availability: notes[action] } : {}) }
@@ -325,5 +346,5 @@ export function sendMessageGuide(ctx: SessionContext, action?: SendMessageAction
   }
 }
 
-export const getToolGuide: ToolHandler<unknown> = (ctx, args) =>
-  sendMessageGuide(ctx, parseArgs(GET_TOOL_GUIDE_ARGS, args).action)
+export const getToolGuide: ToolHandler<TaskReachDeps> = async (ctx, args, deps) =>
+  sendMessageGuide(ctx, parseArgs(GET_TOOL_GUIDE_ARGS, args).action, await taskReachOf(ctx, deps))

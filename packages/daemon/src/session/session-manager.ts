@@ -284,6 +284,8 @@ export class SessionManager {
       slackBotUserIdFor?: (integrationId: string) => string | undefined
       /** Whether people may write to a delegated task from its console page (auto-session-mode.md §10). */
       taskPagesTakeMessages?: () => boolean
+      /** Whether only an Auto conversation's coordinator delegates tasks (auto-session-mode.md §5.1). */
+      tasksCoordinatorOnly?: () => boolean
       /** The time zone in the turn's sender's platform profile, for every agent's local time (product-conventions.md "Local time"). */
       senderTimeZoneFor?: (msg: NormalizedMessage, integrationId?: string) => Promise<string | undefined>
       /** The zone of whoever the read rule says started a turn no person is behind: a run's, a report's, another agent's call's. */
@@ -737,6 +739,7 @@ export class SessionManager {
           ...(threadedTask ? { threadedTask } : {}),
           ...(pageTaskParent !== undefined ? { pageTask: true } : {}),
           ...(this.deps.taskPagesTakeMessages?.() ? { taskPageMessages: true } : {}),
+          ...(this.deps.tasksCoordinatorOnly?.() ? { tasksCoordinatorOnly: true } : {}),
           sessionId: rec?.sessionId,
           originSessionId: creatorSessionId,
           envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
@@ -1121,14 +1124,14 @@ export class SessionManager {
       if (none) this.noFollowUpsSaid.add(key)
       else if (summary) this.noFollowUpsSaid.delete(key)
     }
-    // Every session that can own tasks, a task included: its running tasks ride the same points, and any turn after that list changed (send-message-guide.md §8.7).
-    if (rec.sessionId && mayOpenTasksAt(thread)) {
+    // Every session that can delegate, the coordinator alone once only it does: its running tasks ride the same points, and any turn after that list changed (send-message-guide.md §8.7).
+    if (rec.sessionId && (this.deps.tasksCoordinatorOnly?.() ? coordinator : mayOpenTasksAt(thread))) {
       // A list that cannot be read is left for a later turn, never a reason to fail this one.
       const running = await runningSubsessionsBlock(
         this.deps.store,
         agentId,
         { sessionId: rec.sessionId, key },
-        { last: this.runningSubsessionsShown.get(key), refresh: opening || reminded }
+        { last: this.runningSubsessionsShown.get(key), refresh: opening || reminded, stoppable: !coordinator }
       ).catch(() => undefined)
       if (running) this.runningSubsessionsShown.set(key, running.shown)
       if (running?.text) promptPrelude.push({ type: 'text', text: running.text })

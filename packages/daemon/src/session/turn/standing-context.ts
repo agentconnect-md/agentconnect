@@ -79,6 +79,8 @@ export type StandingContextInput = {
   pageTask?: boolean
   /** People may write to a delegated task from its console page (auto-session-mode.md §10). */
   taskPageMessages?: boolean
+  /** Only an Auto conversation's coordinator delegates tasks, so this session is not taught to (auto-session-mode.md §5.1). */
+  tasksCoordinatorOnly?: boolean
   /** This session's OUTWARD id (session-concept.md §1.1), absent on the turn that opens it. */
   sessionId?: string | null
   /** The session that created this one (send-message-guide.md §9.6): a record only, never a reply address. */
@@ -296,9 +298,9 @@ function onDemandCloneTarget(dir: string, repoFullName: string): string {
 }
 
 // Standing collaboration guidance in `sendMessage`'s action forms; the current conversation is always an ordinary reply.
+const COLLAB_HEADING = `# Collaborating with other agents\n`
+const COLLAB_PLATFORM_WORKFLOW = `Follow the current platform's task workflow when its standing instructions provide one; the delegation defaults below apply otherwise.\n`
 const COLLAB_BEFORE_SELF =
-  `# Collaborating with other agents\n` +
-  `Follow the current platform's task workflow when its standing instructions provide one; the delegation defaults below apply otherwise.\n` +
   `- Every \`sendMessage\` call names an \`action\`; \`getToolGuide\` \`{"tool":"sendMessage"}\` lists them with ` +
   `examples. To reach a specific agent privately, call \`sendMessage\` with ` +
   `\`{"action":"callAgent","toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly ` +
@@ -359,8 +361,22 @@ const COLLAB_AFTER_SELF =
   `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
   `yourself back or broadcast to everyone.`
 
+// auto-session-mode.md §5.1: where only an Auto conversation's coordinator delegates, every other session does its own work.
+const COLLAB_OWN_WORK =
+  `Work of your own stays in this conversation: only an Auto conversation's coordinator delegates tasks. Hand parts ` +
+  `you can finish within this turn to your runtime's own subagent or Task tool when that helps. `
+
 /** The collaboration guidance, the same for every agent. */
-export const COLLAB_APPEND = COLLAB_BEFORE_SELF + COLLAB_SELF_DELEGATION + COLLAB_AFTER_SELF
+export const COLLAB_APPEND =
+  COLLAB_HEADING + COLLAB_PLATFORM_WORKFLOW + COLLAB_BEFORE_SELF + COLLAB_SELF_DELEGATION + COLLAB_AFTER_SELF
+
+/** The collaboration guidance where only the coordinator delegates (auto-session-mode.md §5.1). */
+export const COLLAB_APPEND_WITHOUT_DELEGATION =
+  COLLAB_HEADING +
+  `Follow the current platform's task workflow when its standing instructions provide one.\n` +
+  COLLAB_BEFORE_SELF +
+  COLLAB_OWN_WORK +
+  COLLAB_AFTER_SELF
 
 // auto-session-mode.md §6.7: the parts a task's summary keeps, which its owning session reads in listTasks.
 export const TASK_SUMMARY_REQUEST =
@@ -460,6 +476,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
       : input.threadedTask
         ? THREADED_TASK_APPEND
         : ''
+  const collabAppend = input.tasksCoordinatorOnly === true ? COLLAB_APPEND_WITHOUT_DELEGATION : COLLAB_APPEND
   // A coordinator's own instructions replace the reply and collaboration rules: it only decides where messages go (auto-session-mode.md §5.4).
   const coordinator = isCoordinatorCoordinate(input.thread)
   const assemble = (meta: string) => {
@@ -470,7 +487,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
             meta,
             workspaceRootsAppend,
             platformAppend,
-            COLLAB_APPEND,
+            collabAppend,
             taskReportingAppend,
             input.taskInstructions,
             NO_RESPONSE_RULE,
@@ -489,7 +506,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
     agentMeta,
     workspaceRootsAppend,
     platformAppend,
-    collabAppend: COLLAB_APPEND,
+    collabAppend,
     taskReportingAppend,
     resumeSystemContext,
     sessionContext,

@@ -72,7 +72,11 @@ addresses an agent's bot reads the daemon's refusal. Calls
 are classified to a semantic operation, so the old target-inferred shape and the
 `action` shape are judged alike; `message-task`, which gives an existing background
 task more work, is new-only, skipped against the old shape, and kept out of the matrix
-cell (its runs carry `comparable: false`).
+cell (its runs carry `comparable: false`). So is `own-work-without-tasks`: the background
+self-work request in a session that delegates no task, as a Per thread session is once only
+an Auto conversation's coordinator delegates ([auto-session-mode.md](../../../../docs/designs/auto-session-mode.md)
+§5.1). It is served that session's tools and standing context, and passes with no
+`sendMessage` call.
 
 A scenario passes when the first `sendMessage` call is valid and correct, is
 degraded (`·`) when only the last call is, and fails (`✗`) otherwise or on any call in

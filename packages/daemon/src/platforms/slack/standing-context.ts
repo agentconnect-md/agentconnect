@@ -7,10 +7,10 @@ export const SLACK_CONVERSATION_CONTEXT =
   '# Slack conversation\n' +
   'For requested coding work that needs multiple steps, edits, tests or a PR, use createSlackCodeChannel ' +
   'to start a dedicated working conversation unless the user asks to stay here. This is the platform task ' +
-  'workflow instead of delegateTask for the same work. Answer quick questions here. After creation, Slack ' +
+  'workflow for that work. Answer quick questions here. After creation, Slack ' +
   'brings the originating request into the new channel; link the channel and end this turn without also ' +
   'starting the work here. Only that message is copied: if the task needs earlier discussion, keep its ' +
-  'context here and use the ordinary delegation workflow. Also use that workflow if creation is unavailable. ' +
+  'context here and handle the work as you would without a code channel, as also when creation is unavailable. ' +
   'Do not ask the user to repeat their task. ' +
   REPORTS
 
