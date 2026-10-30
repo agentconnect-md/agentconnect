@@ -17,7 +17,10 @@
 > tools with `postMessage` and `callAgent`, `listTasks`, memory, and the follow-up, proposal and
 > reminder tools its place is offered (§5.4). A threaded task is a session on its message's thread, attached in the task index. It answers
 > each message in the thread the message came from (§6.4), counts as running while a turn of it runs,
-> keeps a summary with `updateTask`, and closes after 7 idle days or with its purged session (§6.5). A
+> keeps a summary with `updateTask`, and closes after 7 idle days or with its purged session (§6.5).
+> A conversation's Tasks tab in the console groups its threaded tasks apart from its background ones,
+> each with its summary, which `listAssistantSubsessions` reads from the owning daemon on every call
+> and the Control Plane stores nowhere (§6.7, §11). A
 > background task cannot take a channel message yet (§6.6): the coordinator opens no background task
 > before P3. Each message a coordinator turn decides shows 🤔 until the turn ends (§4.4), and `!new`
 > and `!stop` act on a task in its threads and on the coordinator at the root (§8). Under `auto` every

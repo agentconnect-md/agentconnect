@@ -43,7 +43,10 @@ export interface AssistantActivityStore {
   assistantItems: Pick<AssistantItemLedger, 'get' | 'byTaskKey'>
   assistantChecks: Pick<AssistantCheckLedger, 'get' | 'checks'>
   assistantDrafts: Pick<AssistantDraftLedger, 'listPending' | 'get'>
-  assistantSubsessions: Pick<AssistantSubsessionIndex, 'list' | 'listForParent' | 'get' | 'adoptFollowUps'>
+  assistantSubsessions: Pick<
+    AssistantSubsessionIndex,
+    'list' | 'listForParent' | 'get' | 'adoptFollowUps' | 'threadsOf'
+  >
   getSession(key: string): Promise<SessionRecord | undefined>
   getSessionByOutwardId(sessionId: string, agentId?: string): Promise<SessionRecord | undefined>
   placeSession(
@@ -294,11 +297,18 @@ async function taskOf(
     const ended = followUp?.status === 'done' || followUp?.status === 'stopped'
     return { ...base, state: ended ? 'done' : 'open', kind: 'follow-up', ...(followUp ? { followUp } : {}) }
   }
+  const threads = await store.assistantSubsessions.threadsOf(agentId, row.childSessionKey)
   return {
     ...base,
     // A sub-session whose failure report is still on its way has ended, as `failed` shows.
     state: row.state === 'reporting' ? 'failed' : row.state,
-    kind: isTaskCoordinate(coordinateOf(row.childSessionKey)) ? 'approved-proposal' : 'delegated'
+    kind: isTaskCoordinate(coordinateOf(row.childSessionKey)) ? 'approved-proposal' : 'delegated',
+    // The task's own account (auto-session-mode.md §6.7), read here and passed through by the Control Plane, which keeps none of it.
+    ...(row.title ? { title: row.title } : {}),
+    ...(row.summary ? { summary: row.summary } : {}),
+    ...(row.summary && row.summaryUpdatedAt !== undefined ? { summaryUpdatedAt: iso(row.summaryUpdatedAt) } : {}),
+    ...(row.background ? { background: row.background } : {}),
+    ...(threads.length > 0 ? { threaded: true } : {})
   }
 }
 

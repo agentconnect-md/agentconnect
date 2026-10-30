@@ -93,6 +93,31 @@ describe('assistant/activity frames', () => {
     ).toBe(true)
   })
 
+  // auto-session-mode.md §6.7: a task's summary rides the read, bounded, and a row without one is still read.
+  it('carries a task’s title, summary, background and whether a thread is attached', () => {
+    const row = {
+      sessionId: 'sid-2',
+      parentSessionId: 'sid-1',
+      state: 'open',
+      createdAt: '2026-10-09T08:00:00.000Z',
+      kind: 'delegated',
+      title: 'Add retry to the webhook sender',
+      summary: 'Scope: webhook retries. Status: in review. Next: merge.',
+      summaryUpdatedAt: '2026-10-09T09:00:00.000Z',
+      background: 'can you add retry with backoff to the webhook sender?',
+      threaded: true
+    }
+    const page = (over: Record<string, unknown>) => ({
+      operation: 'subsessions',
+      subsessions: [{ ...row, ...over }],
+      truncated: false
+    })
+    expect(decodes('assistant/activity/read/result', page({}))).toBe(true)
+    expect(decodes('assistant/activity/read/result', page({ summary: 'x'.repeat(2_001) }))).toBe(false)
+    expect(decodes('assistant/activity/read/result', page({ summaryUpdatedAt: 'yesterday' }))).toBe(false)
+    expect(decodes('assistant/activity/read/result', { operation: 'task', task: row })).toBe(true)
+  })
+
   it('round-trips follow-ups among the tasks, with their newest checks', () => {
     const check = { at: '2026-10-09T09:00:00.000Z', observation: 'The build is still running.', reported: false }
     const followUp = {
