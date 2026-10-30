@@ -42,7 +42,9 @@
 > opens there continues on its own page, which the conversation links to. The console's home and an
 > agent's Playground open that conversation where the agent's daemon reads Auto and its webchat runs
 > the legacy protocol, and the Control Plane keeps it its owner's with one agent; New session stays an
-> ordinary webchat session. The visibility lock for threaded tasks is not implemented.
+> ordinary webchat session. A threaded task's visibility is locked while a coordinator owns it: its
+> daemon reports the owner to the Control Plane each time it changes, and the coordinator's page lists
+> its threaded tasks among its related sessions (§6.2).
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -302,6 +304,18 @@ The rules follow from whether a thread is attached; there is no separate switch.
 | Owner            | The sender of the message it opened for; later messages keep it | The parent's owner                             |
 
 Both kinds inherit the parent's visibility and refuse changes to it.
+
+- A background task's coordinate and lineage already tell the Control Plane that it is a task.
+- A threaded task is a session on a platform thread. It is classified as any session there is, which
+  in the coordinator's conversation is the coordinator's audience. Its daemon reports
+  `taskParentSessionId` on `EventSession`: the session that owns it now. It sends this when the task
+  opens, is adopted on a switch into `auto`, or is handed to a new coordinator by `!new`, and sends
+  `null` when the task is released on a switch out or closes after 7 idle days.
+- While the field is set, the Control Plane refuses visibility changes to the session and lists it
+  among the owner's child sessions, and the task's page names that owner as its parent
+  ([session-visibility.md](session-visibility.md) §4.3).
+- Becoming a task never widens a session that its sender made private earlier. The lock only keeps
+  its audience from changing while the task belongs to the coordinator.
 
 ### 6.3 Nesting
 

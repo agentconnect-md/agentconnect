@@ -1625,6 +1625,8 @@ export interface AssignmentRepo {
 export interface EventSessionInput {
   sessionId: SessionId
   parentSessionId?: SessionId
+  /** The session owning this one as a task now (auto-session-mode.md §6.2); null clears it, absent keeps it. */
+  taskParentSessionId?: SessionId | null
   agentId: AgentId
   launchId?: LaunchId // absent for Slack/Discord-created sessions (no CP launch fence)
   phase: SessionPhase
@@ -1752,6 +1754,8 @@ export interface SessionExternalAccessSnapshot {
 export interface SessionMetaRecord {
   id: SessionId
   parentSessionId: SessionId | null
+  /** The session owning this one as a task now, which its daemon moves or clears (auto-session-mode.md §6.2). */
+  taskParentSessionId?: SessionId | null
   agentId: AgentId
   launchId: LaunchId | null
   platform: Platform | null

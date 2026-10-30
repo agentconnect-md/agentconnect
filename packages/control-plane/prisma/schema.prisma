@@ -1361,6 +1361,7 @@ enum VisibilitySource {
 model SessionMeta {
   id                  String              @id // EventSession.sessionId = ACP session id (agent-assigned string, NOT a UUID)
   parentSessionId     String? // Parent ACP session id reported by the daemon; no FK because parent metadata may arrive later or live on another daemon
+  taskParentSessionId String? // The session that owns this one as a task now (auto-session-mode.md §6.2); the daemon moves or clears it, unlike parentSessionId
   agentId             String              @db.Uuid
   launchId            String?             @db.Uuid // CP launch fence; null for Slack/Discord-created sessions (no CP launch)
   platform            String? // denormalized sessionKey echo for dashboard filters (free string so webchat can be listed)
@@ -1474,6 +1475,7 @@ model SessionMeta {
   @@index([agentId, triggeredBy, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_agent_trigger_page_idx")
   @@index([orgId, visibility, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_org_visibility_page_idx")
   @@index([parentSessionId])
+  @@index([taskParentSessionId])
   // Conversation grouping (merged-conversation-view.md §5.2): serves the
   // emit-at-max exists-newer probe, the member backfill, and the
   // conversationKey resolver. Replaces the unused bare (platform, channel).

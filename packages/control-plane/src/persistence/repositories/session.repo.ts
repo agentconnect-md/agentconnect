@@ -65,6 +65,7 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
   return {
     id: SessionId(s.id),
     parentSessionId: s.parentSessionId ? SessionId(s.parentSessionId) : null,
+    taskParentSessionId: s.taskParentSessionId ? SessionId(s.taskParentSessionId) : null,
     agentId: AgentId(s.agentId),
     launchId: s.launchId ? LaunchId(s.launchId) : null,
     platform: (s.platform as Platform | null) ?? null,
@@ -944,7 +945,7 @@ export class PgSessionRepo implements SessionRepo {
       : false
     const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
       INSERT INTO "session_meta" (
-        "id", "parentSessionId", "agentId", "launchId", "platform", "channel",
+        "id", "parentSessionId", "taskParentSessionId", "agentId", "launchId", "platform", "channel",
         "thread", "tenantScope", "phase", "link", "summary", "title", "status",
         "lastActivityAt", "triggeredBy", "channelName", "triggeredByName", "hookKind",
         "threadUrl", "runtime", "model", "effort", "fastMode",
@@ -954,7 +955,7 @@ export class PgSessionRepo implements SessionRepo {
         "externalScopeId", "externalResolution", "legacyUnresolved",
         "classifiedPolicyRev", "startedAt", "endedAt", "updatedAt"
       ) VALUES (
-        ${ev.sessionId}, ${ev.parentSessionId ?? null}, ${ev.agentId},
+        ${ev.sessionId}, ${ev.parentSessionId ?? null}, ${ev.taskParentSessionId ?? null}, ${ev.agentId},
         ${ev.launchId ?? null}, ${ev.platform ?? null}, ${ev.channel ?? null},
         ${ev.thread ?? null}, ${ev.transportScope ?? null}, ${ev.phase}::"SessionPhase", ${ev.link ?? null},
         ${ev.summary ?? null}, ${ev.title ?? null}, ${ev.status ?? null},
@@ -999,6 +1000,11 @@ export class PgSessionRepo implements SessionRepo {
           "session_meta"."parentSessionId",
           EXCLUDED."parentSessionId"
         ),
+        -- Unlike its lineage, a task's owner moves and clears: absent keeps it, null clears it.
+        "taskParentSessionId" = CASE
+          WHEN ${ev.taskParentSessionId !== undefined} THEN EXCLUDED."taskParentSessionId"
+          ELSE "session_meta"."taskParentSessionId"
+        END,
         "phase" = CASE
           WHEN "session_meta"."phase" IN ('problem', 'end') THEN "session_meta"."phase"
           WHEN EXCLUDED."phase" IN ('problem', 'end') THEN EXCLUDED."phase"
@@ -1779,13 +1785,17 @@ export class PgSessionRepo implements SessionRepo {
     const rows = viewerArm
       ? await this.db.$queryRaw<SessionMeta[]>(Prisma.sql`
           SELECT s.* FROM "session_meta" s
-          WHERE s."parentSessionId" = ${parentSessionId}
+          WHERE (s."parentSessionId" = ${parentSessionId} OR s."taskParentSessionId" = ${parentSessionId})
             AND s."agentId" IN (${Prisma.join(agentIds)})
             AND ${viewerArm}
           ORDER BY s."startedAt" ASC, s."id" ASC
         `)
       : await this.db.sessionMeta.findMany({
-          where: { parentSessionId, agentId: { in: agentIds } },
+          // A threaded task is its owner's child too, by the owner it has now (auto-session-mode.md §6.2).
+          where: {
+            OR: [{ parentSessionId }, { taskParentSessionId: parentSessionId }],
+            agentId: { in: agentIds }
+          },
           orderBy: [{ startedAt: 'asc' }, { id: 'asc' }]
         })
     return rows.map(toRecord)

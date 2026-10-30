@@ -515,13 +515,15 @@ describe('the task model: title, summary and attached threads (auto-session-mode
     for (const id of ['threaded', 'background']) await index.open(row(a, id))
     await index.attachThread(thread(a, 'threaded', '100.1'))
     const successor = { sessionId: 'sid-parent-2', key: sessionKey('slack', 'C0GENERAL', 'append:2', a, 'T0EXAMPLE') }
-    expect(await index.adoptThreaded(a, row(a, 'threaded').parentSessionKey, successor)).toBe(1)
+    expect(await index.adoptThreaded(a, row(a, 'threaded').parentSessionKey, successor)).toEqual([
+      row(a, 'threaded').childSessionKey
+    ])
     expect(await index.get(a, childKey(a, 'threaded'))).toMatchObject({
       parentSessionId: successor.sessionId,
       parentSessionKey: successor.key
     })
     expect(await index.get(a, childKey(a, 'background'))).toMatchObject({ parentSessionId: 'sid-parent-1' })
-    expect(await index.adoptThreaded(agent(), successor.key, successor)).toBe(0)
+    expect(await index.adoptThreaded(agent(), successor.key, successor)).toEqual([])
   })
 
   it('closes the settled threaded tasks idle past a time, whose threads become unowned (auto-session-mode.md §6.5)', async () => {

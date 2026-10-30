@@ -396,6 +396,18 @@ Provider-bound sessions are immutable through this endpoint: no single human
 owns a shared Slack conversation, and changing such a row to `private` or
 `org` would detach it from its source audience.
 
+A task takes the audience of the session that owns it, so it is immutable here
+too ([auto-session-mode.md](auto-session-mode.md) §6.2). A background task is
+recognized by its `subsession:` coordinate and lineage. A threaded task lives on
+a platform thread, so its daemon reports `taskParentSessionId` on `EventSession`:
+the session that owns it now. The daemon re-sends it whenever that changes: when
+the task opens, when a new coordinator adopts it, when a root `!new` hands it
+over, and when it is released or closes, which sends `null`. Unlike
+`parentSessionId`, which records lineage and is first-wins, this column follows
+every report that carries it, and a report without it leaves it unchanged. While
+it is set, the endpoint refuses the session, and the session is listed among
+its owner's child sessions.
+
 For direct sessions, an explicit change sets `visibilitySource = 'explicit'`, which pins the row
 against any later automatic reclassification (§4.5). **Tightening cascades to
 descendants** (§4.5); the CP also notifies the owning daemon of the new
