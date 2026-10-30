@@ -37,8 +37,9 @@ coordinate on both ingress transports. History reads use channel history.
 Archiving ends the channel session. The agent's archive first marks the session
 `closed` (Slack's _Done_), then archives with the optional summary. When a person
 archives the channel instead, `channel_archive` / `group_archive` arrive on either
-transport as a Stop at the channel coordinate: running work in that session is
-cancelled. An archive of a channel the provider reports is not a code channel is
+transport at the channel coordinate: all sessions and delegated tasks sharing the
+channel are cancelled. Native Stop keeps its existing displayed-owner behavior on
+Socket Mode. An archive of a channel the provider reports is not a code channel is
 ignored. A turn waiting on an approval shows the session as `suspended` (_Needs
 attention_) until the last request settles, as in ordinary threads.
 

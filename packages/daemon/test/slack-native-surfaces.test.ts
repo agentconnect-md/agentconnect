@@ -379,21 +379,44 @@ describe('Slack native surfaces', () => {
     await f.conn.stop()
   })
 
-  it('stops the channel session when a person archives a code channel, and ignores other archives', async () => {
-    const actions: unknown[] = []
-    const deps = {
-      onThreadSessions: async () => ['slack:C1:C1:a1'],
-      onStatusAction: (a: unknown) => void actions.push(a)
-    }
-    const f = await fixture(true, deps)
-    await f.handlers.get('channel_archive')!({ event: { channel: 'C1', user: 'U1' } })
-    expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:C1:a1', actor: { userId: 'U1' } }])
-    await f.conn.stop()
+  it.each(['channel_archive', 'group_archive'] as const)(
+    '%s stops every channel session and delegated task',
+    async (type) => {
+      const actions: unknown[] = []
+      const deps = {
+        onThreadSessions: async () => ['slack:C1:C1:a1', 'slack:C1:C1:a2'],
+        onStopThreadTasks: () => ['slack:C1:task:a1', 'slack:C1:C1:a2'],
+        onStatusAction: (a: unknown) => void actions.push(a)
+      }
+      const f = await fixture(true, deps)
+      await f.conn.setStatus('C1', 'C1', 'working', { sessionKey: 'slack:C1:C1:a2' })
+      await f.handlers.get(type)!({ event: { channel: 'C1', user: 'U1' } })
+      expect(actions).toEqual([
+        { kind: 'cancel', sessionKey: 'slack:C1:C1:a1', actor: { userId: 'U1' } },
+        { kind: 'cancel', sessionKey: 'slack:C1:C1:a2', actor: { userId: 'U1' } },
+        { kind: 'cancel', sessionKey: 'slack:C1:task:a1', actor: { userId: 'U1' } }
+      ])
+      await f.conn.stop()
 
-    const ordinary = await fixture(false, deps)
-    actions.length = 0
-    await ordinary.handlers.get('group_archive')!({ event: { channel: 'C1', user: 'U1' } })
-    expect(actions).toEqual([])
-    await ordinary.conn.stop()
+      const ordinary = await fixture(false, deps)
+      actions.length = 0
+      await ordinary.handlers.get(type)!({ event: { channel: 'C1', user: 'U1' } })
+      expect(actions).toEqual([])
+      await ordinary.conn.stop()
+    }
+  )
+
+  it('native Stop in a code channel still targets only the displayed agent', async () => {
+    const onStatusAction = vi.fn()
+    const f = await fixture(true, {
+      onThreadSessions: async () => ['slack:C1:C1:a1', 'slack:C1:C1:a2'],
+      onStatusAction
+    })
+    await f.conn.setStatus('C1', 'C1', 'working', { sessionKey: 'slack:C1:C1:a2' })
+    await f.handlers.get('agent_session_stopped')!({ event: { channel: 'C1', user: 'U1' } })
+    expect(onStatusAction.mock.calls).toEqual([
+      [{ kind: 'cancel', sessionKey: 'slack:C1:C1:a2', actor: { userId: 'U1' } }]
+    ])
+    await f.conn.stop()
   })
 })
