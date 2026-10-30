@@ -1,6 +1,7 @@
 import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 import { sessionThreadOf, type NormalizedMessage } from '../messages/normalized.js'
 import { isCoordinatorCoordinate } from '../session/append-coordinate.js'
+import { isSubsessionCoordinate } from '../session/subsession-coordinate.js'
 import { attachmentMention } from '../session/attachment-block.js'
 import { MAX_STEERS_PER_TURN } from './constants.js'
 import type { Pending, QueueEntry } from './turn-types.js'
@@ -13,7 +14,7 @@ type SteerCandidate = Pick<
   'msg' | 'isQueueCmd' | 'hookContext' | 'callMeta' | 'admissionWait' | 'coordinationWait'
 >
 
-/** Only an ordinary human chat message outside a coordinator may be steered; everything else stays serialised. */
+/** Only an ordinary human chat message outside a coordinator or a task may be steered; everything else stays serialised. */
 export function steerEligibleEntry(entry: SteerCandidate): boolean {
   return (
     entry.msg.source === 'user' &&
@@ -25,7 +26,9 @@ export function steerEligibleEntry(entry: SteerCandidate): boolean {
     entry.admissionWait === undefined &&
     entry.coordinationWait === undefined &&
     // A coordinator decides each message in a turn of its own batch, never inside a running one (auto-session-mode.md §4.3).
-    !isCoordinatorCoordinate(sessionThreadOf(entry.msg))
+    !isCoordinatorCoordinate(sessionThreadOf(entry.msg)) &&
+    // A message on a task's page runs as its own turn, so its answer reaches the page rather than the parent's report (auto-session-mode.md §10).
+    !isSubsessionCoordinate(sessionThreadOf(entry.msg))
   )
 }
 

@@ -1,6 +1,9 @@
 import {
   continuableOrigin,
+  continuableSession,
+  isDelegatedTaskCoordinate,
   originKindOf,
+  TASK_PAGE_MESSAGES_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
@@ -12,6 +15,7 @@ import { canEdit, canView } from '../authorization/policy.js'
 import { chatCallerRole } from '../domain/chat-actions.js'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import { servesSessionContent } from '../domain/session-content.js'
+import { continuationAudience, continuationParentId } from '../domain/continuation-audience.js'
 import type { MemberSetRepo, OrgMemberRole, SessionContentStore, Shareable, ViewCtx } from '../persistence/ports.js'
 import type { PlacementResolver, ResolvableAgent } from '../orchestrator/placementResolver.js'
 import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
@@ -40,8 +44,10 @@ export interface WebchatVerificationDeps {
   /** Session-targeted continuation re-checks (webchat-cross-integration-continuation.md §6.2). */
   sessions: {
     getUnscoped(id: SessionId): Promise<{
+      id?: string
       orgId: string
       agentId: string
+      parentSessionId?: string | null
       platform: string | null
       tenantScope?: string | null
       channel?: string | null
@@ -125,12 +131,19 @@ export function webchatBinding(
         return { ok: false, reason: 'continuation unavailable' }
       }
       if (session.contentPurgedAt !== null) return { ok: false, reason: 'continuation unavailable' }
-      if (!continuableOrigin(session.platform ?? '')) return { ok: false, reason: 'continuation unavailable' }
+      if (!continuableSession(session)) return { ok: false, reason: 'continuation unavailable' }
       if (opts.viewer.role === 'viewer') return { ok: false, reason: 'continuation unavailable' }
+      // A task is continued by whoever may continue its owning session (auto-session-mode.md §10).
+      const parentId = continuationParentId(session)
+      const audience = continuationAudience(
+        session,
+        parentId ? await deps.sessions.getUnscoped(SessionId(parentId)) : null
+      )
+      if (!audience) return { ok: false, reason: 'continuation unavailable' }
       // Fence the exact owner proved by mint-time provider-identity expansion against the live row.
       if (
-        session.visibility === 'private' &&
-        (session.ownerIdentity === null || session.ownerIdentity !== claims.privateSessionOwnerIdentity)
+        audience.visibility === 'private' &&
+        (audience.ownerIdentity === null || audience.ownerIdentity !== claims.privateSessionOwnerIdentity)
       ) {
         return { ok: false, reason: 'continuation unavailable' }
       }
@@ -146,6 +159,12 @@ export function webchatBinding(
       if (
         originKindOf(session.platform ?? '') === 'hook' &&
         !daemon.capabilities.features.includes(WEBCHAT_HOOK_CONTINUATION_FEATURE)
+      ) {
+        return { ok: false, reason: 'continuation unavailable' }
+      }
+      if (
+        isDelegatedTaskCoordinate(session.thread) &&
+        !daemon.capabilities.features.includes(TASK_PAGE_MESSAGES_FEATURE)
       ) {
         return { ok: false, reason: 'continuation unavailable' }
       }

@@ -281,6 +281,8 @@ export class SessionManager {
        *  cannot tell that a multi-mention message addresses it — the
        *  response-choice rule then misfires into AC_NO_RESPONSE. */
       slackBotUserIdFor?: (integrationId: string) => string | undefined
+      /** Whether people may write to a delegated task from its console page (auto-session-mode.md §10). */
+      taskPagesTakeMessages?: () => boolean
       /** The time zone in the turn's sender's platform profile, for every agent's local time (product-conventions.md "Local time"). */
       senderTimeZoneFor?: (msg: NormalizedMessage, integrationId?: string) => Promise<string | undefined>
       /** The zone of whoever the read rule says started a turn no person is behind: a run's, a report's, another agent's call's. */
@@ -715,6 +717,7 @@ export class SessionManager {
             msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
           thread,
           ...(threadedTask ? { threadedTask } : {}),
+          ...(this.deps.taskPagesTakeMessages?.() ? { taskPageMessages: true } : {}),
           sessionId: rec?.sessionId,
           originSessionId: creatorSessionId,
           envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),

@@ -66,6 +66,10 @@ describe('steer admission policy', () => {
     expect(steerEligibleEntry({ msg: msg(), coordinationWait: Promise.resolve() })).toBe(false)
   })
 
+  it("queues a person's message on a task's page as its own turn, so its answer reaches the page", () => {
+    expect(steerEligibleEntry({ msg: msg({ thread: 'subsession:42', headless: true }) })).toBe(false)
+  })
+
   it('queues a message carrying an uploaded file, whose download link a steer cannot deliver', () => {
     const upload = { id: 'webchat:t1:file:u1', name: 'spec.pdf', mimeType: 'application/pdf', size: 12 }
     const transfer = { uploadId: '3f1c2a4e-9b7d-4e21-8c3a-0d5e6f7a8b9c', sha256: 'abc' }

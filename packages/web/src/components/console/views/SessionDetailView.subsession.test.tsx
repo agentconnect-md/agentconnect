@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// A task's own page is read-only (its channel is synthetic and its thread no platform thread, so a composer could reach neither it nor its turn), names the session it belongs to, and shows a follow-up's state and checks.
+// A task's own page is read-only unless the server lets the caller continue a delegated task console-only (auto-session-mode.md §10), names the session it belongs to, and shows a follow-up's state and checks.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -26,7 +26,13 @@ const wire = vi.hoisted(() => ({
   taskReads: [] as Array<[string, string]>,
   integrations: [] as unknown[]
 }))
-const spies = vi.hoisted(() => ({ pgAttach: vi.fn(), pgCancel: vi.fn(), listFilters: [] as unknown[] }))
+const spies = vi.hoisted(() => ({
+  pgAttach: vi.fn(),
+  pgCancel: vi.fn(),
+  pgSend: vi.fn(() => true),
+  markSessionTarget: vi.fn(),
+  listFilters: [] as unknown[]
+}))
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'session-1' }),
@@ -147,8 +153,8 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     isPgBusy: () => wire.busy,
     setPgImage: () => {},
     openPlayground: () => 'pg_new',
-    pgSend: () => true,
-    markSessionTarget: () => {},
+    pgSend: spies.pgSend,
+    markSessionTarget: spies.markSessionTarget,
     pgAttach: spies.pgAttach,
     getPgQueue: () => [],
     pgCancelQueued: () => {},
@@ -207,11 +213,15 @@ const listRow = (origin: Origin): Session =>
     daemonId: 'daemon-1'
   } as unknown as SessionDto)
 
-// The Control Plane's own verdict: a Slack-origin task still reads as continuable there.
 const OWNER = { id: 'owner-1', agentId: 'agent-1', agentName: 'Ops bot', platform: 'slack', title: 'Deploy the thing' }
 
-const detailOf = (origin: Origin, parentSession: SessionDetailDto['parentSession'] = null): SessionDetailDto => {
-  const canContinue = origin.platform !== 'webchat'
+// The Control Plane's own verdict: a task only where its daemon takes page messages, a webchat conversation in place.
+const detailOf = (
+  origin: Origin,
+  parentSession: SessionDetailDto['parentSession'] = null,
+  taskContinues = false
+): SessionDetailDto => {
+  const canContinue = origin.thread?.startsWith('subsession:') ? taskContinues : origin.platform !== 'webchat'
   return {
     id: 'session-1',
     parentSession,
@@ -266,10 +276,14 @@ async function settle() {
 
 async function open(
   origin: Origin,
-  { listed = true, parent = null }: { listed?: boolean; parent?: SessionDetailDto['parentSession'] } = {}
+  {
+    listed = true,
+    parent = null,
+    taskContinues = false
+  }: { listed?: boolean; parent?: SessionDetailDto['parentSession']; taskContinues?: boolean } = {}
 ) {
   wire.rows = listed ? [listRow(origin)] : []
-  wire.detail = detailOf(origin, parent)
+  wire.detail = detailOf(origin, parent, taskContinues)
   await act(async () => {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
@@ -309,6 +323,8 @@ beforeEach(() => {
   daemonFeatures.length = 0
   spies.pgAttach.mockClear()
   spies.pgCancel.mockClear()
+  spies.pgSend.mockClear()
+  spies.markSessionTarget.mockClear()
   setViewport(false)
   container = document.createElement('div')
   document.body.append(container)
@@ -379,6 +395,24 @@ describe.each([
       'Started by Deploy the thing'
     )
   })
+
+  it.each(SUBSESSIONS.filter(([name]) => name.endsWith('task')))(
+    'offers %s a composer that continues it by its target once the server lets this caller',
+    async (_name, origin) => {
+      await open(origin, { parent: OWNER, taskContinues: true })
+
+      expect(container?.querySelector('[data-task-owner]')?.textContent).toBe('Belongs to Deploy the thing · task')
+      expect(composer()).not.toBeNull()
+      // Never its conversation's own socket: the task is reached by its session, console-only.
+      expect(spies.pgAttach).not.toHaveBeenCalled()
+      await act(async () => button('Send message')?.click())
+      expect(spies.markSessionTarget).toHaveBeenCalledWith('session-1', 'session-1')
+      expect(spies.pgSend).toHaveBeenCalledTimes(1)
+      // The task's session, never the conversation id its channel names.
+      const [sessionId, agentId, , conversationId] = spies.pgSend.mock.calls[0] as unknown[]
+      expect([sessionId, agentId, conversationId]).toEqual(['session-1', 'agent-1', undefined])
+    }
+  )
 
   it('says the owning session is not visible rather than inventing a link', async () => {
     await open(SLACK_SUBSESSION)

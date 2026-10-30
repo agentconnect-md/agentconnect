@@ -1,4 +1,9 @@
-import { continuableOrigin, originKindOf } from '@agentconnect.md/protocol'
+import {
+  continuableSession,
+  isDelegatedTaskCoordinate,
+  isSubsessionCoordinate,
+  originKindOf
+} from '@agentconnect.md/protocol'
 import { LifecycleCleanupBlockedError } from '../daemon/turn-types.js'
 import { formatErr } from '../daemon/text.js'
 import { isHeadlessCronSession } from '../scheduler/scheduler.js'
@@ -69,6 +74,11 @@ export interface ChatContinuationHost extends Pick<
   ): Promise<string | null>
 }
 
+/** Whether the console continues this session by its target rather than in place: any but a webchat conversation's own, whose tasks are targets too (auto-session-mode.md §10). */
+export function continuedByTarget(local: { platform: string; thread?: string | null }): boolean {
+  return local.platform !== 'webchat' || isSubsessionCoordinate(local.thread)
+}
+
 // Continue the existing outward session and preserve its origin mirror before admitting execution.
 export class ChatSessionContinuation {
   constructor(
@@ -99,13 +109,16 @@ export class ChatSessionContinuation {
     }
     // The verified outward id must resolve on this agent; never rebuild coordinates from caller input.
     const local = await this.host.store().getSessionByOutwardId(targetSessionId, agentId)
-    if (!local || !continuableOrigin(local.platform)) return { accepted: false, reason: 'not_found' }
+    if (!local || !continuableSession(local)) return { accepted: false, reason: 'not_found' }
     if (this.host.paused(agentId)) return { accepted: false, reason: 'paused' }
     if (this.host.safetyDraining(agentId)) return { accepted: false, reason: 'busy' }
     if (this.host.draining() || this.host.agentDraining(agentId)) return { accepted: false, reason: 'draining' }
     // Hook and headless cron sessions have no mirror; a missing chat integration must refuse the turn.
     const synthetic = isHeadlessCronSession(local)
-    const integration = originKindOf(local.platform) === 'hook' || synthetic ? null : this.integration(agentId, local)
+    // A delegated task's coordinate is no platform thread, so its page runs console-only (auto-session-mode.md §10).
+    const task = isDelegatedTaskCoordinate(local.thread)
+    const integration =
+      originKindOf(local.platform) === 'hook' || synthetic || task ? null : this.integration(agentId, local)
     if (integration === undefined) return { accepted: false, reason: 'integration_offline' }
     await this.application.rememberAuthorName(author)
     const shared = integration === null ? post : undefined
@@ -126,7 +139,7 @@ export class ChatSessionContinuation {
       isDm: local.conversationKind === 'dm',
       trigger: local.conversationKind === 'dm' ? 'dm' : 'mention',
       adoptedSession: true,
-      ...(synthetic ? { headless: true, syntheticChannel: true } : {})
+      ...(synthetic ? { headless: true, syntheticChannel: true } : task ? { headless: true } : {})
     }
     const key = sessionKey(
       message.platform,

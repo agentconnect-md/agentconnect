@@ -9,6 +9,7 @@ import {
 } from '@microsoft/agent-host-protocol'
 import type { AhpAttachmentAuthorization } from '@agentconnect.md/protocol'
 import { chatSessionKey } from '../session/chat-application.js'
+import { continuedByTarget } from '../session/chat-continuation.js'
 import { observeChatTurn } from '../session/chat-observer.js'
 import type { ChatOutput, ChatPost, ChatSink } from '../session/chat-turn.js'
 import type { MaskedChatEvent } from '../session/chat-events.js'
@@ -17,7 +18,7 @@ import { publishedMessage } from './action-schema.js'
 import type { AhpActionContext } from './service.js'
 
 export interface AhpDispatchEnvironment {
-  session(sessionId: string, agentId: string): Promise<{ key: string; platform: string } | undefined>
+  session(sessionId: string, agentId: string): Promise<{ key: string; platform: string; thread?: string } | undefined>
   authorized(auth: AhpAttachmentAuthorization): boolean
   canStart(sessionKey: string, turnId: string): boolean
   now(): number
@@ -48,7 +49,7 @@ export async function dispatchAhpAction(
     callerRole: auth.callerRole,
     callerApproves: auth.callerApproves,
     ...(!auth.conversationId ? { apiOrigin: true } : {}),
-    ...(auth.targetSessionId || (local && local.platform !== 'webchat') ? { targetSessionId: binding.sessionId } : {})
+    ...(auth.targetSessionId || (local && continuedByTarget(local)) ? { targetSessionId: binding.sessionId } : {})
   }
   await application.dispatch(scope, params, origin, {
     authorized: () => context.isCurrent() && host.authorized(auth),

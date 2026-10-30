@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { manifestFor } from '../platform-manifest.js'
+import { isDelegatedTaskCoordinate, isSubsessionCoordinate } from '../subsession-coordinate.js'
 
 /**
  * Routing & orchestration (C→D control) — protocol §5.
@@ -83,6 +84,12 @@ export function originKindOf(p: string): OriginKind | undefined {
 export function continuableOrigin(platform: string): boolean {
   const kind = originKindOf(platform)
   return kind === 'hook' || (kind === 'chat' && manifestFor(platform).consoleContinuation)
+}
+
+/** Whether the console composer may continue this session: a delegated task's page on any surface, which runs console-only (auto-session-mode.md §10), or a continuable origin's session outside background work. */
+export function continuableSession(session: { platform: string | null; thread?: string | null }): boolean {
+  if (isSubsessionCoordinate(session.thread)) return isDelegatedTaskCoordinate(session.thread)
+  return continuableOrigin(session.platform ?? '')
 }
 export const Platform = z.string().min(1)
 export type Platform = z.infer<typeof Platform>

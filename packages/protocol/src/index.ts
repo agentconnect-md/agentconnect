@@ -83,6 +83,7 @@ export {
   READ_ACCESS_BATCH_V1_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
   SESSION_MODE_AUTO_V1_FEATURE,
+  TASK_PAGE_MESSAGES_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
@@ -257,7 +258,14 @@ export {
   isAppendCoordinate,
   isCoordinatorCoordinate
 } from './append-coordinate.js'
-export { SUBSESSION_COORDINATE_PREFIX, isSubsessionCoordinate } from './subsession-coordinate.js'
+export {
+  APPROVED_TASK_COORDINATE_PREFIX,
+  CHECK_COORDINATE_PREFIX,
+  RESEARCH_COORDINATE_PREFIX,
+  SUBSESSION_COORDINATE_PREFIX,
+  isDelegatedTaskCoordinate,
+  isSubsessionCoordinate
+} from './subsession-coordinate.js'
 
 // ── §5 platform manifest — pre-dispatch capability table, read by every host ──
 export {

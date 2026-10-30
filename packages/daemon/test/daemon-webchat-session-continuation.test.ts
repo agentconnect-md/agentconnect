@@ -515,3 +515,109 @@ describe('webchat session-targeted continuation — headless cron origin', () =>
     await daemon.stop()
   })
 })
+
+// A delegated task's coordinate is no platform thread: its page is continued console-only (auto-session-mode.md §10).
+const TASK_ACP = 'acp-target-task'
+const TASK_THREAD = 'subsession:4242'
+const TASK_KEY = `slack:C1:${TASK_THREAD}:${AGENT}`
+const PARENT_KEY = `slack:C1:100.1:${AGENT}`
+
+describe('webchat session-targeted continuation — a delegated task', () => {
+  async function seedTask(d: Awaited<ReturnType<typeof boot>>['d'], thread = TASK_THREAD) {
+    const key = `slack:C1:${thread}:${AGENT}`
+    await d.store.upsertSession({
+      key,
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread,
+      acpSessionId: TASK_ACP,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await d.store.setSessionClassification(key, { sourceBindingKind: 'local' })
+    return key
+  }
+
+  it("runs the turn on the task without a mirror, streams the answer to the page, and leaves a settled task's parent unreported", async () => {
+    const { daemon, d, prompts, postMessage, postAsAuthor } = await boot(() => 'the retry now backs off')
+    const key = await seedTask(d)
+    const index = (d as never as { store: { assistantSubsessions: AssistantSubsessionIndexLike } }).store
+      .assistantSubsessions
+    await index.open({
+      agentId: AGENT,
+      childSessionKey: key,
+      parentSessionId: TARGET_ACP,
+      parentSessionKey: PARENT_KEY,
+      title: 'Retry with backoff'
+    })
+    await index.finish(AGENT, key, 'done')
+    const events: RdChatEvent[] = []
+
+    const ack = await d.handleRelayMsg(turn('does it back off now?', { targetSessionId: TASK_ACP }), (e) =>
+      events.push(e)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+
+    // Nothing reaches Slack: the task's thread is no platform thread.
+    expect(postAsAuthor).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]!.text).toContain('does it back off now?')
+    expect(events.some((e) => e.kind === 'output')).toBe(true)
+    const page = await d.store.transcriptPage('C1', TASK_THREAD, null, 50, AGENT)
+    const texts = page.rows.map((r) => r.text)
+    expect(texts).toContain('does it back off now?')
+    expect(texts.filter((t) => t === 'the retry now backs off')).toHaveLength(1)
+    // The person read the answer on the page, so a settled task's parent hears nothing of it.
+    const row = await index.get(AGENT, key)
+    expect(row).toMatchObject({ state: 'done' })
+    expect(row?.endReport).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it("continues a webchat conversation's task by its target, never as that conversation's own session", async () => {
+    const { daemon, d, prompts } = await boot(() => 'on it')
+    const parentConv = '88888888-8888-4888-8888-888888888888'
+    const key = `webchat:${parentConv}:${TASK_THREAD}:${AGENT}`
+    await d.store.upsertSession({
+      key,
+      agentId: AGENT,
+      platform: 'webchat',
+      channel: parentConv,
+      thread: TASK_THREAD,
+      acpSessionId: TASK_ACP,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await d.store.setSessionClassification(key, { sourceBindingKind: 'local' })
+    const events: RdChatEvent[] = []
+    const ack = await d.handleRelayMsg(turn('one more case', { targetSessionId: TASK_ACP }), (e) => events.push(e))
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    expect(prompts).toHaveLength(1)
+    const page = await d.store.transcriptPage(parentConv, TASK_THREAD, null, 50, AGENT)
+    expect(page.rows.map((r) => r.text)).toEqual(expect.arrayContaining(['one more case', 'on it']))
+    expect(await d.store.getSession(`webchat:${parentConv}:webchat:${parentConv}:${AGENT}`)).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it("refuses a follow-up's check, which stays read-only", async () => {
+    const { daemon, d, prompts, postMessage } = await boot()
+    await seedTask(d, 'subsession:check-7')
+    const ack = await d.handleRelayMsg(turn('x', { targetSessionId: TASK_ACP }), () => {})
+    expect(ack).toMatchObject({ accepted: false, reason: 'not_found' })
+    expect(prompts).toHaveLength(0)
+    expect(postMessage).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+})
+
+interface AssistantSubsessionIndexLike {
+  open(input: Record<string, unknown>): Promise<boolean>
+  finish(agentId: string, key: string, state: 'done' | 'failed'): Promise<boolean>
+  get(agentId: string, key: string): Promise<{ state: string; endReport?: string } | undefined>
+}

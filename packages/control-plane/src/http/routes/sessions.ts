@@ -36,13 +36,14 @@ import {
   isSubsessionCoordinate,
   SANDBOX_KEEP_ALIVE_FEATURE,
   WEBCHAT_IMAGES_FEATURE,
-  continuableOrigin,
+  continuableSession,
   type SharedImageResolveOk,
   type CodeHostProvider,
   type HookKind
 } from '@agentconnect.md/protocol'
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { makeSessionAccessResolver } from '../session-access.js'
+import { continuationAudience } from '../../domain/continuation-audience.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
@@ -1065,20 +1066,22 @@ export function sessionRoutes(deps: HttpDeps) {
             (await deps.repos.webchatConversation.hasRemovedParticipants(orgOf(req), s.channel ?? '')))
         const hook = hookMetadataForSession(hookMetadata, s)
         const display = sessionDisplayMetadata(s, hook, channelNames)
-        // Continuation gate (webchat-cross-integration-continuation.md §6.5):
-        // the same predicate + state checks the mint route applies, projected as
-        // one server-computed flag + bounded product-language reason.
+        // Continuation gate (webchat-cross-integration-continuation.md §6.5): the mint route's checks, as one flag and a bounded reason.
         const continuationUnavailableReason = await (async () => {
           const owningAgent = orgAgents.find((agent) => agent.id === s.agentId)
+          // A task is continued by whoever may continue its owning session (auto-session-mode.md §10).
+          const audience = continuationAudience(s, parent)
+          const audienceAccess = audience === s || !audience ? access : await sessionAccess.forSessions(req, [audience])
           if (
             !owningAgent ||
             !canView(owningAgent, ctx) ||
-            !canContinueSession(s, ctx, access.identitySet, access.externalAccess)
+            !audience ||
+            !canContinueSession(audience, ctx, audienceAccess.identitySet, audienceAccess.externalAccess)
           ) {
             return 'unauthorized' as const
           }
           if (s.contentPurgedAt) return 'content_purged' as const
-          if (!continuableOrigin(s.platform ?? '')) return 'unsupported_platform' as const
+          if (!continuableSession(s)) return 'unsupported_platform' as const
           const host = await resolveContinuationHost(deps, s, owningAgent)
           return host.ok ? null : host.reason
         })()
