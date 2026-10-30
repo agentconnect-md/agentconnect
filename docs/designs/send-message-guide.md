@@ -1146,7 +1146,8 @@ only when that is not clear.
 
 `listTasks` takes no arguments and lists the calling session's tasks: its delegated tasks, its
 place's follow-ups when it is the place's current long session, and the approved proposals that
-report to it. Each entry carries:
+report to it, running first, then the most recently active, at most 20 of them with a count of
+the rest. Each entry carries:
 
 | Field                         | Meaning                                                                                                   |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -1173,8 +1174,9 @@ reports to the console rather than to the agent (§2.1).
 
 #### A task's summary
 
-`updateTask {summary, title?}` is offered only inside a delegated task, never to research, a
-follow-up's check or an approved proposal, and acts on the calling task alone. `summary` is at
+`updateTask {summary, title?}` is offered only inside a delegated task or a threaded task
+([auto-session-mode.md](auto-session-mode.md) §6.2), never to research, a follow-up's check or an
+approved proposal, and acts on the calling task alone. `summary` is at
 most 500 characters; `title`, one line of at most 80, changes only together with it and renames
 the task's session too. The task's standing context asks for its scope, its status and its next
 step and open questions, written as soon as the scope is known and updated when either changes.

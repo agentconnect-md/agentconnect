@@ -195,6 +195,10 @@ const roundParam = (round: number | undefined) => (round === undefined ? [] : [r
 const THREADED = (alias: string) =>
   `EXISTS (SELECT 1 FROM assistant_subsession_thread t WHERE t.agentId = ${alias}.agentId AND t.childSessionKey = ${alias}.childSessionKey)`
 
+// When a task last did anything: its session's last change, else its opening (auto-session-mode.md §5.2).
+const LAST_ACTIVE = (alias: string) =>
+  `COALESCE((SELECT s.updatedAt FROM sessions s WHERE s.key = ${alias}.childSessionKey), ${alias}.createdAt)`
+
 // The agent's running background delegations, the count a capped open or a reopened round is checked against.
 const RUNNING_DELEGATIONS = `(SELECT COUNT(*) FROM assistant_subsession a
                 WHERE a.agentId = ? AND a.state = 'open' AND a.kind = 'delegation' AND NOT ${THREADED('a')}
@@ -583,7 +587,7 @@ export class AssistantSubsessionIndex {
     return { rows: rows.map(subsessionOf), total }
   }
 
-  /** Every row one owning session's reports go to — its tasks, follow-ups and approved proposals — running first, then newest, at most `limit`, with the total. */
+  /** Every row one owning session's reports go to — its tasks, follow-ups and approved proposals — running first, then the most recently active, at most `limit`, with the total. */
   async listForOwner(
     agentId: string,
     parent: { sessionId: string; key: string },
@@ -601,7 +605,8 @@ export class AssistantSubsessionIndex {
     const rows = (
       await this.db.query(
         `SELECT * FROM assistant_subsession ${where}
-          ORDER BY CASE WHEN state = 'open' THEN 0 ELSE 1 END, createdAt DESC, childSessionKey LIMIT ?`,
+          ORDER BY CASE WHEN state = 'open' THEN 0 ELSE 1 END, ${LAST_ACTIVE('assistant_subsession')} DESC, childSessionKey
+          LIMIT ?`,
         [...params, limit]
       )
     ).rows as Row[]
@@ -692,6 +697,48 @@ export class AssistantSubsessionIndex {
         childSessionKey
       ])
     ).changes
+  }
+
+  /** A threaded task's next turn starts: its settled row is `open` again in the next round, outside the cap (auto-session-mode.md §6.2); false when it is not one or already runs. */
+  async resumeThreaded(agentId: string, childSessionKey: string): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `UPDATE assistant_subsession SET state = 'open', round = round + 1, endReport = NULL, reportAttempts = 0
+        WHERE agentId = ? AND childSessionKey = ? AND kind = 'delegation' AND state IN ('done', 'failed')
+          AND ${THREADED('assistant_subsession')}`,
+      [agentId, childSessionKey]
+    )
+    return changes > 0
+  }
+
+  /** Close the agent's settled threaded tasks idle since before `idleBefore`: their rows go and their threads become unowned (auto-session-mode.md §6.5); the closed keys. */
+  async closeIdleThreaded(agentId: string, idleBefore: number): Promise<string[]> {
+    const idle = (
+      await this.db.query(
+        `SELECT a.childSessionKey FROM assistant_subsession a
+          WHERE a.agentId = ? AND a.kind = 'delegation' AND a.state IN ('done', 'failed') AND ${THREADED('a')}
+            AND ${LAST_ACTIVE('a')} < ?
+          ORDER BY a.createdAt, a.childSessionKey`,
+        [agentId, idleBefore]
+      )
+    ).rows as Row[]
+    const closed: string[] = []
+    for (const { childSessionKey } of idle) {
+      const key = String(childSessionKey)
+      // A turn that started meanwhile keeps the task.
+      const { changes } = await this.db.query(
+        `DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? AND state IN ('done', 'failed')
+            AND ${LAST_ACTIVE('assistant_subsession')} < ?`,
+        [agentId, key, idleBefore]
+      )
+      if (changes === 0) continue
+      await this.db.query('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?', [
+        agentId,
+        key
+      ])
+      await this.detachThreads(agentId, key)
+      closed.push(key)
+    }
+    return closed
   }
 
   /** Whether a task's `round` reports to its parent: a background task's always, a threaded one's only before its first thread (§6.2, §6.6). */

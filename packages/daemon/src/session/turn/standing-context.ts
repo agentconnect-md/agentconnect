@@ -73,6 +73,8 @@ export type StandingContextInput = {
   /** The agent's own Slack bot user id, on Slack turns only. */
   slackSelfId?: string
   thread: string
+  /** A task the coordinator opened on a platform thread (auto-session-mode.md §6.2). */
+  threadedTask?: boolean
   /** This session's OUTWARD id (session-concept.md §1.1), absent on the turn that opens it. */
   sessionId?: string | null
   /** The session that created this one (send-message-guide.md §9.6): a record only, never a reply address. */
@@ -382,6 +384,13 @@ export function buildTaskReportingAppend(ownerSessionId: string | null | undefin
   )
 }
 
+// auto-session-mode.md §6.2, §6.4: a threaded task answers people in its threads and reports nothing to the coordinator.
+export const THREADED_TASK_APPEND =
+  `# You are a task\n` +
+  `The coordinator of this channel opened you for a message in this thread. People talk to you directly here, and ` +
+  `the coordinator may hand you more messages, each from a thread it attaches to you; your answer goes to the ` +
+  `thread each message came from. Nothing is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
+
 /** The most answerable messages one turn lists; the rest stay valid and are counted (send-message-guide.md §9.5). */
 export const MAX_LISTED_SESSION_MESSAGES = 8
 
@@ -421,7 +430,9 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const platformAppend = input.platformStanding?.trim() ?? ''
   const taskReportingAppend = isDelegationCoordinate(input.thread)
     ? buildTaskReportingAppend(input.originSessionId, keepsTaskSummaryAt(input.thread))
-    : ''
+    : input.threadedTask
+      ? THREADED_TASK_APPEND
+      : ''
   // A coordinator's own instructions replace the reply and collaboration rules: it only decides where messages go (auto-session-mode.md §5.4).
   const coordinator = isCoordinatorCoordinate(input.thread)
   const assemble = (meta: string) => {

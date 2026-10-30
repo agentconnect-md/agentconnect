@@ -1031,7 +1031,11 @@ import {
   coordinatorSessionTools,
   renderCoordinatorBatch
 } from './auto-session/coordinator-prompt.js'
-import { CoordinatorSessions, deliveredMessage } from './auto-session/coordinator-sessions.js'
+import {
+  CoordinatorSessions,
+  deliveredMessage,
+  THREADED_TASK_IDLE_CLOSE_MS
+} from './auto-session/coordinator-sessions.js'
 import { coordinatorView, inThread, replyThreadOf } from './auto-session/coordinator-turns.js'
 import {
   isGettingToKnowCoordinate,
@@ -5424,13 +5428,14 @@ export class Daemon {
         integrationId,
         transportScope,
         isDm,
-        sessionKey
+        sessionKey,
+        threadedTask
       }) => {
         if (this.runtimes[agent.runtime]?.sessionMcpServers === 'unsupported') {
           const instructions = isResearchCoordinate(thread) ? this.organizationResearchPrompt(agent, []) : undefined
           return { fingerprint: toolContextFingerprint([], [], instructions), instructions, mcpServers: () => [] }
         }
-        let tools = this.sessionBridgeTools(agent, { platform, channel, thread, integrationId, isDm })
+        let tools = this.sessionBridgeTools(agent, { platform, channel, thread, integrationId, isDm, threadedTask })
         // assistant-mode.md §5.12: a follow-up's check gets the reads, recordCheck and propose, nothing that writes or posts.
         const check = isCheckCoordinate(thread)
         // §5.15: organization research gets memory, knowledge, the channel listing and the code-host reads, nothing that posts.
@@ -10250,7 +10255,14 @@ export class Daemon {
   /** The AgentConnect tools a session at these coordinates is offered, before a check's filter. */
   private sessionBridgeTools(
     agent: Agent,
-    at: { platform: string; channel: string; thread: string; integrationId?: string | undefined; isDm: boolean }
+    at: {
+      platform: string
+      channel: string
+      thread: string
+      integrationId?: string | undefined
+      isDm: boolean
+      threadedTask?: boolean | undefined
+    }
   ): ToolDescriptor[] {
     const { platform, thread, integrationId } = at
     let tools = toolsForIntegrations(agent.integrations, {
@@ -10276,7 +10288,7 @@ export class Daemon {
     // Its reminders (§5.9), in a platform conversation of the session's own only.
     tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
     // Listing and stopping its tasks (send-message-guide.md §8.7), in every session that can delegate one.
-    tools = [...tools, ...stopTaskToolsFor({ thread })]
+    tools = [...tools, ...stopTaskToolsFor({ thread, ...(at.threadedTask ? { threadedTask: true } : {}) })]
     // Capability requests (capability-requests.md §4.1, §5): any agent toward a CP that serves them; execution re-checks.
     tools = [
       ...tools,
@@ -10638,6 +10650,7 @@ export class Daemon {
       await this.collab
         .endIdleSubsessions([...this.agents.keys()])
         .catch((err) => this.log.warn(`idle sub-session sweep failed: ${formatErr(err)}`))
+      await this.closeIdleThreadedTasks().catch((err) => this.log.warn(`idle task sweep failed: ${formatErr(err)}`))
       await this.releaseEndedTaskSlackHolds().catch((err) =>
         this.log.warn(`task indicator sweep failed: ${formatErr(err)}`)
       )
@@ -13547,6 +13560,26 @@ export class Daemon {
     await this.coordinators
       .settleTurn(key, entry.agentId, opts.replayed ? 'stopped' : ended)
       .catch((err) => this.log.warn(`coordinator ${key}: settling the turn failed: ${formatErr(err)}`))
+  }
+
+  /** auto-session-mode.md §6.5: on the agent's duty holder, a threaded task idle for a week closes and its threads go back to the coordinator. */
+  private async closeIdleThreadedTasks(): Promise<void> {
+    const idleBefore = this.clock.now() - THREADED_TASK_IDLE_CLOSE_MS
+    for (const agentId of this.agents.keys()) {
+      if (this.draining) return
+      if (!this.servesAgent(agentId)) continue
+      for (const key of await this.store.assistantSubsessions.closeIdleThreaded(agentId, idleBefore))
+        this.log.info(`task ${key} closed after a week idle; its threads go back to the coordinator`)
+    }
+  }
+
+  /** A threaded task's turn starts: it runs again until the turn ends (auto-session-mode.md §6.2). */
+  private async resumeThreadedTaskTurn(entry: QueueEntry, key: string): Promise<void> {
+    const thread = sessionThreadOf(entry.msg)
+    if (isAppendCoordinate(thread) || isSubsessionCoordinate(thread)) return
+    await this.store.assistantSubsessions
+      .resumeThreaded(entry.agentId, key)
+      .catch((err) => this.log.warn(`task ${key}: marking its turn running failed: ${formatErr(err)}`))
   }
 
   /** A threaded task's turn ended: it is idle until its threads speak again (auto-session-mode.md §6.2). */
@@ -18882,6 +18915,7 @@ export class Daemon {
             let ended: TurnAcknowledgementEnd = 'failed'
             try {
               await this.settleReviewBatch(entry)
+              if (this.cfg.features.autoSessionMode) await this.resumeThreadedTaskTurn(entry, key)
               sessionId = await this.dispatchOne(entry, key)
               ended = sessionId === null ? 'interrupted' : 'completed'
             } finally {

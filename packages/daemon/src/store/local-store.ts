@@ -25,11 +25,7 @@ import {
   nextAppendCoordinate,
   type ConversationCoordinateKind
 } from '../session/append-coordinate.js'
-import {
-  GETTING_TO_KNOW_COORDINATE_PREFIX,
-  isSubsessionCoordinate,
-  checkCoordinate
-} from '../session/subsession-coordinate.js'
+import { GETTING_TO_KNOW_COORDINATE_PREFIX, checkCoordinate } from '../session/subsession-coordinate.js'
 import { monotonicTs } from './monotonic-ts.js'
 import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
@@ -5310,18 +5306,16 @@ export class LocalStore {
       // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
       if (isAppendCoordinate(rec.thread))
         await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
-      // A purged sub-session leaves its parent's index (assistant-mode.md §5.6).
-      if (isSubsessionCoordinate(rec.thread)) {
-        await tx
-          .prepare('DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?')
-          .run(rec.agentId, key)
-        await tx
-          .prepare('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?')
-          .run(rec.agentId, key)
-        await tx
-          .prepare('DELETE FROM assistant_subsession_thread WHERE agentId = ? AND childSessionKey = ?')
-          .run(rec.agentId, key)
-      }
+      // A purged task leaves its parent's index, a threaded one on its own thread too, whose threads become unowned (auto-session-mode.md §6.5).
+      await tx
+        .prepare('DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?')
+        .run(rec.agentId, key)
+      await tx
+        .prepare('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?')
+        .run(rec.agentId, key)
+      await tx
+        .prepare('DELETE FROM assistant_subsession_thread WHERE agentId = ? AND childSessionKey = ?')
+        .run(rec.agentId, key)
       // A purged session neither answers nor is answered: its messages go with it (send-message-guide.md §9.3).
       await tx.prepare('DELETE FROM session_message WHERE recipientKey = ?').run(key)
       await tx.prepare('DELETE FROM session_message_sent WHERE senderKey = ?').run(key)
