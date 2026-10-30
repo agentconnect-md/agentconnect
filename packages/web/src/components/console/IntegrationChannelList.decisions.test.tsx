@@ -197,14 +197,22 @@ async function pick(label: string) {
 }
 
 describe('IntegrationChannelList By decision', () => {
-  it('collapses Code sessions separately and expands them without trigger or session-mode settings', async () => {
-    await render([group(), group({ channelId: 'C2', name: 'Build the page', isCodeSession: true })])
-    const toggle = all('button[aria-expanded]').find((node) => node.textContent?.includes('Code sessions'))!
-    expect(toggle.textContent).toContain('Code sessions')
+  it('collapses Code channels below DMs and expands them without trigger or session-mode settings', async () => {
+    await render([
+      group(),
+      group({ channelId: 'C2', name: 'Build the page', isCodeSession: true }),
+      group({ channelId: 'D1', name: 'Example user', kind: 'im', trigger: 'any' })
+    ])
+    const toggle = all('button[aria-expanded]').find((node) => node.textContent?.includes('Code channels'))!
+    expect(toggle.textContent).toContain('Code channels')
     expect(container!.textContent).toContain('general')
+    expect(container!.textContent).toContain('Example user')
+    expect(container!.textContent!.indexOf('Example user')).toBeLessThan(
+      container!.textContent!.indexOf('Code channels')
+    )
     expect(container!.textContent).not.toContain('Build the page')
     const settings = all('button').filter((node) => node.textContent?.includes('Per thread')).length
-    expect(settings).toBe(1)
+    expect(settings).toBe(2)
     await click(toggle)
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     expect(container!.textContent).toContain('Build the page')

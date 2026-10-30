@@ -1682,7 +1682,7 @@
         "leaveConfirm": "确定要离开{space}吗？{platform} Bot无法只离开一个{noun}——它会离开整个服务器，其中的所有{nounPlural}都会从列表中消失。重新邀请即可撤销。"
       },
       "directMessages": "私信",
-      "codeSessions": "Code 会话",
+      "codeChannels": "Code 频道",
       "openIn": "在 {platform} 中打开 {name}",
       "ownerChange": {
         "title": "要更改此团队的默认Agent吗？",

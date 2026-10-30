@@ -838,7 +838,7 @@ export function IntegrationChannelList({
   // last-member channel tells the operator what to do — so it is shown verbatim
   // rather than collapsed into "something went wrong".
   const [error, setError] = useState<string | null>(null)
-  const [codeSessionsOpen, setCodeSessionsOpen] = useState(false)
+  const [codeChannelsOpen, setCodeChannelsOpen] = useState(false)
   const act = useCallback(async (action: () => Promise<void>) => {
     setError(null)
     try {
@@ -1058,24 +1058,24 @@ export function IntegrationChannelList({
           {g.rows.map(row)}
         </Fragment>
       ))}
+      {dmRows.length > 0 && groupHeader(translate('directMessages'), padX)}
+      {dmRows.map(row)}
       {codeRows.length > 0 && (
         <>
           <button
             type="button"
             className="flex w-full items-center gap-2 border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[11px] font-semibold leading-normal text-(--text-tertiary) uppercase hover:text-(--text-primary)"
             style={{ padding: `6px ${padX}px` }}
-            aria-expanded={codeSessionsOpen}
-            onClick={() => setCodeSessionsOpen((open) => !open)}
+            aria-expanded={codeChannelsOpen}
+            onClick={() => setCodeChannelsOpen((open) => !open)}
           >
-            <Icon name={codeSessionsOpen ? 'chevron-down' : 'chevron-right'} size={13} />
-            <span>{translate('codeSessions')}</span>
+            <Icon name={codeChannelsOpen ? 'chevron-down' : 'chevron-right'} size={13} />
+            <span>{translate('codeChannels')}</span>
             <span className="ml-auto tabular-nums">{codeRows.length}</span>
           </button>
-          {codeSessionsOpen && codeRows.map(row)}
+          {codeChannelsOpen && codeRows.map(row)}
         </>
       )}
-      {dmRows.length > 0 && groupHeader(translate('directMessages'), padX)}
-      {dmRows.map(row)}
       {ownerGuard.dialog}
       {routingRow && decisions && (
         <DecisionRoutingModal

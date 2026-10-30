@@ -35,7 +35,7 @@ renames and views remain channel-scoped and omit `thread_ts`. Native Stop withou
 thread timestamp addresses the same channel coordinate on both ingress transports.
 History reads use channel history.
 
-The console groups these conversations under Code sessions, collapsed by default,
+The console groups these conversations under Code channels, below direct messages and collapsed by default,
 without per-row trigger or session-mode controls. Membership snapshots carry the
 provider's classification and exclude archived channels; archive events refresh that
 snapshot so completed sessions disappear from the list.
