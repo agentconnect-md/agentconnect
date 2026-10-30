@@ -37,6 +37,7 @@ async function fixture() {
   }
   const agent = { id: AGENT, orgId: ORG, visibility: 'org', sharedWith: [], daemonId: DAEMON, placementKind: 'daemon' }
   const create = vi.fn(async () => {})
+  const features = [API_AHP_V1_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE, WEBCHAT_MULTI_AGENT_FEATURE]
   const tokens = new WebchatTokenService('test-pepper-at-least-32-characters-long')
   const mint = vi.fn(tokens.mint.bind(tokens))
   const deps = {
@@ -75,15 +76,13 @@ async function fixture() {
     daemonConns: {
       get: () => ({
         state: 'READY',
-        capabilities: {
-          features: [API_AHP_V1_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE, WEBCHAT_MULTI_AGENT_FEATURE]
-        }
+        capabilities: { features }
       })
     },
     webchatTokens: { mint }
   } as unknown as HttpDeps
   await app.register(webchatTokenRoutes(deps), { prefix: '/orgs/:orgId' })
-  return { app, config, create, mint, tokens }
+  return { app, config, create, mint, tokens, features }
 }
 
 describe('Webchat token routes pin an authorized protocol', () => {
@@ -128,6 +127,19 @@ describe('Webchat token routes pin an authorized protocol', () => {
     expect(denied.statusCode).toBe(503)
     expect(f.create).not.toHaveBeenCalled()
     expect(f.mint).toHaveBeenCalledTimes(1)
+  })
+
+  it('mints legacy for the deployment preference when a participant cannot serve AHP', async () => {
+    const f = await fixture()
+    f.features.splice(f.features.indexOf(API_AHP_V1_FEATURE), 1)
+    const url = `/orgs/${ORG}/agents/${AGENT}/webchat/token`
+    const chosen = await f.app.inject({ method: 'POST', url, payload: {} })
+    expect(chosen.statusCode, chosen.body).toBe(200)
+    expect(chosen.json()).toMatchObject({ protocol: 'legacy' })
+    expect(chosen.json()).not.toHaveProperty('ahp')
+    expect(await f.tokens.verify(chosen.json().token)).toMatchObject({ protocol: 'legacy' })
+    const explicit = await f.app.inject({ method: 'POST', url, payload: { protocol: 'ahp' } })
+    expect(explicit.statusCode).toBe(503)
   })
 
   it('preserves the existing authorization refusal before exposing attachment metadata', async () => {

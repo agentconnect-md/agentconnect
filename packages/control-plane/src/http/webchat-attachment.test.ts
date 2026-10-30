@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { API_AHP_V1_FEATURE } from '@agentconnect.md/protocol'
 import { AgentId, OrgId } from '../domain/ids.js'
 import type { HttpDeps } from './deps.js'
-import { webchatAttachment } from './webchat-attachment.js'
+import { servesAhpWebchat, webchatAttachment } from './webchat-attachment.js'
 
 const ORG = OrgId('org')
 const AGENT = AgentId('11111111-1111-4111-8111-111111111111')
@@ -54,14 +54,30 @@ describe('Webchat attachment bootstrap', () => {
   it.each(['off', 'shadow'] as const)('does not bootstrap an AHP attachment in %s mode', async (mode) => {
     const f = fixture()
     f.config.AHP_MODE = mode
-    expect(await webchatAttachment(f.deps, input)).toBeNull()
+    expect(await webchatAttachment(f.deps, input)).toEqual({ protocol: 'legacy' })
+    expect(await webchatAttachment(f.deps, { ...input, protocol: 'ahp' })).toBeNull()
   })
 
-  it.each(['capability', 'offline'] as const)('requires every participant to pass the %s gate', async (gate) => {
-    const f = fixture()
-    if (gate === 'capability') f.capable.delete(PEER)
-    if (gate === 'offline') f.online.delete(PEER)
-    expect(await webchatAttachment(f.deps, input)).toBeNull()
+  it.each(['capability', 'offline'] as const)(
+    'settles the deployment preference for legacy unless every participant passes the %s gate',
+    async (gate) => {
+      const f = fixture()
+      if (gate === 'capability') f.capable.delete(PEER)
+      if (gate === 'offline') f.online.delete(PEER)
+      expect(await webchatAttachment(f.deps, input)).toEqual({ protocol: 'legacy' })
+      // An AHP client cannot use a legacy grant, so its explicit request is refused instead.
+      expect(await webchatAttachment(f.deps, { ...input, protocol: 'ahp' })).toBeNull()
+    }
+  )
+
+  it('reports per daemon whether it serves AHP Webchat', () => {
+    const config = { AHP_MODE: 'on' as const, PUBLIC_RELAY_URL: 'https://relay.example.test' }
+    const daemon = { capabilities: { features: [API_AHP_V1_FEATURE] } }
+    expect(servesAhpWebchat(config, daemon)).toBe(true)
+    expect(servesAhpWebchat(config, { capabilities: { features: [] } })).toBe(false)
+    expect(servesAhpWebchat(config, null)).toBe(false)
+    expect(servesAhpWebchat({ ...config, AHP_MODE: 'shadow' }, daemon)).toBe(false)
+    expect(servesAhpWebchat({ ...config, PUBLIC_RELAY_URL: undefined }, daemon)).toBe(false)
   })
 
   it('attaches participants that have no AHP API entry', async () => {

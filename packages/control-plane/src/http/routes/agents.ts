@@ -157,6 +157,7 @@ import {
 } from '../../authorization/policy.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { makeMemoryPlaceAccess } from '../memory-place-access.js'
+import { servesAhpWebchat } from '../webchat-attachment.js'
 import { makeMemorySources, type MemorySource } from '../memory-source.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
@@ -441,6 +442,7 @@ function toDto(
     daemonName: a.daemonId ? placementView.daemonName : null,
     setId: a.setId,
     placementReady: placementView.ready,
+    ahpWebchat: placementView.ahpWebchat,
     ...(placementView.holderDaemonId !== undefined ? { holderDaemonId: placementView.holderDaemonId } : {}),
     workspace: workspaceToDto(a.workspace, a.workspaceRepoId),
     workspaceRepoId: a.workspaceRepoId?.toString() ?? null,
@@ -476,16 +478,19 @@ interface PlacementView {
   ready: boolean
   /** Set only for an org's own group: the pool shares its store, and a machine placement names its daemon. */
   holderDaemonId?: string | null
+  ahpWebchat: boolean
 }
 
-const NO_PLACEMENT: PlacementView = { daemonName: null, strategies: UNPLACED, ready: false }
+const NO_PLACEMENT: PlacementView = { daemonName: null, strategies: UNPLACED, ready: false, ahpWebchat: false }
 
 function placementViewOf(deps: HttpDeps, daemon: DaemonView | null): PlacementView {
   const live = daemon ? deps.liveness.get(daemon.daemonId) : undefined
+  const ready = live?.reachable === true && live.state === 'READY'
   return {
     daemonName: daemon?.name ?? null,
     strategies: placementStrategies(daemon ? [daemon.capabilities] : []),
-    ready: live?.reachable === true && live.state === 'READY'
+    ready,
+    ahpWebchat: ready && servesAhpWebchat(deps.config, daemon)
   }
 }
 

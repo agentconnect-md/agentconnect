@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PlaygroundData } from './contract'
-import { selectPlayground, webchatProtocol, type PlaygroundProtocol } from './selector'
+import { protocolFor, selectPlayground, webchatProtocol, type PlaygroundProtocol } from './selector'
 afterEach(() => vi.unstubAllGlobals())
 function adapter(name: string) {
   return {
@@ -60,5 +60,28 @@ describe('attachment protocol selector', () => {
     expect(pins.get(id)).toBe('ahp')
     expect(ahp.pgSend).toHaveBeenCalledTimes(1)
     expect(legacy.pgSend).not.toHaveBeenCalled()
+  })
+  it('uses AHP only where the deployment prefers it and every participant can attach over it', () => {
+    const capable = { ahpWebchat: true },
+      legacyOnly = { ahpWebchat: false }
+    expect(protocolFor([capable, capable], 'ahp')).toBe('ahp')
+    expect(protocolFor([capable, legacyOnly], 'ahp')).toBe('legacy')
+    expect(protocolFor([capable, undefined], 'ahp')).toBe('legacy')
+    expect(protocolFor([], 'ahp')).toBe('legacy')
+    expect(protocolFor([capable], 'legacy')).toBe('legacy')
+  })
+  it('opens a new conversation on the protocol its participants can share', () => {
+    const legacy = adapter('old'),
+      ahp = adapter('new'),
+      pins = new Map<string, PlaygroundProtocol>()
+    const ui = selectPlayground(legacy, ahp, pins, (target) =>
+      'agents' in target ? protocolFor(target.agents, 'ahp') : 'legacy'
+    )
+    const agent = { id: 'a', ahpWebchat: true } as never,
+      peer = { id: 'b', ahpWebchat: false } as never
+    expect(pins.get(ui.openPlayground(agent))).toBe('ahp')
+    expect(pins.get(ui.openPlayground(agent, [peer]))).toBe('legacy')
+    expect(ahp.openPlayground).toHaveBeenCalledTimes(1)
+    expect(legacy.openPlayground).toHaveBeenCalledWith(agent, [peer])
   })
 })

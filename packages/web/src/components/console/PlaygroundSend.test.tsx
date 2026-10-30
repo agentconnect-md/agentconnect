@@ -13,7 +13,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@/lib/data'
 
 vi.mock('@/lib/data-context', () => ({
-  useConsoleData: () => ({ agents: [], daemons: [], refreshSessions: vi.fn() })
+  useConsoleData: () => ({
+    agents: [],
+    daemons: [],
+    allSessions: [],
+    getAgent: () => undefined,
+    refreshSessions: vi.fn()
+  })
 }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org1', slug: 'acme' } }) }))
 vi.mock('@/lib/api', () => ({
