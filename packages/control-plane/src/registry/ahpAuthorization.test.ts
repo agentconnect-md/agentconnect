@@ -179,7 +179,7 @@ describe('AHP client authority', () => {
       ok: false
     })
   })
-  it('scopes a multi-agent browser attachment to the selected participant API entry', async () => {
+  it('admits browser participants without an AHP API entry while keys still need one', async () => {
     const f = fixture()
     const peer = '33333333-3333-4333-8333-333333333333'
     const originalAgent = f.deps.agents.getUnscoped
@@ -188,7 +188,7 @@ describe('AHP client authority', () => {
       { agentId: AGENT as never, role: 'primary' },
       { agentId: peer as never, role: 'member' }
     ]
-    f.deps.apiEntries.listForAgent = async (id) => (id === peer ? [{ protocol: 'ahp' }] : [])
+    f.state.api = false
     const browser = await f.tokens.mint({
       protocol: 'ahp',
       orgId: 'org',
@@ -197,11 +197,16 @@ describe('AHP client authority', () => {
       user: 'User',
       conversationId: CONVERSATION
     })
-    expect(await f.auth.verifyBrowser({ credential: browser.token, agentId: peer })).toMatchObject({
-      ok: true,
-      agentId: peer,
-      apiProtocols: ['ahp']
-    })
+    for (const agentId of [AGENT, peer])
+      expect(await f.auth.verifyBrowser({ credential: browser.token, agentId })).toMatchObject({
+        ok: true,
+        agentId,
+        apiProtocols: ['ahp']
+      })
+    const result = await f.auth.verifyBrowser({ credential: browser.token, agentId: peer })
+    if (!result.ok || !result.ahpGrant) throw new Error('expected browser grant')
+    expect(await f.auth.authorizeGrant(result.ahpGrant.token, { orgId: 'org', agentId: peer })).not.toBeNull()
+    expect(await f.auth.verifyKey({ credential: 'test-key', agentId: AGENT })).toMatchObject({ ok: false })
   })
   it('keeps a session continuation target in the signed grant and rechecks purge before registry access', async () => {
     const f = fixture()

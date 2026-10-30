@@ -258,8 +258,8 @@ client uses the enabled AHP endpoint against the same authorized session.
 initially admits only explicitly allowed first-party/test credentials; widening
 it to public-profile credentials is a separate rollout decision. Require an
 explicit per-agent AHP API entry, following the existing `apiProtocols` model.
-Both gates apply even when Webchat selects AHP, and clients cannot self-assert
-membership in the first-party/test audience.
+Neither gate applies to Webchat's own browser attachment, which conversation
+membership already authorizes; clients cannot self-assert either exemption.
 
 The relay must also check the selected daemon's advertised AHP service/version
 capability before opening an attachment, including a first-party AHP attachment.

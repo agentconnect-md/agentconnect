@@ -11,7 +11,6 @@ const CONVERSATION = '33333333-3333-4333-8333-333333333333'
 const input = { orgId: ORG, primaryAgentId: AGENT, conversationId: CONVERSATION }
 
 function fixture() {
-  const entries = new Set<string>([AGENT, PEER])
   const capable = new Set<string>([AGENT, PEER])
   const online = new Set<string>([AGENT, PEER])
   const bindings = new Map<string, { sessionUri: string }>()
@@ -20,12 +19,13 @@ function fixture() {
     WEBCHAT_PROTOCOL: 'ahp' as 'legacy' | 'ahp',
     PUBLIC_RELAY_URL: 'https://relay.example.test/prefix'
   }
+  const listEntries = vi.fn(async () => [])
   const findBinding = vi.fn(async (_org: string, agent: string) => bindings.get(agent) ?? null)
   const deps = {
     config,
     repos: {
       agent: { get: async (_org: string, id: string) => ({ id, orgId: ORG }) },
-      agentApiEntry: { listForAgent: async (id: string) => (entries.has(id) ? [{ protocol: 'ahp' }] : []) },
+      agentApiEntry: { listForAgent: listEntries },
       webchatConversation: { participants: async () => [{ agentId: AGENT }, { agentId: PEER }] },
       ahpSessionBinding: { forConversation: findBinding }
     },
@@ -37,7 +37,7 @@ function fixture() {
       })
     }
   } as unknown as HttpDeps
-  return { deps, config, entries, capable, online, bindings, findBinding }
+  return { deps, config, capable, online, bindings, findBinding, listEntries }
 }
 
 describe('Webchat attachment bootstrap', () => {
@@ -57,16 +57,19 @@ describe('Webchat attachment bootstrap', () => {
     expect(await webchatAttachment(f.deps, input)).toBeNull()
   })
 
-  it.each(['entry', 'capability', 'offline'] as const)(
-    'requires every participant to pass the %s gate',
-    async (gate) => {
-      const f = fixture()
-      if (gate === 'entry') f.entries.delete(PEER)
-      if (gate === 'capability') f.capable.delete(PEER)
-      if (gate === 'offline') f.online.delete(PEER)
-      expect(await webchatAttachment(f.deps, input)).toBeNull()
-    }
-  )
+  it.each(['capability', 'offline'] as const)('requires every participant to pass the %s gate', async (gate) => {
+    const f = fixture()
+    if (gate === 'capability') f.capable.delete(PEER)
+    if (gate === 'offline') f.online.delete(PEER)
+    expect(await webchatAttachment(f.deps, input)).toBeNull()
+  })
+
+  it('attaches participants that have no AHP API entry', async () => {
+    const f = fixture()
+    const result = await webchatAttachment(f.deps, input)
+    expect(result?.ahp?.peers.map((peer) => peer.agentId)).toEqual([AGENT, PEER])
+    expect(f.listEntries).not.toHaveBeenCalled()
+  })
 
   it('returns agent endpoints and only CP-owned URI bindings without embedding credentials', async () => {
     const f = fixture()
