@@ -4,9 +4,10 @@ export type PlaygroundProtocol = 'legacy' | 'ahp'
 export const webchatProtocol = (): PlaygroundProtocol =>
   typeof window !== 'undefined' && window.__AC_ENV?.WEBCHAT_PROTOCOL === 'ahp' ? 'ahp' : 'legacy'
 
-// A new attachment's participants: openPlayground names them; any other first touch knows only its session id.
-export type ProtocolTarget = { agents: readonly Agent[] } | { sessionId: string }
-export type ProtocolChoice = (target: ProtocolTarget) => PlaygroundProtocol
+// A new attachment's participants: openPlayground names them; other first touches know the session, pgAttach its agent too.
+export type ProtocolTarget = { agents: readonly Agent[] } | { sessionId: string; agentId?: string }
+// Undefined while a session's participants are unknown: composer writes wait, anything else pins legacy.
+export type ProtocolChoice = (target: ProtocolTarget) => PlaygroundProtocol | undefined
 
 // AHP only where the deployment prefers it and the CP reports every participant can attach over it.
 export function protocolFor(
@@ -28,6 +29,8 @@ export function selectPlayground(
   return createPlaygroundSelector(pins, preferred)(legacy, ahp)
 }
 
+const STAGED = new Set<PropertyKey>(['setPgInput', 'setPgImage', 'setPgFiles'])
+
 // One selector per pin map: its methods keep their identity across renders and always reach the latest adapters.
 export function createPlaygroundSelector(
   pins: Map<string, PlaygroundProtocol>,
@@ -42,24 +45,31 @@ export function createPlaygroundSelector(
       }
     | undefined
   const methods = new Map<PropertyKey, unknown>()
-  const owner = (id: string, claim: boolean): { adapter: PlaygroundData; id: string } => {
+  const owner = (
+    id: string,
+    claim: boolean,
+    staged: boolean,
+    agentId?: string
+  ): { adapter: PlaygroundData; id: string } => {
     const { legacy, ahp } = adapters
     let protocol = pins.get(id)
     const known = protocol ? adapters[protocol].getPgSession(id) : (ahp.getPgSession(id) ?? legacy.getPgSession(id))
     if (!protocol && known) protocol = ahp.getPgSession(id) ? 'ahp' : 'legacy'
-    protocol ??= preferred({ sessionId: id })
+    protocol ??= preferred({ sessionId: id, agentId })
     const key = known?.id ?? id
-    if (claim) {
+    // Composer state may wait for the choice; anything that can start an attachment pins legacy as before.
+    if (claim && (protocol || !staged)) {
+      protocol ??= 'legacy'
       pins.set(id, protocol)
       pins.set(key, protocol)
     }
-    return { adapter: adapters[protocol], id: key }
+    return { adapter: adapters[protocol ?? 'legacy'], id: key }
   }
   const method = (property: keyof PlaygroundData): unknown => {
     if (property === 'openPlayground')
       return (...args: Parameters<PlaygroundData['openPlayground']>) => {
         const [agent, members] = args,
-          protocol = preferred({ agents: [agent, ...(members ?? [])] }),
+          protocol = preferred({ agents: [agent, ...(members ?? [])] }) ?? 'legacy',
           id = adapters[protocol].openPlayground(...args)
         pins.set(id, protocol)
         return id
@@ -74,7 +84,8 @@ export function createPlaygroundSelector(
         }
       }
     return (id: string, ...args: unknown[]) => {
-      const selected = owner(id, !property.startsWith('get') && property !== 'isPgBusy')
+      const hint = property === 'pgAttach' && typeof args[0] === 'string' ? args[0] : undefined
+      const selected = owner(id, !property.startsWith('get') && property !== 'isPgBusy', STAGED.has(property), hint)
       return Reflect.apply(selected.adapter[property] as (...args: unknown[]) => unknown, selected.adapter, [
         selected.id,
         ...args

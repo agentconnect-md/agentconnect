@@ -38,9 +38,10 @@ function AdapterBoundary({ children }: { children: ReactNode }) {
       createPlaygroundSelector(pins, (target) => {
         const { getAgent, allSessions } = directory.current
         if ('agents' in target) return protocolFor(target.agents)
-        // An unknown session has no participant the CP vouched for, so it stays on legacy.
-        const agentId = allSessions.find((session) => session.id === target.sessionId)?.agentId
-        return protocolFor([agentId ? getAgent(agentId) : undefined])
+        // Until the session and its agent are loaded the choice stays open, so an early write does not pin legacy.
+        const agentId = allSessions.find((session) => session.id === target.sessionId)?.agentId ?? target.agentId
+        const agent = agentId ? getAgent(agentId) : undefined
+        return agent ? protocolFor([agent]) : undefined
       }),
     [pins]
   )
