@@ -19,6 +19,8 @@ import {
   SHARED_AGENT_SELECT_ACTION_ID,
   SHARED_CONFIG_ACTION_ID,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+  SLACK_CODE_MODEL_KEY,
+  SLACK_CODE_CONTEXT_KEY,
   SLACK_STATUS_ACTION,
   decodePermValue,
   decodeSlackStatusOverflowValue,
@@ -49,7 +51,11 @@ const CONFIG_ACTION = 'agent_select'
 /** The subset of a Slack interactive (block_actions / view_submission) payload we read.
  *  `api_app_id` / `team` are demux hints the HTTP route reads BEFORE dispatch. */
 export interface SlackInteractiveBody {
-  type: string
+  type?: string
+  command?: string
+  channel_id?: string
+  user_id?: string
+  team_id?: string
   api_app_id?: string
   team?: { id?: string }
   user?: { id?: string }
@@ -770,13 +776,31 @@ export class SlackHttpIngest {
     this.deps.onChannelsChanged(channels)
   }
 
-  /** Handle one verified `/slack/interactions` payload. The returned value is the
-   *  SYNCHRONOUS 200 body (only `block_suggestion` rides data on it — the external
-   *  select options); every other branch returns '' (empty 200) and runs its
-   *  side-effects — `views.open`, forwards — after we've computed the return value.
-   *  Mirrors the old `socket.on('interactive')` branch order (§10.1). */
+  // Check provider ownership before resolving the channel-wide session; never dispatch a settings click as chat.
+  private async openCodeSessionOptions(channelId: string, triggerId: string, userId: string): Promise<void> {
+    try {
+      const result = await this.web?.conversations.info({ channel: channelId })
+      const channel = slackCodeChannelInfo(result?.channel)
+      if (
+        channel.code &&
+        channel.owners.includes(this.botUserId) &&
+        this.deps.onSessionShortcut({ channelId, threadTs: channelId, triggerId, userId, interactionId: triggerId })
+      )
+        return
+    } catch {
+      this.deps.log?.debug('slack: code-channel settings lookup failed')
+    }
+    await this.openUnavailableModal(triggerId)
+  }
+
+  // Acknowledge verified interactions immediately; only suggestions return data in the HTTP response.
   async handleInteraction(body: SlackInteractiveBody): Promise<unknown> {
     try {
+      if (body.command === `/${SLACK_CODE_MODEL_KEY}` || body.command === `/${SLACK_CODE_CONTEXT_KEY}`) {
+        if (body.channel_id && body.trigger_id && body.user_id)
+          void this.openCodeSessionOptions(body.channel_id, body.trigger_id, body.user_id)
+        return ''
+      }
       if (body.type === 'block_suggestion' && body.action_id === SHARED_AGENT_SELECT_ACTION_ID) {
         // The one branch whose result rides the 200 body (replaces `ack({ options })`).
         return { options: httpSlackAgentOptions(this.deps.agents(), body.value) }

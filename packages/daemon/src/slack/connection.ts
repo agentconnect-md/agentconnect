@@ -12,6 +12,8 @@ import {
   decodeSlackStatusOverflowValue,
   SLACK_APP_HOME_ACTION_PREFIX,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+  SLACK_CODE_MODEL_KEY,
+  SLACK_CODE_CONTEXT_KEY,
   type PlaceExternalReason,
   type SlackAppHomeContext
 } from '@agentconnect.md/protocol'
@@ -52,6 +54,7 @@ import {
   buildPermissionUpdateCard,
   buildStatusModal,
   buildStatusUnavailableModal,
+  renderCodeContextLabels,
   decodePermValue,
   elicitFormViewValues,
   type SlackViewState,
@@ -583,12 +586,23 @@ type SlackSearchContextResponse = {
   response_metadata?: { next_cursor?: string }
 }
 
+type SlackCodeContextItem = NonNullable<
+  NonNullable<Parameters<WebClient['agents']['conversations']['setProperties']>[0]['code_channel']>['context_bar_items']
+>[number]
+
 export type AppLike = {
   message: (handler: (args: { message: unknown; body?: unknown }) => Promise<void> | void) => void
   // `body` is the Events API envelope (team id, event time) Bolt hands every listener beside the event itself.
   event: (type: string, handler: (args: { event: unknown; body?: unknown }) => Promise<void> | void) => void
   action: (actionId: string | RegExp, handler: (args: BlockActionArgs) => Promise<void> | void) => void
   shortcut: (callbackId: string, handler: (args: MessageShortcutArgs) => Promise<void> | void) => void
+  command: (
+    name: string,
+    handler: (args: {
+      ack: () => Promise<void>
+      command: { channel_id: string; user_id: string; trigger_id: string }
+    }) => Promise<void>
+  ) => void
   client: {
     views: {
       open: (a: unknown) => Promise<unknown>
@@ -661,6 +675,7 @@ export type AppLike = {
           properties?: {
             record_channel?: { record_type?: string }
             agent_session?: { encoded_agent_bot_user_ids?: string[] }
+            code_channel?: { context_bar_items?: SlackCodeContextItem[] }
           }
         }
       }>
@@ -1020,6 +1035,7 @@ function sendOnlyApp(botToken: string): AppLike {
     event: () => {},
     action: () => {},
     shortcut: () => {},
+    command: () => {},
     client: client as unknown as AppLike['client'],
     start: async () => {},
     stop: async () => {}
@@ -1076,6 +1092,53 @@ export class SlackConnection implements PlatformConnection {
    *  unchanged repeats must not spend an API call. Grows like sessionLifecycle: unevicted. */
   private lastTitles = new Map<string, string>()
   private readonly codeChannels = new Map<string, { at: number; value: Promise<{ code: boolean; owners: string[] }> }>()
+  private readonly codeContextStatus = new Map<string, string>()
+
+  // Serialize read/replace with agent context updates so neither writer erases the other's items.
+  async updateCodeContext(
+    channel: string,
+    update: { info?: StatusBarInfo; items?: SlackCodeContextItem[] }
+  ): Promise<boolean> {
+    const api = this.app.client.agents.conversations
+    if (!api) return false
+    const labels = update.info ? renderCodeContextLabels(update.info) : undefined
+    const statusKey = labels ? JSON.stringify(labels) : undefined
+    try {
+      return await this.queue.enqueue(async () => {
+        if (statusKey && this.codeContextStatus.get(channel) === statusKey) return true
+        const { channel: info } = await this.app.client.conversations.info({ channel })
+        const owned = slackCodeChannelInfo(info)
+        if (!owned.code || !owned.owners.includes(this.botUserId)) return false
+        const existing = (info?.properties?.code_channel?.context_bar_items ?? []).map(
+          ({ key, label, icon, url, item_type }) => ({ key, label, icon, url, item_type })
+        )
+        const isControl = (item: SlackCodeContextItem) =>
+          item.key === SLACK_CODE_MODEL_KEY || item.key === SLACK_CODE_CONTEXT_KEY
+        const controls: SlackCodeContextItem[] = labels
+          ? [
+              { key: SLACK_CODE_MODEL_KEY, label: labels.model, icon: 'code', item_type: 'action' },
+              ...(labels.context
+                ? [{ key: SLACK_CODE_CONTEXT_KEY, label: labels.context, icon: 'terminal', item_type: 'action' }]
+                : [])
+            ]
+          : existing.filter(isControl)
+        const items = [...controls, ...(update.items ?? existing).filter((item) => !isControl(item)).slice(0, 3)]
+        if (JSON.stringify(items) !== JSON.stringify(existing))
+          await api.setProperties({
+            channel_id: channel,
+            code_channel: { context_bar_items: items }
+          })
+        if (statusKey) {
+          if (this.codeContextStatus.size >= 1000)
+            this.codeContextStatus.delete(this.codeContextStatus.keys().next().value!)
+          this.codeContextStatus.set(channel, statusKey)
+        }
+        return true
+      })
+    } catch (err) {
+      throw this.toolFailure(err, 'agents.conversations.setProperties')
+    }
+  }
 
   async codeChannel(channel: string): Promise<{ code: boolean; owners: string[] }> {
     const cached = this.codeChannels.get(channel)
@@ -1418,6 +1481,19 @@ export class SlackConnection implements PlatformConnection {
         channel && thread && userId ? await this.deps.onMessageShortcut?.({ channel, thread, userId }) : undefined
       await this.openStatusModal(triggerId, sessionKey)
     })
+    // Native context-bar action keys arrive as slash commands, with a one-shot modal trigger.
+    for (const key of [SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY]) {
+      this.app.command(`/${key}`, async ({ ack, command }) => {
+        await ack()
+        const channel = command.channel_id
+        const info = await this.codeChannel(channel).catch(() => undefined)
+        const sessionKey =
+          info?.code && info.owners.includes(this.botUserId)
+            ? await this.deps.onMessageShortcut?.({ channel, thread: channel, userId: command.user_id })
+            : undefined
+        await this.openStatusModal(command.trigger_id, sessionKey)
+      })
+    }
     // Status-bar interactivity (Block Kit block_actions over Socket Mode). Each handler
     // MUST ack() promptly (Slack drops the interaction / trigger_id after ~3s). Configure
     // opens the controls modal; its selects carry the session key in `view.private_metadata`.

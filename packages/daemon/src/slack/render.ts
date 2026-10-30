@@ -89,11 +89,11 @@ export type SlackAction =
   // turns progress. `text` is the notification/accessibility fallback; `blocks` is the
   // Block Kit payload. Shown when the Agent's status-bar setting is enabled. NOT
   // recorded into the transcript.
-  | { kind: 'status-bar'; text: string; blocks: unknown[] }
+  | { kind: 'status-bar'; text: string; blocks: unknown[]; info?: StatusBarInfo }
   // Remove a status row left by an earlier turn after the Agent disables it. The daemon
   // clears the persisted ts only after Slack accepts the delete, so a transient failure
   // can retry on the next turn.
-  | { kind: 'clear-status-bar' }
+  | { kind: 'clear-status-bar'; info?: StatusBarInfo }
   // `attribution` closes the footer lifecycle after the latest reply section was first
   // posted with it. The daemon uses this boundary to retry stale-footer cleanup or refresh
   // final metadata that changed during the prompt. Not transcript content.
@@ -489,6 +489,16 @@ export function renderStatusBar(info: StatusBarInfo): string {
   }
   if (info.totalTokens !== undefined) parts.push(`${compactCount(info.totalTokens)} tok`)
   return `:bar_chart: ${parts.length ? parts.join(' · ') : '—'}`
+}
+
+// Native code-channel chrome stays compact; the settings modal owns output mode and token totals.
+export function renderCodeContextLabels(info: StatusBarInfo): { model: string; context?: string } {
+  const model = clampTo([info.model, info.effort].filter(Boolean).join(' · ') || 'Session settings', 128)
+  const context =
+    info.contextUsed === undefined
+      ? undefined
+      : `${compactCount(info.contextUsed)}${info.contextSize !== undefined && info.contextSize > 0 ? `/${compactCount(info.contextSize)}` : ''}`
+  return { model, context }
 }
 
 /** Slack action_ids for the interactive status bar + modal. The protocol owns the

@@ -66,8 +66,28 @@ The platform-owned session tool registry exposes four tools only to Slack sessio
   when the copied origin request arrives under a new message timestamp.
 - `setSlackCodeView`: publish a unified diff, self-contained HTML preview, or PR tab.
   HTML keys are stable upsert identities; content is bounded by UTF-8 bytes.
-- `manageSlackCodeChannel`: replace informational context links, list/remove tabs, or
+- `manageSlackCodeChannel`: replace up to three informational context links, list/remove tabs, or
   archive a completed task with an optional existing summary message.
+
+The native context bar reserves two items for session controls: model and effort
+together, then current context usage such as `42k/200k`. These use monochrome code
+and terminal icons. Unknown capacity is omitted; cumulative token totals are never
+used as context usage. The controls update independently of the optional message
+header, including after settings change while idle. Clicking either opens the
+existing settings modal, where output mode remains configurable.
+
+Informational items use native monochrome icons (a branch for repositories). PR
+checks use `◷`, `✓`, or `✕` for pending, all passing, or failed checks on the current
+head. The agent supplies observed check status through the context tool; this is not
+a background CI polling service. Unknown or absent checks have no pass indicator.
+The connection serializes context replacements and preserves the session controls
+when informational links change, and links when model or usage changes.
+
+Context-bar action keys are delivered as slash-command payloads. Socket Mode routes
+them to Bolt command listeners; HTTP apps set `features.code_channels.slash_command_url`
+to the existing signed `/slack/interactions` endpoint. Both verify code-channel
+ownership and resolve the channel-wide session before opening the modal. Subsequent
+settings changes retain the existing actor and session authorization checks.
 
 Tools use the session's own bot connection and the existing place write rule. Creating
 something new requires an eligible human asker. Cross-channel view/context/archive

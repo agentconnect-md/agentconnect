@@ -60,6 +60,7 @@ function connWith(overrides: ClientOverrides = {}) {
     event() {},
     action() {},
     shortcut() {},
+    command() {},
     client,
     start: async () => {},
     stop: async () => {}

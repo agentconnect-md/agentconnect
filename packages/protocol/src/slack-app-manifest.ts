@@ -3,6 +3,10 @@
 // App-level message shortcut for session controls, shared by Socket Mode and HTTP apps.
 export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
 
+// Reserved native context-bar keys; both open the session's existing settings modal.
+export const SLACK_CODE_MODEL_KEY = 'ac_session_model'
+export const SLACK_CODE_CONTEXT_KEY = 'ac_session_context'
+
 /** Public platform profile copy. Never derive this from an Agent description. */
 export const PLATFORM_APP_DESCRIPTION = 'AI agent powered by AgentConnect.'
 
@@ -75,7 +79,7 @@ export const DEFAULT_SLACK_APP_NAME = 'agentconnect'
 export interface SlackAppManifest extends Record<string, unknown> {
   display_information: { name: string; background_color?: string }
   features: {
-    code_channels: { enabled: boolean }
+    code_channels: { enabled: boolean; slash_command_url?: string }
     bot_user: { display_name: string; always_online: boolean }
     app_home: { home_tab_enabled: boolean; messages_tab_enabled: boolean; messages_tab_read_only_enabled: boolean }
     agent_view: { agent_description: string; suggested_prompts: { title: string; message: string }[] }
@@ -130,7 +134,10 @@ export function buildSlackAppManifest(name: string, options: SlackAppManifestOpt
       ...(options.backgroundColor ? { background_color: options.backgroundColor } : {})
     },
     features: {
-      code_channels: { enabled: true },
+      code_channels: {
+        enabled: true,
+        ...(relayUrl ? { slash_command_url: slackInteractionsRequestUrl(relayUrl) } : {})
+      },
       bot_user: { display_name: displayName, always_online: true },
       app_home: { home_tab_enabled: true, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
       agent_view: {

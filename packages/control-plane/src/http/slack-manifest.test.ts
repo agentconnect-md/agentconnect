@@ -59,6 +59,7 @@ describe('buildInstallManifest', () => {
 
   it('http mode: disables Socket Mode and points the Events API request_urls at the relay', () => {
     const m = buildInstallManifest('acme-bot', REDIRECT, { httpRelayBase: 'https://relay.example' }) as {
+      features: { code_channels: { slash_command_url: string } }
       settings: {
         socket_mode_enabled: boolean
         event_subscriptions: { request_url: string; bot_events: string[] }
@@ -66,6 +67,7 @@ describe('buildInstallManifest', () => {
       }
     }
     expect(m.settings.socket_mode_enabled).toBe(false)
+    expect(m.features.code_channels.slash_command_url).toBe('https://relay.example/slack/interactions')
     expect(m.settings.event_subscriptions.request_url).toBe('https://relay.example/slack/events')
     expect(m.settings.interactivity.request_url).toBe('https://relay.example/slack/interactions')
     expect(m.settings.interactivity.message_menu_options_url).toBe('https://relay.example/slack/interactions')
@@ -251,7 +253,10 @@ describe('mergeManagedSlackManifest', () => {
     }
 
     expect(merged.display_information).toEqual({ name: 'Custom app', description: 'Keep this description' })
-    expect(merged.features.code_channels).toEqual({ enabled: true, custom_future_field: true })
+    expect(merged.features.code_channels).toEqual({
+      enabled: true,
+      custom_future_field: true
+    })
     expect(merged.features.bot_user).toEqual({ display_name: 'Custom bot', always_online: true })
     expect(merged.features.slash_commands).toEqual(current.features.slash_commands)
     expect(merged.features.shortcuts).toEqual([

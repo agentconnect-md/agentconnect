@@ -1109,6 +1109,7 @@ describe('SlackConnection chrome streaming', () => {
       event() {},
       action() {},
       shortcut() {},
+      command() {},
       view() {},
       client: {
         auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'B1', team_id: 'T123' }) },
