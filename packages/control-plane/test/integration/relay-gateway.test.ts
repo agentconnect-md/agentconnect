@@ -20,7 +20,9 @@ import {
   FOLLOW_UP_WATCH_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+  SESSION_MODE_AUTO_V1_FEATURE,
   TASK_PAGE_MESSAGES_FEATURE,
+  coordinatorConversationId,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
@@ -613,6 +615,85 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     expect(moved.statusCode).toBe(409)
     expect((moved.json() as { message: string }).message).toContain('moved')
     expect((await mintConversationToken(app, { conversationId })).statusCode).toBe(409)
+  })
+
+  // auto-session-mode.md §10: a member's private coordinator conversation, one per organization, member and agent.
+  it('POST …/webchat/token with coordinator mints the caller’s one coordinator conversation, theirs alone', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base, [SESSION_MODE_AUTO_V1_FEATURE, WEBCHAT_MULTI_AGENT_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { name: 'agent-b' })
+    const coordinator = { coordinator: true }
+
+    // It needs a daemon that reads Auto, and the legacy webchat protocol.
+    const unserved = await mintWebchatToken(app, AGENT_B, coordinator)
+    expect(unserved.statusCode).toBe(409)
+    expect((unserved.json() as { message: string }).message).toBe('No daemon serving this agent is connected.')
+    expect((await mintWebchatToken(app, AGENT, { ...coordinator, protocol: 'ahp' })).statusCode).toBe(409)
+    expect((await mintWebchatToken(app, AGENT, { ...coordinator, conversationId: randomUUID() })).statusCode).toBe(400)
+
+    const conversationId = coordinatorConversationId(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, AGENT)
+    const first = await mintWebchatToken(app, AGENT, coordinator)
+    expect(first.statusCode).toBe(200)
+    expect(first.json()).toMatchObject({ conversationId, protocol: 'legacy' })
+    expect(first.json()).not.toHaveProperty('sessionId')
+    expect(await prisma.webchatConversation.findUnique({ where: { id: conversationId } })).toMatchObject({
+      agentId: AGENT,
+      userId: DEFAULT_OWNER_ID
+    })
+    const { ws, result } = await verifyWebchat(base, (first.json() as { token: string }).token, 'pod-coordinator')
+    expect(result).toMatchObject({ ok: true, conversationId })
+    ws.close()
+
+    // The same conversation every time, opened on its current session once it has one.
+    const sessionId = `acp-coordinator-${conversationId.slice(0, 8)}`
+    await seedSessionMeta(prisma, sessionId, AGENT, { platform: 'webchat', channel: conversationId, daemonId: DAEMON })
+    await prisma.webchatConversationAgent.updateMany({
+      where: { conversationId },
+      data: { currentSessionId: sessionId }
+    })
+    const again = await mintWebchatToken(app, AGENT, coordinator)
+    expect(again.statusCode).toBe(200)
+    expect(again.json()).toMatchObject({ conversationId, sessionId })
+    expect(await prisma.webchatConversation.count({ where: { userId: DEFAULT_OWNER_ID } })).toBe(1)
+
+    // It takes no other participant.
+    const join = await app.http.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/${conversationId}/agents`,
+      payload: { agentId: AGENT_B }
+    })
+    expect(join.statusCode).toBe(409)
+
+    // Another member's coordinator conversation stays theirs, even on a session everyone may continue.
+    const otherUserId = 'usr_coordinator_owner'
+    await prisma.user.create({ data: { id: otherUserId, email: 'coordinator-owner@example.test' } })
+    await prisma.membership.create({ data: { orgId: DEFAULT_ORG_ID, userId: otherUserId, role: 'collaborator' } })
+    const theirs = coordinatorConversationId(DEFAULT_ORG_ID, otherUserId, AGENT)
+    const theirSession = `acp-coordinator-${theirs.slice(0, 8)}`
+    await prisma.webchatConversation.create({
+      data: { id: theirs, orgId: DEFAULT_ORG_ID, agentId: AGENT, userId: otherUserId, currentSessionId: null }
+    })
+    await seedSessionMeta(prisma, theirSession, AGENT, {
+      platform: 'webchat',
+      channel: theirs,
+      visibility: 'org',
+      ownerIdentity: `user:${otherUserId}`,
+      daemonId: DAEMON
+    })
+    await prisma.webchatConversationAgent.create({
+      data: {
+        conversationId: theirs,
+        agentId: AGENT,
+        role: 'primary',
+        ord: 0,
+        addedByUserId: otherUserId,
+        currentSessionId: theirSession
+      }
+    })
+    expect((await mintConversationToken(app, { conversationId: theirs })).statusCode).toBe(404)
+    expect((await mintWebchatToken(app, AGENT, { conversationId: theirs })).statusCode).toBe(404)
+    daemonWs.close()
   })
 
   it('POST …/webchat/token → 503 when no relay pool is configured (PUBLIC_RELAY_URL unset)', async () => {

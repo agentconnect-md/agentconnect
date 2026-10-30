@@ -57,10 +57,12 @@ import {
   updateGiteaHook,
   updateGitlabHook,
   uploadAgentIcon,
+  openCoordinatorConversation,
   type GithubInstallationDto,
   type HookDto,
   type HookRunDto
 } from '@/lib/api'
+import { opensCoordinator } from '@/components/console/playground/coordinator'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
@@ -1073,6 +1075,18 @@ function AgentDetail() {
     da.outputMode && da.outputMode !== '—' ? da.outputMode[0]!.toUpperCase() + da.outputMode.slice(1) : da.outputMode
 
   const onPlayground = () => {
+    // auto-session-mode.md §10: the playground is the member's private coordinator with the agent, on its session once it has one.
+    if (activeOrg && !MOCK_MODE && opensCoordinator(da, daemons, memberSets)) {
+      void openCoordinatorConversation(activeOrg.id, da.id)
+        .catch(() => undefined)
+        .then((entry) => {
+          const id =
+            entry?.sessionId ??
+            openPlayground(da, undefined, entry ? { conversationId: entry.conversationId } : undefined)
+          router.push(orgPath(`/sessions/${id}`))
+        })
+      return
+    }
     const pid = openPlayground(da)
     router.push(orgPath(`/sessions/${pid}`))
   }

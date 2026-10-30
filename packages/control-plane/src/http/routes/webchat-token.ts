@@ -17,10 +17,11 @@ import { z } from 'zod'
 import {
   continuableOrigin,
   continuableSession,
+  coordinatorConversationId,
   originKindOf,
   WEBCHAT_MULTI_AGENT_FEATURE
 } from '@agentconnect.md/protocol'
-import type { SessionMetaRecord } from '../../persistence/ports.js'
+import type { AgentRecord, SessionMetaRecord } from '../../persistence/ports.js'
 import { MAX_CONVERSATION_PEERS, type ConversationPeerClaim } from '../../registry/webchatToken.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
@@ -31,24 +32,35 @@ import { makeSessionAccessResolver } from '../session-access.js'
 import { continuationAudience, continuationParentId } from '../../domain/continuation-audience.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { ctxOf, orgOf } from '../rbac.js'
+import { autoSessionModeRefusal } from '../decision-access.js'
 import { ErrorDto } from '../dto/index.js'
 import { webchatAuthorIdentity } from '../../registry/agentChatKeyVerification.js'
 import { everyTurnReachesItsContent as turnsReachContent } from '../../registry/webchatVerification.js'
 import { Tag } from '../plugins/openapi.js'
 import { WebchatProtocol, WebchatAttachmentDto, webchatAttachment } from '../webchat-attachment.js'
 
+type ErrorBody = z.infer<typeof ErrorDto>
+
 const Params = z.object({ orgId: z.string(), agentId: z.string().uuid() })
-const Body = z.object({
-  protocol: WebchatProtocol.optional(),
-  // Resume an existing conversation; omitted ⇒ the CP mints a fresh id.
-  conversationId: z.string().uuid().optional()
-})
+const Body = z
+  .object({
+    protocol: WebchatProtocol.optional(),
+    // Resume an existing conversation; omitted ⇒ the CP mints a fresh id.
+    conversationId: z.string().uuid().optional(),
+    // The caller's private coordinator conversation with the agent, created on first use (auto-session-mode.md §10).
+    coordinator: z.boolean().optional()
+  })
+  .refine((b) => !(b.coordinator && b.conversationId !== undefined), {
+    message: 'a coordinator conversation is named by its agent, not by conversationId'
+  })
 const WebchatTokenDto = WebchatAttachmentDto.extend({
   token: z.string(),
   relayUrl: z.string(),
   conversationId: z.string(),
   // The token's own `exp`; a caller reuses the token until then instead of minting per turn.
-  expiresAt: z.string().datetime()
+  expiresAt: z.string().datetime(),
+  // A coordinator conversation's current session, which the console opens it on once it has one.
+  sessionId: z.string().optional()
 })
 
 const ConversationParams = z.object({ orgId: z.string() })
@@ -162,6 +174,9 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       if (!binding) return null
       const resumable = { primaryAgentId: binding.primaryAgentId, currentSessionIds: binding.currentSessionIds }
       if (binding.ownerUserId === req.principal!.userId) return resumable
+      // A member's coordinator conversation is private to them (auto-session-mode.md §10).
+      if (conversationId === coordinatorConversationId(orgOf(req), binding.ownerUserId, binding.primaryAgentId))
+        return null
       const ids = binding.currentSessionIds.filter((id): id is SessionId => id !== null)
       if (ids.length === 0 || ids.length !== binding.currentSessionIds.length) return null
       const sessions = await Promise.all(ids.map((id) => deps.repos.session.get(orgOf(req), id)))
@@ -187,6 +202,53 @@ export function webchatTokenRoutes(deps: HttpDeps) {
     }
     const AGENT_MOVED = { error: 'Conflict', statusCode: 409, message: 'the agent moved since this conversation ran' }
 
+    /** A member's private coordinator conversation with an agent (auto-session-mode.md §10): one per organization, member and agent, created on first use and the member's alone. */
+    const mintCoordinator = async (
+      principal: { userId: string; email?: string },
+      agent: AgentRecord,
+      relayUrl: string,
+      protocol: WebchatProtocol | undefined
+    ): Promise<{ code: 200; body: z.infer<typeof WebchatTokenDto> } | { code: 404 | 409; body: ErrorBody }> => {
+      const refusal = await autoSessionModeRefusal(deps, agent)
+      if (refusal) return { code: 409, body: { error: 'Conflict', statusCode: 409, message: refusal } }
+      if (protocol === 'ahp') {
+        const message = 'a coordinator conversation runs over legacy webchat'
+        return { code: 409, body: { error: 'Conflict', statusCode: 409, message } }
+      }
+      const { userId } = principal
+      const conversationId = coordinatorConversationId(agent.orgId, userId, agent.id)
+      const existing = await deps.repos.webchatConversation.resumeBinding(conversationId, agent.orgId)
+      if (existing && (existing.ownerUserId !== userId || existing.primaryAgentId !== agent.id)) {
+        return { code: 404, body: { error: 'Not Found', statusCode: 404, message: 'conversation not found' } }
+      }
+      if (existing && !(await everyTurnReachesItsContent(agent.orgId, existing.currentSessionIds))) {
+        return { code: 409, body: AGENT_MOVED }
+      }
+      if (!existing) {
+        await deps.repos.webchatConversation.ensure({ conversationId, userId, agentId: agent.id, orgId: agent.orgId })
+      }
+      const { token, expiresAt } = await deps.webchatTokens.mint({
+        protocol: 'legacy',
+        userId,
+        ...(await authorIdentity(userId, principal.email)),
+        agentId: agent.id,
+        orgId: agent.orgId,
+        conversationId
+      })
+      const sessionId = existing?.currentSessionIds[0] ?? undefined
+      return {
+        code: 200,
+        body: {
+          token,
+          relayUrl,
+          conversationId,
+          expiresAt: expiresAt.toISOString(),
+          protocol: 'legacy',
+          ...(sessionId ? { sessionId } : {})
+        }
+      }
+    }
+
     r.post(
       '/agents/:agentId/webchat/token',
       {
@@ -195,7 +257,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Mint a webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed for the conversation owner, and for any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). A resume answers 409 once an agent’s next turn would reach a machine that does not hold its session.',
+            'Mints a short-lived token the browser presents to the relay pool to start or resume a playground webchat session with this agent. A resume is allowed for the conversation owner, and for any non-viewer member who may continue every session it currently stands on (org-visible sessions; private ones stay owner-only). A resume answers 409 once an agent’s next turn would reach a machine that does not hold its session. With `coordinator`, the token is for the caller’s private conversation with the agent’s coordinator, created on first use and answered with its current session; it needs a daemon that reads Auto and the legacy webchat protocol.',
           operationId: 'mintWebchatToken',
           params: Params,
           body: Body,
@@ -215,6 +277,10 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         const userId = req.principal!.userId
+        if (req.body.coordinator) {
+          const minted = await mintCoordinator(req.principal!, agent, relayUrl, req.body.protocol)
+          return reply.code(minted.code).send(minted.body)
+        }
         const conversationId = req.body.conversationId?.toLowerCase() ?? randomUUID()
         const binding = { conversationId, userId, agentId: agent.id, orgId: agent.orgId }
         if (req.body.conversationId) {
@@ -498,6 +564,12 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         const owned = await deps.repos.webchatConversation.ownedBy(conversationId, orgId, userId)
         if (!owned) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
+        }
+        // A member's coordinator conversation is theirs with one agent (auto-session-mode.md §10).
+        if (conversationId === coordinatorConversationId(orgId, userId, owned.primaryAgentId)) {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: 'a coordinator conversation has a fixed participant' })
         }
         // A session-targeted conversation has exactly one participant — no
         // roster growth (webchat-cross-integration-continuation.md §6.2).

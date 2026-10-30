@@ -1795,8 +1795,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
 
   const openPlayground = useCallback(
-    (da: Agent, members?: Agent[], options?: { worktree?: boolean }): string => {
+    (da: Agent, members?: Agent[], options?: { worktree?: boolean; conversationId?: string }): string => {
       const id = newPlaygroundSessionId(da.id)
+      if (options?.conversationId) conversationIds.current.set(id, options.conversationId)
       if (da.workspace && isGitWorkspace(da.workspace)) {
         stagedWorktree.current.set(id, options?.worktree ?? da.workspace.worktree === true)
       }
@@ -1851,7 +1852,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // Warm the socket so the first turn is snappy. Swallow its ready rejection here —
       // a token-mint failure (e.g. no relay pool configured → 503) is surfaced on the
       // actual send in pgSend; an unhandled warm-connect rejection would just noise logs.
-      connect(id, da.id).ready.catch(() => {})
+      connect(id, da.id, options?.conversationId).ready.catch(() => {})
       return id
     },
     [connect, setPgImage, setPgInput, setBusy]

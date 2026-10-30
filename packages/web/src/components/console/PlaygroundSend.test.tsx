@@ -2532,3 +2532,18 @@ describe('a continuation lane retargeted to another member session', () => {
     expect(getBusyLaneAgentIds('s-architect')).toEqual(['agent-review'])
   })
 })
+
+// auto-session-mode.md §10: a live session opened on the member's coordinator conversation resumes it, never minting another.
+describe('A live session on an existing conversation', () => {
+  it('dials that conversation from its first, warming connect', async () => {
+    const agent = { id: 'agent-1', name: 'Echo', runtime: 'claude', model: 'model-standard' } as unknown as Agent
+    const api = await import('@/lib/api')
+    let id = ''
+    await act(async () => {
+      id = openPlayground(agent, undefined, { conversationId: 'conv-co' })
+    })
+    expect(vi.mocked(api.webchatWsUrl)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(api.webchatWsUrl)).toHaveBeenCalledWith('org1', 'agent-1', 'conv-co', undefined)
+    expect(getPgSession(id)).toMatchObject({ agentId: 'agent-1' })
+  })
+})
