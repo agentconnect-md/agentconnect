@@ -861,7 +861,7 @@ export function integrationRoutes(deps: HttpDeps) {
           tags: [Tag.Integrations],
           summary: 'Update a conversation',
           description:
-            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding. By decision refusals carry `code` DECISION_NOT_FOUND (404) or DECISION_UNSUPPORTED_CONSUMER (409); session mode `auto` is refused with SESSION_MODE_UNSUPPORTED (409) unless every connected daemon serving the conversation supports it.",
+            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding. By decision refusals carry `code` DECISION_NOT_FOUND (404) or DECISION_UNSUPPORTED_CONSUMER (409); session mode `auto` is refused with SESSION_MODE_UNSUPPORTED (409) unless every connected daemon serving the conversation supports it, and with SESSION_MODE_CONFLICT (409) together with By decision or shared-bot routing.",
           operationId: 'updateIntegrationChannel',
           params: IdParam.extend({ channelId: z.string().min(1) }),
           body: UpdateIntegrationChannelBody,
@@ -957,6 +957,17 @@ export function integrationRoutes(deps: HttpDeps) {
             })
           }
         }
+        // Auto decides every message itself, so it never runs behind By decision or shared-bot routing (auto-session-mode.md §3.3).
+        if (
+          (req.body.sessionMode ?? existingChannel.sessionMode) === 'auto' &&
+          (req.body.trigger ?? existingChannel.trigger) === 'decision'
+        )
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'Auto cannot be combined with By decision or shared-bot routing.',
+            code: 'SESSION_MODE_CONFLICT'
+          })
         // Auto reaches only a daemon that reads it; the conversation's consumer must be served by one now.
         if (req.body.sessionMode === 'auto') {
           const refusal = await autoSessionModeRefusal(deps, selectedOwner ?? agent)

@@ -28,16 +28,16 @@ export function appendCoordinate(ts: number): string {
 }
 
 // The coordinator session (auto-session-mode.md §4) is a conversation's session too, so its coordinate is an append one of its own family.
-const COORDINATOR_PREFIX = `${PREFIX}coordinator-`
+export const COORDINATOR_COORDINATE_PREFIX = `${PREFIX}coordinator-`
 
 /** The coordinator session's coordinate for a given mint time. */
 export function coordinatorCoordinate(ts: number): string {
-  return `${COORDINATOR_PREFIX}${ts}`
+  return `${COORDINATOR_COORDINATE_PREFIX}${ts}`
 }
 
 /** Whether a session's thread segment is a coordinator session's (auto-session-mode.md §4). */
 export function isCoordinatorCoordinate(thread: string | null | undefined): boolean {
-  return typeof thread === 'string' && thread.startsWith(COORDINATOR_PREFIX)
+  return typeof thread === 'string' && thread.startsWith(COORDINATOR_COORDINATE_PREFIX)
 }
 
 /** Which session a conversation coordinate names: the one `append` session or the `auto` coordinator. */
@@ -52,7 +52,7 @@ export function coordinateKind(thread: string | undefined): ConversationCoordina
 export function appendCoordinateTs(thread: string | undefined): number | undefined {
   if (!isAppendCoordinate(thread)) return undefined
   // Digits only, and at least one: `Number('')` is 0, an epoch coordinate that would win every comparison.
-  const payload = thread!.slice(isCoordinatorCoordinate(thread) ? COORDINATOR_PREFIX.length : PREFIX.length)
+  const payload = thread!.slice(isCoordinatorCoordinate(thread) ? COORDINATOR_COORDINATE_PREFIX.length : PREFIX.length)
   if (!/^\d+$/.test(payload)) return undefined
   const ts = Number(payload)
   return Number.isSafeInteger(ts) ? ts : undefined

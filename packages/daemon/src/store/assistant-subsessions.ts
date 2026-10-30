@@ -1,4 +1,5 @@
 // The persistent parent–child index of assistant-mode sub-sessions (assistant-mode.md §5.6), partitioned by agent.
+import { APPEND_COORDINATE_PREFIX } from '../session/append-coordinate.js'
 import { RESEARCH_SESSION_KEY_PATTERN, SUBSESSION_COORDINATE_PREFIX } from '../session/subsession-coordinate.js'
 import { AsyncMutex } from './async-mutex.js'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
@@ -731,14 +732,141 @@ export class AssistantSubsessionIndex {
         [agentId, key, idleBefore]
       )
       if (changes === 0) continue
-      await this.db.query('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?', [
-        agentId,
-        key
-      ])
-      await this.detachThreads(agentId, key)
+      await this.dropTaskInputsAndThreads(agentId, key)
       closed.push(key)
     }
     return closed
+  }
+
+  /** The conversations the agent's threaded tasks hold threads in. */
+  async threadedConversations(
+    agentId: string
+  ): Promise<{ platform: string; channel: string; transportScope?: string }[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT DISTINCT platform, channel, transportScope FROM assistant_subsession_thread WHERE agentId = ?
+          ORDER BY platform, channel, transportScope`,
+        [agentId]
+      )
+    ).rows as Row[]
+    return rows.map((row) => ({
+      platform: String(row.platform),
+      channel: String(row.channel),
+      ...(row.transportScope ? { transportScope: String(row.transportScope) } : {})
+    }))
+  }
+
+  /** A conversation that left `auto` hands its threaded tasks back as ordinary thread sessions (auto-session-mode.md §3.5): their rows and threads go; the released keys. */
+  async releaseThreaded(
+    agentId: string,
+    at: { platform: string; channel: string; transportScope?: string | null }
+  ): Promise<string[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT DISTINCT childSessionKey FROM assistant_subsession_thread
+          WHERE agentId = ? AND platform = ? AND channel = ? AND transportScope = ? ORDER BY childSessionKey`,
+        [agentId, at.platform, at.channel, at.transportScope ?? '']
+      )
+    ).rows as Row[]
+    const released: string[] = []
+    for (const { childSessionKey } of rows) {
+      const key = String(childSessionKey)
+      await this.db.query(`DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? ${DELEGATIONS}`, [
+        agentId,
+        key
+      ])
+      await this.dropTaskInputsAndThreads(agentId, key)
+      released.push(key)
+    }
+    return released
+  }
+
+  /** A conversation's thread sessions active since `activeSince` that no task holds, the ones a switch into `auto` adopts (auto-session-mode.md §3.5). */
+  async unownedThreadSessions(
+    agentId: string,
+    at: { platform: string; channel: string; transportScope?: string | null },
+    activeSince: number
+  ): Promise<{ key: string; thread: string; title?: string; running: boolean }[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT s.key, s.thread, s.title, s.state FROM sessions s
+          WHERE s.agentId = ? AND s.platform = ? AND s.channel = ? AND COALESCE(s.transportScope, '') = ?
+            AND s.thread NOT LIKE ? AND s.thread NOT LIKE ? AND s.originSessionId IS NULL AND s.updatedAt >= ?
+            AND NOT EXISTS (SELECT 1 FROM assistant_subsession a WHERE a.agentId = s.agentId AND a.childSessionKey = s.key)
+            AND NOT EXISTS (SELECT 1 FROM assistant_subsession_thread t WHERE t.agentId = s.agentId
+              AND t.platform = s.platform AND t.channel = s.channel AND t.transportScope = COALESCE(s.transportScope, '')
+              AND t.thread = s.thread)
+          ORDER BY s.updatedAt, s.key`,
+        [
+          agentId,
+          at.platform,
+          at.channel,
+          at.transportScope ?? '',
+          `${SUBSESSION_COORDINATE_PREFIX}%`,
+          `${APPEND_COORDINATE_PREFIX}%`,
+          activeSince
+        ]
+      )
+    ).rows as Row[]
+    return rows.map((row) => ({
+      key: String(row.key),
+      thread: String(row.thread),
+      ...(row.title != null ? { title: String(row.title) } : {}),
+      running: row.state === 'prompting' || row.state === 'cancelling'
+    }))
+  }
+
+  /** Index an existing thread session as a threaded task holding its own thread, settled unless a turn of it runs; false when it is indexed already or the thread is another task's. */
+  async adoptThreadSession(
+    input: OpenInput & {
+      platform: string
+      channel: string
+      transportScope?: string | null
+      thread: string
+      running: boolean
+      now: number
+    }
+  ): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `INSERT OR IGNORE INTO assistant_subsession
+         (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread, title)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.agentId,
+        input.childSessionKey,
+        input.parentSessionId,
+        input.parentSessionKey,
+        input.running ? 'open' : 'done',
+        input.now,
+        input.thread,
+        input.title ?? null
+      ]
+    )
+    if (changes === 0) return false
+    const attached = await this.attachThread({
+      agentId: input.agentId,
+      childSessionKey: input.childSessionKey,
+      platform: input.platform,
+      channel: input.channel,
+      transportScope: input.transportScope ?? '',
+      thread: input.thread,
+      sinceRound: 1,
+      now: input.now
+    })
+    if (attached) return true
+    await this.db.query('DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?', [
+      input.agentId,
+      input.childSessionKey
+    ])
+    return false
+  }
+
+  private async dropTaskInputsAndThreads(agentId: string, childSessionKey: string): Promise<void> {
+    await this.db.query('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?', [
+      agentId,
+      childSessionKey
+    ])
+    await this.detachThreads(agentId, childSessionKey)
   }
 
   /** Hand one parent's threaded tasks to another, as a coordinator's `!new` does (auto-session-mode.md §8); how many moved. */

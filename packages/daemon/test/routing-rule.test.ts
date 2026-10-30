@@ -302,6 +302,49 @@ describe('rulesFromAgent', () => {
   })
 })
 
+// auto-session-mode.md §3.3: under `auto` the coordinator decides every message, so Mention and Any behave alike.
+describe('rulesFromAgent under auto', () => {
+  const withCore = (core: Record<string, unknown>) =>
+    agent({
+      integrations: [
+        { id: 'int1', platform: 'slack', core, config: { botToken: 'x', appToken: 'y' } } as unknown as Integration
+      ]
+    })
+  const scopedMatches = (core: Record<string, unknown>, autoSessionMode = true) =>
+    rulesFromAgent(withCore(core), {}, { autoSessionMode })
+      .filter((rule) => rule.scope.channel !== undefined)
+      .map((rule) => `${rule.scope.channel}:${rule.match.kind}`)
+  const sessionModes = [
+    { channel: 'C1', mode: 'auto' },
+    { channel: 'C2', mode: 'auto' },
+    { channel: 'C3', mode: 'append' }
+  ]
+
+  it('admits Any message in a direct integration’s auto conversations, muted ones still fenced', () => {
+    const core = { mode: 'direct', bindRules: [{ match: { kind: 'mention' } }], mutedChannels: ['C2'], sessionModes }
+    expect(scopedMatches(core)).toEqual(['C1:auto', 'C2:auto'])
+    expect(rulesFromAgent(withCore(core), {}, { autoSessionMode: true }).at(-1)!.mutedChannels).toEqual(['C2'])
+    expect(scopedMatches(core, false)).toEqual([])
+  })
+
+  it('adds nothing where a rule already admits Any, where By decision holds, or where a gated integration is Off', () => {
+    const bindRules = [
+      { channel: 'C1', match: { kind: 'auto' } },
+      { channel: 'C2', match: { kind: 'decision' } }
+    ]
+    expect(scopedMatches({ mode: 'direct', bindRules, sessionModes })).toEqual(['C1:auto', 'C2:decision'])
+    const gated = {
+      mode: 'direct',
+      gated: true,
+      bindRules: [{ channel: 'C1', match: { kind: 'mention' } }],
+      sessionModes
+    }
+    expect(scopedMatches(gated)).toEqual(['C1:mention', 'C1:auto'])
+    // A shared bot's relay picks what reaches this daemon.
+    expect(scopedMatches({ mode: 'shared', bindRules: [], sessionModes })).toEqual([])
+  })
+})
+
 describe('resolveCpRule', () => {
   const cp: CpRule = { agentId: 'agentA', scope: { channel: 'C9' }, match: { kind: 'auto' }, epoch: 3 }
   it('resolves integrationId + botUserId + platform when the agent is servable', () => {
@@ -488,6 +531,23 @@ describe('conversationSessionMode for an unlisted conversation', () => {
     expect(conversationSessionMode(int('slack', [{ channel: 'C1', mode: 'auto' }]), 'C1', on('channel'))).toBe('auto')
     expect(conversationSessionMode(int('slack'), 'C1', { assistantMode: false, kind: 'channel' })).toBe('createNew')
     expect(conversationSessionMode(int('slack'), 'C1')).toBe('createNew')
+  })
+
+  it('keys a By decision or routed conversation listed `auto` Per thread, which never runs behind them', () => {
+    const bound = {
+      id: 'i-mode',
+      platform: 'slack',
+      core: {
+        mode: 'direct',
+        bindRules: [{ channel: 'C1', match: { kind: 'decision' } }],
+        sessionModes: [
+          { channel: 'C1', mode: 'auto' },
+          { channel: 'C2', mode: 'auto' }
+        ]
+      }
+    } as unknown as Integration
+    expect(conversationSessionMode(bound, 'C1')).toBe('createNew')
+    expect(conversationSessionMode(bound, 'C2')).toBe('auto')
   })
 
   it('reads the kind the way the control plane seeds the row', () => {

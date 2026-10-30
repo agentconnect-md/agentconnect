@@ -10661,6 +10661,7 @@ export class Daemon {
         .endIdleSubsessions([...this.agents.keys()])
         .catch((err) => this.log.warn(`idle sub-session sweep failed: ${formatErr(err)}`))
       await this.closeIdleThreadedTasks().catch((err) => this.log.warn(`idle task sweep failed: ${formatErr(err)}`))
+      await this.leaveAutoConversations().catch((err) => this.log.warn(`auto mode sweep failed: ${formatErr(err)}`))
       await this.releaseEndedTaskSlackHolds().catch((err) =>
         this.log.warn(`task indicator sweep failed: ${formatErr(err)}`)
       )
@@ -13496,9 +13497,13 @@ export class Daemon {
   ): Promise<string | undefined> {
     // A scheduled run, a hook or another agent's call names no platform message to decide on, so it keeps its own session.
     if (msg.source !== 'user') return undefined
+    const at = { platform: int.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
+    // Minted before the thread lookup, so a thread session the switch into `auto` adopts keeps its thread (§3.5).
+    const coordinator = mint
+      ? await this.resolveCoordinator(agentId, at)
+      : await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope, 'coordinator')
     if (msg.thread !== undefined && msg.msgId !== undefined && inThread({ ...msg, msgId: msg.msgId })) {
       const index = this.store.assistantSubsessions
-      const at = { platform: int.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
       const task = await index.taskOfThread(agentId, { ...at, thread: msg.thread })
       if (task !== undefined) {
         // The task's session stays where it opened; every thread it holds reaches it (§6.4).
@@ -13507,15 +13512,32 @@ export class Daemon {
         return coordinate === msg.thread ? undefined : coordinate
       }
     }
-    return mint
-      ? await this.store.resolveAppendCoordinate(
-          agentId,
-          msg.channel,
-          msg.transportScope,
-          this.clock.now(),
-          'coordinator'
-        )
-      : await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope, 'coordinator')
+    return coordinator
+  }
+
+  /** The conversation's coordinator, minted when it has none; a new one adopts the thread sessions from before `auto` (auto-session-mode.md §3.5). */
+  private async resolveCoordinator(
+    agentId: string,
+    at: { platform: string; channel: string; transportScope: string | null }
+  ): Promise<string> {
+    const current = await this.store.currentAppendCoordinate(agentId, at.channel, at.transportScope, 'coordinator')
+    if (current !== undefined) return current
+    const minted = await this.store.resolveAppendCoordinate(
+      agentId,
+      at.channel,
+      at.transportScope,
+      this.clock.now(),
+      'coordinator'
+    )
+    const key = sessionKey(at.platform, at.channel, minted, agentId, at.transportScope)
+    try {
+      const adopted = await this.coordinators.adoptThreadSessions(agentId, key, at)
+      if (adopted > 0)
+        this.log.info(`coordinator ${key}: ${adopted} thread session(s) from before auto became its tasks`)
+    } catch (err) {
+      this.log.warn(`coordinator ${key}: adopting the conversation's thread sessions failed: ${formatErr(err)}`)
+    }
+    return minted
   }
 
   /** Open a coordinator turn on its batch: the trigger and every entry queued behind it, each under its own id (auto-session-mode.md §4.3). */
@@ -13579,6 +13601,33 @@ export class Daemon {
       for (const key of await this.store.assistantSubsessions.closeIdleThreaded(agentId, idleBefore))
         this.log.info(`task ${key} closed after a week idle; its threads go back to the coordinator`)
     }
+  }
+
+  /** auto-session-mode.md §3.5: on the agent's duty holder, a conversation that left `auto` drops its coordinator, and its threaded tasks become ordinary thread sessions. */
+  private async leaveAutoConversations(): Promise<void> {
+    for (const agentId of this.agents.keys()) {
+      if (this.draining) return
+      if (!this.servesAgent(agentId)) continue
+      const index = this.store.assistantSubsessions
+      for (const at of await index.threadedConversations(agentId)) {
+        if (this.conversationRunsAuto(agentId, at.channel, at.platform)) continue
+        for (const key of await index.releaseThreaded(agentId, at))
+          this.log.info(`task ${key} is an ordinary thread session again: its conversation left auto`)
+      }
+      for (const { channel, transportScope, coordinate } of await this.store.coordinatorReservations(agentId)) {
+        if (this.conversationRunsAuto(agentId, channel)) continue
+        if (await this.store.retireCoordinator(agentId, channel, transportScope, coordinate))
+          this.log.info(`coordinator ${coordinate} of ${agentId} in ${channel} retired: the conversation left auto`)
+      }
+    }
+  }
+
+  /** Whether a conversation may run its coordinator: the switch on and an integration of the agent listing it `auto`. */
+  private conversationRunsAuto(agentId: string, channel: string, platform?: string): boolean {
+    if (!this.cfg.features.autoSessionMode) return false
+    return (this.agents.get(agentId)?.integrations ?? []).some(
+      (int) => (platform === undefined || int.platform === platform) && conversationSessionMode(int, channel) === 'auto'
+    )
   }
 
   /** A threaded task's turn starts: it runs again until the turn ends (auto-session-mode.md §6.2). */
@@ -16926,7 +16975,9 @@ export class Daemon {
 
   /** Local layer (agent.json) ∪ resolved CP layer; unservable CP rules are dropped + warn-logged. */
   private mergedRules(): RoutingRule[] {
-    const local = [...this.agents.values()].flatMap((a) => rulesFromAgent(a, this.botUserIds))
+    const local = [...this.agents.values()].flatMap((a) =>
+      rulesFromAgent(a, this.botUserIds, { autoSessionMode: this.cfg.features.autoSessionMode })
+    )
     const cp: RoutingRule[] = []
     for (const cpRule of this.cpRouting?.effectiveRules() ?? []) {
       const resolved = resolveCpRule(cpRule, (agentId) => this.resolveCpAgent(agentId))

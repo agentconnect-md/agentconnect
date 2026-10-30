@@ -113,7 +113,15 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
         FOR UPDATE OF ic`
       const rows = await tx.integrationChannel.findMany({
         where: { integration: { botId, orgId, status: 'active' } },
-        select: { integrationId: true, channelId: true, kind: true, trigger: true, decisionBinding: true, name: true }
+        select: {
+          integrationId: true,
+          channelId: true,
+          kind: true,
+          trigger: true,
+          decisionBinding: true,
+          name: true,
+          sessionMode: true
+        }
       })
       // The scope is re-derived from the locked rows, so a concurrent PATCH cannot slip a removal past the caller.
       const current = new Set(rows.filter((row) => isRouted(row.decisionBinding)).map((row) => row.channelId))
@@ -127,6 +135,7 @@ export class PgBotDecisionRoutingRepo implements BotDecisionRoutingRepo {
         const conversation = rows.filter((row) => row.channelId === channelId)
         if (conversation.length === 0) throw new RoutingChannelInvalid(channelId, 'missing')
         if (conversation.some((row) => row.kind === 'im')) throw new RoutingChannelInvalid(channelId, 'direct')
+        if (conversation.some((row) => row.sessionMode === 'auto')) throw new RoutingChannelInvalid(channelId, 'auto')
       }
       const config = {
         enabled: input.config.enabled,

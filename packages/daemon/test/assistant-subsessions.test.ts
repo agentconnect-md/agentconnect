@@ -560,6 +560,101 @@ describe('the task model: title, summary and attached threads (auto-session-mode
     expect(await index.closeIdleThreaded(a, 5_000)).toEqual([])
   })
 
+  it('adopts a conversation’s recent unowned thread sessions and releases them again (auto-session-mode.md §3.5)', async () => {
+    const s = await open()
+    const a = agent()
+    const index = s.assistantSubsessions
+    const conversation = { platform: 'slack', channel: 'C0GENERAL', transportScope: 'T0EXAMPLE' }
+    const onThread = (ts: string, channel = 'C0GENERAL') => sessionKey('slack', channel, ts, a, 'T0EXAMPLE')
+    const seed = async (thread: string, over: Partial<Parameters<LocalStore['upsertSession']>[0]> = {}) =>
+      await s.upsertSession({
+        key: onThread(thread, over.channel),
+        agentId: a,
+        platform: 'slack',
+        channel: 'C0GENERAL',
+        thread,
+        transportScope: 'T0EXAMPLE',
+        acpSessionId: `acp-${thread}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: 9_000,
+        ...over
+      })
+    await seed('100.1')
+    await s.setSessionTitle(onThread('100.1'), 'Fix the flaky test')
+    await seed('100.2', { state: 'prompting' })
+    await seed('100.3', { updatedAt: 1_000 })
+    await seed('100.4', { originSessionId: 'sid-caller' })
+    await seed(subsessionCoordinate('bg'))
+    await seed('append:5')
+    await seed('100.6', { channel: 'C0OTHER' })
+    // A thread another task already holds is not adopted with its session.
+    await seed('100.7')
+    await index.open({ ...row(a, 'holder'), now: 1_000 })
+    await index.attachThread(thread(a, 'holder', '100.7'))
+
+    const found = await index.unownedThreadSessions(a, conversation, 5_000)
+    expect(found).toEqual([
+      { key: onThread('100.1'), thread: '100.1', title: 'Fix the flaky test', running: false },
+      { key: onThread('100.2'), thread: '100.2', running: true }
+    ])
+    const parent = { parentSessionId: 'sid-coordinator', parentSessionKey: 'coordinator-key' }
+    for (const session of found)
+      expect(
+        await index.adoptThreadSession({
+          agentId: a,
+          childSessionKey: session.key,
+          ...parent,
+          title: session.title ?? 'Conversation',
+          ...conversation,
+          thread: session.thread,
+          running: session.running,
+          now: 9_500
+        })
+      ).toBe(true)
+    expect(await index.get(a, onThread('100.1'))).toMatchObject({ title: 'Fix the flaky test', state: 'done' })
+    expect(await index.get(a, onThread('100.2'))).toMatchObject({ title: 'Conversation', state: 'open' })
+    expect(await index.taskOfThread(a, { ...conversation, thread: '100.1' })).toBe(onThread('100.1'))
+    expect(await index.unownedThreadSessions(a, conversation, 5_000)).toEqual([])
+    // A thread held by another task refuses the adoption, which leaves no row behind.
+    expect(
+      await index.adoptThreadSession({
+        agentId: a,
+        childSessionKey: onThread('100.7'),
+        ...parent,
+        ...conversation,
+        thread: '100.7',
+        running: false,
+        now: 9_500
+      })
+    ).toBe(false)
+    expect(await index.get(a, onThread('100.7'))).toBeUndefined()
+
+    expect(await index.threadedConversations(a)).toEqual([conversation])
+    expect((await index.releaseThreaded(a, conversation)).sort()).toEqual(
+      [onThread('100.1'), onThread('100.2'), childKey(a, 'holder')].sort()
+    )
+    expect(await index.get(a, onThread('100.1'))).toBeUndefined()
+    expect(await index.threadsOf(a, onThread('100.1'))).toEqual([])
+    expect(await index.threadedConversations(a)).toEqual([])
+  })
+
+  it('lists and retires a conversation’s coordinator only while it is still the one in force', async () => {
+    const s = await open()
+    const a = agent()
+    const coordinator = await s.resolveAppendCoordinate(a, 'C0GENERAL', 'T0EXAMPLE', 1_000, 'coordinator')
+    await s.resolveAppendCoordinate(a, 'C0APPEND', 'T0EXAMPLE', 1_000)
+    expect(await s.coordinatorReservations(a)).toEqual([
+      { channel: 'C0GENERAL', transportScope: 'T0EXAMPLE', coordinate: coordinator }
+    ])
+    expect(await s.retireCoordinator(a, 'C0GENERAL', 'T0EXAMPLE', 'append:coordinator-1')).toBe(false)
+    expect(await s.retireCoordinator(a, 'C0GENERAL', 'T0EXAMPLE', coordinator)).toBe(true)
+    expect(await s.coordinatorReservations(a)).toEqual([])
+    expect(await s.currentAppendCoordinate(a, 'C0GENERAL', 'T0EXAMPLE')).toBeUndefined()
+    // A later switch back mints a coordinator of its own.
+    expect(await s.resolveAppendCoordinate(a, 'C0GENERAL', 'T0EXAMPLE', 2_000, 'coordinator')).not.toBe(coordinator)
+  })
+
   it('drops a task’s threads with its agent and with its purged session', async () => {
     const s = await open()
     const a = agent()

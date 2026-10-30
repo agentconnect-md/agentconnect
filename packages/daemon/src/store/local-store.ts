@@ -20,6 +20,7 @@ import { newSessionMessageId, SESSION_MESSAGE_SCHEMA, SessionMessages } from './
 import { CAPABILITY_CARD_SCHEMA, CapabilityCardLedger } from './capability-cards.js'
 import {
   APPEND_COORDINATE_PREFIX,
+  COORDINATOR_COORDINATE_PREFIX,
   coordinateKind,
   isAppendCoordinate,
   nextAppendCoordinate,
@@ -4340,6 +4341,42 @@ export class LocalStore {
       .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
       .get(agentId, channel, transportScope ?? '')) as { coordinate: string } | undefined
     return row && (kind === undefined || coordinateKind(row.coordinate) === kind) ? row.coordinate : undefined
+  }
+
+  /** The agent's conversations whose coordinate in force is a coordinator's (auto-session-mode.md §3.5). */
+  async coordinatorReservations(
+    agentId: string
+  ): Promise<{ channel: string; transportScope?: string; coordinate: string }[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT channel, transportScope, coordinate FROM append_reservation WHERE agentId = ? AND coordinate LIKE ?
+          ORDER BY channel, transportScope`
+      )
+      .all(agentId, `${COORDINATOR_COORDINATE_PREFIX}%`)) as {
+      channel: string
+      transportScope: string
+      coordinate: string
+    }[]
+    return rows.map((row) => ({
+      channel: row.channel,
+      ...(row.transportScope ? { transportScope: row.transportScope } : {}),
+      coordinate: row.coordinate
+    }))
+  }
+
+  /** A conversation that left `auto` drops its coordinator unless it moved meanwhile, so a switch back mints a new one (auto-session-mode.md §3.5). */
+  async retireCoordinator(
+    agentId: string,
+    channel: string,
+    transportScope: string | null | undefined,
+    coordinate: string
+  ): Promise<boolean> {
+    const res = await this.db
+      .prepare(
+        'DELETE FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ? AND coordinate = ?'
+      )
+      .run(agentId, channel, transportScope ?? '', coordinate)
+    return Number(res.changes) > 0
   }
 
   /** A place's one long session (assistant-mode.md §5.2): the append session in force, else the place's only
