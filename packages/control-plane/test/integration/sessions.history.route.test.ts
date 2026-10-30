@@ -21,7 +21,7 @@ import { ConnectionClosed } from '../../src/ws/registry.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { SessionListReq, SessionListPage, SessionHistoryReq, SessionHistoryPage } from '@agentconnect.md/protocol'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_EMAIL, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -357,6 +357,42 @@ describe('GET /sessions (metadata list from CP DB)', () => {
     expect(filteredBody.sessions.map((session) => session.sessionId)).toEqual([older])
     expect(filteredBody.total).toBe(1)
     expect(filteredBody.nextCursor).toBeNull()
+  })
+
+  it("filters a member's sessions under both their user id and their email", async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const byId = randomUUID()
+    const byEmail = randomUUID()
+    const other = randomUUID()
+    const row = (id: string, triggeredBy: string, at: string) => ({
+      id,
+      agentId: AGENT,
+      orgId: DEFAULT_ORG_ID,
+      platform: 'webchat',
+      channel: id,
+      triggeredBy,
+      phase: 'start' as const,
+      lastActivityAt: new Date(at)
+    })
+    await prisma.sessionMeta.createMany({
+      data: [
+        row(byId, DEFAULT_OWNER_ID, '2026-07-05T09:00:00.000Z'),
+        row(byEmail, DEFAULT_OWNER_EMAIL, '2026-07-05T08:00:00.000Z'),
+        row(other, 'someone@example.test', '2026-07-05T07:00:00.000Z')
+      ]
+    })
+    running = buildHttpApp(prisma)
+
+    for (const value of [DEFAULT_OWNER_ID, DEFAULT_OWNER_EMAIL]) {
+      const res = await running.app.inject({
+        method: 'GET',
+        url: `${ORG}/sessions?view=flat&triggeredBy=${encodeURIComponent(value)}`
+      })
+      expect(res.statusCode).toBe(200)
+      const body = res.json() as { sessions: Array<{ sessionId: string }> }
+      expect(body.sessions.map((session) => session.sessionId)).toEqual([byId, byEmail])
+    }
   })
 
   it('cascades each facet through the other active filters while keeping its own alternatives', async () => {
