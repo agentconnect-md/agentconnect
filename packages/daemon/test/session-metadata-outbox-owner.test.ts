@@ -158,3 +158,28 @@ describe('session metadata names the session owning a task', () => {
     await w.store.close()
   })
 })
+
+describe('a task owner change while the Control Plane is away', () => {
+  it('is queued durably as an ordered update and sent once it is back', async () => {
+    const w = await world()
+    await w.start()
+    await w.events()
+    w.sync.mockClear()
+    // The last milestone was acknowledged; the release happens while the Control Plane is away.
+    w.cp.state = 'CONNECTING'
+    await w.outbox.emitSessionMetadataSnapshot({
+      sessionId: 'acp-1',
+      sessionKey: w.channel.key,
+      agentId: AGENT,
+      phase: 'plan',
+      ordered: true,
+      platform: 'slack',
+      channel: w.channel.channel
+    })
+    w.cp.state = 'READY'
+    const seen = await w.events()
+    expect(seen.get(w.channel.outward)?.taskParentSessionId).toBeNull()
+    w.outbox.dispose()
+    await w.store.close()
+  })
+})

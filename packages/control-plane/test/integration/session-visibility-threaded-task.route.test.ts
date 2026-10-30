@@ -7,7 +7,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
-import { SessionId, type AgentId } from '../../src/domain/ids.js'
+import { OrgId, SessionId, type AgentId } from '../../src/domain/ids.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const opened: HttpApp[] = []
@@ -85,6 +85,14 @@ describe('session visibility of a threaded task', () => {
     expect(await detail(app, task)).toMatchObject({ canChangeVisibility: false, parentSession: { id: first } })
     expect(await put(app, task, 'private')).toBe(403)
     expect((await detail(app, first)).childSessions.map((s) => s.id)).toEqual([task])
+    // The write re-checks the row it locked, so a task adopted after the route's read stays locked.
+    const seen: unknown[] = []
+    const locked = await repo().setVisibility(OrgId(DEFAULT_ORG_ID), SessionId(task), 'private', (lockedRow) => {
+      seen.push(lockedRow)
+      return !lockedRow.taskParentSessionId
+    })
+    expect(locked).toEqual({ affected: [], forbidden: true })
+    expect(seen).toEqual([expect.objectContaining({ taskParentSessionId: first })])
 
     // A snapshot that does not say keeps the owner; a root `!new` hands the task to the next coordinator.
     await milestone(agentId, task, '1700000000.000100', sender)

@@ -13778,6 +13778,8 @@ export class Daemon {
           sessionKey: key,
           agentId,
           phase: 'plan',
+          // Durably queued: a release during a Control Plane outage must still clear the lock once it reconnects.
+          ordered: true,
           platform: rec.platform as SessionKey['platform'],
           channel: rec.channel,
           thread: rec.thread

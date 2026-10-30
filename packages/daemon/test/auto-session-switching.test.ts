@@ -237,8 +237,10 @@ describe('switching out of auto (auto-session-mode.md §3.5)', () => {
     const emit = vi.spyOn(d.sessionMetadataOutbox, 'emitSessionMetadataSnapshot')
     await d.leaveAutoConversations()
     expect(await index.get('bot-a', keyAt('1.1'))).toBeUndefined()
-    // §6.2: released, its metadata names no owner, so its visibility is its sender's again.
-    expect(emit.mock.calls.map(([snapshot]: any[]) => snapshot.sessionKey)).toEqual([keyAt('1.1')])
+    // §6.2: released, its metadata names no owner, so its visibility is its sender's again; queued durably.
+    expect(emit.mock.calls.map(([snapshot]: any[]) => [snapshot.sessionKey, snapshot.ordered])).toEqual([
+      [keyAt('1.1'), true]
+    ])
     emit.mockRestore()
     expect(await index.taskOfThread('bot-a', at('5.1'))).toBeUndefined()
     expect(await coordinatorKey()).toBeUndefined()

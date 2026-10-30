@@ -1824,6 +1824,7 @@ export class PgSessionRepo implements SessionRepo {
       ownerIdentity: string | null
       externalProvider: string | null
       thread: string | null
+      taskParentSessionId: string | null
     }) => boolean
   ): Promise<SessionVisibilityChange> {
     return withAmbientTx(this.db, async (tx) => {
@@ -1836,9 +1837,10 @@ export class PgSessionRepo implements SessionRepo {
           ownerIdentity: string | null
           externalProvider: string | null
           thread: string | null
+          taskParentSessionId: string | null
         }>
       >(Prisma.sql`
-        SELECT "visibility", "ownerIdentity", "externalProvider", "thread"
+        SELECT "visibility", "ownerIdentity", "externalProvider", "thread", "taskParentSessionId"
         FROM "session_meta" WHERE "id" = ${sessionId} AND "orgId" = ${orgId} FOR UPDATE
       `)
       // The org fence rides the row-lock read, so a cross-org id takes the same
@@ -1850,7 +1852,9 @@ export class PgSessionRepo implements SessionRepo {
         visibility: locked[0]!.visibility as SessionVisibility,
         ownerIdentity: locked[0]!.ownerIdentity,
         externalProvider: locked[0]!.externalProvider,
-        thread: locked[0]!.thread
+        thread: locked[0]!.thread,
+        // A task adopted after the route's read is locked by the time this write holds the row (auto-session-mode.md §6.2).
+        taskParentSessionId: locked[0]!.taskParentSessionId
       }
       // Re-authorize against the LOCKED row, not the one the route read. An
       // ancestor cascade committing in between can re-own this session, and the

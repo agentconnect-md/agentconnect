@@ -2087,6 +2087,7 @@ export interface SessionRepo {
       ownerIdentity: string | null
       externalProvider: string | null
       thread: string | null
+      taskParentSessionId: string | null
     }) => boolean
   ): Promise<SessionVisibilityChange>
   /** Raise the daemon-ack watermark (§5.1). Monotonic: a late ack for an older
