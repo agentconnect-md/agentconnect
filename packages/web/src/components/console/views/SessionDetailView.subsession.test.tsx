@@ -23,7 +23,8 @@ const wire = vi.hoisted(() => ({
   draft: 'more please',
   /** What the single-task read answers; null answers 404. */
   task: null as unknown,
-  taskReads: [] as Array<[string, string]>
+  taskReads: [] as Array<[string, string]>,
+  integrations: [] as unknown[]
 }))
 const spies = vi.hoisted(() => ({ pgAttach: vi.fn(), pgCancel: vi.fn(), listFilters: [] as unknown[] }))
 
@@ -99,6 +100,7 @@ vi.mock('@/lib/data-context', () => ({
     crons: [],
     daemons,
     memberSets: [],
+    integrations: wire.integrations,
     orgSetIds: new Set<string>(),
     members: [],
     sessionActivityVersionById: {},
@@ -303,6 +305,7 @@ beforeEach(() => {
   wire.draft = 'more please'
   wire.task = null
   wire.taskReads = []
+  wire.integrations = []
   daemonFeatures.length = 0
   spies.pgAttach.mockClear()
   spies.pgCancel.mockClear()
@@ -425,15 +428,37 @@ describe.each([
     expect(container?.querySelector('[data-related-row="startedBy"]')).not.toBeNull()
   })
 
-  // auto-session-mode.md §11: a coordinator's threaded task links back to it and stays a conversation people continue.
+  // auto-session-mode.md §11: a coordinator's threaded task links back to it, read from its daemon, and stays a conversation people continue.
   it('names the coordinator a threaded task belongs to, and keeps its composer', async () => {
-    await open(SLACK, { parent: { ...OWNER, title: 'morning all', coordinator: true } })
+    daemonFeatures.push('assistant-task-handle-v1', 'session-mode-auto-v1')
+    wire.integrations = [{ agentId: 'agent-1', channels: [{ channelId: 'C0123', sessionMode: 'auto' }] }]
+    wire.task = {
+      sessionId: 'session-1',
+      title: 'Webhook retries',
+      state: 'done',
+      startedAt: '2026-10-01T00:00:00.000Z',
+      visible: true,
+      canStop: false,
+      parent: { sessionId: 'coordinator-1', title: 'morning all', platform: 'slack', channelName: 'eng' },
+      kind: 'delegated',
+      threaded: true
+    }
+    await open(SLACK)
 
-    const owner = container?.querySelector('[data-task-owner]')
+    expect(wire.taskReads).toEqual([['agent-1', 'session-1']])
+    const owner = container?.querySelector('[data-threaded-task]')
     expect(owner?.textContent).toBe('Belongs to morning all · task')
-    expect(owner?.querySelector('a')?.getAttribute('href')).toMatch(/\/sessions\/owner-1$/)
+    expect(owner?.querySelector('a')?.getAttribute('href')).toMatch(/\/sessions\/coordinator-1$/)
     expect(composer()).not.toBeNull()
-    expect(container?.querySelector('[data-coordinator-tag]')).toBeNull()
+  })
+
+  it('reads no threaded task where the conversation does not run Auto', async () => {
+    daemonFeatures.push('assistant-task-handle-v1', 'session-mode-auto-v1')
+    wire.integrations = [{ agentId: 'agent-1', channels: [{ channelId: 'C0123', sessionMode: 'createNew' }] }]
+    await open(SLACK)
+
+    expect(wire.taskReads).toEqual([])
+    expect(container?.querySelector('[data-task-owner]')).toBeNull()
   })
 
   it('marks a coordinator’s own page in the desktop title row and the phone header alike', async () => {

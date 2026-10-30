@@ -1,5 +1,5 @@
 // Human authorization after authentication and organization selection; see docs/designs/authorization-policy.md.
-import { isAppendCoordinate, isCoordinatorCoordinate, isSubsessionCoordinate } from '@agentconnect.md/protocol'
+import { isAppendCoordinate, isSubsessionCoordinate } from '@agentconnect.md/protocol'
 import type { SessionExternalAccessSnapshot, SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
 
 export type { Shareable, ViewCtx } from '../persistence/ports.js'
@@ -30,18 +30,16 @@ export interface SessionViewable {
   /** The session's thread coordinate; null when it has none. Omitted means unread, which
    *  `session.visibility.change` treats as an `append` coordinate (fail closed). */
   thread?: string | null
-  /** What recognises an agent's own task; unread on a `subsession:` coordinate counts as one. */
+  /** What recognises an agent's own background work; unread on a `subsession:` coordinate counts as it. */
   subsession?: SubsessionFacts
 }
 
-/** The lineage of a session on a `subsession:` coordinate (assistant-mode.md §5.6), or of one with a parent. */
+/** The lineage of a session on a `subsession:` coordinate (assistant-mode.md §5.6). */
 export interface SubsessionFacts {
   parentSessionId: string | null
   /** The parent session's agent; null when there is no parent row. */
   parentAgentId: string | null
   agentId: string
-  /** The parent session's coordinate, which names a coordinator's threaded task (auto-session-mode.md §6.2). */
-  parentThread?: string | null
 }
 
 export type AuthorizationRequest =
@@ -80,11 +78,10 @@ function resourceIsEditable(resource: Shareable, principal: ViewCtx): boolean {
   return principal.role !== 'viewer' && resourceIsVisible(resource, principal)
 }
 
-/** An agent's own task, background work or a coordinator's threaded task, takes its parent's audience, so none of its viewers may change it. */
+/** An agent's own background work, in assistant mode or not, takes its owning session's audience, so none of its viewers may change it. */
 function isOwnSubsession(resource: SessionViewable): boolean {
+  if (!isSubsessionCoordinate(resource.thread)) return false
   const facts = resource.subsession
-  if (!isSubsessionCoordinate(resource.thread))
-    return facts !== undefined && facts.parentAgentId === facts.agentId && isCoordinatorCoordinate(facts.parentThread)
   return facts === undefined || (facts.parentSessionId !== null && facts.parentAgentId === facts.agentId)
 }
 

@@ -472,12 +472,4 @@ describe('canChangeSessionVisibility on an agent’s own task', () => {
     expect(allowed(session(null, facts()))).toBe(true)
     expect(allowed(session('append:1700000000000', facts()))).toBe(false)
   })
-
-  // auto-session-mode.md §6.2: a coordinator's threaded task takes its audience, so its owner cannot change it either.
-  it('refuses a coordinator’s threaded task, and only its own agent’s', () => {
-    const coordinator = { parentThread: 'append:coordinator-1700000000000' }
-    expect(allowed(session('1700000000.000100', facts(coordinator)))).toBe(false)
-    expect(allowed(session('1700000000.000100', facts({ ...coordinator, parentAgentId: 'agent-b' })))).toBe(true)
-    expect(allowed(session('1700000000.000100', facts({ parentThread: 'append:1700000000000' })))).toBe(true)
-  })
 })

@@ -33,7 +33,6 @@ import {
   CODE_HOST_PROVIDERS,
   isCodeHostHookKind,
   isSessionIdentityPlatform,
-  isCoordinatorCoordinate,
   isSubsessionCoordinate,
   SANDBOX_KEEP_ALIVE_FEATURE,
   WEBCHAT_IMAGES_FEATURE,
@@ -225,8 +224,7 @@ function sessionRelation(
     agentName: agentNames.get(s.agentId) ?? null,
     platform: s.platform ?? 'slack',
     title: s.title,
-    subsession: isSubsessionCoordinate(s.thread),
-    coordinator: isCoordinatorCoordinate(s.thread)
+    subsession: isSubsessionCoordinate(s.thread)
   }
 }
 
@@ -625,19 +623,18 @@ export function sessionRoutes(deps: HttpDeps) {
       return { session, access }
     }
 
-    // The lineage that recognises an agent's own task: background work on its coordinate (assistant-mode.md §5.6), or a coordinator's threaded task (auto-session-mode.md §6.2).
+    // assistant-mode.md §5.6: the lineage that recognises an agent's own background work, read only on its coordinate.
     const subsessionFacts = async (
       req: FastifyRequest,
       session: SessionMetaRecord
     ): Promise<{ subsession?: SubsessionFacts }> => {
-      if (!isSubsessionCoordinate(session.thread) && !session.parentSessionId) return {}
+      if (!isSubsessionCoordinate(session.thread)) return {}
       const parent = session.parentSessionId ? await deps.repos.session.get(orgOf(req), session.parentSessionId) : null
       return {
         subsession: {
           parentSessionId: session.parentSessionId,
           parentAgentId: parent?.agentId ?? null,
-          agentId: session.agentId,
-          parentThread: parent?.thread ?? null
+          agentId: session.agentId
         }
       }
     }

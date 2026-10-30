@@ -628,8 +628,6 @@ export interface SessionRelationDto {
   title: string | null
   /** A task (delegated task, follow-up or approved proposal) rather than a conversation; absent on older Control Planes. */
   subsession?: boolean
-  /** A conversation's coordinator under Auto, a threaded task's parent; absent on older Control Planes. */
-  coordinator?: boolean
 }
 
 export interface SessionDetailDto {

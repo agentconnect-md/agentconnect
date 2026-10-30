@@ -43,13 +43,7 @@ async function agent(daemonId: string, assistantMode: boolean): Promise<AgentId>
 }
 
 /** A parent the first poster owns, and a child classified exactly as `event/session` ingest classifies one. */
-async function lineage(
-  parentAgent: AgentId,
-  childAgent: AgentId,
-  childThread: string,
-  owner: string,
-  parentThread = '1700000000.000100'
-) {
+async function lineage(parentAgent: AgentId, childAgent: AgentId, childThread: string, owner: string) {
   const repo = new PgSessionRepo(prisma)
   const parentId = `s-parent-${randomUUID()}`
   const childId = `s-child-${randomUUID()}`
@@ -59,7 +53,7 @@ async function lineage(
     phase: 'start',
     platform: 'slack',
     channel: 'C1',
-    thread: parentThread,
+    thread: '1700000000.000100',
     at: new Date(),
     classification: { visibility: 'org', ownerIdentity: `user:${owner}`, source: 'default' }
   })
@@ -118,19 +112,6 @@ describe('session visibility of an agent’s sub-sessions', () => {
       expect(await row(childId)).toMatchObject({ visibility: 'private', ownerIdentity: `user:${firstPoster}` })
     }
   )
-
-  // auto-session-mode.md §6.2: a coordinator's threaded task takes its audience, an adopted thread session's owner included.
-  it('refuses the owner of a coordinator’s threaded task a change of its own', async () => {
-    const firstPoster = await makeUser(`sv-sub-coordinator-${randomUUID()}`)
-    const daemonId = await seedDaemon(prisma, randomUUID())
-    const own = await agent(daemonId, false)
-    const { childId } = await lineage(own, own, '1700000000.000200', firstPoster, 'append:coordinator-1700000000000')
-    const app = appAs(firstPoster)
-
-    expect(await detail(app, childId)).toMatchObject({ visibility: 'org', canChangeVisibility: false })
-    expect(await put(app, childId, 'private')).toBe(403)
-    expect((await row(childId)).visibility).toBe('org')
-  })
 
   it.each([
     ['a peer’s child on a platform thread', true, 'peer', '1700000000.000200'],

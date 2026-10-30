@@ -31,10 +31,9 @@
 > the daemon reads `auto`, and it takes their reports (§3.4). The console's session-mode menu offers
 > Auto in a room whose consumer's daemon reads it, outside By decision and shared-bot routing, and
 > under Auto its trigger menu offers only Off beside "Decided by the coordinator" (§3.3, §11). The
-> console labels the coordinator in the session list and on its page. Outside a DM, a threaded task's
-> session metadata names its coordinator as lineage while it classifies by its own room, so each page
-> links to the other, and the Control Plane refuses changes to a threaded task's visibility (§6.2,
-> §11). Webchat (§10) is not implemented.
+> console labels the coordinator in the session list and on its page, and a threaded task's page
+> names the coordinator it belongs to now, read from the owning daemon by the task's session (§11).
+> The visibility lock for threaded tasks and webchat (§10) are not implemented.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -284,10 +283,7 @@ The rules follow from whether a thread is attached; there is no separate switch.
 | Concurrency cap  | Not counted in `maxConcurrentSubsessions`                       | Counted                                        |
 | Owner            | The sender of the message it opened for; later messages keep it | The parent's owner                             |
 
-Both kinds inherit the parent's visibility and refuse changes to it. A threaded task lives in its
-coordinator's room, so it takes that audience by classifying as the room does: its lineage to the
-coordinator is recorded the way an agent's channel-root post records its own, and a DM's tasks carry
-none.
+Both kinds inherit the parent's visibility and refuse changes to it.
 
 ### 6.3 Nesting
 

@@ -736,7 +736,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Get one of an agent’s tasks',
           description:
-            'Reads one task the agent started (a delegated task, a follow-up or an approved proposal) by its own session id, as `listAssistantSubsessions` lists it: its state, start, title, the conversation it belongs to where the caller may view it, and `canStop`; a follow-up also carries its status, next check, what counts as done and its newest checks. Only a task session of this agent the caller may view is read; any other answers 404, as does one the daemon no longer holds. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot read one task, and 409 `ASSISTANT_MODE_OFF` for an agent outside assistant mode whose daemon serves only assistant mode’s. Nothing is stored by this call.',
+            'Reads one task the agent started (a delegated task, a coordinator’s threaded task, a follow-up or an approved proposal) by its own session id, as `listAssistantSubsessions` lists it: its state, start, title, the conversation it belongs to where the caller may view it, and `canStop`; a follow-up also carries its status, next check, what counts as done and its newest checks. Only a session of this agent the caller may view is read, and one its daemon does not hold as a task answers 404. Answers 409 `DAEMON_FEATURE_MISSING` when the agent’s daemon cannot read one task, and 409 `ASSISTANT_MODE_OFF` for an agent outside assistant mode whose daemon serves only assistant mode’s. Nothing is stored by this call.',
           operationId: 'getAssistantSubsession',
           params: SubsessionParam,
           response: { 200: SubsessionDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -746,8 +746,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         const admitted = await admit(req, reply, false, TASK_HANDLE, true)
         if (!admitted) return reply
         const row = await deps.repos.session.get(orgOf(req), SessionId(req.params.sessionId))
-        // A task session of this agent the caller may view, as its own page needs.
-        if (!row || row.agentId !== admitted.agent.id || !isSubsessionCoordinate(row.thread)) {
+        // A session of this agent the caller may view, as its own page needs; a threaded task lives on a platform thread (auto-session-mode.md §11).
+        if (!row || row.agentId !== admitted.agent.id) {
           return send(reply, notFound('task not found'))
         }
         const audience = await access.forSessions(req, [row])
