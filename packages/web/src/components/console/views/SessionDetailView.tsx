@@ -4685,7 +4685,13 @@ export default function SessionDetailView() {
           )
           continue
         }
-        const participant = self ? speaker('@you') : speaker(senderAgentName ?? who, senderAgentName)
+        const cron = asCron(who)
+        const participant = self
+          ? speaker('@you')
+          : speaker(
+              senderAgentName ?? who,
+              cron?.name ?? (cron ? 'Schedule' : (senderAgentName ?? platformSenderFallback(session.platform, who)))
+            )
         pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',
           key: `u:${liveAnchor(stp)}`,
@@ -4697,8 +4703,8 @@ export default function SessionDetailView() {
           time: stp.time ?? '',
           text: stp.text,
           image: stp.image,
-          isCron: false,
-          cronId: null,
+          isCron: !!cron,
+          cronId: cron?.id ?? null,
           ...(stp.steer ? { steer: true, ...(stp.steered ? { steered: true } : {}) } : {}),
           platform: session.platform
         })
