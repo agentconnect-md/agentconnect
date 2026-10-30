@@ -6,7 +6,8 @@ export const webchatProtocol = (): PlaygroundProtocol =>
 
 // A new attachment's participants: openPlayground names them; any other first touch knows only its session id.
 export type ProtocolTarget = { agents: readonly Agent[] } | { sessionId: string }
-export type ProtocolChoice = (target: ProtocolTarget) => PlaygroundProtocol
+// Undefined while a session's participants are still unknown: the call goes to legacy without pinning it.
+export type ProtocolChoice = (target: ProtocolTarget) => PlaygroundProtocol | undefined
 
 // AHP only where the deployment prefers it and the CP reports every participant can attach over it.
 export function protocolFor(
@@ -49,17 +50,17 @@ export function createPlaygroundSelector(
     if (!protocol && known) protocol = ahp.getPgSession(id) ? 'ahp' : 'legacy'
     protocol ??= preferred({ sessionId: id })
     const key = known?.id ?? id
-    if (claim) {
+    if (claim && protocol) {
       pins.set(id, protocol)
       pins.set(key, protocol)
     }
-    return { adapter: adapters[protocol], id: key }
+    return { adapter: adapters[protocol ?? 'legacy'], id: key }
   }
   const method = (property: keyof PlaygroundData): unknown => {
     if (property === 'openPlayground')
       return (...args: Parameters<PlaygroundData['openPlayground']>) => {
         const [agent, members] = args,
-          protocol = preferred({ agents: [agent, ...(members ?? [])] }),
+          protocol = preferred({ agents: [agent, ...(members ?? [])] }) ?? 'legacy',
           id = adapters[protocol].openPlayground(...args)
         pins.set(id, protocol)
         return id

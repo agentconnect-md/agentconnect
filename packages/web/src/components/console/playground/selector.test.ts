@@ -84,4 +84,18 @@ describe('attachment protocol selector', () => {
     expect(ahp.openPlayground).toHaveBeenCalledTimes(1)
     expect(legacy.openPlayground).toHaveBeenCalledWith(agent, [peer])
   })
+  it('leaves a session unpinned until its participants are known', () => {
+    const legacy = adapter('old'),
+      ahp = adapter('new'),
+      pins = new Map<string, PlaygroundProtocol>()
+    const choice: { protocol?: PlaygroundProtocol } = {}
+    const ui = selectPlayground(legacy, ahp, pins, () => choice.protocol)
+    ui.pgSend('session', 'a', 'Early')
+    expect(legacy.pgSend).toHaveBeenCalledWith('session', 'a', 'Early')
+    expect(pins.has('session')).toBe(false)
+    choice.protocol = 'ahp'
+    ui.pgSend('session', 'a', 'Later')
+    expect(ahp.pgSend).toHaveBeenCalledWith('session', 'a', 'Later')
+    expect(pins.get('session')).toBe('ahp')
+  })
 })
