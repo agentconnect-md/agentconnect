@@ -20,8 +20,12 @@
 > keeps a summary with `updateTask`, and closes after 7 idle days or with its purged session (§6.5). A
 > background task cannot take a channel message yet (§6.6): the coordinator opens no background task
 > before P3. Each message a coordinator turn decides shows 🤔 until the turn ends (§4.4), and `!new`
-> and `!stop` act on a task in its threads and on the coordinator at the root (§8). The visibility
-> lock for threaded tasks and webchat (§10) are not implemented.
+> and `!stop` act on a task in its threads and on the coordinator at the root (§8). Under `auto` every
+> message of a conversation that is not Off reaches the coordinator, and `auto` is refused together
+> with By decision and shared-bot routing (§3.3). Switching into `auto` makes the conversation's recent
+> thread sessions the coordinator's tasks; switching out retires the coordinator and hands its tasks
+> back as ordinary thread sessions (§3.5). The visibility lock for threaded tasks, assistant mode's
+> move to `auto` (§3.4) and webchat (§10) are not implemented.
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -77,6 +81,12 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
 - With `auto` selected, the trigger menu offers only Off; the other choices read "Decided by the
   coordinator".
 - By decision and shared-bot routing are mutually exclusive with `auto` for now.
+- The Control Plane refuses `auto` on a By decision or routed row, By decision on an `auto` row, and
+  adding an `auto` conversation to a shared bot's routing, all with 409 `SESSION_MODE_CONFLICT`. A
+  daemon that still receives both keys the row Per thread.
+- Mention and Any message both admit every message: a daemon adds an Any rule for each `auto`
+  conversation of a direct integration that is not Off, and a shared bot's relay routes every message
+  of an `auto` conversation to its owner once the owner's daemon advertises `session-mode-auto-v1`.
 
 ### 3.4 Assistant mode
 
@@ -94,6 +104,13 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
 - **Out of `auto`**: the coordinator takes no new messages and ages out. Threaded tasks go back to
   being ordinary thread sessions: under `createNew` they keep working; under `append` thread messages
   join the one session.
+- Mode is read per message, so the switch takes effect where a message or the sweep meets it:
+  - A conversation's coordinator is minted by the first message that needs it. A newly minted one
+    adopts, as settled threaded tasks, the conversation's thread sessions that a platform message
+    opened, that were active within the last 7 days (§6.5) and whose threads no task holds.
+  - The minute sweep on the agent's duty holder releases the threaded tasks of a conversation that
+    is no longer `auto` and drops its coordinator reservation, so a switch back mints a new
+    coordinator, which adopts its old tasks' sessions again.
 
 ## 4. Root messages and the coordinator
 

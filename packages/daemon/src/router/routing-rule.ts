@@ -79,6 +79,8 @@ export function conversationSessionMode(
   unseen?: { assistantMode: boolean; kind: AppendConversationKind }
 ): ChannelSessionMode {
   const listed = integrationCore(int).sessionModes.find((entry) => entry.channel === channel)?.mode
+  // By decision and shared-bot routing never run under `auto` (auto-session-mode.md §3.3), so such a row keys Per thread.
+  if (listed === 'auto' && integrationRouting(int).decisionBound(channel)) return 'createNew'
   if (listed) return listed
   return unseen?.assistantMode && manifestFor(int.platform).appendKinds.includes(unseen.kind) ? 'append' : 'createNew'
 }
@@ -162,12 +164,32 @@ export function resolveAgentIntegration(
   }
 }
 
+/** Under `auto` the coordinator decides every message (auto-session-mode.md §3.3), so a direct integration's `auto` conversation admits Any message wherever it admits one at all. */
+function autoConversationRules(int: Integration, routing: ReturnType<typeof integrationRouting>): BindRuleConfig[] {
+  const core = integrationCore(int)
+  if (core.mode !== 'direct') return []
+  return core.sessionModes.flatMap(({ channel }) => {
+    if (conversationSessionMode(int, channel) !== 'auto') return []
+    const scoped = routing.bindRules.filter((rule) => rule.channel === channel)
+    if (scoped.some((rule) => rule.match.kind === 'auto')) return []
+    // A gated integration admits only a conversation a scoped rule enables; Off is its missing rule.
+    if (routing.gated && !scoped.some((rule) => rule.match.kind !== 'decision')) return []
+    return [{ channel, match: { kind: 'auto' as const } }]
+  })
+}
+
 /** Local layer: one resolved RoutingRule per bindRule of EACH integration (any
  *  platform), tagged with its platform so cross-platform messages can't collide. */
-export function rulesFromAgent(agent: Agent, botUserIds: Record<string, string>): RoutingRule[] {
+export function rulesFromAgent(
+  agent: Agent,
+  botUserIds: Record<string, string>,
+  opts: { autoSessionMode?: boolean } = {}
+): RoutingRule[] {
   const out: RoutingRule[] = []
   for (const int of agent.integrations) {
-    const { staticBotUserId, bindRules, mutedChannels } = integrationRouting(int)
+    const routing = integrationRouting(int)
+    const { staticBotUserId, mutedChannels } = routing
+    const bindRules = [...routing.bindRules, ...(opts.autoSessionMode ? autoConversationRules(int, routing) : [])]
     const botUserId = botUserIds[int.id] ?? staticBotUserId ?? ''
     for (const br of bindRules) {
       out.push({

@@ -79,7 +79,7 @@ export class RoutingChannelInvalid extends Error {
   readonly code = 'ROUTING_CHANNEL_INVALID' as const
   constructor(
     readonly channelId: string,
-    readonly reason: 'direct' | 'missing'
+    readonly reason: 'direct' | 'missing' | 'auto'
   ) {
     super(`channel ${channelId} cannot be added to routing (${reason})`)
     this.name = 'RoutingChannelInvalid'

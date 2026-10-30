@@ -6,6 +6,7 @@ import {
   DECISION_ROUTING_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
+  SESSION_MODE_AUTO_V1_FEATURE,
   type DecisionDraft,
   type IntegrationRemove,
   type IntegrationUpsert,
@@ -657,6 +658,46 @@ describe('the router persistence invariants', () => {
     expect(await prisma.botDecisionRouting.findUnique({ where: { botId } })).toMatchObject({ enabled: true })
     for (const row of await rowsOf('C1')) expect(row.decisionBinding).toEqual({ type: 'shared_bot_routing' })
     for (const row of await rowsOf('C2')) expect(row).toMatchObject({ trigger: 'any', decisionBinding: null })
+  })
+})
+
+// auto-session-mode.md §3.3: the coordinator decides every message of an Auto conversation, so routing never holds one.
+describe('Auto conversations on a shared bot', () => {
+  it('refuses to add an Auto conversation to routing, in the route and in the save itself', async () => {
+    const { botId, a, b } = await seedBot()
+    const { app } = appWith()
+    await prisma.integrationChannel.updateMany({ where: { channelId: 'C1' }, data: { sessionMode: 'auto' } })
+    const decisionId = await createDecision(app)
+    const config = routingConfig(decisionId, a.agentId, b.agentId) as SharedBotDecisionRouting
+    const refused = await put(app, botId, { config, channelIds: ['C1'], removals: [] })
+    expect(refused.statusCode, refused.body).toBe(409)
+    expect(refused.json().code).toBe('SESSION_MODE_CONFLICT')
+    const actor = { userId: DEFAULT_OWNER_ID, role: 'owner' as const }
+    await expect(
+      new PgBotDecisionRoutingRepo(prisma).save(
+        OrgId(DEFAULT_ORG_ID),
+        BotId(botId),
+        { config, channelIds: ['C1'], removals: [] },
+        actor
+      )
+    ).rejects.toMatchObject({ reason: 'auto' })
+    for (const row of await rowsOf('C1')) expect(row).toMatchObject({ trigger: 'mention', decisionBinding: null })
+    // Another conversation still joins routing.
+    expect((await put(app, botId, { config, channelIds: ['C2'], removals: [] })).statusCode).toBe(200)
+  })
+
+  it("routes every message of an Auto conversation to its owner once the owner's daemon reads Auto", async () => {
+    const { botId, a } = await seedBot()
+    const { app, relay, spy } = appWith()
+    await prisma.integrationChannel.updateMany({ where: { channelId: 'C1' }, data: { sessionMode: 'auto' } })
+    await app.deps.httpBot.syncRoutes(botId)
+    const ownerRoute = (kind: 'mention' | 'auto') =>
+      expect.objectContaining({ agentId: a.agentId, scope: { channel: 'C1' }, match: { kind } })
+    expect(lastRoutes(relay!).routes).toContainEqual(ownerRoute('mention'))
+    spy.features = [...ROUTING, SESSION_MODE_AUTO_V1_FEATURE]
+    await app.deps.httpBot.daemonReady(DAEMON)
+    expect(lastRoutes(relay!).routes).toContainEqual(ownerRoute('auto'))
+    expect(lastRoutes(relay!).routes).not.toContainEqual(ownerRoute('mention'))
   })
 })
 

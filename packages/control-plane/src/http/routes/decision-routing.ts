@@ -86,6 +86,7 @@ const notFound = (message: string, code?: string) => ({
   ...(code ? { code } : {})
 })
 const forbidden = (message: string) => ({ error: 'Forbidden', statusCode: 403, message })
+const AUTO_ROUTING_CONFLICT = 'A conversation in Auto cannot be added to routing; choose another session mode first.'
 const conflict = (message: string, code?: string) => ({
   error: 'Conflict',
   statusCode: 409,
@@ -177,7 +178,7 @@ export function decisionRoutingRoutes(deps: HttpDeps) {
           summary: 'Save shared-bot routing',
           operationId: 'saveBotDecisionRouting',
           description:
-            'Saves the complete routing configuration and its channel scope in one transaction. `channelIds` is the complete desired scope: an addition must be an enabled group channel and becomes By decision on every sibling row, replacing any gate; every removed channel must appear in `removals` with its replacement trigger and optional default agent. `enabled: false` pauses routing and keeps the scope. Adding channels is refused with `code` DECISION_UNSUPPORTED_CONSUMER (409) while the relay or the evaluation host does not support routing; an invisible Decision is `code` DECISION_NOT_FOUND (404).',
+            'Saves the complete routing configuration and its channel scope in one transaction. `channelIds` is the complete desired scope: an addition must be an enabled group channel and becomes By decision on every sibling row, replacing any gate; every removed channel must appear in `removals` with its replacement trigger and optional default agent. `enabled: false` pauses routing and keeps the scope. Adding channels is refused with `code` DECISION_UNSUPPORTED_CONSUMER (409) while the relay or the evaluation host does not support routing, and a conversation in Auto with `code` SESSION_MODE_CONFLICT (409); an invisible Decision is `code` DECISION_NOT_FOUND (404).',
           params: IdParam,
           body: BotDecisionRoutingSaveBody,
           response: {
@@ -247,6 +248,9 @@ export function decisionRoutingRoutes(deps: HttpDeps) {
           if (conversation.length === 0) return reply.code(404).send(notFound('channel not found'))
           if (conversation.some((row) => row.kind === 'im'))
             return reply.code(400).send(badRequest('By decision applies only to group conversations'))
+          // Auto decides every message itself, so it never runs behind routing (auto-session-mode.md §3.3).
+          if (additions.includes(channelId) && conversation.some((row) => row.sessionMode === 'auto'))
+            return reply.code(409).send(conflict(AUTO_ROUTING_CONFLICT, 'SESSION_MODE_CONFLICT'))
           const owner = pickConversationOwner(installs, conversation)
           const ownerAgent = owner ? await deps.repos.agent.get(orgOf(req), owner.agentId) : null
           if (!owner || !ownerAgent)
@@ -303,7 +307,9 @@ export function decisionRoutingRoutes(deps: HttpDeps) {
           if (err instanceof RoutingChannelInvalid)
             return err.reason === 'missing'
               ? reply.code(404).send(notFound('channel not found'))
-              : reply.code(400).send(badRequest('By decision applies only to group conversations'))
+              : err.reason === 'auto'
+                ? reply.code(409).send(conflict(AUTO_ROUTING_CONFLICT, 'SESSION_MODE_CONFLICT'))
+                : reply.code(400).send(badRequest('By decision applies only to group conversations'))
           // The Decision was deleted between validation and the write (FK RESTRICT on the router).
           if (
             err instanceof DecisionBindingDenied ||

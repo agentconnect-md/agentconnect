@@ -81,9 +81,9 @@ export function messageForTask(
   }
 }
 
-/** A fallback task's title: the message's first line, cut to a task title's length. */
-function fallbackTitle(msg: NormalizedMessage): string {
-  const line = deriveTitle(msg.text)?.replace(/\s+/g, ' ').trim() || 'Message'
+/** A task title the daemon gives: the text's first line, cut to a task title's length. */
+function taskTitleFrom(text: string | undefined, otherwise: string): string {
+  const line = deriveTitle(text)?.replace(/\s+/g, ' ').trim() || otherwise
   const chars = [...line]
   return chars.length <= TASK_TITLE_MAX_CHARS ? line : `${chars.slice(0, TASK_TITLE_MAX_CHARS - 1).join('')}…`
 }
@@ -273,7 +273,38 @@ export class CoordinatorSessions {
       .store()
       .assistantSubsessions.taskOfThread(agentId, { ...at, thread: replyThreadOf(msg) })
     if (owner !== undefined) await this.deliverToTask(agentId, owner, message)
-    else await this.openTask(await this.taskOwner(agentId, msg, key), agentId, message, fallbackTitle(msg))
+    else
+      await this.openTask(await this.taskOwner(agentId, msg, key), agentId, message, taskTitleFrom(msg.text, 'Message'))
+  }
+
+  /** Into `auto` (§3.5): the conversation's thread sessions active within a task's idle lifetime become the new coordinator's threaded tasks, titled from their first message; how many. */
+  async adoptThreadSessions(
+    agentId: string,
+    coordinatorKey: string,
+    at: { platform: string; channel: string; transportScope?: string | null }
+  ): Promise<number> {
+    const store = this.host.store()
+    const index = store.assistantSubsessions
+    const now = this.host.now()
+    const sessions = await index.unownedThreadSessions(agentId, at, now - THREADED_TASK_IDLE_CLOSE_MS)
+    if (sessions.length === 0) return 0
+    const parentSessionId = await store.ensureOutwardSessionId(coordinatorKey, agentId, now)
+    let adopted = 0
+    for (const session of sessions) {
+      const opened = await index.adoptThreadSession({
+        agentId,
+        childSessionKey: session.key,
+        parentSessionId,
+        parentSessionKey: coordinatorKey,
+        title: taskTitleFrom(session.title, 'Conversation'),
+        ...at,
+        thread: session.thread,
+        running: session.running,
+        now
+      })
+      if (opened) adopted += 1
+    }
+    return adopted
   }
 
   /** A coordinator's `!new`: the session succeeding it takes over its threaded tasks, which keep their threads (§8). */

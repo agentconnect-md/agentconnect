@@ -9,6 +9,7 @@ import {
   DECISION_CHAIN_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   OWNER_DEFAULT_DECISION_V1_FEATURE,
+  SESSION_MODE_AUTO_V1_FEATURE,
   type DecisionDraft,
   type IntegrationUpsert,
   type IntegrationRemove,
@@ -374,6 +375,36 @@ describe('PATCH /integrations/:id/channels/:channelId with By decision', () => {
     expect(cleared.statusCode).toBe(200)
     for (const row of await prisma.integrationChannel.findMany({ where: { channelId: 'C1' } }))
       expect(row).toMatchObject({ trigger: 'mention', decisionBinding: null })
+  })
+})
+
+// auto-session-mode.md §3.3: the coordinator decides every message, so Auto never runs behind By decision.
+describe('Auto with By decision', () => {
+  it('refuses either one on a row that has the other, and takes both changed together', async () => {
+    const { integrationId } = await seedInstall()
+    const { app, spy } = appWith([DECISION_TRIGGER_V1_FEATURE, SESSION_MODE_AUTO_V1_FEATURE])
+    const decisionId = await createDecision(app)
+    expect((await patchChannel(app, integrationId, 'C1', gateOf(decisionId))).statusCode).toBe(200)
+    const row = () => prisma.integrationChannel.findFirst({ where: { channelId: 'C1' } })
+
+    const auto = await patchChannel(app, integrationId, 'C1', { sessionMode: 'auto' })
+    expect(auto.statusCode, auto.body).toBe(409)
+    expect(auto.json()).toMatchObject({ code: 'SESSION_MODE_CONFLICT' })
+    expect(await row()).toMatchObject({ trigger: 'decision', sessionMode: 'createNew' })
+
+    expect((await patchChannel(app, integrationId, 'C1', { trigger: 'mention', sessionMode: 'auto' })).statusCode).toBe(
+      200
+    )
+    spy.upserts.length = 0
+    const gated = await patchChannel(app, integrationId, 'C1', gateOf(decisionId))
+    expect(gated.statusCode, gated.body).toBe(409)
+    expect(gated.json()).toMatchObject({ code: 'SESSION_MODE_CONFLICT' })
+    expect(await row()).toMatchObject({ trigger: 'mention', sessionMode: 'auto' })
+    expect(spy.upserts).toEqual([])
+
+    const both = await patchChannel(app, integrationId, 'C1', { ...gateOf(decisionId), sessionMode: 'append' })
+    expect(both.statusCode, both.body).toBe(200)
+    expect(await row()).toMatchObject({ trigger: 'decision', sessionMode: 'append' })
   })
 })
 
