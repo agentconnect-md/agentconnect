@@ -25,6 +25,8 @@ export type AhpRoster = Array<{ agentId: string; name: string; primary?: boolean
 export class AhpConversation {
   readonly peers = new Map<string, AhpAttachment>()
   readonly notices: SessionStep[] = []
+  // Turn ids this tab sent, so their prompts render as the viewer's own.
+  readonly sent = new Set<string>()
   queue: QueuedTurn[] = []
   pending = false
   conversationId?: string
@@ -251,6 +253,7 @@ export class AhpConversation {
       for (const { peer, action } of deliveries)
         if (peer.remainingActionBytes(action) < 0) throw new AhpMessageTooLargeError()
       dispatched = true
+      this.sent.add(turn.queueId)
       await Promise.all(deliveries.map(({ peer, action }) => peer.dispatch(action)))
     } catch (error) {
       if (this.closed) return
@@ -272,6 +275,7 @@ export class AhpConversation {
     this.pending = true
     this.changed()
     try {
+      this.sent.add(turn.queueId)
       await peer.dispatch({
         type: 'chat/pendingMessageSet' as ActionType.ChatPendingMessageSet,
         kind: 'steering' as PendingMessageKind.Steering,

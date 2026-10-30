@@ -21,6 +21,8 @@ type Entry = {
   session?: Session
   steps: SessionStep[]
   persisted?: { rows: SessionMessageDto[]; agentId: string; prompts?: SessionMessageDto[] }
+  // Turns an adopted session's first attach replayed per peer; its fetched transcript already renders them.
+  replayed?: Map<string, Set<string>>
 }
 const NO_STEPS: SessionStep[] = [],
   NO_FILES: ComposerFile[] = [],
@@ -76,21 +78,32 @@ export class AhpPlaygroundStore {
     const prompts = new Set<string>(),
       connection = entry.connection
     let steps = [...connection.peers]
-      .flatMap(([agentId, peer]) =>
-        peer.snapshot.chat
-          ? ahpSteps(peer.snapshot.chat, agentId, peer.snapshot.session)
-              .map((step) => ({
-                ...step,
-                ...(step.kind !== 'msg' ? { who: connection.roster.find((p) => p.agentId === agentId)?.name } : {})
-              }))
-              .filter((step) => {
-                if (step.kind !== 'msg') return true
-                if (prompts.has(step.turnId)) return false
-                prompts.add(step.turnId)
-                return true
-              })
-          : []
-      )
+      .flatMap(([agentId, peer]) => {
+        const chat = peer.snapshot.chat
+        if (!chat) return []
+        const replayed = entry.session ? undefined : (entry.replayed ??= new Map())
+        if (replayed && !replayed.has(agentId)) replayed.set(agentId, new Set(chat.turns.map((turn) => turn.id)))
+        const seen = replayed?.get(agentId)
+        return ahpSteps(
+          seen ? { ...chat, turns: chat.turns.filter((turn) => !seen.has(turn.id)) } : chat,
+          agentId,
+          peer.snapshot.session
+        )
+          .map((step) => ({
+            ...step,
+            ...(step.kind !== 'msg'
+              ? { who: connection.roster.find((p) => p.agentId === agentId)?.name }
+              : connection.sent.has(step.turnId)
+                ? { who: '@you' }
+                : {})
+          }))
+          .filter((step) => {
+            if (step.kind !== 'msg') return true
+            if (prompts.has(step.turnId)) return false
+            prompts.add(step.turnId)
+            return true
+          })
+      })
       .sort((a, b) => (a.observedAtMs ?? 0) - (b.observedAtMs ?? 0))
     if (entry.persisted)
       steps = reconcilePersistedLiveSteps(steps, entry.persisted.rows, entry.persisted.agentId, entry.persisted.prompts)
