@@ -244,12 +244,7 @@ export class AhpService {
         },
         createSession: async (params) => {
           if (attachment.authorization.conversationId || attachment.authorization.targetSessionId) throw denied()
-          if (
-            params.activeClient ||
-            params.workingDirectories?.length ||
-            (params.config && Object.keys(params.config).length)
-          )
-            throw new AhpProtocolError(JsonRpcErrorCodes.InvalidParams, 'Session configuration is not supported')
+          // The agent's own workspace and tools govern the session; a client's folders, config and tools are ignored.
           const binding = await reserve(params.channel)
           state.announce(binding.sessionUri)
         },
