@@ -999,6 +999,105 @@ describe('R1/R2a persistence foundation', () => {
     })
   })
 
+  it('settles a self-review downgrade as COMMENT with the reserved verdict, and never upgrades a COMMENT', async () => {
+    const repo = new PgHookRepo(prisma)
+    const hookId = HookId(randomUUID())
+    const agentId = AgentId(randomUUID())
+    const headSha = 'd'.repeat(40)
+    const projection = await repo.upsertReviewProjection({
+      hookId,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId,
+      agentName: 'self-review-agent',
+      repoId: 9_100n,
+      repoFullName: 'acme/self-review',
+      headSha,
+      reportSha: headSha,
+      projectionEpoch: 1n,
+      mode: 'check',
+      gateMode: 'informational',
+      desiredState: 'queued',
+      nextAttemptAt: new Date('2026-07-11T00:00:00.000Z')
+    })
+    const reserve = async (deliveryKey: string, reviewEvent: 'REQUEST_CHANGES' | 'COMMENT', bound: boolean) => {
+      const attemptId = randomUUID()
+      const run = await prisma.hookRun.create({
+        data: {
+          hookId,
+          orgId: DEFAULT_ORG_ID,
+          deliveryKey,
+          startedAt: new Date('2026-07-11T00:00:00.000Z'),
+          turnStartedAt: new Date('2026-07-11T00:00:01.000Z'),
+          agentId,
+          dispatchDaemonId: D1,
+          headSha,
+          reviewAttemptId: attemptId,
+          reviewAttemptState: 'reserved',
+          reviewEvent,
+          verdict: 'fail',
+          ...(bound ? { projectionId: projection.id, projectionGeneration: projection.generation } : {})
+        }
+      })
+      return { attemptId, run }
+    }
+    const submitted = (deliveryKey: string, attemptId: string, event: 'COMMENT' | 'REQUEST_CHANGES') => ({
+      deliveryKey,
+      attemptId,
+      state: 'submitted' as const,
+      reviewId: `review-${deliveryKey}`,
+      event,
+      verdict: 'fail' as const,
+      commitId: headSha
+    })
+
+    // The immediate result records the published COMMENT and projects the reserved fail verdict.
+    const result = await reserve('result', 'REQUEST_CHANGES', true)
+    await prisma.hookReviewProjection.update({
+      where: { id: projection.id },
+      data: { currentHookRunId: result.run.id }
+    })
+    expect(await repo.recordReviewResult(hookId, D1, submitted('result', result.attemptId, 'COMMENT'))).toBe(true)
+    expect(await repo.getRun(hookId, 'result')).toMatchObject({
+      reviewAttemptState: 'submitted',
+      reviewEvent: 'COMMENT',
+      verdict: 'fail'
+    })
+    expect(await repo.getReviewProjection(projection.id)).toMatchObject({ desiredState: 'action_required' })
+
+    // A lost result reply is recovered by the terminal report carrying the same COMMENT.
+    const report = await reserve('report', 'REQUEST_CHANGES', false)
+    expect(
+      await repo.recordReport(
+        hookId,
+        D1,
+        {
+          deliveryKey: 'report',
+          status: 'success',
+          reviewAttemptId: report.attemptId,
+          reviewAttemptState: 'submitted',
+          reviewId: 'review-report',
+          reviewEvent: 'COMMENT',
+          verdict: 'fail',
+          reviewCommitId: headSha
+        },
+        new Date('2026-07-11T00:01:00.000Z')
+      )
+    ).toBe(true)
+    expect(await repo.getRun(hookId, 'report')).toMatchObject({
+      reviewAttemptState: 'submitted',
+      reviewEvent: 'COMMENT'
+    })
+
+    const comment = await reserve('comment', 'COMMENT', false)
+    expect(await repo.recordReviewResult(hookId, D1, submitted('comment', comment.attemptId, 'REQUEST_CHANGES'))).toBe(
+      false
+    )
+    expect(await repo.getRun(hookId, 'comment')).toMatchObject({
+      reviewAttemptState: 'reserved',
+      reviewEvent: 'COMMENT'
+    })
+  })
+
   it('keeps a submitted formal verdict authoritative when the stale-run reaper wins later', async () => {
     const repo = new PgHookRepo(prisma)
     const hookId = HookId(randomUUID())

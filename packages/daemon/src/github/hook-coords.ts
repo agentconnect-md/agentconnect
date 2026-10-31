@@ -53,7 +53,11 @@ export function reviewPolicyAllows(policy: HookConfigSnapshot['reviewPolicy'], e
 }
 
 export function reviewResultForWire(effect: GithubReviewEffect): HookReviewResult {
-  if (effect.state === 'submitted') return effect
+  // The CP records what GitHub published, so a self-review downgrade projects as the COMMENT it became.
+  if (effect.state === 'submitted') {
+    const { reviewId, verdict, commitId } = effect
+    return { state: 'submitted', reviewId, event: effect.publishedEvent ?? effect.event, verdict, commitId }
+  }
   return { state: effect.state, code: effect.code }
 }
 

@@ -8,6 +8,7 @@
  * persistence transaction owned by HookRepo.
  */
 import {
+  hookReviewEventSettles,
   isRetryableHookDeliveryReason,
   type ErrorCode,
   type GithubReviewAuthorize,
@@ -620,7 +621,7 @@ export class GithubReviewBrokerService {
     let persisted: HookReviewResultInput
     if (result.state === 'submitted') {
       if (
-        run.reviewEvent !== result.event ||
+        !hookReviewEventSettles(run.reviewEvent, result.event) ||
         run.verdict !== result.verdict ||
         run.headSha === null ||
         run.headSha !== result.commitId ||
