@@ -13917,14 +13917,20 @@ export class Daemon {
     at: { platform: string; channel: string; thread: string },
     srcIntegrationIds: readonly string[]
   ): Promise<void> {
-    const transportScope = this.transportScopeForIntegrationIds(srcIntegrationIds) ?? null
     const index = this.store.assistantSubsessions
     for (const [agentId, agent] of this.agents) {
-      if (!agent.integrations?.some((int) => srcIntegrationIds.includes(int.id))) continue
-      const task = await index.taskOfThread(agentId, { ...at, transportScope })
-      if (task === undefined || !(await index.closeTask(agentId, task))) continue
-      this.log.info(`task ${task} closed: its place ${at.channel} was archived`)
-      await this.reportTaskOwners(agentId, [task])
+      const own = (agent.integrations ?? []).filter((int) => srcIntegrationIds.includes(int.id)).map((int) => int.id)
+      if (own.length === 0) continue
+      // A socket's messages carry the scope of all its integrations, a relayed one its own integration's.
+      const scopes = new Set(
+        [srcIntegrationIds, ...own.map((id) => [id])].map((ids) => this.transportScopeForIntegrationIds(ids))
+      )
+      for (const transportScope of scopes) {
+        const task = await index.taskOfThread(agentId, { ...at, transportScope: transportScope ?? null })
+        if (task === undefined || !(await index.closeTask(agentId, task))) continue
+        this.log.info(`task ${task} closed: its place ${at.channel} was archived`)
+        await this.reportTaskOwners(agentId, [task])
+      }
     }
   }
 
