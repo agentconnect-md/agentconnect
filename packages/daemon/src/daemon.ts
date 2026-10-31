@@ -9852,7 +9852,8 @@ export class Daemon {
       platform: platformLabel(at.platform),
       channelId: at.channel,
       ...(selfAddress ? { selfAddress } : {}),
-      peers
+      peers,
+      ...(at.platform === 'webchat' ? { webchat: true } : {})
     })
   }
 
@@ -13710,7 +13711,7 @@ export class Daemon {
         const mention = attachmentMention(message.msg.attachments)
         return coordinatorView(message, mention ? `${message.msg.text}\n${mention}`.trim() : message.msg.text)
       }),
-      { channelId: channel, ...(channelName ? { channelName } : {}) }
+      { channelId: channel, ...(channelName ? { channelName } : {}), ...(entry.webchat ? { webchat: true } : {}) }
     )
   }
 

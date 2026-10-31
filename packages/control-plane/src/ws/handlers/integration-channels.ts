@@ -20,6 +20,7 @@
  */
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
+import { autoConversationKinds } from '../../domain/conversation-defaults.js'
 import { isGatedAgent } from '../../orchestrator/placement.js'
 import { servedAgents } from '../../orchestrator/servedAgents.js'
 import type { DaemonWsDeps } from '../deps.js'
@@ -58,6 +59,7 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   let seeded: ReadonlyMap<string, SeedTrigger> | undefined
   let externalChanged = false
   let migrated = false
+  let sessionModeChanged = false
   try {
     // Ownership may have changed while the first repository read was in flight.
     // Re-check under the shared mutation lease before accepting this daemon's
@@ -79,33 +81,34 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     // no Off to override — and a resolver that answers nothing leaves §14.2 intact.
     const bot = defaultTrigger && deps.bot ? await deps.bot.get(OrgId(integration.orgId), integration.botId) : null
     seeded = owner && bot && deps.gatedDmSeeds ? await deps.gatedDmSeeds(p.channels, owner, bot) : undefined
+    // A new room or group DM starts on Auto where the reporting daemon reads it (auto-session-mode.md §3.2).
+    const autoKinds = autoConversationKinds(
+      integration.platform,
+      deps.connReg.get(conn.daemonId)?.capabilities?.features
+    )
     const written = await deps.integrationChannel.replaceSnapshot(
       integration.id,
       p.channels,
-      defaultTrigger || p.authoritative === false || p.removed?.length || p.migrated?.length
+      defaultTrigger || p.authoritative === false || p.removed?.length || p.migrated?.length || autoKinds.length
         ? {
             ...(defaultTrigger ? { defaultTrigger } : {}),
             ...(seeded?.size ? { defaultTriggerByChannel: seeded } : {}),
             ...(p.authoritative === false ? { authoritative: false } : {}),
             ...(p.removed?.length ? { removed: p.removed } : {}),
-            ...(p.migrated?.length ? { migrated: p.migrated } : {})
+            ...(p.migrated?.length ? { migrated: p.migrated } : {}),
+            ...(autoKinds.length ? { autoKinds } : {})
           }
         : undefined
     )
     externalChanged = written?.externalChanged === true
     migrated = written?.migrated === true
+    sessionModeChanged = written?.sessionModeChanged === true
   } finally {
     release()
   }
 
-  // §14.8 is the one path where a REPORT can create an ENABLED row, so it is also the
-  // only one that has to push: the reporting daemon still holds bindRules assembled
-  // before this write, and it has already cached the conversation, so no later message
-  // re-reports and repairs it. Outside the mutation lease and best-effort — the
-  // register snapshot remains the durable backstop.
-  // A detected external place (assistant-mode.md §5.3) rides the spec too, so a change to the set pushes as well.
-  // A migrated conversation's carried trigger reaches the daemon the same way.
-  if ((seeded?.size || externalChanged || migrated) && owner && deps.integrationConverge) {
+  // The reporting daemon's spec predates this write, so push what it changed there: a §14.8 opened DM, the external set (assistant-mode.md §5.3), a migrated trigger, a session mode it does not list; best-effort.
+  if ((seeded?.size || externalChanged || migrated || sessionModeChanged) && owner && deps.integrationConverge) {
     try {
       await deps.integrationConverge(owner)
     } catch {

@@ -55,6 +55,7 @@ let running: HttpApp | undefined
 afterEach(async () => {
   await running?.close()
   running = undefined
+  reporterFeatures = undefined
 })
 
 // §14.8 OIDC subjects — the key a linked Slack identity is resolved by.
@@ -208,6 +209,9 @@ async function installDiscord(app: HttpApp): Promise<string> {
   return (res.json() as { id: string }).id
 }
 
+/** What the reporting daemon advertises; unset, it is not connected and every new row stays Per thread. */
+let reporterFeatures: string[] | undefined
+
 /** Dispatch a hand-built `integration/channels` EVT through the real handler. */
 async function report(
   daemonId: string,
@@ -248,6 +252,9 @@ async function report(
     clock: systemClock,
     agentMutations,
     collabRoutes,
+    connReg: {
+      get: () => (reporterFeatures ? { state: 'READY', capabilities: { features: reporterFeatures } } : undefined)
+    },
     ...(links
       ? {
           gatedDmSeeds: ((reported, agent, bot) =>
@@ -2138,6 +2145,84 @@ describe('PATCH /integrations/:id/channels/:channelId — session mode', () => {
     expect(res.json()).toMatchObject({ channelId: 'C1', sessionMode: 'auto' })
     expect((await modesOf(id)).get('C1')).toBe('auto')
     expect(spy.upserts.at(-1)!.u.core!.sessionModes).toEqual([{ channel: 'C1', mode: 'auto' }])
+  })
+
+  // auto-session-mode.md §3.2: new rooms and group DMs start on Auto where the bot's daemon reads it; DMs and known rows never change.
+  it('starts a new room and group DM on Auto for a daemon that reads it, and pushes them', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma, undefined, undefined, new SpyControl() as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C0', name: 'before' }])
+    const pushes: unknown[] = []
+    const converge = async (agent: unknown) => void pushes.push(agent)
+
+    reporterFeatures = [SESSION_MODE_AUTO_V1_FEATURE]
+    await report(
+      DAEMON,
+      id,
+      [
+        { id: 'C0', name: 'before' },
+        { id: 'C1', name: 'deploys' },
+        { id: 'G1', name: 'mpim-alice--bob-1', kind: 'mpim' },
+        { id: 'D1', name: '@alice', kind: 'im' }
+      ],
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      converge
+    )
+    expect(Object.fromEntries(await modesOf(id))).toEqual({
+      C0: 'createNew',
+      C1: 'auto',
+      G1: 'auto',
+      D1: 'createNew'
+    })
+    expect(pushes).toHaveLength(1)
+
+    // A re-report creates nothing, so it pushes nothing.
+    await report(
+      DAEMON,
+      id,
+      [{ id: 'C1', name: 'deploys' }],
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      converge
+    )
+    expect(pushes).toHaveLength(1)
+  })
+
+  it('keeps new rows Per thread for a daemon that does not read Auto', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma)
+    const id = await install(running)
+    reporterFeatures = []
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+    expect((await modesOf(id)).get('C1')).toBe('createNew')
+  })
+
+  it('gives a room that turns out to be a DM the DM’s mode, never the room’s Auto, and pushes it', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma)
+    const id = await install(running)
+    const pushes: unknown[] = []
+    const converge = async (agent: unknown) => void pushes.push(agent)
+    const reportOne = (channel: IntegrationChannel) =>
+      report(DAEMON, id, [channel], undefined, undefined, false, undefined, undefined, converge)
+    reporterFeatures = [SESSION_MODE_AUTO_V1_FEATURE]
+    await reportOne({ id: 'D1', name: '@alice' })
+    expect((await modesOf(id)).get('D1')).toBe('auto')
+    expect(pushes).toHaveLength(1)
+    await reportOne({ id: 'D1', name: '@alice', kind: 'im' })
+    expect((await modesOf(id)).get('D1')).toBe('createNew')
+    // The daemon still lists the row as Auto, so the conversion reaches it at once.
+    expect(pushes).toHaveLength(2)
+    await reportOne({ id: 'D1', name: '@alice', kind: 'im' })
+    expect(pushes).toHaveLength(2)
   })
 })
 

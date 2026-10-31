@@ -23,6 +23,8 @@ export const CO_IDS = {
   bob: 'U0EXAMPLE2',
   channel: 'C0EXAMPLE1',
   channelName: 'eng-platform',
+  /** A member's private webchat conversation with the agent (auto-session-mode.md §10). */
+  conversation: '0e7a1c52-5b2d-5d7e-9f3a-2c1b0d4e6f70',
   checkoutTask: 'task-checkout-flake'
 } as const
 
@@ -68,8 +70,16 @@ export function coordinatorTools(): ToolDescriptor[] {
   return shippedCoordinatorTools()
 }
 
-/** The coordinator session's standing instructions, as the daemon ships them, for the scenarios' channel. */
-export function coordinatorPrompt(): string {
+/** The coordinator session's standing instructions, as the daemon ships them, for the scenarios' channel or webchat conversation. */
+export function coordinatorPrompt(webchat = false): string {
+  if (webchat)
+    return shippedCoordinatorPrompt({
+      agentName: CO_IDS.self,
+      platform: 'webchat',
+      channelId: CO_IDS.conversation,
+      peers: [],
+      webchat: true
+    })
   return shippedCoordinatorPrompt({
     agentName: CO_IDS.self,
     platform: 'Slack',
@@ -87,7 +97,8 @@ export function coordinatorPrompt(): string {
 }
 
 /** One coordinator turn's input: the delivered channel-root messages, rendered as the daemon renders them. */
-export function renderBatch(messages: ChannelMessage[]): string {
+export function renderBatch(messages: ChannelMessage[], webchat = false): string {
+  if (webchat) return renderCoordinatorBatch(messages, { channelId: CO_IDS.conversation, webchat: true })
   return renderCoordinatorBatch(
     messages.map((message) => ({ ...message, from: `<@${message.from}>` })),
     { channelId: CO_IDS.channel, channelName: CO_IDS.channelName }
@@ -299,13 +310,26 @@ export type CoScenarioId =
   | 'batch-mixed'
   | 'batch-route-and-new'
   | 'report-reply'
+  | 'webchat-new-work'
+  | 'webchat-status'
+  | 'webchat-route'
 
 export interface CoordinatorScenario {
   id: CoScenarioId
   messages: ChannelMessage[]
   tasks: ProbeTask[]
   expect: Record<string, Expectation>
+  /** A member's webchat conversation: the person reads every text the turn writes (auto-session-mode.md §10). */
+  webchat?: true
 }
+
+/** A webchat message: one person, always addressed to the agent. */
+const webMsg = (id: string, body: string): ChannelMessage => ({
+  id,
+  from: 'Alice Example',
+  mentionsYou: true,
+  text: body
+})
 
 const msg = (id: string, from: string, mentionsYou: boolean, body: string): ChannelMessage => ({
   id,
@@ -443,6 +467,37 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
       }
     ],
     expect: { 'msg-1700001100.000100': { kind: 'reply', mentions: '4821' } }
+  },
+  {
+    id: 'webchat-new-work',
+    webchat: true,
+    tasks: [],
+    messages: [
+      webMsg(
+        'msg-6f1d2c3b-0a9e-4c7d-8b5a-1e2f3a4b5c6d',
+        'can you add retry with backoff to the webhook sender in services/notify? it drops events on 502s'
+      )
+    ],
+    expect: { 'msg-6f1d2c3b-0a9e-4c7d-8b5a-1e2f3a4b5c6d': { kind: 'delegate' } }
+  },
+  {
+    id: 'webchat-status',
+    webchat: true,
+    tasks: [CHECKOUT_TASK],
+    messages: [webMsg('msg-7a2e3d4c-1b0f-4d8e-9c6b-2f3a4b5c6d7e', 'where are we on the flaky checkout test?')],
+    expect: { 'msg-7a2e3d4c-1b0f-4d8e-9c6b-2f3a4b5c6d7e': { kind: 'reply', mentions: '4821', alternatives: ['route'] } }
+  },
+  {
+    id: 'webchat-route',
+    webchat: true,
+    tasks: [CHECKOUT_TASK],
+    messages: [
+      webMsg(
+        'msg-8b3f4e5d-2c1a-4e9f-8d7c-3a4b5c6d7e8f',
+        'checkout e2e timed out on main again just now: https://ci.example.test/runs/8812'
+      )
+    ],
+    expect: { 'msg-8b3f4e5d-2c1a-4e9f-8d7c-3a4b5c6d7e8f': { kind: 'route', taskId: CO_IDS.checkoutTask } }
   }
 ]
 
@@ -488,6 +543,12 @@ export function judgeCoordinator(
       failed = true
       notes.push(`${message.id}: ${got}, expected ${expected.kind}`)
     }
+  }
+  // A webchat person reads the text a turn writes beside a call, which a channel never posts.
+  const chatter = textReply(finalText)
+  if (scenario.webchat && chatter !== undefined && outcomes.size > 0) {
+    degraded = true
+    notes.push(`text shown beside a call: ${JSON.stringify(chatter.slice(0, 80))}`)
   }
   const refused = calls.filter((call) => call.error !== undefined)
   if (refused.length > 0) {
@@ -538,11 +599,11 @@ export async function runCoordinatorScenarios(input: {
 }): Promise<CoordinatorRun[]> {
   const { runtime, host, cwd, fixture, support } = input
   const usesMeta = host.usesMetaSystemPrompt()
-  const prompt = coordinatorPrompt()
   const runs: CoordinatorRun[] = []
   for (let rep = 1; rep <= input.reps; rep++) {
     for (const scenario of input.scenarios) {
       const key = `${runtime}/co/${scenario.id}/${rep}`
+      const prompt = coordinatorPrompt(scenario.webchat === true)
       const scope: CoScope = {
         messages: scenario.messages.map((message) => message.id),
         reports: scenario.messages.filter((message) => message.report).map((message) => message.id),
@@ -559,7 +620,7 @@ export async function runCoordinatorScenarios(input: {
         )
         const blocks = [
           ...(usesMeta ? [] : [{ type: 'text' as const, text: prompt }]),
-          { type: 'text' as const, text: renderBatch(scenario.messages) }
+          { type: 'text' as const, text: renderBatch(scenario.messages, scenario.webchat === true) }
         ]
         tokens = (await support.withTimeout(host.prompt(sessionId, blocks), `${runtime}/coordinator ${scenario.id}`))
           .usage

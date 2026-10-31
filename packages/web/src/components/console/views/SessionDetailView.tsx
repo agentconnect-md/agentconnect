@@ -82,9 +82,6 @@ import { FollowUpTaskSummary } from '@/components/console/follow-up'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { SessionModelSelectionResult } from '@/components/console/decisions/SessionModelSelectionResult'
 import { CoordinatorTag } from '@/components/console/CoordinatorTag'
-import { autoSessionModeSupported } from '@/lib/session-mode'
-import { useThreadedTaskParent } from '@/lib/threaded-task'
-import { isAppendCoordinate } from '@agentconnect.md/protocol/append-coordinate'
 import { agentToneColor } from '@/lib/agent-tone'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
@@ -2688,7 +2685,6 @@ export default function SessionDetailView() {
     crons,
     daemons,
     memberSets,
-    integrations,
     orgSetIds,
     members,
     sessionActivityVersionById,
@@ -3942,29 +3938,6 @@ export default function SessionDetailView() {
     agentCapabilitySource(owner, daemons, memberSets)?.caps.features?.includes(ASSISTANT_TASK_HANDLE_FEATURE)
       ? owner.id
       : null
-  // A coordinator's threaded task names its coordinator, read from its daemon only where the conversation runs Auto (auto-session-mode.md §11).
-  const ownerFeatures = owner ? agentCapabilitySource(owner, daemons, memberSets)?.caps.features : undefined
-  const detailThread = currentSessionDetail?.thread ?? null
-  const runsAuto =
-    owner?.assistantMode?.enabled === true ||
-    (integrations ?? []).some(
-      (i) =>
-        i.agentId === owner?.id &&
-        i.channels.some((c) => c.channelId === currentSessionDetail?.channel && c.sessionMode === 'auto')
-    )
-  const threadedTaskAgentId =
-    !taskPage &&
-    !MOCK_MODE &&
-    !isPg &&
-    !isWebchat &&
-    owner &&
-    detailThread &&
-    !isAppendCoordinate(detailThread) &&
-    ownerFeatures?.includes(ASSISTANT_TASK_HANDLE_FEATURE) &&
-    autoSessionModeSupported(ownerFeatures) &&
-    runsAuto
-      ? owner.id
-      : null
   // Continuation is server-computed (webchat-cross-integration-continuation.md §6.5): a transient blocker disables the composer, unauthorized/unsupported stay read-only.
   const isContinuable = !readOnlySubsession && !isPg && !isWebchat && composerDetail?.canContinue === true
   const continuationReason = composerDetail?.continuationUnavailableReason ?? null
@@ -5190,9 +5163,6 @@ export default function SessionDetailView() {
                     : t('taskOwnerHidden')}
                 </span>
               </div>
-            ) : null}
-            {threadedTaskAgentId ? (
-              <ThreadedTaskOwner agentId={threadedTaskAgentId} sessionId={session.id} flatView={flatView} />
             ) : null}
             {followUpPageAgentId ? <FollowUpTaskSummary agentId={followUpPageAgentId} sessionId={session.id} /> : null}
             {/* DESKTOP TITLE ROW — the session name + its status badge. These used to live
@@ -6647,45 +6617,6 @@ export default function SessionDetailView() {
           ) : null}
         </DockPanel>
       </SessionDock>
-    </div>
-  )
-}
-
-/** A coordinator's threaded task names the coordinator it belongs to now and leads back there (auto-session-mode.md §11). */
-function ThreadedTaskOwner({
-  agentId,
-  sessionId,
-  flatView
-}: {
-  agentId: string
-  sessionId: string
-  flatView: boolean
-}) {
-  const t = useTranslations('Sessions.detail')
-  const { orgPath } = useOrgs()
-  const parent = useThreadedTaskParent(agentId, sessionId)
-  if (!parent) return null
-  return (
-    <div
-      data-task-owner=""
-      data-threaded-task=""
-      className="flex min-w-0 items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) max-desktop:border-b max-desktop:border-(--border-subtle) max-desktop:bg-(--surface-card) max-desktop:px-4 max-desktop:py-2 desktop:mb-[6px]"
-    >
-      <Icon name="corner-up-left" size={13} className="flex-none" />
-      <span className="min-w-0 truncate">
-        {t.rich('taskBelongsTo', {
-          title: parent.title?.trim() || `Session ${parent.sessionId.slice(0, 8)}`,
-          session: (chunks) => (
-            <Link
-              className="lnk font-medium text-(--text-link)"
-              href={orgPath(`/sessions/${encodeURIComponent(parent.sessionId)}${flatView ? '?view=flat' : ''}`)}
-              title={t('backToOwningSession')}
-            >
-              {chunks}
-            </Link>
-          )
-        })}
-      </span>
     </div>
   )
 }

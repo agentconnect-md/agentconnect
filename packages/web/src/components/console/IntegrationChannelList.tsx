@@ -139,12 +139,12 @@ function RowSettings({
             ? channel.trigger === 'decision'
             : !semantics.triggers || semantics.triggers.includes(o.value)
         )
-  // A DM chooses its session only where its platform's DMs are not one continuous session already; a group DM never does.
+  // A DM chooses its session only where its platform's DMs are not one continuous session already; a group DM where its platform has one.
   const offered =
     channel.kind === 'im'
       ? (semantics.dmSessionModes ?? [])
-      : isDirectConversation(channel.kind)
-        ? []
+      : channel.kind === 'mpim'
+        ? (semantics.groupDmSessionModes ?? [])
         : semantics.sessionModes
   const autoOption: ChannelSettingsOption<SessionMode> = {
     value: 'auto',

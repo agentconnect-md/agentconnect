@@ -66,6 +66,7 @@ import { defaultMemberOf, isGatedAgent, httpIntegrationToSpec, placedMembers } f
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
+import { autoConversationKinds } from '../domain/conversation-defaults.js'
 import type { CpPlatformRegistry, CpTenantLearning } from '../platforms/provider.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
 import {
@@ -833,9 +834,22 @@ export class HttpBotOrchestrator {
       // editor must enable them in the console before the compiler emits a route.
       const owner = await this.agents.getUnscoped(integration.agentId)
       const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
-      await this.channels.replaceSnapshot(integration.id, channels, defaultTrigger ? { defaultTrigger } : undefined)
+      const autoKinds = owner ? await this.autoConversationKinds(owner, bot.platform) : []
+      await this.channels.replaceSnapshot(
+        integration.id,
+        channels,
+        defaultTrigger || autoKinds.length
+          ? { ...(defaultTrigger ? { defaultTrigger } : {}), ...(autoKinds.length ? { autoKinds } : {}) }
+          : undefined
+      )
     }
     await this.syncRoutes(botId)
+  }
+
+  /** The kinds an install's new conversation starts on Auto in: the daemon the relay addresses its agent on must read it (auto-session-mode.md §3.2). */
+  private async autoConversationKinds(agent: AgentRecord, platform: string): Promise<readonly ConversationKind[]> {
+    const daemonId = await this.placement.dispatchDaemon(agent)
+    return autoConversationKinds(platform, daemonId ? this.control.daemonFeatures?.(daemonId) : undefined)
   }
 
   /** §14.3: the relay that posts a bot's channel gating notices, chosen deterministically from the connected roster at (re)assign time; undefined ⇒ no relay. */
@@ -896,7 +910,14 @@ export class HttpBotOrchestrator {
       const reported = { ...conversation, kind }
       // Per install, since installs have different audiences; an ungated one takes the repository's open default (§14.9).
       const defaultTrigger = isGatedAgent(agent) ? await this.gatedConversationTrigger(agent, bot, reported) : undefined
-      await this.channels.upsertConversation(install.id, reported, defaultTrigger ? { defaultTrigger } : undefined)
+      const autoKinds = await this.autoConversationKinds(agent, bot.platform)
+      await this.channels.upsertConversation(
+        install.id,
+        reported,
+        defaultTrigger || autoKinds.length
+          ? { ...(defaultTrigger ? { defaultTrigger } : {}), ...(autoKinds.length ? { autoKinds } : {}) }
+          : undefined
+      )
     }
     await this.syncRoutes(botId)
   }

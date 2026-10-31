@@ -516,10 +516,10 @@ describe('conversationSessionMode for an unlisted conversation', () => {
     }) as unknown as Integration
   const on = (kind: 'channel' | 'im' | 'mpim') => ({ assistantMode: true, kind })
 
-  it('appends a room and a Slack DM, but not a group DM or a DM that is one session already', () => {
+  it('appends a room, a Slack DM and a Slack group DM, but not a DM that is one session already', () => {
     expect(conversationSessionMode(int('slack'), 'C1', on('channel'))).toBe('append')
     expect(conversationSessionMode(int('slack'), 'D1', on('im'))).toBe('append')
-    expect(conversationSessionMode(int('slack'), 'G1', on('mpim'))).toBe('createNew')
+    expect(conversationSessionMode(int('slack'), 'G1', on('mpim'))).toBe('append')
     expect(conversationSessionMode(int('telegram'), '42', on('im'))).toBe('createNew')
     expect(conversationSessionMode(int('linear'), 'team', on('channel'))).toBe('createNew')
   })
@@ -538,7 +538,7 @@ describe('conversationSessionMode for an unlisted conversation', () => {
     const auto = (kind: 'channel' | 'im' | 'mpim') => ({ assistantMode: true, kind, auto: true })
     expect(conversationSessionMode(int('slack'), 'C1', auto('channel'))).toBe('auto')
     expect(conversationSessionMode(int('slack'), 'D1', auto('im'))).toBe('auto')
-    expect(conversationSessionMode(int('slack'), 'G1', auto('mpim'))).toBe('createNew')
+    expect(conversationSessionMode(int('slack'), 'G1', auto('mpim'))).toBe('auto')
     expect(conversationSessionMode(int('slack', [{ channel: 'C1', mode: 'append' }]), 'C1', auto('channel'))).toBe(
       'append'
     )

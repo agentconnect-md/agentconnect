@@ -90,7 +90,7 @@ describe('platform manifest', () => {
     expect(manifestFor('some-future-platform').addressedByConstruction).toBe(false)
   })
 
-  it('lets rooms append everywhere but Linear, DMs only on Slack, and group DMs nowhere', () => {
+  it('lets rooms append everywhere but Linear, and DMs and group DMs only on Slack', () => {
     // The spec projection reads it to give an assistant-mode agent one session per place; an unknown id forces nothing.
     for (const p of [
       'slack',
@@ -116,7 +116,9 @@ describe('platform manifest', () => {
     ])
       expect(manifestFor(p).appendKinds, p).not.toContain('im')
     expect(manifestFor('slack').appendKinds).toContain('im')
-    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, MSTEAMS_PLATFORM, 'linear'])
+    // Only Slack has a group DM of its own, a small room that keys one session too (auto-session-mode.md §3.2).
+    expect(manifestFor('slack').appendKinds).toContain('mpim')
+    for (const p of ['telegram', 'discord', 'feishu', 'qq', GOOGLE_CHAT_PLATFORM, MSTEAMS_PLATFORM, 'linear'])
       expect(manifestFor(p).appendKinds, p).not.toContain('mpim')
     expect(manifestFor('some-future-platform').appendKinds).toEqual([])
     expect(DEFAULT_MANIFEST.appendKinds).toEqual([])

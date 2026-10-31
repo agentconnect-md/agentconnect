@@ -9,6 +9,7 @@ import {
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   OWNER_DEFAULT_DECISION_V1_FEATURE,
+  SESSION_MODE_AUTO_V1_FEATURE,
   type DecisionBundleDefinition,
   type IntegrationSpec,
   type RcBotAssign,
@@ -16,7 +17,7 @@ import {
   type RelayCpFrameType
 } from '@agentconnect.md/protocol'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
-import { openConversationTrigger } from '../domain/conversation-defaults.js'
+import { openConversationSessionMode, openConversationTrigger } from '../domain/conversation-defaults.js'
 import type {
   BotRepo,
   BotRecord,
@@ -282,6 +283,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
               integrationId,
               channelId: candidate.id,
               trigger: opts?.defaultTrigger ?? openConversationTrigger(candidate),
+              sessionMode: openConversationSessionMode(candidate, opts?.autoKinds),
               externalReason: candidate.externalReason ?? null
             })
             channels.push(row)
@@ -328,7 +330,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
             kind: conversation.kind ?? 'channel',
             dmUserId: conversation.dmUserId ?? null,
             externalReason: conversation.externalReason ?? null,
-            trigger: opts?.defaultTrigger ?? openConversationTrigger(conversation)
+            trigger: opts?.defaultTrigger ?? openConversationTrigger(conversation),
+            sessionMode: openConversationSessionMode(conversation, opts?.autoKinds)
           })
           channels.push(row)
         } else {
@@ -1124,6 +1127,28 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       await orch.replaceChannels(BOT, [{ id: 'C1', name: 'deploys', externalReason: null }])
       await orch.replaceChannels(BOT, [{ id: 'C1', name: 'deploys', externalReason: 'externallyShared' }])
       expect(channels.filter((c) => c.channelId === 'C1').every((c) => c.trigger === 'mention')).toBe(true)
+    })
+
+    // auto-session-mode.md §3.2: an install's new room and group DM start on Auto where the daemon its agent is addressed on reads it.
+    it('starts new rooms and group DMs on Auto for an owner whose daemon reads it, and routes them every message', async () => {
+      daemonFeatures = { [D1]: [SESSION_MODE_AUTO_V1_FEATURE] }
+      channels = []
+      const orch = makeOrch()
+      await orch.replaceChannels(BOT, [{ id: 'C5', name: 'deploys' }])
+      await orch.reportConversation(BOT, { id: 'G5', name: 'mpim-alice--bob-1', kind: 'mpim' })
+      await orch.reportConversation(BOT, { id: 'D5', name: '@Alice', dmUserId: 'U_ALICE' })
+      const modeOf = (id: string) => channels.find((c) => c.integrationId === INT_A && c.channelId === id)?.sessionMode
+      expect([modeOf('C5'), modeOf('G5'), modeOf('D5')]).toEqual(['auto', 'auto', 'createNew'])
+      const assign = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect(assign.routes.filter((r) => r.scope?.channel === 'C5')).toEqual([
+        expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } })
+      ])
+    })
+
+    it('keeps new rooms Per thread for an owner whose daemon does not read Auto', async () => {
+      channels = []
+      await makeOrch().replaceChannels(BOT, [{ id: 'C5', name: 'deploys' }])
+      expect(channels.filter((c) => c.channelId === 'C5').map((c) => c.sessionMode)).toEqual(['createNew', 'createNew'])
     })
 
     it('reportConversation seeds an external DM Off for an ungated bot', async () => {

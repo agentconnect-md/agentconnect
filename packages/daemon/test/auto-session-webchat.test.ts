@@ -216,6 +216,9 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md ย
     ])
     // The task answered on its page; nothing reached the coordinator, which is not woken by its end.
     expect(coordinatorPrompts).toHaveLength(1)
+    // The coordinator reads of a conversation, never a channel (auto-session-mode.md ยง10).
+    expect(coordinatorPrompts[0]).toContain(`[One new message in this conversation (${CONV})]`)
+    expect(coordinatorPrompts[0]).toContain('in a private webchat conversation')
 
     const second = await send('also handle 429')
     await vi.waitFor(() => expect(taskPrompts).toHaveLength(2), WAIT)

@@ -352,7 +352,11 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
     // Default true. When enabled, interactive IM answer text is staged until a
     // turn-final thread refresh accepts it; changed context causes bounded
     // regeneration in the same ACP session. Set false to opt out (kill switch).
-    "turnFinalContextRefresh": true
+    "turnFinalContextRefresh": true,
+    // Default true. Runs the `auto` session mode's coordinator and advertises
+    // session-mode-auto-v1 (auto-session-mode.md §3.1). Set false to route `auto`
+    // as Per thread and keep every session's task tools.
+    "autoSessionMode": true
   },
 
   // ---------- Local capacity/limits ----------

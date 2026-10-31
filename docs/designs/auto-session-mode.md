@@ -1,54 +1,11 @@
 # Auto Session Mode: the Coordinator Session and Tasks
 
-> Status: Design. The coordinator's prompt and tool surface are validated in the local runtime
-> matrix (§12). The task index of §6.1, the task action shapes of §5.1 with `messageId` refused,
-> the two-level nesting a daemon keeps with its Auto switch off (§6.3) and the threaded rules of
-> §6.2 that key on an attached thread are implemented; `stopTask` stays a tool of its own with the
-> shape of §5.1. `listTasks` (§5.2) and
-> `updateTask` (§5.3) with the summary and its reminder (§6.7) are implemented; `listTasks` lists the
-> 20 most recently active. The `auto` value (§3.1) exists on the wire and in the
-> Control Plane, behind the `session-mode-auto-v1` capability, which a daemon advertises only with
-> its `features.autoSessionMode` switch; with the switch off it routes `auto` as Per thread. With it
-> on, the coordinator session runs (`packages/daemon/src/auto-session/`): root and unowned-thread
-> messages reach it in batches (§4.3), its prompt and tools are the ones §12 probes, it decides with
-> `delegateTask` and `messageTask` carrying `messageId` and with `replyToMessage` (§4.2, §5.1), a
-> task's threads reach that task (§7), and a mention left without an outcome, or caught by a failed
-> turn, opens a threaded task (§4.5). It runs read-only with shared workspace isolation, so it never
-> has a checkout of its own or an executor, in an empty working directory (§5.4). Its tools are the decision
-> tools with `postMessage` and `callAgent`, `listTasks`, memory, and the follow-up, proposal and
-> reminder tools its place is offered (§5.4). A threaded task is a session on its message's thread, attached in the task index. It answers
-> each message in the thread the message came from (§6.4), counts as running while a turn of it runs,
-> keeps a summary with `updateTask`, and closes after 7 idle days or with its purged session (§6.5).
-> A conversation's Tasks tab in the console groups its threaded tasks apart from its background ones,
-> each with its summary, which `listAssistantSubsessions` reads from the owning daemon on every call
-> and the Control Plane stores nowhere (§6.7, §11). A
-> background task cannot take a channel message yet (§6.6): the coordinator opens no background task
-> before P3. Each message a coordinator turn decides shows 🤔 until the turn ends (§4.4), and `!new`
-> and `!stop` act on a task in its threads and on the coordinator at the root, where Slack's new chat
-> acts as `!new` does (§8). Under `auto` every
-> message of a conversation that is not Off reaches the coordinator, and `auto` is refused together
-> with By decision and shared-bot routing (§3.3). Switching into `auto` makes the conversation's recent
-> thread sessions the coordinator's tasks; switching out retires the coordinator and hands its tasks
-> back as ordinary thread sessions (§3.5). Assistant mode's places run through the coordinator where
-> the daemon reads `auto`, and it takes their reports (§3.4). The console's session-mode menu offers
-> Auto in a room whose consumer's daemon reads it, outside By decision and shared-bot routing, and
-> under Auto its trigger menu offers only Off beside "Decided by the coordinator" (§3.3, §11). The
-> console labels the coordinator in the session list and on its page, and a threaded task's page
-> names the coordinator it belongs to now, read from the owning daemon by the task's session (§11).
-> The console's Usage page names, under each agent, what its coordinators spent (§4.6). A delegated
-> task's page takes messages from whoever may continue its owning session, where the daemon
-> advertises `task-page-messages-v1`, which its Auto switch also turns on (§10). With the switch on, a
-> daemon runs a member's private coordinator conversation in webchat (§10): it knows the conversation
-> by its derived id, every message reaches the coordinator addressed to it, and a task the coordinator
-> opens there continues on its own page, which the conversation links to. The console's home and an
-> agent's Playground open that conversation where the agent's daemon reads Auto and its webchat runs
-> the legacy protocol, and the Control Plane keeps it its owner's with one agent; New session stays an
-> ordinary webchat session. A threaded task's visibility is locked while a coordinator owns it: its
-> daemon reports the owner to the Control Plane each time it changes, and the coordinator's page lists
-> its threaded tasks among its related sessions (§6.2). With the switch on, only the coordinator
-> delegates (§5.1): no other session is offered `delegateTask`, a task opens none (§6.3), and only
-> an assistant-mode place's own session keeps `messageTask`, `listTasks` and `stopTask`, for its
-> follow-ups, research and approved proposals; the daemon refuses the rest.
+> Status: Implemented on the daemon, the Control Plane and the console. A daemon runs `auto` with
+> its `features.autoSessionMode` switch, which is on by default and advertises
+> `session-mode-auto-v1` (§3.1); with the switch off it routes `auto` as Per thread and keeps P1's
+> task tools for every session (§5.1, §6.3). New rooms and group DMs start on Auto where the bot's
+> daemon reads it (§3.2), and assistant mode's places run through the coordinator (§3.4). The
+> coordinator's prompt and tool surface are the ones the local runtime matrix validates (§12).
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
 > [send-message-guide.md](send-message-guide.md) (the `sendMessage` actions).
@@ -63,7 +20,7 @@ message's thread attached, and people in that thread talk to the task directly.
 
 Tasks and today's delegated tasks become one concept. A task with a thread attached talks to people;
 a task without one works in the background and reports to its parent session, as a delegated task does
-today.
+today. Every task the coordinator opens is threaded (§6.6).
 
 Single session keeps its current meaning: root and thread messages all join one session.
 
@@ -96,6 +53,21 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
   new row still defaults to `createNew`.
 - Existing rows, `createNew` and `append` alike, are not changed.
 - DMs are unaffected.
+- The Control Plane decides when it creates the row: from a daemon's conversation report, by the
+  reporting daemon's features, or from the relay, by the features of the daemon the relay addresses
+  the install's agent on. A new row starts on `auto` where that daemon advertises
+  `session-mode-auto-v1` and the platform keys one session for the row's kind (`appendKinds` in
+  `packages/protocol/src/platform-manifest.ts`), so a Linear team row stays `createNew`.
+- The daemon's spec does not list a row it just reported, so the Control Plane pushes the integration
+  at once when a report creates an `auto` row; the relay path pushes with its route update. A message
+  that arrives before the push runs Per thread, and the coordinator adopts that thread session as a
+  task when it first runs (§3.5).
+- A row a later report reclassifies as a 1:1 DM, which Slack can do to a conversation it first
+  reported as a room, takes the DM's mode with the DM's trigger.
+- A group DM is a small private room: Slack lists `mpim` in `appendKinds`, and the console offers its
+  group-DM rows a room's modes (`groupDmSessionModes`). Assistant mode therefore runs a Slack group
+  DM through its coordinator too (§3.4).
+- The daemon's `features.autoSessionMode` switch is on by default.
 
 ### 3.3 Trigger
 
@@ -223,8 +195,8 @@ When the coordinator's turn fails or times out:
 
 ### 4.6 Usage
 
-No separate cap: batching (§4.3) bounds it, and the console shows the coordinator's usage. A limit is
-decided once real usage is known.
+No separate cap: batching (§4.3) bounds it, and the console's Usage page shows, under each agent,
+what its coordinators spent. A limit is decided once real usage is known.
 
 ## 5. Tools
 
@@ -236,11 +208,11 @@ The existing names stay, with `messageId` added (`SEND_MESSAGE_ACTIONS` in
 - `delegateTask {title, message?, messageId?}`: `message` or `messageId` is required.
   - With `messageId`: a threaded task. It receives the original message as it arrived (sender, text,
     attachments); `message` is the coordinator's background.
-  - Without: a background task, as today. The coordinator's tool always names a message for now
-    (§6.6).
+  - Without: a background task, as today. The coordinator's tool always names a message, so its tasks
+    are always threaded (§6.6).
   - `title` is required and shown in the console and in `listTasks`.
 - `messageTask {taskId, message?, messageId?}`: with `messageId`, hands that platform message to the
-  task and attaches its thread; a background task becomes threaded this way (§6.6).
+  task and attaches its thread (§6.4).
 - `stopTask {taskId}`: stops a task's current turn, either kind. The coordinator is not offered it
   yet; `!stop` in a task's thread stops a threaded task (§8), and the console stops either kind.
 - `replyToMessage {messageId, message}`: the coordinator's own reply, in the message's thread.
@@ -260,8 +232,8 @@ session, an ordinary webchat session, and a task of either kind.
   person stops it from the console. The session is no longer reminded of it.
 - `updateTask` stays a task's own (§5.3). `followUp`, `propose`, research, `callAgent` and
   `postMessage` are unchanged.
-- The daemon applies the rule with its Auto switch on, which P6 turns on by default. With the switch
-  off, every session keeps the task tools of P1 (§6.3).
+- The daemon applies the rule with its Auto switch on, which is the default. With the switch off,
+  every session keeps the task tools of P1 (§6.3).
 
 ### 5.2 `listTasks`
 
@@ -358,14 +330,12 @@ A threaded task lives as long as its session: when the session ages out after 7 
 closes and leaves `listTasks`. A later reply in its thread is an unowned-thread message and goes to
 the coordinator, which may open a task again.
 
-### 6.6 A background task gaining a thread
+### 6.6 Coordinator tasks are threaded
 
-`messageTask` with a `messageId` on a background task attaches the thread, and from then on the task
-follows the threaded rules: no reports to the parent, outside the concurrency cap. The round running
-when the thread attaches still reports once when it ends.
-
-Since only the coordinator delegates (§5.1) and its `delegateTask` always carries a `messageId`, no
-background task of a coordinator exists to gain a thread until the coordinator may open one.
+Every task the coordinator opens is threaded from its first round: its `delegateTask` always names a
+message (§5.1), and the task holds that message's thread, or in webchat the message's id (§10). The
+coordinator opens no background task, so no task of the coordinator ever changes kind (decided
+2026-10-30). A background task is one a session opened on a daemon whose Auto switch is off (§6.3).
 
 ### 6.7 The task summary
 
@@ -434,9 +404,13 @@ not addressed to this agent. Cost grows with the number of agents.
   - Each message runs as a turn of its own, never batched (§4.3's one-message form): its text streams
     to the browser and is its reply. `replyToMessage` and the link cards below are the coordinator's
     own posts in the conversation.
+  - The coordinator's prompt names the place a private conversation with one person, with no
+    threads: a task answers on its own page, and the text the coordinator writes is shown as it
+    writes it, so it writes nothing but its calls and replies with `replyToMessage`.
   - It runs over the legacy webchat protocol; an AHP conversation stays an ordinary one for now.
 - New session opens an **ordinary webchat session** without the coordinator, as today.
-- Every task's page accepts messages (today it is read-only), for whoever may continue the parent.
+- Every task's page accepts messages (today it is read-only), for whoever may continue the parent,
+  where the daemon advertises `task-page-messages-v1`, which its Auto switch also turns on.
   - A threaded task's page is its thread's session, which the console already continues. A background
     task's coordinate is no platform thread, so its page continues it console-only: nothing is mirrored
     to the platform, and the answer streams to the page.
@@ -464,8 +438,12 @@ not addressed to this agent. Cost grows with the number of agents.
 
 ## 11. Console
 
-- The session-mode menu gains Auto beside Per thread and Single session.
-- The session list labels the coordinator; tasks show their title and link to their parent.
+- The session-mode menu gains Auto beside Per thread and Single session, where the conversation's
+  consumer's daemon reads it and outside By decision and shared-bot routing; a group DM row offers it
+  too (§3.2).
+- The session list labels the coordinator; tasks show their title and link to their parent. A
+  threaded task's page names its coordinator once, among its related sessions, from the Control
+  Plane's record of the owner (§6.2).
 - A parent's Tasks tab lists all its tasks, threaded and background grouped apart.
 
 ## 12. Validation
@@ -475,7 +453,8 @@ tool surface (`sendMessage` with `delegateTask`, `messageTask` and `replyToMessa
 into a real runtime session over an HTTP MCP fixture, delivers channel messages in the format of
 §4.3, and judges each message's outcome. Its scenarios: new work, a message for an open task, a
 status question, a greeting, chatter between people, a request to another agent, a vague mention, a
-small edit the coordinator must not do itself, two mixed batches, and a follow-up's report (§3.4).
+small edit the coordinator must not do itself, two mixed batches, a follow-up's report (§3.4), and in
+a webchat conversation (§10) new work, a status question and a message for an open task.
 
 ```bash
 AC_RUNTIME_MATRIX_ONLY=coordinator AC_RUNTIME_MATRIX_TARGETS=claude-acp,codex-acp \
@@ -501,6 +480,9 @@ and the report scenario added to the probe, both passed 33 / 33 (3 repetitions e
 answered with `replyToMessage` naming the PR it reported. After the place tools came to name their
 message by `messageId`, `codex-acp` passed 33 / 33 again and `claude-acp` 32 / 33. Its one failure was
 an `ignore-chatter` turn that timed out after 180 s with no call; that scenario passed 3 / 3 on a rerun.
+On 2026-10-31 the webchat form of the prompt (§10) passed its three scenarios (`webchat-new-work`,
+`webchat-status`, `webchat-route`, which also fail any text shown beside a call) 9 / 9 on `claude-acp`
+and on `codex-acp` (3 repetitions each); the channel prompt was unchanged.
 
 The candidate prompt asks the coordinator to express every outcome as a call and to end its turn
 with `AC_NO_RESPONSE`; the judge still accepts a one-message turn's text as its reply (§4.3).
@@ -515,3 +497,5 @@ a reply saying a message was for another agent, so the prompt states that ignori
 - A cap on coordinator usage (§4.6).
 - Judging across bots; one coordinator shared by a shared bot's agents.
 - Carrying an assistant-mode `append` session's context into the coordinator.
+- A background task gaining a thread: the coordinator opens no background task (§6.6), so nothing
+  would gain one.
