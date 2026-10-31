@@ -36,6 +36,7 @@ import {
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
 import { agentStrategyValue } from '@/lib/execution-strategy'
+import { useAgentGithubAppDialog } from '@/components/console/GithubAppDialog'
 import { useStrategyNames } from '@/components/console/ExecutionStrategyField'
 import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import {
@@ -439,10 +440,19 @@ function AgentDetail() {
   const gitlabRows = orderedGitlabHookRows(gitlabHooks)
   const giteaHooks = codeHostHooks.gitea
   const giteaRows = orderedGiteaHookRows(giteaHooks)
+  // The agent works through one GitHub App: its installations back the rows, and GitHub's return lands back on its dialog.
+  const githubAgentAppId = getAgent(id)?.githubAppId ?? null
+  const returnedGithubApp = params.get('github-app')
+  const githubAppDialog = useAgentGithubAppDialog(
+    { id, githubAppId: githubAgentAppId },
+    returnedGithubApp && /^[0-9a-f-]{36}$/.test(returnedGithubApp) ? returnedGithubApp : undefined
+  )
   const githubInstallationsKey =
-    activeOrg && githubHooks.length > 0 ? (['github-review-installations', activeOrg.id] as const) : null
+    activeOrg && githubHooks.length > 0
+      ? (['github-review-installations', activeOrg.id, githubAgentAppId] as const)
+      : null
   const { data: githubInstallationsData } = useSWR<GithubInstallationDto[]>(githubInstallationsKey, () =>
-    fetchGithubInstallations().then((result) => result.installations)
+    fetchGithubInstallations(undefined, githubAgentAppId).then((result) => result.installations)
   )
   const githubInstallations = githubInstallationsData ?? []
   // One deployment talks to exactly one GitLab instance (§24.1), so any connection names the host.
@@ -2292,8 +2302,23 @@ function AgentDetail() {
                               <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
                               {t('integrations.connected')}
                             </span>
+                            {githubAppDialog.appSlug && (
+                              <span className="min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                                {t.rich('integrations.githubVia', {
+                                  slug: () => <span className="mono">{githubAppDialog.appSlug}</span>
+                                })}
+                              </span>
+                            )}
                           </div>
                         </div>
+                        <button
+                          className="iconbtn"
+                          title={t('integrations.githubApp')}
+                          aria-label={t('integrations.githubApp')}
+                          onClick={githubAppDialog.openDialog}
+                        >
+                          <Icon name="app-window" size={15} />
+                        </button>
                         <button
                           className="iconbtn"
                           title={t('integrations.disconnectGithub')}
@@ -3024,6 +3049,7 @@ function AgentDetail() {
           and a centered dialog on desktop. The dense repository rows only open
           it; they do not duplicate policy controls. */}
       {routingEvaluationsDrawer}
+      {githubAppDialog.dialog}
 
       {reviewSettingsDraft && reviewSettingsHook && (
         <div

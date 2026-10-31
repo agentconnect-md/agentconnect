@@ -678,6 +678,7 @@ export interface Agent {
   allowedTargetAgentIds: string[]
   /** #536: when true, the agent introduces itself to peers on a genuine channel join. */
   introduceOnJoin: boolean
+  githubAppId?: string | null // the organization GitHub App the agent works through; null ⇒ the built-in App
   /** The strategy slug sessions run in (session-executors.md §5), `host` when unconfined. */
   execution: string
   /** What the placement offers `execution`, as the Control Plane projected it; host alone for an unplaced agent. */

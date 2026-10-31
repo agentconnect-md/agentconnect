@@ -298,6 +298,29 @@
       "notRunningBackground": "没有正在运行的回合。它启动的后台进程可能仍在运行，无法在这里停止；该进程结束后，它会回报。",
       "stopFailed": "停止失败，请重试。",
       "stopUpgrade": "升级此 Agent 的 Daemon 后才能在这里停止任务。"
+    },
+    "githubApp": {
+      "title": "GitHub App",
+      "close": "关闭",
+      "builtIn": "内置",
+      "builtInFallback": "内置 GitHub App",
+      "free": "空闲",
+      "create": "新建 GitHub App…",
+      "checking": "正在检查此 App 能访问的范围…",
+      "kinds": {
+        "workspace": "工作区",
+        "repository": "仓库",
+        "review": "评审",
+        "installation": "安装"
+      },
+      "addOnGithub": "去 GitHub 添加",
+      "notCovered": "{slug} 还没有覆盖此 agent 用到的全部内容。",
+      "checkAgain": "重新检查",
+      "cancel": "取消",
+      "opening": "正在打开…",
+      "continueOnGithub": "在 GitHub 上继续",
+      "switching": "正在切换…",
+      "switch": "切换"
     }
   },
   "Profile": {
@@ -1850,7 +1873,7 @@
         "installGithubApp": "安装 GitHub App",
         "installedSync": "已安装，立即同步",
         "opensGithub": "将在新标签页打开 github.com",
-        "githubConnected": "GitHub App 已连接，仓库和元数据会自动同步。",
+        "githubConnected": "GitHub App 已连接",
         "manageAccess": "管理访问权限",
         "publicRepositoriesShown": "当前显示公开仓库。",
         "linkGithubProfile": "关联 GitHub 个人资料",
@@ -1927,7 +1950,11 @@
         "materializeByDecisionDaemonOutdated": "请升级运行此 Agent 的 daemon 以使用 Decision",
         "materializeByDecisionDaemonOffline": "运行此 Agent 的 daemon 已离线",
         "materializeByDecisionNoProvider": "此 Agent 运行的位置没有就绪的 Decision 提供方",
-        "materializeByDecisionNoSelector": "请先设置仓库选择器"
+        "materializeByDecisionNoSelector": "请先设置仓库选择器",
+        "githubConnectedWith": "已通过 <slug></slug> 连接",
+        "more": "更多",
+        "useOwnGithubApp": "使用独立的 GitHub App…",
+        "changeGithubApp": "更换 GitHub App…"
       },
       "listenFor": "监听对象",
       "alreadyWatched": "已监听",
@@ -3077,7 +3104,9 @@
         "claudeFile": "CLAUDE.md",
         "skillsDirectory": ".agent/skills/",
         "runbooksDirectory": "docs/runbooks/",
-        "seconds": "{value} 秒"
+        "seconds": "{value} 秒",
+        "githubVia": "通过 <slug></slug>",
+        "githubApp": "GitHub App"
       },
       "tools": {
         "loading": "加载中…",

@@ -8,11 +8,13 @@ import type { LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import { ApiProtocolMark, GithubMark, LoadingState, MarkSlot, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { AgentPicker } from '@/components/console/AgentPicker'
+import { useAgentGithubAppDialog } from '@/components/console/GithubAppDialog'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
 import { IntegrationPlatformGroups, PLATFORM_TILE_WIDTH } from '@/components/console/IntegrationPlatformGroups'
 import {
+  GithubConnectedBanner,
   GithubPrivateReposNotice,
   GiteaNoRepositoriesNotice,
   GiteaRepositoryField,
@@ -59,7 +61,7 @@ import {
   repoAuthProvider,
   fetchGithubInstallationRepo,
   fetchGithubInstallations,
-  fetchGithubInstallUrl,
+  githubInstallUrlFor,
   fetchGithubRepoRoster,
   invalidateGithubRepoRosterCache,
   syncGithubInstallations,
@@ -525,6 +527,10 @@ export default function AddIntegrationModal({
   // installations probe doubles as the enabled-probe; repository pages render
   // progressively and filter client-side (same contract as Add-agent).
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
+  // The App the agent works through; a switch from this modal reloads the picker with that App's installations.
+  const [githubAppId, setGithubAppId] = useState<string | null>(agent.githubAppId ?? null)
+  // Editors opened from here act through the App the agent works through now, even after a switch made here.
+  const appAgent = useMemo(() => ({ ...agent, githubAppId }), [agent, githubAppId])
   const [ghRepos, setGhRepos] = useState<GithubRepoChoice[] | null>(null)
   const [ghReposNonce, setGhReposNonce] = useState(0)
   // At least one installation's roster failed to load — the list may be
@@ -983,14 +989,14 @@ export default function AddIntegrationModal({
   useEffect(() => {
     if (platform !== 'github' || gh !== null) return
     let alive = true
-    fetchGithubInstallations().then(
+    fetchGithubInstallations(undefined, githubAppId).then(
       (r) => alive && setGh(r),
       () => alive && setGh({ enabled: false, installations: [] })
     )
     return () => {
       alive = false
     }
-  }, [platform, gh])
+  }, [platform, gh, githubAppId])
 
   // Repo pick list: merge pages from every installation as soon as they arrive.
   // GitHub offers no server-side search for App installations, so the dropdown
@@ -1093,8 +1099,13 @@ export default function AddIntegrationModal({
   }, [platform, ghRepoOpen, gh, ghTypedRepo, ghExactAlreadyLoaded])
 
   // Install deep link is minted fresh per click (one-shot signed state).
+  const githubApp = useAgentGithubAppDialog({ id: agent.id, githubAppId }, undefined, (next) => {
+    setGithubAppId(next)
+    setGh(null)
+    setGhRepos(null)
+  })
   const openGhInstall = async () => {
-    const url = await fetchGithubInstallUrl().catch(() => null)
+    const url = await githubInstallUrlFor(githubAppId).catch(() => null)
     if (url) window.open(url, '_blank', 'noopener,noreferrer')
   }
 
@@ -1103,7 +1114,7 @@ export default function AddIntegrationModal({
     setGhSyncing(true)
     setErr(null)
     try {
-      const installations = await syncGithubInstallations()
+      const installations = await syncGithubInstallations(githubAppId)
       setGh({ enabled: true, installations })
       setGhReposError(null)
       setGhPrivateReposHidden(false)
@@ -1857,6 +1868,13 @@ export default function AddIntegrationModal({
               </div>
             ) : (
               <>
+                <div className="mb-4">
+                  <GithubConnectedBanner
+                    onManage={() => void openGhInstall()}
+                    appSlug={githubApp.appSlug}
+                    onGithubApp={githubApp.openDialog}
+                  />
+                </div>
                 {(() => {
                   // The picker lists EVERY repo the GitHub App can see (ghRepos).
                   // Workspace + already-authorized repos are directly watchable.
@@ -2725,7 +2743,7 @@ export default function AddIntegrationModal({
           hook creation with the new grant pre-picked. */}
       {authRepoFor !== null && (
         <EditWorkspaceModal
-          agent={agent}
+          agent={appAgent}
           authorized={authorizedRepos}
           installationGrants={installationGrants}
           initialRepositoryAuthorization={{
@@ -2748,6 +2766,7 @@ export default function AddIntegrationModal({
           }}
         />
       )}
+      {githubApp.dialog}
     </>
   )
 }

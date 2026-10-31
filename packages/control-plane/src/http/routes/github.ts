@@ -159,12 +159,20 @@ export function githubRoutes(deps: HttpDeps) {
           tags: [Tag.GitHub],
           summary: 'List GitHub installations',
           description:
-            "The org's live (non-revoked) installations of the deployment GitHub App — the repo picker's first level. Includes the persisted installation-effective Checks permission separately from GitHub's coarse current/outdated App-upgrade verdict; a transient verdict read reports `unknown` without hiding the durable roster. Org-level infrastructure: visible to every member, never restricted.",
+            "The org's live (non-revoked) installations of the built-in GitHub App, or of the organization App `app` names — the repo picker's first level. Includes the persisted installation-effective Checks permission separately from GitHub's coarse current/outdated App-upgrade verdict; a transient verdict read reports `unknown` without hiding the durable roster, and an organization App's verdict is always `unknown`. Org-level infrastructure: visible to every member, never restricted.",
           operationId: 'listGithubInstallations',
+          querystring: z.object({ app: z.string().uuid().optional() }),
           response: { 200: GithubInstallationListDto }
         }
       },
       async (req) => {
+        const appId = req.query.app
+        if (appId) {
+          const rows = (await deps.repos.githubInstallation.listClaimsForOrg(orgOf(req))).filter(
+            (row) => row.githubAppId === appId && row.revokedAt === null
+          )
+          return rows.map((row) => githubInstallationToDto(row, null))
+        }
         const rows = await deps.repos.githubInstallation.listForOrg(orgOf(req))
         let outdated: ReadonlyMap<string, string> | null = null
         try {
