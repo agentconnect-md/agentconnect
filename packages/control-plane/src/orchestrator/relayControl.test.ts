@@ -137,3 +137,28 @@ describe('RelayControlSender.hookAssign — Decision routing (code-host-decision
     expect(v1Relay).toHaveBeenCalledWith('rc/hook-remove', { hookId: rule.hookId })
   })
 })
+
+describe('RelayControlSender.githubAppAssign', () => {
+  it("sends a dedicated App's webhook secret only to relays that verify them", () => {
+    const reg = new RelayRegistry()
+    const verifying = vi.fn()
+    const older = vi.fn()
+    reg.add({ relayId: 'new', features: ['github-app-webhook-v1'], send: verifying, close: vi.fn() })
+    reg.add({ relayId: 'old', features: [], send: older, close: vi.fn() })
+    const assign = {
+      githubAppId: '45454545-4545-4454-8454-454545454545',
+      appId: '2000',
+      webhookSecret: 'whsec-example'
+    }
+    const sender = new RelayControlSender(reg)
+
+    sender.githubAppAssign(assign)
+    sender.githubAppUnassign(assign.githubAppId)
+
+    expect(verifying.mock.calls).toEqual([
+      ['rc/github-app-assign', assign],
+      ['rc/github-app-unassign', { githubAppId: assign.githubAppId }]
+    ])
+    expect(older).not.toHaveBeenCalled()
+  })
+})

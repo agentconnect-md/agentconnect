@@ -136,6 +136,9 @@ function make(
     }
     /** The scope's Decision routing read (code-host-decisions.md §3.2). */
     routing?: CodeHostDecisionRoutingRecord | null
+    /** The organization GitHub App the agent works through, and the org's Apps. */
+    githubAppId?: string
+    githubApps?: Array<{ id: string; slug: string }>
   } = {}
 ) {
   const agents: HookAgentReads = {
@@ -146,7 +149,8 @@ function make(
             id: AGENT,
             name: 'review-agent',
             daemonId: opts.daemonId ?? DAEMON,
-            ...(opts.pause !== undefined ? { pause: opts.pause } : {})
+            ...(opts.pause !== undefined ? { pause: opts.pause } : {}),
+            ...(opts.githubAppId ? { githubAppId: opts.githubAppId } : {})
           } as AgentRecord)
     )
   }
@@ -158,7 +162,7 @@ function make(
     hookAssign: (rule: unknown) => assigns.push(rule),
     hookRemove: (id: string) => removes.push(id)
   } as unknown as RelayControlSender
-  const installations = opts.installations ? { listForOrg: vi.fn(async () => opts.installations!) } : undefined
+  const installations = opts.installations ? { listClaimsForOrg: vi.fn(async () => opts.installations!) } : undefined
   const gitlabBindings =
     opts.gitlabBinding === undefined
       ? undefined
@@ -184,7 +188,8 @@ function make(
       undefined,
       undefined,
       opts.gitea ? giteaSources(opts.gitea) : undefined,
-      opts.routing !== undefined ? { get: vi.fn(async () => opts.routing ?? null) } : undefined
+      opts.routing !== undefined ? { get: vi.fn(async () => opts.routing ?? null) } : undefined,
+      opts.githubApps ? { listForOrg: vi.fn(async () => opts.githubApps as never) } : undefined
     ),
     assigns,
     removes
@@ -356,6 +361,33 @@ describe('HookService.compile', () => {
     expect(legacy?.github).not.toHaveProperty('commentFamilies')
   })
 
+  it('carries only the installations and handle of the App the agent works through', async () => {
+    const githubApps = [
+      { id: 'app-1', slug: 'example-review' },
+      { id: 'app-2', slug: 'example-coder' }
+    ]
+    const installations = [
+      installation(1n),
+      installation(2n, { githubAppId: 'app-1' }),
+      installation(4n, { githubAppId: 'app-1', revokedAt: new Date() }),
+      installation(3n, { githubAppId: 'app-2' })
+    ]
+    const builtIn = await make({ installations, appSlug: 'example-app', githubApps }).svc.compile(ghHook())
+    expect(builtIn?.github).toMatchObject({
+      installationIds: ['1'],
+      appSlug: 'example-app',
+      internalAppSlugs: ['example-review', 'example-coder']
+    })
+    const onApp = await make({ installations, appSlug: 'example-app', githubApps, githubAppId: 'app-1' }).svc.compile(
+      ghHook()
+    )
+    expect(onApp?.github).toMatchObject({
+      installationIds: ['2'],
+      appSlug: 'example-review',
+      internalAppSlugs: ['example-app', 'example-coder']
+    })
+  })
+
   it('excludes suspended installations from the attribution set', async () => {
     const { svc } = make({
       installations: [installation(1n, { suspendedAt: new Date() }), installation(2n)]
@@ -427,7 +459,7 @@ describe('HookService.compile', () => {
 
 describe('HookService.replayTo', () => {
   it('one hook whose compile throws must not starve the rest of the replay', async () => {
-    // The github branch awaits installations.listForOrg — the first compile
+    // The github branch awaits installations.listClaimsForOrg — the first compile
     // dependency that can realistically reject (DB blip). The per-hook
     // try/catch is what keeps a (re)registering relay from losing ALL rules.
     const webhook = hook()
@@ -444,7 +476,7 @@ describe('HookService.replayTo', () => {
     const secrets = { get: vi.fn(async () => null) } as unknown as HookSecretStore
     const hooks = { listEnabled: vi.fn(async () => [github, webhook]) } as unknown as HookRepo
     const installations = {
-      listForOrg: vi.fn(async () => {
+      listClaimsForOrg: vi.fn(async () => {
         throw new Error('db blip')
       })
     }
@@ -616,7 +648,7 @@ describe('HookService — Decision routing (code-host-decisions.md §3.2-§3.3)'
       agents,
       {} as RelayControlSender,
       placement as never,
-      { listForOrg: vi.fn(async () => [installation(1n)]) },
+      { listClaimsForOrg: vi.fn(async () => [installation(1n)]) },
       undefined,
       undefined,
       undefined,

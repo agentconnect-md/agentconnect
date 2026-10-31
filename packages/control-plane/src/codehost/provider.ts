@@ -127,6 +127,8 @@ export interface CodeHostWorkspaceDerivation {
   requestedAccess?: 'read' | 'write'
   /** True when the caller persists the outcome: a host that binds on first use binds HERE (gitea-integration.md §6); a preview never writes. */
   write?: boolean
+  /** The organization GitHub App the agent works through; absent or null ⇒ the built-in App. */
+  githubAppId?: string | null
 }
 
 /** The persisted workspace fields one of this host's derivations writes. */

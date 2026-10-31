@@ -464,6 +464,7 @@ function toDto(
     outboundPolicy: a.outboundPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
+    githubAppId: a.githubAppId ?? null,
     execution: a.execution,
     strategies: placementView.strategies,
     hookKinds
@@ -2853,7 +2854,11 @@ export function agentRoutes(deps: HttpDeps) {
 
             const [owner, repo] = gitRepoLabel(existing.workspace.gitRepo).split('/')
             if (!owner || !repo) return conflict('workspace gitRepo is not a github repository')
-            const installation = await deps.repos.githubInstallation.liveByOrgAndAccount(existing.orgId, owner)
+            const installation = await deps.repos.githubInstallation.liveByOrgAndAccount(
+              existing.orgId,
+              owner,
+              existing.githubAppId ?? null
+            )
             if (!installation || installation.suspendedAt) {
               return conflict(`no live GitHub installation covers ${owner}`)
             }
@@ -3219,7 +3224,7 @@ export function agentRoutes(deps: HttpDeps) {
                 req.principal?.userId,
                 req.body.gitRepo,
                 req.body.access,
-                { write: true }
+                { write: true, githubAppId: existing.githubAppId ?? null }
               )
             } catch (e) {
               if (e instanceof WorkspaceCredentialRefused) return conflict(e.message)

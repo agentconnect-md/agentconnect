@@ -1196,6 +1196,8 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     installationsByAccount?: Record<string, GithubInstallationRecord>
     /** GET /repos/{owner}/{repo} answers, keyed lowercase; missing ⇒ 404. */
     repoRefs?: Record<string, { id: number; full_name: string }>
+    /** Per-installation overrides of `repoRefs`, keyed by installation id: what THAT installation covers. */
+    repoRefsByInstallation?: Record<string, Record<string, { id: number; full_name: string }>>
     withRepoAuths?: boolean
     /** Skill-source registry rows by name (shared-skills.md §3 read grants). */
     skillSources?: Record<string, SkillSourceRecord>
@@ -1213,8 +1215,12 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       if (url.includes('/access_tokens')) {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>
         if (body.repositories || body.repository_ids) mintBodies.push(body)
+        const installationId = /\/app\/installations\/(\d+)\//.exec(url)?.[1] ?? '0'
         return Response.json(
-          { token: `ghs_${mintBodies.length}`, expires_at: new Date(clock.now() + 3_600_000).toISOString() },
+          {
+            token: `ghs_${mintBodies.length}_i${installationId}`,
+            expires_at: new Date(clock.now() + 3_600_000).toISOString()
+          },
           { status: 201 }
         )
       }
@@ -1226,7 +1232,9 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       const repoPath = /\/repos\/([^/]+\/[^/]+)$/.exec(url)
       if (repoPath) {
         repoLookups.push(repoPath[1]!)
-        const hit = opts.repoRefs?.[repoPath[1]!.toLowerCase()]
+        const viaInstallation = /_i(\d+)$/.exec(new Headers(init?.headers).get('authorization') ?? '')?.[1]
+        const refs = (viaInstallation && opts.repoRefsByInstallation?.[viaInstallation]) || opts.repoRefs
+        const hit = refs?.[repoPath[1]!.toLowerCase()]
         if (!hit) return Response.json({ message: 'Not Found' }, { status: 404 })
         return Response.json({ ...hit, private: true }, { status: 200 })
       }
@@ -1241,9 +1249,9 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       clock,
       installations: {
         get: async (id: string) => (id === 'row-1' ? (byAccount['acme'] ?? null) : null),
-        liveByOrgAndAccount: async (_orgId: string, account: string) => {
+        liveByOrgAndAccount: async (_orgId: string, account: string, githubAppId?: string | null) => {
           accountLookups.push(account)
-          return byAccount[account] ?? null
+          return byAccount[githubAppId ? `${account}@${githubAppId}` : account] ?? null
         },
         getByInstallationId: async (id: bigint) =>
           Object.values(byAccount).find((row) => row.installationId === id) ?? null
@@ -1541,6 +1549,79 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       code: 'SCOPE_DENIED'
     })
     expect(mintBodies).toHaveLength(1)
+  })
+
+  it("an agent on an organization App works only through that App's installations", async () => {
+    const REVIEW_AGENT = { ...(READ_WORKSPACE_AGENT as object), githubAppId: 'app-review' } as never
+    const { svc, mintBodies, accountLookups } = harness({
+      rows: [],
+      installationsByAccount: {
+        acme: installation(),
+        'acme@app-review': installation({ id: 'row-2', installationId: 43n, githubAppId: 'app-review' })
+      }
+    })
+
+    // Its hook rows name its own App's installation (43), which signs the reply.
+    const grant = await svc.mintForHookReply(REVIEW_AGENT, 'acme/tools', 777n, [], false, 43n)
+    expect(grant.token).toMatch(/^ghs_1_i43$/)
+    expect(accountLookups).toEqual(['acme'])
+    expect(mintBodies).toHaveLength(1)
+    // The built-in App's installation on the same account stands in for nothing.
+    await expect(svc.mintForHookReply(REVIEW_AGENT, 'acme/tools', 777n, [], false, 42n)).rejects.toMatchObject({
+      code: 'SCOPE_DENIED'
+    })
+  })
+
+  it("an installation grant authorizes through the App installation it names, never another App's", async () => {
+    const REVIEW_SCRATCH = { ...(SCRATCH_AGENT as object), githubAppId: 'app-review' } as never
+    const grantOn = (installationId: bigint): AgentInstallationAuthorizationRecord => ({
+      id: 'ia-1',
+      agentId: 'agent-scratch' as never,
+      provider: 'github',
+      installationId,
+      accountLogin: 'acme',
+      access: 'write',
+      materialize: 'on-demand',
+      createdAt: new Date(0),
+      createdBy: null
+    })
+    const byAccount = {
+      acme: installation(),
+      'acme@app-review': installation({ id: 'row-2', installationId: 43n, githubAppId: 'app-review' })
+    }
+    const own = harness({
+      rows: [],
+      installationGrants: [grantOn(43n)],
+      installationsByAccount: byAccount,
+      repoRefs: { 'acme/tools': { id: 111, full_name: 'acme/tools' }, 'acme/tools/pulls/7': { id: 0, full_name: '' } },
+      objects: { 'acme/tools/pulls/7': {} }
+    })
+    await expect(own.svc.mintForAgent(REVIEW_SCRATCH, [], CONTENTS, 'acme/tools')).resolves.toMatchObject({
+      access: 'write',
+      repoId: 111n
+    })
+    await expect(own.svc.resolveAgentRepoAuthorization(REVIEW_SCRATCH, 111n, 'acme/tools')).resolves.toMatchObject({
+      kind: 'installation',
+      installation: { installationId: 43n }
+    })
+    // A follow-up watch subscribes on the App's own installation, which is what delivers its events.
+    await expect(own.svc.resolveWatchedObject(REVIEW_SCRATCH, 'acme/tools', 'pull', 7)).resolves.toEqual({
+      installationId: 43n,
+      repoId: 111n,
+      repoFullName: 'acme/tools',
+      subject: 'pull'
+    })
+
+    // A grant left on the built-in installation does not carry over to the agent's App.
+    const other = harness({
+      rows: [],
+      installationGrants: [grantOn(42n)],
+      installationsByAccount: byAccount,
+      repoRefs: { 'acme/tools': { id: 111, full_name: 'acme/tools' } }
+    })
+    await expect(other.svc.mintForAgent(REVIEW_SCRATCH, [], CONTENTS, 'acme/tools')).rejects.toMatchObject({
+      code: 'SCOPE_DENIED'
+    })
   })
 
   it('a general issues/PR ask still follows an additional repo comment-tier grant', async () => {

@@ -80,6 +80,9 @@ import {
   type RcMcpUnassign,
   type RcMemoryConnectionAssign,
   type RcMemoryConnectionUnassign,
+  type RcGithubAppAssign,
+  type RcGithubAppUnassign,
+  GITHUB_APP_WEBHOOK_V1_FEATURE,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   type RcSnapshotBegin,
   type RcSnapshotEnd,
@@ -177,6 +180,9 @@ export interface RelayCpClientDeps {
   /** Purpose-separated daemon-private memory plugin proxy bindings. */
   onMemoryConnectionAssign?: (a: RcMemoryConnectionAssign) => void
   onMemoryConnectionUnassign?: (a: RcMemoryConnectionUnassign) => void
+  /** An organization GitHub App's webhook secret arrived or left; carries the secret — NEVER log. */
+  onGithubAppAssign?: (a: RcGithubAppAssign) => void
+  onGithubAppUnassign?: (a: RcGithubAppUnassign) => void
   /** A full reconnect replay of one projection starts, then ends naming what failed to replay. */
   onSnapshotBegin?: (s: RcSnapshotBegin) => void
   onSnapshotEnd?: (s: RcSnapshotEnd) => void
@@ -787,7 +793,9 @@ export class RelayCpClient {
           // Fills an installation-wide GitHub rule in with each event's repository, so the CP may send it one.
           HOOK_GITHUB_INSTALLATION_V1_FEATURE,
           // Prunes its MCP, hook and memory tables at the end of a replay snapshot instead of keeping stale entries.
-          RELAY_PROJECTION_SNAPSHOT_V1_FEATURE
+          RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+          // Verifies organization GitHub Apps' webhooks with the secrets the CP sends it.
+          GITHUB_APP_WEBHOOK_V1_FEATURE
         ]
       })
     )
@@ -919,6 +927,14 @@ export class RelayCpClient {
       }
       case 'rc/memoryconnection-unassign': {
         this.deps.onMemoryConnectionUnassign?.(frame.payload as RcMemoryConnectionUnassign)
+        return
+      }
+      case 'rc/github-app-assign': {
+        this.deps.onGithubAppAssign?.(frame.payload as RcGithubAppAssign)
+        return
+      }
+      case 'rc/github-app-unassign': {
+        this.deps.onGithubAppUnassign?.(frame.payload as RcGithubAppUnassign)
         return
       }
       case 'rc/snapshot-begin': {

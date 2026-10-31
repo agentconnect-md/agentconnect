@@ -14,6 +14,8 @@ const CHECK_RUN_ID = '86617583005'
 const REPO_ID = 987654321n
 const APP_ID = 4157507
 const INSTALLATION_ID = 1234567n
+const DEDICATED_APP_ID = 2000n
+const DEDICATED_INSTALLATION_ID = 7654321n
 
 const request: RcGithubRerequest = {
   checkRunId: CHECK_RUN_ID,
@@ -145,6 +147,7 @@ function make(
     hook?: HookRecord | null
     run?: HookRunRecord | null
     runs?: HookRunRecord[]
+    orgAppIdOf?: (installationId: bigint) => Promise<bigint | null>
   } = {}
 ) {
   const findReviewProjectionByCheckRunId = vi.fn(async () =>
@@ -182,7 +185,8 @@ function make(
       | 'getManyUnscoped'
       | 'getRunById'
     >,
-    appId: APP_ID
+    appId: APP_ID,
+    ...(opts.orgAppIdOf ? { orgAppIdOf: opts.orgAppIdOf } : {})
   })
   return {
     service,
@@ -230,6 +234,37 @@ describe('GithubRerequestService', () => {
       pullNumber: 585,
       configRevision: '7',
       dispatchRevision: '9'
+    })
+  })
+
+  describe("an organization App's Check", () => {
+    const orgAppRequest: RcGithubRerequest = {
+      checkRunId: CHECK_RUN_ID,
+      repoId: REPO_ID.toString(),
+      headSha: HEAD_SHA,
+      deliveryKey: 'delivery-org-app-rerun-1',
+      appId: DEDICATED_APP_ID.toString()
+    }
+    const written = projection({ lastResolvedInstallationId: DEDICATED_INSTALLATION_ID })
+    const orgAppIdOf = async (installationId: bigint) =>
+      installationId === DEDICATED_INSTALLATION_ID ? DEDICATED_APP_ID : null
+
+    it('resolves when the delivering App wrote the Check', async () => {
+      await expect(make({ projection: written, orgAppIdOf }).service.resolve(orgAppRequest)).resolves.toEqual({
+        allowed: true,
+        hookId: HOOK_ID,
+        pullNumber: 585,
+        configRevision: '7',
+        dispatchRevision: '9'
+      })
+    })
+
+    it.each([
+      ['another App wrote the Check', { projection: projection(), orgAppIdOf }],
+      ['the delivering App is not the writer', { projection: written, orgAppIdOf: async () => 3000n }],
+      ['no App lookup is wired', { projection: written }]
+    ])('denies when %s', async (_name, opts) => {
+      await expect(make(opts).service.resolve(orgAppRequest)).resolves.toEqual({ allowed: false })
     })
   })
 

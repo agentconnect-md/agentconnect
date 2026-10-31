@@ -992,6 +992,7 @@ export const AgentDto = z.object({
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
+  githubAppId: z.string().nullable(), // the agent's dedicated GitHub App; null ⇒ the deployment App
   computerUse: AgentComputerUse.nullable(), // derived (computer-use.md §4.1): the Computers granting it and its managed mode; null ⇒ none
   // The strategy sessions run in (session-executors.md §5).
   execution: ExecutorStrategyName,
@@ -2403,6 +2404,49 @@ export const GithubAppDto = z.object({
   /** `https://github.com/apps/<slug>/installations/new?state=…` — one-shot, org-bound. */
   installUrl: z.string().nullable()
 })
+
+/** An organization GitHub App (github-app-git-credentials.md §Organization GitHub Apps): one agent at a time, free when `agentId` is null. */
+export const GithubOrgAppDto = z.object({
+  id: z.string(),
+  appId: z.number(), // GitHub-side App id
+  slug: z.string(), // github.com/apps/<slug>; the bot login is `<slug>[bot]`
+  botUserId: z.number().nullable(),
+  agentId: z.string().nullable(), // the agent working through it; null ⇒ free
+  /** Live installations of this App. */
+  installations: z.array(
+    z.object({
+      id: z.string(),
+      installationId: z.number(),
+      accountLogin: z.string(),
+      accountType: z.string(),
+      repositorySelection: z.string(),
+      suspended: z.boolean()
+    })
+  ),
+  createdAt: z.string() // ISO-8601
+})
+export const GithubOrgAppListDto = z.array(GithubOrgAppDto)
+export const AgentGithubAppDto = z.object({ app: GithubOrgAppDto.nullable() })
+/** What the agent works on through GitHub, and whether one App reaches each. */
+export const GithubAppCoverageItemDto = z.object({
+  target: z.string(), // `owner/repo`, or an account login for installation-wide grants and reviews
+  kind: z.enum(['workspace', 'repository', 'review', 'installation']),
+  covered: z.boolean()
+})
+export const GithubAppCoverageDto = z.object({ coverage: z.array(GithubAppCoverageItemDto) })
+export const SwitchAgentGithubAppBody = z.object({
+  /** A free organization App, or null for the built-in App. */
+  githubAppId: z.string().uuid().nullable()
+})
+export const GithubAppSwitchRefusedDto = z.object({
+  error: z.string(),
+  statusCode: z.number(),
+  message: z.string(),
+  reason: z.enum(['not_covered', 'app_in_use', 'agent_changed']),
+  coverage: z.array(GithubAppCoverageItemDto).optional()
+})
+/** The form to POST to GitHub: `manifest` as JSON in a field named `manifest`, to `action`. */
+export const GithubAppManifestDto = z.object({ action: z.string(), manifest: z.record(z.string(), z.unknown()) })
 
 /** One installation of the deployment App, claimed by this org. Infrastructure-class
  *  in the visibility taxonomy (like bots): org-visible, never restricted. */
