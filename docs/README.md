@@ -56,6 +56,7 @@ the picture it draws.
 ### Webchat and console
 
 - **(proposal)** [ahp-adoption.md](designs/ahp-adoption.md) — An open AHP v1 interface for third-party clients: separate legacy/AHP services, feature switches, interoperability, and gateway reuse.
+- **(proposal)** [ahp-client-sign-in.md](designs/ahp-client-sign-in.md) — Browser sign-in for AHP clients such as VS Code through the CP OAuth server: an `ahp` scope, per-agent resource binding, and token refresh on a live connection.
 - [webchat-multi-agents.md](designs/webchat-multi-agents.md) — Multi-agent webchat conversations: roster, primary agent, activation.
 - [webchat-generated-images.md](designs/webchat-generated-images.md) — Runtime-generated workspace images, explicit publication through `shareFile`, and retained inline previews in webchat.
 - [webchat-side-panels.md](designs/webchat-side-panels.md) — The session-detail right dock.
