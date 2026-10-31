@@ -68,8 +68,10 @@ member of the workspace has a channel made, as the tool requires an eligible hum
 
 - The task's session is the channel session, and the task holds the channel coordinate as
   its thread. The coordinator links the channel in the message's thread.
-- Slack's copy of the request opens the task: it reaches that session, never a second one,
-  and carries the coordinator's title and background when it arrives within 10 minutes.
+- Slack's copy of the request opens the task: it reaches that session, never a second one.
+  A code channel message that arrives while the channel is still being made waits for it, so
+  the copy runs once the task is indexed, and the copy, from the request's own sender within
+  10 minutes, carries the coordinator's title and background.
 - A code channel has no root, so under Auto it never runs a coordinator of its own: every
   message there keys on the channel session, the task's while one holds it. A code channel
   made outside a task, or whose task has closed, stays an ordinary channel session.

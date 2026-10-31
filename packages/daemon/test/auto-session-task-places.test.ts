@@ -120,17 +120,54 @@ describe('a coordinator task in a place of its own', () => {
     // The platform copies the message into its place, so nothing is dispatched to the task here.
     expect(dispatched).toEqual([])
 
-    // That copy carries the coordinator's title and background, once.
+    // That copy, which its sender posts there, carries the coordinator's title and background, once.
     const copy = slack('2.1', { msgId: 'slack:C2:2.1', channel: 'C2', thread: 'C2', text: 'fix the flaky test' })
-    sessions.applyPlaceOpening(sessionKey('slack', 'C2', 'C2', 'other-agent'), copy)
+    await sessions.placeOpening('bot-a', sessionKey('slack', 'C2', 'C2', 'other-agent'), copy)
     expect(copy.initialSessionTitle).toBeUndefined()
-    sessions.applyPlaceOpening(placeKey, copy)
+    const someoneElse = slack('2.0', {
+      msgId: 'slack:C2:2.0',
+      channel: 'C2',
+      thread: 'C2',
+      sender: { id: 'U2', isBot: false }
+    })
+    await sessions.placeOpening('bot-a', placeKey, someoneElse)
+    expect(someoneElse.initialSessionTitle).toBeUndefined()
+    await sessions.placeOpening('bot-a', placeKey, copy)
     expect(copy).toMatchObject({ text: 'fix the flaky test', initialSessionTitle: 'Flaky test' })
     expect(copy.turnBody?.prompt).toContain('it fails on main only')
     const next = slack('2.2', { msgId: 'slack:C2:2.2', channel: 'C2', thread: 'C2' })
-    sessions.applyPlaceOpening(placeKey, next)
+    await sessions.placeOpening('bot-a', placeKey, next)
     expect(next.initialSessionTitle).toBeUndefined()
     expect(next.turnBody).toBeUndefined()
+  })
+
+  it('holds a copy that arrives while its place is being made until the task and its opening are kept', async () => {
+    let created!: (place: TaskPlace) => void
+    const { store, sessions, ctx, begin } = await setup(() => new Promise<TaskPlace>((resolve) => (created = resolve)))
+    begin(slack('1.1', { text: 'fix the flaky test' }))
+    const decided = sessions.decide(ctx, {
+      action: 'delegateTask',
+      messageId: 'msg-1.1',
+      title: 'Flaky test',
+      message: 'it fails on main only'
+    })
+    await vi.waitFor(() => expect(created).toBeDefined())
+    // Slack delivers its copy before answering the creation.
+    const copy = slack('2.1', { msgId: 'slack:C2:2.1', channel: 'C2', thread: 'C2', text: 'fix the flaky test' })
+    let indexed: unknown
+    const admitted = sessions.placeOpening('bot-a', placeKey, copy).then(async () => {
+      indexed = await store.assistantSubsessions.get('bot-a', placeKey)
+    })
+    // A message elsewhere does not wait for it.
+    const elsewhere = slack('3.1', { text: 'unrelated' })
+    await sessions.placeOpening('bot-a', sessionKey('slack', 'C1', '3.1', 'bot-a'), elsewhere)
+    expect(indexed).toBeUndefined()
+    created({ channel: 'C2', thread: 'C2' })
+    await admitted
+    await decided
+    expect(indexed).toMatchObject({ title: 'Flaky test' })
+    expect(copy).toMatchObject({ initialSessionTitle: 'Flaky test' })
+    expect(copy.turnBody?.prompt).toContain('it fails on main only')
   })
 
   it('lets a copy that comes too late open the task without the coordinator’s words', async () => {
@@ -139,7 +176,7 @@ describe('a coordinator task in a place of its own', () => {
     await sessions.decide(ctx, { action: 'delegateTask', messageId: 'msg-1.1', title: 'Flaky test', message: 'x' })
     advance(TASK_PLACE_OPENING_MS + 1)
     const copy = slack('2.1', { msgId: 'slack:C2:2.1', channel: 'C2', thread: 'C2' })
-    sessions.applyPlaceOpening(placeKey, copy)
+    await sessions.placeOpening('bot-a', placeKey, copy)
     expect(copy.initialSessionTitle).toBeUndefined()
   })
 
@@ -190,6 +227,9 @@ describe('a coordinator task in a place of its own', () => {
     expect(moved.sessionThread).toBeUndefined()
     expect(moved.headless).toBeUndefined()
     expect(moved.turnBody?.prompt).toContain('they asked in another thread')
+    // It never takes the opening the platform's copy of the task's own message is waiting for.
+    await sessions.placeOpening('bot-a', placeKey, moved)
+    expect(moved.initialSessionTitle).toBeUndefined()
     expect(posted.at(-1)).toEqual({ thread: '3.1', text: `Passed to [Flaky test](${LINK})` })
     expect(
       await store.assistantSubsessions.taskOfThread('bot-a', { platform: 'slack', channel: 'C1', thread: '3.1' })

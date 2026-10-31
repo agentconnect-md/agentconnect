@@ -375,9 +375,11 @@ message ([slack-code-channels.md](slack-code-channels.md)) instead of in the mes
   outside the concurrency cap (§6.2). The message's own thread stays unowned, and the coordinator posts
   a link to the channel there ("Started a task: [title](link)").
 - **The first message.** Slack copies the message into the new channel, and that copy opens the task: it
-  reaches the task's session, never a second one, and the daemon dispatches nothing itself. A copy that
-  arrives within 10 minutes carries the coordinator's title and background, as the original would have.
-  A copy that comes before the task is indexed still lands in the same session.
+  reaches the task's session, never a second one, and the daemon dispatches nothing itself. A message in a
+  room keyed as one thread that arrives while the agent's place is still being made waits for it, at most
+  30 seconds, so the copy runs once the task is indexed. The copy, the first message there from the
+  original's sender within 10 minutes, carries the coordinator's title and background; no other message
+  takes them, nor a message the coordinator moves there.
 - **Routing.** A room its platform keys as one thread named after itself has no root, so it never runs a
   coordinator of its own whatever its mode: every message there keys on the channel's session, the
   task's while a task holds it. This also keeps a code channel made outside a task, or one whose task has

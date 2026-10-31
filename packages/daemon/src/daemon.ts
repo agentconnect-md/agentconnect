@@ -18469,7 +18469,8 @@ export class Daemon {
     if (isSubsessionCoordinate(sessionThreadOf(msg)) || isCoordinatorCoordinate(sessionThreadOf(msg)))
       msg.headless = true
     // The platform's copy of a message a task's place was made for opens that task with its title and background (auto-session-mode.md §6.8).
-    this.coordinators.applyPlaceOpening(
+    await this.coordinators.placeOpening(
+      agentId,
       sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope),
       msg
     )
