@@ -1,7 +1,7 @@
 // Agents' dedicated GitHub Apps: metadata rows plus the org-sealed private key (§Dedicated Apps).
 import type { GithubApp, Prisma, PrismaClient } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
-import type { GithubAppRecord, GithubAppRepo, GithubAppSecretStore } from '../ports.js'
+import type { GithubAppRecord, GithubAppRepo, GithubAppSecretStore, GithubAppWebhook } from '../ports.js'
 import { OrgId } from '../../domain/ids.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
@@ -66,6 +66,11 @@ export class PgGithubAppRepo implements GithubAppRepo {
 
   async getUnscoped(id: string): Promise<GithubAppRecord | null> {
     const row = await this.prisma.githubApp.findUnique({ where: { id }, include: withAgent })
+    return row ? toRecord(row) : null
+  }
+
+  async getByAppId(appId: bigint): Promise<GithubAppRecord | null> {
+    const row = await this.prisma.githubApp.findUnique({ where: { appId }, include: withAgent })
     return row ? toRecord(row) : null
   }
 
@@ -154,16 +159,32 @@ export class PgGithubAppSecretStore implements GithubAppSecretStore {
     private readonly cipher: SecretCipher
   ) {}
 
-  async put(orgId: OrgId, githubAppId: string, privateKeyB64: string): Promise<void> {
+  async put(orgId: OrgId, githubAppId: string, privateKeyB64: string, webhookSecret?: string): Promise<void> {
     if ((await this.prisma.githubApp.count({ where: { id: githubAppId, orgId } })) === 0) {
       throw new Error('github app secret write outside its organization')
     }
     const sealed = await this.cipher.seal(privateKeyB64, orgScope(orgId))
+    const sealedWebhook = webhookSecret ? await this.cipher.seal(webhookSecret, orgScope(orgId)) : null
     await this.prisma.githubAppSecret.upsert({
       where: { githubAppId },
-      create: { githubAppId, privateKey: sealed },
-      update: { privateKey: sealed }
+      create: { githubAppId, privateKey: sealed, webhookSecret: sealedWebhook },
+      update: { privateKey: sealed, webhookSecret: sealedWebhook }
     })
+  }
+
+  async listWebhooks(): Promise<GithubAppWebhook[]> {
+    const rows = await this.prisma.githubAppSecret.findMany({
+      where: { webhookSecret: { not: null } },
+      select: { githubAppId: true, webhookSecret: true, app: { select: { appId: true, orgId: true } } },
+      orderBy: { githubAppId: 'asc' }
+    })
+    return Promise.all(
+      rows.map(async (row) => ({
+        githubAppId: row.githubAppId,
+        appId: row.app.appId,
+        webhookSecret: await this.cipher.open(row.webhookSecret!, orgScope(OrgId(row.app.orgId)))
+      }))
+    )
   }
 
   async get(orgId: OrgId, githubAppId: string): Promise<string | null> {

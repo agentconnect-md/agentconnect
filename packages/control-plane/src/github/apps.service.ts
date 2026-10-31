@@ -6,6 +6,7 @@ import type {
   GithubAppRecord,
   GithubAppRepo,
   GithubAppSecretStore,
+  GithubAppWebhook,
   GithubInstallationFacts,
   GithubInstallationRecord,
   GithubInstallationRepo,
@@ -21,6 +22,7 @@ interface GhManifestConversion {
   slug: string
   client_id?: string
   pem: string
+  webhook_secret?: string | null
 }
 
 interface GhInstallation {
@@ -42,6 +44,9 @@ export const DEDICATED_APP_PERMISSIONS = {
   workflows: 'write',
   deployments: 'read'
 } as const
+
+/** The only event a dedicated App subscribes to; installation events reach every App with a webhook. */
+export const DEDICATED_APP_EVENTS = ['check_run'] as const
 
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/
 /** GitHub App names are at most 34 characters. */
@@ -74,6 +79,10 @@ export interface GithubAppsServiceDeps {
   publicCpUrl: string
   /** The console origin, shown as the App's homepage. */
   webAppUrl?: string
+  /** The relay's public HTTP origin; an HTTPS one gets the App a lifecycle webhook. */
+  publicRelayUrl?: string
+  /** Pushes an App's webhook secret to the relays, or withdraws it. */
+  webhooks?: { assign(webhook: GithubAppWebhook): void; unassign(githubAppId: string): void }
   /** Per-installation cache drop after the roster changed. */
   onInstallationChanged?: (installationId: bigint, orgId: OrgId) => void | Promise<void>
   /** The org's set of dedicated Apps changed (compiled hook rules name their bots). */
@@ -86,6 +95,7 @@ export interface GithubAppsServiceDeps {
 export class GithubAppsService {
   private readonly stateKey: Buffer
   private readonly lastSetupSync = new Map<string, number>()
+  private readonly trailingSync = new Map<string, TimerHandle>()
   private timer: TimerHandle | undefined
   private stopped = false
 
@@ -114,6 +124,7 @@ export class GithubAppsService {
     )
     action.searchParams.set('state', minted.state)
     const cp = this.deps.publicCpUrl.replace(/\/$/, '')
+    const relay = this.deps.publicRelayUrl?.replace(/\/$/, '')
     const manifest = {
       name: appName(agent.name, owner),
       url: this.deps.webAppUrl ?? cp,
@@ -121,6 +132,13 @@ export class GithubAppsService {
       setup_url: `${cp}/v1/github/apps/${githubAppId}/setup/callback`,
       setup_on_update: true,
       public: false,
+      // GitHub delivers only to HTTPS; without one the App has no webhook and its lifecycle is noticed at the next redirect or mint.
+      ...(relay && new URL(relay).protocol === 'https:'
+        ? {
+            hook_attributes: { url: `${relay}/webhooks/github`, active: true },
+            default_events: [...DEDICATED_APP_EVENTS]
+          }
+        : {}),
       default_permissions: DEDICATED_APP_PERMISSIONS
     }
     return { action: action.toString(), manifest }
@@ -153,12 +171,14 @@ export class GithubAppsService {
     })
     // The agent was deleted or got another App meanwhile: the new App exists on GitHub but nothing here uses it.
     if (!app) return { orphanedSlug: converted.slug }
+    const webhookSecret = converted.webhook_secret || undefined
     try {
-      await this.deps.secrets.put(orgId, app.id, privateKeyB64)
+      await this.deps.secrets.put(orgId, app.id, privateKeyB64, webhookSecret)
     } catch (e) {
       await this.deps.apps.delete(orgId, app.id)
       throw e
     }
+    if (webhookSecret) this.deps.webhooks?.assign({ githubAppId: app.id, appId: app.appId, webhookSecret })
     this.deps.registry.invalidate(app.id)
     await this.deps.onAppsChanged?.(orgId)
     return { app, installUrl: `https://github.com/apps/${encodeURIComponent(app.slug)}/installations/new` }
@@ -174,6 +194,37 @@ export class GithubAppsService {
       await this.sync(app.orgId, app.id)
     }
     return app
+  }
+
+  /** A verified installation event from the App's own webhook: re-pull its roster, deferred (never dropped) inside the throttle window. */
+  async syncFromWebhook(appId: bigint): Promise<void> {
+    if (this.stopped) return
+    const app = await this.deps.apps.getByAppId(appId)
+    if (!app) return
+    const last = this.lastSetupSync.get(app.id)
+    const waitMs = last === undefined ? 0 : SETUP_SYNC_INTERVAL_MS - (this.deps.clock.now() - last)
+    if (waitMs > 0) {
+      // GitHub sends most installation transitions once, so the last one inside the window still converges.
+      if (!this.trailingSync.has(app.id)) {
+        this.trailingSync.set(
+          app.id,
+          this.deps.clock.setTimeout(() => {
+            this.trailingSync.delete(app.id)
+            void this.syncFromWebhook(appId).catch((err: unknown) =>
+              this.deps.log?.warn({ err, githubAppId: app.id }, 'github app webhook sync failed')
+            )
+          }, waitMs)
+        )
+      }
+      return
+    }
+    this.lastSetupSync.set(app.id, this.deps.clock.now())
+    await this.sync(app.orgId, app.id)
+  }
+
+  /** Every App's webhook secret to one relay, after it (re)registers. */
+  async replayWebhooksTo(send: (webhook: GithubAppWebhook) => void): Promise<void> {
+    for (const webhook of await this.deps.secrets.listWebhooks()) send(webhook)
   }
 
   /** Re-pull the App's installation roster: new installations are claimed, missing ones marked revoked. */
@@ -211,6 +262,7 @@ export class GithubAppsService {
     )
     for (const app of reaped) {
       this.deps.registry.invalidate(app.id)
+      this.deps.webhooks?.unassign(app.id)
       this.lastSetupSync.delete(app.id)
       for (const installationId of app.installationIds) {
         await this.deps.onInstallationChanged?.(installationId, app.orgId)
@@ -230,6 +282,8 @@ export class GithubAppsService {
     this.stopped = true
     if (this.timer !== undefined) this.deps.clock.clearTimeout(this.timer)
     this.timer = undefined
+    for (const timer of this.trailingSync.values()) this.deps.clock.clearTimeout(timer)
+    this.trailingSync.clear()
   }
 
   private arm(): void {

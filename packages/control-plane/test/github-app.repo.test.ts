@@ -160,4 +160,19 @@ describe('PgGithubAppRepo + PgGithubInstallationRepo (dedicated Apps)', () => {
     await expect(secrets.get(OrgId('other-org'), app.id)).resolves.toBeNull()
     await expect(secrets.put(OrgId('other-org'), app.id, 'x')).rejects.toThrow(/outside its organization/)
   })
+
+  it('seals the webhook secret beside the key and lists only Apps created with one', async () => {
+    const apps = new PgGithubAppRepo(prisma)
+    const secrets = new PgGithubAppSecretStore(prisma, new PlaintextSecretCipher())
+    const hooked = (await apps.createForAgent(appFor(await agent('hooked'), 2007n, 'example-hooked')))!
+    const bare = (await apps.createForAgent(appFor(await agent('bare'), 2008n, 'example-bare')))!
+    await secrets.put(ORG, hooked.id, 'cGVt', 'whsec-example')
+    await secrets.put(ORG, bare.id, 'cGVt')
+
+    await expect(secrets.listWebhooks()).resolves.toEqual([
+      { githubAppId: hooked.id, appId: 2007n, webhookSecret: 'whsec-example' }
+    ])
+    await expect(apps.getByAppId(2007n)).resolves.toMatchObject({ id: hooked.id, orgId: ORG })
+    await expect(apps.getByAppId(9999n)).resolves.toBeNull()
+  })
 })
