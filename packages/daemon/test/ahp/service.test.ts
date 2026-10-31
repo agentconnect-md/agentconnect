@@ -164,6 +164,21 @@ it('binds a browser attachment to CP canonical URI and refuses public create', a
   ).toBe(AhpErrorCodes.PermissionDenied)
 })
 
+it('creates a session a client asks for with its own folders, config and tools, which the agent ignores', async () => {
+  const { auth, connect, options } = fixture()
+  const peer = await connect()
+  await peer.initialize()
+  const created = await peer.request('createSession', {
+    channel: 'ahp-session:/vscode',
+    provider: auth.agentId,
+    workingDirectories: ['file:///Users/someone/project'],
+    config: { isolation: 'folder' },
+    activeClient: { clientId: 'client', tools: [], customizations: [] }
+  })
+  expect(created.error).toBeUndefined()
+  expect(options.registry.reserve).toHaveBeenCalled()
+})
+
 it('discovers catalogs without installing history or retaining every session', async () => {
   const { connect, history, options } = fixture()
   const peer = await connect()
