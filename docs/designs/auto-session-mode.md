@@ -267,6 +267,10 @@ together with the summary. Only a task calls it, for itself; both kinds can.
     sender and answer in its thread; a report or an unknown id is refused.
 - A read-only runtime mode and no workspace (an empty directory). Anything that needs work becomes a
   task.
+  - Where that mode is a plan mode, the tools that end a plan wait for an approver nobody is, so the
+    coordinator is never offered them (Claude Code's `ExitPlanMode` and `AskUserQuestion`, as for a
+    check). Its prompt says the mode restricts native file and shell tools only, never its
+    AgentConnect tools.
   - Its workspace isolation is always shared, so it never gets a checkout, a session pod or an
     executor of its own.
   - On the daemon's disk a coordinator on the agent's shared host opens in

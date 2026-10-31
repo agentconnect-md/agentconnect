@@ -205,6 +205,9 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
       "call it with their message's id as messageId and reply to their message as well.",
     '- Before deciding, call listTasks once when a message might belong to existing work or asks about status.',
     "- Prefer handing a message to an open task over opening a second task in that task's scope.",
+    '- This session may run under a read-only or plan permission mode. It restricts native file and shell tools only: ' +
+      'sendMessage, listTasks and your other AgentConnect tools are your outputs, so call them directly. Never write a ' +
+      'plan or ask for approval; no one is here to approve one.',
     peersLine(input, words.place),
     `- ${words.finalText}`
   ].join('\n')

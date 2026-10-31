@@ -13,6 +13,7 @@ import {
 import { CoordinatorSessions, deliveredMessage, messageForTask } from '../src/auto-session/coordinator-sessions.js'
 import { CoordinatorTurns } from '../src/auto-session/coordinator-turns.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../src/runtime-defs/claude-runtime.js'
 import { executeTool } from '../src/mcp/ops.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
@@ -71,6 +72,12 @@ describe('the coordinator prompt and batch', () => {
     expect(prompt).toContain('Your Slack user is <@UBOT>.')
     expect(prompt).toContain('- Other agents in this channel: billing (Slack user <@UPEER>): Owns invoices.')
     expect(prompt).toContain('AC_NO_RESPONSE')
+  })
+
+  it('tells the model its read-only mode leaves its AgentConnect tools alone and needs no plan', () => {
+    const prompt = coordinatorPrompt({ agentName: 'bot-a', platform: 'Slack', channelId: 'C1', peers: [] })
+    expect(prompt).toContain('restricts native file and shell tools only')
+    expect(prompt).toContain('Never write a plan or ask for approval')
   })
 
   // auto-session-mode.md §10: a webchat coordinator reads of one person's conversation, task pages and text that is shown.
@@ -635,6 +642,8 @@ describe('auto conversations route to the coordinator', () => {
     expect(prompts[1]).not.toContain('[U1] second')
     expect(host.prompt).toHaveBeenCalledTimes(2)
     expect((host.newSession.mock.calls[0] as unknown[])[0]).toBe(join(root, 'coordinators', 'bot-a'))
+    // Its plan mode can end a turn only through tools that need an approver, so the coordinator never gets them.
+    expect((host.newSession.mock.calls[0] as unknown[])[6]).toEqual(CLAUDE_HEADLESS_DISALLOWED_TOOLS)
     await daemon.stop()
   })
 
