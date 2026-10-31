@@ -141,6 +141,9 @@ describe('PgGithubAppRepo + PgGithubInstallationRepo (dedicated Apps)', () => {
     await expect(apps.reapRetired(later, 10)).resolves.toEqual([])
     await update({ desiredState: 'neutral', observedState: 'neutral', nextAttemptAt: null })
     await expect(apps.reapRetired(later, 10)).resolves.toEqual([])
+    // Cleanup blocked before it wrote anything: no retry scheduled and no observed state, still unfinished.
+    await update({ desiredState: 'failure', observedState: null, lastErrorCode: 'repo_authorization' })
+    await expect(apps.reapRetired(later, 10)).resolves.toEqual([])
 
     await update({ desiredState: 'failure', observedState: 'failure' })
     await expect(apps.reapRetired(later, 10)).resolves.toEqual([{ id: app.id, orgId: ORG, installationIds: [46n] }])

@@ -98,6 +98,7 @@ export class PgGithubAppRepo implements GithubAppRepo {
   ): Promise<Array<{ id: string; orgId: OrgId; installationIds: bigint[] }>> {
     return this.transaction(async (tx) => {
       // Only a tombstone settled at failure can never be written again: the org-delete settle test, row for row.
+      // `IS NOT TRUE`, not `NOT`: a NULL observed state (blocked cleanup) is unsettled and must keep the App.
       const rows = await tx.$queryRaw<Array<{ id: string; orgId: string }>>`
         SELECT a."id", a."orgId" FROM "github_app" a
         WHERE a."retiredAt" < ${before}
@@ -105,7 +106,7 @@ export class PgGithubAppRepo implements GithubAppRepo {
             SELECT 1 FROM "hook_review_projection" p
             JOIN "github_installation" i ON i."installationId" = p."lastResolvedInstallationId"
             WHERE i."githubAppId" = a."id"
-              AND NOT (
+              AND (
                 p."tombstonedAt" IS NOT NULL
                 AND p."writeMarker" IS NULL AND p."writePhase" IS NULL AND p."writeStartedAt" IS NULL
                 AND p."pendingIntent" IS NULL AND p."leaseOwner" IS NULL AND p."leaseUntil" IS NULL
@@ -122,7 +123,7 @@ export class PgGithubAppRepo implements GithubAppRepo {
                     AND p."lastErrorCode" = p."subjectSyncErrorCode"
                   )
                 )
-              ))
+              ) IS NOT TRUE)
         ORDER BY a."retiredAt"
         LIMIT ${limit}
         FOR UPDATE OF a SKIP LOCKED`
