@@ -11,7 +11,11 @@ const prior = {
   state: 'complete'
 }
 // Attaches with one already-finished turn and echoes each started turn back as the active one.
+const attachments: FakeAttachment[] = []
 class FakeAttachment {
+  constructor() {
+    attachments.push(this)
+  }
   snapshot: AhpView = { connected: false, uncertain: false }
   listener?: (view: AhpView) => void
   subscribe(listener: (view: AhpView) => void) {
@@ -119,5 +123,46 @@ describe('AHP UI store', () => {
     expect(ui.pgSend('s', 'a', 'Next prompt')).toBe(true)
     await vi.waitFor(() => expect(store.getValue().getLiveSteps('s')).toHaveLength(1))
     expect(store.getValue().getLiveSteps('s')[0]).toMatchObject({ kind: 'msg', text: 'Next prompt', who: '@you' })
+  })
+
+  it('keeps a turn the transcript confirmed retired when a later tail refresh brings no rows', async () => {
+    mint.mockResolvedValue({
+      token: 't',
+      protocol: 'ahp',
+      conversationId: 'c',
+      ahp: { url: 'wss://relay.example.test/ahp' }
+    })
+    const ui = store.getValue()
+    ui.markSessionTarget('s')
+    ui.pgAttach('s', 'a', 'c')
+    await vi.waitFor(() => expect(store.getValue().isPgBusy('s')).toBe(false))
+    await vi.waitFor(() => expect(mint).toHaveBeenCalled())
+    expect(ui.pgSend('s', 'a', 'Next prompt')).toBe(true)
+    await vi.waitFor(() => expect(store.getValue().getLiveSteps('s')).toHaveLength(1))
+    const attachment = attachments.at(-1)!
+    const active = attachment.snapshot.chat!.activeTurn!
+    const startedAt = Date.parse(active.startedAt)
+    attachment.emit({
+      chat: {
+        ...attachment.snapshot.chat!,
+        activeTurn: undefined,
+        turns: [
+          prior,
+          { ...active, state: 'complete', responseParts: [{ kind: 'markdown', id: 'r:1', content: 'Reply' }] }
+        ]
+      } as unknown as ChatState
+    })
+    await vi.waitFor(() => expect(store.getValue().getLiveSteps('s')).toHaveLength(2))
+    const row = (seq: number, sender: string, text: string) => ({
+      seq,
+      sender,
+      text,
+      kind: 'text',
+      ts: String(startedAt + seq)
+    })
+    store.getValue().reconcileLiveSteps('s', [row(1, 'me', 'Next prompt'), row(2, 'a', 'Reply')], 'a')
+    expect(store.getValue().getLiveSteps('s')).toEqual([])
+    store.getValue().reconcileLiveSteps('s', [], 'a')
+    expect(store.getValue().getLiveSteps('s')).toEqual([])
   })
 })
