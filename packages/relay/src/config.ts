@@ -15,7 +15,7 @@ export const RelayConfigSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     AHP_MODE: z.enum(['off', 'shadow', 'on']).default('off'),
-    // Issuer of the CP's OAuth authorization server, advertised beside the AHP endpoint for client discovery only.
+    // Issuer of the CP's OAuth authorization server, advertised beside the AHP endpoint so clients can sign in.
     AHP_AUTHORIZATION_SERVER: z
       .string()
       .url()

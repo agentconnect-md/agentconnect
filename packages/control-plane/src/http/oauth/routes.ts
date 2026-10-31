@@ -13,7 +13,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { HttpDeps } from '../deps.js'
 import { publicBaseUrl } from './base.js'
-import { redirectUriMatches } from '../../registry/oauthService.js'
+import { AHP_SCOPE, ahpResourceAgent, normalizeScopes, redirectUriMatches } from '../../registry/oauthService.js'
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined)
 
@@ -104,6 +104,16 @@ export function oauthRoutes(deps: HttpDeps) {
         return reply.redirect(
           redirectWith(redirectUri, { error: 'invalid_request', error_description: 'PKCE S256 required', state })
         )
+      }
+
+      const scopes = normalizeScopes(str(q.scope))
+      if (!scopes) {
+        req.log.warn({ clientId }, 'oauth: authorize bounced — AHP and MCP scopes mixed')
+        return reply.redirect(redirectWith(redirectUri, { error: 'invalid_scope', state }))
+      }
+      if (scopes.includes(AHP_SCOPE) && !ahpResourceAgent(str(q.resource), deps.config.PUBLIC_RELAY_URL)) {
+        req.log.warn({ clientId }, 'oauth: authorize bounced — AHP scope without an agent endpoint resource')
+        return reply.redirect(redirectWith(redirectUri, { error: 'invalid_target', state }))
       }
 
       // Hand the (browser-carried) request to the console consent page. No server-side

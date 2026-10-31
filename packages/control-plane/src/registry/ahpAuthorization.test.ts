@@ -15,6 +15,7 @@ import { WebchatTokenService } from './webchatToken.js'
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const CONVERSATION = '22222222-2222-4222-8222-222222222222'
 const PEPPER = 'test-ahp-grant-pepper-at-least-32-characters'
+const RESOURCE = `https://relay.example.test/ahp/agents/${AGENT}`
 
 function fixture() {
   const state = {
@@ -26,7 +27,10 @@ function fixture() {
     api: true,
     feature: true,
     owner: 'user',
-    expiresAt: null as Date | null
+    expiresAt: null as Date | null,
+    principalType: 'user' as 'user' | 'oauth',
+    scopes: [] as string[],
+    grant: { resource: RESOURCE as string | null, revoked: false, userId: 'user' }
   }
   const grants = new AhpGrantService(PEPPER, () => state.now)
   const tokens = new WebchatTokenService(PEPPER)
@@ -34,29 +38,50 @@ function fixture() {
     grants,
     tokens,
     now: () => state.now,
-    config: { AHP_MODE: 'on', AHP_PUBLIC_ACCESS: false, AHP_TEST_KEY_IDS: ['key'] },
+    config: {
+      AHP_MODE: 'on',
+      AHP_PUBLIC_ACCESS: false,
+      AHP_TEST_KEY_IDS: ['key'],
+      AHP_TEST_USER_IDS: ['user'],
+      PUBLIC_RELAY_URL: 'https://relay.example.test'
+    },
     keys: {
       authenticateUser: async () => ({
         orgId: 'org',
         userId: 'user',
         apiKeyId: 'key',
-        scopes: [],
+        scopes: state.scopes,
         permission: state.permission
       })
     },
     keyRows: {
-      listForUser: async () => [
-        {
-          id: 'key',
-          userId: 'user',
-          orgId: 'org',
-          principalType: 'user',
-          permission: state.permission,
-          scopes: [],
-          revokedAt: state.revoked ? new Date(0) : null,
-          expiresAt: state.expiresAt
-        }
-      ]
+      findById: async (id: string) =>
+        id === 'key'
+          ? {
+              id: 'key',
+              userId: 'user',
+              orgId: 'org',
+              principalType: state.principalType,
+              permission: state.permission,
+              scopes: state.scopes,
+              oauthGrantId: state.principalType === 'oauth' ? 'grant' : null,
+              revokedAt: state.revoked ? new Date(0) : null,
+              expiresAt: state.expiresAt
+            }
+          : null
+    },
+    oauthGrants: {
+      getGrant: async (id: string) =>
+        id === 'grant'
+          ? {
+              id,
+              userId: state.grant.userId,
+              orgId: 'org',
+              scopes: ['ahp'],
+              resource: state.grant.resource,
+              revokedAt: state.grant.revoked ? new Date(0) : null
+            }
+          : null
     },
     agents: {
       getUnscoped: async () => ({
@@ -133,6 +158,47 @@ describe('AHP client authority', () => {
     f.state.revoked = false
     f.state.api = false
     expect(await f.auth.authorizeGrant(signed.token, { orgId: 'org', agentId: AGENT })).toBeNull()
+  })
+
+  it('admits an ahp OAuth token for the endpoint its grant names and rechecks the grant on renewal', async () => {
+    const f = fixture()
+    f.state.principalType = 'oauth'
+    f.state.scopes = ['ahp']
+    f.deps.config.AHP_TEST_KEY_IDS = []
+    const verify = (resource?: string) => f.auth.verifyKey({ credential: 'token', agentId: AGENT, resource })
+    const admitted = await verify(RESOURCE)
+    if (!admitted.ok || !admitted.ahpGrant) throw new Error('expected grant')
+    expect(await f.auth.authorizeGrant(admitted.ahpGrant.token, { orgId: 'org', agentId: AGENT })).toMatchObject({
+      apiKeyId: 'key'
+    })
+    expect(await verify()).toMatchObject({ ok: false })
+    expect(await verify(RESOURCE.replace('relay.', 'other.'))).toMatchObject({ ok: false })
+    f.state.grant.revoked = true
+    expect(await f.auth.authorizeGrant(admitted.ahpGrant.token, { orgId: 'org', agentId: AGENT })).toBeNull()
+  })
+
+  it.each([
+    ['an MCP scope', (f: ReturnType<typeof fixture>) => void (f.state.scopes = ['mcp:write'])],
+    [
+      'another agent endpoint',
+      (f: ReturnType<typeof fixture>) => void (f.state.grant.resource = RESOURCE.replace(AGENT, CONVERSATION))
+    ],
+    [
+      'another relay',
+      (f: ReturnType<typeof fixture>) => void (f.deps.config.PUBLIC_RELAY_URL = 'https://elsewhere.example.test')
+    ],
+    [
+      'a user outside the test audience',
+      (f: ReturnType<typeof fixture>) => void (f.deps.config.AHP_TEST_USER_IDS = [])
+    ],
+    ["another user's grant", (f: ReturnType<typeof fixture>) => void (f.state.grant.userId = 'other')]
+  ])('refuses an OAuth token with %s', async (_name, change) => {
+    const f = fixture()
+    f.state.principalType = 'oauth'
+    f.state.scopes = ['ahp']
+    change(f)
+    const resource = f.state.grant.resource ?? RESOURCE
+    expect(await f.auth.verifyKey({ credential: 'token', agentId: AGENT, resource })).toMatchObject({ ok: false })
   })
 
   it.each([undefined, 'legacy'] as const)('rejects browser protocol pin %s at AHP ingress', async (protocol) => {

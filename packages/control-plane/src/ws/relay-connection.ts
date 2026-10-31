@@ -133,7 +133,7 @@ export interface RelayConnDeps {
   /** The in-memory relay index — this connection registers itself for `rc/daemon-revoke` push. */
   relayReg: RelayRegistry
   // AHP verification remains unavailable until its separately deployed service is wired.
-  verifyAhpKey?: (req: { credential: string; agentId: string }) => Promise<RcVerifyResult>
+  verifyAhpKey?: (req: { credential: string; agentId: string; resource?: string }) => Promise<RcVerifyResult>
   verifyAhpBrowser?: (req: { credential: string; agentId?: string }) => Promise<RcVerifyResult>
   /** Resolve a browser webchat token → identity + the agent's CURRENT placement
    *  (userId, user, agentId, daemonId, orgId, conversationId), or `{ ok:false }` (§10). May throw on a

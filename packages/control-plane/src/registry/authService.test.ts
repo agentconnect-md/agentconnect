@@ -42,6 +42,7 @@ function makeRepo(over: Partial<ApiKeyRepo> = {}): ApiKeyRepo {
   return {
     create: vi.fn(),
     findByHash: vi.fn(async () => record()),
+    findById: vi.fn(async () => null),
     touchLastUsed: vi.fn(async () => {}),
     revoke: vi.fn(),
     listForDaemon: vi.fn(async () => []),

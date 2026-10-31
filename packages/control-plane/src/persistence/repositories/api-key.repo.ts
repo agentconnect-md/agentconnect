@@ -86,6 +86,11 @@ export class PgApiKeyRepo implements ApiKeyRepo {
     return row ? toRecord(row) : null
   }
 
+  async findById(id: string): Promise<ApiKeyRecord | null> {
+    const row = await this.db.apiKey.findUnique({ where: { id }, include: WITH_AGENTS })
+    return row ? toRecord(row) : null
+  }
+
   async touchLastUsed(id: string, at: Date): Promise<void> {
     await this.db.apiKey.update({ where: { id }, data: { lastUsedAt: at } })
   }

@@ -19,8 +19,9 @@ transport, authenticate in-band with the standard `authenticate` command.
 | Control Plane        | `WEBCHAT_PROTOCOL=legacy\|ahp`  | `legacy`                        | Default for new first-party attachments, exposed as `webchatProtocol` in runtime config.   |
 | Control Plane        | `AHP_PUBLIC_ACCESS=true\|false` | `false`                         | Admits eligible full personal keys outside the test-key allowlist; never anonymous access. |
 | Control Plane        | `AHP_TEST_KEY_IDS`              | empty                           | Comma-separated API-key row IDs for the canary audience; never secret key values.          |
+| Control Plane        | `AHP_TEST_USER_IDS`             | empty                           | Comma-separated user IDs whose AHP OAuth tokens are admitted before public access.         |
 | Control Plane        | `PUBLIC_RELAY_URL`              | unset                           | Public relay origin used for bootstrap; use HTTPS/WSS in deployment.                       |
-| Every relay replica  | `AHP_AUTHORIZATION_SERVER`      | unset                           | OAuth issuer advertised beside the endpoint for discovery; tokens are not accepted yet.    |
+| Every relay replica  | `AHP_AUTHORIZATION_SERVER`      | unset                           | CP OAuth issuer advertised beside the endpoint, so clients such as VS Code can sign in.    |
 | Each agent           | AHP API entry                   | absent                          | Explicitly permits key-authenticated clients for the agent; Webchat does not need it.      |
 | Serving daemon       | `api-ahp-v1` capability         | absent unless wired and enabled | Independently checked during admission and placement resolution.                           |
 | Serving daemon       | `api-ahp-handshake-v1`          | advertised with `api-ahp-v1`    | Required for in-band `authenticate`; header and browser-token attachments do not need it.  |
@@ -82,8 +83,9 @@ another protocol. Membership, resource audience and continuation policy still ap
 5. Exercise the endpoint and failure cases. Change the first-party default only
    after its gates pass; widen public-key access separately after release review.
 
-The initial native profile accepts full personal user keys. Read-only,
-`agent:chat`, OAuth, daemon and relay credentials do not obtain it. A full key
+The native profile accepts full personal user keys and CP OAuth tokens granted
+the `ahp` scope for that agent's endpoint. Read-only, `agent:chat`, MCP-scoped
+OAuth, daemon and relay credentials do not obtain it. A full key
 still obeys its holder's organization, role, agent audience and session policy.
 
 ## Endpoint and credentials
@@ -109,10 +111,11 @@ a daemon until the key is verified:
    subscribes to `ahp-root://`, a placeholder agent whose `protectedResources`
    names `https://<dialed-host>/ahp/agents/<agent-uuid>` with `required: true`.
    When the relay sets `AHP_AUTHORIZATION_SERVER`, the entry also lists that
-   issuer in `authorization_servers` with its `mcp:read`/`mcp:write` scopes.
+   issuer in `authorization_servers` with the `ahp` scope.
    Other initial subscriptions are dropped as unauthorized.
-2. `authenticate` with that `resource` and a full personal API key as `token`
-   is verified through the same `rc/verify(ahp-client-key)` rules as the header.
+2. `authenticate` with that `resource` and a full personal API key or an `ahp`
+   OAuth access token as `token` is verified through the same
+   `rc/verify(ahp-client-key)` rules as the header, which also receive the resource.
    Success returns `{}`; the daemon then adopts the client and replaces the
    placeholder with a `root/agentsChanged` action. Grant renewal and expiry
    match the header path, rechecking the pushed key.
@@ -155,12 +158,26 @@ characters) and the status snapshot, including token and cost totals, as
 AHP Webchat renders them, reading each card's outcome from the request itself
 because a card settled or reopened between turns is not updated there.
 
+### Sign-in with AgentConnect
+
 Set `AHP_AUTHORIZATION_SERVER` to the `issuer` the CP serves at
 `/.well-known/oauth-authorization-server` (the `PUBLIC_MCP_URL` origin when set,
-otherwise `PUBLIC_CP_URL`). VS Code's Agents window can then resolve an auth
-provider for the endpoint, but it still cannot authenticate: `authenticate`
-accepts only full personal API keys, and accepting OAuth access tokens for AHP is
-separate, security-reviewed work.
+otherwise `PUBLIC_CP_URL`), and set the CP's `PUBLIC_RELAY_URL` to the relay
+origin clients dial. A client such as VS Code then registers itself, opens the
+console's consent page, and receives an hourly access token for the `ahp` scope
+([design](designs/ahp-client-sign-in.md)):
+
+- The grant is bound to the endpoint the relay advertised, so each agent needs its
+  own consent, and the CP refuses a resource that is not an agent endpoint on
+  `PUBLIC_RELAY_URL`. A request mixing `ahp` with MCP scopes is refused.
+- An `ahp` token is refused on the REST API and the MCP endpoint, including reads.
+- Before `AHP_PUBLIC_ACCESS`, only users listed in `AHP_TEST_USER_IDS` are
+  admitted; the agent still needs its AHP API entry.
+- A client that refreshes its token sends `authenticate` again on the live socket.
+  The relay verifies it for the same organization, user and agent, adopts it for
+  renewal and answers `{}`; a token for another caller closes the socket with 4401.
+- Disconnecting the client in the console profile revokes the grant, which closes
+  its sockets at the next grant renewal, within a minute.
 
 With [ahpc](https://www.npmjs.com/package/@softov/ahpc), export the key in
 `AHPC_TOKEN_<RESOURCE>` (the resource with its scheme removed and every other

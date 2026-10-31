@@ -181,7 +181,9 @@ export const RcVerify = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('ahp-client-key'),
     credential: z.string().min(1),
-    agentId: z.string().uuid()
+    agentId: z.string().uuid(),
+    // The endpoint the relay advertised as the protected resource; an OAuth token's grant must name it.
+    resource: z.string().url().max(2048).optional()
   }),
   z.object({
     kind: z.literal('daemon-key'),
