@@ -246,10 +246,10 @@ describe('append mode keys one session per conversation', () => {
   })
 })
 
-// auto-session-mode.md §3.1: until the coordinator lands, an auto conversation routes as Per thread.
+// auto-session-mode.md §3.1: with the daemon's Auto switch off, an auto conversation routes as Per thread.
 describe('auto mode with the coordinator switched off', () => {
   it('keys on its thread, as a createNew conversation does', async () => {
-    const { daemon, calls } = await boot('auto')
+    const { daemon, calls } = await boot('auto', false, ['bot-a'], { autoSessionMode: false })
 
     await route(daemon, human({ ts: '1720000000.000100' }))
     await route(
@@ -262,15 +262,15 @@ describe('auto mode with the coordinator switched off', () => {
     await daemon.stop()
   })
 
-  it('advertises the mode only when the operator opts in', async () => {
+  it('advertises the mode unless the operator switches it off', async () => {
     const featuresOf = async (features?: Record<string, unknown>) => {
       const { daemon } = await boot('auto', false, ['bot-a'], features)
       const advertised = (daemon as never as { registrationFeatures: () => string[] }).registrationFeatures()
       await daemon.stop()
       return advertised
     }
-    expect(await featuresOf()).not.toContain(SESSION_MODE_AUTO_V1_FEATURE)
-    expect(await featuresOf({ autoSessionMode: true })).toContain(SESSION_MODE_AUTO_V1_FEATURE)
+    expect(await featuresOf()).toContain(SESSION_MODE_AUTO_V1_FEATURE)
+    expect(await featuresOf({ autoSessionMode: false })).not.toContain(SESSION_MODE_AUTO_V1_FEATURE)
   })
 })
 

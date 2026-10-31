@@ -919,6 +919,8 @@ function scaffold(opts: { external?: boolean } = {}): string {
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      // An ordinary session delegates only with the Auto switch off (auto-session-mode.md §5.1).
+      features: { autoSessionMode: false },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )

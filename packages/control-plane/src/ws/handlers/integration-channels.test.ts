@@ -6,7 +6,7 @@
  * which bot it resolves, and when it stays silent.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { buildEnvelope, type IntegrationChannel } from '@agentconnect.md/protocol'
+import { buildEnvelope, SESSION_MODE_AUTO_V1_FEATURE, type IntegrationChannel } from '@agentconnect.md/protocol'
 import { handleIntegrationChannels } from './integration-channels.js'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
@@ -18,7 +18,12 @@ const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
 const conn = { daemonId: DAEMON } as unknown as DaemonConnection
 
-function fakeDeps(platform = 'slack', known = true, externalChanged = false) {
+function fakeDeps(
+  platform = 'slack',
+  known = true,
+  externalChanged = false,
+  reporter: { features?: string[]; autoCreated?: boolean } = {}
+) {
   const dropPublicAudiences = vi.fn()
   const integrationConverge = vi.fn(async () => {})
   const integration = known ? [{ id: INTEGRATION, agentId: AGENT, botId: BOT, orgId: 'org-1', platform }] : []
@@ -33,9 +38,14 @@ function fakeDeps(platform = 'slack', known = true, externalChanged = false) {
       listByIds: vi.fn(async () => [])
     },
     clock: { now: () => Date.now() },
-    integrationChannel: { replaceSnapshot: vi.fn(async () => ({ externalChanged })) },
+    integrationChannel: {
+      replaceSnapshot: vi.fn(async () => ({ externalChanged, ...(reporter.autoCreated ? { autoCreated: true } : {}) }))
+    },
     integrationConverge,
-    collabRoutes: { broadcast: vi.fn(async () => {}) }
+    collabRoutes: { broadcast: vi.fn(async () => {}) },
+    connReg: {
+      get: () => (reporter.features ? { state: 'READY', capabilities: { features: reporter.features } } : undefined)
+    }
   } as unknown as DaemonWsDeps
   return {
     deps,
@@ -133,5 +143,31 @@ describe('handleIntegrationChannels — detected external places', () => {
     const { deps, integrationConverge } = fakeDeps('slack', true, false)
     await handleIntegrationChannels(frame([shared]), conn, deps)
     expect(integrationConverge).not.toHaveBeenCalled()
+  })
+})
+
+// auto-session-mode.md §3.2: a new room or group DM starts on Auto where the reporting daemon reads it, and reaches it at once.
+describe('handleIntegrationChannels — new conversations on Auto', () => {
+  it('starts new rooms and group DMs on Auto for a daemon that reads it, and pushes the spec it lacks', async () => {
+    const { deps, replaceSnapshot, integrationConverge } = fakeDeps('slack', true, false, {
+      features: [SESSION_MODE_AUTO_V1_FEATURE],
+      autoCreated: true
+    })
+    await handleIntegrationChannels(frame([{ id: 'C1' }]), conn, deps)
+    expect(replaceSnapshot.mock.calls[0]![2]).toEqual({ autoKinds: ['channel', 'mpim'] })
+    expect(integrationConverge).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps every new row Per thread for a daemon that does not read it, and pushes nothing', async () => {
+    const { deps, replaceSnapshot, integrationConverge } = fakeDeps('slack', true, false, { features: [] })
+    await handleIntegrationChannels(frame([{ id: 'C1' }]), conn, deps)
+    expect(replaceSnapshot.mock.calls[0]![2]).toBeUndefined()
+    expect(integrationConverge).not.toHaveBeenCalled()
+  })
+
+  it('never starts a row on Auto where its platform keys no conversation session', async () => {
+    const { deps, replaceSnapshot } = fakeDeps('linear', true, false, { features: [SESSION_MODE_AUTO_V1_FEATURE] })
+    await handleIntegrationChannels(frame([{ id: 'team-1' }]), conn, deps)
+    expect(replaceSnapshot.mock.calls[0]![2]).toBeUndefined()
   })
 })

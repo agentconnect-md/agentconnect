@@ -107,6 +107,27 @@ describe('runtime matrix coordinator probe', () => {
     expect(renderBatch(scenario('report-reply').messages)).toContain('<report id="msg-1700001100.000100">')
   })
 
+  // auto-session-mode.md §10: a webchat person reads the turn's text, so text beside a call is degraded there and nowhere else.
+  it('probes the webchat prompt, where text beside a call is shown', () => {
+    const [id] = scopeOf('webchat-new-work').messages
+    const delegated = recorded('webchat-new-work', [
+      { action: 'delegateTask', messageId: id, title: 'Webhook retries' }
+    ])
+    expect(judgeCoordinator(scenario('webchat-new-work'), delegated, 'AC_NO_RESPONSE').verdict).toBe('PASS')
+    expect(judgeCoordinator(scenario('webchat-new-work'), delegated, 'On it!')).toMatchObject({
+      verdict: 'DEGRADED',
+      notes: [expect.stringContaining('text shown beside a call')]
+    })
+    const [channel] = scopeOf('new-work').messages
+    const quiet = recorded('new-work', [{ action: 'delegateTask', messageId: channel, title: 'Staging pulls' }])
+    expect(judgeCoordinator(scenario('new-work'), quiet, 'On it!').verdict).toBe('PASS')
+    expect(judgeCoordinator(scenario('webchat-status'), [], 'PR #4821 is in review.').verdict).toBe('PASS')
+    expect(renderBatch(scenario('webchat-status').messages, true)).toContain(
+      `[One new message in this conversation (${CO_IDS.conversation})]`
+    )
+    expect(coordinatorPrompt(true)).toContain('in a private webchat conversation')
+  })
+
   it('renders ids and mentions, and rejects unknown scenario ids', () => {
     const batch = renderBatch(scenario('batch-mixed').messages)
     expect(batch).toContain('4 new channel-root messages')

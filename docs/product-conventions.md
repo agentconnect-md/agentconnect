@@ -1014,12 +1014,13 @@ the Memory tab offers only Managed and the Control Plane and says to turn the mo
 them, and the API refuses any other choice the same way. Turning the mode off moves nothing back.
 While the Control Plane is unreachable, the agent's memory is unavailable.
 
-Each place keeps one long session while the mode is on: every room, and a 1:1 DM
-on a platform whose DMs otherwise open a session per message. A conversation gated By
+Each place keeps one long session while the mode is on: every room, a Slack group DM, and a
+1:1 DM on a platform whose DMs otherwise open a session per message. A conversation gated By
 decision keeps its own session mode, and a platform whose rooms never append (a Linear
 team) is left as it is. A new conversation keeps that one session from its first message,
-before the console lists it. The row shows `Single session` and offers no other choice; the
-stored choice returns when the mode is switched off.
+before the console lists it. The long session is the place's coordinator where its daemon reads
+Auto. The row shows `Auto`, or `Single session` on an older daemon, and offers no other choice;
+the stored choice returns when the mode is switched off.
 
 A room or group DM is external when the platform says people from outside the organization are
 in it. On Slack that is a Slack Connect conversation, read from the membership listing and from

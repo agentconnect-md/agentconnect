@@ -462,37 +462,20 @@ describe.each([
     expect(container?.querySelector('[data-related-row="startedBy"]')).not.toBeNull()
   })
 
-  // auto-session-mode.md §11: a coordinator's threaded task links back to it, read from its daemon, and stays a conversation people continue.
-  it('names the coordinator a threaded task belongs to, and keeps its composer', async () => {
+  // auto-session-mode.md §6.2, §11: a threaded task's coordinator is its Control Plane parent, named once among its related sessions.
+  it('names the coordinator a threaded task belongs to once, from its metadata, and keeps its composer', async () => {
     daemonFeatures.push('assistant-task-handle-v1', 'session-mode-auto-v1')
     wire.integrations = [{ agentId: 'agent-1', channels: [{ channelId: 'C0123', sessionMode: 'auto' }] }]
-    wire.task = {
-      sessionId: 'session-1',
-      title: 'Webhook retries',
-      state: 'done',
-      startedAt: '2026-10-01T00:00:00.000Z',
-      visible: true,
-      canStop: false,
-      parent: { sessionId: 'coordinator-1', title: 'morning all', platform: 'slack', channelName: 'eng' },
-      kind: 'delegated',
-      threaded: true
-    }
-    await open(SLACK)
-
-    expect(wire.taskReads).toEqual([['agent-1', 'session-1']])
-    const owner = container?.querySelector('[data-threaded-task]')
-    expect(owner?.textContent).toBe('Belongs to morning all · task')
-    expect(owner?.querySelector('a')?.getAttribute('href')).toMatch(/\/sessions\/coordinator-1$/)
-    expect(composer()).not.toBeNull()
-  })
-
-  it('reads no threaded task where the conversation does not run Auto', async () => {
-    daemonFeatures.push('assistant-task-handle-v1', 'session-mode-auto-v1')
-    wire.integrations = [{ agentId: 'agent-1', channels: [{ channelId: 'C0123', sessionMode: 'createNew' }] }]
-    await open(SLACK)
+    await open(SLACK, { parent: { ...OWNER, id: 'coordinator-1', title: 'morning all' } })
 
     expect(wire.taskReads).toEqual([])
     expect(container?.querySelector('[data-task-owner]')).toBeNull()
+    // The dock's Related list and the phone's Related card draw the same one link.
+    const related = [...(container?.querySelectorAll('[data-related-row="startedBy"]') ?? [])]
+    expect(related.length).toBeGreaterThan(0)
+    for (const row of related)
+      expect((row.closest('a') ?? row.querySelector('a'))?.getAttribute('href')).toMatch(/\/sessions\/coordinator-1$/)
+    expect(composer()).not.toBeNull()
   })
 
   it('marks a coordinator’s own page in the desktop title row and the phone header alike', async () => {

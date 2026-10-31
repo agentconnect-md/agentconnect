@@ -30,6 +30,8 @@ function scaffold(agents: { id: string; assistantMode?: Record<string, unknown> 
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      // An ordinary session delegates only with the Auto switch off (auto-session-mode.md §5.1).
+      features: { autoSessionMode: false },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )
@@ -941,7 +943,7 @@ describe('a task’s own background tasks (auto-session-mode.md §6.3)', () => {
   })
 })
 
-describe('a task with a thread attached (auto-session-mode.md §6.2, §6.6)', () => {
+describe('a task with a thread attached (auto-session-mode.md §6.2)', () => {
   it('reports the round running when its thread attaches once, and no later round', async () => {
     const h = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     const caller = await seedCaller(h.d)

@@ -1274,7 +1274,7 @@ Storage keeps its internal names (`assistant_subsession*`, the `subsession:` coo
   start of its opening message as `background` (v72), its `summary` with its update time and the
   turns since, and the platform threads attached to it.
   A task with a thread is outside the concurrency cap, and only rounds before its first thread's
-  round report to the owning session (auto-session-mode.md §6.2, §6.6).
+  round report to the owning session (auto-session-mode.md §6.2).
 - **Round state.** The task's index row carries `round` (store schema v51). `open` is a
   running round that holds a slot; the round's report waits in `reporting`; `done` and `failed`
   are retained idle states that hold none. Every parent input carries its round in

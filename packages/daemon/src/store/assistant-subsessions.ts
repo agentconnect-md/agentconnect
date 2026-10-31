@@ -51,7 +51,7 @@ export interface AssistantSubsessionThread {
   channel: string
   transportScope?: string
   thread: string
-  /** The first work round that no longer reports to the parent (§6.6). */
+  /** The first work round that no longer reports to the parent (§6.2). */
   sinceRound: number
   attachedAt: number
 }
@@ -918,7 +918,7 @@ export class AssistantSubsessionIndex {
     return moved
   }
 
-  /** Whether a task's `round` reports to its parent: a background task's always, a threaded one's only before its first thread (§6.2, §6.6). */
+  /** Whether a task's `round` reports to its parent: a background task's always, a threaded one's only before its first thread (§6.2). */
   async reportsRound(agentId: string, childSessionKey: string, round: number): Promise<boolean> {
     const row = (
       await this.db.query(

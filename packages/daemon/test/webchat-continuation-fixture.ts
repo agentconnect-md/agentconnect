@@ -21,14 +21,14 @@ import type { RdMsgWebchat, RdWebchatPost, WebchatPost } from '@agentconnect.md/
 export const NO_RESPONSE = 'AC_NO_RESPONSE'
 
 /** Scaffold a control-plane-less daemon root with one stub agent per id. */
-export function scaffold(agentIds: string[]): string {
+export function scaffold(agentIds: string[], features: Record<string, unknown> = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-wc-cont-'))
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      features: { turnFinalContextRefresh: true },
+      features: { turnFinalContextRefresh: true, ...features },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )

@@ -73,6 +73,28 @@ describe('the coordinator prompt and batch', () => {
     expect(prompt).toContain('AC_NO_RESPONSE')
   })
 
+  // auto-session-mode.md §10: a webchat coordinator reads of one person's conversation, task pages and text that is shown.
+  it('names a webchat conversation and its task pages, never a channel or a thread', () => {
+    const prompt = coordinatorPrompt({
+      agentName: 'bot-a',
+      platform: 'webchat',
+      channelId: 'conv-1',
+      peers: [],
+      webchat: true
+    })
+    expect(prompt).toContain('in a private webchat conversation (conv-1) with one person')
+    expect(prompt).toContain('The task answers on its own page, which the conversation links to.')
+    expect(prompt).toContain('- No other agent is in this conversation.')
+    expect(prompt).toContain('The person reads your text as you write it, so write nothing but your calls.')
+    expect(prompt).not.toMatch(/channel|thread/i)
+    expect(
+      renderCoordinatorBatch([{ id: 'msg-p1', from: 'user-1', mentionsYou: true, text: 'hi' }], {
+        channelId: 'conv-1',
+        webchat: true
+      })
+    ).toContain('[One new message in this conversation (conv-1)]')
+  })
+
   it('offers its decision tools and the memory and place tools, nothing else', () => {
     const tool = (name: string): ToolDescriptor => ({
       name,

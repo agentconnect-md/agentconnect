@@ -584,6 +584,8 @@ export interface WebChannelListSemantics {
   sessionModes?: readonly ('createNew' | 'append' | 'auto')[]
   /** Session modes a 1:1 DM row offers. Absent ⇒ none: the platform's DMs are one continuous session already. */
   dmSessionModes?: readonly ('createNew' | 'append' | 'auto')[]
+  /** Session modes a group DM row offers, a small private room (auto-session-mode.md §3.2). Absent ⇒ none: the platform has no group DM of its own. */
+  groupDmSessionModes?: readonly ('createNew' | 'append' | 'auto')[]
   /** Confirmation before a default seat moves off a gated agent, whose only grant it is (body gets `owner`, `room`); absent ⇒ no warning. */
   ownerChangeWarning?: {
     title: WebChannelListMessage

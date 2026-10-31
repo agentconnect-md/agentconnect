@@ -29,6 +29,8 @@ export interface CoordinatorPromptInput {
   /** How the platform mentions this agent, when known. */
   selfAddress?: string
   peers: readonly CoordinatorPeer[]
+  /** A member's private webchat conversation: no threads, one message a turn, and the text written is shown (§10). */
+  webchat?: boolean
 }
 
 /** One delivered message as the coordinator reads it. */
@@ -47,6 +49,32 @@ export interface CoordinatorMessage {
 
 const where = (input: { channelId: string; channelName?: string }): string =>
   input.channelName ? `#${input.channelName} (${input.channelId})` : input.channelId
+
+/** The words the prompt names its place and a task's answer with: a channel's threads, or webchat's pages. */
+function placeWords(input: CoordinatorPromptInput) {
+  return input.webchat
+    ? {
+        intro:
+          `You coordinate the agent "${input.agentName}" in a private webchat conversation (${input.channelId}) ` +
+          'with one person. Their messages are delivered to you, one per turn.',
+        place: 'conversation',
+        taskAnswers: 'on its own page, which the conversation links to',
+        replyPosts: 'in the conversation',
+        finalText:
+          'The person reads your text as you write it, so write nothing but your calls. After them, end the turn with ' +
+          `exactly ${NO_RESPONSE_SENTINEL}.`
+      }
+    : {
+        intro:
+          `You coordinate the agent "${input.agentName}" in ${input.platform} channel ${where(input)}.` +
+          `${input.selfAddress ? ` Your ${input.platform} user is ${input.selfAddress}.` : ''} Channel messages are ` +
+          'delivered to you, one or several per turn.',
+        place: 'channel',
+        taskAnswers: "in the message's thread",
+        replyPosts: "in the message's thread",
+        finalText: `Your final text is never shown to anyone. After your calls, end the turn with exactly ${NO_RESPONSE_SENTINEL}.`
+      }
+}
 
 const SEND_MESSAGE_DESCRIPTION =
   'Act on a channel message delivered to you as the coordinator. Every call names the message it decides on by messageId. ' +
@@ -132,40 +160,39 @@ export function coordinatorSessionTools(tools: readonly ToolDescriptor[]): ToolD
   ]
 }
 
-function peersLine(input: CoordinatorPromptInput): string {
-  if (input.peers.length === 0) return '- No other agent is in this channel.'
+function peersLine(input: CoordinatorPromptInput, place: string): string {
+  if (input.peers.length === 0) return `- No other agent is in this ${place}.`
   const listed = input.peers.map((peer) => {
     const named = peer.address ? `${peer.name} (${input.platform} user ${peer.address})` : peer.name
     return peer.description ? `${named}: ${peer.description.trim().replace(/\.$/, '')}` : named
   })
-  return `- Other agents in this channel: ${listed.join('; ')}. A message addressed to one of them is not for you.`
+  return `- Other agents in this ${place}: ${listed.join('; ')}. A message addressed to one of them is not for you.`
 }
 
 /** The coordinator session's standing instructions. */
 export function coordinatorPrompt(input: CoordinatorPromptInput): string {
-  const self = input.selfAddress ? ` Your ${input.platform} user is ${input.selfAddress}.` : ''
+  const words = placeWords(input)
   return [
     '# You are the coordinator',
-    `You coordinate the agent "${input.agentName}" in ${input.platform} channel ${where(input)}.${self} Channel ` +
-      'messages are delivered to you, one or several per turn. You never do the work ' +
+    `${words.intro} You never do the work ` +
       'yourself: you have no workspace, and you must not read files, run commands, search the web, or use any tool other ' +
       'than sendMessage, listTasks and the memory, follow-up and reminder tools you are given. For every delivered message ' +
       'you choose exactly one outcome:',
     '',
     '1. Hand it to an open task: sendMessage action "messageTask" with taskId and messageId. Use it when the message ' +
-      "continues, adds to, or reports on work within an open task's scope. The task answers in the message's thread.",
+      `continues, adds to, or reports on work within an open task's scope. The task answers ${words.taskAnswers}.`,
     '2. Open a new task: sendMessage action "delegateTask" with messageId and title. Use it for any request that needs ' +
       'real work: investigating, coding, reading files or logs, running commands, or a multi-step answer. The task ' +
       'receives the original message verbatim, so do not restate it; put in message only background it cannot see.',
-    '3. Reply yourself: sendMessage action "replyToMessage" with messageId and message, which posts a visible reply in ' +
-      "the message's thread. Use it only for what you can " +
+    '3. Reply yourself: sendMessage action "replyToMessage" with messageId and message, which posts a visible reply ' +
+      `${words.replyPosts}. Use it only for what you can ` +
       "answer in one or two sentences without any work: greetings, thanks, or a status question answered from a task's summary.",
     '4. Ignore it: make no call for it. Use it when the message is not for you: conversation between people, a message ' +
       'addressed to someone else, or a request to another agent. Ignoring is silent: never reply to say a message is ' +
       'not for you or to explain why you are not acting.',
     '',
     '# Reports',
-    'A <report> is not a channel message: it is the result of a follow-up, a proposal or a task of yours, or another ' +
+    `A <report> is not a ${words.place} message: it is the result of a follow-up, a proposal or a task of yours, or another ` +
       "agent's answer. When it carries something the people here should know, tell them with sendMessage action " +
       '"replyToMessage" and the report\'s id, which posts where the report belongs; otherwise leave it. Never open a task ' +
       'for a report or hand one to a task. To post anywhere else, use action "postMessage"; to ask another agent, use ' +
@@ -178,8 +205,8 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
       "call it with their message's id as messageId and reply to their message as well.",
     '- Before deciding, call listTasks once when a message might belong to existing work or asks about status.',
     "- Prefer handing a message to an open task over opening a second task in that task's scope.",
-    peersLine(input),
-    `- Your final text is never shown to anyone. After your calls, end the turn with exactly ${NO_RESPONSE_SENTINEL}.`
+    peersLine(input, words.place),
+    `- ${words.finalText}`
   ].join('\n')
 }
 
@@ -191,7 +218,7 @@ const counted = (n: number, one: string, many: string): string => (n === 1 ? `On
 /** One coordinator turn's input: the delivered messages, each with its id, sender and whether it mentions the agent, and the reports. */
 export function renderCoordinatorBatch(
   messages: readonly CoordinatorMessage[],
-  at: { channelId: string; channelName?: string }
+  at: { channelId: string; channelName?: string; webchat?: boolean }
 ): string {
   const blocks = messages.map((message) =>
     message.report
@@ -201,11 +228,17 @@ export function renderCoordinatorBatch(
   )
   const channel = messages.filter((message) => !message.report)
   const reports = messages.length - channel.length
-  const kind = channel.some((message) => message.thread !== undefined) ? 'channel' : 'channel-root'
+  const kind = at.webchat
+    ? undefined
+    : channel.some((message) => message.thread !== undefined)
+      ? 'channel'
+      : 'channel-root'
   const counts = [
-    ...(channel.length > 0 ? [counted(channel.length, `new ${kind} message`, `new ${kind} messages`)] : []),
+    ...(channel.length > 0
+      ? [counted(channel.length, `new ${kind ? `${kind} ` : ''}message`, `new ${kind ? `${kind} ` : ''}messages`)]
+      : []),
     ...(reports > 0 ? [counted(reports, 'report', 'reports')] : [])
   ]
   const count = counts.length === 2 ? `${counts[0]} and ${counts[1]!.replace(/^One /, 'one ')}` : counts[0]
-  return `[${count} in ${where(at)}]\n${blocks.join('\n')}`
+  return `[${count} in ${at.webchat ? `this conversation (${at.channelId})` : where(at)}]\n${blocks.join('\n')}`
 }

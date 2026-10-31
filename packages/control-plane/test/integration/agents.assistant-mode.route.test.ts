@@ -173,12 +173,12 @@ describe('assistant mode', () => {
     expect(projected.core.gated).toBe(false)
     expect(projected.core.mutedChannels).toEqual(['C2'])
     expect(projected.core.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
-    // One session per room and Slack DM; a group DM keeps the platform's own keying, listed so no default overrides it.
+    // One session per room, Slack DM and Slack group DM, a small room (auto-session-mode.md §3.2).
     expect(byChannel(projected.core.sessionModes)).toEqual([
       { channel: 'C1', mode: 'append', assistantPlace: true },
       { channel: 'C2', mode: 'append', assistantPlace: true },
       { channel: 'D1', mode: 'append', assistantPlace: true },
-      { channel: 'G1', mode: 'createNew' }
+      { channel: 'G1', mode: 'append', assistantPlace: true }
     ])
     expect(await rows()).toEqual(stored)
 

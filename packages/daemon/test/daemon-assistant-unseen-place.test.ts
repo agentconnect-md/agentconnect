@@ -19,6 +19,8 @@ function scaffold(opts: { assistantMode: boolean; sessionModes?: { channel: stri
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      // The place's one session is `append` with the Auto switch off (auto-session-mode.md §3.4).
+      features: { autoSessionMode: false },
       runtimes: { claude: { command: 'node', args: [] } }
     })
   )
