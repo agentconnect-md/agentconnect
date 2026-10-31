@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { removeTree } from './tree-support.js'
+import { removeTree, writableTree } from './tree-support.js'
 import { detectSandbox } from '../src/acp/sandbox.js'
 
 // A real bwrap sandbox launch (and its nested seccomp helper) is far slower than
@@ -609,6 +609,7 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     expect(unchanged.skipped).toBe('unchanged')
     expect(cli.calls).toHaveLength(1)
 
+    await writableTree(join(cwd, '.runtime/skills/repair'))
     await writeFile(join(cwd, '.runtime/skills/repair/SKILL.md'), 'tampered')
     // An edited skill is skipped as a conflict rather than failing the whole preparation.
     const skipped = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
