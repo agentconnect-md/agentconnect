@@ -148,6 +148,16 @@ const CoreConfigShape = {
         .map((id) => id.trim())
         .filter(Boolean)
     ),
+  // Users whose AHP OAuth tokens are admitted before public access (ahp-client-sign-in.md §4).
+  AHP_TEST_USER_IDS: z
+    .string()
+    .default('')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean)
+    ),
   // ── Usage report interface — the non-daemon ingress ──
   // Deployment-shared secret authenticating the batch usage endpoint, which records
   // `gateway`-source reports for an upstream that meters sessions outside any daemon.

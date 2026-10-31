@@ -563,6 +563,8 @@ export interface ApiKeyRepo {
   create(input: CreateApiKeyInput): Promise<ApiKeyRecord>
   /** Indexed point-lookup by the unique peppered hash — the credential verification site. */
   findByHash(hash: string): Promise<ApiKeyRecord | null>
+  /** A row by id, revoked or not, so a long-lived grant can recheck the credential behind it. */
+  findById(id: string): Promise<ApiKeyRecord | null>
   /** Throttled liveness write on successful auth. */
   touchLastUsed(id: string, at: Date): Promise<void>
   /** Kill switch: set `revokedAt` (+ reason). Checked on every auth.

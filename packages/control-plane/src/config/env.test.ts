@@ -168,14 +168,22 @@ describe('AHP rollout switches', () => {
       AHP_MODE: 'off',
       WEBCHAT_PROTOCOL: 'legacy',
       AHP_PUBLIC_ACCESS: false,
-      AHP_TEST_KEY_IDS: []
+      AHP_TEST_KEY_IDS: [],
+      AHP_TEST_USER_IDS: []
     })
     expect(
-      loadConfig({ ...base, AHP_MODE: 'on', AHP_TEST_KEY_IDS: 'one, two', AHP_PUBLIC_ACCESS: 'true' })
+      loadConfig({
+        ...base,
+        AHP_MODE: 'on',
+        AHP_TEST_KEY_IDS: 'one, two',
+        AHP_TEST_USER_IDS: 'user',
+        AHP_PUBLIC_ACCESS: 'true'
+      })
     ).toMatchObject({
       WEBCHAT_PROTOCOL: 'legacy',
       AHP_PUBLIC_ACCESS: true,
-      AHP_TEST_KEY_IDS: ['one', 'two']
+      AHP_TEST_KEY_IDS: ['one', 'two'],
+      AHP_TEST_USER_IDS: ['user']
     })
   })
   it.each(['off', 'shadow'])('rejects AHP Webchat while the host is %s', (AHP_MODE) => {

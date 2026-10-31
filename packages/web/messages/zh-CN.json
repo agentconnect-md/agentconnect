@@ -1255,7 +1255,8 @@
       "authorize": "授权",
       "scopes": {
         "read": "查看你的 Agent、Daemon、定时任务、会话和用量",
-        "write": "创建和修改你的 Agent、定时任务和集成"
+        "write": "创建和修改你的 Agent、定时任务和集成",
+        "ahp": "以你的身份与该组织中你可见的 Agent 对话"
       }
     },
     "waitlist": {

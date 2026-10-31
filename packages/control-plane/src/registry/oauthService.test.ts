@@ -4,7 +4,13 @@
  * OAuth client. No DB.
  */
 import { describe, it, expect } from 'vitest'
-import { isRegisterableRedirectUri, redirectUriMatches, normalizeScopes, OAUTH_SCOPES } from './oauthService.js'
+import {
+  ahpResourceAgent,
+  isRegisterableRedirectUri,
+  redirectUriMatches,
+  normalizeScopes,
+  MCP_SCOPES
+} from './oauthService.js'
 import {
   protectedResourceMetadata,
   mcpAuthenticateChallenge,
@@ -45,6 +51,32 @@ describe('scope normalization', () => {
     expect(normalizeScopes(undefined)).toEqual(['mcp:read'])
     expect(normalizeScopes('')).toEqual(['mcp:read'])
   })
+  it('keeps an AHP request to the ahp scope alone and refuses one mixed with MCP scopes', () => {
+    expect(normalizeScopes('ahp')).toEqual(['ahp'])
+    expect(normalizeScopes('ahp offline_access')).toEqual(['ahp'])
+    expect(normalizeScopes('ahp mcp:read')).toBeNull()
+  })
+})
+
+describe('AHP resource indicators', () => {
+  const agent = '11111111-1111-4111-8111-111111111111'
+  const relay = 'https://relay.example.test'
+  it('names the agent of a per-agent endpoint on the configured relay only', () => {
+    expect(ahpResourceAgent(`${relay}/ahp/agents/${agent}`, relay)).toBe(agent)
+    expect(ahpResourceAgent(`${relay}/ahp/agents/${agent}`, `${relay}/`)).toBe(agent)
+    for (const resource of [
+      `https://other.example.test/ahp/agents/${agent}`,
+      `http://relay.example.test/ahp/agents/${agent}`,
+      `${relay}/ahp/agents/${agent}/`,
+      `${relay}/ahp/agents/${agent}?x=1`,
+      `${relay}/ahp`,
+      `${relay}/v1/mcp`,
+      'not a url',
+      undefined
+    ])
+      expect(ahpResourceAgent(resource, relay)).toBeUndefined()
+    expect(ahpResourceAgent(`${relay}/ahp/agents/${agent}`, undefined)).toBeUndefined()
+  })
 })
 
 describe('resource-server discovery (PRM + 401 challenge — AS metadata is the SDK router)', () => {
@@ -56,7 +88,7 @@ describe('resource-server discovery (PRM + 401 challenge — AS metadata is the 
     // validate this byte-for-byte against the URL they dialed.
     expect(prm.resource).toBe(`${base}/v1/mcp`)
     expect(prm.authorization_servers).toEqual([base])
-    expect(prm.scopes_supported).toEqual([...OAUTH_SCOPES])
+    expect(prm.scopes_supported).toEqual([...MCP_SCOPES])
   })
   it('the MCP 401 challenge carries resource_metadata + scope at the public path', () => {
     const challenge = mcpAuthenticateChallenge(base, {})
@@ -82,5 +114,6 @@ describe('resource-server discovery (PRM + 401 challenge — AS metadata is the 
     expect(as.authorization_endpoint).toBe('https://mcp.example.test/oauth/authorize')
     expect(as.token_endpoint).toBe('https://mcp.example.test/oauth/token')
     expect(as.registration_endpoint).toBe('https://mcp.example.test/oauth/register')
+    expect(as.scopes_supported).toEqual(['mcp:read', 'mcp:write', 'ahp'])
   })
 })

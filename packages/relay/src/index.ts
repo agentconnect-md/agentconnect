@@ -379,7 +379,7 @@ async function main(): Promise<void> {
   const ahpServer = createAhpServer(server, {
     mode: () => config.AHP_MODE,
     ...(config.AHP_AUTHORIZATION_SERVER ? { authorizationServer: config.AHP_AUTHORIZATION_SERVER } : {}),
-    verify: (credential, agentId, kind) => client.verifyAhpCredential(credential, agentId, kind),
+    verify: (credential, agentId, kind, resource) => client.verifyAhpCredential(credential, agentId, kind, resource),
     daemon: (daemonId) => held.rdServer?.get(daemonId),
     log
   })

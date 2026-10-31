@@ -342,11 +342,12 @@ export class RelayCpClient {
   async verifyAhpCredential(
     credential: string,
     agentId: string,
-    kind: 'ahp-client-key' | 'webchat-token'
+    kind: 'ahp-client-key' | 'webchat-token',
+    resource?: string
   ): Promise<RcVerifyResult> {
     const request: RcVerify =
       kind === 'ahp-client-key'
-        ? { kind, credential, agentId }
+        ? { kind, credential, agentId, ...(resource ? { resource } : {}) }
         : { kind, credential, agentId, protocol: 'ahp', conversationBinding: 'v1' }
     const reply = await this.authorizationRequest(
       () => buildRelayCpFrame('rc/verify', request),

@@ -82,7 +82,7 @@ async function registerClient(base: string, redirectUris = [REDIRECT]): Promise<
 }
 
 /** register → authorize → consent → token; returns the token response. */
-async function fullFlow(base: string, opts: { scope?: string; orgId?: string } = {}) {
+async function fullFlow(base: string, opts: { scope?: string; orgId?: string; resource?: string } = {}) {
   const clientId = await registerClient(base)
   const { verifier, challenge } = pkce()
 
@@ -90,7 +90,8 @@ async function fullFlow(base: string, opts: { scope?: string; orgId?: string } =
     base,
     'GET',
     `/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(REDIRECT)}` +
-      `&code_challenge=${challenge}&code_challenge_method=S256&state=xyz${opts.scope ? `&scope=${encodeURIComponent(opts.scope)}` : ''}`
+      `&code_challenge=${challenge}&code_challenge_method=S256&state=xyz${opts.scope ? `&scope=${encodeURIComponent(opts.scope)}` : ''}` +
+      (opts.resource ? `&resource=${encodeURIComponent(opts.resource)}` : '')
   )
   expect(authz.status).toBe(302)
   expect(authz.location).toContain('/oauth/consent')
@@ -103,6 +104,7 @@ async function fullFlow(base: string, opts: { scope?: string; orgId?: string } =
       codeChallenge: challenge,
       codeChallengeMethod: 'S256',
       ...(opts.scope ? { scope: opts.scope } : {}),
+      ...(opts.resource ? { resource: opts.resource } : {}),
       state: 'xyz',
       orgId: opts.orgId ?? DEFAULT_ORG_ID,
       decision: 'allow'
@@ -500,5 +502,56 @@ describe('OAuth scope confinement (a mcp:read token cannot write via direct REST
       { bearer: rw.access_token }
     )
     expect(del2.status).not.toBe(403)
+  })
+})
+
+describe('AHP sign-in (ahp-client-sign-in.md)', () => {
+  const RELAY = 'https://relay.example.test'
+  const RESOURCE = `${RELAY}/ahp/agents/11111111-1111-4111-8111-111111111111`
+
+  it('grants an ahp token bound to one agent endpoint, which REST and MCP refuse', async () => {
+    const { base } = await start({ PUBLIC_RELAY_URL: RELAY })
+    const tokens = (await fullFlow(base, { scope: 'ahp', resource: RESOURCE })).tok.json() as Tokens
+    expect(tokens.scope).toBe('ahp')
+    const grants = await prisma.oAuthGrant.findMany({ where: { userId: DEFAULT_OWNER_ID } })
+    expect(grants.map((g) => [g.scopes, g.resource])).toContainEqual([['ahp'], RESOURCE])
+    const rest = await req(base, 'GET', `/api/v1/orgs/${DEFAULT_ORG_ID}/agents`, { bearer: tokens.access_token })
+    expect([rest.status, rest.json().message]).toEqual([403, 'this token is limited to AHP'])
+    expect((await mcpWhoami(base, tokens.access_token)).status).toBe(403)
+  })
+
+  it('refuses an ahp request without an agent endpoint on the relay, or mixed with MCP scopes', async () => {
+    const { base } = await start({ PUBLIC_RELAY_URL: RELAY })
+    const clientId = await registerClient(base)
+    const { challenge } = pkce()
+    const authorize = (query: string) =>
+      req(
+        base,
+        'GET',
+        `/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(REDIRECT)}` +
+          `&code_challenge=${challenge}&code_challenge_method=S256&state=xyz&${query}`
+      )
+    for (const [query, error] of [
+      ['scope=ahp', 'invalid_target'],
+      [`scope=ahp&resource=${encodeURIComponent('https://other.example.test/ahp/agents/x')}`, 'invalid_target'],
+      [`scope=${encodeURIComponent('ahp mcp:read')}&resource=${encodeURIComponent(RESOURCE)}`, 'invalid_scope']
+    ]) {
+      const res = await authorize(query)
+      expect(res.status).toBe(302)
+      expect(new URL(res.location!).searchParams.get('error')).toBe(error)
+    }
+    const consent = await req(base, 'POST', '/api/v1/oauth/consent', {
+      json: {
+        clientId,
+        redirectUri: REDIRECT,
+        codeChallenge: challenge,
+        codeChallengeMethod: 'S256',
+        scope: 'ahp',
+        resource: `${RELAY}/v1/mcp`,
+        orgId: DEFAULT_ORG_ID,
+        decision: 'allow'
+      }
+    })
+    expect(consent.status).toBe(400)
   })
 })

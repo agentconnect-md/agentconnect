@@ -22,7 +22,10 @@ function s256(input: string): string {
 }
 
 /** The scopes the AgentConnect MCP resource understands (agent-assistant.md §6.2). */
-export const OAUTH_SCOPES = ['mcp:read', 'mcp:write'] as const
+export const MCP_SCOPES = ['mcp:read', 'mcp:write'] as const
+/** Use AHP endpoints as the user; it grants nothing on REST or MCP (ahp-client-sign-in.md §3.1). */
+export const AHP_SCOPE = 'ahp'
+export const OAUTH_SCOPES = [...MCP_SCOPES, AHP_SCOPE] as const
 
 const CLIENT_TTL_MS = 90 * 86_400_000 // DCR registration TTL
 const CODE_TTL_MS = 60_000 // authorization code — short (single browser round-trip)
@@ -97,12 +100,29 @@ export function redirectUriMatches(registered: string[], requested: string): boo
   })
 }
 
-/** Intersect a requested space-delimited scope string with what we support; default to
- *  `mcp:read` when nothing valid was requested. */
-export function normalizeScopes(raw: string | undefined | null): string[] {
+/** Supported requested scopes, `mcp:read` when none; null when one request mixes AHP and MCP scopes. */
+export function normalizeScopes(raw: string | undefined | null): string[] | null {
   const requested = (raw ?? '').split(/\s+/).filter(Boolean)
-  const granted = OAUTH_SCOPES.filter((s) => requested.includes(s))
-  return granted.length > 0 ? granted : ['mcp:read']
+  const mcp = MCP_SCOPES.filter((s) => requested.includes(s))
+  if (requested.includes(AHP_SCOPE)) return mcp.length > 0 ? null : [AHP_SCOPE]
+  return mcp.length > 0 ? mcp : ['mcp:read']
+}
+
+/** The agent a per-agent AHP endpoint on the configured relay names, if `resource` is one (ahp-client-sign-in.md §3.2). */
+export function ahpResourceAgent(
+  resource: string | null | undefined,
+  relayUrl: string | undefined
+): string | undefined {
+  if (!resource || !relayUrl) return undefined
+  let url: URL
+  try {
+    url = new URL(resource)
+  } catch {
+    return undefined
+  }
+  const match = /^\/ahp\/agents\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(url.pathname)
+  if (url.protocol !== 'https:' || url.host !== new URL(relayUrl).host || url.search || url.hash) return undefined
+  return match?.[1]
 }
 
 export class OAuthService {

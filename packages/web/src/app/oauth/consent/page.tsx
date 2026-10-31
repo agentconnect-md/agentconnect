@@ -90,7 +90,8 @@ export default function OAuthConsentPage() {
   const appName = ctx?.clientName || t('application')
   const scopeLabels: Record<string, string> = {
     'mcp:read': t('scopes.read'),
-    'mcp:write': t('scopes.write')
+    'mcp:write': t('scopes.write'),
+    ahp: t('scopes.ahp')
   }
 
   return (

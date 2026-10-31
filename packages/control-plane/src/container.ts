@@ -2969,6 +2969,7 @@ export function buildContainer(
     tokens: webchatTokens,
     keys: apiKeys,
     keyRows: repos.apiKey,
+    oauthGrants: repos.oauth,
     agents: repos.agent,
     daemons: connReg,
     conversations: repos.webchatConversation,

@@ -25,20 +25,29 @@ import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import type {
   AhpSessionBindingRecord,
   ApiKeyRepo,
+  OAuthRepo,
   OrgMemberRole,
   SessionExternalAccessSnapshot
 } from '../persistence/ports.js'
 import type { AgentChatKeyVerificationDeps } from './agentChatKeyVerification.js'
 import { webchatAuthorIdentity } from './agentChatKeyVerification.js'
 import type { AhpGrantClaims, AhpGrantService } from './ahpGrant.js'
+import { AHP_SCOPE, ahpResourceAgent } from './oauthService.js'
 import type { WebchatTokenService } from './webchatToken.js'
 import { webchatBinding } from './webchatVerification.js'
 
 export interface AhpAuthorizationDeps extends AgentChatKeyVerificationDeps {
   grants: AhpGrantService
   tokens: Pick<WebchatTokenService, 'verify'>
-  keyRows: Pick<ApiKeyRepo, 'listForUser'>
-  config: { AHP_MODE: 'off' | 'shadow' | 'on'; AHP_PUBLIC_ACCESS: boolean; AHP_TEST_KEY_IDS: string[] }
+  keyRows: Pick<ApiKeyRepo, 'findById'>
+  oauthGrants: Pick<OAuthRepo, 'getGrant'>
+  config: {
+    AHP_MODE: 'off' | 'shadow' | 'on'
+    AHP_PUBLIC_ACCESS: boolean
+    AHP_TEST_KEY_IDS: string[]
+    AHP_TEST_USER_IDS: string[]
+    PUBLIC_RELAY_URL?: string
+  }
   now: () => number
   sessionAccess(
     claims: AhpGrantClaims,
@@ -73,30 +82,38 @@ export class AhpAuthorization {
     return { agent, daemonId, viewer: { userId: claims.userId, role } }
   }
 
-  private async liveKey(claims: AhpGrantClaims) {
+  // `resource` is the endpoint the relay advertised; renewal from a signed grant has none to compare.
+  private async liveKey(claims: AhpGrantClaims, resource?: string | null) {
     if (!claims.apiKeyId) return null
     const d = this.deps
-    if (!d.config.AHP_PUBLIC_ACCESS && !d.config.AHP_TEST_KEY_IDS.includes(claims.apiKeyId)) return null
-    const key = (await d.keyRows.listForUser(claims.userId, { includeRevoked: true })).find(
-      (row) => row.id === claims.apiKeyId
-    )
+    const key = await d.keyRows.findById(claims.apiKeyId)
     if (
       !key ||
+      key.userId !== claims.userId ||
       key.orgId !== claims.orgId ||
-      key.principalType !== 'user' ||
-      key.permission !== 'full' ||
-      key.scopes.length > 0 ||
       key.revokedAt ||
       (key.expiresAt && key.expiresAt.getTime() <= d.now())
     )
       return null
+    if (key.principalType === 'user') {
+      if (!d.config.AHP_PUBLIC_ACCESS && !d.config.AHP_TEST_KEY_IDS.includes(key.id)) return null
+      return key.permission === 'full' && key.scopes.length === 0 ? key : null
+    }
+    if (key.principalType !== 'oauth' || !key.oauthGrantId) return null
+    if (!d.config.AHP_PUBLIC_ACCESS && !d.config.AHP_TEST_USER_IDS.includes(claims.userId)) return null
+    // An OAuth token reaches AHP only through a live `ahp` grant bound to this agent's endpoint (ahp-client-sign-in.md §3).
+    if (key.scopes.length !== 1 || key.scopes[0] !== AHP_SCOPE) return null
+    const grant = await d.oauthGrants.getGrant(key.oauthGrantId)
+    if (!grant || grant.revokedAt || grant.userId !== claims.userId || grant.orgId !== claims.orgId) return null
+    if (ahpResourceAgent(grant.resource, d.config.PUBLIC_RELAY_URL) !== claims.agentId) return null
+    if (resource !== undefined && grant.resource !== resource) return null
     return key
   }
 
-  async verifyKey(req: { credential: string; agentId: string }): Promise<RcVerifyResult> {
+  async verifyKey(req: { credential: string; agentId: string; resource?: string }): Promise<RcVerifyResult> {
     const d = this.deps
     const key = await d.keys.authenticateUser(req.credential)
-    if (!key || key.permission !== 'full' || key.scopes.length > 0) return denied()
+    if (!key) return denied()
     const claims = {
       orgId: key.orgId,
       agentId: req.agentId,
@@ -104,7 +121,7 @@ export class AhpAuthorization {
       user: key.userId,
       apiKeyId: key.apiKeyId
     }
-    const row = await this.liveKey(claims)
+    const row = await this.liveKey(claims, req.resource ?? null)
     const access = row ? await this.agentAccess(claims) : null
     if (!row || !access) return denied()
     const author = await webchatAuthorIdentity(d, key.userId)

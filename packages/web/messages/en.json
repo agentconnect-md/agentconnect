@@ -1255,7 +1255,8 @@
       "authorize": "Authorize",
       "scopes": {
         "read": "View your agents, daemons, schedules, sessions, and usage",
-        "write": "Create and modify your agents, schedules, and integrations"
+        "write": "Create and modify your agents, schedules, and integrations",
+        "ahp": "Chat as you with an agent you can see in this organization"
       }
     },
     "waitlist": {
