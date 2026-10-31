@@ -1,5 +1,4 @@
 import { z } from 'zod'
-import { createHash } from 'node:crypto'
 import { SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY } from '@agentconnect.md/protocol'
 import { parseArgs } from '../../mcp/ops/args.js'
 import type { SessionContext } from '../../mcp/ops/context.js'
@@ -7,6 +6,7 @@ import { buildAttributionBlocks } from '../../slack/render.js'
 import type { SlackConnection } from '../../slack/connection.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 import type { PlatformSessionTools, PlatformSessionToolEnv } from '../read-ports.js'
+import { createCodeChannel } from './code-channel.js'
 
 const text = z.string().trim().min(1)
 const reportArgs = z
@@ -195,16 +195,13 @@ async function execute(
     const origin = env.originMsgId?.split(':')
     if (origin?.length !== 3 || origin[0] !== 'slack' || origin[1] !== ctx.channel || !/^\d+\.\d+$/.test(origin[2]!))
       throw new Error('A code channel requires a live Slack message as its origin')
-    if (!ctx.isDm && (await conn.codeChannel(ctx.channel)).code)
-      return { ok: true, channel_id: ctx.channel, already_exists: true }
-    await env.judgeWrite({ kind: 'new', platform: ctx.platform, integrationId: ctx.integrationId, users: [] })
-    const sessionId = createHash('sha256').update(`${ctx.agentId}:${env.originMsgId}`).digest('hex')
-    return conn.codeChannelApi('create', {
-      name: a.name,
-      session_id: sessionId,
-      origin_channel_id: ctx.channel,
-      origin_message_ts: origin[2]!
-    })
+    const created = await createCodeChannel(
+      conn,
+      { agentId: ctx.agentId, channel: ctx.channel, ts: origin[2]!, isDm: ctx.isDm },
+      a.name,
+      () => env.judgeWrite({ kind: 'new', platform: ctx.platform, integrationId: ctx.integrationId, users: [] })
+    )
+    return created.response
   }
   if (name === 'setSlackCodeView' || name === 'manageSlackCodeChannel') {
     const a = name === 'setSlackCodeView' ? parseArgs(viewArgs, args) : parseArgs(manageArgs, args)
@@ -238,7 +235,12 @@ async function execute(
     }
     if (a.action === 'archive') {
       await conn.closeCodeSession(channel)
-      return conn.codeChannelApi('archive', { channel_id: channel, summary_message_ts: a.summaryMessageTs })
+      const archived = await conn.codeChannelApi('archive', {
+        channel_id: channel,
+        summary_message_ts: a.summaryMessageTs
+      })
+      conn.codeChannelArchived(channel)
+      return archived
     }
     if (a.action === 'removeView') return conn.codeChannelApi('removeView', { channel_id: channel, view_id: a.viewId! })
     return conn.codeChannelApi('listViews', { channel_id: channel })

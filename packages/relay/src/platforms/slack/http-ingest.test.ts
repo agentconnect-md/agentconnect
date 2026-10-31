@@ -1035,7 +1035,8 @@ describe('SlackHttpIngest events', () => {
         channelId: 'C1',
         threadTs: 'C1',
         interactionId: 'Ev126',
-        userId: 'U-ALICE'
+        userId: 'U-ALICE',
+        archived: true
       })
       expect(onChannelsChanged).toHaveBeenCalledWith([expect.objectContaining({ id: 'C2' })])
     }

@@ -138,6 +138,8 @@ export interface HttpSlackSessionStop extends HttpSlackInteractionReceipt {
   channelId: string
   threadTs: string
   userId?: string
+  /** An archive, which also closes the task the channel holds. */
+  archived?: true
 }
 
 type HttpSlackAgent = { agentId: string; name: string }
@@ -647,7 +649,8 @@ export class SlackHttpIngest {
           channelId: event.channel,
           threadTs: event.channel,
           interactionId: eventId ?? `${event.type}:${event.channel}:${eventAtMs ?? ''}`,
-          ...(event.user ? { userId: event.user } : {})
+          ...(event.user ? { userId: event.user } : {}),
+          archived: true
         })
         await this.refreshChannels()
         return

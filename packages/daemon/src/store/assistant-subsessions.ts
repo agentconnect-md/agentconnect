@@ -778,29 +778,35 @@ export class AssistantSubsessionIndex {
     }))
   }
 
-  /** A conversation that left `auto` hands its threaded tasks back as ordinary thread sessions (auto-session-mode.md §3.5): their rows and threads go; the released keys. */
-  async releaseThreaded(
+  /** The tasks holding a thread in one conversation, with the session each belongs to. */
+  async threadedTasksIn(
     agentId: string,
     at: { platform: string; channel: string; transportScope?: string | null }
-  ): Promise<string[]> {
+  ): Promise<{ childSessionKey: string; parentSessionKey: string }[]> {
     const rows = (
       await this.db.query(
-        `SELECT DISTINCT childSessionKey FROM assistant_subsession_thread
-          WHERE agentId = ? AND platform = ? AND channel = ? AND transportScope = ? ORDER BY childSessionKey`,
+        `SELECT DISTINCT a.childSessionKey, a.parentSessionKey FROM assistant_subsession a
+           JOIN assistant_subsession_thread t ON t.agentId = a.agentId AND t.childSessionKey = a.childSessionKey
+          WHERE a.agentId = ? AND t.platform = ? AND t.channel = ? AND t.transportScope = ? AND a.kind = 'delegation'
+          ORDER BY a.childSessionKey`,
         [agentId, at.platform, at.channel, at.transportScope ?? '']
       )
     ).rows as Row[]
-    const released: string[] = []
-    for (const { childSessionKey } of rows) {
-      const key = String(childSessionKey)
-      await this.db.query(`DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? ${DELEGATIONS}`, [
-        agentId,
-        key
-      ])
-      await this.dropTaskInputsAndThreads(agentId, key)
-      released.push(key)
-    }
-    return released
+    return rows.map((row) => ({
+      childSessionKey: String(row.childSessionKey),
+      parentSessionKey: String(row.parentSessionKey)
+    }))
+  }
+
+  /** Close one task: its row and threads go, and its threads become unowned (auto-session-mode.md §3.5, §6.8); false when it was not indexed. */
+  async closeTask(agentId: string, childSessionKey: string): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? ${DELEGATIONS}`,
+      [agentId, childSessionKey]
+    )
+    if (changes === 0) return false
+    await this.dropTaskInputsAndThreads(agentId, childSessionKey)
+    return true
   }
 
   /** A conversation's thread sessions active since `activeSince` that no task holds, the ones a switch into `auto` adopts (auto-session-mode.md §3.5). */

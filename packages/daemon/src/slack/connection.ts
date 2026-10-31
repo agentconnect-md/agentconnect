@@ -42,6 +42,7 @@ import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.j
 import { markNotJoined } from '../platforms/not-joined.js'
 import { slackMessageUrl } from '../platforms/slack/permalink.js'
 import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../platforms/slack/standing-context.js'
+import { createCodeChannel } from '../platforms/slack/code-channel.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
@@ -83,7 +84,9 @@ import type {
   PlatformReactionSummary,
   PlatformScheduledMessage,
   PlatformSearchOptions,
-  PlatformSearchResults
+  PlatformSearchResults,
+  TaskPlace,
+  TaskPlaceOrigin
 } from '../platforms/contract.js'
 
 /**
@@ -482,6 +485,8 @@ export interface SlackDeps {
   onThreadSessions?: (a: { channel: string; thread: string }) => Promise<string[]>
   /** Release the delegated tasks holding this thread's indicator and return their keys, for a Stop to cancel. */
   onStopThreadTasks?: (a: { channel: string; thread: string }) => string[]
+  /** A code channel was archived: the task it holds closes (auto-session-mode.md §6.8). */
+  onPlaceClosed?: (a: { channel: string; thread: string }) => void
   /** Settle the conversation's ONE status slot after a stop: re-assert a surviving sibling's
    *  `processing`, or transition an empty thread to `active`. Owned by the daemon. */
   onSlotSettle?: (a: { channel: string; thread: string; exclude?: string }) => void
@@ -1155,6 +1160,16 @@ export class SlackConnection implements PlatformConnection {
       if (this.codeChannels.get(channel) === entry) this.codeChannels.delete(channel)
       throw err
     }
+  }
+
+  /** A coordinator's task works in a code channel linked to its message (auto-session-mode.md §6.8); none when the message already sits in one. */
+  async openTaskPlace(origin: TaskPlaceOrigin, title: string): Promise<TaskPlace | undefined> {
+    // The daemon has judged whether the message's sender may have a channel made before it asks.
+    const created = await createCodeChannel(this, { ...origin, ts: origin.messageId }, title, async () => {})
+    if (created.existing) return undefined
+    if (created.channelId === undefined) throw new Error('Slack answered the code channel creation without a channel')
+    // A code channel's one session keys on the channel itself (slack-code-channels.md).
+    return { channel: created.channelId, thread: created.channelId }
   }
 
   async prepareInboundMessage(msg: NormalizedMessage): Promise<void> {
@@ -3557,17 +3572,18 @@ export class SlackConnection implements PlatformConnection {
     )
   }
 
-  // Native Stop targets the displayed socket owner; forwarded stops and archives cancel every local session and task.
-  async agentSessionStopped(channel: string, threadTs: string, userId?: string, allSessions = false): Promise<void> {
+  // Native Stop targets the displayed socket owner; forwarded stops and archives cancel every local session and task, and an archive closes the task the channel holds.
+  async agentSessionStopped(channel: string, threadTs: string, userId?: string, archived = false): Promise<void> {
     this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
     // The channel coordinate names a session only in a code channel; an archive of a channel known not to be one is ignored.
     if (threadTs === channel && (await this.codeChannel(channel).catch(() => undefined))?.code === false) return
     const cancel = (sessionKey: string) =>
       this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
-    if (this.deps.sendOnly || allSessions) {
+    if (this.deps.sendOnly || archived) {
       const sessionKeys = (await this.deps.onThreadSessions?.({ channel, thread: threadTs })) ?? []
       const tasks = this.deps.onStopThreadTasks?.({ channel, thread: threadTs }) ?? []
       for (const sessionKey of new Set([...sessionKeys, ...tasks])) cancel(sessionKey)
+      if (archived && threadTs === channel) this.codeChannelArchived(channel)
       await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))
       return
     }
@@ -3581,6 +3597,11 @@ export class SlackConnection implements PlatformConnection {
   /** Mark a code channel's session Done (`closed`) before the channel is archived. */
   async closeCodeSession(channel: string): Promise<boolean> {
     return this.queue.enqueue(() => this.setSessionLifecycle(channel, channel, 'closed'))
+  }
+
+  /** An archived code channel closes the task it holds, whoever archived it; closing twice is harmless. */
+  codeChannelArchived(channel: string): void {
+    this.deps.onPlaceClosed?.({ channel, thread: channel })
   }
 
   // The lifecycle half of setStatus. Posting a message does NOT end the loading UX — only `active` does.

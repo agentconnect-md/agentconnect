@@ -273,6 +273,16 @@ describe('slack ingress plugin — review-pinned regressions', () => {
     expect(vi.mocked(h.forwardAction).mock.calls[0]![1]).toEqual(ROUTE)
   })
 
+  it('tells the daemon that an archive stop closes the channel’s task, and a native Stop does not', () => {
+    const h = host()
+    forwardSessionStop(h, 'bot-1', { channelId: 'C1', threadTs: 'C1', interactionId: 'Ev-archive', archived: true })
+    forwardSessionStop(h, 'bot-1', { channelId: 'C1', threadTs: 'C1', interactionId: 'Ev-stop' })
+    expect(vi.mocked(h.forwardAction).mock.calls.map(([msg]) => msg.payload)).toEqual([
+      { kind: 'agent-session-stopped', channelId: 'C1', threadTs: 'C1', archived: true },
+      { kind: 'agent-session-stopped', channelId: 'C1', threadTs: 'C1' }
+    ])
+  })
+
   // assistant-mode.md §5.13: the bot's own join reaches the channel's owning daemon, which may take a getting-to-know task.
   it('forwards the bot joining to the owning daemon, with who added it', () => {
     const h = host()

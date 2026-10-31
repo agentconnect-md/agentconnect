@@ -44,15 +44,42 @@ Archiving ends the channel session. The agent's archive first marks the session
 `closed` (Slack's _Done_), then archives with the optional summary. When a person
 archives the channel instead, `channel_archive` / `group_archive` arrive on either
 transport at the channel coordinate: all sessions and delegated tasks sharing the
-channel are cancelled. Native Stop keeps its existing displayed-owner behavior on
-Socket Mode. An archive of a channel the provider reports is not a code channel is
-ignored. A turn waiting on an approval shows the session as `suspended` (_Needs
+channel are cancelled. Either archive also closes the coordinator task the channel
+holds (below). The relay forwards an archive as a Stop marked `archived`, because a
+native Stop without a thread timestamp reaches the same channel coordinate. Native Stop
+keeps its existing displayed-owner behavior on Socket Mode and closes no task. An
+archive of a channel the provider reports is not a code channel is ignored. A turn waiting on an approval shows the session as `suspended` (_Needs
 attention_) until the last request settles, as in ordinary threads.
 
 An assigned bot is an implicit recipient of human messages in its code channel. This
 does not count as an explicit mention: session mute still applies, other explicit
 mentions take precedence, and the conversation's Off fence remains authoritative.
 Other bots do not acquire implicit activation from this field.
+
+## Coordinator tasks
+
+In an Auto conversation ([auto-session-mode.md](auto-session-mode.md) §6.8), a task the
+coordinator opens with `delegateTask` for a message works in a code channel linked to that
+message instead of in the message's thread. The daemon reaches it through the optional
+`openTaskPlace` member of its platform contract, which the Slack connection implements with
+the same creation path `createSlackCodeChannel` uses: the origin link, the origin-derived
+idempotency key, Slack's privacy match and the author's invite. Only a sender who is a full
+member of the workspace has a channel made, as the tool requires an eligible human asker.
+
+- The task's session is the channel session, and the task holds the channel coordinate as
+  its thread. The coordinator links the channel in the message's thread.
+- Slack's copy of the request opens the task: it reaches that session, never a second one,
+  and carries the coordinator's title and background when it arrives within 10 minutes.
+- A code channel has no root, so under Auto it never runs a coordinator of its own: every
+  message there keys on the channel session, the task's while one holds it. A code channel
+  made outside a task, or whose task has closed, stays an ordinary channel session.
+- A message the coordinator hands the task later moves into the channel, and its thread gets
+  a link.
+- Archiving the channel closes the task. So do 7 idle days, and its coordinator's
+  conversation leaving Auto.
+- Without code channels, when creation fails, or when the sender may not make a channel, the
+  task stays in the message's thread with no further notice. Background tasks (no
+  `messageId`) and the coordinator's fallback tasks never use a code channel.
 
 ## Agent tools
 
