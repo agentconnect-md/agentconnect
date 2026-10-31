@@ -113,4 +113,70 @@ describe('attachment protocol selector', () => {
     expect(ahp.pgAttach).toHaveBeenCalledWith('session', 'capable', 'conv')
     expect(pins.get('session')).toBe('ahp')
   })
+
+  describe('a conversation before its first send', () => {
+    const capable = { id: 'a', ahpWebchat: true } as never,
+      legacyOnly = { id: 'b', ahpWebchat: false } as never
+    function full(name: string) {
+      return {
+        ...adapter(name),
+        pgAddAgent: vi.fn(async () => true),
+        pgRemoveAgent: vi.fn(async () => true),
+        pgDiscard: vi.fn(),
+        setPgInput: vi.fn(),
+        setPgImage: vi.fn(),
+        getPgImage: vi.fn(),
+        getPgFiles: vi.fn(() => []),
+        setPgFiles: vi.fn(),
+        getPgWorktree: vi.fn(),
+        pgSetWorktree: vi.fn(),
+        pgStageRuntime: vi.fn()
+      } as unknown as PlaygroundData
+    }
+    function setup() {
+      const legacy = full('old'),
+        ahp = full('new'),
+        pins = new Map<string, PlaygroundProtocol>()
+      vi.mocked(ahp.getPgSession).mockImplementation((id) =>
+        id === 'new' || id === 'real' ? ({ id: 'new', realSessionId: 'real' } as never) : undefined
+      )
+      const ui = selectPlayground(legacy, ahp, pins, (target) =>
+        'agents' in target ? protocolFor(target.agents, 'ahp') : undefined
+      )
+      return { legacy, ahp, pins, ui }
+    }
+    it('moves to legacy, draft and all, when a member without AHP joins', async () => {
+      const { legacy, ahp, ui } = setup()
+      expect(ui.openPlayground(capable)).toBe('new')
+      ui.pgStageRuntime('real', { model: 'm' })
+      expect(await ui.pgAddAgent('real', legacyOnly)).toBe(true)
+      expect(ahp.pgAddAgent).not.toHaveBeenCalled()
+      expect(legacy.openPlayground).toHaveBeenCalledWith(capable, [legacyOnly], undefined)
+      expect(legacy.setPgInput).toHaveBeenCalledWith('old', 'new')
+      expect(legacy.pgStageRuntime).toHaveBeenCalledWith('old', { model: 'm' })
+      expect(ahp.pgDiscard).toHaveBeenCalledWith('new')
+      ui.pgSend('real', 'a', 'Hello both')
+      expect(legacy.pgSend).toHaveBeenCalledWith('old', 'a', 'Hello both')
+      expect(ahp.pgSend).not.toHaveBeenCalled()
+    })
+    it('settles on AHP at the first send once the member without it has left', async () => {
+      const { legacy, ahp, ui } = setup()
+      const id = ui.openPlayground(capable, [legacyOnly])
+      expect(id).toBe('old')
+      await ui.pgRemoveAgent(id, 'b')
+      ui.pgSend(id, 'a', 'Just you')
+      expect(ahp.openPlayground).toHaveBeenCalledWith(capable, [], undefined)
+      expect(legacy.pgDiscard).toHaveBeenCalledWith('old')
+      expect(ahp.pgSend).toHaveBeenCalledWith('new', 'a', 'Just you')
+      expect(legacy.pgSend).not.toHaveBeenCalled()
+    })
+    it('keeps a conversation on its protocol once it has sent', async () => {
+      const { legacy, ahp, ui } = setup()
+      const id = ui.openPlayground(capable)
+      ui.pgSend(id, 'a', 'First')
+      await ui.pgAddAgent(id, legacyOnly)
+      expect(ahp.pgAddAgent).toHaveBeenCalledWith('new', legacyOnly)
+      expect(legacy.openPlayground).not.toHaveBeenCalled()
+    })
+  })
 })

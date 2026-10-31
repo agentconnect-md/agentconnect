@@ -39,6 +39,8 @@ export interface PlaygroundData {
   pgAddAgent: (id: string, agent: Agent) => Promise<boolean>
   /** Remove a non-primary member from a live conversation (§3.1a), then reconnect so the relay re-verifies the shrunk roster; refused while a turn streams or queues. */
   pgRemoveAgent: (id: string, agentId: string) => Promise<boolean>
+  /** Close a conversation that never sent a turn, as when its first send moves it to the other protocol. */
+  pgDiscard: (id: string) => void
   /** Returns whether the send was ACCEPTED — false only when there is nothing to
    *  send. A send while a turn is still streaming is accepted too: it QUEUES
    *  (Claude Code-style) and dispatches in order as turns finish. Callers that

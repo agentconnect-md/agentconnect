@@ -211,4 +211,11 @@ describe('AHP UI store', () => {
     expect(await store.getValue().pgRemoveAgent(id, 'b')).toBe(true)
     expect(store.getValue().getPgSession(id)!.participants).toEqual([{ agentId: 'a', name: 'Alpha', primary: true }])
   })
+  it('discards a conversation that never sent', () => {
+    const id = store.getValue().openPlayground(agent)
+    expect(store.getValue().pgSessionList.map((session) => session.id)).toEqual([id])
+    store.getValue().pgDiscard(id)
+    expect(store.getValue().pgSessionList).toEqual([])
+    expect(store.getValue().getPgSession(id)).toBeUndefined()
+  })
 })
