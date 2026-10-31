@@ -64,7 +64,7 @@
     "@opentelemetry/semantic-conventions": "^1.43.0",
     "@resvg/resvg-wasm": "2.6.2",
     "@slack/bolt": "^5.1.0",
-    "@slack/web-api": "^8.2.0",
+    "@slack/web-api": "^8.3.0",
     "@tencent-connect/qqbot-nodejs": "1.0.5",
     "cborg": "^6.1.5",
     "chokidar": "^6.0.0",

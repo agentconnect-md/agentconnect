@@ -13,6 +13,7 @@ const text = z.string().trim().min(1)
 const reportArgs = z
   .object({
     title: text.max(150),
+    summary: z.array(text.max(1000)).min(1).max(6).optional(),
     sections: z
       .array(z.object({ title: text.max(150), text: text.max(3000), collapsed: z.boolean().optional() }))
       .max(10)
@@ -35,12 +36,20 @@ const reportArgs = z
       .optional()
   })
   .strict()
-  .refine((a) => a.sections?.length || a.table, 'Supply at least one section or table')
+  .refine((a) => a.summary?.length || a.sections?.length || a.table, 'Supply a summary, section or table')
 
 // Slack's table limit includes every cell, including column headings.
 export function slackReport(args: z.infer<typeof reportArgs>): { blocks: unknown[]; text: string } {
   const blocks: unknown[] = [{ type: 'header', text: { type: 'plain_text', text: args.title } }]
   const fallback = [args.title]
+  if (args.summary?.length) {
+    const summary = args.summary.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } }))
+    const rows = []
+    for (let i = 0; i < summary.length; i += 3)
+      rows.push({ items: summary.slice(i, i + 3).map((block) => ({ block })) })
+    blocks.push({ type: 'layout', label: args.title, rows, fallback: summary })
+    fallback.push(...args.summary)
+  }
   for (const section of args.sections ?? []) {
     blocks.push({
       type: 'container',
@@ -82,7 +91,7 @@ export function slackReport(args: z.infer<typeof reportArgs>): { blocks: unknown
 const descriptor: ToolDescriptor = {
   name: 'presentSlackReport',
   description:
-    'Publish substantial findings or multi-row comparisons in this Slack conversation with native collapsible sections and a sortable, paginated data table. Choose this when the results benefit from expandable details or sorting, even if the user did not request a format. Use sections.text as Slack mrkdwn. String cells are plain text; numeric cells sort numerically. Keep short answers and small tables in ordinary replies. This posts immediately; do not repeat the report in your final reply.',
+    'Publish substantial findings or multi-row comparisons in this Slack conversation with a multi-column summary, collapsible details and a sortable, paginated data table. Choose this when parallel facts, expandable details or sorting help the reader, even if the user did not request a format. Use optional summary for up to six short facts or metrics and sections for longer details; both accept Slack mrkdwn. String table cells are plain text; numeric cells sort numerically. Keep short answers and small tables in ordinary replies. This posts immediately; do not repeat the report in your final reply.',
   inputSchema: z.toJSONSchema(reportArgs, { unrepresentable: 'any' }) as ToolDescriptor['inputSchema']
 }
 

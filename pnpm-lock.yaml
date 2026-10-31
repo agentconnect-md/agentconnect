@@ -65,7 +65,7 @@ importers:
         version: 0.20.2(prettier@3.9.10)
       promptfoo:
         specifier: 0.125.1
-        version: 0.125.1(5355ca00ed44322804918b433bda2650)
+        version: 0.125.1(fab7d3f635e1fd954ab2ae3043d58b00)
       semver:
         specifier: ^7.8.5
         version: 7.8.5
@@ -251,8 +251,8 @@ importers:
         specifier: ^2.6.2
         version: 2.6.2
       '@slack/web-api':
-        specifier: ^8.2.0
-        version: 8.2.0
+        specifier: ^8.3.0
+        version: 8.3.0
       croner:
         specifier: ^11.0.0
         version: 11.0.0
@@ -390,8 +390,8 @@ importers:
         specifier: ^5.1.0
         version: 5.1.0(@types/express@5.0.6)(supports-color@7.2.0)(undici@8.12.3)
       '@slack/web-api':
-        specifier: ^8.2.0
-        version: 8.2.0
+        specifier: ^8.3.0
+        version: 8.3.0
       '@tencent-connect/qqbot-nodejs':
         specifier: 1.0.5
         version: 1.0.5
@@ -664,8 +664,8 @@ importers:
         specifier: ^1.9.1
         version: 1.9.1
       '@slack/web-api':
-        specifier: ^8.2.0
-        version: 8.2.0
+        specifier: ^8.3.0
+        version: 8.3.0
       fastify:
         specifier: ^5.12.7
         version: 5.12.7
@@ -3485,22 +3485,18 @@ packages:
     resolution: {integrity: sha512-Aqs5bGghT+VtNcdwVOQy7CcyCfDNd9YYnZsCRukIF9p1Mxuq4uL+BjqlWQB0SeS4wzrLzePPgvj8JDuQil+ezA==}
     engines: {node: '>=20', npm: '>=9.6.4'}
 
-  '@slack/socket-mode@3.1.0':
-    resolution: {integrity: sha512-F9T+FKbtsYRKV23X8l6WW1fx7ncqsMufg+HLA4ffHf/MvZSCvPunFw576ekmY0Q03kgTAIByTKDJxnM+wn1okg==}
+  '@slack/socket-mode@3.1.1':
+    resolution: {integrity: sha512-PtPzxkKTGWw7RWZVlQziNHt8ktSctjpzaVyC30K8AvMwGWwCNT+M/vLAI3AQko6d8X9eWo+hA8eNO4k6j8Qrfw==}
     engines: {node: '>=20', npm: '>=9.6.4'}
     peerDependencies:
       undici: ^7.0.0 || ^8.0.0
 
-  '@slack/types@3.1.0':
-    resolution: {integrity: sha512-bTzqrO3lxJ5iWedo1eJKNAs1koyEhaTwKLJUkD3KETnPeQvD978AAE4jvWstUws8Gbbc4JR6iYE6F7XjE8UGmw==}
+  '@slack/types@3.3.0':
+    resolution: {integrity: sha512-11r2kM9Zy/UlaV6OwPibZueVlyNJ5xtHEHK/iYDnPLyhQcxRtsifNAwNhJ1Lm0nszW4jrWCHThXCHCNJC/hvqg==}
     engines: {node: '>= 20', npm: '>=9.6.4'}
 
-  '@slack/types@3.2.0':
-    resolution: {integrity: sha512-IN4gdtlzQt8UJoj+1v+qAHeR4TxHO0KMlIs841SFfDQAcFFnsrWaGsEAE4goxVt8O/JOAFaGGdrFTzhNBop/Fg==}
-    engines: {node: '>= 20', npm: '>=9.6.4'}
-
-  '@slack/web-api@8.2.0':
-    resolution: {integrity: sha512-bIW8/8BLD/HLuHLIA2LfA7AhSokzui4swCbMJuwoRJxn/kzHVla6YEKLvN1nCFHK/DfX7g+4Wj3ess/ZSh/tWQ==}
+  '@slack/web-api@8.3.0':
+    resolution: {integrity: sha512-rGHDZggzG658Uc4yebenp3rVfVVToL0w8aOis40EfrstZCxg8FWS+ECGDIkw498Q9jxF/LVKgGbPfUeYntTrUQ==}
     engines: {node: '>= 20', npm: '>=9.6.4'}
 
   '@smithy/config-resolver@4.7.2':
@@ -12503,9 +12499,9 @@ snapshots:
     dependencies:
       '@slack/logger': 5.0.0
       '@slack/oauth': 4.0.0
-      '@slack/socket-mode': 3.1.0(undici@8.12.3)
-      '@slack/types': 3.1.0
-      '@slack/web-api': 8.2.0
+      '@slack/socket-mode': 3.1.1(undici@8.12.3)
+      '@slack/types': 3.3.0
+      '@slack/web-api': 8.3.0
       '@types/express': 5.0.6
       express: 5.2.1(supports-color@7.2.0)
       path-to-regexp: 8.4.2
@@ -12522,27 +12518,25 @@ snapshots:
   '@slack/oauth@4.0.0':
     dependencies:
       '@slack/logger': 5.0.0
-      '@slack/web-api': 8.2.0
+      '@slack/web-api': 8.3.0
       '@types/jsonwebtoken': 9.0.10
       '@types/node': 26.6.6
       jsonwebtoken: 9.0.3
 
-  '@slack/socket-mode@3.1.0(undici@8.12.3)':
+  '@slack/socket-mode@3.1.1(undici@8.12.3)':
     dependencies:
       '@slack/logger': 5.0.0
-      '@slack/web-api': 8.2.0
+      '@slack/web-api': 8.3.0
       '@types/node': 26.6.6
       eventemitter3: 5.0.4
       undici: 8.12.3
 
-  '@slack/types@3.1.0': {}
+  '@slack/types@3.3.0': {}
 
-  '@slack/types@3.2.0': {}
-
-  '@slack/web-api@8.2.0':
+  '@slack/web-api@8.3.0':
     dependencies:
       '@slack/logger': 5.0.0
-      '@slack/types': 3.2.0
+      '@slack/types': 3.3.0
       '@types/node': 26.6.6
       '@types/retry': 0.12.5
       eventemitter3: 5.0.4
@@ -17163,7 +17157,7 @@ snapshots:
 
   promise-limit@2.7.0: {}
 
-  promptfoo@0.125.1(5355ca00ed44322804918b433bda2650):
+  promptfoo@0.125.1(fab7d3f635e1fd954ab2ae3043d58b00):
     dependencies:
       '@anthropic-ai/sdk': 0.133.0(zod@4.6.7)
       '@apidevtools/json-schema-ref-parser': 16.0.5(@types/json-schema@7.0.15)
@@ -17262,7 +17256,7 @@ snapshots:
       '@openai/agents': 0.11.8(@aws-sdk/credential-provider-node@3.972.89)(@cfworker/json-schema@4.1.1)(@smithy/hash-node@4.5.2)(@smithy/signature-v4@5.7.4)(supports-color@7.2.0)(ws@8.22.0)(zod@4.6.7)
       '@openai/codex-sdk': 0.156.1
       '@opencode-ai/sdk': 1.19.4
-      '@slack/web-api': 8.2.0
+      '@slack/web-api': 8.3.0
       '@smithy/node-http-handler': 4.13.0
       google-auth-library: 11.3.1(supports-color@7.2.0)
       hono: 4.13.14

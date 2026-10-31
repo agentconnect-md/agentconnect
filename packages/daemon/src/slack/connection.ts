@@ -754,9 +754,10 @@ export type AppLike = {
       // predates it fails here with missing_scope rather than being marked broken.
       get: (a: unknown) => Promise<{ message?: { reactions?: { name?: string; count?: number; users?: string[] }[] } }>
     }
-    // Slack Canvas (`canvases:write`, plus `canvases:read` for the section anchors).
+    // Canvas bodies and heading anchors require canvases:read; edits require canvases:write.
     canvases: {
       create: (a: unknown) => Promise<{ canvas_id?: string }>
+      getContent: (a: unknown) => Promise<{ content?: string }>
       edit: (a: unknown) => Promise<unknown>
       sections: { lookup: (a: unknown) => Promise<{ sections?: { id?: string }[] }> }
     }
@@ -3459,31 +3460,25 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /**
-   * Read a canvas back.
-   *
-   * Slack publishes NO full-content read: `canvases:read` buys `canvases.sections.lookup`,
-   * which answers with section ids and no text. So the body is fetched the way any other
-   * Slack file is — `files.info` for the private URL, then the credentialed download this
-   * connection already performs — and is simply ABSENT when that path does not serve text.
-   * The metadata and the section anchors an edit needs are always returned.
-   */
+  // Read the complete Markdown body and fresh heading anchors through the Canvas API.
   async readCanvas(canvasId: string): Promise<PlatformCanvas> {
-    let file: { title?: string; permalink?: string; url_private?: string }
     try {
-      const res = await this.app.client.files.info({ file: canvasId })
-      file = res.file ?? {}
+      const [metadata, body, sections] = await Promise.all([
+        this.app.client.files.info({ file: canvasId }),
+        this.app.client.canvases.getContent({ canvas_id: canvasId, content_type: 'markdown' }),
+        this.canvasSections(canvasId)
+      ])
+      if (typeof body.content !== 'string') throw new Error('Slack canvases.getContent returned no content')
+      const file = metadata.file ?? {}
+      return {
+        id: canvasId,
+        ...(file.title ? { title: file.title } : {}),
+        ...(file.permalink ? { url: file.permalink } : {}),
+        markdown: body.content,
+        ...(sections ? { sections } : {})
+      }
     } catch (err) {
       throw this.toolFailure(err, 'reading a canvas')
-    }
-    const sections = await this.canvasSections(canvasId)
-    const bytes = file.url_private ? await this.downloadFile(file.url_private) : null
-    return {
-      id: canvasId,
-      ...(file.title ? { title: file.title } : {}),
-      ...(file.permalink ? { url: file.permalink } : {}),
-      ...(bytes ? { markdown: bytes.toString('utf8') } : {}),
-      ...(sections ? { sections } : {})
     }
   }
 
@@ -3539,15 +3534,7 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /**
-   * The addressable sections of a canvas, or undefined when the workspace did not grant
-   * `canvases:read` — the edit anchors are then unknown, not an error.
-   *
-   * HEADINGS ONLY, and that is the public API's ceiling rather than a choice: `criteria` is
-   * required and its `section_types` vocabulary is `any_header|h1|h2|h3`, so there is no
-   * request that returns every section. The ids are also invalidated by each edit, which is
-   * why `readCanvas` is documented as a call to make immediately before `updateCanvas`.
-   */
+  // Lookup exposes heading anchors only; fetch fresh IDs before each edit and omit them on failure.
   private async canvasSections(canvasId: string): Promise<{ id: string }[] | undefined> {
     try {
       const res = await this.app.client.canvases.sections.lookup({
