@@ -118,6 +118,27 @@ describe('reconcilePersistedLiveSteps', () => {
     ).toEqual([notice])
   })
 
+  it('retires a prompt with files once its row lands with the daemon’s attached-file note', () => {
+    const at = 1_785_000_000_000
+    const live = [
+      { ...prompt('read this', at), turnComplete: true },
+      { kind: 'done', turnId: `u:${at}`, agentId, text: 'PELICAN', observedAtMs: at + 100 }
+    ] satisfies [SessionStep, SessionStep]
+    const rows = [
+      persistedPrompt(1, 'read this\n[attached: secret.txt (text/plain)]', at + 10),
+      { seq: 2, ts: String(at + 200), text: 'PELICAN', sender: agentId, kind: 'text' }
+    ]
+    expect(reconcilePersistedLiveSteps(live, rows, agentId)).toEqual([])
+    const fileOnly: SessionStep[] = [{ ...live[0], text: '' }, live[1]]
+    expect(
+      reconcilePersistedLiveSteps(
+        fileOnly,
+        [persistedPrompt(1, '[attached: secret.txt (text/plain)]', at + 10), rows[1]!],
+        agentId
+      )
+    ).toEqual([])
+  })
+
   function persistedReply(seq: number, sender: string, text: string, ts: number, postId: string): SessionMessageDto {
     return { seq, ts: String(ts), text, sender, kind: 'text', postId }
   }
