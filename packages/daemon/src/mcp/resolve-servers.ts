@@ -39,6 +39,8 @@ export function resolveAgentMcpServers(opts: {
   hostsUiServer?: (name: string) => boolean
   /** Sandbox launches normalize trusted commands before HOME is hidden. */
   resolveStdioCommand?: (command: string, env: McpServerDef['env']) => string
+  /** The session's coordinate, sent as X-AC-* headers to an http/sse server with `sessionHeaders`. */
+  session?: { channel: string; thread: string; key: string }
   warn?: (msg: string) => void
 }): McpServer[] {
   const out: McpServer[] = []
@@ -75,7 +77,15 @@ export function resolveAgentMcpServers(opts: {
       )
       continue
     }
-    out.push({ type: def.transport, name, url: def.url!, headers: def.headers })
+    const session =
+      def.sessionHeaders && opts.session
+        ? [
+            { name: 'X-AC-Channel', value: opts.session.channel },
+            { name: 'X-AC-Thread', value: opts.session.thread },
+            { name: 'X-AC-Session', value: opts.session.key }
+          ]
+        : []
+    out.push({ type: def.transport, name, url: def.url!, headers: [...def.headers, ...session] })
   }
   return out
 }
