@@ -306,8 +306,11 @@ its key and installations, because only the App that created a Check can
 update it. The reporter therefore writes every existing Check with the App of
 the projection's last installation, on the agent path and in cleanup alike.
 A reaper deletes a retired App, with its key and installations, an hour after
-retirement (past any token minted under it) once no Check projection on its
-installations still owes GitHub a write. The App itself stays on GitHub until
+retirement (past any token minted under it) once every Check projection on its
+installations is finished for good: tombstoned and settled at failure, the test
+organization deletion uses. A live projection, even one with nothing queued,
+keeps the App, so an App the agent dropped stays until that agent's hooks or
+the agent itself are deleted. The App itself stays on GitHub until
 someone deletes it there.
 
 **Creation** uses GitHub's manifest flow, because GitHub creates an App only

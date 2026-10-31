@@ -4405,7 +4405,7 @@ export interface GithubAppRepo {
   listForOrg(orgId: OrgId): Promise<GithubAppRecord[]>
   /** Detaches the App from its agent (which falls back to the deployment App) and marks it retired. */
   retire(orgId: OrgId, id: string, at: Date): Promise<boolean>
-  /** Deletes Apps retired before `before` with no Check write left on their installations, and their keys and installations. */
+  /** Deletes Apps retired before `before` whose Check projections are all tombstoned and settled, with their keys and installations. */
   reapRetired(before: Date, limit: number): Promise<Array<{ id: string; orgId: OrgId; installationIds: bigint[] }>>
   /** Cascades to the App's installations; its agent falls back to the deployment App. */
   delete(orgId: OrgId, id: string): Promise<boolean>

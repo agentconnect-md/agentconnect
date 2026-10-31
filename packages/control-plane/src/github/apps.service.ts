@@ -203,7 +203,7 @@ export class GithubAppsService {
     return this.deps.apps.retire(orgId, id, new Date(this.deps.clock.now()))
   }
 
-  /** Deletes retired Apps once their grace has passed and no Check projection still needs them. */
+  /** Deletes retired Apps once their grace has passed and every Check they created is finished for good. */
   async reap(): Promise<number> {
     const reaped = await this.deps.apps.reapRetired(
       new Date(this.deps.clock.now() - RETIRED_APP_GRACE_MS),

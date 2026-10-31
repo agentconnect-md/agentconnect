@@ -102,7 +102,7 @@ describe('PgGithubAppRepo + PgGithubInstallationRepo (dedicated Apps)', () => {
     await expect(installations.getByInstallationId(45n)).resolves.toMatchObject({ githubAppId: goneApp.id })
   })
 
-  it('reaps a retired App after its grace once no Check projection on its installations has work left', async () => {
+  it('reaps a retired App after its grace only once every Check on its installations is finished for good', async () => {
     const apps = new PgGithubAppRepo(prisma)
     const installations = new PgGithubInstallationRepo(prisma)
     const retiredAt = new Date('2026-11-01T00:00:00Z')
@@ -123,18 +123,26 @@ describe('PgGithubAppRepo + PgGithubInstallationRepo (dedicated Apps)', () => {
         externalId: '55555555-5555-4555-8555-555555555555',
         mode: 'check',
         gateMode: 'informational',
-        desiredState: 'failure',
-        tombstonedAt: retiredAt,
-        nextAttemptAt: retiredAt
+        // A live review between two updates: nothing queued, yet its Check will be written again.
+        desiredState: 'in_progress',
+        observedState: 'in_progress'
       }
     })
 
-    // Still inside the grace, then past it but with cleanup still owed: kept.
+    // Inside the grace, and past it while that Check can still be updated: kept.
     await expect(apps.reapRetired(retiredAt, 10)).resolves.toEqual([])
     const later = new Date(retiredAt.getTime() + 2 * 60 * 60 * 1000)
     await expect(apps.reapRetired(later, 10)).resolves.toEqual([])
 
-    await prisma.hookReviewProjection.update({ where: { id: projection.id }, data: { nextAttemptAt: null } })
+    // A tombstone with cleanup still owed, then one settled at neutral (a later revocation can upgrade it): kept.
+    const update = (data: Parameters<typeof prisma.hookReviewProjection.update>[0]['data']) =>
+      prisma.hookReviewProjection.update({ where: { id: projection.id }, data })
+    await update({ tombstonedAt: retiredAt, desiredState: 'failure', nextAttemptAt: retiredAt })
+    await expect(apps.reapRetired(later, 10)).resolves.toEqual([])
+    await update({ desiredState: 'neutral', observedState: 'neutral', nextAttemptAt: null })
+    await expect(apps.reapRetired(later, 10)).resolves.toEqual([])
+
+    await update({ desiredState: 'failure', observedState: 'failure' })
     await expect(apps.reapRetired(later, 10)).resolves.toEqual([{ id: app.id, orgId: ORG, installationIds: [46n] }])
     await expect(apps.getUnscoped(app.id)).resolves.toBeNull()
     await expect(installations.getByInstallationId(46n)).resolves.toBeNull()

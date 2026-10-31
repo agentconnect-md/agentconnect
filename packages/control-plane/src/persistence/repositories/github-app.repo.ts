@@ -97,7 +97,7 @@ export class PgGithubAppRepo implements GithubAppRepo {
     limit: number
   ): Promise<Array<{ id: string; orgId: OrgId; installationIds: bigint[] }>> {
     return this.transaction(async (tx) => {
-      // A projection still owes GitHub a write while any of these is set: the test its own settle uses.
+      // Only a tombstone settled at failure can never be written again: the org-delete settle test, row for row.
       const rows = await tx.$queryRaw<Array<{ id: string; orgId: string }>>`
         SELECT a."id", a."orgId" FROM "github_app" a
         WHERE a."retiredAt" < ${before}
@@ -105,8 +105,24 @@ export class PgGithubAppRepo implements GithubAppRepo {
             SELECT 1 FROM "hook_review_projection" p
             JOIN "github_installation" i ON i."installationId" = p."lastResolvedInstallationId"
             WHERE i."githubAppId" = a."id"
-              AND (p."writeMarker" IS NOT NULL OR p."writePhase" IS NOT NULL OR p."pendingIntent" IS NOT NULL
-                OR p."leaseOwner" IS NOT NULL OR p."nextAttemptAt" IS NOT NULL))
+              AND NOT (
+                p."tombstonedAt" IS NOT NULL
+                AND p."writeMarker" IS NULL AND p."writePhase" IS NULL AND p."writeStartedAt" IS NULL
+                AND p."pendingIntent" IS NULL AND p."leaseOwner" IS NULL AND p."leaseUntil" IS NULL
+                AND p."nextAttemptAt" IS NULL
+                AND p."desiredState" = 'failure'
+                AND (
+                  p."observedState" = 'failure'
+                  OR (
+                    p."observedState" = 'action_required'
+                    AND p."subjectSyncGeneration" = p."generation"
+                    AND p."subjectSyncErrorCode" IN (
+                      'pr_association_incomplete', 'no_current_pull_request', 'stale_head', 'shared_head_multiple_prs'
+                    )
+                    AND p."lastErrorCode" = p."subjectSyncErrorCode"
+                  )
+                )
+              ))
         ORDER BY a."retiredAt"
         LIMIT ${limit}
         FOR UPDATE OF a SKIP LOCKED`
