@@ -82,23 +82,62 @@ describe('PgGithubAppRepo + PgGithubInstallationRepo (dedicated Apps)', () => {
     expect((await apps.listForOrg(ORG)).map((a) => a.slug)).toEqual(['example-coder'])
   })
 
-  it('deleting the App detaches its agent; deleting the agent deletes its App and installations', async () => {
+  it('retires the App when its agent drops it or is deleted, keeping its key and installations', async () => {
     const apps = new PgGithubAppRepo(prisma)
     const installations = new PgGithubInstallationRepo(prisma)
     const kept = await agent('kept')
     const keptApp = (await apps.createForAgent(appFor(kept, 2004n, 'example-kept')))!
     await installations.upsertFromGithub(ORG, facts(44n), keptApp.id)
-    await expect(apps.get(OrgId('other-org'), keptApp.id)).resolves.toBeNull()
-    await expect(apps.delete(ORG, keptApp.id)).resolves.toBe(true)
-    await expect(installations.getByInstallationId(44n)).resolves.toBeNull()
+    await expect(apps.retire(OrgId('other-org'), keptApp.id, new Date())).resolves.toBe(false)
+    await expect(apps.retire(ORG, keptApp.id, new Date())).resolves.toBe(true)
     await expect(prisma.agent.findUniqueOrThrow({ where: { id: kept } })).resolves.toMatchObject({ githubAppId: null })
+    await expect(apps.get(ORG, keptApp.id)).resolves.toMatchObject({ agentId: null, retiredAt: expect.any(Date) })
+    await expect(installations.getByInstallationId(44n)).resolves.toMatchObject({ githubAppId: keptApp.id })
 
     const gone = await agent('gone')
     const goneApp = (await apps.createForAgent(appFor(gone, 2005n, 'example-gone')))!
     await installations.upsertFromGithub(ORG, facts(45n), goneApp.id)
     await new PgAgentRepo(prisma).delete(ORG, AgentId(gone))
-    await expect(apps.getUnscoped(goneApp.id)).resolves.toBeNull()
-    await expect(installations.getByInstallationId(45n)).resolves.toBeNull()
+    await expect(apps.getUnscoped(goneApp.id)).resolves.toMatchObject({ agentId: null, retiredAt: expect.any(Date) })
+    await expect(installations.getByInstallationId(45n)).resolves.toMatchObject({ githubAppId: goneApp.id })
+  })
+
+  it('reaps a retired App after its grace once no Check projection on its installations has work left', async () => {
+    const apps = new PgGithubAppRepo(prisma)
+    const installations = new PgGithubInstallationRepo(prisma)
+    const retiredAt = new Date('2026-11-01T00:00:00Z')
+    const app = (await apps.createForAgent(appFor(await agent('reaped'), 2007n, 'example-reaped')))!
+    await installations.upsertFromGithub(ORG, facts(46n), app.id)
+    await apps.retire(ORG, app.id, retiredAt)
+    const projection = await prisma.hookReviewProjection.create({
+      data: {
+        hookId: '33333333-3333-4333-8333-333333333333',
+        orgId: ORG,
+        agentId: '44444444-4444-4444-8444-444444444444',
+        lastResolvedInstallationId: 46n,
+        repoId: 9n,
+        repoFullName: 'acme/tools',
+        headSha: 'a'.repeat(40),
+        reportSha: 'a'.repeat(40),
+        projectionEpoch: 1n,
+        externalId: '55555555-5555-4555-8555-555555555555',
+        mode: 'check',
+        gateMode: 'informational',
+        desiredState: 'failure',
+        tombstonedAt: retiredAt,
+        nextAttemptAt: retiredAt
+      }
+    })
+
+    // Still inside the grace, then past it but with cleanup still owed: kept.
+    await expect(apps.reapRetired(retiredAt, 10)).resolves.toEqual([])
+    const later = new Date(retiredAt.getTime() + 2 * 60 * 60 * 1000)
+    await expect(apps.reapRetired(later, 10)).resolves.toEqual([])
+
+    await prisma.hookReviewProjection.update({ where: { id: projection.id }, data: { nextAttemptAt: null } })
+    await expect(apps.reapRetired(later, 10)).resolves.toEqual([{ id: app.id, orgId: ORG, installationIds: [46n] }])
+    await expect(apps.getUnscoped(app.id)).resolves.toBeNull()
+    await expect(installations.getByInstallationId(46n)).resolves.toBeNull()
   })
 
   it('seals the private key under the org and refuses a cross-org write', async () => {

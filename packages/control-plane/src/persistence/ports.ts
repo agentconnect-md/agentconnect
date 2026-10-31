@@ -4375,12 +4375,14 @@ export interface GithubInstallStateStore {
 export interface GithubAppRecord {
   id: string
   orgId: OrgId
-  /** The agent that owns the App; null only in the instant between its deletion and the App's. */
+  /** The agent that owns the App; null once retired. */
   agentId: string | null
   appId: bigint
   slug: string
   clientId: string | null
   botUserId: bigint | null
+  /** Its agent was deleted or dropped it; it signs only for the Checks it already created. */
+  retiredAt: Date | null
   createdAt: Date
 }
 
@@ -4401,6 +4403,10 @@ export interface GithubAppRepo {
   getUnscoped(id: string): Promise<GithubAppRecord | null>
   getForAgent(orgId: OrgId, agentId: string): Promise<GithubAppRecord | null>
   listForOrg(orgId: OrgId): Promise<GithubAppRecord[]>
+  /** Detaches the App from its agent (which falls back to the deployment App) and marks it retired. */
+  retire(orgId: OrgId, id: string, at: Date): Promise<boolean>
+  /** Deletes Apps retired before `before` with no Check write left on their installations, and their keys and installations. */
+  reapRetired(before: Date, limit: number): Promise<Array<{ id: string; orgId: OrgId; installationIds: bigint[] }>>
   /** Cascades to the App's installations; its agent falls back to the deployment App. */
   delete(orgId: OrgId, id: string): Promise<boolean>
 }

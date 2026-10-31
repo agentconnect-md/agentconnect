@@ -1156,6 +1156,13 @@ export class GithubService {
     return { cred: minted.cred, resolved }
   }
 
+  /** The App that signs a Check last written through `installationId`: its dedicated App id, null for the deployment App, undefined when unknown. */
+  async checkSignerAppOf(orgId: OrgId, installationId: bigint | null | undefined): Promise<string | null | undefined> {
+    if (installationId == null) return undefined
+    const row = await this.deps.installations.getByInstallationId(installationId)
+    return row?.orgId === orgId ? (row.githubAppId ?? null) : undefined
+  }
+
   /** Cleanup-only Checks capability for a tombstoned projection after its
    * Agent or per-repository authorization has been deleted. The durable
    * projection supplies org + numeric repo identity; this method still
@@ -1175,9 +1182,7 @@ export class GithubService {
     const [owner, repo] = repoFullName.split('/')
     if (!owner || !repo) throw new GitCredDeniedError('invalid github repository name', 'SCOPE_DENIED', false)
     // Only the App that created a Check can update it, so the last installation picks the App; authority is still re-resolved.
-    const last =
-      lastInstallationId != null ? await this.deps.installations.getByInstallationId(lastInstallationId) : null
-    const githubAppId = last?.orgId === orgId ? last.githubAppId : null
+    const githubAppId = (await this.checkSignerAppOf(orgId, lastInstallationId)) ?? null
     let installation = await this.deps.installations.liveByOrgAndAccount(orgId, owner, githubAppId)
     if (!installation || installation.suspendedAt) {
       throw new GitCredDeniedError(`no live github installation covers ${owner}`, 'LEASE_DENIED', false)

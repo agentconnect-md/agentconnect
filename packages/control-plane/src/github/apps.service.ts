@@ -1,6 +1,6 @@
 // Agents' dedicated GitHub Apps: created through GitHub's manifest flow, synced from their own setup redirect (§Dedicated Apps).
 import { randomUUID } from 'node:crypto'
-import type { Clock } from '../domain/clock.js'
+import type { Clock, TimerHandle } from '../domain/clock.js'
 import { OrgId } from '../domain/ids.js'
 import type {
   GithubAppRecord,
@@ -48,6 +48,10 @@ const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/
 const APP_NAME_MAX = 34
 /** A setup redirect is unauthenticated, so one App's roster is pulled at most this often from it. */
 const SETUP_SYNC_INTERVAL_MS = 10_000
+/** A retired App outlives the hour a token minted under it stays valid. */
+const RETIRED_APP_GRACE_MS = 60 * 60 * 1000
+const RETIRED_APP_REAP_INTERVAL_MS = 10 * 60 * 1000
+const RETIRED_APP_REAP_LIMIT = 100
 
 export class GithubAppRegistrationError extends Error {
   constructor(message: string) {
@@ -74,6 +78,7 @@ export interface GithubAppsServiceDeps {
   onInstallationChanged?: (installationId: bigint, orgId: OrgId) => void | Promise<void>
   /** The org's set of dedicated Apps changed (compiled hook rules name their bots). */
   onAppsChanged?: (orgId: OrgId) => void | Promise<void>
+  log?: { warn(obj: unknown, msg?: string): void }
   fetchImpl?: FetchLike
   baseUrl?: string
 }
@@ -81,6 +86,8 @@ export interface GithubAppsServiceDeps {
 export class GithubAppsService {
   private readonly stateKey: Buffer
   private readonly lastSetupSync = new Map<string, number>()
+  private timer: TimerHandle | undefined
+  private stopped = false
 
   constructor(private readonly deps: GithubAppsServiceDeps) {
     this.stateKey = deriveManifestStateKey(deps.pepper)
@@ -191,14 +198,48 @@ export class GithubAppsService {
     )
   }
 
-  async delete(orgId: OrgId, id: string): Promise<boolean> {
-    const claimed = await this.installationsOf(orgId, id)
-    const deleted = await this.deps.apps.delete(orgId, id)
-    if (!deleted) return false
-    this.deps.registry.invalidate(id)
-    for (const row of claimed) await this.deps.onInstallationChanged?.(row.installationId, orgId)
-    await this.deps.onAppsChanged?.(orgId)
-    return true
+  /** The agent drops its App and falls back to the deployment App; the App stays, retired, to close its own Checks. */
+  remove(orgId: OrgId, id: string): Promise<boolean> {
+    return this.deps.apps.retire(orgId, id, new Date(this.deps.clock.now()))
+  }
+
+  /** Deletes retired Apps once their grace has passed and no Check projection still needs them. */
+  async reap(): Promise<number> {
+    const reaped = await this.deps.apps.reapRetired(
+      new Date(this.deps.clock.now() - RETIRED_APP_GRACE_MS),
+      RETIRED_APP_REAP_LIMIT
+    )
+    for (const app of reaped) {
+      this.deps.registry.invalidate(app.id)
+      this.lastSetupSync.delete(app.id)
+      for (const installationId of app.installationIds) {
+        await this.deps.onInstallationChanged?.(installationId, app.orgId)
+      }
+      await this.deps.onAppsChanged?.(app.orgId)
+    }
+    return reaped.length
+  }
+
+  /** Arm the periodic reap; armed by the container's background start, never in tests. */
+  start(): void {
+    this.stopped = false
+    this.arm()
+  }
+
+  stop(): void {
+    this.stopped = true
+    if (this.timer !== undefined) this.deps.clock.clearTimeout(this.timer)
+    this.timer = undefined
+  }
+
+  private arm(): void {
+    if (this.stopped) return
+    this.timer = this.deps.clock.setTimeout(() => {
+      this.timer = undefined
+      void this.reap()
+        .catch((err: unknown) => this.deps.log?.warn({ err }, 'github app reap failed'))
+        .finally(() => this.arm())
+    }, RETIRED_APP_REAP_INTERVAL_MS)
   }
 
   private async syncInstallations(app: GithubAppRecord, cfg: GithubAppConfig): Promise<GithubInstallationRecord[]> {

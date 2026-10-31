@@ -1504,6 +1504,7 @@ export function buildContainer(
             await wakeGithubReviewProjections(installationId, orgId)
           },
           onAppsChanged: (orgId) => hookService.rebroadcastGithubForOrg(orgId),
+          log: { warn: (obj, msg) => http.log.warn(obj, msg) },
           ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
         })
       : undefined
@@ -3649,6 +3650,7 @@ export function buildContainer(
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
       agentMemoryStagingSweeper.start()
+      githubApps?.start()
       githubRunReporter?.start()
       giteaStatusReporter.start()
       hookRedeliveryReconciler?.start()
@@ -3686,6 +3688,7 @@ export function buildContainer(
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       agentMemoryStagingSweeper.stop()
+      githubApps?.stop()
       githubRunReporter?.stop()
       giteaStatusReporter.stop()
       hookRedeliveryReconciler?.stop()

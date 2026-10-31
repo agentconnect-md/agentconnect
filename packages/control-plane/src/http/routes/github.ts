@@ -576,7 +576,7 @@ export function githubRoutes(deps: HttpDeps) {
             tags: [Tag.GitHub],
             summary: "Remove an agent's dedicated GitHub App",
             description:
-              "Forgets the App, its key and its installations; the agent returns to the deployment App's bot. The App itself stays on GitHub until someone deletes it there.",
+              "The agent returns to the deployment App's bot. The App is retired: it keeps closing the Checks it created, then its key and installations are deleted. The App itself stays on GitHub until someone deletes it there.",
             operationId: 'deleteAgentGithubApp',
             params: IdParam,
             response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto }
@@ -586,7 +586,7 @@ export function githubRoutes(deps: HttpDeps) {
           const agent = await agentFor(req, reply, true)
           if (!agent) return reply
           const app = await apps.getForAgent(orgOf(req), agent.id)
-          if (!app || !(await apps.delete(orgOf(req), app.id))) return notFound(reply)
+          if (!app || !(await apps.remove(orgOf(req), app.id))) return notFound(reply)
           return reply.code(204).send(null)
         }
       )

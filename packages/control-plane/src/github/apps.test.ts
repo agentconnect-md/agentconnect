@@ -42,6 +42,7 @@ function app(over: Partial<GithubAppRecord> = {}): GithubAppRecord {
     slug: 'example-review',
     clientId: null,
     botUserId: 77n,
+    retiredAt: null,
     createdAt: new Date(0),
     ...over
   }
@@ -149,6 +150,17 @@ describe('GithubAppsService', () => {
         getUnscoped: async (id) => rows.find((r) => r.id === id) ?? null,
         getForAgent: async (_org, agentId) => rows.find((r) => r.agentId === agentId) ?? null,
         listForOrg: async () => rows,
+        retire: async (_org, id, at) => {
+          const row = rows.find((r) => r.id === id && r.retiredAt === null)
+          if (!row) return false
+          Object.assign(row, { retiredAt: at, agentId: null })
+          return true
+        },
+        reapRetired: async (before) => {
+          const gone = rows.filter((r) => r.retiredAt !== null && r.retiredAt < before)
+          for (const r of gone) rows.splice(rows.indexOf(r), 1)
+          return gone.map((r) => ({ id: r.id, orgId: r.orgId, installationIds: [43n] }))
+        },
         delete: async (_org, id) => {
           const i = rows.findIndex((r) => r.id === id)
           if (i < 0) return false
@@ -256,18 +268,23 @@ describe('GithubAppsService', () => {
     await expect(h.svc.completeSetup('00000000-0000-4000-8000-000000000000')).resolves.toBeNull()
   })
 
-  it('delete forgets the App, drops its signer and invalidates its installations', async () => {
+  it('remove retires the App, which keeps signing until the reaper deletes it after the grace', async () => {
     const h = harness()
     await h.svc.completeManifest((await started(h)).state, 'code-1')
     const id = h.rows[0]!.id
-    await h.svc.sync(ORG, id)
-    h.changed.length = 0
     h.appsChanged.mockClear()
-    await expect(h.svc.delete(ORG, id)).resolves.toBe(true)
+    h.invalidate.mockClear()
+    await expect(h.svc.remove(ORG, id)).resolves.toBe(true)
+    expect(h.rows[0]).toMatchObject({ id, agentId: null, retiredAt: new Date(h.clock.now()) })
+    expect(h.invalidate).not.toHaveBeenCalled()
+    await expect(h.svc.remove(ORG, id)).resolves.toBe(false)
+
+    await expect(h.svc.reap()).resolves.toBe(0)
+    h.clock.advance(60 * 60 * 1000 + 1)
+    await expect(h.svc.reap()).resolves.toBe(1)
     expect(h.rows).toEqual([])
-    expect(h.invalidate).toHaveBeenLastCalledWith(id)
-    expect(h.changed).toEqual([43n])
+    expect(h.invalidate).toHaveBeenCalledWith(id)
+    expect(h.changed).toContain(43n)
     expect(h.appsChanged).toHaveBeenCalledWith(ORG)
-    await expect(h.svc.delete(ORG, id)).resolves.toBe(false)
   })
 })

@@ -300,9 +300,15 @@ agent can get its own App: one App belongs to exactly one agent
 (`Agent.githubAppId`, unique), so its bot names that agent on GitHub. The
 `GithubApp` row holds the App id, slug, client id and bot user id; the private
 key is in `GithubAppSecret`, sealed under the org scope and read only by the
-token signer. Deleting the App returns the agent to the deployment App and
-cascades to the App's installations; deleting the agent deletes its App. The
-App itself stays on GitHub until someone deletes it there.
+token signer. When the agent drops its App or is deleted, the App is retired
+(`retiredAt`): the agent falls back to the deployment App, but the App keeps
+its key and installations, because only the App that created a Check can
+update it. The reporter therefore writes every existing Check with the App of
+the projection's last installation, on the agent path and in cleanup alike.
+A reaper deletes a retired App, with its key and installations, an hour after
+retirement (past any token minted under it) once no Check projection on its
+installations still owes GitHub a write. The App itself stays on GitHub until
+someone deletes it there.
 
 **Creation** uses GitHub's manifest flow, because GitHub creates an App only
 after a person confirms it. From the agent's edit dialog the console asks the

@@ -3379,6 +3379,8 @@ model GithubApp {
   slug      String // github.com/apps/<slug>; the bot login is `<slug>[bot]`
   clientId  String? // JWT issuer when known (GitHub's recommendation); else the App id
   botUserId BigInt? // user id of `<slug>[bot]`, resolved on registration; null ⇒ unknown
+  // Set when its agent is deleted or drops it; the App keeps signing its Checks until the reaper removes it.
+  retiredAt DateTime? @db.Timestamptz(6)
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 

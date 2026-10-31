@@ -1325,8 +1325,10 @@ export class PgAgentRepo implements AgentRepo {
       // (the FK SetNull would orphan the row from this agentId lookup).
       await settlePresetPlacement(tx, agentId)
       if (row) await pruneKnowledgeReaders(tx, row.orgId, agentId)
-      // A dedicated GitHub App belongs to its agent: its row, sealed key and installations go with it.
-      if (row?.githubAppId) await tx.githubApp.deleteMany({ where: { id: row.githubAppId, orgId } })
+      // The agent's dedicated App outlives it, retired, so it can still close the Checks it created.
+      if (row?.githubAppId) {
+        await tx.githubApp.updateMany({ where: { id: row.githubAppId, orgId }, data: { retiredAt: new Date() } })
+      }
       await tx.agent.delete({ where: { id: agentId, orgId } })
       return removedHooks
     })

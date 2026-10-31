@@ -17,6 +17,7 @@ function toRecord(r: GithubApp & { agent: { id: string } | null }): GithubAppRec
     slug: r.slug,
     clientId: r.clientId,
     botUserId: r.botUserId,
+    retiredAt: r.retiredAt,
     createdAt: r.createdAt
   }
 }
@@ -80,6 +81,48 @@ export class PgGithubAppRepo implements GithubAppRepo {
       orderBy: { slug: 'asc' }
     })
     return rows.map(toRecord)
+  }
+
+  async retire(orgId: OrgId, id: string, at: Date): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const res = await tx.githubApp.updateMany({ where: { id, orgId, retiredAt: null }, data: { retiredAt: at } })
+      if (res.count === 0) return false
+      await tx.agent.updateMany({ where: { orgId, githubAppId: id }, data: { githubAppId: null } })
+      return true
+    })
+  }
+
+  async reapRetired(
+    before: Date,
+    limit: number
+  ): Promise<Array<{ id: string; orgId: OrgId; installationIds: bigint[] }>> {
+    return this.transaction(async (tx) => {
+      // A projection still owes GitHub a write while any of these is set: the test its own settle uses.
+      const rows = await tx.$queryRaw<Array<{ id: string; orgId: string }>>`
+        SELECT a."id", a."orgId" FROM "github_app" a
+        WHERE a."retiredAt" < ${before}
+          AND NOT EXISTS (
+            SELECT 1 FROM "hook_review_projection" p
+            JOIN "github_installation" i ON i."installationId" = p."lastResolvedInstallationId"
+            WHERE i."githubAppId" = a."id"
+              AND (p."writeMarker" IS NOT NULL OR p."writePhase" IS NOT NULL OR p."pendingIntent" IS NOT NULL
+                OR p."leaseOwner" IS NOT NULL OR p."nextAttemptAt" IS NOT NULL))
+        ORDER BY a."retiredAt"
+        LIMIT ${limit}
+        FOR UPDATE OF a SKIP LOCKED`
+      if (rows.length === 0) return []
+      const ids = rows.map((row) => row.id)
+      const installations = await tx.githubInstallation.findMany({
+        where: { githubAppId: { in: ids } },
+        select: { installationId: true, githubAppId: true }
+      })
+      await tx.githubApp.deleteMany({ where: { id: { in: ids } } })
+      return rows.map((row) => ({
+        id: row.id,
+        orgId: OrgId(row.orgId),
+        installationIds: installations.filter((i) => i.githubAppId === row.id).map((i) => i.installationId)
+      }))
+    })
   }
 
   async delete(orgId: OrgId, id: string): Promise<boolean> {

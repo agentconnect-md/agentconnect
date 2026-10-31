@@ -6,6 +6,7 @@ CREATE TABLE "github_app" (
     "slug" TEXT NOT NULL,
     "clientId" TEXT,
     "botUserId" BIGINT,
+    "retiredAt" TIMESTAMPTZ(6),
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMPTZ(6) NOT NULL,
 
