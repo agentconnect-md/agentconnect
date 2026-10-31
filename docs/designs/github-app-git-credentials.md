@@ -346,7 +346,9 @@ picks the secret by the `X-GitHub-Hook-Installation-Target-ID` header, the App
 id GitHub names the sender with. The CP pushes each App's id and webhook secret
 to every relay that advertises `github-app-webhook-v1` (`rc/github-app-assign`
 when the App is created, `rc/github-app-unassign` when the reaper deletes it,
-and a `github-app` replay snapshot when a relay registers). The header only
+and a `github-app` replay snapshot when a relay registers). A retired App keeps
+its webhook until then, so re-runs on its Checks still arrive and its roster
+stays current. The header only
 selects the secret: a delivery naming a dedicated App verifies against that
 App's secret alone, never the deployment App's, and an id the relay does not
 hold falls back to the deployment App's secret and path. A verified delivery is

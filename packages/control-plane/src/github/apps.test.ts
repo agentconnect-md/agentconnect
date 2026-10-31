@@ -353,6 +353,16 @@ describe('GithubAppsService', () => {
     expect(h.calls.filter((c) => c.includes('/app/installations'))).toHaveLength(2)
   })
 
+  it('keeps a retired App on the relays and its roster current until the reaper deletes it', async () => {
+    const h = harness({ relay: 'https://relay.example.test', webhookSecret: 'whsec-example' })
+    await h.svc.completeManifest((await started(h)).state, 'code-1')
+    const id = h.rows[0]!.id
+    await h.svc.remove(ORG, id)
+    expect(h.unassigned).toEqual([])
+    await h.svc.syncFromWebhook(2000n)
+    expect(h.claimed).toEqual([{ orgId: ORG, installationId: 43n, githubAppId: id }])
+  })
+
   it('remove retires the App, which keeps signing until the reaper deletes it after the grace', async () => {
     const h = harness()
     await h.svc.completeManifest((await started(h)).state, 'code-1')
