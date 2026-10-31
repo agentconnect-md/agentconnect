@@ -553,9 +553,9 @@ export class GithubRunReporter {
           projection.checkRunId !== null
             ? await this.deps.github.checkSignerAppOf(OrgId(projection.orgId), projection.lastResolvedInstallationId)
             : undefined
-        const signer = creator === undefined ? agent : { ...agent, githubAppId: creator }
-        const minted = await this.deps.github.mintChecksForAgent(signer, projection.repoId, projection.repoFullName, {
-          installationGrants: hook?.installationId != null
+        const minted = await this.deps.github.mintChecksForAgent(agent, projection.repoId, projection.repoFullName, {
+          installationGrants: hook?.installationId != null,
+          ...(creator !== undefined ? { signerAppId: creator } : {})
         })
         token = minted.cred.token
         repoFullName = minted.resolved.repoFullName

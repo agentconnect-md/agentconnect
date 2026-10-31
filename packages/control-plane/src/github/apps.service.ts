@@ -287,7 +287,10 @@ export class GithubAppsService {
       clientId: app.clientId,
       privateKeyB64
     })
-    return this.syncInstallations(app, cfg)
+    const live = await this.syncInstallations(app, cfg)
+    // Repository rules carry the App's live installation ids, so a reinstall needs them recompiled.
+    await this.deps.onAppsChanged?.(orgId)
+    return live
   }
 
   /** Installations claimed for an App. */

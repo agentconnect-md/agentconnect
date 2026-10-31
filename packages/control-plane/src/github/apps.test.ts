@@ -137,6 +137,7 @@ describe('GithubAppsService', () => {
           { status: 201 }
         )
       }
+      if (url.includes('/app/installations')) return Response.json([])
       throw new Error(`unexpected github call: ${url}`)
     }
     const installs = opts.installations ?? [installation({ accountLogin: 'acme', accountType: 'Organization' })]
@@ -277,6 +278,14 @@ describe('GithubAppsService', () => {
       coverage: [{ target: 'acme/tools', kind: 'workspace', covered: false }]
     })
     expect(uncovered.switches).toEqual([])
+  })
+
+  it("re-compiles the org after re-pulling an App's installations, so a reinstall reaches the relay", async () => {
+    const h = harness()
+    h.rows.push(app({ id: 'own', agentId: 'agent-1' }))
+    h.secrets.set('own', REVIEW_KEY_B64)
+    await h.svc.sync(ORG, 'own')
+    expect(h.appsChanged).toHaveBeenCalledWith(ORG)
   })
 
   it('deletes only a free App', async () => {

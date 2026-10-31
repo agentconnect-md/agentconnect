@@ -1624,6 +1624,49 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     })
   })
 
+  it("an existing Check is signed by the App that created it, authorized by the agent's current grant", async () => {
+    const REVIEW_SCRATCH = { ...(SCRATCH_AGENT as object), githubAppId: 'app-review' } as never
+    const reporter = { pull_requests: 'write', checks: 'write' }
+    const grant: AgentInstallationAuthorizationRecord = {
+      id: 'ia-1',
+      agentId: 'agent-scratch' as never,
+      provider: 'github',
+      installationId: 43n,
+      accountLogin: 'acme',
+      access: 'write',
+      materialize: 'on-demand',
+      createdAt: new Date(0),
+      createdBy: null
+    }
+    const { svc } = harness({
+      rows: [],
+      installationGrants: [grant],
+      installationsByAccount: {
+        acme: installation({ permissions: reporter }),
+        'acme@app-review': installation({
+          id: 'row-2',
+          installationId: 43n,
+          githubAppId: 'app-review',
+          permissions: reporter
+        })
+      },
+      repoRefs: { 'acme/tools': { id: 111, full_name: 'acme/tools' } }
+    })
+
+    // The switch moved the grant to the agent's App (43); the built-in App (42) created the Check and still signs it.
+    const minted = await svc.mintChecksForAgent(REVIEW_SCRATCH, 111n, 'acme/tools', {
+      installationGrants: true,
+      signerAppId: null
+    })
+    expect(minted.resolved.installation.installationId).toBe(42n)
+    const own = await svc.mintChecksForAgent(REVIEW_SCRATCH, 111n, 'acme/tools', { installationGrants: true })
+    expect(own.resolved.installation.installationId).toBe(43n)
+    // A creator App that no longer reaches the account mints nothing.
+    await expect(
+      svc.mintChecksForAgent(REVIEW_SCRATCH, 111n, 'acme/tools', { installationGrants: true, signerAppId: 'app-gone' })
+    ).rejects.toMatchObject({ code: 'LEASE_DENIED' })
+  })
+
   it('a general issues/PR ask still follows an additional repo comment-tier grant', async () => {
     const { svc, mintBodies } = harness({ rows: [grantRow({ access: 'comment' })] })
 

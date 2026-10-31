@@ -1125,14 +1125,32 @@ export class GithubService {
     agent: AgentRecord,
     repoId: bigint,
     repoFullName: string,
-    // True for an installation row's Checks, which its grant carries because the grant outlives no row.
-    opts: { installationGrants?: boolean } = {}
+    // installationGrants: true for an installation row's Checks, which its grant carries because the grant outlives no row.
+    // signerAppId: the App that created the Check being updated (null ⇒ built-in), when it differs from the agent's.
+    opts: { installationGrants?: boolean; signerAppId?: string | null } = {}
   ): Promise<{ cred: MintedGitCred; resolved: ResolvedAgentRepoAuthorization }> {
     let resolved = await this.resolveAgentRepoAuthorization(agent, repoId, repoFullName, {
       installationGrants: opts.installationGrants === true
     })
     if (resolved.access !== 'write') {
       throw new GitCredDeniedError('informational Checks require write repository authorization', 'SCOPE_DENIED', false)
+    }
+    if (opts.signerAppId !== undefined && opts.signerAppId !== (agent.githubAppId ?? null)) {
+      // Authority stays the agent's current grant; only GitHub's credential comes from the App that created the Check.
+      const [owner = '', repo = ''] = resolved.repoFullName.split('/')
+      const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner, opts.signerAppId)
+      if (!installation || installation.suspendedAt) {
+        throw new GitCredDeniedError(`no live github installation covers ${owner}`, 'LEASE_DENIED', false)
+      }
+      const ref = await this.repoRefFor(installation, owner, repo)
+      if (!ref || ref.repoId !== resolved.repoId) {
+        throw new GitCredDeniedError(
+          'the App that created this Check no longer reaches the repository',
+          'SCOPE_DENIED',
+          false
+        )
+      }
+      resolved = { ...resolved, installation }
     }
     if (!hasChecksReporterPermissions(resolved.installation)) {
       const refreshed = await this.refreshInstallationFacts(resolved.installation.installationId)

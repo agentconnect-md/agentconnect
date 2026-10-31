@@ -923,7 +923,9 @@ describe('GithubRunReporter', () => {
     await reporter.tick()
 
     expect(github.checkSignerAppOf).toHaveBeenCalledWith(orgId, 43n)
-    expect((mint.mock.calls as unknown[][])[0]?.[0]).toMatchObject({ id: agentId, githubAppId: 'app-retired' })
+    // Authorization stays the agent's own; only the credential comes from the creating App.
+    expect((mint.mock.calls as unknown[][])[0]?.[0]).toMatchObject({ id: agentId, githubAppId: null })
+    expect((mint.mock.calls as unknown[][])[0]?.[3]).toMatchObject({ signerAppId: 'app-retired' })
   })
 
   it('shows workspace preparation as in progress before a session exists', async () => {
