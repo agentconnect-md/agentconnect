@@ -298,6 +298,24 @@
       "notRunningBackground": "No turn is running. A background process it started may still be running; it can’t be stopped from here, and it reports back when that process ends.",
       "stopFailed": "Couldn’t stop it. Try again.",
       "stopUpgrade": "Upgrade this agent’s daemon to stop tasks here."
+    },
+    "githubIdentity": {
+      "label": "GitHub identity",
+      "shared": "Shared bot",
+      "owner": "Create under",
+      "personal": "My account",
+      "create": "Create its own GitHub App",
+      "creating": "Opening GitHub…",
+      "notInstalled": "Not installed yet",
+      "install": "Install on GitHub",
+      "installedOn": "Installed on {accounts}",
+      "suspended": "{account} (suspended)",
+      "sync": "Sync",
+      "syncing": "Syncing…",
+      "remove": "Remove",
+      "removing": "Removing…",
+      "removeTitle": "Remove {slug}[bot]?",
+      "removeBody": "This agent goes back to the shared bot. The App stays on GitHub until you delete it there."
     }
   },
   "Profile": {

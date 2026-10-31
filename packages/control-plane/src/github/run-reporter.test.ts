@@ -603,6 +603,7 @@ describe('GithubRunReporter', () => {
     const github = {
       mintChecksForAgent: mint,
       mintChecksForProjectionCleanup: cleanupMint,
+      checkSignerAppOf: vi.fn(async (): Promise<string | null | undefined> => undefined),
       invalidateInstallationTokens: vi.fn(),
       refreshInstallationFacts: vi.fn(async () => installation())
     }
@@ -631,6 +632,7 @@ describe('GithubRunReporter', () => {
         GithubService,
         | 'mintChecksForAgent'
         | 'mintChecksForProjectionCleanup'
+        | 'checkSignerAppOf'
         | 'invalidateInstallationTokens'
         | 'refreshInstallationFacts'
       >,
@@ -663,7 +665,12 @@ describe('GithubRunReporter', () => {
 
     await reporter.tick()
 
-    expect(github.mintChecksForProjectionCleanup).toHaveBeenCalledWith(orgId, p.repoId, p.repoFullName)
+    expect(github.mintChecksForProjectionCleanup).toHaveBeenCalledWith(
+      orgId,
+      p.repoId,
+      p.repoFullName,
+      p.lastResolvedInstallationId
+    )
     expect(mint).not.toHaveBeenCalled()
     const mutation = fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST')
     const body = JSON.parse(String(mutation?.[1]?.body)) as {
@@ -898,6 +905,25 @@ describe('GithubRunReporter', () => {
     expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
       expect.objectContaining({ observedState: 'in_progress' })
     )
+  })
+
+  it('updates an existing check run with the App that created it after the agent drops that App', async () => {
+    const p = projection({
+      desiredState: 'preparing',
+      observedState: 'queued',
+      checkRunId: '90071992547409931',
+      lastResolvedInstallationId: 43n
+    })
+    const fetchImpl = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () =>
+      Response.json({ id: p.checkRunId, external_id: p.externalId, status: 'in_progress', conclusion: null })
+    )
+    const { reporter, mint, github } = worker(p, fetchImpl, {}, { ...agent(), githubAppId: null })
+    github.checkSignerAppOf.mockResolvedValue('app-retired')
+
+    await reporter.tick()
+
+    expect(github.checkSignerAppOf).toHaveBeenCalledWith(orgId, 43n)
+    expect((mint.mock.calls as unknown[][])[0]?.[0]).toMatchObject({ id: agentId, githubAppId: 'app-retired' })
   })
 
   it('shows workspace preparation as in progress before a session exists', async () => {

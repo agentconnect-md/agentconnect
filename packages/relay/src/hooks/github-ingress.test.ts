@@ -1797,6 +1797,33 @@ describe('github ingress', () => {
       }
     )
 
+    it("dispatches a same-repository PR authored by an agent's dedicated App like the deployment App's", async () => {
+      h.table.upsert(
+        rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app', internalAppSlugs: ['example-coder'] })
+      )
+      h.authzResult = false
+      const pullRequest = pullPayload().pull_request as Record<string, unknown>
+
+      await post(
+        'pull_request',
+        pullPayload({
+          action: 'opened',
+          sender: { login: 'example-coder[bot]', type: 'Bot' },
+          pull_request: {
+            ...pullRequest,
+            user: { login: 'Example-Coder[bot]', type: 'Bot' },
+            head: { sha: 'a'.repeat(40), repo: { full_name: 'acme/infra' } },
+            base: { sha: 'b'.repeat(40), repo: { full_name: 'acme/infra' } }
+          }
+        })
+      )
+      await flush()
+
+      expect(h.authzRequests).toHaveLength(0)
+      expect(h.sent).toHaveLength(1)
+      expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted' })])
+    })
+
     it.each(['opened', 'synchronize'] as const)(
       "publishes the manual-request Check for another bot's PR %s without authorizing the bot",
       async (action) => {

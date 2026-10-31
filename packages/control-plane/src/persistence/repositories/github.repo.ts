@@ -29,6 +29,7 @@ function toRecord(r: GithubInstallation): GithubInstallationRecord {
     repositorySelection: r.repositorySelection,
     permissions: (r.permissions as Record<string, string> | null) ?? {},
     suspendedAt: r.suspendedAt,
+    githubAppId: r.githubAppId,
     revokedAt: r.revokedAt,
     createdAt: r.createdAt
   }
@@ -42,7 +43,11 @@ export class PgGithubInstallationRepo implements GithubInstallationRepo {
     return fn(this.prisma as Prisma.TransactionClient)
   }
 
-  async upsertFromGithub(orgId: OrgId, facts: GithubInstallationFacts): Promise<GithubInstallationRecord> {
+  async upsertFromGithub(
+    orgId: OrgId,
+    facts: GithubInstallationFacts,
+    githubAppId?: string | null
+  ): Promise<GithubInstallationRecord> {
     const mutable = {
       accountLogin: facts.accountLogin,
       accountType: facts.accountType,
@@ -54,7 +59,13 @@ export class PgGithubInstallationRepo implements GithubInstallationRepo {
     return this.transaction(async (tx) => {
       const row = await tx.githubInstallation.upsert({
         where: { installationId: facts.installationId },
-        create: { installationId: facts.installationId, orgId, permissions: facts.permissions ?? {}, ...mutable },
+        create: {
+          installationId: facts.installationId,
+          orgId,
+          githubAppId: githubAppId ?? null,
+          permissions: facts.permissions ?? {},
+          ...mutable
+        },
         // Deliberately exclude orgId. The post-upsert check also closes the
         // concurrent-create race: throwing rolls this transaction back.
         update: mutable
@@ -75,7 +86,7 @@ export class PgGithubInstallationRepo implements GithubInstallationRepo {
 
   async listForOrg(orgId: OrgId): Promise<GithubInstallationRecord[]> {
     const rows = await this.prisma.githubInstallation.findMany({
-      where: { orgId, revokedAt: null },
+      where: { orgId, revokedAt: null, githubAppId: null },
       orderBy: { accountLogin: 'asc' }
     })
     return rows.map(toRecord)
@@ -89,10 +100,16 @@ export class PgGithubInstallationRepo implements GithubInstallationRepo {
     return rows.map(toRecord)
   }
 
-  async liveByOrgAndAccount(orgId: OrgId, accountLogin: string): Promise<GithubInstallationRecord | null> {
+  async liveByOrgAndAccount(
+    orgId: OrgId,
+    accountLogin: string,
+    githubAppId: string | null = null
+  ): Promise<GithubInstallationRecord | null> {
     const row = await this.prisma.githubInstallation.findFirst({
       // GitHub logins are case-insensitive; stored as reported, matched loosely.
-      where: { orgId, revokedAt: null, accountLogin: { equals: accountLogin, mode: 'insensitive' } }
+      // Always App-qualified: the deployment App and a dedicated App can both be
+      // installed on one account, and neither installation may stand in for the other.
+      where: { orgId, revokedAt: null, githubAppId, accountLogin: { equals: accountLogin, mode: 'insensitive' } }
     })
     return row ? toRecord(row) : null
   }

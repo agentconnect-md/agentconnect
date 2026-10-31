@@ -430,6 +430,7 @@ export interface AgentDto {
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join
   execution?: string // the strategy slug sessions run in (session-executors.md §5); absent only on an older CP
   strategies?: StrategyTable // what the placement offers `execution`, host alone for an unplaced agent; absent only on an older CP
+  githubAppId?: string | null // the agent's dedicated GitHub App; null or absent (older CP) ⇒ the deployment App
   hookKinds: HookKind[] // distinct kinds of enabled inbound triggers (list-view marks)
 }
 
@@ -2188,6 +2189,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // An older CP that names no strategy is read as the unplaced agent's host-only table.
     execution: d.execution ?? HOST_STRATEGY,
     strategies: d.strategies ?? HOST_ONLY_TABLE,
+    githubAppId: d.githubAppId ?? null,
     hookKinds: d.hookKinds ?? [],
     integrations: [],
     workspace: ws
@@ -6597,6 +6599,50 @@ export async function syncGithubInstallations(): Promise<GithubInstallationDto[]
 export async function uninstallGithubInstallation(id: string): Promise<void> {
   await apiDelete<void>(`${orgBase()}/github/installations/${encodeURIComponent(id)}`)
   invalidateGithubRepoRosterCache(id)
+}
+
+/** An agent's dedicated GitHub App: the agent acts as `<slug>[bot]` instead of the deployment App's bot. */
+export interface GithubDedicatedAppDto {
+  id: string
+  appId: number // GitHub-side App id
+  slug: string // the bot is `<slug>[bot]`
+  botUserId: number | null
+  installations: { installationId: number; accountLogin: string; suspended: boolean }[]
+  createdAt: string
+}
+
+/** The agent's dedicated App, or null while it uses the deployment App; 404 ⇒ the feature is off. */
+export async function fetchAgentGithubApp(
+  orgId: string | undefined,
+  agentId: string
+): Promise<{ enabled: boolean; app: GithubDedicatedAppDto | null }> {
+  try {
+    const { app } = await apiGet<{ app: GithubDedicatedAppDto | null }>(
+      `${orgBase(orgId)}/agents/${encodeURIComponent(agentId)}/github-app`
+    )
+    return { enabled: true, app }
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return { enabled: false, app: null }
+    throw e
+  }
+}
+
+/** The form to post to GitHub's create-App-from-manifest page; `owner` absent ⇒ the caller's personal account. */
+export async function startAgentGithubAppManifest(
+  agentId: string,
+  owner?: string
+): Promise<{ action: string; manifest: Record<string, unknown> }> {
+  return apiPost(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app/manifest`, owner ? { owner } : {})
+}
+
+/** Re-pull the agent's App installations from GitHub. */
+export async function syncAgentGithubApp(agentId: string): Promise<{ app: GithubDedicatedAppDto | null }> {
+  return apiPost(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app/sync`, {})
+}
+
+/** Forget the agent's App; it returns to the deployment App's bot. */
+export async function deleteAgentGithubApp(agentId: string): Promise<void> {
+  await apiDelete<void>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app`)
 }
 
 // Smaller pages make the first permission-filtered results visible sooner;

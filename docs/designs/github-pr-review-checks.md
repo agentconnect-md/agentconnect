@@ -468,10 +468,10 @@ a live repository-role check.
 
 ### 7. Explain GitHub App Identity Boundary in UI
 
-Installation-token reviews are authored by one deployment-level App bot, not agent display name:
+Installation-token reviews are authored by an App bot, not agent display name. By default that is the deployment App; an agent with its own App ([Dedicated Apps](github-app-git-credentials.md#dedicated-apps)) reviews as that App's bot:
 
-- Multiple AgentConnect agents cannot produce distinct reviewer identities; conflicting reviews share bot actor.
-- App bot cannot approve its own PR. If last push is also by bot, it cannot satisfy "last push must be approved by someone else." No CODEOWNERS promise.
+- Agents that share an App share its bot actor; conflicting reviews from them are indistinguishable on GitHub.
+- An App bot cannot approve its own PR. If the last push is by the same bot, it cannot satisfy "last push must be approved by someone else"; a review agent on a dedicated App can. No CODEOWNERS promise.
 - GitHub refuses `APPROVE` and `REQUEST_CHANGES` from the PR's own author with HTTP 422 (`Can not approve your own pull request`, `Can not request changes on your own pull request`). The daemon republishes the same marked body and inline comments once as `COMMENT` and returns `publishedEvent: COMMENT` with a note to the agent. The reservation settles as `COMMENT` with the agent's verdict, so the Check still reports pass or fail while the PR shows only a comment review. A refused `COMMENT` or any other 422 stays `not_submitted`. A replay recovers the downgrade by marker from the review's own `COMMENTED` state and never posts again.
 - Relay rejects bot comments/review-comments and unrelated bot events, so formal-review events cannot loop. Revision-bearing PR events authored by the configured App are the lifecycle exception: same-repository revisions are the internal CI lane and may start review without human-author authorization; fork revisions still require the maintainer workflow-approval path.
 - On hook creation, PR review menu is collapsed by default and defaults to `Details` (`full` + informational Check). `None` maps to review/reporting `off` without changing trigger or output routing, while `Brief` permits only a formal `COMMENT` review and no Check. Expanded Details shows four side-by-side capability checkboxes projected from config: Inline comments → Request changes → Approve hierarchy, plus independent Status check.

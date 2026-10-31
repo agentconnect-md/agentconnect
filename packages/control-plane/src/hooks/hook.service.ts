@@ -26,6 +26,7 @@ import type {
   GiteaConnectionRepo,
   GiteaRepositoryBindingRepo,
   GiteaWebhookSecretStore,
+  GithubAppRepo,
   GithubInstallationRepo,
   GitlabAgentAccountRepo,
   GitlabProjectBindingRepo,
@@ -104,7 +105,9 @@ export class HookService {
     /** Absent ⇒ gitea hooks never compile (no connection surface wired). */
     private readonly gitea?: GiteaHookCompileSources,
     /** The repository scopes' Decision routings; absent ⇒ every code-host rule compiles unrouted. */
-    private readonly routings?: Pick<CodeHostDecisionRoutingRepo, 'get'>
+    private readonly routings?: Pick<CodeHostDecisionRoutingRepo, 'get'>,
+    /** The org's dedicated GitHub Apps, whose pull requests the relay admits as the internal CI lane. */
+    private readonly githubApps?: Pick<GithubAppRepo, 'listForOrg'>
   ) {}
 
   /** Wire the scope reconciler (it rebroadcasts through this service, so it attaches after construction). */
@@ -304,6 +307,7 @@ export class HookService {
     const commentFamilies = cadence.commentFamilies.filter(
       (family): family is 'issues' | 'pull_request' => family !== 'merge_request'
     )
+    const internalAppSlugs = ((await this.githubApps?.listForOrg(hook.orgId)) ?? []).map((app) => app.slug)
     const matching = {
       events: cadence.events,
       ...(commentFamilies.length > 0 ? { commentFamilies } : {}),
@@ -311,6 +315,7 @@ export class HookService {
       ...(hook.skipDrafts ? { skipDrafts: true } : {}),
       mentionOnly: cadence.mentionOnly,
       ...(this.appSlug ? { appSlug: this.appSlug } : {}),
+      ...(internalAppSlugs.length > 0 ? { internalAppSlugs } : {}),
       agentName: agent.name
     }
     // An installation row fires for every repository of its one installation, while that installation stays live.

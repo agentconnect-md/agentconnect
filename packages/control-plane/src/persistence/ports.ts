@@ -1332,6 +1332,8 @@ export interface AgentRecord {
   /** Nullable on scratch/anonymous and pre-R2a rows; action-time authorization
    *  fails closed until a legacy github workspace is lazily repaired. */
   workspaceRepoId?: bigint
+  /** The agent's dedicated GitHub App (GithubApp.id); absent/null ⇒ the deployment App. */
+  githubAppId?: string | null
   capabilities: string[]
   createdAt: Date
   createdBy: AgentCreator | null // null for daemon/CLI-created agents (no WebUI principal)
@@ -4320,6 +4322,8 @@ export interface GithubInstallationFacts {
 export interface GithubInstallationRecord extends GithubInstallationFacts {
   id: string // our row id (uuid) — what agents reference as provenance
   orgId: OrgId
+  /** The agent's dedicated App this installation belongs to; absent/null ⇒ the deployment App. */
+  githubAppId?: string | null
   revokedAt: Date | null
   createdAt: Date
 }
@@ -4327,18 +4331,28 @@ export interface GithubInstallationRecord extends GithubInstallationFacts {
 export interface GithubInstallationRepo {
   /** Claim/update by GitHub installation id. The setup callback is the only
    * path allowed to create a claim; refresh paths pass the durable claim's org. */
-  upsertFromGithub(orgId: OrgId, facts: GithubInstallationFacts): Promise<GithubInstallationRecord>
+  upsertFromGithub(
+    orgId: OrgId,
+    facts: GithubInstallationFacts,
+    /** The dedicated App the facts were pulled with; omitted ⇒ the deployment App. A row keeps its App. */
+    githubAppId?: string | null
+  ): Promise<GithubInstallationRecord>
   /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
    *  as absent, exactly like a missing row. The claim row IS the tenancy record
    *  for an installation, so this is the read the HTTP surface must use. */
   get(orgId: OrgId, id: string): Promise<GithubInstallationRecord | null>
-  /** Live (non-revoked) installations claimed by the org — the picker's first level. */
+  /** Live (non-revoked) deployment-App installations claimed by the org — the picker's first level. */
   listForOrg(orgId: OrgId): Promise<GithubInstallationRecord[]>
-  /** Every durable claim for an org, including revoked rows. Sync refreshes
+  /** Every durable claim for an org, including revoked rows and every App. Sync refreshes
    * exactly this set, so it never assigns an unclaimed or foreign installation. */
   listClaimsForOrg(orgId: OrgId): Promise<GithubInstallationRecord[]>
-  /** Mint-time resolution: the live installation covering `accountLogin` in this org. */
-  liveByOrgAndAccount(orgId: OrgId, accountLogin: string): Promise<GithubInstallationRecord | null>
+  /** Mint-time resolution: the live installation covering `accountLogin` in this org
+   *  under one App — the deployment App by default, or the dedicated App an agent acts as. */
+  liveByOrgAndAccount(
+    orgId: OrgId,
+    accountLogin: string,
+    githubAppId?: string | null
+  ): Promise<GithubInstallationRecord | null>
   /** Doorbell lookup by GITHUB-side id (revoked rows included — the claim row is
    *  what maps the poke to an org; unknown ⇒ no org claim yet, ignore).
    *  System-tier and deliberately CROSS-ORG: resolving the owning organization
@@ -4354,6 +4368,53 @@ export interface GithubInstallStateStore {
   put(nonce: string, orgId: OrgId, expiresAt: Date): Promise<void>
   /** True iff the nonce existed (it is deleted atomically) — false ⇒ replay/unknown. */
   consume(nonce: string): Promise<boolean>
+}
+
+/** An agent's dedicated GitHub App (github-app-git-credentials.md §Dedicated Apps).
+ *  The private key is never on the record; read it via {@link GithubAppSecretStore}. */
+export interface GithubAppRecord {
+  id: string
+  orgId: OrgId
+  /** The agent that owns the App; null once retired. */
+  agentId: string | null
+  appId: bigint
+  slug: string
+  clientId: string | null
+  botUserId: bigint | null
+  /** Its agent was deleted or dropped it; it signs only for the Checks it already created. */
+  retiredAt: Date | null
+  createdAt: Date
+}
+
+export interface GithubAppRepo {
+  /** Creates the agent's App and binds it in one transaction; false-y when the agent is gone or already has one. */
+  createForAgent(input: {
+    id: string
+    orgId: OrgId
+    agentId: string
+    appId: bigint
+    slug: string
+    clientId: string | null
+    botUserId: bigint | null
+  }): Promise<GithubAppRecord | null>
+  /** Org-fenced point read: a cross-org id reads as absent. */
+  get(orgId: OrgId, id: string): Promise<GithubAppRecord | null>
+  /** Cross-org read for the token signer and the App's setup callback, which hold only the App id. */
+  getUnscoped(id: string): Promise<GithubAppRecord | null>
+  getForAgent(orgId: OrgId, agentId: string): Promise<GithubAppRecord | null>
+  listForOrg(orgId: OrgId): Promise<GithubAppRecord[]>
+  /** Detaches the App from its agent (which falls back to the deployment App) and marks it retired. */
+  retire(orgId: OrgId, id: string, at: Date): Promise<boolean>
+  /** Deletes Apps retired before `before` whose Check projections are all tombstoned and settled, with their keys and installations. */
+  reapRetired(before: Date, limit: number): Promise<Array<{ id: string; orgId: OrgId; installationIds: bigint[] }>>
+  /** Cascades to the App's installations; its agent falls back to the deployment App. */
+  delete(orgId: OrgId, id: string): Promise<boolean>
+}
+
+/** Sealed App private key (base64 PEM); read ONLY by the token signer. */
+export interface GithubAppSecretStore {
+  put(orgId: OrgId, githubAppId: string, privateKeyB64: string): Promise<void>
+  get(orgId: OrgId, githubAppId: string): Promise<string | null>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -82,9 +82,10 @@ stale until a network fetch succeeds.
 - Real-time synchronization of installation or repository
   additions/removals: the CP reconciles on demand and fails closed when
   minting shows that authorization changed.
-- **Per-organization self-managed GitHub Apps** (manifest flow / manual
-  registration): the App is instance-level configuration. Separate Apps per
-  tenant are deferred; see "Current Behavior and Remaining Questions."
+- **Per-organization GitHub Apps as the deployment identity**: the deployment
+  App stays instance-level configuration and carries sign-in, the setup
+  callback and every webhook. An agent can get its own App to act as (see
+  "Dedicated Apps"); those carry no webhook.
 - Other git hosts such as GitLab or Bitbucket: protocol fields retain an
   extension point for providers.
 - SSH remotes: use HTTPS exclusively. Relative URLs in `.gitmodules` resolve to
@@ -284,6 +285,111 @@ authoritative, keeping `gitRepo` as the single source of truth. This avoids a
 drift where clone uses `gitRepo` while minting uses `repoFullName`, targeting
 different repositories. GitHub-App mode asserts that the host is github.com. A
 non-GitHub URL produces a null label and is rejected from GitHub-App mode.
+
+## Dedicated Apps
+
+Every installation-token operation is attributed to one App's bot. With a
+single deployment App, two agents on one repository are the same GitHub actor:
+a pull request opened by one agent cannot be approved or rejected by another,
+because GitHub refuses a self-review (`422: cannot approve your own PR`), and
+branch rules such as "last push must be approved by someone else" can never be
+met. A dedicated App gives an agent its own actor.
+
+**Model.** The deployment App remains the default, shared by every agent. An
+agent can get its own App: one App belongs to exactly one agent
+(`Agent.githubAppId`, unique), so its bot names that agent on GitHub. The
+`GithubApp` row holds the App id, slug, client id and bot user id; the private
+key is in `GithubAppSecret`, sealed under the org scope and read only by the
+token signer. When the agent drops its App or is deleted, the App is retired
+(`retiredAt`): the agent falls back to the deployment App, but the App keeps
+its key and installations, because only the App that created a Check can
+update it. The reporter therefore writes every existing Check with the App of
+the projection's last installation, on the agent path and in cleanup alike.
+A reaper deletes a retired App, with its key and installations, an hour after
+retirement (past any token minted under it) once every Check projection on its
+installations is finished for good: tombstoned and settled at failure, the test
+organization deletion uses. A live projection, even one with nothing queued,
+keeps the App, so an App the agent dropped stays until that agent's hooks or
+the agent itself are deleted. The App itself stays on GitHub until
+someone deletes it there.
+
+**Creation** uses GitHub's manifest flow, because GitHub creates an App only
+after a person confirms it. From the agent's edit dialog the console asks the
+CP for a manifest (`POST /agents/:id/github-app/manifest`, agent editors only)
+and posts it to GitHub's create page under the chosen organization or the
+caller's account. The manifest asks for the agent-facing subset of the
+deployment App's permissions, no webhook, `public: false`, and a setup URL that
+names a pre-allocated App row (`/v1/github/apps/<id>/setup/callback`). The
+agent, the org and that row id ride a signed one-shot state, keyed apart from
+the install state. GitHub redirects to `/v1/github/apps/manifest/callback`; the
+CP converts the code once (`POST /app-manifests/{code}/conversions`), binds the
+App to the agent with a compare-and-set on the agent row, seals the key and
+sends the browser to the App's install page. An agent that was deleted or got
+another App meanwhile leaves the new App unbound and nothing stored.
+
+**Installations.** Every install or update of the App redirects to its own
+setup URL (`setup_on_update`), and that redirect re-pulls `GET
+/app/installations` with the App's key, at most once every ten seconds per App,
+claiming each installation for the App's org (`GithubInstallation.githubAppId`)
+and marking missing ones revoked. This is the one place a roster pull claims
+installations: the deployment App's installations are claimed only through the
+signed setup callback, because its roster spans every tenant. A dedicated App
+belongs to one organization (its App id is unique), and holding its private key
+already proves authority over all of its installations, so the redirect needs
+no state.
+
+**Resolution.** `liveByOrgAndAccount` is always App-qualified: the deployment
+App and a dedicated App can both be installed on one GitHub account, and
+neither installation may stand in for the other. Agent-attributed mint paths
+(`mintForAgent`, hook replies, formal reviews, auto-merge, Checks, follow-up
+watches) resolve with the agent's App; everything else (pickers, hooks, trusted
+users, grant re-attestation) resolves the deployment App. Projection cleanup
+runs without an agent, and only the App that created a Check can update it, so
+it resolves the App of the projection's last installation. The deployment-App
+installation list is what `listForOrg` returns; a dedicated App's
+installations are listed on the agent.
+
+**Signing.** `InstallationTokenService` and the App-JWT reads (`pullInstallation`,
+`uninstallInstallation`) ask the `GithubAppRegistry` which App an installation
+belongs to and sign with that App's key. Configs are cached per App because
+`mintAppJwt` keys its auth cache on the config object; creation and
+deletion invalidate the entry. Token caches stay keyed by installation id, so
+the two Apps never share an entry.
+
+**Hooks, grants and watches.** Events keep arriving through the deployment
+App, so a hook row names a deployment-App installation, the console grants an
+agent only deployment-App installations, and the relay matches a follow-up
+watch by the installation that delivered the event. An agent acting as a
+dedicated App resolves the same account's installation under its own App;
+`mintForHookReply` and the installation-grant lookups therefore compare the two
+installations by account rather than by id, and a follow-up watch subscribes
+on the deployment-App installation while its authorization and read use the
+agent's own App. A grant stays bound to the deployment installation it names
+and to the repositories that installation covers: it covers the App's
+installation only while that one is still the org's live, unsuspended
+installation on the account and still reaches the repository, so a suspended,
+revoked or replaced installation, or a repository removed from it, leaves the
+grant inert for every identity.
+
+**Pull requests by a dedicated App.** Compiled GitHub hook rules carry the
+slugs of the org's dedicated Apps (`internalAppSlugs`), so a same-repository
+pull request opened by one is the internal CI lane, like one opened by the
+deployment App: a coding agent with its own App still gets its pull requests
+reviewed automatically.
+
+**Prerequisites and limits.**
+
+- The dedicated App must be installed on the same GitHub accounts and
+  repositories as the deployment App; a repository the dedicated App does not
+  cover is refused at mint time even though the picker, which reads the
+  deployment installation, offered it.
+- The commit identity delivered at `register/ok` is still the deployment
+  App's; pushes by a dedicated-App agent are authenticated as that App but
+  commits made through the console wand are attributed to the deployment bot.
+- Rerequest events on a dedicated App's Check never arrive (no webhook), and
+  uninstalling the App is noticed at the next mint or redirect, not at once.
+- A daemon keeps an already minted token until it expires (up to an hour)
+  after the agent's App changes.
 
 ## Protocol Contract (`packages/protocol`)
 
@@ -1104,11 +1210,11 @@ the cache and stops requesting.
    `GitCredRequest.capabilities` scopes each request, and the `gh` wrapper
    routes per-repository requests as described in
    [agent-multi-repo-authorization.md](agent-multi-repo-authorization.md).
-2. **Multi-tenancy / per-organization self-managed Apps.** The current App is
-   one instance-level App shared with sign-in. If separate organizations can
-   connect their own GitHub Apps in the future, introduce an
-   organization-level App table and keep each App's key and installation set in
-   its own trust boundary.
+2. **Multi-tenancy / per-organization self-managed Apps.** The deployment App
+   stays one instance-level App shared with sign-in. Agents' dedicated Apps
+   (see "Dedicated Apps") keep each App's key and installation set in the
+   owning organization's trust boundary; they give agents distinct actors and
+   do not replace the deployment App.
 3. Search experience in the picker for an organization with
    `repositorySelection: all` and thousands of repositories. GitHub provides
    no server-side search on this endpoint, so the CP would need caching and
