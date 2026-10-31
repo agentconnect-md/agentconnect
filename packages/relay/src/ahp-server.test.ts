@@ -523,3 +523,23 @@ it('adopts a refreshed token pushed on a bound socket and closes on one for anot
   expect((await authenticate('foreign-token')).error.code).toBe(-32007)
   expect(await client.closed).toBe(4401)
 })
+it('keeps a token refreshed while an older renewal is still verifying', async () => {
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  const host = await fixture()
+  const client = await preauth(host.url)
+  await client.initialize()
+  const authenticate = (token: string) =>
+    client.request('authenticate', { channel: 'ahp-root://', resource: RESOURCE(host.url), token })
+  expect((await authenticate('old-token')).result).toEqual({})
+  let release = (_value: RcVerifyResult) => {}
+  host.verify.mockImplementationOnce(() => new Promise<RcVerifyResult>((resolve) => (release = resolve)))
+  await vi.advanceTimersByTimeAsync(55_000)
+  expect(host.verify).toHaveBeenLastCalledWith('old-token', AGENT, 'ahp-client-key', RESOURCE(host.url))
+  const refreshed = authenticate('new-token')
+  // Let the refreshed `authenticate` reach the relay before the older renewal settles.
+  for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve))
+  release(allow())
+  expect((await refreshed).result).toEqual({})
+  await vi.advanceTimersByTimeAsync(55_000)
+  expect(host.verify).toHaveBeenLastCalledWith('new-token', AGENT, 'ahp-client-key', RESOURCE(host.url))
+})

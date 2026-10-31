@@ -535,7 +535,7 @@ describe('AHP sign-in (ahp-client-sign-in.md)', () => {
       ['scope=ahp', 'invalid_target'],
       [`scope=ahp&resource=${encodeURIComponent('https://other.example.test/ahp/agents/x')}`, 'invalid_target'],
       [`scope=${encodeURIComponent('ahp mcp:read')}&resource=${encodeURIComponent(RESOURCE)}`, 'invalid_scope']
-    ]) {
+    ] as const) {
       const res = await authorize(query)
       expect(res.status).toBe(302)
       expect(new URL(res.location!).searchParams.get('error')).toBe(error)

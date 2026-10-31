@@ -276,6 +276,13 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
       expiry = setTimeout(() => close('unauthorized'), Math.max(0, authorization.grant.expiresAtMs - now()))
       renewal = setTimeout(() => void renew(), Math.max(1000, authorization.grant.expiresAtMs - now() - 5000))
     }
+    // Adoptions run one at a time, so a slow renewal cannot replace a token the client refreshed meanwhile.
+    let adoptions: Promise<unknown> = Promise.resolve()
+    const serially = (run: () => Promise<boolean>): Promise<boolean> => {
+      const next = adoptions.then(run, run)
+      adoptions = next.catch(() => undefined)
+      return next
+    }
     // Re-verifies a credential for the same caller and agent, then adopts the grant it yields.
     const adopt = async (candidate: Credential): Promise<boolean> => {
       const checkedAt = now()
@@ -307,7 +314,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
     const renew = async () => {
       if (!valid()) return
       try {
-        if (!(await adopt(credential)) && !closed) close('unauthorized')
+        if (!(await serially(() => adopt(credential))) && !closed) close('unauthorized')
       } catch {
         close('unauthorized')
       }
@@ -321,7 +328,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
         return close('invalid_message')
       }
       try {
-        if (await adopt({ ...credential, credential: parsed.data.token }))
+        if (await serially(() => adopt({ ...credential, credential: parsed.data.token })))
           return reply({ jsonrpc: '2.0', id, result: {} })
       } catch {
         // Treated as a refused credential below.
