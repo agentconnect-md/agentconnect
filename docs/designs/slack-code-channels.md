@@ -33,7 +33,9 @@ an actual thread reply's parent as `replyThread`: reply bodies, streams and file
 return there, while a top-level request receives a top-level response. Native status,
 renames and views remain channel-scoped and omit `thread_ts`. Native Stop without a
 thread timestamp addresses the same channel coordinate on both ingress transports.
-History reads use channel history.
+History reads use channel history. A root post the agent makes in a code channel, such as
+its wrap-up, belongs to that same session: the gateway's `roomThread` names the channel as
+the post's thread, so the post is recorded there and seeds no second session.
 
 The console groups these conversations under Code channels, below direct messages and collapsed by default,
 without per-row trigger or session-mode controls. Membership snapshots carry the
@@ -44,7 +46,9 @@ Archiving ends the channel session. The agent's archive first marks the session
 `closed` (Slack's _Done_), then archives with the optional summary. When a person
 archives the channel instead, `channel_archive` / `group_archive` arrive on either
 transport at the channel coordinate: all sessions and delegated tasks sharing the
-channel are cancelled. Either archive also closes the coordinator task the channel
+channel are cancelled. The agent's own archive raises the same events, which cancel every
+session sharing the channel except the one whose turn archived it: that turn ends by
+itself once its wrap-up is posted. Either archive also closes the coordinator task the channel
 holds (below). The relay forwards an archive as a Stop marked `archived`, because a
 native Stop without a thread timestamp reaches the same channel coordinate. Native Stop
 keeps its existing displayed-owner behavior on Socket Mode and closes no task. An

@@ -639,6 +639,32 @@ describe('Slack native surfaces', () => {
     await f.conn.stop()
   })
 
+  it('spares the turn that archived its own code channel, and still stops the others', async () => {
+    const actions: unknown[] = []
+    const f = await fixture(true, {
+      onThreadSessions: async () => ['slack:C1:C1:a1', 'slack:C1:C1:a2'],
+      onStatusAction: (a: unknown) => void actions.push(a)
+    })
+    const own = { ...ctx, thread: 'C1', deliveryThread: 'C1' }
+    await SLACK_SESSION_TOOLS.execute('manageSlackCodeChannel', own, { action: 'archive' }, f.env)
+    await f.handlers.get('channel_archive')!({ event: { channel: 'C1', user: 'U_FAKE_BOT' } })
+    expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:C1:a2', actor: { userId: 'U_FAKE_BOT' } }])
+    // Only that archive's event spares it.
+    actions.length = 0
+    await f.handlers.get('channel_archive')!({ event: { channel: 'C1', user: 'U1' } })
+    expect(actions).toHaveLength(2)
+    await f.conn.stop()
+  })
+
+  it('names a code channel as the thread its root posts belong to, and no other channel', async () => {
+    const f = await fixture()
+    expect(await f.conn.roomThread('C1')).toBe('C1')
+    const ordinary = await fixture(false)
+    expect(await ordinary.conn.roomThread('C1')).toBeUndefined()
+    await f.conn.stop()
+    await ordinary.conn.stop()
+  })
+
   it.each(['channel_archive', 'group_archive'] as const)(
     '%s stops every channel session and delegated task',
     async (type) => {

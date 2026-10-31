@@ -98,6 +98,8 @@ export interface MessageGateway {
   createThread?(channel: string, messageId: string, name: string): Promise<string | undefined>
   /** The provider thread a just-posted root message landed in, where it is not the message id itself (Google Chat). */
   threadOfPost?(postId: string): string | undefined
+  /** The one thread a conversation keys on where the platform keys it as one session (a Slack code channel); undefined where a root post threads off itself. */
+  roomThread?(channel: string): Promise<string | undefined>
   /** Enter a public conversation the bot is not in; offered only where a bot can join one by itself (Slack). */
   joinChannel?(channel: string): Promise<void>
   /** `user` is the counterpart of a 1:1 direct conversation, where the platform names one. */
