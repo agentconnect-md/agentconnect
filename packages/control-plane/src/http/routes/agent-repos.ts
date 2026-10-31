@@ -126,7 +126,11 @@ export function agentRepoRoutes(deps: HttpDeps) {
       const workspaceLabel = gitRepoLabel(agent.workspace.gitRepo)
       const [owner, repo] = workspaceLabel.split('/')
       if (!owner || !repo) return undefined
-      const installation = await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner)
+      const installation = await deps.repos.githubInstallation.liveByOrgAndAccount(
+        agent.orgId,
+        owner,
+        agent.githubAppId ?? null
+      )
       if (!installation || installation.suspendedAt) return undefined
       const ref = await deps.github.repoRefFor(installation, owner, repo)
       if (!ref) return undefined
@@ -432,7 +436,11 @@ export function agentRepoRoutes(deps: HttpDeps) {
         if (!owner || !repo) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'expected "owner/repo"' })
         }
-        const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(OrgId(orgOf(req)), owner)
+        const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(
+          OrgId(orgOf(req)),
+          owner,
+          agent.githubAppId ?? null
+        )
         if (!ins || ins.suspendedAt) {
           return reply.code(400).send({
             error: 'Bad Request',

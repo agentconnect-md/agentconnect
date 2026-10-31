@@ -306,7 +306,11 @@ export function hookRoutes(deps: HttpDeps) {
       status: e.code === 'RATE_LIMITED' ? 429 : 502,
       message: `github: ${e.message}`
     })
-    const resolveGithubRepo = async (orgId: string, repoFullName: string): Promise<RepoResolution> => {
+    const resolveGithubRepo = async (
+      orgId: string,
+      repoFullName: string,
+      githubAppId: string | null
+    ): Promise<RepoResolution> => {
       if (!deps.github) {
         return {
           ok: false,
@@ -316,7 +320,7 @@ export function hookRoutes(deps: HttpDeps) {
       }
       const [owner, repo] = repoFullName.split('/')
       if (!owner || !repo) return notCovered
-      const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(OrgId(orgId), owner)
+      const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(OrgId(orgId), owner, githubAppId)
       if (!ins || ins.suspendedAt) return notCovered
       try {
         const ref = await deps.github.repoRefFor(ins, owner, repo)
@@ -367,7 +371,9 @@ export function hookRoutes(deps: HttpDeps) {
       // After the rows (decision 10): the caller resolved `repoFullName` through its owner's live installation, the coverage proof.
       const installationGranted = async (): Promise<boolean> => {
         const owner = provider === 'github' ? repoFullName.split('/')[0] : undefined
-        const ins = owner ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner) : null
+        const ins = owner
+          ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner, agent.githubAppId ?? null)
+          : null
         if (!ins || ins.suspendedAt) return false
         return (await deps.repos.agentInstallationAuth.listForAgent(agent.id)).some(
           (grant) => grant.provider === 'github' && grant.installationId === ins.installationId
@@ -387,7 +393,9 @@ export function hookRoutes(deps: HttpDeps) {
       if (provider === 'github' && agent.workspace.mode === 'git' && onGithubCom && deps.github) {
         const workspaceLabel = gitRepoLabel(agent.workspace.gitRepo)
         const [owner, repo] = workspaceLabel.split('/')
-        const ins = owner ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner) : null
+        const ins = owner
+          ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner, agent.githubAppId ?? null)
+          : null
         if (ins && repo) {
           try {
             const ref = await deps.github.repoRefFor(ins, owner!, repo)
@@ -553,7 +561,11 @@ export function hookRoutes(deps: HttpDeps) {
       if (!deps.github) {
         return { ok: false, status: 409, message: 'GitHub App is not configured on this deployment (GITHUB_APP_*)' }
       }
-      const installation = await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, account)
+      const installation = await deps.repos.githubInstallation.liveByOrgAndAccount(
+        agent.orgId,
+        account,
+        agent.githubAppId ?? null
+      )
       if (!installation || installation.suspendedAt) {
         return {
           ok: false,
@@ -845,7 +857,7 @@ export function hookRoutes(deps: HttpDeps) {
                         hmacSecret: null
                       }
                     }
-                    const repo = await resolveGithubRepo(orgId, scope.repoFullName!)
+                    const repo = await resolveGithubRepo(orgId, scope.repoFullName!, agent.githubAppId ?? null)
                     if (!repo.ok) return repo
                     const siblingError = await siblingShapeError(
                       agent.id,
@@ -1200,7 +1212,7 @@ export function hookRoutes(deps: HttpDeps) {
             // A pure disable or check-off reduces effects, so it reuses the persisted binding even with the grant or GitHub gone.
             const repo = safeLifecycleNarrowing
               ? { ok: true as const, repoId: existing.repoId!, repoFullName: existing.repoFullName! }
-              : await resolveGithubRepo(orgId, scope.repoFullName!)
+              : await resolveGithubRepo(orgId, scope.repoFullName!, agent.githubAppId ?? null)
             if (!repo.ok) {
               const { status, message } = repo
               return reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })

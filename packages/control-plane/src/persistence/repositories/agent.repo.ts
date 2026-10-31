@@ -383,6 +383,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     placementChangedAt: a.placementChangedAt,
     workspace: workspaceOf(a),
     ...(a.workspaceRepoId !== null ? { workspaceRepoId: a.workspaceRepoId } : {}),
+    githubAppId: a.githubAppId,
     capabilities: a.capabilities,
     createdAt: a.createdAt,
     createdBy: a.createdBy

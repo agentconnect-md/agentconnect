@@ -23,6 +23,8 @@ export interface RepositoryGrantReattestorConfig {
 export interface RepositoryGrantReattestorDeps {
   grants: Pick<AgentRepoAuthorizationRepo, 'claimDueForReattestation' | 'recordAttestation'>
   installations: Pick<GithubInstallationRepo, 'liveByOrgAndAccount'>
+  /** The organization GitHub App the grant's agent works through; absent ⇒ the built-in App. */
+  agentApp?: (agentId: AgentId) => Promise<string | null>
   github: Pick<GithubService, 'repoRefForCommentAuthz'>
   /** The creation gate's check, over {@link strictRepoAccessLookups} so a credential failure throws. */
   authz: Pick<GithubUserAuthzService, 'assertAccess'>
@@ -171,7 +173,8 @@ export class RepositoryGrantReattestor {
     if (grant.attestedByUserId === null) return { kind: 'stale', reason: 'attester_removed' }
     const [owner, repo] = grant.repoFullName.split('/')
     if (!owner || !repo) return { kind: 'skipped', why: 'not an owner/repo name' }
-    const installation = await this.deps.installations.liveByOrgAndAccount(grant.orgId, owner)
+    const githubAppId = (await this.deps.agentApp?.(grant.agentId)) ?? null
+    const installation = await this.deps.installations.liveByOrgAndAccount(grant.orgId, owner, githubAppId)
     if (!installation || installation.suspendedAt) return { kind: 'skipped', why: 'no live installation' }
     // The numeric id is the grant's identity: a reused name is another repository, which the mint gate denies anyway.
     const ref = await this.deps.github.repoRefForCommentAuthz(installation, owner, repo)
