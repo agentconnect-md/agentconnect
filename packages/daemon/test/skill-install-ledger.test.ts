@@ -213,6 +213,7 @@ describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
     const target = join(cwd, ...old.relativeRoot.split('/'))
     const tombstone = join(dirname(target), cleanupOperation.tombstoneName)
     await rename(target, tombstone)
+    await writableTree(tombstone)
     await rm(join(tombstone, 'SKILL.md'))
     await writeFile(
       location.file,

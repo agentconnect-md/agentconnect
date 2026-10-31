@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { removeTree } from './tree-support.js'
 import { detectSandbox } from '../src/acp/sandbox.js'
 
 // A real bwrap sandbox launch (and its nested seccomp helper) is far slower than
@@ -81,7 +82,7 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
   }, 120_000)
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   })
 
   it('feeds managed and accepted-local sources through the same CLI invocation seam', async () => {
@@ -212,7 +213,7 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     expect(repeated.skipped).toBeNull()
     expect(repeated.errors).toHaveLength(1)
 
-    await rm(join(cwd, '.runtime/skills/taken'), { recursive: true })
+    await removeTree(join(cwd, '.runtime/skills/taken'))
     const cleared = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
       stateDir,
       localSkills: [
@@ -569,7 +570,7 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
       runCli: cli.run
     })
 
-    await rm(cwd, { recursive: true })
+    await removeTree(cwd)
     await mkdir(join(cwd, '.runtime/skills/recreated'), { recursive: true })
     await writeFile(join(cwd, '.runtime/skills/recreated/SKILL.md'), 'manual replacement')
 
