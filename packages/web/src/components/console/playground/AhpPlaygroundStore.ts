@@ -308,6 +308,13 @@ export class AhpPlaygroundStore {
           await addWebchatConversationAgent(this.orgId, connection.conversationId!, agent.id)
           connection.roster.push({ agentId: agent.id, name: agentLabel(agent) })
         }),
+      pgDiscard: (id) => {
+        const entry = this.entries.get(id)
+        if (!entry) return
+        this.entries.delete(id)
+        void entry.connection.close()
+        this.changed()
+      },
       pgRemoveAgent: (id, agentId) =>
         this.rosterChange(id, async (connection) => {
           await removeWebchatConversationAgent(this.orgId, connection.conversationId!, agentId)

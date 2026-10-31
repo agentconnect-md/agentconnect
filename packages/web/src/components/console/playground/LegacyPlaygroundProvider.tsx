@@ -1858,19 +1858,34 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect, setPgImage, setPgInput, setBusy]
   )
 
+  const dropConn = useCallback((id: string): void => {
+    const existing = conns.current.get(id)
+    if (!existing) return
+    existing.closing = true
+    if (existing.reconnectTimer) window.clearTimeout(existing.reconnectTimer)
+    existing.ws?.close()
+    conns.current.delete(id)
+  }, [])
+
   // The relay caches the roster it verified at connect, so a join or removal rebuilds the socket for a fresh rc/verify.
   const reverifyRoster = useCallback(
     (id: string, primaryId: string, conversationId: string): void => {
-      const existing = conns.current.get(id)
-      if (existing) {
-        existing.closing = true
-        if (existing.reconnectTimer) window.clearTimeout(existing.reconnectTimer)
-        existing.ws?.close()
-        conns.current.delete(id)
-      }
+      dropConn(id)
       connect(id, primaryId, conversationId).ready.catch(() => {})
     },
-    [connect]
+    [connect, dropConn]
+  )
+
+  const pgDiscard = useCallback(
+    (id: string): void => {
+      dropConn(id)
+      setPgSessions((cur) => {
+        if (!(id in cur)) return cur
+        const { [id]: _discarded, ...rest } = cur
+        return rest
+      })
+    },
+    [dropConn]
   )
 
   const pgAddAgent = useCallback(
@@ -2537,6 +2552,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgRemoveAgent,
+      pgDiscard,
       pgSend,
       pgNotice,
       pgAttach,
@@ -2572,6 +2588,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgRemoveAgent,
+      pgDiscard,
       pgSend,
       pgNotice,
       pgAttach,
