@@ -8,7 +8,6 @@
  * stub (no `OIDC_ISSUER`). Tests drive it with `app.inject` — DB-backed, NO socket.
  */
 import { PgDecisionRepo } from '../../src/persistence/repositories/decision.repo.js'
-import { PgGithubAppRepo } from '../../src/persistence/repositories/github-app.repo.js'
 import { PgBotDecisionRoutingRepo } from '../../src/persistence/repositories/bot-decision-routing.repo.js'
 import type { FastifyInstance } from 'fastify'
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
@@ -577,7 +576,6 @@ export function buildHttpApp(
       org: orgRepo,
       waitlist: waitlistRepo,
       githubInstallation: githubInstallationRepo,
-      githubApp: new PgGithubAppRepo(prisma),
       agentRepoAuth: agentRepoAuthRepo,
       agentInstallationAuth: agentInstallationAuthRepo,
       codeHostRepository: new PgCodeHostRepositoryRepo(prisma),

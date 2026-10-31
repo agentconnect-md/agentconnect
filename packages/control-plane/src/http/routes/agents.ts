@@ -464,7 +464,6 @@ function toDto(
     outboundPolicy: a.outboundPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
-    githubAppId: a.githubAppId ?? null,
     execution: a.execution,
     strategies: placementView.strategies,
     hookKinds

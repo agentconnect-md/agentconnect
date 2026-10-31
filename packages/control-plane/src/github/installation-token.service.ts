@@ -91,9 +91,7 @@ export class InstallationTokenService {
     private readonly cfg: GithubAppConfig,
     private readonly clock: Clock,
     private readonly fetchImpl?: FetchLike,
-    private readonly baseUrl?: string,
-    /** The dedicated App an installation belongs to; undefined ⇒ sign with the deployment App. */
-    private readonly signerFor?: (installationId: bigint) => Promise<GithubAppConfig | undefined>
+    private readonly baseUrl?: string
   ) {}
 
   /**
@@ -297,7 +295,7 @@ export class InstallationTokenService {
   }
 
   private async request(installationId: bigint, body: unknown): Promise<CacheEntry> {
-    const jwt = await mintAppJwt((await this.signerFor?.(installationId)) ?? this.cfg)
+    const jwt = await mintAppJwt(this.cfg)
     const res = await githubRequest<GithubTokenResponse>(`/app/installations/${installationId}/access_tokens`, {
       method: 'POST',
       auth: jwt,

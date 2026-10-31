@@ -22,7 +22,6 @@ import {
 } from '@agentconnect.md/protocol'
 import { HookTable } from './hook-table.js'
 import { FollowUpWatchTable } from './follow-up-watch-table.js'
-import { GithubAppWebhookTable } from './github-app-table.js'
 import { HookRateLimiter } from './rate-limit.js'
 import {
   registerGithubIngress,
@@ -253,7 +252,6 @@ interface Harness {
   feedback: RcPullRequestFeedback[]
   feedbackError: boolean
   watches: FollowUpWatchTable
-  appWebhooks: GithubAppWebhookTable
   wakes: RcPullRequestFeedback[]
   wakeError: boolean
   rerequestResult: RcGithubRerequestResult | (() => Promise<RcGithubRerequestResult>)
@@ -281,7 +279,6 @@ function makeHarness(authzCapacity = 20): Harness {
       | 'rerequestRequests'
       | 'feedback'
       | 'watches'
-      | 'appWebhooks'
       | 'wakes'
       | 'onlineDaemons'
     > = {
@@ -294,7 +291,6 @@ function makeHarness(authzCapacity = 20): Harness {
     feedback: [],
     feedbackError: false,
     watches: new FollowUpWatchTable(),
-    appWebhooks: new GithubAppWebhookTable(),
     wakes: [],
     wakeError: false,
     authzResult: true,
@@ -364,8 +360,7 @@ function makeHarness(authzCapacity = 20): Harness {
     limiter: new HookRateLimiter(clock, { capacity: 3, refillPerSec: 0 }),
     clock,
     log,
-    webhookSecret: () => SECRET,
-    appWebhooks: h.appWebhooks
+    webhookSecret: () => SECRET
   })
   h.app = app
   h.table = table
@@ -641,148 +636,6 @@ describe('github ingress', () => {
       ])
       expect(h.sent).toHaveLength(0)
       expect(h.reports).toHaveLength(0)
-    })
-  })
-
-  describe("an agent's dedicated App", () => {
-    const GITHUB_APP = '45454545-4545-4454-8454-454545454545'
-    const DEDICATED_APP_ID = 2000
-    const DEDICATED_SECRET = 'ghw_dedicated'
-    const DEDICATED_INSTALLATION = 7654321
-    const fromApp = (appId = DEDICATED_APP_ID, secret = DEDICATED_SECRET) => ({
-      secret,
-      headers: {
-        'x-github-hook-installation-target-type': 'integration',
-        'x-github-hook-installation-target-id': String(appId)
-      }
-    })
-    const allowed: RcGithubRerequestResult = {
-      allowed: true,
-      hookId: HOOK,
-      pullNumber: 585,
-      sourceInstallationId: String(INSTALLATION),
-      configRevision: '3',
-      dispatchRevision: '5'
-    }
-    const ownCheck = () =>
-      rerequestPayload({
-        installation: { id: DEDICATED_INSTALLATION },
-        check_run: { ...(rerequestPayload().check_run as object), app: { id: DEDICATED_APP_ID } }
-      })
-
-    beforeEach(() => {
-      h.appWebhooks.apply({ githubAppId: GITHUB_APP, appId: String(DEDICATED_APP_ID), webhookSecret: DEDICATED_SECRET })
-    })
-
-    it("verifies with the App's own secret, never the deployment App's", async () => {
-      const installed = { action: 'created', installation: { id: DEDICATED_INSTALLATION } }
-      expect((await post('installation', installed, fromApp(DEDICATED_APP_ID, SECRET))).statusCode).toBe(401)
-      expect((await post('installation', installed, fromApp(DEDICATED_APP_ID, 'forged'))).statusCode).toBe(401)
-      expect(h.doorbells).toEqual([])
-      // A header naming an App nothing here knows stays on the deployment App's secret and path.
-      expect((await post('installation', installed, fromApp(3000, SECRET))).statusCode).toBe(202)
-      expect(h.doorbells).toEqual([{ installationId: String(DEDICATED_INSTALLATION), action: 'created' }])
-    })
-
-    it("rings the CP with the App's id on its installation events", async () => {
-      for (const [event, action] of [
-        ['installation', 'deleted'],
-        ['installation_repositories', 'removed']
-      ] as const) {
-        const res = await post(event, { action, installation: { id: DEDICATED_INSTALLATION } }, fromApp())
-        expect(res.statusCode).toBe(202)
-      }
-      expect(h.doorbells).toEqual([
-        { installationId: String(DEDICATED_INSTALLATION), action: 'deleted', appId: String(DEDICATED_APP_ID) },
-        { installationId: String(DEDICATED_INSTALLATION), action: 'removed', appId: String(DEDICATED_APP_ID) }
-      ])
-    })
-
-    it('acknowledges and drops conversation events, which arrive through the deployment App', async () => {
-      h.table.upsert(rule({}, { events: ['pull_request:*', 'issues:*'] }))
-      for (const [event, body] of [
-        ['pull_request', pullPayload({ action: 'opened' })],
-        ['issues', { action: 'opened', installation: { id: DEDICATED_INSTALLATION }, repository: { id: REPO_ID } }],
-        ['check_run', { ...ownCheck(), action: 'completed' }]
-      ] as const) {
-        expect((await post(event, body, fromApp())).statusCode).toBe(202)
-      }
-      await flush()
-      expect(h.sent).toEqual([])
-      expect(h.reports).toEqual([])
-      expect(h.feedback).toEqual([])
-      expect(h.authzRequests).toEqual([])
-      expect(h.rerequestRequests).toEqual([])
-    })
-
-    it('re-runs its own Check on the deployment installation the CP names', async () => {
-      h.table.upsert(rule())
-      h.rerequestResult = allowed
-      expect((await post('check_run', ownCheck(), fromApp())).statusCode).toBe(202)
-      await flush()
-
-      expect(h.rerequestRequests).toEqual([
-        {
-          checkRunId: '86617583005',
-          repoId: String(REPO_ID),
-          headSha: 'a'.repeat(40),
-          deliveryKey: 'gh-delivery-1',
-          appId: String(DEDICATED_APP_ID)
-        }
-      ])
-      expect(h.authzRequests).toEqual([expect.objectContaining({ installationId: String(INSTALLATION) })])
-      expect(h.sent).toHaveLength(1)
-      expect(h.sent[0]).toMatchObject({
-        event: 'check_run:rerequested',
-        github: { sourceInstallationId: String(INSTALLATION), pullNumber: 585 }
-      })
-    })
-
-    it('ignores a rerequest for a Check another App created, or one the CP gives no installation', async () => {
-      h.table.upsert(rule())
-      h.rerequestResult = allowed
-      const foreign = rerequestPayload({
-        check_run: { ...(rerequestPayload().check_run as object), app: { id: APP_ID } }
-      })
-      await post('check_run', foreign, fromApp())
-      await flush()
-      expect(h.rerequestRequests).toEqual([])
-
-      const { sourceInstallationId: _, ...withoutSource } = allowed as Extract<
-        RcGithubRerequestResult,
-        { hookId: string }
-      >
-      h.rerequestResult = withoutSource
-      await post('check_run', ownCheck(), fromApp())
-      await flush()
-      expect(h.rerequestRequests).toHaveLength(1)
-      expect(h.sent).toEqual([])
-    })
-
-    it('takes the Request review button on its own Check like a re-run, with the stored base', async () => {
-      h.table.upsert(rule())
-      h.rerequestResult = { ...allowed, baseSha: 'b'.repeat(40) }
-      await post(
-        'check_run',
-        { ...ownCheck(), action: 'requested_action', requested_action: { identifier: 'request_review' } },
-        fromApp()
-      )
-      await flush()
-      expect(h.rerequestRequests).toEqual([
-        expect.objectContaining({ includeBaseSha: true, appId: String(DEDICATED_APP_ID) })
-      ])
-      expect(h.sent).toHaveLength(1)
-      expect(h.sent[0]).toMatchObject({ github: { sourceInstallationId: String(INSTALLATION) } })
-    })
-
-    it('stops verifying an App the CP withdrew or a replay no longer names', async () => {
-      const installed = { action: 'created', installation: { id: DEDICATED_INSTALLATION } }
-      h.appWebhooks.beginSnapshot('snap-1')
-      h.appWebhooks.endSnapshot('snap-1', [])
-      expect((await post('installation', installed, fromApp())).statusCode).toBe(401)
-      h.appWebhooks.apply({ githubAppId: GITHUB_APP, appId: String(DEDICATED_APP_ID), webhookSecret: DEDICATED_SECRET })
-      h.appWebhooks.remove(GITHUB_APP)
-      expect((await post('installation', installed, fromApp())).statusCode).toBe(401)
     })
   })
 
@@ -1943,33 +1796,6 @@ describe('github ingress', () => {
         expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted' })])
       }
     )
-
-    it("dispatches a same-repository PR authored by an agent's dedicated App like the deployment App's", async () => {
-      h.table.upsert(
-        rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app', internalAppSlugs: ['example-coder'] })
-      )
-      h.authzResult = false
-      const pullRequest = pullPayload().pull_request as Record<string, unknown>
-
-      await post(
-        'pull_request',
-        pullPayload({
-          action: 'opened',
-          sender: { login: 'example-coder[bot]', type: 'Bot' },
-          pull_request: {
-            ...pullRequest,
-            user: { login: 'Example-Coder[bot]', type: 'Bot' },
-            head: { sha: 'a'.repeat(40), repo: { full_name: 'acme/infra' } },
-            base: { sha: 'b'.repeat(40), repo: { full_name: 'acme/infra' } }
-          }
-        })
-      )
-      await flush()
-
-      expect(h.authzRequests).toHaveLength(0)
-      expect(h.sent).toHaveLength(1)
-      expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted' })])
-    })
 
     it.each(['opened', 'synchronize'] as const)(
       "publishes the manual-request Check for another bot's PR %s without authorizing the bot",

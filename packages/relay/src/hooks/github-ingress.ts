@@ -23,7 +23,6 @@ import {
 } from '@agentconnect.md/protocol'
 import type { RelayDaemonServer } from '../relay-daemon-server.js'
 import type { HookTable } from './hook-table.js'
-import type { GithubAppWebhookTable } from './github-app-table.js'
 import type { FollowUpWatchTable } from './follow-up-watch-table.js'
 import { githubRuleByHookId, githubRulesForEvent } from './github-installation.js'
 import type { HookRateLimiter } from './rate-limit.js'
@@ -79,8 +78,6 @@ export interface GithubIngressDeps {
   log: Logger
   /** The App webhook secret from this process's immutable startup snapshot. */
   webhookSecret: () => string | undefined
-  /** Agents' dedicated Apps' webhook secrets, pushed by the CP. */
-  appWebhooks?: Pick<GithubAppWebhookTable, 'secretFor'>
 }
 
 /** The payload slice the matcher reads: untrusted filter input; authorization is the compiled `installationIds` set. */
@@ -114,7 +111,6 @@ interface GithubPayload {
   check_run?: {
     id?: number
     head_sha?: string
-    app?: { id?: number }
     pull_requests?: Array<{
       number?: number
       head?: { sha?: string; repo?: { id?: number } | null }
@@ -319,10 +315,7 @@ function isConfiguredAppPullRequest(rule: RcHookAssign, ctx: GithubMatchCtx): bo
     !ctx.subjectAuthorLogin
   )
     return false
-  const author = ctx.subjectAuthorLogin.toLowerCase()
-  return [rule.github.appSlug, ...(rule.github.internalAppSlugs ?? [])].some(
-    (slug) => author === `${slug}[bot]`.toLowerCase()
-  )
+  return ctx.subjectAuthorLogin.toLowerCase() === `${rule.github.appSlug}[bot]`.toLowerCase()
 }
 
 /** A same-repository App-authored revision is the internal CI lane, reviewable without trusting the bot as a maintainer. */
@@ -797,16 +790,14 @@ async function dispatchGithubRerequest(
   payload: GithubPayload,
   deliveryKey: string,
   event: 'check_run' | 'check_suite' | 'workflow_run',
-  action: 'rerequested' | 'requested_action' | 'in_progress',
-  // The agent's dedicated App that delivered a check_run rerequest; the run's own installation then stands in for the delivering one.
-  dedicatedAppId?: string
+  action: 'rerequested' | 'requested_action' | 'in_progress'
 ): Promise<void> {
   const checkRunId = payload.check_run?.id
   const checkSuiteId = payload.check_suite?.id
   const appId = payload.check_suite?.app?.id
   const repoId = payload.repository?.id
   const repoFullName = payload.repository?.full_name
-  const deliveredInstallationId = payload.installation?.id
+  const installationId = payload.installation?.id
   const headSha =
     event === 'check_run'
       ? payload.check_run?.head_sha
@@ -815,7 +806,7 @@ async function dispatchGithubRerequest(
         : payload.workflow_run?.head_sha
   if (
     !positiveSafeInteger(repoId) ||
-    !positiveSafeInteger(deliveredInstallationId) ||
+    !positiveSafeInteger(installationId) ||
     !repoFullName ||
     !headSha ||
     (event === 'check_run' && !positiveSafeInteger(checkRunId)) ||
@@ -826,7 +817,7 @@ async function dispatchGithubRerequest(
     return
   }
   // Reverse lookups share the authz budget, so unknown Check identities cannot buy unbounded CP work.
-  if (!deps.authzLimiter.allow(`${deliveredInstallationId}:${repoId}`)) {
+  if (!deps.authzLimiter.allow(`${installationId}:${repoId}`)) {
     deps.log.info(`github ingress: rerequest authz rate-limited ${deliveryKey}`)
     return
   }
@@ -848,21 +839,20 @@ async function dispatchGithubRerequest(
             repoId: String(repoId),
             headSha,
             deliveryKey,
-            ...(action === 'requested_action' ? { includeBaseSha: true as const } : {}),
-            ...(dedicatedAppId !== undefined ? { appId: dedicatedAppId } : {})
+            ...(action === 'requested_action' ? { includeBaseSha: true as const } : {})
           }
         : event === 'check_suite'
           ? {
               scope: 'suite',
               appId: String(appId),
-              installationId: String(deliveredInstallationId),
+              installationId: String(installationId),
               repoId: String(repoId),
               headSha,
               deliveryKey
             }
           : {
               scope: 'workflow',
-              installationId: String(deliveredInstallationId),
+              installationId: String(installationId),
               repoId: String(repoId),
               headSha,
               ...(workflowPullNumber !== undefined ? { pullNumber: workflowPullNumber } : {}),
@@ -876,17 +866,6 @@ async function dispatchGithubRerequest(
   }
   if (!result.allowed) {
     deps.log.info(`github ingress: ignored unowned ${event} rerequest ${deliveryKey}`)
-    return
-  }
-  // The deployment App delivered the run, so its rule, actor check and dispatch stay on that installation.
-  const installationId =
-    dedicatedAppId === undefined
-      ? deliveredInstallationId
-      : 'sourceInstallationId' in result
-        ? Number(result.sourceInstallationId)
-        : undefined
-  if (!positiveSafeInteger(installationId)) {
-    deps.log.info(`github ingress: ignored dedicated-App rerequest without a source installation ${deliveryKey}`)
     return
   }
 
@@ -1044,42 +1023,6 @@ async function dispatchGithubRerequest(
   await Promise.all(dispatches)
 }
 
-/** A dedicated App's webhook carries only its lifecycle; its conversation events also arrive through the deployment App, so they are dropped. */
-function dispatchDedicatedAppDelivery(
-  deps: GithubIngressDeps,
-  appId: string,
-  event: string,
-  payload: GithubPayload,
-  deliveryKey: string
-): void {
-  if (INSTALLATION_EVENTS.has(event)) {
-    const id = payload.installation?.id
-    if (id === undefined) return
-    deps.doorbell({ installationId: String(id), action: payload.action ?? 'unknown', appId })
-    deps.log.info(
-      `github ingress: doorbell ${deliveryKey} app ${appId} installation ${id} (${payload.action ?? 'unknown'})`
-    )
-    return
-  }
-  // GitHub sends a Check's re-run and button press only to the App that created it; the CP checks that App owns it too.
-  if (event === 'check_run' && String(payload.check_run?.app?.id) === appId) {
-    if (payload.action === 'rerequested') {
-      void dispatchGithubRerequest(deps, payload, deliveryKey, 'check_run', 'rerequested', appId)
-      return
-    }
-    if (
-      payload.action === 'requested_action' &&
-      payload.requested_action?.identifier === GITHUB_REQUEST_REVIEW_ACTION
-    ) {
-      void dispatchGithubRerequest(deps, payload, deliveryKey, 'check_run', 'requested_action', appId)
-      return
-    }
-  }
-  deps.log.debug(
-    `github ingress: dropped ${event}:${payload.action ?? 'none'} ${deliveryKey} from dedicated app ${appId}`
-  )
-}
-
 function pullRequestNeedsMaintainer(ctx: GithubMatchCtx, prAuthorAuthorized: boolean): boolean {
   return ctx.event === 'pull_request' && ctx.eventAction !== 'pull_request:review_requested' && !prAuthorAuthorized
 }
@@ -1110,10 +1053,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
 
     scope.post('/webhooks/github', { bodyLimit: GITHUB_BODY_LIMIT }, async (req, reply) => {
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-      // A dedicated App names itself in this header; the claim holds only if that App's own secret signed the body.
-      const targetAppId = headerString(req.headers['x-github-hook-installation-target-id'])
-      const dedicatedAppSecret = targetAppId ? deps.appWebhooks?.secretFor(targetAppId) : undefined
-      const webhookSecret = dedicatedAppSecret ?? deps.webhookSecret()
+      const webhookSecret = deps.webhookSecret()
       if (!webhookSecret) return reply.code(404).send({ error: 'Not Found', statusCode: 404 })
       // MANDATORY signature — only GitHub (or a secret holder) may spend work here.
       if (!verifySha256Header(webhookSecret, raw, headerString(req.headers['x-hub-signature-256']))) {
@@ -1131,10 +1071,6 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       } catch {
         // Cannot happen from GitHub (it signed valid JSON) — defensive only.
         return reply.code(400).send({ error: 'Bad Request', statusCode: 400 })
-      }
-      if (dedicatedAppSecret !== undefined && targetAppId !== undefined) {
-        dispatchDedicatedAppDelivery(deps, targetAppId, event, payload, deliveryKey)
-        return reply.code(202).send({ deliveryKey })
       }
       // Proves GitHub delivered a thread event, so a later silent drop is never mistaken for a missing delivery.
       if (GITHUB_ROUTED_THREAD_EVENTS.has(event)) {

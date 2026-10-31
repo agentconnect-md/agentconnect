@@ -34,39 +34,6 @@ export function githubAppBotIdentity(slug: string, botUserId: number): GitCommit
   return { name, email: `${botUserId}+${name}@users.noreply.github.com` }
 }
 
-/** The App identity from its parts — the deployment env or an agent's dedicated App row.
- *  Throws on an unparsable or non-RSA key. */
-export function githubAppConfigFromParts(parts: {
-  appId: number
-  slug: string
-  clientId?: string | null
-  privateKeyB64: string
-}): GithubAppConfig {
-  let pem: string
-  try {
-    pem = Buffer.from(parts.privateKeyB64, 'base64').toString('utf8')
-  } catch {
-    throw new Error('GitHub App private key is not valid base64')
-  }
-  let privateKey: KeyObject
-  try {
-    // createPrivateKey handles both PKCS#1 (GitHub's download format,
-    // "BEGIN RSA PRIVATE KEY") and PKCS#8 PEM.
-    privateKey = createPrivateKey(pem)
-  } catch (e) {
-    throw new Error(`GitHub App private key does not decode to a parsable private key: ${(e as Error).message}`)
-  }
-  if (privateKey.asymmetricKeyType !== 'rsa') {
-    throw new Error(`GitHub App private key must be an RSA key (got ${privateKey.asymmetricKeyType})`)
-  }
-  return {
-    appId: parts.appId,
-    slug: parts.slug,
-    jwtIssuer: parts.clientId ?? String(parts.appId),
-    privateKey
-  }
-}
-
 /** Undefined ⇒ feature disabled. Throws on partial config or an unparsable key. */
 export function resolveGithubAppConfig(config: GithubEnvSlice): GithubAppConfig | undefined {
   const present = {
@@ -83,14 +50,28 @@ export function resolveGithubAppConfig(config: GithubEnvSlice): GithubAppConfig 
     throw new Error(`github app config is partial — missing ${missing.join(', ')} (set all three or none)`)
   }
 
+  let pem: string
   try {
-    return githubAppConfigFromParts({
-      appId: config.GITHUB_APP_ID!,
-      slug: config.GITHUB_APP_SLUG!,
-      clientId: config.GITHUB_APP_CLIENT_ID,
-      privateKeyB64: config.GITHUB_APP_PRIVATE_KEY_B64!
-    })
+    pem = Buffer.from(config.GITHUB_APP_PRIVATE_KEY_B64!, 'base64').toString('utf8')
+  } catch {
+    throw new Error('GITHUB_APP_PRIVATE_KEY_B64 is not valid base64')
+  }
+  let privateKey: KeyObject
+  try {
+    // createPrivateKey handles both PKCS#1 (GitHub's download format,
+    // "BEGIN RSA PRIVATE KEY") and PKCS#8 PEM.
+    privateKey = createPrivateKey(pem)
   } catch (e) {
-    throw new Error((e as Error).message.replace('GitHub App private key', 'GITHUB_APP_PRIVATE_KEY_B64'))
+    throw new Error(`GITHUB_APP_PRIVATE_KEY_B64 does not decode to a parsable private key: ${(e as Error).message}`)
+  }
+  if (privateKey.asymmetricKeyType !== 'rsa') {
+    throw new Error(`GITHUB_APP_PRIVATE_KEY_B64 must be an RSA key (got ${privateKey.asymmetricKeyType})`)
+  }
+
+  return {
+    appId: config.GITHUB_APP_ID!,
+    slug: config.GITHUB_APP_SLUG!,
+    jwtIssuer: config.GITHUB_APP_CLIENT_ID ?? String(config.GITHUB_APP_ID!),
+    privateKey
   }
 }

@@ -52,77 +52,19 @@ export function mintInstallState(key: Buffer, orgId: string, clock: Clock): { st
 
 /** Null on ANY defect: malformed, bad signature, expired. Constant-time compare. */
 export function verifyInstallState(key: Buffer, state: string, clock: Clock): InstallState | null {
-  const payload = verifiedPayload<StatePayload>(key, state)
-  if (!payload) return null
-  if (typeof payload.o !== 'string' || typeof payload.e !== 'number' || typeof payload.n !== 'string') return null
-  if (payload.e * 1000 <= clock.now()) return null
-  return { orgId: payload.o, nonce: payload.n, expiresAt: new Date(payload.e * 1000) }
-}
-
-function verifiedPayload<T>(key: Buffer, state: string): T | null {
   const dot = state.indexOf('.')
   if (dot <= 0 || dot === state.length - 1) return null
   const encoded = state.slice(0, dot)
   const sig = Buffer.from(state.slice(dot + 1), 'base64url')
   const expected = mac(key, encoded)
   if (sig.length !== expected.length || !timingSafeEqual(sig, expected)) return null
+  let payload: StatePayload
   try {
-    return JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as T
+    payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as StatePayload
   } catch {
     return null
   }
-}
-
-/** The manifest flow's own subkey, so an install state never verifies as a manifest state or back. */
-export function deriveManifestStateKey(pepper: string): Buffer {
-  return createHmac('sha256', pepper).update('github-app-manifest-state-v1').digest()
-}
-
-/** A dedicated-App creation in flight: the agent it is for and the App row id its setup URL already names. */
-export interface ManifestState extends InstallState {
-  agentId: string
-  githubAppId: string
-}
-
-interface ManifestPayload extends StatePayload {
-  a: string // agentId
-  g: string // pre-allocated GithubApp.id
-}
-
-export function mintManifestState(
-  key: Buffer,
-  claims: { orgId: string; agentId: string; githubAppId: string },
-  clock: Clock
-): { state: string } & ManifestState {
-  const nonce = randomBytes(16).toString('base64url')
-  const expiresAt = new Date(clock.now() + INSTALL_STATE_TTL_MS)
-  const payload: ManifestPayload = {
-    o: claims.orgId,
-    a: claims.agentId,
-    g: claims.githubAppId,
-    e: Math.floor(expiresAt.getTime() / 1000),
-    n: nonce
-  }
-  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url')
-  const sig = mac(key, encoded).toString('base64url')
-  return { state: `${encoded}.${sig}`, ...claims, nonce, expiresAt }
-}
-
-export function verifyManifestState(key: Buffer, state: string, clock: Clock): ManifestState | null {
-  const payload = verifiedPayload<ManifestPayload>(key, state)
-  if (!payload) return null
-  if (
-    [payload.o, payload.a, payload.g, payload.n].some((v) => typeof v !== 'string') ||
-    typeof payload.e !== 'number'
-  ) {
-    return null
-  }
+  if (typeof payload.o !== 'string' || typeof payload.e !== 'number' || typeof payload.n !== 'string') return null
   if (payload.e * 1000 <= clock.now()) return null
-  return {
-    orgId: payload.o,
-    agentId: payload.a,
-    githubAppId: payload.g,
-    nonce: payload.n,
-    expiresAt: new Date(payload.e * 1000)
-  }
+  return { orgId: payload.o, nonce: payload.n, expiresAt: new Date(payload.e * 1000) }
 }

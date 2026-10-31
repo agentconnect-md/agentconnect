@@ -44,7 +44,6 @@ import { HookTable } from './hooks/hook-table.js'
 import { HookRateLimiter } from './hooks/rate-limit.js'
 import { registerHookIngress } from './hooks/ingress.js'
 import { registerGithubIngress } from './hooks/github-ingress.js'
-import { GithubAppWebhookTable } from './hooks/github-app-table.js'
 import { FollowUpWatchTable } from './hooks/follow-up-watch-table.js'
 import { registerGitlabIngress } from './hooks/gitlab-ingress.js'
 import { registerGiteaIngress } from './hooks/gitea/ingress.js'
@@ -130,7 +129,6 @@ async function main(): Promise<void> {
   const mcpBindings = new McpBindingTable()
   const memoryBindings = new MemoryConnectionBindingTable()
   const followUpWatches = new FollowUpWatchTable()
-  const githubAppWebhooks = new GithubAppWebhookTable()
   const projectionTable = (kind: RcSnapshotKind) =>
     kind === 'mcp'
       ? mcpBindings
@@ -138,9 +136,7 @@ async function main(): Promise<void> {
         ? hookTable
         : kind === 'follow-up-watch'
           ? followUpWatches
-          : kind === 'github-app'
-            ? githubAppWebhooks
-            : memoryBindings
+          : memoryBindings
 
   const wsOrigin = toWsOrigin(config.CP_URL)
   // TURN for viewer media without a punched path (computer-use.md §7.2); it checks credentials once the CP hands over the secret.
@@ -169,8 +165,7 @@ async function main(): Promise<void> {
     // dropped while it was down.
     onReady: () => {
       // A snapshot left open by the dropped link never ends; the new CP's replay starts its own.
-      for (const table of [mcpBindings, hookTable, memoryBindings, followUpWatches, githubAppWebhooks])
-        table.abandonSnapshot()
+      for (const table of [mcpBindings, hookTable, memoryBindings, followUpWatches]) table.abandonSnapshot()
       // A CP without snapshots replays the full memory-binding set, so only its clear drops revoked grants.
       if (!client.advertisedFeature(RELAY_PROJECTION_SNAPSHOT_V1_FEATURE)) memoryBindings.clear()
       held.relayIngress?.flushPendingReports()
@@ -224,8 +219,6 @@ async function main(): Promise<void> {
     onMcpUnassign: (a) => mcpBindings.unassign(a.providerId, a.grantKeyHash),
     onMemoryConnectionAssign: (a) => memoryBindings.assign(a),
     onMemoryConnectionUnassign: (a) => memoryBindings.unassign(a.connectionId, a.revision, a.grantKeyHash),
-    onGithubAppAssign: (a) => githubAppWebhooks.apply(a),
-    onGithubAppUnassign: (a) => githubAppWebhooks.remove(a.githubAppId),
     onSnapshotBegin: (s) => projectionTable(s.kind).beginSnapshot(s.snapshotId),
     onSnapshotEnd: (s) => projectionTable(s.kind).endSnapshot(s.snapshotId, s.withheld)
   })
@@ -300,8 +293,7 @@ async function main(): Promise<void> {
     limiter,
     clock: systemClock,
     log,
-    webhookSecret: () => deploymentConfig.githubWebhookSecret,
-    appWebhooks: githubAppWebhooks
+    webhookSecret: () => deploymentConfig.githubWebhookSecret
   })
 
   // GitLab project webhooks (gitlab-com-integration.md §11.2): rule-carried
