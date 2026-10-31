@@ -315,7 +315,10 @@ function isConfiguredAppPullRequest(rule: RcHookAssign, ctx: GithubMatchCtx): bo
     !ctx.subjectAuthorLogin
   )
     return false
-  return ctx.subjectAuthorLogin.toLowerCase() === `${rule.github.appSlug}[bot]`.toLowerCase()
+  const author = ctx.subjectAuthorLogin.toLowerCase()
+  return [rule.github.appSlug, ...(rule.github.internalAppSlugs ?? [])].some(
+    (slug) => author === `${slug}[bot]`.toLowerCase()
+  )
 }
 
 /** A same-repository App-authored revision is the internal CI lane, reviewable without trusting the bot as a maintainer. */

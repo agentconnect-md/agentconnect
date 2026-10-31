@@ -301,7 +301,21 @@
     },
     "githubIdentity": {
       "label": "GitHub 身份",
-      "deployment": "部署 App（默认）"
+      "shared": "共享 bot",
+      "owner": "创建在",
+      "personal": "我的账号",
+      "create": "创建专属 GitHub App",
+      "creating": "正在打开 GitHub…",
+      "notInstalled": "尚未安装",
+      "install": "去 GitHub 安装",
+      "installedOn": "已安装在 {accounts}",
+      "suspended": "{account}(已暂停)",
+      "sync": "同步",
+      "syncing": "同步中…",
+      "remove": "移除",
+      "removing": "移除中…",
+      "removeTitle": "移除 {slug}[bot]?",
+      "removeBody": "这个 agent 会改回使用共享 bot。GitHub 上的 App 不会被删除,需要你到 GitHub 上自行删除。"
     }
   },
   "Profile": {
@@ -5101,31 +5115,6 @@
       "replace": "替换",
       "applyAllBody": "这会将 {key} 分配给你可以管理的每个 Agent，以及之后配置的 Agent。你无法管理的 Agent 不受影响，现有分配会保留。",
       "replaceBody": "已分配 {key} 的 Agent 将收到新值。之前的值无法恢复。"
-    },
-    "githubApps": {
-      "title": "GitHub Apps",
-      "description": "在部署 App 之外注册 GitHub App，让智能体以独立的机器人身份行事。请将其安装到与部署 App 相同的 GitHub 账户和仓库；事件仍通过部署 App 送达，因此无需 Webhook。",
-      "register": "注册 App",
-      "registering": "正在注册…",
-      "registerTitle": "注册 GitHub App",
-      "close": "关闭",
-      "cancel": "取消",
-      "appIdLabel": "App ID",
-      "clientIdLabel": "Client ID（可选）",
-      "privateKeyLabel": "私钥",
-      "privateKeyPlaceholder": "-----BEGIN RSA PRIVATE KEY-----",
-      "privateKeyHelp": "粘贴 PEM 私钥。该字段仅可写入，无法再次读取。",
-      "loadError": "无法加载 GitHub Apps。",
-      "empty": "尚未注册 GitHub App。",
-      "appId": "App ID {appId}",
-      "noInstallations": "无安装",
-      "suspended": "{account}（已暂停）",
-      "sync": "同步",
-      "syncing": "正在同步…",
-      "remove": "移除",
-      "removing": "正在移除…",
-      "removeTitle": "移除 {slug}[bot]？",
-      "removeBody": "绑定到它的智能体将回到部署 App。该 App 仍安装在 GitHub 上。"
     }
   },
   "Decisions": {

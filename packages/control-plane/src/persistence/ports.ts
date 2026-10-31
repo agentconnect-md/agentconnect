@@ -1193,7 +1193,6 @@ export interface CreateAgentInput {
   chatActions?: ChatActions // what people can do in chat; absent ⇒ 'approve'
   pause?: boolean // operational message-processing toggle (#288); true ⇒ daemon skips all turns
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join (absent ⇒ DB default false)
-  githubAppId?: string | null // the registered GitHub App the agent acts as; absent/null ⇒ the deployment App
   computerUse?: AgentComputerSetting // the managed computer mode (computer-use.md §4.1); absent ⇒ none
   execution?: string // the strategy slug sessions run in (session-executors.md §5); absent ⇒ DB default host
   env?: Record<string, string> // extra env injected into the runtime (AgentSpec.env)
@@ -1249,7 +1248,6 @@ export interface UpdateAgentInput {
   chatActions?: ChatActions
   pause?: boolean | null // operational message-processing toggle (#288); null clears
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join
-  githubAppId?: string | null // the registered GitHub App the agent acts as; null returns it to the deployment App
   computerUse?: AgentComputerSetting | null // the managed computer mode (computer-use.md §4.1); replaced wholesale, null clears
   execution?: string // the strategy slug, resolved by the route against the placement's table
   /** Widen an existing App-backed GitHub workspace from read to write. */
@@ -1334,7 +1332,7 @@ export interface AgentRecord {
   /** Nullable on scratch/anonymous and pre-R2a rows; action-time authorization
    *  fails closed until a legacy github workspace is lazily repaired. */
   workspaceRepoId?: bigint
-  /** The organization-registered GitHub App this agent acts as (GithubApp.id); absent/null ⇒ the deployment App. */
+  /** The agent's dedicated GitHub App (GithubApp.id); absent/null ⇒ the deployment App. */
   githubAppId?: string | null
   capabilities: string[]
   createdAt: Date
@@ -4324,7 +4322,7 @@ export interface GithubInstallationFacts {
 export interface GithubInstallationRecord extends GithubInstallationFacts {
   id: string // our row id (uuid) — what agents reference as provenance
   orgId: OrgId
-  /** The organization-registered App this installation belongs to; absent/null ⇒ the deployment App. */
+  /** The agent's dedicated App this installation belongs to; absent/null ⇒ the deployment App. */
   githubAppId?: string | null
   revokedAt: Date | null
   createdAt: Date
@@ -4336,7 +4334,7 @@ export interface GithubInstallationRepo {
   upsertFromGithub(
     orgId: OrgId,
     facts: GithubInstallationFacts,
-    /** The registered App the facts were pulled with; omitted ⇒ the deployment App. A row keeps its App. */
+    /** The dedicated App the facts were pulled with; omitted ⇒ the deployment App. A row keeps its App. */
     githubAppId?: string | null
   ): Promise<GithubInstallationRecord>
   /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
@@ -4349,7 +4347,7 @@ export interface GithubInstallationRepo {
    * exactly this set, so it never assigns an unclaimed or foreign installation. */
   listClaimsForOrg(orgId: OrgId): Promise<GithubInstallationRecord[]>
   /** Mint-time resolution: the live installation covering `accountLogin` in this org
-   *  under one App — the deployment App by default, or the registered App an agent acts as. */
+   *  under one App — the deployment App by default, or the dedicated App an agent acts as. */
   liveByOrgAndAccount(
     orgId: OrgId,
     accountLogin: string,
@@ -4372,11 +4370,13 @@ export interface GithubInstallStateStore {
   consume(nonce: string): Promise<boolean>
 }
 
-/** An organization-registered GitHub App (github-app-git-credentials.md §Dedicated Apps).
+/** An agent's dedicated GitHub App (github-app-git-credentials.md §Dedicated Apps).
  *  The private key is never on the record; read it via {@link GithubAppSecretStore}. */
 export interface GithubAppRecord {
   id: string
   orgId: OrgId
+  /** The agent that owns the App; null only in the instant between its deletion and the App's. */
+  agentId: string | null
   appId: bigint
   slug: string
   clientId: string | null
@@ -4385,19 +4385,23 @@ export interface GithubAppRecord {
 }
 
 export interface GithubAppRepo {
-  create(input: {
+  /** Creates the agent's App and binds it in one transaction; false-y when the agent is gone or already has one. */
+  createForAgent(input: {
+    id: string
     orgId: OrgId
+    agentId: string
     appId: bigint
     slug: string
     clientId: string | null
     botUserId: bigint | null
-  }): Promise<GithubAppRecord>
+  }): Promise<GithubAppRecord | null>
   /** Org-fenced point read: a cross-org id reads as absent. */
   get(orgId: OrgId, id: string): Promise<GithubAppRecord | null>
-  /** Cross-org read for the token signer, which only holds the installation row's App id. */
+  /** Cross-org read for the token signer and the App's setup callback, which hold only the App id. */
   getUnscoped(id: string): Promise<GithubAppRecord | null>
+  getForAgent(orgId: OrgId, agentId: string): Promise<GithubAppRecord | null>
   listForOrg(orgId: OrgId): Promise<GithubAppRecord[]>
-  /** Cascades to the App's installations; agents bound to it fall back to the deployment App. */
+  /** Cascades to the App's installations; its agent falls back to the deployment App. */
   delete(orgId: OrgId, id: string): Promise<boolean>
 }
 

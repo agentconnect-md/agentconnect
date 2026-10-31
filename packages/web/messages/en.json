@@ -301,7 +301,21 @@
     },
     "githubIdentity": {
       "label": "GitHub identity",
-      "deployment": "Deployment App (default)"
+      "shared": "Shared bot",
+      "owner": "Create under",
+      "personal": "My account",
+      "create": "Create its own GitHub App",
+      "creating": "Opening GitHub…",
+      "notInstalled": "Not installed yet",
+      "install": "Install on GitHub",
+      "installedOn": "Installed on {accounts}",
+      "suspended": "{account} (suspended)",
+      "sync": "Sync",
+      "syncing": "Syncing…",
+      "remove": "Remove",
+      "removing": "Removing…",
+      "removeTitle": "Remove {slug}[bot]?",
+      "removeBody": "This agent goes back to the shared bot. The App stays on GitHub until you delete it there."
     }
   },
   "Profile": {
@@ -5101,31 +5115,6 @@
       "replace": "Replace",
       "applyAllBody": "This assigns {key} to every agent you can manage, and to agents you configure later. Agents you cannot manage are not affected, and existing assignments are kept.",
       "replaceBody": "Agents assigned {key} will receive the new value. The previous value cannot be recovered."
-    },
-    "githubApps": {
-      "title": "GitHub Apps",
-      "description": "Register a GitHub App beside the deployment App so an agent can act as its own bot. Install it on the same GitHub accounts and repositories as the deployment App; events keep arriving through the deployment App, so it needs no webhook.",
-      "register": "Register App",
-      "registering": "Registering…",
-      "registerTitle": "Register GitHub App",
-      "close": "Close",
-      "cancel": "Cancel",
-      "appIdLabel": "App ID",
-      "clientIdLabel": "Client ID (optional)",
-      "privateKeyLabel": "Private key",
-      "privateKeyPlaceholder": "-----BEGIN RSA PRIVATE KEY-----",
-      "privateKeyHelp": "Paste the PEM private key. It is write-only and cannot be read back.",
-      "loadError": "Could not load GitHub Apps.",
-      "empty": "No GitHub Apps registered.",
-      "appId": "App ID {appId}",
-      "noInstallations": "No installations",
-      "suspended": "{account} (suspended)",
-      "sync": "Sync",
-      "syncing": "Syncing…",
-      "remove": "Remove",
-      "removing": "Removing…",
-      "removeTitle": "Remove {slug}[bot]?",
-      "removeBody": "Agents bound to it return to the deployment App. The App stays installed on GitHub."
     }
   },
   "Decisions": {

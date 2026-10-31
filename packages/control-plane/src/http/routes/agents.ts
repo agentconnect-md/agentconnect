@@ -2068,9 +2068,6 @@ export function agentRoutes(deps: HttpDeps) {
         }
         const selectorRefusal = repositorySelectorRefusal(req.body.repositorySelector)
         if (selectorRefusal) return badRequest(reply, selectorRefusal)
-        if (req.body.githubAppId && !(await deps.repos.githubApp.get(orgOf(req), req.body.githubAppId))) {
-          return conflict('unknown GitHub App')
-        }
         const executionChoice = resolveExecution(
           placementStrategies((wantsSet ? setMembers : placedDaemon ? [placedDaemon] : []).map((d) => d.capabilities)),
           req.body.execution
@@ -2235,7 +2232,6 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.chatActions !== undefined ? { chatActions: req.body.chatActions } : {}),
                   ...(req.body.pause !== undefined ? { pause: req.body.pause } : {}),
                   ...(req.body.introduceOnJoin !== undefined ? { introduceOnJoin: req.body.introduceOnJoin } : {}),
-                  ...(req.body.githubAppId !== undefined ? { githubAppId: req.body.githubAppId } : {}),
                   ...(req.body.computerUse !== undefined ? { computerUse: req.body.computerUse } : {}),
                   execution: executionChoice.execution,
                   ...(req.body.env !== undefined ? { env: req.body.env } : {}),
@@ -2777,9 +2773,6 @@ export function agentRoutes(deps: HttpDeps) {
         // viewers read-only while collaborators and owners may edit.
         if (!canEdit(existing, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
-        }
-        if (req.body.githubAppId && !(await deps.repos.githubApp.get(orgOf(req), req.body.githubAppId))) {
-          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'unknown GitHub App' })
         }
         // Built-in preset agents keep their fixed brand identity (preset-agents.md
         // §3.1): display name and icon are not editable — everything else stays an

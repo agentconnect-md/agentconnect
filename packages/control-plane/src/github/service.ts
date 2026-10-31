@@ -122,7 +122,7 @@ export interface GithubServiceDeps {
   /** Optional lazy repair of the workspace's rename-proof numeric repo id. */
   agents?: Pick<AgentRepo, 'setWorkspaceRepoId'>
   onInstallationFactsChanged?: (installationId: bigint, orgId: OrgId) => void | Promise<void>
-  /** Organization-registered Apps; absent ⇒ every installation is signed with the deployment App. */
+  /** Agents' dedicated Apps; absent ⇒ every installation is signed with the deployment App. */
   appRegistry?: Pick<GithubAppRegistry, 'configForInstallation'>
   pepper: string
   fetchImpl?: FetchLike
@@ -1164,7 +1164,8 @@ export class GithubService {
   async mintChecksForProjectionCleanup(
     orgId: OrgId,
     repoId: bigint,
-    repoFullName: string
+    repoFullName: string,
+    lastInstallationId?: bigint | null
   ): Promise<{
     cred: MintedGitCred
     repoId: bigint
@@ -1173,7 +1174,11 @@ export class GithubService {
   }> {
     const [owner, repo] = repoFullName.split('/')
     if (!owner || !repo) throw new GitCredDeniedError('invalid github repository name', 'SCOPE_DENIED', false)
-    let installation = await this.deps.installations.liveByOrgAndAccount(orgId, owner)
+    // Only the App that created a Check can update it, so the last installation picks the App; authority is still re-resolved.
+    const last =
+      lastInstallationId != null ? await this.deps.installations.getByInstallationId(lastInstallationId) : null
+    const githubAppId = last?.orgId === orgId ? last.githubAppId : null
+    let installation = await this.deps.installations.liveByOrgAndAccount(orgId, owner, githubAppId)
     if (!installation || installation.suspendedAt) {
       throw new GitCredDeniedError(`no live github installation covers ${owner}`, 'LEASE_DENIED', false)
     }
@@ -1340,7 +1345,7 @@ export class GithubService {
     }
   }
 
-  /** A hook row names a deployment-App installation. An agent acting as a registered App
+  /** A hook row names a deployment-App installation. An agent acting as a dedicated App
    *  resolves the same account's installation under that App, so the two agree by
    *  account rather than by installation id. */
   private async coversHookInstallation(ins: GithubInstallationRecord, hookInstallationId: bigint): Promise<boolean> {
@@ -1351,7 +1356,7 @@ export class GithubService {
   }
 
   /** An installation grant names a deployment-App installation (the console lists only those) and
-   *  authorizes the repositories that installation covers. When the agent acts as a registered App, the
+   *  authorizes the repositories that installation covers. When the agent acts as a dedicated App, the
    *  grant covers the App's own installation on that account only while the grant's installation is
    *  still the org's live, unsuspended deployment installation there AND still covers the repository:
    *  a suspended, revoked or replaced installation, or a repository removed from it, leaves the grant as

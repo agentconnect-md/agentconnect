@@ -1551,7 +1551,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     expect(mintBodies).toHaveLength(1)
   })
 
-  it("an agent acting as a registered App resolves that App's installation on the hook's account", async () => {
+  it("an agent acting as a dedicated App resolves that App's installation on the hook's account", async () => {
     const REVIEW_AGENT = { ...(READ_WORKSPACE_AGENT as object), githubAppId: 'app-review' } as never
     const { svc, mintBodies, accountLookups } = harness({
       rows: [],

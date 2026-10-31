@@ -322,7 +322,7 @@ export interface HttpDeps {
     presetAgent: PresetAgentStore
     /** Deployment GitHub App installations (github-app workspaces); org-level infrastructure. */
     githubInstallation: GithubInstallationRepo
-    /** Organization-registered GitHub Apps (github-app-git-credentials.md §Dedicated Apps). */
+    /** Agents' dedicated GitHub Apps (github-app-git-credentials.md §Dedicated Apps). */
     githubApp: GithubAppRepo
     /** Explicit non-workspace repo grants per agent (issue #457) — the agent
      *  Repositories card + the github-hook watch-repo gate. */
@@ -514,7 +514,7 @@ export interface HttpDeps {
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService
-  /** Organization-registered GitHub Apps; absent with `github`. */
+  /** Agents' dedicated GitHub Apps; absent with `github`. */
   githubApps?: GithubAppsService
   /** Resolves a typed login to the host's numeric user id for the "Trusted users" list; per-provider arms
    *  are present only where that host is configured, so an unconfigured host answers 409 rather than 404. */

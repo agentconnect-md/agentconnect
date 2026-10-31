@@ -537,7 +537,8 @@ export class GithubRunReporter {
         const minted = await this.deps.github.mintChecksForProjectionCleanup(
           OrgId(projection.orgId),
           projection.repoId,
-          projection.repoFullName
+          projection.repoFullName,
+          projection.lastResolvedInstallationId
         )
         token = minted.cred.token
         repoFullName = minted.repoFullName

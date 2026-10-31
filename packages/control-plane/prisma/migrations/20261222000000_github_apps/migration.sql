@@ -1,4 +1,4 @@
--- Organization-registered GitHub Apps beside the deployment App (github-app-git-credentials.md §Dedicated Apps).
+-- Agents' dedicated GitHub Apps beside the deployment App (github-app-git-credentials.md §Dedicated Apps).
 CREATE TABLE "github_app" (
     "id" UUID NOT NULL,
     "orgId" TEXT NOT NULL,
@@ -32,4 +32,5 @@ CREATE INDEX "github_installation_githubAppId_idx" ON "github_installation"("git
 ALTER TABLE "github_installation" ADD CONSTRAINT "github_installation_githubAppId_fkey" FOREIGN KEY ("githubAppId") REFERENCES "github_app"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 ALTER TABLE "agent" ADD COLUMN "githubAppId" UUID;
+CREATE UNIQUE INDEX "agent_githubAppId_key" ON "agent"("githubAppId");
 ALTER TABLE "agent" ADD CONSTRAINT "agent_githubAppId_fkey" FOREIGN KEY ("githubAppId") REFERENCES "github_app"("id") ON DELETE SET NULL ON UPDATE CASCADE;

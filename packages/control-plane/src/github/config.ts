@@ -34,7 +34,7 @@ export function githubAppBotIdentity(slug: string, botUserId: number): GitCommit
   return { name, email: `${botUserId}+${name}@users.noreply.github.com` }
 }
 
-/** The App identity from its parts — the deployment env or an organization-registered App row.
+/** The App identity from its parts — the deployment env or an agent's dedicated App row.
  *  Throws on an unparsable or non-RSA key. */
 export function githubAppConfigFromParts(parts: {
   appId: number

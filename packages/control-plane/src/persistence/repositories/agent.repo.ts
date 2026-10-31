@@ -518,7 +518,6 @@ export class PgAgentRepo implements AgentRepo {
           capabilities: input.capabilities ?? [],
           // #536 self-introduce-on-join (dedicated column; absent ⇒ DB default false).
           ...(input.introduceOnJoin !== undefined ? { introduceOnJoin: input.introduceOnJoin } : {}),
-          ...(input.githubAppId !== undefined ? { githubAppId: input.githubAppId } : {}),
           // The strategy sessions run in (session-executors.md §5); absent ⇒ DB default `host`.
           ...(input.execution !== undefined ? { execution: input.execution } : {}),
           // Initial visibility (absent ⇒ DB default 'org'). sharedWith only bites
@@ -864,7 +863,6 @@ export class PgAgentRepo implements AgentRepo {
         ...(patch.runtime !== undefined ? { runtime: patch.runtime } : {}),
         ...(patch.capabilities !== undefined ? { capabilities: patch.capabilities } : {}),
         ...(patch.introduceOnJoin !== undefined ? { introduceOnJoin: patch.introduceOnJoin } : {}),
-        ...(patch.githubAppId !== undefined ? { githubAppId: patch.githubAppId } : {}),
         ...(patch.execution !== undefined ? { execution: patch.execution } : {}),
         ...(patch.gitAccess !== undefined ? { gitAccess: patch.gitAccess } : {}),
         ...(patch.agentDir !== undefined ? { agentDir: patch.agentDir } : {}),
@@ -1310,7 +1308,7 @@ export class PgAgentRepo implements AgentRepo {
       // missing-row error semantics the comment above documents.
       const row = await tx.agent.findUnique({
         where: { id: agentId, orgId },
-        select: { orgId: true, runtimeOverrides: true }
+        select: { orgId: true, runtimeOverrides: true, githubAppId: true }
       })
       if (row) {
         const memory = (row.runtimeOverrides as RuntimeOverrides | null)?.memory
@@ -1327,6 +1325,8 @@ export class PgAgentRepo implements AgentRepo {
       // (the FK SetNull would orphan the row from this agentId lookup).
       await settlePresetPlacement(tx, agentId)
       if (row) await pruneKnowledgeReaders(tx, row.orgId, agentId)
+      // A dedicated GitHub App belongs to its agent: its row, sealed key and installations go with it.
+      if (row?.githubAppId) await tx.githubApp.deleteMany({ where: { id: row.githubAppId, orgId } })
       await tx.agent.delete({ where: { id: agentId, orgId } })
       return removedHooks
     })

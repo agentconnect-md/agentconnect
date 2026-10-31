@@ -663,7 +663,12 @@ describe('GithubRunReporter', () => {
 
     await reporter.tick()
 
-    expect(github.mintChecksForProjectionCleanup).toHaveBeenCalledWith(orgId, p.repoId, p.repoFullName)
+    expect(github.mintChecksForProjectionCleanup).toHaveBeenCalledWith(
+      orgId,
+      p.repoId,
+      p.repoFullName,
+      p.lastResolvedInstallationId
+    )
     expect(mint).not.toHaveBeenCalled()
     const mutation = fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST')
     const body = JSON.parse(String(mutation?.[1]?.body)) as {

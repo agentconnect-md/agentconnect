@@ -92,7 +92,7 @@ export class InstallationTokenService {
     private readonly clock: Clock,
     private readonly fetchImpl?: FetchLike,
     private readonly baseUrl?: string,
-    /** The registered App an installation belongs to; undefined ⇒ sign with the deployment App. */
+    /** The dedicated App an installation belongs to; undefined ⇒ sign with the deployment App. */
     private readonly signerFor?: (installationId: bigint) => Promise<GithubAppConfig | undefined>
   ) {}
 

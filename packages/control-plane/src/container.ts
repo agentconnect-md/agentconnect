@@ -1014,7 +1014,8 @@ export function buildContainer(
       webhookSecrets: giteaWebhookSecretStore,
       host: giteaCfg.baseUrl
     },
-    repos.codeHostDecisionRouting
+    repos.codeHostDecisionRouting,
+    githubAppCfg ? repos.githubApp : undefined
   )
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
@@ -1455,7 +1456,7 @@ export function buildContainer(
   }
   // github-app workspaces (opt-in): assembled only when GITHUB_APP_* is fully
   // configured; absent ⇒ routes 404 and the WS gitcred handler denies.
-  // Organization-registered Apps sign for their own installations (github-app-git-credentials.md §Dedicated Apps).
+  // Agents' dedicated Apps sign for their own installations (github-app-git-credentials.md §Dedicated Apps).
   const githubAppRegistry = githubAppCfg
     ? new GithubAppRegistry({
         apps: repos.githubApp,
@@ -1483,20 +1484,26 @@ export function buildContainer(
         ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
       })
     : undefined
+  // Dedicated Apps need the public origin: GitHub redirects the browser to its manifest and setup callbacks.
   const githubApps =
-    github && githubAppCfg && githubAppRegistry
+    github && githubAppRegistry && config.PUBLIC_CP_URL
       ? new GithubAppsService({
           apps: repos.githubApp,
           secrets: new PgGithubAppSecretStore(prisma, secretCipher),
           installations: repos.githubInstallation,
+          states: repos.githubInstallState,
           registry: githubAppRegistry,
-          deploymentAppId: githubAppCfg.appId,
           botUserId: (slug) => github.botUserId(slug),
+          pepper: config.API_KEY_PEPPER,
+          clock,
+          publicCpUrl: config.PUBLIC_CP_URL,
+          ...(webAppUrl ? { webAppUrl } : {}),
           onInstallationChanged: async (installationId, orgId) => {
             github.tokens.invalidateInstallation(installationId)
             github.invalidateRepositoryRoster(installationId)
             await wakeGithubReviewProjections(installationId, orgId)
           },
+          onAppsChanged: (orgId) => hookService.rebroadcastGithubForOrg(orgId),
           ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
         })
       : undefined

@@ -1,12 +1,4 @@
-/**
- * Organization-registered GitHub Apps (github-app-git-credentials.md §Dedicated Apps).
- *
- * The registry answers one question for the token signer: which App signs for
- * an installation. The deployment App (`GITHUB_APP_*`) stays the default; an
- * installation that belongs to a registered App is signed with that App's key.
- * Configs are cached per App id because `mintAppJwt` keys its auth cache on the
- * config object; registration and deletion invalidate the entry.
- */
+// Which App signs for an installation: its dedicated App's key, else the deployment App (§Dedicated Apps).
 import type { GithubAppRepo, GithubAppSecretStore, GithubInstallationRepo } from '../persistence/ports.js'
 import { githubAppConfigFromParts, type GithubAppConfig } from './config.js'
 
@@ -21,7 +13,7 @@ export class GithubAppRegistry {
 
   constructor(private readonly deps: GithubAppRegistryDeps) {}
 
-  /** The signer for a registered App; undefined when the App or its key is gone. */
+  /** The signer for a dedicated App; undefined when the App or its key is gone. */
   configFor(githubAppId: string): Promise<GithubAppConfig | undefined> {
     let pending = this.configs.get(githubAppId)
     if (!pending) {
@@ -34,7 +26,7 @@ export class GithubAppRegistry {
     return pending
   }
 
-  /** The signer for an installation: its registered App, or undefined ⇒ the deployment App. */
+  /** The signer for an installation: its dedicated App, or undefined ⇒ the deployment App. */
   async configForInstallation(installationId: bigint): Promise<GithubAppConfig | undefined> {
     const row = await this.deps.installations.getByInstallationId(installationId)
     if (!row?.githubAppId) return undefined

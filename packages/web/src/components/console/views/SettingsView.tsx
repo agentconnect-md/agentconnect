@@ -43,7 +43,6 @@ import { inviteLinkStatus, inviteLinkUrl } from '@/lib/org-invite-link'
 import EditMemberModal, { type MemberTarget } from '@/components/console/modals/EditMemberModal'
 import InviteMembersModal from '@/components/console/modals/InviteMembersModal'
 import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEnvironmentCard'
-import { GithubAppsCard } from '@/components/console/GithubAppsCard'
 import { ServiceAccountsCard } from '@/components/console/ServiceAccountsCard'
 import { Scrim } from '@/components/console/Scrim'
 
@@ -749,8 +748,6 @@ export default function SettingsView() {
       {/* Sits with the other organization-wide agent policies. Owner-only, so the
           card renders nothing at all for collaborators and viewers (§8.1). */}
       <OrganizationEnvironmentCard orgId={activeOrg?.id} isOwner={isOwner} agents={agents} />
-
-      <GithubAppsCard orgId={activeOrg?.id} isOwner={isOwner} />
 
       <div className="card mt-[18px]" id="members">
         <div className="cardhead justify-between">

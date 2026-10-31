@@ -766,7 +766,6 @@ export const CreateAgentBody = z.object({
   chatActions: ChatActions.optional(), // what people can do in chat; absent ⇒ 'approve'
   pause: z.boolean().optional(), // operational message-processing toggle (#288)
   introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
-  githubAppId: z.string().uuid().nullable().optional(), // the registered GitHub App the agent acts as; absent/null ⇒ the deployment App
   computerUse: AgentComputerSetting.optional(), // the managed computer mode (computer-use.md §4.1); access is set on each Computer
   // The strategy sessions run in (session-executors.md §5), checked against the placement's table; absent ⇒ host where it runs, else the first available sandbox.
   execution: ExecutorStrategyName.optional(),
@@ -826,7 +825,6 @@ export const UpdateAgentBody = z
     chatActions: ChatActions.optional(),
     pause: z.boolean().nullable().optional(), // operational toggle (#288); null clears
     introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
-    githubAppId: z.string().uuid().nullable().optional(), // the registered GitHub App the agent acts as; null returns it to the deployment App
     computerUse: AgentComputerSetting.nullable().optional(), // the managed computer mode (computer-use.md §4.1); null clears
     execution: ExecutorStrategyName.optional(), // the strategy sessions run in, checked against the placement's table
     // Same-repository capability widening only. Workspace identity/conversion
@@ -994,7 +992,7 @@ export const AgentDto = z.object({
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
-  githubAppId: z.string().nullable(), // the registered GitHub App the agent acts as; null ⇒ the deployment App
+  githubAppId: z.string().nullable(), // the agent's dedicated GitHub App; null ⇒ the deployment App
   computerUse: AgentComputerUse.nullable(), // derived (computer-use.md §4.1): the Computers granting it and its managed mode; null ⇒ none
   // The strategy sessions run in (session-executors.md §5).
   execution: ExecutorStrategyName,
@@ -2407,25 +2405,23 @@ export const GithubAppDto = z.object({
   installUrl: z.string().nullable()
 })
 
-/** An organization-registered GitHub App an agent can act as instead of the deployment App
- *  (github-app-git-credentials.md §Dedicated Apps). The private key is write-only. */
-export const GithubRegisteredAppDto = z.object({
+/** An agent's dedicated GitHub App (github-app-git-credentials.md §Dedicated Apps). */
+export const GithubDedicatedAppDto = z.object({
   id: z.string(),
   appId: z.number(), // GitHub-side App id
   slug: z.string(), // github.com/apps/<slug>; the bot login is `<slug>[bot]`
-  clientId: z.string().nullable(),
   botUserId: z.number().nullable(),
-  /** Live installations of this App claimed by the org (account logins). */
+  /** Live installations of this App (account logins). */
   installations: z.array(z.object({ installationId: z.number(), accountLogin: z.string(), suspended: z.boolean() })),
   createdAt: z.string() // ISO-8601
 })
-export const GithubRegisteredAppListDto = z.array(GithubRegisteredAppDto)
-export const RegisterGithubAppBody = z.object({
-  appId: z.number().int().positive(),
-  clientId: z.string().min(1).optional(),
-  /** The App's private key: PEM text, or its base64. */
-  privateKey: z.string().min(1)
+export const AgentGithubAppDto = z.object({ app: GithubDedicatedAppDto.nullable() })
+export const StartGithubAppManifestBody = z.object({
+  /** The GitHub organization that owns the new App; absent ⇒ the caller's personal account. */
+  owner: z.string().min(1).max(39).optional()
 })
+/** The form to POST to GitHub: `manifest` as JSON in a field named `manifest`, to `action`. */
+export const GithubAppManifestDto = z.object({ action: z.string(), manifest: z.record(z.string(), z.unknown()) })
 
 /** One installation of the deployment App, claimed by this org. Infrastructure-class
  *  in the visibility taxonomy (like bots): org-visible, never restricted. */

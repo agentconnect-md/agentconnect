@@ -444,6 +444,8 @@ export const RcGithubHookRule = z.object({
   mentionOnly: z.boolean(),
   // The broadcast handle: `@<appSlug>` keeps every matching rule in the repo fan-out (compiled from GITHUB_APP_SLUG).
   appSlug: z.string().optional(),
+  // The org's dedicated Apps: their same-repository pull request revisions are the internal CI lane like the deployment App's.
+  internalAppSlugs: z.array(z.string()).optional(),
   // The targeted handle: `@<agentName>` keeps only this agent's rules; optional for a CP that predates targeted mentions.
   agentName: z.string().optional(),
   // The org's valid installation ids (BigInt as string): an event fires only if payload.installation.id is in the set.

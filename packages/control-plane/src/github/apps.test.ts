@@ -1,8 +1,4 @@
-/**
- * Unit tests for organization-registered GitHub Apps (no Docker, no network):
- * the registry's per-installation signer, registration against a fake GitHub,
- * and the token service signing with the installation's own App.
- */
+// Agents' dedicated GitHub Apps without Docker or network: per-installation signing and the manifest flow.
 import { generateKeyPairSync } from 'node:crypto'
 import { describe, it, expect, vi } from 'vitest'
 import { decodeJwt } from 'jose'
@@ -41,6 +37,7 @@ function app(over: Partial<GithubAppRecord> = {}): GithubAppRecord {
   return {
     id: 'app-review',
     orgId: ORG,
+    agentId: 'agent-1',
     appId: 2000n,
     slug: 'example-review',
     clientId: null,
@@ -115,39 +112,42 @@ describe('InstallationTokenService with a per-installation signer', () => {
 })
 
 describe('GithubAppsService', () => {
-  function harness(opts: { ghApp?: { id: number; slug: string; client_id?: string }; installations?: unknown[] } = {}) {
+  const REVIEW_PEM = Buffer.from(REVIEW_KEY_B64, 'base64').toString('utf8')
+
+  function harness(opts: { bindable?: boolean } = {}) {
     const rows: GithubAppRecord[] = []
     const claimed: Array<{ orgId: string; installationId: bigint; githubAppId?: string | null }> = []
     const revoked: bigint[] = []
     const secrets = new Map<string, string>()
+    const nonces = new Set<string>()
     const invalidate = vi.fn()
+    const appsChanged = vi.fn()
     const changed: bigint[] = []
-    const fetchImpl = async (url: string): Promise<Response> => {
-      if (url.endsWith('/app'))
-        return Response.json(opts.ghApp ?? { id: 2000, slug: 'example-review', client_id: 'Iv1' })
+    const calls: string[] = []
+    const clock = new FakeClock(1_800_000_000_000)
+    const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+      calls.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url.endsWith('/app-manifests/code-1/conversions')) {
+        return Response.json({ id: 2000, slug: 'example-review', client_id: 'Iv1', pem: REVIEW_PEM }, { status: 201 })
+      }
       if (url.includes('/app/installations')) {
-        return Response.json(
-          opts.installations ?? [
-            {
-              id: 43,
-              account: { login: 'acme', type: 'Organization' },
-              repository_selection: 'all',
-              suspended_at: null
-            }
-          ]
-        )
+        return Response.json([
+          { id: 43, account: { login: 'acme', type: 'Organization' }, repository_selection: 'all', suspended_at: null }
+        ])
       }
       throw new Error(`unexpected github call: ${url}`)
     }
     const svc = new GithubAppsService({
       apps: {
-        create: async (input) => {
-          const row = app({ ...input, id: `app-${rows.length + 1}` })
+        createForAgent: async ({ agentId, ...input }) => {
+          if (opts.bindable === false) return null
+          const row = app({ ...input, agentId })
           rows.push(row)
           return row
         },
         get: async (_org, id) => rows.find((r) => r.id === id) ?? null,
         getUnscoped: async (id) => rows.find((r) => r.id === id) ?? null,
+        getForAgent: async (_org, agentId) => rows.find((r) => r.agentId === agentId) ?? null,
         listForOrg: async () => rows,
         delete: async (_org, id) => {
           const i = rows.findIndex((r) => r.id === id)
@@ -160,67 +160,114 @@ describe('GithubAppsService', () => {
       installations: {
         upsertFromGithub: async (orgId, facts, githubAppId) => {
           claimed.push({ orgId, installationId: facts.installationId, githubAppId })
-          return installation({
-            orgId,
-            installationId: facts.installationId,
-            githubAppId,
-            accountLogin: facts.accountLogin
-          })
+          return installation({ orgId, installationId: facts.installationId, githubAppId })
         },
         listClaimsForOrg: async () => [
           ...claimed.map((c) => installation({ installationId: c.installationId, githubAppId: c.githubAppId })),
           // claimed earlier, gone on GitHub
           installation({
             installationId: 99n,
-            githubAppId: 'app-1',
+            githubAppId: rows[0]?.id ?? null,
             revokedAt: revoked.includes(99n) ? new Date(1) : null
           })
         ],
         markRevokedByInstallationId: async (id) => void revoked.push(id)
       },
+      states: {
+        put: async (nonce) => void nonces.add(nonce),
+        consume: async (nonce) => nonces.delete(nonce)
+      },
       registry: { invalidate },
-      deploymentAppId: 1000,
       botUserId: async (slug) => (slug === 'example-review' ? 77 : -1),
+      pepper: 'p'.repeat(32),
+      clock,
+      publicCpUrl: 'https://api.example.test/',
+      webAppUrl: 'https://console.example.test',
       onInstallationChanged: async (id) => void changed.push(id),
+      onAppsChanged: appsChanged,
       fetchImpl
     })
-    return { svc, rows, claimed, revoked, secrets, invalidate, changed }
+    return { svc, rows, claimed, revoked, secrets, invalidate, appsChanged, changed, calls, clock }
   }
 
-  it('verifies the key names the given App, records the bot user, seals the key and claims the installations', async () => {
-    const { svc, claimed, revoked, secrets, invalidate, changed } = harness()
-    const { app: row, installations } = await svc.register(ORG, { appId: 2000, privateKeyB64: REVIEW_KEY_B64 })
-    expect(row).toMatchObject({ appId: 2000n, slug: 'example-review', clientId: 'Iv1', botUserId: 77n })
-    expect(secrets.get(row.id)).toBe(REVIEW_KEY_B64)
-    expect(invalidate).toHaveBeenCalledWith(row.id)
-    expect(claimed).toEqual([{ orgId: ORG, installationId: 43n, githubAppId: row.id }])
-    expect(installations.map((i) => i.installationId)).toEqual([43n])
-    expect(revoked).toEqual([99n])
-    expect(changed).toEqual([43n, 99n])
-  })
+  async function started(h: ReturnType<typeof harness>) {
+    const form = await h.svc.startManifest(ORG, { id: 'agent-1', name: 'reviewer' }, 'acme')
+    return { form, state: new URL(form.action).searchParams.get('state')! }
+  }
 
-  it('refuses the deployment App, a key for another App, and an unparsable key', async () => {
-    const { svc, rows } = harness()
-    await expect(svc.register(ORG, { appId: 1000, privateKeyB64: REVIEW_KEY_B64 })).rejects.toBeInstanceOf(
+  it('starts a manifest under the owner, naming the pre-allocated App in its setup URL', async () => {
+    const h = harness()
+    const { form } = await started(h)
+    const action = new URL(form.action)
+    expect(`${action.origin}${action.pathname}`).toBe('https://github.com/organizations/acme/settings/apps/new')
+    expect(form.manifest).toMatchObject({
+      name: 'reviewer-acme',
+      url: 'https://console.example.test',
+      redirect_url: 'https://api.example.test/v1/github/apps/manifest/callback',
+      setup_on_update: true,
+      public: false
+    })
+    expect(form.manifest.setup_url).toMatch(
+      /^https:\/\/api\.example\.test\/v1\/github\/apps\/[0-9a-f-]{36}\/setup\/callback$/
+    )
+    expect(form.manifest).not.toHaveProperty('hook_attributes')
+    await expect(h.svc.startManifest(ORG, { id: 'agent-1', name: 'reviewer' }, 'bad/owner')).rejects.toBeInstanceOf(
       GithubAppRegistrationError
     )
-    await expect(svc.register(ORG, { appId: 2001, privateKeyB64: REVIEW_KEY_B64 })).rejects.toThrow(
-      /belongs to GitHub App 2000/
-    )
-    await expect(
-      svc.register(ORG, { appId: 2000, privateKeyB64: Buffer.from('not a pem').toString('base64') })
-    ).rejects.toBeInstanceOf(GithubAppRegistrationError)
-    expect(rows).toEqual([])
+  })
+
+  it('converts the code once, binds the App to its agent and seals its key', async () => {
+    const h = harness()
+    const { form, state } = await started(h)
+    const done = await h.svc.completeManifest(state, 'code-1')
+    expect(done).toEqual({ app: h.rows[0], installUrl: 'https://github.com/apps/example-review/installations/new' })
+    expect(h.rows[0]).toMatchObject({ agentId: 'agent-1', appId: 2000n, slug: 'example-review', botUserId: 77n })
+    expect(form.manifest.setup_url).toContain(`/apps/${h.rows[0]!.id}/setup/callback`)
+    expect(h.secrets.get(h.rows[0]!.id)).toBe(REVIEW_KEY_B64)
+    expect(h.invalidate).toHaveBeenCalledWith(h.rows[0]!.id)
+    expect(h.appsChanged).toHaveBeenCalledWith(ORG)
+    // One-shot: a replayed or forged state converts nothing.
+    await expect(h.svc.completeManifest(state, 'code-1')).resolves.toBeNull()
+    await expect(h.svc.completeManifest(`${state}x`, 'code-1')).resolves.toBeNull()
+    expect(h.calls.filter((c) => c.includes('/conversions'))).toHaveLength(1)
+  })
+
+  it('reports an App it could not bind without storing its key', async () => {
+    const h = harness({ bindable: false })
+    const { state } = await started(h)
+    await expect(h.svc.completeManifest(state, 'code-1')).resolves.toEqual({ orphanedSlug: 'example-review' })
+    expect(h.secrets.size).toBe(0)
+    expect(h.appsChanged).not.toHaveBeenCalled()
+  })
+
+  it('syncs the roster on a setup redirect, at most once per interval', async () => {
+    const h = harness()
+    await h.svc.completeManifest((await started(h)).state, 'code-1')
+    const id = h.rows[0]!.id
+    await expect(h.svc.completeSetup(id)).resolves.toMatchObject({ id, agentId: 'agent-1' })
+    expect(h.claimed).toEqual([{ orgId: ORG, installationId: 43n, githubAppId: id }])
+    expect(h.revoked).toEqual([99n])
+    expect(h.changed).toEqual([43n, 99n])
+    await h.svc.completeSetup(id)
+    expect(h.claimed).toHaveLength(1)
+    h.clock.advance(10_000)
+    await h.svc.completeSetup(id)
+    expect(h.claimed).toHaveLength(2)
+    await expect(h.svc.completeSetup('00000000-0000-4000-8000-000000000000')).resolves.toBeNull()
   })
 
   it('delete forgets the App, drops its signer and invalidates its installations', async () => {
-    const { svc, rows, invalidate, changed } = harness()
-    const { app: row } = await svc.register(ORG, { appId: 2000, privateKeyB64: REVIEW_KEY_B64 })
-    changed.length = 0
-    await expect(svc.delete(ORG, row.id)).resolves.toBe(true)
-    expect(rows).toEqual([])
-    expect(invalidate).toHaveBeenLastCalledWith(row.id)
-    expect(changed).toEqual([43n])
-    await expect(svc.delete(ORG, row.id)).resolves.toBe(false)
+    const h = harness()
+    await h.svc.completeManifest((await started(h)).state, 'code-1')
+    const id = h.rows[0]!.id
+    await h.svc.sync(ORG, id)
+    h.changed.length = 0
+    h.appsChanged.mockClear()
+    await expect(h.svc.delete(ORG, id)).resolves.toBe(true)
+    expect(h.rows).toEqual([])
+    expect(h.invalidate).toHaveBeenLastCalledWith(id)
+    expect(h.changed).toEqual([43n])
+    expect(h.appsChanged).toHaveBeenCalledWith(ORG)
+    await expect(h.svc.delete(ORG, id)).resolves.toBe(false)
   })
 })

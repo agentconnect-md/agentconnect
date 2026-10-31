@@ -107,7 +107,7 @@ export class PgGithubInstallationRepo implements GithubInstallationRepo {
   ): Promise<GithubInstallationRecord | null> {
     const row = await this.prisma.githubInstallation.findFirst({
       // GitHub logins are case-insensitive; stored as reported, matched loosely.
-      // Always App-qualified: the deployment App and a registered App can both be
+      // Always App-qualified: the deployment App and a dedicated App can both be
       // installed on one account, and neither installation may stand in for the other.
       where: { orgId, revokedAt: null, githubAppId, accountLogin: { equals: accountLogin, mode: 'insensitive' } }
     })
