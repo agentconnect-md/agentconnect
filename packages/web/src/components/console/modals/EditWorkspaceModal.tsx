@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import type { AgentRepositorySelector } from '@agentconnect.md/protocol/decision'
 import { GithubMark, LoadingState } from '@/components/marks'
+import { useAgentGithubAppDialog } from '@/components/console/GithubAppDialog'
 import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon } from '@/components/ui'
 import { codeHostRecord } from '@/lib/code-hosts'
@@ -26,7 +27,7 @@ import {
   setAgentWorkspace,
   fetchGithubBranches,
   fetchGithubInstallations,
-  fetchGithubInstallUrl,
+  githubInstallUrlFor,
   fetchGithubRepoRoster,
   fetchGithubRepoAccess,
   invalidateGithubRepoRosterCache,
@@ -251,7 +252,7 @@ export default function EditWorkspaceModal({
     if (repositoryEditor !== null) return
     let alive = true
     const probeInstalls = () =>
-      fetchGithubInstallations().then(
+      fetchGithubInstallations(undefined, agent.githubAppId).then(
         (r) => alive && setGh(r),
         () => alive && setGh({ enabled: false, installations: [] })
       )
@@ -299,8 +300,9 @@ export default function EditWorkspaceModal({
   // those as the workspace binds it (gitea-integration.md §6).
   const gt = useGiteaRepositories(repositoryEditor === null && mode === 'gitea')
 
+  const githubApp = useAgentGithubAppDialog(agent)
   const openGhInstall = async () => {
-    const url = await fetchGithubInstallUrl().catch(() => null)
+    const url = await githubInstallUrlFor(agent.githubAppId).catch(() => null)
     if (url) window.open(url, '_blank', 'noopener,noreferrer')
   }
 
@@ -973,7 +975,11 @@ export default function EditWorkspaceModal({
                     />
                   </div>
                 ) : (
-                  <GithubConnectedBanner onManage={() => void openGhInstall()} />
+                  <GithubConnectedBanner
+                    onManage={() => void openGhInstall()}
+                    appSlug={githubApp.appSlug}
+                    onGithubApp={githubApp.openDialog}
+                  />
                 )}
                 <GithubRepositoryField
                   value={pick}
@@ -1151,7 +1157,11 @@ export default function EditWorkspaceModal({
 
             {mode === 'scratch' && gh?.enabled && gh.installations.length > 0 && (
               <div className="mt-3">
-                <GithubConnectedBanner onManage={() => void openGhInstall()} />
+                <GithubConnectedBanner
+                  onManage={() => void openGhInstall()}
+                  appSlug={githubApp.appSlug}
+                  onGithubApp={githubApp.openDialog}
+                />
               </div>
             )}
 
@@ -1297,6 +1307,7 @@ export default function EditWorkspaceModal({
           </Button>
         </div>
       </div>
+      {githubApp.dialog}
     </div>
   )
 }

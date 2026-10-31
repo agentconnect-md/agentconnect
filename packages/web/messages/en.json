@@ -298,6 +298,29 @@
       "notRunningBackground": "No turn is running. A background process it started may still be running; it can’t be stopped from here, and it reports back when that process ends.",
       "stopFailed": "Couldn’t stop it. Try again.",
       "stopUpgrade": "Upgrade this agent’s daemon to stop tasks here."
+    },
+    "githubApp": {
+      "title": "GitHub App",
+      "close": "Close",
+      "builtIn": "built-in",
+      "builtInFallback": "Built-in GitHub App",
+      "free": "free",
+      "create": "Create a new GitHub App…",
+      "checking": "Checking what this App can reach…",
+      "kinds": {
+        "workspace": "workspace",
+        "repository": "repository",
+        "review": "review",
+        "installation": "installation"
+      },
+      "addOnGithub": "Add on GitHub",
+      "notCovered": "{slug} does not reach everything this agent works on yet.",
+      "checkAgain": "Check again",
+      "cancel": "Cancel",
+      "opening": "Opening…",
+      "continueOnGithub": "Continue on GitHub",
+      "switching": "Switching…",
+      "switch": "Switch"
     }
   },
   "Profile": {
@@ -1850,7 +1873,7 @@
         "installGithubApp": "Install GitHub app",
         "installedSync": "I’ve installed it — sync",
         "opensGithub": "Opens github.com in a new tab",
-        "githubConnected": "GitHub app connected — repos and metadata sync automatically.",
+        "githubConnected": "GitHub App connected",
         "manageAccess": "Manage access",
         "publicRepositoriesShown": "Public repositories are shown.",
         "linkGithubProfile": "Link your GitHub profile",
@@ -1927,7 +1950,11 @@
         "materializeByDecisionDaemonOutdated": "Update the daemon that runs this agent to use Decisions",
         "materializeByDecisionDaemonOffline": "The daemon that runs this agent is offline",
         "materializeByDecisionNoProvider": "No Decision provider is ready where this agent runs",
-        "materializeByDecisionNoSelector": "Set the Repository selector first"
+        "materializeByDecisionNoSelector": "Set the Repository selector first",
+        "githubConnectedWith": "Connected with <slug></slug>",
+        "more": "More",
+        "useOwnGithubApp": "Use its own GitHub App…",
+        "changeGithubApp": "Change GitHub App…"
       },
       "listenFor": "Listen for",
       "alreadyWatched": "already watched",
@@ -3077,7 +3104,9 @@
         "claudeFile": "CLAUDE.md",
         "skillsDirectory": ".agent/skills/",
         "runbooksDirectory": "docs/runbooks/",
-        "seconds": "{value}s"
+        "seconds": "{value}s",
+        "githubVia": "via <slug></slug>",
+        "githubApp": "GitHub App"
       },
       "tools": {
         "loading": "Loading…",

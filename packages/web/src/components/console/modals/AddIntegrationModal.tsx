@@ -8,11 +8,13 @@ import type { LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import { ApiProtocolMark, GithubMark, LoadingState, MarkSlot, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { AgentPicker } from '@/components/console/AgentPicker'
+import { useAgentGithubAppDialog } from '@/components/console/GithubAppDialog'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
 import { IntegrationPlatformGroups, PLATFORM_TILE_WIDTH } from '@/components/console/IntegrationPlatformGroups'
 import {
+  GithubConnectedBanner,
   GithubPrivateReposNotice,
   GiteaNoRepositoriesNotice,
   GiteaRepositoryField,
@@ -59,7 +61,7 @@ import {
   repoAuthProvider,
   fetchGithubInstallationRepo,
   fetchGithubInstallations,
-  fetchGithubInstallUrl,
+  githubInstallUrlFor,
   fetchGithubRepoRoster,
   invalidateGithubRepoRosterCache,
   syncGithubInstallations,
@@ -983,7 +985,7 @@ export default function AddIntegrationModal({
   useEffect(() => {
     if (platform !== 'github' || gh !== null) return
     let alive = true
-    fetchGithubInstallations().then(
+    fetchGithubInstallations(undefined, agent.githubAppId).then(
       (r) => alive && setGh(r),
       () => alive && setGh({ enabled: false, installations: [] })
     )
@@ -1093,8 +1095,9 @@ export default function AddIntegrationModal({
   }, [platform, ghRepoOpen, gh, ghTypedRepo, ghExactAlreadyLoaded])
 
   // Install deep link is minted fresh per click (one-shot signed state).
+  const githubApp = useAgentGithubAppDialog(agent)
   const openGhInstall = async () => {
-    const url = await fetchGithubInstallUrl().catch(() => null)
+    const url = await githubInstallUrlFor(agent.githubAppId).catch(() => null)
     if (url) window.open(url, '_blank', 'noopener,noreferrer')
   }
 
@@ -1857,6 +1860,13 @@ export default function AddIntegrationModal({
               </div>
             ) : (
               <>
+                <div className="mb-4">
+                  <GithubConnectedBanner
+                    onManage={() => void openGhInstall()}
+                    appSlug={githubApp.appSlug}
+                    onGithubApp={githubApp.openDialog}
+                  />
+                </div>
                 {(() => {
                   // The picker lists EVERY repo the GitHub App can see (ghRepos).
                   // Workspace + already-authorized repos are directly watchable.
@@ -2748,6 +2758,7 @@ export default function AddIntegrationModal({
           }}
         />
       )}
+      {githubApp.dialog}
     </>
   )
 }

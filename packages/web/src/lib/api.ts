@@ -428,6 +428,7 @@ export interface AgentDto {
   outboundPolicy: AgentCallPolicy // which peer agents this agent may discover/call
   allowedTargetAgentIds: string[] // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join
+  githubAppId?: string | null // the organization GitHub App the agent works through; null or absent ⇒ the built-in App
   execution?: string // the strategy slug sessions run in (session-executors.md §5); absent only on an older CP
   strategies?: StrategyTable // what the placement offers `execution`, host alone for an unplaced agent; absent only on an older CP
   hookKinds: HookKind[] // distinct kinds of enabled inbound triggers (list-view marks)
@@ -2185,6 +2186,7 @@ export function agentFromDto(d: AgentDto): Agent {
     allowedTargetAgentIds: d.allowedTargetAgentIds ?? [],
     // Unset (older CP) reads as off — the product default.
     introduceOnJoin: d.introduceOnJoin ?? false,
+    githubAppId: d.githubAppId ?? null,
     // An older CP that names no strategy is read as the unplaced agent's host-only table.
     execution: d.execution ?? HOST_STRATEGY,
     strategies: d.strategies ?? HOST_ONLY_TABLE,
@@ -6557,12 +6559,18 @@ export type GithubInstalledRepoDto = GithubRepoDto & { installationId: string }
 /** Installations list doubles as the enabled-probe: it is viewer-readable (the
  *  install-link route is not — minting a state is a write), and 404 ⇒ the
  *  feature is off on this deployment. */
-export async function fetchGithubInstallations(orgId?: string): Promise<{
+/** The built-in App's installations, or those of the organization App `appId` names. */
+export async function fetchGithubInstallations(
+  orgId?: string,
+  appId?: string | null
+): Promise<{
   enabled: boolean
   installations: GithubInstallationDto[]
 }> {
   try {
-    const installations = await apiGet<GithubInstallationDto[]>(`${orgBase(orgId)}/github/installations`)
+    const installations = await apiGet<GithubInstallationDto[]>(
+      `${orgBase(orgId)}/github/installations${appId ? `?app=${encodeURIComponent(appId)}` : ''}`
+    )
     return { enabled: true, installations }
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return { enabled: false, installations: [] }
@@ -6582,6 +6590,80 @@ export async function fetchGithubInstallUrl(): Promise<string | null> {
     if (e instanceof ApiError && (e.status === 404 || e.status === 403)) return null
     throw e
   }
+}
+
+/** The built-in App's slug; null when GitHub is not configured. */
+export async function fetchBuiltinGithubAppSlug(orgId?: string): Promise<string | null> {
+  try {
+    return (await apiGet<{ slug: string | null }>(`${orgBase(orgId)}/github/app`)).slug
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 404 || e.status === 403)) return null
+    throw e
+  }
+}
+
+/** An organization GitHub App: one agent works through it at a time, free when `agentId` is null. */
+export interface GithubOrgAppDto {
+  id: string
+  appId: number
+  slug: string // the bot is `<slug>[bot]`
+  botUserId: number | null
+  agentId: string | null
+  installations: Array<{
+    id: string
+    installationId: number
+    accountLogin: string
+    accountType: string
+    repositorySelection: string
+    suspended: boolean
+  }>
+  createdAt: string
+}
+
+/** The organization's GitHub Apps; 404 ⇒ the feature is off (empty). */
+export async function fetchGithubApps(orgId?: string): Promise<GithubOrgAppDto[]> {
+  try {
+    return await apiGet<GithubOrgAppDto[]>(`${orgBase(orgId)}/github/apps`)
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return []
+    throw e
+  }
+}
+
+/** One thing the agent works on through GitHub, and whether an App reaches it. */
+export interface GithubAppCoverageItem {
+  target: string // `owner/repo`, or an account login
+  kind: 'workspace' | 'repository' | 'review' | 'installation'
+  covered: boolean
+}
+
+/** Whether `appId` (absent ⇒ the built-in App) reaches everything the agent works on. */
+export async function fetchGithubAppCoverage(agentId: string, appId: string | null): Promise<GithubAppCoverageItem[]> {
+  const query = appId ? `?app=${encodeURIComponent(appId)}` : ''
+  return (
+    await apiGet<{ coverage: GithubAppCoverageItem[] }>(
+      `${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app/coverage${query}`
+    )
+  ).coverage
+}
+
+/** Moves the agent to `githubAppId` (null ⇒ built-in); a 409 carries the uncovered items. */
+export async function switchAgentGithubApp(agentId: string, githubAppId: string | null): Promise<void> {
+  await apiPut(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app`, { githubAppId })
+}
+
+/** The form to post to GitHub's create-App-from-manifest page for this agent. */
+export async function startGithubAppManifest(
+  agentId: string
+): Promise<{ action: string; manifest: Record<string, unknown> }> {
+  return apiPost(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app/manifest`, {})
+}
+
+/** Where to install the App an agent works through: the built-in App's org-bound link, or an organization App's own page. */
+export async function githubInstallUrlFor(appId: string | null | undefined): Promise<string | null> {
+  if (!appId) return fetchGithubInstallUrl()
+  const app = (await fetchGithubApps()).find((row) => row.id === appId)
+  return app ? `https://github.com/apps/${encodeURIComponent(app.slug)}/installations/new` : null
 }
 
 /** Refresh the organization's existing claims from GitHub. Unknown App-wide

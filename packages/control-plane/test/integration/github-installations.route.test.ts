@@ -365,3 +365,44 @@ describe('DELETE /orgs/:orgId/github/installations/:id', () => {
     expect(h.rebroadcast).not.toHaveBeenCalled()
   })
 })
+
+describe('GET /orgs/:orgId/github/installations', () => {
+  it("lists the built-in App's installations by default and an organization App's on request", async () => {
+    const builtIn = await seedInstallation()
+    const app = await prisma.githubApp.create({
+      data: { orgId: DEFAULT_ORG_ID, appId: 2001n, slug: 'review-example', botUserId: 9001n }
+    })
+    const own = await prisma.githubInstallation.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        installationId: INSTALLATION + 1n,
+        accountLogin: 'acme',
+        accountType: 'Organization',
+        repositorySelection: 'selected',
+        githubAppId: app.id
+      }
+    })
+    await prisma.githubInstallation.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        installationId: INSTALLATION + 2n,
+        accountLogin: 'other',
+        accountType: 'Organization',
+        repositorySelection: 'all',
+        githubAppId: app.id,
+        revokedAt: new Date()
+      }
+    })
+    const h = appAs({ githubFetch: async () => Response.json({ message: 'unavailable' }, { status: 503 }) })
+
+    const byDefault = await h.app.app.inject({ method: 'GET', url: `${ORG}/github/installations` })
+    expect(byDefault.statusCode).toBe(200)
+    expect((byDefault.json() as Array<{ id: string }>).map((row) => row.id)).toEqual([builtIn.id])
+
+    const ofApp = await h.app.app.inject({ method: 'GET', url: `${ORG}/github/installations?app=${app.id}` })
+    expect(ofApp.statusCode).toBe(200)
+    expect(ofApp.json()).toEqual([
+      expect.objectContaining({ id: own.id, installationId: Number(INSTALLATION + 1n), permissionsStatus: 'unknown' })
+    ])
+  })
+})
