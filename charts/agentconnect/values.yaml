@@ -181,7 +181,7 @@ daemonPool:
   # Agents ONE member accepts duty for — held, not working: an idle agent still costs a duty entry.
   # Null leaves the daemon's own default, 0 is unbounded. A member's config file is an emptyDir.
   maxAgents: null
-  # AHP serving mode for every member (off | shadow | on); empty leaves the daemon's own default, off.
+  # AHP serving mode for every member (off | shadow | on); empty leaves the daemon's own default, on.
   # It is the pool's `features.ahp.mode`: CP and relay still need their own AHP_MODE (docs/ahp-operations.md).
   ahpMode: ''
   # Existing Secret whose config.json is the strict data-plane document:

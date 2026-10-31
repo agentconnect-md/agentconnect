@@ -15,7 +15,7 @@ transport, authenticate in-band with the standard `authenticate` command.
 | -------------------- | ------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------ |
 | Control Plane        | `AHP_MODE=off\|shadow\|on`      | `off`                           | Only `on` permits AHP authorization and bootstrap.                                         |
 | Every relay replica  | `AHP_MODE=off\|shadow\|on`      | `off`                           | Only `on` accepts `/ahp/agents/:agentId` upgrades.                                         |
-| Daemon configuration | `features.ahp.mode`             | `off`                           | `off`: no AHP serving; `shadow`: observation only; `on`: serving alongside legacy.         |
+| Daemon configuration | `features.ahp.mode`             | `on`                            | `off`: no AHP serving; `shadow`: observation only; `on`: serving alongside legacy.         |
 | Control Plane        | `WEBCHAT_PROTOCOL=legacy\|ahp`  | `legacy`                        | Default for new first-party attachments, exposed as `webchatProtocol` in runtime config.   |
 | Control Plane        | `AHP_PUBLIC_ACCESS=true\|false` | `false`                         | Admits eligible full personal keys outside the test-key allowlist; never anonymous access. |
 | Control Plane        | `AHP_TEST_KEY_IDS`              | empty                           | Comma-separated API-key row IDs for the canary audience; never secret key values.          |
@@ -25,13 +25,15 @@ transport, authenticate in-band with the standard `authenticate` command.
 | Serving daemon       | `api-ahp-v1` capability         | absent unless wired and enabled | Independently checked during admission and placement resolution.                           |
 | Serving daemon       | `api-ahp-handshake-v1`          | advertised with `api-ahp-v1`    | Required for in-band `authenticate`; header and browser-token attachments do not need it.  |
 
-The daemon switch belongs in `config.json` under `AGENTCONNECT_ROOT` (normally
-`~/.agentconnect`). It is not a daemon `AHP_MODE` environment override:
+A daemon serves AHP by default; it is only reached once the CP and relay also run
+`AHP_MODE=on`. To opt a daemon out, set the switch in `config.json` under
+`AGENTCONNECT_ROOT` (normally `~/.agentconnect`). It is not a daemon `AHP_MODE`
+environment override:
 
 ```json
 {
   "features": {
-    "ahp": { "mode": "on" }
+    "ahp": { "mode": "off" }
   }
 }
 ```

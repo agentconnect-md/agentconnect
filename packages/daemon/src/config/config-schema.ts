@@ -257,13 +257,14 @@ export const ConfigSchema = z.object({
   features: z
     .object({
       turnFinalContextRefresh: z.boolean().default(true),
-      ahp: z.object({ mode: AhpMode.default('off') }).default({ mode: 'off' }),
+      // AHP serves only where the CP and relay also run AHP_MODE=on; `off` opts a daemon out.
+      ahp: z.object({ mode: AhpMode.default('on') }).default({ mode: 'on' }),
       // Steer a message into the live turn over `_session/steering` instead of queueing it.
       sessionSteering: z.boolean().default(true),
       // Run the `auto` session mode and advertise it (auto-session-mode.md §3.1); off routes `auto` as Per thread and keeps every session's task tools.
       autoSessionMode: z.boolean().default(true)
     })
-    .default({ turnFinalContextRefresh: true, sessionSteering: true, ahp: { mode: 'off' }, autoSessionMode: true }),
+    .default({ turnFinalContextRefresh: true, sessionSteering: true, ahp: { mode: 'on' }, autoSessionMode: true }),
   sessions: z
     .object({
       // A finished session untouched this long loses its row and transcript (#485); legacy '2weeks'/'1month' normalize to days.

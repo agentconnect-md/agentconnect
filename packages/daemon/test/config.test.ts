@@ -350,6 +350,13 @@ describe('loadConfig', () => {
     expect(cfg.logging.level).toBe('debug')
   })
 
+  it('serves AHP by default and lets the file opt out', () => {
+    expect(loadConfig({ root: tmpRoot({ version: 1 }) }).features.ahp.mode).toBe('on')
+    expect(loadConfig({ root: tmpRoot({ version: 1, features: { ahp: { mode: 'off' } } }) }).features.ahp.mode).toBe(
+      'off'
+    )
+  })
+
   it('lets --ahp-mode override the file and refuses an unknown mode', () => {
     const root = tmpRoot({ version: 1, features: { ahp: { mode: 'shadow' } } })
     expect(loadConfig({ root }).features.ahp.mode).toBe('shadow')
