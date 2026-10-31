@@ -302,6 +302,11 @@ export const HookReviewResult = z.discriminatedUnion('state', [
 ])
 export type HookReviewResult = z.infer<typeof HookReviewResult>
 
+/** A submitted review settles its reservation as the reserved event, or as the COMMENT GitHub downgrades the author's own verdict to. */
+export function hookReviewEventSettles(reserved: string | null, published: HookReviewEvent): boolean {
+  return reserved !== null && (reserved === published || published === 'COMMENT')
+}
+
 /** Body-free identity of the daemon's one fallback GitHub comment. */
 export const GithubPublishedComment = z.object({
   kind: z.enum(['issue_comment', 'review_comment']),

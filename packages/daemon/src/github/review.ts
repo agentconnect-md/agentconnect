@@ -50,6 +50,9 @@ export type GithubReviewEffect =
       event: GithubReviewEvent
       verdict: GithubReviewVerdict
       commitId: string
+      /** The event actually published when it differs from the requested one (§7 self-review downgrade). */
+      publishedEvent?: GithubReviewEvent
+      message?: string
     }
   | {
       state: 'not_submitted'
@@ -81,6 +84,7 @@ interface GithubReviewResponse {
   id?: string | number
   body?: string | null
   commit_id?: string
+  state?: string
 }
 
 interface GithubPullFile {
@@ -93,6 +97,12 @@ const MAX_REVIEW_PAGES = 10
 const REVIEWS_PER_PAGE = 100
 const FILES_PER_PAGE = 100
 const MAX_FILE_PAGES = 30
+
+// GitHub's 422 `errors` text for the author's own verdict, as reported in https://github.com/tgymnich/fork-sync/issues/153.
+const SELF_REVIEW_REFUSAL = /\bcan not (?:approve|request changes on) your own pull request\b/i
+
+const SELF_REVIEW_NOTE =
+  'GitHub refuses the pull request author’s own APPROVE and REQUEST_CHANGES, so the same review was published as a COMMENT (self_review_forbidden).'
 
 class GithubHttpError extends Error {
   constructor(
@@ -262,50 +272,69 @@ export class GithubReviewClient {
 
       // Share ordinary-comment attribution, with the correlation marker last.
       const body = appendGithubMarkdownChrome(input.body, `${githubAttributionFooter(attribution)}\n\n${marker}`)
-      try {
-        const created = await this.request<GithubReviewResponse>(
-          `/repos/${target.repoFullName}/pulls/${target.pullNumber}/reviews`,
-          target.token,
-          'POST',
-          {
-            commit_id: target.expectedHeadSha,
-            event: input.event,
-            body,
-            ...(input.comments?.length
-              ? {
-                  comments: input.comments.map((comment) => ({
-                    path: comment.path,
-                    body: comment.body,
-                    line: comment.line,
-                    side: comment.side,
-                    ...(comment.startLine !== undefined ? { start_line: comment.startLine } : {}),
-                    ...(comment.startSide !== undefined ? { start_side: comment.startSide } : {})
-                  }))
-                }
-              : {})
-          }
-        )
-        return this.submitted(created, target, input)
-      } catch (err) {
-        // A received 4xx proves no review was created, so the attempt reservation can be released.
-        if (err instanceof GithubHttpError && err.status >= 400 && err.status < 500) {
-          return { state: 'not_submitted', code: 'github_rejected', message: err.message }
-        }
-        // Reconcile an ambiguous timeout/disconnect/5xx by marker without blindly repeating the POST.
-        const recovered = await this.findByMarker(target, marker).catch(() => undefined)
-        if (recovered) return this.submitted(recovered, target, input)
-        return {
-          state: 'ambiguous',
-          code: 'ambiguous_write',
-          message: `GitHub review outcome is unknown (${err instanceof Error ? err.message : String(err)}); automatic retry is blocked`
-        }
-      }
+      return await this.post(target, input, body, marker, input.event)
     } catch (err) {
       // Everything before POST is a definite no-effect failure.
       return {
         state: 'not_submitted',
         code: 'github_rejected',
         message: err instanceof Error ? err.message : String(err)
+      }
+    }
+  }
+
+  private async post(
+    target: GithubReviewTarget,
+    input: SubmitGithubReviewInput,
+    body: string,
+    marker: string,
+    event: GithubReviewEvent
+  ): Promise<GithubReviewEffect> {
+    try {
+      const created = await this.request<GithubReviewResponse>(
+        `/repos/${target.repoFullName}/pulls/${target.pullNumber}/reviews`,
+        target.token,
+        'POST',
+        {
+          commit_id: target.expectedHeadSha,
+          event,
+          body,
+          ...(input.comments?.length
+            ? {
+                comments: input.comments.map((comment) => ({
+                  path: comment.path,
+                  body: comment.body,
+                  line: comment.line,
+                  side: comment.side,
+                  ...(comment.startLine !== undefined ? { start_line: comment.startLine } : {}),
+                  ...(comment.startSide !== undefined ? { start_side: comment.startSide } : {})
+                }))
+              }
+            : {})
+        }
+      )
+      return this.submitted(created, target, input, event)
+    } catch (err) {
+      // The author's own verdict was refused with nothing created, so the same marked review is republished once as COMMENT.
+      if (
+        err instanceof GithubHttpError &&
+        err.status === 422 &&
+        event !== 'COMMENT' &&
+        SELF_REVIEW_REFUSAL.test(err.message)
+      ) {
+        return this.post(target, input, body, marker, 'COMMENT')
+      }
+      // A received 4xx proves no review was created, so the attempt reservation can be released.
+      if (err instanceof GithubHttpError && err.status >= 400 && err.status < 500) {
+        return { state: 'not_submitted', code: 'github_rejected', message: err.message }
+      }
+      // Reconcile an ambiguous timeout/disconnect/5xx by marker without blindly repeating the POST.
+      const recovered = await this.findByMarker(target, marker).catch(() => undefined)
+      if (recovered) return this.submitted(recovered, target, input, event)
+      return {
+        state: 'ambiguous',
+        code: 'ambiguous_write',
+        message: `GitHub review outcome is unknown (${err instanceof Error ? err.message : String(err)}); automatic retry is blocked`
       }
     }
   }
@@ -339,7 +368,8 @@ export class GithubReviewClient {
   private submitted(
     review: GithubReviewResponse,
     target: GithubReviewTarget,
-    input: SubmitGithubReviewInput
+    input: SubmitGithubReviewInput,
+    posted: GithubReviewEvent = input.event
   ): GithubReviewEffect {
     if (review.id === undefined || review.id === null) {
       return {
@@ -363,12 +393,15 @@ export class GithubReviewClient {
         message: 'recovered review is anchored to an unexpected commit'
       }
     }
+    // A marker-recovered review reports its own state, so a replay sees the downgrade the original POST made.
+    const published = review.state === 'COMMENTED' ? 'COMMENT' : posted
     return {
       state: 'submitted',
       reviewId: String(review.id),
       event: input.event,
       verdict: input.verdict,
-      commitId
+      commitId,
+      ...(published !== input.event ? { publishedEvent: published, message: SELF_REVIEW_NOTE } : {})
     }
   }
 
