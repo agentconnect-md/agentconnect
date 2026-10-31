@@ -165,4 +165,50 @@ describe('AHP UI store', () => {
     store.getValue().reconcileLiveSteps('s', [], 'a')
     expect(store.getValue().getLiveSteps('s')).toEqual([])
   })
+
+  it('orders a group turn by its earliest stamp and keeps the roster after removing down to one member', async () => {
+    const url = 'wss://relay.example.test/ahp'
+    mint.mockResolvedValue({
+      token: 't',
+      protocol: 'ahp',
+      conversationId: 'c',
+      ahp: {
+        url,
+        peers: [
+          { agentId: 'a', url },
+          { agentId: 'b', url }
+        ]
+      }
+    })
+    attachments.length = 0
+    const ui = store.getValue()
+    const id = ui.openPlayground(agent, [{ id: 'b', name: 'Beta' } as Agent])
+    await vi.waitFor(() => expect(attachments).toHaveLength(2))
+    await vi.waitFor(() => expect(store.getValue().isPgBusy(id)).toBe(false))
+    const [alpha, beta] = attachments as [FakeAttachment, FakeAttachment]
+    const turn = (startedAt: string, reply: string) => ({
+      id: 'group-turn',
+      startedAt,
+      message: { text: 'Who are you?', origin: { kind: 'user' } },
+      responseParts: [{ kind: 'markdown', id: `r:${reply}`, content: reply }],
+      state: 'complete'
+    })
+    beta.emit({
+      chat: { ...beta.snapshot.chat!, turns: [prior, turn('2026-01-01T00:01:00.000Z', 'B')] } as unknown as ChatState
+    })
+    alpha.emit({
+      chat: { ...alpha.snapshot.chat!, turns: [prior, turn('2026-01-01T00:01:00.030Z', 'A')] } as unknown as ChatState
+    })
+    const latest = store
+      .getValue()
+      .getPgSession(id)!
+      .steps.filter((step) => step.turnId === 'group-turn')
+    expect(latest.map((step) => [step.kind, step.text])).toEqual([
+      ['msg', 'Who are you?'],
+      ['done', 'A'],
+      ['done', 'B']
+    ])
+    expect(await store.getValue().pgRemoveAgent(id, 'b')).toBe(true)
+    expect(store.getValue().getPgSession(id)!.participants).toEqual([{ agentId: 'a', name: 'Alpha', primary: true }])
+  })
 })
