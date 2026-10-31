@@ -997,19 +997,20 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       migrated?: readonly { from: string; to: string }[]
       autoKinds?: readonly ConversationKind[]
     }
-  ): Promise<{ externalChanged: boolean; migrated?: boolean; autoCreated?: boolean }> {
+  ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean }> {
     // Read first only to decide whether the spec needs a push; the register snapshot backs up a missed one.
-    const before = new Map(
+    const known = new Map(
       (
         await this.db.integrationChannel.findMany({
           where: { integrationId, channelId: { in: channels.map((c) => c.id) } },
-          select: { channelId: true, externalReason: true }
+          select: { channelId: true, externalReason: true, kind: true, sessionMode: true }
         })
-      ).map((row) => [row.channelId, PlaceExternalReason.safeParse(row.externalReason).data ?? null])
+      ).map((row) => [row.channelId, row])
     )
     // The spec carries only which places are external, so a reason turning sticky changes nothing there.
     const externalChanged = channels.some((c) => {
-      const stored = before.get(c.id) ?? null
+      const row = known.get(c.id)
+      const stored = row ? (PlaceExternalReason.safeParse(row.externalReason).data ?? null) : null
       return (mergePlaceExternalReason(stored, c.externalReason) === null) !== (stored === null)
     })
     if (opts?.authoritative !== false) {
@@ -1021,10 +1022,15 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     // retraction wins over a stale entry the reporter also happened to list.
     const removed = new Set(opts?.removed ?? [])
     const authoritative = opts?.authoritative !== false
-    // A new Auto row has to reach the daemon, whose spec does not list it yet (auto-session-mode.md §3.2).
-    const autoCreated = channels.some(
-      (c) => !removed.has(c.id) && !before.has(c.id) && openConversationSessionMode(c, opts?.autoKinds) === 'auto'
-    )
+    // A new Auto row, or a room turning into a direct conversation with another mode, has to reach the daemon (auto-session-mode.md §3.2).
+    const sessionModeChanged = channels.some((c) => {
+      if (removed.has(c.id)) return false
+      const row = known.get(c.id)
+      const mode = openConversationSessionMode(c, opts?.autoKinds)
+      if (!row) return mode === 'auto'
+      const converts = (c.kind === 'im' || c.kind === 'mpim') && row.kind !== c.kind
+      return converts && row.sessionMode !== mode
+    })
     for (const c of channels) {
       if (removed.has(c.id)) continue
       // Which columns a re-report is allowed to overwrite. An absent name/isPrivate is
@@ -1146,7 +1152,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         where: { integrationId, channelId: { in: [...removed] } }
       })
     }
-    return { externalChanged, ...(migrated ? { migrated } : {}), ...(autoCreated ? { autoCreated } : {}) }
+    return { externalChanged, ...(migrated ? { migrated } : {}), ...(sessionModeChanged ? { sessionModeChanged } : {}) }
   }
 
   // Move one conversation's operator-owned settings to its new platform id and drop the old row; false when there was nothing to move.

@@ -59,7 +59,7 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   let seeded: ReadonlyMap<string, SeedTrigger> | undefined
   let externalChanged = false
   let migrated = false
-  let autoCreated = false
+  let sessionModeChanged = false
   try {
     // Ownership may have changed while the first repository read was in flight.
     // Re-check under the shared mutation lease before accepting this daemon's
@@ -102,13 +102,13 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     )
     externalChanged = written?.externalChanged === true
     migrated = written?.migrated === true
-    autoCreated = written?.autoCreated === true
+    sessionModeChanged = written?.sessionModeChanged === true
   } finally {
     release()
   }
 
-  // The reporting daemon's spec predates this write, so push what it changed there: a §14.8 opened DM, the external set (assistant-mode.md §5.3), a migrated trigger, a new Auto row; best-effort.
-  if ((seeded?.size || externalChanged || migrated || autoCreated) && owner && deps.integrationConverge) {
+  // The reporting daemon's spec predates this write, so push what it changed there: a §14.8 opened DM, the external set (assistant-mode.md §5.3), a migrated trigger, a session mode it does not list; best-effort.
+  if ((seeded?.size || externalChanged || migrated || sessionModeChanged) && owner && deps.integrationConverge) {
     try {
       await deps.integrationConverge(owner)
     } catch {

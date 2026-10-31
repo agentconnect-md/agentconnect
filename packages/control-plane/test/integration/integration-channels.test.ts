@@ -2205,15 +2205,24 @@ describe('PATCH /integrations/:id/channels/:channelId — session mode', () => {
     expect((await modesOf(id)).get('C1')).toBe('createNew')
   })
 
-  it('gives a room that turns out to be a DM the DM’s mode, never the room’s Auto', async () => {
+  it('gives a room that turns out to be a DM the DM’s mode, never the room’s Auto, and pushes it', async () => {
     await seedDaemon(prisma, DAEMON)
     running = buildHttpApp(prisma)
     const id = await install(running)
+    const pushes: unknown[] = []
+    const converge = async (agent: unknown) => void pushes.push(agent)
+    const reportOne = (channel: IntegrationChannel) =>
+      report(DAEMON, id, [channel], undefined, undefined, false, undefined, undefined, converge)
     reporterFeatures = [SESSION_MODE_AUTO_V1_FEATURE]
-    await report(DAEMON, id, [{ id: 'D1', name: '@alice' }], undefined, undefined, false)
+    await reportOne({ id: 'D1', name: '@alice' })
     expect((await modesOf(id)).get('D1')).toBe('auto')
-    await report(DAEMON, id, [{ id: 'D1', name: '@alice', kind: 'im' }], undefined, undefined, false)
+    expect(pushes).toHaveLength(1)
+    await reportOne({ id: 'D1', name: '@alice', kind: 'im' })
     expect((await modesOf(id)).get('D1')).toBe('createNew')
+    // The daemon still lists the row as Auto, so the conversion reaches it at once.
+    expect(pushes).toHaveLength(2)
+    await reportOne({ id: 'D1', name: '@alice', kind: 'im' })
+    expect(pushes).toHaveLength(2)
   })
 })
 

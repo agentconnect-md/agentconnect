@@ -22,7 +22,7 @@ function fakeDeps(
   platform = 'slack',
   known = true,
   externalChanged = false,
-  reporter: { features?: string[]; autoCreated?: boolean } = {}
+  reporter: { features?: string[]; sessionModeChanged?: boolean } = {}
 ) {
   const dropPublicAudiences = vi.fn()
   const integrationConverge = vi.fn(async () => {})
@@ -39,7 +39,10 @@ function fakeDeps(
     },
     clock: { now: () => Date.now() },
     integrationChannel: {
-      replaceSnapshot: vi.fn(async () => ({ externalChanged, ...(reporter.autoCreated ? { autoCreated: true } : {}) }))
+      replaceSnapshot: vi.fn(async () => ({
+        externalChanged,
+        ...(reporter.sessionModeChanged ? { sessionModeChanged: true } : {})
+      }))
     },
     integrationConverge,
     collabRoutes: { broadcast: vi.fn(async () => {}) },
@@ -151,7 +154,7 @@ describe('handleIntegrationChannels — new conversations on Auto', () => {
   it('starts new rooms and group DMs on Auto for a daemon that reads it, and pushes the spec it lacks', async () => {
     const { deps, replaceSnapshot, integrationConverge } = fakeDeps('slack', true, false, {
       features: [SESSION_MODE_AUTO_V1_FEATURE],
-      autoCreated: true
+      sessionModeChanged: true
     })
     await handleIntegrationChannels(frame([{ id: 'C1' }]), conn, deps)
     expect(replaceSnapshot.mock.calls[0]![2]).toEqual({ autoKinds: ['channel', 'mpim'] })

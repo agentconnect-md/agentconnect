@@ -6298,10 +6298,10 @@ export interface IntegrationChannelRepo {
       removed?: string[]
       /** Conversations whose platform id changed: `from`'s settings move onto `to` unless an editor already chose `to`'s, then `from` is deleted. */
       migrated?: readonly { from: string; to: string }[]
-      /** The kinds a NEW row starts on Auto in (auto-session-mode.md §3.2); absent ⇒ every new row is Per thread. */
+      /** The kinds a NEW row starts on Auto in (auto-session-mode.md §3.2); absent ⇒ every new row is Per thread. `sessionModeChanged` says a mode the daemon's spec lacks was written. */
       autoKinds?: readonly ConversationKind[]
     }
-  ): Promise<{ externalChanged: boolean; migrated?: boolean; autoCreated?: boolean }>
+  ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean }>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */
