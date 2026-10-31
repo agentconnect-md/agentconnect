@@ -108,4 +108,36 @@ describe('EditWorkspaceModal after a GitHub App switch', () => {
     )
     expect(mocks.syncGithubInstallations).toHaveBeenCalledWith('app-own')
   })
+
+  it('opens the repository editor on the App the agent switched to', async () => {
+    mocks.fetchGithubInstallations.mockResolvedValue({ enabled: true, installations: [installation({})] })
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => {
+      root?.render(
+        <EditWorkspaceModal
+          agent={agent}
+          authorized={[]}
+          installationGrants={[]}
+          onInstallationGrantsChange={() => undefined}
+          onClose={() => undefined}
+          onChanged={() => undefined}
+        />
+      )
+    })
+    await act(async () => mocks.onSwitched?.('app-own'))
+    const ofNewApp = () => mocks.fetchGithubInstallations.mock.calls.filter(([, appId]) => appId === 'app-own').length
+    const before = ofNewApp()
+
+    await act(async () =>
+      Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
+        .find((b) => b.textContent?.includes('Authorize repository'))
+        ?.click()
+    )
+
+    // The nested editor probes the new App's installations, not the built-in App's.
+    expect(ofNewApp()).toBe(before + 1)
+    expect(mocks.fetchGithubInstallations).toHaveBeenLastCalledWith(undefined, 'app-own')
+  })
 })

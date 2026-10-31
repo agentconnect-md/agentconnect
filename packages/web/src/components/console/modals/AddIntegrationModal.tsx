@@ -529,6 +529,8 @@ export default function AddIntegrationModal({
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   // The App the agent works through; a switch from this modal reloads the picker with that App's installations.
   const [githubAppId, setGithubAppId] = useState<string | null>(agent.githubAppId ?? null)
+  // Editors opened from here act through the App the agent works through now, even after a switch made here.
+  const appAgent = useMemo(() => ({ ...agent, githubAppId }), [agent, githubAppId])
   const [ghRepos, setGhRepos] = useState<GithubRepoChoice[] | null>(null)
   const [ghReposNonce, setGhReposNonce] = useState(0)
   // At least one installation's roster failed to load — the list may be
@@ -2741,7 +2743,7 @@ export default function AddIntegrationModal({
           hook creation with the new grant pre-picked. */}
       {authRepoFor !== null && (
         <EditWorkspaceModal
-          agent={agent}
+          agent={appAgent}
           authorized={authorizedRepos}
           installationGrants={installationGrants}
           initialRepositoryAuthorization={{

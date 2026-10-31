@@ -150,6 +150,8 @@ export default function EditWorkspaceModal({
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   // The App the agent works through; a switch from this modal reloads the picker with that App's installations.
   const [githubAppId, setGithubAppId] = useState<string | null>(agent.githubAppId ?? null)
+  // Editors opened from here act through the App the agent works through now, even after a switch made here.
+  const appAgent = useMemo(() => ({ ...agent, githubAppId }), [agent, githubAppId])
   const [ghSyncing, setGhSyncing] = useState(false)
   const [repos, setRepos] = useState<Array<GithubRepoDto & { installationId: string }> | null>(null)
   const [reposError, setReposError] = useState<'failed' | null>(null)
@@ -656,7 +658,7 @@ export default function EditWorkspaceModal({
     const closeRepositoryEditor = repositoryEditor.returnToWorkspace ? () => setRepositoryEditor(null) : onClose
     return (
       <AddAgentRepoModal
-        agent={agent}
+        agent={appAgent}
         workspaceRepo={isGithubApp && githubWorkspace ? githubWorkspace.repo : null}
         authorized={authorizations}
         installationGrants={grants}
