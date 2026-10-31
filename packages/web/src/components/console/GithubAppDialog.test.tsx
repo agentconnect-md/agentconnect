@@ -47,13 +47,18 @@ const { GithubAppDialog } = await import('./GithubAppDialog')
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 
-async function render(agentId: string, onClose = vi.fn()) {
+async function render(agentId: string, onClose = vi.fn(), onSwitched = vi.fn()) {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
   await act(async () => {
     root?.render(
-      <GithubAppDialog agent={{ id: agentId, githubAppId: null }} initialAppId="app-free" onClose={onClose} />
+      <GithubAppDialog
+        agent={{ id: agentId, githubAppId: null }}
+        initialAppId="app-free"
+        onClose={onClose}
+        onSwitched={onSwitched}
+      />
     )
   })
   await act(async () => new Promise((resolve) => setTimeout(resolve, 0)))
@@ -90,15 +95,18 @@ describe('GithubAppDialog', () => {
     expect(document.body.textContent).not.toContain('triage-example')
   })
 
-  it('switches once everything is covered, then refreshes and closes', async () => {
+  it('switches once everything is covered, tells the opener, then refreshes and closes', async () => {
     mocks.coverage = [{ target: 'example-org/api', kind: 'review', covered: true }]
-    const onClose = await render('agent-b')
+    const onSwitched = vi.fn()
+    const onClose = await render('agent-b', vi.fn(), onSwitched)
 
     expect(button('Switch')?.disabled).toBe(false)
     await act(async () => button('Switch')?.click())
 
     expect(mocks.switchAgentGithubApp).toHaveBeenCalledWith('agent-b', 'app-free')
     expect(mocks.refresh).toHaveBeenCalled()
+    // An open picker reloads with the new App's installations.
+    expect(onSwitched).toHaveBeenCalledWith('app-free')
     expect(onClose).toHaveBeenCalled()
   })
 })

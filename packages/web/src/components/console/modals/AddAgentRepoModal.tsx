@@ -278,7 +278,7 @@ export default function AddAgentRepoModal({
     setGhSyncing(true)
     setErr(null)
     try {
-      const installations = await syncGithubInstallations()
+      const installations = await syncGithubInstallations(agent.githubAppId)
       setGh({ enabled: true, installations })
       setReposError(null)
       setPrivateReposHidden(false)

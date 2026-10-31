@@ -40,8 +40,12 @@ function submitToGithub(action: string, manifest: Record<string, unknown>): void
   form.submit()
 }
 
-/** The agent's GitHub App slug (null on the built-in App) and the dialog that changes it, for a surface that opens it. */
-export function useAgentGithubAppDialog(agent: Pick<Agent, 'id' | 'githubAppId'>, initialAppId?: string) {
+/** The agent's GitHub App slug (null on the built-in App) and the dialog that changes it; `onSwitched` lets an open picker reload. */
+export function useAgentGithubAppDialog(
+  agent: Pick<Agent, 'id' | 'githubAppId'>,
+  initialAppId?: string,
+  onSwitched?: (githubAppId: string | null) => void
+) {
   const { activeOrg } = useOrgs()
   const { data: apps } = useSWR(agent.githubAppId ? consoleKeys.githubApps(activeOrg?.id) : null, ([, id]) =>
     fetchGithubApps(id ?? undefined)
@@ -49,7 +53,12 @@ export function useAgentGithubAppDialog(agent: Pick<Agent, 'id' | 'githubAppId'>
   const appSlug = agent.githubAppId ? (apps?.find((app) => app.id === agent.githubAppId)?.slug ?? null) : null
   const [open, setOpen] = useState(initialAppId !== undefined)
   const dialog = open ? (
-    <GithubAppDialog agent={agent} initialAppId={initialAppId} onClose={() => setOpen(false)} />
+    <GithubAppDialog
+      agent={agent}
+      initialAppId={initialAppId}
+      onClose={() => setOpen(false)}
+      {...(onSwitched ? { onSwitched } : {})}
+    />
   ) : null
   return { appSlug, openDialog: () => setOpen(true), dialog }
 }
@@ -57,12 +66,14 @@ export function useAgentGithubAppDialog(agent: Pick<Agent, 'id' | 'githubAppId'>
 export function GithubAppDialog({
   agent,
   initialAppId,
-  onClose
+  onClose,
+  onSwitched
 }: {
   agent: Pick<Agent, 'id' | 'githubAppId'>
   /** The App to open on, such as one just created on GitHub. */
   initialAppId?: string
   onClose: () => void
+  onSwitched?: (githubAppId: string | null) => void
 }) {
   const t = useTranslations('Common.githubApp')
   const { activeOrg } = useOrgs()
@@ -114,8 +125,9 @@ export function GithubAppDialog({
         submitToGithub(form.action, form.manifest)
         return
       }
+      const next = choice === BUILT_IN ? null : choice
       try {
-        await switchAgentGithubApp(agent.id, choice === BUILT_IN ? null : choice)
+        await switchAgentGithubApp(agent.id, next)
       } catch (e) {
         // A refusal names what is still uncovered; show the fresh list rather than a bare message.
         if (e instanceof ApiError && e.status === 409 && Array.isArray(e.details?.coverage)) {
@@ -125,6 +137,7 @@ export function GithubAppDialog({
         throw e
       }
       refresh()
+      onSwitched?.(next)
       onClose()
     })
 

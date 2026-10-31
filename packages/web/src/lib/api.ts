@@ -6666,10 +6666,15 @@ export async function githubInstallUrlFor(appId: string | null | undefined): Pro
   return app ? `https://github.com/apps/${encodeURIComponent(app.slug)}/installations/new` : null
 }
 
-/** Refresh the organization's existing claims from GitHub. Unknown App-wide
- * installations are never assigned by this endpoint. */
-export async function syncGithubInstallations(): Promise<GithubInstallationDto[]> {
-  const installations = await apiPost<GithubInstallationDto[]>(`${orgBase()}/github/installations/sync`, {})
+/** Refresh the existing claims of the built-in App, or of the organization App `appId` names, from GitHub. */
+export async function syncGithubInstallations(appId?: string | null): Promise<GithubInstallationDto[]> {
+  let installations: GithubInstallationDto[]
+  if (appId) {
+    await apiPost(`${orgBase()}/github/apps/${encodeURIComponent(appId)}/sync`, {})
+    installations = (await fetchGithubInstallations(undefined, appId)).installations
+  } else {
+    installations = await apiPost<GithubInstallationDto[]>(`${orgBase()}/github/installations/sync`, {})
+  }
   invalidateGithubRepoRosterCache()
   return installations
 }

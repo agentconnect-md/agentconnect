@@ -148,6 +148,8 @@ export default function EditWorkspaceModal({
   const currentAgentDir = agentDirInputValue(gitWorkspace?.agentDir)
   const [mode, setMode] = useState<WorkspaceMode>(initialMode ?? currentSource)
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
+  // The App the agent works through; a switch from this modal reloads the picker with that App's installations.
+  const [githubAppId, setGithubAppId] = useState<string | null>(agent.githubAppId ?? null)
   const [ghSyncing, setGhSyncing] = useState(false)
   const [repos, setRepos] = useState<Array<GithubRepoDto & { installationId: string }> | null>(null)
   const [reposError, setReposError] = useState<'failed' | null>(null)
@@ -252,7 +254,7 @@ export default function EditWorkspaceModal({
     if (repositoryEditor !== null) return
     let alive = true
     const probeInstalls = () =>
-      fetchGithubInstallations(undefined, agent.githubAppId).then(
+      fetchGithubInstallations(undefined, githubAppId).then(
         (r) => alive && setGh(r),
         () => alive && setGh({ enabled: false, installations: [] })
       )
@@ -263,7 +265,7 @@ export default function EditWorkspaceModal({
       alive = false
       window.removeEventListener('focus', onFocus)
     }
-  }, [repositoryEditor])
+  }, [repositoryEditor, githubAppId])
 
   useEffect(() => {
     if (repositoryEditor !== null || !gh) return
@@ -300,9 +302,13 @@ export default function EditWorkspaceModal({
   // those as the workspace binds it (gitea-integration.md §6).
   const gt = useGiteaRepositories(repositoryEditor === null && mode === 'gitea')
 
-  const githubApp = useAgentGithubAppDialog(agent)
+  const githubApp = useAgentGithubAppDialog({ id: agent.id, githubAppId }, undefined, (next) => {
+    setGithubAppId(next)
+    setGh(null)
+    setRepos(null)
+  })
   const openGhInstall = async () => {
-    const url = await githubInstallUrlFor(agent.githubAppId).catch(() => null)
+    const url = await githubInstallUrlFor(githubAppId).catch(() => null)
     if (url) window.open(url, '_blank', 'noopener,noreferrer')
   }
 
@@ -311,7 +317,7 @@ export default function EditWorkspaceModal({
     setGhSyncing(true)
     setErr(null)
     try {
-      const installations = await syncGithubInstallations()
+      const installations = await syncGithubInstallations(githubAppId)
       setGh({ enabled: true, installations })
       setReposError(null)
       setPrivateReposHidden(false)

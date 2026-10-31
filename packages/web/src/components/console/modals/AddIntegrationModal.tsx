@@ -527,6 +527,8 @@ export default function AddIntegrationModal({
   // installations probe doubles as the enabled-probe; repository pages render
   // progressively and filter client-side (same contract as Add-agent).
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
+  // The App the agent works through; a switch from this modal reloads the picker with that App's installations.
+  const [githubAppId, setGithubAppId] = useState<string | null>(agent.githubAppId ?? null)
   const [ghRepos, setGhRepos] = useState<GithubRepoChoice[] | null>(null)
   const [ghReposNonce, setGhReposNonce] = useState(0)
   // At least one installation's roster failed to load — the list may be
@@ -985,14 +987,14 @@ export default function AddIntegrationModal({
   useEffect(() => {
     if (platform !== 'github' || gh !== null) return
     let alive = true
-    fetchGithubInstallations(undefined, agent.githubAppId).then(
+    fetchGithubInstallations(undefined, githubAppId).then(
       (r) => alive && setGh(r),
       () => alive && setGh({ enabled: false, installations: [] })
     )
     return () => {
       alive = false
     }
-  }, [platform, gh])
+  }, [platform, gh, githubAppId])
 
   // Repo pick list: merge pages from every installation as soon as they arrive.
   // GitHub offers no server-side search for App installations, so the dropdown
@@ -1095,9 +1097,13 @@ export default function AddIntegrationModal({
   }, [platform, ghRepoOpen, gh, ghTypedRepo, ghExactAlreadyLoaded])
 
   // Install deep link is minted fresh per click (one-shot signed state).
-  const githubApp = useAgentGithubAppDialog(agent)
+  const githubApp = useAgentGithubAppDialog({ id: agent.id, githubAppId }, undefined, (next) => {
+    setGithubAppId(next)
+    setGh(null)
+    setGhRepos(null)
+  })
   const openGhInstall = async () => {
-    const url = await githubInstallUrlFor(agent.githubAppId).catch(() => null)
+    const url = await githubInstallUrlFor(githubAppId).catch(() => null)
     if (url) window.open(url, '_blank', 'noopener,noreferrer')
   }
 
@@ -1106,7 +1112,7 @@ export default function AddIntegrationModal({
     setGhSyncing(true)
     setErr(null)
     try {
-      const installations = await syncGithubInstallations()
+      const installations = await syncGithubInstallations(githubAppId)
       setGh({ enabled: true, installations })
       setGhReposError(null)
       setGhPrivateReposHidden(false)
