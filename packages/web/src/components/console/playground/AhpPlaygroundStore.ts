@@ -24,6 +24,13 @@ type Entry = {
   // Turns an adopted session's first attach replayed per peer; its fetched transcript already renders them.
   replayed?: Map<string, Set<string>>
 }
+const rowKey = (row: SessionMessageDto) => JSON.stringify([row.sender, row.seq, row.ts, row.kind])
+function unionRows(prior: SessionMessageDto[] | undefined, rows: SessionMessageDto[]): SessionMessageDto[] {
+  if (!prior?.length) return rows
+  const keys = new Set(prior.map(rowKey))
+  const added = rows.filter((row) => !keys.has(rowKey(row)))
+  return added.length ? [...prior, ...added] : prior
+}
 const NO_STEPS: SessionStep[] = [],
   NO_FILES: ComposerFile[] = [],
   NO_QUEUE: QueuedTurn[] = []
@@ -376,7 +383,13 @@ export class AhpPlaygroundStore {
       reconcileLiveSteps: (id, rows, agentId, prompts) => {
         const entry = this.entries.get(id)
         if (entry) {
-          entry.persisted = { rows, agentId, prompts }
+          // A tail refresh passes only rows since its cursor, and the tail is re-derived from the snapshot, so rows accumulate.
+          const prior = entry.persisted
+          entry.persisted = {
+            rows: unionRows(prior?.rows, rows),
+            agentId,
+            prompts: unionRows(prior ? (prior.prompts ?? prior.rows) : undefined, prompts ?? rows)
+          }
           this.project(id, entry)
         }
       }
