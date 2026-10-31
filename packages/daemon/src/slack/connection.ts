@@ -1,3 +1,10 @@
+import {
+  CARD_ACTION_PREFIX,
+  CARD_EDIT_ACTION,
+  CARD_TEXT_BLOCK,
+  decodeCardValue
+} from '../platforms/slack/choice-card.js'
+import { EDIT_CHOICE } from '../cards/choice-cards.js'
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt'
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
 import {
@@ -506,6 +513,8 @@ export interface SlackDeps {
     fields: Record<string, string | string[]>
     actor?: InteractionActor
   }) => void
+  /** A press on a sticky choice card's button (or its Send edited, with the text in the card's field). */
+  onCardChoice?: (a: { cardId: string; choice: string; editedText?: string; actor: InteractionActor }) => void
   newTraceId: () => string
   log?: Logger
   /** When true, hand Bolt LogLevel.DEBUG so socket-mode internals are visible. */
@@ -1639,6 +1648,26 @@ export class SlackConnection implements PlatformConnection {
         requestId: action.value,
         fields: elicitFormViewValues(body?.state),
         ...(actor ? { actor } : {})
+      })
+    })
+    // Sticky choice cards: option buttons share the `ac_card:<index>` prefix (value = `<cardId>|<optionId>`).
+    this.app.action(new RegExp(`^${CARD_ACTION_PREFIX}:`), async ({ ack, action, body }) => {
+      await ack()
+      const decoded = action.value ? decodeCardValue(action.value) : undefined
+      const actor = actorOf(body)
+      if (decoded && actor) this.deps.onCardChoice?.({ ...decoded, actor })
+    })
+    this.app.action(CARD_EDIT_ACTION, async ({ ack, action, body }) => {
+      await ack()
+      const actor = actorOf(body)
+      if (!action.value || !actor) return
+      const typed = (body?.state as { values?: Record<string, Record<string, { value?: unknown }>> } | undefined)
+        ?.values?.[CARD_TEXT_BLOCK]?.text?.value
+      this.deps.onCardChoice?.({
+        cardId: action.value,
+        choice: EDIT_CHOICE,
+        ...(typeof typed === 'string' ? { editedText: typed } : {}),
+        actor
       })
     })
     log?.debug('slack: app.start → opening Socket Mode WebSocket (wss://…slack.com)…')

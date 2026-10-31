@@ -187,6 +187,57 @@ function buildShareFileTool(): ToolDescriptor {
   }
 }
 
+/** Sticky choice cards in THIS conversation: buttons that outlive the turn; a press starts a new turn here. */
+export const CHOICE_CARD_TOOLS: ToolDescriptor[] = [
+  {
+    name: 'postChoiceCard',
+    description:
+      'Post a card with 1–5 buttons into THIS conversation. Unlike a question in your reply, the card stays ' +
+      'clickable after your turn ends and after restarts; the first press settles it and starts a new turn here ' +
+      'with the presser as sender and a line like `[card <id>] <name> chose "<label>"`. Set `editText` to add an ' +
+      'editable text field and a "Send edited" button. Returns the card id.',
+    inputSchema: obj(
+      {
+        title: { type: 'string', minLength: 1, maxLength: 150 },
+        body: { type: 'string', maxLength: 2900 },
+        options: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 5,
+          items: obj(
+            {
+              id: { type: 'string', minLength: 1, maxLength: 60 },
+              label: { type: 'string', minLength: 1, maxLength: 75 }
+            },
+            ['id', 'label']
+          )
+        },
+        editText: { type: 'string', minLength: 1, maxLength: 2900 }
+      },
+      ['title', 'options']
+    )
+  },
+  {
+    name: 'readChoiceCard',
+    description: 'Read one of your cards: its state, the chosen option, who pressed it, and any edited text.',
+    inputSchema: obj({ cardId: { type: 'string', minLength: 1 } }, ['cardId'])
+  },
+  {
+    name: 'updateChoiceCard',
+    description:
+      'Change one of your cards: `state` (any state but "open" removes its buttons; "open" restores them) and/or a ' +
+      'status `label` shown under it (null clears it).',
+    inputSchema: obj(
+      {
+        cardId: { type: 'string', minLength: 1 },
+        state: { type: 'string', minLength: 1, maxLength: 40 },
+        label: { type: ['string', 'null'], maxLength: 300 }
+      },
+      ['cardId']
+    )
+  }
+]
+
 function buildReadTools(platforms: string[], currentPlatform?: string): ToolDescriptor[] {
   const platform = {
     type: 'string',
@@ -1141,6 +1192,7 @@ export const ALL_TOOL_NAMES = [
       buildSendMessageTool([]),
       GET_TOOL_GUIDE_TOOL,
       buildShareFileTool(),
+      ...CHOICE_CARD_TOOLS,
       // Built once per registered platform AS the session platform so every port gate opens:
       // the auto-allow set is about names, and a name some platform can inject must be listed
       // even for an agent that will never see it.
@@ -1223,6 +1275,8 @@ export function toolsForIntegrations(
     // platform-gated like the read tools; sessions without a file-hosting gateway get a
     // clean refusal at call time (port probe / coordinate gates).
     add([buildShareFileTool()])
+    // Cards post where the session's platform can show them; others refuse at call time.
+    add(CHOICE_CARD_TOOLS)
   }
   // A console turn's output capability, not the integration count, decides; execution re-checks the active turn.
   if (options.consoleImages) add([buildShareFileTool()])
