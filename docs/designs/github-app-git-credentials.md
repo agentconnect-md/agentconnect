@@ -84,8 +84,8 @@ stale until a network fetch succeeds.
   minting shows that authorization changed.
 - **Per-organization GitHub Apps as the deployment identity**: the deployment
   App stays instance-level configuration and carries sign-in, the setup
-  callback and every webhook. An agent can get its own App to act as (see
-  "Dedicated Apps"); those carry no webhook.
+  callback and every conversation webhook. An agent can get its own App to
+  act as (see "Dedicated Apps"); its webhook carries only that App's lifecycle.
 - Other git hosts such as GitLab or Bitbucket: protocol fields retain an
   extension point for providers.
 - SSH remotes: use HTTPS exclusively. Relative URLs in `.gitmodules` resolve to
@@ -300,7 +300,7 @@ agent can get its own App: one App belongs to exactly one agent
 (`Agent.githubAppId`, unique), so its bot names that agent on GitHub. The
 `GithubApp` row holds the App id, slug, client id and bot user id; the private
 key is in `GithubAppSecret`, sealed under the org scope and read only by the
-token signer. When the agent drops its App or is deleted, the App is retired
+token signer; its webhook secret is sealed beside it. When the agent drops its App or is deleted, the App is retired
 (`retiredAt`): the agent falls back to the deployment App, but the App keeps
 its key and installations, because only the App that created a Check can
 update it. The reporter therefore writes every existing Check with the App of
@@ -318,13 +318,16 @@ after a person confirms it. From the agent's edit dialog the console asks the
 CP for a manifest (`POST /agents/:id/github-app/manifest`, agent editors only)
 and posts it to GitHub's create page under the chosen organization or the
 caller's account. The manifest asks for the agent-facing subset of the
-deployment App's permissions, no webhook, `public: false`, and a setup URL that
-names a pre-allocated App row (`/v1/github/apps/<id>/setup/callback`). The
+deployment App's permissions, `public: false`, a setup URL that names a
+pre-allocated App row (`/v1/github/apps/<id>/setup/callback`) and, when the
+relay's public origin is HTTPS, a webhook at the relay's `/webhooks/github`
+subscribed to `check_run` only (installation events reach every App with a
+webhook). The
 agent, the org and that row id ride a signed one-shot state, keyed apart from
 the install state. GitHub redirects to `/v1/github/apps/manifest/callback`; the
 CP converts the code once (`POST /app-manifests/{code}/conversions`), binds the
-App to the agent with a compare-and-set on the agent row, seals the key and
-sends the browser to the App's install page. An agent that was deleted or got
+App to the agent with a compare-and-set on the agent row, seals the key and the
+conversion's `webhook_secret` and sends the browser to the App's install page. An agent that was deleted or got
 another App meanwhile leaves the new App unbound and nothing stored.
 
 **Installations.** Every install or update of the App redirects to its own
@@ -337,6 +340,38 @@ signed setup callback, because its roster spans every tenant. A dedicated App
 belongs to one organization (its App id is unique), and holding its private key
 already proves authority over all of its installations, so the redirect needs
 no state.
+
+**Webhook.** Every App's deliveries reach the same relay endpoint, so the relay
+picks the secret by the `X-GitHub-Hook-Installation-Target-ID` header, the App
+id GitHub names the sender with. The CP pushes each App's id and webhook secret
+to every relay that advertises `github-app-webhook-v1` (`rc/github-app-assign`
+when the App is created, `rc/github-app-unassign` when the reaper deletes it,
+and a `github-app` replay snapshot when a relay registers). A retired App keeps
+its webhook until then, so re-runs on its Checks still arrive and its roster
+stays current. The header only
+selects the secret: a delivery naming a dedicated App verifies against that
+App's secret alone, never the deployment App's, and an id the relay does not
+hold falls back to the deployment App's secret and path. A verified delivery is
+acted on only for the App's lifecycle:
+
+- `installation` and `installation_repositories` ring the doorbell with the
+  App id (`rc/github-installation.appId`). The CP re-pulls that App's roster
+  exactly as the setup redirect does, so a new installation is claimed and an
+  uninstall is marked revoked at once. The redirect's ten-second throttle
+  defers an event that lands inside the window instead of dropping it, because
+  GitHub sends most installation transitions once.
+- `check_run` `rerequested`, or the Check's "Request review" button
+  (`requested_action`), on a Check that App created (the payload's
+  `check_run.app.id`) goes through the deployment App's rerequest path with the
+  App id on `rc/github-rerequest`. The CP accepts it only when the Check's
+  projection last resolved to an installation of that App, and replies with the
+  installation the current run was delivered through. The relay fences the rule,
+  checks the actor and dispatches on that deployment installation, as for a
+  deployment-App Check.
+
+Everything else, conversation events included, is acknowledged and dropped:
+those events also arrive through the deployment App, and handling both copies
+would dispatch them twice.
 
 **Resolution.** `liveByOrgAndAccount` is always App-qualified: the deployment
 App and a dedicated App can both be installed on one GitHub account, and
@@ -386,8 +421,15 @@ reviewed automatically.
 - The commit identity delivered at `register/ok` is still the deployment
   App's; pushes by a dedicated-App agent are authenticated as that App but
   commits made through the console wand are attributed to the deployment bot.
-- Rerequest events on a dedicated App's Check never arrive (no webhook), and
-  uninstalling the App is noticed at the next mint or redirect, not at once.
+- An App gets its webhook only when the relay's public origin is HTTPS at
+  creation; without one, rerequests on its Checks never arrive and an
+  uninstall is noticed at the next mint or redirect. An App created before
+  webhooks were supported has none either; recreating it gives it one.
+- "Re-run all checks" on a dedicated App's Check Suite is dropped; re-running
+  the Check itself works.
+- A relay keeps an App's secret after the organization is deleted until its
+  next registration replay; a delivery it still verifies finds no App on the
+  CP and does nothing.
 - A daemon keeps an already minted token until it expires (up to an hour)
   after the agent's App changes.
 

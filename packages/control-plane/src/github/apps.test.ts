@@ -115,8 +115,11 @@ describe('InstallationTokenService with a per-installation signer', () => {
 describe('GithubAppsService', () => {
   const REVIEW_PEM = Buffer.from(REVIEW_KEY_B64, 'base64').toString('utf8')
 
-  function harness(opts: { bindable?: boolean } = {}) {
+  function harness(opts: { bindable?: boolean; relay?: string; webhookSecret?: string } = {}) {
     const rows: GithubAppRecord[] = []
+    const webhookSecrets = new Map<string, string>()
+    const assigned: Array<{ githubAppId: string; appId: bigint; webhookSecret: string }> = []
+    const unassigned: string[] = []
     const claimed: Array<{ orgId: string; installationId: bigint; githubAppId?: string | null }> = []
     const revoked: bigint[] = []
     const secrets = new Map<string, string>()
@@ -129,7 +132,10 @@ describe('GithubAppsService', () => {
     const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
       calls.push(`${init?.method ?? 'GET'} ${url}`)
       if (url.endsWith('/app-manifests/code-1/conversions')) {
-        return Response.json({ id: 2000, slug: 'example-review', client_id: 'Iv1', pem: REVIEW_PEM }, { status: 201 })
+        return Response.json(
+          { id: 2000, slug: 'example-review', client_id: 'Iv1', pem: REVIEW_PEM, webhook_secret: opts.webhookSecret },
+          { status: 201 }
+        )
       }
       if (url.includes('/app/installations')) {
         return Response.json([
@@ -148,6 +154,7 @@ describe('GithubAppsService', () => {
         },
         get: async (_org, id) => rows.find((r) => r.id === id) ?? null,
         getUnscoped: async (id) => rows.find((r) => r.id === id) ?? null,
+        getByAppId: async (appId) => rows.find((r) => r.appId === appId) ?? null,
         getForAgent: async (_org, agentId) => rows.find((r) => r.agentId === agentId) ?? null,
         listForOrg: async () => rows,
         retire: async (_org, id, at) => {
@@ -168,7 +175,18 @@ describe('GithubAppsService', () => {
           return true
         }
       },
-      secrets: { put: async (_o, id, v) => void secrets.set(id, v), get: async (_o, id) => secrets.get(id) ?? null },
+      secrets: {
+        put: async (_o, id, v, webhookSecret) => {
+          secrets.set(id, v)
+          if (webhookSecret) webhookSecrets.set(id, webhookSecret)
+        },
+        get: async (_o, id) => secrets.get(id) ?? null,
+        listWebhooks: async () =>
+          rows.flatMap((r) => {
+            const webhookSecret = webhookSecrets.get(r.id)
+            return webhookSecret ? [{ githubAppId: r.id, appId: r.appId, webhookSecret }] : []
+          })
+      },
       installations: {
         upsertFromGithub: async (orgId, facts, githubAppId) => {
           claimed.push({ orgId, installationId: facts.installationId, githubAppId })
@@ -195,11 +213,27 @@ describe('GithubAppsService', () => {
       clock,
       publicCpUrl: 'https://api.example.test/',
       webAppUrl: 'https://console.example.test',
+      ...(opts.relay ? { publicRelayUrl: opts.relay } : {}),
+      webhooks: { assign: (w) => void assigned.push(w), unassign: (id) => void unassigned.push(id) },
       onInstallationChanged: async (id) => void changed.push(id),
       onAppsChanged: appsChanged,
       fetchImpl
     })
-    return { svc, rows, claimed, revoked, secrets, invalidate, appsChanged, changed, calls, clock }
+    return {
+      svc,
+      rows,
+      claimed,
+      revoked,
+      secrets,
+      webhookSecrets,
+      assigned,
+      unassigned,
+      invalidate,
+      appsChanged,
+      changed,
+      calls,
+      clock
+    }
   }
 
   async function started(h: ReturnType<typeof harness>) {
@@ -266,6 +300,67 @@ describe('GithubAppsService', () => {
     await h.svc.completeSetup(id)
     expect(h.claimed).toHaveLength(2)
     await expect(h.svc.completeSetup('00000000-0000-4000-8000-000000000000')).resolves.toBeNull()
+  })
+
+  it('gives the App a check_run webhook at the relay only when the relay origin is HTTPS', async () => {
+    const https = await started(harness({ relay: 'https://relay.example.test/' }))
+    expect(https.form.manifest).toMatchObject({
+      hook_attributes: { url: 'https://relay.example.test/webhooks/github', active: true },
+      default_events: ['check_run']
+    })
+    const http = await started(harness({ relay: 'http://localhost:8090' }))
+    expect(http.form.manifest).not.toHaveProperty('hook_attributes')
+    expect(http.form.manifest).not.toHaveProperty('default_events')
+  })
+
+  it('seals the webhook secret beside the key and pushes it to the relays', async () => {
+    const h = harness({ relay: 'https://relay.example.test', webhookSecret: 'whsec-example' })
+    await h.svc.completeManifest((await started(h)).state, 'code-1')
+    const id = h.rows[0]!.id
+    expect(h.webhookSecrets.get(id)).toBe('whsec-example')
+    expect(h.assigned).toEqual([{ githubAppId: id, appId: 2000n, webhookSecret: 'whsec-example' }])
+    const replayed: unknown[] = []
+    await h.svc.replayWebhooksTo((w) => void replayed.push(w))
+    expect(replayed).toEqual(h.assigned)
+
+    await h.svc.remove(ORG, id)
+    h.clock.advance(60 * 60 * 1000 + 1)
+    await h.svc.reap()
+    expect(h.unassigned).toEqual([id])
+  })
+
+  it('pushes nothing for an App GitHub created without a webhook', async () => {
+    const h = harness()
+    await h.svc.completeManifest((await started(h)).state, 'code-1')
+    expect(h.webhookSecrets.size).toBe(0)
+    expect(h.assigned).toEqual([])
+  })
+
+  it("re-pulls the roster on the App's own installation event, deferring one inside the interval", async () => {
+    const h = harness({ relay: 'https://relay.example.test', webhookSecret: 'whsec-example' })
+    await h.svc.completeManifest((await started(h)).state, 'code-1')
+    const id = h.rows[0]!.id
+    await h.svc.syncFromWebhook(2000n)
+    expect(h.claimed).toEqual([{ orgId: ORG, installationId: 43n, githubAppId: id }])
+    // An uninstall right after the install still converges: the event inside the window runs once it ends.
+    await h.svc.syncFromWebhook(2000n)
+    await h.svc.syncFromWebhook(2000n)
+    expect(h.claimed).toHaveLength(1)
+    h.clock.advance(10_000)
+    await vi.waitFor(() => expect(h.claimed).toHaveLength(2))
+    // An App id nothing here owns pulls nothing.
+    await h.svc.syncFromWebhook(3000n)
+    expect(h.calls.filter((c) => c.includes('/app/installations'))).toHaveLength(2)
+  })
+
+  it('keeps a retired App on the relays and its roster current until the reaper deletes it', async () => {
+    const h = harness({ relay: 'https://relay.example.test', webhookSecret: 'whsec-example' })
+    await h.svc.completeManifest((await started(h)).state, 'code-1')
+    const id = h.rows[0]!.id
+    await h.svc.remove(ORG, id)
+    expect(h.unassigned).toEqual([])
+    await h.svc.syncFromWebhook(2000n)
+    expect(h.claimed).toEqual([{ orgId: ORG, installationId: 43n, githubAppId: id }])
   })
 
   it('remove retires the App, which keeps signing until the reaper deletes it after the grace', async () => {

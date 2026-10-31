@@ -32,6 +32,7 @@ import {
   PROVIDER_CREDENTIALS_V1_FEATURE,
   AGENT_MODEL_PROVIDER_FEATURE,
   FOLLOW_UP_WATCH_FEATURE,
+  GITHUB_APP_WEBHOOK_V1_FEATURE,
   COMPUTER_WS_PUBLIC_PATH
 } from '@agentconnect.md/protocol'
 
@@ -1485,6 +1486,7 @@ export function buildContainer(
       })
     : undefined
   // Dedicated Apps need the public origin: GitHub redirects the browser to its manifest and setup callbacks.
+  const dedicatedAppRelayUrl = relayHttpBase(config.PUBLIC_RELAY_URL)
   const githubApps =
     github && githubAppRegistry && config.PUBLIC_CP_URL
       ? new GithubAppsService({
@@ -1498,6 +1500,16 @@ export function buildContainer(
           clock,
           publicCpUrl: config.PUBLIC_CP_URL,
           ...(webAppUrl ? { webAppUrl } : {}),
+          ...(dedicatedAppRelayUrl ? { publicRelayUrl: dedicatedAppRelayUrl } : {}),
+          webhooks: {
+            assign: (w) =>
+              relayControl.githubAppAssign({
+                githubAppId: w.githubAppId,
+                appId: w.appId.toString(),
+                webhookSecret: w.webhookSecret
+              }),
+            unassign: (githubAppId) => relayControl.githubAppUnassign(githubAppId)
+          },
           onInstallationChanged: async (installationId, orgId) => {
             github.tokens.invalidateInstallation(installationId)
             github.invalidateRepositoryRoster(installationId)
@@ -2029,7 +2041,15 @@ export function buildContainer(
       })
     : undefined
   const githubRerequest = githubAppCfg
-    ? new GithubRerequestService({ hooks: repos.hook, appId: githubAppCfg.appId })
+    ? new GithubRerequestService({
+        hooks: repos.hook,
+        appId: githubAppCfg.appId,
+        dedicatedAppIdOf: async (installationId) => {
+          const row = await repos.githubInstallation.getByInstallationId(installationId)
+          if (!row?.githubAppId) return null
+          return (await repos.githubApp.getUnscoped(row.githubAppId))?.appId ?? null
+        }
+      })
     : undefined
   const githubRunReporterRef: { current?: GithubRunReporter } = {}
   const githubRunCoordinator = github
@@ -3356,6 +3376,19 @@ export function buildContainer(
           http.log.error({ err }, 'relay: hook-rule replay on register failed')
         )
       )
+      if (githubApps && ch.features?.includes(GITHUB_APP_WEBHOOK_V1_FEATURE)) {
+        trackRelayRegistrationTask(
+          replaySnapshot(ch, 'github-app', relayControl, () =>
+            githubApps.replayWebhooksTo((w) =>
+              ch.send('rc/github-app-assign', {
+                githubAppId: w.githubAppId,
+                appId: w.appId.toString(),
+                webhookSecret: w.webhookSecret
+              })
+            )
+          ).catch((err) => http.log.error({ err }, 'relay: github app webhook replay failed'))
+        )
+      }
       // Seed the fresh relay with every MCP provider binding (its table starts empty;
       // bindings are pool-wide, so a later-joining relay must be replayed or requests 401).
       trackRelayRegistrationTask(
@@ -3590,6 +3623,13 @@ export function buildContainer(
     // Installation doorbell poke — fire-and-forget into the throttled re-pull
     // (the doorbell owns single-flight/cooldown and swallows its own errors).
     onGithubInstallation: async (m) => {
+      // A dedicated App's own webhook: re-pull that App's roster, which also claims a new installation.
+      if (m.appId !== undefined) {
+        void githubApps
+          ?.syncFromWebhook(BigInt(m.appId))
+          .catch((err) => http.log.warn({ err, appId: m.appId }, 'relay: dedicated GitHub App sync failed'))
+        return
+      }
       if (!installationDoorbell) {
         http.log.debug({ installationId: m.installationId }, 'relay: doorbell ignored — GITHUB_APP_* not configured')
         return

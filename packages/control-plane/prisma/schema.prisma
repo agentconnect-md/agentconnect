@@ -3394,11 +3394,12 @@ model GithubApp {
   @@map("github_app")
 }
 
-/// Private key of an agent's dedicated GitHub App — read ONLY via the
+/// Private key and webhook secret of an agent's dedicated GitHub App — read ONLY via the
 /// GithubAppSecretStore (sealed by SecretCipher under the org scope).
 model GithubAppSecret {
-  githubAppId String @id @db.Uuid
-  privateKey  String // stored SecretCipher representation of the base64 PEM
+  githubAppId   String  @id @db.Uuid
+  privateKey    String // stored SecretCipher representation of the base64 PEM
+  webhookSecret String? // stored SecretCipher representation; null ⇒ the App was created without a webhook
 
   app GithubApp @relation(fields: [githubAppId], references: [id], onDelete: Cascade)
 

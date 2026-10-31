@@ -4401,6 +4401,8 @@ export interface GithubAppRepo {
   get(orgId: OrgId, id: string): Promise<GithubAppRecord | null>
   /** Cross-org read for the token signer and the App's setup callback, which hold only the App id. */
   getUnscoped(id: string): Promise<GithubAppRecord | null>
+  /** Cross-org read by GitHub App id, for a delivery its webhook secret verified. */
+  getByAppId(appId: bigint): Promise<GithubAppRecord | null>
   getForAgent(orgId: OrgId, agentId: string): Promise<GithubAppRecord | null>
   listForOrg(orgId: OrgId): Promise<GithubAppRecord[]>
   /** Detaches the App from its agent (which falls back to the deployment App) and marks it retired. */
@@ -4411,10 +4413,19 @@ export interface GithubAppRepo {
   delete(orgId: OrgId, id: string): Promise<boolean>
 }
 
-/** Sealed App private key (base64 PEM); read ONLY by the token signer. */
+/** One dedicated App's webhook, as the relay verifies it. */
+export interface GithubAppWebhook {
+  githubAppId: string
+  appId: bigint
+  webhookSecret: string
+}
+
+/** Sealed App private key (base64 PEM), read ONLY by the token signer, and its webhook secret, read only for the relay. */
 export interface GithubAppSecretStore {
-  put(orgId: OrgId, githubAppId: string, privateKeyB64: string): Promise<void>
+  put(orgId: OrgId, githubAppId: string, privateKeyB64: string, webhookSecret?: string): Promise<void>
   get(orgId: OrgId, githubAppId: string): Promise<string | null>
+  /** Every App created with a webhook, across orgs. */
+  listWebhooks(): Promise<GithubAppWebhook[]>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

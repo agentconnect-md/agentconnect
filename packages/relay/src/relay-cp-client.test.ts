@@ -11,6 +11,7 @@ import {
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+  GITHUB_APP_WEBHOOK_V1_FEATURE,
   GITEA_V1_FEATURE,
   DECISION_ROUTING_FORWARD_V1_FEATURE,
   DECISION_ROUTING_V1_FEATURE,
@@ -225,7 +226,8 @@ describe('RelayCpClient', () => {
         HOOK_DECISION_ROUTING_V2_FEATURE,
         OWNER_DEFAULT_DECISION_V1_FEATURE,
         HOOK_GITHUB_INSTALLATION_V1_FEATURE,
-        RELAY_PROJECTION_SNAPSHOT_V1_FEATURE
+        RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+        GITHUB_APP_WEBHOOK_V1_FEATURE
       ]
     })
 
@@ -1169,6 +1171,21 @@ describe('RelayCpClient redial after a planned CP restart', () => {
     await flush()
     expect(connect).toHaveBeenCalledTimes(dials + 1)
     expect(connect.mock.calls.at(-1)).toEqual([undefined])
+  })
+})
+
+describe('RelayCpClient dedicated GitHub App webhooks', () => {
+  it('hands the assign and unassign frames to the table', async () => {
+    const onGithubAppAssign = vi.fn()
+    const onGithubAppUnassign = vi.fn()
+    const { client, transport } = makeClient({ onGithubAppAssign, onGithubAppUnassign })
+    await handshakeToReady(client, transport)
+    const assign = { githubAppId: DAEMON_ID, appId: '2000', webhookSecret: 'whsec-example' }
+    transport.inject(buildRelayCpFrame('rc/github-app-assign', assign))
+    transport.inject(buildRelayCpFrame('rc/github-app-unassign', { githubAppId: DAEMON_ID }))
+    await flush()
+    expect(onGithubAppAssign).toHaveBeenCalledWith(assign)
+    expect(onGithubAppUnassign).toHaveBeenCalledWith({ githubAppId: DAEMON_ID })
   })
 })
 
