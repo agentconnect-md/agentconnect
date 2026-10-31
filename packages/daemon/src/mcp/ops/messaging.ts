@@ -503,12 +503,18 @@ export async function settlePost(
     providerPostId !== undefined && mustMaterializeThread
       ? await gw.createThread?.(channel, providerPostId, rootPostThreadName(body))
       : undefined
+  // A root post into a conversation that is one session belongs to that session, as a reply there does.
+  const roomThread =
+    updateThread === undefined && providerPostId !== undefined && !isDmTarget
+      ? await gw.roomThread?.(channel).catch(() => undefined)
+      : undefined
   const canonicalPostThread =
     updateThread !== undefined
       ? threadKeyForUpdate(platform, channel, updateThread)
       : providerPostId === undefined
         ? undefined
-        : threadKeyForPost(platform, channel, gw.threadOfPost?.(providerPostId) ?? providerPostId, isDmTarget)
+        : (roomThread ??
+          threadKeyForPost(platform, channel, gw.threadOfPost?.(providerPostId) ?? providerPostId, isDmTarget))
   const postedThread =
     updateThread !== undefined
       ? canonicalPostThread
@@ -525,7 +531,14 @@ export async function settlePost(
     )
   }
   // session-concept case 2a and §2.4: the author joins the post's thread with a session whose origin is the posting one.
-  if (!post.seed || postedThread === undefined || providerPostId === undefined || !deps.spawnChannelRootSession) {
+  // That session already holds the conversation, so the post seeds no second one.
+  if (
+    !post.seed ||
+    roomThread !== undefined ||
+    postedThread === undefined ||
+    providerPostId === undefined ||
+    !deps.spawnChannelRootSession
+  ) {
     return { ...(postedThread !== undefined ? { postedThread } : {}), seeded: false }
   }
   const seeded = await deps.spawnChannelRootSession({

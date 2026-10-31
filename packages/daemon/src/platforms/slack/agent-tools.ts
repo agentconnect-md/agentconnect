@@ -3,6 +3,7 @@ import { SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY } from '@agentconnect.md/p
 import { parseArgs } from '../../mcp/ops/args.js'
 import type { SessionContext } from '../../mcp/ops/context.js'
 import { buildAttributionBlocks } from '../../slack/render.js'
+import { sessionKey } from '../../store/local-store.js'
 import type { SlackConnection } from '../../slack/connection.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 import type { PlatformSessionTools, PlatformSessionToolEnv } from '../read-ports.js'
@@ -233,15 +234,12 @@ async function execute(
       if (!updated) throw new Error('This bot does not own that Slack code channel')
       return { ok: true }
     }
-    if (a.action === 'archive') {
-      await conn.closeCodeSession(channel)
-      const archived = await conn.codeChannelApi('archive', {
-        channel_id: channel,
-        summary_message_ts: a.summaryMessageTs
-      })
-      conn.codeChannelArchived(channel)
-      return archived
-    }
+    if (a.action === 'archive')
+      return conn.archiveCodeChannel(
+        channel,
+        a.summaryMessageTs,
+        sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+      )
     if (a.action === 'removeView') return conn.codeChannelApi('removeView', { channel_id: channel, view_id: a.viewId! })
     return conn.codeChannelApi('listViews', { channel_id: channel })
   }

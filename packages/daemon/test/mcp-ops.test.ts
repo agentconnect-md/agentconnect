@@ -841,6 +841,19 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(recorded[0]).toMatchObject({ thread: 'tg:172', ts: '172' })
     })
 
+    it('records a root post into a conversation keyed as one session there, and seeds no second session', async () => {
+      // A Slack code channel is one session on the channel, so the post belongs to it, as a reply there does.
+      const { d, spawns, recorded } = tgDeps({}, { roomThread: async (channel) => channel })
+      await executeTool(
+        tgCtx,
+        'sendMessage',
+        { action: 'postMessage', platform: 'telegram', channel: '-100123', message: 'hi' },
+        d
+      )
+      expect(recorded[0]).toMatchObject({ channel: '-100123', thread: '-100123', ts: '172' })
+      expect(spawns).toEqual([])
+    })
+
     it('anchors a peer wake to that same key', async () => {
       // #295 canonicalized only the spawn and left this path on the raw ts, so ONE post yielded
       // two different session keys. A peer wake always posts on the caller's own platform, so

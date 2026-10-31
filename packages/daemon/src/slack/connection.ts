@@ -1162,6 +1162,11 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
+  /** A code channel is one session keyed on the channel, so a root post there belongs to it (slack-code-channels.md). */
+  async roomThread(channel: string): Promise<string | undefined> {
+    return (await this.codeChannel(channel).catch(() => undefined))?.code ? channel : undefined
+  }
+
   /** A coordinator's task works in a code channel linked to its message (auto-session-mode.md §6.8); none when the message already sits in one. */
   async openTaskPlace(origin: TaskPlaceOrigin, title: string): Promise<TaskPlace | undefined> {
     // The daemon has judged whether the message's sender may have a channel made before it asks.
@@ -3582,7 +3587,10 @@ export class SlackConnection implements PlatformConnection {
     if (this.deps.sendOnly || archived) {
       const sessionKeys = (await this.deps.onThreadSessions?.({ channel, thread: threadTs })) ?? []
       const tasks = this.deps.onStopThreadTasks?.({ channel, thread: threadTs }) ?? []
-      for (const sessionKey of new Set([...sessionKeys, ...tasks])) cancel(sessionKey)
+      // The session whose own turn archived the channel ends that turn itself, after its wrap-up.
+      const archivedBy = archived ? this.ownArchives.get(channel) : undefined
+      if (archived) this.ownArchives.delete(channel)
+      for (const sessionKey of new Set([...sessionKeys, ...tasks])) if (sessionKey !== archivedBy) cancel(sessionKey)
       if (archived && threadTs === channel) this.codeChannelArchived(channel)
       await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))
       return
@@ -3602,6 +3610,24 @@ export class SlackConnection implements PlatformConnection {
   /** An archived code channel closes the task it holds, whoever archived it; closing twice is harmless. */
   codeChannelArchived(channel: string): void {
     this.deps.onPlaceClosed?.({ channel, thread: channel })
+  }
+
+  /** Sessions archiving their own code channel, by channel, so Slack's archive event does not cancel the turn that asked for it. */
+  private readonly ownArchives = new Map<string, string>()
+
+  /** Archive a code channel for the session `by` whose turn asked, echoing `summaryTs` to the origin, and close its task. */
+  async archiveCodeChannel(channel: string, summaryTs: string | undefined, by: string): Promise<unknown> {
+    await this.closeCodeSession(channel)
+    // Noted before the call: Slack's archive event can arrive before its answer does.
+    this.ownArchives.set(channel, by)
+    try {
+      const archived = await this.codeChannelApi('archive', { channel_id: channel, summary_message_ts: summaryTs })
+      this.codeChannelArchived(channel)
+      return archived
+    } catch (err) {
+      if (this.ownArchives.get(channel) === by) this.ownArchives.delete(channel)
+      throw err
+    }
   }
 
   // The lifecycle half of setStatus. Posting a message does NOT end the loading UX — only `active` does.
