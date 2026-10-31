@@ -2344,7 +2344,18 @@ describe('Slack interactive status bar', () => {
         () => {}
       )
     ).toEqual({ msgId: 'action-stop', accepted: true })
-    expect(agentSessionStopped).toHaveBeenCalledWith('C1', 'T1', 'U1')
+    expect(agentSessionStopped).toHaveBeenCalledWith('C1', 'T1', 'U1', false)
+    // A forwarded archive says so, which closes the task the channel holds (auto-session-mode.md §6.8).
+    await (daemon as any).handleRelayMsg(
+      action({
+        sessionKey: 'C1/C1',
+        msgId: 'action-archive',
+        userId: 'U1',
+        payload: { kind: 'agent-session-stopped', channelId: 'C1', threadTs: 'C1', archived: true }
+      }),
+      () => {}
+    )
+    expect(agentSessionStopped).toHaveBeenLastCalledWith('C1', 'C1', 'U1', true)
 
     const permissionResolved = vi.fn()
     const permissionRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
