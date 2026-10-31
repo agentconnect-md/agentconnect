@@ -2,16 +2,23 @@
 
 ## Reports
 
-Slack sessions expose `presentSlackReport` for substantial findings and comparisons. Sections
-use native collapsible Container blocks; tables use Data Table blocks with pagination
+Slack sessions expose `presentSlackReport` for substantial findings and comparisons. An optional
+summary places up to six short facts in native Layout blocks, with up to three columns per row.
+Slack stacks them on mobile; older clients receive ordinary section blocks in the same order.
+Sections use native collapsible Container blocks; tables use Data Table blocks with pagination
 and numeric sorting. Ordinary replies retain Markdown, including Markdown tables.
-Sections accept Slack mrkdwn, while table strings are plain text. The tool validates
+Summary items and sections accept Slack mrkdwn, while table strings are plain text. The tool validates
 row widths and message limits before posting. Reports use the current turn's physical
 delivery thread and the configured agent identity and attribution.
 They carry finalized authorship with the live turn's hop count and enter the normal
 outbound transcript. A headless or ended turn cannot publish through this surface.
-The agent chooses this format when expandable details or sortable rows help the reader;
+The agent chooses this format when parallel facts, expandable details or sortable rows help the reader;
 the user does not need to name the tool or request a particular format.
+
+The shared `readCanvas` tool reads the complete Markdown body through `canvases.getContent`,
+alongside file metadata and fresh heading anchors for edits. A failed content read is reported
+as a failure; an empty canvas has an empty Markdown body. It requires the existing
+`canvases:read` and `files:read` grants.
 
 ## Code channels
 
@@ -91,7 +98,7 @@ member of the workspace has a channel made, as the tool requires an eligible hum
 
 The platform-owned session tool registry exposes four tools only to Slack sessions:
 
-- `presentSlackReport`: publish collapsible sections and a paginated table here.
+- `presentSlackReport`: publish parallel summary facts, collapsible sections and a paginated table here.
 - `createSlackCodeChannel`: create a task channel linked to the current live triggering
   message. Slack matches origin privacy and invites its author. An origin-derived
   idempotency key prevents duplicate channels when a call is retried. Creation inside
@@ -189,5 +196,7 @@ The Control Plane continues to hold control metadata only.
 - [Slack Code](https://docs.slack.dev/ai/slack-code/)
 - [Code channel properties](https://docs.slack.dev/ai/slack-code/code-channel-properties/)
 - [Container block](https://docs.slack.dev/reference/block-kit/blocks/container-block/)
+- [Layout block](https://docs.slack.dev/reference/block-kit/blocks/layout-block/)
 - [Data Table block](https://docs.slack.dev/reference/block-kit/blocks/data-table-block/)
+- [Canvas content](https://docs.slack.dev/reference/methods/canvases.getContent/)
 - [Code channel views](https://docs.slack.dev/reference/methods/agents.conversations.setView/)

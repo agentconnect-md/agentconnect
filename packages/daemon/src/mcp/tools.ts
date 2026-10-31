@@ -706,9 +706,8 @@ function buildCanvasTools(offered: boolean, integrationId: SchemaProp): ToolDesc
       description:
         'Read a canvas back: its title, link, markdown body, and the section ids an anchored edit can target. ' +
         'Always call this immediately before `updateCanvas` — section ids CHANGE every time a canvas is edited, so ' +
-        'one from an earlier turn is stale and must never be reused. Two limits worth knowing: only HEADING ' +
-        'sections get an id, so an anchored edit can address a heading but not an arbitrary paragraph, and the body ' +
-        'is absent (rather than empty) when the platform would not serve it — the canvas still exists.',
+        'one from an earlier turn is stale and must never be reused. Only HEADING sections get an id, so ' +
+        'an anchored edit can address a heading but not an arbitrary paragraph.',
       inputSchema: obj({ integrationId, canvasId }, ['canvasId'])
     },
     {

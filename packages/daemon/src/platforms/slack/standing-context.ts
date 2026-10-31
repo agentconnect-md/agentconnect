@@ -1,6 +1,7 @@
 const REPORTS =
   'Choose presentSlackReport for substantial findings with several sections or a comparison with many rows: ' +
-  'readers can expand details and sort or page through the data. Choose it from the task, without requiring ' +
+  'readers can compare short summary facts side by side, expand details and sort or page through the data. ' +
+  'Choose it from the task, without requiring ' +
   'the user to request a report format or name a tool. Keep short answers and small tables in ordinary replies.'
 
 export const SLACK_CONVERSATION_CONTEXT =

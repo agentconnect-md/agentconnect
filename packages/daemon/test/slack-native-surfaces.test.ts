@@ -297,13 +297,14 @@ describe('Slack native surfaces', () => {
     }
   })
 
-  it('posts native containers and numeric table cells in the current delivery thread', async () => {
+  it('posts summary columns, collapsible details and numeric table cells in the current delivery thread', async () => {
     const f = await fixture()
     await SLACK_SESSION_TOOLS.execute(
       'presentSlackReport',
       ctx,
       {
         title: 'Results',
+        summary: ['*Status*\nPassed', '*Checks*\n12', '*Duration*\n3 minutes', '*Next*\nReview'],
         sections: [{ title: 'Details', text: '*Passed*' }],
         table: {
           caption: 'Counts',
@@ -319,9 +320,23 @@ describe('Slack native surfaces', () => {
     expect(f.judgeWrite).toHaveBeenCalledWith(expect.objectContaining({ channel: 'C1', kind: 'conversation' }))
     const sent = f.post.mock.calls[0]![0] as Record<string, unknown>
     expect(sent.thread_ts).toBe('1.001')
+    expect(sent.text).toContain('*Status*\nPassed')
+    expect(sent.text).toContain('*Next*\nReview')
     expect(f.env.recordPost).toHaveBeenCalledWith(expect.stringContaining('Results'), expect.any(String))
     expect(sent.blocks).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          type: 'layout',
+          label: 'Results',
+          rows: [
+            { items: [expect.any(Object), expect.any(Object), expect.any(Object)] },
+            { items: [{ block: { type: 'section', text: { type: 'mrkdwn', text: '*Next*\nReview' } } }] }
+          ],
+          fallback: expect.arrayContaining([
+            { type: 'section', text: { type: 'mrkdwn', text: '*Status*\nPassed' } },
+            { type: 'section', text: { type: 'mrkdwn', text: '*Next*\nReview' } }
+          ])
+        }),
         expect.objectContaining({ type: 'container', is_collapsible: true, default_collapsed: true }),
         expect.objectContaining({
           type: 'data_table',
@@ -334,6 +349,21 @@ describe('Slack native surfaces', () => {
         })
       ])
     )
+    await f.conn.stop()
+  })
+
+  it('accepts a summary without requiring details or a table', async () => {
+    const f = await fixture()
+    await SLACK_SESSION_TOOLS.execute(
+      'presentSlackReport',
+      ctx,
+      { title: 'Overview', summary: ['*Status*\nReady', '*Owner*\nTeam'] },
+      f.env
+    )
+    expect(f.post.mock.calls[0]![0]).toMatchObject({
+      text: expect.stringContaining('*Owner*\nTeam'),
+      blocks: expect.arrayContaining([expect.objectContaining({ type: 'layout' })])
+    })
     await f.conn.stop()
   })
 
