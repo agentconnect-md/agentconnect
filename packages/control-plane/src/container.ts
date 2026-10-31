@@ -32,7 +32,6 @@ import {
   PROVIDER_CREDENTIALS_V1_FEATURE,
   AGENT_MODEL_PROVIDER_FEATURE,
   FOLLOW_UP_WATCH_FEATURE,
-  GITHUB_APP_WEBHOOK_V1_FEATURE,
   COMPUTER_WS_PUBLIC_PATH
 } from '@agentconnect.md/protocol'
 
@@ -69,8 +68,6 @@ import { relayDeploymentSnapshot } from './config/deployment.js'
 import type { FetchLike } from './github/api.js'
 import { ConnectorsClient, parseBlocklist, parseWhitelist } from './connectors/index.js'
 import { GithubService } from './github/service.js'
-import { GithubAppRegistry } from './github/app-registry.js'
-import { GithubAppsService } from './github/apps.service.js'
 import { RepoCandidatesService } from './github/repo-candidates.js'
 import { GithubInstallationDoorbell } from './github/installation-doorbell.service.js'
 import { GithubCommentAuthzService } from './github/comment-authz.service.js'
@@ -165,8 +162,6 @@ import {
   PresetAgentBackfill,
   PgGithubInstallationRepo,
   PgGithubInstallStateStore,
-  PgGithubAppRepo,
-  PgGithubAppSecretStore,
   PgAgentRepoAuthorizationRepo,
   PgAgentInstallationAuthorizationRepo,
   PgCodeHostRepositoryRepo,
@@ -641,7 +636,6 @@ export function buildContainer(
     waitlist: new PgWaitlistRepo(prisma),
     githubInstallation: new PgGithubInstallationRepo(prisma),
     githubInstallState: new PgGithubInstallStateStore(prisma),
-    githubApp: new PgGithubAppRepo(prisma),
     agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma),
     agentInstallationAuth: new PgAgentInstallationAuthorizationRepo(prisma),
     codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
@@ -1015,8 +1009,7 @@ export function buildContainer(
       webhookSecrets: giteaWebhookSecretStore,
       host: giteaCfg.baseUrl
     },
-    repos.codeHostDecisionRouting,
-    githubAppCfg ? repos.githubApp : undefined
+    repos.codeHostDecisionRouting
   )
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
@@ -1457,21 +1450,12 @@ export function buildContainer(
   }
   // github-app workspaces (opt-in): assembled only when GITHUB_APP_* is fully
   // configured; absent ⇒ routes 404 and the WS gitcred handler denies.
-  // Agents' dedicated Apps sign for their own installations (github-app-git-credentials.md §Dedicated Apps).
-  const githubAppRegistry = githubAppCfg
-    ? new GithubAppRegistry({
-        apps: repos.githubApp,
-        secrets: new PgGithubAppSecretStore(prisma, secretCipher),
-        installations: repos.githubInstallation
-      })
-    : undefined
   const github = githubAppCfg
     ? new GithubService({
         cfg: githubAppCfg,
         clock,
         installations: repos.githubInstallation,
         installState: repos.githubInstallState,
-        appRegistry: githubAppRegistry!,
         repoAuths: repos.agentRepoAuth,
         installationAuths: repos.agentInstallationAuth,
         skillSources: repos.skillSource,
@@ -1485,41 +1469,6 @@ export function buildContainer(
         ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
       })
     : undefined
-  // Dedicated Apps need the public origin: GitHub redirects the browser to its manifest and setup callbacks.
-  const dedicatedAppRelayUrl = relayHttpBase(config.PUBLIC_RELAY_URL)
-  const githubApps =
-    github && githubAppRegistry && config.PUBLIC_CP_URL
-      ? new GithubAppsService({
-          apps: repos.githubApp,
-          secrets: new PgGithubAppSecretStore(prisma, secretCipher),
-          installations: repos.githubInstallation,
-          states: repos.githubInstallState,
-          registry: githubAppRegistry,
-          botUserId: (slug) => github.botUserId(slug),
-          pepper: config.API_KEY_PEPPER,
-          clock,
-          publicCpUrl: config.PUBLIC_CP_URL,
-          ...(webAppUrl ? { webAppUrl } : {}),
-          ...(dedicatedAppRelayUrl ? { publicRelayUrl: dedicatedAppRelayUrl } : {}),
-          webhooks: {
-            assign: (w) =>
-              relayControl.githubAppAssign({
-                githubAppId: w.githubAppId,
-                appId: w.appId.toString(),
-                webhookSecret: w.webhookSecret
-              }),
-            unassign: (githubAppId) => relayControl.githubAppUnassign(githubAppId)
-          },
-          onInstallationChanged: async (installationId, orgId) => {
-            github.tokens.invalidateInstallation(installationId)
-            github.invalidateRepositoryRoster(installationId)
-            await wakeGithubReviewProjections(installationId, orgId)
-          },
-          onAppsChanged: (orgId) => hookService.rebroadcastGithubForOrg(orgId),
-          log: { warn: (obj, msg) => http.log.warn(obj, msg) },
-          ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
-        })
-      : undefined
   // GitLab.com OAuth administration (opt-in, gitlab-com-integration.md §9):
   // assembled only when GITLAB_CLIENT_ID/SECRET are configured AND the public
   // origin is known (the begin/callback URLs derive from it); absent ⇒ routes 404.
@@ -2041,15 +1990,7 @@ export function buildContainer(
       })
     : undefined
   const githubRerequest = githubAppCfg
-    ? new GithubRerequestService({
-        hooks: repos.hook,
-        appId: githubAppCfg.appId,
-        dedicatedAppIdOf: async (installationId) => {
-          const row = await repos.githubInstallation.getByInstallationId(installationId)
-          if (!row?.githubAppId) return null
-          return (await repos.githubApp.getUnscoped(row.githubAppId))?.appId ?? null
-        }
-      })
+    ? new GithubRerequestService({ hooks: repos.hook, appId: githubAppCfg.appId })
     : undefined
   const githubRunReporterRef: { current?: GithubRunReporter } = {}
   const githubRunCoordinator = github
@@ -2372,7 +2313,6 @@ export function buildContainer(
       linearInstallState: repos.linearInstallState,
       presetAgent: repos.presetAgent,
       githubInstallation: repos.githubInstallation,
-      githubApp: repos.githubApp,
       agentRepoAuth: repos.agentRepoAuth,
       agentInstallationAuth: repos.agentInstallationAuth,
       codeHostRepository: repos.codeHostRepository,
@@ -2437,7 +2377,6 @@ export function buildContainer(
     resolvePublicRepo: createPublicRepoResolver(),
     trustedActors,
     ...(github ? { github } : {}),
-    ...(githubApps ? { githubApps } : {}),
     ...(gitlab ? { gitlab } : {}),
     gitea,
     ...(pullRequestView ? { pullRequestView } : {}),
@@ -3376,19 +3315,6 @@ export function buildContainer(
           http.log.error({ err }, 'relay: hook-rule replay on register failed')
         )
       )
-      if (githubApps && ch.features?.includes(GITHUB_APP_WEBHOOK_V1_FEATURE)) {
-        trackRelayRegistrationTask(
-          replaySnapshot(ch, 'github-app', relayControl, () =>
-            githubApps.replayWebhooksTo((w) =>
-              ch.send('rc/github-app-assign', {
-                githubAppId: w.githubAppId,
-                appId: w.appId.toString(),
-                webhookSecret: w.webhookSecret
-              })
-            )
-          ).catch((err) => http.log.error({ err }, 'relay: github app webhook replay failed'))
-        )
-      }
       // Seed the fresh relay with every MCP provider binding (its table starts empty;
       // bindings are pool-wide, so a later-joining relay must be replayed or requests 401).
       trackRelayRegistrationTask(
@@ -3623,13 +3549,6 @@ export function buildContainer(
     // Installation doorbell poke — fire-and-forget into the throttled re-pull
     // (the doorbell owns single-flight/cooldown and swallows its own errors).
     onGithubInstallation: async (m) => {
-      // A dedicated App's own webhook: re-pull that App's roster, which also claims a new installation.
-      if (m.appId !== undefined) {
-        void githubApps
-          ?.syncFromWebhook(BigInt(m.appId))
-          .catch((err) => http.log.warn({ err, appId: m.appId }, 'relay: dedicated GitHub App sync failed'))
-        return
-      }
       if (!installationDoorbell) {
         http.log.debug({ installationId: m.installationId }, 'relay: doorbell ignored — GITHUB_APP_* not configured')
         return
@@ -3690,7 +3609,6 @@ export function buildContainer(
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
       agentMemoryStagingSweeper.start()
-      githubApps?.start()
       githubRunReporter?.start()
       giteaStatusReporter.start()
       hookRedeliveryReconciler?.start()
@@ -3728,7 +3646,6 @@ export function buildContainer(
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       agentMemoryStagingSweeper.stop()
-      githubApps?.stop()
       githubRunReporter?.stop()
       giteaStatusReporter.stop()
       hookRedeliveryReconciler?.stop()

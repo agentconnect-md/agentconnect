@@ -383,7 +383,6 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     placementChangedAt: a.placementChangedAt,
     workspace: workspaceOf(a),
     ...(a.workspaceRepoId !== null ? { workspaceRepoId: a.workspaceRepoId } : {}),
-    githubAppId: a.githubAppId,
     capabilities: a.capabilities,
     createdAt: a.createdAt,
     createdBy: a.createdBy
@@ -1308,7 +1307,7 @@ export class PgAgentRepo implements AgentRepo {
       // missing-row error semantics the comment above documents.
       const row = await tx.agent.findUnique({
         where: { id: agentId, orgId },
-        select: { orgId: true, runtimeOverrides: true, githubAppId: true }
+        select: { orgId: true, runtimeOverrides: true }
       })
       if (row) {
         const memory = (row.runtimeOverrides as RuntimeOverrides | null)?.memory
@@ -1325,10 +1324,6 @@ export class PgAgentRepo implements AgentRepo {
       // (the FK SetNull would orphan the row from this agentId lookup).
       await settlePresetPlacement(tx, agentId)
       if (row) await pruneKnowledgeReaders(tx, row.orgId, agentId)
-      // The agent's dedicated App outlives it, retired, so it can still close the Checks it created.
-      if (row?.githubAppId) {
-        await tx.githubApp.updateMany({ where: { id: row.githubAppId, orgId }, data: { retiredAt: new Date() } })
-      }
       await tx.agent.delete({ where: { id: agentId, orgId } })
       return removedHooks
     })

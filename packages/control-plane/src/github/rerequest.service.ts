@@ -18,8 +18,6 @@ export interface GithubRerequestDeps {
     | 'getRunById'
   >
   appId: number
-  /** The GitHub App id of an installation's dedicated App; null ⇒ the deployment App's or unknown. */
-  dedicatedAppIdOf?: (installationId: bigint) => Promise<bigint | null>
 }
 
 const TERMINAL_CHECK_STATES = new Set([
@@ -53,18 +51,12 @@ export class GithubRerequestService {
     if (!this.matchesCurrentHook(hook, projection, run) || !this.matchesCurrentRun(run, projection)) {
       return { allowed: false }
     }
-    // A dedicated App's delivery reaches only a Check that App wrote, and the run keeps its deployment installation.
-    if (req.appId !== undefined && !(await this.writtenByApp(projection, req.appId))) return { allowed: false }
-    if (req.appId !== undefined && run.sourceInstallationId === null) return { allowed: false }
 
     return {
       allowed: true,
       hookId: hook.id,
       pullNumber: run.pullNumber,
       ...(req.includeBaseSha ? { baseSha: run.baseSha } : {}),
-      ...(req.appId !== undefined && run.sourceInstallationId !== null
-        ? { sourceInstallationId: run.sourceInstallationId.toString() }
-        : {}),
       configRevision: hook.configRevision.toString(),
       dispatchRevision: hook.dispatchRevision.toString()
     }
@@ -136,11 +128,6 @@ export class GithubRerequestService {
       ]
     })
     return targets.length > 0 ? { allowed: true, targets } : { allowed: false }
-  }
-
-  private async writtenByApp(projection: HookReviewProjectionRecord, appId: string): Promise<boolean> {
-    if (projection.lastResolvedInstallationId === null || !this.deps.dedicatedAppIdOf) return false
-    return (await this.deps.dedicatedAppIdOf(projection.lastResolvedInstallationId)) === BigInt(appId)
   }
 
   private matchesProjection(

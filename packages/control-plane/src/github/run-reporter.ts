@@ -335,7 +335,6 @@ export interface GithubRunReporterDeps {
     GithubService,
     | 'mintChecksForAgent'
     | 'mintChecksForProjectionCleanup'
-    | 'checkSignerAppOf'
     | 'invalidateInstallationTokens'
     | 'refreshInstallationFacts'
   >
@@ -538,8 +537,7 @@ export class GithubRunReporter {
         const minted = await this.deps.github.mintChecksForProjectionCleanup(
           OrgId(projection.orgId),
           projection.repoId,
-          projection.repoFullName,
-          projection.lastResolvedInstallationId
+          projection.repoFullName
         )
         token = minted.cred.token
         repoFullName = minted.repoFullName
@@ -548,13 +546,7 @@ export class GithubRunReporter {
       } else if (agent && agent.orgId === projection.orgId) {
         // An installation row publishes at its grant's tier: the grant cannot be revoked while the row exists.
         const hook = await this.deps.hooks.getUnscoped(projection.hookId)
-        // A Check already created stays with its App, even after the agent drops or changes it.
-        const creator =
-          projection.checkRunId !== null
-            ? await this.deps.github.checkSignerAppOf(OrgId(projection.orgId), projection.lastResolvedInstallationId)
-            : undefined
-        const signer = creator === undefined ? agent : { ...agent, githubAppId: creator }
-        const minted = await this.deps.github.mintChecksForAgent(signer, projection.repoId, projection.repoFullName, {
+        const minted = await this.deps.github.mintChecksForAgent(agent, projection.repoId, projection.repoFullName, {
           installationGrants: hook?.installationId != null
         })
         token = minted.cred.token

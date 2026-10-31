@@ -766,21 +766,6 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     ).toBe(false)
   })
 
-  it("round-trips a dedicated GitHub App's webhook frames and its doorbell", () => {
-    const assign = { githubAppId: RELAY_ID, appId: '2000', webhookSecret: 'whsec-example' }
-    expect(decodeRelayCpFrame(envelope('rc/github-app-assign', assign)).ok).toBe(true)
-    expect(decodeRelayCpFrame(envelope('rc/github-app-assign', { ...assign, appId: 'app-2000' })).ok).toBe(false)
-    expect(decodeRelayCpFrame(envelope('rc/github-app-assign', { ...assign, webhookSecret: '' })).ok).toBe(false)
-    expect(decodeRelayCpFrame(envelope('rc/github-app-unassign', { githubAppId: RELAY_ID })).ok).toBe(true)
-    expect(decodeRelayCpFrame(envelope('rc/snapshot-begin', { kind: 'github-app', snapshotId: RELAY_ID })).ok).toBe(
-      true
-    )
-    expect(
-      decodeRelayCpFrame(envelope('rc/github-installation', { installationId: '43', action: 'created', appId: '2000' }))
-        .ok
-    ).toBe(true)
-  })
-
   it('round-trips the thread-affinity and participant frames', () => {
     // compatibility-owner report leg
     expect(

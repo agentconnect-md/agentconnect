@@ -992,7 +992,6 @@ export const AgentDto = z.object({
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
-  githubAppId: z.string().nullable(), // the agent's dedicated GitHub App; null ⇒ the deployment App
   computerUse: AgentComputerUse.nullable(), // derived (computer-use.md §4.1): the Computers granting it and its managed mode; null ⇒ none
   // The strategy sessions run in (session-executors.md §5).
   execution: ExecutorStrategyName,
@@ -2404,24 +2403,6 @@ export const GithubAppDto = z.object({
   /** `https://github.com/apps/<slug>/installations/new?state=…` — one-shot, org-bound. */
   installUrl: z.string().nullable()
 })
-
-/** An agent's dedicated GitHub App (github-app-git-credentials.md §Dedicated Apps). */
-export const GithubDedicatedAppDto = z.object({
-  id: z.string(),
-  appId: z.number(), // GitHub-side App id
-  slug: z.string(), // github.com/apps/<slug>; the bot login is `<slug>[bot]`
-  botUserId: z.number().nullable(),
-  /** Live installations of this App (account logins). */
-  installations: z.array(z.object({ installationId: z.number(), accountLogin: z.string(), suspended: z.boolean() })),
-  createdAt: z.string() // ISO-8601
-})
-export const AgentGithubAppDto = z.object({ app: GithubDedicatedAppDto.nullable() })
-export const StartGithubAppManifestBody = z.object({
-  /** The GitHub organization that owns the new App; absent ⇒ the caller's personal account. */
-  owner: z.string().min(1).max(39).optional()
-})
-/** The form to POST to GitHub: `manifest` as JSON in a field named `manifest`, to `action`. */
-export const GithubAppManifestDto = z.object({ action: z.string(), manifest: z.record(z.string(), z.unknown()) })
 
 /** One installation of the deployment App, claimed by this org. Infrastructure-class
  *  in the visibility taxonomy (like bots): org-visible, never restricted. */

@@ -14,7 +14,6 @@
 import type {
   RcFollowUpWatch,
   RcCodeHostFeedbackWatch,
-  RcGithubAppAssign,
   RcHookAssign,
   RcCollabRoutes,
   RcMcpAssign,
@@ -26,7 +25,6 @@ import type {
 import {
   CODEHOST_FEEDBACK_FEATURE,
   FOLLOW_UP_WATCH_FEATURE,
-  GITHUB_APP_WEBHOOK_V1_FEATURE,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   HOOK_GITHUB_INSTALLATION_V1_FEATURE,
   codeHostHookRuleOf
@@ -134,19 +132,6 @@ export class RelayControlSender {
 
   memoryConnectionUnassign(u: RcMemoryConnectionUnassign): void {
     this.broadcast((ch) => ch.send('rc/memoryconnection-unassign', u), 'memory')
-  }
-
-  /** A dedicated GitHub App's webhook secret, to every relay that verifies them (never logged). */
-  githubAppAssign(a: RcGithubAppAssign): void {
-    this.broadcast((ch) => {
-      if (advertises(ch.features, [GITHUB_APP_WEBHOOK_V1_FEATURE])) ch.send('rc/github-app-assign', a)
-    }, 'github-app')
-  }
-
-  githubAppUnassign(githubAppId: string): void {
-    this.broadcast((ch) => {
-      if (advertises(ch.features, [GITHUB_APP_WEBHOOK_V1_FEATURE])) ch.send('rc/github-app-unassign', { githubAppId })
-    }, 'github-app')
   }
 
   /** Ship one org's bot-agnostic collaboration routing snapshot to EVERY relay

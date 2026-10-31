@@ -14,8 +14,6 @@ const CHECK_RUN_ID = '86617583005'
 const REPO_ID = 987654321n
 const APP_ID = 4157507
 const INSTALLATION_ID = 1234567n
-const DEDICATED_APP_ID = 2000n
-const DEDICATED_INSTALLATION_ID = 7654321n
 
 const request: RcGithubRerequest = {
   checkRunId: CHECK_RUN_ID,
@@ -147,7 +145,6 @@ function make(
     hook?: HookRecord | null
     run?: HookRunRecord | null
     runs?: HookRunRecord[]
-    dedicatedAppIdOf?: (installationId: bigint) => Promise<bigint | null>
   } = {}
 ) {
   const findReviewProjectionByCheckRunId = vi.fn(async () =>
@@ -185,8 +182,7 @@ function make(
       | 'getManyUnscoped'
       | 'getRunById'
     >,
-    appId: APP_ID,
-    ...(opts.dedicatedAppIdOf ? { dedicatedAppIdOf: opts.dedicatedAppIdOf } : {})
+    appId: APP_ID
   })
   return {
     service,
@@ -234,42 +230,6 @@ describe('GithubRerequestService', () => {
       pullNumber: 585,
       configRevision: '7',
       dispatchRevision: '9'
-    })
-  })
-
-  describe("a dedicated App's Check", () => {
-    const dedicatedRequest: RcGithubRerequest = {
-      checkRunId: CHECK_RUN_ID,
-      repoId: REPO_ID.toString(),
-      headSha: HEAD_SHA,
-      deliveryKey: 'delivery-dedicated-rerun-1',
-      appId: DEDICATED_APP_ID.toString()
-    }
-    const written = projection({ lastResolvedInstallationId: DEDICATED_INSTALLATION_ID })
-    const dedicatedAppIdOf = async (installationId: bigint) =>
-      installationId === DEDICATED_INSTALLATION_ID ? DEDICATED_APP_ID : null
-
-    it('resolves to the deployment installation its current run was delivered through', async () => {
-      await expect(make({ projection: written, dedicatedAppIdOf }).service.resolve(dedicatedRequest)).resolves.toEqual({
-        allowed: true,
-        hookId: HOOK_ID,
-        pullNumber: 585,
-        sourceInstallationId: INSTALLATION_ID.toString(),
-        configRevision: '7',
-        dispatchRevision: '9'
-      })
-    })
-
-    it.each([
-      ['another App wrote the Check', { projection: projection(), dedicatedAppIdOf }],
-      ['the delivering App is not the writer', { projection: written, dedicatedAppIdOf: async () => 3000n }],
-      ['no App lookup is wired', { projection: written }],
-      [
-        'the run has no source installation',
-        { projection: written, dedicatedAppIdOf, run: run({ sourceInstallationId: null }) }
-      ]
-    ])('denies when %s', async (_name, opts) => {
-      await expect(make(opts).service.resolve(dedicatedRequest)).resolves.toEqual({ allowed: false })
     })
   })
 

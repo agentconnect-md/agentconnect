@@ -298,24 +298,6 @@
       "notRunningBackground": "没有正在运行的回合。它启动的后台进程可能仍在运行，无法在这里停止；该进程结束后，它会回报。",
       "stopFailed": "停止失败，请重试。",
       "stopUpgrade": "升级此 Agent 的 Daemon 后才能在这里停止任务。"
-    },
-    "githubIdentity": {
-      "label": "GitHub 身份",
-      "shared": "共享 bot",
-      "owner": "创建在",
-      "personal": "我的账号",
-      "create": "创建专属 GitHub App",
-      "creating": "正在打开 GitHub…",
-      "notInstalled": "尚未安装",
-      "install": "去 GitHub 安装",
-      "installedOn": "已安装在 {accounts}",
-      "suspended": "{account}(已暂停)",
-      "sync": "同步",
-      "syncing": "同步中…",
-      "remove": "移除",
-      "removing": "移除中…",
-      "removeTitle": "移除 {slug}[bot]?",
-      "removeBody": "这个 agent 会改回使用共享 bot。GitHub 上的 App 不会被删除,需要你到 GitHub 上自行删除。"
     }
   },
   "Profile": {

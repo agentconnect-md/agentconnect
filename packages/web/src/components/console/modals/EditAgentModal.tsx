@@ -54,7 +54,6 @@ import {
 import { OutputModeField } from '@/components/console/OutputModeField'
 import { ChatActionsField } from '@/components/console/ChatActionsField'
 import { ExecutionStrategyField } from '@/components/console/ExecutionStrategyField'
-import { GithubIdentityField } from '@/components/console/GithubIdentityField'
 import {
   agentStrategies,
   agentStrategyValue,
@@ -961,7 +960,6 @@ export default function EditAgentModal({
                     disabledReason={placementRequested ? t('edit.saveComputerFirst') : undefined}
                   />
                 )}
-                <GithubIdentityField agentId={agent.id} className="desktop:col-span-2" />
                 <OutputModeField
                   className="desktop:col-span-2"
                   value={outputMode}
