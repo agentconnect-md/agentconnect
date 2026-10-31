@@ -8,6 +8,7 @@ import { AgentSkillEntry } from '@agentconnect.md/protocol'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { describe, expect, it, vi } from 'vitest'
+import { removeTree } from './tree-support.js'
 import type { ShimRequester } from '../src/shim/channels.js'
 import { ShimBundleClient } from '../src/shim/bundle-client.js'
 import { createBundleHandler } from '../src/shim/bundle-handler.js'
@@ -339,7 +340,7 @@ const withWorld = async (work: (w: World) => Promise<void>): Promise<void> => {
   try {
     await work(w)
   } finally {
-    await rm(w.root, { recursive: true, force: true })
+    await removeTree(w.root)
   }
 }
 

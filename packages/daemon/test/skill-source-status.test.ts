@@ -1,9 +1,10 @@
 // Per-Source skill failure codes reported to the CP (source-cache.md §11): what each install path reports and the code each failure carries.
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { removeTree } from './tree-support.js'
 import { AgentSkillStatus, SkillSourceFailureCode } from '@agentconnect.md/protocol'
 import {
   installSkills,
@@ -95,7 +96,7 @@ describe('installSkills reports failed Git Sources', () => {
   })
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   })
 
   const COMMIT = 'a'.repeat(40)

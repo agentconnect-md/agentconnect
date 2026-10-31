@@ -15,6 +15,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { writableTreeSync } from './tree-support.js'
 
 const TEMP_ENV = ['TMPDIR', 'TMP', 'TEMP'] as const
 
@@ -27,6 +28,7 @@ export function setup(): () => void {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
+    writableTreeSync(root)
     rmSync(root, { recursive: true, force: true, maxRetries: 3 })
   }
 }

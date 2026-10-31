@@ -18,6 +18,8 @@ export const MOCKING_TESTS = [
   'test/daemon-cp-onboarding.test.ts',
   'test/runtime-install-repair-collapse.test.ts',
   'test/skill-bundle-bytecode-cache.test.ts',
+  'test/skill-bundle-fileless-dirs.test.ts',
+  'test/skill-bundle-read-only.test.ts',
   'test/skill-install-bulk-publish.test.ts',
   'test/skill-workspace-mutator.test.ts',
   'test/telegram-connection.test.ts',

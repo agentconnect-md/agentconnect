@@ -1,8 +1,9 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { removeTree } from './tree-support.js'
 import { detectSandbox } from '../src/acp/sandbox.js'
 
 // A real bwrap sandbox launch (and its nested seccomp helper) is far slower than
@@ -28,7 +29,7 @@ async function fixture(): Promise<{ root: string; source: string }> {
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+  await Promise.all(roots.splice(0).map((root) => removeTree(root)))
 })
 
 // Exercise the same live Linux SRT/bwrap boundary as sandbox.test.ts. macOS
