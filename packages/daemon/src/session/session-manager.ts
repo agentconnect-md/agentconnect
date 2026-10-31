@@ -68,6 +68,7 @@ import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/pro
 import { deriveTitle } from './derive-title.js'
 import { chatSettingsAllowed } from '../agents/chat-actions.js'
 import { backgroundConversationText, intakeEvidenceText } from '../decisions/evidence.js'
+import { wholeRoomThread } from '../auto-session/coordinator-turns.js'
 
 // The recall lifecycle contract lives with the collaborator that emits it; re-exported
 // here because SessionManagerDeps is the seam production wires its observer through.
@@ -737,6 +738,7 @@ export class SessionManager {
             msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
           thread,
           ...(threadedTask ? { threadedTask } : {}),
+          ...(threadedTask && wholeRoomThread({ ...msg, thread }) ? { placeTask: true } : {}),
           ...(pageTaskParent !== undefined ? { pageTask: true } : {}),
           ...(this.deps.taskPagesTakeMessages?.() ? { taskPageMessages: true } : {}),
           ...(this.deps.tasksCoordinatorOnly?.() ? { tasksCoordinatorOnly: true } : {}),

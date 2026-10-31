@@ -75,6 +75,8 @@ export type StandingContextInput = {
   thread: string
   /** A task the coordinator opened on a platform thread (auto-session-mode.md §6.2). */
   threadedTask?: boolean
+  /** A threaded task working in a room of its own the coordinator's platform made for it (§6.8). */
+  placeTask?: boolean
   /** A task the coordinator opened for a message of a conversation without threads, whose page is its conversation (§10). */
   pageTask?: boolean
   /** People may write to a delegated task from its console page (auto-session-mode.md §10). */
@@ -421,6 +423,13 @@ export const THREADED_TASK_APPEND =
   `the coordinator may hand you more messages, each from a thread it attaches to you; your answer goes to the ` +
   `thread each message came from. Nothing is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
 
+// auto-session-mode.md §6.8: a task in a room of its own answers there and reports nothing to the coordinator.
+export const PLACE_TASK_APPEND =
+  `# You are a task\n` +
+  `The coordinator of another conversation opened you for a message there and gave you this conversation of your ` +
+  `own. People talk to you directly here, and the coordinator may move more messages here from its conversation; ` +
+  `you answer here. Nothing is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
+
 // auto-session-mode.md §10: a task for a console message answers on its own page and reports nothing to the coordinator.
 export const PAGE_TASK_APPEND =
   `# You are a task\n` +
@@ -473,9 +482,11 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
           keepsTaskSummaryAt(input.thread),
           input.taskPageMessages === true && keepsTaskSummaryAt(input.thread)
         )
-      : input.threadedTask
-        ? THREADED_TASK_APPEND
-        : ''
+      : input.placeTask
+        ? PLACE_TASK_APPEND
+        : input.threadedTask
+          ? THREADED_TASK_APPEND
+          : ''
   const collabAppend = input.tasksCoordinatorOnly === true ? COLLAB_APPEND_WITHOUT_DELEGATION : COLLAB_APPEND
   // A coordinator's own instructions replace the reply and collaboration rules: it only decides where messages go (auto-session-mode.md §5.4).
   const coordinator = isCoordinatorCoordinate(input.thread)

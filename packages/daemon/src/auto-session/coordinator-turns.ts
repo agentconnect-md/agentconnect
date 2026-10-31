@@ -48,6 +48,16 @@ export function threadless(msg: Pick<NormalizedMessage, 'platform'>): boolean {
   return msg.platform === 'webchat'
 }
 
+/** Whether a room is one thread named after it, as a platform keys a room of its own (a task's place, auto-session-mode.md §6.8): it has no root to coordinate. */
+export function wholeRoomThread(msg: {
+  channel: string
+  thread?: string
+  isDm?: boolean
+  isGroupDm?: boolean
+}): boolean {
+  return !msg.isDm && msg.isGroupDm !== true && msg.thread === msg.channel
+}
+
 /** Whether a message sits in a thread under another message, rather than at the conversation root. */
 export function inThread(msg: Pick<NormalizedMessage, 'thread'> & MessageIdentity): boolean {
   return msg.thread !== undefined && msg.thread !== platformMessageIdOf(msg)

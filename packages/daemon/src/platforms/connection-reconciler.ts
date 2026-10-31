@@ -139,6 +139,11 @@ export interface PlatformActionSink {
     srcIntegrationIds: readonly string[]
   ): Promise<string[]>
   stopSlackThreadTasks(at: { channel: string; thread: string }, srcIntegrationIds: readonly string[]): string[]
+  /** A task's place closed on its platform (an archived code channel): the task it holds closes (auto-session-mode.md §6.8). */
+  closeTaskPlace(
+    at: { platform: string; channel: string; thread: string },
+    srcIntegrationIds: readonly string[]
+  ): Promise<void>
   startNewAppendSessions(
     platform: string,
     channel: string,
@@ -460,6 +465,10 @@ export class ConnectionReconciler {
       onMessageShortcut: (shortcut) => this.host.slackShortcutSession(shortcut, this.host.srcIntegrationIds(conn())),
       onThreadSessions: (a) => this.host.slackThreadSessions(a, this.host.srcIntegrationIds(conn())),
       onStopThreadTasks: (a) => this.host.stopSlackThreadTasks(a, this.host.srcIntegrationIds(conn())),
+      onPlaceClosed: (a) =>
+        void this.host
+          .closeTaskPlace({ platform: 'slack', ...a }, this.host.srcIntegrationIds(conn()))
+          .catch((err: unknown) => this.log.warn(`slack: closing the task of ${a.channel} failed: ${String(err)}`)),
       onSlotSettle: (a) => this.host.settleSlackSlot(conn(), a),
       onStatusAction: (a) => this.host.handleStatusAction(a),
       onStatusInfo: (key) => this.host.statusInfoForKey(key),
@@ -787,6 +796,12 @@ export class ConnectionReconciler {
             // the conversation's sessions the same way a Socket Mode stop does.
             onThreadSessions: (a) => this.host.slackThreadSessions(a, this.host.srcIntegrationIds(created)),
             onStopThreadTasks: (a) => this.host.stopSlackThreadTasks(a, this.host.srcIntegrationIds(created)),
+            onPlaceClosed: (a) =>
+              void this.host
+                .closeTaskPlace({ platform: 'slack', ...a }, this.host.srcIntegrationIds(created))
+                .catch((err: unknown) =>
+                  this.log.warn(`slack: closing the task of ${a.channel} failed: ${String(err)}`)
+                ),
             onSlotSettle: (a) => this.host.settleSlackSlot(created, a),
             onStatusAction: (a) => this.host.handleStatusAction(a),
             onStatusInfo: (key) => this.host.statusInfoForKey(key),

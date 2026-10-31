@@ -656,9 +656,13 @@ describe('the task model: title, summary and attached threads (auto-session-mode
     expect(await index.get(a, onThread('100.7'))).toBeUndefined()
 
     expect(await index.threadedConversations(a)).toEqual([conversation])
-    expect((await index.releaseThreaded(a, conversation)).sort()).toEqual(
+    const tasks = await index.threadedTasksIn(a, conversation)
+    expect(tasks.map((task) => task.childSessionKey).sort()).toEqual(
       [onThread('100.1'), onThread('100.2'), childKey(a, 'holder')].sort()
     )
+    expect(tasks.find((task) => task.childSessionKey === onThread('100.1'))?.parentSessionKey).toBe('coordinator-key')
+    for (const task of tasks) expect(await index.closeTask(a, task.childSessionKey)).toBe(true)
+    expect(await index.closeTask(a, onThread('100.1'))).toBe(false)
     expect(await index.get(a, onThread('100.1'))).toBeUndefined()
     expect(await index.threadsOf(a, onThread('100.1'))).toEqual([])
     expect(await index.threadedConversations(a)).toEqual([])

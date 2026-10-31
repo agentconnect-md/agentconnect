@@ -489,7 +489,7 @@ import {
   type DreamOperationPolicy,
   type DreamPlaces
 } from './dream/runner.js'
-import { describePlace, judgeSessionParticipation, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
+import { describePlace, judgeSessionParticipation, memberMakesNew, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
 import { PLACE_SHARE_TTL_MS, PlaceTrust } from './assistant/place-trust.js'
 import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
@@ -550,6 +550,7 @@ import type {
   PlatformChannelInfo,
   PlatformConnection as ContractConnection,
   RelayCardClicks,
+  TaskPlace,
   Welcome
 } from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
@@ -1048,7 +1049,9 @@ import {
   answerThreadOf,
   coordinatorView,
   inThread,
+  platformMessageIdOf,
   threadless,
+  wholeRoomThread,
   type DeliveredMessage
 } from './auto-session/coordinator-turns.js'
 import {
@@ -1994,6 +1997,10 @@ export class Daemon {
     showTriaging: (agentId, message) => this.showTriaging(agentId, message),
     sessionLink: (sessionId) => this.sessionLink(sessionId),
     reportTaskOwners: async (agentId, keys) => await this.reportTaskOwners(agentId, keys),
+    openTaskPlace: async (agentId, integrationId, msg, title) =>
+      await this.openTaskPlace(agentId, integrationId, msg, title),
+    threadLink: (integrationId, at) =>
+      sessionThreadUrlFor(at, integrationId === undefined ? undefined : this.connForIntegration(integrationId)),
     warn: (message) => this.log.warn(message)
   })
   // Latched for the WHOLE drain handoff, including the window after `draining`
@@ -3056,6 +3063,7 @@ export class Daemon {
       slackThreadSessions: (shortcut, srcIntegrationIds) =>
         this.commands.slackThreadSessions(shortcut, srcIntegrationIds),
       stopSlackThreadTasks: (at, srcIntegrationIds) => this.stopTaskSlackHolds(at, srcIntegrationIds),
+      closeTaskPlace: async (at, srcIntegrationIds) => await this.closeTaskPlace(at, srcIntegrationIds),
       startNewAppendSessions: (platform, channel, srcIntegrationIds, actor, notBefore) =>
         this.commands.startNewAppendSessions(platform, channel, srcIntegrationIds, actor, notBefore),
       settleSlackSlot: (conn, a) => this.settleSlackSlot(conn as SlackConnection, a.channel, a.thread, a.exclude)
@@ -13608,11 +13616,13 @@ export class Daemon {
     agentId: string,
     int: Integration,
     msg: Pick<NormalizedMessage, 'channel' | 'transportScope'> &
-      Partial<Pick<NormalizedMessage, 'thread' | 'msgId' | 'transcriptTs' | 'source'>>,
+      Partial<Pick<NormalizedMessage, 'thread' | 'msgId' | 'transcriptTs' | 'source' | 'isDm' | 'isGroupDm'>>,
     mint: boolean
   ): Promise<string | undefined> {
     // A scheduled run, a hook or another agent's call names no platform message to decide on, so it keeps its own session.
     if (msg.source !== 'user') return undefined
+    // A room keyed as one thread has no root: its one session takes every message, the task's when it is a task's place (§6.8).
+    if (wholeRoomThread(msg)) return undefined
     const at = { platform: int.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
     // Minted before the thread lookup, so a thread session the switch into `auto` adopts keeps its thread (§3.5).
     const coordinator = mint
@@ -13752,9 +13762,18 @@ export class Daemon {
       if (this.draining) return
       if (!this.servesAgent(agentId)) continue
       const index = this.store.assistantSubsessions
+      // One read per coordinator, however many tasks it owns.
+      const owners = new Map<string, Promise<boolean | undefined>>()
       for (const at of await index.threadedConversations(agentId)) {
-        if (this.conversationRunsAuto(agentId, at) || this.webchatRunsCoordinator(at)) continue
-        const released = await index.releaseThreaded(agentId, at)
+        const runs = this.conversationRunsAuto(agentId, at) || this.webchatRunsCoordinator(at)
+        const released: string[] = []
+        for (const task of await index.threadedTasksIn(agentId, at)) {
+          const owner = task.parentSessionKey
+          if (!owners.has(owner)) owners.set(owner, this.coordinatorRunsAuto(agentId, owner))
+          // A task in a place of its own goes with its coordinator's conversation, not the place's (§6.8).
+          if (((await owners.get(owner)) ?? runs) === true) continue
+          if (await index.closeTask(agentId, task.childSessionKey)) released.push(task.childSessionKey)
+        }
         for (const key of released)
           this.log.info(`task ${key} is an ordinary thread session again: its conversation left auto`)
         await this.reportTaskOwners(agentId, released)
@@ -13766,6 +13785,13 @@ export class Daemon {
           this.log.info(`coordinator ${coordinate} of ${agentId} in ${channel} retired: the conversation left auto`)
       }
     }
+  }
+
+  /** Whether a task's coordinator still runs in its conversation, read from its session; undefined when the owner is no coordinator session recorded here. */
+  private async coordinatorRunsAuto(agentId: string, ownerKey: string): Promise<boolean | undefined> {
+    const owner = await this.store.getSession(ownerKey)
+    if (!owner || !isCoordinatorCoordinate(owner.thread)) return undefined
+    return this.conversationRunsAuto(agentId, owner) || this.webchatRunsCoordinator(owner)
   }
 
   /** Whether a webchat conversation keeps its coordinator: only a member's coordinator conversation mints one, and a reservation, which names no platform, is told by its conversation's UUID (§10). */
@@ -13866,6 +13892,46 @@ export class Daemon {
     if (!conn || !react || !at) return () => {}
     const placed = react.call(conn, at.channel, at.messageId, 'triaging').catch(() => {})
     return () => void placed.then(() => conn.unreact?.call(conn, at.channel, at.messageId, 'triaging')).catch(() => {})
+  }
+
+  /** A conversation of its own for a coordinator's task, where the message's platform makes one and its sender may have the agent make something new (auto-session-mode.md §6.8). */
+  private async openTaskPlace(
+    agentId: string,
+    integrationId: string | undefined,
+    msg: NormalizedMessage,
+    title: string
+  ): Promise<TaskPlace | undefined> {
+    if (integrationId === undefined || msg.source !== 'user') return undefined
+    const conn: Partial<ContractConnection> | undefined = this.anyConnForIntegration(integrationId)
+    if (!conn?.openTaskPlace) return undefined
+    const lookups = this.placeMembers.lookupsFor(agentId)
+    if (!(await memberMakesNew(msg.platform, integrationId, msg.sender.id, lookups))) return undefined
+    return await conn.openTaskPlace(
+      { agentId, channel: msg.channel, messageId: platformMessageIdOf(msg), isDm: msg.isDm },
+      title
+    )
+  }
+
+  /** A task's place closed on its platform, as an archived code channel does: the task it holds closes and its owner hears it (auto-session-mode.md §6.8). */
+  private async closeTaskPlace(
+    at: { platform: string; channel: string; thread: string },
+    srcIntegrationIds: readonly string[]
+  ): Promise<void> {
+    const index = this.store.assistantSubsessions
+    for (const [agentId, agent] of this.agents) {
+      const own = (agent.integrations ?? []).filter((int) => srcIntegrationIds.includes(int.id)).map((int) => int.id)
+      if (own.length === 0) continue
+      // A socket's messages carry the scope of all its integrations, a relayed one its own integration's.
+      const scopes = new Set(
+        [srcIntegrationIds, ...own.map((id) => [id])].map((ids) => this.transportScopeForIntegrationIds(ids))
+      )
+      for (const transportScope of scopes) {
+        const task = await index.taskOfThread(agentId, { ...at, transportScope: transportScope ?? null })
+        if (task === undefined || !(await index.closeTask(agentId, task))) continue
+        this.log.info(`task ${task} closed: its place ${at.channel} was archived`)
+        await this.reportTaskOwners(agentId, [task])
+      }
+    }
   }
 
   /** The coordinator's own reply in a message's thread (auto-session-mode.md §4.2 (d)). */
@@ -15376,7 +15442,7 @@ export class Daemon {
     // Conversation-addressed like the shortcut above: the Slack event names no session, so the
     // connection resolves the one this thread owns and runs the same cancel + transition.
     if (payload.kind === 'agent-session-stopped') {
-      await conn.agentSessionStopped(payload.channelId, payload.threadTs, msg.userId)
+      await conn.agentSessionStopped(payload.channelId, payload.threadTs, msg.userId, payload.archived === true)
       return { msgId: msg.msgId, accepted: true }
     }
 
@@ -18402,6 +18468,13 @@ export class Daemon {
     // A sub-session never speaks on the platform, whichever turn wakes it (assistant-mode.md §5.7); a coordinator speaks only through its outcomes (auto-session-mode.md §4.2).
     if (isSubsessionCoordinate(sessionThreadOf(msg)) || isCoordinatorCoordinate(sessionThreadOf(msg)))
       msg.headless = true
+    // The platform's copy of a message a task's place was made for opens that task with its title and background (auto-session-mode.md §6.8).
+    if (wholeRoomThread(msg))
+      await this.coordinators.placeOpening(
+        agentId,
+        sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope),
+        msg
+      )
     // An agent-initiated wake's INBOUND message posts live too (#807 only posted the woken
     // REPLY, so the sender's message appeared on refresh but never in the live view). Mint
     // its canonical post identity before the inbox row persists so a replay reuses it and

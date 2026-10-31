@@ -368,6 +368,43 @@ describe('Slack native surfaces', () => {
     await f.conn.stop()
   })
 
+  it('opens a coordinator task’s code channel through the tool’s own creation path (auto-session-mode.md §6.8)', async () => {
+    const f = await fixture(false)
+    const origin = { agentId: ctx.agentId, channel: 'C1', messageId: '1.002', isDm: false }
+    expect(await f.conn.openTaskPlace(origin, 'Flaky test')).toEqual({ channel: 'C2', thread: 'C2' })
+    await SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Flaky test' }, f.env)
+    // The same origin keys the same channel whichever path asks, and Slack keeps its privacy.
+    expect(f.api.create.mock.calls[0]).toEqual(f.api.create.mock.calls[1])
+    expect(f.api.create.mock.calls[0]![0]).toMatchObject({
+      name: 'Flaky test',
+      origin_channel_id: 'C1',
+      origin_message_ts: '1.002'
+    })
+    expect(f.api.create.mock.calls[0]![0]).not.toHaveProperty('is_private')
+    await f.conn.stop()
+  })
+
+  it('opens no place for a task whose message already sits in a code channel, and rejects what Slack refuses', async () => {
+    const inside = await fixture(true)
+    expect(
+      await inside.conn.openTaskPlace({ agentId: 'a1', channel: 'C1', messageId: '1.002', isDm: false }, 'Task')
+    ).toBeUndefined()
+    expect(inside.api.create).not.toHaveBeenCalled()
+    await inside.conn.stop()
+    const refused = await fixture(false)
+    refused.api.create.mockRejectedValueOnce(
+      Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } })
+    )
+    await expect(
+      refused.conn.openTaskPlace({ agentId: 'a1', channel: 'C1', messageId: '1.002', isDm: false }, 'Task')
+    ).rejects.toThrow()
+    refused.api.create.mockResolvedValueOnce({} as never)
+    await expect(
+      refused.conn.openTaskPlace({ agentId: 'a1', channel: 'C1', messageId: '1.002', isDm: false }, 'Task')
+    ).rejects.toThrow('without a channel')
+    await refused.conn.stop()
+  })
+
   it('reuses the code channel when Slack delivers the copied origin as a new request', async () => {
     const f = await fixture()
     const msg = { channel: 'C1', thread: '1.002', isDm: false } as NormalizedMessage
@@ -594,14 +631,24 @@ describe('Slack native surfaces', () => {
     await f.conn.stop()
   })
 
+  it('closes the task a code channel holds when the agent archives it', async () => {
+    const onPlaceClosed = vi.fn()
+    const f = await fixture(true, { onPlaceClosed })
+    await SLACK_SESSION_TOOLS.execute('manageSlackCodeChannel', ctx, { action: 'archive' }, f.env)
+    expect(onPlaceClosed).toHaveBeenCalledWith({ channel: 'C1', thread: 'C1' })
+    await f.conn.stop()
+  })
+
   it.each(['channel_archive', 'group_archive'] as const)(
     '%s stops every channel session and delegated task',
     async (type) => {
       const actions: unknown[] = []
+      const closed: unknown[] = []
       const deps = {
         onThreadSessions: async () => ['slack:C1:C1:a1', 'slack:C1:C1:a2'],
         onStopThreadTasks: () => ['slack:C1:task:a1', 'slack:C1:C1:a2'],
-        onStatusAction: (a: unknown) => void actions.push(a)
+        onStatusAction: (a: unknown) => void actions.push(a),
+        onPlaceClosed: (a: unknown) => void closed.push(a)
       }
       const f = await fixture(true, deps)
       await f.conn.setStatus('C1', 'C1', 'working', { sessionKey: 'slack:C1:C1:a2' })
@@ -611,15 +658,29 @@ describe('Slack native surfaces', () => {
         { kind: 'cancel', sessionKey: 'slack:C1:C1:a2', actor: { userId: 'U1' } },
         { kind: 'cancel', sessionKey: 'slack:C1:task:a1', actor: { userId: 'U1' } }
       ])
+      // The task the channel holds closes too (auto-session-mode.md §6.8).
+      expect(closed).toEqual([{ channel: 'C1', thread: 'C1' }])
       await f.conn.stop()
 
       const ordinary = await fixture(false, deps)
       actions.length = 0
+      closed.length = 0
       await ordinary.handlers.get(type)!({ event: { channel: 'C1', user: 'U1' } })
       expect(actions).toEqual([])
+      expect(closed).toEqual([])
       await ordinary.conn.stop()
     }
   )
+
+  it('closes the channel’s task on a relayed archive, and on no native Stop', async () => {
+    const onPlaceClosed = vi.fn()
+    const f = await fixture(true, { sendOnly: true, onThreadSessions: async () => [], onPlaceClosed })
+    await f.conn.agentSessionStopped('C1', 'C1', 'U1')
+    expect(onPlaceClosed).not.toHaveBeenCalled()
+    await f.conn.agentSessionStopped('C1', 'C1', 'U1', true)
+    expect(onPlaceClosed).toHaveBeenCalledWith({ channel: 'C1', thread: 'C1' })
+    await f.conn.stop()
+  })
 
   it('native Stop in a code channel still targets only the displayed agent', async () => {
     const onStatusAction = vi.fn()

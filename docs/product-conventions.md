@@ -1334,7 +1334,10 @@ If channel creation is unavailable, ordinary delegation remains available.
 Work already in a Code channel continues there and keeps
 its repository, branch, diff and PR surfaces current; it never creates a second channel
 or delegates the same work merely because the original request was copied into it.
-Quick questions stay in their original conversation.
+Quick questions stay in their original conversation. In an Auto conversation on Slack, a task
+the coordinator opens for a message works in a Code channel linked to it, and the message's
+thread links the channel; where no channel can be made, the task answers in the thread.
+Archiving the channel closes the task.
 
 In a Code channel, the platform keeps the task's assigned, isolated repositories visible
 as a diff while work runs and when it finishes. The comparison starts from the clean

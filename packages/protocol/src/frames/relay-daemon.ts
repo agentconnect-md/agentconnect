@@ -588,7 +588,9 @@ export const RdSlackAction = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('agent-session-stopped'),
     channelId: z.string().min(1),
-    threadTs: z.string().min(1)
+    threadTs: z.string().min(1),
+    // The channel was archived, which also closes the task it holds; an older relay never says so.
+    archived: z.literal(true).optional()
   }),
   z.object({ kind: z.literal('set-model'), model: z.string().min(1) }),
   z.object({ kind: z.literal('set-effort'), effort: z.string().min(1) }),

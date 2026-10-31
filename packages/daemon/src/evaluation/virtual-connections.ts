@@ -583,6 +583,14 @@ export class VirtualSlackConnection implements PlatformConnection {
   // The Arena has no code channels, so no Plan tab exists to mirror the plan into.
   writePlanCanvas(): void {}
 
+  // Nor a channel for a coordinator's task, which stays in its message's thread.
+  async openTaskPlace(): Promise<undefined> {
+    return undefined
+  }
+
+  // Nothing is archived here, since no code channel exists.
+  codeChannelArchived(): void {}
+
   async searchPublicMessages(): Promise<never> {
     this.unmodelled('workspace searches')
   }

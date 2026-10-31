@@ -308,6 +308,16 @@ async function workspaceMember(
       ? asker.userId
       : await lookups.linked(bot, asker).catch(() => null)
   if (userId === null) return false
+  return await memberMakesNew(platform, bot, userId, lookups)
+}
+
+/** Whether a chat member of that bot may have it make something new: a full member of its workspace, where the platform can tell. */
+export async function memberMakesNew(
+  platform: string,
+  bot: string,
+  userId: string,
+  lookups: ReadLookups
+): Promise<boolean> {
   return !tellsWorkspaceMembers(platform) || (await lookups.fullMember(bot, userId).catch(() => false))
 }
 
