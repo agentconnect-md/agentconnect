@@ -9,6 +9,8 @@ import {
   coordinatorTools as shippedCoordinatorTools,
   renderCoordinatorBatch
 } from '../../src/auto-session/coordinator-prompt.js'
+import { readOnlyExtractionMode } from '../../src/memory/distill.js'
+import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../../src/runtime-defs/claude-runtime.js'
 import { NO_RESPONSE_SENTINEL } from '../../src/session/no-response.js'
 import type { ToolDescriptor } from '../../src/tool-schema/descriptor.js'
 import type { ProbeSupport, SendMessageVerdict } from './send-message-probe.js'
@@ -615,9 +617,20 @@ export async function runCoordinatorScenarios(input: {
       let failure: unknown
       try {
         sessionId = await support.withTimeout(
-          host.newSession(cwd, [fixture.descriptor(key, scope)], undefined, usesMeta ? prompt : undefined),
+          host.newSession(
+            cwd,
+            [fixture.descriptor(key, scope)],
+            undefined,
+            usesMeta ? prompt : undefined,
+            [],
+            undefined,
+            CLAUDE_HEADLESS_DISALLOWED_TOOLS
+          ),
           `${runtime}/coordinator ${scenario.id} session`
         )
+        // As the daemon runs a coordinator: in the runtime's read-only mode, without the tools that wait for an approver.
+        const readOnly = readOnlyExtractionMode(host.permissionModeOptions(sessionId)?.modes ?? [])
+        if (readOnly) await host.setSessionPermissionMode(sessionId, readOnly)
         const blocks = [
           ...(usesMeta ? [] : [{ type: 'text' as const, text: prompt }]),
           { type: 'text' as const, text: renderBatch(scenario.messages, scenario.webchat === true) }

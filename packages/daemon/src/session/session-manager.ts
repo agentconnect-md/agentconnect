@@ -810,8 +810,8 @@ export class SessionManager {
       toolContext,
       sessionQuiescent: (id) => this.deps.sessionSdkQuiescent?.(agentId, key, id) ?? true,
       ...(options.additionalMcpServers !== undefined ? { additionalMcpServers: options.additionalMcpServers } : {}),
-      // A check (assistant-mode.md §5.12) runs in plan mode, whose exits need an approver nobody is; research (§5.15) has nobody to ask either.
-      ...(isCheckCoordinate(thread) || isResearchCoordinate(thread)
+      // A check (assistant-mode.md §5.12) and a coordinator (auto-session-mode.md §5.4) run in plan mode, whose exits need an approver nobody is; research (§5.15) has nobody to ask either.
+      ...(isCheckCoordinate(thread) || isResearchCoordinate(thread) || coordinator
         ? { extraDisallowedTools: CLAUDE_HEADLESS_DISALLOWED_TOOLS }
         : {}),
       // The sticky per-session effort override rides session `_meta` on new/load so the
