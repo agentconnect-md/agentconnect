@@ -6659,11 +6659,16 @@ export async function startGithubAppManifest(
   return apiPost(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app/manifest`, {})
 }
 
+/** An organization GitHub App's public page on GitHub. */
+export function githubAppPageUrl(slug: string): string {
+  return `https://github.com/apps/${encodeURIComponent(slug)}`
+}
+
 /** Where to install the App an agent works through: the built-in App's org-bound link, or an organization App's own page. */
 export async function githubInstallUrlFor(appId: string | null | undefined): Promise<string | null> {
   if (!appId) return fetchGithubInstallUrl()
   const app = (await fetchGithubApps()).find((row) => row.id === appId)
-  return app ? `https://github.com/apps/${encodeURIComponent(app.slug)}/installations/new` : null
+  return app ? `${githubAppPageUrl(app.slug)}/installations/new` : null
 }
 
 /** Refresh the existing claims of the built-in App, or of the organization App `appId` names, from GitHub. */
