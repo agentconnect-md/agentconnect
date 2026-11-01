@@ -1763,14 +1763,10 @@
       "permissionsNeedUpdate": "This installation’s GitHub permissions need updating before all features will work.",
       "updatePermissions": "Update permissions",
       "orgApps": {
-        "heading": "Organization apps",
-        "installedOn": "Installed on",
         "free": "free",
         "usedBy": "used by {agent}",
         "inUse": "in use",
         "notInstalled": "not installed",
-        "install": "Install on GitHub",
-        "sync": "Sync",
         "more": "More",
         "delete": "Delete App…",
         "deleteTitle": "Delete GitHub App",
@@ -1778,8 +1774,15 @@
         "close": "Close",
         "cancel": "Cancel",
         "deleting": "Deleting…",
-        "deleteConfirm": "Delete"
-      }
+        "deleteConfirm": "Delete",
+        "noInstallations": "Not installed on any account yet."
+      },
+      "appColumn": "App",
+      "installationsColumn": "Installations",
+      "builtIn": "built-in",
+      "expand": "Show installations",
+      "collapse": "Hide installations",
+      "installationCount": "{count, plural, one {# installation} other {# installations}}"
     },
     "codeHostActions": {
       "addRepository": "Add repository",

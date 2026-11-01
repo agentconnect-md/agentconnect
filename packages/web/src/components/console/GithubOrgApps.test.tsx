@@ -58,6 +58,14 @@ async function render(props: { isOwner?: boolean; canWrite?: boolean } = {}) {
 }
 
 const row = (slug: string) => document.querySelector<HTMLElement>(`[data-org-app="${slug}"]`)
+const expand = (slug: string) =>
+  act(async () => row(slug)!.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click())
+const menuItem = (text: string) =>
+  [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => b.textContent?.includes(text))
+async function menuItems(slug: string): Promise<string[]> {
+  await act(async () => row(slug)!.querySelector<HTMLButtonElement>('button[aria-label="More"]')!.click())
+  return [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].map((b) => b.textContent?.trim() ?? '')
+}
 
 afterEach(async () => {
   if (root) await act(async () => root?.unmount())
@@ -75,7 +83,7 @@ describe('GithubOrgApps', () => {
     expect(scope.textContent).toBe('')
   })
 
-  it('names the agent using an App, links the App, and lists where it is installed', async () => {
+  it('names the agent using an App, links it, and lists its installations once expanded', async () => {
     mocks.apps = [
       app({
         id: 'app-used',
@@ -98,29 +106,31 @@ describe('GithubOrgApps', () => {
 
     const used = row('review-private')!
     expect(used.textContent).toContain('used by Reviewer')
+    expect(used.textContent).toContain('1 installation')
+    expect(used.querySelector('a.mono')?.getAttribute('href')).toBe('https://github.com/apps/review-private')
+    // Installations are the second level: collapsed until the App row is expanded.
+    expect(used.textContent).not.toContain('example-org')
+    await expand('review-private')
     expect(used.textContent).toContain('example-org')
-    expect(used.querySelector('a')?.getAttribute('href')).toBe('https://github.com/apps/review-private')
-    // An App an agent uses can't be deleted, so it has no menu.
-    expect(used.querySelector('button[aria-label="More"]')).toBeNull()
+    expect(used.textContent).toContain('all repositories')
+    // An App an agent uses can be synced but never deleted.
+    expect(await menuItems('review-private')).toEqual(['Sync'])
 
     const free = row('triage-example')!
     expect(free.textContent).toContain('free')
     expect(free.textContent).toContain('not installed')
-    expect(free.querySelector('button[aria-label="More"]')).not.toBeNull()
   })
 
-  it('syncs one App, and deletes a free one after confirming', async () => {
+  it('syncs an App from its menu, and deletes a free one after confirming', async () => {
     mocks.apps = [app({ id: 'app-free', slug: 'triage-example' })]
     await render()
 
-    await act(async () => row('triage-example')!.querySelector<HTMLButtonElement>('button[aria-label="Sync"]')!.click())
+    expect(await menuItems('triage-example')).toEqual(['Sync', 'Delete App…'])
+    await act(async () => menuItem('Sync')!.click())
     expect(mocks.syncGithubApp).toHaveBeenCalledWith('app-free')
 
-    await act(async () => row('triage-example')!.querySelector<HTMLButtonElement>('button[aria-label="More"]')!.click())
-    const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) =>
-      b.textContent?.includes('Delete App')
-    )
-    await act(async () => item!.click())
+    await menuItems('triage-example')
+    await act(async () => menuItem('Delete App')!.click())
     const confirm = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
       (b) => b.textContent?.trim() === 'Delete'
     )
@@ -128,9 +138,38 @@ describe('GithubOrgApps', () => {
     expect(mocks.deleteGithubApp).toHaveBeenCalledWith('app-free')
   })
 
-  it('offers no controls to a viewer', async () => {
+  it('keeps a suspended installation in the list, marked suspended', async () => {
+    mocks.apps = [
+      app({
+        id: 'app-paused',
+        slug: 'paused-example',
+        installations: [
+          {
+            id: 'i2',
+            installationId: 44,
+            accountLogin: 'example-org',
+            accountType: 'Organization',
+            repositorySelection: 'all',
+            suspended: true
+          }
+        ]
+      })
+    ]
+    await render()
+    await expand('paused-example')
+
+    const paused = row('paused-example')!
+    expect(paused.textContent).toContain('example-org')
+    expect(paused.textContent).toContain('suspended')
+    expect(paused.textContent).not.toContain('not installed')
+  })
+
+  it('lets a viewer expand an App but offers no install, sync or delete', async () => {
     mocks.apps = [app({ id: 'app-free', slug: 'triage-example' })]
     await render({ canWrite: false, isOwner: false })
-    expect(row('triage-example')!.querySelector('button, a[aria-label]')).toBeNull()
+    const scope = row('triage-example')!
+    expect(scope.querySelector('a[aria-label="Install on GitHub"]')).toBeNull()
+    expect(scope.querySelector('button[aria-label="More"]')).toBeNull()
+    expect(scope.querySelector('button[aria-expanded]')).not.toBeNull()
   })
 })

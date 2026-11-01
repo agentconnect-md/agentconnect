@@ -1763,14 +1763,10 @@
       "permissionsNeedUpdate": "此安装的 GitHub 权限需要更新，更新前部分功能无法使用。",
       "updatePermissions": "更新权限",
       "orgApps": {
-        "heading": "组织自有 App",
-        "installedOn": "安装于",
         "free": "空闲",
         "usedBy": "{agent} 在用",
         "inUse": "使用中",
         "notInstalled": "未安装",
-        "install": "在 GitHub 上安装",
-        "sync": "同步",
         "more": "更多",
         "delete": "删除 App…",
         "deleteTitle": "删除 GitHub App",
@@ -1778,8 +1774,15 @@
         "close": "关闭",
         "cancel": "取消",
         "deleting": "正在删除…",
-        "deleteConfirm": "删除"
-      }
+        "deleteConfirm": "删除",
+        "noInstallations": "还没有安装到任何账号。"
+      },
+      "appColumn": "App",
+      "installationsColumn": "安装",
+      "builtIn": "内置",
+      "expand": "展开安装列表",
+      "collapse": "收起安装列表",
+      "installationCount": "{count, plural, other {# 个安装}}"
     },
     "codeHostActions": {
       "addRepository": "添加仓库",
