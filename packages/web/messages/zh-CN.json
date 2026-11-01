@@ -1761,7 +1761,25 @@
       "suspended": "已暂停",
       "needsUpdate": "需要更新",
       "permissionsNeedUpdate": "此安装的 GitHub 权限需要更新，更新前部分功能无法使用。",
-      "updatePermissions": "更新权限"
+      "updatePermissions": "更新权限",
+      "orgApps": {
+        "heading": "组织自有 App",
+        "installedOn": "安装于",
+        "free": "空闲",
+        "usedBy": "{agent} 在用",
+        "inUse": "使用中",
+        "notInstalled": "未安装",
+        "install": "在 GitHub 上安装",
+        "sync": "同步",
+        "more": "更多",
+        "delete": "删除 App…",
+        "deleteTitle": "删除 GitHub App",
+        "deleteBody": "从此组织移除 <slug></slug>？这里会忘掉它的密钥和安装记录；App 本身仍留在 GitHub 上，需要到 GitHub 上删除。",
+        "close": "关闭",
+        "cancel": "取消",
+        "deleting": "正在删除…",
+        "deleteConfirm": "删除"
+      }
     },
     "codeHostActions": {
       "addRepository": "添加仓库",
@@ -3044,7 +3062,6 @@
         "title": "集成",
         "add": "添加",
         "addIntegration": "添加集成",
-        "connected": "已连接",
         "revoked": "已撤销",
         "rejected": "被拒绝",
         "offline": "离线",

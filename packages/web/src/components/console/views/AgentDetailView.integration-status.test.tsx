@@ -153,17 +153,15 @@ afterEach(async () => {
 })
 
 describe('AgentDetailView integration pill', () => {
-  it('reads connected while the agent is served and the credential is live', async () => {
+  it('shows no pill while the agent is served and the credential is live', async () => {
     mocks.agent = agentOn()
     mocks.daemons = [daemon('online')]
     mocks.integrations = [slackIntegration(false)]
-    const { mobile, desktop } = pills(await render())
+    const scope = await render()
 
-    for (const pill of [mobile, desktop]) {
-      expect(pill.textContent).toBe('connected')
-      expect(pill.className).toContain('bg-(--brand-soft)')
-      expect(pill.getAttribute('title')).toBeNull()
-    }
+    // Healthy is the quiet state: only a problem earns a pill.
+    expect(scope.querySelector('a .badge')).toBeNull()
+    expect([...scope.querySelectorAll('span')].some((el) => el.textContent?.trim() === 'connected')).toBe(false)
   })
 
   it('reads offline, neutrally, when the owning daemon is offline — the agents list’s own rule', async () => {

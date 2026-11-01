@@ -241,9 +241,9 @@ describe('AgentDetailView, code-host repository blocks', () => {
   it('titles the card by the host even when every repo shares one owner', async () => {
     const scope = await render()
     // Both fixtures live under acme; the card still says GitHub, so a second account never relabels it.
-    const titles = [...scope.querySelectorAll<HTMLElement>('span.badge')]
-      .filter((el) => el.textContent?.trim() === 'connected')
-      .map((el) => el.previousElementSibling?.textContent?.trim())
+    const titles = [...scope.querySelectorAll<HTMLElement>('span.font-semibold')]
+      .map((el) => el.textContent?.trim())
+      .filter((text) => text === 'GitHub' || text === 'acme')
     expect(titles).toEqual(['GitHub'])
   })
 
