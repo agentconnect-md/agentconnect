@@ -126,7 +126,7 @@ the picture it draws.
 - [agent-reachability-graph.md](designs/agent-reachability-graph.md) — Which agents can reach which: the reachability graph.
 - [preset-agents.md](designs/preset-agents.md) — Preset agents and guided onboarding.
 - [agent-assistant.md](designs/agent-assistant.md) — The AgentConnect MCP: system operations for AI tools.
-- [assistant-mode.md](designs/assistant-mode.md) — Assistant mode: one long conversation per place, one shared mind, external places detected by the platform, background tasks and follow-ups.
+- [assistant-mode.md](designs/assistant-mode.md) — Assistant mode: one long conversation per place, one shared mind, external places detected by the platform, background tasks and follow-ups; §5.18 proposes the work board that shows each coordinator the agent's open work.
 - [capability-requests.md](designs/capability-requests.md) — Capability requests: an agent asks for a setting, tool, repository, connection or secret it lacks, a person completes it in the console, and the conversation resumes.
 - [agent-capability-benchmark-harness.md](designs/agent-capability-benchmark-harness.md) — Add-on evaluation and harness neutrality.
 
