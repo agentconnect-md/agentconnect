@@ -570,7 +570,6 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         // Same identity as every row — an undecorated stream has no app-profile fallback.
         state.stream = await conn.startTurnStream(p.plan.channel, p.plan.thread, {
           isDm: p.plan.isDm,
-          ...(action.taskDisplayMode ? { taskDisplayMode: action.taskDisplayMode } : {}),
           ...(state.recipient ? { recipientUserId: state.recipient } : {}),
           ...(identity ? { identity } : {})
         })

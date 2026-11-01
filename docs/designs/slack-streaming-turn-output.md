@@ -3,9 +3,9 @@
 **Status:** Implemented — **chrome only**. A Slack turn's TOOL-CALL CHROME rides one native
 `chat.startStream` card stream; the agent's answer does not, and the body pipeline is unchanged.
 What came back is the _progress message_, rendered as a native plan card instead of a
-`chat.postMessage` the daemon edits in place — not body streaming (§1). Work steps use native
-`timeline` cards in every supported Slack conversation: ordinary channel threads, DMs and
-code channels. `minimal` keeps a folded `plan` containing earlier replies. `minimal` mode later
+`chat.postMessage` the daemon edits in place — not body streaming (§1). Work steps use a native
+`plan` group in both Medium and High across ordinary channel threads, DMs and code channels.
+`minimal` keeps a folded `plan` containing earlier replies. `minimal` mode later
 joined the stream with its INTERIM reply segments as history cards, posting only its final
 segment as a message (§5.2), which retired that mode's in-place live reply. Layer 0's Agent Sessions
 control surface ([#1462](https://github.com/agentconnect-md/agentconnect/pull/1462),
@@ -205,16 +205,17 @@ tighter one (below).
 | tool output, terminal (`high`)   | separate code-block message                        | the command and its result become the card's body (`details` + `output`, high only); the separate code-block message is **dropped on a streaming turn**, which would otherwise say it twice                                                                                                 |
 | `usage_update`                   | dropped                                            | dropped                                                                                                                                                                                                                                                                                     |
 
-**Display mode follows output detail, not conversation type.** Medium/high use `timeline`:
-each tool or thought is a separate task card with its own icon and disclosure. Medium remains
-compact; high adds the command while it runs and the bounded result when it finishes. Normal
-channel threads, DMs and code channels use the same path. Unsupported surfaces keep the existing
-in-place progress fallback.
+**Work steps stay grouped in Medium and High.** Both use `plan`: the steps share one
+collapsible group, with a counted summary when the turn finishes. Expanding the group reveals
+the individual titles, icons and statuses. High also includes the command and bounded result
+in each step's body. Normal channel threads, DMs and code channels use the same path.
+Unsupported surfaces keep the existing in-place progress fallback.
 
-Minimal uses `plan` so its interim replies remain folded above the final answer. Its container
-starts at `Working…` and ends with a counted earlier-reply label, or `Stopped` / `Failed`.
-`plan_update` titles are ignored by Slack in timeline mode. No model call generates labels or
-invents result summaries; visible text comes from the runtime's own title, description and output.
+All streaming modes use `plan_update` for their group titles. Minimal folds interim replies
+above the final answer; its title starts at `Working…` and ends with a counted earlier-reply
+label, or `Stopped` / `Failed`.
+No model call generates labels or invents result summaries; visible text comes from the
+runtime's own title, description and output.
 
 **A card title is one line, and the daemon is what makes it one.** Slack wraps a long title
 into a paragraph instead of truncating it, offers no hover and no per-title disclosure, so a

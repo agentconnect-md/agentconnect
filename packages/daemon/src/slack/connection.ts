@@ -2107,7 +2107,6 @@ export class SlackConnection implements PlatformConnection {
       isDm?: boolean
       recipientUserId?: string
       identity?: SlackPostOptions
-      taskDisplayMode?: 'timeline' | 'plan'
     } = {}
   ): Promise<SlackTurnStream | undefined> {
     const start = this.app.client.chat.startStream
@@ -2130,7 +2129,7 @@ export class SlackConnection implements PlatformConnection {
       .enqueue(async () => {
         let result: SlackTurnStream | undefined
         try {
-          result = await this.openStream(start, channel, threadTs, recipient, options.identity, options.taskDisplayMode)
+          result = await this.openStream(start, channel, threadTs, recipient, options.identity)
           return result
         } finally {
           publish(result)
@@ -2150,14 +2149,13 @@ export class SlackConnection implements PlatformConnection {
     channel: string,
     threadTs: string,
     recipient: string | undefined,
-    identity?: SlackPostOptions,
-    taskDisplayMode: 'timeline' | 'plan' = 'timeline'
+    identity?: SlackPostOptions
   ): Promise<SlackTurnStream | undefined> {
-    // Work steps render individually; minimal mode keeps interim replies in a folded plan.
+    // Keep work steps and Minimal's interim reply history in a collapsible group.
     const payload: Record<string, unknown> = {
       channel,
       ...(threadTs !== channel ? { thread_ts: threadTs } : {}),
-      task_display_mode: taskDisplayMode,
+      task_display_mode: 'plan',
       ...(recipient ? { recipient_user_id: recipient } : {}),
       ...(recipient && this.teamId ? { recipient_team_id: this.teamId } : {})
     }
