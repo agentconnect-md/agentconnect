@@ -102,7 +102,9 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
   tools of §5.4, belong to it as they belong to an `append` session.
 - A report queued behind a running turn is never absorbed into the next batch. It starts a turn of its
   own, which keeps the report's own metadata (a getting-to-know report's proposals ride on it); the
-  channel messages queued behind it join that turn.
+  channel messages queued behind it join that turn. Proposed: a report without turn metadata joins
+  the batch, batches are cut by permission class in arrival order, and the coordinator's standing
+  list becomes the work board ([assistant-mode.md](assistant-mode.md) §5.18).
 
 ### 3.5 Switching
 
@@ -543,6 +545,8 @@ a reply saying a message was for another agent, so the prompt states that ignori
 ## 13. Not done / later
 
 - A coordinator model setting of its own (the first version follows the agent).
+- `recall` and a read of another place's tasks for the coordinator, and `listTasks` paging: proposed
+  in [assistant-mode.md](assistant-mode.md) §5.18.
 - A cap on coordinator usage (§4.6).
 - Judging across bots; one coordinator shared by a shared bot's agents.
 - Carrying an assistant-mode `append` session's context into the coordinator.
