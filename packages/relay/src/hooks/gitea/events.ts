@@ -348,7 +348,7 @@ export function giteaMentionCandidates(
 export type GiteaRuleVerdict = 'no-match' | 'trusted' | 'needs-authz'
 
 /** §8 internal lane: only a same-repository pull-request revision the bot itself authored enters review. */
-function isInternalBotRevision(rule: RcHookAssign, ctx: GiteaMatchCtx): boolean {
+export function isInternalBotRevision(rule: RcHookAssign, ctx: GiteaMatchCtx): boolean {
   return (
     (ctx.eventAction === 'merge_request:opened' || ctx.eventAction === 'merge_request:synchronize') &&
     ctx.subjectAuthorId !== undefined &&

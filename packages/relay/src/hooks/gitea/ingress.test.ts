@@ -621,6 +621,47 @@ describe('gitea ingress', () => {
     expect(h.sent).toHaveLength(0)
   })
 
+  it('a human push onto the bot’s same-repository pull request authorizes the pusher, not the bot (§8)', async () => {
+    h.table.upsert(rule({}, { events: ['merge_request:*'] }))
+    const humanPush = pullPayload({
+      action: 'synchronized',
+      sender: sender(HUMAN, 'alice'),
+      pull_request: { user: sender(BOT_USER, BOT_LOGIN) }
+    })
+    expect((await post(h, humanPush, { eventType: 'pull_request_sync', delivery: 'd1' })).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toEqual([
+      expect.objectContaining({ actorExternalId: String(HUMAN), actorUsername: 'alice' })
+    ])
+    expect(h.authzRequests[0]?.subjectAuthorExternalId).toBeUndefined()
+    expect(h.sent).toHaveLength(1)
+    expect((h.sent[0] as RdMsgHook).event).toBe('merge_request:synchronize')
+
+    // The pusher's live permission still decides: a refused one leaves the actionable row.
+    h.sent.length = 0
+    h.reports.length = 0
+    h.authzRequests.length = 0
+    h.authzResult = false
+    expect((await post(h, humanPush, { eventType: 'pull_request_sync', delivery: 'd2' })).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toEqual([expect.objectContaining({ actorExternalId: String(HUMAN) })])
+    expect(h.sent).toHaveLength(0)
+    expect(h.reports).toEqual([
+      expect.objectContaining({ status: 'failed', reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED })
+    ])
+
+    // From a fork it is no internal revision: the gate keeps resolving the pull request's author.
+    h.authzRequests.length = 0
+    const forkPush = pullPayload({
+      action: 'synchronized',
+      sender: sender(HUMAN, 'alice'),
+      pull_request: { user: sender(BOT_USER, BOT_LOGIN), head: { ref: 'topic', sha: HEAD_SHA, repo_id: FORK_REPO } }
+    })
+    expect((await post(h, forkPush, { eventType: 'pull_request_sync', delivery: 'd3' })).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toEqual([expect.objectContaining({ actorExternalId: String(BOT_USER) })])
+  })
+
   it('an external pull request never starts automatically (§8)', async () => {
     h.authzResult = false
     h.table.upsert(rule({}, { events: ['merge_request:*'] }))

@@ -469,7 +469,9 @@ the team form, it is never also read as a bare mention of `<owner>`.
 
 **Loop prevention.** A delivery whose `sender.id` is the connection's bot
 user id is rejected, with the §12.1 exception that the bot's own same-repository
-pull-request revisions still enter review. With one identity per organization
+pull-request revisions still enter review. A revision of such a pull request
+pushed by anyone else is not loop traffic: the collaborator gate below resolves
+that sender, since the bot can never pass it. With one identity per organization
 the veto set has one member; per-agent identities would widen it (§14).
 
 **Collaborator gate.** Lifecycle, comment, and external pull-request deliveries
