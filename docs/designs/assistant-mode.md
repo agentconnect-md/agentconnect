@@ -3466,9 +3466,10 @@ is not built.
 
 **Status:** Proposed (eightieth revision, 2026-11-01). Step 1, the admission check, shipped in the
 eighty-first revision ("As shipped" after ①), ③, batches cut by permission class, in the
-eighty-second ("As shipped" after ③), and the board itself, ② and the view and reads of ④, in the
-eighty-third ("As shipped" after ② and after ④); the title, the reports and `readTask` are not
-implemented. Reviewed in draft by three adversarial review rounds; what they changed is noted inline.
+eighty-second ("As shipped" after ③), the board itself, ② and the view and reads of ④, in the
+eighty-third ("As shipped" after ② and after ④), and the reports of ④ in the eighty-fourth (the
+last "As shipped" after ④); the title and `readTask` are not implemented. Reviewed in draft by three
+adversarial review rounds; what they changed is noted inline.
 
 **Why.** The mode promises one mind: what the agent takes on in one place it knows in the others.
 That holds for memory and for follow-ups, not for the work it is doing. A coordinator
@@ -3621,7 +3622,8 @@ taken: the result would sit in a context that answers other people's messages to
   is a class of one person, and so is anyone whose standing lookup fails; one person's consecutive
   messages share a batch. A message no person sent, such as another bot's, is a class of its own,
   judged `NOBODY`.
-- **Reports, until phase 3.** A queued report still heads a turn of its own, so it ends the batch
+- **Reports, until phase 3** (phase D of #3541, the last "As shipped" of ④, replaced this for
+  reports without turn metadata). A queued report still heads a turn of its own, so it ends the batch
   before it; the messages right behind it of one class join its turn, and it adds no asker
   (`askersOfKey` leaves out a report that heads a batch of messages). A report between two messages
   of one class therefore rides with the second's batch, one with no message right behind it runs
@@ -3723,6 +3725,29 @@ taken: the result would sit in a context that answers other people's messages to
   every coordinator with its parameters and rules unchanged. The prompt names the board,
   `listTasks`'s two lists and `recall`, and has a request for work already open elsewhere answered
   with that task's summary and link instead of a second task.
+
+**As shipped** (2026-11-01, #3541 phase D), the reports. Choices the text above leaves open:
+
+- **Which reports ride.** A report the daemon or another agent sends into the coordinator joins the
+  batch unless it carries turn metadata (`reportJoinsBatch`). A getting-to-know report is not the
+  only one that does: a report that opens its place's long session, as the onboarding hello may,
+  keeps a turn of its own too. Anything else no person sent, such as a capability request's reminder
+  or a join notice, is no report: the people it speaks for come with its own turn, so it heads one
+  as before. A webchat conversation's reports keep turns of their own, as its messages do.
+- **The cut.** A report brings no class: it rides with the batch it arrives in, whatever that
+  batch's class, and a batch a report heads takes the class of its first message. A run of reports
+  with no message among them is one batch, judged `NOBODY`. A batch's askers are its messages'
+  senders alone (`askersOfKey`), so a report never narrows what the batch may read or write.
+- **The block.** `<report id task kind title>`: the task's `taskId`, its kind as `listTasks` names
+  it (`follow-up`, `getting to know`, `approved proposal`, `delegated task` or `research`) and its
+  title, recorded when the report is admitted (`reportOf`). Another agent's answer names no task and
+  reads `kind="agent answer"`. The prompt adds that a report may arrive beside messages, is decided
+  on its own, and is left silently.
+- **Settling.** `replyToMessage` with a report's id posts where its reply went before. A report with
+  no call is settled with its turn, however the turn ends, and nothing retries or queues it again.
+  A report riding in a batch lends the turn none of its call metadata: a `callAgent` from that turn
+  continues the hop count of the turn's first entry, as a report steered into an ordinary session's
+  live turn does.
 
 **Examples.** Alice, a full member, asks in her DM whether the webhook retry landed: her board
 carries `#eng-platform`'s line, `listTasks` gives its summary ("PR #412 open, CI running"), and she
@@ -4815,3 +4840,11 @@ restart, and replaces the standing list, the running-tasks block and the 12-turn
 `listTasks` pages the coordinator's own and the other places' open tasks by keyset cursors, and
 `recall` is offered. Implementing it found that a Here line's id is the full task key, so the
 800-token budget holds fewer than the 20 Here lines the view allows.
+
+**Eighty-fourth revision (2026-11-01)**: reports join the coordinator's batch (issue #3541,
+phase D; §5.18 ④ "As shipped"). A report queued behind a running coordinator turn no longer heads a
+turn of its own: it rides in the next batch beside the channel messages, in arrival order, as
+`<report id task kind title>`, bringing no asker or class, and is answered with `replyToMessage`
+naming its id or left, which settles it silently. A report that finds the coordinator idle still
+starts a turn at once. Implementing it found that the getting-to-know report is not the only one
+whose turn carries metadata: a report that opens its place's long session keeps its own turn too.

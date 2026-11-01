@@ -33,8 +33,15 @@ export interface CoordinatorPromptInput {
   webchat?: boolean
 }
 
+/** What a report's block names beside its id: the task it speaks for, by its `taskId`, kind and title. */
+export interface ReportAbout {
+  task?: string
+  kind?: string
+  title?: string
+}
+
 /** One delivered message as the coordinator reads it. */
-export interface CoordinatorMessage {
+export interface CoordinatorMessage extends ReportAbout {
   /** The message's {@link coordinatorMessageId}. */
   id: string
   /** The sender, as the platform names them. */
@@ -220,10 +227,11 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '',
     '# Reports',
     `A <report> is not a ${words.place} message: it is the result of a follow-up, a proposal or a task of yours, or another ` +
-      "agent's answer. When it carries something the people here should know, tell them with sendMessage action " +
-      '"replyToMessage" and the report\'s id, which posts where the report belongs; otherwise leave it. Never open a task ' +
-      'for a report or hand one to a task. To post anywhere else, use action "postMessage"; to ask another agent, use ' +
-      'action "callAgent".',
+      "agent's answer. It may arrive beside messages in one turn, naming the task it speaks for by task, kind and title; " +
+      'decide it on its own. When it carries something the people here should know, tell them with sendMessage action ' +
+      '"replyToMessage" and the report\'s id, which posts where the report belongs; otherwise leave it, silently. ' +
+      'Never open a task for a report or hand one to a task. To post anywhere else, use action "postMessage"; to ask ' +
+      'another agent, use action "callAgent".',
     '',
     '# Rules',
     '- Each call names its message by its id, copied exactly as a string, and each message gets at most one outcome.',
@@ -247,14 +255,23 @@ const framed = (text: string): string => text.replace(/<\/(message|report)>/gi, 
 
 const counted = (n: number, one: string, many: string): string => (n === 1 ? `One ${one}` : `${n} ${many}`)
 
-/** One coordinator turn's input: the delivered messages, each with its id, sender and whether it mentions the agent, and the reports. */
+// A title cannot close its attribute or the tag.
+const attr = (value: string): string =>
+  value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+const aboutAttrs = (about: ReportAbout): string =>
+  (['task', 'kind', 'title'] as const)
+    .flatMap((name) => (about[name] ? [` ${name}="${attr(about[name])}"`] : []))
+    .join('')
+
+/** One coordinator turn's input: the delivered messages, each with its id, sender and whether it mentions the agent, and the reports with the task each speaks for. */
 export function renderCoordinatorBatch(
   messages: readonly CoordinatorMessage[],
   at: { channelId: string; channelName?: string; webchat?: boolean }
 ): string {
   const blocks = messages.map((message) =>
     message.report
-      ? `<report id="${message.id}">\n${framed(message.text)}\n</report>`
+      ? `<report id="${message.id}"${aboutAttrs(message)}>\n${framed(message.text)}\n</report>`
       : `<message id="${message.id}" from="${message.from}" mentions-you="${message.mentionsYou ? 'yes' : 'no'}"` +
         `${message.thread ? ` thread="${message.thread}"` : ''}>\n${framed(message.text)}\n</message>`
   )

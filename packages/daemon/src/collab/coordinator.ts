@@ -4,6 +4,7 @@ import { deriveTitle } from '../session/derive-title.js'
 import { subsessionLabel } from '../permissions/subsession-approval.js'
 import {
   SUBSESSION_COORDINATE_PREFIX,
+  isCheckCoordinate,
   isDelegatedTaskKey,
   isDelegationCoordinate,
   isResearchCoordinate,
@@ -62,7 +63,8 @@ import {
   sdkLeaseKey,
   type CallMeta,
   type Pending,
-  type QueueEntry
+  type QueueEntry,
+  type ReportTask
 } from '../daemon/turn-types.js'
 import type {
   ContinueSubsessionReq,
@@ -1049,6 +1051,7 @@ export class CollabCoordinator {
       ? await store.ensureOutwardSessionId(callerKey, agentId, this.host.clock().now())
       : undefined
     const externalOrigin = await this.host.externalOriginForSession(agentId, callerKey)
+    const reportOf = await this.reportTaskOf(agentId, callerKey, caller.thread)
     // The lineage `replyToSession` gives a report: from the sub-session, one hop past the turn it continues.
     const callMeta: CallMeta = {
       callFrom: agentId,
@@ -1061,6 +1064,7 @@ export class CollabCoordinator {
       ),
       originCoords: { platform: caller.platform, channel: caller.channel, thread: caller.thread },
       ...(report.gettingToKnow !== undefined ? { gettingToKnowReport: report.gettingToKnow } : {}),
+      ...(reportOf ? { reportOf } : {}),
       // The session it opens is the place's own root, never the reporting sub-session's child, which is the place's.
       ...(opening ? { opensPlace: true as const } : {}),
       ...(externalOrigin ? { externalOrigin } : {}),
@@ -1141,6 +1145,24 @@ export class CollabCoordinator {
     }
     this.host.log().info(`sub-session report: ${agentId} → ${parent.key} delivery=${deliveryId}`)
     return { admitted: true }
+  }
+
+  /** The task a report speaks for, by its sub-session's key and coordinate, named as `listTasks` names it (assistant-mode.md §5.18 ④). */
+  private async reportTaskOf(agentId: string, key: string, thread: string): Promise<ReportTask | undefined> {
+    const store = this.host.store()
+    if (isCheckCoordinate(thread)) {
+      const item = await store.assistantItems.byTaskKey(agentId, key).catch(() => undefined)
+      return item && { taskId: key, kind: item.gettingToKnow ? 'getting to know' : 'follow-up', title: item.title }
+    }
+    if (!isSubsessionCoordinate(thread)) return undefined
+    const row = await store.assistantSubsessions.get(agentId, key).catch(() => undefined)
+    const title = subsessionLabel(row?.title, undefined)
+    const kind = isTaskCoordinate(thread)
+      ? 'approved proposal'
+      : isResearchCoordinate(thread)
+        ? 'research'
+        : 'delegated task'
+    return { taskId: key, kind, ...(title ? { title } : {}) }
   }
 
   /** An agent→agent delivery's body, delivery id and thread; the receiving daemon frames the body with its message header (§9.5). */

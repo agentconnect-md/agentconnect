@@ -134,6 +134,13 @@ export interface SettledSdkTask extends LiveSdkTask {
   summary?: string
 }
 
+/** The task a daemon report speaks for: its `taskId`, its kind as `listTasks` names it, and its title. */
+export interface ReportTask {
+  taskId: string
+  kind: 'delegated task' | 'follow-up' | 'getting to know' | 'approved proposal' | 'research'
+  title?: string
+}
+
 /** Daemon-private trusted metadata for an agent-originated delivery: caller identity and the hop/origin chain, never model-derived. */
 export interface CallMeta {
   /** Trusted caller agentId (the agent that invoked `messageAgent`). */
@@ -209,6 +216,8 @@ export interface CallMeta {
   externalOrigin?: ExternalSessionAudience
   /** Daemon-internal, never a tool input: this turn is the round a getting-to-know task's report arrives in, naming its follow-up (assistant-mode.md §5.13), so the place's long session may `propose` on it. Persisted with the inbox row. */
   gettingToKnowReport?: string
+  /** Daemon-internal: the task a daemon report speaks for, which a coordinator's batch names it by (assistant-mode.md §5.18 ④). Persisted with the inbox row. */
+  reportOf?: ReportTask
   /** Daemon-internal (issue #536, never a tool input): when this turn calls
    *  `messageAgent`, deliver the woken peer's turn HEADLESS so it records silently
    *  with no channel output. Set only by the self-introduce-on-join fan-out; does

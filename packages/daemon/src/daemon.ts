@@ -1068,6 +1068,8 @@ import {
   coordinatorView,
   inThread,
   platformMessageIdOf,
+  reportAboutOf,
+  reportJoinsBatch,
   threadless,
   wholeRoomThread,
   type DeliveredMessage
@@ -11641,10 +11643,11 @@ export class Daemon {
   private askersOfKey(key: string, bot: string | undefined, opener?: TurnAskers): TurnAskers {
     const live = this.activeGateEntries.get(key)
     if (!live) return NOBODY
-    const folded = live.foldedMessages ?? []
-    // A report heading a coordinator batch of messages brings no asker of its own (assistant-mode.md §5.18 ③).
-    const rides = (live.coordinatorBatch?.length ?? 0) > 0 && live.msg.source !== 'user' && !opener?.people.length
-    return turnAskers(rides ? folded : [this.turnMessageOf(live), ...folded], bot ?? live.integrationId, opener)
+    const turn = [this.turnMessageOf(live), ...(live.foldedMessages ?? [])]
+    // A report in a coordinator batch brings no asker, and a batch of reports alone is no one (assistant-mode.md §5.18 ③).
+    const asking =
+      live.coordinatorBatch !== undefined && !opener?.people.length ? turn.filter((m) => m.msg.source === 'user') : turn
+    return asking.length > 0 ? turnAskers(asking, bot ?? live.integrationId, opener) : NOBODY
   }
 
   /** The read rule's view of a queued message: its bot, whether the console sent it, and a schedule's or a coordinator message's person. */
@@ -13798,14 +13801,16 @@ export class Daemon {
     return minted
   }
 
-  /** Open a coordinator turn on its batch: the trigger and the channel messages right behind it of one permission class, each under its own id (auto-session-mode.md §4.3, assistant-mode.md §5.18 ③). */
+  /** Open a coordinator turn on its batch: the trigger, the channel messages right behind it of one permission class and the reports among them, each under its own id (auto-session-mode.md §3.4, §4.3, assistant-mode.md §5.18 ③④). */
   private async beginCoordinatorTurn(entry: QueueEntry, key: string): Promise<void> {
     const lookups = this.placeMembers.lookupsFor(entry.agentId)
     const snapshot = [...(this.serialQueue.get(key) ?? [])]
+    const joins = (one: QueueEntry): boolean => reportJoinsBatch(one.msg, one.callMeta)
     const cut = await batchCut(entry, snapshot, {
       ownTurn: (one) => one.webchat !== undefined,
-      // A queued report keeps a turn of its own, whose metadata it needs, such as a getting-to-know report's proposals (§3.4).
-      report: (one) => one.msg.source !== 'user',
+      // A report with turn metadata, such as a getting-to-know report's proposals, keeps a turn of its own (§3.4).
+      heads: (one) => one.msg.source !== 'user' && !joins(one),
+      report: joins,
       classOf: (one) => askerClass(this.turnMessageOf(one), one.integrationId, lookups)
     })
     const chosen = new Set(snapshot.slice(0, cut))
@@ -13835,7 +13840,12 @@ export class Daemon {
     }
     entry.coordinatorBatch = batch
     const messages = [entry, ...batch].map((one) =>
-      deliveredMessage(one.msg, one.integrationId, one.webchat !== undefined)
+      deliveredMessage(
+        one.msg,
+        one.integrationId,
+        one.webchat !== undefined,
+        reportAboutOf(one.agentId, one.msg, one.callMeta)
+      )
     )
     this.coordinators.beginTurn(key, entry.agentId, messages)
     const { channel } = entry.msg
