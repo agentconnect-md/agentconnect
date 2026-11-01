@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CSV to JSON Playground</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <p class="eyebrow">A small browser tool</p>
+        <h1>CSV <span>→</span> JSON</h1>
+        <p class="intro">Paste a CSV file, choose how to read its first row, and see the result instantly.</p>
+      </header>
+
+      <div class="toolbar">
+        <fieldset>
+          <legend>First row</legend>
+          <label><input type="radio" name="mode" value="headers" checked /> Headers</label>
+          <label><input type="radio" name="mode" value="rows" /> Data</label>
+        </fieldset>
+        <button id="sample" class="secondary" type="button">Load sample</button>
+      </div>
+
+      <div class="panes">
+        <section class="pane">
+          <div class="pane-heading">
+            <h2>CSV input</h2>
+            <span>Paste or type</span>
+          </div>
+          <textarea id="csv" aria-label="CSV input" spellcheck="false" placeholder="name,city&#10;Ari,Oslo"></textarea>
+        </section>
+        <section class="pane">
+          <div class="pane-heading">
+            <h2>JSON output</h2>
+            <button id="copy" class="secondary" type="button">Copy JSON</button>
+          </div>
+          <pre id="json" aria-live="polite"></pre>
+        </section>
+      </div>
+      <p id="status" role="status" aria-live="polite"></p>
+      <footer>Runs entirely in your browser. Values remain strings.</footer>
+    </main>
+    <script type="module" src="./main.mjs"></script>
+  </body>
+</html>
