@@ -11,7 +11,7 @@ import {
   renderCoordinatorBatch
 } from '../src/auto-session/coordinator-prompt.js'
 import { CoordinatorSessions, deliveredMessage, messageForTask } from '../src/auto-session/coordinator-sessions.js'
-import { batchCut, CoordinatorTurns } from '../src/auto-session/coordinator-turns.js'
+import { batchCut, CoordinatorTurns, reportAboutOf, reportJoinsBatch } from '../src/auto-session/coordinator-turns.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../src/runtime-defs/claude-runtime.js'
 import { executeTool } from '../src/mcp/ops.js'
@@ -189,13 +189,17 @@ describe('batches cut by permission class, in arrival order (assistant-mode.md �
     id: string
     cls?: string
     report?: true
+    heads?: true
     webchat?: true
   }
   const member = (id: string): Entry => ({ id, cls: 'members' })
   const guest = (id: string): Entry => ({ id, cls: `person:${id}` })
   const report = (id: string): Entry => ({ id, report: true })
+  // A getting-to-know report, whose proposals need its own turn's metadata.
+  const knowing = (id: string): Entry => ({ id, heads: true })
   const rules = {
     ownTurn: (entry: Entry) => entry.webchat === true,
+    heads: (entry: Entry) => entry.heads === true,
     report: (entry: Entry) => entry.report === true,
     classOf: vi.fn(async (entry: Entry) => entry.cls!)
   }
@@ -229,18 +233,31 @@ describe('batches cut by permission class, in arrival order (assistant-mode.md �
     ])
   })
 
-  it('lets a report ride with the messages of one class right behind it', async () => {
-    // A queued report heads a turn of its own until reports join batches, so the batch before it ends there.
+  it('lets a report ride with the batch it arrives in, between messages of one class or behind them (§5.18 ④)', async () => {
     expect(await turnsOf([member('a'), report('r'), member('b'), member('c'), guest('g')])).toEqual([
-      ['a'],
-      ['r', 'b', 'c'],
+      ['a', 'r', 'b', 'c'],
       ['g']
     ])
+    expect(await turnsOf([member('a'), report('r'), guest('g'), report('r2'), member('b')])).toEqual([
+      ['a', 'r'],
+      ['g', 'r2'],
+      ['b']
+    ])
+    expect(await turnsOf([member('a'), report('r')])).toEqual([['a', 'r']])
   })
 
-  it('runs a report with no message right behind it alone', async () => {
-    expect(await turnsOf([report('r1'), report('r2'), member('a')])).toEqual([['r1'], ['r2', 'a']])
-    expect(await turnsOf([member('a'), report('r')])).toEqual([['a'], ['r']])
+  it('runs a run of reports with no message among them as one batch, which the first message behind it joins', async () => {
+    expect(await turnsOf([report('r1'), report('r2')])).toEqual([['r1', 'r2']])
+    expect(await turnsOf([report('r1'), report('r2'), guest('g'), member('a')])).toEqual([['r1', 'r2', 'g'], ['a']])
+  })
+
+  it('keeps a getting-to-know report’s turn its own, ending the batch before it as reports did before', async () => {
+    expect(await turnsOf([member('a'), report('r'), knowing('k'), report('r2'), member('b'), guest('g')])).toEqual([
+      ['a', 'r'],
+      ['k', 'r2', 'b'],
+      ['g']
+    ])
+    expect(await turnsOf([knowing('k1'), knowing('k2')])).toEqual([['k1'], ['k2']])
   })
 
   it('never batches a webchat message, before or behind it', async () => {
@@ -249,11 +266,73 @@ describe('batches cut by permission class, in arrival order (assistant-mode.md �
     expect(await turnsOf([member('a'), webchat('w'), member('b')])).toEqual([['a'], ['w'], ['b']])
   })
 
-  it('looks up no class when nothing can join the turn', async () => {
+  it('looks up no class when no message can join the turn', async () => {
     rules.classOf.mockClear()
     expect(await batchCut(member('a'), [], rules)).toBe(0)
-    expect(await batchCut(member('a'), [report('r'), member('b')], rules)).toBe(0)
+    expect(await batchCut(member('a'), [report('r1'), report('r2')], rules)).toBe(2)
+    expect(await batchCut(member('a'), [knowing('k'), member('b')], rules)).toBe(0)
     expect(rules.classOf).not.toHaveBeenCalled()
+  })
+})
+
+describe('which reports join a coordinator’s batch, and what their block names (assistant-mode.md §5.18 ④)', () => {
+  const report = { source: 'agent', parentReport: true } as const
+  const meta = { callFrom: 'bot-a', hopCount: 1, deliveryId: 'assistant-report:1' }
+
+  it('joins a report no turn metadata rides on, and nothing a person sent or that speaks for people', () => {
+    expect(reportJoinsBatch(report, meta)).toBe(true)
+    expect(reportJoinsBatch(report, undefined)).toBe(true)
+    expect(reportJoinsBatch(report, { ...meta, gettingToKnowReport: 'item-1' })).toBe(false)
+    expect(reportJoinsBatch(report, { ...meta, opensPlace: true })).toBe(false)
+    expect(reportJoinsBatch({ source: 'user', parentReport: true }, undefined)).toBe(false)
+    // A capability or join notice is no report: the people it speaks for come with its own turn.
+    expect(reportJoinsBatch({ source: 'system' }, meta)).toBe(false)
+  })
+
+  it('names the task a report speaks for, or another agent’s answer', () => {
+    const reportOf = { taskId: 'slack:C1:check-1:bot-a', kind: 'follow-up' as const, title: 'Watch PR #412' }
+    expect(reportAboutOf('bot-a', report, { ...meta, reportOf })).toEqual({
+      task: reportOf.taskId,
+      kind: 'follow-up',
+      title: 'Watch PR #412'
+    })
+    expect(reportAboutOf('bot-a', report, { ...meta, callFrom: 'billing' })).toEqual({ kind: 'agent answer' })
+    expect(reportAboutOf('bot-a', report, meta)).toBeUndefined()
+    expect(reportAboutOf('bot-a', { source: 'user' }, { ...meta, reportOf })).toBeUndefined()
+  })
+
+  it('renders the task beside the report’s id, a title unable to break out of its attribute', () => {
+    const batch = renderCoordinatorBatch(
+      [
+        { id: 'msg-1.1', from: 'U2', mentionsYou: true, text: 'any news?' },
+        {
+          id: 'msg-9.9',
+          from: 'bot-a',
+          mentionsYou: false,
+          text: 'PR #412 merged',
+          report: true,
+          task: 'slack:C1:check-1:bot-a',
+          kind: 'follow-up',
+          title: 'Tell "eng" <when> #412 & #413 merge'
+        },
+        {
+          id: 'msg-9.8',
+          from: 'billing',
+          mentionsYou: false,
+          text: 'invoices sent',
+          report: true,
+          kind: 'agent answer'
+        }
+      ],
+      { channelId: 'C1' }
+    )
+    expect(batch).toContain('[One new channel-root message and 2 reports in C1]')
+    expect(batch).toContain(
+      '<report id="msg-9.9" task="slack:C1:check-1:bot-a" kind="follow-up" ' +
+        'title="Tell &quot;eng&quot; &lt;when&gt; #412 &amp; #413 merge">\nPR #412 merged\n</report>'
+    )
+    expect(batch).toContain('<report id="msg-9.8" kind="agent answer">\ninvoices sent\n</report>')
+    expect(batch.indexOf('msg-1.1')).toBeLessThan(batch.indexOf('msg-9.9'))
   })
 })
 
@@ -404,6 +483,47 @@ describe('the coordinator’s outcomes', () => {
     expect(posted.map((post) => post.text)).toEqual(['The PR merged.'])
     // A report is no platform message, so no 🤔 shows on it.
     expect(triaging).toEqual([])
+  })
+
+  // assistant-mode.md §5.18 ④: reports ride in a batch beside channel messages, each answered by its own id or left.
+  it('answers a report of a batch by its id where the report goes, and settles one left without a call silently', async () => {
+    const { sessions, ctx, dispatched, posted, triaging } = await setup()
+    const report = (ts: string, thread?: string) =>
+      ({
+        ...slack(ts),
+        msgId: `agentcall:C1:assistant-report:${ts}`,
+        source: 'agent',
+        transcriptTs: ts,
+        thread,
+        parentReport: true,
+        text: '[follow-up] the PR merged'
+      }) as NormalizedMessage
+    const delivered = (msg: NormalizedMessage) =>
+      deliveredMessage({ ...msg, sessionThread: COORDINATOR, headless: true }, 'int-bot-a')
+    sessions.beginTurn(coordinatorKey, 'bot-a', [
+      delivered(slack('1.1', { trigger: 'mention', text: 'any news on the PR?' })),
+      delivered(report('9.1', '4.4')),
+      delivered(report('9.2'))
+    ])
+    // The report's reply goes to the thread its follow-up was taken in, the message's to its own.
+    expect(
+      await sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-9.1', message: 'PR #412 merged.' })
+    ).toMatchObject({ ok: true, posted: { channel: 'C1', thread: 'msg-4.4' } })
+    expect(
+      await sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-1.1', message: 'Yes, it merged.' })
+    ).toMatchObject({ ok: true, posted: { channel: 'C1', thread: 'msg-1.1' } })
+    await expect(
+      sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-9.1', message: 'again' })
+    ).rejects.toThrow(/already has an outcome/)
+    sessions.turns.noteText(coordinatorKey, 'Both answered.')
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
+    expect(posted.map((post) => [post.msg.msgId, post.text])).toEqual([
+      ['agentcall:C1:assistant-report:9.1', 'PR #412 merged.'],
+      ['slack:C1:1.1', 'Yes, it merged.']
+    ])
+    // The report left without a call opens nothing and posts nothing, and only the message showed 🤔.
+    expect(dispatched).toEqual([])
+    expect(triaging).toEqual(['+msg-1.1', '-msg-1.1'])
   })
 
   it('hands a later message to a threaded task, keyed on the task’s session and answered in its own thread', async () => {
@@ -767,34 +887,124 @@ describe('auto conversations route to the coordinator', () => {
       await daemon.stop()
     })
 
-    it('lets a queued report ride with the messages right behind it, adding no asker, and runs one alone as nobody', async () => {
+    /** Daemon reports into the conversation's coordinator, dispatched as `deliverDaemonReport` does; each settles with the turn it rides in. */
+    async function reporter(d: any) {
+      const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+      const coordinator = await d.store.currentAppendCoordinate('bot-a', 'C1', scope, 'coordinator')
+      const report = (ts: string, meta: Record<string, unknown> = {}): Promise<string | null> => {
+        const msg = slack(ts, {
+          source: 'agent',
+          sender: { id: 'bot-a', isBot: true },
+          text: 'the task finished',
+          parentReport: true
+        })
+        const callMeta = { callFrom: 'bot-a', hopCount: 1, deliveryId: `assistant-report:${ts}`, ...meta }
+        return d
+          .dispatch(
+            'bot-a',
+            { ...msg, transportScope: scope, sessionThread: coordinator },
+            'int-bot-a',
+            undefined,
+            callMeta
+          )
+          .catch(() => null)
+      }
+      return { report, queued: () => [...d.serialQueue.values()][0] ?? [] }
+    }
+    const idsOf = (prompt: string) => [...prompt.matchAll(/<(?:message|report) id="(msg-[\d.]+)"/g)].map((m) => m[1])
+
+    it('folds the reports queued behind a running turn into the next batch in arrival order, adding no asker (§5.18 ④)', async () => {
       const { daemon, d, route, prompts, askers, release } = await heldCoordinator()
       await route(from('1.1', 'U0EXAMPLE1', 'first'))
       await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
-      const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
-      const coordinator = await d.store.currentAppendCoordinate('bot-a', 'C1', scope, 'coordinator')
-      const queued = () => [...d.serialQueue.values()][0]
-      const report = (ts: string) => {
-        const msg = slack(ts, { source: 'agent', sender: { id: 'bot-a', isBot: true }, text: 'the task finished' })
-        void d
-          .dispatch('bot-a', { ...msg, transportScope: scope, sessionThread: coordinator }, 'int-bot-a')
-          .catch(() => {})
-      }
-      report('7.1')
+      const { report, queued } = await reporter(d)
+      const reportOf = { taskId: 'slack:C1:check-1:bot-a', kind: 'follow-up', title: 'Watch PR #412' }
+      const first = report('7.1', { reportOf })
       await vi.waitFor(() => expect(queued()).toHaveLength(1), WAIT)
       await route(from('1.2', 'U0EXAMPLE2'))
       await vi.waitFor(() => expect(queued()).toHaveLength(2), WAIT)
-      report('7.2')
+      const second = report('7.2')
       await vi.waitFor(() => expect(queued()).toHaveLength(3), WAIT)
+      release()
+      await vi.waitFor(() => expect(prompts).toHaveLength(2), WAIT)
+      await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+      expect(idsOf(prompts[1]!)).toEqual(['msg-7.1', 'msg-1.2', 'msg-7.2'])
+      expect(prompts[1]).toContain('[One new channel-root message and 2 reports in C1]')
+      expect(prompts[1]).toContain(
+        '<report id="msg-7.1" task="slack:C1:check-1:bot-a" kind="follow-up" title="Watch PR #412">'
+      )
+      expect(askers[1]).toEqual({ people: ['U0EXAMPLE2'], nobody: false })
+      // Left without a call, each report settles with its turn, answered silently: nothing retries or queues it again.
+      expect(await first).not.toBeNull()
+      expect(await second).not.toBeNull()
+      expect(prompts).toHaveLength(2)
+      expect(d.serialQueue.size).toBe(0)
+      await daemon.stop()
+    })
+
+    it('cuts a queue of reports between messages by class, each report riding with the batch it arrived in', async () => {
+      const { daemon, d, route, prompts, askers, release } = await heldCoordinator()
+      await route(from('1.1', 'U0EXAMPLE1', 'first'))
+      await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+      const { report, queued } = await reporter(d)
+      await route(from('1.2', 'U0EXAMPLE2'))
+      await vi.waitFor(() => expect(queued()).toHaveLength(1), WAIT)
+      void report('7.1')
+      await vi.waitFor(() => expect(queued()).toHaveLength(2), WAIT)
+      await route(from('1.3', GUEST))
+      await vi.waitFor(() => expect(queued()).toHaveLength(3), WAIT)
+      void report('7.2')
+      await vi.waitFor(() => expect(queued()).toHaveLength(4), WAIT)
+      await route(from('1.4', 'U0EXAMPLE1'))
+      await vi.waitFor(() => expect(queued()).toHaveLength(5), WAIT)
+      release()
+      await vi.waitFor(() => expect(prompts).toHaveLength(4), WAIT)
+      await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+      expect(prompts.slice(1).map(idsOf)).toEqual([['msg-1.2', 'msg-7.1'], ['msg-1.3', 'msg-7.2'], ['msg-1.4']])
+      expect(askers.slice(1)).toEqual([
+        { people: ['U0EXAMPLE2'], nobody: false },
+        { people: [GUEST], nobody: false },
+        { people: ['U0EXAMPLE1'], nobody: false }
+      ])
+      await daemon.stop()
+    })
+
+    it('runs reports with no message among them as one batch of no one, and a getting-to-know report’s turn as its own', async () => {
+      const { daemon, d, route, prompts, askers, release } = await heldCoordinator()
+      await route(from('1.1', 'U0EXAMPLE1', 'first'))
+      await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+      const { report, queued } = await reporter(d)
+      void report('7.1')
+      void report('7.2')
+      await vi.waitFor(() => expect(queued()).toHaveLength(2), WAIT)
+      // Its proposals select their follow-up through the turn's metadata (§5.13), so it heads a turn of its own.
+      void report('7.3', { gettingToKnowReport: 'item-1' })
+      await vi.waitFor(() => expect(queued()).toHaveLength(3), WAIT)
+      await route(from('1.2', 'U0EXAMPLE2'))
+      await vi.waitFor(() => expect(queued()).toHaveLength(4), WAIT)
       release()
       await vi.waitFor(() => expect(prompts).toHaveLength(3), WAIT)
       await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
-      expect(prompts[1]).toContain('<report id="msg-7.1">')
-      expect(prompts[1]).toContain('<message id="msg-1.2"')
-      expect(askers[1]).toEqual({ people: ['U0EXAMPLE2'], nobody: false })
-      expect(prompts[2]).toContain('<report id="msg-7.2">')
-      expect(prompts[2]).not.toContain('<message id=')
-      expect(askers[2]).toEqual({ people: [], nobody: true })
+      expect(prompts.slice(1).map(idsOf)).toEqual([
+        ['msg-7.1', 'msg-7.2'],
+        ['msg-7.3', 'msg-1.2']
+      ])
+      expect(askers[1]).toEqual({ people: [], nobody: true })
+      expect(askers[2]).toEqual({ people: ['U0EXAMPLE2'], nobody: false })
+      await daemon.stop()
+    })
+
+    it('starts a turn at once for a report that finds the coordinator idle', async () => {
+      const { daemon, d, route, prompts, release } = await heldCoordinator()
+      release()
+      await route(from('1.1', 'U0EXAMPLE1', 'first'))
+      await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+      await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+      const { report } = await reporter(d)
+      expect(await report('7.1')).not.toBeNull()
+      expect(prompts).toHaveLength(2)
+      expect(idsOf(prompts[1]!)).toEqual(['msg-7.1'])
+      expect(prompts[1]).toContain('[One report in C1]')
       await daemon.stop()
     })
   })

@@ -106,7 +106,32 @@ describe('runtime matrix coordinator probe', () => {
     ])
     expect(judgeCoordinator(scenario('report-reply'), told, 'AC_NO_RESPONSE').verdict).toBe('PASS')
     expect(judgeCoordinator(scenario('report-reply'), [], 'AC_NO_RESPONSE').verdict).toBe('FAIL')
-    expect(renderBatch(scenario('report-reply').messages)).toContain('<report id="msg-1700001100.000100">')
+    expect(renderBatch(scenario('report-reply').messages)).toContain(
+      '<report id="msg-1700001100.000100" task="followup-pr-4821" kind="follow-up" title="Watch PR #4821">'
+    )
+  })
+
+  // assistant-mode.md §5.18 ④: a batch of a message and two reports, one worth telling and one to leave.
+  it('passes a report batch that relays the news, delegates the work and leaves the empty check', () => {
+    const [news, work, quiet] = scopeOf('report-batch').messages
+    const batch = renderBatch(scenario('report-batch').messages)
+    expect(batch).toContain('[One new channel-root message and 2 reports in #eng-platform (C0EXAMPLE1)]')
+    expect(batch.indexOf(news!)).toBeLessThan(batch.indexOf(work!))
+    expect(batch.indexOf(work!)).toBeLessThan(batch.indexOf(quiet!))
+    const told = [
+      { action: 'replyToMessage', messageId: news, message: '<@U0EXAMPLE1> PR #4821 merged and main is green.' },
+      { action: 'delegateTask', messageId: work, title: 'Nightly analytics export failure' }
+    ]
+    expect(judgeCoordinator(scenario('report-batch'), recorded('report-batch', told), 'AC_NO_RESPONSE').verdict).toBe(
+      'PASS'
+    )
+    const noisy = recorded('report-batch', [
+      ...told,
+      { action: 'replyToMessage', messageId: quiet, message: 'The staging certificate is fine.' }
+    ])
+    expect(judgeCoordinator(scenario('report-batch'), noisy, 'AC_NO_RESPONSE').verdict).toBe('DEGRADED')
+    const missed = recorded('report-batch', [told[1]!])
+    expect(judgeCoordinator(scenario('report-batch'), missed, 'AC_NO_RESPONSE').verdict).toBe('FAIL')
   })
 
   // auto-session-mode.md §10: a webchat person reads the turn's text, so text beside a call is degraded there and nowhere else.

@@ -1,6 +1,7 @@
 // A coordinator turn's delivered messages and the one outcome each may take (auto-session-mode.md §4.2–§4.5).
+import type { CallMeta } from '../daemon/turn-types.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
-import { coordinatorMessageId, type CoordinatorMessage } from './coordinator-prompt.js'
+import { coordinatorMessageId, type CoordinatorMessage, type ReportAbout } from './coordinator-prompt.js'
 
 /** One message a coordinator turn decides on, with what acting on it needs. */
 export interface DeliveredMessage {
@@ -11,6 +12,8 @@ export interface DeliveredMessage {
   mentionsYou: boolean
   /** A report, a follow-up's result or another agent's answer rather than a channel message: it is answered, never handed to a task (§3.4). */
   report?: true
+  /** What a report speaks for, which its block names. */
+  about?: ReportAbout
   /** Its turn streams to a webchat browser, which commits the turn's text as the reply. */
   streamed?: true
 }
@@ -78,7 +81,8 @@ export function answerThreadOf(
 /** The message as the coordinator's batch shows it. */
 export function coordinatorView(message: DeliveredMessage, text: string): CoordinatorMessage {
   const { msg } = message
-  if (message.report) return { id: message.id, from: msg.sender.id, mentionsYou: false, text, report: true }
+  if (message.report)
+    return { id: message.id, from: msg.sender.id, mentionsYou: false, text, report: true, ...message.about }
   return {
     id: message.id,
     from: msg.sender.id,
@@ -92,25 +96,55 @@ export function coordinatorView(message: DeliveredMessage, text: string): Coordi
 export interface BatchRules<T> {
   /** It never joins a batch nor takes one: a webchat message, whose reply streams to its own browser turn (§10). */
   ownTurn(entry: T): boolean
-  /** A report, which heads a turn of its own and so ends the batch before it (§3.4). */
+  /** Anything else no person sent, such as a getting-to-know report, whose turn's metadata it needs: it heads a turn and so ends the batch before it (§3.4). */
+  heads(entry: T): boolean
+  /** A report with no turn metadata: it joins the batch it arrives in and brings no class (assistant-mode.md §5.18 ④). */
   report(entry: T): boolean
   classOf(entry: T): Promise<string>
 }
 
-/** How many of the queued entries join the head's batch: those right behind it while they are messages of one class, never reordered (assistant-mode.md §5.18 ③). */
+/** How many of the queued entries join the head's batch: the messages of its class and the reports among them, in arrival order and never reordered (assistant-mode.md §5.18 ③). */
 export async function batchCut<T>(head: T, queued: readonly T[], rules: BatchRules<T>): Promise<number> {
   if (rules.ownTurn(head)) return 0
   let batchClass: string | undefined
   let taken = 0
   for (const next of queued) {
-    if (rules.ownTurn(next) || rules.report(next)) break
-    const nextClass = await rules.classOf(next)
-    // A report heading the turn brings no class of its own: it rides with the messages right behind it.
-    batchClass ??= rules.report(head) ? nextClass : await rules.classOf(head)
-    if (nextClass !== batchClass) break
+    if (rules.ownTurn(next) || rules.heads(next)) break
+    if (!rules.report(next)) {
+      const nextClass = await rules.classOf(next)
+      // An entry no person sent brings no class of its own: the first message of its batch sets it.
+      batchClass ??= rules.heads(head) || rules.report(head) ? nextClass : await rules.classOf(head)
+      if (nextClass !== batchClass) break
+    }
     taken += 1
   }
   return taken
+}
+
+/** Whether a queued entry is a report that joins a coordinator's batch: one no turn metadata rides on, as a getting-to-know report's proposals or a place's opening do (assistant-mode.md §5.18 ④). */
+export function reportJoinsBatch(
+  msg: Pick<NormalizedMessage, 'source' | 'parentReport'>,
+  callMeta: CallMeta | undefined
+): boolean {
+  return (
+    msg.source !== 'user' &&
+    msg.parentReport === true &&
+    callMeta?.gettingToKnowReport === undefined &&
+    callMeta?.opensPlace !== true
+  )
+}
+
+/** What a report's block names beside its id: the task it speaks for, or that it is another agent's answer. */
+export function reportAboutOf(
+  agentId: string,
+  msg: Pick<NormalizedMessage, 'source'>,
+  callMeta: Pick<CallMeta, 'reportOf' | 'callFrom'> | undefined
+): ReportAbout | undefined {
+  if (msg.source === 'user') return undefined
+  const of = callMeta?.reportOf
+  if (of) return { task: of.taskId, kind: of.kind, ...(of.title ? { title: of.title } : {}) }
+  const from = callMeta?.callFrom
+  return from !== undefined && from !== agentId ? { kind: 'agent answer' } : undefined
 }
 
 /** Every coordinator session's live turn, keyed by the session key. */

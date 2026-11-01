@@ -100,11 +100,18 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
   which posts in the report's thread or at the conversation's root; a report never opens a task and
   is never handed to one, and shows no 🤔. Its own follow-ups and proposals, made with the place
   tools of §5.4, belong to it as they belong to an `append` session.
-- A report queued behind a running turn is never absorbed into the next batch. It starts a turn of its
-  own, which keeps the report's own metadata (a getting-to-know report's proposals ride on it); the
-  channel messages right behind it of one permission class join that turn, adding no asker
-  ([assistant-mode.md](assistant-mode.md) §5.18 ③). Proposed: a report without turn metadata joins
-  the batch (the same section's ④).
+- A report queued behind a running turn joins the next batch in arrival order, beside the channel
+  messages and framed apart from them as `<report id task kind title>`: the task it speaks for by
+  its `taskId`, kind and title, or `kind="agent answer"` for another agent's answer
+  ([assistant-mode.md](assistant-mode.md) §5.18 ④). It brings no asker and no permission class, so it
+  rides with the batch it arrives in, and a batch of reports alone is judged `NOBODY` (§5.18 ③). The
+  coordinator answers it with `replyToMessage` naming its id, or leaves it, which settles it
+  silently with the turn; nothing is retried or queued again.
+- A report that carries turn metadata keeps a turn of its own, ending the batch before it: a
+  getting-to-know report, whose proposals ride on that turn's metadata, and a report that opens its
+  place's long session. The channel messages right behind it of one permission class join its turn,
+  and it adds no asker. A report that finds the coordinator idle starts a turn at once, and a webchat
+  conversation's reports, like its messages, each run as a turn of their own (§10).
 - The coordinator's turns carry the work board ([assistant-mode.md](assistant-mode.md) §5.18 ② and ④)
   instead of the standing follow-up list and the running-tasks block: its place's open tasks with
   their ids, and the other places' open tasks every person in its batch may read. It is sent when the
@@ -148,7 +155,8 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
 ### 4.3 Batching
 
 The coordinator runs one turn at a time. Root messages that arrive while it runs are delivered
-together in its next turn, and it decides each one separately. Queued messages are never dropped.
+together in its next turn, with the reports that arrived among them (§3.4), and it decides each one
+separately. Queued messages are never dropped.
 A batch holds one permission class, so the queue is cut in arrival order where the next sender's
 class differs, and every sender of a batch is asked on its turn
 ([assistant-mode.md](assistant-mode.md) §5.18 ③).
@@ -520,7 +528,8 @@ turn with the work board the daemon would send ([assistant-mode.md](assistant-mo
 delivers channel messages in the format of §4.3, and judges each message's outcome. Its scenarios:
 new work, a message for an open task, a status question, a greeting, chatter between people, a
 request to another agent, a vague mention, a small edit the coordinator must not do itself, two mixed
-batches, a follow-up's report (§3.4), a request for work another channel's task already has open, and
+batches, a follow-up's report (§3.4), a batch of one message and two reports, one worth telling
+and one with nothing new, a request for work another channel's task already has open, and
 in a webchat conversation (§10) new work, a status question, a message for an open task and a status
 question about another channel's task.
 
@@ -559,6 +568,14 @@ the daemon sends and `listTasks` answered `here` and `elsewhere`; two scenarios 
 new scenario was answered from the task's `elsewhere` summary after one `listTasks` call, naming its
 channel and pull request; no second task was opened and no task from elsewhere was messaged.
 `claude-acp` used only `ToolSearch` besides the coordinator tools, and `codex-acp` nothing else.
+The same day, with reports riding in the batch ([assistant-mode.md](assistant-mode.md) §5.18 ④),
+every report block naming its task by `task`, `kind` and `title`, and the prompt saying a report may
+arrive beside messages and is left silently, `report-batch` was added: a follow-up's report worth
+telling, a request for new work and a follow-up's report with nothing new, in one turn.
+`claude-acp` (on Claude Opus 5.5) and `codex-acp` each passed 51 / 51 (3 repetitions each). In every
+`report-batch` run the first report was relayed with `replyToMessage` naming its PR, the request
+was delegated and the empty report was left; `codex-acp` called `listTasks` once first, `claude-acp`
+did not. Neither used a tool besides the coordinator tools other than `claude-acp`'s `ToolSearch`.
 
 The candidate prompt asks the coordinator to express every outcome as a call and to end its turn
 with `AC_NO_RESPONSE`; the judge still accepts a one-message turn's text as its reply (§4.3).

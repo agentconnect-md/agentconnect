@@ -221,8 +221,8 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     await daemon.stop()
   })
 
-  // A report's turn carries its own metadata, such as a getting-to-know report's proposals, so no batch absorbs one.
-  it('keeps each report queued behind a turn on a turn of its own, with the channel messages right behind it', async () => {
+  // assistant-mode.md §5.18 ④: a report with no turn metadata of its own rides in the next batch beside the messages.
+  it('folds the reports queued behind a turn into the next batch with the channel messages, in arrival order', async () => {
     let release!: () => void
     const held = new Promise<void>((resolve) => (release = resolve))
     const prompts: string[] = []
@@ -259,17 +259,16 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     await report('p-1', '[follow-up] first report')
     await report('p-2', '[follow-up] second report')
     await route(slack('3.1', { text: 'after the reports' }))
+    await vi.waitFor(() => expect([...d.serialQueue.values()][0]).toHaveLength(3), WAIT)
     release()
-    await vi.waitFor(() => expect(prompts).toHaveLength(3), WAIT)
+    await vi.waitFor(() => expect(prompts).toHaveLength(2), WAIT)
     await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
-    // In arrival order (assistant-mode.md §5.18 ③): the message waits behind the second report and joins its turn.
-    expect(prompts[1]).toContain('[follow-up] first report')
-    expect(prompts[1]).toContain('[One report in C1]')
-    expect(prompts[1]).not.toContain('second report')
-    expect(prompts[1]).not.toContain('after the reports')
-    expect(prompts[2]).toContain('[follow-up] second report')
-    expect(prompts[2]).toContain('after the reports')
-    expect(prompts[2]).toContain('[One new channel-root message and one report in C1]')
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]).toContain('[One new channel-root message and 2 reports in C1]')
+    const at = (text: string) => prompts[1]!.indexOf(text)
+    expect(at('first report')).toBeGreaterThan(-1)
+    expect(at('first report')).toBeLessThan(at('second report'))
+    expect(at('second report')).toBeLessThan(at('after the reports'))
     await daemon.stop()
   })
 

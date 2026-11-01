@@ -525,6 +525,7 @@ describe('a coordinator’s queue is cut by permission class and each batch judg
       const lookups = deps.readLookups!(AGENT)
       const rules = {
         ownTurn: () => false,
+        heads: () => false,
         report: (m: TurnMessage) => m.msg.source !== 'user',
         classOf: (m: TurnMessage) => askerClass(m, 'int-slack', lookups)
       }
