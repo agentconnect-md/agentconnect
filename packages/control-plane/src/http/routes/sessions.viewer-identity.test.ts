@@ -10,6 +10,8 @@
 import Fastify, { type FastifyInstance } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
 import { classifySession } from '../../domain/session-visibility.js'
+import { canViewSession } from '../../authorization/policy.js'
+import { encodeConversationKey } from '../conversation-key.js'
 import { systemClock } from '../../domain/clock.js'
 import type { HttpDeps } from '../deps.js'
 import { GoogleChatSessionAccessService } from '../googlechat-session-access.js'
@@ -78,6 +80,10 @@ function fakeDeps(overrides: {
   plugins?: SessionAccessPlugin[]
   /** The caller's stored sign-in subject, for a delegated call that carries none itself. */
   oidcSubjectOf?: string
+  syntheticChild?: Omit<ReturnType<typeof slackDmSession>, 'parentSessionId' | 'visibility'> & {
+    parentSessionId: string
+    visibility: 'private'
+  }
 }) {
   const listPage = vi.fn(async () => ({ sessions: [], total: 0, hasMore: false }))
   const listConversationPage = vi.fn(async () => ({ conversations: [], total: 0, hasMore: false }))
@@ -91,7 +97,7 @@ function fakeDeps(overrides: {
         // The repo read is org-fenced now (org-scoped-data-layer.md §3), so the
         // fake enforces the fence instead of the route's deleted comparison.
         get: vi.fn(async (orgId: string) => {
-          const row = overrides.session ?? slackDmSession()
+          const row = overrides.session ?? overrides.syntheticChild ?? slackDmSession()
           return row.orgId === orgId ? row : null
         }),
         orgHasAny: vi.fn(async () => true),
@@ -100,13 +106,23 @@ function fakeDeps(overrides: {
         getExternalAccessPolicy: vi.fn(async () => null),
         listPage,
         listConversationPage,
+        listConversationMembers: vi.fn(
+          async ({ viewer }: { viewer: { identitySet: string[]; userId: string; role: 'collaborator' } }) =>
+            overrides.syntheticChild && canViewSession(overrides.syntheticChild, viewer, new Set(viewer.identitySet))
+              ? [overrides.syntheticChild]
+              : []
+        ),
         listChildren: vi.fn(async () => []),
         listFacets: vi.fn(async () => ({ agents: [], integrations: [], channels: [], triggers: [] }))
       },
       sessionUsage: { get: vi.fn(async () => null) },
       user: { getOidcSubject: vi.fn(async () => overrides.oidcSubjectOf ?? null) },
       hook: { getMany: vi.fn(async () => []) },
-      integrationChannel: { namesForOrg: vi.fn(async () => []) }
+      integrationChannel: { namesForOrg: vi.fn(async () => []) },
+      webchatConversation: {
+        apiKeyNames: vi.fn(async () => []),
+        participants: vi.fn(async () => [])
+      }
     },
     clock: { now: () => Date.now() },
     ...(overrides.plugins ? { sessionAccessPlugins: overrides.plugins } : {}),
@@ -152,6 +168,44 @@ async function appAs(
 }
 
 describe('session routes × viewer identity', () => {
+  it('resolves a synthetic webchat child by key only for its private owner', async () => {
+    const child = {
+      ...slackDmSession(),
+      id: 'sess-child',
+      parentSessionId: 'sess-parent',
+      platform: 'webchat',
+      channel: 'a2a:agent-lead',
+      thread: 'agentcall:child',
+      visibility: 'private' as const,
+      ownerIdentity: 'user:u-1'
+    }
+    const { deps } = fakeDeps({ syntheticChild: child })
+    const owner = await appAs(deps, { userId: 'u-1' })
+    const stranger = await appAs(deps, { userId: 'u-2' })
+    const key = encodeConversationKey({
+      platform: 'webchat',
+      tenantScope: null,
+      channel: child.channel,
+      thread: child.thread
+    })!
+    try {
+      const url = `/sessions?conversationKey=${encodeURIComponent(key)}`
+      const allowed = await owner.inject({ method: 'GET', url })
+      expect(allowed.statusCode).toBe(200)
+      expect(allowed.json().conversations[0].sessions[0].sessionId).toBe(child.id)
+      const denied = await stranger.inject({ method: 'GET', url })
+      expect(denied.statusCode).toBe(200)
+      expect(denied.json().conversations).toEqual([])
+      expect((await stranger.inject({ method: 'GET', url: `/sessions/${child.id}` })).statusCode).toBe(404)
+      expect(
+        (await owner.inject({ method: 'GET', url: '/sessions?conversationKey=a2a%3Aagent-lead' })).statusCode
+      ).toBe(400)
+    } finally {
+      await owner.close()
+      await stranger.close()
+    }
+  })
+
   it('feeds the linked Slack identity into the list projection viewer', async () => {
     const { deps, listPage, listConversationPage } = fakeDeps({
       slackIdentityFor: async () => ({ teamId: 'T024BE7LD', userId: 'U0123ABCD' })

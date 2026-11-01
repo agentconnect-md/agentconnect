@@ -11,10 +11,11 @@ export interface ConversationKeyParts {
 }
 
 const SEP = '\u0000'
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export function encodeConversationKey(key: ConversationKeyParts): string | null {
   if (key.channel === null || key.thread === null) return null
-  if (key.platform === 'webchat') return key.channel
+  if (key.platform === 'webchat' && UUID_RE.test(key.channel)) return key.channel
   const raw = [key.platform, key.tenantScope ?? '', key.channel, key.thread].join(SEP)
   const bytes = new TextEncoder().encode(raw)
   let binary = ''
