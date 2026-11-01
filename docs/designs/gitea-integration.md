@@ -571,6 +571,13 @@ pull request and its comments and reviews, create or edit a pull request where
 the grant permits, read commit statuses. Each entry is an exact method and
 path template; no arbitrary path or body passes through.
 
+The `gitea_effect` lease carries the clamp the broker enforces per entry. The
+workspace repository earns `write` from a write workspace and `comment` from a
+read one. Another repository earns the tier of the agent's explicit
+additional-repository grant on it, the same authority the Git plane honors
+(§9); an enabled gitea hook on the repository raises that to at least
+`comment`, and is enough alone for `comment`. Anything else is refused.
+
 ### 10.3 Formal Pull-Request Reviews
 
 `submitCodeReview` keeps its argument schema and is routed to a Gitea adapter

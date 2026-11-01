@@ -46,7 +46,7 @@ export class GiteaGitcredService {
     return this.lease(orgId, repoId, 'read', EFFECT_LEASE_MAX_SEC)
   }
 
-  /** §10.2 broker effect lease: authorized by the agent's Gitea workspace binding or an enabled gitea hook. */
+  /** §10.2 broker effect lease: authorized by the agent's Gitea workspace, an explicit additional grant, or an enabled gitea hook. */
   async grantForBrokerEffect(agent: AgentRecord, repoId: bigint, hookAuthorized: boolean): Promise<GitCredGrant> {
     const credential =
       agent.workspace.mode === 'git' &&
@@ -54,11 +54,26 @@ export class GiteaGitcredService {
       agent.workspaceRepoId === repoId
         ? agent.workspace.credential
         : undefined
-    if (credential === undefined && !hookAuthorized) {
+    const grant =
+      credential === undefined
+        ? (await this.deps.repoAuths.listForAgent(agent.id)).find(
+            (row) => row.provider === 'gitea' && row.repoId === repoId
+          )
+        : undefined
+    if (credential === undefined && grant === undefined && !hookAuthorized) {
       throw new GitCredDeniedError('the agent is not authorized for that gitea repository', 'SCOPE_DENIED', false)
     }
-    // The clamp the daemon broker enforces per operation: only a write workspace earns full effect authority.
-    const access = credential !== undefined && credential.access !== 'read' ? 'write' : 'comment'
+    // The broker's per-operation clamp: a workspace earns write or comment; a grant keeps its tier, which a hook lifts to comment.
+    const access =
+      credential !== undefined
+        ? credential.access !== 'read'
+          ? 'write'
+          : 'comment'
+        : grant?.access === 'write'
+          ? 'write'
+          : hookAuthorized || grant?.access === 'comment'
+            ? 'comment'
+            : 'read'
     return this.lease(agent.orgId, repoId, access, EFFECT_LEASE_MAX_SEC)
   }
 

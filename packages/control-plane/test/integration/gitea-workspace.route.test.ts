@@ -257,6 +257,53 @@ describe('gitcred v2 gitea grants (§4.2, §9)', () => {
     await expect(service.grantForBrokerEffect(agent, SECOND, false)).rejects.toBeInstanceOf(GitCredDeniedError)
   })
 
+  it('serves effects on an additional repository under the explicit grant’s tier, lifted to comment by a hook', async () => {
+    const h = await harness()
+    await h.bind(SECOND, 'example-org/second-repo')
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: h.daemonId, giteaRepoId: REPO, gitAccess: 'read' })
+    const agent = (await new PgAgentRepo(prisma).get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+    const service = gitcred(h)
+    const granted = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${agentId}/repos`,
+      payload: { provider: 'gitea', repoId: SECOND.toString(), access: 'read' }
+    })
+    expect(granted.statusCode).toBe(200)
+    const id = (granted.json() as { id: string }).id
+    const raise = async (access: 'comment' | 'write') => {
+      const res = await h.a.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/agents/${agentId}/repos/${id}`,
+        payload: { access }
+      })
+      expect(res.statusCode).toBe(200)
+    }
+    // A read or comment grant keeps its own tier; a hook lifts it to comment, never past it.
+    expect((await service.grantForBrokerEffect(agent, SECOND, false)).access).toBe('read')
+    expect((await service.grantForBrokerEffect(agent, SECOND, true)).access).toBe('comment')
+    await raise('comment')
+    expect((await service.grantForBrokerEffect(agent, SECOND, false)).access).toBe('comment')
+    expect((await service.grantForBrokerEffect(agent, SECOND, true)).access).toBe('comment')
+    // A write grant authorizes write effects with or without a hook, matching its Git-plane clamp.
+    await raise('write')
+    expect((await service.grantForAgent(agent, SECOND)).access).toBe('write')
+    expect(await service.grantForBrokerEffect(agent, SECOND, false)).toMatchObject({
+      access: 'write',
+      externalRepoId: SECOND.toString(),
+      repoFullName: 'example-org/second-repo',
+      ttlSec: 900
+    })
+    expect((await service.grantForBrokerEffect(agent, SECOND, true)).access).toBe('write')
+    // The workspace repository keeps the workspace's own clamp.
+    expect((await service.grantForBrokerEffect(agent, REPO, false)).access).toBe('comment')
+    // Removing the grant leaves only hook authority.
+    const removed = await h.a.app.inject({ method: 'DELETE', url: `${ORG}/agents/${agentId}/repos/${id}` })
+    expect(removed.statusCode).toBeLessThan(300)
+    await expect(service.grantForBrokerEffect(agent, SECOND, false)).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+    expect((await service.grantForBrokerEffect(agent, SECOND, true)).access).toBe('comment')
+  })
+
   it('denies while the token is rejected and once the binding enters cleanup', async () => {
     const h = await harness()
     const agentId = randomUUID()
