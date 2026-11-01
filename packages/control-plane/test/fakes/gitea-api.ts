@@ -64,6 +64,8 @@ export interface FakeGiteaOptions {
   botRole?: FakeGiteaBotRole
   /** Subscription names the instance silently drops on hook create/update (§16). */
   dropEvents?: string[]
+  /** Gitea 1.23 / Forgejo read-back: the review flag echoed as its constituents, not `pull_request_review` (§16). */
+  splitReviewReadBack?: boolean
   maxResponseItems?: number
   /** Runs when a test delivery is fired — the place a test lets the relay "observe" it (§6 step 4). */
   onTestDelivery?: (hookId: number) => Promise<void> | void
@@ -154,7 +156,9 @@ function page<T>(url: string, rows: readonly T[], limitCap: number, withLink = t
 }
 
 export class FakeGitea {
-  readonly opts: Required<Omit<FakeGiteaOptions, 'onTestDelivery' | 'dropEvents' | 'intercept' | 'gate'>> &
+  readonly opts: Required<
+    Omit<FakeGiteaOptions, 'onTestDelivery' | 'dropEvents' | 'splitReviewReadBack' | 'intercept' | 'gate'>
+  > &
     FakeGiteaOptions
   readonly api: GiteaApiClient
   /** What `GET /version` answers NOW — assign mid-test to downgrade. */
@@ -286,6 +290,14 @@ export class FakeGitea {
     for (const name of asked) {
       if (!KNOWN_EVENTS.has(name) || this.opts.dropEvents?.includes(name)) continue
       for (const expanded of UMBRELLAS[name] ?? [name]) stored.add(expanded)
+    }
+    if (this.opts.splitReviewReadBack) {
+      // `EventCheckers()`: approved/rejected follow the review flag, `_comment` follows the pull request comment flag.
+      if (stored.delete('pull_request_review')) {
+        stored.add('pull_request_review_approved')
+        stored.add('pull_request_review_rejected')
+      }
+      if (stored.has('pull_request_comment')) stored.add('pull_request_review_comment')
     }
     return [...stored]
   }

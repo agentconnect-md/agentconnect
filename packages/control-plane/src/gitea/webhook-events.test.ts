@@ -92,6 +92,19 @@ describe('giteaWebhookEventsMissing', () => {
     expect(giteaWebhookEventsMissing(['push'], [])).toEqual(['push'])
   })
 
+  it('accepts either read-back form of the review subscription, but not the comment flag alone', () => {
+    // Gitea 1.24+ echoes the group key.
+    expect(giteaWebhookEventsMissing(['pull_request_review'], ['pull_request_review'])).toEqual([])
+    // Gitea 1.23 and Forgejo echo the constituents the review flag drives.
+    const split = ['pull_request_review_approved', 'pull_request_review_rejected', 'pull_request_review_comment']
+    expect(giteaWebhookEventsMissing(['pull_request_review'], split)).toEqual([])
+    expect(giteaWebhookEventsMissing(['pull_request_review'], ['pull_request_review_approved'])).toEqual([])
+    // There `_comment` follows `pull_request_comment`, so it proves nothing about reviews.
+    expect(giteaWebhookEventsMissing(['pull_request_review'], ['pull_request_review_comment'])).toEqual([
+      'pull_request_review'
+    ])
+  })
+
   it('hashes the union by content, not by order', () => {
     expect(giteaWebhookEventsHash(['push', 'issues'])).toBe(giteaWebhookEventsHash(['issues', 'push']))
     expect(giteaWebhookEventsHash(['push'])).not.toBe(giteaWebhookEventsHash(['issues']))

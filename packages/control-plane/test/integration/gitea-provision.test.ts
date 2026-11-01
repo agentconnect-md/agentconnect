@@ -148,6 +148,17 @@ describe('GiteaProvisioner (§6) — the managed webhook', () => {
     expect(h.fake.tests).toHaveLength(1)
   })
 
+  it('is ready on an instance that reads the review subscription back as its constituent names', async () => {
+    const h = await harness({ splitReviewReadBack: true }, EVENTS, { relayObserves: true })
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready', reason: null })
+    const hook = [...h.fake.hooks.values()][0]!
+    expect(hook.events).not.toContain('pull_request_review')
+    expect(hook.events).toContain('pull_request_review_approved')
+    const row = await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)
+    expect(row!.desiredEventsHash).not.toBeNull()
+    expect(row!.lastVerifiedDeliveryAt).not.toBeNull()
+  })
+
   it('reads the stored events back by subset and degrades when the instance dropped a name', async () => {
     const h = await harness({ dropEvents: ['pull_request_review'] })
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
@@ -510,6 +521,17 @@ describe('GiteaProvisioner (§7) — signing-key rotation by successor webhook',
     expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
     expect(h.fake.hooks.size).toBe(0)
     expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitea' } })).toBe(0)
+  })
+
+  it('rotates on an instance that reads the review subscription back as its constituent names', async () => {
+    const h = await harness({ splitReviewReadBack: true })
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    expect(await h.provisioner.rotateWebhookSecret(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      rotated: true,
+      promoted: false
+    })
+    expect(h.fake.hooks.size).toBe(2)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.nextWebhookId).not.toBeNull()
   })
 
   it('refuses to replace a working webhook with a successor that lost subscriptions', async () => {
