@@ -91,6 +91,55 @@ export interface AssistantActivity {
 // Room for the answer's own fields around its list.
 const ANSWER_OVERHEAD_BYTES = 1_024
 
+// The console and platform task views read the same scoped rows and follow-up adoption.
+export async function readTaskSubsessions(
+  store: AssistantActivityStore,
+  req: Extract<AssistantActivityReadReq, { operation: 'subsessions' }>,
+  assistant: boolean
+): Promise<Extract<AssistantActivityReadResult, { operation: 'subsessions' }>> {
+  const subsessionOf = (row: AssistantSubsession) => taskOf(store, req.agentId, row)
+  const delegationsOnly = !assistant
+  if (!req.parent) {
+    const rows = await store.assistantSubsessions.list(req.agentId, req.limit + 1, { delegationsOnly })
+    const { kept, trimmed } = withinBudget(await Promise.all(rows.slice(0, req.limit).map(subsessionOf)))
+    return {
+      operation: 'subsessions',
+      subsessions: kept,
+      truncated: rows.length > req.limit || trimmed,
+      followUps: true
+    }
+  }
+  if (assistant && req.parent.cursor === undefined) {
+    const rec = await store.getSessionByOutwardId(req.parent.sessionId, req.agentId)
+    if (rec?.agentId === req.agentId && !isSubsessionCoordinate(rec.thread)) {
+      const place = await store.placeSession(req.agentId, rec.platform, rec.channel, rec.transportScope ?? null)
+      if (place?.key === rec.key)
+        await store.assistantSubsessions.adoptFollowUps(
+          req.agentId,
+          { platform: rec.platform, channel: rec.channel, transportScope: rec.transportScope ?? null },
+          { sessionId: req.parent.sessionId, key: rec.key }
+        )
+    }
+  }
+  const after = req.parent.cursor === undefined ? undefined : cursorPosition(req.parent.cursor)
+  const rows = await store.assistantSubsessions.listForParent(req.agentId, req.parent.sessionId, {
+    limit: req.limit + 1,
+    ...(after ? { after } : {}),
+    delegationsOnly
+  })
+  const page = rows.slice(0, req.limit)
+  const { kept, trimmed } = withinBudget(await Promise.all(page.map(subsessionOf)))
+  const last = page[kept.length - 1]
+  const more = (rows.length > req.limit || trimmed) && last !== undefined
+  return {
+    operation: 'subsessions',
+    subsessions: kept,
+    truncated: more,
+    nextCursor: more ? cursorOf(last) : null,
+    followUps: true
+  }
+}
+
 export function createAssistantActivity(deps: AssistantActivityDeps): AssistantActivity {
   // Only an agent this daemon holds; true while it is in assistant mode, whose follow-ups and proposals the view adds.
   const admit = (agentId: string): boolean => {
@@ -116,19 +165,6 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
     if (rec?.agentId !== agentId || rec.platform !== 'webchat' || isSubsessionCoordinate(rec.thread)) return undefined
     return { platform: rec.platform, channel: rec.channel }
   }
-  // A conversation that is its place's current long session owns the place's follow-ups, so they are listed under it.
-  const adoptInto = async (store: AssistantActivityStore, agentId: string, sessionId: string): Promise<void> => {
-    const rec = await store.getSessionByOutwardId(sessionId, agentId)
-    if (rec?.agentId !== agentId || isSubsessionCoordinate(rec.thread)) return
-    const place = await store.placeSession(agentId, rec.platform, rec.channel, rec.transportScope ?? null)
-    if (place?.key !== rec.key) return
-    await store.assistantSubsessions.adoptFollowUps(
-      agentId,
-      { platform: rec.platform, channel: rec.channel, transportScope: rec.transportScope ?? null },
-      { sessionId, key: rec.key }
-    )
-  }
-
   return {
     async read(req) {
       const assistant = admit(req.agentId)
@@ -139,41 +175,8 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           return { operation: 'items', items: [], truncated: false }
         case 'item':
           return { operation: 'item', item: null }
-        case 'subsessions': {
-          const subsessionOf = (row: AssistantSubsession) => taskOf(store, req.agentId, row)
-          // Follow-ups are listed only in assistant mode.
-          const delegationsOnly = !assistant
-          if (!req.parent) {
-            const rows = await store.assistantSubsessions.list(req.agentId, req.limit + 1, { delegationsOnly })
-            // A follow-up row carries its checks, so the wire budget, not the row limit, bounds the answer.
-            const { kept, trimmed } = withinBudget(await Promise.all(rows.slice(0, req.limit).map(subsessionOf)))
-            return {
-              operation: 'subsessions',
-              subsessions: kept,
-              truncated: rows.length > req.limit || trimmed,
-              followUps: true
-            }
-          }
-          if (assistant && req.parent.cursor === undefined) await adoptInto(store, req.agentId, req.parent.sessionId)
-          const after = req.parent.cursor === undefined ? undefined : cursorPosition(req.parent.cursor)
-          const rows = await store.assistantSubsessions.listForParent(req.agentId, req.parent.sessionId, {
-            limit: req.limit + 1,
-            ...(after ? { after } : {}),
-            delegationsOnly
-          })
-          const page = rows.slice(0, req.limit)
-          const { kept, trimmed } = withinBudget(await Promise.all(page.map(subsessionOf)))
-          // The next page starts after the last row this answer actually carries.
-          const last = page[kept.length - 1]
-          const more = (rows.length > req.limit || trimmed) && last !== undefined
-          return {
-            operation: 'subsessions',
-            subsessions: kept,
-            truncated: more,
-            nextCursor: more ? cursorOf(last) : null,
-            followUps: true
-          }
-        }
+        case 'subsessions':
+          return readTaskSubsessions(store, req, assistant)
         case 'task': {
           const child = await store.getSessionByOutwardId(req.sessionId, req.agentId)
           const row =
