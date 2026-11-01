@@ -513,13 +513,16 @@ not addressed to this agent. Cost grows with the number of agents.
 
 ## 12. Validation
 
-`packages/daemon/test/acp-matrix/coordinator-probe.ts` injects a candidate coordinator prompt and
-tool surface (`sendMessage` with `delegateTask`, `messageTask` and `replyToMessage`, plus `listTasks`)
-into a real runtime session over an HTTP MCP fixture, delivers channel messages in the format of
-§4.3, and judges each message's outcome. Its scenarios: new work, a message for an open task, a
-status question, a greeting, chatter between people, a request to another agent, a vague mention, a
-small edit the coordinator must not do itself, two mixed batches, a follow-up's report (§3.4), and in
-a webchat conversation (§10) new work, a status question and a message for an open task.
+`packages/daemon/test/acp-matrix/coordinator-probe.ts` injects a candidate coordinator prompt and tool
+surface (`sendMessage` with `delegateTask`, `messageTask` and `replyToMessage`, plus `listTasks` with
+its `here` and `elsewhere` lists) into a real runtime session over an HTTP MCP fixture, opens each
+turn with the work board the daemon would send ([assistant-mode.md](assistant-mode.md) §5.18),
+delivers channel messages in the format of §4.3, and judges each message's outcome. Its scenarios:
+new work, a message for an open task, a status question, a greeting, chatter between people, a
+request to another agent, a vague mention, a small edit the coordinator must not do itself, two mixed
+batches, a follow-up's report (§3.4), a request for work another channel's task already has open, and
+in a webchat conversation (§10) new work, a status question, a message for an open task and a status
+question about another channel's task.
 
 ```bash
 AC_RUNTIME_MATRIX_ONLY=coordinator AC_RUNTIME_MATRIX_TARGETS=claude-acp,codex-acp \
@@ -548,6 +551,14 @@ an `ignore-chatter` turn that timed out after 180 s with no call; that scenario 
 On 2026-10-31 the webchat form of the prompt (§10) passed its three scenarios (`webchat-new-work`,
 `webchat-status`, `webchat-route`, which also fail any text shown beside a call) 9 / 9 on `claude-acp`
 and on `codex-acp` (3 repetitions each); the channel prompt was unchanged.
+On 2026-11-01, with the work board (assistant-mode.md §5.18), every scenario opened with the board
+the daemon sends and `listTasks` answered `here` and `elsewhere`; two scenarios were added:
+`elsewhere-duplicate`, a request at the channel root for work another channel's task has open, and
+`webchat-elsewhere-status`, a status question about that task in a member's webchat conversation.
+`claude-acp` (on Claude Opus 5.5) and `codex-acp` each passed 48 / 48 (3 repetitions each). Every
+new scenario was answered from the task's `elsewhere` summary after one `listTasks` call, naming its
+channel and pull request; no second task was opened and no task from elsewhere was messaged.
+`claude-acp` used only `ToolSearch` besides the coordinator tools, and `codex-acp` nothing else.
 
 The candidate prompt asks the coordinator to express every outcome as a call and to end its turn
 with `AC_NO_RESPONSE`; the judge still accepts a one-message turn's text as its reply (§4.3).
