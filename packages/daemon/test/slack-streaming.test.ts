@@ -187,14 +187,11 @@ describe('OutputConverger streaming axis', () => {
     expect(converger.streamUpdate()).toEqual([])
   })
 
-  it.each([
-    ['medium', 'plan'],
-    ['high', 'timeline']
-  ] as const)('groups %s steps in %s mode with a counted closing summary', (mode, taskDisplayMode) => {
+  it.each(['medium', 'high'] as const)('groups %s steps with a counted closing summary', (mode) => {
     const converger = streaming(mode)
     converger.onUpdate(tool('t1', 'Read file', 'completed'))
     const first = converger.streamUpdate()
-    expect(first[0]).toEqual({ kind: 'stream-start', taskDisplayMode })
+    expect(first[0]).toEqual({ kind: 'stream-start' })
     expect(appends(first).at(-1)).toEqual({ type: 'plan_update', title: 'Working…' })
     converger.onUpdate(tool('t2', 'Run tests', 'completed'))
     converger.streamUpdate()
@@ -341,7 +338,7 @@ describe('OutputConverger streaming axis', () => {
     const finals = later.onFinal(attribution())
     const streamActions = finals.filter((a) => a.kind.startsWith('stream-'))
     expect(streamActions).toEqual([
-      { kind: 'stream-start', taskDisplayMode: 'plan' },
+      { kind: 'stream-start' },
       {
         kind: 'stream-stop',
         settle: [
@@ -801,7 +798,7 @@ describe('OutputConverger minimal mode — interim replies as history cards (§5
     converger.onUpdate(tool('t1', 'Read file'))
     const first = converger.streamUpdate()
     expect(kinds(first)).toEqual(['stream-start', 'stream-append'])
-    expect(first[0]).toEqual({ kind: 'stream-start', taskDisplayMode: 'plan' })
+    expect(first[0]).toEqual({ kind: 'stream-start' })
     expect(cards(first)).toEqual([
       {
         type: 'task_update',
@@ -1090,20 +1087,16 @@ describe('applySlackAction — chrome stream actions', () => {
     expect(conn.setTitle).toHaveBeenCalledOnce()
   })
 
-  it.each(['timeline', 'plan'] as const)(
-    'passes %s display through with the recipient and agent identity',
-    async (taskDisplayMode) => {
-      const { apply, conn, state } = fixture()
-      await apply({ kind: 'stream-start', taskDisplayMode })
-      expect(conn.startTurnStream).toHaveBeenCalledWith('C1', 'T1', {
-        isDm: false,
-        taskDisplayMode,
-        recipientUserId: 'U1',
-        identity: { username: 'Bot A', icon_url: 'https://icons.example.test/a.png' }
-      })
-      expect(state.stream).toEqual({ channel: 'C1', threadTs: 'T1', ts: '900.1' })
-    }
-  )
+  it('passes the recipient and agent identity through', async () => {
+    const { apply, conn, state } = fixture()
+    await apply({ kind: 'stream-start' })
+    expect(conn.startTurnStream).toHaveBeenCalledWith('C1', 'T1', {
+      isDm: false,
+      recipientUserId: 'U1',
+      identity: { username: 'Bot A', icon_url: 'https://icons.example.test/a.png' }
+    })
+    expect(state.stream).toEqual({ channel: 'C1', threadTs: 'T1', ts: '900.1' })
+  })
 
   it('carries the agent identity in a DM too — an undecorated stream renders a placeholder', async () => {
     const { apply, conn } = fixture({}, { isDm: true })
@@ -1295,7 +1288,7 @@ describe('SlackConnection chrome streaming', () => {
     expect(stream?.threadTs).toBe('C1')
     expect(app.client.chat.startStream.mock.calls[0]![0]).not.toHaveProperty('thread_ts')
     expect(app.client.chat.startStream).toHaveBeenCalledWith(
-      expect.objectContaining({ recipient_user_id: 'U9', recipient_team_id: 'T123', task_display_mode: 'timeline' })
+      expect.objectContaining({ recipient_user_id: 'U9', recipient_team_id: 'T123', task_display_mode: 'plan' })
     )
     await conn.appendTurnStream(stream!, [readFile])
     await conn.stopTurnStream(stream!)
@@ -1312,8 +1305,8 @@ describe('SlackConnection chrome streaming', () => {
       channel: 'C1',
       // Ordinary sessions require a physical thread, including DMs.
       thread_ts: 'T1',
-      // The same timeline is used in ordinary threads, DMs and code channels.
-      task_display_mode: 'timeline',
+      // The same collapsible group is used in ordinary threads, DMs and code channels.
+      task_display_mode: 'plan',
       recipient_user_id: 'U9',
       recipient_team_id: 'T123',
       username: 'Bot A'
@@ -1342,9 +1335,7 @@ describe('SlackConnection chrome streaming', () => {
     const payload = app.client.chat.startStream.mock.calls[0]![0] as Record<string, unknown>
     expect(payload).not.toHaveProperty('recipient_user_id')
     expect(payload).not.toHaveProperty('recipient_team_id')
-    expect(payload).toHaveProperty('task_display_mode', 'timeline')
-    await conn.startTurnStream('D1', 'T2', { isDm: true, taskDisplayMode: 'plan' })
-    expect(app.client.chat.startStream.mock.calls[1]![0]).toHaveProperty('task_display_mode', 'plan')
+    expect(payload).toHaveProperty('task_display_mode', 'plan')
   })
 
   it('answers "cannot stream" when the SDK has no such method, and latches it', async () => {

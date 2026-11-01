@@ -104,7 +104,7 @@ export type SlackAction =
   // `chat.startStream` stream; on a minimal turn the same stream holds the interim reply
   // segments as history cards. The final answer never rides it: posts, the footer, the
   // transcript and the status calls are all unchanged.
-  | { kind: 'stream-start'; taskDisplayMode?: 'timeline' | 'plan' }
+  | { kind: 'stream-start' }
   // `progressText` is the same in-place `progress` rendering this batch would have
   // produced, so a turn whose stream never opened degrades to today's message.
   | { kind: 'stream-append'; chunks: SlackStreamChunk[]; progressText?: string }
@@ -124,7 +124,7 @@ export type SlackStreamChunk =
       details?: string
       output?: string
     }
-  // Medium and Minimal use this group title; timeline mode ignores it.
+  // The group title summarizes work steps or Minimal's interim reply history.
   | { type: 'plan_update'; title: string }
 
 /** Dynamic identity shown under the last reply section. All Slack integration modes use
@@ -2699,7 +2699,7 @@ export class OutputConverger {
     const out: SlackAction[] = []
     if (!this.streamOpened) {
       this.streamOpened = true
-      out.push({ kind: 'stream-start', taskDisplayMode: this.mode === 'high' ? 'timeline' : 'plan' })
+      out.push({ kind: 'stream-start' })
     }
     out.push({ kind: 'stream-append', chunks, ...(progressText ? { progressText } : {}) })
     return out
@@ -2734,7 +2734,7 @@ export class OutputConverger {
     const out: SlackAction[] = []
     if (!this.streamOpened) {
       this.streamOpened = true
-      out.push({ kind: 'stream-start', taskDisplayMode: this.mode === 'high' ? 'timeline' : 'plan' })
+      out.push({ kind: 'stream-start' })
     }
     out.push({ kind: 'stream-stop', settle, ...(progressText ? { progressText } : {}) })
     return out
