@@ -2216,9 +2216,17 @@ export class WorkspaceManager {
         ])
       ).trim()
       if (unique !== '0' && !(await isReviewSnapshot())) return { outcome: 'retained', reason: 'unique-commits' }
+      // Read before the removal: once Git has dropped this worktree's admin dir, it can no longer say where that was.
+      const adminDir = await worktreeAdminDir(fs, cwd)
       // --force only for a probed snapshot, whose dirt was judged disposable above. Otherwise none:
       // if the tree went dirty between the check and here, Git refuses and the failure keeps the session.
-      await rootGit().raw(['worktree', 'remove', ...(snapshot ? ['--force'] : []), cwd])
+      await rootGit()
+        .raw(['worktree', 'remove', ...(snapshot ? ['--force'] : []), cwd])
+        .catch(async (err: unknown) => {
+          // Git unregisters a worktree it judged removable even when a read-only skill bundle stops the delete, so finish that delete.
+          if (adminDir === undefined || (await fs.stat(adminDir)) !== 'missing') throw err
+          await fs.rmTree(cwd)
+        })
       await cleanupRegistrations()
       // Only a branch this daemon generated for a session worktree, and only when dropping it can
       // drop no work: either every commit on it was proven reachable from a remote, or the worktree
@@ -3716,6 +3724,15 @@ export function parseSymrefDefaultBranch(out: string): string | undefined {
     if (branch && !branch.startsWith('-')) return branch
   }
   return undefined
+}
+
+/** The admin dir a worktree's `.git` file names, resolved against the worktree; undefined when that file is unreadable. */
+async function worktreeAdminDir(fs: WorkspaceFs, worktree: string): Promise<string | undefined> {
+  const read = await fs.readFileBytes(join(worktree, '.git'), MAX_SESSION_CWD_RECORD_BYTES)
+  if (read === undefined || !('bytes' in read)) return undefined
+  const gitdir = /^gitdir: (.+)$/m.exec(read.bytes.toString('utf8'))?.[1]?.trim()
+  if (!gitdir) return undefined
+  return isAbsolute(gitdir) ? gitdir : join(worktree, gitdir)
 }
 
 /** A secondary root's attestation; `repos/` is runtime-writable, so a link, a pipe or an oversized file reads as none. */
