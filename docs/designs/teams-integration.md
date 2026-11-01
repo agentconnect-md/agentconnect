@@ -333,11 +333,8 @@ opens that chat by the `29:` ID from a conversation it shares with the editor,
 else from the roster of a team it knows, which lists every team member. Only that
 editor answers the card, rechecked by the Control Plane on each click as Slack's
 DM is; the chat approval level does not reach it (**measured** end to end in a
-shared channel with sync on). The Teams integration the request was asked on is
-tried first, then the agent's Slack integrations, so an editor linked on both
-gets the card in Teams; a request asked elsewhere still tries Slack first. When
-no rung of the chain reaches an editor, nobody is sent a card and the daemon logs
-that the Control Plane found no editor. The same card
+shared channel with sync on). A Slack integration of the same
+agent is tried first, so an editor linked on both gets Slack's DM. The same card
 goes beside a card that only editors may answer (sync on, and the person who
 asked is not an editor): the routed editor gets it in their 1:1 chat while the
 conversation's card stays, and the first answer from either decides. Its handle

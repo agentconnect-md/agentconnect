@@ -410,17 +410,17 @@ describe('an approval on the editor path of an agent on both Slack and Teams', (
   const routedTo = (w: Awaited<ReturnType<typeof world>>) =>
     w.cp.mock.calls.map((call) => (call[0] as { integrationIds?: string[] }).integrationIds)
 
-  it('offers the Teams integration asked on before Slack for a permission request', async () => {
+  it('offers Slack before Teams for a permission request', async () => {
     const w = await world(GUEST, true)
     void w.permissions.onAcpPermission(AGENT, 's1', permission)
-    await vi.waitFor(() => expect(routedTo(w)).toEqual([[INT, SLACK_INT]]))
+    await vi.waitFor(() => expect(routedTo(w)).toEqual([[SLACK_INT, INT]]))
     await w.store.close()
   })
 
-  it('offers the Teams integration asked on before Slack for an MCP approval with choices', async () => {
+  it('offers Slack before Teams for an MCP approval with choices', async () => {
     const w = await world(GUEST, true)
     void w.permissions.onAcpElicit(AGENT, 's1', question)
-    await vi.waitFor(() => expect(routedTo(w)).toEqual([[INT, SLACK_INT]]))
+    await vi.waitFor(() => expect(routedTo(w)).toEqual([[SLACK_INT, INT]]))
     await w.store.close()
   })
 
@@ -566,34 +566,10 @@ describe('an approval card in a Teams channel only editors may answer', () => {
       .filter((payload) => !payload.verify)
       .map((payload) => payload.integrationIds)
 
-  it('offers the Teams integration asked on before Slack for the editor beside the card', async () => {
+  it('offers Slack before Teams for the editor beside the card', async () => {
     const w = await editorsWorld(ASKER, true)
     void w.permissions.onAcpPermission(AGENT, 's1', permission)
-    await vi.waitFor(() => expect(routes(w)).toEqual([[INT, SLACK_INT]]))
-    await w.store.close()
-  })
-
-  it('reaches an editor linked on both Teams and Slack in their Teams chat, not in Slack', async () => {
-    const w = await editorsWorld(ASKER, true)
-    // The chain's first hit in the order offered, for an editor linked on both integrations.
-    const linked: Record<string, { teamId: string; userId: string }> = {
-      [INT]: { teamId: 'global', userId: EDITOR },
-      [SLACK_INT]: { teamId: 'T0EXAMPLE', userId: 'U0EXAMPLE' }
-    }
-    w.cp.mockImplementation(async (payload: { requestId: string; verify?: unknown; integrationIds?: string[] }) => {
-      if (payload.verify) return { requestId: payload.requestId, allowed: false, linked: true }
-      const first = payload.integrationIds![0]!
-      return {
-        requestId: payload.requestId,
-        target: { integrationId: first, ...linked[first]!, consoleUserId: 'u-ed' }
-      }
-    })
-    void w.permissions.onAcpPermission(AGENT, 's1', permission)
-    await vi.waitFor(() => expect(w.postedTo()).toEqual([SHARED, `a:${EDITOR}`]))
-    await vi.waitFor(async () =>
-      expect(await besideRow(w)).toMatchObject({ besideIntegrationId: INT, besideTs: 'activity-2' })
-    )
-    expect(w.slackConn.postBlocks).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(routes(w)).toEqual([[SLACK_INT, INT]]))
     await w.store.close()
   })
 
@@ -631,20 +607,6 @@ describe('an approval card in a Teams channel only editors may answer', () => {
     )
     await vi.waitFor(() => expect(w.slackConn.updateBlocks).toHaveBeenCalled())
     await vi.waitFor(async () => expect(await besideRow(w)).toMatchObject({ status: 'allowed', besideTs: null }))
-    await w.store.close()
-  })
-
-  it('logs that the editor’s 1:1 chat did not open', async () => {
-    const w = await editorsWorld()
-    const warn = vi.spyOn(w.daemon.log, 'warn')
-    w.conn.openDirectMessage = vi.fn(async () => {
-      throw new Error('no shared conversation')
-    })
-    void w.permissions.onAcpPermission(AGENT, 's1', permission)
-    await vi.waitFor(() =>
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("the editor's 1:1 chat did not open"))
-    )
-    expect(w.postedTo()).toEqual([SHARED])
     await w.store.close()
   })
 

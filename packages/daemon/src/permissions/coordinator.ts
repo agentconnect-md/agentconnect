@@ -1585,11 +1585,6 @@ export class PermissionCoordinator {
     return true
   }
 
-  /** Say why an approval DM or an editor's card did not go out, naming only the session. */
-  private dmSkipped(p: Pending, why: string, level: 'info' | 'warn' = 'warn'): void {
-    this.host.log()[level](`approval DM for "${p.plan.sessionKey}" not sent: ${why}`)
-  }
-
   /** The DMs beside a card: the Computer owner's for a computer-use approval (§4.2), else an editor's where only editors may answer. */
   private async dmBesideCard(
     requestId: string,
@@ -1713,7 +1708,7 @@ export class PermissionCoordinator {
         chrome: true
       }
     )
-    if (!ts) return this.dmSkipped(p, 'Slack returned no message for the DM')
+    if (!ts) return
     // Beside a card that keeps the notify handle, the DM keeps its own, so a restart's sweep retires both.
     const store = this.host.store()
     const handleStored = beside
@@ -1765,11 +1760,7 @@ export class PermissionCoordinator {
     const rec = this.pendingApprovals.get(requestId)
     if (!rec || rec.notify) return false
     if (rec.kind === 'permission' ? rec.beside || rec.chat?.editor || rec.chat?.askerId : rec.chat) return false
-    const channel = await this.host.directMessageAt?.(target.integrationId, target.userId).catch((err: unknown) => {
-      this.dmSkipped(p, `the editor's 1:1 chat did not open: ${formatErr(err)}`)
-      return null
-    })
-    if (channel === undefined) this.dmSkipped(p, "the editor's platform opens no 1:1 chat")
+    const channel = await this.host.directMessageAt?.(target.integrationId, target.userId).catch(() => undefined)
     if (!channel) return false
     const dm = { integrationId: target.integrationId, channel }
     return await this.sendDirectCard(
@@ -1796,15 +1787,7 @@ export class PermissionCoordinator {
       return false
     const params = cardRequest(rec)
     const cards = this.host.chatCardsAt(dm.integrationId)
-    if (!params) return false
-    if (!cards) {
-      this.dmSkipped(p, 'the 1:1 chat has no live card connection')
-      return false
-    }
-    if (params.options.length > cards.facet.maxOptions) {
-      this.dmSkipped(p, `${params.options.length} options are more than a card offers`, 'info')
-      return false
-    }
+    if (!params || !cards || params.options.length > cards.facet.maxOptions) return false
     const { facet, conn } = cards
     const context: ApprovalCardContext | undefined =
       'editor' in who
@@ -1829,11 +1812,9 @@ export class PermissionCoordinator {
     const ts = draft
       ? await facet.post(conn, where, draft, p).catch((err: unknown) => {
           this.host.log().warn(`approval card in a direct chat for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
-          return null
+          return undefined
         })
       : undefined
-    if (ts === undefined)
-      this.dmSkipped(p, draft ? 'the 1:1 chat card post returned nothing' : 'no card for this request')
     if (!ts) return false
     // Kept on the row as well, so the sweep after a restart retires a card no resolver answers any more.
     const store = this.host.store()
@@ -1884,11 +1865,8 @@ export class PermissionCoordinator {
     subsession: boolean
   ): Promise<ApprovalRouteTarget | undefined> {
     const cp = this.host.cpApprovalRoute()
-    if (!cp) {
-      this.dmSkipped(p, 'the control plane routes no approval DMs', 'info')
-      return undefined
-    }
-    // A permission request may also go to an editor's card off Slack, alone or beside the conversation's, as may an MCP approval with choices.
+    if (!cp) return undefined
+    // A permission request may also go to an editor's card off Slack, alone or beside the conversation's, as may an MCP approval with choices; Slack's own integration stays first.
     const rec = this.pendingApprovals.get(requestId)
     const cards =
       !!rec &&
@@ -1896,12 +1874,9 @@ export class PermissionCoordinator {
       (rec.kind === 'permission'
         ? !rec.beside && !rec.chat?.editor && !rec.chat?.askerId
         : !rec.chat && rec.choices !== undefined)
-    // The asking conversation's own integration goes first when it takes an editor's DM or card, else Slack's lead.
-    const integrationIds = this.host.approvalDmIntegrations(agentId, p.plan.integrationId, cards)
-    if (integrationIds.length === 0) {
-      this.dmSkipped(p, 'no integration of the agent reaches an editor directly', 'info')
-      return undefined
-    }
+    const preferred = this.host.slackConnFor(p.plan.integrationId ?? '') ? p.plan.integrationId : undefined
+    const integrationIds = this.host.approvalDmIntegrations(agentId, preferred, cards)
+    if (integrationIds.length === 0) return undefined
     // A computer-use approval, a sub-session's too, goes to the Computer's owner first (computer-use.md §4.2), else down the chain of its allowed members.
     const computer = this.computerAskOf(requestId)
     if (computer?.ownerUserId) {
@@ -1928,11 +1903,11 @@ export class PermissionCoordinator {
       this.host.orgForAgent(agentId)
     )
     if (!routed.target)
-      this.dmSkipped(
-        p,
-        `the control plane found no editor on the ${integrationIds.length} integration(s) offered`,
-        'info'
-      )
+      this.host
+        .log()
+        .info(
+          `approval DM for "${p.plan.sessionKey}" not sent: the control plane found no editor on the ${integrationIds.length} integration(s) offered`
+        )
     return routed.target
   }
 

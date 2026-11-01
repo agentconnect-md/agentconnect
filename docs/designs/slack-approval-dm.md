@@ -154,9 +154,8 @@ A synchronous daemon→CP request/reply over the existing WS, modeled on
   `{ agentId, sessionId, requestId, requesterId?, integrationIds }` —
   `requesterId` is the turn owner's Slack member id when the turn came from
   Slack; `integrationIds` are the agent's connected Slack integrations in
-  the order to try, the session's own integration first when it is among
-  them (Slack, or a platform that takes an editor's card in a 1:1 chat).
-  Each names a workspace that anchors its own identity gate.
+  the order to try, the session's own bot first when the session is on
+  Slack. Each names a workspace that anchors its own identity gate.
 - **`agent/approval-routed`** (CP→daemon):
   `{ requestId, target?: { integrationId, teamId, userId, displayName?,
 consoleUserId } }` — the CP evaluates the chain once per workspace in the
@@ -426,11 +425,9 @@ opens only to linked members with access to the same conversation, with no edito
 an editor linked elsewhere would get a 404. A click in a closed conversation still
 gets the console link, as on any platform.
 Beside a permission request's card, the editor DM of §5 goes out too unless the turn owner is an
-editor. It is routed over the integration the request was asked on first when it takes an
-editor's DM or card, then the agent's Slack integrations, then the others whose platform opens a
-1:1 chat (`approvalDmIntegrations`), so an editor linked on several platforms is reached where the
-request was asked; the editor path orders them the same way. An editor routed off Slack gets the
-card in that chat through the platform's facet, as on the editor path (teams-integration.md §4.4). On a synced
+editor. It is routed over the agent's Slack integrations first, then those whose platform opens a
+1:1 chat (`approvalDmIntegrations`); an editor routed to one of those gets the card in that chat
+through the platform's facet, as on the editor path (teams-integration.md §4.4). On a synced
 Feishu/Lark integration of an agent with neither, nobody is DMed, and the request waits for an
 editor in the conversation or the console; a Feishu/Lark approval DM is not built yet. The first
 answer decides: the DM's addressee is checked as §6.3 says, anyone else as here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
