@@ -58,7 +58,7 @@ function deps(world: World): ApprovalRouteDeps {
     ...world.agent
   } as AgentRecord
   const members = (world.members ?? []).map(
-    (m) => ({ role: 'collaborator', displayName: null, email: null, ...m }) as OrgMemberRecord
+    (m) => ({ role: 'collaborator', displayName: null, email: null, joinedAt: new Date(0), ...m }) as OrgMemberRecord
   )
   const integrations = (world.integrations ?? [{ id: INTEGRATION_A, botId: 'bot-a' }]).map(
     (i) => ({ orgId: ORG, agentId: AGENT_ID, platform: 'slack', ...i }) as unknown as IntegrationRecord
@@ -141,8 +141,12 @@ describe('resolveApprovalRoute — route form', () => {
 
   it('rung 2: a slack session owner wins only in the matching workspace', async () => {
     const world: World = {
-      members: [{ userId: 'u-owner' }],
-      links: { 'u-owner': linked('U0OWNER') },
+      // u-other joined first, so rung 5 picks them: a hit on U0OWNER can only be rung 2.
+      members: [
+        { userId: 'u-owner', joinedAt: new Date(2) },
+        { userId: 'u-other', joinedAt: new Date(1) }
+      ],
+      links: { 'u-owner': linked('U0OWNER'), 'u-other': linked('U0OTHER') },
       session: { ownerIdentity: `slack:${TEAM_A}:U0OWNER` }
     }
     const hit = await resolveApprovalRoute(routeReq({ sessionId: 'sess-1' }), deps(world))
@@ -151,7 +155,7 @@ describe('resolveApprovalRoute — route form', () => {
       routeReq({ sessionId: 'sess-1' }),
       deps({ ...world, session: { ownerIdentity: `slack:${TEAM_B}:U0OWNER` } })
     )
-    expect(mismatch.target).toBeUndefined()
+    expect(mismatch.target?.userId).toBe('U0OTHER')
   })
 
   it('rung 2: a console-user session owner resolves through their own link', async () => {
@@ -199,7 +203,7 @@ describe('resolveApprovalRoute — route form', () => {
   )
 
   it.each([true, false])(
-    'never uses an unrelated owner as a fallback (selected member linked: %s)',
+    'uses an unrelated owner only as the last fallback (selected member linked: %s)',
     async (selectedLinked) => {
       const routed = await resolveApprovalRoute(
         routeReq(),
@@ -209,7 +213,7 @@ describe('resolveApprovalRoute — route form', () => {
           links: { 'u-owner': linked('U0OWNER'), 'u-selected': selectedLinked ? linked('U0SELECTED') : null }
         })
       )
-      expect(routed.target?.consoleUserId).toBe(selectedLinked ? 'u-selected' : undefined)
+      expect(routed.target?.consoleUserId).toBe(selectedLinked ? 'u-selected' : 'u-owner')
     }
   )
 
@@ -274,6 +278,58 @@ describe('resolveApprovalRoute — route form', () => {
     expect(viaTurnOwner.target).toBeUndefined()
     const viaCreator = await resolveApprovalRoute(routeReq(), deps(world))
     expect(viaCreator.target).toMatchObject({ userId: 'U0CREATOR', consoleUserId: 'u-7' })
+  })
+
+  it('rung 5: with no rung 1–4 hit, one linked editor gets it, owners first, then by join date', async () => {
+    const world: World = {
+      members: [
+        { userId: 'u-asker', role: 'viewer' },
+        { userId: 'u-early', joinedAt: new Date(1) },
+        { userId: 'u-late', joinedAt: new Date(3) },
+        { userId: 'u-owner', role: 'owner', joinedAt: new Date(2) },
+        { userId: 'u-owner-unlinked', role: 'owner', joinedAt: new Date(0) }
+      ],
+      links: {
+        'u-asker': linked('U0ASKER'),
+        'u-early': linked('U0EARLY'),
+        'u-late': linked('U0LATE'),
+        'u-owner': linked('U0OWNER')
+      }
+    }
+    const routed = await resolveApprovalRoute(routeReq({ requesterId: 'U0ASKER' }), deps(world))
+    expect(routed.target).toMatchObject({ userId: 'U0OWNER', consoleUserId: 'u-owner' })
+    const noOwner = deps({ ...world, links: { ...world.links, 'u-owner': null } })
+    expect((await resolveApprovalRoute(routeReq({ requesterId: 'U0ASKER' }), noOwner)).target).toMatchObject({
+      userId: 'U0EARLY'
+    })
+  })
+
+  it('rung 5: a rung 1–4 hit on a later integration wins over the fallback on an earlier one', async () => {
+    const routed = await resolveApprovalRoute(
+      routeReq({ requesterId: 'U0B', integrationIds: [INTEGRATION_A, INTEGRATION_B] }),
+      deps({
+        members: [{ userId: 'u-a', role: 'owner' }, { userId: 'u-b' }],
+        links: { 'u-a': linked('U0A', TEAM_A), 'u-b': linked('U0B', TEAM_B) },
+        integrations: [
+          { id: INTEGRATION_A, botId: 'bot-a' },
+          { id: INTEGRATION_B, botId: 'bot-b' }
+        ],
+        bots: { 'bot-a': { teamId: TEAM_A }, 'bot-b': { teamId: TEAM_B } }
+      })
+    )
+    expect(routed.target).toMatchObject({ integrationId: INTEGRATION_B, userId: 'U0B' })
+  })
+
+  it('rung 5: over the audience cap only owners are tried', async () => {
+    const members = Array.from({ length: 201 }, (_, i) => ({ userId: `u-${i}` }))
+    const world: World = { members, links: { 'u-3': linked('U0THREE') } }
+    expect((await resolveApprovalRoute(routeReq(), deps(world))).target).toBeUndefined()
+    const withOwner = deps({
+      ...world,
+      members: [...members, { userId: 'u-boss', role: 'owner' }],
+      links: { ...world.links, 'u-boss': linked('U0BOSS') }
+    })
+    expect((await resolveApprovalRoute(routeReq(), withOwner)).target).toMatchObject({ userId: 'U0BOSS' })
   })
 
   it('walks workspaces in the given order and takes the first hit', async () => {

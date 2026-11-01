@@ -168,6 +168,16 @@ export async function resolveApprovalRoute(
   if (capped) {
     deps.log?.debug({ editors: editors.length }, 'approval route: editor set over cap — member-id rungs skipped')
   }
+  // Rung 5's order: owners first, then by join date and user id, so retries pick the same person; capped, owners only.
+  const fallbackOrder = editors
+    .filter((m) => !capped || m.role === 'owner')
+    .sort(
+      (a, b) =>
+        Number(b.role === 'owner') - Number(a.role === 'owner') ||
+        a.joinedAt.getTime() - b.joinedAt.getTime() ||
+        (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0)
+    )
+  const fallbacks: Array<() => Promise<AgentApprovalRouted | null>> = []
 
   for (const integrationId of req.integrationIds) {
     const teamId = await tenantFor(integrationId)
@@ -230,6 +240,18 @@ export async function resolveApprovalRoute(
       const routed = member ? await singleLookup(member) : null
       if (routed) return routed
     }
+    fallbacks.push(async () => {
+      for (const member of fallbackOrder) {
+        const routed = await singleLookup(member)
+        if (routed) return routed
+      }
+      return null
+    })
+  }
+  // Rung 5 — when no integration's rungs 1–4 hit: one editor linked there, in the order offered.
+  for (const fallback of fallbacks) {
+    const routed = await fallback()
+    if (routed) return routed
   }
   return none
 }
