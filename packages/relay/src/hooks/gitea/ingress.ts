@@ -31,6 +31,7 @@ import {
   giteaRuleVerdict,
   giteaSessionKey,
   giteaThreadWorktreeCleanup,
+  isInternalBotRevision,
   GITEA_ROUTING,
   normalizeGiteaEvent,
   type GiteaPayload
@@ -284,9 +285,14 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
 
       // §8: one live membership decision fences the whole fan-out; an external pull request's author fails it.
       const isLifecycle = ctx.family === 'issues' || ctx.family === 'merge_request'
+      // A human push onto the bot's own same-repository pull request authorizes the pusher: the bot never passes the gate.
+      const botRevisionPushedByOther = needsAuthz.every((rule) => isInternalBotRevision(rule, ctx))
       // Lifecycle authorizes the subject author, comments and reviews their author, a reviewer request the requester (§8).
       const gated =
-        ctx.eventAction !== 'merge_request:review_requested' && isLifecycle && ctx.subjectAuthorId !== undefined
+        ctx.eventAction !== 'merge_request:review_requested' &&
+        isLifecycle &&
+        !botRevisionPushedByOther &&
+        ctx.subjectAuthorId !== undefined
           ? { id: ctx.subjectAuthorId, login: ctx.subjectAuthorLogin }
           : { id: ctx.actorId, login: ctx.actorLogin }
       const actorId = gated.id
