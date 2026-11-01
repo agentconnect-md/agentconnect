@@ -104,21 +104,18 @@ export function rowAttribution(
   agentById: Map<string, Agent>
 ): TxAgentChip[] {
   if (!parts?.length) return []
-  const named: { chip: TxAgentChip; value: bigint }[] = []
+  const named: TxAgentChip[] = []
   const withheld: string[] = []
   for (const part of parts) {
-    // Exact scaled value, never a float: past 2^53 a float calls distinct amounts equal and misorders them.
-    const value = scaleAmount(part.amount)
-    if (value === 0n) continue
+    if (scaleAmount(part.amount) === 0n) continue
     // Fails CLOSED: an id the roster cannot resolve (unloaded, errored, or restricted) is withheld.
     const agent = agentById.get(part.agentId)
     // The id never enters a chip it cannot name — `key` included, so it cannot leak through a
     // prop that ends up serialized.
-    if (agent) named.push({ chip: { key: part.agentId, agent, amount: part.amount }, value })
+    if (agent) named.push({ key: part.agentId, agent, amount: part.amount })
     else withheld.push(part.amount)
   }
-  named.sort((a, b) => (b.value > a.value ? 1 : b.value < a.value ? -1 : 0))
-  const chips = named.map(({ chip }) => chip)
+  const chips = named.sort((a, b) => byAmountDesc(a.amount, b.amount))
   if (withheld.length) chips.push({ key: 'withheld', amount: sumAmounts(withheld) })
   return chips
 }
@@ -420,7 +417,7 @@ function FoldedCharges({
   const groupTotal = Number(group.amount)
   const days = usageDays(group.txs)
   const maxDay = Math.max(...days.map((d) => Number(d.amount)))
-  const max = group.txs.reduce((a, b) => (Number(b.amount) > Number(a.amount) ? b : a))
+  const max = group.txs.reduce((a, b) => (scaleAmount(b.amount) > scaleAmount(a.amount) ? b : a))
   return (
     // Summary strip, then one row per local day; a day opens into an hourly chart and its charges.
     <div
