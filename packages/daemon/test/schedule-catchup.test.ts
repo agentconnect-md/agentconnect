@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { systemClock, type Clock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
 import { scheduleFingerprint } from '../src/scheduler/scheduler.js'
 
@@ -21,6 +22,21 @@ const GROUP = '11111111-1111-4111-8111-111111111111'
 const HOUR_MS = 60 * 60_000
 const CRON = { id: 'report', schedule: HOURLY, trigger: 'run the report' }
 const DREAMING = { enabled: true, schedule: HOURLY }
+
+/**
+ * A clock that runs at real pace but starts half past an hour, shared by every member of a pool.
+ * On the wall clock a test that lands on the top of the hour races the boundary: a stamp written
+ * just before it and a catch-up just after it see different "previous occurrences".
+ */
+function midHourClock(): Clock {
+  const real = Date.now()
+  const offset = Math.floor(real / HOUR_MS) * HOUR_MS + HOUR_MS / 2 - real
+  return {
+    now: () => Date.now() + offset,
+    setTimeout: (fn, ms) => systemClock.setTimeout(fn, ms),
+    clearTimeout: (h) => systemClock.clearTimeout(h)
+  }
+}
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-catchup-'))
@@ -53,15 +69,26 @@ function scaffold(): string {
 }
 
 /** One member: dispatch and the dream runner stubbed, so a fire is observable without a real turn. */
-async function boot(root: string) {
+async function boot(root: string, clock: Clock) {
   const daemon = new Daemon({
     root,
+    clock,
     hostFactory: () => ({}) as any,
     dreamOperationPolicy: 'test-only',
     probeRuntimes: async () => []
   })
   await daemon.start()
   const inner = daemon as any
+  // Never keep the real schedules armed: croner ticks on the wall clock, so a test that straddles
+  // the top of the hour would get a real fire, outside `joinCatchUpFires`, stamping over the
+  // catch-up's claim. Startup has already armed them (no CP yet, so this member served the agent),
+  // so stop those jobs first, then keep any later sync from arming new ones. Every fire this file
+  // observes is a catch-up or a direct call.
+  inner.scheduler.stop()
+  inner.dreamScheduler.stop()
+  inner.scheduler.sync = () => {}
+  inner.dreamScheduler.sync = () => {}
+  expect(inner.scheduler.count(AGENT)).toBe(0)
   const crons: string[] = []
   const dreams: string[] = []
   inner.dispatch = vi.fn(async (agentId: string) => {
@@ -92,8 +119,9 @@ async function boot(root: string) {
 /** Two members over ONE store: the same root, so both LocalStores open the same database. */
 async function bootPool() {
   const root = scaffold()
-  const a = await boot(root)
-  const b = await boot(root)
+  const clock = midHourClock()
+  const a = await boot(root, clock)
+  const b = await boot(root, clock)
   return { a, b, root, stop: () => Promise.all([a.daemon.stop(), b.daemon.stop()]) }
 }
 
