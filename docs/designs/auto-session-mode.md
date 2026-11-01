@@ -548,14 +548,15 @@ not addressed to this agent. Cost grows with the number of agents.
 ## 12. Validation
 
 `packages/daemon/test/acp-matrix/coordinator-probe.ts` injects a candidate coordinator prompt and tool
-surface (`sendMessage` with `delegateTask`, `messageTask` and `replyToMessage`, plus `listTasks` with
-its `here` and `elsewhere` lists) into a real runtime session over an HTTP MCP fixture, opens each
+surface (`sendMessage` with `delegateTask`, `messageTask` and `replyToMessage`, `listTasks` with
+its `here` and `elsewhere` lists, and `readTask`) into a real runtime session over an HTTP MCP fixture, opens each
 turn with the work board the daemon would send ([assistant-mode.md](assistant-mode.md) §5.18),
 delivers channel messages in the format of §4.3, and judges each message's outcome. Its scenarios:
 new work, a message for an open task, a status question, a greeting, chatter between people, a
 request to another agent, a vague mention, a small edit the coordinator must not do itself, two mixed
 batches, a follow-up's report (§3.4), a batch of one message and two reports, one worth telling
-and one with nothing new, a request for work another channel's task already has open, and
+and one with nothing new, a request for work another channel's task already has open, a question
+about another channel's task that only its latest words answer, and
 in a webchat conversation (§10) new work, a status question, a message for an open task and a status
 question about another channel's task.
 
@@ -611,6 +612,18 @@ passed 51 / 51 again (3 repetitions each), on the prompt with the reports of pha
 its PR, and the request beside it was delegated. Over the 51 runs `claude-acp` called `listTasks` 31
 times and `codex-acp` 39 times; neither used a tool besides the coordinator tools other than
 `claude-acp`'s `ToolSearch`.
+On 2026-11-02, with `readTask`, the inlined ids and the title as a task's current scope
+([assistant-mode.md](assistant-mode.md) §5.18 ④), the tool surface gained `readTask`, the board's
+header named it, and the prompt said that `readTask` reads a task's latest words, the message it was
+opened for and the pull requests it opened without waking it, and that a title names what a task is
+doing now and a summary's first sentence its status. `elsewhere-read-task` was added: a request at the
+channel root for the pull request of another channel's task, whose `elsewhere` summary predates it, so
+only `readTask` names it. `claude-acp` (on Claude Opus 5.5) and `codex-acp` each passed 54 / 54
+(3 repetitions each). In every `elsewhere-read-task` run the coordinator called `listTasks` once, then
+`readTask` once with the id `elsewhere` gave, and replied with the pull request's link; neither called
+`readTask` in any other scenario. Over the 54 runs `claude-acp` called `listTasks` 32 times and
+`codex-acp` 42 times; neither used a tool besides the coordinator tools other than `claude-acp`'s
+`ToolSearch`.
 
 The candidate prompt asks the coordinator to express every outcome as a call and to end its turn
 with `AC_NO_RESPONSE`; the judge still accepts a one-message turn's text as its reply (§4.3).
