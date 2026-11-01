@@ -304,6 +304,9 @@ async function startAndFinish(h: Awaited<ReturnType<typeof boot>>, caller: { sco
   return child
 }
 
+/** A task key as listTasks shows it: cut before the agent's id, a unique prefix every task tool takes (assistant-mode.md §5.18 ④). */
+const listedId = (key: string): string => key.slice(0, key.lastIndexOf(':bot-a'))
+
 describe('messageTask continues an existing task of this session', () => {
   // A DM's request asked in a thread under a person's message: the task's report replies in that thread, as its acknowledgement did.
   it('reports each round in the thread of the turn that asked for it, and at the top when no turn asked', async () => {
@@ -887,7 +890,7 @@ describe('a task’s own background tasks (auto-session-mode.md §6.3)', () => {
     } as never)
     // A task's task works for the person behind the root session (auto-session-mode.md §6.2).
     expect((listed as any).tasks).toEqual([
-      expect.objectContaining({ taskId: levelTwo, title: 'Level two', owner: 'U0ALICE', running: true })
+      expect.objectContaining({ taskId: listedId(levelTwo), title: 'Level two', owner: 'U0ALICE', running: true })
     ])
 
     releaseLevelTwo()
@@ -1293,7 +1296,7 @@ describe('a task’s own summary (auto-session-mode.md §5.3, §6.7)', () => {
     expect(handed(h, 'This task has no summary yet')).toBe(0)
     expect(await rowOf(h.d, child)).toMatchObject({ turnsSinceSummary: 1 })
     let listed = (await executeTool(toolContext(caller), 'listTasks', {}, deps)) as any
-    expect(listed.tasks[0]).toMatchObject({ taskId: child, background: 'investigate the flaky test' })
+    expect(listed.tasks[0]).toMatchObject({ taskId: listedId(child), background: 'investigate the flaky test' })
 
     await send(h.d, caller, { action: 'messageTask', taskId: child, message: 'also Windows' })
     await vi.waitFor(() => expect(h.reports()).toHaveLength(2), WAIT)
@@ -1316,7 +1319,7 @@ describe('a task’s own summary (auto-session-mode.md §5.3, §6.7)', () => {
     expect((await h.d.store.getSession(child))?.title).toBe('Fix the flaky test')
     listed = (await executeTool(toolContext(caller), 'listTasks', {}, deps)) as any
     expect(listed.tasks[0]).toMatchObject({
-      taskId: child,
+      taskId: listedId(child),
       title: 'Fix the flaky test',
       summary,
       summaryUpdatedAt: expect.any(String)

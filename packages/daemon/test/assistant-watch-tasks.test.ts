@@ -23,6 +23,8 @@ const PLACE_KEY = sessionKey('slack', GENERAL.channel, 'append:1', AGENT, SCOPE)
 const OWNER = { sessionId: 'sid-place', key: PLACE_KEY }
 const key = (id: string, channel = GENERAL.channel) =>
   sessionKey('slack', channel, `subsession:check-${id}`, AGENT, SCOPE)
+/** A task key as the board shows it: cut before the agent's id (assistant-mode.md §5.18 ④). */
+const shortKey = (id: string) => key(id).slice(0, key(id).lastIndexOf(`:${AGENT}`))
 
 let store: LocalStore | undefined
 afterEach(async () => {
@@ -266,10 +268,12 @@ describe('a watch task on the board and in listTasks', () => {
     const board = async () =>
       renderWorkBoard(await workBoardView({ stores: s, agentId: AGENT, owner: coordinator, place: HERE }))
     expect((await board()).text).toContain(
-      `- follow-up · next 2030-01-02T01:00Z · "Tell Alice when PR #412 merges" · ${key('1')}`
+      `- follow-up · next 2030-01-02T01:00Z · "Tell Alice when PR #412 merges" · ${shortKey('1')}\n`
     )
     await s.assistantSubsessions.checking(AGENT, key('1'), 2_000)
-    expect((await board()).text).toContain(`- follow-up · running · "Tell Alice when PR #412 merges" · ${key('1')}`)
+    expect((await board()).text).toContain(
+      `- follow-up · running · "Tell Alice when PR #412 merges" · ${shortKey('1')}\n`
+    )
     expect((await readOpenWork(s, AGENT, coordinator, HERE))[0]).toMatchObject({ changedAt: 2_000, status: 'running' })
   })
 

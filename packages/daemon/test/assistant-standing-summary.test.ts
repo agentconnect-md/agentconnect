@@ -11,6 +11,7 @@ import {
   standingSummaryFor,
   taskSummaryReminder
 } from '../src/assistant/standing-summary.js'
+import { UPDATE_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { localMemoryHome } from '../src/memory/home.js'
@@ -478,12 +479,33 @@ describe('a task’s summary reminder (auto-session-mode.md §6.7)', () => {
     expect(await turn()).toContain('This task has no summary yet.')
     await index.setSummary('bot-a', taskKey, { summary: 'Scope: x. Status: in progress. Next: y.', now: 1 })
     for (let n = 0; n < 5; n++) expect(await turn()).toBeUndefined()
-    expect(await turn()).toContain('This task’s summary was written 5 turns ago. Call updateTask')
+    const stale = await turn()
+    expect(stale).toContain('This task’s summary was written 5 turns ago. Call updateTask')
+    // assistant-mode.md §5.18 ④: the title names what the task is doing now, the summary's first sentence its status.
+    expect(stale).toContain('a summary whose first sentence states its current status')
+    expect(stale).toContain(
+      'Its title names what it is doing now: if the work has moved on to something the title no longer names, give ' +
+        'it a new title with the summary.'
+    )
     expect(await turn()).toContain('written 6 turns ago')
     // A fresh summary starts the count again.
     await index.setSummary('bot-a', taskKey, { summary: 'Done.', now: 2 })
     expect(await turn()).toBeUndefined()
     expect((await index.get('bot-a', taskKey))?.turnsSinceSummary).toBe(1)
+    // A closed task is reminded of nothing and counts no turn.
+    await index.closeTask('bot-a', taskKey, 3)
+    expect(await turn()).toBeUndefined()
+    expect((await index.record('bot-a', taskKey))?.turnsSinceSummary).toBe(1)
+  })
+
+  it('tells a task in updateTask that its title names what it does now and its summary opens with its status', () => {
+    const description = UPDATE_TASK_TOOL.description
+    expect(description).toContain('The title names what the task is doing now')
+    expect(description).toContain('give it a new one')
+    expect(description).toContain('The summary’s first sentence states the current status on its own')
+    const props = UPDATE_TASK_TOOL.inputSchema.properties as Record<string, { description: string }>
+    expect(props.title!.description).toContain('What the task is doing now')
+    expect(props.summary!.description).toContain('The current status in its first sentence')
   })
 
   it('says nothing for a session that is no indexed task, or for a follow-up', async () => {

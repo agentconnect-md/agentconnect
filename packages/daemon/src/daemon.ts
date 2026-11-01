@@ -411,7 +411,9 @@ import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
 import { stopTaskToolsFor } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
-import type { AssistantSubsession } from './store/assistant-subsessions.js'
+import type { AssistantSubsession, OpenedObject } from './store/assistant-subsessions.js'
+import { createdObjectOf, feedbackPullOf } from './codehost/opened-object.js'
+import { shortTaskIds } from './assistant/task-ids.js'
 import {
   askerClass,
   askerKey,
@@ -5182,11 +5184,15 @@ export class Daemon {
       assistantSubsessions: {
         actor: (ctx) => this.taskStopper(ctx),
         sessionIdOf: async (key) => (await this.store.getSession(key))?.sessionId ?? undefined,
-        find: async (agentId, id) =>
-          (await this.store.assistantSubsessions.get(agentId, id)) ??
-          (await this.store
-            .getSessionByOutwardIdOnly(id, agentId)
-            .then((child) => (child ? this.store.assistantSubsessions.get(agentId, child.key) : undefined))),
+        find: async (agentId, id) => {
+          const key = await this.store.assistantSubsessions.resolve(agentId, id)
+          return (
+            (key !== undefined ? await this.store.assistantSubsessions.get(agentId, key) : undefined) ??
+            (await this.store
+              .getSessionByOutwardIdOnly(id, agentId)
+              .then((child) => (child ? this.store.assistantSubsessions.get(agentId, child.key) : undefined)))
+          )
+        },
         stopSession: (key, actor) => this.stopSessionByKey(key, actor),
         listForOwner: (agentId, parent, limit, opts) =>
           this.store.assistantSubsessions.listForOwner(agentId, parent, limit, opts),
@@ -5211,6 +5217,8 @@ export class Daemon {
           return rec ? { title: rec.title ?? null, updatedAt: rec.updatedAt } : undefined
         },
         ownerOf: (row) => this.taskOwnerName(row),
+        shortIds: (agentId) => this.shortTaskIdsOf(agentId),
+        opened: (agentId, key) => this.store.assistantSubsessions.opened(agentId, key),
         board: async (ctx, owner) =>
           await this.workBoardOf(
             ctx.agentId,
@@ -5232,6 +5240,18 @@ export class Daemon {
           return saved
         },
         now: () => this.clock.now()
+      },
+      // A task's record and words for readTask and recall's inlined ids (assistant-mode.md §5.18 ④), closed tasks within their window included.
+      taskReads: {
+        resolve: (agentId, id) => this.store.assistantSubsessions.resolve(agentId, id),
+        record: (agentId, key) => this.store.assistantSubsessions.record(agentId, key),
+        checked: (agentId, key) => this.checkedTasks.get(agentId, key),
+        opened: (agentId, key) => this.store.assistantSubsessions.opened(agentId, key),
+        watchUrls: (agentId) => this.store.assistantSubsessions.watchUrls(agentId),
+        session: (key) => this.store.getSession(key),
+        shortIds: (agentId) => this.shortTaskIdsOf(agentId),
+        openedFor: (agentId, message) => this.store.assistantSubsessions.taskOpenedFor(agentId, message),
+        holding: (agentId, at) => this.store.assistantSubsessions.taskOfThread(agentId, at)
       },
       // Resolved from trusted session coordinates at call time, so a place that changes audience applies at once.
       memoryScope: (ctx, call) => this.memoryToolScope(ctx, call),
@@ -13899,7 +13919,7 @@ export class Daemon {
     for (const agentId of this.agents.keys()) {
       if (this.draining) return
       if (!this.servesAgent(agentId)) continue
-      const closed = await this.store.assistantSubsessions.closeIdleThreaded(agentId, idleBefore)
+      const closed = await this.store.assistantSubsessions.closeIdleThreaded(agentId, idleBefore, this.clock.now())
       for (const key of closed)
         this.log.info(`task ${key} closed after a week idle; its threads go back to the coordinator`)
       await this.reportTaskOwners(agentId, closed)
@@ -13922,7 +13942,8 @@ export class Daemon {
           if (!owners.has(owner)) owners.set(owner, this.coordinatorRunsAuto(agentId, owner))
           // A task in a place of its own goes with its coordinator's conversation, not the place's (§6.8).
           if (((await owners.get(owner)) ?? runs) === true) continue
-          if (await index.closeTask(agentId, task.childSessionKey)) released.push(task.childSessionKey)
+          if (await index.closeTask(agentId, task.childSessionKey, this.clock.now()))
+            released.push(task.childSessionKey)
         }
         for (const key of released)
           this.log.info(`task ${key} is an ordinary thread session again: its conversation left auto`)
@@ -14077,7 +14098,7 @@ export class Daemon {
       )
       for (const transportScope of scopes) {
         const task = await index.taskOfThread(agentId, { ...at, transportScope: transportScope ?? null })
-        if (task === undefined || !(await index.closeTask(agentId, task))) continue
+        if (task === undefined || !(await index.closeTask(agentId, task, this.clock.now()))) continue
         this.log.info(`task ${task} closed: its place ${at.channel} was archived`)
         await this.reportTaskOwners(agentId, [task])
       }
@@ -16145,7 +16166,31 @@ export class Daemon {
     if (!target) throw new Error('this session has no code-host repository to act on')
     const broker = this.codeHostBrokers.get(target.provider)
     if (!broker) throw new Error(`code-host effects are unavailable for ${target.provider} on this daemon`)
-    return await broker.execute({ ...target, agentId: req.agentId, sessionKey: key }, req.operation)
+    const result = await broker.execute({ ...target, agentId: req.agentId, sessionKey: key }, req.operation)
+    if (req.operation.kind === 'createMergeRequest')
+      await this.noteTaskOpened(req.agentId, key, createdObjectOf(result))
+    return result
+  }
+
+  /** A task that opened a pull request or merge request keeps it beside its record (assistant-mode.md §5.18 ④); any other session keeps nothing. */
+  private async noteTaskOpened(
+    agentId: string,
+    key: string,
+    opened: Omit<OpenedObject, 'openedAt'> | undefined
+  ): Promise<void> {
+    if (!opened) return
+    try {
+      await this.store.assistantSubsessions.recordOpened(agentId, key, { ...opened, now: this.clock.now() })
+    } catch (err) {
+      // What it records is a read aid: a failure never holds up the call or the feedback that found it.
+      this.log.warn(`task ${key}: recording ${opened.label} failed: ${formatErr(err)}`)
+    }
+  }
+
+  /** Each task key's short id, unique among the agent's task keys (assistant-mode.md §5.18 ④). */
+  private async shortTaskIdsOf(agentId: string): Promise<(key: string) => string> {
+    const ids = shortTaskIds(await this.store.assistantSubsessions.taskKeys(agentId), agentId)
+    return (key) => ids.get(key) ?? key
   }
 
   /** A follow-up check's watched GitLab project (assistant-mode.md §5.14), which the subscription verified; reads only. */
@@ -25363,6 +25408,8 @@ export class Daemon {
       session.transportScope
     )
     if (session.key !== expectedKey) return deferred('not_found')
+    // The Control Plane names the pull request this session opened: a task keeps it (assistant-mode.md §5.18 ④).
+    await this.noteTaskOpened(req.agentId, session.key, feedbackPullOf(req))
 
     const originKind = originKindOf(session.platform) ?? 'chat'
     const integrationId =

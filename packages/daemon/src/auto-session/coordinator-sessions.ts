@@ -155,6 +155,12 @@ async function settledWithin(promises: readonly Promise<unknown>[], ms: number):
   clearTimeout(timer)
 }
 
+/** The message a task is opened for, as `recall` and `listTasks` name it (assistant-mode.md §5.18 ④). */
+const openedForOf = (message: DeliveredMessage) => ({
+  place: `${message.msg.platform}:${message.msg.channel}`,
+  messageId: message.id
+})
+
 // A link a title cannot break out of.
 const linkText = (title: string): string => title.replace(/[[\]\\]/g, (char) => `\\${char}`)
 
@@ -312,6 +318,7 @@ export class CoordinatorSessions {
       parentSessionKey: coordinatorKey,
       title,
       background: background?.trim() || msg.text,
+      openedFor: openedForOf(message),
       replyThread: thread,
       now
     })
@@ -391,6 +398,7 @@ export class CoordinatorSessions {
       parentSessionKey: coordinatorKey,
       title,
       background: background?.trim() || msg.text,
+      openedFor: openedForOf(message),
       replyThread: place.thread,
       now
     })
@@ -461,6 +469,7 @@ export class CoordinatorSessions {
       parentSessionKey: coordinatorKey,
       title,
       background: background?.trim() || msg.text,
+      openedFor: openedForOf(message),
       now
     })
     await index.attachThread({
@@ -517,8 +526,10 @@ export class CoordinatorSessions {
     const { msg } = message
     const store = this.host.store()
     const index = store.assistantSubsessions
+    // A taskId is the task's key or a unique prefix of it, as listTasks and the board show it (assistant-mode.md §5.18 ④).
+    const key = await index.resolve(agentId, taskId)
     const row =
-      (await index.get(agentId, taskId)) ??
+      (key !== undefined ? await index.get(agentId, key) : undefined) ??
       (await store.getSessionByOutwardIdOnly(taskId, agentId).then((s) => (s ? index.get(agentId, s.key) : undefined)))
     // A message without a thread moves only to a task on its own page (§10).
     if (

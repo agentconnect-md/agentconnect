@@ -49,6 +49,8 @@ export type PlaceReadTool =
   | 'listBookmarks'
   // send-message-guide.md §9.2: a call into another agent's existing session is judged as a read of its conversation.
   | 'callAgent'
+  // assistant-mode.md §5.18 ④: one task's record and words, a read of its place with its own sessions.
+  | 'readTask'
 
 /** How a source reads on its own bot: open to anyone who may see the workspace, to its members, or not at all. */
 export type SourceClass = 'public' | 'members' | 'direct' | 'webchat' | 'undetermined'

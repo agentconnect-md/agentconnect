@@ -19,12 +19,14 @@ import {
   type TurnAskers
 } from '../../assistant/place-access.js'
 import { askerKey } from '../../assistant/place-members.js'
+import { coordinatorMessageId } from '../../auto-session/coordinator-prompt.js'
 import { platformLabel } from '../../platforms/read-ports.js'
 import { transcriptChannelKey, type SessionRecord, type TranscriptRow } from '../../store/local-store.js'
 import { optionalString, parseArgs } from './args.js'
 import type { SessionContext } from './context.js'
 import { knownIntegrations } from './gateway.js'
 import { describePlace, judgePlaceRead, kindFromRows, type PlaceAccessDeps, type PlaceStore } from './place-gate.js'
+import { readableTasks, type TaskReadDeps } from './read-task.js'
 
 export const RECALL_ARGS = z.object({ place: optionalString('place'), query: optionalString('query') })
 
@@ -275,13 +277,14 @@ async function ownTitled(titled: Place[], askers: TurnAskers, lookups: ReadLooku
   return answer?.complete ? answer.owned : []
 }
 
-/** This agent's own text rows in a place, newest first, within a scan budget; `complete` when none was left. */
+/** This agent's own text rows in a place, newest first, each with the session it was read from, within a scan budget; `complete` when none was left. */
 async function placeRows(
   ctx: SessionContext,
   place: Place,
   store: PlaceStore
-): Promise<{ rows: TranscriptRow[]; complete: boolean }> {
+): Promise<{ rows: TranscriptRow[]; sessionOf: Map<number, SessionRecord>; complete: boolean }> {
   const rows: TranscriptRow[] = []
+  const sessionOf = new Map<number, SessionRecord>()
   const seen = new Set<number>()
   let budget = SCANNED_ROWS
   for (const session of recalledSessions(place)) {
@@ -293,13 +296,14 @@ async function placeRows(
     }
     let before: number | null = null
     for (;;) {
-      if (budget <= 0) return { rows, complete: false }
+      if (budget <= 0) return { rows, sessionOf, complete: false }
       const page = await store.transcriptPageForAgent(scope, before, Math.min(PAGE_ROWS, budget))
       budget -= page.rows.length
       for (const row of page.rows) {
         if (row.kind !== 'text' || !row.text.trim() || seen.has(row.seq)) continue
         seen.add(row.seq)
         rows.push(row)
+        sessionOf.set(row.seq, session)
       }
       const last = page.rows.at(-1)
       if (!page.hasMore || !last) break
@@ -307,7 +311,46 @@ async function placeRows(
     }
   }
   // Sessions past the cap were never searched, so the answer covers only the recent part.
-  return { rows, complete: place.sessions.length <= RECALLED_SESSIONS }
+  return { rows, sessionOf, complete: place.sessions.length <= RECALLED_SESSIONS }
+}
+
+/** The task a message was handed to: the one opened for it, else the open task whose thread it is in, unless the agent wrote it (assistant-mode.md §5.18 ④). */
+async function taskOfRow(
+  ctx: SessionContext,
+  place: Place,
+  session: SessionRecord | undefined,
+  row: TranscriptRow,
+  reads: NonNullable<TaskReadDeps['taskReads']>
+): Promise<string | undefined> {
+  const id = row.postId ?? row.ts
+  const opened = await reads.openedFor(ctx.agentId, { place: placeId(place), messageId: coordinatorMessageId(id) })
+  if (opened !== undefined || row.sender === ctx.agentId) return opened
+  return await reads.holding(ctx.agentId, {
+    platform: place.platform,
+    channel: place.channel,
+    transportScope: session?.transportScope ?? null,
+    thread: row.thread ?? id
+  })
+}
+
+/** Each excerpt's task, where the turn may read that task; none is inlined otherwise. */
+async function excerptTasks(
+  ctx: SessionContext,
+  place: Place,
+  rows: readonly TranscriptRow[],
+  sessionOf: ReadonlyMap<number, SessionRecord>,
+  deps: PlaceAccessDeps & TaskReadDeps
+): Promise<Map<number, string>> {
+  const reads = deps.taskReads
+  if (!reads) return new Map()
+  const tasks = new Map<number, string>()
+  for (const row of rows) {
+    const key = await taskOfRow(ctx, place, sessionOf.get(row.seq), row, reads).catch(() => undefined)
+    if (key !== undefined) tasks.set(row.seq, key)
+  }
+  const readable = await readableTasks(ctx, tasks.values(), reads, deps)
+  const shown = await reads.shortIds(ctx.agentId)
+  return new Map([...tasks].flatMap(([seq, key]) => (readable.has(key) ? [[seq, shown(key)] as const] : [])))
 }
 
 /** Up to `EXCERPT_CHARS` of a row, centered on the first matched word. */
@@ -321,8 +364,14 @@ function clip(text: string, terms: string[]): string {
   return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`
 }
 
-async function recallFrom(ctx: SessionContext, place: Place, query: string | undefined, store: PlaceStore) {
-  const { rows, complete } = await placeRows(ctx, place, store)
+async function recallFrom(
+  ctx: SessionContext,
+  place: Place,
+  query: string | undefined,
+  store: PlaceStore,
+  deps: PlaceAccessDeps & TaskReadDeps
+) {
+  const { rows, sessionOf, complete } = await placeRows(ctx, place, store)
   const terms = [
     ...new Set(
       (query ?? '')
@@ -341,6 +390,7 @@ async function recallFrom(ctx: SessionContext, place: Place, query: string | und
     .map((s) => s.row)
     .sort((a, b) => a.eventTimeUs - b.eventTimeUs || a.seq - b.seq)
   const names = await store.getDisplayNames([...new Set(picked.map((r) => r.sender).filter((s) => s !== ctx.agentId))])
+  const tasks = await excerptTasks(ctx, place, picked, sessionOf, deps)
   const excerpts: Record<string, string>[] = []
   let total = 0
   let truncated = false
@@ -352,9 +402,12 @@ async function recallFrom(ctx: SessionContext, place: Place, query: string | und
     }
     total += text.length
     const at = iso(Math.floor(row.eventTimeUs / 1000))
+    const task = tasks.get(row.seq)
     excerpts.push({
       ...(at ? { at } : {}),
       from: row.sender === ctx.agentId ? 'you' : (names.get(row.sender) ?? row.sender),
+      messageId: coordinatorMessageId(row.postId ?? row.ts),
+      ...(task !== undefined ? { taskId: task } : {}),
       text
     })
   }
@@ -372,7 +425,7 @@ async function recallFrom(ctx: SessionContext, place: Place, query: string | und
 export async function recall(
   ctx: SessionContext,
   args: Record<string, unknown>,
-  deps: PlaceAccessDeps
+  deps: PlaceAccessDeps & TaskReadDeps
 ): Promise<unknown> {
   const { place: handle, query } = parseArgs(RECALL_ARGS, args)
   const store = deps.placeStore
@@ -402,6 +455,6 @@ export async function recall(
     place: placeId(place),
     ...(name ? { name } : {}),
     ...(query ? { query } : {}),
-    ...(await recallFrom(ctx, place, query, store))
+    ...(await recallFrom(ctx, place, query, store, deps))
   }
 }

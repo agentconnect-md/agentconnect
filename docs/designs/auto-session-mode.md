@@ -274,19 +274,30 @@ tasks its batch may see, read only, with place, status, summary and thread links
 carries its status as the board shows it: a follow-up's is `next <time>` while it waits and `running`
 during a check. Each is a page of
 at most 20 in the board's order, newest change first, continued by its own `nextCursor`, and access
-is judged again on every page.
+is judged again on every page. Every entry also names the message its task was opened for and the pull
+or merge requests it opened. Both lists hold open tasks only; a task's id is its key cut before the
+agent's id where that names it alone, which every task tool takes beside the whole key.
+
+`readTask {taskId, after?}` is offered wherever `listTasks` is. It reads one task, open or closed
+within its window (§6.5), without waking it: its title, summary and `summaryAt`, mode and status, the
+message it was opened for, the pull requests it opened with the follow-ups watching them, and a page
+of its latest words, continued by a cursor. It is judged like `recall` of the task's place, with the
+task's own sessions, for every person in the batch, on every page; a task they may not read is
+answered as an unknown id ([assistant-mode.md](assistant-mode.md) §5.18 ④).
 
 ### 5.3 `updateTask`
 
 `updateTask {summary, title?}`, a tool of its own. `summary` is required; the title changes only
 together with the summary. Only a task calls it, for itself; both kinds can, and so can a follow-up's
-check, to rename what it watches (§6.7).
+check, to rename what it watches (§6.7). Its description says the title names what the task is doing
+now and the summary's first sentence states the current status.
 
 ### 5.4 The coordinator's limits
 
 - Only AgentConnect tools: `sendMessage` (the task actions and `replyToMessage`, plus `postMessage`
-  and `callAgent`), `listTasks`, `recall`, memory, and assistant mode's follow-up tools.
-  - `recall` keeps its parameters and the read rule, judged by every sender of the batch.
+  and `callAgent`), `listTasks`, `readTask`, `recall`, memory, and assistant mode's follow-up tools.
+  - `recall` keeps its parameters and the read rule, judged by every sender of the batch. Each excerpt
+    carries its message id and, where the batch may read it, the task the message was handed to.
   - `postMessage` and `callAgent` run as they do in any session. `callAgent` always asks for an
     answer, which comes back as a report.
   - The place tools are those its place's long session is offered: `followUp`, `getToKnow`, `propose`,
@@ -366,8 +377,10 @@ coordinate is unchanged, [channel-session-mode.md](channel-session-mode.md) §3.
 
 A threaded task lives as long as its session: when the session ages out after 7 idle days, the task
 closes and leaves `listTasks`. A later reply in its thread is an unowned-thread message and goes to
-the coordinator, which may open a task again. A follow-up lives until it is done or stopped, however
-long it waits between checks; it then keeps its row, marked ended, which no idle close removes.
+the coordinator, which may open a task again, under the same id. A follow-up lives until it is done or
+stopped, however long it waits between checks. A closed task of either kind keeps its row, marked
+closed, which `readTask` reads and nothing else lists; the store's retention sweep deletes it 90 days
+after it closed.
 
 ### 6.6 Coordinator tasks are threaded
 
@@ -381,15 +394,18 @@ coordinator opens no background task, so no task of the coordinator ever changes
 A task keeps its own summary with `updateTask` (§5.3), which the coordinator reads in `listTasks` to
 place new messages.
 
-- **Content**: fixed parts set by the task's prompt, at most 500 characters: the scope (what the task
-  is about, the coordinator's main signal), the status (in progress, waiting on someone, done or
-  blocked), and the next step and open questions.
+- **Content**: fixed parts set by the task's prompt, at most 500 characters: the status (in progress,
+  waiting on someone, done or blocked) in a first sentence that stands on its own, since a short list
+  may quote only that sentence, then the scope (what the task is about, the coordinator's main
+  signal), and the next step and open questions.
 - **When**: the prompt asks for an update in any turn where the scope or status changes. As a
   backstop the daemon adds a reminder to the next turn when a task has no summary or its summary is
   5 turns old. No extra model call writes summaries.
 - **Before the first summary**: `listTasks` shows the title and background the coordinator gave
   (`delegateTask`'s `message`).
-- **Title**: the task may change it with the summary; the coordinator's title is only the first one.
+- **Title**: it names what the task is doing now. The task changes it with the summary when the work
+  moves on to something it no longer names, and the stale-summary reminder says so; the coordinator's
+  title is only the first one. A new title changes the work board.
 - **A follow-up**: its summary is its last check's result, which `recordCheck` writes, and before its
   first check `listTasks` shows what it was taken with. Its title names what it watches; a check that
   a message moved to something else renames it with `updateTask`. It gets no stale-summary reminder.
@@ -426,9 +442,9 @@ message ([slack-code-channels.md](slack-code-channels.md)) instead of in the mes
   answers, and links the channel in the message's thread ("Passed to [title](link)"); the thread is not
   attached, so a later reply there comes back to the coordinator. `listTasks` lists the task with the
   channel as its thread and the channel's link.
-- **Closing.** Archiving the channel, by a person or by the agent, closes the task: its row and thread go,
-  and its owner is cleared (§6.2). The relay forwards an archive with an `archived` flag, since a native
-  Stop reaches the same channel coordinate. The task also closes after 7 idle days (§6.5) and is released
+- **Closing.** Archiving the channel, by a person or by the agent, closes the task: its thread goes, its
+  row is kept closed (§6.5), and its owner is cleared (§6.2). The relay forwards an archive with an
+  `archived` flag, since a native Stop reaches the same channel coordinate. The task also closes after 7 idle days (§6.5) and is released
   when its coordinator's conversation leaves `auto` (§3.5), judged by that conversation, not the
   channel's own mode.
 - **Fallback.** When the installation lacks code channels, creation fails, or the sender may not make a
@@ -532,14 +548,15 @@ not addressed to this agent. Cost grows with the number of agents.
 ## 12. Validation
 
 `packages/daemon/test/acp-matrix/coordinator-probe.ts` injects a candidate coordinator prompt and tool
-surface (`sendMessage` with `delegateTask`, `messageTask` and `replyToMessage`, plus `listTasks` with
-its `here` and `elsewhere` lists) into a real runtime session over an HTTP MCP fixture, opens each
+surface (`sendMessage` with `delegateTask`, `messageTask` and `replyToMessage`, `listTasks` with
+its `here` and `elsewhere` lists, and `readTask`) into a real runtime session over an HTTP MCP fixture, opens each
 turn with the work board the daemon would send ([assistant-mode.md](assistant-mode.md) §5.18),
 delivers channel messages in the format of §4.3, and judges each message's outcome. Its scenarios:
 new work, a message for an open task, a status question, a greeting, chatter between people, a
 request to another agent, a vague mention, a small edit the coordinator must not do itself, two mixed
 batches, a follow-up's report (§3.4), a batch of one message and two reports, one worth telling
-and one with nothing new, a request for work another channel's task already has open, and
+and one with nothing new, a request for work another channel's task already has open, a question
+about another channel's task that only its latest words answer, and
 in a webchat conversation (§10) new work, a status question, a message for an open task and a status
 question about another channel's task.
 
@@ -586,6 +603,27 @@ telling, a request for new work and a follow-up's report with nothing new, in on
 `report-batch` run the first report was relayed with `replyToMessage` naming its PR, the request
 was delegated and the empty report was left; `codex-acp` called `listTasks` once first, `claude-acp`
 did not. Neither used a tool besides the coordinator tools other than `claude-acp`'s `ToolSearch`.
+The same day, with follow-ups as watch tasks ([assistant-mode.md](assistant-mode.md) §5.18 ⑤), the
+prompt gained one paragraph: a task runs in one of two modes, work or watch, both messaged and
+stopped by their `taskId`, and a follow-up shows "next" and the time of its next check, or "running"
+while a check runs. No scenario was added. `claude-acp` (on Claude Opus 5.5) and `codex-acp` each
+passed 51 / 51 again (3 repetitions each), on the prompt with the reports of phase D. In every
+`report-reply` and `report-batch` run the follow-up's report was relayed with `replyToMessage` naming
+its PR, and the request beside it was delegated. Over the 51 runs `claude-acp` called `listTasks` 31
+times and `codex-acp` 39 times; neither used a tool besides the coordinator tools other than
+`claude-acp`'s `ToolSearch`.
+On 2026-11-02, with `readTask`, the inlined ids and the title as a task's current scope
+([assistant-mode.md](assistant-mode.md) §5.18 ④), the tool surface gained `readTask`, the board's
+header named it, and the prompt said that `readTask` reads a task's latest words, the message it was
+opened for and the pull requests it opened without waking it, and that a title names what a task is
+doing now and a summary's first sentence its status. `elsewhere-read-task` was added: a request at the
+channel root for the pull request of another channel's task, whose `elsewhere` summary predates it, so
+only `readTask` names it. `claude-acp` (on Claude Opus 5.5) and `codex-acp` each passed 54 / 54
+(3 repetitions each). In every `elsewhere-read-task` run the coordinator called `listTasks` once, then
+`readTask` once with the id `elsewhere` gave, and replied with the pull request's link; neither called
+`readTask` in any other scenario. Over the 54 runs `claude-acp` called `listTasks` 32 times and
+`codex-acp` 42 times; neither used a tool besides the coordinator tools other than `claude-acp`'s
+`ToolSearch`.
 
 The candidate prompt asks the coordinator to express every outcome as a call and to end its turn
 with `AC_NO_RESPONSE`; the judge still accepts a one-message turn's text as its reply (§4.3).
@@ -597,8 +635,6 @@ a reply saying a message was for another agent, so the prompt states that ignori
 ## 13. Not done / later
 
 - A coordinator model setting of its own (the first version follows the agent).
-- `recall` and a read of another place's tasks for the coordinator, and `listTasks` paging: proposed
-  in [assistant-mode.md](assistant-mode.md) §5.18.
 - A cap on coordinator usage (§4.6).
 - Judging across bots; one coordinator shared by a shared bot's agents.
 - Carrying an assistant-mode `append` session's context into the coordinator.

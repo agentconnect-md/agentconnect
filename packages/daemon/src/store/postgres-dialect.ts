@@ -342,6 +342,11 @@ export const canonicalColumns = [
   'changedAt',
   // a watch task's schedule (assistant-mode.md §5.18)
   'nextAt',
+  // a closed task's record, what it was opened for and what it opened (assistant-mode.md §5.18 ④)
+  'closedAt',
+  'openedForPlace',
+  'openedForMessage',
+  'openedAt',
   'watchStatus',
   'ownerPlatform',
   'ownerChannel',

@@ -1,4 +1,5 @@
 // The coordinator session's prompt, tool surface and turn input (auto-session-mode.md §4, §5.4, §9); the runtime matrix probes these texts.
+import { READ_TASK_TOOL } from '../mcp/ops/assistant-subsessions.js'
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
 import { NO_RESPONSE_SENTINEL } from '../session/no-response.js'
 import { obj, type ToolDescriptor } from '../tool-schema/descriptor.js'
@@ -97,8 +98,9 @@ const SEND_MESSAGE_DESCRIPTION =
 const LIST_TASKS_DESCRIPTION =
   'List open work, the most recently changed first. "here" holds your own tasks in this conversation: taskId, title, ' +
   "whether a thread is attached and its links, owner, last activity, whether it is running, and the task's own summary " +
-  '(scope, status, next step) with when it was last updated. "elsewhere" holds the open tasks of other conversations ' +
-  'the people asking may see, read only: place, title, status, summary and thread links. Each list holds at most 20; ' +
+  '(status first, then scope and next step) with when it was last updated. "elsewhere" holds the open tasks of other ' +
+  'conversations the people asking may see, read only: id, place, title, status, summary and thread links. Entries ' +
+  'also name the message a task was opened for and the pull requests it opened. Each list holds at most 20; ' +
   "pass a list's nextCursor, or the cursor a line of the work board names, as after to read on. Use it to tell " +
   'whether a message belongs to work already open, here or elsewhere, and to answer status questions.'
 
@@ -147,9 +149,9 @@ export const COORDINATOR_LIST_TASKS_TOOL: ToolDescriptor = {
   }
 }
 
-/** The coordinator's decision tools; memory tools join them in a daemon session (§5.4). */
+/** The coordinator's decision tools and its read of one task; memory tools join them in a daemon session (§5.4). */
 export function coordinatorTools(): ToolDescriptor[] {
-  return [COORDINATOR_SEND_MESSAGE_TOOL, COORDINATOR_LIST_TASKS_TOOL]
+  return [COORDINATOR_SEND_MESSAGE_TOOL, COORDINATOR_LIST_TASKS_TOOL, READ_TASK_TOOL]
 }
 
 // What the coordinator keeps for its place as assistant mode's long session: follow-ups, proposals and reminders (§3.4, §5.4).
@@ -202,8 +204,8 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '# You are the coordinator',
     `${words.intro} You never do the work ` +
       'yourself: you have no workspace, and you must not read files, run commands, search the web, or use any tool other ' +
-      'than sendMessage, listTasks, recall and the memory, follow-up and reminder tools you are given. For every delivered ' +
-      'message you choose exactly one outcome:',
+      'than sendMessage, listTasks, readTask, recall and the memory, follow-up and reminder tools you are given. For ' +
+      'every delivered message you choose exactly one outcome:',
     '',
     '1. Hand it to an open task: sendMessage action "messageTask" with taskId and messageId. Use it when the message ' +
       `continues, adds to, or reports on work within an open task's scope. The task answers ${words.taskAnswers}.`,
@@ -222,8 +224,11 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     'A turn may begin with the work board: "Here" lists the open tasks of this ' +
       `${words.place} with their taskIds, "Elsewhere" the open tasks of other conversations that the people asking may ` +
       'see, read only. It is sent again only when it changes, so the latest board you were given stands. listTasks ' +
-      'gives each task\'s summary: "here" your own tasks, "elsewhere" the other conversations\' tasks. recall reads ' +
-      'what was said in another conversation.',
+      'gives each task\'s summary: "here" your own tasks, "elsewhere" the other conversations\' tasks. readTask ' +
+      "reads one task's latest words, the message it was opened for and the pull requests it opened, without waking " +
+      'it, when its summary does not answer a question. recall reads what was said in another conversation.',
+    "A task's title names what it is doing now, which the task keeps current, and its summary's first sentence " +
+      'states its current status.',
     'A task runs in one of two modes: work, which does what it is given, or watch, a follow-up, which checks ' +
       'something on its schedule and reports only when it changes. Both are messaged and stopped by their taskId; a ' +
       'follow-up shows "next" and the time of its next check, or "running" while a check runs.',

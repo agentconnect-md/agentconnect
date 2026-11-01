@@ -7,6 +7,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { RESEARCH_SESSION_KEY_PATTERN, SUBSESSION_COORDINATE_PREFIX } from '../session/subsession-coordinate.js'
 import { AsyncMutex } from './async-mutex.js'
+import { CLOSE_TASK } from './closed-tasks.js'
 import {
   ASSISTANT_TASK_OBSERVATION_SCHEMA,
   WATCH_TASK_COLUMNS,
@@ -32,6 +33,8 @@ export interface AssistantSubsession {
   mode?: 'watch'
   /** A follow-up's schedule (§5.12): open while `active` or `waiting`, and its next check while one is set; a getting-to-know task's row has none. */
   watchStatus?: WatchTaskStatus
+  /** A getting-to-know task's watch row, whose record the item ledger keeps (assistant-mode.md §5.13, §5.18 ⑤). */
+  gettingToKnow?: true
   nextAt?: number
   /** The place a watch row belongs to, whose current long session owns it. */
   place?: { platform: string; channel: string; transportScope?: string }
@@ -54,7 +57,29 @@ export interface AssistantSubsession {
   turnsSinceSummary?: number
   /** When a round last started or settled or its title changed, the work board's order (assistant-mode.md §5.18). */
   changedAt?: number
+  /** When it closed; a closed task's row is kept for a window, for `readTask` alone (assistant-mode.md §5.18 ④). */
+  closedAt?: number
+  /** The message it was opened for, by its place as `recall` names one and its id as the coordinator names it. */
+  openedFor?: TaskMessage
 }
+
+/** A message by its place (`platform:channel`) and its id as the coordinator names it (`msg-…`). */
+export interface TaskMessage {
+  place: string
+  messageId: string
+}
+
+/** A pull request or merge request a task opened, as the daemon saw it opened (assistant-mode.md §5.18 ④). */
+export interface OpenedObject {
+  kind: 'pull request' | 'merge request'
+  /** How people name it: `owner/repo#12`, or a merge request's `group/project!3`. */
+  label: string
+  url: string
+  openedAt: number
+}
+
+/** A task's whole record, closed or not, with its owner's conversation and its sessions, as `readTask` reads it. */
+export type TaskRecord = PlacedSubsession
 
 /** An indexed row with what the work board reads beside it (assistant-mode.md §5.18 ②). */
 export interface PlacedSubsession extends AssistantSubsession {
@@ -106,6 +131,19 @@ export const ASSISTANT_SUBSESSION_THREAD_SCHEMA = `
         ON assistant_subsession_thread (agentId, childSessionKey);
 `
 
+// The pull requests and merge requests a task opened, kept with its row and swept with it (assistant-mode.md §5.18 ④).
+export const ASSISTANT_TASK_OPENED_SCHEMA = `
+      CREATE TABLE IF NOT EXISTS assistant_task_opened (
+        agentId TEXT NOT NULL,
+        taskKey TEXT NOT NULL,
+        url TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        label TEXT NOT NULL,
+        openedAt INTEGER NOT NULL,
+        PRIMARY KEY (agentId, taskKey, url)
+      );
+`
+
 export const ASSISTANT_SUBSESSION_SCHEMA = `
       CREATE TABLE IF NOT EXISTS assistant_subsession (
         agentId TEXT NOT NULL,
@@ -125,6 +163,10 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         summaryUpdatedAt INTEGER,
         turnsSinceSummary INTEGER NOT NULL DEFAULT 0,
         changedAt INTEGER,
+        closedAt INTEGER,
+        openedForPlace TEXT,
+        openedForMessage TEXT,
+        gettingToKnow INTEGER NOT NULL DEFAULT 0,
         ${WATCH_TASK_COLUMNS}
         PRIMARY KEY (agentId, childSessionKey)
       );
@@ -143,6 +185,7 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         ON assistant_subsession_input (agentId, childSessionKey);
       ${ASSISTANT_SUBSESSION_THREAD_SCHEMA}
       ${ASSISTANT_TASK_OBSERVATION_SCHEMA}
+      ${ASSISTANT_TASK_OPENED_SCHEMA}
 `
 
 /** What the index needs from the store; a capped open that claims something else at once needs its transaction. */
@@ -158,6 +201,16 @@ type Row = Record<string, unknown>
 
 // A listing's filter that leaves watch tasks out (assistant-mode.md §5.18).
 const DELEGATIONS = " AND mode = 'work'"
+
+// A row the live reads see: a closed work task reads as gone, as its deleted row did; a watch row keeps its own status rules.
+const live = (alias?: string): string => {
+  const at = alias ? `${alias}.` : ''
+  return `(${at}mode = 'watch' OR ${at}closedAt IS NULL)`
+}
+const LIVE = live()
+
+/** At most this many objects are kept per task. */
+export const TASK_OPENED_MAX = 20
 
 // A row a delegation opened, as isDelegatedTaskKey reads its key: a background coordinate other than a check's, an approved proposal's or research's.
 const NOT_DELEGATED_TASKS =
@@ -185,6 +238,8 @@ type OpenInput = Omit<
   | 'summaryUpdatedAt'
   | 'turnsSinceSummary'
   | 'changedAt'
+  | 'closedAt'
+  | 'gettingToKnow'
 > & {
   now?: number
 }
@@ -199,6 +254,7 @@ function subsessionOf(row: Row): AssistantSubsession {
     createdAt: Number(row.createdAt),
     ...(row.mode === 'watch' ? { mode: 'watch' as const } : {}),
     ...(isWatchTaskStatus(row.watchStatus) ? { watchStatus: row.watchStatus } : {}),
+    ...(Number(row.gettingToKnow ?? 0) === 1 ? { gettingToKnow: true as const } : {}),
     ...(row.nextAt != null ? { nextAt: Number(row.nextAt) } : {}),
     ...(row.mode === 'watch' && row.originPlatform != null && row.originChannel != null
       ? {
@@ -218,7 +274,11 @@ function subsessionOf(row: Row): AssistantSubsession {
     ...(row.summary != null ? { summary: String(row.summary) } : {}),
     ...(row.summaryUpdatedAt != null ? { summaryUpdatedAt: Number(row.summaryUpdatedAt) } : {}),
     ...(Number(row.turnsSinceSummary ?? 0) > 0 ? { turnsSinceSummary: Number(row.turnsSinceSummary) } : {}),
-    changedAt: Number(row.changedAt ?? row.createdAt)
+    changedAt: Number(row.changedAt ?? row.createdAt),
+    ...(row.closedAt != null ? { closedAt: Number(row.closedAt) } : {}),
+    ...(row.openedForPlace != null && row.openedForMessage != null
+      ? { openedFor: { place: String(row.openedForPlace), messageId: String(row.openedForMessage) } }
+      : {})
   }
 }
 
@@ -247,6 +307,21 @@ const backgroundOf = (text: string | undefined): string | null => {
     : chars.join('')
 }
 
+/** A key whose task closed opens a task again under the same id, and the closed record goes with what was kept beside it. */
+async function clearClosed(
+  db: Pick<AssistantSubsessionDatabase, 'query'>,
+  agentId: string,
+  childSessionKey: string
+): Promise<void> {
+  const { changes } = await db.query(
+    'DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? AND closedAt IS NOT NULL',
+    [agentId, childSessionKey]
+  )
+  if (changes === 0) return
+  for (const table of ['assistant_task_opened', 'assistant_task_observation'])
+    await db.query(`DELETE FROM ${table} WHERE agentId = ? AND taskKey = ?`, [agentId, childSessionKey])
+}
+
 // A guard on one round, when the caller names it.
 const inRound = (round: number | undefined) => (round === undefined ? '' : ' AND round = ?')
 const roundParam = (round: number | undefined) => (round === undefined ? [] : [round])
@@ -261,7 +336,7 @@ const LAST_ACTIVE = (alias: string) =>
 
 // The agent's running background delegations, the count a capped open or a reopened round is checked against.
 const RUNNING_DELEGATIONS = `(SELECT COUNT(*) FROM assistant_subsession a
-                WHERE a.agentId = ? AND a.state = 'open' AND a.mode = 'work' AND NOT ${THREADED('a')}
+                WHERE a.agentId = ? AND a.state = 'open' AND a.mode = 'work' AND a.closedAt IS NULL AND NOT ${THREADED('a')}
                   AND (a.createdAt >= ? OR EXISTS (SELECT 1 FROM sessions s WHERE s.key = a.childSessionKey)))`
 
 export class AssistantSubsessionIndex {
@@ -272,11 +347,12 @@ export class AssistantSubsessionIndex {
 
   /** Record a delegation; true when the row is new, false when the child was already indexed. */
   async open(input: OpenInput): Promise<boolean> {
+    await clearClosed(this.db, input.agentId, input.childSessionKey)
     const { changes } = await this.db.query(
       `INSERT OR IGNORE INTO assistant_subsession
          (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread, title, background,
-          changedAt)
-       VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
+          changedAt, openedForPlace, openedForMessage)
+       VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.agentId,
         input.childSessionKey,
@@ -286,7 +362,9 @@ export class AssistantSubsessionIndex {
         input.replyThread ?? null,
         input.title ?? null,
         backgroundOf(input.background),
-        input.now ?? Date.now()
+        input.now ?? Date.now(),
+        input.openedFor?.place ?? null,
+        input.openedFor?.messageId ?? null
       ]
     )
     return changes > 0
@@ -324,6 +402,7 @@ export class AssistantSubsessionIndex {
     input: OpenInput,
     cap: { limit: number; startedSince: number }
   ): Promise<boolean> {
+    await clearClosed(db, input.agentId, input.childSessionKey)
     const { changes } = await db.query(
       `INSERT OR IGNORE INTO assistant_subsession
          (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread, title, background,
@@ -361,7 +440,7 @@ export class AssistantSubsessionIndex {
       const { changes } = await this.db.query(
         `UPDATE assistant_subsession SET state = 'open', round = round + 1, endReport = NULL, reportAttempts = 0,
             changedAt = ?
-          WHERE agentId = ? AND childSessionKey = ? AND round = ? AND state IN ('done', 'failed')
+          WHERE agentId = ? AND childSessionKey = ? AND round = ? AND state IN ('done', 'failed') AND closedAt IS NULL
             AND (${THREADED('assistant_subsession')} OR ${RUNNING_DELEGATIONS} < ?)`,
         [now, agentId, childSessionKey, round, agentId, cap.startedSince, cap.limit]
       )
@@ -374,7 +453,8 @@ export class AssistantSubsessionIndex {
   /** Record the thread of the turn that asked for this round's work; null when no turn's thread is known. */
   async setReplyThread(agentId: string, childSessionKey: string, replyThread: string | null): Promise<void> {
     await this.db.query(
-      `UPDATE assistant_subsession SET replyThread = ? WHERE agentId = ? AND childSessionKey = ? AND mode = 'work'`,
+      `UPDATE assistant_subsession SET replyThread = ?
+        WHERE agentId = ? AND childSessionKey = ? AND mode = 'work' AND closedAt IS NULL`,
       [replyThread, agentId, childSessionKey]
     )
   }
@@ -383,11 +463,12 @@ export class AssistantSubsessionIndex {
   async openGettingToKnow(
     input: OpenInput & { place: { platform: string; channel: string; transportScope?: string | null } }
   ): Promise<boolean> {
+    await clearClosed(this.db, input.agentId, input.childSessionKey)
     const { changes } = await this.db.query(
       `INSERT OR IGNORE INTO assistant_subsession
          (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, mode, originPlatform,
-          originChannel, originTransportScope, changedAt)
-       VALUES (?, ?, ?, ?, 'done', ?, 'watch', ?, ?, ?, ?)`,
+          originChannel, originTransportScope, changedAt, gettingToKnow)
+       VALUES (?, ?, ?, ?, 'done', ?, 'watch', ?, ?, ?, ?, 1)`,
       [
         input.agentId,
         input.childSessionKey,
@@ -448,17 +529,17 @@ export class AssistantSubsessionIndex {
       return await db.transaction!<'cut' | 'done' | 'failed' | 'missing'>(async (tx) => {
         const { changes } = await tx.query(
           `UPDATE assistant_subsession SET state = 'failed', changedAt = ?
-            WHERE agentId = ? AND childSessionKey = ? AND state = 'open'`,
+            WHERE agentId = ? AND childSessionKey = ? AND state = 'open' AND ${LIVE}`,
           [now, agentId, childSessionKey]
         )
         const row =
           changes > 0
             ? undefined
             : ((
-                await tx.query('SELECT state FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?', [
-                  agentId,
-                  childSessionKey
-                ])
+                await tx.query(
+                  `SELECT state FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? AND ${LIVE}`,
+                  [agentId, childSessionKey]
+                )
               ).rows[0] as Row | undefined)
         const ended = changes > 0 ? 'cut' : row === undefined ? 'missing' : row.state === 'done' ? 'done' : 'failed'
         if (!(await claim(tx, ended))) throw new ClaimRefused()
@@ -480,7 +561,7 @@ export class AssistantSubsessionIndex {
   ): Promise<boolean> {
     const { changes } = await this.db.query(
       `UPDATE assistant_subsession SET state = ?, changedAt = ?
-        WHERE agentId = ? AND childSessionKey = ? AND state = 'open'${inRound(round)}`,
+        WHERE agentId = ? AND childSessionKey = ? AND state = 'open' AND ${LIVE}${inRound(round)}`,
       [state, now, agentId, childSessionKey, ...roundParam(round)]
     )
     return changes > 0
@@ -496,7 +577,7 @@ export class AssistantSubsessionIndex {
   ): Promise<boolean> {
     const { changes } = await this.db.query(
       `UPDATE assistant_subsession SET state = 'reporting', endReport = ?, reportAttempts = 0, changedAt = ?
-        WHERE agentId = ? AND childSessionKey = ? AND state = 'open'${inRound(round)}`,
+        WHERE agentId = ? AND childSessionKey = ? AND state = 'open' AND ${LIVE}${inRound(round)}`,
       [report, now, agentId, childSessionKey, ...roundParam(round)]
     )
     return changes > 0
@@ -506,7 +587,7 @@ export class AssistantSubsessionIndex {
   async countReportAttempt(agentId: string, childSessionKey: string): Promise<number | undefined> {
     const { changes } = await this.db.query(
       `UPDATE assistant_subsession SET reportAttempts = reportAttempts + 1
-        WHERE agentId = ? AND childSessionKey = ? AND state = 'reporting'`,
+        WHERE agentId = ? AND childSessionKey = ? AND state = 'reporting' AND ${LIVE}`,
       [agentId, childSessionKey]
     )
     return changes > 0 ? ((await this.get(agentId, childSessionKey))?.reportAttempts ?? 0) : undefined
@@ -519,7 +600,8 @@ export class AssistantSubsessionIndex {
     state: Exclude<AssistantSubsessionState, 'open' | 'reporting'> = 'failed'
   ): Promise<boolean> {
     const { changes } = await this.db.query(
-      `UPDATE assistant_subsession SET state = ? WHERE agentId = ? AND childSessionKey = ? AND state = 'reporting'`,
+      `UPDATE assistant_subsession SET state = ?
+        WHERE agentId = ? AND childSessionKey = ? AND state = 'reporting' AND ${LIVE}`,
       [state, agentId, childSessionKey]
     )
     return changes > 0
@@ -565,7 +647,7 @@ export class AssistantSubsessionIndex {
     const rows = (
       await this.db.query(
         `SELECT * FROM assistant_subsession a WHERE a.agentId = ? AND a.state = 'open' AND a.mode = 'work'
-            AND NOT EXISTS (SELECT 1 FROM inbox i WHERE i.sessionKey = a.childSessionKey AND i.completedAt IS NULL)
+            AND a.closedAt IS NULL AND NOT EXISTS (SELECT 1 FROM inbox i WHERE i.sessionKey = a.childSessionKey AND i.completedAt IS NULL)
           ORDER BY a.createdAt, a.childSessionKey`,
         [agentId]
       )
@@ -577,7 +659,8 @@ export class AssistantSubsessionIndex {
   async listReporting(agentId: string): Promise<AssistantSubsession[]> {
     const rows = (
       await this.db.query(
-        `SELECT * FROM assistant_subsession WHERE agentId = ? AND state = 'reporting' ORDER BY createdAt, childSessionKey`,
+        `SELECT * FROM assistant_subsession WHERE agentId = ? AND state = 'reporting' AND ${LIVE}
+          ORDER BY createdAt, childSessionKey`,
         [agentId]
       )
     ).rows as Row[]
@@ -589,7 +672,7 @@ export class AssistantSubsessionIndex {
     const row = (
       await this.db.query(
         `SELECT childSessionKey, createdAt, round FROM assistant_subsession
-          WHERE agentId = ? AND mode = 'work' AND state = 'open' AND childSessionKey LIKE ?
+          WHERE agentId = ? AND mode = 'work' AND state = 'open' AND closedAt IS NULL AND childSessionKey LIKE ?
           ORDER BY createdAt DESC LIMIT 1`,
         [agentId, RESEARCH_SESSION_KEY_PATTERN]
       )
@@ -607,9 +690,10 @@ export class AssistantSubsessionIndex {
     return opened?.at !== null && opened?.at !== undefined ? Number(opened.at) : Number(row.createdAt)
   }
 
+  /** An indexed task by its exact key; a closed work task reads as gone (see {@link record}). */
   async get(agentId: string, childSessionKey: string): Promise<AssistantSubsession | undefined> {
     const row = (
-      await this.db.query('SELECT * FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?', [
+      await this.db.query(`SELECT * FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? AND ${LIVE}`, [
         agentId,
         childSessionKey
       ])
@@ -621,7 +705,7 @@ export class AssistantSubsessionIndex {
   async list(agentId: string, limit: number, opts: { delegationsOnly?: boolean } = {}): Promise<AssistantSubsession[]> {
     const rows = (
       await this.db.query(
-        `SELECT * FROM assistant_subsession WHERE agentId = ?${opts.delegationsOnly ? DELEGATIONS : ''}
+        `SELECT * FROM assistant_subsession WHERE agentId = ? AND ${LIVE}${opts.delegationsOnly ? DELEGATIONS : ''}
          ORDER BY CASE WHEN state = 'open' THEN 0 ELSE 1 END, createdAt DESC, childSessionKey LIMIT ?`,
         [agentId, limit]
       )
@@ -638,7 +722,7 @@ export class AssistantSubsessionIndex {
     const after = page.after
     const rows = (
       await this.db.query(
-        `SELECT * FROM assistant_subsession WHERE agentId = ? AND parentSessionId = ?${
+        `SELECT * FROM assistant_subsession WHERE agentId = ? AND parentSessionId = ? AND ${LIVE}${
           page.delegationsOnly ? DELEGATIONS : ''
         }${after ? ' AND (createdAt < ? OR (createdAt = ? AND childSessionKey > ?))' : ''} ORDER BY createdAt DESC, childSessionKey LIMIT ?`,
         [
@@ -659,7 +743,7 @@ export class AssistantSubsessionIndex {
     limit: number
   ): Promise<{ rows: AssistantSubsession[]; total: number }> {
     const where =
-      `WHERE agentId = ? AND parentSessionId = ? AND parentSessionKey = ? AND state = 'open'` +
+      `WHERE agentId = ? AND parentSessionId = ? AND parentSessionKey = ? AND state = 'open' AND closedAt IS NULL` +
       `${DELEGATIONS} AND childSessionKey NOT LIKE ?`
     const params = [agentId, parent.sessionId, parent.key, `%:${SUBSESSION_COORDINATE_PREFIX}task-%`]
     const count = (await this.db.query(`SELECT COUNT(*) AS n FROM assistant_subsession ${where}`, params)).rows[0] as
@@ -683,7 +767,7 @@ export class AssistantSubsessionIndex {
     opts: { followUps?: boolean; delegatedTasks?: boolean } = {}
   ): Promise<{ rows: AssistantSubsession[]; total: number }> {
     const where =
-      'WHERE agentId = ? AND parentSessionId = ? AND parentSessionKey = ?' +
+      `WHERE agentId = ? AND parentSessionId = ? AND parentSessionKey = ? AND ${LIVE}` +
       (opts.followUps === false ? DELEGATIONS : '') +
       (opts.delegatedTasks === false ? NOT_DELEGATED_TASKS : '')
     const params = [
@@ -709,6 +793,12 @@ export class AssistantSubsessionIndex {
 
   /** Every row of the agent with its owner's conversation and its own sessions, as the work board reads them (assistant-mode.md §5.18 ②). */
   async listPlaced(agentId: string): Promise<PlacedSubsession[]> {
+    return await this.placed(agentId)
+  }
+
+  /** The live rows with their places, or one row by its key whether closed or not. */
+  private async placed(agentId: string, childSessionKey?: string): Promise<PlacedSubsession[]> {
+    const one = childSessionKey !== undefined
     const rows = (
       await this.db.query(
         `SELECT a.*, p.platform AS ownerPlatform, p.channel AS ownerChannel, p.transportScope AS ownerTransportScope,
@@ -716,9 +806,9 @@ export class AssistantSubsessionIndex {
            FROM assistant_subsession a
            LEFT JOIN sessions p ON p.key = a.parentSessionKey
            LEFT JOIN sessions c ON c.key = a.childSessionKey
-          WHERE a.agentId = ?
+          WHERE a.agentId = ? AND ${one ? 'a.childSessionKey = ?' : live('a')}
           ORDER BY a.childSessionKey`,
-        [agentId]
+        one ? [agentId, childSessionKey] : [agentId]
       )
     ).rows as Row[]
     const held = (
@@ -726,9 +816,11 @@ export class AssistantSubsessionIndex {
         `SELECT t.childSessionKey, s.sessionId FROM assistant_subsession_thread t
            JOIN sessions s ON s.agentId = t.agentId AND s.platform = t.platform AND s.channel = t.channel
             AND COALESCE(s.transportScope, '') = t.transportScope AND s.thread = t.thread
-          WHERE t.agentId = ? AND s.sessionId IS NOT NULL AND s.key <> t.childSessionKey
+          WHERE t.agentId = ? AND s.sessionId IS NOT NULL AND s.key <> t.childSessionKey${
+            one ? ' AND t.childSessionKey = ?' : ''
+          }
           ORDER BY t.childSessionKey, s.sessionId`,
-        [agentId]
+        one ? [agentId, childSessionKey] : [agentId]
       )
     ).rows as Row[]
     const threadSessions = new Map<string, string[]>()
@@ -766,7 +858,7 @@ export class AssistantSubsessionIndex {
     const { changes } = await this.db.query(
       `UPDATE assistant_subsession SET summary = ?, summaryUpdatedAt = ?, turnsSinceSummary = 0, title = COALESCE(?, title),
           changedAt = CASE WHEN COALESCE(title, '') = COALESCE(?, title, '') THEN changedAt ELSE ? END
-        WHERE agentId = ? AND childSessionKey = ? AND (mode = 'work' OR watchStatus IS NOT NULL)`,
+        WHERE agentId = ? AND childSessionKey = ? AND ((mode = 'work' AND closedAt IS NULL) OR watchStatus IS NOT NULL)`,
       [update.summary, update.now, update.title ?? null, update.title ?? null, update.now, agentId, childSessionKey]
     )
     return changes > 0
@@ -776,7 +868,7 @@ export class AssistantSubsessionIndex {
   async countTurn(agentId: string, childSessionKey: string): Promise<number | undefined> {
     const { changes } = await this.db.query(
       `UPDATE assistant_subsession SET turnsSinceSummary = turnsSinceSummary + 1
-        WHERE agentId = ? AND childSessionKey = ? AND mode = 'work'`,
+        WHERE agentId = ? AND childSessionKey = ? AND mode = 'work' AND closedAt IS NULL`,
       [agentId, childSessionKey]
     )
     return changes > 0 ? ((await this.get(agentId, childSessionKey))?.turnsSinceSummary ?? 0) : undefined
@@ -789,7 +881,8 @@ export class AssistantSubsessionIndex {
          (agentId, platform, channel, transportScope, thread, childSessionKey, sinceRound, attachedAt)
        SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT),
               CAST(? AS INTEGER), CAST(? AS INTEGER)
-        WHERE EXISTS (SELECT 1 FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? AND mode = 'work')`,
+        WHERE EXISTS (SELECT 1 FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? AND mode = 'work'
+          AND closedAt IS NULL)`,
       [
         input.agentId,
         input.platform,
@@ -846,20 +939,20 @@ export class AssistantSubsessionIndex {
   async resumeThreaded(agentId: string, childSessionKey: string, now = Date.now()): Promise<boolean> {
     const { changes } = await this.db.query(
       `UPDATE assistant_subsession SET state = 'open', round = round + 1, endReport = NULL, reportAttempts = 0, changedAt = ?
-        WHERE agentId = ? AND childSessionKey = ? AND mode = 'work' AND state IN ('done', 'failed')
+        WHERE agentId = ? AND childSessionKey = ? AND mode = 'work' AND state IN ('done', 'failed') AND closedAt IS NULL
           AND ${THREADED('assistant_subsession')}`,
       [now, agentId, childSessionKey]
     )
     return changes > 0
   }
 
-  /** Close the agent's settled threaded tasks idle since before `idleBefore`: their rows go and their threads become unowned (auto-session-mode.md §6.5); the closed keys. */
-  async closeIdleThreaded(agentId: string, idleBefore: number): Promise<string[]> {
+  /** Close the agent's settled threaded tasks idle since before `idleBefore`: their rows are kept closed and their threads become unowned (auto-session-mode.md §6.5); the closed keys. */
+  async closeIdleThreaded(agentId: string, idleBefore: number, now = Date.now()): Promise<string[]> {
     const idle = (
       await this.db.query(
         `SELECT a.childSessionKey FROM assistant_subsession a
-          WHERE a.agentId = ? AND a.mode = 'work' AND a.state IN ('done', 'failed') AND ${THREADED('a')}
-            AND ${LAST_ACTIVE('a')} < ?
+          WHERE a.agentId = ? AND a.mode = 'work' AND a.state IN ('done', 'failed') AND a.closedAt IS NULL
+            AND ${THREADED('a')} AND ${LAST_ACTIVE('a')} < ?
           ORDER BY a.createdAt, a.childSessionKey`,
         [agentId, idleBefore]
       )
@@ -869,9 +962,10 @@ export class AssistantSubsessionIndex {
       const key = String(childSessionKey)
       // A turn that started meanwhile keeps the task.
       const { changes } = await this.db.query(
-        `DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? AND state IN ('done', 'failed')
+        `UPDATE assistant_subsession SET ${CLOSE_TASK}
+          WHERE agentId = ? AND childSessionKey = ? AND state IN ('done', 'failed') AND closedAt IS NULL
             AND ${LAST_ACTIVE('assistant_subsession')} < ?`,
-        [agentId, key, idleBefore]
+        [now, agentId, key, idleBefore]
       )
       if (changes === 0) continue
       await this.dropTaskInputsAndThreads(agentId, key)
@@ -908,6 +1002,7 @@ export class AssistantSubsessionIndex {
         `SELECT DISTINCT a.childSessionKey, a.parentSessionKey FROM assistant_subsession a
            JOIN assistant_subsession_thread t ON t.agentId = a.agentId AND t.childSessionKey = a.childSessionKey
           WHERE a.agentId = ? AND t.platform = ? AND t.channel = ? AND t.transportScope = ? AND a.mode = 'work'
+            AND a.closedAt IS NULL
           ORDER BY a.childSessionKey`,
         [agentId, at.platform, at.channel, at.transportScope ?? '']
       )
@@ -918,11 +1013,12 @@ export class AssistantSubsessionIndex {
     }))
   }
 
-  /** Close one task: its row and threads go, and its threads become unowned (auto-session-mode.md §3.5, §6.8); false when it was not indexed. */
-  async closeTask(agentId: string, childSessionKey: string): Promise<boolean> {
+  /** Close one task: its row is kept closed, its inputs and threads go, and its threads become unowned (auto-session-mode.md §3.5, §6.8); false when it was not open. */
+  async closeTask(agentId: string, childSessionKey: string, now = Date.now()): Promise<boolean> {
     const { changes } = await this.db.query(
-      `DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? ${DELEGATIONS}`,
-      [agentId, childSessionKey]
+      `UPDATE assistant_subsession SET ${CLOSE_TASK}
+        WHERE agentId = ? AND childSessionKey = ? AND closedAt IS NULL${DELEGATIONS}`,
+      [now, agentId, childSessionKey]
     )
     if (changes === 0) return false
     await this.dropTaskInputsAndThreads(agentId, childSessionKey)
@@ -940,7 +1036,8 @@ export class AssistantSubsessionIndex {
         `SELECT s.key, s.thread, s.title, s.state FROM sessions s
           WHERE s.agentId = ? AND s.platform = ? AND s.channel = ? AND COALESCE(s.transportScope, '') = ?
             AND s.thread NOT LIKE ? AND s.thread NOT LIKE ? AND s.originSessionId IS NULL AND s.updatedAt >= ?
-            AND NOT EXISTS (SELECT 1 FROM assistant_subsession a WHERE a.agentId = s.agentId AND a.childSessionKey = s.key)
+            AND NOT EXISTS (SELECT 1 FROM assistant_subsession a WHERE a.agentId = s.agentId AND a.childSessionKey = s.key
+              AND ${live('a')})
             AND NOT EXISTS (SELECT 1 FROM assistant_subsession_thread t WHERE t.agentId = s.agentId
               AND t.platform = s.platform AND t.channel = s.channel AND t.transportScope = COALESCE(s.transportScope, '')
               AND t.thread = s.thread)
@@ -975,6 +1072,7 @@ export class AssistantSubsessionIndex {
       now: number
     }
   ): Promise<boolean> {
+    await clearClosed(this.db, input.agentId, input.childSessionKey)
     const { changes } = await this.db.query(
       `INSERT OR IGNORE INTO assistant_subsession
          (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, replyThread, title, changedAt)
@@ -1027,7 +1125,8 @@ export class AssistantSubsessionIndex {
     const rows = (
       await this.db.query(
         `SELECT childSessionKey FROM assistant_subsession
-          WHERE agentId = ? AND parentSessionKey = ? AND mode = 'work' AND ${THREADED('assistant_subsession')}
+          WHERE agentId = ? AND parentSessionKey = ? AND mode = 'work' AND closedAt IS NULL
+            AND ${THREADED('assistant_subsession')}
           ORDER BY childSessionKey`,
         [agentId, fromParentKey]
       )
@@ -1061,14 +1160,122 @@ export class AssistantSubsessionIndex {
     const row = (
       await this.db.query(
         `SELECT 1 AS one FROM assistant_subsession a WHERE a.agentId = ? AND a.parentSessionKey = ?
-            AND a.mode = 'work' AND a.state IN ('open', 'reporting') AND NOT ${THREADED('a')} LIMIT 1`,
+            AND a.mode = 'work' AND a.closedAt IS NULL AND a.state IN ('open', 'reporting') AND NOT ${THREADED('a')} LIMIT 1`,
         [agentId, parentSessionKey]
       )
     ).rows[0] as Row | undefined
     return row !== undefined
   }
 
+  /** One task's whole record, closed within its window or open, with its owner's conversation and its sessions (assistant-mode.md §5.18 ④). */
+  async record(agentId: string, childSessionKey: string): Promise<TaskRecord | undefined> {
+    return (await this.placed(agentId, childSessionKey))[0]
+  }
+
+  /** A task's key from its full key or a unique prefix of it, as a short commit hash resolves; an ambiguous prefix finds none. */
+  async resolve(agentId: string, id: string): Promise<string | undefined> {
+    const exact = (
+      await this.db.query(
+        'SELECT childSessionKey FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?',
+        [agentId, id]
+      )
+    ).rows[0] as Row | undefined
+    if (exact) return id
+    const rows = (
+      await this.db.query(
+        `SELECT childSessionKey FROM assistant_subsession
+          WHERE agentId = ? AND substr(childSessionKey, 1, length(CAST(? AS TEXT))) = CAST(? AS TEXT) LIMIT 2`,
+        [agentId, id, id]
+      )
+    ).rows as Row[]
+    return rows.length === 1 ? String(rows[0]!.childSessionKey) : undefined
+  }
+
+  /** Every task key of the agent, closed ones within their window included: the set a short id must be unique in. */
+  async taskKeys(agentId: string): Promise<string[]> {
+    const rows = (
+      await this.db.query(
+        'SELECT childSessionKey FROM assistant_subsession WHERE agentId = ? ORDER BY childSessionKey',
+        [agentId]
+      )
+    ).rows as Row[]
+    return rows.map((row) => String(row.childSessionKey))
+  }
+
+  /** The task, open or closed within its window, that was opened for a message, the newest when a key was reused. */
+  async taskOpenedFor(agentId: string, message: TaskMessage): Promise<string | undefined> {
+    const row = (
+      await this.db.query(
+        `SELECT childSessionKey FROM assistant_subsession
+          WHERE agentId = ? AND openedForPlace = ? AND openedForMessage = ?
+          ORDER BY createdAt DESC, childSessionKey LIMIT 1`,
+        [agentId, message.place, message.messageId]
+      )
+    ).rows[0] as Row | undefined
+    return row ? String(row.childSessionKey) : undefined
+  }
+
+  /** Record a pull request or merge request an open work task opened; false when it is no open work task, already has it, or holds the most. */
+  async recordOpened(
+    agentId: string,
+    childSessionKey: string,
+    opened: Omit<OpenedObject, 'openedAt'> & { now: number }
+  ): Promise<boolean> {
+    const { changes } = await this.db.query(
+      `INSERT OR IGNORE INTO assistant_task_opened (agentId, taskKey, url, kind, label, openedAt)
+       SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS INTEGER)
+        WHERE EXISTS (SELECT 1 FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? AND mode = 'work'
+                        AND closedAt IS NULL)
+          AND (SELECT COUNT(*) FROM assistant_task_opened WHERE agentId = ? AND taskKey = ?) < ?`,
+      [
+        agentId,
+        childSessionKey,
+        opened.url,
+        opened.kind,
+        opened.label,
+        opened.now,
+        agentId,
+        childSessionKey,
+        agentId,
+        childSessionKey,
+        TASK_OPENED_MAX
+      ]
+    )
+    return changes > 0
+  }
+
+  /** What a task opened, oldest first. */
+  async opened(agentId: string, childSessionKey: string): Promise<OpenedObject[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT url, kind, label, openedAt FROM assistant_task_opened WHERE agentId = ? AND taskKey = ?
+          ORDER BY openedAt, url`,
+        [agentId, childSessionKey]
+      )
+    ).rows as Row[]
+    return rows.map((row) => ({
+      kind: row.kind === 'merge request' ? 'merge request' : 'pull request',
+      label: String(row.label),
+      url: String(row.url),
+      openedAt: Number(row.openedAt)
+    }))
+  }
+
+  /** Every open watch task's key with the URL it watches. */
+  async watchUrls(agentId: string): Promise<{ taskKey: string; url: string }[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT childSessionKey, watchUrl FROM assistant_subsession
+          WHERE agentId = ? AND mode = 'watch' AND watchUrl IS NOT NULL AND closedAt IS NULL
+          ORDER BY createdAt, childSessionKey`,
+        [agentId]
+      )
+    ).rows as Row[]
+    return rows.map((row) => ({ taskKey: String(row.childSessionKey), url: String(row.watchUrl) }))
+  }
+
   async deleteForAgent(agentId: string): Promise<number> {
+    await this.db.query('DELETE FROM assistant_task_opened WHERE agentId = ?', [agentId])
     await this.db.query('DELETE FROM assistant_task_observation WHERE agentId = ?', [agentId])
     await this.db.query('DELETE FROM assistant_subsession_thread WHERE agentId = ?', [agentId])
     await this.db.query('DELETE FROM assistant_subsession_input WHERE agentId = ?', [agentId])

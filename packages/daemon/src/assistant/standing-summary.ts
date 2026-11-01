@@ -150,12 +150,15 @@ const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim().repla
 export const TASK_SUMMARY_STALE_TURNS = 5
 
 const NO_SUMMARY_REMINDER =
-  `<system-reminder>\nThis task has no summary yet. Call updateTask with its scope, its status (in progress, waiting ` +
-  `on someone, done or blocked) and its next step, so the session that started it can see how it stands.\n</system-reminder>`
+  `<system-reminder>\nThis task has no summary yet. Call updateTask with a summary whose first sentence states its ` +
+  `status (in progress, waiting on someone, done or blocked), then its scope and its next step, so the sessions that ` +
+  `see this task know how it stands.\n</system-reminder>`
 
 const staleSummaryReminder = (turns: number) =>
-  `<system-reminder>\nThis task’s summary was written ${turns} turns ago. Call updateTask with its current scope, ` +
-  `status and next step, so the session that started it does not act on an old account.\n</system-reminder>`
+  `<system-reminder>\nThis task’s summary was written ${turns} turns ago. Call updateTask with a summary whose first ` +
+  `sentence states its current status, then its scope and next step, so no one acts on an old account. Its title ` +
+  `names what it is doing now: if the work has moved on to something the title no longer names, give it a new ` +
+  `title with the summary.\n</system-reminder>`
 
 /** Count this turn of a task; a reminder when it has no summary after its first turn, or its summary is stale (auto-session-mode.md §6.7). */
 export async function taskSummaryReminder(

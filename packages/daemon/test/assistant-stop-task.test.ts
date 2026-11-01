@@ -10,7 +10,12 @@ import { createAssistantActivity } from '../src/cp/assistant-activity.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type MessageAgentReq, type SessionContext } from '../src/mcp/ops.js'
 import { FOLLOW_UP_TOOL } from '../src/mcp/ops/assistant-items.js'
-import { LIST_TASKS_TOOL, stopTaskToolsFor, UPDATE_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
+import {
+  LIST_TASKS_TOOL,
+  READ_TASK_TOOL,
+  stopTaskToolsFor,
+  UPDATE_TASK_TOOL
+} from '../src/mcp/ops/assistant-subsessions.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import type { TaskReach } from '../src/session/subsession-coordinate.js'
@@ -215,6 +220,9 @@ async function delegate(h: Harness, c: Conversation, text = 'write the release n
   await vi.waitFor(() => expect(h.rt.subPrompts).toHaveLength(before + 1), WAIT)
   return res.targetSession
 }
+
+/** A task key as listTasks shows it: cut before the agent's id, a unique prefix every task tool takes (assistant-mode.md §5.18 ④). */
+const short = (key: string): string => key.slice(0, key.lastIndexOf(`:${AGENT}`))
 
 const stop = (h: Harness, c: Conversation, taskId: string) =>
   executeTool(c.ctx, 'stopTask', { taskId }, h.deps) as Promise<any>
@@ -500,9 +508,11 @@ describe('who is offered stopTask', () => {
         const token = server!.env.find((entry: { name: string }) => entry.name === 'AC_MCP_TOKEN')!.value
         const tools = h.d.mcp.sessions.get(token)!.tools as { name: string }[]
         const stopTool = tools.find((t) => t.name === 'stopTask')
-        // listTasks is offered exactly where stopTask is, right before it.
+        // listTasks and readTask are offered exactly where stopTask is, right before it.
         expect(tools.find((t) => t.name === 'listTasks')).toEqual(stopTool ? LIST_TASKS_TOOL : undefined)
-        if (stopTool) expect(tools[tools.indexOf(stopTool) - 1]!.name).toBe('listTasks')
+        expect(tools.find((t) => t.name === 'readTask')).toEqual(stopTool ? READ_TASK_TOOL : undefined)
+        if (stopTool) expect(tools[tools.indexOf(stopTool) - 1]!.name).toBe('readTask')
+        if (stopTool) expect(tools[tools.indexOf(stopTool) - 2]!.name).toBe('listTasks')
         // updateTask only inside a task, which keeps its own summary, or a follow-up's check, which renames its watch task (auto-session-mode.md §5.3).
         const thread = String(session.thread ?? 'append:1')
         const summaryKept =
@@ -547,6 +557,7 @@ describe('who is offered stopTask', () => {
       expect(stopTaskToolsFor({ thread: 'subsession:research-1' })).toEqual([])
       expect(stopTaskToolsFor({ thread: 'subsession:d-1' }).map((t) => t.name)).toEqual([
         'listTasks',
+        'readTask',
         'stopTask',
         'updateTask'
       ])
@@ -725,7 +736,7 @@ describe('listTasks (send-message-guide.md §8.7)', () => {
       await h.d.store.setDisplayName('U0ALICE', 'Alice', Date.now())
 
       const mine = await list(h, dm)
-      expect(mine.tasks.map((t: { taskId?: string }) => t.taskId)).toEqual([second, first])
+      expect(mine.tasks.map((t: { taskId?: string }) => t.taskId)).toEqual([short(second), short(first)])
       for (const task of mine.tasks) {
         expect(task).toMatchObject({
           kind: 'delegated task',
@@ -749,19 +760,19 @@ describe('listTasks (send-message-guide.md §8.7)', () => {
       ])
       expect(mine.note).toContain('A delegated task or a follow-up has a taskId')
       expect(mine.note).toContain('never shown to people, who know it by its title')
-      expect(JSON.stringify(mine)).not.toContain(theirs)
+      expect(JSON.stringify(mine)).not.toContain(short(theirs))
       // An owner with no known name is listed by id.
       expect((await list(h, other)).tasks.map((t: { taskId?: string; owner?: string }) => [t.taskId, t.owner])).toEqual(
-        [[theirs, 'U0BOB']]
+        [[short(theirs), 'U0BOB']]
       )
 
-      // A stopped task stays listed as ended, with no result handed back.
-      expect(await stop(h, dm, first)).toMatchObject({ result: 'stopped' })
+      // A stopped task stays listed as ended, with no result handed back; the short id stops it as the full key would.
+      expect(await stop(h, dm, short(first))).toMatchObject({ result: 'stopped', taskId: first })
       await vi.waitFor(async () => expect(await stateOf(h, first)).toBe('failed'), WAIT)
       const after = await list(h, dm)
       expect(after.tasks.map((t: { taskId?: string; state: string }) => [t.taskId, t.state])).toEqual([
-        [second, 'running'],
-        [first, 'ended']
+        [short(second), 'running'],
+        [short(first), 'ended']
       ])
       expect(after.tasks[1]).toMatchObject({
         running: false,

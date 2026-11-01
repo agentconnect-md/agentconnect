@@ -3464,13 +3464,13 @@ is not built.
 
 ### 5.18 The work board
 
-**Status:** Proposed (eightieth revision, 2026-11-01). Step 1, the admission check, shipped in the
-eighty-first revision ("As shipped" after ①), ③, batches cut by permission class, in the
-eighty-second ("As shipped" after ③), the board itself, ② and the view and reads of ④, in the
-eighty-third ("As shipped" after ② and after ④), the reports of ④ in the eighty-fourth (the last
-"As shipped" after ④), and follow-ups as watch tasks, ⑤, in the eighty-fifth; the title and
-`readTask` are not implemented. Reviewed in draft by three adversarial review rounds; what they
-changed is noted inline.
+**Status:** Implemented. Proposed in the eightieth revision (2026-11-01). Step 1, the admission
+check, shipped in the eighty-first revision ("As shipped" after ①), ③, batches cut by permission
+class, in the eighty-second ("As shipped" after ③), the board itself, ② and the view and reads of ④,
+in the eighty-third ("As shipped" after ② and after ④), the reports of ④ in the eighty-fourth,
+follow-ups as watch tasks, ⑤, in the eighty-fifth, and the title, `readTask`, the inlined ids and
+closed tasks kept for a window in the eighty-sixth (the last "As shipped" after ④). Reviewed in
+draft by three adversarial review rounds; what they changed is noted inline.
 
 **Why.** The mode promises one mind: what the agent takes on in one place it knows in the others.
 That holds for memory and for follow-ups, not for the work it is doing. A coordinator
@@ -3527,9 +3527,9 @@ uncertain outcome (§5.10). The board derives a **lifetime** status of its own, 
 `finished` and `ended` are the state of a task's latest round and a threaded task stays indexed and
 resumable until it closes after 7 idle days (auto-session-mode.md §6.5): `running` (a turn or check
 runs), `idle` (indexed, nothing running), `waiting` and `next <time>` (a follow-up), and `closed`
-(no longer indexed as open). The board lists open tasks only: closing a threaded task deletes its
-row today and keeps no closing time, so a history of closed work needs the retained record #3537
-proposes and is not promised here.
+(no longer indexed as open). The board lists open tasks only, and so does `listTasks`: a closed task
+keeps its row, with when it closed, for a retention window that `readTask` reads (④, "As shipped"
+for phase E), and a history of closed work on the board is not promised here.
 
 A board line is content from the task's place, so showing it elsewhere is a read of that place and
 is judged as §5.5 judges reads, **by the people asking**, in two steps that `recall`'s own listing
@@ -3649,8 +3649,8 @@ taken: the result would sit in a context that answers other people's messages to
   to people; name work by its title. Full summaries: listTasks. A task's own words: readTask. What
   was said in a place: recall.
   Here:
-  - delegated task · running · "Summarize last week's incident notes" · asked by Alice · task-7f3a
-  - follow-up · next 2026-11-02T01:00Z · "Tell Alice when PR #412 merges" · fu-21c9
+  - delegated task · running · "Summarize last week's incident notes" · asked by Alice · slack:C0EXAMPLE1:1761980000.000100
+  - follow-up · next 2026-11-02T01:00Z · "Tell Alice when PR #412 merges" · slack:C0EXAMPLE1:subsession:check-7f3a
   Elsewhere (read only):
   - #eng-platform · delegated task · idle · "Add retry with backoff to the webhook sender"
   - #eng-platform · follow-up · next 2026-11-02T02:00Z · "Tell #eng when 2.9 is tagged"
@@ -3751,6 +3751,63 @@ taken: the result would sit in a context that answers other people's messages to
   continues the hop count of the turn's first entry, as a report steered into an ordinary session's
   live turn does.
 
+**As shipped** (2026-11-02, #3541 phase E, #3537), the title, the reads and the retained closed task.
+Choices the text above leaves open:
+
+- **The title.** `updateTask`'s description says the title names what the task is doing now and is
+  renamed when the work moves on to something it no longer names, and that the summary's first
+  sentence states the current status on its own. The stale-summary reminder says the same, and so
+  does the coordinator's prompt. No tool and no model call is added.
+- **`readTask {taskId, after?}`** is offered wherever `listTasks` is: to a coordinator, to a session
+  that delegates, and to an assistant-mode place's session that does not. It resolves the id among
+  the agent's tasks, open or closed within the window, and judges it as `recall` judges a place
+  named to it: `judgePlaceRead` of the task's place (a follow-up's place, else its owner's
+  conversation) with the task's own sessions, for every asker of the turn, on the first page and on
+  every continuation. A task of the caller's own conversation is always readable, as `recall` of the
+  current place is. An unknown id, an ambiguous prefix, a task with no place left to judge it by and
+  a refused one get one answer. It returns the task's kind, mode, title, lifetime status (`closed`
+  with when, and how a follow-up ended), summary with `summaryAt` or else its background, place, the
+  message it was opened for, a follow-up's watched object, the pull and merge requests it opened,
+  each with the open follow-ups watching it that the turn may read, and a page of its own text rows:
+  at most ten within 4,000 characters, the newest page first and shown oldest first, with a cursor
+  to older ones. It reads the store alone, so it wakes nothing and counts no turn.
+- **Inlined ids.** A `recall` excerpt carries its `messageId`, in the coordinator's `msg-` form, and,
+  when the turn may read that task, the `taskId` of the task opened for the message or holding its
+  thread; the agent's own words name no task. `listTasks` entries, `here` and `elsewhere`, carry
+  `openedFor` (place and message id) and `opened`.
+- **What a task opened** is recorded where the daemon already sees it: a merge request (GitLab) or
+  pull request (Gitea) a task creates with `createCodeHostMergeRequest`, and the pull request the
+  Control Plane names as a session's own when it delivers feedback for it
+  ([codehost-pr-feedback.md](codehost-pr-feedback.md)), at most 20 per task. The Control Plane
+  associates a GitHub pull request with its session from the worktree's branch and tells the daemon
+  only with that feedback, so a GitHub pull request is known from its first review, comment or failed
+  check. An issue a task opens with its own tooling, or one made with a platform's issue tools, is
+  not recorded: no seam reports it.
+- **Opened for.** A task the coordinator opens, in a thread, a place of its own or a page, records its
+  message's place and id, a fallback task too; a thread session adopted on a switch into `auto`
+  records none.
+- **Short ids.** `messageTask`, `stopTask` and `readTask` take the task key or a unique prefix of it,
+  as a short commit hash resolves. The board, `listTasks`, `readTask` and `recall` show the key cut
+  before its `:<agent id>` tail where no other key of the agent, closed ones within their window
+  included, starts with what is left, else the whole key. There is one id space: a prefix names the
+  key it resolves to and nothing else, and an ambiguous one is answered as an unknown id. A Slack
+  thread task's id shrinks from about ninety characters to about thirty-five, so the 800-token budget
+  seats about sixteen Here lines with typical titles where it seated ten.
+- **Closed tasks.** Closing a task in either mode stamps `closedAt` on its row: `closeTask` (an
+  archived place, a conversation leaving `auto`), the close after 7 idle days, a work task's session
+  being purged, and a follow-up ending, done or stopped. A closed work task reads as gone wherever its
+  deleted row did (the board, `listTasks`, `messageTask`, the owner the Control Plane is told, the
+  concurrency cap, the report path); an ended follow-up keeps ⑤'s rules. Its inputs and threads go
+  when it closes, as before, so its threads are unowned again; its row, what it opened and a
+  follow-up's observations go at the sweep. A key whose task closed may open a task again, which
+  takes the id and drops the closed record. The store's retention sweep, hourly on each daemon and
+  in the pool's reconcile job, deletes them 90 days after the close (`CLOSED_TASK_RETENTION_MS`, the
+  default `sessions.retention`, the tier that keeps session rows and transcripts); check state and
+  check logs keep their own limits. A closed task's excerpts are its rows up to its close, while its
+  session is kept; once that is purged, its record answers alone. Store version 75 adds `closedAt`,
+  the opened-for columns and the opened-object table on both backends, and closes every ended
+  follow-up at its last change.
+
 **⑤ Follow-ups are watch tasks.** Every task is one kind of task in one of two modes. A task in
 **work** mode does what it is given: a delegated task, organization research, an approved proposal.
 A task in **watch** mode is a follow-up: read-only, checked on its schedule, and woken by its
@@ -3788,7 +3845,9 @@ open with or without a next check, done, or stopped.
   follow-up's idle check session, the row, its schedule and its observations stay, and its next check
   opens a new session under the same key, with the stored observations as its handover (§5.12). A
   getting-to-know task's index row still goes with its session, since its item keeps the record and
-  its check indexes it again.
+  its check indexes it again. Store version 75 (the eighty-sixth revision) marks that row as a
+  getting-to-know task's (`gettingToKnow`), where it had been told apart only by having no schedule,
+  so `readTask`, the board and the session purge read the marker rather than the missing schedule.
 - **Migration.** One step on both store backends. Each follow-up item becomes its task row, and one
   that no index row named gets one under its place's session (an item that never had a session key is
   given one); its observations follow it, the latest
@@ -4916,3 +4975,15 @@ and the board treat it as a task. One store step on both backends moves existing
 getting-to-know tasks stay in the item ledger. The line deferring the merge leaves "Deferred": what it
 said a merge would need is the id mapping the migration does once, and proposals and recovery read the
 task key.
+
+**Eighty-sixth revision (2026-11-02)**: `readTask`, inlined ids, the title as a task's current scope,
+and closed tasks kept for a window (issue #3541, phase E, and #3537; §5.18 ② and the last "As shipped"
+of ④). Closing a task deleted its row, so a recalled excerpt led nowhere once its task closed, and the
+coordinator could look into a task only through `messageTask`, which wakes it. Closing now stamps the
+row in both modes and the store sweep deletes it 90 days later; `readTask` reads one task's record,
+related ids and latest words without waking it, judged like `recall` of its place on every page;
+`recall` excerpts and `listTasks` entries carry the ids of what they relate to where the turn may read
+them; and every task tool takes a unique prefix of a task key, which the board shows, so the board
+seats about sixteen Here lines where it seated ten. Implementing it found that the daemon learns of a
+GitHub pull request a task opened only when the Control Plane first delivers feedback for it, and that
+§5.18 ② and auto-session-mode.md §6.8 still described a closed task's row as deleted.

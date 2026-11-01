@@ -20,7 +20,8 @@ const scopeOf = (id: string): CoScope => ({
     .messages.filter((message) => message.report)
     .map((message) => message.id),
   tasks: scenario(id).tasks,
-  ...(scenario(id).elsewhere ? { elsewhere: scenario(id).elsewhere } : {})
+  ...(scenario(id).elsewhere ? { elsewhere: scenario(id).elsewhere } : {}),
+  ...(scenario(id).reads ? { reads: scenario(id).reads } : {})
 })
 const recorded = (id: string, calls: Array<Record<string, unknown>>): CoRecordedCall[] => {
   const log: CoRecordedCall[] = []
@@ -87,7 +88,11 @@ describe('runtime matrix coordinator probe', () => {
       const post = (body: unknown) =>
         fetch(url, { method: 'POST', body: JSON.stringify(body) }).then((res) => res.json() as Promise<any>)
       const listed = await post({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
-      expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toEqual(['sendMessage', 'listTasks'])
+      expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+        'sendMessage',
+        'listTasks',
+        'readTask'
+      ])
       const tasks = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'listTasks' } })
       expect(tasks.result.content[0].text).toContain(CO_IDS.checkoutTask)
       expect(fixture.calls('k').map((call) => call.tool)).toEqual(['listTasks'])
@@ -193,6 +198,47 @@ describe('runtime matrix coordinator probe', () => {
       const body = JSON.parse(listed.result.content[0].text)
       expect(body.here).toEqual([])
       expect(body.elsewhere[0]).toMatchObject({ id: CO_IDS.webhookTask, summary: expect.stringContaining('PR #412') })
+    } finally {
+      fixture.server.close()
+    }
+  })
+
+  it('answers readTask for a task it knows, refuses any other, and passes only a reply naming its pull request', async () => {
+    const board = boardFor(scenario('elsewhere-read-task'))!
+    expect(board).toContain(
+      `- #${CO_IDS.exportChannelName} · delegated task · running · "Fix the nightly analytics export"`
+    )
+    // Its summary predates the pull request, which only readTask names.
+    expect(JSON.stringify(scenario('elsewhere-read-task').elsewhere)).not.toContain('#57')
+    const [ask] = scopeOf('elsewhere-read-task').messages
+    const answered = recorded('elsewhere-read-task', [
+      { action: 'replyToMessage', messageId: ask, message: 'Yes: https://github.com/example-org/analytics/pull/57' }
+    ])
+    expect(judgeCoordinator(scenario('elsewhere-read-task'), answered, '').verdict).toBe('PASS')
+    const vague = recorded('elsewhere-read-task', [
+      { action: 'replyToMessage', messageId: ask, message: 'Not yet, it is still in progress.' }
+    ])
+    expect(judgeCoordinator(scenario('elsewhere-read-task'), vague, '').verdict).toBe('DEGRADED')
+    const fixture = await coordinatorFixture()
+    try {
+      const { url } = fixture.descriptor('r', scopeOf('elsewhere-read-task')) as { url: string }
+      const call = async (taskId: string) =>
+        await fetch(url, {
+          method: 'POST',
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: { name: 'readTask', arguments: { taskId } }
+          })
+        }).then((res) => res.json() as Promise<any>)
+      const read = JSON.parse((await call(CO_IDS.exportTask)).result.content[0].text)
+      expect(read.opened[0]).toMatchObject({ label: 'example-org/analytics#57' })
+      expect((await call(CO_IDS.webhookTask)).result.isError).toBe(true)
+      expect(fixture.calls('r').map((one) => [one.tool, one.error === undefined])).toEqual([
+        ['readTask', true],
+        ['readTask', false]
+      ])
     } finally {
       fixture.server.close()
     }
