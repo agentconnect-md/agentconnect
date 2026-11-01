@@ -3497,7 +3497,7 @@ assistant-mode agent to By decision or adding it to shared-bot routing is refuse
 or relay projection changes. Existing agents with such rows keep today's behavior until an editor
 changes them.
 
-**As shipped** (2026-11-01, step 1). The check reads every conversation row of the agent's
+**As shipped** (2026-11-01, #3542). The check reads every conversation row of the agent's
 installs whose trigger is By decision, a gate or a bot's router, and every routed conversation of
 a shared bot the agent uses, even one where it has no row, since the router may hand it to any
 agent using the bot. It fails as the `routing` refusal, and the admission response lists those
@@ -4716,10 +4716,10 @@ discovery-then-permission rule, from offsets to keyset cursors, and from a follo
 and automatic rollover to leaving both out.
 
 **Eighty-first revision (2026-11-01)**: assistant mode refuses By decision and shared-bot routing
-(issue #3541, phase A; §4.1, §5.18 ① "As shipped"). Every place of an assistant-mode agent runs a
-coordinator, which Auto keeps apart from both, yet a By decision row of such an agent was left on
-Per thread. The Routing row of the admission table is no longer proposed: switching the mode on
-fails while a conversation of the agent is By decision or routed, and the panel names those
+(issue #3541, phase A, #3542; §4.1, §5.18 ① "As shipped"). Every place of an assistant-mode
+agent runs a coordinator, which Auto keeps apart from both, yet a By decision row of such an agent
+was left on Per thread. The Routing row of the admission table is no longer proposed: switching the
+mode on fails while a conversation of the agent is By decision or routed, and the panel names those
 conversations; setting By decision on a conversation an assistant-mode agent shares, or adding a
 conversation to the routing of a bot such an agent uses, is refused with 409
 `SESSION_MODE_CONFLICT`. Rows from before the check keep their behavior until an editor changes
