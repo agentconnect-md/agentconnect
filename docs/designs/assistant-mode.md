@@ -4987,3 +4987,12 @@ them; and every task tool takes a unique prefix of a task key, which the board s
 seats about sixteen Here lines where it seated ten. Implementing it found that the daemon learns of a
 GitHub pull request a task opened only when the Control Plane first delivers feedback for it, and that
 §5.18 ② and auto-session-mode.md §6.8 still described a closed task's row as deleted.
+
+**Eighty-seventh revision (2026-11-02)**: a delegated task works in its message's thread on Slack as
+everywhere else, and moves into a code channel only when it makes one for its work; a task that
+answers away from the asker's thread reports its run to the coordinator (auto-session-mode.md §6.8,
+§5.1, §6.6). Opening a code channel for every delegated message made a channel of each small request
+and left the asking thread with a link and no answer, since a task in a place reported nothing; the
+thread is the asker's place, and a channel is a workspace the task earns. The `openTaskPlace` member
+leaves the platform contract, `createSlackCodeChannel` is the one creation path, and a task that
+calls it holds the channel as one more thread.

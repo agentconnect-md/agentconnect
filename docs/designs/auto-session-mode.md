@@ -5,7 +5,7 @@
 > `session-mode-auto-v1` (§3.1); with the switch off it routes `auto` as Per thread and keeps P1's
 > task tools for every session (§5.1, §6.3). New rooms and group DMs start on Auto where the bot's
 > daemon reads it (§3.2), and assistant mode's places run through the coordinator (§3.4). On Slack a
-> task the coordinator opens for a message works in a code channel linked to it (§6.8). The
+> task moves into a code channel only when it makes one for its work (§6.8). The
 > coordinator's prompt and tool surface are the ones the local runtime matrix validates (§12).
 > Builds on: [channel-session-mode.md](channel-session-mode.md) (the reserved `auto` value),
 > [assistant-mode.md](assistant-mode.md) §5.6 (delegated tasks),
@@ -211,7 +211,7 @@ A message that mentions the agent and has no outcome when the turn ends (a one-m
 When the coordinator's turn fails or times out:
 
 - A message that mentions the agent opens a threaded task directly, as Per thread would, in the
-  message's thread: a fallback never opens a conversation of its own (§6.8).
+  message's thread: a fallback task holds no channel (§6.8).
 - Any other message stays silent.
 
 ### 4.6 Usage
@@ -228,9 +228,8 @@ The existing names stay, with `messageId` added (`SEND_MESSAGE_ACTIONS` in
 
 - `delegateTask {title, message?, messageId?}`: `message` or `messageId` is required.
   - With `messageId`: a threaded task. It receives the original message as it arrived (sender, text,
-    attachments); `message` is the coordinator's background. Where the message's platform gives a task a
-    conversation of its own (a Slack code channel), the task works there instead of in the message's
-    thread (§6.8).
+    attachments); `message` is the coordinator's background. It works in the message's thread; a
+    task that makes a Slack code channel for its work moves into it (§6.8).
   - Without: a background task, as today. The coordinator's tool always names a message, so its tasks
     are always threaded (§6.6).
   - `title` is required and shown in the console and in `listTasks`.
@@ -337,14 +336,14 @@ thread participation record of [channel-session-mode.md](channel-session-mode.md
 
 The rules follow from whether a thread is attached; there is no separate switch.
 
-| Aspect           | Threaded task                                                   | Background task                                |
-| ---------------- | --------------------------------------------------------------- | ---------------------------------------------- |
-| Coordinate       | Platform threads, one or more, or a room of its own (§6.8)      | `subsession:<id>`, never posts to the platform |
-| Who talks to it  | Anyone in its threads; the parent through `messageTask`         | The parent only                                |
-| Where results go | Into the thread; nothing is reported to the parent              | Reported to the parent each round (today)      |
-| Permission cards | In its own thread                                               | As today                                       |
-| Concurrency cap  | Not counted in `maxConcurrentSubsessions`                       | Counted                                        |
-| Owner            | The sender of the message it opened for; later messages keep it | The parent's owner                             |
+| Aspect           | Threaded task                                                                        | Background task                                |
+| ---------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| Coordinate       | Platform threads, one or more, or a room of its own (§6.8)                           | `subsession:<id>`, never posts to the platform |
+| Who talks to it  | Anyone in its threads; the parent through `messageTask`                              | The parent only                                |
+| Where results go | Into its threads; a run ended in a channel it holds is reported to the parent (§6.8) | Reported to the parent each round (today)      |
+| Permission cards | In its own thread                                                                    | As today                                       |
+| Concurrency cap  | Not counted in `maxConcurrentSubsessions`                                            | Counted                                        |
+| Owner            | The sender of the message it opened for; later messages keep it                      | The parent's owner                             |
 
 Both kinds inherit the parent's visibility and refuse changes to it.
 
@@ -415,51 +414,64 @@ place new messages.
 
 ### 6.8 A task in a conversation of its own
 
-On Slack, a task the coordinator opens for a message works in a native code channel linked to that
-message ([slack-code-channels.md](slack-code-channels.md)) instead of in the message's thread.
+A task the coordinator opens for a message works in the message's thread on every platform (§6.4).
+On Slack it may move into a native code channel ([slack-code-channels.md](slack-code-channels.md)),
+but only when it makes one for its work: the coordinator never asks the platform for a place. Until
+the eighty-seventh revision of [assistant-mode.md](assistant-mode.md) the coordinator opened a code
+channel for every delegated message, which made a channel of each small request and left the asking
+thread with a link and no answer, since a task in a place reported nothing. The thread is the asker's
+place; a channel is a workspace the task earns.
 
-- **Creation.** `delegateTask` with a `messageId` asks the message's platform for a place, through the
-  optional `openTaskPlace` member of the daemon platform contract (`platforms/contract.ts`). Slack
-  implements it with the code channel creation path its `createSlackCodeChannel` tool uses: linked to
-  the message, keyed by it so a retried creation finds the same channel, privacy matching the message's
-  conversation, and its author invited. The daemon asks only for a sender who may have the agent make
-  something new (a full member of the bot's workspace, the place write rule's `new` target).
-- **Coordinate.** The task's session is the channel's one session (`slack:<channel>:<channel>`), and the
-  task holds the channel coordinate as its one thread from its first round: it reports nothing and is
-  outside the concurrency cap (§6.2). The message's own thread stays unowned, and the coordinator posts
-  a link to the channel there ("Started a task: [title](link)").
-- **The first message.** Slack copies the message into the new channel, and that copy opens the task: it
-  reaches the task's session, never a second one, and the daemon dispatches nothing itself. A message in a
-  room keyed as one thread that arrives while the agent's place is still being made waits for it, at most
-  30 seconds, so the copy runs once the task is indexed. The copy, the first message there from the
-  original's sender within 10 minutes, carries the coordinator's title and background; no other message
-  takes them, nor a message the coordinator moves there.
+- **Creation.** The task calls its `createSlackCodeChannel` tool, as any Slack session may, when the
+  work it was handed is the kind that wants a channel (several steps, edits, tests or a pull request,
+  in the tool's own words) and the person did not ask it to stay in the thread; a quick answer never
+  makes one. The tool's rules are unchanged: linked to the message the task is working on, keyed by it
+  so a retried creation finds the same channel, privacy matching the message's conversation, its author
+  invited, and open only to a sender who may have the agent make something new (a full member of the
+  bot's workspace, the place write rule's `new` target). The `openTaskPlace` member leaves the daemon
+  platform contract (`platforms/contract.ts`): `delegateTask` has no place to ask for.
+- **Coordinate.** The task keeps its session. The channel becomes one more thread it holds
+  (`slack:<channel>:<channel>`, attached as §6.4 attaches a thread), so a message in the channel
+  reaches the task and is answered there, while the origin thread stays attached and is answered in
+  place. The task's own words tell the thread where it moved; the coordinator posts nothing.
+- **The first message.** Slack copies the linked message into the new channel. The copy reaches the
+  task through the channel it holds, never a second session, and carries nothing new: the task already
+  has the message, its title and its background. The daemon dispatches nothing itself. A message in a
+  room keyed as one thread that arrives while the task's channel is still being attached waits for it,
+  at most 30 seconds.
 - **Routing.** A room its platform keys as one thread named after itself has no root, so it never runs a
   coordinator of its own whatever its mode: every message there keys on the channel's session, the
   task's while a task holds it. This also keeps a code channel made outside a task, or one whose task has
   closed, an ordinary code channel. `!new`, `!stop` and Slack's native Stop act on that session (§8).
-- **More messages.** `messageTask` with a `messageId` moves the message into the channel, where the task
-  answers, and links the channel in the message's thread ("Passed to [title](link)"); the thread is not
-  attached, so a later reply there comes back to the coordinator. `listTasks` lists the task with the
-  channel as its thread and the channel's link.
-- **Closing.** Archiving the channel, by a person or by the agent, closes the task: its thread goes, its
+- **More messages.** `messageTask` with a `messageId` moves the message into the channel a task holds,
+  where the task answers, and links the channel in the message's thread ("Passed to [title](link)"); the
+  thread is not attached, so a later reply there comes back to the coordinator. `listTasks` lists the
+  task with the channel among its threads and the channel's link.
+- **Reports.** A task whose answer lands where the asker's thread is not reports to its coordinator: a
+  background task each round (§6.6), and a task holding a channel at the end of each run there, with the
+  `<report id task kind title>` of [assistant-mode.md](assistant-mode.md) §5.18 ④ carrying its summary.
+  The coordinator may relay it in the origin thread with `replyToMessage`, so "tell me when it is done"
+  is answered where it was asked, or leave it. A task answering in the asker's own thread reports
+  nothing, as before.
+- **Closing.** Archiving the channel, by a person or by the agent, closes the task: its threads go, its
   row is kept closed (§6.5), and its owner is cleared (§6.2). The relay forwards an archive with an
-  `archived` flag, since a native Stop reaches the same channel coordinate. The task also closes after 7 idle days (§6.5) and is released
-  when its coordinator's conversation leaves `auto` (§3.5), judged by that conversation, not the
-  channel's own mode.
+  `archived` flag, since a native Stop reaches the same channel coordinate. The task also closes after
+  7 idle days (§6.5) and is released when its coordinator's conversation leaves `auto` (§3.5), judged
+  by that conversation, not the channel's own mode.
 - **Fallback.** When the installation lacks code channels, creation fails, or the sender may not make a
-  channel, the task opens in the message's thread as before; nothing beyond the usual answer is shown.
-- **Not here.** A background task (`delegateTask` without a `messageId`) never gets a conversation of its
-  own, and neither does a fallback task (§4.5) or a thread session adopted on a switch into `auto`
-  (§3.5).
+  channel, the task stays in its threads; nothing beyond the tool's own answer is shown.
+- **Not here.** A background task (`delegateTask` without a `messageId`) never holds a channel, and
+  neither does a fallback task (§4.5) or a thread session adopted on a switch into `auto` (§3.5). The
+  coordinator asking for a channel on `delegateTask` (a `place` parameter) is not done: the task that
+  has the work decides.
 
 ## 7. Thread routing
 
-| Thread                     | Goes to                                                     |
-| -------------------------- | ----------------------------------------------------------- |
-| Attached to a task         | That task, without the coordinator                          |
-| Unowned                    | The coordinator, which may still open a task for the thread |
-| A room keyed as one thread | That room's one session, the task's in its place (§6.8)     |
+| Thread                     | Goes to                                                          |
+| -------------------------- | ---------------------------------------------------------------- |
+| Attached to a task         | That task, without the coordinator                               |
+| Unowned                    | The coordinator, which may still open a task for the thread      |
+| A room keyed as one thread | That room's one session, the task's while a task holds it (§6.8) |
 
 ## 8. Commands
 
