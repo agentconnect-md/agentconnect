@@ -1,6 +1,6 @@
 export function parseCsv(source, { headers = true } = {}) {
   const input = source.replace(/^\uFEFF/, '')
-  if (!input.trim()) return []
+  if (!input.length) return []
 
   const records = []
   let row = []

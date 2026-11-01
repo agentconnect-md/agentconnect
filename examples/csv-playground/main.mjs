@@ -10,14 +10,14 @@ function render() {
   try {
     const headers = document.querySelector('input[name="mode"]:checked').value === 'headers'
     const result = parseCsv(input.value, { headers })
-    output.textContent = JSON.stringify(result, null, 2)
-    status.textContent = input.value.trim()
+    output.value = JSON.stringify(result, null, 2)
+    status.textContent = input.value.length
       ? `${result.length} ${result.length === 1 ? 'row' : 'rows'} converted.`
       : 'Paste CSV to get started.'
     status.className = 'success'
     copy.disabled = false
   } catch (error) {
-    output.textContent = ''
+    output.value = ''
     status.textContent = error.message
     status.className = 'error'
     copy.disabled = true
@@ -33,10 +33,12 @@ document.querySelector('#sample').addEventListener('click', () => {
 })
 copy.addEventListener('click', async () => {
   try {
-    await navigator.clipboard.writeText(output.textContent)
+    await navigator.clipboard.writeText(output.value)
     status.textContent = 'JSON copied to clipboard.'
+    status.className = 'success'
   } catch {
-    status.textContent = 'Could not copy automatically. Select the JSON and copy it manually.'
+    status.textContent = 'Could not copy automatically. Focus the JSON output, select all, and copy it manually.'
+    status.className = 'error'
   }
 })
 

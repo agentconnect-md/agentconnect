@@ -14,6 +14,7 @@ test('returns arrays without headers', () => {
     ['a', 'b'],
     ['1', '2']
   ])
+  assert.deepEqual(parseCsv(' ', { headers: false }), [[' ']])
 })
 
 test('handles quoted commas, escaped quotes, and multiline fields', () => {
