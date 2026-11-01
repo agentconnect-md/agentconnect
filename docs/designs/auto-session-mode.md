@@ -506,6 +506,9 @@ place; a channel is a workspace the task earns.
 - **The tools in the channel.** The Slack tools that default to "this conversation"
   (`setSlackCodeView`, `manageSlackCodeChannel`, `presentSlackReport`) and `getCurrentChannel` act in
   the channel of the turn, and the code channel's native session controls follow the turn there.
+  The automatic Code diff is published from a turn delivered in the channel, against the starting
+  point the task kept on its first turn, in its origin thread, so work done before the channel was
+  made is part of it; a task whose repository already had changes then keeps none, as anywhere.
   The channel's Tasks tab reads a session keyed on the channel, so it stays empty for a task that
   holds it, and the code channel's standing context is not added to a task whose session opened
   elsewhere.

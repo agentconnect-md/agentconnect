@@ -24,9 +24,16 @@ export interface SlackTurnState {
 export async function startSlackCodeDiff(
   turn: SlackTurn,
   state: SlackTurnState,
-  host: Pick<CodeDiffHost, 'open' | 'authorize' | 'active' | 'mask' | 'notice' | 'debug'>
+  host: Pick<CodeDiffHost, 'open' | 'authorize' | 'active' | 'mask' | 'notice' | 'debug'> & {
+    keepStart?: () => Promise<void>
+  }
 ): Promise<string | undefined> {
-  if (!turn.conn || turn.plan.isDm || turn.plan.sessionThread !== turn.plan.channel) return undefined
+  if (!turn.conn || turn.plan.isDm) return undefined
+  // A task may move into a code channel it makes later, so its turn elsewhere keeps its starting point (auto-session-mode.md §6.8).
+  if (turn.plan.statusThread !== turn.plan.channel) {
+    await host.keepStart?.().catch(() => {})
+    return undefined
+  }
   const conn = turn.conn as SlackConnection
   let hasPublished = false
   try {

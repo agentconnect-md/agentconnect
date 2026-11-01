@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { normalizeSlackMessage } from '@agentconnect.md/message'
 import { SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY } from '@agentconnect.md/protocol'
@@ -7,6 +11,9 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { slackThreadUrl } from '../src/platforms/slack/permalink.js'
+import { gitFor } from '../src/workspace/git-injection.js'
+import { LocalGitRunner } from '../src/workspace/git-runner.js'
+import { openTaskDiff } from '../src/workspace/task-diff.js'
 import { planCanvasMarkdown } from '../src/slack/render.js'
 import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../src/platforms/slack/standing-context.js'
 import {
@@ -280,12 +287,82 @@ describe('Slack native surfaces', () => {
     }
   })
 
+  it('publishes a task’s diff in the code channel it made against the start it kept in its thread (auto-session-mode.md §6.8)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'task-channel-diff-'))
+    const git = (args: string[]) =>
+      execFileSync('git', args, {
+        cwd: root,
+        env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_COMMITTER_NAME: 'Test' },
+        encoding: 'utf8'
+      })
+    git(['init', '--initial-branch=main'])
+    git(['config', 'user.email', 'test@example.test'])
+    writeFileSync(join(root, 'app.js'), 'export const count = 1\n')
+    git(['add', '.'])
+    git(['commit', '-m', 'initial'])
+    const sources = [
+      { git: new LocalGitRunner(gitFor(root), root, (env) => gitFor(root, undefined, env)), name: 'repo' }
+    ]
+    const thread = await fixture(false)
+    const channel = await fixture(true)
+    try {
+      // Its first turn, in the thread it was opened in, publishes nothing and keeps the task's start.
+      const keepStart = vi.fn(async () => void (await openTaskDiff(sources, 'task-key', true)))
+      const origin = {
+        conn: thread.conn,
+        plan: { channel: 'C1', sessionThread: '1.001', statusThread: '1.001', isDm: false }
+      } as SlackTurn
+      const host = {
+        authorize: async () => {},
+        active: () => true,
+        mask: (text: string) => text,
+        notice: async () => {},
+        debug: () => {}
+      }
+      expect(
+        await startSlackCodeDiff(
+          origin,
+          {},
+          { ...host, open: () => openTaskDiff(sources, 'task-key', false), keepStart }
+        )
+      ).toBeUndefined()
+      expect(keepStart).toHaveBeenCalledOnce()
+      expect(thread.api.setView).not.toHaveBeenCalled()
+      writeFileSync(join(root, 'app.js'), 'export const count = 2\n')
+      // A later turn in the code channel it holds, keyed on the same session, diffs against that start.
+      const state: SlackTurnState = {}
+      const held = {
+        conn: channel.conn,
+        plan: { channel: 'C2', sessionThread: '1.001', statusThread: 'C2', isDm: false }
+      } as SlackTurn
+      expect(
+        await startSlackCodeDiff(held, state, { ...host, open: () => openTaskDiff(sources, 'task-key', false) })
+      ).toContain('platform maintains')
+      await state.codeDiff!.settle()
+      state.codeDiff!.stop()
+      expect(channel.api.setView).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          channel_id: 'C2',
+          type: 'diff',
+          content: expect.stringContaining('+export const count = 2')
+        })
+      )
+    } finally {
+      await thread.conn.stop()
+      await channel.conn.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('updates the owned channel through the authorized platform output without a model tool call', async () => {
     const f = await fixture()
     const state: SlackTurnState = {}
     const authorize = vi.fn(async () => {})
     let content = 'diff --git a/a b/a\n'
-    const turn = { conn: f.conn, plan: { channel: 'C1', sessionThread: 'C1', isDm: false } } as SlackTurn
+    const turn = {
+      conn: f.conn,
+      plan: { channel: 'C1', sessionThread: 'C1', statusThread: 'C1', isDm: false }
+    } as SlackTurn
     const context = await startSlackCodeDiff(turn, state, {
       authorize,
       open: async () => ({ read: async () => content }),

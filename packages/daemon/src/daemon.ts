@@ -1821,16 +1821,29 @@ export class Daemon {
         onStart: (p, created) =>
           startSlackCodeDiff(p, turnState<SlackTurnState>(p), {
             open: () => this.turnTaskDiff(p, created),
+            // A coordinator's task saves its starting point on its first turn, where it opened, for a code channel it makes later.
+            keepStart: async () => {
+              if (
+                !created ||
+                !(await this.store.assistantSubsessions.get(p.plan.agentId, p.plan.sessionKey))?.openedFor
+              )
+                return
+              await this.turnTaskDiff(p, created)
+            },
             authorize: async () => {
               try {
-                await this.mcp.authorizeConversationOutput({
-                  agentId: p.plan.agentId,
-                  integrationId: p.plan.integrationId,
-                  platform: p.plan.platform,
-                  channel: p.plan.channel,
-                  thread: p.plan.sessionThread,
-                  transportScope: p.entry.msg.transportScope
-                })
+                // The session is found where it lives; the output goes to the channel this turn runs in.
+                await this.mcp.authorizeConversationOutput(
+                  {
+                    agentId: p.plan.agentId,
+                    integrationId: p.plan.integrationId,
+                    platform: p.plan.platform,
+                    channel: sessionChannelOf(p.entry.msg),
+                    thread: p.plan.sessionThread,
+                    transportScope: p.entry.msg.transportScope
+                  },
+                  p.plan.channel
+                )
               } catch {
                 throw new TaskDiffUnavailable(
                   'Publication is not authorized for this task. Automatic updates have stopped.'
