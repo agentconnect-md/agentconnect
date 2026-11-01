@@ -79,11 +79,16 @@ async function boot(root: string, clock: Clock) {
   })
   await daemon.start()
   const inner = daemon as any
-  // Never arm the real schedules: croner ticks on the wall clock, so a test that straddles the top
-  // of the hour would get a real fire, outside `joinCatchUpFires`, stamping over the catch-up's
-  // claim. Every fire this file observes is a catch-up or a direct call.
+  // Never keep the real schedules armed: croner ticks on the wall clock, so a test that straddles
+  // the top of the hour would get a real fire, outside `joinCatchUpFires`, stamping over the
+  // catch-up's claim. Startup has already armed them (no CP yet, so this member served the agent),
+  // so stop those jobs first, then keep any later sync from arming new ones. Every fire this file
+  // observes is a catch-up or a direct call.
+  inner.scheduler.stop()
+  inner.dreamScheduler.stop()
   inner.scheduler.sync = () => {}
   inner.dreamScheduler.sync = () => {}
+  expect(inner.scheduler.count(AGENT)).toBe(0)
   const crons: string[] = []
   const dreams: string[] = []
   inner.dispatch = vi.fn(async (agentId: string) => {
