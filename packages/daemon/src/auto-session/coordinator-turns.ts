@@ -88,6 +88,31 @@ export function coordinatorView(message: DeliveredMessage, text: string): Coordi
   }
 }
 
+/** How a coordinator's queue is cut into batches: entries that take a turn of their own, reports, and each message's permission class. */
+export interface BatchRules<T> {
+  /** It never joins a batch nor takes one: a webchat message, whose reply streams to its own browser turn (§10). */
+  ownTurn(entry: T): boolean
+  /** A report, which heads a turn of its own and so ends the batch before it (§3.4). */
+  report(entry: T): boolean
+  classOf(entry: T): Promise<string>
+}
+
+/** How many of the queued entries join the head's batch: those right behind it while they are messages of one class, never reordered (assistant-mode.md §5.18 ③). */
+export async function batchCut<T>(head: T, queued: readonly T[], rules: BatchRules<T>): Promise<number> {
+  if (rules.ownTurn(head)) return 0
+  let batchClass: string | undefined
+  let taken = 0
+  for (const next of queued) {
+    if (rules.ownTurn(next) || rules.report(next)) break
+    const nextClass = await rules.classOf(next)
+    // A report heading the turn brings no class of its own: it rides with the messages right behind it.
+    batchClass ??= rules.report(head) ? nextClass : await rules.classOf(head)
+    if (nextClass !== batchClass) break
+    taken += 1
+  }
+  return taken
+}
+
 /** Every coordinator session's live turn, keyed by the session key. */
 export class CoordinatorTurns {
   private readonly turns = new Map<string, Turn>()

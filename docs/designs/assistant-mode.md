@@ -722,10 +722,11 @@ member (below).
   (a webchat session always), so a DM the console shows every member stays its owner's alone. A CP
   that is unreachable, or lacks the feature, refuses the read.
 - **Who is asking** on a turn: the senders of its message and of every message coalesced or steered
-  into it, recorded before the runtime sees them; the console user in webchat and a console
-  continuation; a delegated task's opener (kept in memory, so a restart reads it as no one); a follow-up's
-  check's or an approved proposal's asker (the person who confirmed the follow-up, and for a check a
-  message started also everyone behind that message); a schedule's last human editor, else its
+  into it or batched with it by a coordinator (§5.18 ③), recorded before the runtime sees them;
+  the console user in webchat and a console continuation; a delegated task's opener (kept in
+  memory, so a restart reads it as no one); a follow-up's check's or an approved proposal's asker
+  (the person who confirmed the follow-up, and for a check a message started also everyone behind
+  that message); a schedule's last human editor, else its
   creator (`CronUpsert.askerUserId`). Hook runs, report rounds, schedules that record no person and
   agent-to-agent messages are no one: the agent-to-agent frame carries no originating person and was
   not given one.
@@ -3463,8 +3464,9 @@ is not built.
 
 ### 5.18 The work board
 
-**Status:** Proposed (eightieth revision, 2026-11-01). Nothing is implemented. Reviewed in draft
-by three adversarial review rounds; what they changed is noted inline.
+**Status:** Proposed (eightieth revision, 2026-11-01). ③ shipped in the eighty-first revision
+("As shipped" under it); the rest is not implemented. Reviewed in draft by three adversarial review
+rounds; what they changed is noted inline.
 
 **Why.** The mode promises one mind: what the agent takes on in one place it knows in the others.
 That holds for memory and for follow-ups, not for the work it is doing. A coordinator
@@ -3565,6 +3567,30 @@ are folded today, so `askersOfKey` sees them all; within a batch they are one cl
 and write is judged by that class. A channel of members stays one batch, as today; a guest's
 message costs one turn of its own. A read judged by one named message inside a mixed batch is not
 taken: the result would sit in a context that answers other people's messages too.
+
+**As shipped** (#PRNUM, eighty-first revision). Choices the text above leaves open:
+
+- **Today was narrower than it says.** A coordinator marks its messages headless so that it speaks
+  only through its outcomes, and the asker rule took a headless message for one no person sent:
+  every coordinator turn, a webchat home's included, read and wrote as `NOBODY`, not as its first
+  sender. A coordinator's message now asks as its sender (`turnMessageOf`); the memory rules'
+  "a person typed this turn" reads the message itself, so they are unchanged.
+- **The cut.** `batchCut` (`auto-session/coordinator-turns.ts`) takes the messages right behind the
+  turn's first entry while they are of its class, as a prefix of the queue as it stands once the
+  lookups answer. Each is folded into `foldedMessages` before the model sees it, so the write gate,
+  `readAskers`, `callAgent` and a delegated task's opener read every sender; the per-message place
+  tools keep judging by their named message.
+- **The classes.** `askerClass` (`assistant/place-members.ts`): the full members of the message's
+  own bot's workspace where the platform tells guests apart (`tellsWorkspaceMembers`), every member
+  of that bot where it cannot. Anyone else (a guest, a member of another workspace, a console user)
+  is a class of one person, and so is anyone whose standing lookup fails; one person's consecutive
+  messages share a batch. A message no person sent, such as another bot's, is a class of its own,
+  judged `NOBODY`.
+- **Reports, until phase 3.** A queued report still heads a turn of its own, so it ends the batch
+  before it; the messages right behind it of one class join its turn, and it adds no asker
+  (`askersOfKey` leaves out a report that heads a batch of messages). A report between two messages
+  of one class therefore rides with the second's batch, one with no message right behind it runs
+  alone as `NOBODY`, and a webchat message is never batched.
 
 **④ The board view, the reads, the title, the reports.**
 
@@ -4701,3 +4727,12 @@ without turn metadata joining the batch, and `listTasks`, `recall` and `readTask
 Three adversarial review rounds of the draft moved the design from a place-judged list to the
 discovery-then-permission rule, from offsets to keyset cursors, and from a follow-up store merge
 and automatic rollover to leaving both out.
+
+**Eighty-first revision (2026-11-01)**: a coordinator batch is judged by every sender and cut by
+permission class (§5.18 ③ shipped, #PRNUM; issue #3541, phase B). Its queued messages are folded
+into the turn's askers, so `postMessage` and `callAgent` from a turn that decides several people's
+messages are judged by all of them, and the queue is cut in arrival order where the next sender's
+class differs. Implementing it found that the starting point was narrower than §5.18 said: a
+coordinator's messages are headless, which the asker rule read as no person's, so every coordinator
+turn read and wrote as `NOBODY`; each message now asks as its sender. Reports still head turns of
+their own until phase 3, so a report rides with the messages right behind it.

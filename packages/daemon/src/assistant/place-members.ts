@@ -2,6 +2,7 @@
 import type { ReadAccessAsker } from '@agentconnect.md/protocol'
 import type { MessageGateway } from '../mcp/ops/context.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
+import { tellsWorkspaceMembers } from '../platforms/read-ports.js'
 import type { ConsoleVerdict, ReadAsker, ReadLookups, TurnAskers } from './place-access.js'
 
 /** How long a member listing, a workspace standing, a console verdict or a linked identity is trusted before it is asked again. */
@@ -162,6 +163,18 @@ export function turnAskers(messages: readonly TurnMessage[], bot: string | undef
     }
   }
   return { people: [...people.values()], nobody: nobody || people.size === 0 }
+}
+
+/** The permission class a message asks in (assistant-mode.md §5.18 ③): a bot's full members share one, anyone else asks alone, as does a failed lookup. */
+export async function askerClass(m: TurnMessage, bot: string | undefined, lookups: ReadLookups): Promise<string> {
+  const asker = askerOf(m, bot)
+  if (!asker) return 'nobody'
+  if (asker.kind === 'member') {
+    const workspace = `members\u001f${asker.platform}\u001f${asker.integrationId}`
+    if (!tellsWorkspaceMembers(asker.platform)) return workspace
+    if (await lookups.fullMember(asker.integrationId, asker.userId).catch(() => false)) return workspace
+  }
+  return `person\u001f${askerKey(asker)}`
 }
 
 /** An item's follower as a person: `user:<id>` a console user, `<platform>:<tenant>:<uid>` a chat member on the bot the item came through. */

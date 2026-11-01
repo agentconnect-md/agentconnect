@@ -11,7 +11,7 @@ import {
   renderCoordinatorBatch
 } from '../src/auto-session/coordinator-prompt.js'
 import { CoordinatorSessions, deliveredMessage, messageForTask } from '../src/auto-session/coordinator-sessions.js'
-import { CoordinatorTurns } from '../src/auto-session/coordinator-turns.js'
+import { batchCut, CoordinatorTurns } from '../src/auto-session/coordinator-turns.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../src/runtime-defs/claude-runtime.js'
 import { executeTool } from '../src/mcp/ops.js'
@@ -181,6 +181,79 @@ describe('a coordinator turn', () => {
     turns.begin('k', [delivered('1.1')])
     turns.noteText('k', 'AC_NO_RESPONSE')
     expect(turns.end('k', isNoResponsePrefix)?.reply).toBeUndefined()
+  })
+})
+
+describe('batches cut by permission class, in arrival order (assistant-mode.md §5.18 ③)', () => {
+  interface Entry {
+    id: string
+    cls?: string
+    report?: true
+    webchat?: true
+  }
+  const member = (id: string): Entry => ({ id, cls: 'members' })
+  const guest = (id: string): Entry => ({ id, cls: `person:${id}` })
+  const report = (id: string): Entry => ({ id, report: true })
+  const rules = {
+    ownTurn: (entry: Entry) => entry.webchat === true,
+    report: (entry: Entry) => entry.report === true,
+    classOf: vi.fn(async (entry: Entry) => entry.cls!)
+  }
+
+  /** The turns a queue runs as, each its head and the entries its batch takes, as the runner takes heads. */
+  async function turnsOf(queue: Entry[]): Promise<string[][]> {
+    const turns: string[][] = []
+    let rest = queue
+    while (rest.length > 0) {
+      const [head, ...behind] = rest
+      const taken = await batchCut(head!, behind, rules)
+      turns.push([head!, ...behind.slice(0, taken)].map((entry) => entry.id))
+      rest = behind.slice(taken)
+    }
+    return turns
+  }
+
+  it('runs members, a guest and members as three turns, in arrival order', async () => {
+    expect(await turnsOf([member('a'), member('b'), guest('g'), member('c'), member('d')])).toEqual([
+      ['a', 'b'],
+      ['g'],
+      ['c', 'd']
+    ])
+  })
+
+  it('gives two guests a turn each, and one guest’s messages one', async () => {
+    expect(await turnsOf([guest('g1'), guest('g2')])).toEqual([['g1'], ['g2']])
+    expect(await turnsOf([guest('g1'), { ...guest('g1'), id: 'g1-again' }, member('a')])).toEqual([
+      ['g1', 'g1-again'],
+      ['a']
+    ])
+  })
+
+  it('lets a report ride with the messages of one class right behind it', async () => {
+    // A queued report heads a turn of its own until reports join batches, so the batch before it ends there.
+    expect(await turnsOf([member('a'), report('r'), member('b'), member('c'), guest('g')])).toEqual([
+      ['a'],
+      ['r', 'b', 'c'],
+      ['g']
+    ])
+  })
+
+  it('runs a report with no message right behind it alone', async () => {
+    expect(await turnsOf([report('r1'), report('r2'), member('a')])).toEqual([['r1'], ['r2', 'a']])
+    expect(await turnsOf([member('a'), report('r')])).toEqual([['a'], ['r']])
+  })
+
+  it('never batches a webchat message, before or behind it', async () => {
+    const webchat = (id: string): Entry => ({ id, cls: 'members', webchat: true })
+    expect(await turnsOf([webchat('w1'), webchat('w2')])).toEqual([['w1'], ['w2']])
+    expect(await turnsOf([member('a'), webchat('w'), member('b')])).toEqual([['a'], ['w'], ['b']])
+  })
+
+  it('looks up no class when nothing can join the turn', async () => {
+    rules.classOf.mockClear()
+    expect(await batchCut(member('a'), [], rules)).toBe(0)
+    expect(await batchCut(member('a'), [report('r'), member('b')], rules)).toBe(0)
+    expect(rules.classOf).not.toHaveBeenCalled()
   })
 })
 
@@ -645,6 +718,85 @@ describe('auto conversations route to the coordinator', () => {
     // Its plan mode can end a turn only through tools that need an approver, so the coordinator never gets them.
     expect((host.newSession.mock.calls[0] as unknown[])[6]).toEqual(CLAUDE_HEADLESS_DISALLOWED_TOOLS)
     await daemon.stop()
+  })
+
+  describe('a batch is judged by every sender of its one permission class (assistant-mode.md §5.18 ③)', () => {
+    const GUEST = 'U0GUEST1'
+    const from = (ts: string, id: string, text = 'hello') => slack(ts, { sender: { id, isBot: false }, text })
+
+    /** A coordinator whose first turn waits to be released, recording each turn's prompt and the people it reads as. */
+    async function heldCoordinator() {
+      let release!: () => void
+      const held = new Promise<void>((resolve) => (release = resolve))
+      const prompts: string[] = []
+      const askers: { people: string[]; nobody: boolean }[] = []
+      const booted = await boot(async (_id, blocks) => {
+        prompts.push(blocks.map((block) => block.text ?? '').join('\n'))
+        const [key] = [...booted.d.activeGateEntries.entries()].find(
+          ([, entry]: [string, { msg: NormalizedMessage }]) => isCoordinatorCoordinate(entry.msg.sessionThread)
+        )!
+        const turn = booted.d.askersOfKey(key, undefined)
+        askers.push({ people: turn.people.map((person: { userId: string }) => person.userId), nobody: turn.nobody })
+        if (prompts.length === 1) await held
+        return 'end_turn'
+      })
+      // Everyone but the guest is a full member of the bot's workspace.
+      booted.d.placeMembers.isFullMember = vi.fn(async (_bot: string, user: string) => user !== GUEST)
+      return { ...booted, prompts, askers, release }
+    }
+
+    it('folds every sender of a batch into its askers, and cuts it where a guest waits, in arrival order', async () => {
+      const { daemon, d, route, prompts, askers, release } = await heldCoordinator()
+      await route(from('1.1', 'U0EXAMPLE1', 'first'))
+      await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+      await route(from('1.2', 'U0EXAMPLE2'))
+      await route(from('1.3', 'U0EXAMPLE1'))
+      await route(from('1.4', GUEST))
+      await route(from('1.5', 'U0EXAMPLE2'))
+      release()
+      await vi.waitFor(() => expect(prompts).toHaveLength(4), WAIT)
+      await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+      const ids = prompts.map((prompt) => [...prompt.matchAll(/<message id="(msg-[\d.]+)"/g)].map((m) => m[1]))
+      expect(ids).toEqual([['msg-1.1'], ['msg-1.2', 'msg-1.3'], ['msg-1.4'], ['msg-1.5']])
+      expect(askers).toEqual([
+        { people: ['U0EXAMPLE1'], nobody: false },
+        { people: ['U0EXAMPLE2', 'U0EXAMPLE1'], nobody: false },
+        { people: [GUEST], nobody: false },
+        { people: ['U0EXAMPLE2'], nobody: false }
+      ])
+      await daemon.stop()
+    })
+
+    it('lets a queued report ride with the messages right behind it, adding no asker, and runs one alone as nobody', async () => {
+      const { daemon, d, route, prompts, askers, release } = await heldCoordinator()
+      await route(from('1.1', 'U0EXAMPLE1', 'first'))
+      await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+      const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+      const coordinator = await d.store.currentAppendCoordinate('bot-a', 'C1', scope, 'coordinator')
+      const queued = () => [...d.serialQueue.values()][0]
+      const report = (ts: string) => {
+        const msg = slack(ts, { source: 'agent', sender: { id: 'bot-a', isBot: true }, text: 'the task finished' })
+        void d
+          .dispatch('bot-a', { ...msg, transportScope: scope, sessionThread: coordinator }, 'int-bot-a')
+          .catch(() => {})
+      }
+      report('7.1')
+      await vi.waitFor(() => expect(queued()).toHaveLength(1), WAIT)
+      await route(from('1.2', 'U0EXAMPLE2'))
+      await vi.waitFor(() => expect(queued()).toHaveLength(2), WAIT)
+      report('7.2')
+      await vi.waitFor(() => expect(queued()).toHaveLength(3), WAIT)
+      release()
+      await vi.waitFor(() => expect(prompts).toHaveLength(3), WAIT)
+      await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+      expect(prompts[1]).toContain('<report id="msg-7.1">')
+      expect(prompts[1]).toContain('<message id="msg-1.2"')
+      expect(askers[1]).toEqual({ people: ['U0EXAMPLE2'], nobody: false })
+      expect(prompts[2]).toContain('<report id="msg-7.2">')
+      expect(prompts[2]).not.toContain('<message id=')
+      expect(askers[2]).toEqual({ people: [], nobody: true })
+      await daemon.stop()
+    })
   })
 
   it('opens a host of its own in an empty directory inside the agent’s, with no workspace roots', async () => {

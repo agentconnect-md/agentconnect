@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NOBODY, type ConsoleVerdict, type ReadAsker, type TurnAskers } from '../src/assistant/place-access.js'
-import { PlaceMembers, turnAskers, type TurnMessage } from '../src/assistant/place-members.js'
+import { askerClass, PlaceMembers, turnAskers, type TurnMessage } from '../src/assistant/place-members.js'
 import type { PostInterception } from '../src/assistant/drafts.js'
+import { batchCut } from '../src/auto-session/coordinator-turns.js'
 import { executeTool, type MessageGateway, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
 import { FOLLOW_UP_TOOL } from '../src/mcp/ops/assistant-items.js'
 import type { PlaceSnapshotRow, PlaceStore } from '../src/mcp/ops/place-gate.js'
@@ -511,6 +512,48 @@ describe('a conversation shared with another organization', () => {
       const shared = await executeTool(inShared, 'shareFile', { path: 'chart.png' }, deps).catch((err: Error) => err)
       expect(String(shared)).not.toMatch(/another organization/)
       expect(draftPost).not.toHaveBeenCalled()
+    })
+  }
+})
+
+describe('a coordinator’s queue is cut by permission class and each batch judged by all its senders (assistant-mode.md §5.18 ③)', () => {
+  for (const assistant of [false, true]) {
+    const mode = assistant ? 'in assistant mode' : 'outside assistant mode'
+
+    it(`judges members together and a guest between them alone, in arrival order (${mode})`, async () => {
+      const { deps, gw, asks } = harness({ assistant })
+      const lookups = deps.readLookups!(AGENT)
+      const rules = {
+        ownTurn: () => false,
+        report: (m: TurnMessage) => m.msg.source !== 'user',
+        classOf: (m: TurnMessage) => askerClass(m, 'int-slack', lookups)
+      }
+      const batches: TurnMessage[][] = []
+      let queue = [P, 'U_BOB', GUEST, 'U_ALICE'].map((user) => said(user, 'C_DEPLOY'))
+      while (queue.length > 0) {
+        const [head, ...behind] = queue
+        const taken = await batchCut(head!, behind, rules)
+        batches.push([head!, ...behind.slice(0, taken)])
+        queue = behind.slice(taken)
+      }
+      expect(batches.map((batch) => batch.map((m) => m.msg.sender.id))).toEqual([[P, 'U_BOB'], [GUEST], ['U_ALICE']])
+
+      const coordinator = ctxAt('slack', 'C_DEPLOY')
+      const post = (channel: string) =>
+        executeTool(coordinator, 'sendMessage', { action: 'postMessage', channel, message: 'update' }, deps)
+      // Judged by its first sender alone, the members' batch would post where Bob may not.
+      asks(...batches[0]!)
+      await expect(post('C_PRIV')).rejects.toThrow(NOT_POSTED)
+      await post('G_MPIM')
+      asks(...batches[1]!)
+      await expect(post('G_MPIM')).rejects.toThrow(NOT_POSTED)
+      await expect(post('C_PRIV')).rejects.toThrow(NOT_POSTED)
+      asks(...batches[2]!)
+      await post('C_PRIV')
+      await expect(post('G_MPIM')).rejects.toThrow(NOT_POSTED)
+      expect(gw.postMessage).toHaveBeenCalledTimes(2)
+      expect(gw.postMessage).toHaveBeenNthCalledWith(1, 'G_MPIM', 'update', undefined, expect.anything())
+      expect(gw.postMessage).toHaveBeenNthCalledWith(2, 'C_PRIV', 'update', undefined, expect.anything())
     })
   }
 })

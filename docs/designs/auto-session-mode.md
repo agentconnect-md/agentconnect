@@ -102,9 +102,9 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
   tools of §5.4, belong to it as they belong to an `append` session.
 - A report queued behind a running turn is never absorbed into the next batch. It starts a turn of its
   own, which keeps the report's own metadata (a getting-to-know report's proposals ride on it); the
-  channel messages queued behind it join that turn. Proposed: a report without turn metadata joins
-  the batch, batches are cut by permission class in arrival order, and the coordinator's standing
-  list becomes the work board ([assistant-mode.md](assistant-mode.md) §5.18).
+  channel messages right behind it of one permission class join that turn, adding no asker
+  ([assistant-mode.md](assistant-mode.md) §5.18 ③). Proposed: a report without turn metadata joins
+  the batch, and the coordinator's standing list becomes the work board (the same section's ② and ④).
 
 ### 3.5 Switching
 
@@ -145,6 +145,9 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
 
 The coordinator runs one turn at a time. Root messages that arrive while it runs are delivered
 together in its next turn, and it decides each one separately. Queued messages are never dropped.
+A batch holds one permission class, so the queue is cut in arrival order where the next sender's
+class differs, and every sender of a batch is asked on its turn
+([assistant-mode.md](assistant-mode.md) §5.18 ③).
 
 A turn's final text cannot be tied to one of several messages, so in a turn with more than one
 message every outcome is a call that names its message:

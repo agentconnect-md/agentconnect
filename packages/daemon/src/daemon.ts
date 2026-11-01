@@ -412,6 +412,7 @@ import { stopTaskToolsFor } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
 import type { AssistantSubsession } from './store/assistant-subsessions.js'
 import {
+  askerClass,
   askerKey,
   askerOf,
   askerOfFollower,
@@ -1047,6 +1048,7 @@ import {
 } from './auto-session/coordinator-sessions.js'
 import {
   answerThreadOf,
+  batchCut,
   coordinatorView,
   inThread,
   platformMessageIdOf,
@@ -11583,19 +11585,26 @@ export class Daemon {
   private askersOfKey(key: string, bot: string | undefined, opener?: TurnAskers): TurnAskers {
     const live = this.activeGateEntries.get(key)
     if (!live) return NOBODY
-    return turnAskers([this.turnMessageOf(live), ...(live.foldedMessages ?? [])], bot ?? live.integrationId, opener)
+    const folded = live.foldedMessages ?? []
+    // A report heading a coordinator batch of messages brings no asker of its own (assistant-mode.md §5.18 ③).
+    const rides = (live.coordinatorBatch?.length ?? 0) > 0 && live.msg.source !== 'user' && !opener?.people.length
+    return turnAskers(rides ? folded : [this.turnMessageOf(live), ...folded], bot ?? live.integrationId, opener)
   }
 
-  /** The read rule's view of a queued message: its bot, whether the console sent it, and a schedule's recorded person. */
+  /** The read rule's view of a queued message: its bot, whether the console sent it, and a schedule's or a coordinator message's person. */
   private turnMessageOf(entry: QueueEntry): TurnMessage {
     const cronId = entry.msg.source === 'cron' ? entry.msg.cronRun?.cronId : undefined
     const userId = cronId ? this.cpCrons?.askerOf(cronId) : undefined
-    return {
+    const view: TurnMessage = {
       msg: entry.msg,
       ...(entry.integrationId ? { integrationId: entry.integrationId } : {}),
       ...(entry.webchat && entry.webchat.initiator !== 'agent' ? { console: true } : {}),
       ...(userId ? { person: { kind: 'console' as const, userId } } : {})
     }
+    if (!isCoordinatorCoordinate(sessionThreadOf(entry.msg))) return view
+    // A coordinator's messages are headless only so it speaks through its outcomes (auto-session-mode.md §4.2); each still asks as its sender.
+    const sender = askerOf({ ...view, msg: { ...entry.msg, headless: false } }, undefined)
+    return sender ? { ...view, person: sender } : view
   }
 
   /** A message folded into the live turn joins the people it reads for; recorded before the model can see it. */
@@ -13682,17 +13691,25 @@ export class Daemon {
     return minted
   }
 
-  /** Open a coordinator turn on its batch: the trigger and every channel message queued behind it, each under its own id (auto-session-mode.md §4.3). */
+  /** Open a coordinator turn on its batch: the trigger and the channel messages right behind it of one permission class, each under its own id (auto-session-mode.md §4.3, assistant-mode.md §5.18 ③). */
   private async beginCoordinatorTurn(entry: QueueEntry, key: string): Promise<void> {
+    const lookups = this.placeMembers.lookupsFor(entry.agentId)
+    const snapshot = [...(this.serialQueue.get(key) ?? [])]
+    const cut = await batchCut(entry, snapshot, {
+      ownTurn: (one) => one.webchat !== undefined,
+      // A queued report keeps a turn of its own, whose metadata it needs, such as a getting-to-know report's proposals (§3.4).
+      report: (one) => one.msg.source !== 'user',
+      classOf: (one) => askerClass(this.turnMessageOf(one), one.integrationId, lookups)
+    })
+    const chosen = new Set(snapshot.slice(0, cut))
+    // Only a prefix of the queue as it is now, so an arrival or a removal during the lookups reorders nothing.
     const queued = this.serialQueue.get(key) ?? []
-    // A queued report keeps a turn of its own, whose metadata it needs, such as a getting-to-know report's proposals (§3.4); so does a webchat message, whose reply streams to its own browser turn (§10).
-    const ownTurn = (next: QueueEntry) => next.msg.source !== 'user' || next.webchat !== undefined
-    const kept = queued.filter(ownTurn)
-    if (kept.length > 0) this.serialQueue.set(key, kept)
-    else this.serialQueue.delete(key)
+    let taken = 0
+    while (taken < queued.length && chosen.has(queued[taken]!)) taken += 1
+    if (taken === queued.length) this.serialQueue.delete(key)
+    else if (taken > 0) this.serialQueue.set(key, queued.slice(taken))
     const batch: QueueEntry[] = []
-    for (const next of queued) {
-      if (ownTurn(next)) continue
+    for (const next of queued.slice(0, taken)) {
       // The same holds the runner honors before it starts a queued entry.
       const verdict = next.admissionHold ? await next.admissionHold : 'run'
       next.admissionHold = undefined
@@ -13706,6 +13723,8 @@ export class Daemon {
       next.admissionWait = undefined
       if (next.deferObservedInbound) await this.admitInbound(next.msg, next.agentId)
       batch.push(next)
+      // Before the model sees it, so every read and write of the turn is judged by every sender.
+      this.noteFoldedMessage(key, next)
     }
     entry.coordinatorBatch = batch
     const messages = [entry, ...batch].map((one) =>

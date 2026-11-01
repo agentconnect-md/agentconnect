@@ -222,7 +222,7 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
   })
 
   // A report's turn carries its own metadata, such as a getting-to-know report's proposals, so no batch absorbs one.
-  it('keeps each report queued behind a turn on a turn of its own, with the channel messages behind it', async () => {
+  it('keeps each report queued behind a turn on a turn of its own, with the channel messages right behind it', async () => {
     let release!: () => void
     const held = new Promise<void>((resolve) => (release = resolve))
     const prompts: string[] = []
@@ -262,11 +262,14 @@ describe('assistant mode under auto (auto-session-mode.md §3.4)', () => {
     release()
     await vi.waitFor(() => expect(prompts).toHaveLength(3), WAIT)
     await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+    // In arrival order (assistant-mode.md §5.18 ③): the message waits behind the second report and joins its turn.
     expect(prompts[1]).toContain('[follow-up] first report')
-    expect(prompts[1]).toContain('after the reports')
+    expect(prompts[1]).toContain('[One report in C1]')
     expect(prompts[1]).not.toContain('second report')
+    expect(prompts[1]).not.toContain('after the reports')
     expect(prompts[2]).toContain('[follow-up] second report')
-    expect(prompts[2]).toContain('[One report in C1]')
+    expect(prompts[2]).toContain('after the reports')
+    expect(prompts[2]).toContain('[One new channel-root message and one report in C1]')
     await daemon.stop()
   })
 
