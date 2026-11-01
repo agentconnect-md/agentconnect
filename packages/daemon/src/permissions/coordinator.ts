@@ -1581,7 +1581,7 @@ export class PermissionCoordinator {
     const actor = asker ? { userId: asker, ...(memberId ? { memberId } : {}) } : undefined
     if (actor && (await this.host.chatActor(agentId, p.plan.integrationId, actor)) === 'allowed') return false
     if (!this.pendingApprovals.has(requestId)) return true
-    await this.sendApprovalDm(requestId, agentId, p, requesterName)
+    await this.sendApprovalDm(requestId, agentId, p, requesterName, undefined, undefined, true)
     return true
   }
 
@@ -1902,6 +1902,12 @@ export class PermissionCoordinator {
       },
       this.host.orgForAgent(agentId)
     )
+    if (!routed.target)
+      this.host
+        .log()
+        .info(
+          `approval DM for "${p.plan.sessionKey}" not sent: the control plane found no editor on the ${integrationIds.length} integration(s) offered`
+        )
     return routed.target
   }
 

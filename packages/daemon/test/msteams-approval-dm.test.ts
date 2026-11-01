@@ -73,7 +73,12 @@ async function world(asker = ASKER, slack = false, editorsOnly = false) {
     chatActions: 'approve',
     integrations: slack ? [integration, slackIntegration] : [integration]
   })
-  if (slack) daemon.connByIntegration.set(SLACK_INT, { openDirectMessage: vi.fn(async () => 'D-example') })
+  const slackConn = {
+    openDirectMessage: vi.fn(async () => 'D0EXAMPLE'),
+    postBlocks: vi.fn(async () => '1700000000.000100'),
+    updateBlocks: vi.fn(async () => true)
+  }
+  if (slack) daemon.connByIntegration.set(SLACK_INT, slackConn)
   const conn = Object.create(MsTeamsConnection.prototype)
   let posted = 0
   conn.isFullMember = vi.fn(async (user: string) => user !== GUEST)
@@ -140,7 +145,20 @@ async function world(asker = ASKER, slack = false, editorsOnly = false) {
   const postedTo = (): string[] =>
     cardPosts.mock.calls.map((call) => (call[0] as { conversationId: string }).conversationId)
   const onlyRequest = (): string => [...permissions.pendingApprovals.keys()][0]
-  return { daemon, store, conn, cp, permissions, postedTo, onlyRequest, applied, notices, cardPosts, cardReplaces }
+  return {
+    daemon,
+    store,
+    conn,
+    slackConn,
+    cp,
+    permissions,
+    postedTo,
+    onlyRequest,
+    applied,
+    notices,
+    cardPosts,
+    cardReplaces
+  }
 }
 
 describe('an approval in a Teams channel shared with another organization', () => {
@@ -406,6 +424,18 @@ describe('an approval on the editor path of an agent on both Slack and Teams', (
     await w.store.close()
   })
 
+  it('logs that the control plane found no editor, naming how many integrations it was offered', async () => {
+    const w = await world(GUEST, true)
+    const info = vi.spyOn(w.daemon.log, 'info')
+    void w.permissions.onAcpPermission(AGENT, 's1', permission)
+    await vi.waitFor(() =>
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('found no editor on the 2 integration(s) offered'))
+    )
+    expect(w.postedTo()).toEqual([])
+    expect(w.slackConn.postBlocks).not.toHaveBeenCalled()
+    await w.store.close()
+  })
+
   it('offers only Slack for an MCP approval no Teams card answers', async () => {
     const w = await world(GUEST, true)
     void w.permissions.onAcpElicit(AGENT, 's1', yesNo)
@@ -530,17 +560,53 @@ describe('an approval card in a Teams channel only editors may answer', () => {
     await w.store.close()
   })
 
+  const routes = (w: Awaited<ReturnType<typeof world>>) =>
+    w.cp.mock.calls
+      .map((call) => call[0] as { verify?: unknown; integrationIds?: string[] })
+      .filter((payload) => !payload.verify)
+      .map((payload) => payload.integrationIds)
+
   it('offers Slack before Teams for the editor beside the card', async () => {
     const w = await editorsWorld(ASKER, true)
     void w.permissions.onAcpPermission(AGENT, 's1', permission)
-    await vi.waitFor(() =>
-      expect(
-        w.cp.mock.calls
-          .map((call) => call[0] as { verify?: unknown; integrationIds?: string[] })
-          .filter((payload) => !payload.verify)
-          .map((payload) => payload.integrationIds)
-      ).toEqual([[SLACK_INT, INT]])
+    await vi.waitFor(() => expect(routes(w)).toEqual([[SLACK_INT, INT]]))
+    await w.store.close()
+  })
+
+  it('keeps a Slack DM beside the card on the row’s beside handle, and retires it with the card', async () => {
+    const w = await editorsWorld(ASKER, true)
+    w.cp.mockImplementation(async (payload: { requestId: string; verify?: unknown }) => {
+      const verify = payload.verify as { userId: string } | undefined
+      if (verify) return { requestId: payload.requestId, allowed: verify.userId === MEMBER_EDITOR, linked: true }
+      return {
+        requestId: payload.requestId,
+        target: { integrationId: SLACK_INT, teamId: 'T0EXAMPLE', userId: 'U0EXAMPLE', consoleUserId: 'u-ed' }
+      }
+    })
+    const decided = vi.fn()
+    void w.permissions.onAcpPermission(AGENT, 's1', permission).then(decided)
+    await vi.waitFor(() => expect(w.slackConn.postBlocks).toHaveBeenCalledTimes(1))
+    expect(w.slackConn.openDirectMessage).toHaveBeenCalledWith('U0EXAMPLE')
+    await vi.waitFor(async () =>
+      expect(await besideRow(w)).toMatchObject({
+        besideIntegrationId: SLACK_INT,
+        besideChannel: 'D0EXAMPLE',
+        besideTs: '1700000000.000100',
+        notifyTs: null
+      })
     )
+    // An editor in the channel answers first: the DM says how it ended and its handle is gone.
+    await w.permissions.handlePermissionChoice({
+      requestId: w.onlyRequest(),
+      optionId: 'allow',
+      ts: 'activity-1',
+      actor: { userId: MEMBER_EDITOR }
+    })
+    await vi.waitFor(() =>
+      expect(decided).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    )
+    await vi.waitFor(() => expect(w.slackConn.updateBlocks).toHaveBeenCalled())
+    await vi.waitFor(async () => expect(await besideRow(w)).toMatchObject({ status: 'allowed', besideTs: null }))
     await w.store.close()
   })
 
