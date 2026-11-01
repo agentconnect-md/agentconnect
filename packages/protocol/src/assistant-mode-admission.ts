@@ -28,13 +28,24 @@ export const AssistantModeRefusal = z.enum([
   'runtime-unset',
   'runtime-not-admitted',
   'memory-provider',
-  'store-not-shared'
+  'store-not-shared',
+  'routing'
 ])
 export type AssistantModeRefusal = z.infer<typeof AssistantModeRefusal>
 
+/** A conversation the routing check names: By decision, or in a shared bot's routing (assistant-mode.md §5.18 ①). */
+export const AssistantModeRoutedConversation = z.object({
+  integrationId: z.string(),
+  channelId: z.string(),
+  name: z.string().nullable()
+})
+export type AssistantModeRoutedConversation = z.infer<typeof AssistantModeRoutedConversation>
+
 export const AssistantModeAdmission = z.object({
   admitted: z.boolean(),
-  refusals: z.array(AssistantModeRefusal)
+  refusals: z.array(AssistantModeRefusal),
+  /** The conversations to change before the mode turns on; present with the `routing` refusal. */
+  conversations: z.array(AssistantModeRoutedConversation).optional()
 })
 export type AssistantModeAdmission = z.infer<typeof AssistantModeAdmission>
 

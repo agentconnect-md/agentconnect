@@ -3372,7 +3372,8 @@
           "runtime-unset": "请先选择 Runtime。",
           "runtime-not-admitted": "暂不支持此 Runtime：它需要能关闭自身记忆，并能在重启后恢复会话。",
           "memory-provider": "记忆必须为托管。",
-          "store-not-shared": "此 Agent 所在组的所有 Daemon 必须共用同一存储。"
+          "store-not-shared": "此 Agent 所在组的所有 Daemon 必须共用同一存储。",
+          "routing": "请先在这些对话中停止使用按决策或共享 Bot 路由：{names}。"
         },
         "blockers": {
           "invalidLimit": "每项限制必须是其范围内的整数。"

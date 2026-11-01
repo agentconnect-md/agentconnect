@@ -36,6 +36,7 @@ import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-a
 import { canView, canEdit } from '../../authorization/policy.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
 import { conversationOwnerRow, pickConversationOwner } from '../../orchestrator/httpBot.js'
+import { anyAssistantModeAgent } from '../../agents/assistant-mode.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
 import { releaseFreedBot, removeIntegrationRow } from '../uninstall.js'
@@ -861,7 +862,7 @@ export function integrationRoutes(deps: HttpDeps) {
           tags: [Tag.Integrations],
           summary: 'Update a conversation',
           description:
-            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding. By decision refusals carry `code` DECISION_NOT_FOUND (404) or DECISION_UNSUPPORTED_CONSUMER (409); session mode `auto` is refused with SESSION_MODE_UNSUPPORTED (409) unless every connected daemon serving the conversation supports it, and with SESSION_MODE_CONFLICT (409) together with By decision or shared-bot routing.",
+            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding. By decision refusals carry `code` DECISION_NOT_FOUND (404) or DECISION_UNSUPPORTED_CONSUMER (409); session mode `auto` is refused with SESSION_MODE_UNSUPPORTED (409) unless every connected daemon serving the conversation supports it, and with SESSION_MODE_CONFLICT (409) together with By decision or shared-bot routing. By decision is refused with SESSION_MODE_CONFLICT (409) while an agent of the conversation (on a shared bot, any agent using the bot) is in assistant mode.",
           operationId: 'updateIntegrationChannel',
           params: IdParam.extend({ channelId: z.string().min(1) }),
           body: UpdateIntegrationChannelBody,
@@ -921,6 +922,8 @@ export function integrationRoutes(deps: HttpDeps) {
         const botScopedConversation = bot.transport === 'http'
         let effectiveOwner: AgentRecord | null = null
         let selectedOwner: AgentRecord | null = null
+        // A shared conversation's trigger repeats on every install's row, so every agent of the bot shares it.
+        let conversationAgents = [agent.id]
         if (botScopedConversation) {
           if (req.body.agentId !== undefined && !bot.agentIds.includes(AgentId(req.body.agentId))) {
             return reply.code(409).send({
@@ -933,6 +936,7 @@ export function integrationRoutes(deps: HttpDeps) {
             deps.repos.integration.listForBot(bot.id),
             deps.repos.integrationChannel.listForBot(bot.id)
           ])
+          conversationAgents = installs.map((install) => install.agentId)
           const owner = pickConversationOwner(
             installs,
             conversationRows.filter((channel) => channel.channelId === req.params.channelId)
@@ -966,6 +970,17 @@ export function integrationRoutes(deps: HttpDeps) {
             error: 'Conflict',
             statusCode: 409,
             message: 'Auto cannot be combined with By decision or shared-bot routing.',
+            code: 'SESSION_MODE_CONFLICT'
+          })
+        // Assistant mode runs every place through a coordinator, so its conversations never become By decision (assistant-mode.md §5.18 ①).
+        if (
+          req.body.trigger === 'decision' &&
+          (await anyAssistantModeAgent(deps.repos.agent, orgOf(req), conversationAgents))
+        )
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'An agent in assistant mode cannot use By decision; choose another trigger.',
             code: 'SESSION_MODE_CONFLICT'
           })
         // Auto reaches only a daemon that reads it; the conversation's consumer must be served by one now.

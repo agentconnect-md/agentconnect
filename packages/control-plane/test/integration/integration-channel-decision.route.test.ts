@@ -378,6 +378,55 @@ describe('PATCH /integrations/:id/channels/:channelId with By decision', () => {
   })
 })
 
+// assistant-mode.md §5.18 ①: every assistant-mode place runs a coordinator, so none of its conversations becomes By decision.
+describe('Assistant mode with By decision', () => {
+  const assistantOn = (agentId: string) =>
+    prisma.agent.update({ where: { id: agentId }, data: { assistantMode: { enabled: true } } })
+
+  it('refuses a gate on a conversation of an agent in assistant mode, and takes any other trigger', async () => {
+    const { integrationId, agentId } = await seedInstall()
+    const { app, spy } = appWith()
+    const decisionId = await createDecision(app)
+    await assistantOn(agentId)
+    const row = () => prisma.integrationChannel.findFirst({ where: { integrationId, channelId: 'C1' } })
+
+    spy.upserts.length = 0
+    const refused = await patchChannel(app, integrationId, 'C1', gateOf(decisionId))
+    expect(refused.statusCode, refused.body).toBe(409)
+    expect(refused.json()).toMatchObject({ code: 'SESSION_MODE_CONFLICT' })
+    expect(await row()).toMatchObject({ trigger: 'mention', decisionBinding: null })
+    expect(spy.upserts).toEqual([])
+    expect((await patchChannel(app, integrationId, 'C1', { trigger: 'any' })).statusCode).toBe(200)
+  })
+
+  it('refuses a gate on a shared conversation while any agent using the bot is in assistant mode', async () => {
+    const { integrationId, installs } = await seedInstall({ transport: 'http', agents: 2 })
+    const { app } = appWith()
+    const decisionId = await createDecision(app)
+    await assistantOn(installs[1]!.agentId)
+
+    const refused = await patchChannel(app, integrationId, 'C1', gateOf(decisionId))
+    expect(refused.statusCode, refused.body).toBe(409)
+    expect(refused.json()).toMatchObject({ code: 'SESSION_MODE_CONFLICT' })
+    for (const row of await prisma.integrationChannel.findMany({ where: { channelId: 'C1' } }))
+      expect(row).toMatchObject({ trigger: 'mention', decisionBinding: null })
+  })
+
+  it('leaves an existing gate in place, refusing only a new one', async () => {
+    const { integrationId, agentId } = await seedInstall()
+    const { app } = appWith()
+    const decisionId = await createDecision(app)
+    expect((await patchChannel(app, integrationId, 'C1', gateOf(decisionId))).statusCode).toBe(200)
+    await assistantOn(agentId)
+
+    // A session-mode edit keeps the gate; setting it again is refused.
+    const kept = await patchChannel(app, integrationId, 'C1', { sessionMode: 'append' })
+    expect(kept.statusCode, kept.body).toBe(200)
+    expect(kept.json()).toMatchObject({ trigger: 'decision', sessionMode: 'append' })
+    expect((await patchChannel(app, integrationId, 'C1', gateOf(decisionId))).statusCode).toBe(409)
+  })
+})
+
 // auto-session-mode.md §3.3: the coordinator decides every message, so Auto never runs behind By decision.
 describe('Auto with By decision', () => {
   it('refuses either one on a row that has the other, and takes both changed together', async () => {

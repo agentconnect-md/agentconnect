@@ -7,6 +7,8 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { ASSISTANT_MODE_NOT_ADMITTED } from '../../src/agents/assistant-mode.js'
+import { PgIntegrationChannelRepo } from '../../src/persistence/index.js'
+import { IntegrationId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -54,6 +56,60 @@ const patch = (app: HttpApp, agentId: string, payload: Record<string, unknown>) 
   app.app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload })
 const admission = (app: HttpApp, agentId: string) =>
   app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/assistant-mode/admission` })
+
+/** An install of the agent on a new bot with these conversations; a routed row binds the bot's router, so it needs no Decision. */
+async function seedConversations(
+  agentId: string,
+  rows: Array<{ channelId: string; name: string; routed?: boolean }>,
+  transport: 'socket' | 'http' = 'socket'
+): Promise<string> {
+  const botId = randomUUID()
+  await prisma.bot.create({
+    data: {
+      id: botId,
+      orgId: DEFAULT_ORG_ID,
+      platform: 'slack',
+      name: `bot-${botId}`,
+      ...(transport === 'http' ? { transport, shareable: true } : {})
+    }
+  })
+  const integrationId = randomUUID()
+  await prisma.integration.create({
+    data: { id: integrationId, orgId: DEFAULT_ORG_ID, agentId, botId, platform: 'slack', name: 'example-bot' }
+  })
+  await prisma.integrationChannel.createMany({
+    data: rows.map(({ channelId, name, routed }) => ({
+      integrationId,
+      channelId,
+      name,
+      ...(routed ? { trigger: 'decision' as const, decisionBinding: { type: 'shared_bot_routing' } } : {})
+    }))
+  })
+  return integrationId
+}
+
+/** A By decision gate on one conversation, through a Decision the API creates. */
+async function gate(app: HttpApp, integrationId: string, channelId: string): Promise<void> {
+  const created = await app.app.inject({
+    method: 'POST',
+    url: `${ORG}/decisions`,
+    payload: {
+      name: 'Needs help',
+      providerId: 'typesafe',
+      model: 'jev-1.13.0',
+      visibility: 'org',
+      sharedWith: [],
+      question: { type: 'boolean', instructions: 'Is help needed?', criteria: { true: 'Yes', false: 'No' } }
+    }
+  })
+  expect(created.statusCode, created.body).toBe(201)
+  const decisionId = (created.json() as { id: string }).id
+  await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(integrationId), channelId, {
+    trigger: 'decision',
+    decisionBinding: { type: 'gate', decisionId, when: { type: 'boolean', values: [true] } },
+    decisionNeedsReview: false
+  })
+}
 
 /** A daemon group whose members report these stores (null ⇒ a private store). */
 async function seedGroup(stores: Array<string | null>): Promise<string> {
@@ -379,6 +435,82 @@ describe('assistant mode', () => {
     const offAndSwitch = await patch(app, agentId, { runtime: 'qwen-code', assistantMode: { enabled: false } })
     expect(offAndSwitch.statusCode, offAndSwitch.body).toBe(200)
     expect(offAndSwitch.json()).toMatchObject({ runtime: 'qwen-code', assistantMode: { enabled: false } })
+  })
+
+  // assistant-mode.md §4.1, §5.18 ①: every place runs a coordinator, which By decision and shared-bot routing exclude.
+  it('refuses to turn on over a By decision or routed conversation, naming each, until they change', async () => {
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { runtime: 'claude-acp' })
+    const { app } = withSpy()
+    const direct = await seedConversations(agentId, [
+      { channelId: 'C1', name: 'general' },
+      { channelId: 'C2', name: 'random' }
+    ])
+    await gate(app, direct, 'C1')
+    // The bot's router may hand a conversation to any agent using the bot, so a routed one counts without a row of the agent's.
+    const shared = await seedConversations(agentId, [], 'http')
+    const sharedBot = (await prisma.integration.findUniqueOrThrow({ where: { id: shared } })).botId
+    const other = randomUUID()
+    await seedAgent(prisma, other, { runtime: 'claude-acp' })
+    const otherInstall = randomUUID()
+    await prisma.integration.create({
+      data: { id: otherInstall, orgId: DEFAULT_ORG_ID, agentId: other, botId: sharedBot, platform: 'slack', name: 'b' }
+    })
+    await prisma.integrationChannel.create({
+      data: {
+        integrationId: otherInstall,
+        channelId: 'C3',
+        name: 'support',
+        trigger: 'decision',
+        decisionBinding: { type: 'shared_bot_routing' }
+      }
+    })
+
+    const checked = (await admission(app, agentId)).json() as { conversations?: Array<{ channelId: string }> }
+    expect({
+      ...checked,
+      conversations: checked.conversations?.sort((a, b) => (a.channelId < b.channelId ? -1 : 1))
+    }).toEqual({
+      admitted: false,
+      refusals: ['routing'],
+      conversations: [
+        { integrationId: direct, channelId: 'C1', name: 'general' },
+        { integrationId: shared, channelId: 'C3', name: 'support' }
+      ]
+    })
+    const refused = await patch(app, agentId, { assistantMode: ON })
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ code: ASSISTANT_MODE_NOT_ADMITTED })
+    expect(refused.json().message).toMatch(
+      /^assistant mode cannot be turned on: no conversation may be By decision or in a shared bot’s routing \(change (general, support|support, general) first\)$/
+    )
+    expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).assistantMode).toBeNull()
+
+    // An editor changes both conversations; the switch then turns on.
+    const repo = new PgIntegrationChannelRepo(prisma)
+    await repo.setTrigger(IntegrationId(direct), 'C1', { trigger: 'mention' })
+    await repo.setTrigger(IntegrationId(otherInstall), 'C3', { trigger: 'mention' })
+    expect((await admission(app, agentId)).json()).toEqual({ admitted: true, refusals: [] })
+    const on = await patch(app, agentId, { assistantMode: ON })
+    expect(on.statusCode, on.body).toBe(200)
+  })
+
+  it('keeps a By decision row of an agent already on, and checks no routing on its later edits', async () => {
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { runtime: 'claude-acp' })
+    const { app } = withSpy()
+    const integrationId = await seedConversations(agentId, [{ channelId: 'C1', name: 'general' }])
+    expect((await patch(app, agentId, { assistantMode: ON })).statusCode).toBe(200)
+    // A row written before the check existed, or past it in a race.
+    await gate(app, integrationId, 'C1')
+
+    const edited = await patch(app, agentId, { runtime: 'codex-acp' })
+    expect(edited.statusCode, edited.body).toBe(200)
+    expect(await prisma.integrationChannel.findFirst({ where: { integrationId, channelId: 'C1' } })).toMatchObject({
+      trigger: 'decision'
+    })
+    // The check still reports what a switch-on would meet.
+    expect((await admission(app, agentId)).json()).toMatchObject({ admitted: false, refusals: ['routing'] })
   })
 
   // assistant-mode.md §4.1: Codex and OpenCode resume a session by id after a restart, so neither is locked.
