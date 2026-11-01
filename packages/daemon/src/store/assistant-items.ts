@@ -374,6 +374,21 @@ export class AssistantItemLedger {
     return await this.withLinks(agentId, rows)
   }
 
+  /** Every open follow-up of the agent, with no cap, so the work board loses none (assistant-mode.md §5.18). */
+  async listOpen(agentId: string): Promise<AssistantItemOverview[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT ${itemColumns('i.')} FROM assistant_item i WHERE i.agentId = ? AND i.status IN ('active', 'waiting')
+         ORDER BY i.id`,
+        [agentId]
+      )
+    ).rows as ItemRow[]
+    const listed: AssistantItemOverview[] = []
+    for (let at = 0; at < rows.length; at += ASSISTANT_ITEM_LIST_MAX)
+      listed.push(...(await this.withLinks(agentId, rows.slice(at, at + ASSISTANT_ITEM_LIST_MAX))))
+    return listed
+  }
+
   /** Field-level append: no version check, keeps the newest {@link ASSISTANT_ITEM_OBSERVATIONS_KEPT}. */
   async appendObservation(
     agentId: string,

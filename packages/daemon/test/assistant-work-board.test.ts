@@ -192,6 +192,17 @@ describe('the board reads open work from both stores', () => {
     })
   })
 
+  it('keeps this place’s follow-ups however many other places have newer ones', async () => {
+    const s = await store()
+    const here = await coordinator(s, 'C0HERE')
+    const ops = await coordinator(s, 'C0OPS')
+    const mine = await followUp(s, here, 'C0HERE', 'old', { now: 1_000 })
+    for (let i = 0; i < 201; i += 1) await followUp(s, ops, 'C0OPS', `busy-${i}`, { now: 2_000 + i })
+    const tasks = await readOpenWork(s, AGENT, here, HERE)
+    expect(tasks.filter((t) => t.here).map((t) => t.id)).toEqual([mine.taskKey])
+    expect(tasks.filter((t) => !t.here)).toHaveLength(201)
+  })
+
   it('moves a task on the board when a round starts or settles or its title changes, never for a summary alone', async () => {
     const s = await store()
     const here = await coordinator(s, 'C0HERE')

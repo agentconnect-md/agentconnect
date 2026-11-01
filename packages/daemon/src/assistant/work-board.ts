@@ -2,11 +2,7 @@
 import { createHash } from 'node:crypto'
 import { subsessionLabel } from '../permissions/subsession-approval.js'
 import { isTaskCoordinate, subsessionCoordinateOf } from '../session/subsession-coordinate.js'
-import {
-  ASSISTANT_ITEM_LIST_MAX,
-  type AssistantItemLedger,
-  type AssistantItemOverview
-} from '../store/assistant-items.js'
+import type { AssistantItemLedger, AssistantItemOverview } from '../store/assistant-items.js'
 import type { AssistantSubsessionIndex, PlacedSubsession } from '../store/assistant-subsessions.js'
 import {
   askerMayRead,
@@ -57,7 +53,7 @@ export interface BoardTask {
 /** The two stores the board reads; nothing moves between them. */
 export interface BoardStores {
   assistantSubsessions: Pick<AssistantSubsessionIndex, 'listPlaced'>
-  assistantItems: Pick<AssistantItemLedger, 'list'>
+  assistantItems: Pick<AssistantItemLedger, 'listOpen'>
 }
 
 const sameConversation = (a: BoardPlace, b: BoardPlace): boolean => a.platform === b.platform && a.channel === b.channel
@@ -96,7 +92,7 @@ export async function readOpenWork(
 ): Promise<BoardTask[]> {
   const [rows, items] = await Promise.all([
     stores.assistantSubsessions.listPlaced(agentId),
-    stores.assistantItems.list(agentId, { status: ['active', 'waiting'], limit: ASSISTANT_ITEM_LIST_MAX })
+    stores.assistantItems.listOpen(agentId)
   ])
   const byKey = new Map(rows.map((row) => [row.childSessionKey, row]))
   const tasks: BoardTask[] = []
