@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
-import useSWR from 'swr'
+import useSWR, { useSWRConfig } from 'swr'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
@@ -7,14 +7,16 @@ import { GithubMark, LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import {
   fetchBuiltinGithubAppSlug,
+  fetchGithubApps,
   fetchGithubInstallUrl,
   fetchGithubInstallations,
+  syncGithubApp,
   syncGithubInstallations,
   type GithubInstallationDto
 } from '@/lib/api'
 import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
 import { Scrim } from '@/components/console/Scrim'
-import { GithubAppRow, GithubOrgApps, INSTALLATION_ROW } from '@/components/console/GithubOrgApps'
+import { GithubAppRow, GithubOrgApps, INSTALLATION_ROW, InstallAppButton } from '@/components/console/GithubOrgApps'
 import { consoleKeys } from '@/lib/swr-keys'
 
 // No 'use client' here: rendered only inside a client boundary — the Integrations page, or the
@@ -26,16 +28,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 // Installations are org-level infrastructure (like bots) — every member can
 // see them; installing and syncing are writes (viewers don't get those buttons),
 // while uninstalling the App from an account is owner-only.
-export default function GithubCard({
-  canWrite,
-  isOwner,
-  agentNameOf
-}: {
-  canWrite: boolean
-  isOwner: boolean
-  /** Names the agent an organization App serves; the console passes it, the webchat dialog does not. */
-  agentNameOf?: (agentId: string) => string | undefined
-}) {
+export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; isOwner: boolean }) {
   const t = useTranslations('Integrations')
   // Gate the org-scoped fetch on the active org (same hard-refresh race as SlackCard):
   // before OrgProvider resolves, `orgBase()` throws → the catch would show "not enabled"
@@ -48,6 +41,7 @@ export default function GithubCard({
   const [uninstalling, setUninstalling] = useState<GithubInstallationDto | null>(null)
   // Each App is a first-level row over its installations; the built-in App opens expanded.
   const [builtInOpen, setBuiltInOpen] = useState(true)
+  const { mutate } = useSWRConfig()
   const { data: builtInSlug } = useSWR(activeOrg ? consoleKeys.githubBuiltinApp(activeOrg.id) : null, ([, id]) =>
     fetchBuiltinGithubAppSlug(id ?? undefined)
   )
@@ -80,14 +74,22 @@ export default function GithubCard({
     }
   }
 
-  // Refresh the org's claimed installations after GitHub changes or an install
-  // finished in the other tab just now.
+  // Re-pull every App's installations from GitHub, the built-in App's and each organization App's; one failing App doesn't stop the rest.
   const sync = async () => {
-    if (busy) return
+    if (busy || !activeOrg) return
     setBusy(true)
     setErr(null)
     try {
-      setInstalls(await syncGithubInstallations())
+      const [builtIn, ...orgApps] = await Promise.allSettled([
+        syncGithubInstallations(),
+        ...(await fetchGithubApps(activeOrg.id)).map((app) => syncGithubApp(app.id))
+      ])
+      if (builtIn?.status === 'fulfilled') setInstalls(builtIn.value)
+      await mutate(consoleKeys.githubApps(activeOrg.id))
+      const failed = [builtIn, ...orgApps].find((result) => result?.status === 'rejected')
+      if (failed?.status === 'rejected') {
+        setErr(failed.reason instanceof Error ? failed.reason.message : String(failed.reason))
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -118,35 +120,13 @@ export default function GithubCard({
           {t('github.notEnabled')}
         </div>
       )}
-      {/* Desktop only: the row collapses to one stacked column below the
-          breakpoint, where a two-track header would label nothing. */}
-      {enabled === true && (
-        <div className="row h hidden grid-cols-[minmax(0,1fr)_auto] gap-[11px] desktop:grid">
-          <span>{t('github.appColumn')}</span>
-          <span>{t('github.installationsColumn')}</span>
-        </div>
-      )}
       {enabled === true && (
         <div data-builtin-app>
           <GithubAppRow
             open={builtInOpen}
             onToggle={() => setBuiltInOpen((open) => !open)}
             label={builtInOpen ? t('github.collapse') : t('github.expand')}
-            aside={
-              <>
-                <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                  {installs.length > 0
-                    ? t('github.installationCount', { count: installs.length })
-                    : t('github.orgApps.notInstalled')}
-                </span>
-                {canWrite && (
-                  <Button size="xs" variant="ghost" onClick={install}>
-                    <Icon name="external-link" size={13} />
-                    {t('github.install')}
-                  </Button>
-                )}
-              </>
-            }
+            aside={canWrite && <InstallAppButton onClick={() => void install()} />}
           >
             <span className="mono min-w-0 truncate text-[12.5px]">{builtInSlug ?? t('github.label')}</span>
             <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('github.builtIn')}</span>
@@ -186,15 +166,15 @@ export default function GithubCard({
                       {i.repositorySelection === 'all' ? t('github.allRepositories') : t('github.selectedRepositories')}
                     </span>
                     {isOwner && (
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        className="text-(--status-error) hover:text-(--status-error)"
+                      <button
+                        type="button"
+                        className="iconbtn text-(--status-error)"
+                        title={t('github.uninstall')}
+                        aria-label={t('github.uninstall')}
                         onClick={() => setUninstalling(i)}
                       >
-                        <Icon name="unplug" size={13} />
-                        {t('github.uninstall')}
-                      </Button>
+                        <Icon name="unplug" size={14} />
+                      </button>
                     )}
                   </span>
                 </div>
@@ -222,9 +202,7 @@ export default function GithubCard({
             ))}
         </div>
       )}
-      {enabled === true && (
-        <GithubOrgApps canWrite={canWrite} isOwner={isOwner} {...(agentNameOf ? { agentNameOf } : {})} />
-      )}
+      {enabled === true && <GithubOrgApps canWrite={canWrite} isOwner={isOwner} />}
       {err && (
         <div className="px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>
       )}

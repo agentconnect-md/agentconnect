@@ -591,6 +591,30 @@ describe('GithubService.uninstallInstallation', () => {
     await expect(svc.uninstallInstallation(123456789n)).resolves.toBeUndefined()
   })
 
+  it("uninstalls an organization App's installation with that App's own JWT", async () => {
+    const issuers: string[] = []
+    const svc = new GithubService({
+      cfg: cfg(),
+      clock: new FakeClock(1_700_000_000_000),
+      installations: {} as never,
+      installState: { put: async () => {}, consume: async () => true },
+      pepper: 'p'.repeat(32),
+      appRegistry: {
+        configForInstallation: async (id: bigint) =>
+          id === 43n ? { ...cfg(), appId: 2000, jwtIssuer: '2000' } : undefined
+      } as never,
+      fetchImpl: async (_url, init) => {
+        const jwt = String(new Headers(init?.headers).get('authorization')).replace(/^Bearer /, '')
+        issuers.push(JSON.parse(Buffer.from(jwt.split('.')[1]!, 'base64url').toString()).iss)
+        return new Response(null, { status: 204 })
+      }
+    })
+
+    await svc.uninstallInstallation(43n)
+    await svc.uninstallInstallation(42n)
+    expect(issuers).toEqual(['2000', cfg().jwtIssuer])
+  })
+
   it('preserves non-terminal uninstall failures', async () => {
     const svc = new GithubService({
       cfg: cfg(),

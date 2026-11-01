@@ -2,11 +2,13 @@ import { useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
-import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
-import { GithubMark } from '@/components/marks'
+import Link from 'next/link'
+import { AgentIconView, GithubMark } from '@/components/marks'
+import { useConsoleData } from '@/lib/data-context'
 import { Scrim } from '@/components/console/Scrim'
-import { deleteGithubApp, fetchGithubApps, githubAppPageUrl, syncGithubApp, type GithubOrgAppDto } from '@/lib/api'
+import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
+import { deleteGithubApp, fetchGithubApps, githubAppPageUrl, type GithubOrgAppDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 
@@ -17,6 +19,7 @@ export function GithubAppRow({
   open,
   onToggle,
   label,
+  icon,
   children,
   aside,
   dataAttr
@@ -24,6 +27,8 @@ export function GithubAppRow({
   open: boolean
   onToggle: () => void
   label: string
+  /** Leads the row; absent ⇒ the GitHub mark. */
+  icon?: ReactNode
   children: ReactNode
   aside: ReactNode
   dataAttr?: string
@@ -44,15 +49,33 @@ export function GithubAppRow({
         >
           <Icon name="chevron-down" size={14} className={open ? undefined : '-rotate-90'} />
         </button>
-        <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
-          <span className="flex h-[14px] w-[14px] items-center justify-center">
-            <GithubMark color="var(--text-primary)" fillPct={SQUARE_MARK_FILL_PCT} />
+        {icon ?? (
+          <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
+            <span className="flex h-[14px] w-[14px] items-center justify-center">
+              <GithubMark color="var(--text-primary)" fillPct={SQUARE_MARK_FILL_PCT} />
+            </span>
           </span>
-        </span>
+        )}
         {children}
       </div>
       <span className="flex items-center justify-between gap-3 desktop:justify-end">{aside}</span>
     </div>
+  )
+}
+
+/** Opens the App's install page on GitHub, as an icon like every other row action. */
+export function InstallAppButton({ href, onClick }: { href?: string; onClick?: () => void }) {
+  const t = useTranslations('Integrations.github')
+  return (
+    <button
+      type="button"
+      className="iconbtn"
+      title={t('install')}
+      aria-label={t('install')}
+      onClick={onClick ?? (() => href && window.open(href, '_blank', 'noopener'))}
+    >
+      <Icon name="external-link" size={14} />
+    </button>
   )
 }
 
@@ -61,25 +84,16 @@ export const INSTALLATION_ROW =
   'row grid-cols-1 gap-2 bg-(--surface-sunken) desktop:grid-cols-[minmax(0,1fr)_auto] desktop:gap-[11px] desktop:pl-[50px]'
 
 // The organization's own GitHub Apps, each over its installations; absent until the org creates one.
-export function GithubOrgApps({
-  canWrite,
-  isOwner,
-  agentNameOf
-}: {
-  canWrite: boolean
-  isOwner: boolean
-  /** Names the agent an App serves; absent (outside the console) ⇒ "in use". */
-  agentNameOf?: (agentId: string) => string | undefined
-}) {
+export function GithubOrgApps({ canWrite, isOwner }: { canWrite: boolean; isOwner: boolean }) {
   const t = useTranslations('Integrations.github')
-  const { activeOrg } = useOrgs()
+  const { activeOrg, orgPath } = useOrgs()
+  const { getAgent } = useConsoleData()
   const { data: apps, mutate } = useSWR(activeOrg ? consoleKeys.githubApps(activeOrg.id) : null, ([, id]) =>
     fetchGithubApps(id ?? undefined)
   )
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
-  const [syncing, setSyncing] = useState<string | null>(null)
-  const [err, setErr] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<GithubOrgAppDto | null>(null)
+  const [uninstalling, setUninstalling] = useState<{ id: string; accountLogin: string } | null>(null)
 
   if (!apps || apps.length === 0) return null
 
@@ -90,101 +104,45 @@ export function GithubOrgApps({
       return next
     })
 
-  const sync = async (app: GithubOrgAppDto) => {
-    if (syncing) return
-    setSyncing(app.id)
-    setErr(null)
-    try {
-      await syncGithubApp(app.id)
-      await mutate()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setSyncing(null)
-    }
-  }
-
   return (
     <>
       {apps.map((app) => {
         const open = expanded.has(app.id)
-        const agentName = app.agentId ? agentNameOf?.(app.agentId) : undefined
+        const agent = app.agentId ? getAgent(app.agentId) : undefined
+        const agentName = agent ? (agent.displayName ?? agent.name) : ''
         return (
           <div key={app.id} data-org-app={app.slug}>
             <GithubAppRow
               open={open}
               onToggle={() => toggle(app.id)}
               label={open ? t('collapse') : t('expand')}
+              icon={
+                agent ? (
+                  <Link
+                    href={orgPath(`/agents/${encodeURIComponent(agent.id)}`)}
+                    title={t('orgApps.openAgent', { agent: agentName })}
+                    className="flex flex-none no-underline"
+                  >
+                    <span className="av h-7 w-7 flex-none rounded-[7px]">
+                      <AgentIconView icon={agent.icon} runtime={agent.runtime || agent.model || ''} size={28} />
+                    </span>
+                  </Link>
+                ) : undefined
+              }
               aside={
                 <>
-                  <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                    {app.installations.length > 0
-                      ? t('installationCount', { count: app.installations.length })
-                      : t('orgApps.notInstalled')}
-                  </span>
-                  {canWrite && (
-                    <span className="flex flex-none items-center gap-1">
-                      <a
-                        className="iconbtn"
-                        href={`${githubAppPageUrl(app.slug)}/installations/new`}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={t('install')}
-                        aria-label={t('install')}
-                      >
-                        <Icon name="external-link" size={14} />
-                      </a>
-                      <AnchoredFlyout
-                        ariaLabel={t('orgApps.more')}
-                        align="end"
-                        width={200}
-                        estimatedHeight={88}
-                        triggerClassName="flex"
-                        trigger={({ open: menuOpen, menuId, toggle: toggleMenu }) => (
-                          <button
-                            type="button"
-                            className="iconbtn"
-                            title={t('orgApps.more')}
-                            aria-label={t('orgApps.more')}
-                            aria-haspopup="menu"
-                            aria-expanded={menuOpen}
-                            aria-controls={menuOpen ? menuId : undefined}
-                            onClick={toggleMenu}
-                          >
-                            <Icon name={syncing === app.id ? 'loader' : 'ellipsis'} size={14} />
-                          </button>
-                        )}
-                      >
-                        {({ close }) => (
-                          <>
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className="fopt"
-                              onClick={() => {
-                                close(true)
-                                void sync(app)
-                              }}
-                            >
-                              <span className="min-w-0 flex-1 truncate">{t('sync')}</span>
-                            </button>
-                            {isOwner && app.agentId === null && (
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="fopt text-(--status-error)"
-                                onClick={() => {
-                                  close(true)
-                                  setDeleting(app)
-                                }}
-                              >
-                                <span className="min-w-0 flex-1 truncate">{t('orgApps.delete')}</span>
-                              </button>
-                            )}
-                          </>
-                        )}
-                      </AnchoredFlyout>
-                    </span>
+                  {canWrite && <InstallAppButton href={`${githubAppPageUrl(app.slug)}/installations/new`} />}
+                  {/* Only a free App can be deleted. */}
+                  {isOwner && app.agentId === null && (
+                    <button
+                      type="button"
+                      className="iconbtn text-(--status-error)"
+                      title={t('orgApps.delete')}
+                      aria-label={t('orgApps.delete')}
+                      onClick={() => setDeleting(app)}
+                    >
+                      <Icon name="trash" size={14} />
+                    </button>
                   )}
                 </>
               }
@@ -199,10 +157,15 @@ export function GithubOrgApps({
               </a>
               {app.agentId === null ? (
                 <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('orgApps.free')}</span>
+              ) : agent ? (
+                <Link
+                  href={orgPath(`/agents/${encodeURIComponent(agent.id)}`)}
+                  className="badge min-w-0 truncate bg-(--surface-active) text-(--text-secondary) no-underline hover:text-(--text-primary)"
+                >
+                  {agentName}
+                </Link>
               ) : (
-                <span className="min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                  {agentName ? t('orgApps.usedBy', { agent: agentName }) : t('orgApps.inUse')}
-                </span>
+                <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('orgApps.inUse')}</span>
               )}
             </GithubAppRow>
             {open &&
@@ -224,8 +187,21 @@ export function GithubOrgApps({
                         <span className="badge bg-(--status-error-soft) text-(--status-error)">{t('suspended')}</span>
                       )}
                     </div>
-                    <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      {i.repositorySelection === 'all' ? t('allRepositories') : t('selectedRepositories')}
+                    <span className="flex items-center justify-between gap-3 desktop:justify-end">
+                      <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                        {i.repositorySelection === 'all' ? t('allRepositories') : t('selectedRepositories')}
+                      </span>
+                      {isOwner && (
+                        <button
+                          type="button"
+                          className="iconbtn text-(--status-error)"
+                          title={t('uninstall')}
+                          aria-label={t('uninstall')}
+                          onClick={() => setUninstalling({ id: i.id, accountLogin: i.accountLogin })}
+                        >
+                          <Icon name="unplug" size={14} />
+                        </button>
+                      )}
                     </span>
                   </div>
                 ))
@@ -233,8 +209,19 @@ export function GithubOrgApps({
           </div>
         )
       })}
-      {err && (
-        <div className="px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>
+      {uninstalling && (
+        <Scrim onEscape={() => setUninstalling(null)} onClick={() => setUninstalling(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <UninstallGithubInstallationModal
+              installation={uninstalling}
+              onClose={() => setUninstalling(null)}
+              onUninstalled={() => {
+                setUninstalling(null)
+                void mutate()
+              }}
+            />
+          </div>
+        </Scrim>
       )}
       {deleting && (
         <DeleteGithubAppDialog

@@ -1764,10 +1764,7 @@
       "updatePermissions": "Update permissions",
       "orgApps": {
         "free": "free",
-        "usedBy": "used by {agent}",
         "inUse": "in use",
-        "notInstalled": "not installed",
-        "more": "More",
         "delete": "Delete App…",
         "deleteTitle": "Delete GitHub App",
         "deleteBody": "Remove <slug></slug> from this organization? Its key and installations are forgotten here; the App stays on GitHub until you delete it there.",
@@ -1775,14 +1772,12 @@
         "cancel": "Cancel",
         "deleting": "Deleting…",
         "deleteConfirm": "Delete",
-        "noInstallations": "Not installed on any account yet."
+        "noInstallations": "Not installed on any account yet.",
+        "openAgent": "Open {agent}"
       },
-      "appColumn": "App",
-      "installationsColumn": "Installations",
       "builtIn": "built-in",
       "expand": "Show installations",
-      "collapse": "Hide installations",
-      "installationCount": "{count, plural, one {# installation} other {# installations}}"
+      "collapse": "Hide installations"
     },
     "codeHostActions": {
       "addRepository": "Add repository",
