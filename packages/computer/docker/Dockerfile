@@ -29,13 +29,6 @@ ARG NODE_VERSION=26.13.0
 ARG NODE_SHA256_ARM64=406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92
 ARG NODE_SHA256_X64=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997
 ARG TARGETARCH
-ARG VERSION=dev
-
-LABEL org.opencontainers.image.title="AgentConnect computer" \
-  org.opencontainers.image.description="A Linux desktop (Xvfb, Xfce, Chromium, LibreOffice) that registers as an AgentConnect Computer" \
-  org.opencontainers.image.source="https://github.com/agentconnect-md/agentconnect" \
-  org.opencontainers.image.version="${VERSION}"
-# No licenses label: the daemon is Apache-2.0, but the Debian packages keep their own (/usr/share/doc/*/copyright).
 
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
 # Nothing here renders with OpenGL (Chromium and LibreOffice draw in software), so Mesa's LLVM backend and the CJK serif faces stay out.
@@ -91,4 +84,11 @@ EXPOSE 7681
 # Doctor inside the running daemon: display, driver, screenshot, capture, and the Computer key; unreachable is unhealthy.
 HEALTHCHECK --interval=60s --timeout=45s --start-period=120s --start-interval=5s --retries=3 \
   CMD agentconnect-computer doctor --json --daemon --port "$PORT" > /dev/null || exit 1
+# After every RUN: each RUN sees a declared ARG, so a per-release VERSION would rebuild the apt layer on every release.
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="AgentConnect computer" \
+  org.opencontainers.image.description="A Linux desktop (Xvfb, Xfce, Chromium, LibreOffice) that registers as an AgentConnect Computer" \
+  org.opencontainers.image.source="https://github.com/agentconnect-md/agentconnect" \
+  org.opencontainers.image.version="${VERSION}"
+# No licenses label: the daemon is Apache-2.0, but the Debian packages keep their own (/usr/share/doc/*/copyright).
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
