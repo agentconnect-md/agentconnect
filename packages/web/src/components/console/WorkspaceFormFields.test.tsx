@@ -4,6 +4,7 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  GithubConnectedBanner,
   GithubPrivateReposNotice,
   GithubRepositoryField,
   GithubRepositoryOption,
@@ -32,6 +33,15 @@ afterEach(async () => {
 })
 
 describe('WorkspaceFormFields', () => {
+  it("links an organization GitHub App's slug to its page on GitHub", async () => {
+    await render(<GithubConnectedBanner onManage={() => undefined} appSlug="review-example" />)
+
+    expect(container?.textContent).toContain('Connected with review-example')
+    const link = container?.querySelector('a')
+    expect(link?.getAttribute('href')).toBe('https://github.com/apps/review-example')
+    expect(link?.getAttribute('target')).toBe('_blank')
+  })
+
   it('keeps missing private repositories informational and links to Profile', async () => {
     await render(<GithubPrivateReposNotice profileHref="/acme/profile#sign-in-methods" />)
 

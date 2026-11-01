@@ -11,7 +11,7 @@ import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-h
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { GITEA_REPOSITORY_STATE, giteaChoiceSelectable, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
-import type { RepoAccess, RepoGrantStaleReason, RepoMaterialize } from '@/lib/api'
+import { githubAppPageUrl, type RepoAccess, type RepoGrantStaleReason, type RepoMaterialize } from '@/lib/api'
 import type { RepositoryDecisionBlock } from '@/lib/repository-selector'
 
 // The TILE the user types through, not what is stored (git-workspace-model.md §7):
@@ -458,7 +458,18 @@ export function GithubConnectedBanner({
       <Icon name="circle-check" size={16} color="var(--status-online)" />
       <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-primary)">
         {appSlug
-          ? t.rich('githubConnectedWith', { slug: () => <span className="mono">{appSlug}</span> })
+          ? t.rich('githubConnectedWith', {
+              slug: () => (
+                <a
+                  className="mono text-inherit underline-offset-2 hover:underline"
+                  href={githubAppPageUrl(appSlug)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {appSlug}
+                </a>
+              )
+            })
           : t('githubConnected')}
       </span>
       <button

@@ -59,6 +59,7 @@ import {
   updateGitlabHook,
   uploadAgentIcon,
   openCoordinatorConversation,
+  githubAppPageUrl,
   type GithubInstallationDto,
   type HookDto,
   type HookRunDto
@@ -447,6 +448,7 @@ function AgentDetail() {
     { id, githubAppId: githubAgentAppId },
     returnedGithubApp && /^[0-9a-f-]{36}$/.test(returnedGithubApp) ? returnedGithubApp : undefined
   )
+  const githubAppSlug = githubAppDialog.appSlug
   const githubInstallationsKey =
     activeOrg && githubHooks.length > 0
       ? (['github-review-installations', activeOrg.id, githubAgentAppId] as const)
@@ -2302,10 +2304,19 @@ function AgentDetail() {
                               <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
                               {t('integrations.connected')}
                             </span>
-                            {githubAppDialog.appSlug && (
+                            {githubAppSlug && (
                               <span className="min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                                 {t.rich('integrations.githubVia', {
-                                  slug: () => <span className="mono">{githubAppDialog.appSlug}</span>
+                                  slug: () => (
+                                    <a
+                                      className="mono text-inherit underline-offset-2 hover:underline"
+                                      href={githubAppPageUrl(githubAppSlug)}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      {githubAppSlug}
+                                    </a>
+                                  )
                                 })}
                               </span>
                             )}
