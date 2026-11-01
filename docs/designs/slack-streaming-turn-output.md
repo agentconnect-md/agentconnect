@@ -205,11 +205,12 @@ tighter one (below).
 | tool output, terminal (`high`)   | separate code-block message                        | the command and its result become the card's body (`details` + `output`, high only); the separate code-block message is **dropped on a streaming turn**, which would otherwise say it twice                                                                                                 |
 | `usage_update`                   | dropped                                            | dropped                                                                                                                                                                                                                                                                                     |
 
-**Display mode follows output detail, not conversation type.** Medium/high use `timeline`:
-each tool or thought is a separate task card with its own icon and disclosure. Medium remains
-compact; high adds the command while it runs and the bounded result when it finishes. Normal
-channel threads, DMs and code channels use the same path. Unsupported surfaces keep the existing
-in-place progress fallback.
+**Display mode follows output detail, not conversation type.** Medium uses `plan`: the work
+steps share one collapsible group, with a counted summary when the turn finishes. Expanding
+the group reveals the individual titles, icons and statuses. High uses `timeline`: each tool
+or thought is a separate card, with the command while it runs and the bounded result when it
+finishes. Normal channel threads, DMs and code channels use the same path. Unsupported
+surfaces keep the existing in-place progress fallback.
 
 Minimal uses `plan` so its interim replies remain folded above the final answer. Its container
 starts at `Working…` and ends with a counted earlier-reply label, or `Stopped` / `Failed`.

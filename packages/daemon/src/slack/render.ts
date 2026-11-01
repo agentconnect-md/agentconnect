@@ -2699,7 +2699,7 @@ export class OutputConverger {
     const out: SlackAction[] = []
     if (!this.streamOpened) {
       this.streamOpened = true
-      out.push({ kind: 'stream-start', ...(this.mode === 'minimal' ? { taskDisplayMode: 'plan' as const } : {}) })
+      out.push({ kind: 'stream-start', taskDisplayMode: this.mode === 'high' ? 'timeline' : 'plan' })
     }
     out.push({ kind: 'stream-append', chunks, ...(progressText ? { progressText } : {}) })
     return out
@@ -2734,7 +2734,7 @@ export class OutputConverger {
     const out: SlackAction[] = []
     if (!this.streamOpened) {
       this.streamOpened = true
-      out.push({ kind: 'stream-start', ...(this.mode === 'minimal' ? { taskDisplayMode: 'plan' as const } : {}) })
+      out.push({ kind: 'stream-start', taskDisplayMode: this.mode === 'high' ? 'timeline' : 'plan' })
     }
     out.push({ kind: 'stream-stop', settle, ...(progressText ? { progressText } : {}) })
     return out

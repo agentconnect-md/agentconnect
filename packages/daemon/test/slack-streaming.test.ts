@@ -187,10 +187,15 @@ describe('OutputConverger streaming axis', () => {
     expect(converger.streamUpdate()).toEqual([])
   })
 
-  it('labels the container while working and settles it to a counted summary', () => {
-    const converger = streaming('medium')
+  it.each([
+    ['medium', 'plan'],
+    ['high', 'timeline']
+  ] as const)('groups %s steps in %s mode with a counted closing summary', (mode, taskDisplayMode) => {
+    const converger = streaming(mode)
     converger.onUpdate(tool('t1', 'Read file', 'completed'))
-    expect(appends(converger.streamUpdate()).at(-1)).toEqual({ type: 'plan_update', title: 'Working…' })
+    const first = converger.streamUpdate()
+    expect(first[0]).toEqual({ kind: 'stream-start', taskDisplayMode })
+    expect(appends(first).at(-1)).toEqual({ type: 'plan_update', title: 'Working…' })
     converger.onUpdate(tool('t2', 'Run tests', 'completed'))
     converger.streamUpdate()
     expect(appends(converger.onFinal(attribution())).filter((c) => c.type === 'plan_update')).toEqual([
@@ -336,7 +341,7 @@ describe('OutputConverger streaming axis', () => {
     const finals = later.onFinal(attribution())
     const streamActions = finals.filter((a) => a.kind.startsWith('stream-'))
     expect(streamActions).toEqual([
-      { kind: 'stream-start' },
+      { kind: 'stream-start', taskDisplayMode: 'plan' },
       {
         kind: 'stream-stop',
         settle: [
