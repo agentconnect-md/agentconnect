@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -510,12 +511,15 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
     const requestedCwd = workspaces.sessionWorktreePath(agent, 'session-a')
     mkdirSync(requestedCwd, { recursive: true })
     const cwd = realpathSync(requestedCwd)
-    writeFileSync(join(cwd, '.git'), 'gitdir: elsewhere')
+    // The admin dir `worktree add` registers it under, which Git drops once it has judged the worktree removable.
+    const adminDir = join(path, '.git', 'worktrees', basename(cwd))
+    mkdirSync(adminDir, { recursive: true })
+    writeFileSync(join(cwd, '.git'), `gitdir: ${adminDir}\n`)
     // Hand back the CANONICAL path: the GC re-derives its worktree path from the
     // realpath'd root before every destructive step, so that is the path it puts
     // on the Git command line. The two spellings differ wherever `$TMPDIR` sits
     // behind a symlink — on macOS it does (`/var` → `/private/var`).
-    return { agent, cwd: realpathSync(cwd), id: basename(cwd) }
+    return { agent, cwd: realpathSync(cwd), id: basename(cwd), adminDir }
   }
   const gitCalls = () => rawMock.mock.calls.map((call) => call[0] as string[])
 
@@ -678,7 +682,7 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
   })
 
   it('reports failed (keeping the session) when git refuses the removal', async () => {
-    const { agent } = fixture()
+    const { agent, cwd } = fixture()
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'rev-list') return '0\n'
       if (args[0] === 'worktree' && args[1] === 'remove') throw new Error('worktree is locked')
@@ -689,7 +693,36 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
       outcome: 'failed',
       error: 'worktree is locked'
     })
+    // Git still holds the registration, so its refusal is the verdict: nothing is deleted behind it.
+    expect(existsSync(cwd)).toBe(true)
   })
+
+  // Read-only modes are what make Git's own delete fail, and a Windows chmod cannot express them.
+  it.skipIf(process.platform === 'win32')(
+    'finishes the delete Git began when a read-only skill bundle stopped it',
+    async () => {
+      const { agent, cwd, adminDir } = fixture()
+      // An installed bundle is published without owner-write (shared-skills.md §8).
+      const bundle = join(cwd, '.claude', 'skills', 'checks')
+      mkdirSync(bundle, { recursive: true })
+      writeFileSync(join(bundle, 'SKILL.md'), '# checks\n')
+      chmodSync(join(bundle, 'SKILL.md'), 0o400)
+      chmodSync(bundle, 0o500)
+      rawMock.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'rev-list') return '0\n'
+        if (args[0] === 'worktree' && args[1] === 'remove') {
+          // What Git does: past its checks it unregisters the worktree even though the tree delete failed.
+          rmSync(adminDir, { recursive: true, force: true })
+          throw new Error(`failed to delete '${cwd}': Permission denied`)
+        }
+        return ''
+      })
+
+      expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
+      expect(existsSync(cwd)).toBe(false)
+      expect(gitCalls()).toContainEqual(['worktree', 'prune'])
+    }
+  )
 
   it('an absent worktree still prunes stale registrations and review refs', async () => {
     const { agent, id } = fixture()

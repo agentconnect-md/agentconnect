@@ -177,7 +177,8 @@ describe('CpAgentRegistry (memory-only CP specs)', () => {
     reg.upsert(A1, spec())
     const root = join(dir, 'helper')
     writeFileSync(join(root, 'keep'), 'data')
-    chmodSync(root, 0o500)
+    // Unreadable, so the removal fails before deleting anything; owner-write alone it would take back.
+    chmodSync(root, 0o000)
     try {
       expect(() => reg.remove(A1)).toThrow()
       expect(reg.agents()).toHaveLength(1)
@@ -186,6 +187,26 @@ describe('CpAgentRegistry (memory-only CP specs)', () => {
     }
     expect(() => reg.remove(A1)).not.toThrow()
     expect(existsSync(root)).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('removes a root holding a read-only installed skill bundle', () => {
+    const { dir, reg } = makeReg()
+    reg.upsert(A1, spec())
+    const root = join(dir, 'helper')
+    // An installed bundle is published without owner-write (shared-skills.md §8).
+    const bundle = join(root, 'workspace', '.claude', 'skills', 'checks')
+    mkdirSync(join(bundle, 'scripts'), { recursive: true })
+    writeFileSync(join(bundle, 'SKILL.md'), '# checks\n')
+    writeFileSync(join(bundle, 'scripts', 'run.sh'), 'true\n')
+    chmodSync(join(bundle, 'scripts', 'run.sh'), 0o500)
+    chmodSync(join(bundle, 'SKILL.md'), 0o400)
+    chmodSync(join(bundle, 'scripts'), 0o500)
+    chmodSync(bundle, 0o500)
+
+    reg.remove(A1)
+
+    expect(existsSync(root)).toBe(false)
+    expect(reg.agents()).toEqual([])
   })
 
   it('inventories and removes a marker-only root after registry restart', () => {
