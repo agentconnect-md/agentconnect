@@ -250,13 +250,35 @@ async function seedPlace(d: any, channel = 'C1') {
   return { key, scope, coordinate }
 }
 
-async function takeItem(d: any, nextCheck = Date.now() - MINUTE, channel = 'C1') {
-  return await d.store.assistantItems.create({
-    agentId: 'bot-a',
-    taskKey: sessionKey('slack', channel, checkCoordinate(randomUUID()), 'bot-a', scopeOf(d)),
-    asker: 'slack:T0EXAMPLE:U0ALICE',
+/** A follow-up, a watch task (§5.18), whose first check re-points it at its place's long session. */
+async function openFollowUp(
+  d: any,
+  input: {
+    agentId?: string
+    taskKey: string
+    asker?: string
+    nextCheck: number
+    origin: { platform: string; channel: string; transportScope: string | null }
+    summary: string
+  }
+) {
+  return await d.store.assistantWatchTasks.open({
+    agentId: input.agentId ?? 'bot-a',
+    taskKey: input.taskKey,
+    ...(input.asker ? { asker: input.asker } : {}),
     title: 'Land PR #12',
     doneWhen: 'PR #12 is merged',
+    nextAt: input.nextCheck,
+    origin: input.origin,
+    owner: { sessionId: '', key: '' },
+    background: input.summary
+  })
+}
+
+async function takeItem(d: any, nextCheck = Date.now() - MINUTE, channel = 'C1') {
+  return await openFollowUp(d, {
+    taskKey: sessionKey('slack', channel, checkCoordinate(randomUUID()), 'bot-a', scopeOf(d)),
+    asker: 'slack:T0EXAMPLE:U0ALICE',
     nextCheck,
     origin: { platform: 'slack', channel, transportScope: scopeOf(d) },
     summary: 'Alice asked to see PR #12 through.'
@@ -322,12 +344,12 @@ describe('a follow-up’s check proposes', () => {
       status: 'awaiting_review',
       target: { platform: 'slack', integrationId: INT_A, channel: 'C1', thread: null },
       destination: { name: 'general' },
-      proposal: { sentence: SENTENCE, why: 'The check found a merge conflict.', itemId: item.id, itemVersion: 1 },
+      proposal: { sentence: SENTENCE, why: 'The check found a merge conflict.', itemId: item.taskKey, itemVersion: 1 },
       source: { sessionKey: checkKey, place: false },
       approver: { kind: 'place', integrationId: INT_A, channel: 'C1' },
       cardTs: 'card-1'
     })
-    expect(record.hash).toBe(assistantTaskHash('bot-a', item.id, 1, TASK))
+    expect(record.hash).toBe(assistantTaskHash('bot-a', item.taskKey, 1, TASK))
     expect(record.expiresAt - record.createdAt).toBe(24 * 60 * MINUTE)
     expect(results[0]).toMatchObject({
       proposed: true,
@@ -353,9 +375,9 @@ describe('a follow-up’s check proposes', () => {
     expect(card).not.toContain('Always allow')
     // Nothing ran, and the check still recorded what it saw.
     expect(h.tasks()).toHaveLength(0)
-    expect((await h.d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
-      'PR #12 conflicts with main.'
-    ])
+    expect(
+      (await h.d.store.assistantWatchTasks.get('bot-a', item.taskKey)).observations.map((o: any) => o.text)
+    ).toEqual(['PR #12 conflicts with main.'])
     await h.daemon.stop()
   })
 
@@ -374,7 +396,7 @@ describe('a follow-up’s check proposes', () => {
         proposal: {
           sentence: SENTENCE,
           why: 'The check found a merge conflict.',
-          itemId: item.id,
+          itemId: item.taskKey,
           itemTitle: 'Land PR #12'
         }
       })
@@ -469,17 +491,17 @@ describe('a check’s follow-up form (assistant-mode.md §5.13)', () => {
       status: 'succeeded',
       followUp: { id: expect.any(String), parentSessionId: 'sid-parent-bot-a' }
     })
-    expect(await h.d.store.assistantItems.get('bot-a', answer.followUp.id)).toMatchObject({
+    expect(await h.d.store.assistantWatchTasks.get('bot-a', answer.followUp.id)).toMatchObject({
       ...form,
       status: 'waiting',
-      nextCheck: null,
+      nextAt: null,
       asker: 'user:usr-editor',
-      summary: 'Ada is waiting on it.',
+      background: 'Ada is waiting on it.',
       origin: { platform: 'slack', channel: 'C1' }
     })
     await h.settled()
     expect(h.tasks()).toEqual([])
-    const observed = (await h.d.store.assistantItems.get('bot-a', item.id)).observations.at(-1).text
+    const observed = (await h.d.store.assistantWatchTasks.get('bot-a', item.taskKey)).observations.at(-1).text
     expect(observed).toContain(`was taken as the follow-up "${form.title}"`)
     // A second decision finds it already decided and takes nothing more.
     expect(await h.decide(record!.id)).toMatchObject({ result: 'already-decided' })
@@ -547,7 +569,9 @@ describe('an approved proposal runs once', () => {
     const card = JSON.stringify(h.cards.update.mock.calls.at(-1))
     expect(card).toContain('reported back')
     expect(card).not.toContain('"actions"')
-    const observations = (await h.d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)
+    const observations = (await h.d.store.assistantWatchTasks.get('bot-a', item.taskKey)).observations.map(
+      (o: any) => o.text
+    )
     expect(observations).toEqual(
       expect.arrayContaining([
         `Proposal "${SENTENCE}" was approved by Grace; it runs in a background session.`,
@@ -612,9 +636,9 @@ describe('a proposal that is not approved never runs', () => {
     expect([channel, ts]).toEqual(['C1', 'card-1'])
     expect(JSON.stringify(blocks)).toContain('Denied by u0bob. Nothing was run.')
     expect(JSON.stringify(blocks)).not.toContain('"actions"')
-    expect((await h.d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toContain(
-      `Proposal "${SENTENCE}" was denied by u0bob; nothing was run.`
-    )
+    expect(
+      (await h.d.store.assistantWatchTasks.get('bot-a', item.taskKey)).observations.map((o: any) => o.text)
+    ).toContain(`Proposal "${SENTENCE}" was denied by u0bob; nothing was run.`)
     await h.daemon.stop()
   })
 
@@ -656,7 +680,7 @@ describe('a proposal that is not approved never runs', () => {
   it('refuses a proposal whose follow-up ended meanwhile', async () => {
     const h = await boot(scaffold())
     const { item, record } = await proposed(h)
-    await h.d.store.assistantItems.schedule('bot-a', item.id, { status: 'done', nextCheck: null })
+    await h.d.store.assistantWatchTasks.schedule('bot-a', item.taskKey, { status: 'done', nextAt: null })
     expect(await h.decide(record.id)).toMatchObject({ status: 'failed', failure: 'its follow-up has ended' })
     await h.settled()
     expect(h.tasks()).toHaveLength(0)
@@ -756,7 +780,7 @@ describe('a proposal in the conversation its item belongs to', () => {
       task: TASK,
       sentence: 'I want to close PR #12.',
       why: '',
-      itemId: item.id,
+      itemId: item.taskKey,
       itemVersion: item.version,
       source: record.source,
       place: { integrationId: INT_A, channel: 'C1' }
@@ -789,11 +813,9 @@ describe('a proposal in the conversation its item belongs to', () => {
 
   it('leaves an agent outside assistant mode alone: no check, so no card', async () => {
     const h = await boot(scaffold())
-    await h.d.store.assistantItems.create({
+    await openFollowUp(h.d, {
       agentId: 'bot-b',
       taskKey: 'slack:C1:subsession:check-b:bot-b',
-      title: 'Land PR #12',
-      doneWhen: 'PR #12 is merged',
       nextCheck: Date.now() - MINUTE,
       origin: { platform: 'slack', channel: 'C1', transportScope: h.d.transportScopeForIntegrationIds([INT_B]) },
       summary: 'Bob asked.'
@@ -830,12 +852,9 @@ describe('a proposal in a webchat conversation', () => {
   /** One proposal from a check of an item taken in the webchat conversation `conv-1`. */
   async function proposedInWebchat(h: Awaited<ReturnType<typeof boot>>) {
     await seedWebchat(h.d, 'conv-1', CONVERSATION)
-    const item = await h.d.store.assistantItems.create({
-      agentId: 'bot-a',
+    const item = await openFollowUp(h.d, {
       taskKey: sessionKey('webchat', 'conv-1', checkCoordinate(randomUUID()), 'bot-a'),
       asker: 'user:usr-alice',
-      title: 'Land PR #12',
-      doneWhen: 'PR #12 is merged',
       nextCheck: Date.now() - MINUTE,
       origin: { platform: 'webchat', channel: 'conv-1', transportScope: null },
       summary: 'Alice asked in webchat to see PR #12 through.'
@@ -959,9 +978,9 @@ describe('a proposal in a webchat conversation', () => {
     expect(await decideIn(h, record.id)).toMatchObject({ result: 'already-decided', status: 'denied' })
     await h.settled()
     expect(h.tasks()).toHaveLength(0)
-    expect((await h.d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toContain(
-      `Proposal "${SENTENCE}" was denied by Grace; nothing was run.`
-    )
+    expect(
+      (await h.d.store.assistantWatchTasks.get('bot-a', item.taskKey)).observations.map((o: any) => o.text)
+    ).toContain(`Proposal "${SENTENCE}" was denied by Grace; nothing was run.`)
     await h.daemon.stop()
   })
 })
@@ -1091,7 +1110,9 @@ describe('a task cut short by a restart or handover', () => {
       expect(await h.d.store.assistantDrafts.get(record.id)).toMatchObject({ status, failure })
       expect(await h.d.store.assistantSubsessions.get('bot-a', key)).toMatchObject({ state: rowState })
       expect(JSON.stringify(h.cards.update.mock.calls.at(-1))).toContain(card)
-      const observations = (await h.d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)
+      const observations = (await h.d.store.assistantWatchTasks.get('bot-a', item.taskKey)).observations.map(
+        (o: any) => o.text
+      )
       expect(observations.some((text: string) => text.includes('cut short'))).toBe(false)
       await h.daemon.stop()
     }

@@ -112,6 +112,11 @@ export function subsessionCoordinateOf(key: string): string | undefined {
   return at >= 0 ? key.slice(at + 1) : undefined
 }
 
+/** Whether a task's child key names a getting-to-know task's session, the one checked task the item ledger keeps (assistant-mode.md §5.13). */
+export function isGettingToKnowKey(key: string): boolean {
+  return isGettingToKnowCoordinate(subsessionCoordinateOf(key))
+}
+
 /** Whether a task's child key names one a delegation opened, which only a session of reach `delegate` manages: never a follow-up, research or an approved proposal. */
 export function isDelegatedTaskKey(key: string): boolean {
   return isDelegatedTaskCoordinate(subsessionCoordinateOf(key))

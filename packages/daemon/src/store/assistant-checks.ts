@@ -1,6 +1,9 @@
-// A follow-up's check state and check log (assistant-mode.md §5.12): which next check was taken, the failure streak and its backoff, the check in flight, messages and an event wake (§5.14) waiting for it.
+// A checked task's check state and check log (assistant-mode.md §5.12, §5.18), by its task key: which next check was taken, the failure streak and its backoff, the check in flight, messages and an event wake (§5.14) waiting for it.
 import { FollowUpEventKind } from '@agentconnect.md/protocol'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
+
+// A watch task (a follow-up) whose schedule is open, as the task store keeps it.
+const OPEN_WATCH = "w.mode = 'watch' AND w.watchStatus IN ('active', 'waiting')"
 
 /** After this many failed checks in a row a follow-up is checked no more until it is messaged. */
 export const CHECK_MAX_FAILURES = 5
@@ -16,7 +19,7 @@ export const CHECK_BUDGET_WINDOW_MS = 24 * 60 * 60_000
 
 export interface AssistantCheckState {
   agentId: string
-  itemId: string
+  taskKey: string
   /** The `nextCheck` the last finished scheduled check was for; that value is never checked again. */
   checkedNextCheck: number | null
   /** Failed checks in a row; a finished check resets it. */
@@ -58,15 +61,15 @@ export interface AssistantCheckState {
 export const ASSISTANT_CHECK_STARTS = ['time', 'message', 'wake'] as const
 export type AssistantCheckStart = (typeof ASSISTANT_CHECK_STARTS)[number]
 
-/** A follow-up whose scheduled check is due and not yet taken. */
+/** A checked task whose scheduled check is due and not yet taken, by its task key. */
 export interface AssistantCheckDue {
-  itemId: string
+  taskKey: string
   nextCheck: number
 }
 
-/** One check of a follow-up, as its log keeps it. */
+/** One check of a watch or getting-to-know task, as its log keeps it. */
 export interface AssistantCheck {
-  itemId: string
+  taskKey: string
   checkNo: number
   startedAt: number
   endedAt: number | null
@@ -84,7 +87,7 @@ export type AssistantWakeOutcome = 'duplicate' | 'answered' | 'recorded'
 export const ASSISTANT_CHECK_SCHEMA = `
       CREATE TABLE IF NOT EXISTS assistant_check_state (
         agentId TEXT NOT NULL,
-        itemId TEXT NOT NULL,
+        taskKey TEXT NOT NULL,
         checkedNextCheck INTEGER,
         failures INTEGER NOT NULL DEFAULT 0,
         retryAt INTEGER,
@@ -106,11 +109,11 @@ export const ASSISTANT_CHECK_SCHEMA = `
         lastWokenAt INTEGER,
         runningWake TEXT,
         updatedAt INTEGER NOT NULL,
-        PRIMARY KEY (agentId, itemId)
+        PRIMARY KEY (agentId, taskKey)
       );
       CREATE TABLE IF NOT EXISTS assistant_check (
         agentId TEXT NOT NULL,
-        itemId TEXT NOT NULL,
+        taskKey TEXT NOT NULL,
         checkNo INTEGER NOT NULL,
         startedAt INTEGER NOT NULL,
         endedAt INTEGER,
@@ -119,7 +122,7 @@ export const ASSISTANT_CHECK_SCHEMA = `
         historyRead INTEGER NOT NULL DEFAULT 0,
         startedBy TEXT,
         events TEXT,
-        PRIMARY KEY (agentId, itemId, checkNo)
+        PRIMARY KEY (agentId, taskKey, checkNo)
       );
       CREATE INDEX IF NOT EXISTS assistant_check_by_agent ON assistant_check (agentId, startedAt);
 `
@@ -151,7 +154,7 @@ const eventsText = (kinds: readonly FollowUpEventKind[]): string | null => (kind
 function stateOf(row: Row): AssistantCheckState {
   return {
     agentId: String(row.agentId),
-    itemId: String(row.itemId),
+    taskKey: String(row.taskKey),
     checkedNextCheck: num(row.checkedNextCheck),
     failures: Number(row.failures),
     retryAt: num(row.retryAt),
@@ -184,25 +187,31 @@ const CLEAR_RUNNING =
 export class AssistantCheckLedger {
   constructor(private readonly db: AssistantCheckDatabase) {}
 
-  /** Open follow-ups whose next check is due, never taken for that value, past any backoff, not stopped and not checking since `staleBefore`; follow-ups before getting-to-know tasks, then earliest first. */
+  /** Open watch tasks, then getting-to-know tasks, whose next check is due, never taken for that value, past any backoff, not stopped and not checking since `staleBefore`; earliest first. */
   async due(agentId: string, now: number, limit: number, staleBefore = 0): Promise<AssistantCheckDue[]> {
     const rows = (
       await this.db.query(
-        `SELECT i.id AS itemId, i.nextCheck FROM assistant_item i
-           LEFT JOIN assistant_check_state p ON p.agentId = i.agentId AND p.itemId = i.id
-          WHERE i.agentId = ? AND i.status IN ('active', 'waiting') AND i.nextCheck IS NOT NULL AND i.nextCheck <= ?
-            AND (p.itemId IS NULL OR (
-              (p.checkedNextCheck IS NULL OR p.checkedNextCheck <> i.nextCheck)
+        `SELECT t.taskKey, t.nextCheck FROM (
+             SELECT w.childSessionKey AS taskKey, w.nextAt AS nextCheck, 0 AS ord FROM assistant_subsession w
+              WHERE w.agentId = ? AND ${OPEN_WATCH} AND w.nextAt IS NOT NULL AND w.nextAt <= ?
+             UNION ALL
+             SELECT i.taskKey, i.nextCheck, 1 AS ord FROM assistant_item i
+              WHERE i.agentId = ? AND i.gettingToKnow IS NOT NULL AND i.status IN ('active', 'waiting')
+                AND i.nextCheck IS NOT NULL AND i.nextCheck <= ?
+           ) t
+           LEFT JOIN assistant_check_state p ON p.agentId = ? AND p.taskKey = t.taskKey
+          WHERE p.taskKey IS NULL OR (
+              (p.checkedNextCheck IS NULL OR p.checkedNextCheck <> t.nextCheck)
               AND (p.retryAt IS NULL OR p.retryAt <= ?)
-              AND p.stopped = 0 AND (p.runningKey IS NULL OR p.runningSince < ?)))
-          ORDER BY CASE WHEN i.gettingToKnow IS NULL THEN 0 ELSE 1 END, i.nextCheck, i.id LIMIT ?`,
-        [agentId, now, now, staleBefore, limit]
+              AND p.stopped = 0 AND (p.runningKey IS NULL OR p.runningSince < ?))
+          ORDER BY t.ord, t.nextCheck, t.taskKey LIMIT ?`,
+        [agentId, now, agentId, now, agentId, now, staleBefore, limit]
       )
     ).rows as Row[]
-    return rows.map((row) => ({ itemId: String(row.itemId), nextCheck: Number(row.nextCheck) }))
+    return rows.map((row) => ({ taskKey: String(row.taskKey), nextCheck: Number(row.nextCheck) }))
   }
 
-  /** Open follow-ups a wake made due (§5.14): past any backoff, not stopped, none running, and no woken check of theirs started after `spacedBefore`. */
+  /** Open watch tasks a wake made due (§5.14): past any backoff, not stopped, none running, and no woken check of theirs started after `spacedBefore`. */
   async wokenDue(
     agentId: string,
     now: number,
@@ -212,24 +221,24 @@ export class AssistantCheckLedger {
   ): Promise<string[]> {
     const rows = (
       await this.db.query(
-        `SELECT p.itemId FROM assistant_check_state p
-           JOIN assistant_item i ON i.agentId = p.agentId AND i.id = p.itemId
-          WHERE p.agentId = ? AND i.status IN ('active', 'waiting') AND i.gettingToKnow IS NULL
+        `SELECT p.taskKey FROM assistant_check_state p
+           JOIN assistant_subsession w ON w.agentId = p.agentId AND w.childSessionKey = p.taskKey
+          WHERE p.agentId = ? AND ${OPEN_WATCH}
             AND p.wakeAt IS NOT NULL AND p.wakeAt <= ?
             AND (p.retryAt IS NULL OR p.retryAt <= ?) AND p.stopped = 0
             AND (p.runningKey IS NULL OR p.runningSince < ?)
             AND (p.lastWokenAt IS NULL OR p.lastWokenAt <= ?)
-          ORDER BY p.wakeAt, p.itemId LIMIT ?`,
+          ORDER BY p.wakeAt, p.taskKey LIMIT ?`,
         [agentId, now, now, staleBefore, spacedBefore, limit]
       )
     ).rows as Row[]
-    return rows.map((row) => String(row.itemId))
+    return rows.map((row) => String(row.taskKey))
   }
 
   /** Record one wake: once per `wakeId`, dropped when the check running since before its latest event answers it, else folded into the waiting one. */
   async recordWake(
     agentId: string,
-    itemId: string,
+    taskKey: string,
     wake: {
       wakeId: number
       /** A wake from a new subscription counts afresh, whatever the last one applied. */
@@ -241,8 +250,8 @@ export class AssistantCheckLedger {
     }
   ): Promise<AssistantWakeOutcome> {
     for (let attempt = 0; attempt < 5; attempt++) {
-      await ensure(this.db, agentId, itemId, wake.now)
-      const state = await this.get(agentId, itemId)
+      await ensure(this.db, agentId, taskKey, wake.now)
+      const state = await this.get(agentId, taskKey)
       if (!state) return 'duplicate'
       const fresh = wake.subscription !== undefined && wake.subscription !== state.wakeSubscription
       if (!fresh && wake.wakeId <= state.wakeId) return 'duplicate'
@@ -253,7 +262,7 @@ export class AssistantCheckLedger {
       const { changes } = await this.db.query(
         `UPDATE assistant_check_state SET wakeId = ?, wakeSubscription = ?, wakeAt = ?, wakeKinds = ?, wakeLatestAt = ?,
            updatedAt = ?
-         WHERE agentId = ? AND itemId = ? AND wakeId = ?`,
+         WHERE agentId = ? AND taskKey = ? AND wakeId = ?`,
         [
           wake.wakeId,
           wake.subscription ?? state.wakeSubscription,
@@ -262,7 +271,7 @@ export class AssistantCheckLedger {
           latest,
           wake.now,
           agentId,
-          itemId,
+          taskKey,
           state.wakeId
         ]
       )
@@ -271,29 +280,29 @@ export class AssistantCheckLedger {
     throw new Error('the wake could not be recorded')
   }
 
-  /** Open follow-ups with messages waiting, no check running and past any backoff, oldest first. */
+  /** Open watch tasks with messages waiting, no check running and past any backoff, oldest first. */
   async withPendingMessages(agentId: string, now: number, limit: number): Promise<string[]> {
     const rows = (
       await this.db.query(
-        `SELECT p.itemId FROM assistant_check_state p
-           JOIN assistant_item i ON i.agentId = p.agentId AND i.id = p.itemId
+        `SELECT p.taskKey FROM assistant_check_state p
+           JOIN assistant_subsession w ON w.agentId = p.agentId AND w.childSessionKey = p.taskKey
           WHERE p.agentId = ? AND p.pendingMessages IS NOT NULL AND p.runningKey IS NULL
-            AND (p.retryAt IS NULL OR p.retryAt <= ?) AND p.stopped = 0 AND i.status IN ('active', 'waiting')
-          ORDER BY p.updatedAt, p.itemId LIMIT ?`,
+            AND (p.retryAt IS NULL OR p.retryAt <= ?) AND p.stopped = 0 AND ${OPEN_WATCH}
+          ORDER BY p.updatedAt, p.taskKey LIMIT ?`,
         [agentId, now, limit]
       )
     ).rows as Row[]
-    return rows.map((row) => String(row.itemId))
+    return rows.map((row) => String(row.taskKey))
   }
 
-  async get(agentId: string, itemId: string): Promise<AssistantCheckState | undefined> {
+  async get(agentId: string, taskKey: string): Promise<AssistantCheckState | undefined> {
     const row = (
-      await this.db.query('SELECT * FROM assistant_check_state WHERE agentId = ? AND itemId = ?', [agentId, itemId])
+      await this.db.query('SELECT * FROM assistant_check_state WHERE agentId = ? AND taskKey = ?', [agentId, taskKey])
     ).rows[0] as Row | undefined
     return row ? stateOf(row) : undefined
   }
 
-  /** The follow-up a check is running in this session for, while it runs. */
+  /** The task a check is running in this session for, while it runs. */
   async byRunningKey(agentId: string, runningKey: string): Promise<AssistantCheckState | undefined> {
     const row = (
       await this.db.query('SELECT * FROM assistant_check_state WHERE agentId = ? AND runningKey = ?', [
@@ -308,7 +317,7 @@ export class AssistantCheckLedger {
   async running(agentId: string): Promise<AssistantCheckState[]> {
     const rows = (
       await this.db.query(
-        'SELECT * FROM assistant_check_state WHERE agentId = ? AND runningKey IS NOT NULL ORDER BY updatedAt, itemId',
+        'SELECT * FROM assistant_check_state WHERE agentId = ? AND runningKey IS NOT NULL ORDER BY updatedAt, taskKey',
         [agentId]
       )
     ).rows as Row[]
@@ -318,7 +327,7 @@ export class AssistantCheckLedger {
   /** A check starts and takes any waiting messages; none while one runs, and with `exclusive` none while another of the agent's runs. */
   async begin(
     agentId: string,
-    itemId: string,
+    taskKey: string,
     run: {
       key: string
       nextCheck: number | null
@@ -333,20 +342,20 @@ export class AssistantCheckLedger {
     }
   ): Promise<{ checkNo: number; messages: string | null; events: FollowUpEventKind[] } | undefined> {
     return await this.db.transaction(async (tx) => {
-      await ensure(tx, agentId, itemId, run.now)
+      await ensure(tx, agentId, taskKey, run.now)
       const prior = stateOf(
-        (await tx.query('SELECT * FROM assistant_check_state WHERE agentId = ? AND itemId = ?', [agentId, itemId]))
+        (await tx.query('SELECT * FROM assistant_check_state WHERE agentId = ? AND taskKey = ?', [agentId, taskKey]))
           .rows[0] as Row
       )
       const next = (
         await tx.query(
-          'SELECT COALESCE(MAX(checkNo), 0) + 1 AS n FROM assistant_check WHERE agentId = ? AND itemId = ?',
-          [agentId, itemId]
+          'SELECT COALESCE(MAX(checkNo), 0) + 1 AS n FROM assistant_check WHERE agentId = ? AND taskKey = ?',
+          [agentId, taskKey]
         )
       ).rows[0] as Row
       const checkNo = Number(next.n)
       const exclusive = run.exclusive
-        ? ` AND NOT EXISTS (SELECT 1 FROM assistant_check_state o WHERE o.agentId = ? AND o.itemId <> ?
+        ? ` AND NOT EXISTS (SELECT 1 FROM assistant_check_state o WHERE o.agentId = ? AND o.taskKey <> ?
               AND o.runningKey IS NOT NULL AND o.runningSince >= ?)`
         : ''
       // Every check takes a waiting wake along (§5.14); one a wake starts also spaces the next woken one.
@@ -360,7 +369,7 @@ export class AssistantCheckLedger {
            lastWokenAt = ${woken ? '?' : 'lastWokenAt'},
            updatedAt = ?, failures = CASE WHEN stopped = 1 THEN 0 ELSE failures END, stopped = 0,
            stoppedNextCheck = NULL
-         WHERE agentId = ? AND itemId = ? AND (runningKey IS NULL OR runningSince IS NULL OR runningSince < ?)${exclusive}`,
+         WHERE agentId = ? AND taskKey = ? AND (runningKey IS NULL OR runningSince IS NULL OR runningSince < ?)${exclusive}`,
         [
           run.key,
           run.nextCheck,
@@ -371,9 +380,9 @@ export class AssistantCheckLedger {
           ...(woken ? [run.now] : []),
           run.now,
           agentId,
-          itemId,
+          taskKey,
           run.staleBefore,
-          ...(run.exclusive ? [agentId, itemId, run.staleBefore] : [])
+          ...(run.exclusive ? [agentId, taskKey, run.staleBefore] : [])
         ]
       )
       if (changes === 0) return undefined
@@ -381,49 +390,54 @@ export class AssistantCheckLedger {
       // A stale check this one replaces ends in the log without having recorded anything.
       if (prior.runningCheck !== null)
         await tx.query(
-          'UPDATE assistant_check SET endedAt = ? WHERE agentId = ? AND itemId = ? AND checkNo = ? AND endedAt IS NULL',
-          [run.now, agentId, itemId, prior.runningCheck]
+          'UPDATE assistant_check SET endedAt = ? WHERE agentId = ? AND taskKey = ? AND checkNo = ? AND endedAt IS NULL',
+          [run.now, agentId, taskKey, prior.runningCheck]
         )
       await tx.query(
-        `INSERT INTO assistant_check (agentId, itemId, checkNo, startedAt, reported, startedBy, events)
+        `INSERT INTO assistant_check (agentId, taskKey, checkNo, startedAt, reported, startedBy, events)
          VALUES (?, ?, ?, ?, 0, ?, ?)`,
-        [agentId, itemId, checkNo, run.now, startedBy, eventsText(prior.wakeKinds)]
+        [agentId, taskKey, checkNo, run.now, startedBy, eventsText(prior.wakeKinds)]
       )
       // Pruning stops at the budget window, so the daily budget still sees every check it must count.
       await tx.query(
-        'DELETE FROM assistant_check WHERE agentId = ? AND itemId = ? AND checkNo <= ? AND startedAt < ?',
-        [agentId, itemId, checkNo - ASSISTANT_CHECKS_KEPT, run.now - CHECK_BUDGET_WINDOW_MS]
+        'DELETE FROM assistant_check WHERE agentId = ? AND taskKey = ? AND checkNo <= ? AND startedAt < ?',
+        [agentId, taskKey, checkNo - ASSISTANT_CHECKS_KEPT, run.now - CHECK_BUDGET_WINDOW_MS]
       )
       return { checkNo, messages: prior.pendingMessages, events: prior.wakeKinds }
     })
   }
 
   /** Put back the wake a check took that did not run to its end, in front of any that arrived meanwhile; it is due at once. */
-  async restoreWake(agentId: string, itemId: string, events: readonly FollowUpEventKind[], now: number): Promise<void> {
+  async restoreWake(
+    agentId: string,
+    taskKey: string,
+    events: readonly FollowUpEventKind[],
+    now: number
+  ): Promise<void> {
     if (events.length === 0) return
-    const state = await this.get(agentId, itemId)
+    const state = await this.get(agentId, taskKey)
     if (!state) return
     await this.db.query(
       `UPDATE assistant_check_state SET wakeAt = COALESCE(wakeAt, ?), wakeKinds = ?, wakeLatestAt = COALESCE(wakeLatestAt, ?),
-         updatedAt = ? WHERE agentId = ? AND itemId = ?`,
-      [now, eventsText(mergeEvents(events, state.wakeKinds)), now, now, agentId, itemId]
+         updatedAt = ? WHERE agentId = ? AND taskKey = ?`,
+      [now, eventsText(mergeEvents(events, state.wakeKinds)), now, now, agentId, taskKey]
     )
   }
 
   /** Replace the messages waiting for the next check. */
-  async setPendingMessages(agentId: string, itemId: string, messages: string | null, now: number): Promise<void> {
-    await ensure(this.db, agentId, itemId, now)
+  async setPendingMessages(agentId: string, taskKey: string, messages: string | null, now: number): Promise<void> {
+    await ensure(this.db, agentId, taskKey, now)
     await this.db.query(
-      'UPDATE assistant_check_state SET pendingMessages = ?, updatedAt = ? WHERE agentId = ? AND itemId = ?',
-      [messages, now, agentId, itemId]
+      'UPDATE assistant_check_state SET pendingMessages = ?, updatedAt = ? WHERE agentId = ? AND taskKey = ?',
+      [messages, now, agentId, taskKey]
     )
   }
 
   /** Keep the running check's report for its end; false when that check is no longer the follow-up's. */
-  async keepReport(agentId: string, itemId: string, key: string, text: string, now: number): Promise<boolean> {
+  async keepReport(agentId: string, taskKey: string, key: string, text: string, now: number): Promise<boolean> {
     const { changes } = await this.db.query(
-      'UPDATE assistant_check_state SET runningReport = ?, updatedAt = ? WHERE agentId = ? AND itemId = ? AND runningKey = ?',
-      [text, now, agentId, itemId, key]
+      'UPDATE assistant_check_state SET runningReport = ?, updatedAt = ? WHERE agentId = ? AND taskKey = ? AND runningKey = ?',
+      [text, now, agentId, taskKey, key]
     )
     return changes > 0
   }
@@ -431,24 +445,24 @@ export class AssistantCheckLedger {
   /** Close a check's log row with what it saw, or why it failed, and whether its report got through. */
   async endCheck(
     agentId: string,
-    itemId: string,
+    taskKey: string,
     checkNo: number,
     end: { observation: string | null; reported: boolean; now: number }
   ): Promise<void> {
     await this.db.query(
       `UPDATE assistant_check SET endedAt = ?, observation = ?, reported = ?
-       WHERE agentId = ? AND itemId = ? AND checkNo = ?`,
-      [end.now, end.observation, end.reported ? 1 : 0, agentId, itemId, checkNo]
+       WHERE agentId = ? AND taskKey = ? AND checkNo = ?`,
+      [end.now, end.observation, end.reported ? 1 : 0, agentId, taskKey, checkNo]
     )
   }
 
   /** The check finished: a scheduled next check is done with and the streak is over. False when another check took the follow-up since. */
-  async succeed(agentId: string, itemId: string, key: string, now: number): Promise<boolean> {
+  async succeed(agentId: string, taskKey: string, key: string, now: number): Promise<boolean> {
     const { changes } = await this.db.query(
       `UPDATE assistant_check_state SET checkedNextCheck = COALESCE(runningNextCheck, checkedNextCheck), failures = 0,
          retryAt = NULL, ${CLEAR_RUNNING}, updatedAt = ?
-       WHERE agentId = ? AND itemId = ? AND runningKey = ?`,
-      [now, agentId, itemId, key]
+       WHERE agentId = ? AND taskKey = ? AND runningKey = ?`,
+      [now, agentId, taskKey, key]
     )
     return changes > 0
   }
@@ -456,19 +470,19 @@ export class AssistantCheckLedger {
   /** The check failed: back off, and stop at {@link CHECK_MAX_FAILURES}; undefined when another check took the follow-up since. */
   async fail(
     agentId: string,
-    itemId: string,
+    taskKey: string,
     key: string,
     now: number,
     currentNextCheck: number | null
   ): Promise<{ failures: number; stopped: boolean } | undefined> {
-    const state = await this.get(agentId, itemId)
+    const state = await this.get(agentId, taskKey)
     if (state?.runningKey !== key) return undefined
     const failures = state.failures + 1
     const stopped = failures >= CHECK_MAX_FAILURES
     const { changes } = await this.db.query(
       `UPDATE assistant_check_state SET failures = ?, retryAt = ?, stopped = ?, stoppedNextCheck = ?, ${CLEAR_RUNNING},
          updatedAt = ?
-       WHERE agentId = ? AND itemId = ? AND runningKey = ?`,
+       WHERE agentId = ? AND taskKey = ? AND runningKey = ?`,
       [
         failures,
         now + checkBackoffMs(failures),
@@ -476,7 +490,7 @@ export class AssistantCheckLedger {
         stopped ? currentNextCheck : null,
         now,
         agentId,
-        itemId,
+        taskKey,
         key
       ]
     )
@@ -484,37 +498,37 @@ export class AssistantCheckLedger {
   }
 
   /** The check ended without counting either way (a pause, a shutdown): it leaves the log, and the same next check stays due. */
-  async release(agentId: string, itemId: string, key: string, now: number): Promise<void> {
-    const state = await this.get(agentId, itemId)
+  async release(agentId: string, taskKey: string, key: string, now: number): Promise<void> {
+    const state = await this.get(agentId, taskKey)
     if (state?.runningKey !== key) return
     const { changes } = await this.db.query(
-      `UPDATE assistant_check_state SET ${CLEAR_RUNNING}, updatedAt = ? WHERE agentId = ? AND itemId = ? AND runningKey = ?`,
-      [now, agentId, itemId, key]
+      `UPDATE assistant_check_state SET ${CLEAR_RUNNING}, updatedAt = ? WHERE agentId = ? AND taskKey = ? AND runningKey = ?`,
+      [now, agentId, taskKey, key]
     )
     if (changes > 0 && state.runningCheck !== null)
-      await this.db.query('DELETE FROM assistant_check WHERE agentId = ? AND itemId = ? AND checkNo = ?', [
+      await this.db.query('DELETE FROM assistant_check WHERE agentId = ? AND taskKey = ? AND checkNo = ?', [
         agentId,
-        itemId,
+        taskKey,
         state.runningCheck
       ])
   }
 
   /** This next check is passed over without a check, and is not tried again. */
-  async skip(agentId: string, itemId: string, nextCheck: number, now: number): Promise<void> {
-    await ensure(this.db, agentId, itemId, now)
+  async skip(agentId: string, taskKey: string, nextCheck: number, now: number): Promise<void> {
+    await ensure(this.db, agentId, taskKey, now)
     await this.db.query(
-      'UPDATE assistant_check_state SET checkedNextCheck = ?, updatedAt = ? WHERE agentId = ? AND itemId = ?',
-      [nextCheck, now, agentId, itemId]
+      'UPDATE assistant_check_state SET checkedNextCheck = ?, updatedAt = ? WHERE agentId = ? AND taskKey = ?',
+      [nextCheck, now, agentId, taskKey]
     )
   }
 
   /** Grant up to `want` more history messages to a running check, at most `max` in all; how many it may read now. */
-  async takeHistory(agentId: string, itemId: string, checkNo: number, want: number, max: number): Promise<number> {
+  async takeHistory(agentId: string, taskKey: string, checkNo: number, want: number, max: number): Promise<number> {
     for (let attempt = 0; attempt < 5; attempt++) {
       const row = (
         await this.db.query(
-          'SELECT historyRead FROM assistant_check WHERE agentId = ? AND itemId = ? AND checkNo = ?',
-          [agentId, itemId, checkNo]
+          'SELECT historyRead FROM assistant_check WHERE agentId = ? AND taskKey = ? AND checkNo = ?',
+          [agentId, taskKey, checkNo]
         )
       ).rows[0] as Row | undefined
       if (!row) return 0
@@ -522,8 +536,8 @@ export class AssistantCheckLedger {
       const granted = Math.max(0, Math.min(want, max - read))
       if (granted === 0) return 0
       const { changes } = await this.db.query(
-        `UPDATE assistant_check SET historyRead = ? WHERE agentId = ? AND itemId = ? AND checkNo = ? AND historyRead = ?`,
-        [read + granted, agentId, itemId, checkNo, read]
+        `UPDATE assistant_check SET historyRead = ? WHERE agentId = ? AND taskKey = ? AND checkNo = ? AND historyRead = ?`,
+        [read + granted, agentId, taskKey, checkNo, read]
       )
       if (changes > 0) return granted
     }
@@ -531,16 +545,16 @@ export class AssistantCheckLedger {
   }
 
   /** A follow-up's newest checks, newest first. */
-  async checks(agentId: string, itemId: string, limit: number): Promise<AssistantCheck[]> {
+  async checks(agentId: string, taskKey: string, limit: number): Promise<AssistantCheck[]> {
     const rows = (
       await this.db.query(
-        `SELECT itemId, checkNo, startedAt, endedAt, observation, reported, startedBy, events FROM assistant_check
-          WHERE agentId = ? AND itemId = ? ORDER BY checkNo DESC LIMIT ?`,
-        [agentId, itemId, limit]
+        `SELECT taskKey, checkNo, startedAt, endedAt, observation, reported, startedBy, events FROM assistant_check
+          WHERE agentId = ? AND taskKey = ? ORDER BY checkNo DESC LIMIT ?`,
+        [agentId, taskKey, limit]
       )
     ).rows as Row[]
     return rows.map((row) => ({
-      itemId: String(row.itemId),
+      taskKey: String(row.taskKey),
       checkNo: Number(row.checkNo),
       startedAt: Number(row.startedAt),
       endedAt: num(row.endedAt),
@@ -566,11 +580,11 @@ export class AssistantCheckLedger {
 async function ensure(
   db: Pick<AssistantCheckDatabase, 'query'>,
   agentId: string,
-  itemId: string,
+  taskKey: string,
   now: number
 ): Promise<void> {
   await db.query(
-    'INSERT OR IGNORE INTO assistant_check_state (agentId, itemId, failures, stopped, updatedAt) VALUES (?, ?, 0, 0, ?)',
-    [agentId, itemId, now]
+    'INSERT OR IGNORE INTO assistant_check_state (agentId, taskKey, failures, stopped, updatedAt) VALUES (?, ?, 0, 0, ?)',
+    [agentId, taskKey, now]
   )
 }

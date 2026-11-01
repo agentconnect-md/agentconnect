@@ -422,7 +422,7 @@ export class SessionManager {
   private async isThreadedTask(agentId: string, key: string, thread: string): Promise<boolean> {
     if (isSubsessionCoordinate(thread) || isAppendCoordinate(thread)) return false
     const row = await this.deps.store.assistantSubsessions.get(agentId, key).catch(() => undefined)
-    return row !== undefined && row.kind !== 'follow-up'
+    return row !== undefined && row.mode !== 'watch'
   }
 
   /** The coordinator session a task on its own console page belongs to, by outward id: a delegated task holding a thread; undefined for any other session (auto-session-mode.md §10). */
@@ -1129,7 +1129,7 @@ export class SessionManager {
     }
     // The follow-ups this place may see ride the same points: first turn, restart, compaction, every 12th turn (§5.12); a coordinator reads its board instead.
     if ((opening || reminded) && !coordinator) {
-      const summary = await standingSummaryFor(this.deps.store.assistantItems, agent, place)
+      const summary = await standingSummaryFor(this.deps.store.assistantWatchTasks, agent, place)
       const none = summary === NO_FOLLOW_UPS
       // An empty list replaces one the context may still hold: never on a fresh context, once until a list is shown again.
       if (summary && !(none && (opening || this.noFollowUpsSaid.has(key))))

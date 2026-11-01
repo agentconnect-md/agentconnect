@@ -123,7 +123,8 @@ export function followUpWatchLabel(watched: FollowUpWatched): string {
 export const FollowUpWatchState = z.enum(['pending', 'watching', 'refused', 'ended'])
 export type FollowUpWatchState = z.infer<typeof FollowUpWatchState>
 
-const FollowUpId = z.string().min(1).max(200)
+// A follow-up's one id, its watch task's key (assistant-mode.md §5.18), which a long place coordinate can stretch.
+const FollowUpId = z.string().min(1).max(1024)
 
 /** D→C REQ: `set` subscribes or moves each listed follow-up, `remove` ends each, `full` is the agent's whole set and drops the rest. */
 export const AssistantFollowUpWatchReq = z

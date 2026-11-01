@@ -447,6 +447,7 @@ import {
   type GettingToKnowFacts,
   type CheckParent
 } from './assistant/follow-up-checks.js'
+import { CheckedTasks, type CheckedTask } from './assistant/checked-tasks.js'
 import { FollowUpWatches, watchTarget } from './assistant/follow-up-watches.js'
 import {
   GETTING_TO_KNOW_MAX_MESSAGES,
@@ -464,7 +465,7 @@ import {
 import { gettingToKnowToolsFor } from './mcp/ops/getting-to-know.js'
 import type { ToolDescriptor } from './tool-schema/descriptor.js'
 import { AssistantTasks, callerOfMessage, type TaskCaller } from './assistant/tasks.js'
-import type { AssistantItem, AssistantPlace } from './store/assistant-items.js'
+import type { AssistantPlace } from './store/assistant-items.js'
 import type {
   AssistantDraft,
   AssistantDraftDestination,
@@ -5099,7 +5100,7 @@ export class Daemon {
       memory: this.memory,
       memoryEntryStore: this.store,
       assistantItems: {
-        ledgerFor: (agentId) => (assistantModeOn(this.agents.get(agentId)) ? this.store.assistantItems : undefined),
+        ledgerFor: (agentId) => (assistantModeOn(this.agents.get(agentId)) ? this.checkedTasks : undefined),
         askerFor: (ctx) => this.assistantAskerFor(ctx),
         // A getting-to-know task of the session's place, as its long session asked (§5.13).
         gettingToKnow: (ctx) => this.requestGettingToKnow(ctx),
@@ -5110,9 +5111,9 @@ export class Daemon {
           this.followUpWatches.offered()
             ? {
                 check: (url) => void watchTarget(url),
-                set: (agentId, itemId, url) => this.followUpWatches.set(agentId, itemId, url),
-                clear: (agentId, itemId) => this.followUpWatches.clear(agentId, itemId),
-                end: (agentId, itemId) => this.followUpWatches.end(agentId, itemId)
+                set: (agentId, taskKey, url) => this.followUpWatches.set(agentId, taskKey, url),
+                clear: (agentId, taskKey) => this.followUpWatches.clear(agentId, taskKey),
+                end: (agentId, taskKey) => this.followUpWatches.end(agentId, taskKey)
               }
             : undefined,
         // A follow-up of the session's place, owned by its long session, else by the session taking it (§5.12).
@@ -5130,16 +5131,16 @@ export class Daemon {
           })
         },
         check: {
-          itemFor: (ctx) =>
-            this.followUpChecks.itemFor(
+          taskFor: (ctx) =>
+            this.followUpChecks.taskFor(
               ctx.agentId,
               sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
             ),
-          report: (ctx, itemId, text) =>
+          report: (ctx, taskKey, text) =>
             this.followUpChecks.report(
               ctx.agentId,
               sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope),
-              itemId,
+              taskKey,
               text
             ),
           propose: (ctx, input) =>
@@ -5183,10 +5184,10 @@ export class Daemon {
         followUps: {
           own: async (ctx) =>
             (await this.followUpOwner(ctx.agentId, this.sessionKeyOf(ctx), placeOfSession(ctx))) !== undefined,
-          get: (agentId, key) => this.store.assistantItems.byTaskKey(agentId, key),
+          get: (agentId, key) => this.checkedTasks.get(agentId, key),
           stop: (ctx, item) => this.followUpChecks.stop(ctx.agentId, item, this.taskStopper(ctx)),
           reported: async (item) =>
-            (await this.store.assistantChecks.checks(item.agentId, item.id, 1))[0]?.reported ?? false
+            (await this.store.assistantChecks.checks(item.agentId, item.taskKey, 1))[0]?.reported ?? false
         },
         sessionOf: async (key) => {
           const rec = await this.store.getSession(key)
@@ -9626,9 +9627,9 @@ export class Daemon {
         const int = this.integrationConfigById(integrationId)
         return int ? memberAskerIdentity(int.platform, await this.tenantScopeForIntegration(int), userId) : undefined
       },
-      followUpTaken: async (agentId, itemId) => (await this.store.assistantItems.get(agentId, itemId)) !== undefined,
-      observe: async (agentId, itemId, text) => {
-        await this.store.assistantItems.appendObservation(agentId, itemId, {
+      followUpTaken: async (agentId, taskKey) => (await this.checkedTasks.get(agentId, taskKey)) !== undefined,
+      observe: async (agentId, taskKey, text) => {
+        await this.checkedTasks.appendObservation(agentId, taskKey, {
           text,
           author: 'proposal',
           now: this.clock.now()
@@ -9753,7 +9754,7 @@ export class Daemon {
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) },
       ledger: () => this.store.assistantDrafts,
       subsessions: this.store.assistantSubsessions,
-      items: this.store.assistantItems,
+      items: this.checkedTasks,
       agent: (agentId) => {
         const a = this.agents.get(agentId)
         return a
@@ -9769,8 +9770,8 @@ export class Daemon {
         this.reportIntoParent(agentId, caller, parentSessionId, text, reportId),
       settled: (draft) => this.drafts.taskSettled(draft),
       takeFollowUp: (input) => this.followUpChecks.take(input),
-      watchFollowUp: async (agentId, itemId, url) => {
-        const outcome = await this.followUpWatches.set(agentId, itemId, url)
+      watchFollowUp: async (agentId, taskKey, url) => {
+        const outcome = await this.followUpWatches.set(agentId, taskKey, url)
         return outcome.kind === 'refused' ? outcome.reason : undefined
       },
       draining: () => this.draining
@@ -10076,7 +10077,7 @@ export class Daemon {
 
   /** A check's proposal (assistant-mode.md §5.10): run in its follow-up's place once approved, carded there or decided on a webchat conversation's page. */
   private async proposeFromCheck(
-    run: { agentId: string; key: string; item: AssistantItem },
+    run: { agentId: string; key: string; item: CheckedTask },
     input: ProposeInput
   ): Promise<Record<string, unknown>> {
     const { agentId, key, item } = run
@@ -10100,7 +10101,8 @@ export class Daemon {
       ...proposalWork(input),
       sentence: input.sentence,
       why: input.why,
-      itemId: item.id,
+      // A proposal names the task it acts on by its one id, the task key (assistant-mode.md §5.18).
+      itemId: item.taskKey,
       itemVersion: item.version,
       source,
       ...(place ? { place } : {}),
@@ -10164,7 +10166,7 @@ export class Daemon {
           ...proposalWork(input),
           sentence: input.sentence,
           why: input.why,
-          itemId: item.id,
+          itemId: item.taskKey,
           itemVersion: item.version,
           source: {
             platform: ctx.platform,
@@ -10258,11 +10260,21 @@ export class Daemon {
     return (await this.collab.deliverDaemonReport(report)).admitted
   }
 
+  /** Every checked task by its one id (assistant-mode.md §5.18): watch tasks, and the getting-to-know tasks the item ledger keeps. */
+  private checkedTaskService?: CheckedTasks
+  private get checkedTasks(): CheckedTasks {
+    this.checkedTaskService ??= new CheckedTasks({
+      watchTasks: this.store.assistantWatchTasks,
+      items: this.store.assistantItems
+    })
+    return this.checkedTaskService
+  }
+
   /** What follow-ups watch (assistant-mode.md §5.14), built on first use: only toward a Control Plane that takes watches. */
   private followUpWatchService?: FollowUpWatches
   private get followUpWatches(): FollowUpWatches {
     this.followUpWatchService ??= new FollowUpWatches({
-      items: this.store.assistantItems,
+      watchTasks: this.store.assistantWatchTasks,
       port: {
         request: async (agentId, req) => {
           const cp = this.cpClient
@@ -10295,6 +10307,8 @@ export class Daemon {
       holdsDuty: (agentId) => this.servesAgent(agentId) && !this.drainingAgents.has(agentId),
       watches: this.followUpWatches,
       draining: () => this.draining,
+      tasks: this.checkedTasks,
+      watchTasks: this.store.assistantWatchTasks,
       items: this.store.assistantItems,
       checks: this.store.assistantChecks,
       subsessions: this.store.assistantSubsessions,
@@ -10338,7 +10352,7 @@ export class Daemon {
     if (rec?.key !== callerKey) return undefined
     const sessionId = await this.store.ensureOutwardSessionId(rec.key, agentId, this.clock.now())
     const owner = { sessionId, key: rec.key }
-    await this.store.assistantSubsessions.adoptFollowUps(agentId, place, owner)
+    await this.store.assistantSubsessions.adoptWatchTasks(agentId, place, owner)
     return owner
   }
 
@@ -10354,7 +10368,7 @@ export class Daemon {
       channel: req.callerChannel,
       transportScope: req.callerTransportScope ?? null
     }
-    const item = await this.store.assistantItems.byTaskKey(agentId, taskKey)
+    const item = await this.checkedTasks.get(agentId, taskKey)
     const ofPlace =
       item !== undefined &&
       item.origin.platform === place.platform &&
@@ -10393,7 +10407,7 @@ export class Daemon {
     const row = decides
       ? await this.store.assistantSubsessions.get(ctx.agentId, this.sessionKeyOf(ctx)).catch(() => undefined)
       : undefined
-    const threadedTask = row !== undefined && row.kind !== 'follow-up'
+    const threadedTask = row !== undefined && row.mode !== 'watch'
     return taskReachAt(ctx.thread, { coordinatorOnly, assistantMode, threadedTask })
   }
 
@@ -10527,7 +10541,7 @@ export class Daemon {
   }
 
   /** What a getting-to-know task of this place names (assistant-mode.md §5.13), or why it may no longer take one; a place turned external is named so its handling keeps step 1 alone. */
-  private async gettingToKnowFacts(agentId: string, item: AssistantItem): Promise<GettingToKnowFacts> {
+  private async gettingToKnowFacts(agentId: string, item: CheckedTask): Promise<GettingToKnowFacts> {
     const agent = this.agents.get(agentId)
     const { platform, channel, transportScope } = item.origin
     const integrationId = this.integrationIdForTransportScope(agentId, platform, transportScope)
@@ -10781,7 +10795,7 @@ export class Daemon {
     if (!state || state.runningCheck === null) return 0
     return await this.store.assistantChecks.takeHistory(
       ctx.agentId,
-      state.itemId,
+      state.taskKey,
       state.runningCheck,
       want,
       GETTING_TO_KNOW_MAX_MESSAGES
@@ -11608,15 +11622,15 @@ export class Daemon {
     }
     if (isTaskCoordinate(thread)) {
       const task = await this.store.assistantDrafts.taskBySubsession(agentId, key).catch(() => undefined)
-      const itemId = task?.proposal?.itemId
-      const item = itemId ? await this.store.assistantItems.get(agentId, itemId).catch(() => undefined) : undefined
+      const taskKey = task?.proposal?.itemId
+      const item = taskKey ? await this.checkedTasks.get(agentId, taskKey).catch(() => undefined) : undefined
       return await this.itemAskers(agentId, item)
     }
     return isSubsessionCoordinate(thread) ? (this.subsessionOpeners.get(key) ?? NOBODY) : undefined
   }
 
   /** The person who confirmed a follow-up, on the bot its place is reached through. */
-  private async itemAskers(agentId: string, item: AssistantItem | undefined): Promise<TurnAskers> {
+  private async itemAskers(agentId: string, item: CheckedTask | undefined): Promise<TurnAskers> {
     if (!item?.asker) return NOBODY
     const bot = this.integrationIdForTransportScope(agentId, item.origin.platform, item.origin.transportScope)
     const asker = askerOfFollower(item.asker, item.origin.platform, bot)
@@ -11755,8 +11769,8 @@ export class Daemon {
   /** Who a task works for (auto-session-mode.md §6.2): a follow-up's asker, else the opener of the first session above it that is no task. */
   private async taskOwnerName(row: AssistantSubsession): Promise<string | undefined> {
     let id: string | undefined
-    if (row.kind === 'follow-up') {
-      const asker = (await this.store.assistantItems.byTaskKey(row.agentId, row.childSessionKey))?.asker
+    if (row.mode === 'watch') {
+      const asker = (await this.checkedTasks.get(row.agentId, row.childSessionKey))?.asker
       // A platform asker is `<platform>:<scope>:<uid>`; a console asker's `user:<id>` names no one people know.
       id = asker && !asker.startsWith('user:') ? asker.slice(asker.lastIndexOf(':') + 1) : undefined
     } else {
@@ -16114,7 +16128,7 @@ export class Daemon {
     agentId: string,
     key: string
   ): Promise<Omit<CodeHostEffectTarget, 'agentId' | 'sessionKey'> | undefined> {
-    const watch = (await this.store.assistantItems.byTaskKey(agentId, key))?.watch
+    const watch = (await this.store.assistantWatchTasks.get(agentId, key))?.watch
     if (watch?.state !== 'watching' || !watch.repoId) return undefined
     const parsed = parseFollowUpWatchUrl(watch.url)
     if (!('target' in parsed) || parsed.target.provider !== 'gitlab') return undefined
@@ -17500,7 +17514,7 @@ export class Daemon {
     const { agentId, sessionKey: key } = p.plan
     const agent = this.agents.get(agentId)
     const row = await this.store.assistantSubsessions.get(agentId, key)
-    if (!row || row.kind === 'follow-up') return undefined
+    if (!row || row.mode === 'watch') return undefined
     const parent = await this.store.getSessionByOutwardId(row.parentSessionId, agentId)
     const route = {
       parentSessionId: row.parentSessionId,

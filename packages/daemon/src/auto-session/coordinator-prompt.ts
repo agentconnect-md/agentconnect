@@ -217,6 +217,9 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
       'see, read only. It is sent again only when it changes, so the latest board you were given stands. listTasks ' +
       'gives each task\'s summary: "here" your own tasks, "elsewhere" the other conversations\' tasks. recall reads ' +
       'what was said in another conversation.',
+    'A task runs in one of two modes: work, which does what it is given, or watch, a follow-up, which checks ' +
+      'something on its schedule and reports only when it changes. Both are messaged and stopped by their taskId; a ' +
+      'follow-up shows "next" and the time of its next check, or "running" while a check runs.',
     '',
     '# Reports',
     `A <report> is not a ${words.place} message: it is the result of a follow-up, a proposal or a task of yours, or another ` +

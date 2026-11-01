@@ -1,4 +1,4 @@
-// An agent's follow-ups (assistant-mode.md §5.12), kept in the item ledger's tables, in the daemon store, partitioned by agent.
+// An agent's getting-to-know tasks (assistant-mode.md §5.13), kept in the item ledger's tables, in the daemon store, partitioned by agent; follow-ups are watch tasks in the task store (§5.18).
 import { randomUUID } from 'node:crypto'
 import type { SessionRecord } from './local-store.js'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
@@ -9,22 +9,6 @@ export type AssistantItemStatus = (typeof ASSISTANT_ITEM_STATUSES)[number]
 /** How a getting-to-know task (assistant-mode.md §5.13) was started: the bot joined the place, or someone there asked. */
 export const ASSISTANT_GETTING_TO_KNOW_TRIGGERS = ['joined', 'requested'] as const
 export type AssistantGettingToKnowTrigger = (typeof ASSISTANT_GETTING_TO_KNOW_TRIGGERS)[number]
-
-/** Whether a follow-up's watch (assistant-mode.md §5.14) is taken, waits for the Control Plane to confirm it, was refused, or ended. */
-export const ASSISTANT_WATCH_STATES = ['pending', 'watching', 'refused', 'ended'] as const
-export type AssistantWatchState = (typeof ASSISTANT_WATCH_STATES)[number]
-
-/** The one pull request, merge request or issue a follow-up waits on: its URL, its label once taken, and why it is not watched. */
-export interface AssistantItemWatch {
-  url: string
-  /** `owner/repo#12` once the Control Plane took it; null before. */
-  target: string | null
-  state: AssistantWatchState
-  /** The refusal or end reason the Control Plane gave; null while watched. */
-  reason: string | null
-  /** The repository's numeric id once taken, which a check's code-host reads aim at; null before. */
-  repoId?: string | null
-}
 
 /** A place (§5.2) in the coordinate a session row wears; an absent transport scope reads back as null. */
 export type AssistantPlace = Pick<SessionRecord, 'platform' | 'channel' | 'transportScope'>
@@ -54,10 +38,8 @@ export interface AssistantItem {
   shared: boolean
   /** The platform thread it was taken in, where its reports reply; null when taken outside one. */
   replyThread: string | null
-  /** Set on a getting-to-know task of its place (assistant-mode.md §5.13), which ends after one check; null on a follow-up. */
+  /** How it was started (assistant-mode.md §5.13); it ends after one check. Null only on a row from before store version 74. */
   gettingToKnow: AssistantGettingToKnowTrigger | null
-  /** What it watches (§5.14); null when it is woken by time and messages only. */
-  watch: AssistantItemWatch | null
   summary: string
   /** The newest {@link ASSISTANT_ITEM_OBSERVATIONS_KEPT} observations, oldest first. */
   observations: AssistantObservation[]
@@ -77,7 +59,6 @@ export interface AssistantItem {
 export type AssistantItemOverview = Omit<AssistantItem, 'observations'>
 
 export interface AssistantItemCreate {
-  /** An id the caller minted, as an approved proposal's follow-up form names it before taking it. */
   id?: string
   agentId: string
   title: string
@@ -89,7 +70,7 @@ export interface AssistantItemCreate {
   asker?: string
   shared?: boolean
   replyThread?: string
-  gettingToKnow?: AssistantGettingToKnowTrigger
+  gettingToKnow: AssistantGettingToKnowTrigger
   summary?: string
   now?: number
 }
@@ -98,14 +79,10 @@ export interface AssistantItemFilter {
   status?: AssistantItemStatus | AssistantItemStatus[]
   /** Items born in this place. */
   origin?: AssistantPlace
-  /** Items this place may see listed: its own, and every shared one. */
-  visibleFrom?: AssistantPlace
-  /** Follow-ups alone, leaving getting-to-know tasks out. */
-  followUpsOnly?: boolean
   limit?: number
 }
 
-/** A follow-up's schedule after a check or a stop: open with or without a next check, or ended. */
+/** A getting-to-know task's schedule after its check or a stop: open with or without a next check, or ended. */
 export interface AssistantItemSchedule {
   status: AssistantItemStatus
   nextCheck: number | null
@@ -113,7 +90,7 @@ export interface AssistantItemSchedule {
 
 export type AssistantItemLinkKind = 'subsession' | 'proposal'
 
-/** History kept per follow-up: ~7 weeks of daily checks, while a read stays one bounded query (≤ 50 × 2,000 chars). */
+/** History kept per item, while a read stays one bounded query (≤ 50 × 2,000 chars). */
 export const ASSISTANT_ITEM_OBSERVATIONS_KEPT = 50
 export const ASSISTANT_ITEM_LIST_DEFAULT = 50
 export const ASSISTANT_ITEM_LIST_MAX = 200
@@ -149,11 +126,6 @@ export const ASSISTANT_ITEM_SCHEMA = `
         shared INTEGER NOT NULL DEFAULT 0,
         replyThread TEXT,
         gettingToKnow TEXT,
-        watchUrl TEXT,
-        watchTarget TEXT,
-        watchState TEXT,
-        watchReason TEXT,
-        watchRepoId TEXT,
         summary TEXT NOT NULL DEFAULT '',
         observationVersion INTEGER NOT NULL DEFAULT 0,
         version INTEGER NOT NULL DEFAULT 1,
@@ -205,11 +177,6 @@ interface ItemRow {
   shared: number
   replyThread: string | null
   gettingToKnow: string | null
-  watchUrl: string | null
-  watchTarget: string | null
-  watchState: string | null
-  watchReason: string | null
-  watchRepoId: string | null
   summary: string
   observationVersion: number
   version: number
@@ -246,11 +213,6 @@ const ITEM_COLUMNS = [
   'shared',
   'replyThread',
   'gettingToKnow',
-  'watchUrl',
-  'watchTarget',
-  'watchState',
-  'watchReason',
-  'watchRepoId',
   'summary',
   'observationVersion',
   'version',
@@ -275,7 +237,7 @@ export class AssistantItemLedger {
     checkStatus(status)
     checkNextCheck(input.nextCheck)
     checkPlace(input.origin)
-    if (input.gettingToKnow !== undefined && !ASSISTANT_GETTING_TO_KNOW_TRIGGERS.includes(input.gettingToKnow))
+    if (!ASSISTANT_GETTING_TO_KNOW_TRIGGERS.includes(input.gettingToKnow))
       throw new Error(`assistant item gettingToKnow is not one of ${ASSISTANT_GETTING_TO_KNOW_TRIGGERS.join(', ')}`)
     const id = input.id ?? randomUUID()
     await this.db.query(
@@ -297,7 +259,7 @@ export class AssistantItemLedger {
         input.asker ?? null,
         input.shared === true ? 1 : 0,
         input.replyThread ?? null,
-        input.gettingToKnow ?? null,
+        input.gettingToKnow,
         input.summary ?? '',
         now,
         now,
@@ -314,7 +276,7 @@ export class AssistantItemLedger {
     return row ? await this.withObservations(agentId, row) : undefined
   }
 
-  /** The follow-up whose own session this is, by its `taskId`. */
+  /** The getting-to-know task whose own session this is, by its `taskId`. */
   async byTaskKey(agentId: string, taskKey: string): Promise<AssistantItem | undefined> {
     if (taskKey === '') return undefined
     const row = (
@@ -354,11 +316,6 @@ export class AssistantItemLedger {
       where.push('i.originPlatform = ? AND i.originChannel = ? AND i.originTransportScope = ?')
       params.push(filter.origin.platform, filter.origin.channel, scopeOf(filter.origin))
     }
-    if (filter.visibleFrom !== undefined) {
-      where.push('(i.shared = 1 OR (i.originPlatform = ? AND i.originChannel = ? AND i.originTransportScope = ?))')
-      params.push(filter.visibleFrom.platform, filter.visibleFrom.channel, scopeOf(filter.visibleFrom))
-    }
-    if (filter.followUpsOnly === true) where.push('i.gettingToKnow IS NULL')
     const limit = Math.min(
       Math.max(1, Math.floor(filter.limit ?? ASSISTANT_ITEM_LIST_DEFAULT)),
       ASSISTANT_ITEM_LIST_MAX
@@ -374,7 +331,7 @@ export class AssistantItemLedger {
     return await this.withLinks(agentId, rows)
   }
 
-  /** Every open follow-up of the agent, with no cap, so the work board loses none (assistant-mode.md §5.18). */
+  /** Every open getting-to-know task of the agent, with no cap, so the work board loses none (assistant-mode.md §5.18). */
   async listOpen(agentId: string): Promise<AssistantItemOverview[]> {
     const rows = (
       await this.db.query(
@@ -422,7 +379,7 @@ export class AssistantItemLedger {
     })
   }
 
-  /** Set an open follow-up's schedule or end it, with no version handshake; false once it has ended. */
+  /** Set an open getting-to-know task's schedule or end it, with no version handshake; false once it has ended. */
   async schedule(agentId: string, itemId: string, next: AssistantItemSchedule, now = Date.now()): Promise<boolean> {
     checkStatus(next.status)
     checkNextCheck(next.nextCheck ?? undefined)
@@ -434,49 +391,6 @@ export class AssistantItemLedger {
       [next.status, next.nextCheck, now, next.status, next.nextCheck ?? -1, now, agentId, itemId]
     )
     return changes > 0
-  }
-
-  /** Set or clear what an open follow-up watches (§5.14); false once it ended or is gone. */
-  async setWatch(
-    agentId: string,
-    itemId: string,
-    watch: AssistantItemWatch | null,
-    now = Date.now()
-  ): Promise<boolean> {
-    if (watch) {
-      checkText('watchUrl', watch.url, ASSISTANT_ITEM_LIMITS.watchUrl, true)
-      if (!ASSISTANT_WATCH_STATES.includes(watch.state)) throw new Error('assistant item watch state is not supported')
-    }
-    const { changes } = await this.db.query(
-      `UPDATE assistant_item SET watchUrl = ?, watchTarget = ?, watchState = ?, watchReason = ?, watchRepoId = ?,
-         updatedAt = ?
-       WHERE agentId = ? AND id = ? AND status IN ('active', 'waiting') AND gettingToKnow IS NULL`,
-      [
-        watch?.url ?? null,
-        watch?.target ?? null,
-        watch?.state ?? null,
-        watch?.reason ?? null,
-        watch?.repoId ?? null,
-        now,
-        agentId,
-        itemId
-      ]
-    )
-    return changes > 0
-  }
-
-  /** The agent's open follow-ups whose watch is taken or waits to be, as a full set for the Control Plane (§5.14). */
-  async watching(agentId: string): Promise<Array<{ id: string; url: string }>> {
-    const rows = (
-      await this.db.query(
-        `SELECT id, watchUrl FROM assistant_item
-         WHERE agentId = ? AND status IN ('active', 'waiting') AND gettingToKnow IS NULL AND watchUrl IS NOT NULL
-           AND watchState IN ('pending', 'watching')
-         ORDER BY createdAt, id`,
-        [agentId]
-      )
-    ).rows as Array<{ id: string; watchUrl: string }>
-    return rows.map((row) => ({ id: row.id, url: row.watchUrl }))
   }
 
   /** Whether every internal place lists it, as its place's audience was last judged. */
@@ -582,7 +496,6 @@ export class AssistantItemLedger {
       shared: Number(row.shared) === 1,
       replyThread: row.replyThread ?? null,
       gettingToKnow: triggerOf(row.gettingToKnow),
-      watch: watchOf(row),
       summary: row.summary,
       observationVersion: Number(row.observationVersion),
       subsessions: links.filter((l) => l.itemId === row.id && l.kind === 'subsession').map((l) => l.refId),
@@ -595,7 +508,7 @@ export class AssistantItemLedger {
   }
 }
 
-// The check state and log (assistant-checks.ts) are keyed the same way and go with their follow-up.
+// The check state and log (assistant-checks.ts) are keyed by task key, and go with the agent's items too.
 const CHILD_TABLES = [
   'assistant_item_observation',
   'assistant_item_link',
@@ -614,19 +527,6 @@ async function lockItem(tx: StoreTx, agentId: string, itemId: string): Promise<b
 
 async function touchItem(tx: StoreTx, agentId: string, itemId: string, now: number): Promise<void> {
   await tx.query('UPDATE assistant_item SET updatedAt = ? WHERE agentId = ? AND id = ?', [now, agentId, itemId])
-}
-
-const watchOf = (row: ItemRow): AssistantItemWatch | null => {
-  const state = ASSISTANT_WATCH_STATES.find((candidate) => candidate === row.watchState)
-  return row.watchUrl && state
-    ? {
-        url: row.watchUrl,
-        target: row.watchTarget ?? null,
-        state,
-        reason: row.watchReason ?? null,
-        repoId: row.watchRepoId ?? null
-      }
-    : null
 }
 
 const triggerOf = (value: string | null | undefined): AssistantGettingToKnowTrigger | null =>

@@ -87,10 +87,11 @@ export interface AssistantProposalFollowUp {
   watch?: string | null
 }
 
-/** What a check proposes (§5.10): the card's sentence and reason, and the item at the version it was proposed against. */
+/** What a check proposes (§5.10): the card's sentence and reason, and the task it acts on at the version it was proposed against. */
 export interface AssistantProposal {
   sentence: string
   why: string
+  /** The task key of the follow-up or getting-to-know task it acts on, their one id (§5.18). */
   itemId: string
   itemVersion: number
   /** Set on the follow-up form, whose approval takes this follow-up and runs no task. */
@@ -100,6 +101,7 @@ export interface AssistantProposal {
   /** Its card waits for the round's reply to post. */
   held: boolean
   /** The follow-up an approval of the follow-up form took. */
+  /** The task key of the follow-up an approved follow-up form took. */
   tookItemId: string | null
 }
 

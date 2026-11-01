@@ -415,7 +415,7 @@ describe('stopTask in a Slack DM conversation', () => {
         const key = sessionKey('slack', DM, thread, AGENT, h.scope)
         const row = { agentId: AGENT, childSessionKey: key, parentSessionId: owner, parentSessionKey: dm.key }
         if (thread.includes('check-')) {
-          await h.d.store.assistantSubsessions.openFollowUp(row)
+          await h.d.store.assistantSubsessions.openGettingToKnow({ ...row, place: { platform: 'slack', channel: DM } })
           await h.d.store.assistantSubsessions.checking(AGENT, key)
         } else await h.d.store.assistantSubsessions.open(row)
         expect(await stop(h, dm, key)).toEqual(NOT_OWNED)
@@ -503,9 +503,11 @@ describe('who is offered stopTask', () => {
         // listTasks is offered exactly where stopTask is, right before it.
         expect(tools.find((t) => t.name === 'listTasks')).toEqual(stopTool ? LIST_TASKS_TOOL : undefined)
         if (stopTool) expect(tools[tools.indexOf(stopTool) - 1]!.name).toBe('listTasks')
-        // updateTask only inside a task, which keeps its own summary (auto-session-mode.md §5.3).
+        // updateTask only inside a task, which keeps its own summary, or a follow-up's check, which renames its watch task (auto-session-mode.md §5.3).
         const thread = String(session.thread ?? 'append:1')
-        const summaryKept = thread.startsWith('subsession:') && !/^subsession:(check|task|research)-/.test(thread)
+        const summaryKept =
+          (thread.startsWith('subsession:') && !/^subsession:(check|task|research)-/.test(thread)) ||
+          /^subsession:check-(?!look-)/.test(thread)
         expect(tools.find((t) => t.name === 'updateTask')).toEqual(summaryKept ? UPDATE_TASK_TOOL : undefined)
         return stopTool
       }

@@ -623,7 +623,7 @@ export class CollabCoordinator {
     if (!isSubsessionCoordinate(thread)) return true
     const index = this.host.store().assistantSubsessions
     const row = await index.get(agentId, key)
-    if (row === undefined || row.kind === 'follow-up') return false
+    if (row === undefined || row.mode === 'watch') return false
     return !(await this.isTaskKey(agentId, row.parentSessionKey))
   }
 
@@ -681,7 +681,7 @@ export class CollabCoordinator {
     return await this.withSubsessionReportLock(key, async () => {
       const index = this.host.store().assistantSubsessions
       const row = await index.get(req.callerAgentId, key)
-      const ended = rounds && row?.kind !== 'follow-up' ? row !== undefined && row.state !== 'open' : undefined
+      const ended = rounds && row?.mode !== 'watch' ? row !== undefined && row.state !== 'open' : undefined
       if (ended ?? (row?.state === 'failed' || row?.state === 'reporting')) {
         this.host.log().info(`sub-session ${key}: a report after its end was already reported is not delivered`)
         return { delivered: false, inReplyTo: answered.messageId, reason: TASK_ENDED }
@@ -2271,7 +2271,7 @@ export class CollabCoordinator {
     const source = await this.host.store().getSessionByOutwardId(answered.sourceSessionId, agentId)
     if (!source || !isDelegationCoordinate(source.thread)) return false
     const row = await this.host.store().assistantSubsessions.get(agentId, source.key)
-    return row !== undefined && row.kind !== 'follow-up' && row.parentSessionKey === callerKey
+    return row !== undefined && row.mode !== 'watch' && row.parentSessionKey === callerKey
   }
 
   /** §8.2: an owning session's reply into its own task is admitted exactly like `messageTask`. */
@@ -2304,7 +2304,7 @@ export class CollabCoordinator {
   ): Promise<{ row: AssistantSubsession; caller: DaemonReportCaller } | undefined> {
     const store = this.host.store()
     const row = await this.indexedSubsession(agentId, id)
-    if (!row || row.kind === 'follow-up' || row.parentSessionKey !== callerKey) return undefined
+    if (!row || row.mode === 'watch' || row.parentSessionKey !== callerKey) return undefined
     // The recorded parent, by outward id too: a rotated or recreated caller session is not the one that opened it.
     if (!(await store.getSession(callerKey))) return undefined
     const callerId = await store.ensureOutwardSessionId(callerKey, agentId, this.host.clock().now())
@@ -2333,7 +2333,7 @@ export class CollabCoordinator {
     if (!mayOpenTasksAt(req.callerThread)) return notFound()
     // A follow-up is owned by its place, which the host judges (assistant-mode.md §5.12).
     const indexed = await this.indexedSubsession(agentId, req.sessionId)
-    const followUp = indexed?.kind === 'follow-up' && this.host.messageFollowUp ? indexed : undefined
+    const followUp = indexed?.mode === 'watch' && this.host.messageFollowUp ? indexed : undefined
     const owned = followUp ? undefined : await this.ownedSubsession(agentId, req.sessionId, callerKey)
     if (!followUp && !owned) return notFound()
     // auto-session-mode.md §5.1: a session that delegates no task still messages its research, never a delegated task.
@@ -2639,7 +2639,7 @@ export class CollabCoordinator {
       if (!isDelegationCoordinate(local.thread)) return { delivered: false, inReplyTo, reason: 'not_authorized' }
       const row = await store.assistantSubsessions.get(local.agentId, local.key)
       // §8.2: the owner answering its own task is messaging it; any other session's reply is delivered like a peer's.
-      if (row && row.kind !== 'follow-up' && row.parentSessionKey === callerKey)
+      if (row && row.mode !== 'watch' && row.parentSessionKey === callerKey)
         return await this.replyIntoTask(req, answered, local.key)
     }
     const replierSessionId = callerRec

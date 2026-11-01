@@ -1,5 +1,4 @@
 // Approved proposals (assistant-mode.md §5.10): each runs once in a normal-permission sub-session of its follow-up's place, and a cut one is never re-run (§5.7 step 1).
-import { randomUUID } from 'node:crypto'
 import { renderedSessionMessageInput } from '../collab/session-message.js'
 import { newSessionMessageId } from '../store/session-messages.js'
 import type { Agent } from '../agents/agent-schema.js'
@@ -12,7 +11,8 @@ import type { CallMeta } from '../daemon/turn-types.js'
 import { sessionThreadOf, type NormalizedMessage } from '../messages/normalized.js'
 import { taskCoordinate } from '../session/subsession-coordinate.js'
 import type { AssistantDraft, AssistantDraftLedger } from '../store/assistant-drafts.js'
-import type { AssistantItem, AssistantItemLedger } from '../store/assistant-items.js'
+import type { AssistantPlace } from '../store/assistant-items.js'
+import { followUpTaskKey, type CheckedTask, type CheckedTasks } from './checked-tasks.js'
 import type { AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
 import { sessionKey } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
@@ -50,12 +50,13 @@ export interface AssistantTasksHost {
     | 'settleFollowUp'
   >
   subsessions: Pick<AssistantSubsessionIndex, 'openWithinLimitClaiming' | 'finishClaiming' | 'get'>
-  items: Pick<AssistantItemLedger, 'get'>
+  /** The follow-up or getting-to-know task a proposal acts on, by its task key. */
+  items: Pick<CheckedTasks, 'get'>
   agent(agentId: string): Pick<Agent, 'name' | 'assistantMode'> | undefined
   /** This daemon holds the agent's duty. */
   servesAgent(agentId: string): boolean
   /** The long session of the item's place, which the task takes as its parent and reports into. */
-  parentFor(agentId: string, place: AssistantItem['origin']): Promise<CheckParent | undefined>
+  parentFor(agentId: string, place: AssistantPlace): Promise<CheckParent | undefined>
   dispatch(
     agentId: string,
     msg: NormalizedMessage,
@@ -75,31 +76,31 @@ export interface AssistantTasksHost {
   ): Promise<boolean>
   /** The card and the item take in how the task ended. */
   settled(draft: AssistantDraft): Promise<void>
-  /** Take a follow-up of a place under the id an approval minted (assistant-mode.md §5.12). */
+  /** Take a follow-up of a place under the task key an approval minted (assistant-mode.md §5.12). */
   takeFollowUp?(input: {
-    id: string
+    taskKey: string
     agentId: string
-    origin: AssistantItem['origin']
+    origin: AssistantPlace
     caller: { sessionId: string; key: string }
     title: string
     doneWhen: string
     nextCheck?: number
     summary?: string
     asker: string
-  }): Promise<AssistantItem>
+  }): Promise<CheckedTask>
   /** Watch a taken follow-up's object (assistant-mode.md §5.14); why it is not watched, or undefined when it is or will be. */
-  watchFollowUp?(agentId: string, itemId: string, url: string): Promise<string | undefined>
+  watchFollowUp?(agentId: string, taskKey: string, url: string): Promise<string | undefined>
   draining(): boolean
 }
 
 /** A follow-up a proposal may still act on: open, or a getting-to-know task, which ends after its one check by design (§5.13). */
-const actsOn = (item: Pick<AssistantItem, 'status' | 'gettingToKnow'>): boolean =>
+const actsOn = (item: Pick<CheckedTask, 'status' | 'gettingToKnow'>): boolean =>
   item.status === 'active' || item.status === 'waiting' || item.gettingToKnow !== null
 
 const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
 /** The approved proposal's first message: what was approved, by whom, and the follow-up it serves. */
-export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { name: string | null }): string {
+export function taskPrompt(draft: AssistantDraft, item: CheckedTask, by: { name: string | null }): string {
   const proposal = draft.proposal!
   const origin =
     item.gettingToKnow !== null
@@ -118,7 +119,8 @@ export function taskPrompt(draft: AssistantDraft, item: AssistantItem, by: { nam
       ? `Follow-up (getting to know, ended): ${oneLine(item.title)}`
       : `Follow-up (${item.status === 'active' || item.status === 'waiting' ? 'open' : 'ended'}): ${oneLine(item.title)}`,
     `Done when: ${item.doneWhen === null ? 'not set' : oneLine(item.doneWhen)}`,
-    `Summary: ${item.summary.trim() === '' ? 'none' : item.summary.trim()}`,
+    `Background: ${item.background.trim() === '' ? 'none' : item.background.trim()}`,
+    `Last check: ${item.summary.trim() === '' ? 'none yet' : item.summary.trim()}`,
     '',
     `The follow-up was at version ${proposal.itemVersion} when this was proposed and is at version ${item.version} ` +
       'now. Check the current state first, and do not act if the work no longer applies; say so in your report ' +
@@ -267,11 +269,11 @@ export class AssistantTasks {
     if (!actsOn(item)) return await fail('its follow-up has ended')
     const parent = await this.host.parentFor(draft.agentId, item.origin)
     if (!parent) return await fail('the conversation its follow-up belongs to has no ongoing session to report to')
-    const itemId = randomUUID()
-    if (!(await ledger.beginFollowUp(draft.id, by, itemId, now))) return { kind: 'lost' }
+    const taskKey = followUpTaskKey(draft.agentId, item.origin)
+    if (!(await ledger.beginFollowUp(draft.id, by, taskKey, now))) return { kind: 'lost' }
     try {
       await this.host.takeFollowUp({
-        id: itemId,
+        taskKey,
         agentId: draft.agentId,
         origin: item.origin,
         caller: { sessionId: parent.sessionId, key: parent.key },
@@ -288,11 +290,11 @@ export class AssistantTasks {
     }
     // The approver confirmed the follow-up, not the watch: a refused one is said on the card, kept in the record's failure field.
     const unwatched = form.watch
-      ? await this.host.watchFollowUp?.(draft.agentId, itemId, form.watch).catch(() => undefined)
+      ? await this.host.watchFollowUp?.(draft.agentId, taskKey, form.watch).catch(() => undefined)
       : undefined
     await ledger.settleFollowUp(draft.id, 'succeeded', unwatched ?? null, this.host.now())
-    this.host.log.info(`assistant proposal ${draft.id}: took follow-up ${itemId}`)
-    return { kind: 'taken', itemId, parentSessionId: parent.sessionId }
+    this.host.log.info(`assistant proposal ${draft.id}: took follow-up ${taskKey}`)
+    return { kind: 'taken', taskKey, parentSessionId: parent.sessionId }
   }
 
   /** A task's turn ended: reported back is `succeeded`, ended without a report `failed`; a cut kept for replay waits for {@link cut}. */

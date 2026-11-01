@@ -19,7 +19,7 @@ import { toolsForIntegrations } from '../src/mcp/tools.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../src/runtime-defs/claude-runtime.js'
 import { isCheckCoordinate, isSubsessionCoordinate } from '../src/session/subsession-coordinate.js'
-import type { AssistantItem } from '../src/store/assistant-items.js'
+import type { CheckedTask } from '../src/assistant/checked-tasks.js'
 import { CHECK_MAX_FAILURES } from '../src/store/assistant-checks.js'
 import { sessionKey } from '../src/store/local-store.js'
 import type { ObjectToolSchema } from '../src/tool-schema/descriptor.js'
@@ -201,7 +201,7 @@ async function seedPlace(d: any, agentId = 'bot-a') {
 async function takeFollowUp(
   d: any,
   over: { agentId?: string; nextCheck?: number | null; title?: string; replyThread?: string } = {}
-): Promise<AssistantItem> {
+): Promise<CheckedTask> {
   const agentId = over.agentId ?? 'bot-a'
   const scope = scopeOf(d, agentId)
   const nextCheck = over.nextCheck === undefined ? Date.now() - MINUTE : over.nextCheck
@@ -243,7 +243,7 @@ const reporting =
     )
   }
 
-const checkState = (d: any, itemId: string) => d.store.assistantChecks.get('bot-a', itemId)
+const checkState = (d: any, taskKey: string) => d.store.assistantChecks.get('bot-a', taskKey)
 
 /** The place's long session in C1, as its bridge context would carry it. */
 const placeCtx = (place: { coordinate: string; scope: string }): SessionContext => ({
@@ -294,7 +294,7 @@ describe('a due next check wakes one check', () => {
     expect(check!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 0, originSessionId: 'sid-parent-bot-a' })
     expect(check!.callMeta.needsReply).toBeUndefined()
     expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({
-      kind: 'follow-up',
+      mode: 'watch',
       state: 'done',
       parentSessionId: 'sid-parent-bot-a',
       parentSessionKey: place.key
@@ -302,10 +302,10 @@ describe('a due next check wakes one check', () => {
     expect(await d.store.getSession(item.taskKey)).toMatchObject({ originSessionId: 'sid-parent-bot-a' })
     // Nothing changed, so nothing reached the conversation; the check is in its log.
     expect(reports()).toHaveLength(0)
-    const after = await d.store.assistantItems.get('bot-a', item.id)
+    const after = await d.store.assistantWatchTasks.get('bot-a', item.taskKey)
     expect(after.observations.map((o: any) => [o.text, o.author])).toEqual([['The build is still running.', 'check']])
     expect(after).toMatchObject({ status: 'active' })
-    expect(await d.store.assistantChecks.checks('bot-a', item.id, 10)).toEqual([
+    expect(await d.store.assistantChecks.checks('bot-a', item.taskKey, 10)).toEqual([
       expect.objectContaining({ checkNo: 1, observation: 'The build is still running.', reported: false })
     ])
 
@@ -333,14 +333,14 @@ describe('a due next check wakes one check', () => {
     await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
-    await d.store.assistantItems.schedule('bot-a', item.id, { status: 'active', nextCheck: Date.now() - 1_000 })
+    await d.store.assistantWatchTasks.schedule('bot-a', item.taskKey, { status: 'active', nextAt: Date.now() - 1_000 })
     await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(2), WAIT)
     await settled()
     expect(checks()[1]!.msg.thread).toBe(checks()[0]!.msg.thread)
     // The second check is handed what the first one saw.
     expect(modelText(checks()[1]!.msg)).toContain('The build is still running.')
-    expect((await d.store.assistantChecks.checks('bot-a', item.id, 10)).map((c: any) => c.checkNo)).toEqual([2, 1])
+    expect((await d.store.assistantChecks.checks('bot-a', item.taskKey, 10)).map((c: any) => c.checkNo)).toEqual([2, 1])
     await daemon.stop()
   })
 
@@ -367,8 +367,8 @@ describe('a due next check wakes one check', () => {
     const prompts = hosts.flatMap((h) => h.prompt.mock.calls.map((c: any) => JSON.stringify(c[1])))
     expect(prompts.find((p: string) => p.includes(CHECK_OPENING))).toContain(CHECK_LANGUAGE)
     expect(prompts.find((p: string) => p.includes('found a change'))).toContain(ANSWER_LANGUAGE)
-    expect((await d.store.assistantItems.get('bot-a', item.id)).status).toBe('done')
-    expect(await d.store.assistantChecks.checks('bot-a', item.id, 10)).toEqual([
+    expect((await d.store.assistantWatchTasks.get('bot-a', item.taskKey)).status).toBe('done')
+    expect(await d.store.assistantChecks.checks('bot-a', item.taskKey, 10)).toEqual([
       expect.objectContaining({ observation: 'The release is published.', reported: true })
     ])
     expect(checks()).toHaveLength(1)
@@ -384,7 +384,7 @@ describe('a due next check wakes one check', () => {
     await settled()
 
     expect(checks()).toHaveLength(0)
-    const after = await d.store.assistantItems.get('bot-a', item.id)
+    const after = await d.store.assistantWatchTasks.get('bot-a', item.taskKey)
     expect(after.observations.map((o: any) => o.text)).toEqual([
       'No scheduled check ran: the conversation this follow-up belongs to has no ongoing session to report to.'
     ])
@@ -425,8 +425,8 @@ describe('a due next check wakes one check', () => {
     d.agents.get('bot-a').pause = true
     await d.interruptAgentTurns('bot-a', 'pause')
     await settled()
-    expect(await checkState(d, item.id)).toMatchObject({ failures: 0, runningKey: null, checkedNextCheck: null })
-    expect(await d.store.assistantChecks.checks('bot-a', item.id, 10)).toEqual([])
+    expect(await checkState(d, item.taskKey)).toMatchObject({ failures: 0, runningKey: null, checkedNextCheck: null })
+    expect(await d.store.assistantChecks.checks('bot-a', item.taskKey, 10)).toEqual([])
     expect(reports()).toHaveLength(0)
 
     d.agents.get('bot-a').pause = false
@@ -434,7 +434,7 @@ describe('a due next check wakes one check', () => {
     await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(2), WAIT)
     await settled()
-    expect(await checkState(d, item.id)).toMatchObject({ checkedNextCheck: item.nextCheck })
+    expect(await checkState(d, item.taskKey)).toMatchObject({ checkedNextCheck: item.nextAt })
     await daemon.stop()
   })
 
@@ -598,7 +598,7 @@ describe('a check reads and records, nothing else', () => {
     await settled()
     expect(results[0]).toBe('nextCheck must be at least five minutes from now; nothing was written')
     expect(results[1]).toBe('recordCheck takes `done` or `nextCheck`, not both; nothing was written')
-    expect((await d.store.assistantItems.get('bot-a', item.id)).observations).toHaveLength(1)
+    expect((await d.store.assistantWatchTasks.get('bot-a', item.taskKey)).observations).toHaveLength(1)
     await daemon.stop()
   })
 })
@@ -613,13 +613,13 @@ describe('failures back off and stop', () => {
     await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
-    const first = await checkState(d, item.id)
+    const first = await checkState(d, item.taskKey)
     expect(first).toMatchObject({ failures: 1, stopped: false, checkedNextCheck: null })
     expect(first.retryAt).toBeGreaterThanOrEqual(Date.now() + 2 * MINUTE - 5_000)
-    expect((await d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
-      'Scheduled check failed (error); the next attempt is in 2 minutes.'
-    ])
-    expect(await d.store.assistantChecks.checks('bot-a', item.id, 10)).toEqual([
+    expect((await d.store.assistantWatchTasks.get('bot-a', item.taskKey)).observations.map((o: any) => o.text)).toEqual(
+      ['Scheduled check failed (error); the next attempt is in 2 minutes.']
+    )
+    expect(await d.store.assistantChecks.checks('bot-a', item.taskKey, 10)).toEqual([
       expect.objectContaining({ observation: 'Scheduled check failed (error); the next attempt is in 2 minutes.' })
     ])
     // Backing off: nothing before the wait is over.
@@ -629,14 +629,14 @@ describe('failures back off and stop', () => {
 
     for (let n = 2; n <= CHECK_MAX_FAILURES; n++) {
       await d.store.assistantChecks.db.query(
-        'UPDATE assistant_check_state SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
-        ['bot-a', item.id]
+        'UPDATE assistant_check_state SET retryAt = 0 WHERE agentId = ? AND taskKey = ?',
+        ['bot-a', item.taskKey]
       )
       await d.followUpChecks.sweep()
       await vi.waitFor(() => expect(checks()).toHaveLength(n), WAIT)
       await settled()
     }
-    expect(await checkState(d, item.id)).toMatchObject({ failures: CHECK_MAX_FAILURES, stopped: true })
+    expect(await checkState(d, item.taskKey)).toMatchObject({ failures: CHECK_MAX_FAILURES, stopped: true })
     expect(reports()).toHaveLength(1)
     expect(modelText(reports()[0]!.msg)).toContain(
       'Checks of the follow-up "Watch the release build" stopped after 5 failed attempts in a row. ' +
@@ -646,7 +646,7 @@ describe('failures back off and stop', () => {
     expect(modelText(reports()[0]!.msg)).toContain(`Tell the people here.\n\n${ANSWER_LANGUAGE}`)
 
     // A new next check does not resume it.
-    await d.store.assistantItems.schedule('bot-a', item.id, { status: 'active', nextCheck: Date.now() - 1_000 })
+    await d.store.assistantWatchTasks.schedule('bot-a', item.taskKey, { status: 'active', nextAt: Date.now() - 1_000 })
     await d.followUpChecks.sweep()
     await settled()
     expect(checks()).toHaveLength(CHECK_MAX_FAILURES)
@@ -657,7 +657,7 @@ describe('failures back off and stop', () => {
       followUp: 'checking'
     })
     await vi.waitFor(() => expect(checks()).toHaveLength(CHECK_MAX_FAILURES + 1), WAIT)
-    expect(await checkState(d, item.id)).toMatchObject({ failures: 0, stopped: false })
+    expect(await checkState(d, item.taskKey)).toMatchObject({ failures: 0, stopped: false })
     await d.interruptAgentTurns('bot-a', 'stop')
     await settled()
     await daemon.stop()
@@ -671,10 +671,10 @@ describe('failures back off and stop', () => {
     await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
-    expect(await checkState(d, item.id)).toMatchObject({ failures: 1 })
-    expect((await d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
-      'Scheduled check failed (nothing recorded); the next attempt is in 2 minutes.'
-    ])
+    expect(await checkState(d, item.taskKey)).toMatchObject({ failures: 1 })
+    expect((await d.store.assistantWatchTasks.get('bot-a', item.taskKey)).observations.map((o: any) => o.text)).toEqual(
+      ['Scheduled check failed (nothing recorded); the next attempt is in 2 minutes.']
+    )
     expect(reports()).toHaveLength(0)
     await daemon.stop()
   })
@@ -699,8 +699,9 @@ describe('a follow-up owned by its place', () => {
         owner: 'U0ALICE',
         startedAt: expect.any(String),
         lastActivity: expect.any(String),
-        nextCheck: new Date(item.nextCheck!).toISOString(),
-        summary: 'Alice asked to hear when the release is out.',
+        nextCheck: new Date(item.nextAt!).toISOString(),
+        // Before its first check it shows what it was taken with; its summary is then each check's result.
+        background: 'Alice asked to hear when the release is out.',
         handedBackResult: false
       }
     ])
@@ -732,7 +733,10 @@ describe('a follow-up owned by its place', () => {
     // stopTask ends the follow-up itself.
     const stopped = (await executeTool(here, 'stopTask', { taskId: item.taskKey }, deps)) as any
     expect(stopped).toMatchObject({ result: 'stopped', taskId: item.taskKey })
-    expect(await d.store.assistantItems.get('bot-a', item.id)).toMatchObject({ status: 'dropped', nextCheck: null })
+    expect(await d.store.assistantWatchTasks.get('bot-a', item.taskKey)).toMatchObject({
+      status: 'dropped',
+      nextAt: null
+    })
     expect(await executeTool(here, 'stopTask', { taskId: item.taskKey }, deps)).toMatchObject({ result: 'not_running' })
     expect(await message(d, place, item.taskKey, 'More?')).toMatchObject({ delivered: false, reason: 'task_ended' })
     expect(((await executeTool(here, 'listTasks', {}, deps)) as any).tasks[0]).toMatchObject({ state: 'stopped' })
@@ -839,7 +843,7 @@ describe('a follow-up owned by its place', () => {
     expect(await executeTool(thread, 'stopTask', { taskId: item.taskKey }, deps)).toEqual(notOwned)
     const elsewhere = { ...current, channel: 'C2' }
     expect(await executeTool(elsewhere, 'stopTask', { taskId: item.taskKey }, deps)).toEqual(notOwned)
-    expect((await d.store.assistantItems.get('bot-a', item.id)).status).toBe('active')
+    expect((await d.store.assistantWatchTasks.get('bot-a', item.taskKey)).status).toBe('active')
     expect(await executeTool(current, 'stopTask', { taskId: item.taskKey }, deps)).toMatchObject({ result: 'stopped' })
     await settled()
     await daemon.stop()
@@ -856,7 +860,7 @@ describe('a follow-up owned by its place', () => {
     await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
-    const [first] = await d.store.assistantChecks.checks('bot-a', item.id, 1)
+    const [first] = await d.store.assistantChecks.checks('bot-a', item.taskKey, 1)
     const refused = await message(d, place, item.taskKey, 'Check again.')
     expect(refused).toMatchObject({ delivered: false, reason: 'budget' })
     expect(refused.message).toContain(new Date(first.startedAt + 24 * 60 * MINUTE).toISOString())
@@ -908,15 +912,15 @@ describe('a follow-up owned by its place', () => {
         actor: { userId: 'usr-1', name: 'Grace' }
       })
     ).toEqual({ operation: 'stop-subsession', result: 'stopped' })
-    await vi.waitFor(async () => expect((await checkState(d, item.id))?.runningKey).toBeNull(), WAIT)
+    await vi.waitFor(async () => expect((await checkState(d, item.taskKey))?.runningKey).toBeNull(), WAIT)
     await settled()
 
     // Ended with its check done, silently.
     expect(reports()).toHaveLength(0)
-    expect(await d.store.assistantItems.get('bot-a', item.id)).toMatchObject({ status: 'dropped' })
-    expect(await checkState(d, item.id)).toMatchObject({ failures: 0 })
+    expect(await d.store.assistantWatchTasks.get('bot-a', item.taskKey)).toMatchObject({ status: 'dropped' })
+    expect(await checkState(d, item.taskKey)).toMatchObject({ failures: 0 })
     expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({
-      kind: 'follow-up',
+      mode: 'watch',
       state: 'failed'
     })
     await daemon.stop()
@@ -941,19 +945,19 @@ describe('a check replayed after a handover', () => {
     behavior.check = 'hang'
     await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
-    await vi.waitFor(async () => expect((await checkState(d, item.id))?.runningKey).toBeTruthy(), WAIT)
+    await vi.waitFor(async () => expect((await checkState(d, item.taskKey))?.runningKey).toBeTruthy(), WAIT)
 
     await handOver(d, behavior, nothing)
-    await vi.waitFor(async () => expect((await checkState(d, item.id))?.failures).toBe(1), WAIT)
+    await vi.waitFor(async () => expect((await checkState(d, item.taskKey))?.failures).toBe(1), WAIT)
     await settled()
 
-    const state = await checkState(d, item.id)
+    const state = await checkState(d, item.taskKey)
     expect(state).toMatchObject({ failures: 1, stopped: false, checkedNextCheck: null, runningKey: null })
     expect(state.retryAt).toBeGreaterThanOrEqual(Date.now() + 2 * MINUTE - 5_000)
     expect(reports()).toHaveLength(0)
     // The check stays due once the backoff is over.
     expect(await d.store.assistantChecks.due('bot-a', Date.now() + 3 * MINUTE, 10)).toEqual([
-      { itemId: item.id, nextCheck: item.nextCheck }
+      { taskKey: item.taskKey, nextCheck: item.nextAt }
     ])
     await daemon.stop()
   })
@@ -983,7 +987,7 @@ describe('a check replayed after a handover', () => {
     await settled()
 
     expect(modelText(reports()[0]!.msg)).toContain('The release is out.')
-    expect(await checkState(d, item.id)).toMatchObject({ failures: 0, checkedNextCheck: item.nextCheck })
+    expect(await checkState(d, item.taskKey)).toMatchObject({ failures: 0, checkedNextCheck: item.nextAt })
     // The replay ran the same check; no second one started.
     expect(new Set(checks().map((c) => c.msg.thread)).size).toBe(1)
     await daemon.stop()
@@ -1018,15 +1022,15 @@ describe('a check passes on what it found before it settles', () => {
     await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(seen.calls).toBe(1), WAIT)
     // The report is still on its way, so the check still holds it and is not done.
-    const held = await checkState(d, item.id)
+    const held = await checkState(d, item.taskKey)
     expect(held).toMatchObject({ runningReport: 'The release is out.', checkedNextCheck: null })
     expect(held.runningKey).toBeTruthy()
 
     release()
-    await vi.waitFor(async () => expect((await checkState(d, item.id))?.runningKey).toBeNull(), WAIT)
+    await vi.waitFor(async () => expect((await checkState(d, item.taskKey))?.runningKey).toBeNull(), WAIT)
     await settled()
     expect(reports()).toHaveLength(1)
-    expect(await checkState(d, item.id)).toMatchObject({ checkedNextCheck: item.nextCheck, runningReport: null })
+    expect(await checkState(d, item.taskKey)).toMatchObject({ checkedNextCheck: item.nextAt, runningReport: null })
     await daemon.stop()
   })
 
@@ -1052,21 +1056,21 @@ describe('a check passes on what it found before it settles', () => {
     await vi.waitFor(() => expect(crashed).toBe(true), WAIT)
     await settled()
     expect(reports()).toHaveLength(1)
-    expect((await checkState(d, item.id)).runningKey).toBeTruthy()
+    expect((await checkState(d, item.taskKey)).runningKey).toBeTruthy()
 
     // The next start finds the check its turn left unsettled, and settles it without a second report.
     d.followUpCheckService = undefined
     await d.replayInbox(new Set(['bot-a']))
     await settled()
 
-    expect(await checkState(d, item.id)).toMatchObject({ runningKey: null, checkedNextCheck: item.nextCheck })
+    expect(await checkState(d, item.taskKey)).toMatchObject({ runningKey: null, checkedNextCheck: item.nextAt })
     expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({ state: 'done' })
     expect(seen.calls).toBe(2)
     expect(reports()).toHaveLength(1)
     expect(told(hosts, 'The release is out.')).toBe(1)
-    expect((await d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
-      'The release is published.'
-    ])
+    expect((await d.store.assistantWatchTasks.get('bot-a', item.taskKey)).observations.map((o: any) => o.text)).toEqual(
+      ['The release is published.']
+    )
     expect(checks()).toHaveLength(1)
     await daemon.stop()
   })
@@ -1087,7 +1091,7 @@ describe('a check passes on what it found before it settles', () => {
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     expect(reports()).toHaveLength(0)
-    expect(await checkState(d, item.id)).toMatchObject({
+    expect(await checkState(d, item.taskKey)).toMatchObject({
       runningReport: 'The release is out.',
       checkedNextCheck: null
     })
@@ -1101,7 +1105,7 @@ describe('a check passes on what it found before it settles', () => {
 
     expect(reports()).toHaveLength(1)
     expect(modelText(reports()[0]!.msg)).toContain('The release is out.')
-    expect(await checkState(d, item.id)).toMatchObject({ runningKey: null, checkedNextCheck: item.nextCheck })
+    expect(await checkState(d, item.taskKey)).toMatchObject({ runningKey: null, checkedNextCheck: item.nextAt })
     expect(checks()).toHaveLength(1)
     await daemon.stop()
   })
@@ -1114,15 +1118,14 @@ describe('a check passes on what it found before it settles', () => {
     d.reportIntoParent = async () => false
 
     await d.followUpChecks.sweep()
-    await vi.waitFor(async () => expect((await checkState(d, item.id))?.checkedNextCheck).toBe(item.nextCheck), WAIT)
+    await vi.waitFor(async () => expect((await checkState(d, item.taskKey))?.checkedNextCheck).toBe(item.nextAt), WAIT)
     await settled()
 
-    expect(await checkState(d, item.id)).toMatchObject({ runningKey: null, failures: 0 })
-    expect((await d.store.assistantItems.get('bot-a', item.id)).observations.map((o: any) => o.text)).toEqual([
-      'The release is published.',
-      'A report from a check could not reach the conversation this follow-up belongs to.'
-    ])
-    expect(await d.store.assistantChecks.checks('bot-a', item.id, 1)).toEqual([
+    expect(await checkState(d, item.taskKey)).toMatchObject({ runningKey: null, failures: 0 })
+    expect((await d.store.assistantWatchTasks.get('bot-a', item.taskKey)).observations.map((o: any) => o.text)).toEqual(
+      ['The release is published.', 'A report from a check could not reach the conversation this follow-up belongs to.']
+    )
+    expect(await d.store.assistantChecks.checks('bot-a', item.taskKey, 1)).toEqual([
       expect.objectContaining({ reported: false })
     ])
     await daemon.stop()
@@ -1181,7 +1184,7 @@ describe('a check’s report after `!new`', () => {
       parentSessionId: 'sid-parent-bot-a',
       state: 'done'
     })
-    await d.store.assistantItems.schedule('bot-a', item.id, { status: 'active', nextCheck: Date.now() - 1_000 })
+    await d.store.assistantWatchTasks.schedule('bot-a', item.taskKey, { status: 'active', nextAt: Date.now() - 1_000 })
     behavior.check = quiet(deps)
     await d.followUpChecks.sweep()
     await vi.waitFor(
@@ -1234,15 +1237,15 @@ describe('the daily check budget', () => {
 
 describe('follow-up tool text', () => {
   const followUp = {
-    id: 'item-1',
     taskKey: 'slack:C1:subsession:check-1:bot-a',
     version: 1,
     status: 'active',
     title: 'Confirm the new build works',
     doneWhen: null,
+    background: '',
     summary: '',
     observations: []
-  } as unknown as AssistantItem
+  } as unknown as CheckedTask
 
   it('says a next check runs a read-only check that reports only a change', () => {
     const text = JSON.stringify(FOLLOW_UP_TOOL)
@@ -1251,7 +1254,10 @@ describe('follow-up tool text', () => {
   })
 
   it('tells a check its report promises no later message, time or check', () => {
-    const prompt = checkPrompt(followUp, { itemId: 'item-1', nextCheck: Date.UTC(2030, 0, 1) })
+    const prompt = checkPrompt(followUp, {
+      taskKey: 'slack:C1:subsession:check-1:bot-a',
+      nextCheck: Date.UTC(2030, 0, 1)
+    })
     expect(prompt).toContain(
       '4. A report says what you found and promises nothing: no later message, no time anyone will hear back, no ' +
         'next check. When it should be looked at again, set `nextCheck`; the people in its conversation are not ' +
@@ -1264,7 +1270,10 @@ describe('follow-up tool text', () => {
   })
 
   it('asks a check to write in the language of the people in its conversation', () => {
-    const prompt = checkPrompt({ ...followUp, title: '确认新版本可用' }, { itemId: 'item-1', nextCheck: 0 })
+    const prompt = checkPrompt(
+      { ...followUp, title: '确认新版本可用' },
+      { taskKey: 'slack:C1:subsession:check-1:bot-a', nextCheck: 0 }
+    )
     expect(prompt).toContain(`The check records its observation either way. ${CHECK_LANGUAGE}`)
   })
 
@@ -1310,16 +1319,16 @@ describe('follow-up tool text', () => {
 
 describe('a wake makes a watching follow-up due (assistant-mode.md §5.14)', () => {
   const PR = 'https://github.com/example-org/example-repo/pull/12'
-  const watch = async (d: any, itemId: string) =>
-    await d.store.assistantItems.setWatch('bot-a', itemId, {
+  const watch = async (d: any, taskKey: string) =>
+    await d.store.assistantWatchTasks.setWatch('bot-a', taskKey, {
       url: PR,
       target: 'example-org/example-repo#12',
       state: 'watching',
       reason: null
     })
-  const wake = (itemId: string, wakeId: number, kinds: string[] = ['merged', 'checks']) => ({
+  const wake = (taskKey: string, wakeId: number, kinds: string[] = ['merged', 'checks']) => ({
     agentId: 'bot-a',
-    followUpId: itemId,
+    followUpId: taskKey,
     wakeId,
     kinds,
     latestAt: new Date().toISOString()
@@ -1329,21 +1338,21 @@ describe('a wake makes a watching follow-up due (assistant-mode.md §5.14)', () 
     const { daemon, d, behavior, checks, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     await seedPlace(d)
     const item = await takeFollowUp(d, { nextCheck: null })
-    await watch(d, item.id)
+    await watch(d, item.taskKey)
     behavior.check = quiet(deps)
 
-    expect(await d.followUpChecks.wake('bot-a', wake(item.id, 1))).toEqual({ accepted: true })
+    expect(await d.followUpChecks.wake('bot-a', wake(item.taskKey, 1))).toEqual({ accepted: true })
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     const prompt = modelText(checks()[0]!.msg)
     expect(prompt).toContain('Check: woken by events on what it watches')
     expect(prompt).toContain(`Watches: example-org/example-repo#12 (${PR}); read its current state yourself.`)
     expect(prompt).toContain('Woken by: merged, CI finished.')
-    expect(await d.store.assistantChecks.checks('bot-a', item.id, 1)).toEqual([
+    expect(await d.store.assistantChecks.checks('bot-a', item.taskKey, 1)).toEqual([
       expect.objectContaining({ startedBy: 'wake', events: ['merged', 'checks'] })
     ])
 
-    expect(await d.followUpChecks.wake('bot-a', wake(item.id, 1))).toEqual({ accepted: true })
+    expect(await d.followUpChecks.wake('bot-a', wake(item.taskKey, 1))).toEqual({ accepted: true })
     await d.followUpChecks.sweep()
     await settled()
     expect(checks()).toHaveLength(1)
@@ -1354,14 +1363,20 @@ describe('a wake makes a watching follow-up due (assistant-mode.md §5.14)', () 
     const { daemon, d } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     await seedPlace(d)
     const item = await takeFollowUp(d, { nextCheck: null })
-    expect(await d.followUpChecks.wake('bot-a', wake(item.id, 1))).toEqual({ accepted: false, reason: 'not_found' })
+    expect(await d.followUpChecks.wake('bot-a', wake(item.taskKey, 1))).toEqual({
+      accepted: false,
+      reason: 'not_found'
+    })
     expect(await d.followUpChecks.wake('bot-a', wake('no-such-follow-up', 1))).toEqual({
       accepted: false,
       reason: 'not_found'
     })
-    await watch(d, item.id)
+    await watch(d, item.taskKey)
     d.servesAgent = () => false
-    expect(await d.followUpChecks.wake('bot-a', wake(item.id, 1))).toEqual({ accepted: false, reason: 'not_holder' })
+    expect(await d.followUpChecks.wake('bot-a', wake(item.taskKey, 1))).toEqual({
+      accepted: false,
+      reason: 'not_holder'
+    })
     await daemon.stop()
   })
 
@@ -1371,10 +1386,10 @@ describe('a wake makes a watching follow-up due (assistant-mode.md §5.14)', () 
     )
     const place = await seedPlace(d)
     const item = await takeFollowUp(d, { nextCheck: null })
-    await watch(d, item.id)
+    await watch(d, item.taskKey)
     const spent = await takeFollowUp(d, { nextCheck: null, title: 'Spent' })
     for (let i = 0; i < 9; i++) {
-      await d.store.assistantChecks.begin('bot-a', spent.id, {
+      await d.store.assistantChecks.begin('bot-a', spent.taskKey, {
         key: spent.taskKey,
         nextCheck: null,
         observationVersion: 0,
@@ -1385,17 +1400,17 @@ describe('a wake makes a watching follow-up due (assistant-mode.md §5.14)', () 
       })
     }
     behavior.check = quiet(deps)
-    await d.followUpChecks.wake('bot-a', wake(item.id, 1, ['comment']))
+    await d.followUpChecks.wake('bot-a', wake(item.taskKey, 1, ['comment']))
     await d.followUpChecks.sweep()
     await settled()
     expect(checks()).toHaveLength(0)
-    expect((await checkState(d, item.id)).wakeKinds).toEqual(['comment'])
+    expect((await checkState(d, item.taskKey)).wakeKinds).toEqual(['comment'])
 
     await message(d, place, item.taskKey, 'Is it merged yet?')
     await vi.waitFor(() => expect(checks()).toHaveLength(1), WAIT)
     await settled()
     expect(modelText(checks()[0]!.msg)).toContain('Woken by: new comments.')
-    expect((await checkState(d, item.id)).wakeKinds).toEqual([])
+    expect((await checkState(d, item.taskKey)).wakeKinds).toEqual([])
     await daemon.stop()
   })
 
@@ -1403,17 +1418,17 @@ describe('a wake makes a watching follow-up due (assistant-mode.md §5.14)', () 
     const { daemon, d, behavior, checks, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
     await seedPlace(d)
     const item = await takeFollowUp(d)
-    await watch(d, item.id)
+    await watch(d, item.taskKey)
     expect(
       await d.followUpChecks.wake('bot-a', {
         agentId: 'bot-a',
-        followUpId: item.id,
+        followUpId: item.taskKey,
         wakeId: 2,
         kinds: [],
         ended: 'access_lost'
       })
     ).toEqual({ accepted: true })
-    expect((await d.store.assistantItems.get('bot-a', item.id)).watch).toMatchObject({
+    expect((await d.store.assistantWatchTasks.get('bot-a', item.taskKey)).watch).toMatchObject({
       state: 'ended',
       reason: 'access_lost'
     })

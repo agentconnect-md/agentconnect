@@ -1,4 +1,4 @@
-// Follow-ups (assistant-mode.md §5.12): read-only tasks of a place, checked in one retained session of their own when a next check falls due, their conversation messages them, or what they watch changes (§5.14).
+// Follow-ups (assistant-mode.md §5.12), watch tasks of a place (§5.18): read-only, checked in one retained session of their own when a next check falls due, their conversation messages them, or what they watch changes (§5.14).
 import type { AssistantFollowUpWake, AssistantFollowUpWakeResult, FollowUpEventKind } from '@agentconnect.md/protocol'
 import { renderedSessionMessageInput } from '../collab/session-message.js'
 import { newSessionMessageId } from '../store/session-messages.js'
@@ -6,6 +6,7 @@ import type { Agent } from '../agents/agent-schema.js'
 import type { CallMeta } from '../daemon/turn-types.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
+import { UPDATE_TASK_TOOL } from '../mcp/ops/assistant-subsessions.js'
 import {
   assistantModeOn,
   PROPOSE_TOOL,
@@ -15,13 +16,9 @@ import {
   type ProposeInput
 } from '../mcp/ops/assistant-items.js'
 import { isAttachmentReadTool } from '../platforms/read-ports.js'
-import { gettingToKnowCoordinate, checkCoordinate } from '../session/subsession-coordinate.js'
-import type {
-  AssistantGettingToKnowTrigger,
-  AssistantItem,
-  AssistantItemLedger,
-  AssistantPlace
-} from '../store/assistant-items.js'
+import { gettingToKnowCoordinate } from '../session/subsession-coordinate.js'
+import type { AssistantGettingToKnowTrigger, AssistantItemLedger, AssistantPlace } from '../store/assistant-items.js'
+import type { AssistantWatchTasks } from '../store/assistant-watch-tasks.js'
 import type {
   AssistantCheckDue,
   AssistantCheckLedger,
@@ -40,6 +37,7 @@ import {
   gettingToKnowReportText
 } from './getting-to-know.js'
 import type { ReadAsker } from './place-access.js'
+import { checkedTaskOpen, followUpTaskKey, type CheckedTask, type CheckedTasks } from './checked-tasks.js'
 import { callerOfMessage, type TaskCaller } from './tasks.js'
 import { watchReasonText, type FollowUpWatches } from './follow-up-watches.js'
 
@@ -94,7 +92,7 @@ const CHECK_READ_TOOLS = new Set([
   'inspectCodeHostPipelines'
 ])
 
-/** A check's tool set: the reads of what the session would get, `recordCheck`, and `propose`; with `watch` toward a Control Plane that takes it (§5.14). */
+/** A check's tool set: the reads of what the session would get, `recordCheck`, `propose`, and `updateTask` for its watch task's title (§5.18); with `watch` toward a Control Plane that takes it (§5.14). */
 export function checkTools(tools: readonly ToolDescriptor[], opts: { watch?: boolean } = {}): ToolDescriptor[] {
   const reads = tools.filter(
     (tool) =>
@@ -103,8 +101,8 @@ export function checkTools(tools: readonly ToolDescriptor[], opts: { watch?: boo
       isAttachmentReadTool(tool.name)
   )
   return opts.watch
-    ? [...reads, RECORD_CHECK_WATCH_TOOL, PROPOSE_WATCH_TOOL]
-    : [...reads, RECORD_CHECK_TOOL, PROPOSE_TOOL]
+    ? [...reads, RECORD_CHECK_WATCH_TOOL, PROPOSE_WATCH_TOOL, UPDATE_TASK_TOOL]
+    : [...reads, RECORD_CHECK_TOOL, PROPOSE_TOOL, UPDATE_TASK_TOOL]
 }
 
 /** How a check's turn, or its refused start, ended. */
@@ -165,7 +163,7 @@ export type GettingToKnowFacts =
 
 /** What a requested getting-to-know task says back to the session that asked for it. */
 export type GettingToKnowRequestResult =
-  { kind: 'started'; item: AssistantItem } | { kind: 'refused'; reason: string; message: string }
+  { kind: 'started'; item: CheckedTask } | { kind: 'refused'; reason: string; message: string }
 
 type Admission = Promise<{ accepted: boolean; reason?: string }>
 
@@ -180,16 +178,18 @@ export interface FollowUpChecksHost {
   /** The follow-ups' watches (§5.14); absent on a daemon that offers none. */
   watches?: FollowUpWatches
   draining(): boolean
-  items: Pick<
-    AssistantItemLedger,
-    'get' | 'byTaskKey' | 'create' | 'appendObservation' | 'schedule' | 'setShared' | 'latestGettingToKnow' | 'setWatch'
-  >
+  /** Every checked task by its task key: watch tasks, and getting-to-know tasks. */
+  tasks: Pick<CheckedTasks, 'get' | 'appendObservation' | 'schedule' | 'setShared'>
+  /** Follow-ups, the watch tasks it opens and whose watched objects it ends. */
+  watchTasks: Pick<AssistantWatchTasks, 'open' | 'setWatch'>
+  /** Getting-to-know tasks, which the item ledger keeps (§5.13). */
+  items: Pick<AssistantItemLedger, 'create' | 'latestGettingToKnow'>
   checks: AssistantCheckLedger
-  subsessions: Pick<AssistantSubsessionIndex, 'openFollowUp' | 'checking' | 'adoptFollowUps' | 'finish' | 'get'>
+  subsessions: Pick<AssistantSubsessionIndex, 'openGettingToKnow' | 'checking' | 'adoptWatchTasks' | 'finish' | 'get'>
   /** The place's one long session; with `open`, else the one its first message would key (a getting-to-know task's, §5.13); undefined when it has none. */
   parentFor(agentId: string, place: AssistantPlace, opts?: { open?: boolean }): Promise<CheckParent | undefined>
   /** What a getting-to-know task of this follow-up names now, or why its place may no longer take one. */
-  gettingToKnowFacts?(agentId: string, item: AssistantItem): Promise<GettingToKnowFacts>
+  gettingToKnowFacts?(agentId: string, item: CheckedTask): Promise<GettingToKnowFacts>
   /** Whether the place is a public channel, so every internal place lists its follow-ups. */
   sharedPlace?(agentId: string, place: AssistantPlace): Promise<boolean>
   dispatch(
@@ -220,7 +220,7 @@ export interface FollowUpChecksHost {
     proposedFrom(agentId: string, key: string, since: number): Promise<boolean>
     /** Record and card the proposal; what the check reads back. */
     propose(
-      run: { agentId: string; key: string; item: AssistantItem },
+      run: { agentId: string; key: string; item: CheckedTask },
       input: ProposeInput
     ): Promise<Record<string, unknown>>
   }
@@ -252,11 +252,10 @@ const quote = (text: string): string => text.replace(/\s+/g, ' ').trim()
 const iso = (ms: number | null): string => (ms === null ? 'none' : new Date(ms).toISOString())
 
 /** Whether a follow-up is still open: active with a next check, or waiting without one. */
-export const followUpOpen = (item: Pick<AssistantItem, 'status'>): boolean =>
-  item.status === 'active' || item.status === 'waiting'
+export const followUpOpen = checkedTaskOpen
 
 /** The watch line of a check's prompt (§5.14): what it watches, or why it no longer does. */
-function watchLine(item: AssistantItem): string[] {
+function watchLine(item: CheckedTask): string[] {
   const watch = item.watch
   if (!watch) return []
   switch (watch.state) {
@@ -277,7 +276,7 @@ function watchLine(item: AssistantItem): string[] {
 
 /** The check's first message: the follow-up, what woke it, and the standing rules of a check. */
 export function checkPrompt(
-  item: AssistantItem,
+  item: CheckedTask,
   due: AssistantCheckDue | undefined,
   messages: readonly CheckMessage[] = [],
   events: readonly FollowUpEventKind[] = []
@@ -300,7 +299,7 @@ export function checkPrompt(
           : 'Check: asked for by its conversation now',
     ...watchLine(item),
     ...(woken ? [`Woken by: ${woken}. Read where it stands now; the events are only why you look.`] : []),
-    `Summary: ${item.summary.trim() === '' ? 'none' : item.summary.trim()}`,
+    `Background: ${item.background.trim() === '' ? 'none' : item.background.trim()}`,
     observations.length === 0
       ? 'Observations: none yet.'
       : `Latest observations, oldest first:\n${observations.map((o) => `- ${iso(o.at)} ${quote(o.text)}`).join('\n')}`,
@@ -318,7 +317,8 @@ export function checkPrompt(
     '2. Call recordCheck once with an `observation` of what you checked and saw, quoting no one. Your next check ' +
       'reads it if this context is lost, so carry over any instruction a message gave about what or when to check. ' +
       'Set `nextCheck` to when it should be checked again, `done: true` when its done-when holds, or neither to ' +
-      'wait until its conversation messages it.',
+      'wait until its conversation messages it. When a message changed what it watches, first rename it with ' +
+      'updateTask, a title naming what it watches now.',
     '3. Then one of three outcomes. When something should be done, not only known, call `propose` once: one plain ' +
       'sentence for the approver ("I want to do X because Y"), why, and the exact work a background session with ' +
       'your normal permissions carries out once a person approves it. You do not do it yourself, and you do not also ' +
@@ -381,7 +381,7 @@ function checkOf(msg: NormalizedMessage): number | undefined {
 }
 
 /** A follow-up's own session coordinate, read back from its key and place. */
-function threadOf(item: Pick<AssistantItem, 'taskKey' | 'origin' | 'agentId'>): string | undefined {
+function threadOf(item: Pick<CheckedTask, 'taskKey' | 'origin' | 'agentId'>): string | undefined {
   const { platform, channel, transportScope } = item.origin
   const prefix = `${platform}:${channel}:`
   const suffix = `:${item.agentId}${transportScope ? `:${transportScope}` : ''}`
@@ -418,10 +418,10 @@ export class FollowUpChecks {
     }
   }
 
-  /** A new follow-up of the caller's place with its own session key, owned by the place's long session, else the caller. */
+  /** A new follow-up of the caller's place, a watch task with its own session key, owned by the place's long session, else the caller. */
   async take(input: {
-    /** An id the caller minted, as an approved proposal's follow-up form names it (§5.13). */
-    id?: string
+    /** Its task key, minted by the caller, as an approved proposal's follow-up form names it before taking it (§5.13). */
+    taskKey?: string
     agentId: string
     origin: AssistantPlace
     caller: { sessionId: string; key: string }
@@ -432,42 +432,29 @@ export class FollowUpChecks {
     asker: string
     /** The platform thread the taking turn replies in. */
     replyThread?: string
-  }): Promise<AssistantItem> {
+  }): Promise<CheckedTask> {
     const { agentId, origin } = input
     const now = this.host.now()
-    const taskKey = sessionKey(
-      origin.platform,
-      origin.channel,
-      checkCoordinate(monotonicTs()),
-      agentId,
-      origin.transportScope
-    )
+    const taskKey = input.taskKey ?? followUpTaskKey(agentId, origin)
     const shared = (await this.host.sharedPlace?.(agentId, origin).catch(() => false)) ?? false
-    const item = await this.host.items.create({
-      ...(input.id !== undefined ? { id: input.id } : {}),
+    const owner = await this.host.parentFor(agentId, origin).catch(() => undefined)
+    const task = await this.host.watchTasks.open({
+      taskKey,
       agentId,
       title: input.title,
       doneWhen: input.doneWhen,
-      ...(input.nextCheck !== undefined ? { nextCheck: input.nextCheck } : {}),
-      status: input.nextCheck !== undefined ? 'active' : 'waiting',
+      ...(input.nextCheck !== undefined ? { nextAt: input.nextCheck } : {}),
       origin,
-      taskKey,
+      owner: owner ? { sessionId: owner.sessionId, key: owner.key } : input.caller,
       asker: input.asker,
       shared,
       ...(input.replyThread !== undefined ? { replyThread: input.replyThread } : {}),
-      ...(input.summary !== undefined ? { summary: input.summary } : {}),
+      ...(input.summary !== undefined ? { background: input.summary } : {}),
       now
     })
-    const owner = await this.host.parentFor(agentId, origin).catch(() => undefined)
-    await this.host.subsessions.openFollowUp({
-      agentId,
-      childSessionKey: taskKey,
-      parentSessionId: owner?.sessionId ?? input.caller.sessionId,
-      parentSessionKey: owner?.key ?? input.caller.key,
-      now
-    })
-    this.host.log.info(`follow-up: agent ${agentId} took ${item.id} (${taskKey})`)
-    return item
+    this.host.log.info(`follow-up: agent ${agentId} took ${taskKey}`)
+    const { owner: _owner, running: _running, ...rest } = task
+    return { ...rest, gettingToKnow: null }
   }
 
   /** A getting-to-know task of a place (assistant-mode.md §5.13): a follow-up marked as one, due at once, owned by the place's long session, which its report opens if nobody spoke there yet. */
@@ -477,7 +464,7 @@ export class FollowUpChecks {
     trigger: AssistantGettingToKnowTrigger
     title: string
     asker?: string
-  }): Promise<AssistantItem | undefined> {
+  }): Promise<CheckedTask | undefined> {
     const { agentId, place } = input
     const owner = await this.host.parentFor(agentId, place, { open: true }).catch(() => undefined)
     if (!owner) return undefined
@@ -502,15 +489,16 @@ export class FollowUpChecks {
       gettingToKnow: input.trigger,
       now
     })
-    await this.host.subsessions.openFollowUp({
+    await this.host.subsessions.openGettingToKnow({
       agentId,
       childSessionKey: taskKey,
       parentSessionId: owner.sessionId,
       parentSessionKey: owner.key,
+      place,
       now
     })
     this.host.log.info(`getting-to-know task: agent ${agentId} took ${item.id} (${taskKey}, ${input.trigger})`)
-    return item
+    return await this.host.tasks.get(agentId, taskKey)
   }
 
   /** A getting-to-know task someone asked for (§5.13): one at a time per place, counted against the budget, and started at once. */
@@ -534,7 +522,7 @@ export class FollowUpChecks {
       place.channel,
       place.transportScope ?? ''
     ])
-    type Decided = GettingToKnowRequestResult | { kind: 'start'; item: AssistantItem; admitted: Admission }
+    type Decided = GettingToKnowRequestResult | { kind: 'start'; item: CheckedTask; admitted: Admission }
     const decided = await this.withLock(lockKey, async (): Promise<Decided> => {
       const latest = await this.host.items.latestGettingToKnow(agentId, place)
       if (latest && followUpOpen(latest))
@@ -553,10 +541,10 @@ export class FollowUpChecks {
           reason: 'parent_gone',
           message: 'This place has no ongoing conversation to report to. Nothing was started.'
         }
-      const due = { itemId: item.id, nextCheck: item.nextCheck ?? now }
+      const due = { taskKey: item.taskKey, nextCheck: item.nextAt ?? now }
       const started = await this.withLock(
         item.taskKey,
-        async () => await this.begin(agentId, item.id, due, this.host.now(), false, 'message')
+        async () => await this.begin(agentId, item.taskKey, due, this.host.now(), false, 'message')
       )
       if (started === 'no-place' || started === 'busy')
         return {
@@ -603,21 +591,21 @@ export class FollowUpChecks {
     }
   }
 
-  /** The follow-up a check is running in this session for, while it runs. */
-  async itemFor(agentId: string, key: string): Promise<string | undefined> {
-    return (await this.host.checks.byRunningKey(agentId, key))?.itemId
+  /** The task a check is running in this session for, while it runs: its task key. */
+  async taskFor(agentId: string, key: string): Promise<string | undefined> {
+    return (await this.host.checks.byRunningKey(agentId, key))?.taskKey
   }
 
-  /** Who a check in this session reads as: its follow-up, whose asker counts, and the senders of the messages it took. */
-  async askersFor(agentId: string, key: string): Promise<{ item?: AssistantItem; extra: CheckAskers }> {
+  /** Who a check in this session reads as: its task, whose asker counts, and the senders of the messages it took. */
+  async askersFor(agentId: string, key: string): Promise<{ item?: CheckedTask; extra: CheckAskers }> {
     const state = await this.host.checks.byRunningKey(agentId, key)
-    const item = await this.host.items.byTaskKey(agentId, key)
+    const item = await this.host.tasks.get(agentId, key)
     return { ...(item ? { item } : {}), extra: state ? parseInput(state.runningInput).askers : NONE }
   }
 
   /** Keep a check's report for its end; a later one replaces an earlier one. False once the check is over. */
-  async report(agentId: string, key: string, itemId: string, text: string): Promise<boolean> {
-    return await this.host.checks.keepReport(agentId, itemId, key, text, this.host.now())
+  async report(agentId: string, key: string, taskKey: string, text: string): Promise<boolean> {
+    return await this.host.checks.keepReport(agentId, taskKey, key, text, this.host.now())
   }
 
   /** A check asks for approval to act on its follow-up (assistant-mode.md §5.10): at most once per check, and it runs nothing. */
@@ -630,7 +618,7 @@ export class FollowUpChecks {
     this.proposing.add(key)
     try {
       if (await proposals.proposedFrom(agentId, key, state.runningSince ?? 0)) throw new Error(once)
-      const item = await this.host.items.get(agentId, state.itemId)
+      const item = await this.host.tasks.get(agentId, state.taskKey)
       if (!item) throw new Error('this follow-up is gone; nothing was proposed')
       return await proposals.propose({ agentId, key, item }, input)
     } finally {
@@ -641,7 +629,7 @@ export class FollowUpChecks {
   /** The owning session's message (assistant-mode.md §5.12): a check now, or the next one while one runs; refused once the day's budget is spent. */
   async message(
     agentId: string,
-    item: AssistantItem,
+    item: CheckedTask,
     input: { text: string; askers: CheckAskers }
   ): Promise<FollowUpMessageResult> {
     if (item.gettingToKnow !== null)
@@ -667,7 +655,7 @@ export class FollowUpChecks {
     type Decided = FollowUpMessageResult | { kind: 'start'; admitted: Admission }
     const decided = await this.withLock(item.taskKey, async (): Promise<Decided> => {
       const now = this.host.now()
-      const state = await this.host.checks.get(agentId, item.id)
+      const state = await this.host.checks.get(agentId, item.taskKey)
       const pending = parseMessages(state?.pendingMessages ?? null)
       const runs = !!state?.runningKey && state.runningSince !== null && state.runningSince >= now - CHECK_STALE_MS
       // Messages already waiting go with the next check, which is counted once.
@@ -682,13 +670,13 @@ export class FollowUpChecks {
           message: `${FOLLOW_UP_PENDING_MAX} messages already wait for this follow-up’s next check. Nothing was sent.`
         }
       const queued = [...pending, { text: input.text, at: now, askers: input.askers }]
-      await this.host.checks.setPendingMessages(agentId, item.id, JSON.stringify(queued), now)
+      await this.host.checks.setPendingMessages(agentId, item.taskKey, JSON.stringify(queued), now)
       if (runs) return { kind: 'queued' }
-      const started = await this.begin(agentId, item.id, undefined, now)
+      const started = await this.begin(agentId, item.taskKey, undefined, now)
       if (started === 'no-place') {
         await this.host.checks.setPendingMessages(
           agentId,
-          item.id,
+          item.taskKey,
           pending.length > 0 ? JSON.stringify(pending) : null,
           now
         )
@@ -714,18 +702,19 @@ export class FollowUpChecks {
   /** End a follow-up (assistant-mode.md §5.12): no further checks, its waiting messages dropped, and a running check stopped. */
   async stop(
     agentId: string,
-    item: AssistantItem,
+    item: CheckedTask,
     actor: { userId: string; name?: string; isBot?: boolean }
   ): Promise<'stopped' | 'ended'> {
     const now = this.host.now()
     const ended = await this.withLock(item.taskKey, async () => {
-      if (!(await this.host.items.schedule(agentId, item.id, { status: 'dropped', nextCheck: null }, now))) return true
-      await this.host.checks.setPendingMessages(agentId, item.id, null, now)
+      if (!(await this.host.tasks.schedule(agentId, item.taskKey, { status: 'dropped', nextAt: null }, now)))
+        return true
+      await this.host.checks.setPendingMessages(agentId, item.taskKey, null, now)
       return false
     })
     if (ended) return 'ended'
-    if (item.watch) await this.host.watches?.end(agentId, item.id)
-    const state = await this.host.checks.get(agentId, item.id)
+    if (item.watch) await this.host.watches?.end(agentId, item.taskKey)
+    const state = await this.host.checks.get(agentId, item.taskKey)
     if (state?.runningKey) await this.host.stopSession?.(item.taskKey, actor).catch(() => false)
     this.host.log.info(`follow-up ${item.taskKey}: ended`)
     return 'stopped'
@@ -762,40 +751,37 @@ export class FollowUpChecks {
       this.host.log.debug(`follow-up: agent ${agent.id} used its ${budget} checks of the last 24 hours`)
       return true
     }
-    for (const itemId of await this.host.checks.withPendingMessages(agent.id, now, FOLLOW_UP_PENDING_MAX)) {
+    for (const taskKey of await this.host.checks.withPendingMessages(agent.id, now, FOLLOW_UP_PENDING_MAX)) {
       if (await spent()) return
-      const item = await this.host.items.get(agent.id, itemId)
-      if (item) await this.withLock(item.taskKey, async () => await this.begin(agent.id, itemId, undefined, now))
+      await this.withLock(taskKey, async () => await this.begin(agent.id, taskKey, undefined, now))
     }
     // A wake takes the one scheduled slot only while a fifth of the day's budget is left (§5.14).
     const { count } = await this.host.checks.checksSince(agent.id, now - CHECK_BUDGET_WINDOW_MS)
     if (budget - count >= Math.ceil(budget / WAKE_BUDGET_SHARE)) {
       const [woken] = await this.host.checks.wokenDue(agent.id, now, 1, now - CHECK_STALE_MS, now - WAKE_SPACING_MS)
-      const item = woken === undefined ? undefined : await this.host.items.get(agent.id, woken)
-      if (item) {
-        const started = await this.withLock(item.taskKey, async () =>
-          this.begin(agent.id, item.id, undefined, now, true, 'wake')
+      if (woken !== undefined) {
+        const started = await this.withLock(woken, async () =>
+          this.begin(agent.id, woken, undefined, now, true, 'wake')
         )
         if (started !== 'busy' && started !== 'no-place') return
       }
     }
     const [due] = await this.host.checks.due(agent.id, now, 1, now - CHECK_STALE_MS)
     if (!due || (await spent())) return
-    const item = await this.host.items.get(agent.id, due.itemId)
-    if (item) await this.withLock(item.taskKey, async () => await this.begin(agent.id, due.itemId, due, now))
+    await this.withLock(due.taskKey, async () => await this.begin(agent.id, due.taskKey, due, now))
   }
 
   /** Start a check, holding the follow-up's lock: a scheduled one only while none of the agent's runs, a messaged or requested one at once. */
   private async begin(
     agentId: string,
-    itemId: string,
+    taskKey: string,
     due: AssistantCheckDue | undefined,
     now: number,
     exclusive = due !== undefined,
     startedBy: AssistantCheckStart = due !== undefined ? 'time' : 'message'
   ): Promise<'no-place' | 'busy' | { admitted: Admission }> {
-    const item = await this.host.items.get(agentId, itemId)
-    if (!item || !followUpOpen(item) || (due && item.nextCheck !== due.nextCheck)) return 'busy'
+    const item = await this.host.tasks.get(agentId, taskKey)
+    if (!item || !followUpOpen(item) || (due && item.nextAt !== due.nextCheck)) return 'busy'
     const thread = threadOf(item)
     const parent = await this.host.parentFor(agentId, item.origin, item.gettingToKnow ? { open: true } : undefined)
     // A getting-to-know task whose place may no longer take one ends without reading (§5.13).
@@ -808,37 +794,39 @@ export class FollowUpChecks {
           : facts.external
             ? 'its place is shared with another organization'
             : 'its place has no conversation to report to'
-      await this.host.items.schedule(agentId, item.id, { status: 'dropped', nextCheck: null }, now)
-      await this.observe(agentId, item.id, `Did not get to know this place: ${why}.`)
+      await this.host.tasks.schedule(agentId, taskKey, { status: 'dropped', nextAt: null }, now)
+      await this.observe(agentId, taskKey, `Did not get to know this place: ${why}.`)
       this.host.log.info(`getting-to-know task ${item.taskKey}: ended without reading (${why})`)
       return 'no-place'
     }
     if (!parent || !thread) {
       // No conversation to report to: a scheduled check is passed over, once.
       if (due) {
-        await this.host.checks.skip(agentId, item.id, due.nextCheck, now)
+        await this.host.checks.skip(agentId, taskKey, due.nextCheck, now)
         await this.observe(
           agentId,
-          item.id,
+          taskKey,
           'No scheduled check ran: the conversation this follow-up belongs to has no ongoing session to report to.'
         )
       }
       return 'no-place'
     }
     const key = item.taskKey
-    // Its row names the place's current long session, which owns it (§5.12).
-    await this.host.subsessions.openFollowUp({
-      agentId,
-      childSessionKey: key,
-      parentSessionId: parent.sessionId,
-      parentSessionKey: parent.key,
-      now
-    })
-    await this.host.subsessions.adoptFollowUps(agentId, item.origin, { sessionId: parent.sessionId, key: parent.key })
-    const state = await this.host.checks.get(agentId, item.id)
+    // Its row names the place's current long session, which owns it (§5.12); a getting-to-know task's is indexed again if it went.
+    if (item.gettingToKnow)
+      await this.host.subsessions.openGettingToKnow({
+        agentId,
+        childSessionKey: key,
+        parentSessionId: parent.sessionId,
+        parentSessionKey: parent.key,
+        place: item.origin,
+        now
+      })
+    await this.host.subsessions.adoptWatchTasks(agentId, item.origin, { sessionId: parent.sessionId, key: parent.key })
+    const state = await this.host.checks.get(agentId, key)
     const pending = parseMessages(state?.pendingMessages ?? null)
     const input: CheckInput = { messages: pending, askers: mergeAskers(pending.map((m) => m.askers)) }
-    const begun = await this.host.checks.begin(agentId, item.id, {
+    const begun = await this.host.checks.begin(agentId, key, {
       key,
       nextCheck: due?.nextCheck ?? null,
       observationVersion: item.observationVersion,
@@ -852,7 +840,7 @@ export class FollowUpChecks {
     if (!begun) return 'busy'
     const messages = parseMessages(begun.messages)
     const shared = await this.host.sharedPlace?.(agentId, item.origin).catch(() => item.shared)
-    if (shared !== undefined) await this.host.items.setShared(agentId, item.id, shared)
+    if (shared !== undefined) await this.host.tasks.setShared(agentId, key, shared)
     await this.host.subsessions.checking(agentId, key)
     this.running.add(key)
     const deliveryId = monotonicTs()
@@ -906,7 +894,7 @@ export class FollowUpChecks {
     let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
     const admitted: Admission = new Promise((resolve) => (settleAdmission = resolve))
     let answered = false
-    this.host.log.info(`follow-up: agent ${agentId} checks ${item.id} (${key}, check ${begun.checkNo})`)
+    this.host.log.info(`follow-up: agent ${agentId} checks ${key} (check ${begun.checkNo})`)
     void this.host
       .dispatch(agentId, msg, parent.integrationId, callMeta, (result) => {
         answered = true
@@ -927,7 +915,7 @@ export class FollowUpChecks {
   /** A check's turn ended: count it, back off or stop on failure, pass on what it found, then take any message that waited. */
   async settle(end: CheckTurnEnd): Promise<void> {
     const { agentId, key } = end
-    let itemId: string | undefined
+    let taskKey: string | undefined
     try {
       if (end.replayed) return
       await this.withLock(key, async () => {
@@ -940,7 +928,7 @@ export class FollowUpChecks {
         // The end of a check a newer one replaced as stale settles nothing of the newer one.
         const check = checkOf(end.msg)
         if (check !== undefined && state.runningCheck !== null && check !== state.runningCheck) return
-        itemId = state.itemId
+        taskKey = state.taskKey
         let verdict = verdictOf(end)
         if (verdict.kind === 'completed' && !(await this.recorded(agentId, state)))
           verdict = { kind: 'failed', why: 'nothing recorded' }
@@ -951,20 +939,19 @@ export class FollowUpChecks {
     } finally {
       this.running.delete(key)
     }
-    if (itemId !== undefined) await this.takeWaiting(agentId, itemId)
+    if (taskKey !== undefined) await this.takeWaiting(agentId, taskKey)
   }
 
   /** Messages that waited for a check that just ended start the next one, budget permitting. */
-  private async takeWaiting(agentId: string, itemId: string): Promise<void> {
+  private async takeWaiting(agentId: string, taskKey: string): Promise<void> {
     try {
       if (this.host.draining() || !this.host.mayCheck(agentId)) return
       const now = this.host.now()
       const waiting = await this.host.checks.withPendingMessages(agentId, now, FOLLOW_UP_PENDING_MAX)
-      if (!waiting.includes(itemId) || (await this.overBudget(agentId, now))) return
-      const item = await this.host.items.get(agentId, itemId)
-      if (item) await this.withLock(item.taskKey, async () => await this.begin(agentId, itemId, undefined, now))
+      if (!waiting.includes(taskKey) || (await this.overBudget(agentId, now))) return
+      await this.withLock(taskKey, async () => await this.begin(agentId, taskKey, undefined, now))
     } catch (err) {
-      this.host.log.warn(`follow-up ${itemId}: its waiting messages did not start a check: ${(err as Error).message}`)
+      this.host.log.warn(`follow-up ${taskKey}: its waiting messages did not start a check: ${(err as Error).message}`)
     }
   }
 
@@ -1006,7 +993,7 @@ export class FollowUpChecks {
   private async recorded(agentId: string, state: AssistantCheckState): Promise<boolean> {
     const baseline = state.runningObservationVersion
     if (baseline === null) return true
-    const item = await this.host.items.get(agentId, state.itemId)
+    const item = await this.host.tasks.get(agentId, state.taskKey)
     if (item?.gettingToKnow && state.runningReport === null) return false
     return !item || item.observationVersion > baseline
   }
@@ -1019,10 +1006,10 @@ export class FollowUpChecks {
     state: AssistantCheckState,
     verdict: Verdict
   ): Promise<void> {
-    const { itemId, runningReport: report } = state
+    const { taskKey, runningReport: report } = state
     const check = state.runningCheck ?? 0
     const row = await this.host.subsessions.get(agentId, key)
-    const item = await this.host.items.get(agentId, itemId)
+    const item = await this.host.tasks.get(agentId, taskKey)
     const stops = verdict.kind === 'failed' && state.failures + 1 >= CHECK_MAX_FAILURES
     if (item?.gettingToKnow) return await this.concludeGettingToKnow(agentId, key, caller, state, verdict, item, stops)
     // People read this in the console, so the follow-up is named by its title, never its key.
@@ -1034,14 +1021,14 @@ export class FollowUpChecks {
         `[follow-up] Checks of ${name} stopped after ${CHECK_MAX_FAILURES} failed attempts in a row. They resume ` +
         'once it is messaged with messageTask, by the taskId listTasks shows for it. Tell the people here.'
       const reportId = `check:${key}:${check}:stopped`
-      if ((await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text, thread)) === 'draining')
+      if ((await this.deliver(agentId, taskKey, caller, row.parentSessionId, reportId, text, thread)) === 'draining')
         return
     }
     let reported = false
     if (report !== null && row && caller) {
       const text = `[follow-up] The check of ${name} found a change. Pass it on to the people here:\n\n${report}`
       const reportId = `check:${key}:${check}:report`
-      const delivered = await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text, thread)
+      const delivered = await this.deliver(agentId, taskKey, caller, row.parentSessionId, reportId, text, thread)
       if (delivered === 'draining') return
       reported = delivered === 'delivered'
     }
@@ -1052,29 +1039,29 @@ export class FollowUpChecks {
     const seen = latest && baseline !== null && latest.version > baseline ? latest.text : null
     if (verdict.kind === 'completed' || verdict.kind === 'stopped') {
       if (state.runningCheck !== null)
-        await this.host.checks.endCheck(agentId, itemId, state.runningCheck, { observation: seen, reported, now })
-      await this.host.checks.succeed(agentId, itemId, key, now)
+        await this.host.checks.endCheck(agentId, taskKey, state.runningCheck, { observation: seen, reported, now })
+      await this.host.checks.succeed(agentId, taskKey, key, now)
       await this.host.subsessions.finish(agentId, key, verdict.kind === 'completed' ? 'done' : 'failed')
     } else if (verdict.kind === 'released') {
-      await this.host.checks.release(agentId, itemId, key, now)
+      await this.host.checks.release(agentId, taskKey, key, now)
       await this.host.subsessions.finish(agentId, key, 'failed')
-      await this.restore(agentId, itemId, input.messages, now)
-      await this.host.checks.restoreWake(agentId, itemId, state.runningWake, now)
+      await this.restore(agentId, taskKey, input.messages, now)
+      await this.host.checks.restoreWake(agentId, taskKey, state.runningWake, now)
     } else {
       await this.host.subsessions.finish(agentId, key, 'failed')
       // The events stay recorded: the retry takes them, and once checks stop a message does (§5.14).
-      await this.host.checks.restoreWake(agentId, itemId, state.runningWake, now)
+      await this.host.checks.restoreWake(agentId, taskKey, state.runningWake, now)
       const why = `Scheduled check failed (${verdict.why})`
-      const failed = await this.host.checks.fail(agentId, itemId, key, now, item?.nextCheck ?? null)
+      const failed = await this.host.checks.fail(agentId, taskKey, key, now, item?.nextAt ?? null)
       if (failed) {
         const note = failed.stopped
           ? `${why}, ${CHECK_MAX_FAILURES} times in a row; checks stop until the follow-up is messaged.`
           : `${why}; the next attempt is in ${checkBackoffMs(failed.failures) / 60_000} minutes.`
         if (state.runningCheck !== null)
-          await this.host.checks.endCheck(agentId, itemId, state.runningCheck, { observation: note, reported, now })
-        await this.observe(agentId, itemId, note)
+          await this.host.checks.endCheck(agentId, taskKey, state.runningCheck, { observation: note, reported, now })
+        await this.observe(agentId, taskKey, note)
         // Messages of a failed check wait for its next attempt; once checks stop, the stop report speaks for them.
-        if (!failed.stopped) await this.restore(agentId, itemId, input.messages, now)
+        if (!failed.stopped) await this.restore(agentId, taskKey, input.messages, now)
       }
     }
   }
@@ -1086,10 +1073,10 @@ export class FollowUpChecks {
     caller: TaskCaller | undefined,
     state: AssistantCheckState,
     verdict: Verdict,
-    item: AssistantItem,
+    item: CheckedTask,
     stops: boolean
   ): Promise<void> {
-    const { itemId, runningReport: report } = state
+    const { taskKey, runningReport: report } = state
     const check = state.runningCheck ?? 0
     const row = await this.host.subsessions.get(agentId, key)
     const facts = await this.host.gettingToKnowFacts?.(agentId, item).catch(() => undefined)
@@ -1108,14 +1095,14 @@ export class FollowUpChecks {
       // Its round may propose, where the place has cards (§5.13).
       const delivered = await this.deliver(
         agentId,
-        itemId,
+        taskKey,
         caller,
         row.parentSessionId,
         reportId,
         text,
         undefined,
         opens,
-        itemId
+        item.itemId
       )
       if (delivered === 'draining') return
       reported = delivered === 'delivered'
@@ -1123,39 +1110,39 @@ export class FollowUpChecks {
     if (stops && item.gettingToKnow === 'requested' && row && caller) {
       const text = gettingToKnowFailedText(place, CHECK_MAX_FAILURES)
       const reportId = `check:${key}:${check}:stopped`
-      const sent = await this.deliver(agentId, itemId, caller, row.parentSessionId, reportId, text, undefined, opens)
+      const sent = await this.deliver(agentId, taskKey, caller, row.parentSessionId, reportId, text, undefined, opens)
       if (sent === 'draining') return
     }
     const now = this.host.now()
     if (verdict.kind === 'completed' || verdict.kind === 'stopped') {
-      const latest = (await this.host.items.get(agentId, itemId))?.observations.at(-1)
+      const latest = (await this.host.tasks.get(agentId, taskKey))?.observations.at(-1)
       const baseline = state.runningObservationVersion
       const seen = latest && baseline !== null && latest.version > baseline ? latest.text : null
       if (state.runningCheck !== null)
-        await this.host.checks.endCheck(agentId, itemId, state.runningCheck, { observation: seen, reported, now })
-      await this.host.checks.succeed(agentId, itemId, key, now)
+        await this.host.checks.endCheck(agentId, taskKey, state.runningCheck, { observation: seen, reported, now })
+      await this.host.checks.succeed(agentId, taskKey, key, now)
       // Its one check ends it: done once read, stopped when someone stopped the read.
       const status = verdict.kind === 'completed' ? 'done' : 'dropped'
-      await this.host.items.schedule(agentId, itemId, { status, nextCheck: null }, now)
+      await this.host.tasks.schedule(agentId, taskKey, { status, nextAt: null }, now)
       await this.host.subsessions.finish(agentId, key, verdict.kind === 'completed' ? 'done' : 'failed')
     } else if (verdict.kind === 'released') {
-      await this.host.checks.release(agentId, itemId, key, now)
+      await this.host.checks.release(agentId, taskKey, key, now)
       await this.host.subsessions.finish(agentId, key, 'failed')
     } else {
       await this.host.subsessions.finish(agentId, key, 'failed')
-      const failed = await this.host.checks.fail(agentId, itemId, key, now, item.nextCheck)
+      const failed = await this.host.checks.fail(agentId, taskKey, key, now, item.nextAt)
       if (!failed) return
       const note = failed.stopped
         ? `Getting to know this place failed (${verdict.why}), ${CHECK_MAX_FAILURES} times in a row; it ended without reporting.`
         : `Getting to know this place failed (${verdict.why}); the next attempt is in ${checkBackoffMs(failed.failures) / 60_000} minutes.`
       if (state.runningCheck !== null)
-        await this.host.checks.endCheck(agentId, itemId, state.runningCheck, {
+        await this.host.checks.endCheck(agentId, taskKey, state.runningCheck, {
           observation: note,
           reported: false,
           now
         })
-      await this.observe(agentId, itemId, note)
-      if (failed.stopped) await this.host.items.schedule(agentId, itemId, { status: 'dropped', nextCheck: null }, now)
+      await this.observe(agentId, taskKey, note)
+      if (failed.stopped) await this.host.tasks.schedule(agentId, taskKey, { status: 'dropped', nextAt: null }, now)
     }
   }
 
@@ -1163,17 +1150,22 @@ export class FollowUpChecks {
   async wake(agentId: string, req: AssistantFollowUpWake): Promise<AssistantFollowUpWakeResult> {
     if (!this.host.holdsDuty?.(agentId) || this.host.draining()) return { accepted: false, reason: 'not_holder' }
     const agent = [...this.host.agents()].find((candidate) => candidate.id === agentId)
-    const item = assistantModeOn(agent) ? await this.host.items.get(agentId, req.followUpId) : undefined
+    const item = assistantModeOn(agent) ? await this.host.tasks.get(agentId, req.followUpId) : undefined
     const watched = item?.watch && (item.watch.state === 'watching' || item.watch.state === 'pending')
     if (!item || !followUpOpen(item) || item.gettingToKnow !== null || !watched)
       return { accepted: false, reason: 'not_found' }
     const now = this.host.now()
     if (req.ended) {
-      await this.host.items.setWatch(agentId, item.id, { ...item.watch!, state: 'ended', reason: req.ended }, now)
+      await this.host.watchTasks.setWatch(
+        agentId,
+        item.taskKey,
+        { ...item.watch!, state: 'ended', reason: req.ended },
+        now
+      )
       this.host.log.info(`follow-up ${item.taskKey}: its watch ended (${req.ended})`)
       return { accepted: true }
     }
-    const outcome = await this.host.checks.recordWake(agentId, item.id, {
+    const outcome = await this.host.checks.recordWake(agentId, item.taskKey, {
       wakeId: req.wakeId,
       ...(req.subscription !== undefined ? { subscription: req.subscription } : {}),
       kinds: req.kinds,
@@ -1191,21 +1183,21 @@ export class FollowUpChecks {
   /** Put a check's messages back in front of any that arrived meanwhile. */
   private async restore(
     agentId: string,
-    itemId: string,
+    taskKey: string,
     messages: readonly CheckMessage[],
     now: number
   ): Promise<void> {
     if (messages.length === 0) return
-    const state = await this.host.checks.get(agentId, itemId)
+    const state = await this.host.checks.get(agentId, taskKey)
     const waiting = parseMessages(state?.pendingMessages ?? null)
     const all = [...messages, ...waiting].slice(-FOLLOW_UP_PENDING_MAX)
-    await this.host.checks.setPendingMessages(agentId, itemId, JSON.stringify(all), now)
+    await this.host.checks.setPendingMessages(agentId, taskKey, JSON.stringify(all), now)
   }
 
   /** One report into the place, in the thread the follow-up was taken in; one refused is recorded on the follow-up instead. `draining` leaves the check to recovery. */
   private async deliver(
     agentId: string,
-    itemId: string,
+    taskKey: string,
     caller: TaskCaller,
     parentSessionId: string,
     reportId: string,
@@ -1229,18 +1221,18 @@ export class FollowUpChecks {
         gettingToKnow
       )
     } catch (err) {
-      this.host.log.warn(`follow-up report for ${itemId} failed: ${(err as Error).message}`)
+      this.host.log.warn(`follow-up report for ${taskKey} failed: ${(err as Error).message}`)
     }
     if (!delivered)
       await this.observe(
         agentId,
-        itemId,
+        taskKey,
         'A report from a check could not reach the conversation this follow-up belongs to.'
       )
     return delivered ? 'delivered' : 'refused'
   }
 
-  private async observe(agentId: string, itemId: string, text: string): Promise<void> {
-    await this.host.items.appendObservation(agentId, itemId, { text, author: 'check', now: this.host.now() })
+  private async observe(agentId: string, taskKey: string, text: string): Promise<void> {
+    await this.host.tasks.appendObservation(agentId, taskKey, { text, author: 'check', now: this.host.now() })
   }
 }

@@ -29,7 +29,7 @@ export interface BoardPlace {
 
 /** One open task as the board reads it. */
 export interface BoardTask {
-  /** Its `taskId`: a task's session key, a follow-up's task key. */
+  /** Its one id, the `taskId`: its session's key, in work and watch mode alike. */
   id: string
   kind: BoardKind
   title: string | null
@@ -47,10 +47,11 @@ export interface BoardTask {
   /** The outward ids of its own sessions, which a read off the asker's own bot is judged by. */
   sessions: string[]
   row?: PlacedSubsession
+  /** A getting-to-know task's record, which the item ledger keeps (§5.13). */
   item?: AssistantItemOverview
 }
 
-/** The two stores the board reads; nothing moves between them. */
+/** The task store, whose work and watch rows are the tasks, and the item ledger, which keeps getting-to-know tasks. */
 export interface BoardStores {
   assistantSubsessions: Pick<AssistantSubsessionIndex, 'listPlaced'>
   assistantItems: Pick<AssistantItemLedger, 'listOpen'>
@@ -83,7 +84,7 @@ export function boardOrder(a: Pick<BoardTask, 'changedAt' | 'id'>, b: Pick<Board
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
-/** The agent's open tasks in board order; `here` marks the coordinator `owner`'s own and its place's follow-ups. */
+/** The agent's open tasks in board order; `here` marks the coordinator `owner`'s own and its place's watch and getting-to-know tasks. */
 export async function readOpenWork(
   stores: BoardStores,
   agentId: string,
@@ -104,7 +105,7 @@ export async function readOpenWork(
     const scheduled = item.status === 'active' && item.nextCheck !== null
     tasks.push({
       id: item.taskKey,
-      kind: item.gettingToKnow ? 'getting to know' : 'follow-up',
+      kind: 'getting to know',
       title: item.title,
       status: row?.state === 'open' ? 'running' : scheduled ? 'next' : 'waiting',
       ...(scheduled ? { nextCheck: item.nextCheck! } : {}),
@@ -118,7 +119,11 @@ export async function readOpenWork(
     })
   }
   for (const row of rows) {
-    if (row.kind === 'follow-up') continue
+    if (row.mode === 'watch') {
+      const task = watchTaskLine(row, place)
+      if (task) tasks.push(task)
+      continue
+    }
     const approved = isTaskCoordinate(subsessionCoordinateOf(row.childSessionKey))
     // An approved proposal runs once and is never rerun (§5.10), so a settled one is closed work.
     if (approved && (row.state === 'done' || row.state === 'failed')) continue
@@ -144,6 +149,28 @@ export async function readOpenWork(
     })
   }
   return tasks.sort(boardOrder)
+}
+
+/** A follow-up's line, from its watch row: open while active or waiting, `running` during a check, else `next <time>` or `waiting`; a getting-to-know task's row has no schedule and is read from its item. */
+function watchTaskLine(row: PlacedSubsession, place: BoardPlace): BoardTask | undefined {
+  if ((row.watchStatus !== 'active' && row.watchStatus !== 'waiting') || !row.place) return undefined
+  const here = samePlace(row.place, place)
+  // The same conversation through another bot is not this coordinator's to address, nor another place's.
+  if (!here && sameConversation(row.place, place)) return undefined
+  const scheduled = row.watchStatus === 'active' && row.nextAt !== undefined
+  return {
+    id: row.childSessionKey,
+    kind: 'follow-up',
+    title: row.title ?? null,
+    status: row.state === 'open' ? 'running' : scheduled ? 'next' : 'waiting',
+    ...(scheduled ? { nextCheck: row.nextAt! } : {}),
+    place: { ...row.place, transportScope: row.place.transportScope ?? null },
+    ...(row.owner?.conversationKind ? { placeKind: row.owner.conversationKind } : {}),
+    changedAt: row.changedAt ?? row.createdAt,
+    here,
+    sessions: row.sessionId ? [row.sessionId] : [],
+    row
+  }
 }
 
 /** How a discovered line is judged: who is asking, the live lookups, and how a place is described. */

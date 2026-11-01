@@ -10,8 +10,10 @@ import {
 import { stopIndexedSubsession } from '../../cp/assistant-activity.js'
 import { subsessionLabel } from '../../permissions/subsession-approval.js'
 import {
+  isCheckCoordinate,
   isDelegatedTaskKey,
   isDelegationCoordinate,
+  isGettingToKnowCoordinate,
   isSubsessionCoordinate,
   isTaskCoordinate,
   keepsTaskSummaryAt,
@@ -19,7 +21,7 @@ import {
   subsessionCoordinateOf,
   type TaskReach
 } from '../../session/subsession-coordinate.js'
-import type { AssistantItem } from '../../store/assistant-items.js'
+import type { CheckedTask } from '../../assistant/checked-tasks.js'
 import {
   TASK_SUMMARY_MAX_CHARS,
   type AssistantSubsession,
@@ -56,16 +58,16 @@ export interface AssistantSubsessionDeps extends TaskReachDeps {
     setSummary?: AssistantSubsessionIndex['setSummary']
     /** A coordinator's work board as its live turn's askers may see it (assistant-mode.md §5.18). */
     board?(ctx: SessionContext, owner: { sessionId?: string; key: string }): Promise<BoardView>
-    /** Follow-ups (assistant-mode.md §5.12), owned by their place's current long session. */
+    /** Watch tasks (assistant-mode.md §5.12, §5.18), owned by their place's current long session. */
     followUps?: {
       /** Whether the calling session is its place's current long session, which then owns the place's follow-ups. */
       own(ctx: SessionContext): Promise<boolean>
-      /** A follow-up by its `taskId`. */
-      get(agentId: string, taskKey: string): Promise<AssistantItem | undefined>
+      /** A follow-up, or a getting-to-know task, by its `taskId`. */
+      get(agentId: string, taskKey: string): Promise<CheckedTask | undefined>
       /** End it; `ended` when it already had. */
-      stop(ctx: SessionContext, item: AssistantItem): Promise<'stopped' | 'ended'>
+      stop(ctx: SessionContext, item: CheckedTask): Promise<'stopped' | 'ended'>
       /** Whether its latest check handed back a report; false before any. */
-      reported(item: AssistantItem): Promise<boolean>
+      reported(item: CheckedTask): Promise<boolean>
     }
     now?(): number
   }
@@ -209,7 +211,7 @@ const coordinateOf = subsessionCoordinateOf
 const taskCoordinateOf = (key: string): boolean => isDelegationCoordinate(coordinateOf(key))
 
 /** Whether a follow-up belongs to the calling session's place. */
-const ofPlace = (item: AssistantItem, ctx: SessionContext): boolean =>
+const ofPlace = (item: CheckedTask, ctx: SessionContext): boolean =>
   item.origin.platform === ctx.platform &&
   item.origin.channel === ctx.channel &&
   (item.origin.transportScope ?? null) === (ctx.transportScope ?? null)
@@ -222,7 +224,7 @@ export const stopTask: ToolHandler<AssistantSubsessionDeps> = async (ctx, args, 
   if (!mayOpenTasksAt(ctx.thread)) return refused(NOT_OWNED)
   const here = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
   const row = await port.find(ctx.agentId, taskId)
-  if (row?.kind === 'follow-up') return await stopFollowUp(ctx, row, port)
+  if (row?.mode === 'watch') return await stopFollowUp(ctx, row, port)
   if (!row || !taskCoordinateOf(row.childSessionKey) || row.parentSessionKey !== here) return refused(NOT_OWNED)
   // The recorded owner by outward id too: a session recreated on the same key did not start it.
   const owner = await port.sessionIdOf(here)
@@ -298,10 +300,12 @@ export interface ListedTask {
   lastActivity: string
   /** A follow-up's next scheduled check; null while it waits to be messaged. */
   nextCheck?: string | null
-  /** A delegated task's own account of its scope, status and next step, or a follow-up's summary. */
+  /** On a coordinator's list, its lifetime status as the work board shows it: running, idle, waiting, or next and the time of its next check. */
+  status?: string
+  /** A delegated task's own account of its scope, status and next step, or a follow-up's last check's result. */
   summary?: string
   summaryUpdatedAt?: string
-  /** Before a delegated task's first summary, the start of the message it was opened with. */
+  /** Before a task's first summary, the start of the message it was opened with, or what a follow-up was taken with. */
   background?: string
   /** A delegated task: whether a platform thread is attached (auto-session-mode.md §6.2), and which. */
   threaded?: boolean
@@ -336,7 +340,7 @@ function duration(ms: number): string {
 }
 
 function kindOf(row: AssistantSubsession): ListedTask['kind'] {
-  if (row.kind === 'follow-up') return 'follow-up'
+  if (row.mode === 'watch') return 'follow-up'
   return isTaskCoordinate(coordinateOf(row.childSessionKey)) ? 'approved proposal' : 'delegated task'
 }
 
@@ -346,7 +350,7 @@ const oneLine = (text: string): string => [...text.replace(/\s+/g, ' ').trim()].
 const iso = (at: number): string => new Date(at).toISOString()
 
 /** A follow-up's state: checking while a check runs, waiting between checks, then how it ended. */
-function followUpState(row: AssistantSubsession, item: AssistantItem): ListedTask['state'] {
+function followUpState(row: AssistantSubsession, item: CheckedTask): ListedTask['state'] {
   if (item.status === 'done') return 'done'
   if (item.status === 'dropped') return 'stopped'
   return row.state === 'open' ? 'checking' : 'waiting'
@@ -377,8 +381,8 @@ async function listedTaskOf(
       state: followUpState(row, item),
       ...common,
       lastActivity: iso(Math.max(item.updatedAt, session?.updatedAt ?? 0)),
-      nextCheck: item.nextCheck === null ? null : iso(item.nextCheck),
-      ...(item.summary.trim() ? { summary: item.summary.trim() } : {}),
+      nextCheck: item.nextAt === null ? null : iso(item.nextAt),
+      ...watchSummaryOf(item),
       handedBackResult: (await port.followUps?.reported(item)) ?? false
     }
   }
@@ -404,6 +408,18 @@ async function listedTaskOf(
     ...(delegated ? { threaded: threads.length > 0, ...(threads.length > 0 ? { threads } : {}) } : {}),
     handedBackResult: row.state === 'done'
   }
+}
+
+/** A watch task's summary, its last check's result, with when it was written; before its first check, what it was taken with. */
+function watchSummaryOf(
+  item: Pick<CheckedTask, 'summary' | 'summaryUpdatedAt' | 'background'>
+): Pick<ListedTask, 'summary' | 'summaryUpdatedAt' | 'background'> {
+  if (item.summary.trim())
+    return {
+      summary: cut(item.summary, TASK_SUMMARY_MAX_CHARS),
+      ...(item.summaryUpdatedAt !== null ? { summaryUpdatedAt: iso(item.summaryUpdatedAt) } : {})
+    }
+  return item.background.trim() ? { background: cut(item.background, TASK_SUMMARY_MAX_CHARS) } : {}
 }
 
 /** The calling session's tasks, scoped like its running-tasks reminder, and its place's follow-ups while it is the place's long session; a coordinator reads its work board. */
@@ -486,7 +502,12 @@ async function boardListing(
     !cursor || cursor.list === 'elsewhere' ? boardPage('elsewhere', view.elsewhere ?? [], cursor) : undefined
   const listedHere = here
     ? (
-        await Promise.all(here.page.map((task) => (task.row ? listedTaskOf(ctx, port, task.row, now) : undefined)))
+        await Promise.all(
+          here.page.map(async (task): Promise<ListedTask | undefined> => {
+            const listed = task.row ? await listedTaskOf(ctx, port, task.row, now) : undefined
+            return listed ? { ...listed, status: boardStatusText(task) } : undefined
+          })
+        )
       ).filter((task): task is ListedTask => task !== undefined)
     : undefined
   const listedElsewhere = elsewhere
@@ -511,6 +532,7 @@ async function elsewhereTaskOf(
 ): Promise<ListedElsewhereTask> {
   const session = await port.sessionOf?.(task.id)
   const row = task.row
+  // A getting-to-know task's record is its item; every other task's is its row.
   const item = task.item
   const delegated = task.kind === 'delegated task'
   const threads = delegated ? ((await port.threadsOf?.(ctx.agentId, task.id)) ?? []) : []
@@ -529,7 +551,7 @@ async function elsewhereTaskOf(
           ...(row?.summaryUpdatedAt !== undefined && !item ? { summaryAt: iso(row.summaryUpdatedAt) } : {})
         }
       : row?.background !== undefined
-        ? { background: row.background }
+        ? { background: cut(row.background, ELSEWHERE_SUMMARY_CHARS) }
         : {}),
     ...(threads.length > 0 ? { threads } : {})
   }
@@ -540,13 +562,17 @@ const NOT_A_TASK = {
   reason: 'Only a task keeps a summary, and this session is not one. Nothing was saved.'
 }
 
+/** Whether a session's own row is a watch task, whose check renames it (assistant-mode.md §5.18); a getting-to-know task's is not one. */
+const watchTaskAt = (thread: string): boolean => isCheckCoordinate(thread) && !isGettingToKnowCoordinate(thread)
+
 /** A task saves its own summary, and its title with it (auto-session-mode.md §5.3); every other session is refused. */
 export const updateTask: ToolHandler<AssistantSubsessionDeps> = async (ctx, args, deps) => {
   const { summary, title } = parseArgs(UPDATE_TASK_ARGS, args)
   const port = deps.assistantSubsessions
   if (!port?.setSummary) throw new Error('updateTask: task summaries are not available on this daemon')
-  // A follow-up's check, an approved proposal and research keep no summary; a threaded task's row is found by its key.
-  if (isSubsessionCoordinate(ctx.thread) && !keepsTaskSummaryAt(ctx.thread)) return NOT_A_TASK
+  // An approved proposal and research keep no summary; a threaded task's row is found by its key, a watch task's check writes its own.
+  if (isSubsessionCoordinate(ctx.thread) && !keepsTaskSummaryAt(ctx.thread) && !watchTaskAt(ctx.thread))
+    return NOT_A_TASK
   const here = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
   const saved = await port.setSummary(ctx.agentId, here, {
     summary,

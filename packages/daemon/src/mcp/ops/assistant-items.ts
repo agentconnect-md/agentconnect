@@ -1,4 +1,4 @@
-// The follow-up tools (assistant-mode.md §5.12): an assistant-mode agent takes a follow-up, and its checks record what they saw over the bridge.
+// The follow-up tools (assistant-mode.md §5.12): an assistant-mode agent takes a follow-up, a watch task (§5.18), and its checks record what they saw over the bridge.
 import { z } from 'zod'
 import {
   ASSISTANT_PROPOSAL_SENTENCE_MAX,
@@ -7,20 +7,16 @@ import {
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../../agents/agent-schema.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
-import {
-  ASSISTANT_ITEM_LIMITS,
-  type AssistantItem,
-  type AssistantItemLedger,
-  type AssistantItemSchedule,
-  type AssistantPlace
-} from '../../store/assistant-items.js'
+import type { CheckedTask, CheckedTasks } from '../../assistant/checked-tasks.js'
+import { ASSISTANT_ITEM_LIMITS, type AssistantPlace } from '../../store/assistant-items.js'
+import type { WatchTaskStatus } from '../../store/assistant-watch-tasks.js'
 import { obj, type JsonValue, type ObjectToolSchema, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { isCheckCoordinate } from '../../session/subsession-coordinate.js'
 import type { SessionContext, ToolHandler } from './context.js'
 import { parseArgs, requiredString } from './args.js'
 
-/** The ledger calls a check's tools make. */
-export type AssistantItemLedgerPort = Pick<AssistantItemLedger, 'get' | 'appendObservation' | 'schedule'>
+/** The task-store calls a check's tools make, by the task's one id. */
+export type AssistantItemLedgerPort = Pick<CheckedTasks, 'get' | 'appendObservation' | 'schedule'>
 
 /** What a request for a getting-to-know task says back. */
 export type GettingToKnowRequest =
@@ -45,9 +41,9 @@ export type WatchOutcomeView =
 export interface FollowUpWatchToolPort {
   /** Refuse a URL that names no pull request, merge request or issue, before anything is written. */
   check(url: string): void
-  set(agentId: string, itemId: string, url: string): Promise<WatchOutcomeView>
-  clear(agentId: string, itemId: string): Promise<WatchOutcomeView>
-  end(agentId: string, itemId: string): Promise<void>
+  set(agentId: string, taskKey: string, url: string): Promise<WatchOutcomeView>
+  clear(agentId: string, taskKey: string): Promise<WatchOutcomeView>
+  end(agentId: string, taskKey: string): Promise<void>
 }
 
 export interface AssistantItemDeps {
@@ -56,8 +52,8 @@ export interface AssistantItemDeps {
     ledgerFor(agentId: string): AssistantItemLedgerPort | undefined
     /** The person whose message started the session's live turn, as an asker identity; undefined when no person did. */
     askerFor(ctx: SessionContext): Promise<string | undefined>
-    /** Take a follow-up of the session's place (assistant-mode.md §5.12). */
-    take?(ctx: SessionContext, input: FollowUpInput): Promise<AssistantItem>
+    /** Take a follow-up of the session's place (assistant-mode.md §5.12): a watch task, by its task key. */
+    take?(ctx: SessionContext, input: FollowUpInput): Promise<CheckedTask>
     /** Start a getting-to-know task of the session's place, as its long session asked (assistant-mode.md §5.13). */
     gettingToKnow?(ctx: SessionContext): Promise<GettingToKnowRequest>
     /** A proposal of the place's long session on the round a getting-to-know task reports back (§5.13); refused on any other. */
@@ -66,10 +62,10 @@ export interface AssistantItemDeps {
     watches?(): FollowUpWatchToolPort | undefined
     /** A check's side, in the follow-up's own session. */
     check?: {
-      /** The follow-up this session's check is running for; undefined once it ended. */
-      itemFor(ctx: SessionContext): Promise<string | undefined>
+      /** The task key of the task this session's check is running for; undefined once it ended. */
+      taskFor(ctx: SessionContext): Promise<string | undefined>
       /** Keep the check's report; it reaches the follow-up's conversation once the check ends. False once it ended. */
-      report(ctx: SessionContext, itemId: string, text: string): Promise<boolean>
+      report(ctx: SessionContext, taskKey: string, text: string): Promise<boolean>
       /** Ask for approval to act on the follow-up (assistant-mode.md §5.10); once per check, nothing runs here. */
       propose?(ctx: SessionContext, input: ProposeInput): Promise<Record<string, unknown>>
       now(): number
@@ -219,8 +215,8 @@ const NEXT_CHECK =
 export const FOLLOW_UP_TOOL: ToolDescriptor = {
   name: 'followUp',
   description:
-    'Take on following something up for the person asking: at each next check a read-only check runs in the ' +
-    'background and reports here only if something changed. It only looks and records what it saw, so promise a ' +
+    'Take on following something up for the person asking: a task in watch mode, where at each next check a ' +
+    'read-only check runs in the background and reports here only if something changed. It only looks and records what it saw, so promise a ' +
     'check then, never an action. First restate in your reply what you will watch, what counts as done and when ' +
     'to look next, and call this only after the person confirms. Call listTasks before restating: when an open ' +
     'follow-up of this conversation already covers the request, offer to send the change to it with sendMessage ' +
@@ -423,18 +419,18 @@ export const followUp: ToolHandler<AssistantItemDeps> = async (ctx, args, deps) 
   })
   // The person confirmed the follow-up, not the watch: it is taken either way (§5.14).
   const watch =
-    input.watch !== undefined ? watchNote(await watchesOf(deps).set(ctx.agentId, item.id, input.watch)) : undefined
+    input.watch !== undefined ? watchNote(await watchesOf(deps).set(ctx.agentId, item.taskKey, input.watch)) : undefined
   return {
     taskId: item.taskKey,
     followUp: {
       title: item.title,
       doneWhen: item.doneWhen,
-      nextCheck: iso(item.nextCheck),
-      summary: item.summary
+      nextCheck: iso(item.nextAt),
+      summary: item.background
     },
     ...(watch !== undefined ? { watch } : {}),
     note:
-      (item.nextCheck === null
+      (item.nextAt === null
         ? 'Taken. It runs no check until you message it with messageTask and this taskId.'
         : 'Taken. Its first check runs at nextCheck; listTasks shows it, messageTask changes it, stopTask ends it.') +
       ' Never show the taskId to people; name the follow-up by its title.'
@@ -447,10 +443,10 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
   const input = parseArgs(RECORD_CHECK_ARGS, args)
   const ledger = ledgerOf(ctx, deps)
   const port = deps.assistantItems?.check
-  const itemId = port ? await port.itemFor(ctx) : undefined
-  if (!port || itemId === undefined) throw new Error('this check has ended; nothing was written')
-  const item = await ledger.get(ctx.agentId, itemId)
-  if (item?.gettingToKnow) return await handBackGettingToKnow(ctx, input, itemId, ledger, port)
+  const taskKey = port ? await port.taskFor(ctx) : undefined
+  if (!port || taskKey === undefined) throw new Error('this check has ended; nothing was written')
+  const item = await ledger.get(ctx.agentId, taskKey)
+  if (item?.gettingToKnow) return await handBackGettingToKnow(ctx, input, taskKey, ledger, port)
   if (input.report !== undefined && input.report.length > ASSISTANT_ITEM_LIMITS.observation)
     throw new Error(
       `argument report must be at most ${ASSISTANT_ITEM_LIMITS.observation} characters; nothing was written`
@@ -461,29 +457,30 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
     throw new Error('nextCheck must be at least five minutes from now; nothing was written')
   const watches = input.watch !== undefined || input.done === true ? deps.assistantItems?.watches?.() : undefined
   if (input.watch !== undefined && input.watch !== '') watchesOf(deps).check(input.watch)
-  const next: AssistantItemSchedule =
+  const next: { status: WatchTaskStatus; nextAt: number | null } =
     input.done === true
-      ? { status: 'done', nextCheck: null }
+      ? { status: 'done', nextAt: null }
       : input.nextCheck !== undefined
-        ? { status: 'active', nextCheck: input.nextCheck }
-        : { status: 'waiting', nextCheck: null }
-  const appended = await ledger.appendObservation(ctx.agentId, itemId, { text: input.observation, author: 'check' })
+        ? { status: 'active', nextAt: input.nextCheck }
+        : { status: 'waiting', nextAt: null }
+  // What it saw becomes its summary, the last check's result (assistant-mode.md §5.18).
+  const appended = await ledger.appendObservation(ctx.agentId, taskKey, { text: input.observation, author: 'check' })
   if (!appended) throw new Error('this follow-up is gone; nothing was written')
   // One its conversation ended while this check ran stays ended; what the check saw is still recorded.
-  const open = await ledger.schedule(ctx.agentId, itemId, next)
+  const open = await ledger.schedule(ctx.agentId, taskKey, next)
   // `done` ends the watch with the follow-up; a new URL moves it, an empty one stops it (§5.14).
   let watch: string | undefined
   if (input.done === true || !open) {
-    if (item?.watch) await watches?.end(ctx.agentId, itemId)
+    if (item?.watch) await watches?.end(ctx.agentId, taskKey)
   } else if (input.watch === '')
-    watch = watchNote(await watchesOf(deps).clear(ctx.agentId, itemId)) ?? 'No longer watched.'
-  else if (input.watch !== undefined) watch = watchNote(await watchesOf(deps).set(ctx.agentId, itemId, input.watch))
-  if (input.report !== undefined && !(await port.report(ctx, itemId, input.report)))
+    watch = watchNote(await watchesOf(deps).clear(ctx.agentId, taskKey)) ?? 'No longer watched.'
+  else if (input.watch !== undefined) watch = watchNote(await watchesOf(deps).set(ctx.agentId, taskKey, input.watch))
+  if (input.report !== undefined && !(await port.report(ctx, taskKey, input.report)))
     throw new Error('this check has ended; the observation was written but the report was not kept')
   return {
     ok: true,
     followUp: open
-      ? { state: next.status === 'done' ? 'done' : 'waiting', nextCheck: iso(next.nextCheck) }
+      ? { state: next.status === 'done' ? 'done' : 'waiting', nextCheck: iso(next.nextAt) }
       : { state: 'ended', nextCheck: null },
     ...(watch !== undefined ? { watch } : {}),
     ...(input.report !== undefined ? { report: 'passed on when this check ends' } : {})
@@ -494,15 +491,15 @@ export const recordCheck: ToolHandler<AssistantItemDeps> = async (ctx, args, dep
 async function handBackGettingToKnow(
   ctx: SessionContext,
   input: z.infer<typeof RECORD_CHECK_ARGS>,
-  itemId: string,
+  taskKey: string,
   ledger: AssistantItemLedgerPort,
   port: NonNullable<NonNullable<AssistantItemDeps['assistantItems']>['check']>
 ): Promise<Record<string, unknown>> {
   if (input.report === undefined)
     throw new Error('a getting-to-know task hands back its whole answer as `report`; nothing was written')
-  const appended = await ledger.appendObservation(ctx.agentId, itemId, { text: input.observation, author: 'check' })
+  const appended = await ledger.appendObservation(ctx.agentId, taskKey, { text: input.observation, author: 'check' })
   if (!appended) throw new Error('this getting-to-know task is gone; nothing was written')
-  if (!(await port.report(ctx, itemId, input.report)))
+  if (!(await port.report(ctx, taskKey, input.report)))
     throw new Error('this getting-to-know task has ended; the observation was written but the report was not kept')
   return { ok: true, report: 'passed on when this task ends; end your turn now' }
 }
