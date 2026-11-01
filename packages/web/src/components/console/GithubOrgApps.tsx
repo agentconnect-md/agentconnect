@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { AgentIconView, GithubMark } from '@/components/marks'
 import { useConsoleData } from '@/lib/data-context'
 import { Scrim } from '@/components/console/Scrim'
+import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
 import { deleteGithubApp, fetchGithubApps, githubAppPageUrl, type GithubOrgAppDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -92,6 +93,7 @@ export function GithubOrgApps({ canWrite, isOwner }: { canWrite: boolean; isOwne
   )
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
   const [deleting, setDeleting] = useState<GithubOrgAppDto | null>(null)
+  const [uninstalling, setUninstalling] = useState<{ id: string; accountLogin: string } | null>(null)
 
   if (!apps || apps.length === 0) return null
 
@@ -185,8 +187,21 @@ export function GithubOrgApps({ canWrite, isOwner }: { canWrite: boolean; isOwne
                         <span className="badge bg-(--status-error-soft) text-(--status-error)">{t('suspended')}</span>
                       )}
                     </div>
-                    <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      {i.repositorySelection === 'all' ? t('allRepositories') : t('selectedRepositories')}
+                    <span className="flex items-center justify-between gap-3 desktop:justify-end">
+                      <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                        {i.repositorySelection === 'all' ? t('allRepositories') : t('selectedRepositories')}
+                      </span>
+                      {isOwner && (
+                        <button
+                          type="button"
+                          className="iconbtn text-(--status-error)"
+                          title={t('uninstall')}
+                          aria-label={t('uninstall')}
+                          onClick={() => setUninstalling({ id: i.id, accountLogin: i.accountLogin })}
+                        >
+                          <Icon name="unplug" size={14} />
+                        </button>
+                      )}
                     </span>
                   </div>
                 ))
@@ -194,6 +209,20 @@ export function GithubOrgApps({ canWrite, isOwner }: { canWrite: boolean; isOwne
           </div>
         )
       })}
+      {uninstalling && (
+        <Scrim onEscape={() => setUninstalling(null)} onClick={() => setUninstalling(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <UninstallGithubInstallationModal
+              installation={uninstalling}
+              onClose={() => setUninstalling(null)}
+              onUninstalled={() => {
+                setUninstalling(null)
+                void mutate()
+              }}
+            />
+          </div>
+        </Scrim>
+      )}
       {deleting && (
         <DeleteGithubAppDialog
           app={deleting}

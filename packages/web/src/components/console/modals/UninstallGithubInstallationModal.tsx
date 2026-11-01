@@ -14,7 +14,8 @@ export default function UninstallGithubInstallationModal({
   onClose,
   onUninstalled
 }: {
-  installation: GithubInstallationDto
+  /** Any App's installation: the server signs the uninstall with the App it belongs to. */
+  installation: Pick<GithubInstallationDto, 'id' | 'accountLogin'>
   onClose: () => void
   onUninstalled: (id: string) => void
 }) {
