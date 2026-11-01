@@ -431,6 +431,15 @@ import {
   type TurnAskers
 } from './assistant/place-access.js'
 import { personCouldActivate } from './assistant/place-askers.js'
+import { sharedWithOutsiders } from './assistant/standing-summary.js'
+import {
+  BOARD_HERE_LINES,
+  renderWorkBoard,
+  workBoardView,
+  type BoardPlace,
+  type BoardView,
+  type RenderedBoard
+} from './assistant/work-board.js'
 import {
   FollowUpChecks,
   CHECK_SWEEP_INTERVAL_MS,
@@ -490,7 +499,13 @@ import {
   type DreamOperationPolicy,
   type DreamPlaces
 } from './dream/runner.js'
-import { describePlace, judgeSessionParticipation, memberMakesNew, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
+import {
+  describePlace,
+  judgeSessionParticipation,
+  kindFromRows,
+  memberMakesNew,
+  type PlaceAccessDeps
+} from './mcp/ops/place-gate.js'
 import { PLACE_SHARE_TTL_MS, PlaceTrust } from './assistant/place-trust.js'
 import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
@@ -5178,6 +5193,13 @@ export class Daemon {
           return rec ? { title: rec.title ?? null, updatedAt: rec.updatedAt } : undefined
         },
         ownerOf: (row) => this.taskOwnerName(row),
+        board: async (ctx, owner) =>
+          await this.workBoardOf(
+            ctx.agentId,
+            owner,
+            { ...placeOfSession(ctx), ...(ctx.integrationId ? { integrationId: ctx.integrationId } : {}) },
+            await this.readAskersFor(ctx)
+          ),
         threadsOf: async (agentId, key) =>
           (await this.store.assistantSubsessions.threadsOf(agentId, key)).map((t) => {
             const integrationId = this.integrationIdForSessionTransport(agentId, t.platform, t.transportScope)
@@ -5488,6 +5510,13 @@ export class Daemon {
       slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
       taskPagesTakeMessages: () => this.cfg.features.autoSessionMode,
       tasksCoordinatorOnly: () => this.cfg.features.autoSessionMode,
+      workBoardFor: (input) =>
+        this.renderedWorkBoard(
+          input.agentId,
+          { ...(input.sessionId ? { sessionId: input.sessionId } : {}), key: input.sessionKey },
+          input.place,
+          this.askersOfKey(input.sessionKey, input.place.integrationId)
+        ),
       senderTimeZoneFor: (msg, integrationId) => this.profileTimeZone(integrationId, msg.sender.id),
       startedByTimeZone: (agentId, key) => this.startedByTimeZone(agentId, key),
       notePersonTimeZone: (key, zone) => this.notePersonTimeZone(key, zone),
@@ -11744,6 +11773,57 @@ export class Daemon {
     }
     if (!id) return undefined
     return (await this.store.getDisplayNames([id])).get(id) ?? id
+  }
+
+  /** A coordinator's work board as `askers` may see it (assistant-mode.md §5.18): other places' lines only in assistant mode, and never into a place shared with another organization. */
+  private async workBoardOf(
+    agentId: string,
+    owner: { sessionId?: string; key: string },
+    place: BoardPlace & { integrationId?: string },
+    askers: TurnAskers
+  ): Promise<BoardView> {
+    const agent = this.agents.get(agentId)
+    const elsewhere = agent?.assistantMode?.enabled === true && !sharedWithOutsiders(agent, place)
+    const placeDeps: Pick<PlaceAccessDeps, 'gatewayFor' | 'placeSnapshot'> = {
+      gatewayFor: (integrationId) => this.gatewayForIntegration(integrationId),
+      placeSnapshot: (integrationId, channel) => this.readPlaceSnapshot(integrationId, channel)
+    }
+    return await workBoardView({
+      stores: this.store,
+      agentId,
+      owner,
+      place,
+      ...(elsewhere
+        ? {
+            judge: {
+              askers,
+              lookups: this.placeMembers.lookupsFor(agentId),
+              current: {
+                platform: place.platform,
+                ...(place.integrationId ? { integrationId: place.integrationId } : {})
+              },
+              botOf: (at) => this.integrationIdForTransportScope(agentId, at.platform, at.transportScope),
+              describe: (at, kind, bot) => describePlace(at, kindFromRows(at.platform, [kind]), bot, placeDeps)
+            }
+          }
+        : {})
+    })
+  }
+
+  /** The board a coordinator turn carries, its Here lines naming who asked for each. */
+  private async renderedWorkBoard(
+    agentId: string,
+    owner: { sessionId?: string; key: string },
+    place: BoardPlace & { integrationId?: string },
+    askers: TurnAskers
+  ): Promise<RenderedBoard> {
+    const view = await this.workBoardOf(agentId, owner, place, askers)
+    const names = new Map<string, string>()
+    for (const task of view.here.slice(0, BOARD_HERE_LINES)) {
+      const name = task.row ? await this.taskOwnerName(task.row).catch(() => undefined) : undefined
+      if (name) names.set(task.id, name)
+    }
+    return renderWorkBoard(view, names)
   }
 
   /** A sub-session reads as the people whose turn opened it; a restart forgets them, so it then reads as nobody. */

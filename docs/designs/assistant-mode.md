@@ -512,8 +512,8 @@ summary.
 - Concurrency: field-level merge (append observations); a check's schedule and a stop write
   without a version handshake, and an ended follow-up is never reopened.
 
-**② The standing list** (for a coordinator, proposed to be replaced by the work board of §5.18,
-which judges each line by the people asking rather than by place): label, the place it belongs
+**② The standing list** (for a coordinator, replaced by the work board of §5.18, which judges
+each line by the people asking rather than by place, together with the running-tasks block below): label, the place it belongs
 to, and its next check (or that it waits) of
 the open follow-ups a place may see: its own, each with its `taskId`, and every public channel's;
 a private channel's, a group DM's and a DM's only there (§5.12). Capped at 30 and injected through
@@ -3465,9 +3465,10 @@ is not built.
 ### 5.18 The work board
 
 **Status:** Proposed (eightieth revision, 2026-11-01). Step 1, the admission check, shipped in the
-eighty-first revision ("As shipped" after ①), and ③, batches cut by permission class, in the
-eighty-second ("As shipped" after ③); the rest is not implemented. Reviewed in draft by three
-adversarial review rounds; what they changed is noted inline.
+eighty-first revision ("As shipped" after ①), ③, batches cut by permission class, in the
+eighty-second ("As shipped" after ③), and the board itself, ② and the view and reads of ④, in the
+eighty-third ("As shipped" after ② and after ④); the title, the reports and `readTask` are not
+implemented. Reviewed in draft by three adversarial review rounds; what they changed is noted inline.
 
 **Why.** The mode promises one mind: what the agent takes on in one place it knows in the others.
 That holds for memory and for follow-ups, not for the work it is doing. A coordinator
@@ -3555,6 +3556,27 @@ In practice a full member in any internal place sees every public channel's work
 Slack guest sees the work of the public channels they are in; a webchat user or a person on another
 bot sees what their linked identity or console visibility lets `recall` read of public channels;
 nobody sees a DM's, a group DM's or a private channel's work from elsewhere.
+
+**As shipped** (2026-11-01, #3541 phase C). Choices the text above leaves open:
+
+- **When a task changed.** Both stores record `changedAt` (store version 73, seeded from each row's
+  last activity). A delegated task's moves when a round starts, settles or begins reporting, and when
+  `updateTask` gives it a new title; a summary alone does not move it. A follow-up's moves when its
+  status or next check changes and when a check starts; it reads the later of the two stores' times.
+- **Open, and the status.** A delegated task is open while it is indexed: `running` while a round
+  runs, `idle` otherwise, a round that is reporting its end included. An approved proposal is open
+  only until its one run settles, since it never runs again. A follow-up is open while active or
+  waiting: `running` while a check runs, `next <time>` while one is scheduled, `waiting` otherwise.
+- **Here, and a task's place.** Here holds the coordinator's own tasks and its place's follow-ups,
+  the ones its `listTasks` addresses; another session's task in the same conversation is on neither
+  list. Another place's task belongs to the conversation of the session that owns it; one whose
+  owner's row is gone has no place to judge it by and is left out.
+- **The task's sessions** are its own session's outward id and any other session on a thread it
+  holds. A task with no session yet is shown only to an asker the platform judges, never through the
+  console's view.
+- **Where Elsewhere goes.** Only an assistant-mode agent's coordinators receive Elsewhere, and a
+  place shared with another organization receives its own lines alone. At most 100 discovered lines
+  are judged per render, newest first; a line past them counts as one the batch may not see.
 
 **③ Batches are cut by permission class, in arrival order.** A coordinator turn's askers are
 today the first message's sender alone: `askersOfKey` reads the initiating message and the
@@ -3676,6 +3698,31 @@ taken: the result would sit in a context that answers other people's messages to
   settled as answered silently and nothing is retried. A report that arrives while the coordinator
   is idle still starts a turn at once. Webchat's one-message turns (auto-session-mode.md §10) are
   unchanged.
+
+**As shipped** (2026-11-01, #3541 phase C), the view and the reads; the title, the reports and
+`readTask` are not implemented. Choices the text above leaves open:
+
+- **The block.** Its header is the example's without the `readTask` sentence, which waits for that
+  tool, and says that it replaces any earlier board. A Here line ends with the full `taskId` that
+  `messageTask` and `stopTask` take, a session key of about a hundred characters, so the 800-token
+  budget, estimated at four characters a token for prose and two for ids and cursors, holds fewer
+  than 20 Here lines once Elsewhere is folded away. When nothing is open the coordinator is told so
+  only where it may still hold a board: once one was shown, after a restart or after a compaction,
+  never when its session opens.
+- **Folds and cursors.** A place's fold line names the cursor just before that place's first folded
+  line, so `listTasks` reaches that place first; the eleventh place on folds into one total. Ties in
+  `changedAt` are broken by a short digest of the id, which a cursor carries beside the time:
+  `e.<time in base 36>.<digest>` for Elsewhere, `h.…` for Here.
+- **The reads.** A coordinator's `listTasks` returns `here`, `elsewhere` and `nextCursor`; a cursor
+  continues its own list, and the answer then carries that list alone. Both hold open tasks only. An
+  `elsewhere` entry carries its id, place and place name, kind, title, lifetime status, last
+  activity, its summary cut to 500 characters (a delegated task's with `summaryAt`) or else the
+  opening message's start, and its thread links. Sessions that are not coordinators list as before.
+- **Sending.** The session manager keeps each coordinator's last digest in memory; a board that
+  cannot be read is skipped for that turn and leaves the record as it was. `recall` is offered to
+  every coordinator with its parameters and rules unchanged. The prompt names the board,
+  `listTasks`'s two lists and `recall`, and has a request for work already open elsewhere answered
+  with that task's summary and link instead of a second task.
 
 **Examples.** Alice, a full member, asks in her DM whether the webhook retry landed: her board
 carries `#eng-platform`'s line, `listTasks` gives its summary ("PR #412 open, CI running"), and she
@@ -4759,3 +4806,12 @@ sender's class differs. Implementing it found that the starting point was narrow
 a coordinator's messages are headless, which the asker rule read as no person's, so every
 coordinator turn read and wrote as `NOBODY`; each message now asks as its sender. Reports still head
 turns of their own until phase 3, so a report rides with the messages right behind it.
+
+**Eighty-third revision (2026-11-01)**: the work board reaches coordinators (issue #3541, phase C;
+§5.18 ② and ④ "As shipped"). A coordinator's turn opens with the agent's open work: its own place's
+tasks with their ids, and the other places' that every person in its batch may read, discovered in
+public sources only. It is sent again only when its text changes, after a compaction and after a
+restart, and replaces the standing list, the running-tasks block and the 12-turn reminder there.
+`listTasks` pages the coordinator's own and the other places' open tasks by keyset cursors, and
+`recall` is offered. Implementing it found that a Here line's id is the full task key, so the
+800-token budget holds fewer than the 20 Here lines the view allows.

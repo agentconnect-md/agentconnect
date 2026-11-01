@@ -1220,7 +1220,7 @@ describe('feedback and commands under auto (auto-session-mode.md §4.4, §8)', (
         tools: coordinatorSessionTools([])
       }) as SessionContext
     const listed = async (thread: string) =>
-      ((await executeTool(ctx(thread), 'listTasks', {}, deps)) as { tasks: { taskId: string }[] }).tasks.map(
+      ((await executeTool(ctx(thread), 'listTasks', {}, deps)) as { here: { taskId: string }[] }).here.map(
         (task) => task.taskId
       )
     expect(await listed(retired)).toEqual([taskKey])

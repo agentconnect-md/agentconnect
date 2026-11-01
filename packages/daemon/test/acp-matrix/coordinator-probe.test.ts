@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  boardFor,
   CO_IDS,
   CO_SCENARIOS,
   coordinatorFixture,
@@ -18,7 +19,8 @@ const scopeOf = (id: string): CoScope => ({
   reports: scenario(id)
     .messages.filter((message) => message.report)
     .map((message) => message.id),
-  tasks: scenario(id).tasks
+  tasks: scenario(id).tasks,
+  ...(scenario(id).elsewhere ? { elsewhere: scenario(id).elsewhere } : {})
 })
 const recorded = (id: string, calls: Array<Record<string, unknown>>): CoRecordedCall[] => {
   const log: CoRecordedCall[] = []
@@ -126,6 +128,49 @@ describe('runtime matrix coordinator probe', () => {
       `[One new message in this conversation (${CO_IDS.conversation})]`
     )
     expect(coordinatorPrompt(true)).toContain('in a private webchat conversation')
+  })
+
+  // assistant-mode.md §5.18: the coordinator opens with the work board and reads other places' tasks read only.
+  it('opens with the work board, lists elsewhere apart, and fails a duplicate of work open elsewhere', async () => {
+    expect(boardFor(scenario('new-work'))).toBeUndefined()
+    expect(boardFor(scenario('route-to-task'))).toContain(`· asked by <@${CO_IDS.alice}> · ${CO_IDS.checkoutTask}`)
+    const board = boardFor(scenario('elsewhere-duplicate'))!
+    expect(board).toContain('Elsewhere (read only):')
+    expect(board).toContain(`- #${CO_IDS.otherChannelName} · delegated task · running · "Add retry with backoff`)
+    expect(board).not.toContain(CO_IDS.webhookTask)
+    const [ask] = scopeOf('elsewhere-duplicate').messages
+    expect(
+      decide(
+        { action: 'messageTask', messageId: ask, taskId: CO_IDS.webhookTask },
+        scopeOf('elsewhere-duplicate'),
+        new Set()
+      )
+    ).toMatchObject({ error: expect.stringContaining('not one of your open tasks') })
+    const again = recorded('elsewhere-duplicate', [{ action: 'delegateTask', messageId: ask, title: 'Webhook retry' }])
+    expect(judgeCoordinator(scenario('elsewhere-duplicate'), again, '').verdict).toBe('FAIL')
+    const pointed = recorded('elsewhere-duplicate', [
+      { action: 'replyToMessage', messageId: ask, message: 'Already in progress in #notify-service: PR #412 is open.' }
+    ])
+    expect(judgeCoordinator(scenario('elsewhere-duplicate'), pointed, '').verdict).toBe('PASS')
+    const vague = recorded('elsewhere-duplicate', [
+      { action: 'replyToMessage', messageId: ask, message: 'On it soon.' }
+    ])
+    expect(judgeCoordinator(scenario('elsewhere-duplicate'), vague, '').verdict).toBe('DEGRADED')
+    const answered = judgeCoordinator(scenario('webchat-elsewhere-status'), [], 'Not yet: PR #412 is open, CI running.')
+    expect(answered.verdict).toBe('PASS')
+    const fixture = await coordinatorFixture()
+    try {
+      const { url } = fixture.descriptor('e', scopeOf('webchat-elsewhere-status')) as { url: string }
+      const listed = await fetch(url, {
+        method: 'POST',
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'listTasks' } })
+      }).then((res) => res.json() as Promise<any>)
+      const body = JSON.parse(listed.result.content[0].text)
+      expect(body.here).toEqual([])
+      expect(body.elsewhere[0]).toMatchObject({ id: CO_IDS.webhookTask, summary: expect.stringContaining('PR #412') })
+    } finally {
+      fixture.server.close()
+    }
   })
 
   it('renders ids and mentions, and rejects unknown scenario ids', () => {

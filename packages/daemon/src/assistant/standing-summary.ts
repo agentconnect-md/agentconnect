@@ -54,7 +54,7 @@ const samePlace = (origin: AssistantItemOverview['origin'], here: SummaryPlace):
   (origin.transportScope ?? null) === (here.transportScope ?? null)
 
 /** Whether the agent holds the conversation shared with another organization: on the named bot, else on any bot of that platform. */
-function sharedWithOutsiders(agent: Pick<Agent, 'integrations'>, place: SummaryPlace): boolean {
+export function sharedWithOutsiders(agent: Pick<Agent, 'integrations'>, place: SummaryPlace): boolean {
   return agent.integrations.some(
     (int) =>
       (place.integrationId ? int.id === place.integrationId : int.platform === place.platform) &&

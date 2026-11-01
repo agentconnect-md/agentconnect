@@ -69,6 +69,8 @@ export interface AssistantItem {
   version: number
   createdAt: number
   updatedAt: number
+  /** When its status or next check last changed, the work board's order (assistant-mode.md §5.18). */
+  changedAt?: number
 }
 
 /** A listed item: everything but the observation history, which only `get` reads. */
@@ -156,7 +158,8 @@ export const ASSISTANT_ITEM_SCHEMA = `
         observationVersion INTEGER NOT NULL DEFAULT 0,
         version INTEGER NOT NULL DEFAULT 1,
         createdAt INTEGER NOT NULL,
-        updatedAt INTEGER NOT NULL
+        updatedAt INTEGER NOT NULL,
+        changedAt INTEGER
       );
       CREATE INDEX IF NOT EXISTS assistant_item_by_agent ON assistant_item (agentId, status, updatedAt);
       CREATE INDEX IF NOT EXISTS assistant_item_by_origin
@@ -212,6 +215,7 @@ interface ItemRow {
   version: number
   createdAt: number
   updatedAt: number
+  changedAt: number | null
 }
 
 interface LinkRow {
@@ -251,7 +255,8 @@ const ITEM_COLUMNS = [
   'observationVersion',
   'version',
   'createdAt',
-  'updatedAt'
+  'updatedAt',
+  'changedAt'
 ] as const
 const itemColumns = (alias = ''): string => ITEM_COLUMNS.map((column) => `${alias}${column}`).join(', ')
 
@@ -276,8 +281,8 @@ export class AssistantItemLedger {
     await this.db.query(
       `INSERT INTO assistant_item (id, agentId, title, doneWhen, nextCheck, status, originPlatform, originChannel,
          originTransportScope, taskKey, asker, shared, replyThread, gettingToKnow, summary, observationVersion, version,
-         createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+         createdAt, updatedAt, changedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
       [
         id,
         input.agentId,
@@ -294,6 +299,7 @@ export class AssistantItemLedger {
         input.replyThread ?? null,
         input.gettingToKnow ?? null,
         input.summary ?? '',
+        now,
         now,
         now
       ]
@@ -368,6 +374,21 @@ export class AssistantItemLedger {
     return await this.withLinks(agentId, rows)
   }
 
+  /** Every open follow-up of the agent, with no cap, so the work board loses none (assistant-mode.md §5.18). */
+  async listOpen(agentId: string): Promise<AssistantItemOverview[]> {
+    const rows = (
+      await this.db.query(
+        `SELECT ${itemColumns('i.')} FROM assistant_item i WHERE i.agentId = ? AND i.status IN ('active', 'waiting')
+         ORDER BY i.id`,
+        [agentId]
+      )
+    ).rows as ItemRow[]
+    const listed: AssistantItemOverview[] = []
+    for (let at = 0; at < rows.length; at += ASSISTANT_ITEM_LIST_MAX)
+      listed.push(...(await this.withLinks(agentId, rows.slice(at, at + ASSISTANT_ITEM_LIST_MAX))))
+    return listed
+  }
+
   /** Field-level append: no version check, keeps the newest {@link ASSISTANT_ITEM_OBSERVATIONS_KEPT}. */
   async appendObservation(
     agentId: string,
@@ -405,10 +426,12 @@ export class AssistantItemLedger {
   async schedule(agentId: string, itemId: string, next: AssistantItemSchedule, now = Date.now()): Promise<boolean> {
     checkStatus(next.status)
     checkNextCheck(next.nextCheck ?? undefined)
+    // A schedule that changes nothing the work board shows keeps its place in the board's order.
     const { changes } = await this.db.query(
-      `UPDATE assistant_item SET status = ?, nextCheck = ?, version = version + 1, updatedAt = ?
+      `UPDATE assistant_item SET status = ?, nextCheck = ?, version = version + 1, updatedAt = ?,
+         changedAt = CASE WHEN status = ? AND COALESCE(nextCheck, -1) = ? THEN changedAt ELSE ? END
        WHERE agentId = ? AND id = ? AND status IN ('active', 'waiting')`,
-      [next.status, next.nextCheck, now, agentId, itemId]
+      [next.status, next.nextCheck, now, next.status, next.nextCheck ?? -1, now, agentId, itemId]
     )
     return changes > 0
   }
@@ -566,7 +589,8 @@ export class AssistantItemLedger {
       proposals: links.filter((l) => l.itemId === row.id && l.kind === 'proposal').map((l) => l.refId),
       version: Number(row.version),
       createdAt: Number(row.createdAt),
-      updatedAt: Number(row.updatedAt)
+      updatedAt: Number(row.updatedAt),
+      changedAt: row.changedAt === null || row.changedAt === undefined ? Number(row.updatedAt) : Number(row.changedAt)
     }))
   }
 }
