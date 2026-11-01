@@ -7595,7 +7595,7 @@ export class Daemon {
     pod: SandboxSubject,
     plane:
       | (Pick<K8sRuntimePlane, 'skillClientFor' | 'workspaceIncarnationFor' | 'shimGenerationFor'> &
-          Partial<Pick<K8sRuntimePlane, 'servesTunnel'>>)
+          Partial<Pick<K8sRuntimePlane, 'servesTunnel' | 'deviceWorkspaceIncarnationFor'>>)
       | undefined = this.k8sPlane,
     cwd?: string
   ): Promise<ClusterSkillLedger | undefined> {
@@ -7603,10 +7603,21 @@ export class Daemon {
     const shimGeneration = plane?.shimGenerationFor?.(pod)
     const isLaunchCurrent = () =>
       plane?.workspaceIncarnationFor?.(pod) === reported && plane?.shimGenerationFor?.(pod) === shimGeneration
+    // Receipts are relative to the directory installed into, so installs into a cwd keep a ledger of their own.
+    const keyFor = (incarnation: string | undefined) =>
+      incarnation && cwd ? cwdWorkspaceIncarnation(incarnation, cwd) : incarnation
+    const workspaceIncarnation = keyFor(reported)
+    const deviceIncarnation = keyFor(plane?.deviceWorkspaceIncarnationFor?.(pod))
+    const initialLedger =
+      workspaceIncarnation &&
+      deviceIncarnation &&
+      !(await this.store.clusterSkillLedger(agent.id, workspaceIncarnation))
+        ? (await this.store.clusterSkillLedger(agent.id, deviceIncarnation))?.ledger
+        : undefined
     const ledger = await this.reconcileSandboxSkills(agent, {
       client: plane?.skillClientFor?.(pod, cwd),
-      // Receipts are relative to the directory installed into, so installs into a cwd keep a ledger of their own.
-      workspaceIncarnation: reported && cwd ? cwdWorkspaceIncarnation(reported, cwd) : reported,
+      workspaceIncarnation,
+      ...(initialLedger ? { initialLedger } : {}),
       shimGeneration,
       isLaunchCurrent,
       // Only the pool's plane serves tunnels per pod; an executor's client is never granted `skills-git`.
@@ -7682,10 +7693,11 @@ export class Daemon {
         }
         localAuthority = await pending
       }
-      const { client, workspaceIncarnation } = await microsandboxSkillTarget(session, cwd)
+      const { client, workspaceIncarnation, deviceIncarnation } = await microsandboxSkillTarget(session, cwd)
       const initialLedger = (await this.store.clusterSkillLedger(agent.id, workspaceIncarnation))
         ? undefined
-        : await legacySandboxSkillLedger(agent.id, cwd, join(this.root, 'skill-installs'))
+        : ((await this.store.clusterSkillLedger(agent.id, deviceIncarnation))?.ledger ??
+          (await legacySandboxSkillLedger(agent.id, cwd, join(this.root, 'skill-installs'))))
       const ledger = await this.reconcileSandboxSkills(agent, {
         client,
         workspaceIncarnation,

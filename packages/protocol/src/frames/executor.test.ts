@@ -319,6 +319,7 @@ describe('executor/prepare', () => {
         helperRoot: '/opt/agentconnect',
         missingHelpers: ['ghWrapperDir'],
         workspaceIncarnation: 'workspace:0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9',
+        stableWorkspaceIncarnation: 'workspace:9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0',
         liveCount: 4
       },
       { status: 'full', liveCount: 32 },

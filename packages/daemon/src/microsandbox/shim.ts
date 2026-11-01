@@ -77,8 +77,10 @@ print(root, flush=True)
 /** A local VM's skills seam over its bound shim, fenced on the workspace's own identity. */
 export async function microsandboxSkillTarget(session: Pick<ShimSession, 'request' | 'hasCapability'>, cwd: string) {
   // VM replacement preserves bind-mounted storage; replacing that storage must revoke its receipts.
+  const { incarnation, deviceIncarnation } = await workspaceIncarnationOf(cwd)
   return {
-    workspaceIncarnation: await workspaceIncarnationOf(cwd),
+    workspaceIncarnation: incarnation,
+    deviceIncarnation,
     client: new ClusterSkillClient(
       cwdSkillRequester(session, cwd),
       session.hasCapability('skills-wide'),
