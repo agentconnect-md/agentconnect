@@ -74,10 +74,17 @@ export function unionGiteaWebhookEvents(
   return GITEA_WEBHOOK_EVENTS.filter((event) => events.has(event))
 }
 
+// A split read-back echoes `pull_request_review` as its constituents; only these two prove the review flag, `_comment` follows `pull_request_comment` (§7).
+const READ_BACK_ALIASES: Record<string, readonly string[]> = {
+  pull_request_review: ['pull_request_review_approved', 'pull_request_review_rejected']
+}
+
 /** The desired names the stored webhook does NOT carry — compared by subset, because Gitea expands umbrella names (§7). */
 export function giteaWebhookEventsMissing(desired: readonly string[], stored: readonly string[]): string[] {
   const present = new Set(stored)
-  return desired.filter((event) => !present.has(event))
+  return desired.filter(
+    (event) => !present.has(event) && !READ_BACK_ALIASES[event]?.some((alias) => present.has(alias))
+  )
 }
 
 /** The hash the binding records the converged subscription under. */

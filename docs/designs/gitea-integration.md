@@ -339,6 +339,17 @@ by subset, not equality. `pull_request` does not expand the same way, so the
 label filter's entry event on a pull request, `pull_request_label`, is asked
 for by name.
 
+The read-back does not always echo the review subscription by its own name.
+Gitea 1.24 and later return the group key `pull_request_review`; Gitea 1.23
+and Forgejo 15 and 16 return the flags behind it instead —
+`pull_request_review_approved`, `pull_request_review_rejected` and
+`pull_request_review_comment`. The installer accepts either form: a desired
+`pull_request_review` is satisfied by the group key, or by `_approved` or
+`_rejected`. `_comment` alone proves nothing, because in the split form it
+follows the `pull_request_comment` flag, not the review flag. The check is not
+gated on product or version, since both fresh installs and signing-key
+rotation read back the same way.
+
 **Verification.** The relay enforces HTTPS and the 1 MiB raw-body limit, parses
 only enough bounded JSON to read `repository.id`, looks up the compiled rules
 for `(gitea, id)`, and compares `X-Gitea-Signature` against a timing-safe
@@ -1106,6 +1117,13 @@ fixtures, and captured every webhook delivery.
 - Every status code, every refusal text, and the webhook's expanded event list
   matched. The only differences are the extra `X-Forgejo-*` headers and
   added payload fields; no field Gitea sends is missing or renamed.
+- Gitea 1.23 and Forgejo read a subscribed `pull_request_review` back as its
+  constituent flags, not as the group key Gitea 1.24+ returns. A later Forgejo
+  16.0.5 installation subscribed to the `issues` and `merge_request` union read
+  every requested name back except `pull_request_review`, with
+  `pull_request_review_approved`, `pull_request_review_rejected` and
+  `pull_request_review_comment` in its place; §7's read-back accepts both
+  forms.
 - All 22 captured deliveries per host normalized identically through the
   relay's matcher and cleanup, merge and issue close included; every
   signature verified.
