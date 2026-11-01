@@ -680,6 +680,9 @@ describe('failures back off and stop', () => {
   })
 })
 
+/** A task key as listTasks shows it: cut before the agent's id, a unique prefix every task tool takes (assistant-mode.md §5.18 ④). */
+const listedId = (key: string): string => key.slice(0, key.lastIndexOf(':bot-a'))
+
 describe('a follow-up owned by its place', () => {
   it('is listed, messaged and ended by the place’s current long session alone', async () => {
     const { daemon, d, behavior, checks, settled, deps } = await boot(scaffold([{ id: 'bot-a', assistantMode: ON }]))
@@ -690,7 +693,7 @@ describe('a follow-up owned by its place', () => {
     const listed = (await executeTool(here, 'listTasks', {}, deps)) as any
     expect(listed.tasks).toEqual([
       {
-        taskId: item.taskKey,
+        taskId: listedId(item.taskKey),
         kind: 'follow-up',
         title: 'Watch the release build',
         state: 'waiting',
@@ -833,7 +836,7 @@ describe('a follow-up owned by its place', () => {
     expect(((await executeTool(old, 'listTasks', {}, deps)) as any).tasks).toEqual([])
     // The new one lists it, and its row names the new session.
     expect(((await executeTool(current, 'listTasks', {}, deps)) as any).tasks).toEqual([
-      expect.objectContaining({ taskId: item.taskKey, kind: 'follow-up' })
+      expect.objectContaining({ taskId: listedId(item.taskKey), kind: 'follow-up' })
     ])
     expect(await d.store.assistantSubsessions.get('bot-a', item.taskKey)).toMatchObject({
       parentSessionId: 'sid-current-bot-a'

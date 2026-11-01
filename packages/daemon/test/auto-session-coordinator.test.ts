@@ -114,6 +114,7 @@ describe('the coordinator prompt and batch', () => {
     expect(tools.map((one) => one.name)).toEqual([
       'sendMessage',
       'listTasks',
+      'readTask',
       'getMemoryEntry',
       'followUp',
       'remind',
@@ -1433,9 +1434,15 @@ describe('feedback and commands under auto (auto-session-mode.md §4.4, §8)', (
       ((await executeTool(ctx(thread), 'listTasks', {}, deps)) as { here: { taskId: string }[] }).here.map(
         (task) => task.taskId
       )
-    expect(await listed(retired)).toEqual([taskKey])
+    // listTasks shows the key cut before the agent's id, a unique prefix messageTask takes (assistant-mode.md §5.18 ④).
+    expect(await listed(retired)).toEqual(['slack:C1:1.1'])
     await expect(
-      executeTool(ctx(retired), 'sendMessage', { action: 'messageTask', messageId: 'msg-2.1', taskId: taskKey }, deps)
+      executeTool(
+        ctx(retired),
+        'sendMessage',
+        { action: 'messageTask', messageId: 'msg-2.1', taskId: 'slack:C1:1.1' },
+        deps
+      )
     ).resolves.toMatchObject({ ok: true, taskId: taskKey })
     const opened = (await executeTool(
       ctx(retired),
@@ -1448,7 +1455,7 @@ describe('feedback and commands under auto (auto-session-mode.md §4.4, §8)', (
       parentSessionKey: successor
     })
     const next = successor.split(':').slice(2, 4).join(':')
-    expect((await listed(next)).sort()).toEqual([taskKey, opened.taskId].sort())
+    expect((await listed(next)).sort()).toEqual(['slack:C1:1.1', 'slack:C1:3.1'])
     await daemon.stop()
   })
 

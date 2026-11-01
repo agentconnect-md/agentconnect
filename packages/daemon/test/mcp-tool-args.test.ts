@@ -6,7 +6,7 @@ import { externalMemoryTools } from '../src/memory/tools.js'
 import { FOLLOW_UP_WATCH_TOOL, PROPOSE_WATCH_TOOL, RECORD_CHECK_WATCH_TOOL } from '../src/mcp/ops/assistant-items.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
 import { COORDINATOR_LIST_TASKS_TOOL } from '../src/auto-session/coordinator-prompt.js'
-import { STOP_TASK_TOOL, UPDATE_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
+import { READ_TASK_TOOL, STOP_TASK_TOOL, UPDATE_TASK_TOOL } from '../src/mcp/ops/assistant-subsessions.js'
 import { GETTING_TO_KNOW_TOOL } from '../src/mcp/ops/getting-to-know.js'
 import { CODE_HOST_RESEARCH_TOOLS } from '../src/mcp/ops/code-host-research.js'
 import { CAPABILITY_REQUEST_TOOLS } from '../src/mcp/ops/capability-requests.js'
@@ -101,6 +101,7 @@ const advertised: ToolDescriptor[] = [
   ...ASSISTANT_REMINDER_TOOLS,
   // A coordinator's listTasks also takes `after` (assistant-mode.md §5.18 ④).
   COORDINATOR_LIST_TASKS_TOOL,
+  READ_TASK_TOOL,
   STOP_TASK_TOOL,
   UPDATE_TASK_TOOL,
   ...CAPABILITY_REQUEST_TOOLS

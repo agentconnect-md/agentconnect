@@ -2412,12 +2412,13 @@ export class CollabCoordinator {
     }
   }
 
-  /** One of the agent's indexed sub-sessions, by its key or its session's outward id. */
+  /** One of the agent's indexed sub-sessions, by its key, a unique prefix of it, or its session's outward id. */
   private async indexedSubsession(agentId: string, id: string): Promise<AssistantSubsession | undefined> {
     const store = this.host.store()
     const index = store.assistantSubsessions
+    const key = await index.resolve(agentId, id)
     return (
-      (await index.get(agentId, id)) ??
+      (key !== undefined ? await index.get(agentId, key) : undefined) ??
       (await store
         .getSessionByOutwardIdOnly(id, agentId)
         .then((child) => (child ? index.get(agentId, child.key) : undefined)))

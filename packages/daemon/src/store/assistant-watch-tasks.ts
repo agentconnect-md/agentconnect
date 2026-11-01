@@ -1,5 +1,6 @@
 // Follow-ups as watch tasks (assistant-mode.md §5.18): a task-store row in watch mode, one id, its task key, checked on its schedule, with its observations beside it.
 import { ASSISTANT_ITEM_LIMITS, type AssistantPlace } from './assistant-items.js'
+import { CLOSE_TASK } from './closed-tasks.js'
 import type { StoreQueryResult, StoreTx } from './store-database.js'
 
 /** A watch task's schedule: open with a next check (`active`) or without one (`waiting`), or ended. */
@@ -323,12 +324,15 @@ export class AssistantWatchTasks {
   ): Promise<boolean> {
     if (!isWatchTaskStatus(next.status)) throw new Error('watch task status is not supported')
     checkTime(next.nextAt ?? undefined)
-    // A schedule that changes nothing the work board shows keeps its place in the board's order.
+    // A schedule that changes nothing the work board shows keeps its place in the board's order; an end closes the task.
+    const ended = next.status === 'done' || next.status === 'dropped'
     const { changes } = await this.db.query(
       `UPDATE assistant_subsession SET watchStatus = ?, nextAt = ?, version = version + 1, updatedAt = ?,
-         changedAt = CASE WHEN watchStatus = ? AND COALESCE(nextAt, -1) = ? THEN changedAt ELSE ? END
+         changedAt = CASE WHEN watchStatus = ? AND COALESCE(nextAt, -1) = ? THEN changedAt ELSE ? END${
+           ended ? `, ${CLOSE_TASK}` : ''
+         }
        WHERE agentId = ? AND childSessionKey = ? AND ${WATCH_TASK} AND ${OPEN}`,
-      [next.status, next.nextAt, now, next.status, next.nextAt ?? -1, now, agentId, taskKey]
+      [next.status, next.nextAt, now, next.status, next.nextAt ?? -1, now, ...(ended ? [now] : []), agentId, taskKey]
     )
     return changes > 0
   }

@@ -13,8 +13,10 @@ import { ASSISTANT_ONBOARDING_SCHEMA, AssistantOnboardingLedger } from './assist
 import {
   ASSISTANT_SUBSESSION_SCHEMA,
   ASSISTANT_SUBSESSION_THREAD_SCHEMA,
+  ASSISTANT_TASK_OPENED_SCHEMA,
   AssistantSubsessionIndex
 } from './assistant-subsessions.js'
+import { CLOSE_TASK } from './closed-tasks.js'
 import {
   ASSISTANT_TASK_OBSERVATION_SCHEMA,
   AssistantWatchTasks,
@@ -1332,7 +1334,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 74
+export const SCHEMA_VERSION = 75
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2086,8 +2088,27 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v73 records when a task's status or title last changed, the work board's order (assistant-mode.md §5.18).
   async (db, store) => await addChangedAt(db, store.postgres),
   // v74 makes follow-ups watch tasks in the task store, one id each, which keys their checks and proposals too (§5.18).
-  async (db, store) => await migrateFollowUpsToWatchTasks(db, store.postgres)
+  async (db, store) => await migrateFollowUpsToWatchTasks(db, store.postgres),
+  // v75 keeps a closed task's row for a window, with the message it was opened for and what it opened (§5.18 ④).
+  async (db, store) => await migrateRetainedTasks(db, store.postgres)
 ]
+
+/** Tasks gain when they closed, the message they were opened for, what they opened and a getting-to-know task's marker; an ended watch task counts as closed when it last changed. */
+async function migrateRetainedTasks(db: StoreTx, postgres: boolean): Promise<void> {
+  await db.exec(ASSISTANT_TASK_OPENED_SCHEMA)
+  if (!(await tableExists(db, postgres, 'assistant_subsession'))) return
+  for (const [column, type] of [
+    ['closedAt', 'INTEGER'],
+    ['openedForPlace', 'TEXT'],
+    ['openedForMessage', 'TEXT'],
+    ['gettingToKnow', 'INTEGER NOT NULL DEFAULT 0']
+  ] as const)
+    await addColumn(db, postgres, 'assistant_subsession', column, type)
+  // A watch row without a schedule was a getting-to-know task's (§5.18 ⑤); it now says so.
+  await db.exec("UPDATE assistant_subsession SET gettingToKnow = 1 WHERE mode = 'watch' AND watchStatus IS NULL")
+  await db.exec(`UPDATE assistant_subsession SET closedAt = COALESCE(updatedAt, changedAt, createdAt)
+    WHERE mode = 'watch' AND watchStatus IN ('done', 'dropped') AND closedAt IS NULL`)
+}
 
 // What the item ledger's rows carried that a watch task keeps on its task row instead.
 const MOVED_ITEM_COLUMNS = ['watchUrl', 'watchTarget', 'watchState', 'watchReason', 'watchRepoId'] as const
@@ -5525,12 +5546,14 @@ export class LocalStore {
       // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
       if (isAppendCoordinate(rec.thread))
         await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
-      // A purged task leaves its parent's index, a threaded one on its own thread too (auto-session-mode.md §6.5); a follow-up's row is the task itself, whose next check opens a new session.
+      // A purged work task closes, its record kept for readTask (assistant-mode.md §5.18 ④); a follow-up's row is the task itself, and a getting-to-know task's goes with its session.
       await tx
         .prepare(
-          `DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?
-             AND NOT (mode = 'watch' AND watchStatus IS NOT NULL)`
+          `UPDATE assistant_subsession SET ${CLOSE_TASK} WHERE agentId = ? AND childSessionKey = ? AND mode = 'work'`
         )
+        .run(Date.now(), rec.agentId, key)
+      await tx
+        .prepare(`DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? AND gettingToKnow = 1`)
         .run(rec.agentId, key)
       await tx
         .prepare('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?')

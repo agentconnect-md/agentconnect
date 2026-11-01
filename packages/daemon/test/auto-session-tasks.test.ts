@@ -174,9 +174,10 @@ describe('a threaded task (auto-session-mode.md §6)', () => {
 
   it('is offered updateTask and told it answers in its threads', async () => {
     const thread = { thread: '1.1' }
-    expect(stopTaskToolsFor(thread).map((tool) => tool.name)).toEqual(['listTasks', 'stopTask'])
+    expect(stopTaskToolsFor(thread).map((tool) => tool.name)).toEqual(['listTasks', 'readTask', 'stopTask'])
     expect(stopTaskToolsFor({ ...thread, threadedTask: true }).map((tool) => tool.name)).toEqual([
       'listTasks',
+      'readTask',
       'stopTask',
       'updateTask'
     ])

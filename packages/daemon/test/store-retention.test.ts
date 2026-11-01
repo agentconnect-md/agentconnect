@@ -7,6 +7,7 @@
  * Per-table prune tests are gone with the per-table prunes.
  */
 import { describe, expect, it } from 'vitest'
+import { CLOSED_TASK_RETENTION_MS } from '../src/store/closed-tasks.js'
 import { LocalStore, sessionKey } from '../src/store/local-store.js'
 import {
   DEFAULT_STORE_HORIZON_MS,
@@ -70,6 +71,37 @@ async function seedDecisionVerdicts(s: LocalStore, agentId: string, at: number):
     })
     if (ts === '1') await s.finishDecisionVerdict(seq, agentId, null, 'canceled', 'stop', at)
   }
+}
+
+const PR = 'https://github.com/example-org/example-repo/pull/12'
+const OWNER = { sessionId: 'sid-place', key: 'slack:C0EXAMPLE1:append:coordinator:x' }
+
+/** A work task that opened a pull request and a watch task with an observation, both closed at `at` (assistant-mode.md §5.18 ④). */
+async function seedClosedTasks(s: LocalStore, agentId: string, at: number): Promise<{ work: string; watch: string }> {
+  const work = sessionKey('slack', 'C0EXAMPLE1', '1700000000.000100', agentId)
+  const index = s.assistantSubsessions
+  await index.open({
+    agentId,
+    childSessionKey: work,
+    parentSessionId: OWNER.sessionId,
+    parentSessionKey: OWNER.key,
+    now: at
+  })
+  expect(
+    await index.recordOpened(agentId, work, {
+      kind: 'pull request',
+      label: 'example-org/example-repo#12',
+      url: PR,
+      now: at
+    })
+  ).toBe(true)
+  expect(await index.closeTask(agentId, work, at)).toBe(true)
+  const watch = sessionKey('slack', 'C0EXAMPLE1', 'check-closed', agentId)
+  const origin = { platform: 'slack', channel: 'C0EXAMPLE1', transportScope: null }
+  await s.assistantWatchTasks.open({ agentId, taskKey: watch, title: 'Watch PR 12', origin, owner: OWNER, now: at })
+  await s.assistantWatchTasks.appendObservation(agentId, watch, { text: 'It merged.', now: at })
+  expect(await s.assistantWatchTasks.schedule(agentId, watch, { status: 'done', nextAt: null }, at)).toBe(true)
+  return { work, watch }
 }
 
 /** One row in every table the rule table names, all stamped `at`. */
@@ -210,6 +242,7 @@ describe('store retention rule table', () => {
     await seedEveryTable(s, LIVE, 'fresh', AT, 'member-a')
     await s.putMemoryEntryContinuation(LIVE, '{}', AT + 30 * 60 * 1000)
     await seedDecisionVerdicts(s, LIVE, AT)
+    await seedClosedTasks(s, LIVE, AT)
     const modelSessionId = '44444444-4444-4444-8444-444444444444'
     await s.saveDecisionModelEvaluation(
       LIVE,
@@ -591,6 +624,44 @@ describe('store retention rule table', () => {
     expect(() => resolveStoreRetentionSettings({ [STORE_RETENTION_SCALE_ENV]: '-1' })).toThrow(
       STORE_RETENTION_SCALE_ENV
     )
+  })
+})
+
+describe('closed tasks (assistant-mode.md §5.18 ④)', () => {
+  it('keeps a closed task for its window, then sweeps it with what it opened and observed; an open one stays', async () => {
+    const s = await solo()
+    const index = s.assistantSubsessions
+    const { work, watch } = await seedClosedTasks(s, LIVE, AT)
+    const open = sessionKey('slack', 'C0EXAMPLE1', '1700000000.000200', LIVE)
+    await index.open({
+      agentId: LIVE,
+      childSessionKey: open,
+      parentSessionId: OWNER.sessionId,
+      parentSessionKey: OWNER.key,
+      now: AT
+    })
+    await index.recordOpened(LIVE, open, {
+      kind: 'pull request',
+      label: 'example-org/example-repo#13',
+      url: `${PR}3`,
+      now: AT
+    })
+
+    const within = await sweeper(s, AT + CLOSED_TASK_RETENTION_MS - DAY).instance.sweepAgeOnly()
+    expect(within?.byRule).toMatchObject({ 'closed-task': 0, 'closed-task-opened': 0, 'closed-task-observation': 0 })
+    expect(await index.record(LIVE, work)).toMatchObject({ closedAt: AT })
+    expect(await index.record(LIVE, watch)).toMatchObject({ closedAt: AT, watchStatus: 'done' })
+
+    const past = await sweeper(s, AT + CLOSED_TASK_RETENTION_MS).instance.sweepAgeOnly()
+    expect(past?.byRule).toMatchObject({ 'closed-task': 2, 'closed-task-opened': 1, 'closed-task-observation': 1 })
+    expect(past?.failed).toBe(0)
+    expect(await index.record(LIVE, work)).toBeUndefined()
+    expect(await index.record(LIVE, watch)).toBeUndefined()
+    expect(await index.opened(LIVE, work)).toEqual([])
+    expect((await s.assistantWatchTasks.get(LIVE, watch))?.observations).toBeUndefined()
+    expect(await index.record(LIVE, open)).toMatchObject({ childSessionKey: open })
+    expect(await index.opened(LIVE, open)).toHaveLength(1)
+    await s.close()
   })
 })
 

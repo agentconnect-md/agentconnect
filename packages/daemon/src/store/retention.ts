@@ -1,6 +1,7 @@
 import { systemClock, type Clock } from '@agentconnect.md/connection'
 import type { LocalStore } from './local-store.js'
 import { DECISION_VERDICT_PENDING_STATES, DECISION_VERDICT_TERMINAL_STATES, sqlStates } from './decision-states.js'
+import { CLOSED_TASK_RETENTION_MS, noOpenTask, taskClosedClock } from './closed-tasks.js'
 
 /**
  * The daemon store's ONE retention home (k8s-daemon-pool.md §4).
@@ -219,6 +220,36 @@ export const STORE_RETENTION_RULES: readonly StoreRetentionRule[] = [
     where: `state IN ${sqlStates(DECISION_VERDICT_PENDING_STATES)}`,
     agentColumn: 'agentId',
     horizonMs: DAY_MS
+  },
+  {
+    // A closed task's record (assistant-mode.md §5.18 ④): readTask finds it for one window after it closed.
+    id: 'closed-task',
+    table: 'assistant_subsession',
+    key: ['agentId', 'childSessionKey'],
+    clock: 'closedAt',
+    where: 'closedAt IS NOT NULL',
+    agentColumn: 'agentId',
+    horizonMs: CLOSED_TASK_RETENTION_MS
+  },
+  {
+    // What a task opened goes with its record, and at once once no row of the task is left.
+    id: 'closed-task-opened',
+    table: 'assistant_task_opened',
+    key: ['agentId', 'taskKey', 'url'],
+    clock: taskClosedClock('assistant_task_opened'),
+    where: noOpenTask('assistant_task_opened'),
+    agentColumn: 'agentId',
+    horizonMs: CLOSED_TASK_RETENTION_MS
+  },
+  {
+    // An ended watch task's observations go with its record.
+    id: 'closed-task-observation',
+    table: 'assistant_task_observation',
+    key: ['agentId', 'taskKey', 'observationVersion'],
+    clock: taskClosedClock('assistant_task_observation'),
+    where: noOpenTask('assistant_task_observation'),
+    agentColumn: 'agentId',
+    horizonMs: CLOSED_TASK_RETENTION_MS
   },
   {
     id: 'activation',

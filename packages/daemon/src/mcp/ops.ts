@@ -163,6 +163,7 @@ import {
 } from './ops/place-gate.js'
 import { resolveChannelArg } from './ops/channel-names.js'
 import { recall, RECALL_ARGS } from './ops/recall.js'
+import { readTask, type TaskReadDeps } from './ops/read-task.js'
 import { askingToJoin, parkingOnJoin, type JoinAskDeps, type JoinParked } from './ops/join-ask.js'
 import { ASSISTANT_ITEM_ARG_SCHEMAS, ASSISTANT_ITEM_HANDLERS, type AssistantItemDeps } from './ops/assistant-items.js'
 import { GETTING_TO_KNOW_ARGS, gettingToKnow } from './ops/getting-to-know.js'
@@ -233,6 +234,7 @@ export interface OpsDeps
     AssistantItemDeps,
     AssistantReminderDeps,
     AssistantSubsessionDeps,
+    TaskReadDeps,
     CapabilityRequestDeps {
   /** Rejected tool arguments are logged here at debug, key names only — the sole trace of them (#1921). */
   log?: Pick<Logger, 'debug'>
@@ -342,6 +344,7 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['readCanvas', readCanvas],
   ['updateCanvas', updateCanvas],
   ['recall', recall],
+  ['readTask', readTask],
   ...ASSISTANT_ITEM_HANDLERS,
   ['getToKnow', gettingToKnow],
   ...ASSISTANT_REMINDER_HANDLERS,
