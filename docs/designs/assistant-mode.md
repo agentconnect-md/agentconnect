@@ -4995,4 +4995,5 @@ answers away from the asker's thread reports its run to the coordinator (auto-se
 and left the asking thread with a link and no answer, since a task in a place reported nothing; the
 thread is the asker's place, and a channel is a workspace the task earns. The `openTaskPlace` member
 leaves the platform contract, `createSlackCodeChannel` is the one creation path, and a task that
-calls it holds the channel as one more thread.
+calls it holds the channel as one more thread. A channel a task holds is no place of its own: it is
+not onboarded, and a follow-up taken there belongs to the task's place.

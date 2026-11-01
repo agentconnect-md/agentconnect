@@ -439,6 +439,10 @@ place; a channel is a workspace the task earns.
   has the message, its title and its background. The daemon dispatches nothing itself. A message in a
   room keyed as one thread that arrives while the task's channel is still being attached waits for it,
   at most 30 seconds.
+- **Not a place.** A channel a task holds is the task's workspace, not a place of its own: it is never
+  onboarded (no getting-to-know task, no long session of its own, no coordinator), and a follow-up
+  taken from a message there belongs to the task's own place, the conversation the task was opened
+  in, where its reports and its board line go. A code channel made outside a task is unchanged here.
 - **Routing.** A room its platform keys as one thread named after itself has no root, so it never runs a
   coordinator of its own whatever its mode: every message there keys on the channel's session, the
   task's while a task holds it. This also keeps a code channel made outside a task, or one whose task has
