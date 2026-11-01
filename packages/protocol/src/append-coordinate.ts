@@ -9,3 +9,11 @@ export const APPEND_COORDINATE_PREFIX = 'append:'
 export function isAppendCoordinate(thread: string | null | undefined): boolean {
   return typeof thread === 'string' && thread.startsWith(APPEND_COORDINATE_PREFIX)
 }
+
+/** The coordinator session's coordinate prefix (auto-session-mode.md §4), an append coordinate of its own family. */
+export const COORDINATOR_COORDINATE_PREFIX = `${APPEND_COORDINATE_PREFIX}coordinator-`
+
+/** Whether a session's thread segment is a coordinator session's, so the console can label it and its tasks. */
+export function isCoordinatorCoordinate(thread: string | null | undefined): boolean {
+  return typeof thread === 'string' && thread.startsWith(COORDINATOR_COORDINATE_PREFIX)
+}

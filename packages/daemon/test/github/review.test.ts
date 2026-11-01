@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { reviewResultForWire } from '../../src/github/hook-coords.js'
 import { GithubReviewClient, type GithubReviewTarget, type SubmitGithubReviewInput } from '../../src/github/review.js'
 
 function json(status: number, body: unknown): Response {
@@ -452,5 +453,143 @@ describe('GithubReviewClient', () => {
     const submitted = JSON.parse(String(fetchImpl.mock.calls[4]![1]?.body))
     expect(submitted.comments[2]).toMatchObject({ line: 13, start_line: 10, start_side: 'RIGHT' })
     expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+  })
+
+  describe('self-review refusal', () => {
+    const selfRefusal = (verb: string) =>
+      json(422, { message: 'Unprocessable Entity', errors: [`Can not ${verb} your own pull request`] })
+
+    // One open pull, an empty marker list, and the diff files; POSTs answer from `posts` in order.
+    function github(posts: Array<(body: { event: string; body: string }) => Response>, reviews: unknown[] = []) {
+      const posted: Array<{ event: string; body: string; comments?: unknown }> = []
+      const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+        if (init?.method === 'POST') {
+          const body = JSON.parse(String(init.body)) as { event: string; body: string }
+          posted.push(body)
+          return posts[posted.length - 1]!(body)
+        }
+        if (String(url).includes('/reviews?')) return json(200, posted.length ? reviews : [])
+        if (String(url).includes('/files?')) return json(200, pullFiles)
+        return json(200, {
+          state: 'open',
+          merged: false,
+          draft: false,
+          head: { sha: target.expectedHeadSha },
+          base: { sha: target.expectedBaseSha }
+        })
+      })
+      return { fetchImpl, posted }
+    }
+
+    it.each([
+      ['APPROVE', 'pass', 'approve'],
+      ['REQUEST_CHANGES', 'fail', 'request changes on']
+    ] as const)('republishes a refused %s once as COMMENT with the same content', async (event, verdict, verb) => {
+      const { fetchImpl, posted } = github([
+        () => selfRefusal(verb),
+        () => json(200, { id: '789', state: 'COMMENTED', commit_id: target.expectedHeadSha })
+      ])
+      const client = new GithubReviewClient({ fetchImpl })
+
+      const effect = await client.submit(target, { ...comment, event, verdict })
+      expect(effect).toEqual({
+        state: 'submitted',
+        reviewId: '789',
+        event,
+        verdict,
+        commitId: target.expectedHeadSha,
+        publishedEvent: 'COMMENT',
+        message: expect.stringContaining('published as a COMMENT')
+      })
+      expect(posted.map((body) => body.event)).toEqual([event, 'COMMENT'])
+      expect(posted[1]!.body).toBe(posted[0]!.body)
+      expect(posted[1]!.comments).toEqual(posted[0]!.comments)
+      // The CP records the COMMENT GitHub published, keeping the agent's verdict.
+      expect(reviewResultForWire(effect)).toEqual({
+        state: 'submitted',
+        reviewId: '789',
+        event: 'COMMENT',
+        verdict,
+        commitId: target.expectedHeadSha
+      })
+    })
+
+    it('keeps a refused COMMENT not_submitted without another POST', async () => {
+      const { fetchImpl, posted } = github([() => selfRefusal('approve')])
+      const client = new GithubReviewClient({ fetchImpl })
+
+      await expect(client.submit(target, comment)).resolves.toEqual({
+        state: 'not_submitted',
+        code: 'github_rejected',
+        message: 'GitHub POST 422: Unprocessable Entity; Can not approve your own pull request'
+      })
+      expect(posted).toHaveLength(1)
+    })
+
+    it('leaves an unrelated 422 on APPROVE as a definite rejection', async () => {
+      const { fetchImpl, posted } = github([
+        () =>
+          json(422, {
+            message: 'Validation Failed',
+            errors: ['Pull request review thread line must be part of the diff']
+          })
+      ])
+      const client = new GithubReviewClient({ fetchImpl })
+
+      await expect(client.submit(target, { ...comment, event: 'APPROVE', verdict: 'pass' })).resolves.toMatchObject({
+        state: 'not_submitted',
+        code: 'github_rejected'
+      })
+      expect(posted).toHaveLength(1)
+    })
+
+    it('reconciles an ambiguous COMMENT republish by marker without a third POST', async () => {
+      const reviews: unknown[] = []
+      const { fetchImpl, posted } = github(
+        [
+          () => selfRefusal('approve'),
+          (body) => {
+            reviews.push({ id: '901', state: 'COMMENTED', body: body.body, commit_id: target.expectedHeadSha })
+            throw new Error('socket reset')
+          }
+        ],
+        reviews
+      )
+      const client = new GithubReviewClient({ fetchImpl })
+
+      await expect(client.submit(target, { ...comment, event: 'APPROVE', verdict: 'pass' })).resolves.toMatchObject({
+        state: 'submitted',
+        reviewId: '901',
+        event: 'APPROVE',
+        publishedEvent: 'COMMENT'
+      })
+      expect(posted.map((body) => body.event)).toEqual(['APPROVE', 'COMMENT'])
+    })
+
+    it('reports a replayed downgrade from the recovered review state through GETs only', async () => {
+      let marker = ''
+      const capture = new GithubReviewClient({
+        fetchImpl: github([
+          (body) => {
+            marker = body.body.match(/<!-- agentconnect-review:[^>]+-->/)![0]
+            return selfRefusal('approve')
+          },
+          () => json(200, { id: '1', state: 'COMMENTED', commit_id: target.expectedHeadSha })
+        ]).fetchImpl
+      })
+      await capture.submit(target, { ...comment, event: 'APPROVE', verdict: 'pass' })
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          json(200, [{ id: '1', state: 'COMMENTED', body: marker, commit_id: target.expectedHeadSha }])
+        )
+
+      await expect(new GithubReviewClient({ fetchImpl }).reconcile(target, 'APPROVE', 'pass')).resolves.toMatchObject({
+        state: 'submitted',
+        event: 'APPROVE',
+        publishedEvent: 'COMMENT'
+      })
+      expect(fetchImpl.mock.calls.every(([, init]) => (init?.method ?? 'GET') === 'GET')).toBe(true)
+    })
   })
 })

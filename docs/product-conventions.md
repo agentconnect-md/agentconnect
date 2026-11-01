@@ -321,6 +321,10 @@ acknowledged before it is answered"), which names no phase and never outlives th
 code-host turn adds no startup comment. Status publication is best-effort and never
 holds up initialization.
 
+While a running turn waits on a person — an approval, or a question asked through an approval
+card — Slack shows the session as waiting (its _Needs attention_ state, `suspended`) instead of
+working, and returns it to working once the last such request is answered or released.
+
 Startup notices are not recorded in the AgentConnect transcript. On success or
 cancellation, the console clears the wait. A failed console turn may retain its last
 phase beside the error. Standing notices, such as an unavailable approval, survive
@@ -389,9 +393,14 @@ two seconds never shows one.
 
 DingTalk has no typing indicator either, and the reaction its bot places is a
 "thinking" label, not a mark that the message was seen. There that reaction is
-the indicator, and the one exception to the rule below: placed when the turn
+the indicator, and an exception to the rule below: placed when the turn
 starts and taken off when it ends, however it ends, so nothing claims the agent
 is still thinking once the answer is in.
+
+A conversation on Auto has the other exception. While its coordinator decides
+where a message goes, the message shows 🤔, and the 🤔 comes off when that turn
+ends, whatever it decided. The task that then answers the message acknowledges
+its own turn as above.
 
 The reaction is an acknowledgement, not a status: it is placed once and never
 taken back or swapped for an outcome. That is deliberate — it records that the
@@ -1005,12 +1014,13 @@ the Memory tab offers only Managed and the Control Plane and says to turn the mo
 them, and the API refuses any other choice the same way. Turning the mode off moves nothing back.
 While the Control Plane is unreachable, the agent's memory is unavailable.
 
-Each place keeps one long session while the mode is on: every room, and a 1:1 DM
-on a platform whose DMs otherwise open a session per message. A conversation gated By
+Each place keeps one long session while the mode is on: every room, a Slack group DM, and a
+1:1 DM on a platform whose DMs otherwise open a session per message. A conversation gated By
 decision keeps its own session mode, and a platform whose rooms never append (a Linear
 team) is left as it is. A new conversation keeps that one session from its first message,
-before the console lists it. The row shows `Single session` and offers no other choice; the
-stored choice returns when the mode is switched off.
+before the console lists it. The long session is the place's coordinator where its daemon reads
+Auto. The row shows `Auto`, or `Single session` on an older daemon, and offers no other choice;
+the stored choice returns when the mode is switched off.
 
 A room or group DM is external when the platform says people from outside the organization are
 in it. On Slack that is a Slack Connect conversation, read from the membership listing and from
@@ -1317,8 +1327,33 @@ an approved proposal (see "Assistant-mode proposals"). What the agent's runtime 
 for the current turn, a long command or one of the runtime's own subagents, is not a task of the
 conversation; the session page shows it as this turn's tasks.
 
-Every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
-delegated task of its own: `sendMessage` with action `delegateTask` and only a `message`. Work it
+When the current platform provides a dedicated task conversation, the agent follows that
+workflow. In Slack, requested coding work with several steps opens a Code channel unless
+the user asks to stay in place or the task needs earlier discussion that would be lost.
+If channel creation is unavailable, ordinary delegation remains available.
+Work already in a Code channel continues there and keeps
+its repository, branch, diff and PR surfaces current; it never creates a second channel
+or delegates the same work merely because the original request was copied into it.
+Quick questions stay in their original conversation. In an Auto conversation on Slack, a task
+the coordinator opens for a message works in a Code channel linked to it, and the message's
+thread links the channel; where no channel can be made, the task answers in the thread.
+Archiving the channel closes the task.
+
+In a Code channel, the platform keeps the task's assigned, isolated repositories visible
+as a diff while work runs and when it finishes. The comparison starts from the clean
+repository state before the task, so committing changes does not hide them. The agent
+still explains the work and publishes useful HTML previews and PR links. If enabled
+diff updates fail, the conversation says why. Existing tasks
+without a saved starting point, shared checkouts and unrelated directories are not
+silently published or given repeated eligibility warnings; the same conversation-write
+authorization applies to automatic output.
+
+Otherwise every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
+delegated task of its own: `sendMessage` with action `delegateTask` and only a `message`. Where the
+daemon's Auto switch is on, only an Auto conversation's coordinator delegates: every other
+conversation, and every task, does its long work itself and is not told about `delegateTask`, and a
+task it delegated before runs and reports until it ends. A place's long session there still lists,
+messages and ends its follow-ups and its organization research. Work it
 splits up and can finish within the current turn goes to its runtime's own subagents instead;
 delegating is for work that spans turns, may run a long time, or that people should be able to
 see and stop. A task serves the request the agent is answering: its independent parts, or long
@@ -1661,10 +1696,13 @@ without reporting, uncertain) is recorded on the follow-up.
 ## Capability requests
 
 When an agent cannot do what it was asked because of how it is set up, it may ask
-for what it lacks with `requestCapability`: a change to its own model, effort, fast mode, output mode
-or permission mode, an organization MCP server, a skill, access to a GitHub or GitLab repository, a
+for what it lacks with `requestCapability`: a change to any field of its own agent form (model, effort,
+fast mode, output mode, permission mode, runtime, execution strategy, chat actions, its display name,
+footer and status bar), a scheduled task (a new cron, or a change to one of its own), an
+organization MCP server, a skill, access to a GitHub or GitLab repository, a
 connection (an MCP server's sign-in, a code host, or a chat integration), or a secret: one an MCP
-server sends as a header, or a live secret the agent loads in its own shell. A request grants nothing. Only a person
+server sends as a header, or a live secret the agent loads in its own shell. It never asks for its
+workspace, its visibility or its sharing. A request grants nothing. Only a person
 completes it, in the console, through the same dialog and under the same permissions as making that
 change without a request. A deployment offers this only once its operator turns capability requests
 on, and a follow-up's check, organization research and a getting-to-know task never get the tool.
@@ -1700,7 +1738,8 @@ elsewhere. If what was saved differs from what was asked, the request still comp
 is told what it got instead. On completion, decline or expiry the card is rewritten in place, and the
 agent continues in every conversation that asked, with the authority of the people who asked there,
 and never with another conversation's. A repository, a sign-in or a header reloads the conversation's
-session first, so the agent sees the new access or tools. That continuation is not shown as anyone's message and passes
+session first, so the agent sees the new access or tools. A new runtime continues the conversation from
+a replay of its history, and the agent is told so. That continuation is not shown as anyone's message and passes
 a mention-only trigger; it waits behind a running turn and while the agent is paused. A request the
 agent withdraws wakes nobody.
 
@@ -2315,11 +2354,16 @@ output, and removes intermediate queued revisions. A head change arrives as
 signed `changes.base` metadata. Revision identity includes both base and head, so retargeting
 an unchanged head still preempts work for the old diff. Relay ingest time determines
 recency even if asynchronous authorization reorders delivery; the delivery key breaks
-same-timestamp ties deterministically. Draft state does not change review eligibility: an
-open draft PR follows the same formal review path as a ready PR, including approval when
-the current revision passes. Transitions between draft and ready are status-only and do
-not start another review generation. Explicit comments, review requests, and Check reruns
-remain ordered work and are never discarded by revision supersession.
+same-timestamp ties deterministically. By default draft state does not change review
+eligibility: an open draft PR follows the same formal review path as a ready PR, including
+approval when the current revision passes, and transitions between draft and ready are
+status-only. A pull-request integration can instead skip drafts until they are marked
+ready. Its draft revisions then start no run and leave no Check, so an agent that declines
+drafts never posts a failed one, and marking the PR ready for review starts a review
+generation for its current head under both the Opened and the Any update cadence.
+Converting back to draft stays status-only either way. Explicit comments, review requests,
+and Check reruns still review a draft, and they remain ordered work that revision
+supersession never discards.
 The trusted pull-request lane spans per-delivery anchor session keys but remains isolated by
 the configured output platform, channel, and integration.
 

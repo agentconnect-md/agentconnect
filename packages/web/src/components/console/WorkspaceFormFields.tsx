@@ -11,7 +11,7 @@ import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-h
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { GITEA_REPOSITORY_STATE, giteaChoiceSelectable, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
-import type { RepoAccess, RepoGrantStaleReason, RepoMaterialize } from '@/lib/api'
+import { githubAppPageUrl, type RepoAccess, type RepoGrantStaleReason, type RepoMaterialize } from '@/lib/api'
 import type { RepositoryDecisionBlock } from '@/lib/repository-selector'
 
 // The TILE the user types through, not what is stored (git-workspace-model.md §7):
@@ -441,13 +441,36 @@ export function GithubInstallPrompt({
   )
 }
 
-export function GithubConnectedBanner({ onManage }: { onManage: () => void }) {
+export function GithubConnectedBanner({
+  onManage,
+  appSlug,
+  onGithubApp
+}: {
+  onManage: () => void
+  /** The organization GitHub App the agent works through; absent or null ⇒ the built-in App. */
+  appSlug?: string | null
+  /** Opens the agent's GitHub App dialog; absent ⇒ no menu (an agent not created yet). */
+  onGithubApp?: () => void
+}) {
   const t = useTranslations('Integrations.dialog.workspaceFields')
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-md border border-(--status-online) bg-(--status-online-soft) px-3 py-[9px] desktop:col-span-2">
       <Icon name="circle-check" size={16} color="var(--status-online)" />
-      <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary)">
-        {t('githubConnected')}
+      <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-primary)">
+        {appSlug
+          ? t.rich('githubConnectedWith', {
+              slug: () => (
+                <a
+                  className="mono text-inherit underline-offset-2 hover:underline"
+                  href={githubAppPageUrl(appSlug)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {appSlug}
+                </a>
+              )
+            })
+          : t('githubConnected')}
       </span>
       <button
         type="button"
@@ -457,6 +480,43 @@ export function GithubConnectedBanner({ onManage }: { onManage: () => void }) {
         <Icon name="settings-2" size={13} />
         {t('manageAccess')}
       </button>
+      {onGithubApp && (
+        <AnchoredFlyout
+          ariaLabel={t('more')}
+          align="end"
+          width={230}
+          estimatedHeight={44}
+          triggerClassName="flex"
+          trigger={({ open, menuId, toggle }) => (
+            <button
+              type="button"
+              aria-label={t('more')}
+              aria-haspopup="menu"
+              aria-expanded={open}
+              aria-controls={open ? menuId : undefined}
+              title={t('more')}
+              onClick={toggle}
+              className="iconbtn h-[22px] w-[22px] flex-none"
+            >
+              <Icon name="ellipsis" size={13} />
+            </button>
+          )}
+        >
+          {({ close }) => (
+            <button
+              type="button"
+              role="menuitem"
+              className="fopt"
+              onClick={() => {
+                close(true)
+                onGithubApp()
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate">{appSlug ? t('changeGithubApp') : t('useOwnGithubApp')}</span>
+            </button>
+          )}
+        </AnchoredFlyout>
+      )}
     </div>
   )
 }

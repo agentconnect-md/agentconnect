@@ -26,8 +26,9 @@ published with each release too (see [Run in Docker](#run-in-docker)).
 - The `/view` browser remote desktop: WebRTC video (ffmpeg + werift) with a screenshot-polling
   fallback, and human takeover.
 - `setup` / `doctor` on macOS, Linux (X11 and GNOME Wayland) and Windows; a macOS LaunchAgent
-  (`.app` mode) and a Linux systemd user unit; Windows logon autostart.
-- A Docker image (Xvfb + Xfce + Firefox ESR) that registers from its environment, amd64 and arm64.
+  (`.app` mode), a Linux systemd user unit, and a Windows service that runs the daemon as SYSTEM in
+  the signed-in session, so UAC prompts can be answered as the Computer's setting says.
+- A Docker image (Xvfb + Xfce + Chromium + LibreOffice) that registers from its environment, amd64 and arm64.
 
 **Limits**
 
@@ -38,10 +39,10 @@ published with each release too (see [Run in Docker](#run-in-docker)).
 - Plain HTTP with a bearer token. The daemon listens on `127.0.0.1` by default; other machines
   can reach it only when you pass `--host 0.0.0.0` (or another address) explicitly, and then the
   token is the only protection.
-- One display, no audio, no clipboard sync; no screen border. Keyboard activity, the tray icon
-  and the global stop hotkey exist on X11 only (Wayland is #3221; macOS and Windows have none).
-- Builds are unsigned (macOS `.app` is ad-hoc signed; no Windows installer), so OS grants do not
-  survive a rebuild.
+- One display, no audio, no clipboard sync; no screen border. Keyboard activity and the global stop
+  hotkey exist on X11 only (Wayland is #3221); macOS has a menu bar icon and Windows a taskbar icon.
+- Builds are unsigned (macOS `.app` is ad-hoc signed; the Windows service and taskbar helper are
+  compiled on the machine at install), so macOS grants do not survive a rebuild.
 - CI covers X11 under Xvfb only (see [Development](#development)); the real-session matrix of design
   §13 is still run by hand. `agentconnect computer` manages the npm package on Linux; macOS (`.app`) and
   Windows packaging are M3 / M4, so there the bundle below is still installed by hand.
@@ -102,25 +103,40 @@ Requirements: Windows 10/11 x64 or arm64, a logged-in desktop session, Node.js �
 2. In a normal (non-admin) PowerShell on the Windows desktop, run:
 
    ```powershell
-   .\install.ps1            # copies to %LOCALAPPDATA%\AgentConnect\computer\app and runs setup
-   node "$env:LOCALAPPDATA\AgentConnect\computer\app\agentconnect-computer.mjs" run
+   .\install.ps1            # copies the bundle and runs setup, which installs the service
    ```
 
-   The daemon then listens on `127.0.0.1` only. To reach it from another machine, run
+   `setup` asks for administrator approval once (UAC), then:
+   - compiles the service host, the taskbar helper and the administrator prompt helper with the
+     .NET Framework's own `csc.exe` into `%ProgramFiles%\AgentConnect\Computer`, beside a copy of
+     `node.exe` and the bundle;
+   - moves the config and key to `%ProgramData%\AgentConnect\computer`, which you can read but only
+     administrators can change, since SYSTEM runs what it names;
+   - installs and starts the `AgentConnectComputer` service, which runs the daemon **as SYSTEM in
+     whoever is signed in at the console**. That is what lets it reach UAC prompts on the secure
+     desktop, which stays on as Windows ships it.
+
+   The taskbar icon (in the `^` overflow until you pin it) shows who controls the computer and
+   has the same menu as the macOS menu bar: Stop All Agent Input / Resume, the service, Start at
+   Sign-in, Open Logs, Uninstall and Quit. Its **Administrator Prompts** submenu chooses who
+   answers a UAC prompt while an agent is in control: _People Approve Each One_ (the default: each
+   approve waits for an allowed member's approval card), _Agent Decides_, _Always Approve_ or
+   _Always Deny_. It is the same setting as the console's usage policy, and either place changes
+   it for both. A prompt that asks for an administrator's password is left to you. Apps the agent
+   launches start as you, not as SYSTEM.
+
+   The daemon listens on `127.0.0.1` only. To reach it from another machine, run
    `.\install.ps1 -ListenHost 0.0.0.0` instead: `setup` saves the address and adds the inbound
-   firewall rule, which a loopback-only install skips.
+   firewall rule for the service's `node.exe`, which a loopback-only install skips.
 
-   `run` is a plain foreground process: `Ctrl+C` stops it and closes the port. Keep the console
-   window open: it is the indicator and emergency stop. Running `node agentconnect-computer.mjs run`
-   straight from the copied `bundle/` folder also works; it does the downloads itself but skips the
-   firewall step.
+`service start | stop | restart | status` work without another approval; `service uninstall`
+asks once and keeps the data unless you add `--purge`. With `setup --no-service` nothing is
+installed: run the daemon in a console (`run`, `Ctrl+C` stops it), optionally started at logon by
+a per-user `HKCU\...\Run` entry (`install.ps1 -Autostart`, `autostart disable` removes it). Such a
+daemon cannot answer UAC prompts.
 
-Nothing is installed as a service. With `-Autostart`, `install.ps1` also adds a per-user
-`HKCU\...\Run` entry that opens the daemon console at logon (`autostart disable` removes it). A real
-Windows service would not work anyway: services live in Session 0 and cannot see the user desktop.
-
-To start over (new token), delete `%LOCALAPPDATA%\AgentConnect\computer\config.json`, or run
-`node agentconnect-computer.mjs token add claude` to rotate the token.
+To rotate the token, run `node agentconnect-computer.mjs token add claude` (it asks for approval
+once the service holds the config).
 
 ## Run on macOS
 
@@ -206,10 +222,10 @@ Computer key and the grants stay in `~/.agentconnect/computer`, so an upgrade ke
 registration; a desktop installed by the retired Control Plane `install.sh` keeps its data, and `computer install`
 moves its service onto the store. `AGENTCONNECT_NPM_REGISTRY` points the CLI at another registry.
 
-Requirements for running from source: Node.js ≥ 24.12 (the official tarball in `~/.local/node` works), a logged-in
-graphical session, and `setup` run inside it. Over SSH, export the session's `WAYLAND_DISPLAY`,
-`XDG_RUNTIME_DIR`, and `DBUS_SESSION_BUS_ADDRESS` first. `setup` downloads Cua Driver and a pinned
-static ffmpeg (6.0, libx264).
+Building from source requires Node.js ≥ 26.0; the bundle runs on Node.js ≥ 24.12. A logged-in
+graphical session is also required, and `setup` must run inside it. Over SSH, export the
+session's `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, and `DBUS_SESSION_BUS_ADDRESS` first. `setup`
+downloads Cua Driver and a pinned static ffmpeg (6.0, libx264).
 
 - **X11**: Cua Driver captures and injects through X11/XTest, and the viewer uses ffmpeg `x11grab`.
   Nothing needs approving.
@@ -252,11 +268,12 @@ static ffmpeg (6.0, libx264).
 ## Run in Docker
 
 The `computer` image (`ghcr.io/agentconnect-md/computer`, amd64 and arm64, published with each release) is a
-Debian trixie desktop with Xvfb, a lean Xfce, Firefox ESR, Noto CJK fonts, the pinned Node.js, and the daemon
+Debian trixie desktop with Xvfb, a lean Xfce, Chromium, LibreOffice, Noto CJK fonts, the pinned Node.js (with npm),
+Debian's Python, Go and Rust toolchains, and the daemon
 with Cua Driver preinstalled. ffmpeg (GPL) is not in the image: the daemon downloads the pinned, sha256-checked
 build on first start into the volume, and the viewer polls screenshots until it is there. The entrypoint starts Xvfb on `:1` (`RESOLUTION`, default
-`1600x900x24`), a session D-Bus, Xfce and a maximized browser, then runs `run` in the foreground as user
-`desktop`. The browser is restarted when it exits or crashes (`BROWSER`, default `firefox-esr`; `none` turns it
+`1280x800x24`), a session D-Bus, Xfce and a maximized browser, then runs `run` in the foreground as user
+`desktop`. The browser is restarted when it exits or crashes (`BROWSER`, default `chromium`; `none` turns it
 off; `BROWSER_URL` opens a page). `docker stop` stops the daemon, closes the browser, then the session, with exit
 code 0. `/home/computer` is a volume: the Computer key, config, audit log, and the browser profile survive a new
 container. A `HEALTHCHECK` runs `doctor --json --daemon` inside the running daemon.
@@ -360,8 +377,8 @@ so it never reaches the server or proxy logs, and the page keeps it in `localSto
   WebRTC DataChannel to Cua Driver's desktop-scope input. A Mac's Cmd shortcuts map to Ctrl on
   Windows. Use the text box for IME / pasted text. Viewer actions are audited as `viewer_*`
   (pointer moves are not).
-- Limits: the UAC secure desktop and the lock screen cannot be captured or controlled from
-  the user session. `gdigrab` captures the whole virtual desktop, so with several monitors input
+- Limits: the secure desktop (UAC prompts, the lock screen) cannot be captured; a waiting UAC
+  prompt is described in words instead, and agents answer it with `computer_admin_prompt`. `gdigrab` captures the whole virtual desktop, so with several monitors input
   mapping is only right when `ddagrab` (primary display) works. There is no audio and no
   clipboard sync.
 
@@ -380,6 +397,7 @@ so it never reaches the server or proxy logs, and the page keeps it in `localSto
 | `computer_launch`                       | yes   | `{app}` name, or `.exe` path on Windows                                                                     |
 | `computer_wait`                         | no    | `{ms}` ≤ 10000, then screenshot                                                                             |
 | `computer_acquire` / `computer_release` | —     | explicit lease control                                                                                      |
+| `computer_admin_prompt`                 | yes   | Windows: approve or deny the waiting UAC prompt, as its Administrator Prompts setting allows                |
 
 Coordinates are pixels of the latest screenshot; Cua Driver maps them back to the
 screen. Input tools return a screenshot taken `actionSettleMs` after the action.
@@ -451,8 +469,8 @@ agentconnect-computer stdio [--expose-driver-tools]
 agentconnect-computer token add NAME | token list | token remove NAME
 agentconnect-computer status | pause | resume
 agentconnect-computer doctor [--here] [--json]                       (read-only checks; exit 1 on failure)
-agentconnect-computer service install|uninstall|start|stop|restart|status   (macOS .app LaunchAgent, Linux systemd user unit)
-agentconnect-computer autostart enable | disable | start      (Windows)
+agentconnect-computer service install|uninstall|start|stop|restart|status   (macOS .app LaunchAgent, Linux systemd user unit, Windows service)
+agentconnect-computer autostart enable | disable | start      (Windows without the service)
 ```
 
 With the AgentConnect CLI installed, every command also runs as `agentconnect computer <command>`
@@ -463,7 +481,7 @@ the data dir, where the bundle's install scripts put it; `AGENTCONNECT_COMPUTER_
 development build instead. See
 [cli-daemon-split.md §1.2](../../docs/designs/cli-daemon-split.md#12-computer-desktop-daemon).
 
-Data dir: `%LOCALAPPDATA%\AgentConnect\computer` on Windows, `~/.agentconnect/computer`
+Data dir: `%ProgramData%\AgentConnect\computer` under the Windows service (else `%LOCALAPPDATA%\AgentConnect\computer`), `~/.agentconnect/computer`
 elsewhere (`AGENTCONNECT_COMPUTER_HOME` overrides). `config.json` also holds
 `maxImageDimension`, `leaseIdleSeconds`, `leaseMaxSeconds`, `humanIdleSeconds`,
 `actionScreenshot`, `actionSettleMs`, `allowSystemKeys`, `stopHotkey`, `exposeDriverTools`,

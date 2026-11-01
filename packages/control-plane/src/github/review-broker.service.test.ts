@@ -55,6 +55,7 @@ function hook(overrides: Partial<HookRecord> = {}): HookRecord {
     family: 'pull_request',
     commentFamilies: [],
     labelFilter: [],
+    skipDrafts: false,
     mentionOnly: false,
     configRevision: 7n,
     dispatchRevision: 9n,
@@ -643,6 +644,34 @@ describe('GithubReviewBrokerService', () => {
         DAEMON
       )
     ).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+    expect(hookRepo.recordReviewResult).not.toHaveBeenCalled()
+  })
+
+  it('settles a reserved APPROVE as the COMMENT GitHub downgraded a self-review to, keeping its verdict', async () => {
+    const { service, hookRepo, setRun } = setup()
+    const report = (event: 'COMMENT' | 'APPROVE') => ({
+      hookId: HOOK,
+      deliveryKey: 'delivery-1',
+      attemptId: ATTEMPT,
+      snapshot,
+      result: { state: 'submitted' as const, reviewId: '42', event, verdict: 'pass' as const, commitId: 'head-sha' }
+    })
+    setRun(run({ reviewAttemptId: ATTEMPT, reviewAttemptState: 'reserved', reviewEvent: 'APPROVE', verdict: 'pass' }))
+    await service.recordResult(report('COMMENT'), DAEMON)
+    expect(hookRepo.recordReviewResult).toHaveBeenLastCalledWith(HOOK, DAEMON, {
+      deliveryKey: 'delivery-1',
+      attemptId: ATTEMPT,
+      state: 'submitted',
+      reviewId: '42',
+      event: 'COMMENT',
+      verdict: 'pass',
+      commitId: 'head-sha'
+    })
+
+    // Only the downgrade direction is accepted: a reserved COMMENT never settles as a stronger event.
+    hookRepo.recordReviewResult.mockClear()
+    setRun(run({ reviewAttemptId: ATTEMPT, reviewAttemptState: 'reserved', reviewEvent: 'COMMENT', verdict: 'pass' }))
+    await expect(service.recordResult(report('APPROVE'), DAEMON)).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
     expect(hookRepo.recordReviewResult).not.toHaveBeenCalled()
   })
 

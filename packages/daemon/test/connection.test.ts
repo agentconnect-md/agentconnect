@@ -47,6 +47,7 @@ function fakeAppWith(
     event() {},
     action() {},
     shortcut() {},
+    command() {},
     view() {},
     client: {
       auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
@@ -202,6 +203,7 @@ describe('SlackConnection.openDirectMessage', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: { conversations: { open } },
           start: async () => {},
@@ -221,6 +223,7 @@ describe('SlackConnection.listMemberIds', () => {
     event() {},
     action() {},
     shortcut() {},
+    command() {},
     view() {},
     client: { auth: { test: async () => ({ user_id: 'U1' }) }, conversations: { members } },
     start: async () => {},
@@ -255,6 +258,7 @@ describe('SlackConnection.getChannelInfo', () => {
     event() {},
     action() {},
     shortcut() {},
+    command() {},
     view() {},
     client: { conversations: { info: async () => ({ channel }) } },
     start: async () => {},
@@ -292,6 +296,7 @@ describe('SlackConnection.listBotChannels', () => {
       event() {},
       action() {},
       shortcut() {},
+      command() {},
       view() {},
       client: {
         auth: { test: async () => ({ user_id: 'U1' }) },
@@ -307,7 +312,7 @@ describe('SlackConnection.listBotChannels', () => {
     }
   }
 
-  it('paginates users.conversations and maps to {id,name,isPrivate}, skipping DMs', async () => {
+  it('paginates membership and identifies Code sessions, excluding DMs and archived channels', async () => {
     const conn = new SlackConnection(
       deps() as any,
       () =>
@@ -320,14 +325,19 @@ describe('SlackConnection.listBotChannels', () => {
             ],
             response_metadata: { next_cursor: 'page2' }
           },
-          { channels: [{ id: 'C3', name: 'releases' }] }
+          {
+            channels: [
+              { id: 'C3', name: 'code-task', properties: { record_channel: { record_type: 'agent_channel' } } },
+              { id: 'C4', name: 'archived-task', is_archived: true }
+            ]
+          }
         ]) as any
     )
     const channels = await conn.listBotChannels()
     expect(channels).toEqual([
-      { id: 'C1', name: 'deploys', isPrivate: false, externalReason: null },
-      { id: 'C2', name: 'ops', isPrivate: true, externalReason: null },
-      { id: 'C3', name: 'releases', isPrivate: false, externalReason: null }
+      { id: 'C1', name: 'deploys', isPrivate: false, isCodeSession: false, externalReason: null },
+      { id: 'C2', name: 'ops', isPrivate: true, isCodeSession: false, externalReason: null },
+      { id: 'C3', name: 'code-task', isPrivate: false, isCodeSession: true, externalReason: null }
     ])
   })
 
@@ -380,6 +390,7 @@ describe('SlackConnection.listBotChannels', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: {
             auth: { test: async () => ({ user_id: 'U1' }) },
@@ -428,6 +439,7 @@ describe('SlackConnection never joins a public channel on its own', () => {
       event() {},
       action() {},
       shortcut() {},
+      command() {},
       view() {},
       client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, ...client },
       start: async () => {},
@@ -489,6 +501,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
@@ -515,6 +528,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
@@ -540,6 +554,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
@@ -584,6 +599,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
@@ -628,6 +644,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
@@ -662,6 +679,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
@@ -691,6 +709,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
@@ -725,6 +744,7 @@ describe('SlackConnection.getChannelHistory', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { history } },
           start: async () => {},
@@ -764,6 +784,7 @@ describe('SlackConnection.getChannelHistory', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { history } },
           start: async () => {},
@@ -791,6 +812,7 @@ describe('SlackConnection.getChannelHistory', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { history } },
           start: async () => {},
@@ -825,6 +847,7 @@ describe('SlackConnection membership events', () => {
     shortcut(id: string, h: (a: any) => unknown) {
       shortcuts?.set(id, h)
     },
+    command() {},
     view() {},
     client: {
       auth: { test: async () => ({ user_id: 'UBOT' }) },
@@ -1256,6 +1279,7 @@ describe('SlackConnection assistant DM threads', () => {
           },
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: {
             auth: { test: async () => ({ user_id: 'UBOT' }) },
@@ -1313,6 +1337,7 @@ describe('SlackConnection assistant DM threads', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: {
             auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'BSELF' }) },
@@ -1531,6 +1556,22 @@ describe('SlackConnection.setStatus', () => {
     ])
   })
 
+  it('writes suspended for a waiting status, keeping identity and the displayed owner', async () => {
+    const lifecycle: any[] = []
+    const conn = lifecycleConn((a) => lifecycle.push(a))
+
+    await conn.setStatus('C1', '123.45', 'Run tests', { username: 'Agent A', sessionKey: 'k1' })
+    await conn.setStatus('C1', '123.45', 'Run tests', { username: 'Agent A', sessionKey: 'k1', lifecycle: 'suspended' })
+    await conn.setStatus('C1', '123.45', 'Run tests', { username: 'Agent A', sessionKey: 'k1' })
+
+    expect(lifecycle).toEqual([
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing', username: 'Agent A' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'suspended', username: 'Agent A' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing', username: 'Agent A' }
+    ])
+    expect((conn as any).slotOwner.get('C1:123.45')).toBe('k1')
+  })
+
   // Slack keeps username/icon STICKY on the session, so a same-state write from a different
   // agent must refire — the dedupe key includes the identity, not just the enum.
   it('refires a same-state write when the acting identity changes', async () => {
@@ -1667,6 +1708,7 @@ describe('SlackConnection agent_session_stopped', () => {
     },
     action() {},
     shortcut() {},
+    command() {},
     view() {},
     client: {
       auth: { test: async () => ({ user_id: 'UBOT' }) },
@@ -1769,10 +1811,17 @@ describe('SlackConnection agent_session_stopped', () => {
   it('ignores a payload without session coordinates', async () => {
     const { handlers, lifecycle, actions } = await started(['slack:C1:200.1:bot-a'])
 
-    await handlers.get('agent_session_stopped')!(stopped({ thread_ts: undefined }))
+    await handlers.get('agent_session_stopped')!(stopped({ channel: undefined }))
 
     expect(actions).toEqual([])
     expect(lifecycle).toEqual([])
+  })
+
+  it('uses channel coordinates for a native code channel Stop', async () => {
+    const { handlers, actions, resolved } = await started(['slack:C1:C1:bot-a'])
+    await handlers.get('agent_session_stopped')!(stopped({ thread_ts: undefined }))
+    expect(resolved).toEqual([{ channel: 'C1', thread: 'C1' }])
+    expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:C1:bot-a', actor: { userId: 'U1' } }])
   })
 
   // The relay-forwarded arm. The same event reaches EVERY participant daemon, and per-daemon
@@ -1880,6 +1929,7 @@ describe('SlackConnection.updateBlocks', () => {
     event() {},
     action() {},
     shortcut() {},
+    command() {},
     view() {},
     client: { chat: { update } },
     start: async () => {},
@@ -1997,6 +2047,7 @@ describe('SlackConnection chat.postMessage boundary', () => {
     event() {},
     action() {},
     shortcut() {},
+    command() {},
     view() {},
     client: { chat: { postMessage, getPermalink } },
     start: async () => {},
@@ -2262,6 +2313,7 @@ describe('SlackConnection credential lifecycle', () => {
     },
     action() {},
     shortcut() {},
+    command() {},
     view() {},
     client: { auth: { test: async () => ({ bot_id: 'BBOT', ...identity }) } },
     start: async () => {},
@@ -2343,6 +2395,7 @@ describe('SlackConnection channel names', () => {
           },
           action() {},
           shortcut() {},
+          command() {},
           view() {},
           client: {
             auth: { test: async () => ({ user_id: 'UBOT' }) },

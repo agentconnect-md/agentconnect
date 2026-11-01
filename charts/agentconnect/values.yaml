@@ -181,7 +181,7 @@ daemonPool:
   # Agents ONE member accepts duty for — held, not working: an idle agent still costs a duty entry.
   # Null leaves the daemon's own default, 0 is unbounded. A member's config file is an emptyDir.
   maxAgents: null
-  # AHP serving mode for every member (off | shadow | on); empty leaves the daemon's own default, off.
+  # AHP serving mode for every member (off | shadow | on); empty leaves the daemon's own default, on.
   # It is the pool's `features.ahp.mode`: CP and relay still need their own AHP_MODE (docs/ahp-operations.md).
   ahpMode: ''
   # Existing Secret whose config.json is the strict data-plane document:
@@ -429,7 +429,8 @@ computerPool:
   warmReplicas: 1
   # The port a desktop's pool bootstrap listens on; only daemon-pool members may reach it.
   bootstrapPort: 7690
-  resolution: 1600x900x24
+  # The screenshot size (computer-use.md §5.3), so agents see the screen 1:1.
+  resolution: 1280x800x24
   # The desktop's home (key, browser profile, files): kept while asleep, deleted with an ephemeral desktop.
   home:
     size: 5Gi
@@ -453,6 +454,9 @@ computerPool:
     - ipBlock:
         cidr: ::/0
         except: ['fc00::/7', 'fe80::/10', '::1/128']
+  # Peer-to-peer viewer media (computer-use.md §7.2): punched media goes to the browser's public address on any UDP
+  # port, so this admits UDP to egressTo. Off by default: it also lets the desktop send any UDP there.
+  viewerPeerToPeerEgress: false
   nodeSelector: {}
   tolerations: []
 
@@ -955,8 +959,10 @@ sourceCache:
     unreadPointerDays: 30
     getUrlLifetime: 5m
     putUrlLifetime: 15m
-    # Console file transfers, signed by the Control Plane: the per-file cap and how long a download link stays valid.
-    transferMaxBytes: 512Mi
+    # Console file transfers, signed by the Control Plane: an optional per-file cap ('' => none), the largest single PUT
+    # (at most 100MB behind Cloudflare's proxy; larger browser uploads go in parts of at most this), and the link lifetime.
+    transferMaxBytes: ''
+    transferPartBytes: 512Mi
     transferUrlLifetime: 30m
 
 # Computer screenshot storage (computer-use.md §9): the Control Plane signs desktop uploads and console reads in the Source Cache bucket.
@@ -998,6 +1004,9 @@ computerViewer:
       keyId: ''
       # Key in secrets.existingSecret holding that TURN key's API token.
       apiTokenKey: COMPUTER_TURN_CLOUDFLARE_API_TOKEN
+  stun:
+    # stun: URLs (at most 2) viewers hole-punch with, in place of relay.stun; e.g. stun:stun.cloudflare.com:3478.
+    urls: []
 
 # Bootstrap/runtime roots are read from an existing Secret you create in the
 # namespace (the chart never holds their values). Provider credentials are not

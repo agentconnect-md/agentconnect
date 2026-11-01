@@ -931,6 +931,43 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     }
   })
 
+  // auto-session-mode.md §4.6: the console shows what each agent's coordinator spends, a part of that agent's row.
+  it('repeats each agent’s coordinator spend as a part of its row', async () => {
+    await seedAgent(prisma, AGENT_A)
+    await seedAgent(prisma, AGENT_B)
+    const repo = new PgSessionUsageRepo(prisma)
+    const at = new Date(Date.now() - 60_000)
+    const sessions = [
+      { agentId: AGENT_A, sessionId: 'coordinator-a', thread: 'append:coordinator-1700000000000', cost: '0.25' },
+      { agentId: AGENT_A, sessionId: 'task-a', thread: '1700000000.000100', cost: '1.5' },
+      { agentId: AGENT_B, sessionId: 'append-b', thread: 'append:1700000000000', cost: '0.75' }
+    ]
+    for (const session of sessions) {
+      await seedSessionMeta(prisma, session.sessionId, session.agentId, { lastActivityAt: at, thread: session.thread })
+      await repo.record({
+        agentId: AgentId(session.agentId),
+        sessionId: session.sessionId,
+        source: 'daemon',
+        lastActivityAt: at,
+        usage: { totalTokens: 100, costAmount: session.cost, costCurrency: 'USD' }
+      })
+    }
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const body = (await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })).json() as {
+        agents: Array<{ agentId: string; sessions: number; costAmount: string }>
+        coordinators: Array<{ agentId: string; sessions: number; totalTokens: number; costAmount: string }>
+      }
+      expect(body.agents.find((a) => a.agentId === AGENT_A)).toMatchObject({ sessions: 2, costAmount: '1.75' })
+      expect(body.coordinators).toEqual([
+        expect.objectContaining({ agentId: AGENT_A, sessions: 1, totalTokens: 100, costAmount: '0.25' })
+      ])
+    } finally {
+      await close()
+    }
+  })
+
   it('keeps a gateway row whose sessionId matches no session_meta (hashed credential id)', async () => {
     await seedAgent(prisma, AGENT_A)
     const repo = new PgSessionUsageRepo(prisma)

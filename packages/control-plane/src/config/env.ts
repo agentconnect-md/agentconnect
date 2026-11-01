@@ -100,6 +100,8 @@ const CoreConfigShape = {
   COMPUTER_TURN_CLOUDFLARE_API_TOKEN: z.string().optional(),
   // How long minted TURN credentials stay valid; an allocation refresh after this fails, so it bounds one viewing.
   COMPUTER_TURN_TTL_SEC: z.coerce.number().int().min(300).max(86_400).default(21_600),
+  // STUN for viewer hole punching in place of the relays' own (computer-use.md §7.2): comma-separated stun: URLs, at most 2.
+  COMPUTER_STUN_URLS: z.string().optional(),
   // Managed computers in the Kubernetes pool (computer-use.md §15.1); 'true' needs pool members that serve desktop claims.
   COMPUTER_POOL_ENABLED: z
     .enum(['true', 'false'])
@@ -138,6 +140,16 @@ const CoreConfigShape = {
     .default('false')
     .transform((value) => value === 'true'),
   AHP_TEST_KEY_IDS: z
+    .string()
+    .default('')
+    .transform((value) =>
+      value
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean)
+    ),
+  // Users whose AHP OAuth tokens are admitted before public access (ahp-client-sign-in.md §4).
+  AHP_TEST_USER_IDS: z
     .string()
     .default('')
     .transform((value) =>

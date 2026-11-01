@@ -58,9 +58,10 @@ const KEYS = [
   // (lib/analytics never initializes). POSTHOG_HOST defaults to us.i.posthog.com.
   'POSTHOG_API_KEY',
   'POSTHOG_HOST',
-  // The per-file cap of console file transfer, set when the Control Plane signs them. Served by the CP's
-  // runtime-config below; this env key is the local-dev fallback.
+  // The per-file cap of console file transfer, set when the Control Plane signs them, and the largest part
+  // when uploads may go in parts. Served by the CP's runtime-config below; these env keys are the local-dev fallback.
   'FILE_TRANSFER_MAX_BYTES',
+  'FILE_TRANSFER_PART_BYTES',
   // Console feature flags this deployment turns on — a comma-separated list of ids
   // (lib/feature-flags.ts). Unset ⇒ none: a flagged surface ships in every build and appears
   // only where an environment asks for it, so one prebuilt image serves them all.
@@ -83,7 +84,7 @@ interface RuntimeConfigResponse {
     }
     gitlab?: null | { instanceUrl: string }
   }
-  fileTransfer?: null | { maxBytes: number }
+  fileTransfer?: null | { maxBytes: number; partBytes?: number }
   webchatProtocol?: 'legacy' | 'ahp'
   ahp?: { enabled: boolean; publicAccess: boolean }
 }
@@ -95,7 +96,26 @@ interface DeploymentEnv {
   topology: Record<string, string>
 }
 
+// The CP's runtime switches (Webchat protocol, AHP access) reach a running console within this window.
+const DEPLOYMENT_ENV_TTL_MS = 30_000
 let deploymentEnv: Promise<DeploymentEnv | null> | undefined
+let deploymentSnapshot: { env: DeploymentEnv | null; at: number } | undefined
+
+// A stale snapshot serves while one refresh runs, so a CP outage never stalls a page; none yet means wait for it.
+function currentDeploymentEnv(): DeploymentEnv | null | Promise<DeploymentEnv | null> {
+  if (deploymentSnapshot && Date.now() - deploymentSnapshot.at < DEPLOYMENT_ENV_TTL_MS) return deploymentSnapshot.env
+  if (!deploymentEnv) {
+    const pending = loadDeploymentEnv()
+    deploymentEnv = pending
+    pending
+      .then((env) => (deploymentSnapshot = { env, at: Date.now() }))
+      .catch(() => {})
+      .finally(() => {
+        if (deploymentEnv === pending) deploymentEnv = undefined
+      })
+  }
+  return deploymentSnapshot ? deploymentSnapshot.env : deploymentEnv
+}
 
 async function loadDeploymentEnv(): Promise<DeploymentEnv | null> {
   const base = process.env.CP_INTERNAL_URL
@@ -111,6 +131,7 @@ async function loadDeploymentEnv(): Promise<DeploymentEnv | null> {
     AHP_PUBLIC_ACCESS: String(body.ahp?.publicAccess === true)
   }
   if (body.fileTransfer) topology.FILE_TRANSFER_MAX_BYTES = String(body.fileTransfer.maxBytes)
+  if (body.fileTransfer?.partBytes) topology.FILE_TRANSFER_PART_BYTES = String(body.fileTransfer.partBytes)
   if (body.config === null) return { config: null, topology }
 
   const env: Record<string, string> = {}
@@ -135,16 +156,11 @@ export const resolvePublicEnv = cache(async (): Promise<Record<string, string>> 
   const relayUrl = process.env.RELAY_URL ?? process.env.PUBLIC_RELAY_URL ?? process.env.NEXT_PUBLIC_RELAY_URL
   if (relayUrl) env.RELAY_URL = relayUrl
 
-  // Cache a successful CP snapshot (including configured absence) but retry transient startup failures.
   if (process.env.CP_INTERNAL_URL) {
-    deploymentEnv ??= loadDeploymentEnv()
-    const pending = deploymentEnv
     let persisted: DeploymentEnv | null = null
     try {
-      persisted = await pending
-    } catch {
-      if (deploymentEnv === pending) deploymentEnv = undefined
-    }
+      persisted = await currentDeploymentEnv()
+    } catch {}
     if (persisted?.config) {
       for (const key of ['LOGTO_ENDPOINT', 'LOGTO_APP_ID', 'LOGTO_API_RESOURCE', 'SOCIAL_PROVIDERS']) {
         delete env[key]

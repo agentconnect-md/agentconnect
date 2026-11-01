@@ -146,7 +146,52 @@ describe('registerMcpProxy — MCP reverse proxy route', () => {
         headers: { authorization: 'Bearer good-grant' },
         body: '{}'
       })
-      expect(res.status).toBe(502) // guarded lookup errors the connection
+      expect(res.status).toBe(424)
+      expect(await res.json()).toEqual({ error: 'blocked upstream address' })
+    } finally {
+      await relay.close()
+    }
+  })
+
+  it('reports a hostname the guarded lookup blocks as a misconfiguration, not an outage', async () => {
+    const relay = await startRelay([]) // localhost resolves to loopback, which the guarded lookup refuses
+    relay.bindings.assign({
+      providerId: PID,
+      upstreamUrl: upstream.url.replace('127.0.0.1', 'localhost'),
+      headers: [],
+      grantKeyHashes: [hash('good-grant')]
+    })
+    try {
+      const res = await fetch(`${relay.base}/mcp/${PID}`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer good-grant' },
+        body: '{}'
+      })
+      expect(res.status).toBe(424)
+      expect(await res.json()).toEqual({ error: 'blocked upstream address' })
+    } finally {
+      await relay.close()
+    }
+  })
+
+  it('answers an unreachable upstream with a retryable 503', async () => {
+    const closed = await fakeUpstream()
+    await closed.close() // nothing listens on this port any more
+    const relay = await startRelay(['127.0.0.1'])
+    relay.bindings.assign({
+      providerId: PID,
+      upstreamUrl: closed.url,
+      headers: [],
+      grantKeyHashes: [hash('good-grant')]
+    })
+    try {
+      const res = await fetch(`${relay.base}/mcp/${PID}`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer good-grant' },
+        body: '{}'
+      })
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({ error: 'upstream unreachable' })
     } finally {
       await relay.close()
     }
@@ -166,7 +211,7 @@ describe('registerMcpProxy — MCP reverse proxy route', () => {
         headers: { authorization: 'Bearer good-grant' },
         body: '{}'
       })
-      expect(res.status).toBe(502)
+      expect(res.status).toBe(424)
     } finally {
       await relay.close()
     }
@@ -186,7 +231,7 @@ describe('registerMcpProxy — MCP reverse proxy route', () => {
         headers: { authorization: 'Bearer good-grant' },
         body: '{}'
       })
-      expect(res.status).toBe(502)
+      expect(res.status).toBe(424)
       expect(await res.json()).toEqual({ error: 'upstream redirect rejected' })
     } finally {
       await relay.close()
@@ -210,9 +255,11 @@ describe('registerMcpProxy — MCP reverse proxy route', () => {
         headers: { authorization: 'Bearer good-grant' },
         body: '{}'
       })
-      expect(res.status).toBe(502)
+      expect(res.status).toBe(424)
       expect(res.headers.get('www-authenticate')).toBeNull()
-      expect(await res.json()).toEqual({ error: 'upstream authorization failed' })
+      expect(await res.json()).toEqual({
+        error: "upstream rejected this provider's configured credential; an admin must update it"
+      })
     } finally {
       await relay.close()
     }
@@ -253,7 +300,7 @@ describe('registerMcpProxy — MCP reverse proxy route', () => {
         headers: { authorization: 'Bearer good-grant' },
         body: '{}'
       })
-      expect(res.status).toBe(502)
+      expect(res.status).toBe(424)
       expect(await res.json()).toEqual({ error: 'upstream url credentials rejected' })
     } finally {
       await relay.close()

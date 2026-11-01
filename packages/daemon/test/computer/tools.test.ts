@@ -8,7 +8,9 @@ import type {
 } from '@agentconnect.md/protocol'
 import { agentComputerUseOf } from '@agentconnect.md/protocol'
 import { ComputerChannelError, type ComputerMcpConnection } from '../../src/computer/data-plane.js'
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/client'
 import {
+  COMPUTER_COMMAND_LINE_TOOLS,
   COMPUTER_TOOLS,
   COMPUTER_TOOL_ARGS,
   ComputerTools,
@@ -59,6 +61,8 @@ function setup(
     managed?: 'ephemeral' | 'per-agent'
     pool?: (req: ComputerPoolAcquire) => ComputerPoolAcquireResult
     poolServes?: boolean
+    // What the grant adds, such as the command-line tier it allows (§5.7).
+    grant?: Record<string, unknown>
   } = {}
 ) {
   const asks: ComputerApprovalAsk[] = []
@@ -148,7 +152,8 @@ function setup(
             name: 'Desk',
             ownerUserId: 'user_owner',
             approvers: ['user_owner', 'user_member'],
-            ...(approvals ? { approvals } : {})
+            ...(approvals ? { approvals } : {}),
+            ...options.grant
           })
         },
         close: async () => {
@@ -223,8 +228,9 @@ describe('computerToolsOffered', () => {
   })
 
   it('advertises an argument schema for every tool it validates', () => {
-    expect(COMPUTER_TOOLS.map((tool) => tool.name).sort()).toEqual([...COMPUTER_TOOL_ARGS.keys()].sort())
-    for (const tool of COMPUTER_TOOLS) {
+    const all = [...COMPUTER_TOOLS, ...COMPUTER_COMMAND_LINE_TOOLS]
+    expect(all.map((tool) => tool.name).sort()).toEqual([...COMPUTER_TOOL_ARGS.keys()].sort())
+    for (const tool of all) {
       if (tool.name === 'computer_list') continue
       expect(tool.inputSchema).toMatchObject({ properties: { computer: { type: 'string' } } })
     }
@@ -653,6 +659,58 @@ describe('computer approvals', () => {
   })
 })
 
+describe('administrator prompts (§4.2.1)', () => {
+  const PROMPT = {
+    id: 'a1',
+    app: 'Windows Command Processor',
+    publisher: 'Microsoft Windows',
+    command: 'cmd.exe /c whoami'
+  }
+  // The desktop names the prompt and wants a person's approval until a call carries one.
+  const desktop: CallTool = async (params) => {
+    const meta = (params as { _meta?: Record<string, unknown> })._meta?.['md.agentconnect/approval']
+    if (
+      params.name === 'computer_admin_prompt' &&
+      params.arguments?.answer === 'approve' &&
+      (meta !== 'allowed' || params.arguments?.prompt !== PROMPT.id)
+    )
+      return {
+        isError: true,
+        content: [{ type: 'text', text: JSON.stringify({ error: 'approval_required', adminPrompt: PROMPT }) }]
+      }
+    return { content: [{ type: 'text', text: JSON.stringify({ answered: params.arguments?.answer }) }] }
+  }
+
+  it('asks a person to approve each prompt it names, then sends the approval with the answer', async () => {
+    const { tools, asks, calls, metas } = setup({ callTool: desktop })
+    const handled = await tools.call(ctx(), 'computer_admin_prompt', { answer: 'approve' })
+    expect(parse(handled!.result)).toEqual({ answered: 'approve' })
+    expect(asks).toEqual([
+      expect.objectContaining({
+        kind: 'admin-prompt',
+        tool: 'computer_admin_prompt',
+        action: 'approve “Windows Command Processor” (Microsoft Windows) to run as administrator: cmd.exe /c whoami'
+      })
+    ])
+    expect(calls.map((call) => call.args)).toEqual([{ answer: 'approve' }, { answer: 'approve', prompt: 'a1' }])
+    expect(metas[1]).toEqual({ 'md.agentconnect/approval': 'allowed' })
+    expect(computerApprovalTitle(asks[0]!)).toMatch(/^Administrator prompt on “Desk”: approve/)
+    // Nothing carries over: the next prompt asks again.
+    await tools.call(ctx(), 'computer_admin_prompt', { answer: 'approve' })
+    expect(asks).toHaveLength(2)
+  })
+
+  it('leaves the prompt waiting when nobody approves, and never asks to deny one', async () => {
+    const { tools, asks, calls } = setup({ callTool: desktop, approve: async () => 'deny' })
+    const handled = await tools.call(ctx(), 'computer_admin_prompt', { answer: 'approve' })
+    expect(parse(handled!.result)).toMatchObject({ error: 'approval_denied', computer: C1 })
+    expect(calls).toHaveLength(1)
+    await tools.call(ctx(), 'computer_admin_prompt', { answer: 'deny' })
+    expect(asks).toHaveLength(1)
+    expect(calls).toHaveLength(2)
+  })
+})
+
 describe('managed computers (§15.1)', () => {
   const M = '00000000-0000-4000-8000-0000000000aa'
 
@@ -831,5 +889,98 @@ describe('managed computers (§15.1)', () => {
     expect(parse((await tools.call(ctx(), 'computer_screenshot', { computer: M }))!.result)).not.toMatchObject({
       error: expect.anything()
     })
+  })
+})
+
+describe('the command-line tier (§5.7)', () => {
+  const tierCtx = () => ctx([...COMPUTER_TOOLS, ...COMPUTER_COMMAND_LINE_TOOLS])
+  const ran = { content: [{ type: 'text', text: '{"exitCode":0,"stdout":"hi\\n"}' }] }
+
+  it('refuses a tier tool the grant does not allow without sending anything', async () => {
+    const { tools, calls } = setup({ grant: { files: 'read' } })
+    const exec = await tools.call(tierCtx(), 'computer_exec', { command: 'ls' })
+    expect(parse(exec!.result)).toMatchObject({ error: 'denied', shell: 'off', files: 'read' })
+    const write = await tools.call(tierCtx(), 'computer_write_file', { path: '~/a', content: 'x' })
+    expect(parse(write!.result)).toMatchObject({ error: 'denied' })
+    expect(calls.map((call) => call.name)).toEqual([])
+  })
+
+  it('runs a command without the control lease or an approval when the policy allows commands', async () => {
+    const { tools, calls, leases, asks } = setup({ grant: { shell: 'on' }, callTool: async () => ran })
+    const result = await tools.call(tierCtx(), 'computer_exec', { command: 'echo hi', computer: C1 })
+    expect(result!.result.mcpIsError).toBeUndefined()
+    expect(calls).toEqual([{ computer: C1, name: 'computer_exec', args: { command: 'echo hi' } }])
+    expect(leases.computerLeaseAcquire).not.toHaveBeenCalled()
+    expect(asks).toEqual([])
+  })
+
+  it('asks for each command under ask, until a person allows every command for the session', async () => {
+    const answers: ComputerApprovalAnswer[] = ['allow', 'allow_session']
+    const { tools, calls, asks, metas } = setup({
+      grant: { shell: 'ask' },
+      callTool: async () => ran,
+      approve: async () => answers.shift() ?? 'deny'
+    })
+    await tools.call(tierCtx(), 'computer_exec', { command: 'echo one' })
+    await tools.call(tierCtx(), 'computer_exec', { command: 'echo two', cwd: '/tmp' })
+    await tools.call(tierCtx(), 'computer_exec', { command: 'echo three' })
+    expect(asks.map((ask) => [ask.kind, ask.action])).toEqual([
+      ['command', 'run “echo one”'],
+      ['command', 'run “echo two” in /tmp']
+    ])
+    expect(computerApprovalTitle(asks[0]!)).toBe('Command on “Desk”: run “echo one”')
+    expect(calls).toHaveLength(3)
+    expect(metas.map((meta) => (meta as Record<string, unknown>)['md.agentconnect/approval'])).toEqual([
+      'allowed',
+      'allowed',
+      'allowed_session'
+    ])
+  })
+
+  it('sends nothing when nobody allows a command', async () => {
+    const { tools, calls } = setup({ grant: { shell: 'ask' }, approve: async () => 'deny' })
+    const result = await tools.call(tierCtx(), 'computer_exec', { command: 'rm -rf ~/tmp' })
+    expect(parse(result!.result)).toMatchObject({ error: 'approval_denied' })
+    expect(calls).toEqual([])
+  })
+
+  it('asks before the session’s first write, as before its first input', async () => {
+    const { tools, asks } = setup({
+      grant: { files: 'read-write' },
+      approvals: { firstInputPerSession: true }
+    })
+    await tools.call(tierCtx(), 'computer_write_file', { path: '~/notes.txt', content: 'hello' })
+    await tools.call(tierCtx(), 'computer_write_file', { path: '~/notes.txt', content: 'again' })
+    await tools.call(tierCtx(), 'computer_read_file', { path: '~/notes.txt' })
+    expect(asks.map((ask) => ask.action)).toEqual(['write 5 bytes to ~/notes.txt'])
+  })
+
+  it('reports a command that may have run as uncertain, without a screenshot or a retry', async () => {
+    const { tools, calls } = setup({
+      grant: { shell: 'on' },
+      callTool: async () => {
+        throw new Error('socket hang up')
+      }
+    })
+    const result = await tools.call(tierCtx(), 'computer_exec', { command: 'make deploy' })
+    expect(parse(result!.result)).toMatchObject({ error: 'uncertain' })
+    expect(result!.result.mcpContent.some((block) => block.type === 'image')).toBe(false)
+    expect(calls.map((call) => call.name)).toEqual(['computer_exec'])
+  })
+
+  it('reads a protocol error from the desktop, such as a tool it does not offer, as a definite refusal', async () => {
+    const { tools } = setup({
+      grant: { shell: 'on' },
+      callTool: async () => {
+        throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'Tool computer_exec not found')
+      }
+    })
+    const result = await tools.call(tierCtx(), 'computer_exec', { command: 'true' })
+    expect(parse(result!.result)).toMatchObject({ error: 'unavailable' })
+  })
+
+  it('does not exist for a session that was not offered the tier', async () => {
+    const { tools } = setup({ grant: { shell: 'on' } })
+    await expect(tools.call(ctx(), 'computer_exec', { command: 'true' })).rejects.toThrow(/unknown tool/)
   })
 })

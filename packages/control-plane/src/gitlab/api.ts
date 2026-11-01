@@ -674,18 +674,14 @@ export async function gitlabDeleteServiceAccount(
 export const GITLAB_AVATAR_MAX_BYTES = 200 * 1024
 export const GITLAB_AVATAR_SIZE = 192
 
-/** Set the AUTHENTICATED user's avatar (`PUT /user/avatar`, GitLab 17.0+):
- *  multipart, form field `avatar`. Called with an agent account's own `api` PAT,
- *  so the authenticated user IS the account (§7.2). A provider that does not
- *  offer the endpoint answers 404, which the caller treats as a cosmetic skip.
- *  Status-only errors: the request body carries image bytes and a bearer. */
+/** Upload the authenticated GitLab account's PNG avatar. */
 export async function gitlabUploadCurrentUserAvatar(
   accountToken: string,
   png: Uint8Array,
   client: GitlabApiClient
 ): Promise<void> {
   const form = new FormData()
-  form.set('avatar', new Blob([png], { type: 'image/png' }), 'agent-icon.png')
+  form.set('avatar', new Blob([new Uint8Array(png)], { type: 'image/png' }), 'agent-icon.png')
   const res = await gitlabFetch('/user/avatar', {
     method: 'PUT',
     auth: accountToken,

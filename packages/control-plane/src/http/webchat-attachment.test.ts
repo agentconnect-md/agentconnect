@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { API_AHP_V1_FEATURE } from '@agentconnect.md/protocol'
 import { AgentId, OrgId } from '../domain/ids.js'
 import type { HttpDeps } from './deps.js'
-import { webchatAttachment } from './webchat-attachment.js'
+import { servesAhpWebchat, webchatAttachment } from './webchat-attachment.js'
 
 const ORG = OrgId('org')
 const AGENT = AgentId('11111111-1111-4111-8111-111111111111')
@@ -11,7 +11,6 @@ const CONVERSATION = '33333333-3333-4333-8333-333333333333'
 const input = { orgId: ORG, primaryAgentId: AGENT, conversationId: CONVERSATION }
 
 function fixture() {
-  const entries = new Set<string>([AGENT, PEER])
   const capable = new Set<string>([AGENT, PEER])
   const online = new Set<string>([AGENT, PEER])
   const bindings = new Map<string, { sessionUri: string }>()
@@ -20,12 +19,13 @@ function fixture() {
     WEBCHAT_PROTOCOL: 'ahp' as 'legacy' | 'ahp',
     PUBLIC_RELAY_URL: 'https://relay.example.test/prefix'
   }
+  const listEntries = vi.fn(async () => [])
   const findBinding = vi.fn(async (_org: string, agent: string) => bindings.get(agent) ?? null)
   const deps = {
     config,
     repos: {
       agent: { get: async (_org: string, id: string) => ({ id, orgId: ORG }) },
-      agentApiEntry: { listForAgent: async (id: string) => (entries.has(id) ? [{ protocol: 'ahp' }] : []) },
+      agentApiEntry: { listForAgent: listEntries },
       webchatConversation: { participants: async () => [{ agentId: AGENT }, { agentId: PEER }] },
       ahpSessionBinding: { forConversation: findBinding }
     },
@@ -37,7 +37,7 @@ function fixture() {
       })
     }
   } as unknown as HttpDeps
-  return { deps, config, entries, capable, online, bindings, findBinding }
+  return { deps, config, capable, online, bindings, findBinding, listEntries }
 }
 
 describe('Webchat attachment bootstrap', () => {
@@ -54,19 +54,38 @@ describe('Webchat attachment bootstrap', () => {
   it.each(['off', 'shadow'] as const)('does not bootstrap an AHP attachment in %s mode', async (mode) => {
     const f = fixture()
     f.config.AHP_MODE = mode
-    expect(await webchatAttachment(f.deps, input)).toBeNull()
+    expect(await webchatAttachment(f.deps, input)).toEqual({ protocol: 'legacy' })
+    expect(await webchatAttachment(f.deps, { ...input, protocol: 'ahp' })).toBeNull()
   })
 
-  it.each(['entry', 'capability', 'offline'] as const)(
-    'requires every participant to pass the %s gate',
+  it.each(['capability', 'offline'] as const)(
+    'settles the deployment preference for legacy unless every participant passes the %s gate',
     async (gate) => {
       const f = fixture()
-      if (gate === 'entry') f.entries.delete(PEER)
       if (gate === 'capability') f.capable.delete(PEER)
       if (gate === 'offline') f.online.delete(PEER)
-      expect(await webchatAttachment(f.deps, input)).toBeNull()
+      expect(await webchatAttachment(f.deps, input)).toEqual({ protocol: 'legacy' })
+      // An AHP client cannot use a legacy grant, so its explicit request is refused instead.
+      expect(await webchatAttachment(f.deps, { ...input, protocol: 'ahp' })).toBeNull()
     }
   )
+
+  it('reports per daemon whether it serves AHP Webchat', () => {
+    const config = { AHP_MODE: 'on' as const, PUBLIC_RELAY_URL: 'https://relay.example.test' }
+    const daemon = { capabilities: { features: [API_AHP_V1_FEATURE] } }
+    expect(servesAhpWebchat(config, daemon)).toBe(true)
+    expect(servesAhpWebchat(config, { capabilities: { features: [] } })).toBe(false)
+    expect(servesAhpWebchat(config, null)).toBe(false)
+    expect(servesAhpWebchat({ ...config, AHP_MODE: 'shadow' }, daemon)).toBe(false)
+    expect(servesAhpWebchat({ ...config, PUBLIC_RELAY_URL: undefined }, daemon)).toBe(false)
+  })
+
+  it('attaches participants that have no AHP API entry', async () => {
+    const f = fixture()
+    const result = await webchatAttachment(f.deps, input)
+    expect(result?.ahp?.peers.map((peer) => peer.agentId)).toEqual([AGENT, PEER])
+    expect(f.listEntries).not.toHaveBeenCalled()
+  })
 
   it('returns agent endpoints and only CP-owned URI bindings without embedding credentials', async () => {
     const f = fixture()

@@ -53,6 +53,7 @@ export {
   MAX_ENVIRONMENT_VALUE_LENGTH,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
+  WEBCHAT_MCP_GRANT_RENEW_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -81,6 +82,8 @@ export {
   READ_ACCESS_LINKED_V1_FEATURE,
   READ_ACCESS_BATCH_V1_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
+  SESSION_MODE_AUTO_V1_FEATURE,
+  TASK_PAGE_MESSAGES_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
@@ -111,6 +114,7 @@ export * from './code-host.js'
 export * from './provider-key.js'
 export * from './decision.js'
 export * from './decision-api.js'
+export * from './auto-upgrade.js'
 
 // ── envelope + control extension ──
 export { Envelope, ControlExt, NIL_UUID } from './envelope.js'
@@ -213,7 +217,11 @@ export * from './agent-api.js'
 // Manifest-declared Slack shortcut id — defined in the bundler-facing
 // `./slack-app-manifest.ts` leaf, re-exported here so the package root keeps
 // serving it next to the runtime Slack action ids above.
-export { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from './slack-app-manifest.js'
+export {
+  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+  SLACK_CODE_MODEL_KEY,
+  SLACK_CODE_CONTEXT_KEY
+} from './slack-app-manifest.js'
 export * from './frames/relay-daemon.js'
 // An agent's computer use setting (computer-use.md §4.1).
 export * from './agent-computer-use.js'
@@ -244,8 +252,21 @@ export {
 
 // ── repository-relative agent working-directory helpers ──
 export { MAX_REPO_SUBDIR_LENGTH, RepoSubdirError, normalizeRepoSubdir } from './repo-subdir.js'
-export { APPEND_COORDINATE_PREFIX, isAppendCoordinate } from './append-coordinate.js'
-export { SUBSESSION_COORDINATE_PREFIX, isSubsessionCoordinate } from './subsession-coordinate.js'
+export {
+  APPEND_COORDINATE_PREFIX,
+  COORDINATOR_COORDINATE_PREFIX,
+  isAppendCoordinate,
+  isCoordinatorCoordinate
+} from './append-coordinate.js'
+export { coordinatorConversationId } from './coordinator-conversation.js'
+export {
+  APPROVED_TASK_COORDINATE_PREFIX,
+  CHECK_COORDINATE_PREFIX,
+  RESEARCH_COORDINATE_PREFIX,
+  SUBSESSION_COORDINATE_PREFIX,
+  isDelegatedTaskCoordinate,
+  isSubsessionCoordinate
+} from './subsession-coordinate.js'
 
 // ── §5 platform manifest — pre-dispatch capability table, read by every host ──
 export {

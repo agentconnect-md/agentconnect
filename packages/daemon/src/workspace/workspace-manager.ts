@@ -67,6 +67,7 @@ import type { SourceCacheShape } from '../source-cache/keys.js'
 import type { SourceCacheWorkspaceReader, WorkspaceCachePlan } from '../source-cache/read-plan.js'
 import type { SourceCacheWriteRequest, SourceCacheWriter } from '../source-cache/write-back.js'
 import { localWorkspaceFs, type WorkspaceFs } from './workspace-fs.js'
+import { removeTreeSync } from './remove-tree.js'
 import { WorkspaceViolationError } from './workspace-files.js'
 import { githubSubmoduleRepo, gitmoduleRepos } from './gitmodules.js'
 import {
@@ -1766,8 +1767,8 @@ export class WorkspaceManager {
 
   /** Discard every per-session directory of the agent — the worktrees parent and every session's own clones (§11) alike, since a replaced workspace makes both describe a repository the agent no longer has. An `rmSync`, so its subject can only ever be this daemon's own disk. */
   clearSessionWorktrees(agent: Agent): void {
-    rmSync(this.localWorktreesPathFor(agent), { recursive: true, force: true })
-    rmSync(sessionsDirIn(this.agentRootFor(agent)), { recursive: true, force: true })
+    removeTreeSync(this.localWorktreesPathFor(agent))
+    removeTreeSync(sessionsDirIn(this.agentRootFor(agent)))
   }
 
   sessionWorktreeId(sessionKey: string): string {
@@ -2215,9 +2216,17 @@ export class WorkspaceManager {
         ])
       ).trim()
       if (unique !== '0' && !(await isReviewSnapshot())) return { outcome: 'retained', reason: 'unique-commits' }
+      // Read before the removal: once Git has dropped this worktree's admin dir, it can no longer say where that was.
+      const adminDir = await worktreeAdminDir(fs, cwd)
       // --force only for a probed snapshot, whose dirt was judged disposable above. Otherwise none:
       // if the tree went dirty between the check and here, Git refuses and the failure keeps the session.
-      await rootGit().raw(['worktree', 'remove', ...(snapshot ? ['--force'] : []), cwd])
+      await rootGit()
+        .raw(['worktree', 'remove', ...(snapshot ? ['--force'] : []), cwd])
+        .catch(async (err: unknown) => {
+          // Git unregisters a worktree it judged removable even when a read-only skill bundle stops the delete, so finish that delete.
+          if (adminDir === undefined || (await fs.stat(adminDir)) !== 'missing') throw err
+          await fs.rmTree(cwd)
+        })
       await cleanupRegistrations()
       // Only a branch this daemon generated for a session worktree, and only when dropping it can
       // drop no work: either every commit on it was proven reachable from a remote, or the worktree
@@ -3506,7 +3515,7 @@ export class WorkspaceManager {
 
     if (previous !== undefined) {
       try {
-        rmSync(previous, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+        removeTreeSync(previous, { maxRetries: 10, retryDelay: 100 })
       } catch (err) {
         workspaceLog.warn(`workspace: could not remove replaced directory "${previous}" (${formatErr(err)})`)
       }
@@ -3553,13 +3562,13 @@ export class WorkspaceManager {
     if (agent.workspace.mode === 'from-scratch') {
       if (replace) {
         this.clearSessionWorktrees(agent)
-        rmSync(cwd, { recursive: true, force: true })
+        removeTreeSync(cwd)
         mkdirSync(cwd, { recursive: true })
       }
       if (reconcileMaterialization) this.recordWorkspaceMaterialization(agent)
       return () => {
         if (replace) {
-          rmSync(cwd, { recursive: true, force: true })
+          removeTreeSync(cwd)
           mkdirSync(cwd, { recursive: true })
         }
         restoreMarker()
@@ -3603,13 +3612,13 @@ export class WorkspaceManager {
         try {
           this.recordWorkspaceMaterialization(agent)
         } catch (err) {
-          rmSync(cwd, { recursive: true, force: true })
+          removeTreeSync(cwd)
           mkdirSync(cwd, { recursive: true })
           restoreMarker()
           throw err
         }
         return () => {
-          rmSync(cwd, { recursive: true, force: true })
+          removeTreeSync(cwd)
           mkdirSync(cwd, { recursive: true })
           restoreMarker()
         }
@@ -3628,7 +3637,7 @@ export class WorkspaceManager {
     if (reconcileMaterialization) this.recordWorkspaceMaterialization(agent)
 
     return () => {
-      rmSync(cwd, { recursive: true, force: true })
+      removeTreeSync(cwd)
       mkdirSync(cwd, { recursive: true })
       restoreMarker()
     }
@@ -3715,6 +3724,15 @@ export function parseSymrefDefaultBranch(out: string): string | undefined {
     if (branch && !branch.startsWith('-')) return branch
   }
   return undefined
+}
+
+/** The admin dir a worktree's `.git` file names, resolved against the worktree; undefined when that file is unreadable. */
+async function worktreeAdminDir(fs: WorkspaceFs, worktree: string): Promise<string | undefined> {
+  const read = await fs.readFileBytes(join(worktree, '.git'), MAX_SESSION_CWD_RECORD_BYTES)
+  if (read === undefined || !('bytes' in read)) return undefined
+  const gitdir = /^gitdir: (.+)$/m.exec(read.bytes.toString('utf8'))?.[1]?.trim()
+  if (!gitdir) return undefined
+  return isAbsolute(gitdir) ? gitdir : join(worktree, gitdir)
 }
 
 /** A secondary root's attestation; `repos/` is runtime-writable, so a link, a pipe or an oversized file reads as none. */

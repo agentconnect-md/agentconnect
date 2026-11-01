@@ -7,7 +7,12 @@ import type { ComputerViewerSession, ViewerDeps, ViewerState } from '@/lib/compu
 import { ComputerPanel } from './ComputerPanel'
 
 const fetchComputer = vi.hoisted(() => vi.fn())
-vi.mock('@/lib/api', async (actual) => ({ ...(await actual<typeof import('@/lib/api')>()), fetchComputer }))
+const fetchComputers = vi.hoisted(() => vi.fn())
+vi.mock('@/lib/api', async (actual) => ({
+  ...(await actual<typeof import('@/lib/api')>()),
+  fetchComputer,
+  fetchComputers
+}))
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -17,6 +22,7 @@ const live: ViewerState = {
   frameUrl: null,
   error: null,
   notes: [],
+  stats: null,
   status: {
     you: 'console:u1',
     mode: 'control',
@@ -52,6 +58,7 @@ afterEach(() => {
   root = undefined
   document.body.innerHTML = ''
   fetchComputer.mockReset()
+  fetchComputers.mockReset()
 })
 
 async function render(node: React.ReactNode): Promise<HTMLDivElement> {
@@ -142,5 +149,58 @@ describe('ComputerPanel', () => {
     fetchComputer.mockRejectedValue(new Error('404'))
     const el = await render(<ComputerPanel computerIds={['hidden']} active />)
     expect(el.textContent).toContain('This agent has no computer you can watch.')
+  })
+
+  it('shows the agent’s pool computers: its kept one and this session’s, not another session’s', async () => {
+    fetchComputer.mockImplementation(async (id: string) => computer({ id, name: 'granted' }))
+    fetchComputers.mockResolvedValue([
+      computer({ id: 'kept', name: 'kept', kind: 'managed', allocation: 'per-agent', ownerAgentId: 'a1' }),
+      computer({
+        id: 'mine',
+        name: 'mine',
+        kind: 'managed',
+        allocation: 'ephemeral',
+        ownerAgentId: 'a1',
+        poolSessionId: 's1'
+      }),
+      computer({
+        id: 'theirs',
+        name: 'theirs',
+        kind: 'managed',
+        allocation: 'ephemeral',
+        ownerAgentId: 'a1',
+        poolSessionId: 's2'
+      }),
+      computer({ id: 'other', name: 'other', kind: 'managed', allocation: 'per-agent', ownerAgentId: 'a2' })
+    ])
+    const el = await render(<ComputerPanel computerIds={['g1']} managed={{ agentId: 'a1', sessionId: 's1' }} active />)
+    const options = [...el.querySelectorAll('option')].map((option) => option.textContent)
+    expect(options).toEqual(['granted', 'kept', 'mine'])
+  })
+
+  it('says the agent gets its computer on first use before the pool made one', async () => {
+    fetchComputers.mockResolvedValue([])
+    const el = await render(<ComputerPanel computerIds={[]} managed={{ agentId: 'a1', sessionId: 's1' }} active />)
+    expect(el.textContent).toContain('The agent gets its computer when it first uses one in this session.')
+  })
+
+  it('keeps no other session’s desktop when the list fails after moving to another session', async () => {
+    fetchComputers.mockResolvedValue([
+      computer({
+        id: 'mine',
+        name: 'mine',
+        kind: 'managed',
+        allocation: 'ephemeral',
+        ownerAgentId: 'a1',
+        poolSessionId: 's1'
+      })
+    ])
+    const el = await render(<ComputerPanel computerIds={[]} managed={{ agentId: 'a1', sessionId: 's1' }} active />)
+    expect(el.textContent).toContain('mine')
+    fetchComputers.mockRejectedValue(new Error('503'))
+    await act(async () =>
+      root!.render(<ComputerPanel computerIds={[]} managed={{ agentId: 'a1', sessionId: 's2' }} active />)
+    )
+    expect(el.textContent).not.toContain('mine')
   })
 })

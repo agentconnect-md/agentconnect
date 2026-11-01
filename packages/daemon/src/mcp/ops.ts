@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import {
   listDecisions,
   evaluateDecision,
@@ -30,6 +31,7 @@ import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
 import { isGettingToKnowCoordinate, isCheckCoordinate, isResearchCoordinate } from '../session/subsession-coordinate.js'
+import { isCoordinatorCoordinate } from '../session/append-coordinate.js'
 import { gettingToKnowReadRefusal } from '../assistant/getting-to-know.js'
 import { ToolArgumentError } from './ops/args.js'
 import { describeToolArgumentFailure } from './ops/argument-error.js'
@@ -61,8 +63,10 @@ import {
   WRITE_MEMORY_ARGS,
   type MemoryOpsDeps
 } from './ops/memory.js'
-import type { MessagingDeps } from './ops/messaging.js'
+import { parseAgentTarget, type MessagingDeps } from './ops/messaging.js'
+import { COORDINATOR_MESSAGE_TOOLS } from '../auto-session/coordinator-prompt.js'
 import { sendMessage, validateSendMessageAction } from './ops/send-message-actions.js'
+import { taskReachOf } from './ops/task-reach.js'
 import { getToolGuide, GET_TOOL_GUIDE_ARGS } from './ops/tool-guide.js'
 import {
   addReaction,
@@ -150,7 +154,13 @@ import {
   type PlatformReadDeps
 } from './ops/platform-reads.js'
 import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
-import { assertPlaceRead, isPlatformPost, judgePlaceWrite, type PlaceAccessDeps } from './ops/place-gate.js'
+import {
+  assertPlaceRead,
+  isPlatformPost,
+  judgePlaceWrite,
+  type PlaceAccessDeps,
+  type WriteTarget
+} from './ops/place-gate.js'
 import { resolveChannelArg } from './ops/channel-names.js'
 import { recall, RECALL_ARGS } from './ops/recall.js'
 import { askingToJoin, parkingOnJoin, type JoinAskDeps, type JoinParked } from './ops/join-ask.js'
@@ -418,11 +428,29 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ...allAttachmentReadTools().map((tool) => [tool.name, READ_ATTACHMENT_ARGS] as [string, ZodType])
 ])
 
-/**
- * Execute one tool call inside the daemon and return a plain result object (the
- * bridge wraps it into an MCP `CallToolResult`). Throws on bad input or a
- * missing connection — the caller turns that into an MCP `isError` result.
- */
+// Both model tools and automatic task output use the live-turn gate and the same conversation write policy.
+export async function authorizeSessionPublication(
+  ctx: SessionContext,
+  name: string,
+  target: WriteTarget,
+  deps: OpsDeps
+): Promise<void> {
+  if (deps.canRun && !(await deps.canRun(ctx))) throw new Error('this agent turn has been stopped')
+  if (!deps.shareTarget?.(ctx)?.ok) throw new Error(`${name}: this turn has no visible conversation to publish into`)
+  await judgePlaceWrite(ctx, name, target, deps)
+}
+
+/** A coordinator's `callAgent` target with the answer requested (auto-session-mode.md §5.4); a malformed one is left for the call's own validation. */
+function askingForAnswer(target: unknown): unknown {
+  try {
+    const { toAgent } = parseAgentTarget(target)
+    return toAgent === undefined ? target : { agentId: toAgent, needsReply: true }
+  } catch {
+    return target
+  }
+}
+
+// Execute a daemon tool; the bridge wraps its result or error as an MCP response.
 export async function executeTool(
   ctx: SessionContext,
   name: string,
@@ -436,6 +464,26 @@ export async function executeTool(
   // assistant-mode.md §5.15: organization research reads and writes memory only; nothing it calls posts, whatever name the runtime sends.
   if (isResearchCoordinate(ctx.thread) && !ctx.tools.some((tool) => tool.name === name))
     throw new Error(`${name} is not available to organization research, which cannot post or act anywhere`)
+  // auto-session-mode.md §5.4: a coordinator runs only the tools it was offered; its sendMessage decides on delivered messages, or posts and calls as any session's does.
+  if (isCoordinatorCoordinate(ctx.thread)) {
+    if (!ctx.tools.some((tool) => tool.name === name))
+      throw new Error(`${name} is not available to the coordinator, which only decides where each message goes`)
+    if (name === 'sendMessage' && args.action !== 'postMessage' && args.action !== 'callAgent') {
+      if (!deps.coordinatorDecision) throw new Error('sendMessage: the coordinator is not available on this daemon')
+      return await deps.coordinatorDecision(ctx, args)
+    }
+    // Its question to another agent always asks for the answer, which comes back to it as a report.
+    if (name === 'sendMessage' && args.action === 'callAgent')
+      args = { ...args, toAgent: askingForAnswer(args.toAgent) }
+    // A place tool that acts for a person names their message, whose sender and thread it acts on.
+    if (COORDINATOR_MESSAGE_TOOLS.has(name)) {
+      const { messageId, ...rest } = args
+      const found = deps.coordinatorMessage?.(ctx, messageId) ?? { error: 'is not available on this daemon' }
+      if ('error' in found) throw new Error(`${name}: ${found.error}`)
+      ctx = { ...ctx, forMessage: found.msg }
+      args = rest
+    }
+  }
   // assistant-mode.md §5.13: a getting-to-know task reads only its own place, whatever the arguments name.
   const elsewhere = isGettingToKnowCoordinate(ctx.thread) ? gettingToKnowReadRefusal(ctx, name, args) : undefined
   if (elsewhere) throw new Error(elsewhere)
@@ -531,7 +579,7 @@ async function executeRegisteredTool(
   deps: OpsDeps
 ): Promise<unknown> {
   // send-message-guide.md §3.3: the action and its arguments are checked before any lookup or effect.
-  if (name === 'sendMessage') validateSendMessageAction(ctx, given)
+  if (name === 'sendMessage') validateSendMessageAction(ctx, given, await taskReachOf(ctx, deps))
   // A channel named by its name is judged and acted on by the one id it resolves to.
   const args = await resolveChannelArg(ctx, name, given, deps)
   // Every agent's reads of another conversation and platform writes are judged by who is asking (§5.5).
@@ -557,8 +605,24 @@ async function executeRegisteredTool(
     const conn = ctx.integrationId ? deps.sessionToolConnectionFor(ctx.integrationId) : undefined
     if (!conn) throw new Error(`no live ${owner.label} connection for integration ${ctx.integrationId ?? '(none)'}`)
     const attribution = deps.sessionToolAttributionFor
+    const deliveryThread = deps.deliveryThreadNow?.(ctx) ?? ctx.deliveryThread
     return await owner.sessionTools.execute(name, ctx, args, {
       connection: conn,
+      deliveryThread,
+      originMsgId: deps.searchOrigin?.(ctx),
+      judgeWrite: (target) => authorizeSessionPublication(ctx, name, target, deps),
+      postIdentity: () => ({
+        username: ctx.agentName,
+        icon_url: ctx.iconUrl,
+        agentAuthorId: ctx.agentId,
+        response: {
+          responseId: randomUUID(),
+          deliveryState: 'final',
+          hopCount: deps.currentHopCount?.(ctx) ?? 0,
+          mentionedAgentIds: []
+        }
+      }),
+      recordPost: (text, ts) => deps.recordOutbound(ctx, ctx.channel, deliveryThread, text, ts, ctx.integrationId!),
       ...(attribution ? { attribution: () => attribution(ctx) } : {})
     })
   }

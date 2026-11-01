@@ -147,6 +147,28 @@ describe('rowAttribution', () => {
   it('drops a part whose amount is not a number rather than rendering NaN', () => {
     expect(rowAttribution([{ agentId: 'agt_1', amount: 'twelve' }], roster)).toEqual([])
   })
+
+  it('orders chips by exact amount when a float cannot tell the amounts apart', () => {
+    const bigRoster = new Map([
+      ['agt_a', agent('agt_a', 'alpha')],
+      ['agt_b', agent('agt_b', 'bravo')],
+      ['agt_c', agent('agt_c', 'charlie')],
+      ['agt_d', agent('agt_d', 'delta')],
+      ['agt_e', agent('agt_e', 'echo')]
+    ])
+    // Every amount here rounds to the same float64 (1e19), so a float sort keeps arrival order.
+    const chips = rowAttribution(
+      [
+        { agentId: 'agt_e', amount: '10000000000000000001' },
+        { agentId: 'agt_d', amount: '10000000000000000000' },
+        { agentId: 'agt_a', amount: '10000000000000000010' },
+        { agentId: 'agt_c', amount: '10000000000000000008' },
+        { agentId: 'agt_b', amount: '10000000000000000009' }
+      ],
+      bigRoster
+    )
+    expect(chips.map((c) => c.key)).toEqual(['agt_a', 'agt_b', 'agt_c', 'agt_e', 'agt_d'])
+  })
 })
 
 describe('the usage row', () => {
@@ -292,6 +314,34 @@ describe('groupUsage', () => {
     expect(groups).toHaveLength(1)
     expect(groups[0]!.agents).toEqual([{ key: 'withheld', agent: undefined, amount: '3' }])
     expect(groups[0]!.key).not.toMatch(/"x"|"y"/)
+  })
+
+  it('orders grouped agents and models by exact amount when a float cannot tell them apart', () => {
+    const groups = groupUsage(
+      [
+        {
+          type: 'debit' as const,
+          id: 't1',
+          period: '2026-08',
+          amount: '20000000000000000003',
+          at: '2026-08-25T01:00:00.000Z',
+          // The bigger spender arrives second; a float sort sees a tie and leaves it in place.
+          agents: [
+            { agentId: 'agt_2', amount: '10000000000000000001' },
+            { agentId: 'agt_1', amount: '10000000000000000002' }
+          ],
+          models: [
+            { model: 'model-less', amount: '10000000000000000001' },
+            { model: 'model-more', amount: '10000000000000000002' }
+          ]
+        }
+      ],
+      roster,
+      false
+    )
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.agents.map((a) => a.key)).toEqual(['agt_1', 'agt_2'])
+    expect(groups[0]!.models.map((m) => m.model)).toEqual(['model-more', 'model-less'])
   })
 })
 

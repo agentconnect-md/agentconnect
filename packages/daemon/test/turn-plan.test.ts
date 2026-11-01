@@ -74,6 +74,11 @@ const planFor = (over: Partial<TurnPlanInput> = {}) =>
     ...over
   })
 
+it('replies inside a Code channel thread while keeping its channel session and lifecycle coordinate', () => {
+  const plan = planFor({ entry: entryFor({ msg: message({ thread: 'C1', replyThread: '1.001' }) }) })
+  expect(plan).toMatchObject({ thread: '1.001', sessionThread: 'C1', statusThread: 'C1' })
+})
+
 describe('buildTurnPlan', () => {
   it('lets a sticky output override win over the agent default, and falls back without one', () => {
     expect(planFor({ stickyOutputMode: 'high' }).mode).toBe('high')

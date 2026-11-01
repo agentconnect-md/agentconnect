@@ -176,16 +176,42 @@ describe('viewer WebRTC', () => {
     const stunUrls = [`stun:127.0.0.1:${stun.port}`]
     const { rtc, messages } = sessions()
     const principal: ViewerPrincipal = { client: 'console:u1', control: true, stunUrls }
-    const { offerSdp, channel } = await trickleBrowser(rtc, principal, stunUrls)
+    const { offerSdp, channel, pc } = await trickleBrowser(rtc, principal, stunUrls)
     // Full ICE, not ICE-lite: the desktop runs its own connectivity checks.
     expect(offerSdp).not.toMatch(/a=ice-lite/)
-    // The relay STUN server told the desktop its server-reflexive address.
-    expect(offerSdp).toMatch(/typ srflx/)
+    // The desktop's server-reflexive address reaches the browser by trickle, after the desktop has sent to the browser.
+    expect(offerSdp).not.toMatch(/typ srflx/)
+    expect(offerSdp).not.toMatch(/a=end-of-candidates/)
+    // …and the browser takes it, rather than dropping it as arriving after the end of candidates.
+    await expect
+      .poll(() => pc.iceTransports[0]?.connection.remoteCandidates.map((c) => c.type), { timeout: 5000 })
+      .toContain('srflx')
     if (channel.readyState !== 'open') await new Promise((resolve) => channel.stateChanged.subscribe(resolve))
     const reply = new Promise((resolve) => channel.onMessage.subscribe((data) => resolve(JSON.parse(data.toString()))))
     channel.send(JSON.stringify({ seq: 1, input: { type: 'key', keys: ['escape'] } }))
     expect(await reply).toMatchObject({ seq: 1, ok: true, result: 'applied' })
     expect(messages).toHaveLength(1)
+  }, 30_000)
+
+  it('withholds the desktop’s server-reflexive candidate until the browser has none left to send', async () => {
+    const stun = await startStunServer({
+      host: '127.0.0.1',
+      port: 0,
+      log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+    })
+    opened.push(() => stun.close())
+    const stunUrls = [`stun:127.0.0.1:${stun.port}`]
+    const { rtc } = sessions()
+    const principal: ViewerPrincipal = { client: 'console:u1', control: true, stunUrls }
+    const offer = await rtc.offer(principal, { transport: 'stun' })
+    const types = () =>
+      rtc.candidates(principal.client, offer.id, 0).candidates.map((c) => / typ (\w+)/.exec(c.candidate)?.[1])
+    expect(offer.sdp).not.toMatch(/typ srflx/)
+    expect(types()).not.toContain('srflx')
+    expect(rtc.candidates(principal.client, offer.id, 0).done).toBe(false)
+    // The browser's end of gathering without a public candidate releases it: there is no mapping to open first.
+    rtc.addCandidate(principal.client, offer.id, null)
+    expect(types()).toContain('srflx')
   }, 30_000)
 
   it('answers within the STUN deadline when the STUN server never replies, and still connects on host candidates', async () => {

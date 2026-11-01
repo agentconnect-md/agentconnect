@@ -12,7 +12,6 @@ import {
   resolveComputerLaunch,
   type ComputerHost
 } from '../src/computer/launch.js'
-import { serviceArgs } from '../src/computer/commands.js'
 import { classifyInvocation } from '../src/route.js'
 
 const host = (over: Partial<ComputerHost> = {}): ComputerHost => ({
@@ -37,20 +36,6 @@ describe('computer routing', () => {
 
   it('no longer routes the retired desktop alias to the computer daemon', () => {
     expect(classifyInvocation(['desktop', 'doctor'])).toBe('delegate')
-  })
-})
-
-describe('serviceArgs', () => {
-  it("maps start/stop/restart to the daemon's service command off Windows", () => {
-    for (const platform of ['linux', 'darwin'] as const)
-      for (const action of ['start', 'stop', 'restart'])
-        expect(serviceArgs(action, platform)).toEqual(['service', action])
-  })
-
-  it('starts the Run-key entry on Windows and rejects stop/restart there instead of a misleading service error', () => {
-    expect(serviceArgs('start', 'win32')).toEqual(['autostart', 'start'])
-    expect(() => serviceArgs('stop', 'win32')).toThrow(/stop is not supported on Windows yet/)
-    expect(() => serviceArgs('restart', 'win32')).toThrow(/restart is not supported on Windows yet/)
   })
 })
 
@@ -184,11 +169,8 @@ describe('agentconnect computer (end to end)', () => {
     expect(seen.argv).toEqual(['setup', '--host', '0.0.0.0', '--no-service'])
     expect(seen.self).toMatch(/ computer$/)
     expect(JSON.parse(cli(['computer', 'pause']).stdout).argv).toEqual(['pause'])
-    const restart = cli(['computer', 'restart'])
-    if (process.platform === 'win32') {
-      expect(restart.status).toBe(1)
-      expect(restart.stderr).toMatch(/restart is not supported on Windows yet/)
-    } else expect(JSON.parse(restart.stdout).argv).toEqual(['service', 'restart'])
+    // Windows restarts its service too, as the other platforms do.
+    expect(JSON.parse(cli(['computer', 'restart']).stdout).argv).toEqual(['service', 'restart'])
     expect(ok.status).toBe(0)
     const failed = cli(['computer', 'doctor'], { FAKE_COMPUTER_EXIT: '1' })
     // doctor names the version first, then hands over to the daemon.

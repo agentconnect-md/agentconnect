@@ -41,6 +41,15 @@ const rule = (over: Partial<ActivationRule> = {}): ActivationRule => ({
 })
 
 describe('routeRules (ladder smoke — deep coverage lives in the daemon suites)', () => {
+  it('routes provider-owned conversations implicitly while preserving Off and other mentions', () => {
+    expect(routeRules(msg({ conversationBotId: 'U1' }), [rule()], () => null)?.via).toBe('auto')
+    expect(routeRules(msg({ conversationBotId: 'U1' }), [rule({ mutedChannels: ['C1'] })], () => null)).toBeNull()
+    expect(routeRules(msg({ conversationBotId: 'U1', mentionedBots: ['U2'] }), [rule()], () => null)).toBeNull()
+    expect(routeRules(msg({ conversationBotId: 'U1', sender: { isBot: true } }), [rule()], () => null)).toBeNull()
+    expect(
+      routeRules(msg({ conversationBotId: 'U1', thread: 'C1' }), [rule(), rule({ agentId: 'a2' })], () => 'a2')
+    ).toMatchObject({ agentId: 'a2', via: 'thread' })
+  })
   it('kind precedence: mention > dm > keyword > auto', () => {
     const rules = [
       rule({ agentId: 'auto', match: { kind: 'auto' } }),

@@ -3,6 +3,7 @@ import {
   CapabilityAsk,
   CapabilityRequestReq,
   SessionCapabilitySettled,
+  capabilityAskNeedsV4,
   capabilityTarget
 } from './capability-request.js'
 
@@ -16,6 +17,24 @@ describe('capability request frames', () => {
     expect(CapabilityAsk.safeParse({ kind: 'agent-settings', want: { workspace: 'x' } }).success).toBe(false)
     expect(CapabilityAsk.safeParse({ kind: 'agent-settings', want: {} }).success).toBe(false)
     expect(CapabilityAsk.safeParse({ kind: 'secret', want: { name: 'X' } }).success).toBe(false)
+  })
+
+  it('takes every agent-form field and a cron, behind v4', () => {
+    const runtime = CapabilityAsk.parse({ kind: 'agent-settings', want: { runtime: 'codex-acp', model: 'gpt-5' } })
+    expect(capabilityAskNeedsV4(runtime)).toBe(true)
+    expect(capabilityAskNeedsV4(CapabilityAsk.parse({ kind: 'agent-settings', want: { model: 'm' } }))).toBe(false)
+    expect(CapabilityAsk.safeParse({ kind: 'agent-settings', want: { chatActions: 'admin' } }).success).toBe(false)
+    expect(CapabilityAsk.safeParse({ kind: 'agent-settings', want: { visibility: 'org' } }).success).toBe(false)
+    const cron = CapabilityAsk.parse({ kind: 'cron', want: { schedule: '0 9 * * 1', trigger: 'send the report' } })
+    expect(capabilityAskNeedsV4(cron)).toBe(true)
+    expect(capabilityTarget(cron)).toBe('new:0 9 * * 1::')
+    expect(capabilityTarget({ kind: 'cron', want: { cronId: REQUEST, schedule: '0 9 * * *', trigger: 'x' } })).toBe(
+      `cron:${REQUEST}`
+    )
+    expect(CapabilityAsk.safeParse({ kind: 'cron', want: { schedule: '0 9 * * *' } }).success).toBe(false)
+    expect(
+      CapabilityAsk.safeParse({ kind: 'cron', want: { schedule: '* * * * *', trigger: 'x', channel: 'C1' } }).success
+    ).toBe(false)
   })
 
   it('accepts a skill only as <source>/<skill>', () => {

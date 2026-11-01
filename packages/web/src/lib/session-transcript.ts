@@ -34,8 +34,16 @@ export function mergeSessionMessages(
   })
 }
 
+// The daemon persists a prompt with a synthetic `[attached: …]` file list the live step never shows.
+const ATTACHED_NOTE = /(?:^|\n)\[attached: [^\]\n]*\]$/
+
 function promptKey(text: string, image?: SessionImage): string {
-  return JSON.stringify([text, image?.name ?? null, image?.mimeType ?? null, image?.data ?? null])
+  return JSON.stringify([
+    text.replace(ATTACHED_NOTE, '').trim(),
+    image?.name ?? null,
+    image?.mimeType ?? null,
+    image?.data ?? null
+  ])
 }
 
 /** Retire streamed work after its prompt and any reply posts are confirmed. */

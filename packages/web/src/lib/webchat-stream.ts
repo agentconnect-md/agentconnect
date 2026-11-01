@@ -26,6 +26,10 @@ export interface OrderedWebchatResult<Output, Done> {
   overflow?: true
 }
 
+// The browser's own socket to the chat server failed to open; the agent may be perfectly healthy.
+export const WEBCHAT_CONNECT_FAILED =
+  'Your browser couldn’t connect to the chat server — check your network connection and try again.'
+
 const MAX_PENDING_OUTPUTS = 512
 
 export function createWebchatCursor<Output extends OrderedWebchatOutput, Done extends OrderedWebchatDone>(
@@ -83,4 +87,9 @@ export function acceptWebchatDone<Output extends OrderedWebchatOutput, Done exte
   if (!bindWebchatTurn(cursor, done.turnId)) return { outputs: [] }
   cursor.done = done
   return drainWebchatCursor(cursor)
+}
+
+/** The lane holds frames past a missing index, or a `done` its outputs have not reached — only a resume fills it. */
+export function webchatCursorHasGap(cursor: OrderedWebchatCursor): boolean {
+  return cursor.pending.size > 0 || cursor.done !== undefined
 }

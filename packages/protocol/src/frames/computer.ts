@@ -4,7 +4,12 @@ import { tolerantSchemas } from '../tolerant.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { ErrorFrame } from './error.js'
 import { COMPUTER_LEASE_WAIT_MAX_SECONDS, ComputerControlLease } from './computer-lease.js'
-import { COMPUTER_RELAYS_MAX, ComputerApprovalsSchema, ComputerRelayEntry } from './computer-channel.js'
+import {
+  COMPUTER_ADMIN_PROMPT_MODES,
+  COMPUTER_RELAYS_MAX,
+  ComputerApprovalsSchema,
+  ComputerRelayEntry
+} from './computer-channel.js'
 import { ComputerAuditAck, ComputerAuditReport } from './computer-audit.js'
 import {
   COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS,
@@ -13,6 +18,12 @@ import {
   ComputerScreenshotPut,
   ComputerScreenshotPutOk
 } from './computer-screenshot.js'
+import {
+  COMPUTER_FILE_ROOTS_MAX,
+  COMPUTER_FILES_MODES,
+  COMPUTER_SHELL_MODES,
+  ComputerFileRoot
+} from '../computer-command-line.js'
 
 // The lease schemas ride both wires, so the `./computer` entry serves them to the desktop too.
 export * from './computer-lease.js'
@@ -29,6 +40,8 @@ export * from '../computer-viewer.js'
 export * from './computer-keys.js'
 // Managed computers in the Kubernetes pool (§15.1).
 export * from './computer-pool.js'
+// The command-line tier: computer_exec and the file tools (§5.7).
+export * from '../computer-command-line.js'
 
 // The Computer channel (computer-use.md §3.6, §8.2): the desktop daemon's own control wire; no screen content rides it.
 
@@ -125,11 +138,21 @@ export const ComputerPolicySchema = z
     // Days stored screenshots are kept (§9); 0 means never written, absent means the deployment's default.
     screenshotRetentionDays: z.number().int().min(0).max(COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS).optional(),
     // Whether viewers may hole-punch peer to peer, which shows them the desktop's public IP (§7.2); absent means on only for owner-only viewing.
-    viewerPeerToPeer: z.boolean().optional()
+    viewerPeerToPeer: z.boolean().optional(),
+    // The command-line tier (§5.7); absent means the Computer's default, on for a managed one and off otherwise.
+    shell: z.enum(COMPUTER_SHELL_MODES).optional(),
+    files: z.enum(COMPUTER_FILES_MODES).optional(),
+    // Prefixes the file tools may touch; absent means the user's home directory.
+    fileRoots: z.array(ComputerFileRoot).max(COMPUTER_FILE_ROOTS_MAX).optional()
   })
   .refine((p) => p.leaseIdleSeconds <= p.leaseMaxSeconds, {
     message: 'leaseIdleSeconds must not exceed leaseMaxSeconds',
     path: ['leaseIdleSeconds']
+  })
+  // A shell can drive the display anyway, so a `view` Computer offers none.
+  .refine((p) => p.agentMode === 'control' || p.shell === undefined || p.shell === 'off', {
+    message: 'a shell needs agentMode control',
+    path: ['shell']
   })
 export type ComputerPolicy = z.infer<typeof ComputerPolicySchema>
 
@@ -147,6 +170,9 @@ export const ComputerCapabilitiesSchema = z.object({
   viewerStun: z.boolean().optional(),
   // The browser's traffic leaves through the desktop's egress forwarder, which applies `computer/egress` (§15.4).
   egress: z.boolean().optional(),
+  // The command-line tier can run here (§5.7): computer_exec, and the file tools.
+  exec: z.boolean().optional(),
+  files: z.boolean().optional(),
   displays: z
     .array(
       z.object({
@@ -314,6 +340,17 @@ export type ComputerStopPush = z.infer<typeof ComputerStopPush>
 export const ComputerEgressPush = z.object({ egress: ComputerEgress })
 export type ComputerEgressPush = z.infer<typeof ComputerEgressPush>
 
+/** The CP takes `computer/admin-prompts` from the desktop's own menu (computer-use.md §4.2.1). */
+export const COMPUTER_ADMIN_PROMPTS_FEATURE = 'computer-admin-prompts-v1'
+
+// D→C REQ: the person at the desktop chose who answers administrator prompts; the CP stores it and pushes the policy back.
+export const ComputerAdminPromptsSet = z.object({ mode: z.enum(COMPUTER_ADMIN_PROMPT_MODES) }).strict()
+export type ComputerAdminPromptsSet = z.infer<typeof ComputerAdminPromptsSet>
+
+// C→D REP: the mode now stored.
+export const ComputerAdminPromptsSetOk = z.object({ mode: z.enum(COMPUTER_ADMIN_PROMPT_MODES) })
+export type ComputerAdminPromptsSetOk = z.infer<typeof ComputerAdminPromptsSetOk>
+
 export const COMPUTER_CP_SCHEMAS = {
   'computer/auth': ComputerAuth,
   'computer/auth/ok': ComputerAuthOk,
@@ -325,6 +362,8 @@ export const COMPUTER_CP_SCHEMAS = {
   'computer/relays': ComputerRelaysPush,
   'computer/stop': ComputerStopPush,
   'computer/egress': ComputerEgressPush,
+  'computer/admin-prompts': ComputerAdminPromptsSet,
+  'computer/admin-prompts/ok': ComputerAdminPromptsSetOk,
   'computer/audit': ComputerAuditReport,
   'computer/audit/ok': ComputerAuditAck,
   'computer/screenshot/put': ComputerScreenshotPut,
@@ -348,6 +387,8 @@ export const ComputerCpFrame = z.discriminatedUnion('type', [
   frameSchema('computer/relays', COMPUTER_CP_SCHEMAS['computer/relays']),
   frameSchema('computer/stop', COMPUTER_CP_SCHEMAS['computer/stop']),
   frameSchema('computer/egress', COMPUTER_CP_SCHEMAS['computer/egress']),
+  frameSchema('computer/admin-prompts', COMPUTER_CP_SCHEMAS['computer/admin-prompts']),
+  frameSchema('computer/admin-prompts/ok', COMPUTER_CP_SCHEMAS['computer/admin-prompts/ok']),
   frameSchema('computer/audit', COMPUTER_CP_SCHEMAS['computer/audit']),
   frameSchema('computer/audit/ok', COMPUTER_CP_SCHEMAS['computer/audit/ok']),
   frameSchema('computer/screenshot/put', COMPUTER_CP_SCHEMAS['computer/screenshot/put']),

@@ -8,6 +8,7 @@ import { agentMessageId } from '../messages/message-boundary.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { chunkText } from './chat-chunk.js'
 import { extractToolOutput } from './tool-output.js'
+import { toolEditsOf, type ToolEdit } from './tool-edits.js'
 
 // Map already-masked runtime updates into shared chat events without choosing a protocol.
 export function emitChatUpdate(wc: ChatTurnOutput, update: any, resolveFileLink?: WorkspaceFileLinkResolver): void {
@@ -151,6 +152,7 @@ export function commitSegmentOnce(segment: { committing?: Promise<void> }, write
 function toolPreview(update: { rawInput?: unknown; rawOutput?: unknown; content?: unknown }): {
   input?: string
   output?: string
+  edits?: ToolEdit[]
 } {
   const preview = (value: unknown): string | undefined => {
     if (value === undefined) return undefined
@@ -170,5 +172,10 @@ function toolPreview(update: { rawInput?: unknown; rawOutput?: unknown; content?
   }
   const input = preview(update.rawInput)
   const output = preview(extractToolOutput(update) || update.rawOutput)
-  return { ...(input !== undefined ? { input } : {}), ...(output !== undefined ? { output } : {}) }
+  const edits = toolEditsOf(update)
+  return {
+    ...(input !== undefined ? { input } : {}),
+    ...(output !== undefined ? { output } : {}),
+    ...(edits ? { edits } : {})
+  }
 }

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { FakeClock } from '@agentconnect.md/connection'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -1272,6 +1273,179 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
+  it('force-stops only the cancelled session’s host when its cold start outlives the backstop', async () => {
+    const root = scaffold()
+    const clock = new FakeClock()
+    let releaseLive!: () => void
+    const live = new Promise<void>((resolve) => (releaseLive = resolve))
+    const hosts: { newSession: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }[] = []
+    const factory = vi.fn(() => {
+      const index = hosts.length
+      const host = {
+        start: vi.fn(async () => {}),
+        // The second session's runtime never answers session/new: its turn stays cold.
+        newSession: vi.fn(() => (index === 0 ? Promise.resolve('acp-1') : new Promise<string>(() => {}))),
+        hasSession: vi.fn((sid: string) => sid === 'acp-1'),
+        prompt: vi.fn(async () => {
+          await live
+          return { stopReason: 'end_turn' }
+        }),
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {})
+      }
+      hosts.push(host)
+      return host as never
+    })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: factory as never,
+      sandboxMechanism: 'bwrap',
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    stubWorkspacePreparation(daemon)
+    const one = (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(1), WAIT)
+    const two = (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+    await vi.waitFor(() => expect(hosts[1]?.newSession).toHaveBeenCalledOnce(), WAIT)
+
+    await (daemon as any).interruptTurn('bot-a', KEY('T2'), 'stop', undefined, {})
+    clock.advance(30_000)
+    await expect(two).resolves.toBeNull()
+
+    expect(hosts[1]!.stop).toHaveBeenCalled()
+    expect(hosts[0]!.stop).not.toHaveBeenCalled()
+    const first = sessionHostKey('bot-a', KEY('T1'))
+    expect((daemon as any).hosts.get(first)).toBe(hosts[0])
+    expect((daemon as any).pending.get(pendingTurnKey(first, 'acp-1'))).toBeDefined()
+    releaseLive()
+    await one
+    await daemon.stop()
+  })
+
+  it('force-stops only the shared host when a session on it is cancelled cold, keeping a sibling session host', async () => {
+    const root = scaffold()
+    const clock = new FakeClock()
+    let releaseLive!: () => void
+    const live = new Promise<void>((resolve) => (releaseLive = resolve))
+    const hosts: { newSession: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }[] = []
+    const factory = vi.fn(() => {
+      const index = hosts.length
+      const host = {
+        start: vi.fn(async () => {}),
+        // The shared host, started second, never answers session/new: its turn stays cold.
+        newSession: vi.fn(() => (index === 0 ? Promise.resolve('acp-1') : new Promise<string>(() => {}))),
+        hasSession: vi.fn((sid: string) => sid === 'acp-1'),
+        prompt: vi.fn(async () => {
+          await live
+          return { stopReason: 'end_turn' }
+        }),
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {})
+      }
+      hosts.push(host)
+      return host as never
+    })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: factory as never,
+      sandboxMechanism: 'bwrap',
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    stubWorkspacePreparation(daemon)
+    // T2's row reports shared isolation, so it runs on the agent's shared host while T1 gets a host of its own.
+    await (daemon as any).store.upsertSession({
+      key: KEY('T2'),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T2',
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      workspaceIsolation: 'shared'
+    })
+    const one = (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(1), WAIT)
+    const two = (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+    await vi.waitFor(() => expect(hosts[1]?.newSession).toHaveBeenCalledOnce(), WAIT)
+    const first = sessionHostKey('bot-a', KEY('T1'))
+    expect((daemon as any).hosts.get(first)).toBe(hosts[0])
+    expect((daemon as any).hosts.get(agentHostKey('bot-a'))).toBe(hosts[1])
+
+    await (daemon as any).interruptTurn('bot-a', KEY('T2'), 'stop', undefined, {})
+    clock.advance(30_000)
+    await expect(two).resolves.toBeNull()
+
+    expect(hosts[1]!.stop).toHaveBeenCalled()
+    expect(hosts[0]!.stop).not.toHaveBeenCalled()
+    expect((daemon as any).hosts.get(first)).toBe(hosts[0])
+    expect((daemon as any).pending.get(pendingTurnKey(first, 'acp-1'))).toBeDefined()
+    releaseLive()
+    await one
+    await daemon.stop()
+  })
+
+  it('force-stops only the owning session host when a live turn ignores session/cancel past the backstop', async () => {
+    const root = scaffold()
+    const clock = new FakeClock()
+    const releases: (() => void)[] = []
+    const hosts: { stop: ReturnType<typeof vi.fn> }[] = []
+    const factory = vi.fn(() => {
+      let release!: () => void
+      const blocked = new Promise<void>((resolve) => (release = resolve))
+      releases.push(release)
+      const host = {
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => 'acp-1'),
+        hasSession: vi.fn((sid: string) => sid === 'acp-1'),
+        prompt: vi.fn(async () => {
+          await blocked
+          return { stopReason: 'end_turn' }
+        }),
+        // The runtime ignores session/cancel.
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {})
+      }
+      hosts.push(host)
+      return host as never
+    })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: factory as never,
+      sandboxMechanism: 'bwrap',
+      clock
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    stubWorkspacePreparation(daemon)
+    const one = (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    const two = (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(2), WAIT)
+    const first = sessionHostKey('bot-a', KEY('T1'))
+    const second = sessionHostKey('bot-a', KEY('T2'))
+    // A turn with no selected host falls back to the host that owns it.
+    delete (daemon as any).pending.get(pendingTurnKey(second, 'acp-1')).selectedHost
+
+    await (daemon as any).interruptTurn('bot-a', KEY('T2'), 'stop', undefined, {})
+    clock.advance(30_000)
+    await vi.waitFor(() => expect(hosts[1]!.stop).toHaveBeenCalled(), WAIT)
+
+    expect(hosts[0]!.stop).not.toHaveBeenCalled()
+    expect((daemon as any).hosts.get(first)).toBe(hosts[0])
+    expect((daemon as any).pending.get(pendingTurnKey(first, 'acp-1'))).toBeDefined()
+    for (const release of releases) release()
+    await Promise.all([one, two])
+    await daemon.stop()
+  })
+
   it('a stale idle-close decision does not evict the host a reopened session was admitted on', async () => {
     const { daemon, hosts } = await startDaemon(scaffold())
     await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
@@ -1292,6 +1466,78 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     expect(hosts[1]!.stop).not.toHaveBeenCalled()
     expect((daemon as any).hosts.get(key)).toBe(hosts[1])
     await daemon.stop()
+  })
+
+  it('discards the VM disk of an idle-closed hook session only, keeping its row', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    try {
+      const manager = useMicrosandbox(daemon)
+      const store = (daemon as any).store
+      const row = (thread: string, platform: string) => ({
+        key: KEY(thread),
+        agentId: 'bot-a',
+        platform,
+        channel: 'C1',
+        thread,
+        acpSessionId: null
+      })
+      const closeIdle = vi
+        .spyOn(store, 'closeIdleSessions')
+        .mockResolvedValue([row('T1', 'hook'), row('T2', 'slack')] as never)
+      await (daemon as any).sweepIdle()
+      await vi.waitFor(() => expect(manager.discard).toHaveBeenCalledTimes(1), WAIT)
+      closeIdle.mockRestore()
+      expect(manager.discard).toHaveBeenCalledWith(`bot-a/${hostKeyDirName(sessionHostKey('bot-a', KEY('T1')))}`)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('keeps the VM of a closed hook session that a turn reopened', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    try {
+      const manager = useMicrosandbox(daemon)
+      const row = { key: KEY('T1'), agentId: 'bot-a', acpSessionId: null }
+      // The close was decided with no host; a turn reopened the key before the retirement ran.
+      const fence = { expected: undefined, generation: undefined, row }
+      await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+      const host = (daemon as any).hosts.get(sessionHostKey('bot-a', KEY('T1')))
+      expect(host).toBeDefined()
+      await (daemon as any).retireClosedHookSessionVm(row, fence)
+      expect(host.stop).not.toHaveBeenCalled()
+      expect(manager.discard).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('holds a dispatch that arrives mid-discard until the closed hook session VM is gone', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    try {
+      const manager = useMicrosandbox(daemon)
+      let finishDiscard!: () => void
+      manager.discard.mockImplementationOnce(() => new Promise<void>((resolve) => (finishDiscard = resolve)))
+      const row = { key: KEY('T1'), agentId: 'bot-a', acpSessionId: null }
+      const retiring = (daemon as any).retireClosedHookSessionVm(row, {
+        expected: undefined,
+        generation: undefined,
+        row
+      })
+      await vi.waitFor(() => expect(manager.discard).toHaveBeenCalledTimes(1), WAIT)
+      let admitted = false
+      const admission = (daemon as any).admitActiveDispatch('bot-a', KEY('T1')).then((release: () => void) => {
+        admitted = true
+        release()
+      })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(admitted).toBe(false)
+      finishDiscard()
+      await retiring
+      await admission
+      expect(admitted).toBe(true)
+    } finally {
+      await daemon.stop()
+    }
   })
 
   it('closeIdleSessions reports only the rows it closed, not a candidate a turn reopened meanwhile', async () => {

@@ -11,8 +11,8 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs'
-import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { removeTree } from '../workspace/remove-tree.js'
 import { DEFAULT_BACKOFF_CAP_MS, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import {
   ExecutorRuntimeLaunch,
@@ -601,7 +601,7 @@ class Facet implements ExecutorFacet {
     try {
       // What the strategy owns beyond the directory — a VM and its disposable disks — goes first; the directory is the facet's own.
       await this.deps.launchers[env.strategy]?.discard?.(hostedEnvironment(this.deps.daemonRoot, env.leaf).id)
-      await rm(join(this.sessionsDir, env.leaf), { recursive: true, force: true })
+      await removeTree(join(this.sessionsDir, env.leaf))
       // The record goes last, so a discard cut short is finished by the next sweep rather than forgotten.
       rmSync(join(this.sessionsDir, `${env.leaf}.json`), { force: true })
       this.environments.delete(env.leaf)

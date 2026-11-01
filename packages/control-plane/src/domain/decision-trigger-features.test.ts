@@ -5,10 +5,15 @@ import {
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   OWNER_DEFAULT_DECISION_V1_FEATURE,
+  SESSION_MODE_AUTO_V1_FEATURE,
   type AttributedRoute,
   type IntegrationSpec
 } from '@agentconnect.md/protocol'
-import { encodeIntegrationSpecForPeer, encodeRelayRoutesForPeer } from './decision-trigger-features.js'
+import {
+  encodeIntegrationSpecForPeer,
+  encodeRelayRoutesForPeer,
+  type ProjectedSessionMode
+} from './decision-trigger-features.js'
 
 const gate = { type: 'gate' as const, decisionId: 'd1', when: { type: 'boolean' as const, values: [true] } }
 const spec: IntegrationSpec = {
@@ -47,6 +52,45 @@ describe('encodeIntegrationSpecForPeer', () => {
     expect(encodeIntegrationSpecForPeer(chained, [DECISION_TRIGGER_V1_FEATURE, DECISION_CHAIN_V1_FEATURE])).toBe(
       chained
     )
+  })
+
+  // auto-session-mode.md §3.1: a new enum value is frame-fatal to an older daemon, which keeps Per thread there instead.
+  it('sends auto only to a daemon that advertises it, and createNew to any other', () => {
+    const auto = structuredClone(spec)
+    auto.core.sessionModes = [
+      { channel: 'C3', mode: 'auto' },
+      { channel: 'C4', mode: 'append' }
+    ]
+    const features = [DECISION_TRIGGER_V1_FEATURE, DECISION_CHAIN_V1_FEATURE, DECISION_ROUTING_V1_FEATURE]
+    expect(encodeIntegrationSpecForPeer(auto, [...features, SESSION_MODE_AUTO_V1_FEATURE])).toBe(auto)
+    expect(encodeIntegrationSpecForPeer(auto, features).core.sessionModes).toEqual([
+      { channel: 'C3', mode: 'createNew' },
+      { channel: 'C4', mode: 'append' }
+    ])
+    expect(auto.core.sessionModes[0]!.mode).toBe('auto')
+  })
+
+  // auto-session-mode.md §3.4: assistant mode's places run the coordinator where the daemon reads auto, one append session elsewhere.
+  it('sends an assistant-mode place as auto where the daemon reads it and as append elsewhere, never with its mark', () => {
+    const places = structuredClone(spec)
+    places.core.sessionModes = [
+      { channel: 'C3', mode: 'append', assistantPlace: true },
+      { channel: 'C4', mode: 'append' },
+      { channel: 'G1', mode: 'createNew' }
+    ] as ProjectedSessionMode[]
+    const features = [DECISION_TRIGGER_V1_FEATURE, DECISION_CHAIN_V1_FEATURE, DECISION_ROUTING_V1_FEATURE]
+    expect(encodeIntegrationSpecForPeer(places, [...features, SESSION_MODE_AUTO_V1_FEATURE]).core.sessionModes).toEqual(
+      [
+        { channel: 'C3', mode: 'auto' },
+        { channel: 'C4', mode: 'append' },
+        { channel: 'G1', mode: 'createNew' }
+      ]
+    )
+    expect(encodeIntegrationSpecForPeer(places, features).core.sessionModes).toEqual([
+      { channel: 'C3', mode: 'append' },
+      { channel: 'C4', mode: 'append' },
+      { channel: 'G1', mode: 'createNew' }
+    ])
   })
 
   it('is the identity for a daemon that advertises decision-trigger-v1', () => {

@@ -21,7 +21,7 @@ export interface ComputerOps {
   install: (root: string, target: ResolvedTarget, log: (m: string) => void) => Promise<string>
   /** Brings the macOS app to the version this computer version pins; absent off macOS. */
   app?: (version: string) => Promise<void>
-  /** Whether this platform's background service runs the store's entry (systemd user unit, macOS LaunchAgent); the Windows Run key does not yet. */
+  /** Whether this platform's background service runs the store's entry (systemd user unit, macOS LaunchAgent, Windows service). */
   serviceRunsStore: boolean
   status: (version: string) => Promise<ComputerServiceState>
   /** Rewrites the service from that version, so a changed unit or autostart entry reaches the host. */
@@ -216,14 +216,15 @@ export function realComputerOps(root: string, o: RealOpsOptions): ComputerOps {
     resolve: (opts) => resolveTarget(opts, COMPUTER_PKG),
     install: (r, target, log) => installTarget(r, target, log, { pkg: COMPUTER_STORE }),
     ...(o.app ? { app: o.app } : {}),
-    serviceRunsStore: platform === 'linux' || platform === 'darwin',
+    serviceRunsStore: platform === 'linux' || platform === 'darwin' || platform === 'win32',
     status,
     refresh: (version) => service(version, 'install'),
     // Mirrors `inGraphicalSession` in packages/computer/src/service-linux.ts, which the child inherits this env for.
     refreshStarts:
-      platform === 'darwin'
+      platform === 'win32' ||
+      (platform === 'darwin'
         ? Boolean(o.guiSession)
-        : platform === 'linux' && Boolean((o.env ?? process.env).DISPLAY || (o.env ?? process.env).WAYLAND_DISPLAY),
+        : platform === 'linux' && Boolean((o.env ?? process.env).DISPLAY || (o.env ?? process.env).WAYLAND_DISPLAY)),
     restart: (version) => service(version, 'restart'),
     health: async (version) => {
       const settled = await checkServiceHealthy(

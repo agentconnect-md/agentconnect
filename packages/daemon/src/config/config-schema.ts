@@ -257,21 +257,17 @@ export const ConfigSchema = z.object({
   features: z
     .object({
       turnFinalContextRefresh: z.boolean().default(true),
-      ahp: z.object({ mode: AhpMode.default('off') }).default({ mode: 'off' }),
+      // AHP serves only where the CP and relay also run AHP_MODE=on; `off` opts a daemon out.
+      ahp: z.object({ mode: AhpMode.default('on') }).default({ mode: 'on' }),
       // Steer a message into the live turn over `_session/steering` instead of queueing it.
-      sessionSteering: z.boolean().default(true)
+      sessionSteering: z.boolean().default(true),
+      // Run the `auto` session mode and advertise it (auto-session-mode.md §3.1); off routes `auto` as Per thread and keeps every session's task tools.
+      autoSessionMode: z.boolean().default(true)
     })
-    .default({ turnFinalContextRefresh: true, sessionSteering: true, ahp: { mode: 'off' } }),
+    .default({ turnFinalContextRefresh: true, sessionSteering: true, ahp: { mode: 'on' }, autoSessionMode: true }),
   sessions: z
     .object({
-      // Local-DB retention for FINISHED sessions (issue #485): a session untouched
-      // (sessions.updatedAt) for longer than this window is deleted from the local
-      // store, together with its per-session Git worktree. A worktree holding
-      // dirty/untracked files or commits unreachable from any remote ref is never
-      // auto-deleted — the sweep reports it and keeps the session instead.
-      // 'never' disables the sweep; any '<n>d' day count is accepted (CP-set via
-      // register/ok + config/push). Legacy '2weeks'/'1month' from existing local
-      // config files normalize to their day equivalents.
+      // A finished session untouched this long loses its row and transcript (#485); legacy '2weeks'/'1month' normalize to days.
       retention: z
         .union([
           z.custom<SessionRetentionSetting>((v) => typeof v === 'string' && SESSION_RETENTION_RE.test(v), {
@@ -279,9 +275,15 @@ export const ConfigSchema = z.object({
           }),
           z.enum(['2weeks', '1month']).transform((v): SessionRetentionSetting => (v === '2weeks' ? '14d' : '30d'))
         ])
+        .default('90d'),
+      // A finished session's workspace, sandbox and runtime home go after this, its row and transcript after `retention`.
+      workspaceRetention: z
+        .custom<SessionRetentionSetting>((v) => typeof v === 'string' && SESSION_RETENTION_RE.test(v), {
+          message: "expected 'never' or '<days>d' (e.g. '7d')"
+        })
         .default('7d')
     })
-    .default({ retention: '7d' }),
+    .default({ retention: '90d', workspaceRetention: '7d' }),
   // The Google Chat write budget (google-chat-integration.md §10.8): 3,000 writes a minute per project over the pool; both knobs override.
   googleChat: z
     .object({
@@ -380,4 +382,12 @@ export function sessionRetentionMs(retention: SessionRetention): number | null {
   // Schema-validated 'Nd' always parses; a malformed value fails open to 'never'
   // (keep sessions) rather than sweeping with a NaN window.
   return Number.isFinite(days) && days > 0 ? days * 24 * 3_600_000 : null
+}
+
+/** The window after which a finished session's workspace goes: never later than its row, since a purge takes both. */
+export function workspaceRetentionMs(sessions: Config['sessions']): number | null {
+  const own = sessionRetentionMs(sessions.workspaceRetention)
+  const row = sessionRetentionMs(sessions.retention)
+  if (own === null) return row
+  return row === null ? own : Math.min(own, row)
 }

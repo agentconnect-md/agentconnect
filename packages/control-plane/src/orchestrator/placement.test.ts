@@ -108,7 +108,7 @@ const channel = (
   channelId: string,
   trigger: 'off' | 'mention' | 'any',
   kind: 'channel' | 'im' | 'mpim' = 'channel',
-  sessionMode: 'createNew' | 'append' = 'createNew'
+  sessionMode: IntegrationChannelRecord['sessionMode'] = 'createNew'
 ): IntegrationChannelRecord => ({
   integrationId: INTEGRATION.id,
   channelId,
@@ -147,6 +147,12 @@ describe('integrationToSpec sessionModes', () => {
       { channel: 'C2', mode: 'append' },
       { channel: 'C3', mode: 'append' }
     ])
+  })
+
+  // auto-session-mode.md §3.1: the projection passes auto through; the per-peer encoder decides who may read it.
+  it('passes auto through like any other departure', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'mention'), channel('C2', 'any', 'channel', 'auto')])
+    expect(spec.core.sessionModes).toEqual([{ channel: 'C2', mode: 'auto' }])
   })
 
   // Unlike bindRules, this ships for a gated agent too: session keying is the daemon's
@@ -222,14 +228,15 @@ describe('assistant-mode places', () => {
   })
 
   // The list is complete in assistant mode, so the daemon's append default for an unseen place never overrides a known row.
-  it('keys rooms and Slack DMs on one session, listing group DMs and Decision rows on their own mode', async () => {
+  it('keys rooms, Slack DMs and Slack group DMs on one session, listing Decision rows on their own mode', async () => {
     const spec = await specOf(INTEGRATION, SECRET, rows(), ASSISTANT)
+    // Marked for the coordinator where the daemon reads `auto` (auto-session-mode.md §3.4).
     expect(spec.core.sessionModes).toEqual([
-      { channel: 'C1', mode: 'append' },
-      { channel: 'C2', mode: 'append' },
-      { channel: 'C3', mode: 'append' },
-      { channel: 'D1', mode: 'append' },
-      { channel: 'G1', mode: 'createNew' },
+      { channel: 'C1', mode: 'append', assistantPlace: true },
+      { channel: 'C2', mode: 'append', assistantPlace: true },
+      { channel: 'C3', mode: 'append', assistantPlace: true },
+      { channel: 'D1', mode: 'append', assistantPlace: true },
+      { channel: 'G1', mode: 'append', assistantPlace: true },
       { channel: 'C4', mode: 'createNew' },
       { channel: 'C5', mode: 'append' }
     ])
@@ -261,6 +268,7 @@ describe('assistant-mode places', () => {
       'C2',
       'C3',
       'D1',
+      'G1',
       'C5'
     ])
   })
@@ -273,7 +281,7 @@ describe('assistant-mode places', () => {
       ASSISTANT
     )
     expect(spec.core.sessionModes).toEqual([
-      { channel: '-100', mode: 'append' },
+      { channel: '-100', mode: 'append', assistantPlace: true },
       { channel: '42', mode: 'createNew' }
     ])
   })

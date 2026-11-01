@@ -170,7 +170,13 @@ export class ComputerService {
     await this.opts.screenshots?.applyRetention(id).catch(() => 0)
     // A grant taken away ends the lease it backed; a failure here leaves it to the next heartbeat.
     await this.opts.leases?.current(orgId, id).catch(() => null)
-    this.record(orgId, actorUserId, 'policy_update', { computerId: id, agentMode: policy.agentMode })
+    this.record(orgId, actorUserId, 'policy_update', {
+      computerId: id,
+      agentMode: policy.agentMode,
+      // Turning a shell on is the change an owner most needs to find later (§5.7).
+      ...(policy.shell ? { shell: policy.shell } : {}),
+      ...(policy.files ? { files: policy.files } : {})
+    })
     return computer
   }
 

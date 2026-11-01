@@ -174,6 +174,13 @@ describe('capability request routes', () => {
       })
     ])
 
+    // Only a scheduled-task request takes the task it was saved as.
+    const notCron = await asEditor.app.inject({
+      method: 'POST',
+      url: `${ORG}/capability-requests/${id}/settle`,
+      payload: { cronId: randomUUID() }
+    })
+    expect(notCron.statusCode, notCron.body).toBe(400)
     const settled = await asEditor.app.inject({ method: 'POST', url: `${ORG}/capability-requests/${id}/settle` })
     expect(settled.statusCode, settled.body).toBe(200)
     expect(settled.json()).toMatchObject({ status: 'completed', differs: true, settledBy: { name: 'Ana' } })

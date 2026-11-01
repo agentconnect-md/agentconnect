@@ -96,7 +96,7 @@ target "daemon" {
   )
 }
 
-// A Linux desktop Computer (Xvfb, Xfce, Firefox ESR, the desktop daemon), for amd64 and arm64 hosts (computer-use.md §3.8).
+// A Linux desktop Computer (Xvfb, Xfce, Chromium, LibreOffice, dev tools, the desktop daemon), for amd64 and arm64 hosts (computer-use.md §3.8).
 target "computer" {
   context    = "."
   dockerfile = "packages/computer/docker/Dockerfile"

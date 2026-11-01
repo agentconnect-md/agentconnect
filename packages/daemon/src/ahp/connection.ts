@@ -18,6 +18,7 @@ import {
 } from '@microsoft/agent-host-protocol'
 import { AhpMessageText, AhpSessionUri, type AhpHandshake, type RdAhpClose } from '@agentconnect.md/protocol'
 import type { AhpActionJournal } from './action-journal.js'
+import { parseFileEditUri, type FileEditRef } from './file-edits.js'
 
 export class AhpProtocolError extends Error {
   constructor(
@@ -46,7 +47,8 @@ export interface AhpHostPort {
   dispatch(params: DispatchActionParams, origin: ActionOrigin): Promise<void>
   fetchTurns?(params: FetchTurnsParams): Promise<ChatTurnsLoadedAction | undefined>
   customRequest?(method: 'agentconnect/appRpc' | 'agentconnect/appClose', params: unknown): Promise<unknown>
-  subscribeNotification?(listener: (notification: AhpCatalogNotification) => void): () => void
+  readFileEdit?(ref: FileEditRef): Promise<string | undefined>
+  subscribeNotification?(listener: (notification: AhpCatalogNotification) => void, wanted: () => boolean): () => void
 }
 
 const root = 'ahp-root://' as const
@@ -89,13 +91,22 @@ const fetchTurns = z.object({
   channel: channel.refine((value) => value.startsWith('ahp-chat:/')),
   cursor: cursor.optional()
 })
+const resourceRead = rootParams.extend({
+  uri: z.string().min(1).max(32768),
+  encoding: z.enum(['base64', 'utf-8']).optional()
+})
 const dispatch = z.object({
   channel,
   clientSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   action: z.object({ type: identifier }).passthrough()
 })
 type Request = z.infer<typeof request>
-type Options = { port: AhpHostPort; send(message: string): void; close(reason: RdAhpClose['reason']): void }
+type Options = {
+  port: AhpHostPort
+  send(message: string): void
+  close(reason: RdAhpClose['reason']): void
+  warn?(message: string): void
+}
 
 export class AhpHostConnection {
   private readonly port: AhpHostPort
@@ -122,14 +133,16 @@ export class AhpHostConnection {
       },
       () => this.stop('unavailable')
     )
+    const wanted = () => Boolean(this.clientId) && this.subscriptions.has(root)
     this.unsubscribeNotification = this.port.subscribeNotification?.((notification) => {
-      if (this.clientId && this.subscriptions.has(root)) this.send({ jsonrpc: '2.0', ...notification })
-    })
+      if (wanted()) this.send({ jsonrpc: '2.0', ...notification })
+    }, wanted)
   }
 
   receive(frame: string): Promise<void> {
     if (this.disposed) return Promise.resolve()
     if (++this.queued > 16) {
+      this.options.warn?.(`more than 16 client frames queued`)
       this.stop('overloaded')
       return Promise.resolve()
     }
@@ -286,6 +299,22 @@ export class AhpHostConnection {
       case 'dispatchAction':
         await this.dispatch(parse(dispatch, message.params) as DispatchActionParams)
         return undefined
+      case 'resourceRead': {
+        const params = parse(resourceRead, message.params)
+        const ref = parseFileEditUri(params.uri)
+        if (!ref || !this.port.readFileEdit) throw new AhpProtocolError(AhpErrorCodes.NotFound, 'Resource not found')
+        await this.prepare(ref.sessionUri)
+        const text = await this.port.readFileEdit(ref)
+        this.assertAuthorized()
+        if (text === undefined) throw new AhpProtocolError(AhpErrorCodes.NotFound, 'Resource not found')
+        const result =
+          params.encoding === 'base64'
+            ? { data: Buffer.from(text).toString('base64'), encoding: 'base64', contentType: 'text/plain' }
+            : { data: text, encoding: 'utf-8', contentType: 'text/plain' }
+        if (!this.fits({ jsonrpc: '2.0', id: message.id, result }))
+          throw new AhpProtocolError(JsonRpcErrorCodes.InvalidRequest, 'Resource exceeds the message limit')
+        return result
+      }
       case 'agentconnect/appRpc':
       case 'agentconnect/appClose': {
         if (!this.port.customRequest) throw new AhpProtocolError(JsonRpcErrorCodes.MethodNotFound, 'Unknown method')
@@ -372,7 +401,10 @@ export class AhpHostConnection {
     if (this.disposed) return
     if (!this.port.isAuthorized()) return this.stop('unauthorized')
     const text = JSON.stringify(message)
-    if (!AhpMessageText.safeParse(text).success) return this.stop('overloaded')
+    if (!AhpMessageText.safeParse(text).success) {
+      this.options.warn?.(`outbound message of ${Buffer.byteLength(text)} bytes exceeds the frame limit`)
+      return this.stop('overloaded')
+    }
     try {
       this.options.send(text)
     } catch {

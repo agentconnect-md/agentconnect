@@ -58,7 +58,14 @@ describe('runtime matrix sendMessage probe', () => {
   it('returns the daemon validation error a model reads', async () => {
     const tools = probeTools()
     expect(await validateSendMessage({ action: 'callAgent', toAgent: IDS.peer, message: 'm' }, tools)).toBeUndefined()
-    expect(await validateSendMessage({ action: 'delegateTask', message: 'm' }, tools)).toBeUndefined()
+    expect(await validateSendMessage({ action: 'delegateTask', title: 't', message: 'm' }, tools)).toBeUndefined()
+    // A task needs its title, and a platform message id belongs to the coordinator alone.
+    expect(await validateSendMessage({ action: 'delegateTask', message: 'm' }, tools)).toMatch(
+      /action `delegateTask` requires `title`/
+    )
+    expect(
+      await validateSendMessage({ action: 'delegateTask', title: 't', messageId: 'msg-1', message: 'm' }, tools)
+    ).toMatch(/takes `messageId` only in a coordinator session/)
     // The release-candidate name fails with the exact call to make, so a model still using it is judged a correction.
     const renamed = await validateSendMessage({ action: 'startTask', message: 'm' }, tools)
     expect(renamed).toMatch(/action `startTask` is now `delegateTask`/)
@@ -66,7 +73,7 @@ describe('runtime matrix sendMessage probe', () => {
     expect(
       judge(background, [
         { tool: 'sendMessage', args: { action: 'startTask', message: 'm' }, error: renamed! },
-        { tool: 'sendMessage', args: { action: 'delegateTask', message: 'm' } }
+        { tool: 'sendMessage', args: { action: 'delegateTask', title: 't', message: 'm' } }
       ]).verdict
     ).toBe('DEGRADED')
     expect(
@@ -81,6 +88,24 @@ describe('runtime matrix sendMessage probe', () => {
         tools
       )
     ).toMatch(/sendMessage: invalid arguments — action `callAgent` does not accept `thread`/)
+  })
+
+  it('serves a session that delegates no task its own tools and refusals (auto-session-mode.md §5.1)', async () => {
+    const own = scenario('own-work-without-tasks')
+    expect(own).toMatchObject({ reach: 'none', newOnly: true })
+    const tools = probeTools('slack', own.reach)
+    expect(toolShape(tools)).toBe('action')
+    const send = tools.find((tool) => tool.name === 'sendMessage')!
+    expect(JSON.stringify(send)).not.toMatch(/delegateTask|messageTask/)
+    const refused = await validateSendMessage({ action: 'delegateTask', title: 't', message: 'm' }, tools, {
+      reach: 'none'
+    })
+    expect(refused).toMatch(/action `delegateTask` is not available in this session/)
+    expect(judge(own, []).verdict).toBe('PASS')
+    expect(
+      judge(own, [{ tool: 'sendMessage', args: { action: 'delegateTask', title: 't', message: 'm' }, error: refused! }])
+        .verdict
+    ).toBe('FAIL')
   })
 
   it('refuses a post that addresses a peer by its bot, and a reply asked of a post, with the daemon’s error', async () => {
@@ -147,7 +172,7 @@ describe('runtime matrix sendMessage probe', () => {
     expect(judge(peer, [{ tool: 'sendMessage', args: legacy, error: error! }]).verdict).toBe('FAIL')
     expect(await validateSendMessage({ ...legacy, action: 'wakeAgent' }, tools)).toMatch(/`action` must be one of/)
     expect(await validateSendMessage({ action: 'callAgent', toAgent: IDS.self, message: 'm' }, tools)).toMatch(
-      /sendMessage \{"action":"delegateTask","message":"<the same message>"\}/
+      /sendMessage \{"action":"delegateTask","title":"<a short name for the work>","message":"<the same message>"\}/
     )
     expect(
       await validateSendMessage(

@@ -139,8 +139,14 @@ describe('OutputConverger streaming axis', () => {
     converger.onUpdate(tool('t1', 'Read file', 'completed'))
     converger.onUpdate(tool('t2', 'Run tests', 'failed'))
     expect(cards(converger.streamUpdate())).toEqual([
-      { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' },
-      { type: 'task_update', id: 't2', title: '(failed) Run tests', status: 'complete' }
+      { type: 'task_update', icon: { type: 'icon', name: 'gear' }, id: 't1', title: 'Read file', status: 'complete' },
+      {
+        type: 'task_update',
+        icon: { type: 'icon', name: 'gear' },
+        id: 't2',
+        title: '(failed) Run tests',
+        status: 'complete'
+      }
     ])
   })
 
@@ -149,10 +155,35 @@ describe('OutputConverger streaming axis', () => {
     converger.onUpdate(tool('t1', 'Read file'))
     converger.onUpdate(tool('t1', 'Read file', 'in_progress'))
     expect(cards(converger.streamUpdate())).toEqual([
-      { type: 'task_update', id: 't1', title: 'Read file', status: 'in_progress' }
+      { type: 'task_update', icon: { type: 'icon', name: 'gear' }, id: 't1', title: 'Read file', status: 'in_progress' }
     ])
     // An unchanged repeat emits nothing at all.
     converger.onUpdate(tool('t1', 'Read file', 'in_progress'))
+    expect(converger.streamUpdate()).toEqual([])
+  })
+
+  it('keeps the ACP action icon when later updates omit the kind', () => {
+    const converger = streaming('medium')
+    converger.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Search files', kind: 'search' })
+    expect(cards(converger.streamUpdate())[0]).toMatchObject({ icon: { type: 'icon', name: 'sparkle' } })
+    converger.onUpdate({ sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' })
+    expect(cards(converger.streamUpdate())[0]).toMatchObject({
+      title: 'Search files',
+      status: 'complete',
+      icon: { type: 'icon', name: 'sparkle' }
+    })
+  })
+
+  it('retains both write-once fields when completion overtakes the first flush', () => {
+    const converger = streaming('high')
+    converger.onUpdate(bash('t1', 'ls -la', 'List files'))
+    converger.onUpdate(bash('t1', 'ls -la', 'List files', 'total 8', 'completed'))
+    expect(cards(converger.streamUpdate())[0]).toMatchObject({
+      status: 'complete',
+      details: '```\nls -la\n```',
+      output: 'total 8'
+    })
+    converger.onUpdate(bash('t1', 'ls -la', 'List files', 'total 8', 'completed'))
     expect(converger.streamUpdate()).toEqual([])
   })
 
@@ -187,7 +218,13 @@ describe('OutputConverger streaming axis', () => {
     expect(all.filter((c) => c.type === 'task_update' && c.status === 'error')).toEqual([])
     // …while the failure is still said: prefix on the card, count on the container.
     expect(all).toContainEqual(
-      expect.objectContaining({ type: 'task_update', id: 't1', title: '(failed) Read file', status: 'complete' })
+      expect.objectContaining({
+        type: 'task_update',
+        icon: { type: 'icon', name: 'gear' },
+        id: 't1',
+        title: '(failed) Read file',
+        status: 'complete'
+      })
     )
     expect(all).toContainEqual({ type: 'plan_update', title: 'Completed 2 steps · 1 failed' })
   })
@@ -223,6 +260,7 @@ describe('OutputConverger streaming axis', () => {
     converger.onUpdate(tool('t1', 'Read file'))
     expect(cards(converger.streamUpdate())).toContainEqual({
       type: 'task_update',
+      icon: { type: 'icon', name: 'lightbulb' },
       id: 'thinking-0',
       title: 'Weighing the options',
       status: 'complete',
@@ -262,8 +300,8 @@ describe('OutputConverger streaming axis', () => {
     expect(finals.at(-1)).toEqual({
       kind: 'stream-stop',
       settle: [
-        { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' },
-        { type: 'task_update', id: 't2', title: 'Run tests', status: 'complete' },
+        { type: 'task_update', icon: { type: 'icon', name: 'gear' }, id: 't1', title: 'Read file', status: 'complete' },
+        { type: 'task_update', icon: { type: 'icon', name: 'gear' }, id: 't2', title: 'Run tests', status: 'complete' },
         { type: 'plan_update', title: 'Completed 2 steps' }
       ]
     })
@@ -280,7 +318,7 @@ describe('OutputConverger streaming axis', () => {
       {
         kind: 'stream-stop',
         settle: [
-          { type: 'task_update', id: 't2', title: 'Run tests', status: 'error' },
+          { type: 'task_update', icon: { type: 'icon', name: 'gear' }, id: 't2', title: 'Run tests', status: 'error' },
           { type: 'plan_update', title: 'Stopped' }
         ]
       }
@@ -302,7 +340,13 @@ describe('OutputConverger streaming axis', () => {
       {
         kind: 'stream-stop',
         settle: [
-          { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' },
+          {
+            type: 'task_update',
+            icon: { type: 'icon', name: 'gear' },
+            id: 't1',
+            title: 'Read file',
+            status: 'complete'
+          },
           { type: 'plan_update', title: 'Completed 1 step' }
         ],
         progressText: ':hammer_and_wrench: `Read file`'
@@ -361,7 +405,7 @@ describe('OutputConverger streaming axis', () => {
     expect(terminal.at(-1)).toEqual({
       kind: 'stream-stop',
       settle: [
-        { type: 'task_update', id: 't1', title: 'Read file', status: 'error' },
+        { type: 'task_update', icon: { type: 'icon', name: 'gear' }, id: 't1', title: 'Read file', status: 'error' },
         { type: 'plan_update', title: 'Failed' }
       ]
     })
@@ -394,7 +438,14 @@ describe('OutputConverger streaming axis', () => {
     high.streamUpdate()
     high.onUpdate(toolDone('t1', 'Read file', 'read 42 lines'))
     expect(cards(high.streamUpdate())).toEqual([
-      { type: 'task_update', id: 't1', title: 'Read file', status: 'complete', output: 'read 42 lines' }
+      {
+        type: 'task_update',
+        icon: { type: 'icon', name: 'gear' },
+        id: 't1',
+        title: 'Read file',
+        status: 'complete',
+        output: 'read 42 lines'
+      }
     ])
     // A repeat of the terminal update must not append a second copy — `output` accumulates.
     high.onUpdate(toolDone('t1', 'Read file', 'read 42 lines'))
@@ -405,7 +456,13 @@ describe('OutputConverger streaming axis', () => {
     medium.streamUpdate()
     medium.onUpdate(toolDone('t1', 'Read file', 'read 42 lines'))
     const mediumCard = cards(medium.streamUpdate())[0]
-    expect(mediumCard).toEqual({ type: 'task_update', id: 't1', title: 'Read file', status: 'complete' })
+    expect(mediumCard).toEqual({
+      type: 'task_update',
+      icon: { type: 'icon', name: 'gear' },
+      id: 't1',
+      title: 'Read file',
+      status: 'complete'
+    })
     expect(mediumCard && 'output' in mediumCard).toBe(false)
   })
 
@@ -413,22 +470,31 @@ describe('OutputConverger streaming axis', () => {
     const converger = streaming('medium')
     converger.onUpdate(tool('t1', '**Read** `src/a.ts`'))
     expect(cards(converger.streamUpdate())).toEqual([
-      { type: 'task_update', id: 't1', title: 'Read src/a.ts', status: 'in_progress' }
+      {
+        type: 'task_update',
+        icon: { type: 'icon', name: 'gear' },
+        id: 't1',
+        title: 'Read src/a.ts',
+        status: 'in_progress'
+      }
     ])
   })
 
   it('titles a high card with the runtime description and fences the command below it', () => {
     const converger = streaming('high')
     converger.onUpdate(bash('t1', 'ls -la', 'List files in working directory'))
-    converger.streamUpdate()
+    expect(cards(converger.streamUpdate())[0]).toMatchObject({
+      status: 'in_progress',
+      details: '```\nls -la\n```'
+    })
     converger.onUpdate(bash('t1', 'ls -la', 'List files in working directory', 'total 8', 'completed'))
     expect(cards(converger.streamUpdate())).toEqual([
       {
         type: 'task_update',
+        icon: { type: 'icon', name: 'gear' },
         id: 't1',
         title: 'List files in working directory',
         status: 'complete',
-        details: '```\nls -la\n```',
         output: 'total 8'
       }
     ])
@@ -449,7 +515,13 @@ describe('OutputConverger streaming axis', () => {
       }
     } as never)
     expect(cards(converger.streamUpdate())).toEqual([
-      { type: 'task_update', id: 't1', title: 'createCodeHostMergeRequest', status: 'in_progress' }
+      {
+        type: 'task_update',
+        icon: { type: 'icon', name: 'gear' },
+        id: 't1',
+        title: 'createCodeHostMergeRequest',
+        status: 'in_progress'
+      }
     ])
   })
 
@@ -457,7 +529,7 @@ describe('OutputConverger streaming axis', () => {
     const converger = streaming('medium')
     converger.onUpdate(bash('t1', 'ls -la', 'A description that runs on\nover several lines and is really a document'))
     expect(cards(converger.streamUpdate())).toEqual([
-      { type: 'task_update', id: 't1', title: 'ls -la', status: 'in_progress' }
+      { type: 'task_update', icon: { type: 'icon', name: 'gear' }, id: 't1', title: 'ls -la', status: 'in_progress' }
     ])
   })
 
@@ -473,7 +545,14 @@ describe('OutputConverger streaming axis', () => {
       status: 'completed'
     } as never)
     expect(cards(converger.streamUpdate())).toEqual([
-      { type: 'task_update', id: 't1', title: 'Read file', status: 'complete', output: 'read 42 lines' }
+      {
+        type: 'task_update',
+        icon: { type: 'icon', name: 'gear' },
+        id: 't1',
+        title: 'Read file',
+        status: 'complete',
+        output: 'read 42 lines'
+      }
     ])
   })
 
@@ -503,7 +582,14 @@ describe('OutputConverger streaming axis', () => {
     const converger = streaming('high')
     converger.onUpdate(toolDone('t1', 'ls -la', 'total 8'))
     const card = cards(converger.streamUpdate())[0]
-    expect(card).toEqual({ type: 'task_update', id: 't1', title: 'ls -la', status: 'complete', output: 'total 8' })
+    expect(card).toEqual({
+      type: 'task_update',
+      icon: { type: 'icon', name: 'gear' },
+      id: 't1',
+      title: 'ls -la',
+      status: 'complete',
+      output: 'total 8'
+    })
   })
 
   it('leaves the duplicate tool-output message to the turns that have no card', () => {
@@ -532,11 +618,23 @@ describe('OutputConverger streaming axis', () => {
     converger.onUpdate(think('**Weighing the options**'))
     // The card opens before the line has ended, which costs nothing: `title` REPLACES per id.
     expect(cards(converger.streamUpdate())).toEqual([
-      { type: 'task_update', id: 'thinking-0', title: 'Thinking', status: 'in_progress' }
+      {
+        type: 'task_update',
+        icon: { type: 'icon', name: 'lightbulb' },
+        id: 'thinking-0',
+        title: 'Thinking',
+        status: 'in_progress'
+      }
     ])
     converger.onUpdate(think('\nand the body follows'))
     expect(cards(converger.streamUpdate())).toEqual([
-      { type: 'task_update', id: 'thinking-0', title: 'Weighing the options', status: 'in_progress' }
+      {
+        type: 'task_update',
+        icon: { type: 'icon', name: 'lightbulb' },
+        id: 'thinking-0',
+        title: 'Weighing the options',
+        status: 'in_progress'
+      }
     ])
     // The run is named once — later lines of the same thought do not re-title it.
     converger.onUpdate(think('\nand a third'))
@@ -544,6 +642,7 @@ describe('OutputConverger streaming axis', () => {
     converger.onUpdate(tool('t1', 'Read file'))
     expect(cards(converger.streamUpdate())).toContainEqual({
       type: 'task_update',
+      icon: { type: 'icon', name: 'lightbulb' },
       id: 'thinking-0',
       title: 'Weighing the options',
       status: 'complete'
@@ -564,7 +663,13 @@ describe('OutputConverger streaming axis', () => {
     const unnamed = streaming('medium')
     unnamed.onUpdate(think('   '))
     expect(cards(unnamed.streamUpdate())).toEqual([
-      { type: 'task_update', id: 'thinking-0', title: 'Thinking', status: 'in_progress' }
+      {
+        type: 'task_update',
+        icon: { type: 'icon', name: 'lightbulb' },
+        id: 'thinking-0',
+        title: 'Thinking',
+        status: 'in_progress'
+      }
     ])
   })
 
@@ -576,6 +681,7 @@ describe('OutputConverger streaming axis', () => {
     converger.onUpdate(think('**Summarizing four update groups**'))
     expect(appends(converger.settleStream('completed'))).toContainEqual({
       type: 'task_update',
+      icon: { type: 'icon', name: 'lightbulb' },
       id: 'thinking-0',
       title: 'Summarizing four update groups',
       status: 'complete'
@@ -600,6 +706,7 @@ describe('OutputConverger streaming axis', () => {
     high.onUpdate(tool('t1', 'Read file'))
     expect(cards(high.streamUpdate())).toContainEqual({
       type: 'task_update',
+      icon: { type: 'icon', name: 'lightbulb' },
       id: 'thinking-0',
       title: 'Weighing the options',
       status: 'complete',
@@ -613,6 +720,7 @@ describe('OutputConverger streaming axis', () => {
     oneLine.onUpdate(tool('t1', 'Read file'))
     expect(cards(oneLine.streamUpdate())).toContainEqual({
       type: 'task_update',
+      icon: { type: 'icon', name: 'lightbulb' },
       id: 'thinking-0',
       title: 'Weighing the options',
       status: 'complete'
@@ -623,6 +731,7 @@ describe('OutputConverger streaming axis', () => {
     medium.onUpdate(tool('t1', 'Read file'))
     expect(cards(medium.streamUpdate())).toContainEqual({
       type: 'task_update',
+      icon: { type: 'icon', name: 'lightbulb' },
       id: 'thinking-0',
       title: 'Weighing the options',
       status: 'complete'
@@ -687,9 +796,11 @@ describe('OutputConverger minimal mode — interim replies as history cards (§5
     converger.onUpdate(tool('t1', 'Read file'))
     const first = converger.streamUpdate()
     expect(kinds(first)).toEqual(['stream-start', 'stream-append'])
+    expect(first[0]).toEqual({ kind: 'stream-start', taskDisplayMode: 'plan' })
     expect(cards(first)).toEqual([
       {
         type: 'task_update',
+        icon: { type: 'icon', name: 'comment' },
         id: 'reply-1',
         title: 'Checking the failing test',
         status: 'complete',
@@ -702,7 +813,13 @@ describe('OutputConverger minimal mode — interim replies as history cards (§5
     converger.onUpdate(chunk('Second note'))
     converger.onUpdate(tool('t2', 'Run tests'))
     expect(cards(converger.streamUpdate())).toEqual([
-      { type: 'task_update', id: 'reply-2', title: 'Second note', status: 'complete' }
+      {
+        type: 'task_update',
+        icon: { type: 'icon', name: 'comment' },
+        id: 'reply-2',
+        title: 'Second note',
+        status: 'complete'
+      }
     ])
   })
 
@@ -742,7 +859,13 @@ describe('OutputConverger minimal mode — interim replies as history cards (§5
     expect(final[1]).toEqual({
       kind: 'stream-stop',
       settle: [
-        { type: 'task_update', id: 'reply-1', title: 'Looking into it.', status: 'complete' },
+        {
+          type: 'task_update',
+          icon: { type: 'icon', name: 'comment' },
+          id: 'reply-1',
+          title: 'Looking into it.',
+          status: 'complete'
+        },
         { type: 'plan_update', title: '1 earlier reply' }
       ]
     })
@@ -795,7 +918,14 @@ describe('OutputConverger minimal mode — interim replies as history cards (§5
     converger.onUpdate(chunk('```sh\nnpm test\n```'))
     converger.onUpdate(tool('t1', 'Run tests'))
     expect(cards(converger.streamUpdate())).toEqual([
-      { type: 'task_update', id: 'reply-1', title: 'Reply', status: 'complete', details: '```sh\nnpm test\n```' }
+      {
+        type: 'task_update',
+        icon: { type: 'icon', name: 'comment' },
+        id: 'reply-1',
+        title: 'Reply',
+        status: 'complete',
+        details: '```sh\nnpm test\n```'
+      }
     ])
   })
 
@@ -901,6 +1031,32 @@ describe('applySlackAction — chrome stream actions', () => {
     status
   })
 
+  it.each(['C1', 'append:1'])(
+    'keeps native lifecycle and the Plan tab on the channel with session coordinate %s',
+    async (sessionThread) => {
+      const writePlanCanvas = vi.fn()
+      const postBlocks = vi.fn()
+      const { apply, conn } = fixture(
+        { writePlanCanvas, postBlocks },
+        {
+          thread: '1.001',
+          statusThread: 'C1',
+          sessionThread
+        }
+      )
+      await apply({ kind: 'set-status', text: 'Working' })
+      await apply({ kind: 'set-title', text: 'Task' })
+      await apply({ kind: 'post', text: 'Thread answer' })
+      await apply({ kind: 'stream-start' })
+      await apply({ kind: 'plan', text: 'Plan', markdown: '- [ ] Work', blocks: [] })
+      expect(conn.setStatus).toHaveBeenCalledWith('C1', 'C1', 'Working', expect.anything())
+      expect(conn.setTitle).toHaveBeenCalledWith('C1', 'C1', 'Task')
+      expect(conn.postMessage).toHaveBeenCalledWith('C1', 'Thread answer', '1.001', expect.anything())
+      expect(conn.startTurnStream).toHaveBeenCalledWith('C1', '1.001', expect.anything())
+      expect(writePlanCanvas).toHaveBeenCalledWith('C1', '- [ ] Work')
+    }
+  )
+
   it('flushes the stored session title after the first registering write, exactly once', async () => {
     // An earlier rename is refused (`not_authorized` until the thread is a registered agent
     // session), so the title rides the queue BEHIND the status/stream write that registers it.
@@ -929,16 +1085,20 @@ describe('applySlackAction — chrome stream actions', () => {
     expect(conn.setTitle).toHaveBeenCalledOnce()
   })
 
-  it('opens the stream with the recipient and the agent identity, and records the handle', async () => {
-    const { apply, conn, state } = fixture()
-    await apply({ kind: 'stream-start' })
-    expect(conn.startTurnStream).toHaveBeenCalledWith('C1', 'T1', {
-      isDm: false,
-      recipientUserId: 'U1',
-      identity: { username: 'Bot A', icon_url: 'https://icons.example.test/a.png' }
-    })
-    expect(state.stream).toEqual({ channel: 'C1', threadTs: 'T1', ts: '900.1' })
-  })
+  it.each(['timeline', 'plan'] as const)(
+    'passes %s display through with the recipient and agent identity',
+    async (taskDisplayMode) => {
+      const { apply, conn, state } = fixture()
+      await apply({ kind: 'stream-start', taskDisplayMode })
+      expect(conn.startTurnStream).toHaveBeenCalledWith('C1', 'T1', {
+        isDm: false,
+        taskDisplayMode,
+        recipientUserId: 'U1',
+        identity: { username: 'Bot A', icon_url: 'https://icons.example.test/a.png' }
+      })
+      expect(state.stream).toEqual({ channel: 'C1', threadTs: 'T1', ts: '900.1' })
+    }
+  )
 
   it('carries the agent identity in a DM too — an undecorated stream renders a placeholder', async () => {
     const { apply, conn } = fixture({}, { isDm: true })
@@ -1083,6 +1243,7 @@ describe('SlackConnection chrome streaming', () => {
       event() {},
       action() {},
       shortcut() {},
+      command() {},
       view() {},
       client: {
         auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'B1', team_id: 'T123' }) },
@@ -1115,7 +1276,27 @@ describe('SlackConnection chrome streaming', () => {
     return { conn, app }
   }
 
-  const readFile: SlackStreamChunk = { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' }
+  const readFile: SlackStreamChunk = {
+    type: 'task_update',
+    icon: { type: 'icon', name: 'gear' },
+    id: 't1',
+    title: 'Read file',
+    status: 'complete'
+  }
+
+  it('streams a code channel at channel level with the same settlement protocol', async () => {
+    const { conn, app } = await connect()
+    const stream = await conn.startTurnStream('C1', 'C1', { recipientUserId: 'U9' })
+    expect(stream?.threadTs).toBe('C1')
+    expect(app.client.chat.startStream.mock.calls[0]![0]).not.toHaveProperty('thread_ts')
+    expect(app.client.chat.startStream).toHaveBeenCalledWith(
+      expect.objectContaining({ recipient_user_id: 'U9', recipient_team_id: 'T123', task_display_mode: 'timeline' })
+    )
+    await conn.appendTurnStream(stream!, [readFile])
+    await conn.stopTurnStream(stream!)
+    expect(app.client.chat.stopStream).toHaveBeenCalledWith(expect.objectContaining({ channel: 'C1', ts: '900.1' }))
+    await conn.stop()
+  })
 
   it('opens, appends and settles one cards-only message through the typed SDK methods', async () => {
     const { conn, app } = await connect()
@@ -1124,10 +1305,10 @@ describe('SlackConnection chrome streaming', () => {
     expect(stream).toEqual({ channel: 'C1', threadTs: 'T1', ts: '900.1' })
     expect(app.client.chat.startStream).toHaveBeenCalledWith({
       channel: 'C1',
-      // thread_ts is REQUIRED live, in DMs too — omitting it fails invalid_thread_ts.
+      // Ordinary sessions require a physical thread, including DMs.
       thread_ts: 'T1',
-      // The collapsed container: every task card folded behind one chevron.
-      task_display_mode: 'plan',
+      // The same timeline is used in ordinary threads, DMs and code channels.
+      task_display_mode: 'timeline',
       recipient_user_id: 'U9',
       recipient_team_id: 'T123',
       username: 'Bot A'
@@ -1156,6 +1337,9 @@ describe('SlackConnection chrome streaming', () => {
     const payload = app.client.chat.startStream.mock.calls[0]![0] as Record<string, unknown>
     expect(payload).not.toHaveProperty('recipient_user_id')
     expect(payload).not.toHaveProperty('recipient_team_id')
+    expect(payload).toHaveProperty('task_display_mode', 'timeline')
+    await conn.startTurnStream('D1', 'T2', { isDm: true, taskDisplayMode: 'plan' })
+    expect(app.client.chat.startStream.mock.calls[1]![0]).toHaveProperty('task_display_mode', 'plan')
   })
 
   it('answers "cannot stream" when the SDK has no such method, and latches it', async () => {

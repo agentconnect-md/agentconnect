@@ -36,6 +36,22 @@ export interface ViewerState {
   error: string | null
   // Why each richer path was skipped, for the path badge's tooltip.
   notes: string[]
+  // Measured each second while live; null before the first sample.
+  stats: ViewerStats | null
+}
+
+// What the stream delivers: on WebRTC `latencyMs` is the round trip, on screenshots the time to fetch one frame.
+export interface ViewerStats {
+  fps: number | null
+  kbps: number | null
+  latencyMs: number | null
+}
+
+// Cumulative counters, so each sample is the difference from the one before.
+interface StatsSample {
+  at: number
+  bytes: number
+  frames: number
 }
 
 export interface ViewerDeps {
@@ -64,6 +80,7 @@ const CANDIDATE_POLL_MS = 300
 const STATUS_INTERVAL_MS = 2000
 const PING_INTERVAL_MS = 2000
 const FRAME_INTERVAL_MS = 200
+const STATS_INTERVAL_MS = 1000
 // Renew well before the token lapses; the desktop closes a session whose token is gone.
 const RENEW_FRACTION = 0.5
 
@@ -79,7 +96,15 @@ class HttpError extends Error {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export class ComputerViewerSession {
-  private state: ViewerState = { phase: 'connecting', path: null, status: null, frameUrl: null, error: null, notes: [] }
+  private state: ViewerState = {
+    phase: 'connecting',
+    path: null,
+    status: null,
+    frameUrl: null,
+    error: null,
+    notes: [],
+    stats: null
+  }
   private grant: ComputerViewerGrantDto | null = null
   private relayIndex = 0
   private pc: RTCPeerConnection | null = null
@@ -90,6 +115,9 @@ export class ComputerViewerSession {
   private renewTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
   private inputChain: Promise<unknown> = Promise.resolve()
+  private statsSample: StatsSample | null = null
+  // The screenshot fallback's own counters, read by the same sampler.
+  private shots = { bytes: 0, frames: 0, latencyMs: null as number | null }
   private readonly fetchImpl: typeof fetch
   private readonly now: () => number
 
@@ -113,6 +141,7 @@ export class ComputerViewerSession {
           if (!this.stopped && this.state.phase === 'live') this.update({ error: error.message })
         })
       this.timers.push(setInterval(() => void poll(), STATUS_INTERVAL_MS))
+      this.timers.push(setInterval(() => void this.sampleStats(), STATS_INTERVAL_MS))
       await this.connectMedia()
     } catch (error) {
       if (!this.stopped) this.update({ phase: 'error', error: (error as Error).message })
@@ -309,8 +338,10 @@ export class ComputerViewerSession {
           this.update({ phase: 'live', path, notes, error: null })
           return
         } catch (error) {
+          // A failed punch says why: which candidates each side had and how far each pair's checks got.
+          const detail = transport === 'stun' && this.pc ? await iceReport(this.pc) : null
           this.closePeer()
-          notes.push(`${LABELS[transport]}: ${(error as Error).message}`)
+          notes.push(`${LABELS[transport]}: ${(error as Error).message}${detail ? `\n${detail}` : ''}`)
         }
         if (this.stopped) return
       }
@@ -456,6 +487,7 @@ export class ComputerViewerSession {
     const pc = this.pc
     this.pc = null
     this.channel = null
+    this.statsSample = null
     if (pc) {
       pc.onconnectionstatechange = null
       pc.close()
@@ -474,7 +506,13 @@ export class ComputerViewerSession {
       try {
         const res = await this.api('GET', 'frame')
         if (res.ok) {
-          const url = URL.createObjectURL(await res.blob())
+          const blob = await res.blob()
+          this.shots = {
+            bytes: this.shots.bytes + blob.size,
+            frames: this.shots.frames + 1,
+            latencyMs: this.now() - started
+          }
+          const url = URL.createObjectURL(blob)
           const old = this.state.frameUrl
           if (this.stopped) URL.revokeObjectURL(url)
           else this.update({ frameUrl: url })
@@ -487,10 +525,80 @@ export class ComputerViewerSession {
     }
   }
 
+  private async sampleStats(): Promise<void> {
+    if (this.stopped || this.state.phase !== 'live') return
+    const at = this.now()
+    let next: { sample: StatsSample; stats: ViewerStats } | null = null
+    if (this.state.path === 'screenshots') {
+      next = sampleDelta(this.statsSample, { at, ...this.shots }, null, this.shots.latencyMs)
+    } else if (this.pc && typeof this.pc.getStats === 'function') {
+      const pc = this.pc
+      const reports = await pc
+        .getStats()
+        .then((report) => [...report.values()] as Array<Record<string, unknown>>)
+        .catch(() => null)
+      // The peer changed while its stats were read: this sample belongs to no stream.
+      if (!reports || this.pc !== pc) return
+      next = mediaStats(reports, this.statsSample, at)
+    }
+    if (!next) return
+    this.statsSample = next.sample
+    this.update({ stats: next.stats })
+  }
+
   private update(patch: Partial<ViewerState>): void {
     this.state = { ...this.state, ...patch }
     this.deps.onState(this.state)
   }
+}
+
+// The candidate pair a peer selected: the transport names it, else the nominated pair that succeeded.
+function selectedPair(reports: Array<Record<string, unknown>>, byId: Map<string, Record<string, unknown>>) {
+  const transport = reports.find((r) => r.type === 'transport' && r.selectedCandidatePairId)
+  return (
+    (transport && byId.get(transport.selectedCandidatePairId as string)) ??
+    reports.find((r) => r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded')
+  )
+}
+
+const num = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null)
+
+// Rates over the time since the previous sample; the first sample only sets the baseline.
+function sampleDelta(
+  prev: StatsSample | null,
+  sample: StatsSample,
+  fps: number | null,
+  latencyMs: number | null
+): { sample: StatsSample; stats: ViewerStats } {
+  const ms = prev ? sample.at - prev.at : 0
+  // Counters that went backwards belong to a new stream; wait for the next sample.
+  const usable = prev && ms > 0 && sample.bytes >= prev.bytes && sample.frames >= prev.frames
+  return {
+    sample,
+    stats: {
+      fps: fps ?? (usable ? Math.round(((sample.frames - prev.frames) * 1000) / ms) : null),
+      // Bits per millisecond are kilobits per second.
+      kbps: usable ? Math.round(((sample.bytes - prev.bytes) * 8) / ms) : null,
+      latencyMs: latencyMs === null ? null : Math.round(latencyMs)
+    }
+  }
+}
+
+/** The incoming video's frame rate, bitrate and round trip from a peer's stats, against the previous sample. */
+export function mediaStats(
+  reports: Array<Record<string, unknown>>,
+  prev: StatsSample | null,
+  at: number
+): { sample: StatsSample; stats: ViewerStats } {
+  const byId = new Map(reports.map((r) => [r.id as string, r]))
+  const video = reports.find((r) => r.type === 'inbound-rtp' && r.kind === 'video')
+  const rtt = num(selectedPair(reports, byId)?.currentRoundTripTime)
+  return sampleDelta(
+    prev,
+    { at, bytes: num(video?.bytesReceived) ?? 0, frames: num(video?.framesDecoded) ?? 0 },
+    num(video?.framesPerSecond),
+    rtt === null ? null : rtt * 1000
+  )
 }
 
 /** The candidate types of the pair a peer selected, from its stats; null when the browser does not say. */
@@ -499,14 +607,39 @@ export async function selectedRoute(pc: RTCPeerConnection): Promise<{ local: str
   try {
     const reports = [...(await pc.getStats()).values()] as Array<Record<string, unknown>>
     const byId = new Map(reports.map((r) => [r.id as string, r]))
-    const transport = reports.find((r) => r.type === 'transport' && r.selectedCandidatePairId)
-    const pair =
-      (transport && byId.get(transport.selectedCandidatePairId as string)) ??
-      reports.find((r) => r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded')
+    const pair = selectedPair(reports, byId)
     const local = pair && byId.get(pair.localCandidateId as string)
     const remote = pair && byId.get(pair.remoteCandidateId as string)
     if (!local || !remote) return null
     return { local: String(local.candidateType), remote: String(remote.candidateType) }
+  } catch {
+    return null
+  }
+}
+
+const endpoint = (c: Record<string, unknown>) =>
+  [c.candidateType, c.address && `${String(c.address)}:${String(c.port)}`].filter(Boolean).join(' ')
+
+/** Both sides' candidates and each pair's state with checks sent/answered/received, from a peer's stats; null when it has none. */
+export async function iceReport(pc: RTCPeerConnection): Promise<string | null> {
+  if (typeof pc.getStats !== 'function') return null
+  try {
+    const reports = [...(await pc.getStats()).values()] as Array<Record<string, unknown>>
+    const byId = new Map(reports.map((r) => [r.id as string, r]))
+    const list = (type: string) =>
+      reports
+        .filter((r) => r.type === type)
+        .map(endpoint)
+        .join(', ') || 'none'
+    const pairs = reports
+      .filter((r) => r.type === 'candidate-pair')
+      .map((pair) => {
+        const local = byId.get(pair.localCandidateId as string)
+        const remote = byId.get(pair.remoteCandidateId as string)
+        const checks = [pair.requestsSent, pair.responsesReceived, pair.requestsReceived].map((n) => num(n) ?? 0)
+        return `${String(local?.candidateType)} → ${remote ? endpoint(remote) : '?'} ${String(pair.state)} ${checks.join('/')}`
+      })
+    return `Browser: ${list('local-candidate')}\nDesktop: ${list('remote-candidate')}\nPairs (sent/answered/received): ${pairs.join('; ') || 'none'}`
   } catch {
     return null
   }

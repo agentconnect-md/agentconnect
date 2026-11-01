@@ -7,7 +7,7 @@
  * It speaks the browser-facing, type-tagged webchat envelope. The browser sends
  * `{text, turnId, mentions?, targets?, attachments?, runtime?, timeZone?}` (a turn) or
  * `{type:'resume'|'attach'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
- * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'attached'|'post'|'error'}`.
+ * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'attached'|'post'|'resync'|'error'}`.
  * A turn fans out as one pre-addressed `rd/msg(webchat)` per targeted agent's
  * daemon (targets are validated against the verified roster) plus a transcript-only
  * `context` copy to every other participant's daemon; each `rd/chat` chunk a daemon
@@ -317,6 +317,12 @@ export class RelayBrowserConnection implements ChatSink {
   onImageUpdate(update: RdWebchatImageUpdate): void {
     if (update.conversationId !== this.deps.chatId) return
     this.send({ type: 'image_update', update })
+  }
+
+  /** A participant's daemon relinked: `rd/chat` it streamed while unlinked is gone, so ask the browser to resume. */
+  onDaemonReady(daemonId: string): void {
+    const agentIds = [...this.byAgentId.values()].filter((p) => p.daemonId === daemonId).map((p) => p.agentId)
+    if (agentIds.length > 0) this.send({ type: 'resync', agentIds })
   }
 
   private onText(text: string): void {

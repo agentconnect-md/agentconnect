@@ -13,6 +13,7 @@ import { WebSocketTransport } from '@microsoft/agent-host-protocol/ws'
 import { AHP_WEBSOCKET_PROTOCOL, AHP_WEBCHAT_TOKEN_PREFIX } from '@agentconnect.md/protocol/ahp-constants'
 import type { McpAppRpc, McpAppRpcResult } from '@agentconnect.md/protocol'
 import { randomUuid } from '@/lib/random-uuid'
+import { WEBCHAT_CONNECT_FAILED } from '@/lib/webchat-stream'
 import { AhpDeliveryGuard } from './delivery-guard'
 import { AhpMessageTooLargeError, ahpRemainingActionBytes } from './message-size'
 
@@ -276,5 +277,7 @@ export function ahpBrowserTransport(url: string, token: string): Promise<AhpTran
     .replace(/=+$/, '')
   return WebSocketTransport.connect(url, {
     protocols: [AHP_WEBSOCKET_PROTOCOL, `${AHP_WEBCHAT_TOKEN_PREFIX}${encoded}`]
+  }).catch((cause: unknown) => {
+    throw new Error(WEBCHAT_CONNECT_FAILED, { cause })
   })
 }

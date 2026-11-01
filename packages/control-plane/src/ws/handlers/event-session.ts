@@ -276,6 +276,9 @@ async function recordEventSession(
   const { recorded, session, settled } = await deps.session.recordMilestone({
     sessionId: SessionId(p.sessionId),
     ...(p.parentSessionId !== undefined ? { parentSessionId: SessionId(p.parentSessionId) } : {}),
+    ...(p.taskParentSessionId !== undefined
+      ? { taskParentSessionId: p.taskParentSessionId === null ? null : SessionId(p.taskParentSessionId) }
+      : {}),
     agentId,
     ...(p.launchId !== undefined ? { launchId: LaunchId(p.launchId) } : {}),
     phase: p.phase,

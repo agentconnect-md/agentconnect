@@ -8,7 +8,7 @@ documentation lives. For questions and ideas,
 
 ## Development setup
 
-Development requires Node >= 24.12.0 and pnpm 11. Docker is required for the
+Development requires Node >= 26.0.0 and pnpm 11. Docker is required for the
 Control Plane integration tests.
 
 ```bash

@@ -365,6 +365,11 @@ gate, since a bot has no repository role to look up.
 Closed, deleted, and reopened issue or pull-request lifecycle events do not start
 turns. Ordinary issue/PR title and body edits are also silent. A PR edit carrying
 signed `changes.base` metadata is a target-branch revision and starts a new review.
+A pull-request row may set `skipDrafts`. Its draft revisions (`opened`, `synchronize`,
+and a target-branch edit while the payload's `pull_request.draft` is true) then do not
+fire, and `pull_request:ready_for_review` becomes a revision event for the head the PR
+left draft at, admitted by both the Opened and the Any update cadence. Without the flag,
+`ready_for_review` stays a silent lifecycle event; `converted_to_draft` is always silent.
 Signed issue-close, issue-delete, and merged-pull-request
 deliveries instead fan out as maintenance-only requests that apply the daemon's
 safe session-worktree cleanup without deleting session metadata or transcripts.

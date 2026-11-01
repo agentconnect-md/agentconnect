@@ -23,6 +23,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { RelayDaemonServer } from '../relay-daemon-server.js'
 import type { HookTable } from './hook-table.js'
+import type { GithubAppWebhookTable } from './github-app-table.js'
 import type { FollowUpWatchTable } from './follow-up-watch-table.js'
 import { githubRuleByHookId, githubRulesForEvent } from './github-installation.js'
 import type { HookRateLimiter } from './rate-limit.js'
@@ -78,6 +79,8 @@ export interface GithubIngressDeps {
   log: Logger
   /** The App webhook secret from this process's immutable startup snapshot. */
   webhookSecret: () => string | undefined
+  /** Organization GitHub Apps' webhook secrets, pushed by the CP. */
+  appWebhooks?: Pick<GithubAppWebhookTable, 'secretFor'>
 }
 
 /** The payload slice the matcher reads: untrusted filter input; authorization is the compiled `installationIds` set. */
@@ -111,6 +114,7 @@ interface GithubPayload {
   check_run?: {
     id?: number
     head_sha?: string
+    app?: { id?: number }
     pull_requests?: Array<{
       number?: number
       head?: { sha?: string; repo?: { id?: number } | null }
@@ -217,6 +221,8 @@ export interface GithubMatchCtx {
   requestedReviewerLogin?: string
   /** Signed `pull_request:edited` proof that the target branch changed. */
   baseChanged?: boolean
+  /** The PR's draft flag on a `pull_request` delivery; absent elsewhere. */
+  isDraft?: boolean
   /** The comment's thread family: `issue_comment` reads the issue's `pull_request` marker; review comments are PR. */
   commentSubjectFamily: 'issues' | 'pull_request' | undefined
   /** The issue/PR number; absent for a push or deployment, which have no numbered thread. */
@@ -313,7 +319,10 @@ function isConfiguredAppPullRequest(rule: RcHookAssign, ctx: GithubMatchCtx): bo
     !ctx.subjectAuthorLogin
   )
     return false
-  return ctx.subjectAuthorLogin.toLowerCase() === `${rule.github.appSlug}[bot]`.toLowerCase()
+  const author = ctx.subjectAuthorLogin.toLowerCase()
+  return [rule.github.appSlug, ...(rule.github.internalAppSlugs ?? [])].some(
+    (slug) => author === `${slug}[bot]`.toLowerCase()
+  )
 }
 
 /** A same-repository App-authored revision is the internal CI lane, reviewable without trusting the bot as a maintainer. */
@@ -368,13 +377,14 @@ export type GithubNoMatchReason =
   | 'comment_family'
   | 'mention_only'
   | 'label_filter'
+  | 'draft'
 
 export type GithubRuleMatch =
   { verdict: 'trusted' | 'needs-authz' } | { verdict: 'no-match'; reason: GithubNoMatchReason }
 
 const noMatch = (reason: GithubNoMatchReason): GithubRuleMatch => ({ verdict: 'no-match', reason })
 
-/** One rule's pure verdict: noise veto → bot veto → attribution → cadence/summon → comment scope → mention-only → labels → authz. */
+/** One rule's pure verdict: noise/draft veto → bot veto → attribution → cadence/summon → comment scope → mention-only → labels → authz. */
 export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): GithubRuleVerdict {
   return githubRuleMatch(rule, ctx).verdict
 }
@@ -394,12 +404,14 @@ export function githubRuleMatch(rule: RcHookAssign, ctx: GithubMatchCtx): Github
       (ctx.eventAction === 'pull_request:closed' ||
         ctx.eventAction === 'pull_request:reopened' ||
         (ctx.eventAction === 'pull_request:edited' && !isGithubPullRequestRevision(ctx)) ||
-        ctx.eventAction === 'pull_request:ready_for_review' ||
+        (ctx.eventAction === 'pull_request:ready_for_review' && !rule.github.skipDrafts) ||
         ctx.eventAction === 'pull_request:converted_to_draft' ||
         ctx.eventAction === 'pull_request:auto_merge_enabled' ||
         ctx.eventAction === 'pull_request:auto_merge_disabled'))
   )
     return noMatch('lifecycle')
+  // A draft-skipping rule leaves draft revisions to `ready_for_review`, which reviews the head they reached.
+  if (rule.github.skipDrafts && ctx.isDraft === true && isGithubPullRequestRevision(ctx)) return noMatch('draft')
   // Decision 10: bots are vetoed except PR revisions (another bot's earns only the manual-request Check), deployments, which cannot loop, other bots' releases, and filtered labels.
   if (
     ctx.senderType === 'Bot' &&
@@ -440,7 +452,12 @@ export function githubRuleMatch(rule: RcHookAssign, ctx: GithubMatchCtx): Github
     summoned &&
     createdCadenceSummonFamily !== undefined &&
     rule.github.events.includes(`${createdCadenceSummonFamily}:opened`)
-  const eventMatched = nativeEventMatched || sharedCommentAliasMatched || createdCadenceSummonMatched
+  // Leaving draft stands in for the revisions a draft-skipping rule held back, so the Opened cadence takes it too.
+  const readyRevisionMatched =
+    ctx.eventAction === 'pull_request:ready_for_review' &&
+    (rule.github.events.includes('pull_request:opened') || rule.github.events.includes('pull_request:synchronize'))
+  const eventMatched =
+    nativeEventMatched || sharedCommentAliasMatched || createdCadenceSummonMatched || readyRevisionMatched
   if (!eventMatched) return noMatch('event')
   // `issue_comment` spans issues and PRs: selected comment families scope it, absent keeps the legacy repo-wide union.
   const matchedViaSharedComment =
@@ -780,14 +797,16 @@ async function dispatchGithubRerequest(
   payload: GithubPayload,
   deliveryKey: string,
   event: 'check_run' | 'check_suite' | 'workflow_run',
-  action: 'rerequested' | 'requested_action' | 'in_progress'
+  action: 'rerequested' | 'requested_action' | 'in_progress',
+  // The organization App that delivered a check_run event; the CP then checks the run is that App's.
+  orgAppId?: string
 ): Promise<void> {
   const checkRunId = payload.check_run?.id
   const checkSuiteId = payload.check_suite?.id
   const appId = payload.check_suite?.app?.id
   const repoId = payload.repository?.id
   const repoFullName = payload.repository?.full_name
-  const installationId = payload.installation?.id
+  const deliveredInstallationId = payload.installation?.id
   const headSha =
     event === 'check_run'
       ? payload.check_run?.head_sha
@@ -796,7 +815,7 @@ async function dispatchGithubRerequest(
         : payload.workflow_run?.head_sha
   if (
     !positiveSafeInteger(repoId) ||
-    !positiveSafeInteger(installationId) ||
+    !positiveSafeInteger(deliveredInstallationId) ||
     !repoFullName ||
     !headSha ||
     (event === 'check_run' && !positiveSafeInteger(checkRunId)) ||
@@ -807,7 +826,7 @@ async function dispatchGithubRerequest(
     return
   }
   // Reverse lookups share the authz budget, so unknown Check identities cannot buy unbounded CP work.
-  if (!deps.authzLimiter.allow(`${installationId}:${repoId}`)) {
+  if (!deps.authzLimiter.allow(`${deliveredInstallationId}:${repoId}`)) {
     deps.log.info(`github ingress: rerequest authz rate-limited ${deliveryKey}`)
     return
   }
@@ -829,20 +848,21 @@ async function dispatchGithubRerequest(
             repoId: String(repoId),
             headSha,
             deliveryKey,
-            ...(action === 'requested_action' ? { includeBaseSha: true as const } : {})
+            ...(action === 'requested_action' ? { includeBaseSha: true as const } : {}),
+            ...(orgAppId !== undefined ? { appId: orgAppId } : {})
           }
         : event === 'check_suite'
           ? {
               scope: 'suite',
               appId: String(appId),
-              installationId: String(installationId),
+              installationId: String(deliveredInstallationId),
               repoId: String(repoId),
               headSha,
               deliveryKey
             }
           : {
               scope: 'workflow',
-              installationId: String(installationId),
+              installationId: String(deliveredInstallationId),
               repoId: String(repoId),
               headSha,
               ...(workflowPullNumber !== undefined ? { pullNumber: workflowPullNumber } : {}),
@@ -858,6 +878,7 @@ async function dispatchGithubRerequest(
     deps.log.info(`github ingress: ignored unowned ${event} rerequest ${deliveryKey}`)
     return
   }
+  const installationId = deliveredInstallationId
 
   let targets: GithubRerequestTarget[]
   if (event === 'check_suite' || event === 'workflow_run') {
@@ -1043,7 +1064,11 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
 
     scope.post('/webhooks/github', { bodyLimit: GITHUB_BODY_LIMIT }, async (req, reply) => {
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-      const webhookSecret = deps.webhookSecret()
+      // Every App posts here and names itself in this header; the claim holds only if that App's own secret signed the body.
+      const targetAppId = headerString(req.headers['x-github-hook-installation-target-id'])
+      const orgAppSecret = targetAppId ? deps.appWebhooks?.secretFor(targetAppId) : undefined
+      const orgAppId = orgAppSecret !== undefined ? targetAppId : undefined
+      const webhookSecret = orgAppSecret ?? deps.webhookSecret()
       if (!webhookSecret) return reply.code(404).send({ error: 'Not Found', statusCode: 404 })
       // MANDATORY signature — only GitHub (or a secret holder) may spend work here.
       if (!verifySha256Header(webhookSecret, raw, headerString(req.headers['x-hub-signature-256']))) {
@@ -1098,7 +1123,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       }
 
       if (event === 'check_run' && payload.action === 'rerequested') {
-        void dispatchGithubRerequest(deps, payload, deliveryKey, 'check_run', 'rerequested')
+        void dispatchGithubRerequest(deps, payload, deliveryKey, 'check_run', 'rerequested', orgAppId)
         return reply.code(202).send({ deliveryKey })
       }
       if (event === 'check_suite' && payload.action === 'rerequested') {
@@ -1110,7 +1135,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         payload.action === 'requested_action' &&
         payload.requested_action?.identifier === GITHUB_REQUEST_REVIEW_ACTION
       ) {
-        void dispatchGithubRerequest(deps, payload, deliveryKey, 'check_run', 'requested_action')
+        void dispatchGithubRerequest(deps, payload, deliveryKey, 'check_run', 'requested_action', orgAppId)
         return reply.code(202).send({ deliveryKey })
       }
       if (
@@ -1126,7 +1151,12 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       if (INSTALLATION_EVENTS.has(event)) {
         const id = payload.installation?.id
         if (id !== undefined) {
-          deps.doorbell({ installationId: String(id), action: payload.action ?? 'unknown' })
+          // An organization App's id rides along: the CP pulls a new installation with that App's key.
+          deps.doorbell({
+            installationId: String(id),
+            action: payload.action ?? 'unknown',
+            ...(orgAppId !== undefined ? { appId: orgAppId } : {})
+          })
           deps.log.info(`github ingress: doorbell ${deliveryKey} installation ${id} (${payload.action ?? 'unknown'})`)
         }
         return reply.code(202).send({ deliveryKey })
@@ -1185,6 +1215,9 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         teamOwnerLogin: githubTeamOwner(payload.repository),
         requestedReviewerLogin: payload.requested_reviewer?.login,
         baseChanged: githubPullRequestBaseChanged(event, payload),
+        ...(event === 'pull_request' && typeof payload.pull_request?.draft === 'boolean'
+          ? { isDraft: payload.pull_request.draft }
+          : {}),
         commentSubjectFamily:
           event === 'pull_request_review_comment'
             ? 'pull_request'

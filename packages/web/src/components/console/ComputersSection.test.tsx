@@ -94,7 +94,7 @@ describe('ComputersSection', () => {
     const second = el.querySelector('[data-computer-row="c2"]')!
     expect(second.textContent).toContain('Revoked')
     expect(second.textContent).toContain('macOS · Aqua · All agents')
-    expect(second.textContent).toContain('Checks not reported')
+    expect(second.textContent).toContain('No checks')
     act(() => (first as HTMLElement).click())
     expect(mocks.push).toHaveBeenCalledWith('/acme/computers/c1')
   })
@@ -121,42 +121,57 @@ describe('ComputersSection', () => {
     expect(el.textContent).toContain('Desktops members register for their agents')
   })
 
-  it('shows the managed pool as one entry, named for a self-hosted cluster, and lists only self-hosted computers', () => {
+  it('lists each cloud computer in a section of its own, with who made it and how long it has slept', () => {
     mocks.pool = { enabled: true, available: true }
     mocks.computers = [
       computer(),
-      computer({ id: 'p1', name: 'Shared browser', kind: 'managed', allocation: 'manual' }),
-      computer({ id: 'p2', name: 'ops desktop', kind: 'managed', allocation: 'per-agent', status: 'sleeping' })
+      computer({ id: 'p1', name: 'shared-computer', kind: 'managed', allocation: 'manual', ownerUserId: 'u1' }),
+      computer({
+        id: 'p2',
+        name: 'ops-desk',
+        kind: 'managed',
+        allocation: 'per-agent',
+        ownerAgentId: 'a1',
+        status: 'sleeping',
+        lastSeenAt: new Date(Date.now() - 2 * 3600_000).toISOString()
+      })
     ]
     const el = render()
-    const entry = el.querySelector('[data-computer-pool]')!
-    expect(entry.textContent).toContain('Computer pool')
-    expect(entry.textContent).toContain('1 running · 1 asleep')
-    expect(entry.textContent).toContain('Available')
-    expect(el.querySelector('[data-computer-row="c1"]')).not.toBeNull()
-    expect(el.querySelector('[data-computer-row="p1"]')).toBeNull()
-    act(() => (entry as HTMLElement).click())
-    expect(mocks.push).toHaveBeenCalledWith('/acme/computers/pool')
+    expect(el.querySelector('[data-computer-pool]')).toBeNull()
+    expect(el.querySelector('#cloud-computers')!.textContent).toBe('Cloud computers')
+    expect(el.querySelector('[data-cloud-summary]')!.textContent).toBe('1 running · 1 asleep')
+    const shared = el.querySelector('[data-computer-row="p1"]')!
+    expect(shared.textContent).toContain('Linux · X11 · by you')
+    expect(shared.textContent).toContain('Running')
+    expect(shared.textContent).not.toContain('No checks')
+    const own = el.querySelector('[data-computer-row="p2"]')!
+    expect(own.textContent).toContain('by Ops bot')
+    expect(own.textContent).toContain('idle 2h')
+    expect(own.textContent).toContain('Asleep')
+    // Self-hosted computers stay in their own section below.
+    expect(el.querySelector('#computers')!.parentElement!.textContent).toContain('1')
+    act(() => (own as HTMLElement).click())
+    expect(mocks.push).toHaveBeenCalledWith('/acme/computers/p2')
   })
 
-  it('names the pool AgentConnect Computers on the managed install, in a section of its own before the first managed computer', () => {
-    mocks.flags = new Set(['managed'])
+  it('adds a cloud computer from its section, and says when no pool member can start one', () => {
     mocks.pool = { enabled: true, available: false }
     const el = render()
-    const entry = el.querySelector('[data-computer-pool]')!
-    expect(entry.textContent).toContain('AgentConnect Computers')
-    expect(entry.textContent).toContain('No managed computers yet')
-    expect(entry.textContent).toContain('Unavailable')
-    const managed = el.querySelector('#managed-computers')!
-    expect(managed.textContent).toBe('AgentConnect Computers')
-    // The section adds a managed computer; the self-hosted one below keeps its own empty state.
-    act(() => [...el.querySelectorAll('button')].find((b) => b.textContent === 'Add managed computer')!.click())
+    expect(el.textContent).toContain('No cloud computers yet')
+    expect(el.querySelector('[data-cloud-summary]')!.textContent).toBe('No pool member available to start one')
+    act(() => [...el.querySelectorAll('button')].find((b) => b.textContent === 'Add cloud computer')!.click())
     expect(mocks.openModal).toHaveBeenCalledWith('poolComputer')
     expect(el.querySelector('#computers')!.parentElement!.textContent).toContain('0')
   })
 
-  it('keeps the entry while managed computers remain on a deployment that turned the pool off', () => {
+  it('keeps the section, without Add, while cloud computers remain on a deployment that turned the pool off', () => {
     mocks.computers = [computer({ id: 'p1', kind: 'managed', allocation: 'manual' })]
-    expect(render().querySelector('[data-computer-pool]')).not.toBeNull()
+    const el = render()
+    expect(el.querySelector('[data-computer-row="p1"]')).not.toBeNull()
+    expect([...el.querySelectorAll('button')].some((b) => b.textContent === 'Add cloud computer')).toBe(false)
+  })
+
+  it('hides the section on a deployment without a pool', () => {
+    expect(render().querySelector('#cloud-computers')).toBeNull()
   })
 })

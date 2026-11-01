@@ -44,7 +44,7 @@ import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { fetchAgents } from '@/lib/api'
 import { agentLabel, type Agent } from '@/lib/data'
-import { sumAmounts } from '@/lib/amount'
+import { byAmountDesc, scaleAmount, sumAmounts } from '@/lib/amount'
 import { useOrgs } from '@/lib/org-context'
 import { SEG_FILL, tickInterval } from '@/lib/spend-chart'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -104,20 +104,18 @@ export function rowAttribution(
   agentById: Map<string, Agent>
 ): TxAgentChip[] {
   if (!parts?.length) return []
-  const named: { chip: TxAgentChip; value: number }[] = []
+  const named: TxAgentChip[] = []
   const withheld: string[] = []
   for (const part of parts) {
-    const value = Number(part.amount)
-    if (!Number.isFinite(value) || value === 0) continue
+    if (scaleAmount(part.amount) === 0n) continue
     // Fails CLOSED: an id the roster cannot resolve (unloaded, errored, or restricted) is withheld.
     const agent = agentById.get(part.agentId)
     // The id never enters a chip it cannot name — `key` included, so it cannot leak through a
     // prop that ends up serialized.
-    if (agent) named.push({ chip: { key: part.agentId, agent, amount: part.amount }, value })
+    if (agent) named.push({ key: part.agentId, agent, amount: part.amount })
     else withheld.push(part.amount)
   }
-  named.sort((a, b) => b.value - a.value)
-  const chips = named.map(({ chip }) => chip)
+  const chips = named.sort((a, b) => byAmountDesc(a.amount, b.amount))
   if (withheld.length) chips.push({ key: 'withheld', amount: sumAmounts(withheld) })
   return chips
 }
@@ -164,10 +162,10 @@ export function groupUsage(
   }
   return [...groups].map(([key, g]) => {
     const agents = [...g.agents].map(([k, s]) => ({ key: k, agent: s.agent, amount: sumAmounts(s.amounts) }))
-    const named = agents.filter((c) => c.agent).sort((a, b) => Number(b.amount) - Number(a.amount))
+    const named = agents.filter((c) => c.agent).sort((a, b) => byAmountDesc(a.amount, b.amount))
     const models = [...g.models]
       .map(([model, amounts]) => ({ model, amount: sumAmounts(amounts) }))
-      .sort((a, b) => Number(b.amount) - Number(a.amount))
+      .sort((a, b) => byAmountDesc(a.amount, b.amount))
     return {
       key,
       txs: g.txs,
@@ -419,7 +417,7 @@ function FoldedCharges({
   const groupTotal = Number(group.amount)
   const days = usageDays(group.txs)
   const maxDay = Math.max(...days.map((d) => Number(d.amount)))
-  const max = group.txs.reduce((a, b) => (Number(b.amount) > Number(a.amount) ? b : a))
+  const max = group.txs.reduce((a, b) => (scaleAmount(b.amount) > scaleAmount(a.amount) ? b : a))
   return (
     // Summary strip, then one row per local day; a day opens into an hourly chart and its charges.
     <div

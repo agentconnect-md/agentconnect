@@ -139,3 +139,47 @@ describe('session metadata names its classification by the logical session', () 
     await w.store.close()
   })
 })
+
+describe('session metadata names the session owning a task', () => {
+  it('sends the owner of a threaded task, and null for a session no task row holds (auto-session-mode.md §6.2)', async () => {
+    const w = await world()
+    await w.store.assistantSubsessions.open({
+      agentId: AGENT,
+      childSessionKey: w.channel.key,
+      parentSessionId: 'sid-coordinator',
+      parentSessionKey: sessionKey('slack', 'C1', 'append:coordinator-1', AGENT),
+      title: 'Task'
+    })
+    await w.start()
+    const seen = await w.events()
+    expect(seen.get(w.channel.outward)?.taskParentSessionId).toBe('sid-coordinator')
+    expect(seen.get(w.dm.outward)?.taskParentSessionId).toBeNull()
+    w.outbox.dispose()
+    await w.store.close()
+  })
+})
+
+describe('a task owner change while the Control Plane is away', () => {
+  it('is queued durably as an ordered update and sent once it is back', async () => {
+    const w = await world()
+    await w.start()
+    await w.events()
+    w.sync.mockClear()
+    // The last milestone was acknowledged; the release happens while the Control Plane is away.
+    w.cp.state = 'CONNECTING'
+    await w.outbox.emitSessionMetadataSnapshot({
+      sessionId: 'acp-1',
+      sessionKey: w.channel.key,
+      agentId: AGENT,
+      phase: 'plan',
+      ordered: true,
+      platform: 'slack',
+      channel: w.channel.channel
+    })
+    w.cp.state = 'READY'
+    const seen = await w.events()
+    expect(seen.get(w.channel.outward)?.taskParentSessionId).toBeNull()
+    w.outbox.dispose()
+    await w.store.close()
+  })
+})

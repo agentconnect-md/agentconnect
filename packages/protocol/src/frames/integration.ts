@@ -187,12 +187,8 @@ export const IntegrationMsTeamsConfig = z.object({
 })
 export type IntegrationMsTeamsConfig = z.infer<typeof IntegrationMsTeamsConfig>
 
-/**
- * Which session an activation in a conversation joins (channel-session-mode.md §4).
- * `createNew` is today's behavior — a message opens a session, a thread reply continues
- * that thread's. `append` joins the conversation's one long-lived session instead.
- */
-export const ChannelSessionMode = z.enum(['createNew', 'append'])
+/** Which session an activation joins (channel-session-mode.md §4): one per thread, the conversation's one session, or the coordinator's pick (auto-session-mode.md), which only a daemon advertising `SESSION_MODE_AUTO_V1_FEATURE` receives. */
+export const ChannelSessionMode = z.enum(['createNew', 'append', 'auto'])
 export type ChannelSessionMode = z.infer<typeof ChannelSessionMode>
 
 /** One conversation's session mode. Only conversations that depart from the default are sent. */
@@ -374,6 +370,7 @@ export const IntegrationChannel = z.object({
   space: z.string().optional(), // that space's display name; absent until resolved
   isPrivate: z.boolean().optional(),
   kind: z.enum(['channel', 'im', 'mpim']).optional(), // absent = 'channel'
+  isCodeSession: z.boolean().optional(),
   // The conversation's own glyph and tint, where the platform gives one — a Linear team's
   // `icon` (a provider icon name such as "Feather", or an emoji) and `color` (a hex string).
   // Display only: bounded so a hostile provider cannot grow a row, and never parsed for routing.

@@ -1,23 +1,23 @@
 # syntax=docker/dockerfile:1.7
 
-ARG RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-20261022-002733@sha256:c7df1f23734ee56eb7e55247d156f9757c42df244fdaaf8addba54b503d17528
-ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-20261022-002733@sha256:6b4f3c12ba0dbfcd80f66c2f15a484e6439dd239469c7b315c3973a2031bb993
+ARG RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-20261029-233713@sha256:c6aab2632b8fa5c8dba84b891b05a21d5bd810b3d42b0333983b887dbb6055c9
+ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-20261029-233713@sha256:15374558d1ec9e99d752e62eeac89008e93d03a3a9b00009ccb05eea3cae2ec7
 
-ARG AGENT_BROWSER_VERSION=0.39.2
-ARG CLAUDE_ACP_VERSION=0.95.0
-ARG CODEX_ACP_VERSION=2.2.2-agentconnect.2
-ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.39
-ARG OPENCODE_VERSION=1.18.32
+ARG AGENT_BROWSER_VERSION=0.41.0
+ARG CLAUDE_ACP_VERSION=0.99.1
+ARG CODEX_ACP_VERSION=2.5.0-agentconnect.1
+ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.40
+ARG OPENCODE_VERSION=1.19.4
 
 # Release builds install applications over stable system bases, then add daemon-versioned helpers.
 
 # ───────────────────────────── shim builder ─────────────────────────────────
 # The shim build inlines its dependencies so runtime images need no daemon node_modules.
-FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS shim-builder
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS shim-builder
 WORKDIR /build
 ENV PNPM_HOME=/pnpm \
   PATH=/pnpm:$PATH
-RUN corepack enable
+RUN npm install --global corepack@0.36.0 && corepack enable
 RUN printf 'fetch-retries=5\nfetch-retry-maxtimeout=600000\nfetch-retry-mintimeout=20000\nfetch-timeout=600000\nnetwork-concurrency=8\n' >> /root/.npmrc
 
 # .pnpmfile.mjs is checksummed INTO the lockfile, so a frozen install without it is refused.
@@ -62,7 +62,7 @@ FROM scratch AS runtime-payload-digest-export
 COPY --from=runtime-payload-digest /payload-digest /
 
 # Antigravity is the first, independently cached application layer in the full image.
-FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS antigravity
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS antigravity
 ARG ANTIGRAVITY_VERSION=1.4.3
 ARG ANTIGRAVITY_SHA256_AMD64=0634ce5306ba92c932945455e7a83fda78e2d99c33fa8aa6ee0566206a382714
 ARG TARGETARCH
@@ -82,8 +82,8 @@ RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
 
 # Build Muse's adapter against Bookworm: upstream Linux binaries require glibc 2.39.
 FROM rust:1.99.0-slim-bookworm@sha256:2c3a22f0a5533ea2dd5a16627bc841228151faa2d4de2644ac9987e4a2f1f2fa AS muse-acp
-ARG MUSE_ACP_VERSION=0.15.0
-ARG MUSE_ACP_SOURCE_SHA256=e44fbd0fecf5ea747d3ac2228640775c41663712c16a68627e1d9017f93902b9
+ARG MUSE_ACP_VERSION=0.17.0
+ARG MUSE_ACP_SOURCE_SHA256=310e54d0b08104f36ac86a4908a1c6a5b63f3eb845b45c76606c1ae8e76d26a8
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
@@ -98,13 +98,13 @@ RUN curl --retry 5 -fsSL -o /tmp/muse-acp.tar.gz \
   && cp LICENSE NOTICE /out/licenses/muse-acp/
 
 # Other native harness downloads are independent of Antigravity and agent-browser.
-FROM node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d AS full-native-runtimes
-ARG OMP_VERSION=18.3.0
-ARG OMP_SHA256_AMD64=d2fdaa29affe96e596eb9c78d42f548f1f291df28608631bcc00750a84b94bc3
-ARG DEVIN_VERSION=3000.11.3
-ARG DEVIN_SHA256_AMD64=83b3b113c01bf2a3e9e100db08d77e6b086806a7754f091e20831bdfe215157e
-ARG MUSE_VERSION=1.4.7-R6101.1
-ARG MUSE_SHA256_AMD64=36e3dac91f56c15572b95be55d70ee9fd9685cd9ab49f747bab4746c8d7c2518
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS full-native-runtimes
+ARG OMP_VERSION=18.13.1
+ARG OMP_SHA256_AMD64=ee2961c7da02e514a2475ee958c2fd85dbabf4d0907949ba5022edb2951f84b5
+ARG DEVIN_VERSION=3000.11.228
+ARG DEVIN_SHA256_AMD64=c00eb43d6e3f8c07f8d2ee435cddf62c7879319b73393a891c610da73c558509
+ARG MUSE_VERSION=1.4.13-R6996.1
+ARG MUSE_SHA256_AMD64=51e97f8de0aa175080e6576cbc055510a95dfe0ededf175c7f6b34fc8e3bf524
 ARG TARGETARCH
 RUN test "${TARGETARCH:-amd64}" = amd64 \
   && apt-get update \
@@ -148,14 +148,14 @@ RUN --mount=type=bind,source=docker/runtime-sandbox/install-core-harnesses.sh,ta
   --mount=type=bind,source=docker/runtime-sandbox/bake-dsh-preset.mjs,target=/tmp/bake-dsh-preset.mjs \
   HOME=/root sh /tmp/install-core-harnesses.sh
 
-ARG CLINE_VERSION=3.0.65
+ARG CLINE_VERSION=3.0.74
 ARG PI_ACP_VERSION=0.0.34
-ARG PI_VERSION=0.87.1
-ARG QWEN_CODE_VERSION=0.24.5
-ARG COPILOT_VERSION=1.0.88
-ARG GROK_VERSION=1.0.41
-ARG QODER_VERSION=1.1.63
-ARG QODER_CN_VERSION=1.1.63
+ARG PI_VERSION=1.4.0
+ARG QWEN_CODE_VERSION=0.26.1
+ARG COPILOT_VERSION=1.0.104
+ARG GROK_VERSION=1.0.70
+ARG QODER_VERSION=1.1.80
+ARG QODER_CN_VERSION=1.1.80
 # pi-acp delegates to the separately installed pi CLI; all launches use local executables.
 RUN export HOME=/root \
   && npm install --global --no-fund --no-audit \

@@ -4,7 +4,7 @@ import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { formatFileSize } from '@/components/console/FileBrowser'
 import { deploymentFileTransfer, WEBCHAT_FILES_MAX } from '@/lib/shared-file'
-import { uploadWebchatFile, type ComposerFile } from '@/lib/webchat-file'
+import { uploadWebchatFile, type ComposerFile, type MarkedFile } from '@/lib/webchat-file'
 
 /** Why a non-image file cannot be attached, or null when it can be. */
 export function composerFileRefusal(transfer: boolean, staged: number, size = 0): string | null {
@@ -37,7 +37,7 @@ export function stageComposerFile(
   // A removed entry stays removed: the settled upload updates only an entry still staged under its key.
   const settle = (patch: Partial<ComposerFile>) =>
     setPgFiles(sessionId, (files) => files.map((f) => (f.key === key ? { ...f, ...patch } : f)))
-  uploadWebchatFile(agentId, file).then(
+  uploadWebchatFile(agentId, file, { partBytes: deploymentFileTransfer()?.partBytes }).then(
     (attachment) => settle({ status: 'ready', attachment }),
     (error: unknown) =>
       settle({ status: 'failed', error: error instanceof Error ? error.message : 'Couldn’t upload that file.' })
@@ -82,6 +82,70 @@ export function ComposerFileChips({ files, onRemove }: { files: ComposerFile[]; 
           </button>
         </span>
       ))}
+    </div>
+  )
+}
+
+const FILE_KINDS: Array<{ test: RegExp; icon: string; tint: string; ink: string }> = [
+  { test: /^image\//, icon: 'file-image', tint: '--status-online-soft', ink: '--status-online-text' },
+  { test: /^audio\//, icon: 'file-music', tint: '--status-paused-soft', ink: '--status-paused' },
+  { test: /^video\//, icon: 'file-video-camera', tint: '--status-paused-soft', ink: '--status-paused' },
+  { test: /\/pdf$/, icon: 'file-text', tint: '--status-error-soft', ink: '--status-error' },
+  {
+    test: /(zip|gzip|tar|7z|rar|compressed)/,
+    icon: 'file-archive',
+    tint: '--status-paused-soft',
+    ink: '--status-paused'
+  },
+  {
+    test: /(csv|spreadsheet|excel)/,
+    icon: 'file-spreadsheet',
+    tint: '--status-online-soft',
+    ink: '--status-online-text'
+  },
+  {
+    test: /^text\/x-|(json|javascript|typescript|xml|yaml|toml|x-sh|python)/,
+    icon: 'file-code',
+    tint: '--status-info-soft',
+    ink: '--status-info'
+  },
+  { test: /^text\//, icon: 'file-text', tint: '--status-info-soft', ink: '--status-info' }
+]
+
+/** The files a sent message names, as cards above its bubble: a type tile, the name, and its extension. */
+export function MessageFileCards({ files }: { files: readonly MarkedFile[] }) {
+  return (
+    <div className="mb-[3px] flex max-w-full flex-wrap justify-end gap-2" data-message-files="">
+      {files.map((file, i) => {
+        const kind = FILE_KINDS.find((k) => k.test.test(file.mimeType))
+        const dot = file.name.lastIndexOf('.')
+        const ext = dot > 0 && file.name.length - dot <= 8 ? file.name.slice(dot + 1) : file.mimeType.split('/')[1]
+        return (
+          <div
+            key={`${i}:${file.name}`}
+            title={`${file.name} (${file.mimeType})`}
+            className="flex w-[220px] max-w-full min-w-0 items-center gap-[10px] rounded-lg border border-(--border-subtle) bg-(--surface-card) py-2 pr-3 pl-2 shadow-(--shadow-xs)"
+          >
+            <span
+              className="flex h-9 w-9 flex-none items-center justify-center rounded-md"
+              style={{
+                background: `var(${kind?.tint ?? '--surface-sunken'})`,
+                color: `var(${kind?.ink ?? '--text-secondary'})`
+              }}
+            >
+              <Icon name={kind?.icon ?? 'file'} size={18} />
+            </span>
+            <span className="flex min-w-0 flex-col gap-[2px]">
+              <span className="truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
+                {file.name}
+              </span>
+              <span className="truncate font-mono text-[11px] font-normal leading-normal uppercase text-(--text-tertiary)">
+                {ext}
+              </span>
+            </span>
+          </div>
+        )
+      })}
     </div>
   )
 }

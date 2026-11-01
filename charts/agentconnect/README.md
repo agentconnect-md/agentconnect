@@ -211,7 +211,8 @@ verified against this signer (design §14).
 | `limits.unreadPointerDays`   | `30`    | Days before an unread pointer is swept                    |
 | `limits.getUrlLifetime`      | `5m`    | Presigned GET lifetime (`1m` to `1h`)                     |
 | `limits.putUrlLifetime`      | `15m`   | Presigned PUT lifetime (`1m` to `1h`)                     |
-| `limits.transferMaxBytes`    | `512Mi` | Largest console file transfer (at most `5Gi`)             |
+| `limits.transferMaxBytes`    | none    | Optional cap on a console file transfer (at most `5Ti`)   |
+| `limits.transferPartBytes`   | `512Mi` | Largest single transfer PUT, `5Mi` to `5Gi`; see below    |
 | `limits.transferUrlLifetime` | `30m`   | Transfer download link lifetime (`1m` to `12h`)           |
 
 ### Bucket lifecycle rules
@@ -277,7 +278,8 @@ members, and self-hosted or local daemons that hold no bucket credentials of the
 
 - **Uploads:** a non-image file a user attaches in webchat is uploaded by the browser
   straight into the bucket, and the agent gets a presigned link to download it into its
-  workspace.
+  workspace. A file larger than one part goes as an S3 multipart upload, so there is no
+  size limit beyond `limits.transferMaxBytes` when set, and S3's 10,000 parts.
 - **Downloads:** a large text or binary workspace file is uploaded by its daemon (or its
   pod) on a URL the Control Plane signs, and the browser downloads it from the bucket.
 
@@ -293,6 +295,23 @@ needs:
 Transfer objects are tagged `ac-cache=pending`, so the 2-day `pending` lifecycle rule
 above collects them. The Control Plane refuses transfers while that rule is missing.
 
+A multipart upload the browser abandons leaves parts that are not objects, so no tag rule
+reaches them. Add a rule that aborts them; until the Control Plane finds it, a browser
+upload is refused above `limits.transferPartBytes`:
+
+```json
+{
+  "ID": "ac-source-cache-multipart-abort",
+  "Status": "Enabled",
+  "Filter": { "Prefix": "agentconnect/src/" },
+  "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
+}
+```
+
+`limits.transferPartBytes` is the largest single request a transfer sends: a daemon's
+workspace download, or one part of a browser upload. Behind a proxy that caps request
+bodies, such as Cloudflare's 100 MB, set it below that cap.
+
 Browsers and daemons outside the cluster reach the bucket directly, so two extra settings
 apply:
 
@@ -300,14 +319,15 @@ apply:
   use, when it differs from the in-cluster `endpoint`. Pool members and their pods keep
   using `endpoint`. Empty means `endpoint`.
 - A bucket CORS rule admitting the console origin. Browsers send the signed checksum and
-  tagging headers on upload and read nothing but the body on download:
+  tagging headers on upload, read each part's `ETag`, POST the part list to assemble a
+  multipart upload, and read nothing but the body on download:
 
 ```json
 {
   "CORSRules": [
     {
       "AllowedOrigins": ["https://console.example.test"],
-      "AllowedMethods": ["GET", "PUT"],
+      "AllowedMethods": ["GET", "PUT", "POST"],
       "AllowedHeaders": ["x-amz-checksum-sha256", "x-amz-tagging", "content-type"],
       "ExposeHeaders": ["ETag"],
       "MaxAgeSeconds": 3600
@@ -420,6 +440,15 @@ relays' own metering does not count.
 | `computerViewer.turn.cloudflare.keyId`       | `''`                                 | The TURN key's ID; empty leaves it off         |
 | `computerViewer.turn.cloudflare.apiTokenKey` | `COMPUTER_TURN_CLOUDFLARE_API_TOKEN` | Key in `secrets.existingSecret` with its token |
 
+Hole punching needs a STUN server both peers ask for their public address. `relay.stun` serves
+one on each relay; `computerViewer.stun.urls` names public ones instead, such as
+`stun:stun.cloudflare.com:3478`, with nothing to deploy. The Control Plane issues them only to
+viewers whose Computer's policy allows peer-to-peer media.
+
+| Value                      | Default | Meaning                                                  |
+| -------------------------- | ------- | -------------------------------------------------------- |
+| `computerViewer.stun.urls` | `[]`    | Up to two `stun:` URLs, used in place of the relays' own |
+
 A Computer's policy can set `screenshotRetentionDays`; 0 means its screenshots are never
 written. The Control Plane deletes expired screenshots itself, so the bucket needs no
 extra lifecycle rule. Its credentials need `s3:PutObject`, `s3:GetObject` and
@@ -437,25 +466,32 @@ only pool members to a desktop's bootstrap port, and turns the pool on in the me
 Control Plane. Desktops register at the public Control Plane URL, so `apiHost` or `publicUrl`
 is required.
 
-| Value                               | Default               | Meaning                                                       |
-| ----------------------------------- | --------------------- | ------------------------------------------------------------- |
-| `computerPool.warmReplicas`         | `1`                   | Prewarmed desktops, so an `ephemeral` computer starts at once |
-| `computerPool.home.size`            | `5Gi`                 | A desktop's home volume, kept while it sleeps                 |
-| `computerPool.home.storageClass`    | `standard`            | Storage class of the home volume                              |
-| `computerPool.resources`            | 500m, 1Gi / 3Gi       | One desktop's requests and memory limit                       |
-| `computerPool.ephemeralIdleSeconds` | `600`                 | Idle time before an `ephemeral` desktop is deleted            |
-| `computerPool.sleepIdleSeconds`     | `1800`                | Idle time before a `per-agent` or `manual` desktop sleeps     |
-| `computerPool.image` / `repository` | `<registry>/computer` | The desktop image, tagged like the release by default         |
-| `computerPool.egressPorts`          | `[3128, 8080]`        | TCP ports besides 443 desktops may reach, for egress proxies  |
-| `computerPool.egressTo`             | public addresses      | Where `egressPorts` may lead; private ranges are excluded     |
+| Value                                 | Default               | Meaning                                                       |
+| ------------------------------------- | --------------------- | ------------------------------------------------------------- |
+| `computerPool.warmReplicas`           | `1`                   | Prewarmed desktops, so an `ephemeral` computer starts at once |
+| `computerPool.home.size`              | `5Gi`                 | A desktop's home volume, kept while it sleeps                 |
+| `computerPool.home.storageClass`      | `standard`            | Storage class of the home volume                              |
+| `computerPool.resources`              | 500m, 1Gi / 3Gi       | One desktop's requests and memory limit                       |
+| `computerPool.ephemeralIdleSeconds`   | `600`                 | Idle time before an `ephemeral` desktop is deleted            |
+| `computerPool.sleepIdleSeconds`       | `1800`                | Idle time before a `per-agent` or `manual` desktop sleeps     |
+| `computerPool.image` / `repository`   | `<registry>/computer` | The desktop image, tagged like the release by default         |
+| `computerPool.egressPorts`            | `[3128, 8080]`        | TCP ports besides 443 desktops may reach, for egress proxies  |
+| `computerPool.egressTo`               | public addresses      | Where `egressPorts` may lead; private ranges are excluded     |
+| `computerPool.viewerPeerToPeerEgress` | `false`               | Admit UDP on any port to `egressTo`, for punched viewer media |
 
 A desktop pod may reach DNS, HTTPS, and the ports `egressPorts` lists on the addresses
 `egressTo` allows (public ones by default, so the browser cannot reach the cluster's own
 listeners on 8080; add a private proxy's address there if it needs one). With `relay.turn` or
-`relay.stun` on, or `computerViewer.turn.urls` set, the desktop template also admits those
+`relay.stun` on, or `computerViewer.turn.urls` or `computerViewer.stun.urls` set, the desktop template also admits those
 TURN and STUN ports, public and container both (in-cluster traffic to a LoadBalancer reaches the
 relay pod's port), so a managed computer's viewer works through the relay's TURN although
 its pod has no UDP a browser can reach.
+
+Hole-punched (peer-to-peer) viewer media goes from the desktop to the browser's public address on
+whatever UDP port its NAT picked, which no port list can name. `viewerPeerToPeerEgress` admits UDP on
+any port to `egressTo` for that; it also lets a desktop send any other UDP there, so it is off by
+default. Pair it with a STUN server (`relay.stun` or `computerViewer.stun.urls`) and a Computer
+policy that allows peer-to-peer viewing.
 
 `computerPlan` sets every organization's Computer quotas and egress choices, rendered as
 `AC_COMPUTER_PLAN` on the Control Plane

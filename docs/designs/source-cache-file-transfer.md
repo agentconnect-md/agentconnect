@@ -9,10 +9,11 @@ chart. A deployment offers it once its Control Plane has a transfer bucket
 
 ## 1. What it adds
 
-1. **Webchat uploads any file.** A non-image file the user attaches in the console is
-   PUT by the browser straight into the bucket. The agent's prompt names the file and
-   carries a presigned GET, which the agent downloads into its own workspace when it
-   needs the bytes. Images keep their inline path.
+1. **Webchat uploads any file, of any size.** A non-image file the user attaches in the
+   console is PUT by the browser straight into the bucket: in one PUT, or as an S3
+   multipart upload when it is larger than one part (§2.1). The agent's prompt names the
+   file and carries a presigned GET, which the agent downloads into its own workspace
+   when it needs the bytes. Images keep their inline path.
 2. **Large and binary workspace files download through the bucket.** The owning daemon
    snapshots the file where it lives (a sandbox pod, or its own disk) and PUTs it on a
    URL the Control Plane signs; the browser then fetches a presigned GET. A revision
@@ -55,6 +56,38 @@ download is reused only while its `Last-Modified` is under one day old, well ins
 2-day rule, its length still matches, and the store reports its signed SHA-256 checksum. A copy without a checksum
 cannot prove its bytes, so it is uploaded again.
 
+### 2.1 Uploads in parts
+
+A browser upload larger than its part size goes as an S3 multipart upload under the same
+`up/` key, so the file's size has no bound but S3's 10,000 parts and an optional
+`limits.maxBytes`. The browser holds one part in memory at a time, never the whole file.
+
+- **Part size.** `limits.partBytes` (default 512 MiB) is the largest single request a
+  transfer sends, which keeps every request under a proxy's body cap (Cloudflare's
+  100 MB, for example). The browser uses 64 MiB parts, or `partBytes` when that is
+  smaller, and larger parts only when a file would otherwise need more than 10,000. A
+  file no larger than one part still goes in one PUT. Daemon uploads (workspace
+  downloads, shared images) stay single PUTs of at most `partBytes`.
+- **Integrity.** S3 keeps no whole-object SHA-256 for a multipart object, only a
+  COMPOSITE checksum: the SHA-256 of the parts' raw digests, reported as
+  `<base64>-<parts>`. The upload's `sha256` is therefore that composite, which is still a
+  32-byte base64 value, so the turn, the relay and the daemon carry it unchanged. Each
+  part's PUT signs its exact length and checksum, so the composite proves every byte.
+- **Flow.** The browser hashes each part, then reserves with the part size and digests.
+  The CP checks that the digests describe the declared size and that their composite is
+  the declared `sha256`, starts the multipart upload itself (tagged `ac-cache=pending`,
+  SHA-256 checksums), and returns the first 100 part PUTs and a presigned
+  CompleteMultipartUpload POST. The browser PUTs up to three parts at a time, asks
+  `…/uploads/:uploadId/parts` for the rest and for any URL near expiry, then POSTs the
+  part list (each part's `ETag` and checksum) to the complete URL. The CP keeps no state
+  for the upload: every request carries the layout and is checked again.
+- **Abandoned uploads.** Parts of an unfinished upload are not objects, so no tag rule
+  reaches them. The bucket needs a rule that aborts unfinished multipart uploads under
+  `src/` (`multipartAbortLifecycleRule`, 1 day). The lifecycle check above also looks for
+  it; while a read shows it missing, the CP offers no part size and refuses a reservation
+  in parts with `WORKSPACE_TRANSFER_UNAVAILABLE`, so a file larger than one part cannot be
+  uploaded. A failed read leaves uploads in parts on, as it does transfers.
+
 ## 3. Trust model
 
 - **The Control Plane is the only transfer signer.** It holds the bucket credentials
@@ -74,8 +107,17 @@ cannot prove its bytes, so it is uploaded again.
 
 - **A PUT** signs `content-length`, `x-amz-checksum-sha256` and the tagging header, so the
   store accepts exactly the declared bytes.
-- **The agent's GET for an upload.** The CP `HEAD`s the object first and requires the
-  declared length, and the declared checksum when the store returns one.
+- **A multipart upload** is started by the CP, and each part URL signs that part's length
+  and checksum, derived from the declared size, part size and digests. The complete URL
+  is a presigned POST whose body the browser writes. A part list that differs from the
+  declared one yields an object whose composite checksum is not the declared `sha256`, so
+  the agent's GET below is refused, as for any other bytes the browser did not declare.
+- **The agent's GET for an upload.** The CP `HEAD`s the object first. A returned checksum
+  must match the declared one, or be the declared composite with a `-<parts>` suffix, and
+  proves the bytes, since every PUT signed both checksum and length; a returned
+  `Content-Length` must match the declared size. The length is required only when the
+  store returns no checksum, because a HEAD may omit it (RFC 9110 §9.3.2), as a
+  compressing proxy in front of the store does for text types.
 - **The agent's GET is a bearer URL.** Anyone holding it can read that one object on the
   origin its network names until it expires. The agent may pass it to the model provider's API,
   so it can leave the cluster for up to `limits.urlSeconds`.
@@ -151,9 +193,13 @@ cannot prove its bytes, so it is uploaded again.
   | `transfer-failed`      | 503  |
   | `too-large`            | 400  |
 
-- **Runtime config:** `GET /runtime-config` carries `fileTransfer: { maxBytes } | null`.
-  The console offers non-image uploads and transfer downloads only when the deployment
-  has a bucket and the agent's daemon advertises the feature.
+- **Runtime config:** `GET /runtime-config` carries
+  `fileTransfer: { maxBytes, partBytes? } | null`. `partBytes` is present only while
+  uploads may go in parts, and `maxBytes` is then the upload cap; otherwise `maxBytes` is
+  the single-PUT limit. The console offers non-image uploads and transfer downloads only
+  when the deployment has a bucket and the agent's daemon advertises the feature.
+- **Upload in parts** is console ↔ CP ↔ store only; it adds no frame, and a daemon or
+  relay of any version handles its uploads.
 
 ## 5. Control plane
 
@@ -162,7 +208,8 @@ keys and signs.
 
 | Route                                                  | Purpose                                                        |
 | ------------------------------------------------------ | -------------------------------------------------------------- |
-| `POST /agents/:id/uploads`                             | Reserve an upload; answers the presigned PUT                   |
+| `POST /agents/:id/uploads`                             | Reserve an upload; answers the PUT, or the first parts (§2.1)  |
+| `POST /agents/:id/uploads/:uploadId/parts`             | More, or fresh, part PUTs and complete for an upload in parts  |
 | `POST /agents/:id/workspace/file/transfer`             | Presigned GET for one workspace file; may upload first         |
 | `GET /agents/:id/workspace/file/transfer/:operationId` | A begun transfer: 202 while it uploads, then the GET           |
 | `GET /agents/:id/workspace/file/download`              | Proxied download; any path, `sessionId` optional, `repo` added |
@@ -264,7 +311,8 @@ lands under a key that names another one.
 | `publicEndpoint`                               | `sourceCache.publicEndpoint` | https origin for browsers and daemons outside the cluster |
 | `region`, `bucket`, `prefix`, `forcePathStyle` | `sourceCache.*`              | As for the Source Cache                                   |
 | `credentials`                                  | `sourceCache.credentials`    | Mounted static keys, or a web identity                    |
-| `limits.maxBytes`                              | `limits.transferMaxBytes`    | Per-file cap, default `512Mi`, at most `5Gi`              |
+| `limits.maxBytes`                              | `limits.transferMaxBytes`    | Optional per-file cap, at most `5Ti`; none when omitted   |
+| `limits.partBytes`                             | `limits.transferPartBytes`   | Largest single PUT, default `512Mi`, `5Mi` to `5Gi`       |
 | `limits.urlSeconds`                            | `limits.transferUrlLifetime` | Download link lifetime, default `30m`, `1m` to `12h`      |
 | `limits.putUrlSeconds`                         | `limits.putUrlLifetime`      | Upload PUT lifetime, default `15m`, `1m` to `1h`          |
 
@@ -275,8 +323,10 @@ sum; the chart's `sourceCache.credentials.serviceAccount.sessionDurationSeconds`
 for both the CP and the pool. The CP needs `s3:PutObject`, `s3:PutObjectTagging` and
 `s3:GetObject` under `src/*/transfer/`, and `s3:GetLifecycleConfiguration` on the bucket.
 
-The bucket also needs a CORS rule admitting the console origin for `GET` and `PUT` with
-the `x-amz-checksum-sha256` and `x-amz-tagging` headers (chart README).
+The bucket also needs a CORS rule admitting the console origin for `GET`, `PUT` and
+`POST` with the `x-amz-checksum-sha256`, `x-amz-tagging` and `content-type` headers,
+exposing `ETag` (chart README), and the abort rule of §2.1. Starting and completing a
+multipart upload are covered by `s3:PutObject`.
 
 ## 8. Limitations
 
@@ -300,5 +350,6 @@ the `x-amz-checksum-sha256` and `x-amz-tagging` headers (chart README).
   materializes it into `uploads/` automatically
   ([inbound-file-attachments.md](inbound-file-attachments.md) §2 remains the design for
   that).
-- **Browser memory.** The browser hashes the file in memory before upload, so the cap is
-  also bounded by what a browser tab holds comfortably.
+- **A closed tab abandons an upload in parts.** Nothing resumes it; its parts wait for
+  the abort rule. The CP cannot abort it sooner, since it holds no
+  `s3:AbortMultipartUpload` and keeps no record of open uploads.

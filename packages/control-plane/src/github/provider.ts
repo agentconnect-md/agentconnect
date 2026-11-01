@@ -68,10 +68,12 @@ async function bindGithubWorkspaceRepo(
 
 /** The github arm of the §6 outcome table: App installation, else an anonymous public read. */
 async function deriveGithubWorkspace(derivation: CodeHostWorkspaceDerivation): Promise<DerivedWorkspace | null> {
-  const { deps, orgId, actorUserId, gitRepo, requestedAccess } = derivation
+  const { deps, orgId, actorUserId, gitRepo, requestedAccess, githubAppId } = derivation
   const gh = githubTarget(gitRepo)
   if (!gh) return null
-  const covering = deps.github ? await deps.repos.githubInstallation.liveByOrgAndAccount(OrgId(orgId), gh.owner) : null
+  const covering = deps.github
+    ? await deps.repos.githubInstallation.liveByOrgAndAccount(OrgId(orgId), gh.owner, githubAppId ?? null)
+    : null
   const installation = covering && !covering.suspendedAt ? covering : null
   if (installation) {
     const access = requestedAccess ?? 'write'
@@ -169,7 +171,9 @@ export const githubCodeHostProvider: CodeHostProviderModule = {
   /** Raising the tier re-checks the CALLER's own GitHub permission on the repository. */
   async upgradeRepoAuthorization({ deps, req, reply, orgId, agent, row, access, toDto, specChanged }) {
     const [owner, repo] = row.repoFullName.split('/')
-    const installation = owner ? await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, owner) : null
+    const installation = owner
+      ? await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, owner, agent.githubAppId ?? null)
+      : null
     if (!owner || !repo || !installation || installation.suspendedAt) {
       void reply.code(409).send({
         error: 'Conflict',

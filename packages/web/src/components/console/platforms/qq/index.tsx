@@ -6,6 +6,7 @@ import { QQWizardBody } from './Body'
 
 export const QQModule: WebPlatformModule = {
   platformId: 'qq',
+  docsPath: 'connect-automate/chat-platforms/qq',
   requires: 'qq',
   Mark: QQMark,
   senderFallback: (sender) => (/^[0-9a-f]{32}$/i.test(sender) ? `QQ user · ${sender.slice(-8)}` : undefined),

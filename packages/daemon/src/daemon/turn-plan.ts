@@ -10,6 +10,7 @@
  * without booting a daemon.
  */
 import { sessionThreadOf } from '../messages/normalized.js'
+import { isCoordinatorCoordinate } from '../session/append-coordinate.js'
 import { hasReachedAgentCallHopLimit, originKindOf } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
@@ -55,9 +56,9 @@ export interface TurnPlan {
   readonly platform: string
   readonly isDm: boolean
   readonly channel: string
-  /** The platform thread posts, chrome and thread reads address; absent, the turn speaks at the conversation root. */
+  /** The physical reply target for message bodies, streams and shares; absent means the conversation root. */
   readonly thread?: string
-  /** The delivery's transcript coordinate: `thread`, else the message's own id, which names no platform thread. */
+  /** Transcript coordinate; also the provider lifecycle target when a physical reply target exists. */
   readonly statusThread: string
   /** The SESSION coordinate this turn was admitted on (channel-session-mode.md §3.1),
    *  carried from the per-target resolution rather than re-derived. Matches `statusThread`
@@ -100,6 +101,11 @@ export interface TurnPlan {
   readonly deliveryBinding: SessionDeliveryBinding
 }
 
+/** Root posts without a native session have no activity slot; their transcript key is internal. */
+export function activityThreadOf(plan: { thread?: string; statusThread?: string }): string | undefined {
+  return plan.thread === undefined ? undefined : plan.statusThread
+}
+
 /** Decide everything this turn can decide before it runs. Total over its input. */
 export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
   const { entry, agent, turnSurfaces } = input
@@ -129,9 +135,18 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
   }
   const sourceHopCount = callMeta?.hopCount ?? 0
   const githubReplyBatch = hookContext?.githubReviewBatch
+  // A coordinator's calls act as they are made, so new messages wait for its next turn instead of regenerating this one (auto-session-mode.md §4.3).
   const chatContextRefresh =
-    input.features.turnFinalContextRefresh && !webchat && !githubReply && originKindOf(msg.platform) === 'chat'
-  const webchatRefresh = input.features.turnFinalContextRefresh && !!webchat && msg.platform === 'webchat'
+    input.features.turnFinalContextRefresh &&
+    !webchat &&
+    !githubReply &&
+    originKindOf(msg.platform) === 'chat' &&
+    !isCoordinatorCoordinate(sessionThreadOf(msg))
+  const webchatRefresh =
+    input.features.turnFinalContextRefresh &&
+    !!webchat &&
+    msg.platform === 'webchat' &&
+    !isCoordinatorCoordinate(sessionThreadOf(msg))
   const stageAnswer =
     chatContextRefresh && (suppressReplyConn || turnSurfaces.exact(msg.platform)?.answerDelivery?.(turnCtx) !== 'live')
   return {
@@ -142,7 +157,7 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     platform: msg.platform,
     isDm: msg.isDm,
     channel: msg.channel,
-    ...(msg.thread !== undefined ? { thread: msg.thread } : {}),
+    ...((msg.replyThread ?? msg.thread) !== undefined ? { thread: msg.replyThread ?? msg.thread } : {}),
     statusThread: msg.thread ?? msg.msgId,
     sessionThread: sessionThreadOf(msg),
     transcriptChannel: transcriptChannelKey(msg.channel, msg.transportScope),

@@ -26,6 +26,7 @@ import type {
   GiteaConnectionRepo,
   GiteaRepositoryBindingRepo,
   GiteaWebhookSecretStore,
+  GithubAppRepo,
   GithubInstallationRepo,
   GitlabAgentAccountRepo,
   GitlabProjectBindingRepo,
@@ -77,10 +78,8 @@ export class HookService {
     private readonly relayControl: RelayControlSender,
     /** Names the member a compiled rule dispatches to (placement, or the current duty holder). */
     private readonly placement: Pick<PlacementResolver, 'routableDaemon'> = PLACEMENT_ONLY,
-    /** github-kind compile source: the org's live installation set (the relay's
-     *  runtime attribution gate, decision 6). Absent ⇒ github hooks never compile
-     *  (deployment without the GitHub App). */
-    private readonly installations?: Pick<GithubInstallationRepo, 'listForOrg'>,
+    /** github-kind compile source: the org's installations, each of one App (the relay's attribution gate, decision 6); absent ⇒ github hooks never compile. */
+    private readonly installations?: Pick<GithubInstallationRepo, 'listClaimsForOrg'>,
     /** The App's slug (GITHUB_APP_SLUG) — compiled into github rules as the
      *  broadcast mention handle (P3). The agent record supplies the targeted
      *  handle. */
@@ -104,7 +103,9 @@ export class HookService {
     /** Absent ⇒ gitea hooks never compile (no connection surface wired). */
     private readonly gitea?: GiteaHookCompileSources,
     /** The repository scopes' Decision routings; absent ⇒ every code-host rule compiles unrouted. */
-    private readonly routings?: Pick<CodeHostDecisionRoutingRepo, 'get'>
+    private readonly routings?: Pick<CodeHostDecisionRoutingRepo, 'get'>,
+    /** The org's GitHub Apps: an agent's rules carry its own App, and every App's pull requests are the internal CI lane. */
+    private readonly githubApps?: Pick<GithubAppRepo, 'listForOrg'>
   ) {}
 
   /** Wire the scope reconciler (it rebroadcasts through this service, so it attaches after construction). */
@@ -297,19 +298,30 @@ export class HookService {
         }
       }
     }
-    // github (P2): the rule carries the org's live installation ids, the relay's attribution gate; with none left it leaves the pool.
+    // github (P2): the rule carries the live installation ids of the App the agent works through, so only that App's deliveries fire it.
     if (!this.installations) return null
-    const valid = (await this.installations.listForOrg(hook.orgId)).filter((i) => !i.suspendedAt)
+    const githubAppId = agent.githubAppId ?? null
+    const valid = (await this.installations.listClaimsForOrg(hook.orgId)).filter(
+      (i) => (i.githubAppId ?? null) === githubAppId && !i.revokedAt && !i.suspendedAt
+    )
     // Empty stored comment families keep the published API's legacy repo-wide meaning, so the optional field is omitted.
     const commentFamilies = cadence.commentFamilies.filter(
       (family): family is 'issues' | 'pull_request' => family !== 'merge_request'
+    )
+    const orgApps = (await this.githubApps?.listForOrg(hook.orgId)) ?? []
+    // The App handle summons only the agents working through that App.
+    const appSlug = githubAppId ? orgApps.find((app) => app.id === githubAppId)?.slug : this.appSlug
+    const internalAppSlugs = [this.appSlug, ...orgApps.map((app) => app.slug)].filter(
+      (slug): slug is string => !!slug && slug !== appSlug
     )
     const matching = {
       events: cadence.events,
       ...(commentFamilies.length > 0 ? { commentFamilies } : {}),
       labelFilter: hook.labelFilter,
+      ...(hook.skipDrafts ? { skipDrafts: true } : {}),
       mentionOnly: cadence.mentionOnly,
-      ...(this.appSlug ? { appSlug: this.appSlug } : {}),
+      ...(appSlug ? { appSlug } : {}),
+      ...(internalAppSlugs.length > 0 ? { internalAppSlugs } : {}),
       agentName: agent.name
     }
     // An installation row fires for every repository of its one installation, while that installation stays live.

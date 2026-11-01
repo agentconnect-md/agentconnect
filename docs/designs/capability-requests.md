@@ -3,8 +3,9 @@
 **Status:** Implemented (#3396): every kind, live secrets with the `agentconnect-secrets` helper, the
 card on Slack, Discord, Feishu/Lark, Telegram, Google Chat and QQ, the webchat inline card, the request
 page, the settlement wake and `agent/mcp-rebound`, behind `features.capabilityRequests` and offered to
-every agent. §4.8 item 1 landed separately in #3128. The open questions in §6 keep the defaults written
-here.
+every agent. §4.8 item 1 landed separately in #3128. §4.12 widens what may be asked for (`capability-requests-v4`):
+every field of the agent form, the runtime included, and the agent's scheduled tasks. The open questions in §6 keep the
+defaults written here.
 
 **In one sentence:** when an agent finds it cannot do what it was asked because of how it is set up,
 it says what it is missing and why, hands the people present a link, and once someone with the
@@ -53,8 +54,9 @@ back to the conversation — not a new way to change an agent.
 
 ### 1.3 What it can ask for
 
-- **Its own settings** — model, reasoning effort, permission mode, and the other fields the console's
-  agent form edits.
+- **Its own settings** — model, reasoning effort, permission mode, runtime, execution strategy, and the
+  other fields the console's agent form edits (§4.12).
+- **A scheduled task** — a cron that runs the agent on a schedule, new or one of its own changed (§4.12).
 - **Tools** — an organization MCP server or a skill added to the agent.
 - **Repository access** — a repository authorization (or a higher access tier) on GitHub or GitLab.
 - **A connection** — an organization MCP server's OAuth connection, or a code-host or chat
@@ -123,7 +125,7 @@ process. Remote webchat MCP descriptor rotation uses it today (`daemon.ts`, near
 
 ```ts
 requestCapability({
-  kind: 'agent-settings' | 'mcp-server' | 'skill' | 'repository' | 'connection' | 'secret',
+  kind: 'agent-settings' | 'mcp-server' | 'skill' | 'repository' | 'connection' | 'secret' | 'cron',
   want: { ... },      // per kind, §4.2
   reason: string      // one sentence, ≤ 280 chars, shown to the person
 }) → { requestId, status: 'pending' | 'already_satisfied' | 'declined_recently', link?, message }
@@ -152,16 +154,17 @@ requestCapability({
 
 | Kind             | `want`                                                                                                    | Completed through                                                               | Who can complete                                                                              |
 | ---------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `agent-settings` | A partial patch over the fields of `updateAgent` (model, effort, fast mode, output mode, permission mode) | The agent configuration dialog                                                  | An editor of the agent                                                                        |
+| `agent-settings` | A partial patch over the agent form's fields of `updateAgent` (§4.12)                                     | The agent configuration dialog                                                  | An editor of the agent                                                                        |
 | `mcp-server`     | An organization MCP server by name                                                                        | The agent tools dialog; if the server is not connected yet, its OAuth flow next | An editor of the agent who can see the server; the server's OAuth needs edit access to it     |
 | `skill`          | A skill reference `<source>/<skill>`                                                                      | The skill install dialog                                                        | An editor of the agent who can see the source                                                 |
 | `repository`     | A repository (host + path) and the tier wanted (`read` / `write`)                                         | The repository authorization dialog                                             | An editor of the agent whose own code-host account has that access (the existing attestation) |
 | `connection`     | One of: an MCP server's OAuth connection; a code-host connection or installation; a chat integration      | The console flow that already connects it                                       | Whatever that flow requires today; installing on an organization is an owner's                |
 | `secret`         | A secret name, a description of what goes in it, and where it is used (§4.9)                              | The MCP server's header field, or a live secret field on the agent              | For a header, edit access to the server; for a live secret, an editor of the agent            |
+| `cron`           | A schedule, its time zone and the prompt it runs; with `cronId`, a change to one of the agent's own crons | The cron dialog                                                                 | For a new cron, a member who can see the agent; for a change, edit access to that cron        |
 
 The `want` objects are validated with zod at the bridge and again at the Control Plane. Unknown
-fields are refused, not ignored. `agent-settings` accepts only the listed fields: workspace,
-visibility, sharing, integrations and triggers are not things an agent asks for.
+fields are refused, not ignored. `agent-settings` accepts only the fields §4.12 lists: workspace,
+visibility and sharing stay out, and a chat integration is asked for as a `connection` (§4.12).
 
 ### 4.3 The record
 
@@ -645,6 +648,55 @@ key-server.md) and is a non-goal here.
 
 ---
 
+### 4.12 Widening: every change an admin makes in the console
+
+The safety of a request never rested on the list of kinds. §4.10 holds because a request is inert and a
+person saves the change through the console route that already checks their authority; the list only
+bounds the work. So the rule is: **a change an editor of the agent makes in the console is something the
+agent may ask for**, unless one of the exclusions below applies. Each kind or field that joins carries the
+same five parts: a strict `want` schema, a predicate over current rows (§4.6), the console dialog it opens
+prefilled, its warning lines (§4.5), and whether its wake reloads the session (§4.7).
+
+**`agent-settings` takes every field of the agent form** that is a plain value: `model`, `reasoningEffort`,
+`fastMode`, `outputMode`, `permissionMode`, `runtime`, `execution`, `chatActions`, `introduceOnJoin`,
+`showFooter`, `showStatusBar` and `displayName`. Each is judged by equality with the agent's current value.
+The description is edited on its own card, outside the agent form, and is not among them.
+
+- **The runtime.** A runtime is in `hostSpawnSig`, so saving one retires the process (§3) and the
+  conversation's next turn finds its runtime session unknown. The new runtime cannot load another
+  runtime's session, so it opens a fresh one with the thread replayed as context
+  (`session/turn/runtime-session.ts`): the conversation continues, from its history rather than the old
+  runtime's own state. The outcome says so. A model is per runtime, so a request that changes the runtime
+  usually names the model too, and the dialog resets a model the new runtime does not offer, as it does
+  without a request. The page warns that the agent's sessions restart.
+- **The execution strategy** warns when it leaves the sandbox (`host`): the agent's commands then run
+  with the daemon's own access to the machine.
+- **`chatActions`** warns when it widens what people in the agent's chats may do (`approve`, `settings`).
+
+**`cron`** asks for a scheduled task: `{ schedule, timezone?, trigger, name?, cronId? }`, with `trigger` the
+prompt the cron runs. Without `cronId` it is a new cron of this agent, headless, completed in the cron
+dialog prefilled with the agent and those values; where it posts is the person's choice there. With
+`cronId` it changes one of the agent's own crons, which the dialog opens on. The predicate holds when an
+enabled cron of the agent (that one, given `cronId`) has the wanted schedule and prompt, and the time zone
+when one was asked. A cron is not part of the agent's spec, so saving one re-evaluates the agent's open
+`cron` requests directly, and the wake is not held for an upsert acknowledgement; it does not reload the
+session. Completing a new cron passes the task the dialog saved, which must be one of this agent's crons the
+person can see, so a save that differs from the ask is judged by that task and the agent is told what it got. A `cronId` that is not one of the agent's
+crons is refused as an unknown target. A built-in agent's display name cannot be changed, so it is refused too.
+
+**What stays out, and why:**
+
+- **The workspace** — a running session's repository roots are pinned (§7), so the conversation that asked
+  could not continue on the new one.
+- **Visibility and sharing** — they change who can reach and manage the agent, not what it can do for the
+  person in front of it, and a diff of an audience does not show who should be in it. They stay with the
+  person who manages the agent. A chat integration stays the `connection` kind's, completed through the
+  flow that installs it.
+- **Personal accounts** — §7: nobody can complete those for someone else.
+
+**Compatibility.** The CP advertises `capability-requests-v4` when it takes these asks, and the daemon
+sends one only to such a CP; a CP refuses one from a daemon that did not advertise it.
+
 ## 5. Work breakdown
 
 **P1 — the loop, settings and tools**
@@ -678,6 +730,10 @@ key-server.md) and is a non-goal here.
     the sandbox image.
 13. Code-host refusal pointers.
 14. Offered to every agent, not only assistant mode.
+
+**P4**
+
+15. §4.12: every agent-form field in `agent-settings`, the `cron` kind, behind `capability-requests-v4`.
 
 ---
 

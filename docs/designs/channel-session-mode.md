@@ -1,7 +1,8 @@
 # Per-Conversation Session Mode
 
 > Status: Implemented on the daemon, the Control Plane and the console (§8); the unbounded
-> read §10 once called for does not exist. `auto` remains reserved (§12).
+> read §10 once called for does not exist. `auto` is implemented in [auto-session-mode.md](auto-session-mode.md)
+> (§12), and new rooms and group DMs start on it where the bot's daemon reads it.
 > The transcript layout of §6.2 and the retention question of §12.2 are superseded by
 > [message-intake.md](message-intake.md); the sections say so inline.
 > Scope: chat conversations that are channels, on every platform that has them, over
@@ -17,11 +18,11 @@ session** an activation joins — that is hardcoded by the session key.
 
 This design adds a second per-conversation setting, the **session mode**:
 
-| Mode        | Meaning                                                                                                                                                               |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createNew` | Default, today's behavior. A new message opens a new session; a reply inside a thread the agent already owns continues that thread's session.                         |
-| `append`    | Every admitted message in this conversation — top-level or inside a thread — joins **one** long-lived session belonging to the conversation.                          |
-| `auto`      | Reserved. A classifier would decide between continuing and opening a new session. Not implemented; the enum leaves room so the wire does not change again when it is. |
+| Mode        | Meaning                                                                                                                                                                   |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createNew` | Today's behavior, and the default where `auto` is not. A new message opens a new session; a reply inside a thread the agent already owns continues that thread's session. |
+| `append`    | Every admitted message in this conversation — top-level or inside a thread — joins **one** long-lived session belonging to the conversation.                              |
+| `auto`      | A coordinator session decides where each root message goes ([auto-session-mode.md](auto-session-mode.md)); the default for a new room or group DM.                        |
 
 The trigger and the session mode are orthogonal: the trigger decides whether a message
 activates the agent at all, the session mode decides which session the activation joins.
@@ -539,8 +540,10 @@ the CP branches on the conversation kind: an `append` DM keys on its reservation
 channel does, and each answer still posts into the physical thread its question came from.
 Slack's Assistant "new chat" (`assistant_thread_started`) rotates an `append` DM's
 reservation as `!new` would (§7.1), over both the Socket Mode and the relay ingress; a
-`createNew` DM ignores it, since its new thread is a new session already. Group DMs keep no
-control.
+`createNew` DM ignores it, since its new thread is a new session already. A group DM row takes a
+room's modes where its module declares `groupDmSessionModes`, which Slack does: a group DM is a
+small private room, and a new one starts on `auto` ([auto-session-mode.md](auto-session-mode.md)
+§3.2).
 
 **An `append` session is labelled by its room, not by a person.** The session list and
 detail header render a session's `user` column from `triggeredBy`/`triggeredByName`, which
@@ -556,16 +559,17 @@ list's own timestamps follow.
 **Assistant mode fixes the mode at projection.** For an agent in assistant mode
 ([assistant-mode.md](assistant-mode.md) §5.2), the spec projection keys every row on one
 long session where its platform's manifest lists the conversation kind in `appendKinds` —
-rooms on every platform but Linear, 1:1 DMs on Slack — except a By decision row, which
+rooms on every platform but Linear, 1:1 DMs and group DMs on Slack — except a By decision row, which
 keeps its own mode. The stored rows are not rewritten, so switching the mode off restores
 each row's own choice. The console shows those rows as `Single session`, with no other
 choice, while the mode is on. `appendKinds` and the web module's `sessionModes` /
-`dmSessionModes` state one fact; a web test keeps them in agreement. For such an agent the
+`dmSessionModes` / `groupDmSessionModes` state one fact; a web test keeps them in agreement. For such an agent the
 projection lists every known row, `createNew` ones included, and the daemon gives a
 conversation it does not list yet (one whose row has not reached the spec) `append` where the
 platform's `appendKinds` holds the kind of the message: a 1:1 DM, a group DM, else a room. So the
 first message of a new place already keys the one session, and the default never overrides a
-known row such as a By decision room.
+known row such as a By decision room. Where the daemon reads `auto`, that one session is the
+place's coordinator ([auto-session-mode.md](auto-session-mode.md) §3.4).
 
 **Linear declares `createNew` only.** A Linear row is a team and every issue in it is its own
 thread, so appending would pool a whole team into one session — a meaning this setting has
@@ -671,8 +675,8 @@ open question about transcript retention in §12, not to a read that does not ex
 
 ## 12. Open questions
 
-1. **`auto`.** Deliberately unimplemented. When it arrives it is a third enum value and a
-   daemon-side classifier; nothing above changes shape to accommodate it.
+1. **`auto`.** _Implemented in [auto-session-mode.md](auto-session-mode.md)._ A third enum value whose
+   decider is a coordinator session rather than a classifier.
 2. **Retention of retired coordinates.** _Resolved by [message-intake.md](message-intake.md) §8._ Superseded `append` sessions age out through the
    ordinary retention window, and their transcript rows remain on disk indefinitely like
    every other conversation's. Reads are bounded already (§10), so this is a question about

@@ -3,6 +3,7 @@ import type { PrismaLike } from '../prisma.js'
 import type {
   AcceptWebchatMcpGrantInput,
   IssueWebchatMcpGrantInput,
+  RenewWebchatMcpGrantInput,
   RevokeWebchatMcpGrantsInput,
   WebchatMcpAccessGrantRecord,
   WebchatMcpAccessGrantRepo
@@ -91,6 +92,37 @@ export class PgWebchatMcpAccessGrantRepo implements WebchatMcpAccessGrantRepo {
         data: { status: 'active', activatedAt: input.now }
       })
       return toRecord(activated)
+    })
+  }
+
+  async renew(input: RenewWebchatMcpGrantInput): Promise<WebchatMcpAccessGrantRecord | null> {
+    return this.db.$transaction(async (tx) => {
+      // Lock the authority first, as revocation does, so a renewal never outlives a racing revoke.
+      const [authority] = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+        SELECT "id"
+        FROM "webchat_mcp_delegation"
+        WHERE "id" = ${input.authorityId}
+          AND "generation" = ${input.authorityGeneration}
+          AND "conversationId" = ${input.conversationId}
+          AND "revokedAt" IS NULL
+          AND "expiresAt" > ${input.now}
+        FOR UPDATE
+      `)
+      if (!authority) return null
+      // Only a still-valid active grant extends; an expired or revoked one is never revived, and expiry never moves earlier.
+      const [renewed] = await tx.$queryRaw<WebchatMcpAccessGrant[]>(Prisma.sql`
+        UPDATE "webchat_mcp_access_grant"
+        SET "expiresAt" = GREATEST("expiresAt", ${input.expiresAt})
+        WHERE "id" = ${input.grantId}
+          AND "authorityId" = ${authority.id}
+          AND "descriptorInstanceId" = ${input.descriptorInstanceId}
+          AND "grantRevision" = ${input.grantRevision}
+          AND "status" = 'active'
+          AND "revokedAt" IS NULL
+          AND "expiresAt" > ${input.now}
+        RETURNING *
+      `)
+      return renewed ? toRecord(renewed) : null
     })
   }
 

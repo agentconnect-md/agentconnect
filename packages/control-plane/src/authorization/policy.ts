@@ -32,6 +32,8 @@ export interface SessionViewable {
   thread?: string | null
   /** What recognises an agent's own background work; unread on a `subsession:` coordinate counts as it. */
   subsession?: SubsessionFacts
+  /** The session owning this one as a task now; a task takes its owner's audience (auto-session-mode.md §6.2). */
+  taskParentSessionId?: string | null
 }
 
 /** The lineage of a session on a `subsession:` coordinate (assistant-mode.md §5.6). */
@@ -144,13 +146,14 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     // An `append` session is the whole conversation's long-lived session: its
     // recorded owner is only the first poster, so its audience is no one's to
     // change (channel-session-mode.md §9). An unread coordinate counts as one.
-    // The same holds for an agent's own background work (assistant-mode.md §5.6).
+    // The same holds for an agent's own background work (assistant-mode.md §5.6) and for a task while a session owns it (auto-session-mode.md §6.2).
     case AuthorizationAction.SessionChangeVisibility:
       return (
         !request.resource.externalProvider &&
         request.resource.thread !== undefined &&
         !isAppendCoordinate(request.resource.thread) &&
         !isOwnSubsession(request.resource) &&
+        !request.resource.taskParentSessionId &&
         identityOwnsSession(request.resource, request.identitySet)
       )
     // Continuation is an organization WRITE riding on view (webchat-cross-

@@ -100,7 +100,7 @@ export const GithubHookMetadata = z
   })
 export type GithubHookMetadata = z.infer<typeof GithubHookMetadata>
 
-/** GitHub folds target-branch changes into `pull_request:edited`; only the signed `changes.base` fact makes that edit a revision. */
+/** A signed `changes.base` makes `pull_request:edited` a revision; `ready_for_review` passes only a draft-skipping rule. */
 export function isGithubPullRequestRevisionEvent(
   event: string | undefined,
   github?: Pick<GithubHookMetadata, 'baseChanged'>
@@ -108,6 +108,7 @@ export function isGithubPullRequestRevisionEvent(
   return (
     event === 'pull_request:opened' ||
     event === 'pull_request:synchronize' ||
+    event === 'pull_request:ready_for_review' ||
     (event === 'pull_request:edited' && github?.baseChanged === true)
   )
 }
@@ -300,6 +301,11 @@ export const HookReviewResult = z.discriminatedUnion('state', [
   z.object({ state: z.literal('ambiguous'), code: HookReviewResultCode })
 ])
 export type HookReviewResult = z.infer<typeof HookReviewResult>
+
+/** A submitted review settles its reservation as the reserved event, or as the COMMENT GitHub downgrades the author's own verdict to. */
+export function hookReviewEventSettles(reserved: string | null, published: HookReviewEvent): boolean {
+  return reserved !== null && (reserved === published || published === 'COMMENT')
+}
 
 /** Body-free identity of the daemon's one fallback GitHub comment. */
 export const GithubPublishedComment = z.object({

@@ -85,6 +85,8 @@ export const EventSession = z.object({
   // Stable ACP session id of the session that spawned this one. Absent for roots.
   // Stored as metadata so the console can navigate the session family.
   parentSessionId: z.string().optional(),
+  // The session that owns this one as a task now (auto-session-mode.md §6.2); null for none, absent from an older daemon.
+  taskParentSessionId: z.string().min(1).nullable().optional(),
   agentId: z.string().uuid(),
   launchId: z.string().uuid().optional(), // 🅰️ CP launch fence — absent for sessions created on the Slack/Discord→daemon path (no CP-initiated launch)
   phase: z.enum(['start', 'plan', 'problem', 'end']),
@@ -407,6 +409,18 @@ export const DaemonLifecycleProgress = z.object({
   reason: z.string().max(500).optional()
 })
 export type DaemonLifecycleProgress = z.infer<typeof DaemonLifecycleProgress>
+
+// D→C REQ: a daemon opens the record of an upgrade it chose itself; reply `daemon/lifecycle/begin/ok` or error CONFLICT.
+export const DaemonLifecycleBegin = z.object({
+  op: z.literal('upgrade'),
+  trigger: z.literal('auto'),
+  fromVersion: z.string().min(1).max(128),
+  targetVersion: z.string().min(1).max(128)
+})
+export type DaemonLifecycleBegin = z.infer<typeof DaemonLifecycleBegin>
+
+export const DaemonLifecycleBeginOk = z.object({ operationId: z.string().min(1).max(200) })
+export type DaemonLifecycleBeginOk = z.infer<typeof DaemonLifecycleBeginOk>
 
 /** Fleet: drain+exit, supervisor restarts — C→D REQ, protocol §8.3 / frame #27. */
 export const DaemonRestart = z.object({

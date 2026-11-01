@@ -8,13 +8,30 @@ import type {
   SharedImage,
   SharedImageDownload
 } from '@agentconnect.md/protocol'
+import type { ToolEdit } from './tool-edits.js'
 
 // Masked application updates; protocol adapters own their envelopes, replay, and subscription state.
 export type ChatEvent =
   | { kind: 'message'; text: string; segmentId?: string; postId?: string }
   | { kind: 'thinking'; text: string }
-  | { kind: 'tool_call'; toolCallId: string; title: string; status: string; input?: string; output?: string }
-  | { kind: 'tool_update'; toolCallId: string; status: string; title?: string; input?: string; output?: string }
+  | {
+      kind: 'tool_call'
+      toolCallId: string
+      title: string
+      status: string
+      input?: string
+      output?: string
+      edits?: ToolEdit[]
+    }
+  | {
+      kind: 'tool_update'
+      toolCallId: string
+      status: string
+      title?: string
+      input?: string
+      output?: string
+      edits?: ToolEdit[]
+    }
   | { kind: 'session_info'; title: string }
   | { kind: 'superseded'; generation: number }
   | { kind: 'notice'; text: string; standing?: boolean }

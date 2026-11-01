@@ -12,7 +12,15 @@ import type {
   ToolCallConfirmationReason,
   ToolCallCancellationReason
 } from '@microsoft/agent-host-protocol'
-import type { ElicitAnswerValue, ElicitFieldSpec, SessionStep } from '@/lib/data'
+import type {
+  CapabilityCardBody,
+  ElicitAnswerValue,
+  ElicitFieldSpec,
+  Session,
+  SessionStep,
+  SessionUsage
+} from '@/lib/data'
+import { fmtCost, fmtCountCompact } from '@/lib/api'
 import type { McpAppCard, McpAppOutcome } from '@agentconnect.md/protocol'
 
 const text = (value: StringOrMarkdown | undefined): string =>
@@ -66,7 +74,12 @@ function field(q: ChatInputQuestion): ElicitFieldSpec | undefined {
 export function ahpSteps(chat: ChatState, agentId: string, session?: SessionState): SessionStep[] {
   const steps: SessionStep[] = []
   const meta = session?._meta?.['agentconnect.md'] as
-    | { sessionId?: string; apps?: Array<{ turnId: string; card: McpAppCard; html?: string; outcome?: McpAppOutcome }> }
+    | {
+        sessionId?: string
+        apps?: Array<{ turnId: string; card: McpAppCard; html?: string; outcome?: McpAppOutcome }>
+        plan?: { turnId: string; entries: NonNullable<SessionStep['plan']> }
+        capabilities?: Array<CapabilityCardBody & { turnId: string }>
+      }
     | undefined
   const turns = [...chat.turns, ...(chat.activeTurn ? [chat.activeTurn] : [])]
   for (const turn of turns) {
@@ -89,6 +102,8 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
           }
         : {})
     })
+    // A plan leads the work it planned, as the persisted plan row does.
+    if (meta?.plan?.turnId === turn.id) steps.push({ ...base, kind: 'planblock', text: '', plan: meta.plan.entries })
     for (const part of turn.responseParts) {
       if (part.kind === 'markdown' || part.kind === 'reasoning')
         steps.push({
@@ -167,6 +182,10 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
         })
       }
     }
+    // Settlement is read from the request itself: the daemon cannot update an idle session's cached outcome.
+    for (const { turnId, resolved: _resolved, ...capability } of meta?.capabilities ?? [])
+      if (turnId === turn.id)
+        steps.push({ ...base, kind: 'capability', text: capability.summary, capability, boundary: true })
   }
   if (chat.steeringMessage)
     steps.push({
@@ -185,6 +204,22 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
       app: { ...app.card, html: app.html ?? app.card.html, outcome: app.outcome }
     })
   return steps
+}
+
+// The daemon's status snapshot carries the same usage legacy Webchat streams; untouched fields keep their last value.
+export function ahpUsageFields(
+  status: SessionUsage | undefined,
+  prior: SessionUsage | undefined
+): Partial<Pick<Session, 'usage' | 'tokens' | 'cost'>> {
+  if (!status) return {}
+  const usage: SessionUsage = { ...prior }
+  for (const key of ['contextUsed', 'contextSize', 'totalTokens', 'costAmount', 'costCurrency'] as const)
+    if (status[key] !== undefined) Object.assign(usage, { [key]: status[key] })
+  return {
+    usage,
+    ...(usage.totalTokens !== undefined ? { tokens: fmtCountCompact(usage.totalTokens) } : {}),
+    ...(usage.costAmount !== undefined ? { cost: fmtCost(usage.costAmount, usage.costCurrency) } : {})
+  }
 }
 
 function answer(q: ChatInputQuestion, value: string | number | string[]): ChatInputAnswer {

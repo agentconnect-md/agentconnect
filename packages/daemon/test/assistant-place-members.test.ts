@@ -1,13 +1,14 @@
 // The read rule's lookups and askers (assistant-mode.md §5.5): the cache, its failures, and who counts as asking.
 import { describe, expect, it, vi } from 'vitest'
 import {
+  askerClass,
   askerOfFollower,
   PLACE_MEMBERS_TTL_MS,
   PlaceMembers,
   turnAskers,
   type TurnMessage
 } from '../src/assistant/place-members.js'
-import { NOBODY, type ConsoleVerdict, type ReadAsker } from '../src/assistant/place-access.js'
+import { CLOSED_LOOKUPS, NOBODY, type ConsoleVerdict, type ReadAsker } from '../src/assistant/place-access.js'
 import type { MessageGateway } from '../src/mcp/ops.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 
@@ -191,6 +192,46 @@ describe('turnAskers', () => {
       people: [{ kind: 'console', userId: 'user-editor' }],
       nobody: false
     })
+  })
+})
+
+describe('askerClass (assistant-mode.md §5.18 ③)', () => {
+  const from = (id: string, over: Partial<NormalizedMessage> = {}) => msg({ sender: { id, isBot: false }, ...over })
+
+  it("puts the bot's full members in one class and anyone else in a class of their own", async () => {
+    const { members } = setup({ isFullMember: vi.fn(async (user: string) => user === 'U_P' || user === 'U_Q') })
+    const lookups = members.lookupsFor('agent-a')
+    const workspace = await askerClass(from('U_P'), 'int-slack', lookups)
+    expect(await askerClass(from('U_Q'), 'int-slack', lookups)).toBe(workspace)
+    const guest = await askerClass(from('U_GUEST1'), 'int-slack', lookups)
+    const other = await askerClass(from('U_GUEST2'), 'int-slack', lookups)
+    expect(new Set([workspace, guest, other]).size).toBe(3)
+    // One guest's messages ask as the same one person.
+    expect(await askerClass(from('U_GUEST1'), 'int-slack', lookups)).toBe(guest)
+    // A full member on another bot is not a member of this one's workspace.
+    expect(await askerClass({ ...from('U_P'), integrationId: 'int-other' }, 'int-slack', lookups)).not.toBe(workspace)
+  })
+
+  it('asks alone when the standing cannot be confirmed', async () => {
+    const { members } = setup({ isFullMember: vi.fn().mockRejectedValue(new Error('ratelimited')) })
+    const lookups = members.lookupsFor('agent-a')
+    const p = await askerClass(from('U_P'), 'int-slack', lookups)
+    expect(p).not.toBe(await askerClass(from('U_Q'), 'int-slack', lookups))
+    expect(p).toBe(await askerClass(from('U_P'), 'int-slack', CLOSED_LOOKUPS))
+  })
+
+  it('puts every member in one class where the platform cannot tell a guest, and a console user alone', async () => {
+    const telegram = (id: string) => ({ ...from(id, { platform: 'telegram' }), integrationId: 'int-tg' })
+    expect(await askerClass(telegram('111'), 'int-tg', CLOSED_LOOKUPS)).toBe(
+      await askerClass(telegram('222'), 'int-tg', CLOSED_LOOKUPS)
+    )
+    const consoleUser = { msg: { ...fromP, sender: { id: 'user-p', isBot: false } }, console: true }
+    expect(await askerClass(consoleUser, undefined, CLOSED_LOOKUPS)).toMatch(/^person/)
+  })
+
+  it('puts a message no person sent in the class no person is behind', async () => {
+    for (const over of [{ source: 'agent' as const }, { sender: { id: 'B_OTHER', isBot: true } }, { headless: true }])
+      expect(await askerClass(msg(over), 'int-slack', CLOSED_LOOKUPS), JSON.stringify(over)).toBe('nobody')
   })
 })
 

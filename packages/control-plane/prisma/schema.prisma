@@ -102,6 +102,7 @@ model Org {
   integrations              Integration[]
   bots                      Bot[]
   githubInstallations       GithubInstallation[]
+  githubApps                GithubApp[]
   gitlabConnections         GitlabConnection[]
   gitlabProjectBindings     GitlabProjectBinding[]
   gitlabAgentAccounts       GitlabAgentAccount[]
@@ -501,11 +502,12 @@ model Daemon {
   sharedWith String[]           @default([]) // complete app_user.id audience when visibility='restricted'
 
   // ── console-set daemon settings ──
-  // Retention window for FINISHED sessions on the daemon's LOCAL store (the console's
-  // "Expire sessions" option): 'never' | '7d' | '30d' | '90d'. The CP only stores and
-  // delivers it (register/ok baseline + config/push hot update); the daemon's hourly
-  // retention sweep is what actually deletes expired sessions.
-  sessionRetention String @default("7d")
+  // How long a finished session's row and transcript stay on the daemon ('never' | '<n>d'); the CP only stores and delivers it.
+  sessionRetention   String @default("90d")
+  // How long a finished session's workspace, sandbox and runtime home stay, never past its row; delivered the same way.
+  workspaceRetention String @default("7d")
+  // Auto-upgrade switch (daemon-auto-upgrade.md §3): delivered like sessionRetention; the daemon picks the moment.
+  autoUpgrade      Boolean @default(false)
 
   // ── fencing root ──
   sessionEpoch BigInt @default(0) @db.BigInt // bumped each successful (re)auth
@@ -570,12 +572,20 @@ enum DaemonLifecycleOpStatus {
   pending
   succeeded
   failed
+  deferred // an automatic upgrade the daemon put off because it stayed busy; ignored by the console badge
+}
+
+// Who started the op: a console command, or the daemon's own auto-upgrader (daemon-auto-upgrade.md §6).
+enum DaemonLifecycleOpTrigger {
+  manual
+  auto
 }
 
 model DaemonLifecycleOp {
   id            String                  @id @default(cuid())
   daemonId      String                  @db.Uuid
   op            DaemonLifecycleOpType
+  trigger       DaemonLifecycleOpTrigger @default(manual)
   targetVersion String? // the version to reach (upgrade only); null for restart
   initiator     String? // app_user.id that commanded it; null under devAuth / system
   status        DaemonLifecycleOpStatus @default(pending)
@@ -930,6 +940,8 @@ model Agent {
   // `gitCredentialProvider` qualifies which host numbered it.
   // Nullable for pre-migration/anonymous workspaces and lazily repairable.
   workspaceRepoId       BigInt?
+  // The organization GitHub App this agent works through (GithubApp.id), one agent per App. Null ⇒ the built-in App.
+  githubAppId           String?            @unique @db.Uuid
   gitAccess             GitAccess          @default(write) // ceiling for minted tokens; meaningful only with a credential provider
   capabilities          String[]           @default([]) // → AgentLaunch.activeCapabilities
   permissions           Json               @default("{}") @db.JsonB // {policy:"ask",autoApprove:[...]}
@@ -968,6 +980,7 @@ model Agent {
   updatedAt             DateTime           @updatedAt @db.Timestamptz(6)
 
   org                   Org                        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  githubApp             GithubApp?                 @relation(fields: [githubAppId], references: [id], onDelete: SetNull)
   daemon                Daemon?                    @relation(fields: [daemonId], references: [id], onDelete: SetNull)
   set                   MemberSet?                 @relation(fields: [setId], references: [id], onDelete: SetNull)
   createdBy             User?                      @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
@@ -1352,6 +1365,7 @@ enum VisibilitySource {
 model SessionMeta {
   id                  String              @id // EventSession.sessionId = ACP session id (agent-assigned string, NOT a UUID)
   parentSessionId     String? // Parent ACP session id reported by the daemon; no FK because parent metadata may arrive later or live on another daemon
+  taskParentSessionId String? // The session that owns this one as a task now (auto-session-mode.md §6.2); the daemon moves or clears it, unlike parentSessionId
   agentId             String              @db.Uuid
   launchId            String?             @db.Uuid // CP launch fence; null for Slack/Discord-created sessions (no CP launch)
   platform            String? // denormalized sessionKey echo for dashboard filters (free string so webchat can be listed)
@@ -1465,6 +1479,7 @@ model SessionMeta {
   @@index([agentId, triggeredBy, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_agent_trigger_page_idx")
   @@index([orgId, visibility, lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc)], map: "session_meta_org_visibility_page_idx")
   @@index([parentSessionId])
+  @@index([taskParentSessionId])
   // Conversation grouping (merged-conversation-view.md §5.2): serves the
   // emit-at-max exists-newer probe, the member backfill, and the
   // conversationKey resolver. Replaces the unused bare (platform, channel).
@@ -2213,6 +2228,7 @@ model HookDef {
   events                             String[]          @default([]) // "issues:opened" / "pull_request:*" / "issue_comment:created"
   commentFamilies                    String[]          @default([]) // empty = legacy repo-wide comments; otherwise issues/pull_request scope
   labelFilter                        String[]          @default([]) // non-empty ⇒ issue/PR must carry one of these labels
+  skipDrafts                         Boolean           @default(false) // github PR rows: draft revisions wait for ready_for_review
   mentionOnly                        Boolean           @default(false) // P3 summon mode: authored event text must @<agent-name> or @<app-slug>
   // Durable configuration/dispatch fences.  configRevision changes whenever
   // the compiled definition changes; dispatchRevision additionally changes
@@ -2928,12 +2944,11 @@ enum ChannelTrigger {
   decision
 }
 
-// Which session an activation in a conversation joins (channel-session-mode.md §5).
-// `createNew` is today's behavior; `append` joins the conversation's one long-lived
-// session. `auto` is reserved by the design and deliberately absent until it exists.
+// Which session an activation joins (channel-session-mode.md §5); `auto` needs a daemon advertising it (auto-session-mode.md §3.1).
 enum ChannelSessionMode {
   createNew
   append
+  auto
 }
 
 // Conversation kind (resource-visibility.md §14.3): a member channel vs a direct
@@ -2972,6 +2987,7 @@ model IntegrationChannel {
   url           String?
   isPrivate     Boolean          @default(false)
   kind          ConversationKind @default(channel)
+  isCodeSession Boolean          @default(false)
   // The 1:1 DM counterpart's platform member id (resource-visibility.md §14.8). Control
   // metadata of the same class as `name` — it says WHO the row is with, which is what
   // lets a private agent's DM follow that person's linked console identity instead of
@@ -3340,13 +3356,49 @@ model GithubInstallation {
   permissions         Json      @default("{}") @db.JsonB
   suspendedAt         DateTime? @db.Timestamptz(6)
   revokedAt           DateTime? @db.Timestamptz(6) // sync found it uninstalled ⇒ mark, don't delete
+  // The organization GitHub App this installation belongs to; null ⇒ the built-in App. Resolution is always App-qualified.
+  githubAppId         String?   @db.Uuid
   createdAt           DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt           DateTime  @updatedAt @db.Timestamptz(6)
 
-  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org Org        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  app GithubApp? @relation(fields: [githubAppId], references: [id], onDelete: Cascade)
 
   @@index([orgId])
+  @@index([githubAppId])
   @@map("github_installation")
+}
+
+/// An organization GitHub App: one agent works through it at a time, and it is free for another once that agent stops (§Organization GitHub Apps).
+model GithubApp {
+  id        String   @id @default(uuid()) @db.Uuid
+  orgId     String
+  appId     BigInt   @unique // GitHub-side App id
+  slug      String // github.com/apps/<slug>; the bot login is `<slug>[bot]`
+  clientId  String? // JWT issuer when known (GitHub's recommendation); else the App id
+  botUserId BigInt? // user id of `<slug>[bot]`, resolved on registration; null ⇒ unknown
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  org           Org                  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  secret        GithubAppSecret?
+  installations GithubInstallation[]
+  agent         Agent?
+
+  @@unique([id, orgId])
+  @@index([orgId])
+  @@map("github_app")
+}
+
+/// An organization GitHub App's private key and webhook secret, sealed under the org and read only via GithubAppSecretStore.
+model GithubAppSecret {
+  githubAppId   String  @id @db.Uuid
+  privateKey    String // stored SecretCipher representation of the base64 PEM
+  webhookSecret String? // stored SecretCipher representation; null ⇒ the App was created without a webhook
+
+  app GithubApp @relation(fields: [githubAppId], references: [id], onDelete: Cascade)
+
+  @@map("github_app_secret")
 }
 
 /// One-shot HMAC-signed install-state nonces (the `state` on the GitHub install

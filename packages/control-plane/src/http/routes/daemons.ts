@@ -13,6 +13,8 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import {
+  CONFIG_KEY_UPGRADE_AUTO,
+  DAEMON_AUTO_UPGRADE_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   RUNTIME_PROBE_FEATURE,
   SESSION_RETENTION_RE
@@ -30,6 +32,7 @@ import {
   DaemonCapabilityListDto,
   DaemonViewDto,
   DaemonLifecycleOpDto,
+  DaemonLifecycleOpByIdDto,
   PoolRuntimeProbeDto,
   UpdateDaemonBody,
   DaemonUpgradeBody,
@@ -43,6 +46,7 @@ import type { DaemonLifecycleOpRecord, DaemonLifecycleOpRepo } from '../../persi
 import { provisionDaemonConnect } from '../onboarding.js'
 import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
+import { isOlderVersion } from '../../registry/semver.js'
 
 /** Drain + (install +) relaunch + re-register budget for a CP-commanded lifecycle op.
  *  A still-`pending` op older than this reads as no-longer-in-flight and is closed
@@ -51,6 +55,8 @@ const LIFECYCLE_DEADLINE_MS = 15 * 60_000
 
 /** A pool probe requested within this window is answered by the one already started, not sent again. */
 const POOL_RUNTIME_PROBE_DEBOUNCE_MS = 30_000
+
+const TIMED_OUT_OUTCOME = 'timed out — the daemon did not re-register before the deadline'
 
 /** Backoff for the background arm-write recovery (§7). Bounded to well within
  *  {@link LIFECYCLE_DEADLINE_MS} so a transient DB blip recovers before the op expires. */
@@ -129,12 +135,12 @@ function toDto(
   graceMs: number,
   nowMs: number,
   release: { channel: string; latestVersion: string | null; availableVersions: string[] },
-  latestOp: DaemonLifecycleOpRecord | null
+  latestOp: DaemonLifecycleOpRecord | null,
+  latestAutoOp: DaemonLifecycleOpRecord | null
 ): DaemonViewDtoT {
-  // Read-time expiry projection: a still-`pending` op past its deadline is reported as
-  // `failed` (timed out) even before the sweep/next-command persists that — so the
-  // console never renders a dead op as in-flight, and a stuck op reads terminal.
+  // Read-time expiry projection: a pending op past its deadline reads `failed` before the sweep persists it.
   const expired = latestOp?.status === 'pending' && latestOp.deadline.getTime() <= nowMs
+  const autoExpired = latestAutoOp?.status === 'pending' && latestAutoOp.deadline.getTime() <= nowMs
   const orgOwned = view.orgId !== null
   return {
     daemonId: view.daemonId,
@@ -150,10 +156,23 @@ function toDto(
       ? {
           id: latestOp.id,
           op: latestOp.op,
-          status: expired ? 'failed' : latestOp.status,
+          trigger: latestOp.trigger,
+          // The repo never returns a deferred row here; the cast narrows the shared status type.
+          status: expired ? 'failed' : (latestOp.status as 'pending' | 'succeeded' | 'failed'),
           phase: latestOp.phase,
           targetVersion: latestOp.targetVersion,
-          outcome: expired ? 'timed out — the daemon did not re-register before the deadline' : latestOp.outcome
+          outcome: expired ? TIMED_OUT_OUTCOME : latestOp.outcome
+        }
+      : null,
+    autoUpgrade: view.autoUpgrade,
+    autoUpgradeSupported: orgOwned && view.capabilities.features.includes(DAEMON_AUTO_UPGRADE_FEATURE),
+    lastAutoUpgrade: latestAutoOp
+      ? {
+          id: latestAutoOp.id,
+          status: autoExpired ? 'failed' : (latestAutoOp.status as 'pending' | 'succeeded' | 'failed'),
+          targetVersion: latestAutoOp.targetVersion,
+          outcome: autoExpired ? TIMED_OUT_OUTCOME : latestAutoOp.outcome,
+          settledAt: latestAutoOp.settledAt ? latestAutoOp.settledAt.toISOString() : null
         }
       : null,
     status: liveStatus(view, liveness, graceMs, nowMs),
@@ -179,7 +198,8 @@ function toDto(
     // Defensive read-time normalization: the PATCH route only writes validated
     // values, so a fallback here just keeps an unexpected stored value from
     // failing the whole response's schema serialization.
-    sessionRetention: SESSION_RETENTION_RE.test(view.sessionRetention) ? view.sessionRetention : '7d',
+    sessionRetention: SESSION_RETENTION_RE.test(view.sessionRetention) ? view.sessionRetention : '90d',
+    workspaceRetention: SESSION_RETENTION_RE.test(view.workspaceRetention) ? view.workspaceRetention : '7d',
     memberSetId: view.memberSetId,
     // Identity, not membership — the predicate `assertDaemonNotInSet` enforces, so this is what a pin will accept.
     pinnable: orgOwned,
@@ -233,14 +253,21 @@ export function daemonRoutes(deps: HttpDeps) {
       latestVersion: null,
       availableVersions: []
     }
-  // Evaluated per DTO render so the grace compares against the actual request time. A
-  // single mutation response fetches its own daemon's latest op; the list route batches
-  // (see below) to avoid an N+1. `latestForDaemon` (any status, not just pending) so a
-  // terminal op stays observable — the console reads terminal state, not just in-flight.
-  const dtoWith = (view: DaemonView, ctx: ViewCtx, latestOp: DaemonLifecycleOpRecord | null): DaemonViewDtoT =>
-    toDto(view, deps.liveness, ctx, graceMs, Date.now(), release(), latestOp)
-  const dto = async (view: DaemonView, ctx: ViewCtx): Promise<DaemonViewDtoT> =>
-    dtoWith(view, ctx, await deps.repos.daemonLifecycleOp.latestForDaemon(DaemonId(view.daemonId)))
+  // Rendered per request so the grace uses its time; terminal ops stay observable, deferred ones never reach the badge.
+  const dtoWith = (
+    view: DaemonView,
+    ctx: ViewCtx,
+    latestOp: DaemonLifecycleOpRecord | null,
+    latestAutoOp: DaemonLifecycleOpRecord | null
+  ): DaemonViewDtoT => toDto(view, deps.liveness, ctx, graceMs, Date.now(), release(), latestOp, latestAutoOp)
+  const dto = async (view: DaemonView, ctx: ViewCtx): Promise<DaemonViewDtoT> => {
+    const did = DaemonId(view.daemonId)
+    const [latestOp, [latestAutoOp]] = await Promise.all([
+      deps.repos.daemonLifecycleOp.latestForDaemon(did),
+      deps.repos.daemonLifecycleOp.latestAutoForDaemons([did])
+    ])
+    return dtoWith(view, ctx, latestOp, latestAutoOp ?? null)
+  }
 
   return async function daemonRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
@@ -260,10 +287,17 @@ export function daemonRoutes(deps: HttpDeps) {
       async (req) => {
         const ctx = ctxOf(req)
         const rows = await deps.registry.listAvailable(orgOf(req), ctx)
-        // One batched latest-op query for the whole fleet (no N+1), grouped by daemon.
-        const ops = await deps.repos.daemonLifecycleOp.latestForDaemons(rows.map((d) => DaemonId(d.daemonId)))
+        // Batched latest-op queries for the whole fleet (no N+1), grouped by daemon.
+        const ids = rows.map((d) => DaemonId(d.daemonId))
+        const [ops, autoOps] = await Promise.all([
+          deps.repos.daemonLifecycleOp.latestForDaemons(ids),
+          deps.repos.daemonLifecycleOp.latestAutoForDaemons(ids)
+        ])
         const byDaemon = new Map(ops.map((o) => [o.daemonId as string, o]))
-        return rows.map((d) => fleetOf(dtoWith(d, ctx, byDaemon.get(d.daemonId) ?? null)))
+        const autoByDaemon = new Map(autoOps.map((o) => [o.daemonId as string, o]))
+        return rows.map((d) =>
+          fleetOf(dtoWith(d, ctx, byDaemon.get(d.daemonId) ?? null, autoByDaemon.get(d.daemonId) ?? null))
+        )
       }
     )
 
@@ -284,7 +318,7 @@ export function daemonRoutes(deps: HttpDeps) {
         const ctx = ctxOf(req)
         const rows = await deps.registry.listAvailable(orgOf(req), ctx)
         // Capability needs no lifecycle op, so this read skips that query entirely.
-        return rows.map((d) => capabilityOf(toDto(d, deps.liveness, ctx, graceMs, Date.now(), release(), null)))
+        return rows.map((d) => capabilityOf(toDto(d, deps.liveness, ctx, graceMs, Date.now(), release(), null, null)))
       }
     )
 
@@ -377,9 +411,7 @@ export function daemonRoutes(deps: HttpDeps) {
       return canView(view, ctxOf(req)) ? view : null
     }
 
-    // Update console daemon settings (name / session retention). The row
-    // materializes on the WS `auth` handshake, so a missing id (Prisma P2025)
-    // maps to 404 via the error handler.
+    // Update console daemon settings; the row materializes on WS `auth`, so a missing id (P2025) maps to 404.
     r.patch(
       '/daemons/:id',
       {
@@ -387,11 +419,11 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'Update a daemon',
           description:
-            'Update console daemon settings: the human-friendly display name and/or the finished-session retention window ("Expire sessions"). A retention change is hot-pushed to a connected daemon and re-issued in the register/ok snapshot on reconnect.',
+            'Update console daemon settings: the human-friendly display name, the finished-session retention window ("Expire sessions"), and/or the auto-upgrade switch. With auto-upgrade on, the daemon follows the deployment’s announced release (latestVersion), installing it while serving and restarting onto it only when idle; it is 409 for a daemon that does not advertise daemon-auto-upgrade-v1 (no supervisor, or a pool member). Retention and auto-upgrade changes are hot-pushed to a connected daemon and re-issued in the register/ok snapshot on reconnect. Requires the same edit rights as upgrading the daemon.',
           operationId: 'updateDaemon',
           params: IdParam,
           body: UpdateDaemonBody,
-          response: { 200: DaemonViewDto, 403: ErrorDto, 404: ErrorDto }
+          response: { 200: DaemonViewDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -403,7 +435,15 @@ export function daemonRoutes(deps: HttpDeps) {
         if (!canEdit(existing, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this daemon' })
         }
-        const { name, sessionRetention } = req.body
+        const { name, sessionRetention, workspaceRetention, autoUpgrade } = req.body
+        // Refused before any write so a rejected body changes nothing: no daemon could honour the switch.
+        if (autoUpgrade === true && !existing.capabilities.features.includes(DAEMON_AUTO_UPGRADE_FEATURE)) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'this daemon cannot upgrade itself unattended (it does not advertise daemon-auto-upgrade-v1)'
+          })
+        }
         const did = DaemonId(req.params.id)
         let view = existing
         if (name !== undefined) view = await deps.registry.rename(orgOf(req), did, name, req.principal?.userId)
@@ -417,6 +457,18 @@ export function daemonRoutes(deps: HttpDeps) {
           } catch {
             // NoConnection — the reconnect snapshot is the backstop
           }
+        }
+        if (workspaceRetention !== undefined) {
+          view = await deps.registry.setWorkspaceRetention(orgOf(req), did, workspaceRetention, req.principal?.userId)
+          try {
+            deps.control.configPush(req.params.id, { 'sessions.workspaceRetention': workspaceRetention })
+          } catch {
+            // NoConnection — the reconnect snapshot is the backstop
+          }
+        }
+        if (autoUpgrade !== undefined) {
+          view = await deps.registry.setAutoUpgrade(orgOf(req), did, autoUpgrade, req.principal?.userId)
+          pushAutoUpgrade(req.params.id, autoUpgrade)
         }
         return dto(view, ctxOf(req))
       }
@@ -525,6 +577,15 @@ export function daemonRoutes(deps: HttpDeps) {
       }
     )
 
+    // Best-effort hot push of the switch; an offline daemon converges from register/ok.
+    const pushAutoUpgrade = (id: string, value: boolean): void => {
+      try {
+        deps.control.configPush(id, { [CONFIG_KEY_UPGRADE_AUTO]: value })
+      } catch {
+        // NoConnection — the reconnect snapshot is the backstop
+      }
+    }
+
     // Open a fleet lifecycle op; bootstrap-capable upgrades may wait durably for the next auth.
     const commandLifecycle = async (
       req: FastifyRequest,
@@ -560,16 +621,30 @@ export function daemonRoutes(deps: HttpDeps) {
       }
       // The boot this restart reaches; the op settles only once a different one registers.
       const commandBootId = op === 'restart' ? await deps.registry.currentBootId(DaemonId(id)) : null
-      const opRow = await deps.repos.daemonLifecycleOp.open({
-        daemonId: DaemonId(id),
-        op,
-        ...(commandBootId ? { commandBootId } : {}),
-        ...(targetVersion ? { targetVersion } : {}),
-        ...(req.principal?.userId ? { initiator: req.principal.userId } : {}),
-        // Live delivery replaces this estimate with the sender's actual connection epoch.
-        commandEpoch: BigInt(liveConn?.sessionEpoch ?? existing.sessionEpoch),
-        deadline: new Date(Date.now() + LIFECYCLE_DEADLINE_MS)
-      })
+      // daemon-auto-upgrade.md §6: a manual upgrade below the announced release turns auto-upgrade off, or it would undo this.
+      const latest = release().latestVersion
+      const disableAuto =
+        op === 'upgrade' && existing.autoUpgrade && targetVersion !== undefined && isOlderVersion(targetVersion, latest)
+      const openOp = () =>
+        deps.repos.daemonLifecycleOp.open({
+          daemonId: DaemonId(id),
+          op,
+          ...(commandBootId ? { commandBootId } : {}),
+          ...(targetVersion ? { targetVersion } : {}),
+          ...(req.principal?.userId ? { initiator: req.principal.userId } : {}),
+          // Live delivery replaces this estimate with the sender's actual connection epoch.
+          commandEpoch: BigInt(liveConn?.sessionEpoch ?? existing.sessionEpoch),
+          deadline: new Date(Date.now() + LIFECYCLE_DEADLINE_MS)
+        })
+      const opRow = disableAuto
+        ? await deps.sharedTx(async () => {
+            const opened = await openOp()
+            await deps.registry.setAutoUpgrade(orgOf(req), DaemonId(id), false, req.principal?.userId)
+            return opened
+          })
+        : await openOp()
+      // Reaches the daemon ahead of the upgrade command, so its auto-upgrader stands down first.
+      if (disableAuto) pushAutoUpgrade(id, false)
 
       // Re-resolve after open: READY receives direct control; pre-READY reconnects through auth.
       const deliveryConn = deps.liveness.get(id)
@@ -581,7 +656,8 @@ export function daemonRoutes(deps: HttpDeps) {
         return reply.code(202).send({
           id: opRow.id,
           op: opRow.op,
-          status: opRow.status,
+          trigger: opRow.trigger,
+          status: opRow.status as 'pending',
           phase: opRow.phase,
           targetVersion: opRow.targetVersion,
           outcome: opRow.outcome
@@ -670,14 +746,15 @@ export function daemonRoutes(deps: HttpDeps) {
         req.log.warn({ daemonId: id, opId: opRow.id, err }, 'lifecycle op READY re-check failed; scheduling recovery')
         void retryArm(deps.repos.daemonLifecycleOp, deps.registry, opRow.id, id, epoch, ARM_RECOVERY_DELAYS_MS, req.log)
       }
-      const latest = (await deps.repos.daemonLifecycleOp.getById(opRow.id).catch(() => null)) ?? opRow
+      const latestOp = (await deps.repos.daemonLifecycleOp.getById(opRow.id).catch(() => null)) ?? opRow
       return reply.code(202).send({
-        id: latest.id,
-        op: latest.op,
-        status: latest.status,
-        phase: latest.phase,
-        targetVersion: latest.targetVersion,
-        outcome: latest.outcome
+        id: latestOp.id,
+        op: latestOp.op,
+        trigger: latestOp.trigger,
+        status: latestOp.status as 'pending' | 'succeeded' | 'failed',
+        phase: latestOp.phase,
+        targetVersion: latestOp.targetVersion,
+        outcome: latestOp.outcome
       })
     }
 
@@ -740,10 +817,10 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'Get a daemon lifecycle op',
           description:
-            'Fetch a single CP-commanded restart/upgrade op by id (status expiry-projected). The console polls this to track the command it issued.',
+            'Fetch a single restart/upgrade op by id (status expiry-projected): a console command, or an automatic upgrade the daemon started itself (trigger auto), which reads deferred when the daemon put it off because it stayed busy. The console polls this to track the command it issued.',
           operationId: 'getDaemonLifecycleOp',
           params: z.object({ id: z.string(), opId: z.string() }),
-          response: { 200: DaemonLifecycleOpDto, 403: ErrorDto, 404: ErrorDto }
+          response: { 200: DaemonLifecycleOpByIdDto, 403: ErrorDto, 404: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -760,10 +837,11 @@ export function daemonRoutes(deps: HttpDeps) {
         return {
           id: opRow.id,
           op: opRow.op,
+          trigger: opRow.trigger,
           status: expired ? ('failed' as const) : opRow.status,
           phase: opRow.phase,
           targetVersion: opRow.targetVersion,
-          outcome: expired ? 'timed out — the daemon did not re-register before the deadline' : opRow.outcome
+          outcome: expired ? TIMED_OUT_OUTCOME : opRow.outcome
         }
       }
     )

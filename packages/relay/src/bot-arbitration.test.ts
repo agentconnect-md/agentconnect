@@ -57,6 +57,14 @@ const msg = (over: Partial<WireNormalizedMessage>): WireNormalizedMessage => ({
 describe('HTTP-bot arbitration (§10)', () => {
   const empty = () => new Map<string, RouteTarget>()
 
+  it('uses the bot default for a human message in its provider-owned conversation, with the Off fence intact', () => {
+    const a = assignment()
+    const directed = msg({ conversationBotId: BOTUSER, thread: 'CX' })
+    expect(arbitrate(a, directed, empty())).toEqual({ agentId: ALICE, daemonId: D1, integrationId: 'iA' })
+    expect(arbitrate({ ...a, mutedChannels: ['CX'] }, directed, empty())).toBeNull()
+    expect(arbitrate(a, { ...directed, conversationBotId: 'OTHER' }, empty())).toBeNull()
+  })
+
   it('channel ownership with a mention trigger routes a mentioned message to the owner', () => {
     const t = arbitrate(assignment(), msg({ channel: 'C1', text: '<@UBOT> deploy', mentionedBots: [BOTUSER] }), empty())
     expect(t).toEqual({ agentId: ALICE, daemonId: D1, integrationId: 'iA' })

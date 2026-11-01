@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AhpClient, InMemoryTransport, type AhpTransport } from '@microsoft/agent-host-protocol/client'
 import { type ActionType, type ChatState, type StateAction, MessageKind } from '@microsoft/agent-host-protocol'
-import { AhpAttachment } from './attachment'
+import { AhpAttachment, ahpBrowserTransport } from './attachment'
+import { WEBCHAT_CONNECT_FAILED } from '@/lib/webchat-stream'
 import { AHP_MAX_MESSAGE_BYTES } from '@agentconnect.md/protocol'
 
 const SESSION = 'ahp-session:/test',
@@ -18,6 +19,7 @@ afterEach(async () => {
   await Promise.all(opened.map((item) => item.close()))
   opened.length = 0
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   vi.useRealTimers()
 })
 function fixture(snapshot = empty, extensions?: Record<string, unknown>) {
@@ -144,6 +146,14 @@ describe('official SDK attachment', () => {
     await f.action(start, 53)
     await vi.waitFor(() => expect(f.attachment.snapshot.chat?.activeTurn?.id).toBe('turn'))
   })
+  it('clears the interruption error once a reconnect attaches', async () => {
+    const f = fixture()
+    await f.attachment.attach(SESSION)
+    await f.servers.at(-1)!.close()
+    await vi.waitFor(() => expect(f.attachment.snapshot.error).toMatch('Connection interrupted'))
+    await f.attachment.attach()
+    expect(f.attachment.snapshot).toEqual(expect.objectContaining({ connected: true, error: undefined }))
+  })
   it('does not resend an unknown delivery and reconciles only snapshot evidence', async () => {
     let snapshot = empty()
     const f = fixture(() => snapshot)
@@ -209,5 +219,16 @@ describe('official SDK attachment', () => {
     await f.attachment.attach()
     expect(f.attachment.snapshot.connected).toBe(true)
     expect(f.received.filter((frame) => frame.method === 'dispatchAction')).toEqual([])
+  })
+
+  it('names the browser connection when the socket never opens', async () => {
+    class FailingSocket extends EventTarget {
+      constructor() {
+        super()
+        queueMicrotask(() => this.dispatchEvent(new Event('error')))
+      }
+    }
+    vi.stubGlobal('WebSocket', FailingSocket)
+    await expect(ahpBrowserTransport('wss://relay.example.test/ahp', 'token')).rejects.toThrow(WEBCHAT_CONNECT_FAILED)
   })
 })

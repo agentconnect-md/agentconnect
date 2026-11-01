@@ -26,6 +26,7 @@ import {
   type ApiKeyPermission,
   type RoutePermission
 } from '../../domain/api-key-permission.js'
+import { MCP_SCOPES } from '../../registry/oauthService.js'
 
 /** The authenticated WebUI user attached to a request (`req.principal`).
  *  Identity ONLY — the org a request acts on lives in the URL
@@ -509,6 +510,12 @@ function withApiKeyAuth(
       return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: 'temporarily unavailable' })
     }
     if (!resolved) return unauthorized(reply, 'invalid api key')
+    // An AHP-only OAuth token authenticates AHP endpoints alone, never REST or MCP (ahp-client-sign-in.md §3.3).
+    if (
+      resolved.scopes.length > 0 &&
+      !resolved.scopes.some((scope) => (MCP_SCOPES as readonly string[]).includes(scope))
+    )
+      return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'this token is limited to AHP' })
     // The key's permission is enforced here, where it is resolved, so it covers `/me/*` and MCP as well as the org subtree (daemon-api-key-auth.md §6).
     const declared = req.routeOptions.config.permission
     if (!keyAdmitted(resolved.permission, req.method, declared)) {

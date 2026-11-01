@@ -1,6 +1,10 @@
 // The standing collaboration guidance teaches delegated tasks to every agent (send-message-guide.md §2.1).
 import { describe, expect, it } from 'vitest'
-import { buildStandingContext, COLLAB_APPEND } from '../src/session/turn/standing-context.js'
+import {
+  buildStandingContext,
+  COLLAB_APPEND,
+  COLLAB_APPEND_WITHOUT_DELEGATION
+} from '../src/session/turn/standing-context.js'
 
 const BASE = {
   agentName: 'bot-a',
@@ -24,7 +28,7 @@ describe('standing collaboration guidance', () => {
       'a session of that conversation, not a task: use your own ID from the # Agent block (also included by ' +
         '`listAgents`), never your platform bot identity. For long work of your own ("fix this bug and open a PR") ' +
         'that spans turns, may run a long time, or that people should be able to see and stop, ' +
-        '`{"action":"delegateTask","message":"..."}` delegates it to a TASK of this session'
+        '`{"action":"delegateTask","title":"<a short name>","message":"..."}` delegates it to a TASK of this session'
     )
     expect(context.collabAppend).toContain(
       'reports back into this session each time a round of its work finishes or fails'
@@ -44,7 +48,8 @@ describe('standing collaboration guidance', () => {
         'here use'
     )
     expect(context.collabAppend).toContain(
-      'A task cannot start tasks of its own. To speak in the conversation you are already in'
+      'A task may delegate tasks of its own, but a task that another task started cannot. To speak in the ' +
+        'conversation you are already in'
     )
     for (const text of [context.resumeSystemContext, context.sessionContext, context.metaContext!])
       expect(text).toContain(context.collabAppend)
@@ -62,5 +67,20 @@ describe('standing collaboration guidance', () => {
     expect(context.agentMeta).toContain('- Created by session: sid-creator')
     expect(context.agentMeta).not.toContain('Parent session')
     expect(context.taskReportingAppend).toBe('')
+  })
+})
+
+describe('standing collaboration guidance where only the coordinator delegates (auto-session-mode.md §5.1)', () => {
+  it('teaches no delegation and keeps the rest', () => {
+    const context = buildStandingContext({ ...BASE, tasksCoordinatorOnly: true })
+    expect(context.collabAppend).toBe(COLLAB_APPEND_WITHOUT_DELEGATION)
+    expect(context.collabAppend).not.toMatch(/delegateTask|messageTask|listTasks|stopTask|delegation defaults/)
+    expect(context.collabAppend).toContain(
+      "Work of your own stays in this conversation: only an Auto conversation's coordinator delegates tasks."
+    )
+    expect(context.collabAppend).toContain('`{"action":"replyToSession","messageId":"<that id>","message":"..."}`')
+    for (const text of [context.resumeSystemContext, context.sessionContext])
+      expect(text).toContain(context.collabAppend)
+    expect(context.sessionDigest).not.toBe(buildStandingContext(BASE).sessionDigest)
   })
 })

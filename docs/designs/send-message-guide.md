@@ -8,7 +8,8 @@ Both halves are implemented: delegated tasks (§12 items 1–4 and 11, recorded 
 and message-addressed replies (§12 items 5–9, recorded in §7.8, §8.9 and §9.8). Visible text
 no longer says sub-session (§11 questions 10–11): "task" is the umbrella for a session's
 delegated tasks, its follow-ups and the approved proposals that report to it; what the runtime itself
-reports for the current turn is "this turn's tasks"; internal names are unchanged.
+reports for the current turn is "this turn's tasks"; internal names are unchanged. A daemon with its
+Auto switch on lets only an Auto conversation's coordinator delegate (§2.1).
 
 Keep one agent-facing `sendMessage` tool, add a required `action` discriminator,
 and move detailed argument documentation into an on-demand `getToolGuide` tool. Existing
@@ -113,6 +114,14 @@ Three things are kept apart:
   off, beside its tool calls, with `delegateTask`. Assistant mode's follow-ups (assistant-mode.md
   §5.12) and approved proposals (§5.10) are tasks of the conversation they report to too.
 
+**Only the coordinator delegates.** Where the daemon's Auto switch is on, only an Auto
+conversation's coordinator delegates tasks ([auto-session-mode.md](auto-session-mode.md) §5.1).
+Every other session, a task included, is offered neither `delegateTask` nor, for a delegated task,
+`messageTask`, `listTasks` and `stopTask`, and the daemon refuses them. An assistant-mode place's
+session keeps those three for its follow-ups, its organization research and its approved
+proposals. A task delegated before runs and reports to its owning session until it ends. Elsewhere
+in this document the owning session is any session, as it is with the switch off.
+
 In this document, "task" alone means a delegated task unless a follow-up or an approved proposal
 is named. A delegated task has these properties:
 
@@ -123,7 +132,9 @@ is named. A delegated task has these properties:
    own. When work needs to talk in a channel, that is a conversation, so it gets a session:
    `callAgent` to yourself with `channel` (§3.1).
 3. **No control between tasks.** Tasks of one session do not start, message, or stop one
-   another, and a task cannot start tasks. The owning session orders them by dependency: it
+   another. A task may delegate background tasks of its own, which it owns as any session owns
+   its tasks; a task's task may not (two levels at most,
+   [auto-session-mode.md](auto-session-mode.md) §6.3). The owning session orders them by dependency: it
    starts the tasks whose inputs are ready, may run independent ones at the same time, and
    receives each result before deciding what to start next. The order lives in the owning
    session's reasoning; the daemon enforces no dependency graph.
@@ -179,8 +190,8 @@ task. The `delegateTask` description and guide say so (§3.2, §3.4).
 | `action`         | Purpose                                                                    | Required target       | Optional arguments                                                                                                             |
 | ---------------- | -------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `callAgent`      | Call a peer, optionally in an existing session, or yourself into a channel | `toAgent`             | `channel` or `sessionId` (mutually exclusive), `platform` and `integrationId` with `channel`; a self target requires `channel` |
-| `delegateTask`   | Hand off long work to a delegated task of your current session             | None                  | None                                                                                                                           |
-| `messageTask`    | Send more work or an answer to a task your current session delegated       | `taskId`              | None                                                                                                                           |
+| `delegateTask`   | Hand off long work to a delegated task of your current session             | `title`               | `messageId`, a coordinator session's only; the coordinator's alone where the Auto switch is on (§2.1)                          |
+| `messageTask`    | Send more work or an answer to a task your current session delegated       | `taskId`              | `messageId`, as for `delegateTask`                                                                                             |
 | `replyToSession` | Answer a message another session sent you                                  | `messageId`           | None                                                                                                                           |
 | `postMessage`    | Post to a person, channel, or another existing thread                      | `toUser` or `channel` | `thread`, `attachment`, `platform`, `integrationId`, subject to existing branch rules                                          |
 
@@ -225,7 +236,11 @@ follow-up such as "check again" asks for a status, not for the work again. The d
 the division; the `delegateTask` guide and the standing guidance state the division and this rule,
 and the contract gains no argument.
 
-`delegateTask` requires `action` and `message` and accepts nothing else. It starts a new
+`delegateTask` requires `action`, `title` and `message`. `title` is one line of at most 80
+characters, the task's name in the console and in `listTasks`; the task index and the task's
+session are born with it. `messageId` is reserved for the coordinator session
+([auto-session-mode.md](auto-session-mode.md) §5.1) and is refused with an argument error in every
+other session. It starts a new
 delegated task of the current session, owned by it through trusted caller identity, and returns the task's
 `taskId`. `messageTask` requires `action`, `message`, and a nonempty `taskId`: it sends into an
 existing task, and the daemon must verify that the current session is its owning session. A
@@ -233,8 +248,9 @@ missing, invalid, unrelated, or unavailable task never falls back to starting on
 `messageTask` without `taskId` is an argument error that points to `delegateTask`.
 
 Neither task action accepts `toAgent`, `channel`, `thread`, `platform`, `integrationId`,
-`attachment`, `sessionId`, `messageId`, or `needsReply`. A task reports completion or failure
-automatically; a task cannot delegate tasks, and active per-agent concurrency limits still apply.
+`attachment`, `sessionId`, or `needsReply`, and `messageTask` does not accept `title`. A task
+reports completion or failure automatically; a task may delegate tasks of its own but a task's
+task may not, and active per-agent concurrency limits still apply.
 Every input the owning session sends a task is a message whose metadata names the owning
 session as its source, so the task answers it with `replyToSession` for progress, questions,
 and results. Message delivery alone must not mark the task's work complete; §8 specifies that
@@ -302,8 +318,8 @@ The shipped wording may differ where the runtime matrix (§10) shows a model nee
 example to delegate a task before exploring long work itself; it stays within 1024 characters.
 
 The input schema is a single object, with `action` and `message` required. `taskId` is
-required for `messageTask`, `messageId` for `replyToSession`, and `sessionId` is optional for
-`callAgent`:
+required for `messageTask`, `title` for `delegateTask`, `messageId` for `replyToSession`, and
+`sessionId` is optional for `callAgent`:
 
 | Field           | Type                                                                              | Meaning                                                         |
 | --------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------- |
@@ -315,6 +331,7 @@ required for `messageTask`, `messageId` for `replyToSession`, and `sessionId` is
 | `thread`        | string                                                                            | Existing thread root, for a bare-channel `postMessage` only     |
 | `sessionId`     | string                                                                            | Existing peer session, for `callAgent` only                     |
 | `taskId`        | string                                                                            | A delegated task of the current session, for `messageTask` only |
+| `title`         | string, at most 80 characters                                                     | The new task's name, for `delegateTask` only                    |
 | `messageId`     | string                                                                            | The message being answered, for `replyToSession` only           |
 | `attachment`    | string                                                                            | Received image name from an `[attached: …]` marker              |
 | `platform`      | enum of the agent's platforms                                                     | Target platform                                                 |
@@ -435,6 +452,7 @@ Example delegating a task:
 ```json
 {
   "action": "delegateTask",
+  "title": "Investigate the flaky checkout test",
   "message": "Investigate the flaky test in the background and report your findings."
 }
 ```
@@ -536,7 +554,7 @@ itself, so the agent can retry without a lookup:
 ```text
 sendMessage: action `callAgent` with your own agent id needs `channel`. Work of your own that
 needs no conversation is a delegated task. Nothing was sent. Retry as:
-  sendMessage {"action":"delegateTask","message":"<the same message>"}
+  sendMessage {"action":"delegateTask","title":"<a short name for the work>","message":"<the same message>"}
 delegateTask guide:
 <the rules and example getToolGuide {"tool":"sendMessage","action":"delegateTask"} returns>
 To work visibly in a channel instead, keep callAgent and add `channel`.
@@ -551,9 +569,9 @@ carries its guide.
 `delegateTask` call without echoing the body, for example:
 
 ```text
-sendMessage: action `startTask` is now `delegateTask`, with the same arguments. Nothing was sent
-and no task was started. Retry as:
-  sendMessage {"action":"delegateTask","message":"<the same message>"}
+sendMessage: action `startTask` is now `delegateTask`, which also takes a `title`. Nothing was
+sent and no task was started. Retry as:
+  sendMessage {"action":"delegateTask","title":"<a short name for the work>","message":"<the same message>"}
 delegateTask guide:
 <the delegateTask guide>
 ```
@@ -861,7 +879,7 @@ the sections above left open:
   fails as an argument error (§8.9, §9.8).
 - **Task argument errors.** A `messageTask` whose `taskId` is missing, null, empty or not a
   string, and a self `callAgent` without `channel`, return §3.5's text: the exact
-  `sendMessage {"action":"delegateTask","message":"<the same message>"}` call, then the
+  `sendMessage {"action":"delegateTask","title":"<a short name for the work>","message":"<the same message>"}` call, then the
   `delegateTask` guide rendered as plain text (purpose, one line per rule, the example). Both
   guides live in `mcp/ops/task-guide.ts`, so the error and `getToolGuide` cannot drift. A
   `messageTask` carrying the old `sessionId` gets the same error, which also names `sessionId`
@@ -932,16 +950,17 @@ on one of those messages' ids. No separate owner-message action is needed.
 
 ### 8.1 The start and message contract
 
-| Input                                                          | Behavior                                                              | Authorization                                                                        |
-| -------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `{action: "delegateTask", message}`                            | Start a new task of the current session and deliver its instructions  | Trusted caller identity; existing self-delegation, no-nesting, and concurrency gates |
-| `{action: "messageTask", taskId, message}`                     | Deliver into that existing task, running or retained after completion | The ownership record must name the current session as the owning session             |
-| `{action: "replyToSession", messageId, message}` from the task | Return progress, a question, or results to the owning session         | The answered owner message's metadata (§9.4), which names the owning session         |
+| Input                                                          | Behavior                                                              | Authorization                                                                       |
+| -------------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `{action: "delegateTask", title, message}`                     | Start a new task of the current session and deliver its instructions  | Trusted caller identity; existing self-delegation, two-level, and concurrency gates |
+| `{action: "messageTask", taskId, message}`                     | Deliver into that existing task, running or retained after completion | The ownership record must name the current session as the owning session            |
+| `{action: "replyToSession", messageId, message}` from the task | Return progress, a question, or results to the owning session         | The answered owner message's metadata (§9.4), which names the owning session        |
 
-`delegateTask` accepts only `action` and `message`. `messageTask` requires a nonempty `taskId`;
+`delegateTask` accepts only `action`, `title` and `message`. `messageTask` requires a nonempty `taskId`;
 reject a missing, null, empty, or mistyped id as an argument error that names the `delegateTask`
 call, never treat it as starting. Both reject `toAgent`, `channel`, `thread`, `platform`,
-`integrationId`, `attachment`, `sessionId`, `messageId`, and `needsReply`.
+`integrationId`, `attachment`, `sessionId`, and `needsReply`; `messageId` is the coordinator
+session's alone ([auto-session-mode.md](auto-session-mode.md) §5.1) and refused elsewhere.
 
 A supplied target that does not exist, is unavailable, or is not owned by the
 current session must fail; never fall back to starting another task. Do not infer
@@ -1105,10 +1124,11 @@ explicit `messageTask` opens another round.
 
 | Caller                                                           | `stopTask`                                                   |
 | ---------------------------------------------------------------- | ------------------------------------------------------------ |
-| The owning session, on any of its turns                          | Allowed for its own tasks                                    |
+| The owning session, on any of its turns, a task included         | Allowed for its own tasks                                    |
 | The task itself, or another task of the same owning session      | Refused                                                      |
 | Another session of the agent, including the one after `!new`     | Refused, but for a follow-up of the place's new long session |
 | Another agent, a follow-up's check, an approved proposal, a hook | Refused                                                      |
+| Any session but the coordinator, with the Auto switch on (§2.1)  | Refused for a delegated task, allowed for its own research   |
 
 "Any of its turns" includes a turn a person started, a task's report, a reply from a peer, a
 reminder, and a scheduled run. The owning session is the authority because the task is its own
@@ -1128,7 +1148,7 @@ waiting for it. Only approved proposals carry no `taskId` and keep their existin
 console's Stop among them.
 
 Standing context reminds the owning session which delegated tasks it has running, by id and
-label, refreshed on the next turn after one starts or ends, and states that it may stop one when
+title, refreshed on the next turn after one starts or ends, and states that it may stop one when
 it is no longer needed. The tool's description tells the agent to ask which task a person means
 only when that is not clear.
 
@@ -1136,25 +1156,45 @@ only when that is not clear.
 
 `listTasks` takes no arguments and lists the calling session's tasks: its delegated tasks, its
 place's follow-ups when it is the place's current long session, and the approved proposals that
-report to it. Each entry carries:
+report to it, running first, then the most recently active, at most 20 of them with a count of
+the rest. Each entry carries:
 
-| Field            | Meaning                                                                                           |
-| ---------------- | ------------------------------------------------------------------------------------------------- |
-| `taskId`         | Delegated tasks and follow-ups: the handle `messageTask`, `stopTask` and `viewSessionStatus` take |
-| Kind             | Delegated task, follow-up, or approved proposal                                                   |
-| Label            | The task's label or the proposal's title                                                          |
-| State            | Running, or how it ended                                                                          |
-| Started          | When it started                                                                                   |
-| Elapsed or ended | The running time so far, or when it ended                                                         |
-| Handed back      | Whether it has handed back a result for its latest round                                          |
+| Field                         | Meaning                                                                                                   |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `taskId`                      | Delegated tasks and follow-ups: the handle `messageTask`, `stopTask` and `viewSessionStatus` take         |
+| `kind`                        | Delegated task, follow-up, or approved proposal                                                           |
+| `title`                       | The task's title (its session's title on rows from before titles), or the follow-up's or proposal's       |
+| `state`, `running`            | Running, or how it ended; `running` while a turn or a check of it runs                                    |
+| `owner`                       | Who it works for, by name where known: a background task its root session's opener, a follow-up its asker |
+| `startedAt`, `elapsed`        | When it started, and the running time so far while it runs                                                |
+| `lastActivity`                | When its session last changed                                                                             |
+| `summary`, `summaryUpdatedAt` | The task's own summary (auto-session-mode.md §6.7) and when it wrote it; a follow-up's summary            |
+| `background`                  | Before a delegated task's first summary, the start of the message it was opened with                      |
+| `threaded`, `threads`         | Delegated tasks: whether a platform thread is attached, and each thread with its link                     |
+| `handedBackResult`            | Whether it has handed back a result for its latest round                                                  |
 
 It is read-only and changes nothing. Its scope is exactly the running-tasks reminder's and
 §8.2's ownership: a delegated task appears only to the session the ownership record names, and
 a follow-up only to its place's current long session, and an approved proposal only to the
 session it reports to; another session of the agent,
-including the one after `!new`, another agent and a task itself see none of them. Like the other
+including the one after `!new`, and another agent see none of them; a task sees only the tasks it
+delegated itself ([auto-session-mode.md](auto-session-mode.md) §6.3). With the Auto switch on, only
+the coordinator lists delegated tasks, and a place's other session lists its follow-ups, research
+and approved proposals (§2.1). Like the other
 task tools it needs no IM integration. It does not list this turn's tasks, which the runtime
 reports to the console rather than to the agent (§2.1).
+
+#### A task's summary
+
+`updateTask {summary, title?}` is offered only inside a delegated task or a threaded task
+([auto-session-mode.md](auto-session-mode.md) §6.2), never to research, a follow-up's check or an
+approved proposal, and acts on the calling task alone. `summary` is at
+most 500 characters; `title`, one line of at most 80, changes only together with it and renames
+the task's session too. The task's standing context asks for its scope, its status and its next
+step and open questions, written as soon as the scope is known and updated when either changes.
+The daemon counts the task's turns since its summary; from the second turn without one, and on
+every turn once it is 5 turns old, the turn carries a reminder to update it. The summary lives
+only in the daemon's task index ([auto-session-mode.md](auto-session-mode.md) §6.7).
 
 ### 8.8 Acceptance boundary
 
@@ -1222,6 +1262,19 @@ Storage keeps its internal names (`assistant_subsession*`, the `subsession:` coo
   session, started when its next check falls due or by `messageTask`, and settled when that turn
   ends, by what it recorded with `recordCheck`. An approved proposal (§5.10) runs once and is
   never continued, so it keeps the one-report lifecycle in which its own report settles it.
+- **Two levels ([auto-session-mode.md](auto-session-mode.md) §6.3).** A task an ordinary
+  session delegated may delegate background tasks of its own, and list, message and stop them;
+  a task whose owning session is itself a task is refused `task_nesting`, as are a follow-up's
+  check, an approved proposal and organization research. A task's task reports into that task,
+  never into its place's current long session, and a task whose own background task still runs
+  or reports keeps its round open until that report's turn ends, read from the index so a
+  restart keeps it.
+- **Titles and threads (store schema v71, v72).** The index row carries the task's `title`, born
+  from `delegateTask`'s `title` (rows from before take their session's first-message title), the
+  start of its opening message as `background` (v72), its `summary` with its update time and the
+  turns since, and the platform threads attached to it.
+  A task with a thread is outside the concurrency cap, and only rounds before its first thread's
+  round report to the owning session (auto-session-mode.md §6.2).
 - **Round state.** The task's index row carries `round` (store schema v51). `open` is a
   running round that holds a slot; the round's report waits in `reporting`; `done` and `failed`
   are retained idle states that hold none. Every parent input carries its round in

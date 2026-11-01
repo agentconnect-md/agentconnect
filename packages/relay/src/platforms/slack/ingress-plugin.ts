@@ -224,7 +224,12 @@ export function forwardSessionStop(host: RelayIngressHost, botId: string, stop: 
       msgId: httpSlackStopMsgId(botId, stop),
       botId,
       ...(stop.userId ? { userId: stop.userId } : {}),
-      payload: { kind: 'agent-session-stopped', channelId: stop.channelId, threadTs: stop.threadTs }
+      payload: {
+        kind: 'agent-session-stopped',
+        channelId: stop.channelId,
+        threadTs: stop.threadTs,
+        ...(stop.archived ? { archived: true as const } : {})
+      }
     }
     void host
       .forwardAction(rd, route)

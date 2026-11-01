@@ -53,6 +53,8 @@ export interface MintedGitCred {
 const FRESH_MIN_MS = 15 * 60 * 1000
 /** Shaved off GitHub's expires_at before any comparison or ttlSec computation. */
 const SKEW_MS = 60 * 1000
+/** Re-mints under the new generation after an invalidation crossed a mint, before giving up. */
+const INVALIDATION_RETRIES = 2
 
 interface CacheEntry {
   token: string
@@ -89,7 +91,9 @@ export class InstallationTokenService {
     private readonly cfg: GithubAppConfig,
     private readonly clock: Clock,
     private readonly fetchImpl?: FetchLike,
-    private readonly baseUrl?: string
+    private readonly baseUrl?: string,
+    /** The organization App an installation belongs to; undefined ⇒ sign with the built-in App. */
+    private readonly signerFor?: (installationId: bigint) => Promise<GithubAppConfig | undefined>
   ) {}
 
   /**
@@ -163,7 +167,25 @@ export class InstallationTokenService {
     for (const key of [...this.inflight.keys()]) if (key.startsWith(prefix)) this.inflight.delete(key)
   }
 
+  /** An invalidation that crosses a mint discards its token, never the request: the
+   * next attempt mints under the new generation (or is served what it cached). */
   private async mintPermissionLevels(
+    installationId: bigint,
+    repoFullName: string,
+    levels: InternalPermissionLevels,
+    repoId?: bigint,
+    forceRefresh = false
+  ): Promise<MintedGitCred> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.mintPermissionLevelsOnce(installationId, repoFullName, levels, repoId, forceRefresh)
+      } catch (err) {
+        if (!(err instanceof InstallationTokenInvalidatedError) || attempt >= INVALIDATION_RETRIES) throw err
+      }
+    }
+  }
+
+  private async mintPermissionLevelsOnce(
     installationId: bigint,
     repoFullName: string,
     levels: InternalPermissionLevels,
@@ -275,7 +297,7 @@ export class InstallationTokenService {
   }
 
   private async request(installationId: bigint, body: unknown): Promise<CacheEntry> {
-    const jwt = await mintAppJwt(this.cfg)
+    const jwt = await mintAppJwt((await this.signerFor?.(installationId)) ?? this.cfg)
     const res = await githubRequest<GithubTokenResponse>(`/app/installations/${installationId}/access_tokens`, {
       method: 'POST',
       auth: jwt,

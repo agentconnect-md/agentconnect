@@ -8,6 +8,7 @@ import {
 import {
   ahpElicitValue,
   contextMetadata,
+  deliveredImages,
   messageAttachments,
   permissionAction,
   startAction
@@ -18,15 +19,35 @@ const start = {
   startedAt: new Date(0).toISOString(),
   message: { text: 'hello', origin: { kind: 'user' as const } }
 }
-it('accepts standard user turns and refuses forged identity, model execution, and unsupported attachment fields', () => {
+it('accepts standard user turns and refuses forged identity and unsupported image fields', () => {
   expect(startAction.parse(start)).toEqual(start)
+  const gif = { type: 'embeddedResource', label: 'a.gif', contentType: 'image/gif', data: 'R0lG' }
   for (const message of [
     { ...start.message, origin: { kind: 'agent' } },
     { ...start.message, origin: { kind: 'user', id: 'forged' } },
-    { ...start.message, model: { id: 'unauthorized' } },
-    { ...start.message, attachments: [{ type: 'resource', label: 'secret', uri: 'file:///etc/passwd' }] }
+    { ...start.message, model: { id: 'gpt', extra: true } },
+    { ...start.message, attachments: [gif] },
+    { ...start.message, attachments: [{ type: 'unknown', label: 'x' }] }
   ])
     expect(startAction.safeParse({ ...start, message }).success).toBe(false)
+})
+it("accepts VS Code's model, agent and context attachments without delivering them", () => {
+  const message = startAction.parse({
+    ...start,
+    message: {
+      ...start.message,
+      model: { id: 'copilot/gpt', config: { reasoning: 'high' } },
+      agent: { uri: 'file:///home/user/.github/agents/review.agent.md' },
+      attachments: [
+        { type: 'resource', label: 'passwd', uri: 'file:///etc/passwd', displayKind: 'document' },
+        { type: 'simple', label: 'selection', modelRepresentation: 'secret text' },
+        { type: 'embeddedResource', label: 'notes.txt', contentType: 'text/plain', data: 'bm90ZXM=' }
+      ],
+      _meta: { 'copilot.hidden': true }
+    }
+  }).message
+  expect(deliveredImages(message.attachments)).toEqual([])
+  expect(messageAttachments(message, contextMetadata.parse({}))).toEqual({ images: undefined, files: undefined })
 })
 it('maps standard embedded images through existing upload validation without permitting a second image', () => {
   const image = {
@@ -39,6 +60,8 @@ it('maps standard embedded images through existing upload validation without per
   const decoded = messageAttachments(message, contextMetadata.parse({}))
   expect(decoded.images).toEqual([{ name: 'photo.png', mimeType: 'image/png', data: image.data }])
   expect(() => messageAttachments(message, { images: decoded.images })).toThrow('twice')
+  const two = startAction.parse({ ...start, message: { ...start.message, attachments: [image, image] } }).message
+  expect(() => messageAttachments(two, contextMetadata.parse({}))).toThrow('one image')
 })
 it('refuses automatic confirmation claims and edited tool input', () => {
   const action = {

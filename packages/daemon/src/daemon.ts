@@ -1,6 +1,7 @@
 import { dispatchAhpAppRequest, type AhpAppsScope } from './ahp/apps.js'
 import { AhpProtocolError } from './ahp/connection.js'
 import { initialAhpChat } from './ahp/initial-state.js'
+import { ahpAgentInfo } from './ahp/agent-state.js'
 import { AhpRuntimeObserver } from './ahp/runtime-observer.js'
 import { AhpShadowService } from './ahp/shadow-service.js'
 import { SessionStatus, ActionType, MessageKind, AhpErrorCodes } from '@microsoft/agent-host-protocol'
@@ -10,7 +11,7 @@ import { dispatchAhpAction, type AhpDispatchEnvironment } from './ahp/dispatch.j
 import { LocalAhpCheckpoints } from './ahp/checkpoint-store.js'
 import { readAhpHistory } from './ahp/history.js'
 import { ChatSessionApplication, chatSessionKey, type ChatApplicationHost } from './session/chat-application.js'
-import { ChatSessionContinuation } from './session/chat-continuation.js'
+import { ChatSessionContinuation, continuedByTarget } from './session/chat-continuation.js'
 import { observeChatTurn } from './session/chat-observer.js'
 import { memorySourceTurnId } from './memory/source-turn.js'
 import { codeHostExternalSource } from './codehost/session-audience.js'
@@ -81,6 +82,7 @@ import {
   READ_ACCESS_LINKED_V1_FEATURE,
   READ_ACCESS_BATCH_V1_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
+  DAEMON_AUTO_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITEA_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
@@ -114,6 +116,9 @@ import {
   FOLLOW_UP_TASKS_V1_FEATURE,
   CONVERSATION_PERMISSION_REQUESTS_FEATURE,
   ACTIVITY_EVERY_AGENT_V1_FEATURE,
+  SESSION_MODE_AUTO_V1_FEATURE,
+  coordinatorConversationId,
+  TASK_PAGE_MESSAGES_FEATURE,
   AUTO_MERGE_FEATURE,
   AUTO_MERGE_SESSION_FEATURE,
   SANDBOX_KEEP_ALIVE_FEATURE,
@@ -131,7 +136,9 @@ import {
   CAPABILITY_REQUESTS_FEATURE,
   CAPABILITY_REQUESTS_V2_FEATURE,
   CAPABILITY_REQUESTS_V3_FEATURE,
+  CAPABILITY_REQUESTS_V4_FEATURE,
   CAPABILITY_V1_KINDS,
+  capabilityAskNeedsV4,
   CAPABILITY_ASKERS_MAX,
   FOLLOW_UP_WATCH_FEATURE,
   parseFollowUpWatchUrl,
@@ -163,6 +170,7 @@ import {
   WEBCHAT_IMAGE_MAX_BYTES,
   MCP_APP_INLINE_TEMPLATE_MAX_BYTES,
   COMPUTER_CHANNEL_FEATURE,
+  COMPUTER_COMMAND_LINE_FEATURE,
   COMPUTER_LEASE_FEATURE,
   MAX_WORKSPACE_DOWNLOAD_BYTES
 } from '@agentconnect.md/protocol'
@@ -181,6 +189,7 @@ import { recordedImageModels, type MicrosandboxManager, type MicrosandboxEnviron
 import { probeImageModels } from './microsandbox/model-probe.js'
 import { localShimGitRunner } from './execution/local-git.js'
 import type { GitRunner } from './workspace/git-runner.js'
+import { openTaskDiff, TaskDiffIneligible, TaskDiffUnavailable, type TaskDiff } from './workspace/task-diff.js'
 import {
   localMicrosandboxEnvironment,
   localMicrosandboxPlacement,
@@ -208,10 +217,12 @@ import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { setTimeout as sleepFor } from 'node:timers/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
-import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
+import { readCliEntry, runCliCommand, runCliUpgrade } from './lifecycle/cli-upgrade.js'
+import { AutoUpgrader, type AutoUpgradeHost } from './lifecycle/auto-upgrader.js'
+import { QuiescenceSignal } from './lifecycle/quiescence.js'
 import { FleetUpgradeCoordinator } from './lifecycle/fleet-upgrade.js'
 import { ReadinessGate, readinessSinksFromEnv, readinessState, type ReadinessState } from './readiness.js'
-import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
+import { sessionRetentionMs, workspaceRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
@@ -305,6 +316,8 @@ import { WorkBoundary } from './messages/message-boundary.js'
 import { attachmentMention } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import {
+  COMPUTER_COMMAND_LINE_GUIDANCE,
+  COMPUTER_COMMAND_LINE_TOOLS,
   COMPUTER_TOOLS,
   COMPUTER_USE_GUIDANCE,
   ComputerTools,
@@ -397,7 +410,9 @@ import { AssistantReminders } from './assistant/reminders.js'
 import { assistantReminderToolsFor } from './mcp/ops/assistant-reminders.js'
 import { stopTaskToolsFor } from './mcp/ops/assistant-subsessions.js'
 import type { AssistantReminder } from './store/assistant-reminders.js'
+import type { AssistantSubsession } from './store/assistant-subsessions.js'
 import {
+  askerClass,
   askerKey,
   askerOf,
   askerOfFollower,
@@ -475,7 +490,7 @@ import {
   type DreamOperationPolicy,
   type DreamPlaces
 } from './dream/runner.js'
-import { describePlace, judgeSessionParticipation, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
+import { describePlace, judgeSessionParticipation, memberMakesNew, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
 import { PLACE_SHARE_TTL_MS, PlaceTrust } from './assistant/place-trust.js'
 import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
@@ -536,6 +551,7 @@ import type {
   PlatformChannelInfo,
   PlatformConnection as ContractConnection,
   RelayCardClicks,
+  TaskPlace,
   Welcome
 } from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
@@ -589,6 +605,7 @@ import {
   slackAgentIdentityOptions,
   slackAgentPostOptions,
   slackStreamRecipient,
+  startSlackCodeDiff,
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
 import { slackElicitCards } from './platforms/slack/elicit-card.js'
@@ -1012,15 +1029,45 @@ import {
   sessionThreadOf,
   wakeThreadFields
 } from './messages/normalized.js'
-import { appendCoordinate, isAppendCoordinate } from './session/append-coordinate.js'
 import {
+  appendCoordinate,
+  isAppendCoordinate,
+  isCoordinatorCoordinate,
+  isCoordinatorSessionKey,
+  type ConversationCoordinateKind
+} from './session/append-coordinate.js'
+import {
+  coordinatorPrompt,
+  coordinatorSessionTools,
+  renderCoordinatorBatch
+} from './auto-session/coordinator-prompt.js'
+import {
+  CoordinatorSessions,
+  deliveredMessage,
+  THREADED_TASK_IDLE_CLOSE_MS
+} from './auto-session/coordinator-sessions.js'
+import {
+  answerThreadOf,
+  batchCut,
+  coordinatorView,
+  inThread,
+  platformMessageIdOf,
+  threadless,
+  wholeRoomThread,
+  type DeliveredMessage
+} from './auto-session/coordinator-turns.js'
+import {
+  isDelegationCoordinate,
   isGettingToKnowCoordinate,
   isCheckCoordinate,
   isResearchCoordinate,
   isResearchSessionKey,
   isSubsessionCoordinate,
+  isSubsessionKey,
   isTaskCoordinate,
-  researchThreadOf
+  researchThreadOf,
+  taskReachAt,
+  type TaskReach
 } from './session/subsession-coordinate.js'
 import {
   GITHUB_API_BASE,
@@ -1168,7 +1215,7 @@ import type {
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { HostPasses } from './daemon/host-passes.js'
 import { isBuiltinSystemToolCall, rememberToolCall, type ApprovalRequestParts } from './daemon/tool-classification.js'
-import { buildTurnPlan, type TurnPlan } from './daemon/turn-plan.js'
+import { activityThreadOf, buildTurnPlan, type TurnPlan } from './daemon/turn-plan.js'
 import { turnEvaluationReporter, type TurnEvaluationReporter } from './daemon/turn-evaluation.js'
 import {
   isTrustedHumanTurn,
@@ -1300,9 +1347,10 @@ import {
   MEMBERS_SWEEP_INTERVAL_MS,
   MEMBERS_SWEEP_MAX_LOOKUPS,
   SESSION_RETENTION_SWEEP_INTERVAL_MS,
-  UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS
+  UNTRACKED_SANDBOX_ADOPTION_INTERVAL_MS,
+  WEBCHAT_MCP_GRANT_RENEW_SWEEP_MS
 } from './daemon/constants.js'
-import { nextRetentionRecheck, retentionRecheckPending } from './daemon/retention-recheck.js'
+import { nextRetentionRecheck, retentionRecheckPending, workspaceReclaimed } from './daemon/retention-recheck.js'
 import {
   observeStartup,
   withStartupPhase,
@@ -1749,23 +1797,49 @@ export class Daemon {
           return recipient ? { recipient } : {}
         },
         apply: (p, action) => this.applySlackAction(p, action as SlackAction),
+        onStart: (p, created) =>
+          startSlackCodeDiff(p, turnState<SlackTurnState>(p), {
+            open: () => this.turnTaskDiff(p, created),
+            authorize: async () => {
+              try {
+                await this.mcp.authorizeConversationOutput({
+                  agentId: p.plan.agentId,
+                  integrationId: p.plan.integrationId,
+                  platform: p.plan.platform,
+                  channel: p.plan.channel,
+                  thread: p.plan.sessionThread,
+                  transportScope: p.entry.msg.transportScope
+                })
+              } catch {
+                throw new TaskDiffUnavailable(
+                  'Publication is not authorized for this task. Automatic updates have stopped.'
+                )
+              }
+            },
+            active: () => !p.outputSuppressed && this.pending.get(pendingTurnKey(p.hostKey, p.acpSessionId)) === p,
+            mask: (content) => this.maskAgentSecrets(p.plan.agentId, content),
+            notice: async (text) => {
+              this.enqueueApply(p, { kind: 'post', text, attributed: false })
+              await p.signals.applyChain
+            },
+            debug: (message) => this.log.debug(message)
+          }),
         // §5.5: resolve the closing routing facts before the final body flush, so a
         // terminal section posted at finalization is born `final` (no closing edit).
         prepareResponseClosure: (p) => this.prepareSlackResponseClosure(p),
         // §5.5: re-stamp the delivered answer as this response's one `final` event.
         closeResponse: (p) => this.closeSlackResponse(p),
-        // Suppression teardown: stop the append timer and settle the chrome stream mid-flight
-        // (native Stop, an explicit cancel, displacement, loop protection, shutdown). Slack
-        // does NOT end the stream itself on a Stop click, so this is what closes it.
+        // Stop both publishers when the turn is cancelled, displaced, fenced or shut down.
         onSuppress: (p) => {
+          turnState<SlackTurnState>(p).codeDiff?.stop()
           this.clearSlackStream(p)
           if (p.conv instanceof OutputConverger)
             for (const action of p.conv.settleStream('stopped'))
               this.enqueueApply(p, action, { allowWhenSuppressed: true })
         },
-        // Terminal settlement: a chrome stream must never be left open (§5), and stale footer
-        // removals the final attribution action may have bypassed still need retrying.
+        // Drain task output and settle chrome before releasing the turn's transport.
         onSettle: async (p) => {
+          await turnState<SlackTurnState>(p).codeDiff?.settle()
           // A turn that died before its own settle still owes the stream one. An unresolved
           // stop is NOT retried here — the connection owns that, because it outlives Pending.
           if (p.conn && turnState<SlackTurnState>(p).stream) {
@@ -1907,6 +1981,30 @@ export class Daemon {
 
   // Agent→agent collaboration: A2A wake/reply/status (src/collab/).
   private readonly collab = new CollabCoordinator(this.collabHost())
+  // A conversation's coordinator lookup in flight, so a message arriving meanwhile waits for its adoption (auto-session-mode.md §3.5).
+  private readonly coordinatorLookups = new Map<string, Promise<string>>()
+  // The `auto` mode's coordinator sessions and their live turns (auto-session-mode.md §4).
+  private readonly coordinators = new CoordinatorSessions({
+    store: () => this.store,
+    now: () => this.clock.now(),
+    dispatch: (agentId, msg, integrationId) => {
+      // Its own inbox row beside the coordinator's, which the coordinator's turn still holds.
+      const taskKey = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
+      const deliveryId = `${stableMessageId(msg)}\u001f${taskKey}`
+      void this.dispatch(agentId, msg, integrationId, undefined, undefined, { deliveryId }).catch((err) =>
+        this.log.warn(`coordinator: handing ${msg.msgId} to its task failed: ${formatErr(err)}`)
+      )
+    },
+    post: (agentId, integrationId, msg, text) => this.postCoordinatorReply(agentId, integrationId, msg, text),
+    showTriaging: (agentId, message) => this.showTriaging(agentId, message),
+    sessionLink: (sessionId) => this.sessionLink(sessionId),
+    reportTaskOwners: async (agentId, keys) => await this.reportTaskOwners(agentId, keys),
+    openTaskPlace: async (agentId, integrationId, msg, title) =>
+      await this.openTaskPlace(agentId, integrationId, msg, title),
+    threadLink: (integrationId, at) =>
+      sessionThreadUrlFor(at, integrationId === undefined ? undefined : this.connForIntegration(integrationId)),
+    warn: (message) => this.log.warn(message)
+  })
   // Latched for the WHOLE drain handoff, including the window after `draining`
   // reopens and before the leases are surrendered — a claim landing there would
   // install a grant the release snapshot has already passed by.
@@ -2218,6 +2316,9 @@ export class Daemon {
   private clock: Clock
   private requestExit: (code: number) => void
   private readonly fleetUpgrade: FleetUpgradeCoordinator
+  // Turn-end / background-lease edges and the live-work reads the AutoUpgrader waits on.
+  private readonly quiescence: QuiescenceSignal
+  private readonly autoUpgrader: AutoUpgrader
   // Whole-daemon drain gate: once set, no new turns are dispatched (SIGTERM, or a
   // scope:daemon drain). Agent-scoped drains gate just their agentId.
   private draining = false
@@ -2294,6 +2395,7 @@ export class Daemon {
   private idleSweepTimer?: TimerHandle
   private storeRetentionTimer?: TimerHandle
   private checkSweepTimer?: TimerHandle
+  private webchatGrantRenewTimer?: TimerHandle
   // Last probe-temp-root reclaim, so it rides the idle sweep at its own slower
   // cadence — the OS temp dir can hold thousands of entries to scan.
   private lastProbeRootSweepAt = 0
@@ -2368,6 +2470,8 @@ export class Daemon {
       requestExit?: (code: number) => void
       /** Test seam for a blocked or failed CLI upgrade installation. */
       upgradeInstaller?: typeof runCliUpgrade
+      /** Test seam for the AutoUpgrader's `version install` / `version use` CLI calls. */
+      autoUpgradeCli?: typeof runCliCommand
       /** Who supervises this process — 'cli' (respawn shell), 'service' (launchd/systemd),
        *  or 'k8s' (the kubelet: restart only, since the version is the image). Set by the
        *  launcher via AGENTCONNECT_SUPERVISOR. Absent/unknown means no supervisor (bare
@@ -2644,8 +2748,52 @@ export class Daemon {
         await this.cpClient?.reportLifecycleProgress(progress)
       },
       stop: () => this.stop(),
+      closeAdmission: () => {
+        this.draining = true
+      },
       requestExit: (code) => this.requestExit(code)
     })
+    this.quiescence = new QuiescenceSignal(
+      {
+        // Admitted gate entries and pre-Pending dispatches count too: a cold start has no Pending yet.
+        inFlightTurns: () => this.pending.size + this.inflight.size + this.activeDispatchesByAgent.size,
+        liveBackgroundWork: () => [...this.sdkLease.values()].some(liveSdkLease),
+        lifecycleInFlight: () => this.fleetUpgrade.lifecycleBusy(),
+        draining: () => this.draining || this.shutdownDraining
+      },
+      () => this.clock
+    )
+    this.autoUpgrader = new AutoUpgrader(this.autoUpgradeHost())
+  }
+
+  /** Exactly what the AutoUpgrader touches on the Daemon (daemon-auto-upgrade.md §5). */
+  private autoUpgradeHost(): AutoUpgradeHost {
+    return {
+      log: () => this.log,
+      clock: () => this.clock,
+      root: () => this.root,
+      daemonId: () => this.cfg.daemonId,
+      version: () => DAEMON_VERSION,
+      eligible: () => this.bootstrapUpgradeCapable(),
+      quiescence: () => this.quiescence,
+      runCli: async (args) => {
+        const cliEntry = readCliEntry(this.root)
+        if (!cliEntry) return { ok: false, stderr: 'cannot locate the CLI (cli-entry missing)' }
+        return await (this.opts.autoUpgradeCli ?? runCliCommand)(cliEntry, args, this.root)
+      },
+      lifecycle: () => this.fleetUpgrade.autoUpgradeLifecycle(),
+      cp: () => {
+        const client = this.cpClient
+        if (!client) return undefined
+        return {
+          handshaking: () => client.handshaking(),
+          canBeginLifecycle: () => client.canBeginLifecycle(),
+          beginLifecycle: (req) => client.beginLifecycle(req),
+          reportProgress: (progress) => client.reportLifecycleProgress(progress)
+        }
+      },
+      exitForRollback: () => void this.fleetUpgrade.autoUpgradeLifecycle().exit(undefined, () => true)
+    }
   }
 
   /** Say what the boot probe found: missing SRT dependencies silently run agents unconfined AND fail every managed-skill install (#956). */
@@ -2745,6 +2893,18 @@ export class Daemon {
       statusInfoFrom: async (agentId, sessionKey, acpSessionId) =>
         await this.statusInfoFrom(agentId, sessionKey, acpSessionId),
       emitStatusBar: (p) => this.emitStatusBar(p),
+      refreshIdleStatusBar: async (rec) => {
+        const surface = this.commandChrome.for(rec.platform)
+        if (surface.platform !== rec.platform || !surface.refreshStatus) return
+        const integrationId = this.integrationIdForSessionTransport(rec.agentId, rec.platform, rec.transportScope)
+        const conn = integrationId ? this.connForIntegration(integrationId) : undefined
+        if (conn)
+          await surface.refreshStatus(
+            conn,
+            { channel: rec.channel, replyThread: rec.thread, sessionKey: rec.key },
+            await this.statusInfoFrom(rec.agentId, rec.key, rec.acpSessionId ?? undefined)
+          )
+      },
       interruptTurn: (agentId, key, reason, acpSessionId, opts) =>
         this.interruptTurn(agentId, key, reason, acpSessionId, opts),
       dispatchQueueCommand: async (agentId, msg, integrationId, admission) => {
@@ -2772,6 +2932,9 @@ export class Daemon {
       sessionCoordinateFor: async (agentId, integrationId, msg, opts) =>
         await this.sessionCoordinateFor(agentId, integrationId, msg, opts),
       conversationAppends: (agentId, integrationId, msg) => this.conversationAppends(agentId, integrationId, msg),
+      rootCoordinateKind: (agentId, integrationId, at) => this.rootCoordinateKind(agentId, integrationId, at),
+      adoptCoordinatorTasks: async (agentId, fromKey, toKey) =>
+        await this.coordinators.handOver(agentId, fromKey, toKey),
       mergedRulesForSource: (srcIntegrationIds) => this.mergedRulesForSource(srcIntegrationIds),
       transportScopeForIntegrationIds: (integrationIds) => this.transportScopeForIntegrationIds(integrationIds),
       integrationBelongsToSource: (integrationId, srcIntegrationIds) =>
@@ -2902,6 +3065,7 @@ export class Daemon {
       slackThreadSessions: (shortcut, srcIntegrationIds) =>
         this.commands.slackThreadSessions(shortcut, srcIntegrationIds),
       stopSlackThreadTasks: (at, srcIntegrationIds) => this.stopTaskSlackHolds(at, srcIntegrationIds),
+      closeTaskPlace: async (at, srcIntegrationIds) => await this.closeTaskPlace(at, srcIntegrationIds),
       startNewAppendSessions: (platform, channel, srcIntegrationIds, actor, notBefore) =>
         this.commands.startNewAppendSessions(platform, channel, srcIntegrationIds, actor, notBefore),
       settleSlackSlot: (conn, a) => this.settleSlackSlot(conn as SlackConnection, a.channel, a.thread, a.exclude)
@@ -3076,11 +3240,12 @@ export class Daemon {
     }
     return new AhpService({
       enabled: () => this.cfg.features.ahp.mode === 'on',
+      warn: (message) => this.log.warn(message),
       available: (auth) =>
         this.servesAgent(auth.agentId) && this.orgForAgent(auth.agentId) === auth.orgId && !this.draining,
       initializeMetadata: { 'agentconnect.md': { webchat: true, files: true, steering: true, mcpApps: true } },
       now: () => this.clock.now(),
-      provider: (id) => ({ provider: id, displayName: this.agents.get(id)?.name ?? id, description: '', models: [] }),
+      provider: (id) => ahpAgentInfo(id, this.agents.get(id)?.name ?? id, this.agents.get(id)?.runtimeOverrides?.model),
       reserveSequence: (org, agent, size) => this.store.reserveAhpSequenceBlock(org, agent, size),
       checkpoints: (org, agent) =>
         new LocalAhpCheckpoints(
@@ -3149,7 +3314,7 @@ export class Daemon {
       sessionConfig: async (binding, auth) => {
         if (!application.canChangeRuntime(auth.agentId)) return
         const local = await this.store.getSessionByOutwardId(binding.sessionId, auth.agentId)
-        if (auth.targetSessionId || (local && local.platform !== 'webchat')) return
+        if (auth.targetSessionId || (local && continuedByTarget(local))) return
         const key = local?.key ?? chatSessionKey(binding.conversationId, auth.agentId)
         const [model, effort, permissionMode, fastMode] = await Promise.all([
           this.store.getModelOverride(key),
@@ -3176,6 +3341,21 @@ export class Daemon {
         }
       },
       dispatch: (params, origin, context) => dispatchAhpAction(actions, params, origin, context, dispatchEnvironment),
+      toolBody: async (binding, auth, toolCallId) => {
+        const local = await this.store.getSessionByOutwardId(binding.sessionId, auth.agentId)
+        if (!local) return undefined
+        const body = await this.store.getToolBodyForAgent(
+          {
+            transcriptChannel: transcriptChannelKey(local.channel, local.transportScope),
+            coordinate: local.thread,
+            sessionKey: local.key,
+            agentId: auth.agentId,
+            orgId: auth.orgId
+          },
+          toolCallId
+        )
+        return body === undefined ? undefined : this.maskAgentSecrets(auth.agentId, body)
+      },
       customRequest: (method, params, context, isCurrent) =>
         dispatchAhpAppRequest(
           method,
@@ -3275,8 +3455,25 @@ export class Daemon {
       botUserIds: () => this.botUserIds,
       resolveCpAgent: (agentId, platform) => this.resolveCpAgent(agentId, platform),
       sendWebchatPost: (post) => this.relays?.sendWebchatPost(post),
-      collabAdmits: (fromAgentId, toAgentId) => this.cpCollab.admits(fromAgentId, toAgentId)
+      collabAdmits: (fromAgentId, toAgentId) => this.cpCollab.admits(fromAgentId, toAgentId),
+      coordinatorCoordinate: (agentId, conversationId, authorId) =>
+        this.webchatCoordinator(agentId, conversationId, authorId)
     }
+  }
+
+  /** auto-session-mode.md §10: the coordinator a member's private conversation with an agent keys on, minted by its first message; undefined for any other conversation. */
+  private async webchatCoordinator(
+    agentId: string,
+    conversationId: string,
+    authorId: string,
+    mint = true
+  ): Promise<string | undefined> {
+    if (!this.cfg.features.autoSessionMode) return undefined
+    const orgId = this.orgForAgent(agentId)
+    if (orgId === undefined || conversationId !== coordinatorConversationId(orgId, authorId, agentId)) return undefined
+    return mint
+      ? await this.store.resolveAppendCoordinate(agentId, conversationId, null, this.clock.now(), 'coordinator')
+      : await this.store.currentAppendCoordinate(agentId, conversationId, null, 'coordinator')
   }
 
   private webchatMcpRevocationHost(): WebchatMcpRevocationHost {
@@ -4865,6 +5062,9 @@ export class Daemon {
       preflightWake: (req) => this.collab.wakeRejectionReason(req),
       replyToSession: (req) => this.collab.replyToSession(req),
       continueSubsession: (req) => this.collab.continueSubsession(req),
+      taskReach: (ctx) => this.taskReach(ctx),
+      coordinatorDecision: (ctx, args) => this.coordinators.decide(ctx, args),
+      coordinatorMessage: (ctx, messageId) => this.coordinators.messageFor(ctx, messageId),
       viewSessionStatus: (req) => Promise.resolve(this.collab.viewSessionStatus(req)),
       rootPostRelation: (req) => this.collab.rootPostRelation(req),
       spawnChannelRootSession: (req) => this.collab.spawnChannelRootSession(req),
@@ -4904,8 +5104,8 @@ export class Daemon {
         take: async (ctx, input) => {
           const key = this.sessionKeyOf(ctx)
           const sessionId = await this.store.ensureOutwardSessionId(key, ctx.agentId, this.clock.now())
-          // The thread the taking turn replies in, where the follow-up's reports reply too.
-          const replyThread = this.activeTurnShare.get(key)?.thread
+          // The thread the taking turn replies in, where the follow-up's reports reply too; a coordinator's, the asking message's.
+          const replyThread = ctx.forMessage ? answerThreadOf(ctx.forMessage) : this.activeTurnShare.get(key)?.thread
           return await this.followUpChecks.take({
             agentId: ctx.agentId,
             origin: placeOfSession(ctx),
@@ -4940,7 +5140,7 @@ export class Daemon {
       assistantReminders: {
         ledger: this.store.assistantReminders,
         requesterFor: async (ctx) => {
-          const msg = this.liveTurn(ctx)?.msg
+          const msg = ctx.forMessage ?? this.liveTurn(ctx)?.msg
           return msg && msg.source === 'user' && !msg.sender.isBot && msg.sender.id ? msg.sender.id : undefined
         },
         now: () => this.clock.now()
@@ -4957,6 +5157,13 @@ export class Daemon {
         stopSession: (key, actor) => this.stopSessionByKey(key, actor),
         listForOwner: (agentId, parent, limit, opts) =>
           this.store.assistantSubsessions.listForOwner(agentId, parent, limit, opts),
+        coordinatorOf: async (ctx) => {
+          if (!isCoordinatorCoordinate(ctx.thread)) return undefined
+          const here = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+          const key = await this.coordinators.taskOwner(ctx.agentId, ctx, here)
+          const sessionId = await this.store.outwardSessionIdFor(key, ctx.agentId)
+          return { key, ...(sessionId ? { sessionId } : {}) }
+        },
         // A follow-up belongs to its place's current long session (assistant-mode.md §5.12).
         followUps: {
           own: async (ctx) =>
@@ -4969,6 +5176,20 @@ export class Daemon {
         sessionOf: async (key) => {
           const rec = await this.store.getSession(key)
           return rec ? { title: rec.title ?? null, updatedAt: rec.updatedAt } : undefined
+        },
+        ownerOf: (row) => this.taskOwnerName(row),
+        threadsOf: async (agentId, key) =>
+          (await this.store.assistantSubsessions.threadsOf(agentId, key)).map((t) => {
+            const integrationId = this.integrationIdForSessionTransport(agentId, t.platform, t.transportScope)
+            const link = sessionThreadUrlFor(t, integrationId ? this.connForIntegration(integrationId) : undefined)
+            return { channel: t.channel, thread: t.thread, ...(link ? { link } : {}) }
+          }),
+        // A new title names the task's session too, so the console shows what listTasks does.
+        setSummary: async (agentId, key, update) => {
+          const saved = await this.store.assistantSubsessions.setSummary(agentId, key, update)
+          const rec = saved && update.title !== undefined ? await this.store.getSession(key) : undefined
+          if (rec && update.title !== undefined) await this.persistSessionTitle(rec, update.title)
+          return saved
         },
         now: () => this.clock.now()
       },
@@ -5000,8 +5221,13 @@ export class Daemon {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
         const t = this.activeTurnShare.get(key)
         if (!t) return { ok: false, reason: 'no-turn' }
-        // §3.2's two coordinate gates, checked BEFORE any file I/O: a headless turn must
-        // post nothing, and a postless A2A child has no conversation despite a live gateway.
+        // A coordinator's place tool acts for one delivered message, so it targets that message's thread (auto-session-mode.md §5.4).
+        if (ctx.forMessage) {
+          const { headless: _h, synthetic: _s, replyTo: _r, ...place } = t
+          const thread = answerThreadOf(ctx.forMessage)
+          return { ok: true, ...place, ...(thread !== undefined ? { thread } : {}) }
+        }
+        // §3.2's two coordinate gates, checked before any file I/O: a headless turn posts nothing, a postless A2A child has no conversation.
         if (t.headless) return { ok: false, reason: 'headless' }
         if (t.synthetic) return { ok: false, reason: 'no-conversation' }
         const { headless: _headless, synthetic: _synthetic, ...target } = t
@@ -5260,6 +5486,8 @@ export class Daemon {
       // The session integration's own bot identity (auth.test-resolved on both
       // socket and send-only connections) for the `# Agent` Slack-identity line.
       slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
+      taskPagesTakeMessages: () => this.cfg.features.autoSessionMode,
+      tasksCoordinatorOnly: () => this.cfg.features.autoSessionMode,
       senderTimeZoneFor: (msg, integrationId) => this.profileTimeZone(integrationId, msg.sender.id),
       startedByTimeZone: (agentId, key) => this.startedByTimeZone(agentId, key),
       notePersonTimeZone: (key, zone) => this.notePersonTimeZone(key, zone),
@@ -5281,20 +5509,24 @@ export class Daemon {
         integrationId,
         transportScope,
         isDm,
-        sessionKey
+        sessionKey,
+        threadedTask
       }) => {
         if (this.runtimes[agent.runtime]?.sessionMcpServers === 'unsupported') {
           const instructions = isResearchCoordinate(thread) ? this.organizationResearchPrompt(agent, []) : undefined
           return { fingerprint: toolContextFingerprint([], [], instructions), instructions, mcpServers: () => [] }
         }
-        let tools = this.sessionBridgeTools(agent, { platform, channel, thread, integrationId, isDm })
+        let tools = this.sessionBridgeTools(agent, { platform, channel, thread, integrationId, isDm, threadedTask })
         // assistant-mode.md §5.12: a follow-up's check gets the reads, recordCheck and propose, nothing that writes or posts.
         const check = isCheckCoordinate(thread)
         // §5.15: organization research gets memory, knowledge, the channel listing and the code-host reads, nothing that posts.
         const research = isResearchCoordinate(thread)
-        const narrowed = check || research
+        // auto-session-mode.md §5.4: a coordinator gets its decision tools and memory, nothing that reads or works elsewhere.
+        const coordinator = isCoordinatorCoordinate(thread)
+        const narrowed = check || research || coordinator
         // A getting-to-know task (§5.13) gets only its own place's reads, memory reads and writes (§5.15), and recordCheck.
-        if (isGettingToKnowCoordinate(thread)) tools = gettingToKnowTools(tools)
+        if (coordinator) tools = coordinatorSessionTools(tools)
+        else if (isGettingToKnowCoordinate(thread)) tools = gettingToKnowTools(tools)
         else if (check) tools = checkTools(tools, { watch: this.followUpWatches.offered() })
         else if (research) tools = researchTools(this.researchBridgeTools(agent, tools))
         // Evaluation tools follow product tools, filtered by the agent's current visibility.
@@ -5308,11 +5540,17 @@ export class Daemon {
         // Computer use (computer-use.md §5.2): only for an agent that enabled it, on a runtime that shows the model images.
         const computers = !narrowed && !isGettingToKnowCoordinate(thread) && this.offersComputerTools(agent)
         if (computers) tools.push(...COMPUTER_TOOLS)
+        // The command-line tier (computer-use.md §5.7) needs a CP whose tokens name it; each Computer's policy decides per call.
+        const commandLine = computers && this.cpClient?.supportsServerFeature(COMPUTER_COMMAND_LINE_FEATURE) === true
+        if (commandLine) tools.push(...COMPUTER_COMMAND_LINE_TOOLS)
         if (!this.mcpToolServerReachable()) tools = []
         const instructions =
           [
             research ? this.organizationResearchPrompt(agent, tools) : undefined,
-            computers && tools.length > 0 ? COMPUTER_USE_GUIDANCE : undefined
+            coordinator ? this.coordinatorInstructions(agent, { platform, channel, integrationId }) : undefined,
+            computers && tools.length > 0
+              ? [COMPUTER_USE_GUIDANCE, ...(commandLine ? [COMPUTER_COMMAND_LINE_GUIDANCE] : [])].join('\n')
+              : undefined
           ]
             .filter(Boolean)
             .join('\n\n') || undefined
@@ -5463,7 +5701,7 @@ export class Daemon {
         return this.cpClient.agentsExist(agentIds)
       },
       // This machine's own retention, the second backstop rule: no store is read, so sharing compute needs no shared store (§7).
-      retentionMs: () => sessionRetentionMs(this.cfg.sessions.retention),
+      retentionMs: () => workspaceRetentionMs(this.cfg.sessions),
       log: this.log,
       clock: this.clock
     })
@@ -5915,6 +6153,7 @@ export class Daemon {
     this.armIdleSweep()
     this.armStoreRetentionSweep()
     this.armCheckSweep()
+    this.armWebchatGrantRenewal()
     if (this.sourceCacheSweeper && this.k8sPlane)
       this.sourceCacheSweeper.start(`${this.k8sPlane.memberId}/${randomUUID().slice(0, 8)}`)
     this.startupComplete = true
@@ -6947,6 +7186,8 @@ export class Daemon {
     const key = sessionHostKey(agentId, sessionKey)
     // Organization research launches without the agent's tool credentials, so it never shares a host that has them (assistant-mode.md §5.15).
     if (isResearchSessionKey(sessionKey)) return key
+    // An srt shim hides this daemon's own directories, so a coordinator starts its empty directory on a host of its own (auto-session-mode.md §5.4).
+    if (isCoordinatorSessionKey(sessionKey) && !this.k8s && this.agentStrategy(agent) === 'srt') return key
     if (this.sessionRuntimes.has(sessionKey) || this.confinedSession(agent, sessionKey)) return key
     // An isolated session born in another strategy than the agent's now keeps its own host in its birth strategy (session-executors.md §5).
     if (this.bornInOtherStrategy(agent, sessionKey)) return key
@@ -8314,7 +8555,8 @@ export class Daemon {
         model: agent.runtimeOverrides?.model,
         permissionMode: agent.permissionMode,
         reasoningEffort: agent.reasoningEffort,
-        fastMode: agent.fastMode
+        fastMode: agent.fastMode,
+        operatorInstructions: agent.description
       },
       log: opts.providerCredential
         ? {
@@ -8477,6 +8719,10 @@ export class Daemon {
       CONVERSATION_PERMISSION_REQUESTS_FEATURE,
       // Serves Activity's permission requests, sub-sessions and drafts for an agent outside assistant mode too; static.
       ACTIVITY_EVERY_AGENT_V1_FEATURE,
+      // Reads the `auto` session mode; until the coordinator lands it routes as Per thread, so only an opted-in daemon says so.
+      ...(this.cfg.features.autoSessionMode ? [SESSION_MODE_AUTO_V1_FEATURE] : []),
+      // Continues a delegated task from its console page (auto-session-mode.md §10); Auto's switch keeps the composer hidden until it ships.
+      ...(this.cfg.features.autoSessionMode ? [TASK_PAGE_MESSAGES_FEATURE] : []),
       // Keeps follow-ups in place of items: Activity carries them as tasks and answers no items; static.
       FOLLOW_UP_TASKS_V1_FEATURE,
       // Ends a follow-up by its id before its first check, and reads one task by its session; static.
@@ -8514,7 +8760,7 @@ export class Daemon {
       // organization environment entry on this marker. Static — the fence is
       // unconditional daemon code, with no runtime dependency.
       AGENT_CONFIG_REVISION_FEATURE,
-      ...(this.bootstrapUpgradeCapable() ? [DAEMON_BOOTSTRAP_UPGRADE_FEATURE] : []),
+      ...(this.bootstrapUpgradeCapable() ? [DAEMON_BOOTSTRAP_UPGRADE_FEATURE, DAEMON_AUTO_UPGRADE_FEATURE] : []),
       // Multi-agent webchat conversations (webchat-multi-agents.md): mentions/post
       // on turns, the transcript-only context op, agent-attributed stream frames,
       // and rd/webchat-post reply fan-out. Static — no runtime dependency.
@@ -8551,6 +8797,8 @@ export class Daemon {
       CAPABILITY_REQUESTS_V2_FEATURE,
       // …and serves live secrets to `agentconnect-secrets` (capability-requests.md §4.9.2). Static.
       CAPABILITY_REQUESTS_V3_FEATURE,
+      // …and offers every agent-form field and the `cron` kind (capability-requests.md §4.12). Static.
+      CAPABILITY_REQUESTS_V4_FEATURE,
       // This daemon decodes the host-neutral `mode: 'git'` workspace arm; the CP
       // dual-encodes the legacy host-shaped arms to peers without this bit.
       WORKSPACE_GIT_V1_FEATURE,
@@ -8620,11 +8868,15 @@ export class Daemon {
       const hostKey = sessionHostKey(agent.id, entry.sessionKey)
       // Organization research starts in its own empty directory here too (assistant-mode.md §5.15).
       const researchDir = isResearchSessionKey(entry.sessionKey) ? await this.researchCwd(agent, hostKey) : undefined
-      const cwd =
+      const workspaceCwd =
         researchDir ??
         (inSessionPod
           ? await this.prepareSessionPodLaunch(agent, entry.sessionKey)
           : await this.prepareAgentWorkspace(agent, undefined, undefined))
+      // A coordinator starts in its empty directory in the agent's pod once the preparation bound it (auto-session-mode.md §5.4).
+      const cwd = isCoordinatorSessionKey(entry.sessionKey)
+        ? ((await this.coordinatorDir(agent.id, entry.sessionKey, true)) ?? workspaceCwd)
+        : workspaceCwd
       // The clones it holds on that pod, as an ordinary start lists them.
       const sessionGitDirs = inSessionPod
         ? await this.listSessionGitDirs(agent, entry.sessionKey, hostKeyLabel(hostKey))
@@ -9585,6 +9837,36 @@ export class Daemon {
     }
   }
 
+  /** A coordinator's standing instructions for one conversation, naming the other agents in it (auto-session-mode.md §9). */
+  private coordinatorInstructions(
+    agent: Agent,
+    at: { platform: string; channel: string; integrationId?: string }
+  ): string {
+    const orgId = this.cpCollab.orgForAgent(agent.id)
+    const addressOf = (agentId: string) =>
+      orgId ? this.cpCollab.mentionAddress(orgId, at.platform, at.channel, agentId) : undefined
+    const peers = (orgId ? this.cpCollab.mentionDirectory(orgId, at.platform, at.channel) : [])
+      .filter((entry) => entry.agentId !== agent.id)
+      .map((entry) => {
+        const local = this.agents.get(entry.agentId)
+        const address = addressOf(entry.agentId)
+        return {
+          name: local?.displayName?.trim() || local?.name || entry.name || entry.agentId,
+          ...(address ? { address } : {}),
+          ...(local?.description ? { description: local.description } : {})
+        }
+      })
+    const selfAddress = addressOf(agent.id)
+    return coordinatorPrompt({
+      agentName: agent.displayName?.trim() || agent.name,
+      platform: platformLabel(at.platform),
+      channelId: at.channel,
+      ...(selfAddress ? { selfAddress } : {}),
+      peers,
+      ...(at.platform === 'webchat' ? { webchat: true } : {})
+    })
+  }
+
   // Rules come from the same tool snapshot that the research session receives.
   private organizationResearchPrompt(agent: Agent, tools: ToolDescriptor[]): string {
     const hints = agent.assistantOnboarding?.hints ?? {}
@@ -10060,19 +10342,47 @@ export class Daemon {
     }
   }
 
+  /** What a tool call's session may do with tasks (auto-session-mode.md §5.1), as its offered tools say. */
+  private async taskReach(ctx: SessionContext): Promise<TaskReach> {
+    const coordinatorOnly = this.cfg.features.autoSessionMode
+    const assistantMode = assistantModeOn(this.agents.get(ctx.agentId))
+    // A task on a platform thread keeps nothing; its row is read only where that decides the reach.
+    const decides =
+      coordinatorOnly && assistantMode && !isSubsessionCoordinate(ctx.thread) && !isAppendCoordinate(ctx.thread)
+    const row = decides
+      ? await this.store.assistantSubsessions.get(ctx.agentId, this.sessionKeyOf(ctx)).catch(() => undefined)
+      : undefined
+    const threadedTask = row !== undefined && row.kind !== 'follow-up'
+    return taskReachAt(ctx.thread, { coordinatorOnly, assistantMode, threadedTask })
+  }
+
   /** The AgentConnect tools a session at these coordinates is offered, before a check's filter. */
   private sessionBridgeTools(
     agent: Agent,
-    at: { platform: string; channel: string; thread: string; integrationId?: string | undefined; isDm: boolean }
+    at: {
+      platform: string
+      channel: string
+      thread: string
+      integrationId?: string | undefined
+      isDm: boolean
+      threadedTask?: boolean | undefined
+    }
   ): ToolDescriptor[] {
     const { platform, thread, integrationId } = at
+    // auto-session-mode.md §5.1: what this session may do with tasks; execution re-checks it.
+    const reach = taskReachAt(thread, {
+      coordinatorOnly: this.cfg.features.autoSessionMode,
+      assistantMode: assistantModeOn(agent),
+      ...(at.threadedTask ? { threadedTask: true } : {})
+    })
     let tools = toolsForIntegrations(agent.integrations, {
       organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true,
       decisions:
         !!agent.decisionIds?.length && this.cpClient?.supportsServerFeature?.(DECISION_TOOLS_V1_FEATURE) === true,
       currentPlatform: platform,
       // Static descriptor, dynamic authority: a console turn may reach any session, and execution re-checks it.
-      consoleImages: this.relays?.advertisesWebchatImages?.() === true
+      consoleImages: this.relays?.advertisesWebchatImages?.() === true,
+      taskReach: reach
     })
     // Static descriptor, dynamic authority: the call resolves the current daemon-private turn and fails closed elsewhere.
     tools = [...tools, ...GITHUB_REVIEW_TOOLS]
@@ -10088,8 +10398,8 @@ export class Daemon {
     ]
     // Its reminders (§5.9), in a platform conversation of the session's own only.
     tools = [...tools, ...assistantReminderToolsFor(agent, { thread, integrationId })]
-    // Listing and stopping its tasks (send-message-guide.md §8.7), in every session that can delegate one.
-    tools = [...tools, ...stopTaskToolsFor({ thread })]
+    // Listing and stopping its tasks (send-message-guide.md §8.7), where the session may.
+    tools = [...tools, ...stopTaskToolsFor({ thread, reach, ...(at.threadedTask ? { threadedTask: true } : {}) })]
     // Capability requests (capability-requests.md §4.1, §5): any agent toward a CP that serves them; execution re-checks.
     tools = [
       ...tools,
@@ -10151,8 +10461,16 @@ export class Daemon {
         ? conversationSessionMode(int, place.channel)
         : this.sessionModeFor(agentId, int, { channel: place.channel, isDm })
       : undefined
-    if (!int || mode !== 'append') return undefined
-    const thread = await this.store.resolveAppendCoordinate(agentId, place.channel, place.transportScope)
+    // Under `auto` the place's long session is its coordinator (auto-session-mode.md §3.4).
+    const coordinator = mode === 'auto' && this.cfg.features.autoSessionMode
+    if (!int || (mode !== 'append' && !coordinator)) return undefined
+    const thread = coordinator
+      ? await this.resolveCoordinator(agentId, {
+          platform: place.platform,
+          channel: place.channel,
+          transportScope: place.transportScope ?? null
+        })
+      : await this.store.resolveAppendCoordinate(agentId, place.channel, place.transportScope)
     return {
       key: sessionKey(place.platform, place.channel, thread, agentId, place.transportScope),
       agentId,
@@ -10451,6 +10769,8 @@ export class Daemon {
       await this.collab
         .endIdleSubsessions([...this.agents.keys()])
         .catch((err) => this.log.warn(`idle sub-session sweep failed: ${formatErr(err)}`))
+      await this.closeIdleThreadedTasks().catch((err) => this.log.warn(`idle task sweep failed: ${formatErr(err)}`))
+      await this.leaveAutoConversations().catch((err) => this.log.warn(`auto mode sweep failed: ${formatErr(err)}`))
       await this.releaseEndedTaskSlackHolds().catch((err) =>
         this.log.warn(`task indicator sweep failed: ${formatErr(err)}`)
       )
@@ -10710,8 +11030,9 @@ export class Daemon {
       dispatchWake: (req, text, askers) => this.dispatchCapabilityWake(req, text, askers),
       serves: (ask) => {
         const served = (feature: string) => this.cpClient?.supportsServerFeature?.(feature) === true
-        // A live secret needs a CP that ships it on the spec; every other Phase 2 kind needs v2.
+        // A live secret needs a CP that ships it on the spec, a cron or widened setting v4, every other Phase 2 kind v2.
         if (ask.kind === 'secret' && ask.want.use.route === 'live') return served(CAPABILITY_REQUESTS_V3_FEATURE)
+        if (capabilityAskNeedsV4(ask)) return served(CAPABILITY_REQUESTS_V4_FEATURE)
         return CAPABILITY_V1_KINDS.includes(ask.kind) || served(CAPABILITY_REQUESTS_V2_FEATURE)
       },
       inline: {
@@ -11264,19 +11585,26 @@ export class Daemon {
   private askersOfKey(key: string, bot: string | undefined, opener?: TurnAskers): TurnAskers {
     const live = this.activeGateEntries.get(key)
     if (!live) return NOBODY
-    return turnAskers([this.turnMessageOf(live), ...(live.foldedMessages ?? [])], bot ?? live.integrationId, opener)
+    const folded = live.foldedMessages ?? []
+    // A report heading a coordinator batch of messages brings no asker of its own (assistant-mode.md §5.18 ③).
+    const rides = (live.coordinatorBatch?.length ?? 0) > 0 && live.msg.source !== 'user' && !opener?.people.length
+    return turnAskers(rides ? folded : [this.turnMessageOf(live), ...folded], bot ?? live.integrationId, opener)
   }
 
-  /** The read rule's view of a queued message: its bot, whether the console sent it, and a schedule's recorded person. */
+  /** The read rule's view of a queued message: its bot, whether the console sent it, and a schedule's or a coordinator message's person. */
   private turnMessageOf(entry: QueueEntry): TurnMessage {
     const cronId = entry.msg.source === 'cron' ? entry.msg.cronRun?.cronId : undefined
     const userId = cronId ? this.cpCrons?.askerOf(cronId) : undefined
-    return {
+    const view: TurnMessage = {
       msg: entry.msg,
       ...(entry.integrationId ? { integrationId: entry.integrationId } : {}),
       ...(entry.webchat && entry.webchat.initiator !== 'agent' ? { console: true } : {}),
       ...(userId ? { person: { kind: 'console' as const, userId } } : {})
     }
+    if (!isCoordinatorCoordinate(sessionThreadOf(entry.msg))) return view
+    // A coordinator's messages are headless only so it speaks through its outcomes (auto-session-mode.md §4.2); each still asks as its sender.
+    const sender = askerOf({ ...view, msg: { ...entry.msg, headless: false } }, undefined)
+    return sender ? { ...view, person: sender } : view
   }
 
   /** A message folded into the live turn joins the people it reads for; recorded before the model can see it. */
@@ -11309,21 +11637,20 @@ export class Daemon {
   /** A running task shows the thread of the turn that asked for it as working, until its row leaves `open`. */
   private holdSlackForTask(childKey: string, parentKey: string): void {
     for (const p of this.pending.values()) {
-      if (p.plan.sessionKey !== parentKey || p.plan.platform !== 'slack' || !p.conn || !p.plan.thread) continue
+      if (p.plan.sessionKey !== parentKey || p.plan.platform !== 'slack' || !p.conn) continue
+      const thread = activityThreadOf(p.plan)
+      if (thread === undefined) continue
       const previous = this.taskSlackHolds.get(childKey)
       this.taskSlackHolds.set(childKey, {
         agentId: p.plan.agentId,
         integrationId: p.plan.integrationId,
         conn: p.conn,
         channel: p.plan.channel,
-        thread: p.plan.thread,
+        thread,
         options: { ...p.plan.statusOptions, sessionKey: childKey }
       })
       // A round asked for from another thread moves the hold, so the thread it leaves is settled.
-      if (
-        previous &&
-        (previous.conn !== p.conn || previous.channel !== p.plan.channel || previous.thread !== p.plan.thread)
-      )
+      if (previous && (previous.conn !== p.conn || previous.channel !== p.plan.channel || previous.thread !== thread))
         this.settleSlackSlot(previous.conn, previous.channel, previous.thread)
       return
     }
@@ -11384,11 +11711,36 @@ export class Daemon {
     await Promise.race([cleared, new Promise((resolve) => setTimeout(resolve, TASK_HOLD_CLEAR_MS).unref())])
   }
 
+  /** Who a task works for (auto-session-mode.md §6.2): a follow-up's asker, else the opener of the first session above it that is no task. */
+  private async taskOwnerName(row: AssistantSubsession): Promise<string | undefined> {
+    let id: string | undefined
+    if (row.kind === 'follow-up') {
+      const asker = (await this.store.assistantItems.byTaskKey(row.agentId, row.childSessionKey))?.asker
+      // A platform asker is `<platform>:<scope>:<uid>`; a console asker's `user:<id>` names no one people know.
+      id = asker && !asker.startsWith('user:') ? asker.slice(asker.lastIndexOf(':') + 1) : undefined
+    } else {
+      let key = row.childSessionKey
+      let parent: string | undefined = row.parentSessionKey
+      // Nesting is two levels deep (§6.3), so this climbs at most twice.
+      for (let hops = 0; isSubsessionKey(key) && parent !== undefined && hops < 4; hops++) {
+        key = parent
+        parent = isSubsessionKey(key)
+          ? (await this.store.assistantSubsessions.get(row.agentId, key))?.parentSessionKey
+          : undefined
+      }
+      id = isSubsessionKey(key) ? undefined : ((await this.store.getSession(key))?.triggeredBy ?? undefined)
+    }
+    if (!id) return undefined
+    return (await this.store.getDisplayNames([id])).get(id) ?? id
+  }
+
   /** A sub-session reads as the people whose turn opened it; a restart forgets them, so it then reads as nobody. */
   private noteSubsessionOpener(childKey: string, parentKey: string): void {
     this.holdSlackForTask(childKey, parentKey)
     this.subsessionOpeners.delete(childKey)
-    this.subsessionOpeners.set(childKey, this.askersOfKey(parentKey, undefined))
+    // A task's own task reads for whoever its parent task reads for (auto-session-mode.md §6.3).
+    const inherited = isSubsessionKey(parentKey) ? this.subsessionOpeners.get(parentKey) : undefined
+    this.subsessionOpeners.set(childKey, this.askersOfKey(parentKey, undefined, inherited))
     if (this.subsessionOpeners.size > 512) {
       const oldest = this.subsessionOpeners.keys().next().value
       if (oldest !== undefined) this.subsessionOpeners.delete(oldest)
@@ -11536,7 +11888,9 @@ export class Daemon {
   /** The person whose message started the session's live turn, as an item follower identity (assistant-mode.md §5.4). */
   private async assistantAskerFor(ctx: SessionContext): Promise<string | undefined> {
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-    const msg = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)?.entry.msg
+    // A coordinator's place tool names the message it acts for (auto-session-mode.md §5.4).
+    const msg =
+      ctx.forMessage ?? [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)?.entry.msg
     if (!msg) return undefined
     const integration = ctx.integrationId ? this.integrationConfigById(ctx.integrationId) : undefined
     return askerIdentity(msg, integration ? await this.tenantScopeForIntegration(integration) : undefined)
@@ -13210,13 +13564,22 @@ export class Daemon {
    * several agents and two of them in one conversation may not share a mode. The same
    * placement, and the same reason, as the target's own `muteKey` and transport scope.
    */
-  /** Whether this conversation appends for this target. The mode alone — no store read —
-   *  so a caller can tell "nobody has spoken here yet" from "this is not an append
-   *  conversation", which decide opposite things about the latest-session fallback. */
+  /** Whether this conversation's root is one session for this target (append, or the coordinator under `auto`), from the mode alone so "nobody spoke yet" differs from "not one". */
   private conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean {
-    if (integrationId === undefined) return false
+    return this.rootCoordinateKind(agentId, integrationId, msg) !== undefined
+  }
+
+  /** The one session a conversation's root keys on for this target: its append session, its coordinator under `auto`, or none. */
+  private rootCoordinateKind(
+    agentId: string,
+    integrationId: string | undefined,
+    msg: Pick<NormalizedMessage, 'channel'> & Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm'>>
+  ): ConversationCoordinateKind | undefined {
+    if (integrationId === undefined) return undefined
     const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
-    return int !== undefined && this.sessionModeFor(agentId, int, msg) === 'append'
+    const mode = int === undefined ? undefined : this.sessionModeFor(agentId, int, msg)
+    if (mode === 'append') return 'append'
+    return mode === 'auto' && this.cfg.features.autoSessionMode ? 'coordinator' : undefined
   }
 
   /** A target's session mode where a message arrived; an assistant-mode place appends before its row reaches the spec (assistant-mode.md §5.2). */
@@ -13228,23 +13591,415 @@ export class Daemon {
     // A coordinate with no message behind it (an agent call) has no kind to default by, so only its listed mode counts.
     if (msg.isDm === undefined && msg.isGroupDm === undefined) return conversationSessionMode(int, msg.channel)
     const kind = conversationKindOf({ ...msg, platform: int.platform })
-    return conversationSessionMode(int, msg.channel, { assistantMode: assistantModeOn(this.agents.get(agentId)), kind })
+    const assistantMode = assistantModeOn(this.agents.get(agentId))
+    return conversationSessionMode(int, msg.channel, {
+      assistantMode,
+      kind,
+      auto: assistantMode && this.cfg.features.autoSessionMode
+    })
   }
 
   private async sessionCoordinateFor(
     agentId: string,
     integrationId: string | undefined,
-    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'> & Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm'>>,
+    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'> &
+      Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm' | 'thread' | 'msgId' | 'transcriptTs' | 'source'>>,
     opts: { mint?: boolean } = {}
   ): Promise<string | undefined> {
     if (integrationId === undefined) return undefined
     const int = this.agents.get(agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
-    if (!int || this.sessionModeFor(agentId, int, msg) !== 'append') return undefined
-    // A delivery mints the coordinate; a reader only asks. Otherwise a `/status` typed into
-    // a conversation nobody has spoken in would create the reservation it reports on.
+    if (!int) return undefined
+    const mode = this.sessionModeFor(agentId, int, msg)
+    // Until the operator turns the coordinator on, `auto` keys on the thread as Per thread does.
+    if (mode === 'auto' && this.cfg.features.autoSessionMode)
+      return await this.autoCoordinateFor(agentId, int, msg, opts.mint !== false)
+    if (mode !== 'append') return undefined
+    // A delivery mints the coordinate; a reader only asks, so a `/status` cannot create what it reports on.
     return opts.mint === false
       ? await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope)
       : await this.store.resolveAppendCoordinate(agentId, msg.channel, msg.transportScope)
+  }
+
+  /** auto-session-mode.md §4.1, §7: a platform message in a task's thread goes to that task, any other to the conversation's coordinator. */
+  private async autoCoordinateFor(
+    agentId: string,
+    int: Integration,
+    msg: Pick<NormalizedMessage, 'channel' | 'transportScope'> &
+      Partial<Pick<NormalizedMessage, 'thread' | 'msgId' | 'transcriptTs' | 'source' | 'isDm' | 'isGroupDm'>>,
+    mint: boolean
+  ): Promise<string | undefined> {
+    // A scheduled run, a hook or another agent's call names no platform message to decide on, so it keeps its own session.
+    if (msg.source !== 'user') return undefined
+    // A room keyed as one thread has no root: its one session takes every message, the task's when it is a task's place (§6.8).
+    if (wholeRoomThread(msg)) return undefined
+    const at = { platform: int.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
+    // Minted before the thread lookup, so a thread session the switch into `auto` adopts keeps its thread (§3.5).
+    const coordinator = mint
+      ? await this.resolveCoordinator(agentId, at)
+      : await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope, 'coordinator')
+    if (msg.thread !== undefined && msg.msgId !== undefined && inThread({ ...msg, msgId: msg.msgId })) {
+      const index = this.store.assistantSubsessions
+      const task = await index.taskOfThread(agentId, { ...at, thread: msg.thread })
+      if (task !== undefined) {
+        // The task's session stays where it opened; every thread it holds reaches it (§6.4).
+        const coordinate =
+          (await this.store.getSession(task))?.thread ?? (await index.threadsOf(agentId, task))[0]?.thread
+        return coordinate === msg.thread ? undefined : coordinate
+      }
+    }
+    return coordinator
+  }
+
+  /** The conversation's coordinator, minted when it has none; a new one adopts the thread sessions from before `auto` before anyone else reads it (auto-session-mode.md §3.5). */
+  private async resolveCoordinator(
+    agentId: string,
+    at: { platform: string; channel: string; transportScope: string | null }
+  ): Promise<string> {
+    const slot = `${agentId}\u001f${at.channel}\u001f${at.transportScope ?? ''}`
+    const inFlight = this.coordinatorLookups.get(slot)
+    if (inFlight) return await inFlight
+    const lookup = this.lookUpCoordinator(agentId, at)
+    this.coordinatorLookups.set(slot, lookup)
+    try {
+      return await lookup
+    } finally {
+      if (this.coordinatorLookups.get(slot) === lookup) this.coordinatorLookups.delete(slot)
+    }
+  }
+
+  private async lookUpCoordinator(
+    agentId: string,
+    at: { platform: string; channel: string; transportScope: string | null }
+  ): Promise<string> {
+    const current = await this.store.currentAppendCoordinate(agentId, at.channel, at.transportScope, 'coordinator')
+    if (current !== undefined) return current
+    const minted = await this.store.resolveAppendCoordinate(
+      agentId,
+      at.channel,
+      at.transportScope,
+      this.clock.now(),
+      'coordinator'
+    )
+    const key = sessionKey(at.platform, at.channel, minted, agentId, at.transportScope)
+    try {
+      const adopted = await this.coordinators.adoptThreadSessions(agentId, key, at)
+      if (adopted > 0)
+        this.log.info(`coordinator ${key}: ${adopted} thread session(s) from before auto became its tasks`)
+    } catch (err) {
+      this.log.warn(`coordinator ${key}: adopting the conversation's thread sessions failed: ${formatErr(err)}`)
+    }
+    return minted
+  }
+
+  /** Open a coordinator turn on its batch: the trigger and the channel messages right behind it of one permission class, each under its own id (auto-session-mode.md §4.3, assistant-mode.md §5.18 ③). */
+  private async beginCoordinatorTurn(entry: QueueEntry, key: string): Promise<void> {
+    const lookups = this.placeMembers.lookupsFor(entry.agentId)
+    const snapshot = [...(this.serialQueue.get(key) ?? [])]
+    const cut = await batchCut(entry, snapshot, {
+      ownTurn: (one) => one.webchat !== undefined,
+      // A queued report keeps a turn of its own, whose metadata it needs, such as a getting-to-know report's proposals (§3.4).
+      report: (one) => one.msg.source !== 'user',
+      classOf: (one) => askerClass(this.turnMessageOf(one), one.integrationId, lookups)
+    })
+    const chosen = new Set(snapshot.slice(0, cut))
+    // Only a prefix of the queue as it is now, so an arrival or a removal during the lookups reorders nothing.
+    const queued = this.serialQueue.get(key) ?? []
+    let taken = 0
+    while (taken < queued.length && chosen.has(queued[taken]!)) taken += 1
+    if (taken === queued.length) this.serialQueue.delete(key)
+    else if (taken > 0) this.serialQueue.set(key, queued.slice(taken))
+    const batch: QueueEntry[] = []
+    for (const next of queued.slice(0, taken)) {
+      // The same holds the runner honors before it starts a queued entry.
+      const verdict = next.admissionHold ? await next.admissionHold : 'run'
+      next.admissionHold = undefined
+      if (verdict !== 'run') continue
+      if (next.admissionWait !== undefined && !(await next.admissionWait)) {
+        await this.removeInbox(next)
+        await this.releaseReceipt(next)
+        next.resolve(null)
+        continue
+      }
+      next.admissionWait = undefined
+      if (next.deferObservedInbound) await this.admitInbound(next.msg, next.agentId)
+      batch.push(next)
+      // Before the model sees it, so every read and write of the turn is judged by every sender.
+      this.noteFoldedMessage(key, next)
+    }
+    entry.coordinatorBatch = batch
+    const messages = [entry, ...batch].map((one) =>
+      deliveredMessage(one.msg, one.integrationId, one.webchat !== undefined)
+    )
+    this.coordinators.beginTurn(key, entry.agentId, messages)
+    const { channel } = entry.msg
+    const channelName = (await this.store.getDisplayNames([channel])).get(channel)
+    entry.coordinatorPrompt = renderCoordinatorBatch(
+      messages.map((message) => {
+        // A report reads as its session input does, header and guidance included.
+        if (message.report) return coordinatorView(message, message.msg.turnBody?.prompt ?? message.msg.text)
+        const mention = attachmentMention(message.msg.attachments)
+        return coordinatorView(message, mention ? `${message.msg.text}\n${mention}`.trim() : message.msg.text)
+      }),
+      { channelId: channel, ...(channelName ? { channelName } : {}), ...(entry.webchat ? { webchat: true } : {}) }
+    )
+  }
+
+  /** End a coordinator turn: settle the entries its batch took, then act on what it left undecided (§4.3, §4.5); a turn startup replays keeps every row and acts on nothing. */
+  private async settleCoordinatorTurn(
+    entry: QueueEntry,
+    key: string,
+    ended: 'answered' | 'failed' | 'stopped',
+    sessionId: string | null,
+    opts: { replayed: boolean }
+  ): Promise<void> {
+    if (entry.coordinatorBatch === undefined) return
+    for (const taken of entry.coordinatorBatch) {
+      if (!opts.replayed && !this.retainsInboxRow(taken, false)) await this.removeInbox(taken)
+      taken.resolve(opts.replayed ? null : sessionId)
+    }
+    await this.coordinators
+      .settleTurn(key, entry.agentId, opts.replayed ? 'stopped' : ended)
+      .catch((err) => this.log.warn(`coordinator ${key}: settling the turn failed: ${formatErr(err)}`))
+  }
+
+  /** auto-session-mode.md §6.5: on the agent's duty holder, a threaded task idle for a week closes and its threads go back to the coordinator. */
+  private async closeIdleThreadedTasks(): Promise<void> {
+    const idleBefore = this.clock.now() - THREADED_TASK_IDLE_CLOSE_MS
+    for (const agentId of this.agents.keys()) {
+      if (this.draining) return
+      if (!this.servesAgent(agentId)) continue
+      const closed = await this.store.assistantSubsessions.closeIdleThreaded(agentId, idleBefore)
+      for (const key of closed)
+        this.log.info(`task ${key} closed after a week idle; its threads go back to the coordinator`)
+      await this.reportTaskOwners(agentId, closed)
+    }
+  }
+
+  /** auto-session-mode.md §3.5: on the agent's duty holder, a conversation that left `auto` drops its coordinator, and its threaded tasks become ordinary thread sessions. */
+  private async leaveAutoConversations(): Promise<void> {
+    for (const agentId of this.agents.keys()) {
+      if (this.draining) return
+      if (!this.servesAgent(agentId)) continue
+      const index = this.store.assistantSubsessions
+      // One read per coordinator, however many tasks it owns.
+      const owners = new Map<string, Promise<boolean | undefined>>()
+      for (const at of await index.threadedConversations(agentId)) {
+        const runs = this.conversationRunsAuto(agentId, at) || this.webchatRunsCoordinator(at)
+        const released: string[] = []
+        for (const task of await index.threadedTasksIn(agentId, at)) {
+          const owner = task.parentSessionKey
+          if (!owners.has(owner)) owners.set(owner, this.coordinatorRunsAuto(agentId, owner))
+          // A task in a place of its own goes with its coordinator's conversation, not the place's (§6.8).
+          if (((await owners.get(owner)) ?? runs) === true) continue
+          if (await index.closeTask(agentId, task.childSessionKey)) released.push(task.childSessionKey)
+        }
+        for (const key of released)
+          this.log.info(`task ${key} is an ordinary thread session again: its conversation left auto`)
+        await this.reportTaskOwners(agentId, released)
+      }
+      for (const { channel, transportScope, coordinate } of await this.store.coordinatorReservations(agentId)) {
+        if (this.conversationRunsAuto(agentId, { channel, transportScope }) || this.webchatRunsCoordinator({ channel }))
+          continue
+        if (await this.store.retireCoordinator(agentId, channel, transportScope, coordinate))
+          this.log.info(`coordinator ${coordinate} of ${agentId} in ${channel} retired: the conversation left auto`)
+      }
+    }
+  }
+
+  /** Whether a task's coordinator still runs in its conversation, read from its session; undefined when the owner is no coordinator session recorded here. */
+  private async coordinatorRunsAuto(agentId: string, ownerKey: string): Promise<boolean | undefined> {
+    const owner = await this.store.getSession(ownerKey)
+    if (!owner || !isCoordinatorCoordinate(owner.thread)) return undefined
+    return this.conversationRunsAuto(agentId, owner) || this.webchatRunsCoordinator(owner)
+  }
+
+  /** Whether a webchat conversation keeps its coordinator: only a member's coordinator conversation mints one, and a reservation, which names no platform, is told by its conversation's UUID (§10). */
+  private webchatRunsCoordinator(at: { channel: string; platform?: string }): boolean {
+    if (!this.cfg.features.autoSessionMode) return false
+    return at.platform === undefined ? UUID_RE.test(at.channel) : at.platform === 'webchat'
+  }
+
+  /** Whether a conversation may run its coordinator: the switch on and the integration its rows' transport scope names listing it `auto`, or an assistant-mode place it does not list yet (§3.4). */
+  private conversationRunsAuto(
+    agentId: string,
+    at: { channel: string; transportScope?: string | null; platform?: string }
+  ): boolean {
+    if (!this.cfg.features.autoSessionMode) return false
+    const agent = this.agents.get(agentId)
+    const unseen = (int: Integration) =>
+      assistantModeOn(agent) &&
+      manifestFor(int.platform).appendKinds.length > 0 &&
+      !integrationCore(int).sessionModes.some((entry) => entry.channel === at.channel)
+    return (agent?.integrations ?? []).some(
+      (int) =>
+        (at.platform === undefined || int.platform === at.platform) &&
+        (!at.transportScope || this.transportScopeForIntegration(int) === at.transportScope) &&
+        (conversationSessionMode(int, at.channel) === 'auto' || unseen(int))
+    )
+  }
+
+  /** Re-send these sessions' metadata, which names the session owning each as a task now; one that never ran reports it with its first turn (auto-session-mode.md §6.2). */
+  private async reportTaskOwners(agentId: string, keys: readonly string[]): Promise<void> {
+    for (const key of keys) {
+      const rec = await this.store.getSession(key).catch(() => undefined)
+      if (!rec?.acpSessionId) continue
+      await this.sessionMetadataOutbox
+        .emitSessionMetadataSnapshot({
+          sessionId: rec.acpSessionId,
+          sessionKey: key,
+          agentId,
+          phase: 'plan',
+          // Durably queued: a release during a Control Plane outage must still clear the lock once it reconnects.
+          ordered: true,
+          platform: rec.platform as SessionKey['platform'],
+          channel: rec.channel,
+          thread: rec.thread
+        })
+        .catch((err) => this.log.warn(`task ${key}: reporting its owner failed: ${formatErr(err)}`))
+    }
+  }
+
+  /** A threaded task's turn starts, a page task's too: it runs again until the turn ends (auto-session-mode.md §6.2, §10). */
+  private async resumeThreadedTaskTurn(entry: QueueEntry, key: string): Promise<void> {
+    const thread = sessionThreadOf(entry.msg)
+    if (isAppendCoordinate(thread) || (isSubsessionCoordinate(thread) && !isDelegationCoordinate(thread))) return
+    await this.store.assistantSubsessions
+      .resumeThreaded(entry.agentId, key)
+      .catch((err) => this.log.warn(`task ${key}: marking its turn running failed: ${formatErr(err)}`))
+  }
+
+  /** A threaded task's turn ended: it is idle until its threads speak again (auto-session-mode.md §6.2). */
+  private async settleThreadedTaskTurn(entry: QueueEntry, key: string): Promise<void> {
+    if (isAppendCoordinate(sessionThreadOf(entry.msg))) return
+    await this.store.assistantSubsessions
+      .finish(entry.agentId, key, 'done')
+      .catch((err) => this.log.warn(`task ${key}: settling its turn failed: ${formatErr(err)}`))
+  }
+
+  /** The coordinator's empty working directory where its runtime reads files, made there; undefined opens it in the agent's (auto-session-mode.md §5.4). */
+  private async coordinatorDir(agentId: string, key: string, ownHost: boolean): Promise<string | undefined> {
+    const agent = this.agents.get(agentId)
+    // Shared isolation keeps a coordinator off executors; one placed before that keeps its own preparation.
+    if (!agent || this.placedSession(key)) return undefined
+    try {
+      if (this.k8sPlane) {
+        // In the agent's pod, beside its checkout, made through the pod's own files once the pod is bound.
+        const fs = this.workspaces.offDiskFsFor(agentId, { sessionKey: key })
+        const mount = this.workspaces.sandboxMountFor(agentId, { sessionKey: key })
+        if (fs === undefined || fs === 'unbound' || mount === undefined) return undefined
+        const dir = `${mount.replace(/\/+$/, '')}/.agentconnect/coordinator`
+        await fs.mkdir(dir)
+        return dir
+      }
+      // A host of its own launches inside the agent's directory, as a sandbox boundary requires; a shared host's sandbox hides that directory, and a shared VM mounts neither.
+      if (!ownHost && this.usesMicrosandbox(agent)) return undefined
+      const dir = ownHost ? join(agent.dir, 'coordinator') : join(this.root, 'coordinators', agentId)
+      await mkdir(dir, { recursive: true, mode: 0o700 })
+      return dir
+    } catch (err) {
+      this.log.warn(`coordinator ${key}: no empty working directory (${formatErr(err)}); it opens in the agent's`)
+      return undefined
+    }
+  }
+
+  /** auto-session-mode.md §4.4: 🤔 on a message while a coordinator turn decides it, taken back after its placement settles. */
+  private showTriaging(agentId: string, message: DeliveredMessage): () => void {
+    const conn: Partial<ContractConnection> | undefined =
+      message.integrationId === undefined ? undefined : this.replyConnFor(agentId, message.integrationId)
+    const at = nativeMessageCoordinates(message.msg)
+    const react = conn?.react
+    if (!conn || !react || !at) return () => {}
+    const placed = react.call(conn, at.channel, at.messageId, 'triaging').catch(() => {})
+    return () => void placed.then(() => conn.unreact?.call(conn, at.channel, at.messageId, 'triaging')).catch(() => {})
+  }
+
+  /** A conversation of its own for a coordinator's task, where the message's platform makes one and its sender may have the agent make something new (auto-session-mode.md §6.8). */
+  private async openTaskPlace(
+    agentId: string,
+    integrationId: string | undefined,
+    msg: NormalizedMessage,
+    title: string
+  ): Promise<TaskPlace | undefined> {
+    if (integrationId === undefined || msg.source !== 'user') return undefined
+    const conn: Partial<ContractConnection> | undefined = this.anyConnForIntegration(integrationId)
+    if (!conn?.openTaskPlace) return undefined
+    const lookups = this.placeMembers.lookupsFor(agentId)
+    if (!(await memberMakesNew(msg.platform, integrationId, msg.sender.id, lookups))) return undefined
+    return await conn.openTaskPlace(
+      { agentId, channel: msg.channel, messageId: platformMessageIdOf(msg), isDm: msg.isDm },
+      title
+    )
+  }
+
+  /** A task's place closed on its platform, as an archived code channel does: the task it holds closes and its owner hears it (auto-session-mode.md §6.8). */
+  private async closeTaskPlace(
+    at: { platform: string; channel: string; thread: string },
+    srcIntegrationIds: readonly string[]
+  ): Promise<void> {
+    const index = this.store.assistantSubsessions
+    for (const [agentId, agent] of this.agents) {
+      const own = (agent.integrations ?? []).filter((int) => srcIntegrationIds.includes(int.id)).map((int) => int.id)
+      if (own.length === 0) continue
+      // A socket's messages carry the scope of all its integrations, a relayed one its own integration's.
+      const scopes = new Set(
+        [srcIntegrationIds, ...own.map((id) => [id])].map((ids) => this.transportScopeForIntegrationIds(ids))
+      )
+      for (const transportScope of scopes) {
+        const task = await index.taskOfThread(agentId, { ...at, transportScope: transportScope ?? null })
+        if (task === undefined || !(await index.closeTask(agentId, task))) continue
+        this.log.info(`task ${task} closed: its place ${at.channel} was archived`)
+        await this.reportTaskOwners(agentId, [task])
+      }
+    }
+  }
+
+  /** The coordinator's own reply in a message's thread (auto-session-mode.md §4.2 (d)). */
+  private async postCoordinatorReply(
+    agentId: string,
+    integrationId: string | undefined,
+    msg: NormalizedMessage,
+    text: string
+  ): Promise<void> {
+    if (threadless(msg)) return await this.postWebchatAgentMessage(agentId, msg, text)
+    const gateway: MessageGateway | undefined =
+      integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
+    if (!gateway) throw new Error('the conversation is not connected right now; nothing was posted')
+    const agent = this.agents.get(agentId)
+    const name = agent?.displayName?.trim() || agent?.name
+    await gateway.postMessage(msg.channel, text, answerThreadOf(msg), {
+      ...(name ? { username: name } : {}),
+      ...(agent?.iconUrl ? { icon_url: agent.iconUrl } : {}),
+      agentAuthorId: agentId
+    })
+  }
+
+  /** The coordinator's own post in a webchat conversation, recorded in its session and shown live (auto-session-mode.md §10). */
+  private async postWebchatAgentMessage(agentId: string, msg: NormalizedMessage, text: string): Promise<void> {
+    const conversationId = msg.channel
+    if (!UUID_RE.test(conversationId))
+      throw new Error('the conversation is no webchat conversation; nothing was posted')
+    const postId = randomUUID()
+    const at = await chatTurnOutput.appendChatTextRow(
+      this.store,
+      transcriptChannelKey(conversationId, undefined),
+      `webchat:${conversationId}`,
+      monotonicTs(),
+      {
+        postId,
+        sender: agentId,
+        admission: {
+          agentId,
+          sessionKey: sessionKey(msg.platform, conversationId, sessionThreadOf(msg), agentId, msg.transportScope)
+        },
+        text
+      }
+    )
+    this.relays?.sendWebchatPost({
+      conversationId,
+      agentId,
+      post: { postId, conversationId, author: { kind: 'agent', agentId }, text, at: Number(at) },
+      initiator: 'agent'
+    })
   }
 
   private onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void {
@@ -13269,6 +14024,8 @@ export class Daemon {
     const agentAuthored = this.isAgentBotMessage(msg)
     await this.observedChannelsSync.clearRetractionOnTraffic(msg, srcIntegrationIds)
     msg.transportScope ??= this.transportScopeForIntegrationIds(srcIntegrationIds)
+    const ingressConnection = srcIntegrationIds?.map((id) => this.anyConnForIntegration(id)).find(Boolean)
+    await (ingressConnection as ContractConnection | undefined)?.prepareInboundMessage?.(msg)
     if (msg.sender.avatarUrl && msg.transportScope)
       await this.store.setProfileAvatar(msg.transportScope, msg.sender.id, msg.sender.avatarUrl, Date.now())
     // Above the record: it produces the physical thread step 1 writes, and has no store writes.
@@ -14000,6 +14757,7 @@ export class Daemon {
     // Mirror the lookup here so session metadata/history can label the sender.
     const conn = this.connByIntegration.get(msg.integrationId)
     if (conn) this.nameResolver?.noteMessage(conn, normalized)
+    await conn?.prepareInboundMessage?.(normalized)
     // The relay saw the provider event, so it forwarded the ephemeral search credential
     // beside the payload. Hand it to the adapter and keep no copy — it is never persisted,
     // logged, or reported onward, and `normalized` (which IS persisted) never carries it.
@@ -14703,7 +15461,7 @@ export class Daemon {
     // Conversation-addressed like the shortcut above: the Slack event names no session, so the
     // connection resolves the one this thread owns and runs the same cancel + transition.
     if (payload.kind === 'agent-session-stopped') {
-      await conn.agentSessionStopped(payload.channelId, payload.threadTs, msg.userId)
+      await conn.agentSessionStopped(payload.channelId, payload.threadTs, msg.userId, payload.archived === true)
       return { msgId: msg.msgId, accepted: true }
     }
 
@@ -15469,15 +16227,23 @@ export class Daemon {
   }
 
   private async dispatchRelayOp(msg: RdMsgWebchat, chat: (event: RdChatEvent) => void): Promise<RdAck> {
+    const relayId = this.relayIngressOf.get(msg)
     const sink: WebchatSink = {
       output: (o) => chat({ kind: 'output', output: o }),
-      done: (d) => chat({ kind: 'done', done: d })
+      done: (d) => chat({ kind: 'done', done: d }),
+      ...(relayId ? { relayId } : {})
     }
     const op = msg.payload
     const key = (): string => this.webchatTransport.webchatSessionKey(msg.chatId, msg.agentId)
+    // A member's coordinator conversation holds its content on the coordinator's session (auto-session-mode.md §10).
+    const coordinate =
+      op.op === 'turn'
+        ? await this.webchatCoordinator(msg.agentId, msg.chatId, webchatAuthorOf(op).id, false)
+        : undefined
+    const contentKey = coordinate === undefined ? key() : sessionKey('webchat', msg.chatId, coordinate, msg.agentId)
     // The conversation's content is another member's, and this one has none of it: opening a fresh
     // session under the same conversation would answer the user without the transcript they see (#2218).
-    if ((op.op === 'turn' || op.op === 'context') && (await this.webchatContentIsElsewhere(msg, key()))) {
+    if ((op.op === 'turn' || op.op === 'context') && (await this.webchatContentIsElsewhere(msg, contentKey))) {
       return {
         msgId: msg.msgId,
         accepted: false,
@@ -16006,7 +16772,7 @@ export class Daemon {
     const physical = !isAppendCoordinate(sessionThread) && !isSubsessionCoordinate(sessionThread)
     const snapshot =
       includeProviderSnapshot && physical && thread !== undefined
-        ? this.finalThreadSnapshot(pending, thread, providerCheckpoint)
+        ? this.finalThreadSnapshot(pending, pending.plan.statusThread, providerCheckpoint)
         : undefined
     const refresh = await this.threadContext.refresh({
       scope: {
@@ -16524,7 +17290,9 @@ export class Daemon {
 
   /** Local layer (agent.json) ∪ resolved CP layer; unservable CP rules are dropped + warn-logged. */
   private mergedRules(): RoutingRule[] {
-    const local = [...this.agents.values()].flatMap((a) => rulesFromAgent(a, this.botUserIds))
+    const local = [...this.agents.values()].flatMap((a) =>
+      rulesFromAgent(a, this.botUserIds, { autoSessionMode: this.cfg.features.autoSessionMode })
+    )
     const cp: RoutingRule[] = []
     for (const cpRule of this.cpRouting?.effectiveRules() ?? []) {
       const resolved = resolveCpRule(cpRule, (agentId) => this.resolveCpAgent(agentId))
@@ -16669,6 +17437,13 @@ export class Daemon {
     }
   }
 
+  /** Show a live turn's wait on a person on its own surface — Slack's session state (slack-code-channels.md §5.1). */
+  private showHumanWait(owner: HostKey, acpSessionId: string, waiting: boolean): void {
+    const p = this.pending.get(pendingTurnKey(owner, acpSessionId))
+    if (!p || !(p.conv instanceof OutputConverger)) return
+    for (const action of p.conv.onHumanWait(waiting)) this.enqueueApply(p, action)
+  }
+
   /** The turn's OWN gate notice — only Linear has one; false means post the neutral chat notice (§5.1, §10.4). */
   private openApprovalGateSurface(p: Pending, gateId: string, request: ApprovalRequestParts): boolean {
     if (!(p.conv instanceof LinearConverger)) return false
@@ -16689,6 +17464,7 @@ export class Daemon {
   /** D→C `agent/activity` for the approval bell (slack-approval-dm.md §7); best-effort, the reconnect replay converges it. */
   private emitApprovalActivity(owner: HostKey, acpSessionId: string, state: 'awaiting_permission' | 'idle'): void {
     const agentId = hostKeyAgentId(owner)
+    this.showHumanWait(owner, acpSessionId, state === 'awaiting_permission')
     this.approvalActivityChain = this.approvalActivityChain.then(async () => {
       try {
         const sessionId = (await this.outwardSessionIdForAcp(agentId, acpSessionId, owner)) ?? acpSessionId
@@ -16720,6 +17496,7 @@ export class Daemon {
       noteSubsessionRound: (childKey, parentKey) => this.holdSlackForTask(childKey, parentKey),
       activeTurnThread: (key) => this.activeTurnShare.get(key)?.thread,
       messageFollowUp: (req, taskKey, callerKey) => this.messageFollowUp(req, taskKey, callerKey),
+      tasksCoordinatorOnly: () => this.cfg.features.autoSessionMode,
       sdkLease: () => this.sdkLease,
       safetyDrained: (agentId) => this.waitForSafetyDrain(agentId),
       callerAskers: async (agentId, key, thread, integrationId) =>
@@ -16975,7 +17752,7 @@ export class Daemon {
     const replaced = (await ctx.acknowledgement?.replace(notice).catch(() => false)) === true
     if (ctx.replyConn) {
       // Settle the Slack slot (a sibling may still be working); Telegram's typing hint expires on its own.
-      this.settleSlackSlot(ctx.replyConn, ctx.channel, ctx.thread, ctx.sessionKey)
+      this.settleSlackSlot(ctx.replyConn, ctx.channel, activityThreadOf(ctx), ctx.sessionKey)
       const chrome = turnChromeFor(ctx.platform).chromeMarkedNotices
       if (!replaced && chrome)
         void (ctx.replyConn as SlackConnection).postMessage(ctx.channel, notice, ctx.thread, {
@@ -17707,8 +18484,16 @@ export class Daemon {
     if (integrationId !== undefined) {
       msg.transportScope ??= this.transportScopeForIntegrationIds([integrationId])
     }
-    // A sub-session never speaks on the platform, whichever turn wakes it (assistant-mode.md §5.7).
-    if (isSubsessionCoordinate(sessionThreadOf(msg))) msg.headless = true
+    // A sub-session never speaks on the platform, whichever turn wakes it (assistant-mode.md §5.7); a coordinator speaks only through its outcomes (auto-session-mode.md §4.2).
+    if (isSubsessionCoordinate(sessionThreadOf(msg)) || isCoordinatorCoordinate(sessionThreadOf(msg)))
+      msg.headless = true
+    // The platform's copy of a message a task's place was made for opens that task with its title and background (auto-session-mode.md §6.8).
+    if (wholeRoomThread(msg))
+      await this.coordinators.placeOpening(
+        agentId,
+        sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope),
+        msg
+      )
     // An agent-initiated wake's INBOUND message posts live too (#807 only posted the woken
     // REPLY, so the sender's message appeared on refresh but never in the live view). Mint
     // its canonical post identity before the inbox row persists so a replay reuses it and
@@ -18330,6 +19115,7 @@ export class Daemon {
       released = true
       active.delete(done)
       if (active.size === 0) this.activeDispatchesByAgent.delete(agentId)
+      this.quiescence.notify()
       this.clearColdCancelBackstop(key, done)
       if (this.activeDispatchDoneByKey.get(key) === done) this.activeDispatchDoneByKey.delete(key)
       resolveDone()
@@ -18522,6 +19308,7 @@ export class Daemon {
             let ended: TurnAcknowledgementEnd = 'failed'
             try {
               await this.settleReviewBatch(entry)
+              if (this.cfg.features.autoSessionMode) await this.resumeThreadedTaskTurn(entry, key)
               sessionId = await this.dispatchOne(entry, key)
               ended = sessionId === null ? 'interrupted' : 'completed'
             } finally {
@@ -18533,6 +19320,10 @@ export class Daemon {
             if (!this.retainsInboxRow(entry, false)) await this.removeInbox(entry)
             if (isSubsessionCoordinate(sessionThreadOf(entry.msg)))
               await this.settleSubsessionTurn(entry, key, ended === 'completed' ? 'completed' : 'interrupted')
+            else if (this.cfg.features.autoSessionMode) await this.settleThreadedTaskTurn(entry, key)
+            await this.settleCoordinatorTurn(entry, key, entry.coordinatorEnded ?? 'stopped', sessionId, {
+              replayed: this.retainsInboxRow(entry, false)
+            })
             entry.resolve(sessionId)
           } else {
             await this.removeInbox(entry)
@@ -18543,10 +19334,15 @@ export class Daemon {
           // A shutdown drain's throw is the deadline-cancel of an admitted turn, whose row startup replay recovers.
           if (!this.retainsInboxRow(entry, true)) await this.removeInbox(entry)
           if (isSubsessionCoordinate(sessionThreadOf(entry.msg))) await this.settleSubsessionTurn(entry, key, 'failed')
+          else if (this.cfg.features.autoSessionMode) await this.settleThreadedTaskTurn(entry, key)
+          await this.settleCoordinatorTurn(entry, key, 'failed', null, { replayed: this.retainsInboxRow(entry, true) })
           entry.reject(err)
-          // Fail-stop: do NOT auto-continue draining onto a session whose turn just failed.
-          // Reject every queued follow-up with a clear notice (their own promises) and drop
-          // them; explicit retry/`!queue`/`!cancel` re-admits fresh. Then release the key.
+          // A coordinator's queue holds separate people's messages, never follow-ups of the failed one: they still run (§4.3).
+          if (isCoordinatorCoordinate(sessionThreadOf(entry.msg))) {
+            entry = await this.nextRunnableEntry(key)
+            continue
+          }
+          // Fail-stop: reject every queued follow-up of a failed turn with a notice; a retry, `!queue` or `!cancel` re-admits fresh.
           const rest = this.serialQueue.get(key) ?? []
           this.serialQueue.delete(key)
           for (const e of rest) {
@@ -18572,6 +19368,7 @@ export class Daemon {
       this.inflight.delete(key)
     } finally {
       this.activeGateEntries.delete(key)
+      this.quiescence.notify()
     }
   }
 
@@ -18620,6 +19417,8 @@ export class Daemon {
       }
     }
     await this.confirmPlaceBeforeTurn(agentId, integrationId, msg, webchat, key)
+    // auto-session-mode.md §4.3: a coordinator turn decides every message queued behind it too.
+    if (isCoordinatorCoordinate(sessionThreadOf(msg))) await this.beginCoordinatorTurn(entry, key)
     // Every decision this turn can make before it touches a host, a row or a connection.
     const plan = buildTurnPlan({
       entry,
@@ -18667,7 +19466,7 @@ export class Daemon {
     const indicatorShown = this.showActivity(
       replyConn,
       msg.channel,
-      plan.thread,
+      activityThreadOf(plan),
       plan.startupActivityLabel,
       plan.statusOptions
     )
@@ -18795,6 +19594,8 @@ export class Daemon {
       }
       turnModel = await this.captureTurnModel(run, host, sessionId, modelOverride)
       await this.openTurnChrome(p, run, currentAttributionInfo)
+      const surfaceContext = await this.turnSurfaces.exact(p.plan.platform)?.onStart?.(p, created)
+      if (surfaceContext) handled.blocks.push({ type: 'text', text: surfaceContext })
       const prompt = await this.prePromptContextRefresh(p, run, sessionId, handled)
       this.emitTurnStarted(run, host, sessionId, created, prompt.finalCaptureInput, turnModel)
       const outcome = await this.runPromptLoop(p, run, {
@@ -18825,6 +19626,13 @@ export class Daemon {
       observedError = this.maskAgentSecrets(agentId, turnFailureReason(err))
       throw err
     } finally {
+      if (entry.coordinatorBatch !== undefined)
+        entry.coordinatorEnded =
+          observedOutcome === 'complete'
+            ? 'answered'
+            : observedOutcome === 'failed' || settlement.finalPhase === 'problem'
+              ? 'failed'
+              : 'stopped'
       try {
         await this.settleTurn(p, run, sessionId, settlement, releaseReplyConn, activeTurn)
       } finally {
@@ -18843,7 +19651,7 @@ export class Daemon {
   /** Done with the activity indicator: settle the Slack slot, unless a newer turn displaced this one and owns it. */
   private clearTurnActivity(run: TurnRun): void {
     if (run.entry.displacedByNewerTurn) return
-    this.settleSlackSlot(run.replyConn, run.plan.channel, run.plan.thread, run.plan.sessionKey)
+    this.settleSlackSlot(run.replyConn, run.plan.channel, activityThreadOf(run.plan), run.plan.sessionKey)
   }
 
   /**
@@ -18940,7 +19748,7 @@ export class Daemon {
       // Only a human ingress gets a repair notice; a rejected A2A wake stays postless so no workflow state leaks.
       if (!callMeta && msg.source === 'user') {
         try {
-          await conn?.postMessage(msg.channel, reason, msg.thread ?? msg.msgId)
+          await conn?.postMessage(msg.channel, reason, msg.replyThread ?? msg.thread ?? msg.msgId)
         } catch (err) {
           this.log.warn(`session source: could not post rejection (${formatErr(err)})`)
         }
@@ -18976,14 +19784,15 @@ export class Daemon {
     let agent = run.agent
     const { agentId, msg, integrationId, webchat, callMeta, hookContext } = entry
     // The per-conversation Worktree choice this turn carries, in the isolation vocabulary the row, the host key and the pod claim all speak.
-    // Organization research needs no checkout of its own: it reads through bridge tools only (assistant-mode.md §5.15).
-    const webchatIsolation = isResearchSessionKey(key)
-      ? ('shared' as const)
-      : webchat?.worktree === undefined
-        ? undefined
-        : webchat.worktree
-          ? ('session' as const)
-          : ('shared' as const)
+    // Organization research and a coordinator need no checkout of their own (assistant-mode.md §5.15, auto-session-mode.md §5.4).
+    const webchatIsolation =
+      isResearchSessionKey(key) || isCoordinatorSessionKey(key)
+        ? ('shared' as const)
+        : webchat?.worktree === undefined
+          ? undefined
+          : webchat.worktree
+            ? ('session' as const)
+            : ('shared' as const)
     // Install the exact route before session/new|load: adapters may emit metadata
     // (including a restored title) while SessionManager is still initializing.
     const previousDeliveryBinding = this.sessionDeliveryBindings.get(key)
@@ -19092,7 +19901,11 @@ export class Daemon {
           ...(entry.selectedHost ? { host: entry.selectedHost.host } : {}),
           ...(webchatIsolation ? { workspaceIsolation: webchatIsolation } : {}),
           ...reviewWorkspace,
-          ...(launchWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: launchWorkspaceCwd } : {})
+          ...(launchWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: launchWorkspaceCwd } : {}),
+          ...(entry.coordinatorPrompt !== undefined ? { coordinatorBatch: entry.coordinatorPrompt } : {}),
+          ...(entry.coordinatorPrompt !== undefined
+            ? { bareCwd: async () => await this.coordinatorDir(agentId, key, false) }
+            : {})
         }
       )
       const target = this.sessionRuntimes.get(key)
@@ -19151,7 +19964,7 @@ export class Daemon {
             channel: msg.channel,
             sessionKey: plan.sessionKey,
             transcriptChannel: plan.transcriptChannel,
-            thread: msg.thread,
+            thread: plan.thread,
             statusThread: plan.statusThread,
             sessionThread: plan.sessionThread,
             ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {})
@@ -19579,7 +20392,7 @@ export class Daemon {
       replyConn,
       channel: msg.channel,
       transcriptChannel: plan.transcriptChannel,
-      thread: msg.thread,
+      thread: plan.thread,
       statusThread: plan.statusThread,
       sessionKey: plan.sessionKey
     })
@@ -19668,6 +20481,41 @@ export class Daemon {
     } catch {
       return undefined
     }
+  }
+
+  // Resolve only isolated repositories assigned to this session, on the execution plane that owns them.
+  private async turnTaskDiff(p: Pending, created: boolean): Promise<TaskDiff> {
+    const agent = this.agents.get(p.plan.agentId)
+    const session = await this.store.getSession(p.plan.sessionKey)
+    if (!agent || session?.workspaceIsolation !== 'session')
+      throw new TaskDiffIneligible('Automatic diff updates need a repository isolated for this task.')
+    const scope = createWorkspaceScope({
+      workspaces: this.workspaces,
+      agentOf: (id) => this.agents.get(id),
+      sessionOf: (id, outwardId) => this.store.getSessionByOutwardId(outwardId, id),
+      runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
+    })
+    const roots: Array<{ path: string; name: string }> = []
+    if (agent.workspace.mode === 'git-repo') {
+      const primary = await scope.location(agent.id, p.outwardSessionId)
+      if (primary) roots.push({ path: primary.root, name: 'workspace' })
+    }
+    for (const root of await this.workspaces.sessionAdditionalRoots(agent, {
+      sessionKey: session.key,
+      isolation: 'session'
+    })) {
+      if (!roots.some((existing) => existing.path === root.path))
+        roots.push({ path: root.path, name: root.repoFullName })
+    }
+    return openTaskDiff(
+      roots.map((root) => {
+        const git = this.workspaces.consoleWorkspaceGitRunner(agent.id, root.path, undefined, session.key)
+        if (!git) throw new TaskDiffUnavailable('The task workspace is unavailable.')
+        return { git, name: root.name }
+      }),
+      session.key,
+      created && session.lastTurnOutcome == null
+    )
   }
 
   /** Build this turn's live record from its plan and register it as the session's Pending turn. */
@@ -20091,10 +20939,10 @@ export class Daemon {
         .catch((err) => this.log.debug(`effort override "${effortOverride}" not applied: ${(err as Error).message}`))
     }
     const permissionModeOverride = settingsInChat ? await this.store.getPermissionModeOverride(key) : undefined
-    // assistant-mode.md §5.12: a check runs in the runtime's own read-only mode, never the agent's.
-    const check = isCheckCoordinate(p.plan.sessionThread)
+    // assistant-mode.md §5.12: a check runs in the runtime's own read-only mode, never the agent's; so does a coordinator (auto-session-mode.md §5.4).
+    const check = isCheckCoordinate(p.plan.sessionThread) || isCoordinatorCoordinate(p.plan.sessionThread)
     const checkMode = check ? readOnlyExtractionMode(host.permissionModeOptions?.(sessionId)?.modes ?? []) : undefined
-    if (check && !checkMode) this.log.warn(`check ${key}: the runtime offers no read-only mode; check degraded`)
+    if (check && !checkMode) this.log.warn(`session ${key}: the runtime offers no read-only mode; it runs in its own`)
     const effectivePermissionMode = check
       ? checkMode
       : (permissionModeOverride ??
@@ -20196,7 +21044,7 @@ export class Daemon {
     }
     // Startup observers have settled; a cold host's initial activity now yields to its ordinary turn.
     if (!plan.hostAlreadyRunning)
-      void this.showActivity(replyConn, plan.channel, plan.thread, 'is thinking…', plan.statusOptions)
+      void this.showActivity(replyConn, plan.channel, activityThreadOf(plan), 'is thinking…', plan.statusOptions)
     // Post/refresh the session status bar up front — with the model now known (session
     // created) plus any usage carried over from prior turns — so it sits at the top of
     // the thread before the reply streams in.
@@ -20989,7 +21837,7 @@ export class Daemon {
         channel: msg.channel,
         sessionKey: plan.sessionKey,
         transcriptChannel: plan.transcriptChannel,
-        thread: msg.thread,
+        thread: plan.thread,
         statusThread: plan.statusThread,
         sessionThread: plan.sessionThread
       })
@@ -21194,6 +22042,7 @@ export class Daemon {
     if (!cleanupOutcome.blocked) {
       this.recordFooterHolder(p)
       this.pending.delete(pendingTurnKey(p.hostKey, sessionId))
+      this.quiescence.notify()
       // §7.3 prompting/cancelling → idle: the turn is over (cleanly, on error, or
       // cancelled), so the session is idle again. Without this the row stayed
       // `prompting` forever — the thread never went idle and TTL-close never fired.
@@ -21384,7 +22233,7 @@ export class Daemon {
       // cancels the CardKit entity. Exact lookup — no core fallback.
       this.turnSurfaces.exact(live.plan.platform)?.onSuppress?.(live)
       if (!live.entry.displacedByNewerTurn)
-        this.settleSlackSlot(live.conn, live.plan.channel, live.plan.thread, live.plan.sessionKey)
+        this.settleSlackSlot(live.conn, live.plan.channel, activityThreadOf(live.plan), live.plan.sessionKey)
       if (live.webchat && !live.webchat.doneSent) {
         live.webchat.doneSent = true
         live.webchat.sink.done({
@@ -21504,12 +22353,13 @@ export class Daemon {
     const { msg } = p.entry
     try {
       if (p.conn && turnChromeFor(p.plan.platform).chromeMarkedNotices)
-        await (p.conn as SlackConnection).postMessage(msg.channel, text, msg.thread, {
+        await (p.conn as SlackConnection).postMessage(msg.channel, text, msg.replyThread ?? msg.thread, {
           ...(slackAgentIdentityOptions(p.plan) ?? {}),
           chrome: true
         })
-      else if (p.conn) await p.conn.postMessage(msg.channel, text, msg.thread)
-      else if (!p.plan.suppressReplyConn) await this.chromeNotice(p.plan.platform, p.egress, msg, msg.thread, text)
+      else if (p.conn) await p.conn.postMessage(msg.channel, text, msg.replyThread ?? msg.thread)
+      else if (!p.plan.suppressReplyConn)
+        await this.chromeNotice(p.plan.platform, p.egress, msg, msg.replyThread ?? msg.thread, text)
       await this.store.appendTranscript({
         channel: p.plan.transcriptChannel,
         thread: p.plan.sessionThread,
@@ -21817,8 +22667,8 @@ export class Daemon {
         const turn = this.pending.get(pendingKey)
         // A successor that reused the ACP id is not the turn this backstop was armed for.
         if (!turn || (only && turn !== only)) return
-        // Force-stop the exact process selected for this turn.
-        const cleanup = turn.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)
+        // Force-stop the exact process selected for this turn, else the host that owns it, never its sibling sessions' hosts.
+        const cleanup = turn.selectedHost?.stop(0) ?? this.stopHostByKey(owner, 0)
         const stopped = cleanup.catch((err) => {
           return this.fenceLifecycleCleanupFailure(agentId, key, turn.entry, err)
         })
@@ -21859,13 +22709,15 @@ export class Daemon {
       this.log.warn(
         `${reason}: agent "${agentId}" did not finish cold initialization within ${ms}ms — force-stopping host (${key})`
       )
-      const cleanup = entry.lifecycleCleanup ?? entry.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)
+      // Stop only the host that owns this session, shared or its own; the agent's other hosts keep running.
+      const cleanup =
+        entry.lifecycleCleanup ?? entry.selectedHost?.stop(0) ?? this.stopHostByKey(this.hostKeyFor(agentId, key), 0)
       entry.lifecycleCleanup ??= cleanup
       const stopped = cleanup.catch((err) => {
         return this.fenceLifecycleCleanupFailure(agentId, key, entry, err)
       })
       // Abort every SessionManager cold await now; keep NEW admission gated until
-      // the host-wide stop itself settles, so the old teardown cannot kill fresh work.
+      // the stop itself settles, so the old teardown cannot kill fresh work.
       this.addSafetyDrainWait(agentId, stopped)
       void stopped.then(() => {
         entry.initAbort.abort(new Error(reason))
@@ -22795,25 +23647,18 @@ export class Daemon {
     if (turnChromeFor(p.plan.platform).statusSurface === 'turn-bar' && emitted) await this.emitStatusBar(p, true, true)
   }
 
-  /** Emit/refresh the session's status bar (model / context / tokens / cost). Called at
-   *  turn start (model + carried-over usage), on each `usage_update` (live context/cost),
-   *  and at turn end (token totals). Deduped against the last snapshot so an unchanged
-   *  update is a no-op. Webchat emits a status-only `WebchatOutput` payload through
-   *  the relay reply sink; Slack gets the session-scoped in-place `status-bar` action.
-   *  Telegram has NO status bar — state is queried on
-   *  demand via `/status` (see handleCommand) — so it's skipped here. Headless no-ops in
-   *  applyAction (no connection), which is fine. */
+  // Refresh the platform's status surface at turn boundaries and usage updates, deduping unchanged snapshots.
   private async emitStatusBar(p: Pending, allowWhenSuppressed = false, terminal = false): Promise<void> {
     if (p.outputSuppressed && !allowWhenSuppressed) return
     const statusSurface = turnChromeFor(p.plan.platform).statusSurface
+    const info = await this.buildStatusInfo(p)
     if (statusSurface === 'turn-bar' && !p.plan.showStatusBar) {
-      const key = 'status-bar:hidden'
+      const key = JSON.stringify(['status-bar:hidden', info, terminal])
       if (key === p.chrome.lastStatusBar) return
       p.chrome.lastStatusBar = key
-      this.enqueueApply(p, { kind: 'clear-status-bar' }, { allowWhenSuppressed })
+      this.enqueueApply(p, { kind: 'clear-status-bar', info }, { allowWhenSuppressed })
       return
     }
-    const info = await this.buildStatusInfo(p)
     // `terminal` keeps the turn's closing write distinct from every in-turn one, so it always
     // lands: it carries the final usage and reposts a bar whose ts an edit proved dead.
     const key = JSON.stringify([info, terminal])
@@ -22861,6 +23706,7 @@ export class Daemon {
         p,
         {
           kind: 'status-bar',
+          info,
           text: renderStatusBar(info),
           blocks: buildStatusBlocks(info, p.plan.sessionKey, link, shared)
         },
@@ -22946,7 +23792,7 @@ export class Daemon {
       if (p.outputSuppressed && !opts.allowWhenSuppressed) return
       // The turn-final status clear settles the ONE shared Slack slot: a surviving sibling's `processing` takes it over.
       if (action.kind === 'set-status' && action.text === '' && p.plan.platform === 'slack') {
-        this.settleSlackSlot(p.conn, p.plan.channel, p.plan.thread, p.plan.sessionKey)
+        this.settleSlackSlot(p.conn, p.plan.channel, activityThreadOf(p.plan), p.plan.sessionKey)
         return
       }
       return this.turnSurfaces
@@ -23623,6 +24469,11 @@ export class Daemon {
       return
     }
     const isAnswerChunk = update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text'
+    // A one-message coordinator turn answers with the text after its last call (auto-session-mode.md §4.3).
+    if (isCoordinatorCoordinate(p.plan.sessionThread)) {
+      if (isAnswerChunk) this.coordinators.turns.noteText(p.plan.sessionKey, String(update.content.text ?? ''))
+      else if (update?.sessionUpdate === 'tool_call') this.coordinators.turns.noteToolCall(p.plan.sessionKey)
+    }
     if (isAnswerChunk) {
       const text = String(update.content.text ?? '')
       if (p.plan.stageAnswer) {
@@ -23861,7 +24712,7 @@ export class Daemon {
       const researchDir = isResearchSessionKey(boundKey || undefined) ? await this.researchCwd(agent, key) : undefined
       // The cold gate, before every fresh spawn: a failed child had write authority, so its replacement re-verifies the skill receipts; a review in its own pod needs only that, its cwd already prepared.
       // A shared host started for a session prepares that session's share too (its on-demand clone directory), since the session consumes this one preparation.
-      const prepared =
+      const workspaceCwd =
         researchDir ??
         (bound?.cwd !== undefined && this.runsInSessionPod(agent, boundKey)
           ? await this.prepareSessionPodLaunch(agent, boundKey, allowAgentDrain)
@@ -23871,6 +24722,11 @@ export class Daemon {
               session && session.cwd === undefined ? session.workspace : undefined,
               allowAgentDrain
             ))
+      // A coordinator's host of its own prepares as any launch does, then starts in its empty directory (auto-session-mode.md §5.4).
+      const prepared =
+        boundKey && isCoordinatorSessionKey(boundKey)
+          ? ((await this.coordinatorDir(agentId, boundKey, true)) ?? workspaceCwd)
+          : workspaceCwd
       if (!this.usesMicrosandbox(agent))
         await withStartupPhase('runtime', () => this.ensureRuntimeInstalled(agent.runtime, true))
       const sessionGitDirs = boundKey ? await this.listSessionGitDirs(agent, boundKey, label) : undefined
@@ -24177,8 +25033,9 @@ export class Daemon {
     callMeta: CallMeta | undefined,
     hookContext: HookDispatchContext | undefined
   ): Promise<'unchanged' | 'mismatch' | 'unavailable'> {
-    // A console continuation onto a hook session is not a new audience claiming a runtime — it IS that session, and nothing re-derives a hook audience without the delivery's trusted metadata, so the row keeps its binding (§9).
-    if (msg.adoptedSession && originKindOf(msg.platform) === 'hook') return 'unchanged'
+    // A console continuation onto a hook session or a task is not a new audience claiming a runtime — it IS that session, whose audience its delivery cannot re-derive, so the row keeps its binding (§9; auto-session-mode.md §10).
+    if (msg.adoptedSession && (originKindOf(msg.platform) === 'hook' || isSubsessionCoordinate(sessionThreadOf(msg))))
+      return 'unchanged'
     const direct =
       codeHostExternalSource(hookContext) ??
       (await this.conversationExternalSource(agentId, msg, postlessCall(callMeta)))
@@ -24979,7 +25836,7 @@ export class Daemon {
       if (this.gatedNoticesSent.has(latch)) return
       const text =
         '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.'
-      const thread = isDm ? undefined : msg.thread
+      const thread = isDm ? undefined : (msg.replyThread ?? msg.thread)
       const conn = this.connForIntegration(integrationId)
       // Chrome-marked so peer daemons' thread backfill never re-ingests the notice.
       const post = !conn
@@ -25399,6 +26256,26 @@ export class Daemon {
     }, SESSION_RETENTION_SWEEP_INTERVAL_MS)
   }
 
+  /** Keeps an open webchat session's remote MCP grant alive between turns, so a runtime never holds an expired or rotated bearer. */
+  private armWebchatGrantRenewal(): void {
+    this.webchatGrantRenewTimer = this.clock.setTimeout(async () => {
+      this.webchatGrantRenewTimer = undefined
+      const failed = await this.remoteWebchatGrants
+        ?.renewExpiring(this.clock.now(), async (conversationId, agentId) => {
+          const session = await this.store.getSession(this.webchatTransport.webchatSessionKey(conversationId, agentId))
+          return session !== undefined && session.state !== 'closed'
+        })
+        .catch((err) => {
+          this.log.warn(`remote MCP: grant renewal sweep failed (${formatErr(err)})`)
+          return []
+        })
+      if (failed?.length)
+        this.log.warn(`remote MCP: could not renew the grant of ${failed.length} open conversation(s); retrying`)
+      // The shutdown latch, not `draining`: a temporary daemon/drain re-opens the gate without re-arming this.
+      if (!this.shutdownDraining) this.armWebchatGrantRenewal()
+    }, WEBCHAT_MCP_GRANT_RENEW_SWEEP_MS)
+  }
+
   /** Recurring idle sweep (§7.2/§7.3): reap idle adapter children and TTL-close
    *  idle sessions. Driven by the injected Clock so a FakeClock advances it in tests. */
   private armIdleSweep(): void {
@@ -25554,6 +26431,7 @@ export class Daemon {
     }
     lease.agentId = agentId
     this.sdkLease.set(leaseKey, lease)
+    this.quiescence.notify()
   }
 
   /** Project one (agent, ACP session) background-task lease for the console's `task/list` read
@@ -26214,7 +27092,10 @@ export class Daemon {
     this.sessionRetentionSweepInFlight = true
     try {
       // Orphans too, whatever the window: a VM whose row is gone serves nothing and still pins its image.
-      const discarded = (await this.sweepExpiredSessions()) + (await this.retireOrphanSessionVms())
+      const discarded =
+        (await this.sweepExpiredSessions()) +
+        (await this.sweepExpiredWorkspaces()) +
+        (await this.retireOrphanSessionVms())
       // A discarded VM may have been the last pin on a retired release's image, which startup alone keeps until a restart.
       if (discarded && !this.draining) {
         try {
@@ -26233,12 +27114,13 @@ export class Daemon {
     }
   }
 
-  /** A conversation's current append session skips idle retention (channel-session-mode.md §6.3); removing the agent or integration, leaving `append`, or `!new` ends it. */
+  /** A conversation's current append session, or its coordinator under `auto`, skips idle retention (channel-session-mode.md §6.3); removing the agent or integration, leaving the mode, or `!new` ends it. */
   private async keepsAppendSession(rec: SessionRecord): Promise<boolean> {
     if (!isAppendCoordinate(rec.thread)) return false
     const integrationId = this.integrationIdForSessionTransport(rec.agentId, rec.platform, rec.transportScope)
     const int = this.agents.get(rec.agentId)?.integrations?.find((candidate) => candidate.id === integrationId)
-    if (!int || conversationSessionMode(int, rec.channel) !== 'append') return false
+    const mode = isCoordinatorCoordinate(rec.thread) ? 'auto' : 'append'
+    if (!int || conversationSessionMode(int, rec.channel) !== mode) return false
     return (await this.store.currentAppendCoordinate(rec.agentId, rec.channel, rec.transportScope)) === rec.thread
   }
 
@@ -26276,7 +27158,10 @@ export class Daemon {
     let discarded = 0
     for (const rec of expired) {
       if (this.draining) return 0
-      const res = await this.cleanupSessionWorktree(rec)
+      // A reclaimed workspace has nothing left to judge, and judging it would wake a pod for nothing.
+      const res: SessionWorktreeCleanupResult = workspaceReclaimed(rec)
+        ? { outcome: 'absent' }
+        : await this.cleanupSessionWorktree(rec)
       if (res.outcome === 'active') {
         active += 1
         continue
@@ -26352,6 +27237,68 @@ export class Daemon {
         (failed ? `, ${failed} failed` : '')
     )
     if (removed) void this.drainSessionPurges()
+    return discarded
+  }
+
+  /** Reclaim the workspace, sandbox and runtime home of each finished session past the workspace window, keeping its row and transcript; returns how many session VMs it discarded. */
+  private async sweepExpiredWorkspaces(): Promise<number> {
+    const windowMs = workspaceRetentionMs(this.cfg.sessions)
+    if (windowMs === null) return 0
+    const now = this.clock.now()
+    const rowWindowMs = sessionRetentionMs(this.cfg.sessions.retention)
+    const expired: SessionRecord[] = []
+    for (const rec of await this.store.listExpiredSessions(now - windowMs)) {
+      // A row past its own window is the purge's to judge, which takes the workspace with it.
+      if (rowWindowMs !== null && rec.updatedAt < now - rowWindowMs) continue
+      if (workspaceReclaimed(rec) || retentionRecheckPending(rec, now)) continue
+      if (this.judgesStoredSessions(rec.agentId) && !(await this.keepsAppendSession(rec))) expired.push(rec)
+    }
+    if (!expired.length) return 0
+    const reclaimedAt = this.clock.now()
+    let reclaimed = 0
+    let retained = 0
+    let failed = 0
+    let discarded = 0
+    for (const rec of expired) {
+      if (this.draining) return 0
+      const res = await this.cleanupSessionWorktree(rec)
+      if (res.outcome === 'active') continue
+      if (res.outcome === 'retained' || res.outcome === 'failed') {
+        if (res.outcome === 'retained') retained += 1
+        else failed += 1
+        await this.keepExpiredSession(rec, reclaimedAt)
+        continue
+      }
+      // Inside the admission fence, which a turn must pass first: the row stays, so a new turn could otherwise start in the sandbox going away.
+      await this.withWorkspaceAdmissionFence(rec.agentId, async () => {
+        if (await this.sessionRetentionActive(rec)) return
+        // A legacy session shares its agent's VM, which only its row's purge may retire.
+        const ownSandbox = !this.legacyMicrosandboxSessions.has(sessionHostKey(rec.agentId, rec.key))
+        try {
+          if (ownSandbox) {
+            await this.stopSessionHost(rec.agentId, rec.key, {
+              ...this.sessionHostFence(rec.agentId, rec.key),
+              row: rec
+            })
+            await this.discardSessionSandbox(rec.agentId, rec.key, { rowStays: true })
+          }
+        } catch (err) {
+          failed += 1
+          this.log.warn(
+            `retention: keeping the workspace of session ${rec.key} — sandbox cleanup failed (${formatErr(err)})`
+          )
+          await this.keepExpiredSession(rec, reclaimedAt)
+          return
+        }
+        if (ownSandbox && this.microsandbox) discarded += 1
+        if (await this.store.markSessionWorkspaceReclaimed(rec.key, rec.updatedAt, reclaimedAt)) reclaimed += 1
+      })
+    }
+    this.log.info(
+      `retention: reclaimed the workspaces of ${reclaimed}/${expired.length} idle session(s)` +
+        (retained ? `, ${retained} retained (dirty/unique commits)` : '') +
+        (failed ? `, ${failed} failed` : '')
+    )
     return discarded
   }
 
@@ -26761,7 +27708,7 @@ export class Daemon {
       channel: msg.channel,
       sessionKey,
       transcriptChannel: p.plan.transcriptChannel,
-      thread: msg.thread,
+      thread: p.plan.thread,
       statusThread: p.plan.statusThread,
       sessionThread: p.plan.sessionThread,
       ...(p.entry.acknowledgement ? { acknowledgement: p.entry.acknowledgement.handle } : {})
@@ -26853,7 +27800,11 @@ export class Daemon {
         generation: generationsAtDecision.get(closedHost),
         row
       }
-      void this.stopSessionHost(row.agentId, row.key, fence).catch((error) =>
+      const stopped =
+        originKindOf(row.platform) === 'hook'
+          ? this.retireClosedHookSessionVm(row, fence)
+          : this.stopSessionHost(row.agentId, row.key, fence)
+      void stopped.catch((error) =>
         this.log.warn(`idle: stopping the host of closed session ${row.key} failed (${formatErr(error)})`)
       )
       // A session on the agent's shared host keeps its runtime child until the session itself is closed (#2923).
@@ -27246,8 +28197,27 @@ export class Daemon {
     }
   }
 
+  // A closed hook session is one-shot: stop its host and drop its VM disk under the admission fence, keeping the row and HOME.
+  private retireClosedHookSessionVm(
+    row: { key: string; agentId: string; acpSessionId: string | null },
+    fence: Parameters<Daemon['stopSessionHost']>[2]
+  ): Promise<void> {
+    return this.withWorkspaceAdmissionFence(row.agentId, async () => {
+      await this.stopSessionHost(row.agentId, row.key, fence)
+      const key = sessionHostKey(row.agentId, row.key)
+      if (!this.microsandbox || this.legacyMicrosandboxSessions.has(key)) return
+      if (this.hosts.has(key) || this.hostStarts.has(key) || this.sessionAdmitted(row.key, key)) return
+      if (await this.sessionRetentionActive(row)) return
+      await this.microsandbox.discard(`${row.agentId}/${hostKeyDirName(key)}`)
+    })
+  }
+
   // Retire a session's VM and HOME with its row; a legacy shared VM lives until its last session retires.
-  private async discardSessionSandbox(agentId: string, sessionKey: string): Promise<void> {
+  private async discardSessionSandbox(
+    agentId: string,
+    sessionKey: string,
+    opts?: { rowStays?: boolean }
+  ): Promise<void> {
     const key = sessionHostKey(agentId, sessionKey)
     const leaf = hostKeyDirName(key)
     // A session on another machine is retired by naming the launch this holder prepared; what it cannot name, that executor's backstop collects (§7).
@@ -27269,6 +28239,8 @@ export class Daemon {
     try {
       await plane.discardSession(agentId, leaf)
     } catch (err) {
+      // The orphan reconciler only collects a claim whose row is gone, so a kept row's caller must retry it.
+      if (opts?.rowStays) throw err
       this.log.warn(
         `cluster: could not delete the sandbox of retired session ${sessionKey} (${formatErr(err)}) — ` +
           `sandboxclaim "${plane.driver.claimName(sessionSandboxSubject(agentId, leaf))}" is left for the orphan reconciler`
@@ -28212,7 +29184,8 @@ export class Daemon {
       runCronNow: (cronId) => this.runCronNow(cronId),
       runDrain: (drain, onProgress) => this.runDrain(drain, onProgress),
       scheduleFleetExit: (kind, targetVersion, operationId) =>
-        this.fleetUpgrade.scheduleFleetExit(kind, targetVersion, operationId)
+        this.fleetUpgrade.scheduleFleetExit(kind, targetVersion, operationId),
+      autoUpgrade: () => this.autoUpgrader
     }
   }
 
@@ -28282,6 +29255,7 @@ export class Daemon {
       effectiveAgents: () => this.effectiveAgents(),
       noteProjector: () => this.noteProjector,
       codeHostReviews: () => this.reviewOutbox,
+      autoUpgrade: () => this.autoUpgrader,
       cpAgents: () => this.cpAgents,
       cpIntegrations: () => this.cpIntegrations,
       cpCrons: () => this.cpCrons,
@@ -28808,6 +29782,8 @@ export class Daemon {
     // Grants this process recorded lose their descriptor and plaintext with it; a peer's are not ours to sweep.
     const orphaned = await this.store.markOwnedWebchatMcpGrantsRevoking('session_closed', this.clock.now())
     if (orphaned) this.log.info(`remote MCP: queued ${orphaned} orphaned grant revocation(s) from previous run`)
+    // Before the first register/ok, so its baseline and the persisted switch land on loaded state.
+    this.autoUpgrader.start()
     this.cpClient.start()
     this.log.info(`cp: connecting to ${url}…`)
     return initialRegistry
@@ -29276,10 +30252,23 @@ export class Daemon {
           title: computerApprovalTitle(ask),
           kind: 'execute'
         },
-        options: [
-          { optionId: 'allow', name: 'Allow for this session', kind: 'allow_always' },
-          { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
-        ]
+        // An administrator prompt is approved one at a time; a command once or for the session; the first-input ask covers the session.
+        options:
+          ask.kind === 'admin-prompt'
+            ? [
+                { optionId: 'allow', name: 'Approve once', kind: 'allow_once' },
+                { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+              ]
+            : ask.kind === 'command'
+              ? [
+                  { optionId: 'allow', name: 'Allow once', kind: 'allow_once' },
+                  { optionId: 'allow_session', name: 'Allow for this session', kind: 'allow_always' },
+                  { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+                ]
+              : [
+                  { optionId: 'allow', name: 'Allow for this session', kind: 'allow_always' },
+                  { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+                ]
       },
       {
         computerId: ask.computerId,
@@ -29288,7 +30277,8 @@ export class Daemon {
       }
     )
     if (response.outcome.outcome !== 'selected') return 'deny'
-    return response.outcome.optionId === 'allow' ? 'allow' : 'deny'
+    const chosen = response.outcome.optionId
+    return chosen === 'allow' || chosen === 'allow_session' ? chosen : 'deny'
   }
 
   /** The Computers an agent may use now (computer-use.md §4.1), as the CP derives them from each Computer's agent access. */
@@ -29369,6 +30359,7 @@ export class Daemon {
   }
 
   async stop(): Promise<void> {
+    this.autoUpgrader.stop()
     this.decisionGate.close()
     this.decisionRouter.close()
     this.decisionEvaluator.close()
@@ -29408,6 +30399,10 @@ export class Daemon {
     if (this.checkSweepTimer !== undefined) {
       this.clock.clearTimeout(this.checkSweepTimer)
       this.checkSweepTimer = undefined
+    }
+    if (this.webchatGrantRenewTimer !== undefined) {
+      this.clock.clearTimeout(this.webchatGrantRenewTimer)
+      this.webchatGrantRenewTimer = undefined
     }
     this.runtimeFacts.dispose()
     this.k8sProbeSchedule?.stop()

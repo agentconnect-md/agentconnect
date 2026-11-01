@@ -357,8 +357,7 @@ export class VirtualSlackConnection implements PlatformConnection {
     threadTs?: string,
     options?: VirtualPostOptions
   ): Promise<string | undefined> {
-    const result = await this.record('chrome', channel, text, threadTs, identityOf(options))
-    return result.status === 'delivered' ? result.messageId : undefined
+    return this.postMessage(channel, text, threadTs, options)
   }
 
   async updateBlocks(channel: string, _ts: string, _blocks: unknown[], text?: string): Promise<boolean> {
@@ -424,9 +423,10 @@ export class VirtualSlackConnection implements PlatformConnection {
   /** Ephemeral presence (assistant status) — not a message; not recorded. */
   async setStatus(): Promise<void> {}
 
-  /** The turn-start acknowledgement is presence too: it carries no content and scores
-   *  nothing, so the arena accepts it and records nothing, exactly like the status bar. */
+  /** Reactions on inbound messages are presence too: no content, nothing scored, so the arena records neither. */
   async react(): Promise<void> {}
+
+  async unreact(): Promise<void> {}
 
   async setTitle(): Promise<void> {}
 
@@ -561,6 +561,44 @@ export class VirtualSlackConnection implements PlatformConnection {
   async createConversation(): Promise<never> {
     this.unmodelled('new conversations')
   }
+
+  async prepareInboundMessage(): Promise<void> {}
+
+  async codeChannel(): Promise<{ code: boolean; owners: string[] }> {
+    return { code: false, owners: [] }
+  }
+
+  async updateCodeContext(): Promise<boolean> {
+    return false
+  }
+
+  async codeChannelApi(): Promise<never> {
+    this.unmodelled('code channels')
+  }
+
+  async archiveCodeChannel(): Promise<never> {
+    this.unmodelled('code channels')
+  }
+
+  async closeCodeSession(): Promise<boolean> {
+    this.unmodelled('code channels')
+  }
+
+  // The Arena has no code channels, so no Plan tab exists to mirror the plan into.
+  writePlanCanvas(): void {}
+
+  // So every conversation threads off its root posts.
+  async roomThread(): Promise<undefined> {
+    return undefined
+  }
+
+  // Nor a channel for a coordinator's task, which stays in its message's thread.
+  async openTaskPlace(): Promise<undefined> {
+    return undefined
+  }
+
+  // Nothing is archived here, since no code channel exists.
+  codeChannelArchived(): void {}
 
   async searchPublicMessages(): Promise<never> {
     this.unmodelled('workspace searches')

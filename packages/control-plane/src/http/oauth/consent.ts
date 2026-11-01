@@ -17,7 +17,13 @@
  */
 import type { FastifyInstance } from 'fastify'
 import type { HttpDeps } from '../deps.js'
-import { redirectUriMatches, normalizeScopes, OAUTH_SCOPES } from '../../registry/oauthService.js'
+import {
+  AHP_SCOPE,
+  MCP_SCOPES,
+  ahpResourceAgent,
+  normalizeScopes,
+  redirectUriMatches
+} from '../../registry/oauthService.js'
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined)
 
@@ -36,11 +42,13 @@ export function oauthConsentRoutes(deps: HttpDeps) {
       const client = await deps.oauth.getActiveClient(clientId)
       if (!client)
         return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'unknown or expired client' })
+      const scopes = normalizeScopes(str(q.scope))
+      if (!scopes) return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid scope' })
       const orgs = await deps.repos.org.listForUser(req.principal!.userId)
       return {
         clientId: client.clientId,
         clientName: client.clientName,
-        scopes: normalizeScopes(str(q.scope)),
+        scopes,
         organizations: orgs.map((o) => ({ id: o.id, slug: o.slug, name: o.name, role: o.role }))
       }
     })
@@ -88,10 +96,15 @@ export function oauthConsentRoutes(deps: HttpDeps) {
 
       // Granted scopes = what the user approved, clamped to what we support.
       const requested = normalizeScopes(str(b.scope))
+      if (!requested) return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid scope' })
+      // An AHP grant is all-or-nothing and bound to one agent endpoint on the configured relay.
+      const ahp = requested.includes(AHP_SCOPE)
+      if (ahp && !ahpResourceAgent(str(b.resource), deps.config.PUBLIC_RELAY_URL))
+        return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid resource' })
       const approved = Array.isArray(b.grantedScopes)
         ? b.grantedScopes.filter((s): s is string => typeof s === 'string')
         : requested
-      const scopes = OAUTH_SCOPES.filter((s) => requested.includes(s) && approved.includes(s))
+      const scopes = ahp ? [AHP_SCOPE] : MCP_SCOPES.filter((s) => requested.includes(s) && approved.includes(s))
       if (scopes.length === 0) scopes.push('mcp:read')
 
       const code = await deps.oauth.issueCode({

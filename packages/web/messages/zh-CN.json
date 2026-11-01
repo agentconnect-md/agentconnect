@@ -10,7 +10,8 @@
     },
     "pendingActions": {
       "waiting": "{label} 正等待你的操作",
-      "show": "查看"
+      "show": "查看",
+      "dismiss": "关闭"
     },
     "modelProvider": {
       "label": "凭据",
@@ -72,7 +73,8 @@
       "addLabel": "添加标签",
       "addAnother": "再添加一个…",
       "typeLabel": "输入标签，按 Enter 添加",
-      "limitReached": "已达到标签上限，请移除一个后再添加。"
+      "limitReached": "已达到标签上限，请移除一个后再添加。",
+      "skipDrafts": "草稿 PR 标记为可审查后再触发"
     },
     "beta": "Beta",
     "language": {
@@ -262,6 +264,8 @@
     "taskList": {
       "groups": {
         "tasks": "任务",
+        "threaded": "话题任务",
+        "background": "后台任务",
         "followUps": "跟进",
         "subagents": "子 Agent",
         "commands": "后台命令"
@@ -270,7 +274,8 @@
       "state": {
         "open": "运行中",
         "done": "已回报",
-        "failed": "失败"
+        "failed": "失败",
+        "idle": "空闲"
       },
       "runtimeState": {
         "running": "运行中",
@@ -278,6 +283,7 @@
         "failed": "失败"
       },
       "started": "{time}开始",
+      "summarized": "摘要更新于{time}",
       "lastCheck": "上次 {time}",
       "expires": "{time} 过期",
       "untitled": "未命名的任务",
@@ -292,6 +298,29 @@
       "notRunningBackground": "没有正在运行的回合。它启动的后台进程可能仍在运行，无法在这里停止；该进程结束后，它会回报。",
       "stopFailed": "停止失败，请重试。",
       "stopUpgrade": "升级此 Agent 的 Daemon 后才能在这里停止任务。"
+    },
+    "githubApp": {
+      "title": "GitHub App",
+      "close": "关闭",
+      "builtIn": "内置",
+      "builtInFallback": "内置 GitHub App",
+      "free": "空闲",
+      "create": "新建 GitHub App…",
+      "checking": "正在检查此 App 能访问的范围…",
+      "kinds": {
+        "workspace": "工作区",
+        "repository": "仓库",
+        "review": "评审",
+        "installation": "安装"
+      },
+      "addOnGithub": "去 GitHub 添加",
+      "notCovered": "{slug} 还没有覆盖此 agent 用到的全部内容。",
+      "checkAgain": "重新检查",
+      "cancel": "取消",
+      "opening": "正在打开…",
+      "continueOnGithub": "在 GitHub 上继续",
+      "switching": "正在切换…",
+      "switch": "切换"
     }
   },
   "Profile": {
@@ -608,6 +637,7 @@
       "agents": "Agents",
       "agentSummary": "{count} 个 Agent：{names}",
       "people": "人员",
+      "mine": "{name}（我）",
       "schedules": "定时任务",
       "count": "{count, plural, other {# 个会话}}",
       "schedule": "定时任务",
@@ -653,6 +683,10 @@
       "hideTasks": "隐藏 task",
       "all": "全部",
       "noMatchesShort": "无匹配项"
+    },
+    "coordinator": {
+      "label": "协调会话",
+      "hint": "在自动模式下决定此对话中每条消息的去向：交给任务、直接回复或略过。"
     },
     "visibility": {
       "private": "私密",
@@ -951,7 +985,8 @@
       "closeViewer": "关闭",
       "computer": "电脑",
       "computerPick": "电脑",
-      "computerNone": "这个 agent 没有你可以查看的电脑。"
+      "computerNone": "这个 agent 没有你可以查看的电脑。",
+      "computerOnDemand": "agent 在这个会话里第一次用电脑时才会分到一台。"
     }
   },
   "Shell": {
@@ -1243,7 +1278,8 @@
       "authorize": "授权",
       "scopes": {
         "read": "查看你的 Agent、Daemon、定时任务、会话和用量",
-        "write": "创建和修改你的 Agent、定时任务和集成"
+        "write": "创建和修改你的 Agent、定时任务和集成",
+        "ahp": "以你的身份与该组织中你可见的 Agent 对话"
       }
     },
     "waitlist": {
@@ -1642,7 +1678,9 @@
         "dmOnHint": "回复此对话中的每条消息。",
         "hint": "触发条件——Agent何时响应",
         "decision": "按决策",
-        "decisionHint": "已保存的决策会评估{room}中的每条消息；Agent 仅在结果符合你选择的答案时回复。"
+        "decisionHint": "已保存的决策会评估{room}中的每条消息；Agent 仅在结果符合你选择的答案时回复。",
+        "coordinator": "由协调会话决定",
+        "coordinatorHint": "自动模式下，{room}中的每条消息都会交给协调会话，由它决定回复哪些。"
       },
       "action": {
         "leaveLabel": "离开{noun}",
@@ -1680,6 +1718,7 @@
         "leaveConfirm": "确定要离开{space}吗？{platform} Bot无法只离开一个{noun}——它会离开整个服务器，其中的所有{nounPlural}都会从列表中消失。重新邀请即可撤销。"
       },
       "directMessages": "私信",
+      "codeChannels": "Code 频道",
       "openIn": "在 {platform} 中打开 {name}",
       "ownerChange": {
         "title": "要更改此团队的默认Agent吗？",
@@ -1691,7 +1730,9 @@
         "createNew": "按话题",
         "createNewHint": "每个话题有自己的会话，话题内的回复延续该会话。",
         "append": "单一会话",
-        "appendHint": "{room}只有一个会话，所有话题共享。发送 <code>!new</code> 可开始新会话。"
+        "appendHint": "{room}只有一个会话，所有话题共享。发送 <code>!new</code> 可开始新会话。",
+        "auto": "自动",
+        "autoHint": "协调会话阅读{room}中的每条消息，将其交给任务、直接回复或略过。任务在它所处理消息的话题中回复。"
       },
       "settings": {
         "respondTo": "触发条件",
@@ -1720,7 +1761,23 @@
       "suspended": "已暂停",
       "needsUpdate": "需要更新",
       "permissionsNeedUpdate": "此安装的 GitHub 权限需要更新，更新前部分功能无法使用。",
-      "updatePermissions": "更新权限"
+      "updatePermissions": "更新权限",
+      "orgApps": {
+        "free": "空闲",
+        "inUse": "使用中",
+        "delete": "删除 App…",
+        "deleteTitle": "删除 GitHub App",
+        "deleteBody": "从此组织移除 <slug></slug>？这里会忘掉它的密钥和安装记录；App 本身仍留在 GitHub 上，需要到 GitHub 上删除。",
+        "close": "关闭",
+        "cancel": "取消",
+        "deleting": "正在删除…",
+        "deleteConfirm": "删除",
+        "noInstallations": "还没有安装到任何账号。",
+        "openAgent": "打开 {agent}"
+      },
+      "builtIn": "内置",
+      "expand": "展开安装列表",
+      "collapse": "收起安装列表"
     },
     "codeHostActions": {
       "addRepository": "添加仓库",
@@ -1832,7 +1889,7 @@
         "installGithubApp": "安装 GitHub App",
         "installedSync": "已安装，立即同步",
         "opensGithub": "将在新标签页打开 github.com",
-        "githubConnected": "GitHub App 已连接，仓库和元数据会自动同步。",
+        "githubConnected": "GitHub App 已连接",
         "manageAccess": "管理访问权限",
         "publicRepositoriesShown": "当前显示公开仓库。",
         "linkGithubProfile": "关联 GitHub 个人资料",
@@ -1909,7 +1966,11 @@
         "materializeByDecisionDaemonOutdated": "请升级运行此 Agent 的 daemon 以使用 Decision",
         "materializeByDecisionDaemonOffline": "运行此 Agent 的 daemon 已离线",
         "materializeByDecisionNoProvider": "此 Agent 运行的位置没有就绪的 Decision 提供方",
-        "materializeByDecisionNoSelector": "请先设置仓库选择器"
+        "materializeByDecisionNoSelector": "请先设置仓库选择器",
+        "githubConnectedWith": "已通过 <slug></slug> 连接",
+        "more": "更多",
+        "useOwnGithubApp": "使用独立的 GitHub App…",
+        "changeGithubApp": "更换 GitHub App…"
       },
       "listenFor": "监听对象",
       "alreadyWatched": "已监听",
@@ -1979,6 +2040,7 @@
       "platform": "平台",
       "chat": "聊天",
       "workflow": "工作流",
+      "setupGuide": "设置指南",
       "notSupportedByDaemon": "此 Daemon 不支持",
       "name": "名称",
       "sessionContinuity": "会话连续性",
@@ -2998,7 +3060,6 @@
         "title": "集成",
         "add": "添加",
         "addIntegration": "添加集成",
-        "connected": "已连接",
         "revoked": "已撤销",
         "rejected": "被拒绝",
         "offline": "离线",
@@ -3058,7 +3119,9 @@
         "claudeFile": "CLAUDE.md",
         "skillsDirectory": ".agent/skills/",
         "runbooksDirectory": "docs/runbooks/",
-        "seconds": "{value} 秒"
+        "seconds": "{value} 秒",
+        "githubVia": "通过 <slug></slug>",
+        "githubApp": "GitHub App"
       },
       "tools": {
         "loading": "加载中…",
@@ -3091,6 +3154,7 @@
         "allSourcesEnabled": "组织中的所有来源都已启用。",
         "noSkillsEnabled": "此 Agent 尚未启用技能。",
         "removeFromAgent": "从此 Agent 移除",
+        "editServer": "查看或编辑此服务器",
         "chooseIndividualSkills": "选择单个技能",
         "loadingSkills": "正在加载技能…",
         "noSkillManifest": "此来源中没有找到 SKILL.md。",
@@ -3308,7 +3372,8 @@
           "runtime-unset": "请先选择 Runtime。",
           "runtime-not-admitted": "暂不支持此 Runtime：它需要能关闭自身记忆，并能在重启后恢复会话。",
           "memory-provider": "记忆必须为托管。",
-          "store-not-shared": "此 Agent 所在组的所有 Daemon 必须共用同一存储。"
+          "store-not-shared": "此 Agent 所在组的所有 Daemon 必须共用同一存储。",
+          "routing": "请先在这些对话中停止使用按决策或共享 Bot 路由：{names}。"
         },
         "blockers": {
           "invalidLimit": "每项限制必须是其范围内的整数。"
@@ -4044,6 +4109,7 @@
     },
     "delete": "删除",
     "doubleClickRename": "双击重命名",
+    "autoUpgradeOn": "已开启自动升级",
     "restrictedHint": "已选中——只有共享成员可以查看此 Daemon",
     "empty": {
       "title": "暂无已连接的 Daemon",
@@ -4116,13 +4182,13 @@
       "reconnectingStatus": "重连中",
       "save": "保存",
       "createGroup": "创建组",
-      "expireSessions": "过期会话",
       "editDaemon": "编辑 Daemon",
       "daemonPlaceholder": "edge-1",
       "saveChanges": "保存更改",
       "groupPlaceholder": "edge-pool",
       "visibility": "可见范围",
       "sessionRetention": {
+        "label": "过期会话",
         "afterDays": "{count, plural, other {# 天后}}",
         "never": "永不过期",
         "default": "默认",
@@ -4131,7 +4197,13 @@
         "daysSuffix": "天",
         "daysAriaLabel": "会话过期天数",
         "invalidDays": "请输入 1–9999 之间的整数天数。",
-        "hint": "早于该保留期限的已完成会话及其工作区会从该 Daemon 中删除。"
+        "hint": "早于该保留期限的已完成会话及其记录会从该 Daemon 中删除。"
+      },
+      "workspaceRetention": {
+        "label": "清理工作区",
+        "never": "随会话删除",
+        "daysAriaLabel": "工作区清理天数",
+        "hint": "已完成会话闲置超过该时长后，工作区和沙箱会被清理，对话记录保留；尚未推送的改动不会删除。"
       }
     },
     "lifecycleDialog": {
@@ -4150,7 +4222,8 @@
       "cancel": "取消",
       "sending": "发送中…",
       "upgrade": "升级",
-      "restart": "重启"
+      "restart": "重启",
+      "downgradeDisablesAutoUpgrade": "升级到较旧的版本会关闭自动升级。"
     },
     "runtimeLogin": {
       "title": "登录 {label}",
@@ -4219,6 +4292,18 @@
         "leave": "离开 {name}",
         "join": "加入 {name}",
         "deleteDaemon": "删除 Daemon"
+      },
+      "autoUpgrade": {
+        "label": "自动升级",
+        "help": "自动安装新版本，并且仅在 Daemon 空闲时重启。",
+        "unsupported": "需要由 agentconnect 服务或 CLI 运行的 Daemon；不适用于资源池成员。",
+        "newRelease": "新版本",
+        "upgrading": "正在自动升级到 {version}…",
+        "upgraded": "已升级到 {version}",
+        "upgradedAgo": "已升级到 {version} · {ago}",
+        "failed": "自动升级到 {version} 失败：{outcome}",
+        "failedNoReason": "自动升级到 {version} 失败",
+        "waiting": "正在等待空闲时段以升级到 {version}"
       }
     }
   },
@@ -4560,6 +4645,7 @@
     "loadError": "无法加载用量：{error}",
     "emptyState": "此时间范围内暂无用量记录。Agent 运行会话后，Token 用量会显示在这里。",
     "tokensAndSessions": "{tokens} tokens · {sessions} 个会话",
+    "coordinatorPart": "协调会话：{tokens} tokens · {spend}",
     "computers": {
       "title": "电脑",
       "runningHours": "托管电脑时长",
@@ -6531,7 +6617,7 @@
       },
       "kindHint": {
         "desktop": "需要 Node.js。请以你自己的身份运行，不要用 root 或管理员；在 macOS 上，按提示允许辅助功能和屏幕录制。",
-        "docker": "在装有 Docker 的服务器上，以容器运行带 Firefox 的 Linux 桌面，与服务器隔离。如需使用 docker compose，或让查看器直连传输画面，请参阅自托管桌面容器指南。"
+        "docker": "在装有 Docker 的服务器上，以容器运行带 Chromium 和 LibreOffice 的 Linux 桌面，与服务器隔离。如需使用 docker compose，或让查看器直连传输画面，请参阅自托管桌面容器指南。"
       },
       "name": "名称",
       "optional": "可选",
@@ -6554,12 +6640,12 @@
       "minting": "正在生成命令…",
       "open": "打开电脑",
       "saving": "正在保存…",
-      "poolTitle": "添加托管电脑",
-      "poolDescription": "从本部署的资源池创建一台带 Firefox 的 Linux 桌面，运行在独立的容器中，有自己的磁盘。获得访问权的智能体轮流使用它。空闲时休眠并保留文件和登录状态，直到你删除它。你将是它的所有者。",
+      "poolTitle": "添加云电脑",
+      "poolDescription": "从本部署的资源池创建一台带 Chromium 和 LibreOffice 的 Linux 桌面，运行在独立的容器中，有自己的磁盘。获得访问权的智能体轮流使用它。空闲时休眠并保留文件和登录状态，直到你删除它。你将是它的所有者。",
       "poolName": "名称",
       "poolNamePlaceholder": "共享浏览器",
       "poolAccessHint": "能看到它的成员可以在 Agent 的“工具”页把它授予自己的 Agent。智能体轮流使用：同一时间只有一个控制桌面，其他的排队等待。",
-      "poolUnavailable": "当前没有连接的资源池成员，无法启动托管计算机。请稍后再试。",
+      "poolUnavailable": "当前没有连接的资源池成员，无法启动云电脑。请稍后再试。",
       "poolCreate": "创建计算机",
       "poolCreating": "正在创建…",
       "poolError": "无法创建计算机：{message}",
@@ -6569,22 +6655,17 @@
     "empty": {
       "description": "添加一台电脑后，Agent 可以在你选择的桌面上截图、点击和输入。控制权始终在你手中：由你授权 Agent、批准高风险操作，并可随时停止。"
     },
-    "poolEntry": {
-      "managedTitle": "AgentConnect Computers",
-      "clusterTitle": "电脑池",
+    "cloud": {
+      "title": "云电脑",
+      "description": "此部署运行的隔离 Linux 桌面，你或你的 Agent 都可以创建。空闲时休眠，下次使用时唤醒。",
+      "add": "添加云电脑",
       "meta": "{running} 台运行中 · {asleep} 台休眠",
-      "none": "还没有托管电脑",
-      "countLabel": "台托管电脑",
-      "available": "可用",
-      "unavailable": "不可用",
-      "add": "添加托管电脑",
-      "description": "此部署为你的 Agent 运行的隔离 Linux 桌面。空闲时休眠，下次使用时唤醒。"
-    },
-    "poolPage": {
-      "description": "在本部署的集群中为 Agent 启动的桌面。空闲时休眠，下次使用时唤醒。",
-      "add": "添加托管电脑",
-      "empty": "还没有托管电脑。可以在这里添加，或在 Agent 的工具页设置「托管计算机」，让系统为它创建一台。",
-      "notFound": "本部署没有运行托管电脑"
+      "unavailable": "当前没有可启动它的资源池成员",
+      "empty": "还没有云电脑。可以在这里添加，或在 Agent 的工具页设置「托管计算机」，让系统为它创建一台。",
+      "running": "运行中",
+      "by": "由 {name} 创建",
+      "byYou": "由你创建",
+      "idle": "已空闲 {when}"
     },
     "never": "从未",
     "you": "你",
@@ -6632,7 +6713,16 @@
       "fix": "修复：",
       "notReported": "尚未报告检查结果",
       "failing": "{count, plural, other {# 项检查失败}}",
-      "warning": "{count, plural, other {# 项警告}}"
+      "warning": "{count, plural, other {# 项警告}}",
+      "summary": {
+        "fail": "{count} 项失败",
+        "warn": "{count, plural, other {# 项警告}}",
+        "ok": "{count} 项通过",
+        "info": "{count} 项提示"
+      },
+      "showPassing": "显示 {count, plural, other {# 项通过的检查}}",
+      "hidePassing": "隐藏通过的检查",
+      "none": "无检查"
     },
     "detail": {
       "notFound": "找不到电脑",
@@ -6670,7 +6760,10 @@
         "per-agent": "每个智能体一台",
         "manual": "资源池计算机，共享"
       },
-      "ownerAgent": "所属智能体"
+      "ownerAgent": "所属智能体",
+      "tabs": {
+        "overview": "概览"
+      }
     },
     "actions": {
       "stop": "停止",
@@ -6692,8 +6785,16 @@
       "busy": "正在删除…"
     },
     "activity": {
-      "title": "最近活动",
-      "note": "Agent 和查看者的操作，保留 90 天",
+      "title": "活动",
+      "note": "保留 90 天",
+      "filterLabel": "显示以下来源的活动",
+      "filter": {
+        "all": "全部",
+        "viewers": "查看者",
+        "agents": "Agent"
+      },
+      "today": "今天",
+      "yesterday": "昨天",
       "empty": "这台电脑上还没有任何活动。",
       "loading": "正在加载活动…",
       "more": "显示更早的记录",
@@ -6710,59 +6811,96 @@
     "agentAccess": {
       "title": "Agent 访问",
       "ownAgentOnly": "只供创建它的 Agent 使用",
-      "none": "不允许 Agent",
       "noneDescription": "目前没有 Agent 可以使用。",
-      "selected": "指定 Agent",
       "all": "所有 Agent",
       "allDescription": "组织内的每个 Agent 都能使用。",
       "allNoIsolation": "这包括其他成员的 Agent，你的桌面与它们的操作之间没有任何隔离。",
       "unknownAgent": "你不可见的 Agent",
       "noIsolation": "不是你的 Agent",
       "noIsolationHint": "这个 Agent 属于其他成员。你的桌面与它的操作之间没有任何隔离。",
-      "changeOnAgent": "哪些 Agent 使用这台电脑，在每个 Agent 的“工具”页的“电脑”中设置。从 <agents>Agents</agents> 打开一个 Agent，即可授予或撤销这台电脑。",
+      "changeOnAgent": "按 Agent 授予，在“工具 › 电脑”中设置。<agents>打开 Agents</agents>",
       "openAgentTools": "打开 Agent 的工具"
     },
     "policy": {
       "title": "使用策略",
       "readOnly": "只有所有者可以修改",
       "accessTitle": "控制与批准",
+      "accessHint": "同一时间只有一个智能体控制桌面；其他的按先来先到排队。截图和查看无需排队。",
       "mode": "Agent 可以",
       "modeHint": "仅查看只允许截图；控制还允许点击和输入。",
       "modeControl": "查看和控制",
       "modeView": "仅查看",
       "firstInput": "每个会话询问一次",
       "firstInputHint": "Agent 在一个会话中第一次点击或按键前，需要有权使用这台电脑的人批准。",
+      "adminPrompts": "管理员提示（UAC）",
+      "adminPromptsHint": "Agent 控制这台电脑时弹出的 Windows 管理员提示由谁回答。电脑上任务栏菜单改的是同一个设置。",
+      "adminPrompt": {
+        "people": "每次由人批准",
+        "agent": "交给 Agent 决定",
+        "approve": "总是批准",
+        "deny": "总是拒绝"
+      },
+      "commandLineTitle": "命令行与文件",
+      "commandLineHint": "在这台电脑上运行命令、读写文件比截图便宜得多。它们以已登录用户的身份运行，不需要控制权，暂停或停止 Agent 时会一并停止。",
+      "shell": "命令",
+      "shellHint": "是否允许 Agent 在这里运行 shell 命令。选择“每条都询问”时，每条命令都要先由可使用这台电脑的人批准。",
+      "shellViewOnly": "仅查看的电脑不运行命令。",
+      "shellMode": {
+        "off": "从不",
+        "ask": "询问",
+        "on": "允许"
+      },
+      "files": "文件",
+      "filesHint": "是否允许 Agent 在这里读取，或读写文件。会话中的第一次写入会像第一次输入一样先询问。",
+      "filesMode": {
+        "off": "不可访问",
+        "read": "只读",
+        "read-write": "读写"
+      },
+      "fileRoots": "允许的路径",
+      "fileRootsHint": "每行一个绝对路径，例如 ~/work。留空则允许主目录。命令不受这些路径限制。",
+      "shellNoIsolation": "这是一个人自己的桌面，没有隔离：能运行命令的 Agent 可以做这个账户能做的一切，包括读取它的密钥和已登录的浏览器。",
+      "commandLineUnsupported": "这台电脑的守护进程暂不支持命令行，目前仅支持 Linux 电脑。",
       "limitsTitle": "限制",
-      "idle": "空闲释放（秒）",
+      "idle": "空闲释放",
       "idleHint": "无输入超过此时长后释放控制权，10 到 3600。",
-      "max": "最长控制时间（秒）",
+      "max": "最长控制时间",
       "maxHint": "单个会话最多可持有控制权的时长，60 到 86400。",
-      "wait": "排队等待（秒）",
+      "wait": "排队等待",
       "waitHint": "其他 Agent 正在控制时，Agent 排队等待的最长时间，超时后放弃，0 到 600。",
-      "retention": "截图保留（天）",
+      "retention": "截图保留",
       "retentionHint": "0 表示不保存；留空使用部署默认值。",
       "retentionDefault": "默认",
+      "unitSeconds": "秒",
+      "unitDays": "天",
       "driverTools": "开放驱动工具",
       "driverToolsHint": "同时向 Agent 提供驱动自带的窗口级工具。默认关闭。",
       "peerToPeer": "点对点观看",
       "peerToPeerHint": "允许观看画面跨网络直接在浏览器和桌面之间传输。这会向观看者暴露桌面的公网 IP 地址。默认仅对只有所有者可以观看的自托管 Computer 开启。",
+      "advancedTitle": "高级",
       "problem": {
         "idleRange": "空闲释放必须是 10 到 3600 之间的整数。",
         "maxRange": "最长控制时间必须是 60 到 86400 之间的整数。",
         "idleAboveMax": "空闲释放不能长于最长控制时间。",
         "waitRange": "排队等待必须是 0 到 600 之间的整数。",
-        "retentionRange": "截图保留天数必须是 0 到 3650 之间的整数，或留空。"
+        "retentionRange": "截图保留天数必须是 0 到 3650 之间的整数，或留空。",
+        "rootsInvalid": "允许的路径必须是绝对路径，每行一个，最多 32 个。"
       },
       "reset": "重置",
+      "unsaved": "{count, plural, other {# 项未保存的更改}}",
+      "appliesToAll": "适用于每个有访问权限的 Agent。",
       "save": "保存",
       "saving": "正在保存…"
     },
     "viewer": {
       "title": "屏幕",
       "watch": "观看",
-      "close": "关闭",
-      "idle": "实时观看这台电脑的屏幕，需要时接管鼠标和键盘。视频在你的浏览器和桌面之间直连（中继只帮助双方找到彼此）或经 TURN 传输，不经过 AgentConnect 的服务器。",
+      "close": "停止观看",
+      "idle": "实时观看屏幕，需要时接管鼠标和键盘。",
+      "privacy": "视频在你的浏览器和桌面之间直连，或经 TURN 传输，从不经过 AgentConnect。",
       "offline": "这台电脑上线后才能打开查看器。",
+      "offlineSeen": "离线。最后在线 {when}。",
+      "asleep": "已休眠。Agent 下次使用时会唤醒它，也可以在电脑操作菜单中选择“唤醒”。",
       "connecting": "正在连接…",
       "failed": "查看器已停止。",
       "watching": "正在观看，智能体可以继续工作。",
@@ -6783,7 +6921,11 @@
         "screenshots": "截图"
       },
       "expand": "放大",
-      "collapse": "退出全屏"
+      "collapse": "退出全屏",
+      "stats": {
+        "roundTrip": "来自电脑的视频的帧率、码率和往返延迟",
+        "frameTime": "截图频率、码率和拉取一张截图的耗时"
+      }
     },
     "allAgents": "所有 Agent",
     "allocation": {
@@ -6791,7 +6933,6 @@
       "per-agent": "智能体专属",
       "manual": "资源池"
     },
-    "madeFor": "属于 {agent}",
     "inUseBy": "{agent} 正在使用",
     "waitingCount": "{count, plural, other {# 个在排队}}",
     "hiddenAgent": "你看不到的智能体",
@@ -6806,7 +6947,6 @@
       "resetting": "重置中"
     },
     "pool": {
-      "title": "托管计算机",
       "phase": "资源池状态",
       "error": "最近的问题",
       "hint": {
@@ -6823,14 +6963,9 @@
       "resetBusy": "正在重置…"
     },
     "lease": {
-      "title": "控制权",
-      "note": "同一时间只有一个智能体控制桌面；其他的按先来先到排队。截图和查看无需排队。",
       "free": "没有智能体在控制",
-      "holder": "正在控制",
-      "since": "自 {when}",
-      "queue": "排队中",
-      "queued": "自 {when} 开始等待",
-      "openSession": "打开会话"
+      "holderLine": "{agent} 正在控制",
+      "since": "自 {when}"
     },
     "egress": {
       "title": "托管电脑出口",
@@ -6902,14 +7037,24 @@
       "secretHeader": "<name>{server}</name> 的请求头 <code>{header}</code>",
       "secretLive": "设置实时密钥 <code>{secret}</code>",
       "secretPurpose": "用途：{description}",
-      "secretPresent": "已设置"
+      "secretPresent": "已设置",
+      "scheduleCron": "定时 <code>{schedule}</code>{zone}：<name>{trigger}</name>",
+      "changeCron": "把一个定时任务改为 <code>{schedule}</code>{zone}：<name>{trigger}</name>",
+      "cronExists": "已设置"
     },
     "fields": {
       "model": "模型",
       "reasoningEffort": "推理强度",
       "fastMode": "快速模式",
       "outputMode": "输出模式",
-      "permissionMode": "权限模式"
+      "permissionMode": "权限模式",
+      "runtime": "Runtime",
+      "execution": "执行方式",
+      "chatActions": "聊天中可执行的操作",
+      "introduceOnJoin": "加入频道时自我介绍",
+      "showFooter": "回复页脚",
+      "showStatusBar": "状态栏",
+      "displayName": "显示名称"
     },
     "complete": {
       "heading": "进行变更",
@@ -6949,7 +7094,10 @@
       "saveLiveSecret": "保存 {name}",
       "headerOnOauthServer": "{server} 通过 OAuth 登录，没有可设置的请求头。请拒绝此请求，或改为连接该服务器。",
       "headerHint": "该值保存在 {server} 上，并在每次调用时附加。智能体永远看不到它。",
-      "setHeader": "设置 {header}"
+      "setHeader": "设置 {header}",
+      "cronHint": "定时任务对话框会预先填好这个 Agent、时间和提示词。选好发到哪里，按需调整后保存。",
+      "reviewCron": "检查并保存定时任务",
+      "cronMissing": "这个定时任务已不存在，或者你没有查看它的权限。"
     },
     "authority": {
       "heading": "你无法进行此变更",

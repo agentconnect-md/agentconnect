@@ -3,8 +3,11 @@ import {
   API_AHP_V1_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
-  continuableOrigin,
+  continuableSession,
+  isDelegatedTaskCoordinate,
+  isSubsessionCoordinate,
   originKindOf,
+  TASK_PAGE_MESSAGES_FEATURE,
   type ChatCallerRole,
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
@@ -17,24 +20,34 @@ import {
   type SessionViewable
 } from '../authorization/policy.js'
 import { chatApprovalsAllowed, chatCallerRole } from '../domain/chat-actions.js'
+import { continuationAudience, continuationParentId } from '../domain/continuation-audience.js'
 import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import type {
   AhpSessionBindingRecord,
   ApiKeyRepo,
+  OAuthRepo,
   OrgMemberRole,
   SessionExternalAccessSnapshot
 } from '../persistence/ports.js'
 import type { AgentChatKeyVerificationDeps } from './agentChatKeyVerification.js'
 import { webchatAuthorIdentity } from './agentChatKeyVerification.js'
 import type { AhpGrantClaims, AhpGrantService } from './ahpGrant.js'
+import { AHP_SCOPE, ahpResourceAgent } from './oauthService.js'
 import type { WebchatTokenService } from './webchatToken.js'
 import { webchatBinding } from './webchatVerification.js'
 
 export interface AhpAuthorizationDeps extends AgentChatKeyVerificationDeps {
   grants: AhpGrantService
   tokens: Pick<WebchatTokenService, 'verify'>
-  keyRows: Pick<ApiKeyRepo, 'listForUser'>
-  config: { AHP_MODE: 'off' | 'shadow' | 'on'; AHP_PUBLIC_ACCESS: boolean; AHP_TEST_KEY_IDS: string[] }
+  keyRows: Pick<ApiKeyRepo, 'findById'>
+  oauthGrants: Pick<OAuthRepo, 'getGrant'>
+  config: {
+    AHP_MODE: 'off' | 'shadow' | 'on'
+    AHP_PUBLIC_ACCESS: boolean
+    AHP_TEST_KEY_IDS: string[]
+    AHP_TEST_USER_IDS: string[]
+    PUBLIC_RELAY_URL?: string
+  }
   now: () => number
   sessionAccess(
     claims: AhpGrantClaims,
@@ -50,13 +63,17 @@ const denied = (): RcVerifyResult => ({ ok: false, reason: 'AHP access unavailab
 export class AhpAuthorization {
   constructor(private readonly deps: AhpAuthorizationDeps) {}
 
-  private async agentAccess(claims: Pick<AhpGrantClaims, 'orgId' | 'agentId' | 'userId'>) {
+  private async agentAccess(claims: Pick<AhpGrantClaims, 'orgId' | 'agentId' | 'userId' | 'apiKeyId'>) {
     const d = this.deps
     if (d.config.AHP_MODE !== 'on') return null
     const role = (await d.orgs.roleOf(claims.orgId, claims.userId)) as OrgMemberRole | null
     const agent = await d.agents.getUnscoped(AgentId(claims.agentId))
     if (!role || !agent || agent.orgId !== claims.orgId || !canView(agent, { userId: claims.userId, role })) return null
-    if (!(await d.apiEntries.listForAgent(AgentId(claims.agentId))).some((entry) => entry.protocol === 'ahp'))
+    // The API entry opts an agent into key-driven clients; the console's own Webchat is not one of them.
+    if (
+      claims.apiKeyId &&
+      !(await d.apiEntries.listForAgent(AgentId(claims.agentId))).some((entry) => entry.protocol === 'ahp')
+    )
       return null
     const daemonId = await d.placement.dispatchDaemon(agent)
     const daemon = daemonId ? d.daemons.get(daemonId) : undefined
@@ -65,30 +82,38 @@ export class AhpAuthorization {
     return { agent, daemonId, viewer: { userId: claims.userId, role } }
   }
 
-  private async liveKey(claims: AhpGrantClaims) {
+  // `resource` is the endpoint the relay advertised; renewal from a signed grant has none to compare.
+  private async liveKey(claims: AhpGrantClaims, resource?: string | null) {
     if (!claims.apiKeyId) return null
     const d = this.deps
-    if (!d.config.AHP_PUBLIC_ACCESS && !d.config.AHP_TEST_KEY_IDS.includes(claims.apiKeyId)) return null
-    const key = (await d.keyRows.listForUser(claims.userId, { includeRevoked: true })).find(
-      (row) => row.id === claims.apiKeyId
-    )
+    const key = await d.keyRows.findById(claims.apiKeyId)
     if (
       !key ||
+      key.userId !== claims.userId ||
       key.orgId !== claims.orgId ||
-      key.principalType !== 'user' ||
-      key.permission !== 'full' ||
-      key.scopes.length > 0 ||
       key.revokedAt ||
       (key.expiresAt && key.expiresAt.getTime() <= d.now())
     )
       return null
+    if (key.principalType === 'user') {
+      if (!d.config.AHP_PUBLIC_ACCESS && !d.config.AHP_TEST_KEY_IDS.includes(key.id)) return null
+      return key.permission === 'full' && key.scopes.length === 0 ? key : null
+    }
+    if (key.principalType !== 'oauth' || !key.oauthGrantId) return null
+    if (!d.config.AHP_PUBLIC_ACCESS && !d.config.AHP_TEST_USER_IDS.includes(claims.userId)) return null
+    // An OAuth token reaches AHP only through a live `ahp` grant bound to this agent's endpoint (ahp-client-sign-in.md §3).
+    if (key.scopes.length !== 1 || key.scopes[0] !== AHP_SCOPE) return null
+    const grant = await d.oauthGrants.getGrant(key.oauthGrantId)
+    if (!grant || grant.revokedAt || grant.userId !== claims.userId || grant.orgId !== claims.orgId) return null
+    if (ahpResourceAgent(grant.resource, d.config.PUBLIC_RELAY_URL) !== claims.agentId) return null
+    if (resource !== undefined && grant.resource !== resource) return null
     return key
   }
 
-  async verifyKey(req: { credential: string; agentId: string }): Promise<RcVerifyResult> {
+  async verifyKey(req: { credential: string; agentId: string; resource?: string }): Promise<RcVerifyResult> {
     const d = this.deps
     const key = await d.keys.authenticateUser(req.credential)
-    if (!key || key.permission !== 'full' || key.scopes.length > 0) return denied()
+    if (!key) return denied()
     const claims = {
       orgId: key.orgId,
       agentId: req.agentId,
@@ -96,7 +121,7 @@ export class AhpAuthorization {
       user: key.userId,
       apiKeyId: key.apiKeyId
     }
-    const row = await this.liveKey(claims)
+    const row = await this.liveKey(claims, req.resource ?? null)
     const access = row ? await this.agentAccess(claims) : null
     if (!row || !access) return denied()
     const author = await webchatAuthorIdentity(d, key.userId)
@@ -126,11 +151,13 @@ export class AhpAuthorization {
     const viewer = { userId: claims.userId, role }
     for (const id of binding.currentSessionIds) {
       const session = await this.deps.sessions.getUnscoped(SessionId(id!))
+      const audience = session ? await this.continuationAudienceOf(session) : null
       if (
         !session ||
+        !audience ||
         session.orgId !== claims.orgId ||
         session.contentPurgedAt !== null ||
-        !canContinueSession(session as SessionViewable, viewer, identitySetOf(viewer))
+        !canContinueSession(audience as SessionViewable, viewer, identitySetOf(viewer))
       )
         return null
     }
@@ -182,6 +209,12 @@ export class AhpAuthorization {
     }
   }
 
+  /** A task is continued by whoever may continue its owning session (auto-session-mode.md §10). */
+  private async continuationAudienceOf<S extends Parameters<typeof continuationAudience>[0]>(session: S) {
+    const parentId = continuationParentId(session)
+    return continuationAudience(session, parentId ? await this.deps.sessions.getUnscoped(SessionId(parentId)) : null)
+  }
+
   private async sessionAllowed(
     claims: AhpGrantClaims,
     access: NonNullable<Awaited<ReturnType<AhpAuthorization['agentAccess']>>>,
@@ -192,12 +225,14 @@ export class AhpAuthorization {
   ): Promise<boolean> {
     if (session.orgId !== claims.orgId || session.agentId !== claims.agentId || session.contentPurgedAt !== null)
       return false
-    const audience = await this.deps.sessionAccess(claims, session as SessionViewable)
+    const subject = continued ? await this.continuationAudienceOf(session) : session
+    if (!subject) return false
+    const audience = await this.deps.sessionAccess(claims, subject as SessionViewable)
     const allowed = ownConversation ? canViewSession : canContinueSession
-    if (!allowed(session as SessionViewable, access.viewer, audience.identitySet, audience.externalAccess)) return false
+    if (!allowed(subject as SessionViewable, access.viewer, audience.identitySet, audience.externalAccess)) return false
     if (!(await this.deps.reachesContent(OrgId(claims.orgId), [SessionId(sessionId)]))) return false
     if (continued) {
-      if (session.platform === 'webchat') {
+      if (session.platform === 'webchat' && !isSubsessionCoordinate(session.thread)) {
         const source = await this.deps.conversations.target(session.channel ?? '')
         const roster = await this.deps.conversations.participants(OrgId(claims.orgId), session.channel ?? '')
         if (
@@ -208,10 +243,10 @@ export class AhpAuthorization {
           return false
       }
       const features = this.deps.daemons.get(access.daemonId)?.capabilities?.features ?? []
-      if (!continuableOrigin(session.platform ?? '') || !features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE))
-        return false
+      if (!continuableSession(session) || !features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE)) return false
       if (originKindOf(session.platform ?? '') === 'hook' && !features.includes(WEBCHAT_HOOK_CONTINUATION_FEATURE))
         return false
+      if (isDelegatedTaskCoordinate(session.thread) && !features.includes(TASK_PAGE_MESSAGES_FEATURE)) return false
     }
     return true
   }
@@ -222,7 +257,8 @@ export class AhpAuthorization {
     const session = await this.deps.sessions.getUnscoped(SessionId(sessionId))
     if (!access || !session) return false
     let ownConversation = false
-    const continued = session.platform !== 'webchat'
+    // A webchat conversation's task is no member of it, so it is continued by target too (auto-session-mode.md §10).
+    const continued = session.platform !== 'webchat' || isSubsessionCoordinate(session.thread)
     if (!continued) {
       const conversation = await this.deps.conversations.target(session.channel ?? '')
       if (!conversation || conversation.targetSessionId !== null) return false

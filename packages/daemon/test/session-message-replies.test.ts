@@ -373,7 +373,8 @@ describe('A → B1 ← C: replies addressed to the message they answer (send-mes
   })
 
   it('refuses a mismatched agent, an unknown id, a closed conversation and a task, opening and recording nothing', async () => {
-    const run = await boot()
+    // B1 delegates its own background task, which only a daemon with the Auto switch off lets it do (auto-session-mode.md §5.1).
+    const run = await boot(scaffold([A, B, C, D], { autoSessionMode: false }))
     try {
       const b1 = await openB1(run)
       const before = await run.sessionsOf(B)

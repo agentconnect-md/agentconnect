@@ -181,7 +181,9 @@ export const RcVerify = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('ahp-client-key'),
     credential: z.string().min(1),
-    agentId: z.string().uuid()
+    agentId: z.string().uuid(),
+    // The endpoint the relay advertised as the protected resource; an OAuth token's grant must name it.
+    resource: z.string().url().max(2048).optional()
   }),
   z.object({
     kind: z.literal('daemon-key'),
@@ -367,7 +369,9 @@ export const RcGithubRerequest = z.union([
       deliveryKey: z.string().min(1).max(200),
       // Rolling opt-in: a new CP includes baseSha only when a new relay asks.
       // This keeps replies to older strict-schema relays byte-compatible.
-      includeBaseSha: z.literal(true).optional()
+      includeBaseSha: z.literal(true).optional(),
+      // An organization App delivered it: the Check must be that App's.
+      appId: GithubNumericId.optional()
     })
     .strict(),
   z
@@ -434,12 +438,16 @@ export const RcGithubHookRule = z.object({
   sessionKeyPrefix: z.string().min(1).optional(),
   events: z.array(z.string()), // 'issues:opened' / 'pull_request:*' / …
   labelFilter: z.array(z.string()),
+  // Draft PR revisions do not fire; `ready_for_review` reviews the head instead. Absent on a CP that predates it.
+  skipDrafts: z.boolean().optional(),
   // Scopes GitHub's shared issue_comment event to the console-selected thread families; absent or empty keeps the legacy repo-wide meaning.
   commentFamilies: z.array(z.enum(['issues', 'pull_request'])).optional(),
   // P3 summon mode: authored text must @-mention this agent or the App; thread events still pass the live maintainer gate.
   mentionOnly: z.boolean(),
   // The broadcast handle: `@<appSlug>` keeps every matching rule in the repo fan-out (compiled from GITHUB_APP_SLUG).
   appSlug: z.string().optional(),
+  // The org's other GitHub Apps (the built-in one included): their same-repository pull request revisions are the internal CI lane too.
+  internalAppSlugs: z.array(z.string()).optional(),
   // The targeted handle: `@<agentName>` keeps only this agent's rules; optional for a CP that predates targeted mentions.
   agentName: z.string().optional(),
   // The org's valid installation ids (BigInt as string): an event fires only if payload.installation.id is in the set.
@@ -691,7 +699,9 @@ export type RcRunReport = z.infer<typeof RcRunReport>
 // mint-failure refresh paths converge eventually.
 export const RcGithubInstallation = z.object({
   installationId: z.string().min(1), // GitHub numeric id (BigInt as string)
-  action: z.string().min(1) // created|deleted|suspend|…|added|removed
+  action: z.string().min(1), // created|deleted|suspend|…|added|removed
+  // Set when an organization App delivered it (its GitHub App id): the CP re-pulls that App's roster.
+  appId: GithubNumericId.optional()
 })
 export type RcGithubInstallation = z.infer<typeof RcGithubInstallation>
 
@@ -1343,6 +1353,21 @@ export const RcMemoryConnectionUnassign = z.object({
 })
 export type RcMemoryConnectionUnassign = z.infer<typeof RcMemoryConnectionUnassign>
 
+/** This relay verifies organization GitHub Apps' webhooks, so the CP may send it `rc/github-app-assign`. */
+export const GITHUB_APP_WEBHOOK_V1_FEATURE = 'github-app-webhook-v1'
+
+// C→R EVT — one organization App's webhook secret (github-app-git-credentials.md §Organization GitHub Apps); NEVER log this frame.
+export const RcGithubAppAssign = z.object({
+  githubAppId: z.string().uuid(),
+  appId: GithubNumericId,
+  webhookSecret: z.string().min(1).max(256)
+})
+export type RcGithubAppAssign = z.infer<typeof RcGithubAppAssign>
+
+// C→R EVT — the App is gone: its deliveries no longer verify.
+export const RcGithubAppUnassign = z.object({ githubAppId: z.string().uuid() })
+export type RcGithubAppUnassign = z.infer<typeof RcGithubAppUnassign>
+
 /** Both ends frame a full reconnect replay as one snapshot, so the relay prunes what the replay no longer names. */
 export const RELAY_PROJECTION_SNAPSHOT_V1_FEATURE = 'relay-projection-snapshot-v1'
 
@@ -1350,7 +1375,7 @@ export const RELAY_PROJECTION_SNAPSHOT_V1_FEATURE = 'relay-projection-snapshot-v
 export const RC_SNAPSHOT_MAX_WITHHELD = 1_000
 
 /** The relay projections a CP replays in full after the relay (re)registers. */
-export const RcSnapshotKind = z.enum(['mcp', 'hook', 'memory', 'follow-up-watch'])
+export const RcSnapshotKind = z.enum(['mcp', 'hook', 'memory', 'follow-up-watch', 'github-app'])
 export type RcSnapshotKind = z.infer<typeof RcSnapshotKind>
 
 /** C→R EVT: a full replay of one projection starts; the relay keeps serving its current copy meanwhile. */
@@ -1434,6 +1459,8 @@ export const RELAY_CP_SCHEMAS = {
   'rc/mcp-unassign': RcMcpUnassign,
   'rc/memoryconnection-assign': RcMemoryConnectionAssign,
   'rc/memoryconnection-unassign': RcMemoryConnectionUnassign,
+  'rc/github-app-assign': RcGithubAppAssign,
+  'rc/github-app-unassign': RcGithubAppUnassign,
   'rc/snapshot-begin': RcSnapshotBegin,
   'rc/snapshot-end': RcSnapshotEnd,
   'rc/fragment': FrameFragment,
@@ -1497,6 +1524,8 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/mcp-unassign', RELAY_CP_SCHEMAS['rc/mcp-unassign']),
   frameSchema('rc/memoryconnection-assign', RELAY_CP_SCHEMAS['rc/memoryconnection-assign']),
   frameSchema('rc/memoryconnection-unassign', RELAY_CP_SCHEMAS['rc/memoryconnection-unassign']),
+  frameSchema('rc/github-app-assign', RELAY_CP_SCHEMAS['rc/github-app-assign']),
+  frameSchema('rc/github-app-unassign', RELAY_CP_SCHEMAS['rc/github-app-unassign']),
   frameSchema('rc/snapshot-begin', RELAY_CP_SCHEMAS['rc/snapshot-begin']),
   frameSchema('rc/snapshot-end', RELAY_CP_SCHEMAS['rc/snapshot-end']),
   frameSchema('rc/fragment', RELAY_CP_SCHEMAS['rc/fragment']),

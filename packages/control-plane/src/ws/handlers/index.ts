@@ -28,6 +28,7 @@ import type { DaemonConnection } from '../connection.js'
 import { handleAuth } from './auth.js'
 import { handleDaemonBootstrapResult } from './daemon-bootstrap-result.js'
 import { handleDaemonLifecycleProgress } from './daemon-lifecycle-progress.js'
+import { handleDaemonLifecycleBegin } from './daemon-lifecycle-begin.js'
 import { handleRegister } from './register.js'
 import { handleCapabilitiesUpdate } from './capabilities-update.js'
 import { handleHeartbeat } from './heartbeat.js'
@@ -79,6 +80,7 @@ import {
 import {
   handleWebchatMcpGrantAccept,
   handleWebchatMcpGrantIssue,
+  handleWebchatMcpGrantRenew,
   handleWebchatMcpGrantRevoke
 } from './webchat-mcp-grant.js'
 import {
@@ -105,6 +107,7 @@ export class FrameRouter {
       auth: handleAuth,
       'daemon/bootstrap/result': handleDaemonBootstrapResult,
       'daemon/lifecycle/progress': handleDaemonLifecycleProgress,
+      'daemon/lifecycle/begin': handleDaemonLifecycleBegin,
       register: handleRegister,
       'capabilities/update': handleCapabilitiesUpdate,
       heartbeat: handleHeartbeat,
@@ -165,6 +168,7 @@ export class FrameRouter {
       'decision/get': handleDecisionRead,
       'webchat/mcp-grant/issue': handleWebchatMcpGrantIssue,
       'webchat/mcp-grant/accept': handleWebchatMcpGrantAccept,
+      'webchat/mcp-grant/renew': handleWebchatMcpGrantRenew,
       'webchat/mcp-grant/revoke': handleWebchatMcpGrantRevoke,
       'knowledge/search': handleKnowledgeSearch,
       'knowledge/list': handleKnowledgeList,
@@ -226,6 +230,7 @@ export {
   handleSessionPurged,
   handleWebchatMcpGrantIssue,
   handleWebchatMcpGrantAccept,
+  handleWebchatMcpGrantRenew,
   handleWebchatMcpGrantRevoke,
   handleKnowledgeSearch,
   handleOrganizationSuggestionsSync,

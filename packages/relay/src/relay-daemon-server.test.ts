@@ -34,7 +34,8 @@ afterEach(async () => {
 
 async function start(
   verify: RelayDaemonServerDeps['verify'],
-  relayId: () => string | undefined = () => RELAY_ID
+  relayId: () => string | undefined = () => RELAY_ID,
+  onDaemonReady?: RelayDaemonServerDeps['onDaemonReady']
 ): Promise<string> {
   http = createServer()
   await new Promise<void>((r) => http!.listen(0, '127.0.0.1', () => r()))
@@ -47,6 +48,7 @@ async function start(
     onAgentMsg: async () => ({ deliveryId: 'unused', delivered: false }),
     onRoute: async (_from, msg) => ({ deliveryId: msg.deliveryId, disposition: 'admitted' as const }),
     onRouteReport: () => ({ accepted: true }),
+    ...(onDaemonReady ? { onDaemonReady } : {}),
     log: silentLog
   })
   const port = (http.address() as AddressInfo).port
@@ -103,6 +105,26 @@ describe('createRelayDaemonServer (rd/* accept edge)', () => {
     expect(await closed).toBe(4409)
     await tick()
     expect(rd!.size()).toBe(0)
+  })
+
+  it('reports every READY link, a redial included, so browsers can resume what the gap dropped', async () => {
+    const verify = vi.fn(async () => ({ ok: true, daemonId: DAEMON_ID, orgId: 'org-1' }) as RcVerifyResult)
+    const onDaemonReady = vi.fn()
+    const base = await start(verify, undefined, onDaemonReady)
+    const hello = buildRelayDaemonFrame('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })
+
+    const first = await dial(base, RELAY_DAEMON_SUBPROTOCOL)
+    first.send(JSON.stringify(hello))
+    await nextFrame(first, 'rd/hello/ok')
+    expect(onDaemonReady).toHaveBeenCalledTimes(1)
+    first.terminate()
+    await tick()
+
+    const second = await dial(base, RELAY_DAEMON_SUBPROTOCOL)
+    second.send(JSON.stringify(hello))
+    await nextFrame(second, 'rd/hello/ok')
+    expect(onDaemonReady).toHaveBeenCalledTimes(2)
+    expect(onDaemonReady).toHaveBeenLastCalledWith(DAEMON_ID)
   })
 
   it('offers a projected-token pool member as the webchat rendezvous candidate', async () => {

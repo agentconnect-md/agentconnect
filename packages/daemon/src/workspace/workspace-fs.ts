@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { linkSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs'
 import { readRegularFileSync, RegularFileError } from '../fs/regular-file.js'
+import { removeTreeSync } from './remove-tree.js'
 
 /**
  * What one path IS, resolved WITHOUT following a symlink.
@@ -151,7 +152,7 @@ export class LocalWorkspaceFs implements WorkspaceFs {
   }
 
   async rmTree(path: string): Promise<void> {
-    rmSync(path, { recursive: true, force: true })
+    removeTreeSync(path)
   }
 }
 

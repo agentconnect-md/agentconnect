@@ -41,6 +41,8 @@ function scaffold(agents: { id: string; assistantMode?: Record<string, unknown> 
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      // An ordinary session delegates only with the Auto switch off (auto-session-mode.md §5.1).
+      features: { autoSessionMode: false },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )
@@ -772,9 +774,19 @@ describe('the sub-session cap', () => {
     }
     const deps = { ...d.mcp.deps, canRun: () => true }
 
-    const first = (await executeTool(ctx, 'sendMessage', { action: 'delegateTask', message: 'one' }, deps)) as any
+    const first = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'delegateTask', title: 'one', message: 'one' },
+      deps
+    )) as any
     expect(first.wake).toMatchObject({ delivered: true, subsession: true })
-    const second = (await executeTool(ctx, 'sendMessage', { action: 'delegateTask', message: 'two' }, deps)) as any
+    const second = (await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'delegateTask', title: 'two', message: 'two' },
+      deps
+    )) as any
     expect(second.wake).toMatchObject({
       delivered: false,
       reason: 'task_limit',

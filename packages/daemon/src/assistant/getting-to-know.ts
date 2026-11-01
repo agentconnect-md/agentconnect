@@ -331,8 +331,8 @@ export function joinVerdict(
   if (!assistantModeOn(agent) || !declaresPort(int.platform, 'channelHistory')) return 'drop'
   const listed = integrationCore(int).sessionModes.find((entry) => entry.channel === channel)
   if (!listed) return 'wait'
-  // Its long session must be the place's one appending session, which the report opens if nobody spoke yet (§5.2).
-  if (listed.mode !== 'append') return 'drop'
+  // Its long session must be the place's one appending session or its coordinator, which the report opens if nobody spoke yet (§5.2).
+  if (listed.mode === 'createNew') return 'drop'
   return gettingToKnowPlaceRefusal(agent, int, { channel }) === undefined ? 'take' : 'drop'
 }
 

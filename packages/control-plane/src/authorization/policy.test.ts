@@ -334,6 +334,21 @@ describe('canChangeSessionVisibility', () => {
     ).toBe(true)
   })
 
+  it('refuses a threaded task while a session owns it, and its sender once none does (auto-session-mode.md §6.2)', () => {
+    const principal = ctx(CREATOR, 'collaborator')
+    const task = session('org', `user:${CREATOR}`, '1700000000.000100')
+    expect(
+      canChangeSessionVisibility(
+        { ...task, taskParentSessionId: 'sid-coordinator' },
+        principal,
+        identitySetOf(principal)
+      )
+    ).toBe(false)
+    expect(
+      canChangeSessionVisibility({ ...task, taskParentSessionId: null }, principal, identitySetOf(principal))
+    ).toBe(true)
+  })
+
   it('treats an unread thread coordinate as append — fail closed', () => {
     const principal = ctx(CREATOR, 'owner')
     expect(

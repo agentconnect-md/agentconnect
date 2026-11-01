@@ -3,7 +3,9 @@ import { join } from 'node:path'
 import { MEMORY_FORMAT_GUIDANCE } from '../../memory/frontmatter.js'
 import { MAX_INDEX_INJECT_BYTES } from '../../memory/store.js'
 import { NO_RESPONSE_RULE } from '../no-response.js'
-import { isDelegationCoordinate } from '../subsession-coordinate.js'
+import { isDelegationCoordinate, keepsTaskSummaryAt } from '../subsession-coordinate.js'
+import { isCoordinatorCoordinate } from '../append-coordinate.js'
+import { TASK_SUMMARY_MAX_CHARS } from '../../store/assistant-subsessions.js'
 import type { ReceivedSessionMessage } from '../../store/session-messages.js'
 
 // Opening lines of the inlined agent-meta block (`# Agent\n- Name: …`). The standing
@@ -71,6 +73,16 @@ export type StandingContextInput = {
   /** The agent's own Slack bot user id, on Slack turns only. */
   slackSelfId?: string
   thread: string
+  /** A task the coordinator opened on a platform thread (auto-session-mode.md §6.2). */
+  threadedTask?: boolean
+  /** A threaded task working in a room of its own the coordinator's platform made for it (§6.8). */
+  placeTask?: boolean
+  /** A task the coordinator opened for a message of a conversation without threads, whose page is its conversation (§10). */
+  pageTask?: boolean
+  /** People may write to a delegated task from its console page (auto-session-mode.md §10). */
+  taskPageMessages?: boolean
+  /** Only an Auto conversation's coordinator delegates tasks, so this session is not taught to (auto-session-mode.md §5.1). */
+  tasksCoordinatorOnly?: boolean
   /** This session's OUTWARD id (session-concept.md §1.1), absent on the turn that opens it. */
   sessionId?: string | null
   /** The session that created this one (send-message-guide.md §9.6): a record only, never a reply address. */
@@ -288,8 +300,9 @@ function onDemandCloneTarget(dir: string, repoFullName: string): string {
 }
 
 // Standing collaboration guidance in `sendMessage`'s action forms; the current conversation is always an ordinary reply.
+const COLLAB_HEADING = `# Collaborating with other agents\n`
+const COLLAB_PLATFORM_WORKFLOW = `Follow the current platform's task workflow when its standing instructions provide one; the delegation defaults below apply otherwise.\n`
 const COLLAB_BEFORE_SELF =
-  `# Collaborating with other agents\n` +
   `- Every \`sendMessage\` call names an \`action\`; \`getToolGuide\` \`{"tool":"sendMessage"}\` lists them with ` +
   `examples. To reach a specific agent privately, call \`sendMessage\` with ` +
   `\`{"action":"callAgent","toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly ` +
@@ -308,7 +321,7 @@ const COLLAB_BEFORE_SELF =
 // send-message-guide.md §2.1: every agent's long work of its own is a task delegated by the session that starts it.
 const COLLAB_SELF_DELEGATION =
   `For long work of your own ("fix this bug and open a PR") that spans turns, may run a long time, or that people ` +
-  `should be able to see and stop, \`{"action":"delegateTask","message":"..."}\` delegates it to a TASK of this ` +
+  `should be able to see and stop, \`{"action":"delegateTask","title":"<a short name>","message":"..."}\` delegates it to a TASK of this ` +
   `session: it works in a context of its own, posts nothing, and reports back into this ` +
   `session each time a round of its work finishes or fails. Work you can finish within this turn, even split into ` +
   `parallel parts, goes to your runtime's own subagent or Task tool instead. A task serves the request you are ` +
@@ -323,7 +336,8 @@ const COLLAB_SELF_DELEGATION =
   `\`listTasks\` lists this session's tasks. When a task is no longer needed — the plan changed, or a task it ` +
   `depended on failed — stop it with \`stopTask\` and its taskId. Say in its message which language the people here use, so it reports in that ` +
   `language, and answer them in it whatever language a report comes back in. Keep ordinary conversation here — ` +
-  `questions, lookups and short answers never need a task. A task cannot start tasks of its own. `
+  `questions, lookups and short answers never need a task. A task may delegate tasks of its own, but a task ` +
+  `that another task started cannot. `
 const COLLAB_AFTER_SELF =
   `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
   `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
@@ -349,11 +363,43 @@ const COLLAB_AFTER_SELF =
   `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
   `yourself back or broadcast to everyone.`
 
+// auto-session-mode.md §5.1: where only an Auto conversation's coordinator delegates, every other session does its own work.
+const COLLAB_OWN_WORK =
+  `Work of your own stays in this conversation: only an Auto conversation's coordinator delegates tasks. Hand parts ` +
+  `you can finish within this turn to your runtime's own subagent or Task tool when that helps. `
+
 /** The collaboration guidance, the same for every agent. */
-export const COLLAB_APPEND = COLLAB_BEFORE_SELF + COLLAB_SELF_DELEGATION + COLLAB_AFTER_SELF
+export const COLLAB_APPEND =
+  COLLAB_HEADING + COLLAB_PLATFORM_WORKFLOW + COLLAB_BEFORE_SELF + COLLAB_SELF_DELEGATION + COLLAB_AFTER_SELF
+
+/** The collaboration guidance where only the coordinator delegates (auto-session-mode.md §5.1). */
+export const COLLAB_APPEND_WITHOUT_DELEGATION =
+  COLLAB_HEADING +
+  `Follow the current platform's task workflow when its standing instructions provide one.\n` +
+  COLLAB_BEFORE_SELF +
+  COLLAB_OWN_WORK +
+  COLLAB_AFTER_SELF
+
+// auto-session-mode.md §6.7: the parts a task's summary keeps, which its owning session reads in listTasks.
+export const TASK_SUMMARY_REQUEST =
+  `# Your task summary\n` +
+  `Keep a summary of this task with \`updateTask\`, at most ${TASK_SUMMARY_MAX_CHARS} characters in three parts: its scope (what this ` +
+  `task is about), its status (in progress, waiting on someone, done or blocked), and its next step and open ` +
+  `questions. The session that started this task reads it in listTasks to see how the work stands and what to send ` +
+  `you next. Write the first one as soon as you know the scope, and update it in any turn where the scope or status ` +
+  `changes. \`title\` renames the task, and changes only together with a summary.`
 
 // send-message-guide.md §8.3: a task messages its owning session any time, and the daemon reports each round's end.
-export function buildTaskReportingAppend(ownerSessionId: string | null | undefined): string {
+// auto-session-mode.md §10: a person who may continue the owning session can write to the task from its console page.
+export const TASK_PAGE_MESSAGES =
+  `People who may continue that session can also write to you from your page in the console; their messages arrive ` +
+  `here with their name. Answer such a message in your response, which they read on that page.`
+
+export function buildTaskReportingAppend(
+  ownerSessionId: string | null | undefined,
+  summary = false,
+  pageMessages = false
+): string {
   if (!ownerSessionId) return ''
   return (
     `# Reporting back to the session that started this task\n` +
@@ -364,9 +410,32 @@ export function buildTaskReportingAppend(ownerSessionId: string | null | undefin
     `work. Send your result that way before you finish, saying whether you succeeded and what the result was (on ` +
     `failure, what went wrong). When this round of work ends, the daemon tells that session automatically and ` +
     `forwards your final response, so end with one short line rather than repeating the result. If you asked a ` +
-    `question, end your turn; the answer arrives as a new message.`
+    `question, end your turn; the answer arrives as a new message.` +
+    (pageMessages ? ` ${TASK_PAGE_MESSAGES}` : '') +
+    (summary ? `\n\n${TASK_SUMMARY_REQUEST}` : '')
   )
 }
+
+// auto-session-mode.md §6.2, §6.4: a threaded task answers people in its threads and reports nothing to the coordinator.
+export const THREADED_TASK_APPEND =
+  `# You are a task\n` +
+  `The coordinator of this channel opened you for a message in this thread. People talk to you directly here, and ` +
+  `the coordinator may hand you more messages, each from a thread it attaches to you; your answer goes to the ` +
+  `thread each message came from. Nothing is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
+
+// auto-session-mode.md §6.8: a task in a room of its own answers there and reports nothing to the coordinator.
+export const PLACE_TASK_APPEND =
+  `# You are a task\n` +
+  `The coordinator of another conversation opened you for a message there and gave you this conversation of your ` +
+  `own. People talk to you directly here, and the coordinator may move more messages here from its conversation; ` +
+  `you answer here. Nothing is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
+
+// auto-session-mode.md §10: a task for a console message answers on its own page and reports nothing to the coordinator.
+export const PAGE_TASK_APPEND =
+  `# You are a task\n` +
+  `The coordinator of a person's console conversation opened you for a message there. They talk to you on your own ` +
+  `page in the console, and the coordinator may move more of their messages to you; they read your answers on that ` +
+  `page. Nothing is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
 
 /** The most answerable messages one turn lists; the rest stay valid and are counted (send-message-guide.md §9.5). */
 export const MAX_LISTED_SESSION_MESSAGES = 8
@@ -405,20 +474,37 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots, input.onDemandClones)
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
-  const taskReportingAppend = isDelegationCoordinate(input.thread)
-    ? buildTaskReportingAppend(input.originSessionId)
-    : ''
+  const taskReportingAppend = input.pageTask
+    ? PAGE_TASK_APPEND
+    : isDelegationCoordinate(input.thread)
+      ? buildTaskReportingAppend(
+          input.originSessionId,
+          keepsTaskSummaryAt(input.thread),
+          input.taskPageMessages === true && keepsTaskSummaryAt(input.thread)
+        )
+      : input.placeTask
+        ? PLACE_TASK_APPEND
+        : input.threadedTask
+          ? THREADED_TASK_APPEND
+          : ''
+  const collabAppend = input.tasksCoordinatorOnly === true ? COLLAB_APPEND_WITHOUT_DELEGATION : COLLAB_APPEND
+  // A coordinator's own instructions replace the reply and collaboration rules: it only decides where messages go (auto-session-mode.md §5.4).
+  const coordinator = isCoordinatorCoordinate(input.thread)
   const assemble = (meta: string) => {
-    const resume = [
-      meta,
-      workspaceRootsAppend,
-      platformAppend,
-      COLLAB_APPEND,
-      taskReportingAppend,
-      input.taskInstructions,
-      NO_RESPONSE_RULE,
-      memoryGuidance
-    ]
+    const resume = (
+      coordinator
+        ? [meta, platformAppend, input.taskInstructions, memoryGuidance]
+        : [
+            meta,
+            workspaceRootsAppend,
+            platformAppend,
+            collabAppend,
+            taskReportingAppend,
+            input.taskInstructions,
+            NO_RESPONSE_RULE,
+            memoryGuidance
+          ]
+    )
       .filter(Boolean)
       .join('\n\n')
     return { resume, session: [resume, memoryAppend].filter(Boolean).join('\n\n') }
@@ -431,7 +517,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
     agentMeta,
     workspaceRootsAppend,
     platformAppend,
-    collabAppend: COLLAB_APPEND,
+    collabAppend,
     taskReportingAppend,
     resumeSystemContext,
     sessionContext,

@@ -65,6 +65,7 @@ async function openSocket(
       },
       action() {},
       shortcut() {},
+      command() {},
       view() {},
       client: { auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'BBOT', team_id: 'T1' }) } },
       // Bolt's start opens the socket, so Slack may deliver an event before it resolves.

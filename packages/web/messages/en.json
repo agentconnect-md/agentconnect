@@ -10,7 +10,8 @@
     },
     "pendingActions": {
       "waiting": "{label} is waiting for your action",
-      "show": "Show"
+      "show": "Show",
+      "dismiss": "Dismiss"
     },
     "modelProvider": {
       "label": "Credentials",
@@ -72,7 +73,8 @@
       "addLabel": "Add a label",
       "addAnother": "add another…",
       "typeLabel": "type a label, Enter adds it",
-      "limitReached": "Label limit reached — remove one to add another."
+      "limitReached": "Label limit reached — remove one to add another.",
+      "skipDrafts": "Skip drafts until marked ready for review"
     },
     "beta": "Beta",
     "language": {
@@ -262,6 +264,8 @@
     "taskList": {
       "groups": {
         "tasks": "Tasks",
+        "threaded": "Threaded tasks",
+        "background": "Background tasks",
         "followUps": "Follow-ups",
         "subagents": "Subagents",
         "commands": "Commands"
@@ -270,7 +274,8 @@
       "state": {
         "open": "Running",
         "done": "Reported",
-        "failed": "Failed"
+        "failed": "Failed",
+        "idle": "Idle"
       },
       "runtimeState": {
         "running": "Running",
@@ -278,6 +283,7 @@
         "failed": "Failed"
       },
       "started": "started {time}",
+      "summarized": "summary {time}",
       "lastCheck": "last {time}",
       "expires": "expires {time}",
       "untitled": "Untitled task",
@@ -292,6 +298,29 @@
       "notRunningBackground": "No turn is running. A background process it started may still be running; it can’t be stopped from here, and it reports back when that process ends.",
       "stopFailed": "Couldn’t stop it. Try again.",
       "stopUpgrade": "Upgrade this agent’s daemon to stop tasks here."
+    },
+    "githubApp": {
+      "title": "GitHub App",
+      "close": "Close",
+      "builtIn": "built-in",
+      "builtInFallback": "Built-in GitHub App",
+      "free": "free",
+      "create": "Create a new GitHub App…",
+      "checking": "Checking what this App can reach…",
+      "kinds": {
+        "workspace": "workspace",
+        "repository": "repository",
+        "review": "review",
+        "installation": "installation"
+      },
+      "addOnGithub": "Add on GitHub",
+      "notCovered": "{slug} does not reach everything this agent works on yet.",
+      "checkAgain": "Check again",
+      "cancel": "Cancel",
+      "opening": "Opening…",
+      "continueOnGithub": "Continue on GitHub",
+      "switching": "Switching…",
+      "switch": "Switch"
     }
   },
   "Profile": {
@@ -608,6 +637,7 @@
       "agents": "Agents",
       "agentSummary": "{count} agents: {names}",
       "people": "People",
+      "mine": "{name} (me)",
       "schedules": "Schedules",
       "count": "{count, plural, one {# session} other {# sessions}}",
       "schedule": "Schedule",
@@ -653,6 +683,10 @@
       "hideTasks": "Hide tasks",
       "all": "All",
       "noMatchesShort": "No matches"
+    },
+    "coordinator": {
+      "label": "Coordinator",
+      "hint": "Decides where this conversation’s messages go under Auto: it hands each to a task, answers it, or lets it pass."
     },
     "visibility": {
       "private": "Private",
@@ -951,7 +985,8 @@
       "closeViewer": "Close",
       "computer": "Computer",
       "computerPick": "Computer",
-      "computerNone": "This agent has no computer you can watch."
+      "computerNone": "This agent has no computer you can watch.",
+      "computerOnDemand": "The agent gets its computer when it first uses one in this session."
     }
   },
   "Shell": {
@@ -1243,7 +1278,8 @@
       "authorize": "Authorize",
       "scopes": {
         "read": "View your agents, daemons, schedules, sessions, and usage",
-        "write": "Create and modify your agents, schedules, and integrations"
+        "write": "Create and modify your agents, schedules, and integrations",
+        "ahp": "Chat as you with an agent you can see in this organization"
       }
     },
     "waitlist": {
@@ -1642,7 +1678,9 @@
         "dmOnHint": "Replies to every message in this conversation.",
         "hint": "Trigger — when the agent responds here",
         "decision": "By decision",
-        "decisionHint": "A saved decision judges each message in {room}; the agent answers only for the answers you pick."
+        "decisionHint": "A saved decision judges each message in {room}; the agent answers only for the answers you pick.",
+        "coordinator": "Decided by the coordinator",
+        "coordinatorHint": "Under Auto every message in {room} reaches the coordinator, which decides what to answer."
       },
       "action": {
         "leaveLabel": "Leave {noun}",
@@ -1680,6 +1718,7 @@
         "leaveConfirm": "Leave {space}? A {platform} bot cannot leave one {noun} — it leaves the whole server, and every {nounPlural} of it disappears from this list. Re-invite it to undo."
       },
       "directMessages": "Direct messages",
+      "codeChannels": "Code channels",
       "openIn": "Open {name} in {platform}",
       "ownerChange": {
         "title": "Move this team’s default?",
@@ -1691,7 +1730,9 @@
         "createNew": "Per thread",
         "createNewHint": "Each thread has its own session. Replies continue that session.",
         "append": "Single session",
-        "appendHint": "One session for {room}, shared across threads. Send <code>!new</code> to start a fresh one."
+        "appendHint": "One session for {room}, shared across threads. Send <code>!new</code> to start a fresh one.",
+        "auto": "Auto",
+        "autoHint": "A coordinator reads every message in {room} and hands it to a task, answers it, or lets it pass. A task answers in the thread of the message it opened for."
       },
       "settings": {
         "respondTo": "Respond to",
@@ -1720,7 +1761,23 @@
       "suspended": "suspended",
       "needsUpdate": "needs update",
       "permissionsNeedUpdate": "This installation’s GitHub permissions need updating before all features will work.",
-      "updatePermissions": "Update permissions"
+      "updatePermissions": "Update permissions",
+      "orgApps": {
+        "free": "free",
+        "inUse": "in use",
+        "delete": "Delete App…",
+        "deleteTitle": "Delete GitHub App",
+        "deleteBody": "Remove <slug></slug> from this organization? Its key and installations are forgotten here; the App stays on GitHub until you delete it there.",
+        "close": "Close",
+        "cancel": "Cancel",
+        "deleting": "Deleting…",
+        "deleteConfirm": "Delete",
+        "noInstallations": "Not installed on any account yet.",
+        "openAgent": "Open {agent}"
+      },
+      "builtIn": "built-in",
+      "expand": "Show installations",
+      "collapse": "Hide installations"
     },
     "codeHostActions": {
       "addRepository": "Add repository",
@@ -1832,7 +1889,7 @@
         "installGithubApp": "Install GitHub app",
         "installedSync": "I’ve installed it — sync",
         "opensGithub": "Opens github.com in a new tab",
-        "githubConnected": "GitHub app connected — repos and metadata sync automatically.",
+        "githubConnected": "GitHub App connected",
         "manageAccess": "Manage access",
         "publicRepositoriesShown": "Public repositories are shown.",
         "linkGithubProfile": "Link your GitHub profile",
@@ -1909,7 +1966,11 @@
         "materializeByDecisionDaemonOutdated": "Update the daemon that runs this agent to use Decisions",
         "materializeByDecisionDaemonOffline": "The daemon that runs this agent is offline",
         "materializeByDecisionNoProvider": "No Decision provider is ready where this agent runs",
-        "materializeByDecisionNoSelector": "Set the Repository selector first"
+        "materializeByDecisionNoSelector": "Set the Repository selector first",
+        "githubConnectedWith": "Connected with <slug></slug>",
+        "more": "More",
+        "useOwnGithubApp": "Use its own GitHub App…",
+        "changeGithubApp": "Change GitHub App…"
       },
       "listenFor": "Listen for",
       "alreadyWatched": "already watched",
@@ -1979,6 +2040,7 @@
       "platform": "Platform",
       "chat": "Chat",
       "workflow": "Workflow",
+      "setupGuide": "Setup guide",
       "notSupportedByDaemon": "Not supported by this daemon",
       "name": "Name",
       "sessionContinuity": "Session continuity",
@@ -2998,7 +3060,6 @@
         "title": "Integrations",
         "add": "Add",
         "addIntegration": "Add integration",
-        "connected": "connected",
         "revoked": "revoked",
         "rejected": "rejected",
         "offline": "offline",
@@ -3058,7 +3119,9 @@
         "claudeFile": "CLAUDE.md",
         "skillsDirectory": ".agent/skills/",
         "runbooksDirectory": "docs/runbooks/",
-        "seconds": "{value}s"
+        "seconds": "{value}s",
+        "githubVia": "via <slug></slug>",
+        "githubApp": "GitHub App"
       },
       "tools": {
         "loading": "Loading…",
@@ -3091,6 +3154,7 @@
         "allSourcesEnabled": "Every source in your organization is already enabled.",
         "noSkillsEnabled": "This agent has no skills enabled.",
         "removeFromAgent": "Remove from this agent",
+        "editServer": "View or edit this server",
         "chooseIndividualSkills": "Choose individual skills",
         "loadingSkills": "Loading skills…",
         "noSkillManifest": "No SKILL.md found in this source.",
@@ -3308,7 +3372,8 @@
           "runtime-unset": "Choose a runtime first.",
           "runtime-not-admitted": "This runtime is not supported yet: it must be able to turn off its own memory and resume a session after a restart.",
           "memory-provider": "Memory must be managed.",
-          "store-not-shared": "Every daemon in this agent’s group must share one store."
+          "store-not-shared": "Every daemon in this agent’s group must share one store.",
+          "routing": "Stop using By decision or shared-bot routing in these conversations first: {names}."
         },
         "blockers": {
           "invalidLimit": "Each limit must be a whole number within its range."
@@ -4044,6 +4109,7 @@
     },
     "delete": "Delete",
     "doubleClickRename": "Double-click to rename",
+    "autoUpgradeOn": "Auto-upgrade on",
     "restrictedHint": "Selected — only shared members can see this daemon",
     "empty": {
       "title": "No daemons connected",
@@ -4116,13 +4182,13 @@
       "reconnectingStatus": "Reconnecting",
       "save": "Save",
       "createGroup": "Create group",
-      "expireSessions": "Expire sessions",
       "visibility": "Visibility",
       "editDaemon": "Edit daemon",
       "daemonPlaceholder": "edge-1",
       "saveChanges": "Save changes",
       "groupPlaceholder": "edge-pool",
       "sessionRetention": {
+        "label": "Expire sessions",
         "afterDays": "After {count, plural, one {# day} other {# days}}",
         "never": "Never",
         "default": "default",
@@ -4131,7 +4197,13 @@
         "daysSuffix": "days",
         "daysAriaLabel": "Expire sessions after (days)",
         "invalidDays": "Enter a whole number of days (1–9999).",
-        "hint": "Finished sessions older than this are deleted from the daemon, including their workspaces."
+        "hint": "Finished sessions older than this are deleted from the daemon, with their transcripts."
+      },
+      "workspaceRetention": {
+        "label": "Clean up workspaces",
+        "never": "With the session",
+        "daysAriaLabel": "Clean up workspaces after (days)",
+        "hint": "Finished sessions idle this long lose their workspace and sandbox but keep the conversation. Work not yet pushed is kept."
       }
     },
     "lifecycleDialog": {
@@ -4150,7 +4222,8 @@
       "cancel": "Cancel",
       "sending": "Sending…",
       "upgrade": "Upgrade",
-      "restart": "Restart"
+      "restart": "Restart",
+      "downgradeDisablesAutoUpgrade": "Upgrading to an older version turns auto-upgrade off."
     },
     "runtimeLogin": {
       "title": "Log in to {label}",
@@ -4219,6 +4292,18 @@
         "leave": "Leave {name}",
         "join": "Join {name}",
         "deleteDaemon": "Delete daemon"
+      },
+      "autoUpgrade": {
+        "label": "Auto-upgrade",
+        "help": "Installs new releases automatically and restarts only when the daemon is idle.",
+        "unsupported": "Requires a daemon run by the agentconnect service or CLI; not available for pool members.",
+        "newRelease": "a new release",
+        "upgrading": "Auto-upgrading to {version}…",
+        "upgraded": "Upgraded to {version}",
+        "upgradedAgo": "Upgraded to {version} · {ago}",
+        "failed": "Auto-upgrade to {version} failed: {outcome}",
+        "failedNoReason": "Auto-upgrade to {version} failed",
+        "waiting": "Waiting for an idle window to upgrade to {version}"
       }
     }
   },
@@ -4560,6 +4645,7 @@
     "loadError": "Couldn't load usage: {error}",
     "emptyState": "No usage recorded in this range yet. Token usage appears here once agents run sessions.",
     "tokensAndSessions": "{tokens} tok · {sessions} sessions",
+    "coordinatorPart": "Coordinator: {tokens} tokens · {spend}",
     "computers": {
       "title": "Computers",
       "runningHours": "Managed computer hours",
@@ -6531,7 +6617,7 @@
       },
       "kindHint": {
         "desktop": "Needs Node.js. Run it as yourself, not as root or administrator; on macOS, allow Accessibility and Screen Recording when asked.",
-        "docker": "On a server with Docker: a Linux desktop with Firefox in a container, isolated from the server. For docker compose, or to send the viewer's video directly, see the self-hosted desktop container guide."
+        "docker": "On a server with Docker: a Linux desktop with Chromium and LibreOffice in a container, isolated from the server. For docker compose, or to send the viewer's video directly, see the self-hosted desktop container guide."
       },
       "name": "Name",
       "optional": "optional",
@@ -6554,12 +6640,12 @@
       "minting": "Creating the command…",
       "open": "Open computer",
       "saving": "Saving…",
-      "poolTitle": "Add managed computer",
-      "poolDescription": "A Linux desktop with Firefox from this deployment's pool, isolated in its own container with its own disk. Agents you give access share it one at a time. It sleeps when idle, keeping its files and sign-ins, and stays until you delete it. You will be its owner.",
+      "poolTitle": "Add cloud computer",
+      "poolDescription": "A Linux desktop with Chromium and LibreOffice from this deployment's pool, isolated in its own container with its own disk. Agents you give access share it one at a time. It sleeps when idle, keeping its files and sign-ins, and stays until you delete it. You will be its owner.",
       "poolName": "Name",
       "poolNamePlaceholder": "Shared browser",
       "poolAccessHint": "Members who can see it may give it to their agents on the agent’s Tools tab. Agents take turns: one has control at a time, the others wait in line.",
-      "poolUnavailable": "No pool member is connected right now, so a managed computer cannot be started. Try again in a minute.",
+      "poolUnavailable": "No pool member is connected right now, so a cloud computer cannot be started. Try again in a minute.",
       "poolCreate": "Create computer",
       "poolCreating": "Creating…",
       "poolError": "Could not create the computer: {message}",
@@ -6569,22 +6655,17 @@
     "empty": {
       "description": "Add a computer to let agents take screenshots, click and type on a desktop you choose. You stay in control: you grant agents, approve risky actions and can stop it at any time."
     },
-    "poolEntry": {
-      "managedTitle": "AgentConnect Computers",
-      "clusterTitle": "Computer pool",
+    "cloud": {
+      "title": "Cloud computers",
+      "description": "Isolated Linux desktops this deployment runs. You or your agents can create them. They sleep when idle and wake on the next use.",
+      "add": "Add cloud computer",
       "meta": "{running} running · {asleep} asleep",
-      "none": "No managed computers yet",
-      "countLabel": "managed computers",
-      "available": "Available",
-      "unavailable": "Unavailable",
-      "add": "Add managed computer",
-      "description": "Isolated Linux desktops this deployment runs for your agents. They sleep when idle and wake on the next use."
-    },
-    "poolPage": {
-      "description": "Desktops started for your agents in this deployment's cluster. Each sleeps when idle and wakes on the next use.",
-      "add": "Add managed computer",
-      "empty": "No managed computers yet. Add one here, or set Managed computer on an agent's Tools tab to have one made for it.",
-      "notFound": "This deployment runs no managed computers"
+      "unavailable": "No pool member available to start one",
+      "empty": "No cloud computers yet. Add one here, or set Managed computer on an agent's Tools tab to have one made for it.",
+      "running": "Running",
+      "by": "by {name}",
+      "byYou": "by you",
+      "idle": "idle {when}"
     },
     "never": "never",
     "you": "You",
@@ -6632,7 +6713,16 @@
       "fix": "Fix:",
       "notReported": "Checks not reported",
       "failing": "{count, plural, one {# check failing} other {# checks failing}}",
-      "warning": "{count, plural, one {# warning} other {# warnings}}"
+      "warning": "{count, plural, one {# warning} other {# warnings}}",
+      "summary": {
+        "fail": "{count} failing",
+        "warn": "{count, plural, one {# warning} other {# warnings}}",
+        "ok": "{count} pass",
+        "info": "{count} info"
+      },
+      "showPassing": "Show {count, plural, one {# passing check} other {# passing checks}}",
+      "hidePassing": "Hide passing checks",
+      "none": "No checks"
     },
     "detail": {
       "notFound": "Computer not found",
@@ -6670,7 +6760,10 @@
         "per-agent": "One per agent",
         "manual": "Pool computer, shared"
       },
-      "ownerAgent": "Made for"
+      "ownerAgent": "Made for",
+      "tabs": {
+        "overview": "Overview"
+      }
     },
     "actions": {
       "stop": "Stop",
@@ -6692,8 +6785,16 @@
       "busy": "Deleting…"
     },
     "activity": {
-      "title": "Recent activity",
-      "note": "What agents and viewers did, kept for 90 days",
+      "title": "Activity",
+      "note": "Kept for 90 days",
+      "filterLabel": "Show activity from",
+      "filter": {
+        "all": "All",
+        "viewers": "Viewers",
+        "agents": "Agents"
+      },
+      "today": "Today",
+      "yesterday": "Yesterday",
       "empty": "Nothing has happened on this computer yet.",
       "loading": "Loading activity…",
       "more": "Show older",
@@ -6710,59 +6811,96 @@
     "agentAccess": {
       "title": "Agent access",
       "ownAgentOnly": "Used only by the agent it was made for",
-      "none": "No agents",
       "noneDescription": "No agent can use it yet.",
-      "selected": "Selected agents",
       "all": "All agents",
       "allDescription": "Every agent in the organization can use it.",
       "allNoIsolation": "This includes other members' agents, and your desktop has no isolation from what they do.",
       "unknownAgent": "Agent not visible to you",
       "noIsolation": "Not your agent",
       "noIsolationHint": "This agent belongs to another member. Your desktop has no isolation from what it does.",
-      "changeOnAgent": "Which agents use this computer is set on each agent’s Tools tab, under Computers. Open one from <agents>Agents</agents> to give it this computer or take it away.",
+      "changeOnAgent": "Granted per agent, under Tools › Computers. <agents>Open Agents</agents>",
       "openAgentTools": "Open the agent’s tools"
     },
     "policy": {
       "title": "Usage policy",
       "readOnly": "Only the owner can change this",
       "accessTitle": "Control and approvals",
+      "accessHint": "One agent controls the desktop at a time; others wait in line, first come first served. Screenshots and viewers need no turn.",
       "mode": "Agents may",
       "modeHint": "View only allows screenshots; control also allows clicks and typing.",
       "modeControl": "View and control",
       "modeView": "View only",
       "firstInput": "Ask once per session",
       "firstInputHint": "An agent's first click or keystroke in a session waits until someone allowed to use this Computer approves it.",
+      "adminPrompts": "Administrator prompts (UAC)",
+      "adminPromptsHint": "Who answers a Windows administrator prompt that appears while an agent controls this computer. The menu on the computer changes the same setting.",
+      "adminPrompt": {
+        "people": "People approve each one",
+        "agent": "The agent decides",
+        "approve": "Always approve",
+        "deny": "Always deny"
+      },
+      "commandLineTitle": "Command line and files",
+      "commandLineHint": "Commands and file access on this computer cost agents far less than screenshots. They run as the signed-in person, need no control, and stop when you pause or stop agents.",
+      "shell": "Commands",
+      "shellHint": "Whether agents may run shell commands here. Ask shows each command to someone allowed to use this computer first.",
+      "shellViewOnly": "A view-only computer runs no commands.",
+      "shellMode": {
+        "off": "Never",
+        "ask": "Ask",
+        "on": "Allow"
+      },
+      "files": "Files",
+      "filesHint": "Whether agents may read, or read and write, files here. The first write in a session asks like the first input.",
+      "filesMode": {
+        "off": "No access",
+        "read": "Read",
+        "read-write": "Read and write"
+      },
+      "fileRoots": "Allowed paths",
+      "fileRootsHint": "One absolute path per line, such as ~/work. Blank allows the home directory. Commands are not limited to these paths.",
+      "shellNoIsolation": "This is a person’s own desktop with no isolation: an agent that can run commands can do anything this account can, including reading its keys and signed-in browsers.",
+      "commandLineUnsupported": "This computer’s daemon cannot run the command line yet. It works on Linux computers for now.",
       "limitsTitle": "Limits",
-      "idle": "Idle release (seconds)",
+      "idle": "Idle release",
       "idleHint": "Control is released after this long without input, 10 to 3600.",
-      "max": "Longest control (seconds)",
+      "max": "Longest control",
       "maxHint": "The most one session may hold control, 60 to 86400.",
-      "wait": "Wait in line (seconds)",
+      "wait": "Wait in line",
       "waitHint": "When another agent has control, how long an agent waits for its turn before giving up, 0 to 600.",
-      "retention": "Keep screenshots (days)",
+      "retention": "Keep screenshots",
       "retentionHint": "0 stores none; blank uses the deployment's default.",
       "retentionDefault": "Default",
+      "unitSeconds": "sec",
+      "unitDays": "days",
       "driverTools": "Expose driver tools",
       "driverToolsHint": "Also offer agents the driver's own window-level tools. Off by default.",
       "peerToPeer": "Peer-to-peer viewing",
       "peerToPeerHint": "Let the viewer’s video go straight between browser and desktop across networks. This shows viewers the desktop’s public IP address. On by default only for a self-hosted Computer that just its owner may watch.",
+      "advancedTitle": "Advanced",
       "problem": {
         "idleRange": "Idle release must be a whole number from 10 to 3600.",
         "maxRange": "Longest control must be a whole number from 60 to 86400.",
         "idleAboveMax": "Idle release can't be longer than the longest control.",
         "waitRange": "Wait in line must be a whole number from 0 to 600.",
-        "retentionRange": "Screenshot days must be a whole number from 0 to 3650, or blank."
+        "retentionRange": "Screenshot days must be a whole number from 0 to 3650, or blank.",
+        "rootsInvalid": "Allowed paths must be absolute, one per line, at most 32."
       },
       "reset": "Reset",
+      "unsaved": "{count, plural, one {# unsaved change} other {# unsaved changes}}",
+      "appliesToAll": "Applies to every agent with access.",
       "save": "Save",
       "saving": "Saving…"
     },
     "viewer": {
       "title": "Screen",
       "watch": "Watch",
-      "close": "Close",
-      "idle": "Watch this computer’s screen live, and take over the mouse and keyboard when you need to. Video goes straight between your browser and the desktop (the relay only helps them find each other), or through TURN; nothing passes through AgentConnect’s servers.",
+      "close": "Stop watching",
+      "idle": "Watch to see the screen live, and take over the mouse and keyboard when you need to.",
+      "privacy": "Video goes straight between your browser and the desktop, or through TURN. It never passes through AgentConnect.",
       "offline": "The viewer opens once this computer is online.",
+      "offlineSeen": "Offline. Last seen {when}.",
+      "asleep": "Asleep. An agent’s next use wakes it, or Wake in the computer’s actions.",
       "connecting": "Connecting…",
       "failed": "The viewer stopped.",
       "watching": "Watching. Agents may keep working.",
@@ -6783,7 +6921,11 @@
         "screenshots": "Screenshots"
       },
       "expand": "Expand",
-      "collapse": "Exit full view"
+      "collapse": "Exit full view",
+      "stats": {
+        "roundTrip": "Frame rate, bitrate and round trip of the video from the computer",
+        "frameTime": "Screenshot rate, bitrate and time to fetch one screenshot"
+      }
     },
     "allAgents": "All agents",
     "allocation": {
@@ -6791,7 +6933,6 @@
       "per-agent": "Agent's own",
       "manual": "Pool"
     },
-    "madeFor": "for {agent}",
     "inUseBy": "In use by {agent}",
     "waitingCount": "{count, plural, one {# waiting} other {# waiting}}",
     "hiddenAgent": "an agent you can't see",
@@ -6806,7 +6947,6 @@
       "resetting": "Resetting"
     },
     "pool": {
-      "title": "Managed computer",
       "phase": "Pool state",
       "error": "Last problem",
       "hint": {
@@ -6823,14 +6963,9 @@
       "resetBusy": "Resetting…"
     },
     "lease": {
-      "title": "Control",
-      "note": "One agent controls the desktop at a time; others wait in line, first come first served. Screenshots and viewers need no turn.",
       "free": "No agent has control",
-      "holder": "Has control",
-      "since": "since {when}",
-      "queue": "Waiting in line",
-      "queued": "waiting since {when}",
-      "openSession": "Open session"
+      "holderLine": "{agent} has control",
+      "since": "since {when}"
     },
     "egress": {
       "title": "Managed computer egress",
@@ -6902,14 +7037,24 @@
       "secretHeader": "Header <code>{header}</code> on <name>{server}</name>",
       "secretLive": "Set live secret <code>{secret}</code>",
       "secretPurpose": "For: {description}",
-      "secretPresent": "Already set"
+      "secretPresent": "Already set",
+      "scheduleCron": "Schedule <code>{schedule}</code>{zone}: <name>{trigger}</name>",
+      "changeCron": "Change a scheduled task to <code>{schedule}</code>{zone}: <name>{trigger}</name>",
+      "cronExists": "Scheduled"
     },
     "fields": {
       "model": "Model",
       "reasoningEffort": "Reasoning effort",
       "fastMode": "Fast mode",
       "outputMode": "Output mode",
-      "permissionMode": "Permission mode"
+      "permissionMode": "Permission mode",
+      "runtime": "Runtime",
+      "execution": "Execution",
+      "chatActions": "Chat actions",
+      "introduceOnJoin": "Introduce itself on join",
+      "showFooter": "Reply footer",
+      "showStatusBar": "Status bar",
+      "displayName": "Display name"
     },
     "complete": {
       "heading": "Make the change",
@@ -6949,7 +7094,10 @@
       "saveLiveSecret": "Save {name}",
       "headerOnOauthServer": "{server} signs in with OAuth, so it has no headers to set. Decline the request, or connect the server instead.",
       "headerHint": "The value is stored on {server} and added to each of its calls. The agent never sees it.",
-      "setHeader": "Set {header}"
+      "setHeader": "Set {header}",
+      "cronHint": "The cron dialog opens with this agent, schedule and prompt filled in. Choose where it posts, adjust anything you want, then save.",
+      "reviewCron": "Review and save the scheduled task",
+      "cronMissing": "This scheduled task no longer exists, or you can't see it."
     },
     "authority": {
       "heading": "You can't make this change",

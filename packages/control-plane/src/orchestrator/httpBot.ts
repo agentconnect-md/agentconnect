@@ -66,9 +66,11 @@ import { defaultMemberOf, isGatedAgent, httpIntegrationToSpec, placedMembers } f
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
+import { autoConversationKinds } from '../domain/conversation-defaults.js'
 import type { CpPlatformRegistry, CpTenantLearning } from '../platforms/provider.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
 import {
+  autoSessionModeSupported,
   decisionRoutingSupported,
   decisionTriggerSupported,
   encodeRelayRoutesForPeer,
@@ -155,6 +157,8 @@ interface Compiled {
   /** Daemons whose missing decision-trigger-v1 held a conversation, and daemons a routing host depends on. */
   heldFor: Set<string>
   routingDependents: Set<string>
+  /** Owner daemons not known to read Auto, whose Auto conversations keep their own trigger until they do. */
+  autoHeldFor: Set<string>
 }
 
 /** The bot router as one compile planned it. */
@@ -227,6 +231,8 @@ export class HttpBotOrchestrator {
   private readonly decisionHeldBots = new Map<string, Set<string>>()
   // daemonId → bots whose routed conversations' evaluation host depends on that daemon's liveness or features.
   private readonly routingDependents = new Map<string, Set<string>>()
+  // daemonId → bots whose last compile kept an Auto conversation on its trigger because that daemon was not known to read Auto.
+  private readonly autoHeldBots = new Map<string, Set<string>>()
 
   constructor(
     /** Every bot read here is `getUnscoped`: this is the orchestration trust
@@ -335,6 +341,11 @@ export class HttpBotOrchestrator {
     if (held && decisionTriggerSupported(this.control.daemonFeatures?.(daemonId))) {
       this.decisionHeldBots.delete(daemonId)
       for (const botId of held) bots.add(botId)
+    }
+    const autoHeld = this.autoHeldBots.get(daemonId)
+    if (autoHeld && autoSessionModeSupported(this.control.daemonFeatures?.(daemonId))) {
+      this.autoHeldBots.delete(daemonId)
+      for (const botId of autoHeld) bots.add(botId)
     }
     await this.resyncBots(bots, daemonId, 'http-bot: decision resync deferred')
   }
@@ -823,9 +834,22 @@ export class HttpBotOrchestrator {
       // editor must enable them in the console before the compiler emits a route.
       const owner = await this.agents.getUnscoped(integration.agentId)
       const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
-      await this.channels.replaceSnapshot(integration.id, channels, defaultTrigger ? { defaultTrigger } : undefined)
+      const autoKinds = owner ? await this.autoConversationKinds(owner, bot.platform) : []
+      await this.channels.replaceSnapshot(
+        integration.id,
+        channels,
+        defaultTrigger || autoKinds.length
+          ? { ...(defaultTrigger ? { defaultTrigger } : {}), ...(autoKinds.length ? { autoKinds } : {}) }
+          : undefined
+      )
     }
     await this.syncRoutes(botId)
+  }
+
+  /** The kinds an install's new conversation starts on Auto in: the daemon the relay addresses its agent on must read it (auto-session-mode.md §3.2). */
+  private async autoConversationKinds(agent: AgentRecord, platform: string): Promise<readonly ConversationKind[]> {
+    const daemonId = await this.placement.dispatchDaemon(agent)
+    return autoConversationKinds(platform, daemonId ? this.control.daemonFeatures?.(daemonId) : undefined)
   }
 
   /** §14.3: the relay that posts a bot's channel gating notices, chosen deterministically from the connected roster at (re)assign time; undefined ⇒ no relay. */
@@ -886,7 +910,14 @@ export class HttpBotOrchestrator {
       const reported = { ...conversation, kind }
       // Per install, since installs have different audiences; an ungated one takes the repository's open default (§14.9).
       const defaultTrigger = isGatedAgent(agent) ? await this.gatedConversationTrigger(agent, bot, reported) : undefined
-      await this.channels.upsertConversation(install.id, reported, defaultTrigger ? { defaultTrigger } : undefined)
+      const autoKinds = await this.autoConversationKinds(agent, bot.platform)
+      await this.channels.upsertConversation(
+        install.id,
+        reported,
+        defaultTrigger || autoKinds.length
+          ? { ...(defaultTrigger ? { defaultTrigger } : {}), ...(autoKinds.length ? { autoKinds } : {}) }
+          : undefined
+      )
     }
     await this.syncRoutes(botId)
   }
@@ -1201,6 +1232,7 @@ export class HttpBotOrchestrator {
       space: first((row) => row.space),
       dmUserId: first((row) => row.dmUserId),
       isPrivate: first((row) => row.isPrivate) ?? false,
+      isCodeSession: knownRows.some((row) => row.isCodeSession),
       kind: knownRows.find((row) => row.kind !== 'channel')?.kind ?? knownRows[0]?.kind ?? 'channel'
     }
     for (const integration of installs) {
@@ -1230,6 +1262,7 @@ export class HttpBotOrchestrator {
             ...(template.space ? { space: template.space } : {}),
             ...(template.dmUserId ? { dmUserId: template.dmUserId } : {}),
             isPrivate: template.isPrivate,
+            isCodeSession: template.isCodeSession,
             kind: template.kind
           },
           // A backfill is created Off and then carries the binding in setTrigger, so the CHECK always holds.
@@ -1344,6 +1377,7 @@ export class HttpBotOrchestrator {
     const compiled = await this.plan(bot, integrations)
     this.recordDecisionHolds(bot.id, compiled?.heldFor ?? new Set())
     HttpBotOrchestrator.recordIndex(this.routingDependents, bot.id, compiled?.routingDependents ?? new Set())
+    HttpBotOrchestrator.recordIndex(this.autoHeldBots, bot.id, compiled?.autoHeldFor ?? new Set())
     return compiled
   }
 
@@ -1463,6 +1497,7 @@ export class HttpBotOrchestrator {
     //    routes to one owner, respecting its trigger. Emit scoped rules first.
     const chans = await this.channels.listForBot(bot.id)
     const heldFor = new Set<string>()
+    const autoHeldFor = new Set<string>()
     const conversationOwner = new Map<string, AgentId>()
     for (const c of chans) {
       if (c.agentId && !conversationOwner.has(c.channelId)) conversationOwner.set(c.channelId, c.agentId)
@@ -1540,7 +1575,12 @@ export class HttpBotOrchestrator {
         })
         continue
       }
-      const match: BindMatch = c.trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }
+      let match: BindMatch = c.trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }
+      // Under Auto the owner's coordinator decides every message (auto-session-mode.md §3.3), once its daemon is known to read Auto.
+      if (c.sessionMode === 'auto' && match.kind !== 'auto') {
+        if (autoSessionModeSupported(this.control.daemonFeatures?.(p.daemonId))) match = { kind: 'auto' }
+        else autoHeldFor.add(p.daemonId)
+      }
       routes.push({
         agentId: p.integration.agentId,
         daemonId: p.daemonId,
@@ -1625,6 +1665,7 @@ export class HttpBotOrchestrator {
       routing: routing ? { ...routing } : null,
       heldFor,
       routingDependents,
+      autoHeldFor,
       botChannels: chans,
       placed: placed.map((p) => ({
         integration: p.integration,

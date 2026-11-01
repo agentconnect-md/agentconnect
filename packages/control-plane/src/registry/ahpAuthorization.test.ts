@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { API_AHP_V1_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE } from '@agentconnect.md/protocol'
+import {
+  API_AHP_V1_FEATURE,
+  TASK_PAGE_MESSAGES_FEATURE,
+  WEBCHAT_SESSION_CONTINUATION_FEATURE
+} from '@agentconnect.md/protocol'
 import { AhpAuthorization, type AhpAuthorizationDeps } from './ahpAuthorization.js'
 import { AhpCatalogCursor } from './ahpCatalogCursor.js'
 import { AhpSessionService } from './ahpSessions.js'
@@ -11,6 +15,7 @@ import { WebchatTokenService } from './webchatToken.js'
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const CONVERSATION = '22222222-2222-4222-8222-222222222222'
 const PEPPER = 'test-ahp-grant-pepper-at-least-32-characters'
+const RESOURCE = `https://relay.example.test/ahp/agents/${AGENT}`
 
 function fixture() {
   const state = {
@@ -22,7 +27,10 @@ function fixture() {
     api: true,
     feature: true,
     owner: 'user',
-    expiresAt: null as Date | null
+    expiresAt: null as Date | null,
+    principalType: 'user' as 'user' | 'oauth',
+    scopes: [] as string[],
+    grant: { resource: RESOURCE as string | null, revoked: false, userId: 'user' }
   }
   const grants = new AhpGrantService(PEPPER, () => state.now)
   const tokens = new WebchatTokenService(PEPPER)
@@ -30,29 +38,50 @@ function fixture() {
     grants,
     tokens,
     now: () => state.now,
-    config: { AHP_MODE: 'on', AHP_PUBLIC_ACCESS: false, AHP_TEST_KEY_IDS: ['key'] },
+    config: {
+      AHP_MODE: 'on',
+      AHP_PUBLIC_ACCESS: false,
+      AHP_TEST_KEY_IDS: ['key'],
+      AHP_TEST_USER_IDS: ['user'],
+      PUBLIC_RELAY_URL: 'https://relay.example.test'
+    },
     keys: {
       authenticateUser: async () => ({
         orgId: 'org',
         userId: 'user',
         apiKeyId: 'key',
-        scopes: [],
+        scopes: state.scopes,
         permission: state.permission
       })
     },
     keyRows: {
-      listForUser: async () => [
-        {
-          id: 'key',
-          userId: 'user',
-          orgId: 'org',
-          principalType: 'user',
-          permission: state.permission,
-          scopes: [],
-          revokedAt: state.revoked ? new Date(0) : null,
-          expiresAt: state.expiresAt
-        }
-      ]
+      findById: async (id: string) =>
+        id === 'key'
+          ? {
+              id: 'key',
+              userId: 'user',
+              orgId: 'org',
+              principalType: state.principalType,
+              permission: state.permission,
+              scopes: state.scopes,
+              oauthGrantId: state.principalType === 'oauth' ? 'grant' : null,
+              revokedAt: state.revoked ? new Date(0) : null,
+              expiresAt: state.expiresAt
+            }
+          : null
+    },
+    oauthGrants: {
+      getGrant: async (id: string) =>
+        id === 'grant'
+          ? {
+              id,
+              userId: state.grant.userId,
+              orgId: 'org',
+              scopes: ['ahp'],
+              resource: state.grant.resource,
+              revokedAt: state.grant.revoked ? new Date(0) : null
+            }
+          : null
     },
     agents: {
       getUnscoped: async () => ({
@@ -131,6 +160,47 @@ describe('AHP client authority', () => {
     expect(await f.auth.authorizeGrant(signed.token, { orgId: 'org', agentId: AGENT })).toBeNull()
   })
 
+  it('admits an ahp OAuth token for the endpoint its grant names and rechecks the grant on renewal', async () => {
+    const f = fixture()
+    f.state.principalType = 'oauth'
+    f.state.scopes = ['ahp']
+    f.deps.config.AHP_TEST_KEY_IDS = []
+    const verify = (resource?: string) => f.auth.verifyKey({ credential: 'token', agentId: AGENT, resource })
+    const admitted = await verify(RESOURCE)
+    if (!admitted.ok || !admitted.ahpGrant) throw new Error('expected grant')
+    expect(await f.auth.authorizeGrant(admitted.ahpGrant.token, { orgId: 'org', agentId: AGENT })).toMatchObject({
+      apiKeyId: 'key'
+    })
+    expect(await verify()).toMatchObject({ ok: false })
+    expect(await verify(RESOURCE.replace('relay.', 'other.'))).toMatchObject({ ok: false })
+    f.state.grant.revoked = true
+    expect(await f.auth.authorizeGrant(admitted.ahpGrant.token, { orgId: 'org', agentId: AGENT })).toBeNull()
+  })
+
+  it.each([
+    ['an MCP scope', (f: ReturnType<typeof fixture>) => void (f.state.scopes = ['mcp:write'])],
+    [
+      'another agent endpoint',
+      (f: ReturnType<typeof fixture>) => void (f.state.grant.resource = RESOURCE.replace(AGENT, CONVERSATION))
+    ],
+    [
+      'another relay',
+      (f: ReturnType<typeof fixture>) => void (f.deps.config.PUBLIC_RELAY_URL = 'https://elsewhere.example.test')
+    ],
+    [
+      'a user outside the test audience',
+      (f: ReturnType<typeof fixture>) => void (f.deps.config.AHP_TEST_USER_IDS = [])
+    ],
+    ["another user's grant", (f: ReturnType<typeof fixture>) => void (f.state.grant.userId = 'other')]
+  ])('refuses an OAuth token with %s', async (_name, change) => {
+    const f = fixture()
+    f.state.principalType = 'oauth'
+    f.state.scopes = ['ahp']
+    change(f)
+    const resource = f.state.grant.resource ?? RESOURCE
+    expect(await f.auth.verifyKey({ credential: 'token', agentId: AGENT, resource })).toMatchObject({ ok: false })
+  })
+
   it.each([undefined, 'legacy'] as const)('rejects browser protocol pin %s at AHP ingress', async (protocol) => {
     const f = fixture()
     const browser = await f.tokens.mint({
@@ -179,7 +249,7 @@ describe('AHP client authority', () => {
       ok: false
     })
   })
-  it('scopes a multi-agent browser attachment to the selected participant API entry', async () => {
+  it('admits browser participants without an AHP API entry while keys still need one', async () => {
     const f = fixture()
     const peer = '33333333-3333-4333-8333-333333333333'
     const originalAgent = f.deps.agents.getUnscoped
@@ -188,7 +258,7 @@ describe('AHP client authority', () => {
       { agentId: AGENT as never, role: 'primary' },
       { agentId: peer as never, role: 'member' }
     ]
-    f.deps.apiEntries.listForAgent = async (id) => (id === peer ? [{ protocol: 'ahp' }] : [])
+    f.state.api = false
     const browser = await f.tokens.mint({
       protocol: 'ahp',
       orgId: 'org',
@@ -197,11 +267,16 @@ describe('AHP client authority', () => {
       user: 'User',
       conversationId: CONVERSATION
     })
-    expect(await f.auth.verifyBrowser({ credential: browser.token, agentId: peer })).toMatchObject({
-      ok: true,
-      agentId: peer,
-      apiProtocols: ['ahp']
-    })
+    for (const agentId of [AGENT, peer])
+      expect(await f.auth.verifyBrowser({ credential: browser.token, agentId })).toMatchObject({
+        ok: true,
+        agentId,
+        apiProtocols: ['ahp']
+      })
+    const result = await f.auth.verifyBrowser({ credential: browser.token, agentId: peer })
+    if (!result.ok || !result.ahpGrant) throw new Error('expected browser grant')
+    expect(await f.auth.authorizeGrant(result.ahpGrant.token, { orgId: 'org', agentId: peer })).not.toBeNull()
+    expect(await f.auth.verifyKey({ credential: 'test-key', agentId: AGENT })).toMatchObject({ ok: false })
   })
   it('keeps a session continuation target in the signed grant and rechecks purge before registry access', async () => {
     const f = fixture()
@@ -353,6 +428,39 @@ describe('AHP client authority', () => {
       expect(await service.list({ ...req, limit: 10 })).toEqual({ ok: true, sessions: [] })
     }
   )
+
+  // auto-session-mode.md §10: a webchat conversation's task is continued by its target, judged by its owning session.
+  it("continues a webchat conversation's task by its target once the daemon advertises task pages", async () => {
+    const f = fixture()
+    const parent = {
+      id: 'parent',
+      orgId: 'org',
+      agentId: AGENT,
+      platform: 'webchat',
+      channel: CONVERSATION,
+      thread: `webchat:${CONVERSATION}`,
+      daemonId: 'daemon',
+      contentSetId: null,
+      contentStoreId: null,
+      visibility: 'private',
+      ownerIdentity: 'user:user',
+      contentPurgedAt: null
+    }
+    const task = { ...parent, id: 'task', thread: 'subsession:42', parentSessionId: 'parent', visibility: 'org' }
+    f.deps.sessions.getUnscoped = async (id: string) => (id === 'parent' ? parent : id === 'task' ? task : null)
+    const features = [API_AHP_V1_FEATURE, WEBCHAT_SESSION_CONTINUATION_FEATURE]
+    f.deps.daemons.get = () => ({
+      state: 'READY',
+      capabilities: { platforms: [], runtimes: [], acp: true, features }
+    })
+    const claims = (await f.grants.verify((await grant(f)).token))!
+    expect(await f.auth.authorizeExisting(claims, 'task')).toBe(false)
+    features.push(TASK_PAGE_MESSAGES_FEATURE)
+    expect(await f.auth.authorizeExisting(claims, 'task')).toBe(true)
+    // The task reads org-visible, but its owning session is someone else's private one.
+    parent.ownerIdentity = 'user:other'
+    expect(await f.auth.authorizeExisting(claims, 'task')).toBe(false)
+  })
 
   it('derives owner authority only for the native empty conversation, never from the API key alone', async () => {
     const f = fixture()

@@ -20,6 +20,9 @@ import {
   FOLLOW_UP_WATCH_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+  SESSION_MODE_AUTO_V1_FEATURE,
+  TASK_PAGE_MESSAGES_FEATURE,
+  coordinatorConversationId,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
@@ -612,6 +615,85 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     expect(moved.statusCode).toBe(409)
     expect((moved.json() as { message: string }).message).toContain('moved')
     expect((await mintConversationToken(app, { conversationId })).statusCode).toBe(409)
+  })
+
+  // auto-session-mode.md §10: a member's private coordinator conversation, one per organization, member and agent.
+  it('POST …/webchat/token with coordinator mints the caller’s one coordinator conversation, theirs alone', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const daemonWs = await connectDaemonReady(base, [SESSION_MODE_AUTO_V1_FEATURE, WEBCHAT_MULTI_AGENT_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { name: 'agent-b' })
+    const coordinator = { coordinator: true }
+
+    // It needs a daemon that reads Auto, and the legacy webchat protocol.
+    const unserved = await mintWebchatToken(app, AGENT_B, coordinator)
+    expect(unserved.statusCode).toBe(409)
+    expect((unserved.json() as { message: string }).message).toBe('No daemon serving this agent is connected.')
+    expect((await mintWebchatToken(app, AGENT, { ...coordinator, protocol: 'ahp' })).statusCode).toBe(409)
+    expect((await mintWebchatToken(app, AGENT, { ...coordinator, conversationId: randomUUID() })).statusCode).toBe(400)
+
+    const conversationId = coordinatorConversationId(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, AGENT)
+    const first = await mintWebchatToken(app, AGENT, coordinator)
+    expect(first.statusCode).toBe(200)
+    expect(first.json()).toMatchObject({ conversationId, protocol: 'legacy' })
+    expect(first.json()).not.toHaveProperty('sessionId')
+    expect(await prisma.webchatConversation.findUnique({ where: { id: conversationId } })).toMatchObject({
+      agentId: AGENT,
+      userId: DEFAULT_OWNER_ID
+    })
+    const { ws, result } = await verifyWebchat(base, (first.json() as { token: string }).token, 'pod-coordinator')
+    expect(result).toMatchObject({ ok: true, conversationId })
+    ws.close()
+
+    // The same conversation every time, opened on its current session once it has one.
+    const sessionId = `acp-coordinator-${conversationId.slice(0, 8)}`
+    await seedSessionMeta(prisma, sessionId, AGENT, { platform: 'webchat', channel: conversationId, daemonId: DAEMON })
+    await prisma.webchatConversationAgent.updateMany({
+      where: { conversationId },
+      data: { currentSessionId: sessionId }
+    })
+    const again = await mintWebchatToken(app, AGENT, coordinator)
+    expect(again.statusCode).toBe(200)
+    expect(again.json()).toMatchObject({ conversationId, sessionId })
+    expect(await prisma.webchatConversation.count({ where: { userId: DEFAULT_OWNER_ID } })).toBe(1)
+
+    // It takes no other participant.
+    const join = await app.http.inject({
+      method: 'POST',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/webchat/conversations/${conversationId}/agents`,
+      payload: { agentId: AGENT_B }
+    })
+    expect(join.statusCode).toBe(409)
+
+    // Another member's coordinator conversation stays theirs, even on a session everyone may continue.
+    const otherUserId = 'usr_coordinator_owner'
+    await prisma.user.create({ data: { id: otherUserId, email: 'coordinator-owner@example.test' } })
+    await prisma.membership.create({ data: { orgId: DEFAULT_ORG_ID, userId: otherUserId, role: 'collaborator' } })
+    const theirs = coordinatorConversationId(DEFAULT_ORG_ID, otherUserId, AGENT)
+    const theirSession = `acp-coordinator-${theirs.slice(0, 8)}`
+    await prisma.webchatConversation.create({
+      data: { id: theirs, orgId: DEFAULT_ORG_ID, agentId: AGENT, userId: otherUserId, currentSessionId: null }
+    })
+    await seedSessionMeta(prisma, theirSession, AGENT, {
+      platform: 'webchat',
+      channel: theirs,
+      visibility: 'org',
+      ownerIdentity: `user:${otherUserId}`,
+      daemonId: DAEMON
+    })
+    await prisma.webchatConversationAgent.create({
+      data: {
+        conversationId: theirs,
+        agentId: AGENT,
+        role: 'primary',
+        ord: 0,
+        addedByUserId: otherUserId,
+        currentSessionId: theirSession
+      }
+    })
+    expect((await mintConversationToken(app, { conversationId: theirs })).statusCode).toBe(404)
+    expect((await mintWebchatToken(app, AGENT, { conversationId: theirs })).statusCode).toBe(404)
+    daemonWs.close()
   })
 
   it('POST …/webchat/token → 503 when no relay pool is configured (PUBLIC_RELAY_URL unset)', async () => {
@@ -1546,6 +1628,82 @@ describe('webchat session-continuation mint + verify', () => {
 
     relayWs.close()
     daemonWs.close()
+  })
+
+  // auto-session-mode.md §10: a delegated task's page takes messages, console-only, from whoever may continue its owning session.
+  describe("a delegated task's page", () => {
+    const PARENT_ID = 'acp-continuation-parent-1'
+    const TASK_ID = 'acp-continuation-task-1'
+    const CHECK_ID = 'acp-continuation-check-1'
+    const detail = async (app: App, id: string) =>
+      (await app.http.inject({ method: 'GET', url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/${id}` })).json()
+
+    async function seedTask(parent: { visibility?: 'org' | 'private'; ownerIdentity?: string } = {}): Promise<void> {
+      await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+      await seedSessionMeta(prisma, PARENT_ID, AGENT, { daemonId: DAEMON, channel: 'C123', thread: '100.1', ...parent })
+      for (const [id, thread] of [
+        [TASK_ID, 'subsession:4242'],
+        [CHECK_ID, 'subsession:check-7']
+      ] as const)
+        await seedSessionMeta(prisma, id, AGENT, {
+          daemonId: DAEMON,
+          channel: 'C123',
+          thread,
+          parentSessionId: PARENT_ID
+        })
+    }
+
+    it('stays read-only until the daemon advertises task pages', async () => {
+      const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+      const { ws: relayWs } = await openRelay(base, 'pod-task-1', 'wss://pod-task-1.example.test', CONTINUATION)
+      const daemonWs = await connectDaemonReady(base, CONTINUATION)
+      await seedTask()
+
+      expect((await mintSessionToken(app, TASK_ID)).statusCode).toBe(409)
+      expect(await detail(app, TASK_ID)).toMatchObject({
+        canContinue: false,
+        continuationUnavailableReason: 'unavailable'
+      })
+
+      relayWs.close()
+      daemonWs.close()
+    })
+
+    it("mints and verifies a task by its owning session's audience, and keeps a follow-up's check closed", async () => {
+      const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+      const { ws: relayWs } = await openRelay(base, 'pod-task-2', 'wss://pod-task-2.example.test', CONTINUATION)
+      const daemonWs = await connectDaemonReady(base, [...CONTINUATION, TASK_PAGE_MESSAGES_FEATURE])
+      await seedTask({ visibility: 'private', ownerIdentity: 'user:someone-else' })
+
+      // The task's own row reads org-visible, but its owning session is someone else's private one.
+      expect((await mintSessionToken(app, TASK_ID)).statusCode).toBe(403)
+      expect(await detail(app, TASK_ID)).toMatchObject({
+        canContinue: false,
+        continuationUnavailableReason: 'unauthorized'
+      })
+
+      await prisma.sessionMeta.update({ where: { id: PARENT_ID }, data: { visibility: 'org', ownerIdentity: null } })
+      expect(await detail(app, TASK_ID)).toMatchObject({ canContinue: true, continuationUnavailableReason: null })
+      const minted = await mintSessionToken(app, TASK_ID)
+      expect(minted.statusCode).toBe(200)
+      sendFrame(relayWs, 'rc/verify', {
+        kind: 'webchat-token',
+        credential: (minted.json() as { token: string }).token,
+        conversationBinding: 'v1'
+      })
+      const verdict = (await nextFrame(relayWs, 'rc/verify/ok')).payload as RcVerifyResult
+      expect(verdict).toMatchObject({ ok: true, targetSessionId: TASK_ID })
+
+      // A follow-up's check never takes messages, whoever asks.
+      expect((await mintSessionToken(app, CHECK_ID)).statusCode).toBe(409)
+      expect(await detail(app, CHECK_ID)).toMatchObject({
+        canContinue: false,
+        continuationUnavailableReason: 'unsupported_platform'
+      })
+
+      relayWs.close()
+      daemonWs.close()
+    })
   })
 
   it('caps the peers a mint carries so the verdict never exceeds its participant limit', async () => {

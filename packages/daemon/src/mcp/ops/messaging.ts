@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { MessageGateway, SendIdentity, SessionContext } from './context.js'
 import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
+import type { TaskReachDeps } from './task-reach.js'
 import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
 import { optionalString, parseArgs, requiredString } from './args.js'
 import { assertChannelReachable } from './channel-reach.js'
@@ -248,6 +249,8 @@ export interface MessageAgentReq {
   targetSessionId?: string
   /** The transport's stable id of this call, so a replay of it keeps its message id (send-message-guide.md §9.3). */
   submissionId?: string
+  /** A self-delegation's task title (auto-session-mode.md §5.1); derived from `text` when absent. */
+  title?: string
 }
 
 /** The guidance a started task's receipt hands back (send-message-guide.md §8.6). */
@@ -267,6 +270,8 @@ export interface ContinueSubsessionReq {
   text: string
   /** A stable id of this submission, so a replay of it is admitted once; minted by the daemon when absent. */
   submissionId?: string
+  /** The caller delegates no task (auto-session-mode.md §5.1), so only a follow-up or research takes the message. */
+  assistantTasksOnly?: boolean
 }
 
 /** The result of an agent→agent delivery. `delivered:false` carries a typed `reason`
@@ -325,7 +330,7 @@ export interface ReplyToSessionResult {
 
 /** The deps of the unified outbound send: peer wake, session reply, the visible post, and
  *  the daemon-side session bookkeeping a root post triggers. */
-export interface MessagingDeps extends GatewayDeps {
+export interface MessagingDeps extends GatewayDeps, TaskReachDeps {
   /**
    * The exact platform-native `@mention` addressing `agentId` in one conversation
    * (send-message-routing-rework.md §8.5), or undefined when it has none there.
@@ -360,6 +365,13 @@ export interface MessagingDeps extends GatewayDeps {
   preflightWake?: (req: MessageAgentReq) => string | null
   /** Backs `replyToSession`: a reply to one message the caller received, routed by that message's record (send-message-guide.md §9.4). */
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
+  /** Backs a coordinator session's `sendMessage` (auto-session-mode.md §5.1); absent ⇒ unavailable. */
+  coordinatorDecision?: (ctx: SessionContext, args: Record<string, unknown>) => Promise<unknown>
+  /** The person's message a coordinator's place-tool call names, or why it names none (§5.4); absent ⇒ unavailable. */
+  coordinatorMessage?: (
+    ctx: SessionContext,
+    messageId: unknown
+  ) => { msg: NonNullable<SessionContext['forMessage']> } | { error: string }
   /** Backs `messageTask` (send-message-guide.md §8): the caller's own task only; absent ⇒ unavailable. */
   continueSubsession?: (req: ContinueSubsessionReq) => Promise<MessageAgentResult>
   /** The transport's stable id of this tool call, when it has one, so a resent call is one submission. */
@@ -491,12 +503,18 @@ export async function settlePost(
     providerPostId !== undefined && mustMaterializeThread
       ? await gw.createThread?.(channel, providerPostId, rootPostThreadName(body))
       : undefined
+  // A root post into a conversation that is one session belongs to that session, as a reply there does.
+  const roomThread =
+    updateThread === undefined && providerPostId !== undefined && !isDmTarget
+      ? await gw.roomThread?.(channel).catch(() => undefined)
+      : undefined
   const canonicalPostThread =
     updateThread !== undefined
       ? threadKeyForUpdate(platform, channel, updateThread)
       : providerPostId === undefined
         ? undefined
-        : threadKeyForPost(platform, channel, gw.threadOfPost?.(providerPostId) ?? providerPostId, isDmTarget)
+        : (roomThread ??
+          threadKeyForPost(platform, channel, gw.threadOfPost?.(providerPostId) ?? providerPostId, isDmTarget))
   const postedThread =
     updateThread !== undefined
       ? canonicalPostThread
@@ -513,7 +531,14 @@ export async function settlePost(
     )
   }
   // session-concept case 2a and §2.4: the author joins the post's thread with a session whose origin is the posting one.
-  if (!post.seed || postedThread === undefined || providerPostId === undefined || !deps.spawnChannelRootSession) {
+  // That session already holds the conversation, so the post seeds no second one.
+  if (
+    !post.seed ||
+    roomThread !== undefined ||
+    postedThread === undefined ||
+    providerPostId === undefined ||
+    !deps.spawnChannelRootSession
+  ) {
     return { ...(postedThread !== undefined ? { postedThread } : {}), seeded: false }
   }
   const seeded = await deps.spawnChannelRootSession({
@@ -565,7 +590,8 @@ async function openDirectMessage(gateway: MessageGateway, user: string, platform
 export async function deliverSendMessage(
   ctx: SessionContext,
   args: Record<string, unknown>,
-  deps: MessagingDeps
+  deps: MessagingDeps,
+  task?: { title: string }
 ): Promise<unknown> {
   const message = parseArgs(messageField, args.message)
 
@@ -647,6 +673,7 @@ export async function deliverSendMessage(
           ...(needsReply ? { needsReply: true } : {}),
           // §3.1: no `channel` ⇒ the postless form, whose child is headless.
           ...(channel === undefined ? { postless: true } : {}),
+          ...(task !== undefined ? { title: task.title } : {}),
           ...(deps.callId !== undefined ? { submissionId: deps.callId } : {})
         }
       : undefined

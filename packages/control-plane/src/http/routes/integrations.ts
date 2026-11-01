@@ -36,6 +36,7 @@ import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-a
 import { canView, canEdit } from '../../authorization/policy.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
 import { conversationOwnerRow, pickConversationOwner } from '../../orchestrator/httpBot.js'
+import { anyAssistantModeAgent } from '../../agents/assistant-mode.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
 import { releaseFreedBot, removeIntegrationRow } from '../uninstall.js'
@@ -43,6 +44,7 @@ import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { DecisionBindingDenied } from '../../persistence/decision-binding-fence.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import {
+  autoSessionModeRefusal,
   decisionChannelView,
   decisionGateReadiness,
   routedChannelReadiness,
@@ -86,6 +88,7 @@ function toChannelDto(c: IntegrationChannelRecord, view?: DecisionView): Integra
     key: c.key,
     url: c.url,
     isPrivate: c.isPrivate,
+    isCodeSession: c.isCodeSession ?? false,
     kind: c.kind,
     trigger: c.trigger,
     decisionBinding: c.trigger === 'decision' ? c.decisionBinding : null,
@@ -859,7 +862,7 @@ export function integrationRoutes(deps: HttpDeps) {
           tags: [Tag.Integrations],
           summary: 'Update a conversation',
           description:
-            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding. By decision refusals carry `code` DECISION_NOT_FOUND (404) or DECISION_UNSUPPORTED_CONSUMER (409).",
+            "Set a conversation's trigger (Off, Mention, Any message, or By decision with its complete gate binding), session mode, or default agent, then push the updated routing configuration. Off, Mention, and Any message clear a By decision binding. By decision refusals carry `code` DECISION_NOT_FOUND (404) or DECISION_UNSUPPORTED_CONSUMER (409); session mode `auto` is refused with SESSION_MODE_UNSUPPORTED (409) unless every connected daemon serving the conversation supports it, and with SESSION_MODE_CONFLICT (409) together with By decision or shared-bot routing. By decision is refused with SESSION_MODE_CONFLICT (409) while an agent of the conversation (on a shared bot, any agent using the bot) is in assistant mode.",
           operationId: 'updateIntegrationChannel',
           params: IdParam.extend({ channelId: z.string().min(1) }),
           body: UpdateIntegrationChannelBody,
@@ -919,6 +922,8 @@ export function integrationRoutes(deps: HttpDeps) {
         const botScopedConversation = bot.transport === 'http'
         let effectiveOwner: AgentRecord | null = null
         let selectedOwner: AgentRecord | null = null
+        // A shared conversation's trigger repeats on every install's row, so every agent of the bot shares it.
+        let conversationAgents = [agent.id]
         if (botScopedConversation) {
           if (req.body.agentId !== undefined && !bot.agentIds.includes(AgentId(req.body.agentId))) {
             return reply.code(409).send({
@@ -931,6 +936,7 @@ export function integrationRoutes(deps: HttpDeps) {
             deps.repos.integration.listForBot(bot.id),
             deps.repos.integrationChannel.listForBot(bot.id)
           ])
+          conversationAgents = installs.map((install) => install.agentId)
           const owner = pickConversationOwner(
             installs,
             conversationRows.filter((channel) => channel.channelId === req.params.channelId)
@@ -954,6 +960,36 @@ export function integrationRoutes(deps: HttpDeps) {
               message: 'cannot edit the current or selected conversation owner'
             })
           }
+        }
+        // Auto decides every message itself, so it never runs behind By decision or shared-bot routing (auto-session-mode.md §3.3).
+        if (
+          (req.body.sessionMode ?? existingChannel.sessionMode) === 'auto' &&
+          (req.body.trigger ?? existingChannel.trigger) === 'decision'
+        )
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'Auto cannot be combined with By decision or shared-bot routing.',
+            code: 'SESSION_MODE_CONFLICT'
+          })
+        // Assistant mode runs every place through a coordinator, so its conversations never become By decision (assistant-mode.md §5.18 ①).
+        if (
+          req.body.trigger === 'decision' &&
+          (await anyAssistantModeAgent(deps.repos.agent, orgOf(req), conversationAgents))
+        )
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'An agent in assistant mode cannot use By decision; choose another trigger.',
+            code: 'SESSION_MODE_CONFLICT'
+          })
+        // Auto reaches only a daemon that reads it; the conversation's consumer must be served by one now.
+        if (req.body.sessionMode === 'auto') {
+          const refusal = await autoSessionModeRefusal(deps, selectedOwner ?? agent)
+          if (refusal)
+            return reply
+              .code(409)
+              .send({ error: 'Conflict', statusCode: 409, message: refusal, code: 'SESSION_MODE_UNSUPPORTED' })
         }
         // The consumer is the owner the relay route is compiled for, not necessarily the URL install's agent.
         if (gate) {

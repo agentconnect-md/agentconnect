@@ -22,6 +22,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { HookTable } from './hook-table.js'
 import { FollowUpWatchTable } from './follow-up-watch-table.js'
+import { GithubAppWebhookTable } from './github-app-table.js'
 import { HookRateLimiter } from './rate-limit.js'
 import {
   registerGithubIngress,
@@ -252,6 +253,7 @@ interface Harness {
   feedback: RcPullRequestFeedback[]
   feedbackError: boolean
   watches: FollowUpWatchTable
+  appWebhooks: GithubAppWebhookTable
   wakes: RcPullRequestFeedback[]
   wakeError: boolean
   rerequestResult: RcGithubRerequestResult | (() => Promise<RcGithubRerequestResult>)
@@ -279,6 +281,7 @@ function makeHarness(authzCapacity = 20): Harness {
       | 'rerequestRequests'
       | 'feedback'
       | 'watches'
+      | 'appWebhooks'
       | 'wakes'
       | 'onlineDaemons'
     > = {
@@ -291,6 +294,7 @@ function makeHarness(authzCapacity = 20): Harness {
     feedback: [],
     feedbackError: false,
     watches: new FollowUpWatchTable(),
+    appWebhooks: new GithubAppWebhookTable(),
     wakes: [],
     wakeError: false,
     authzResult: true,
@@ -360,7 +364,8 @@ function makeHarness(authzCapacity = 20): Harness {
     limiter: new HookRateLimiter(clock, { capacity: 3, refillPerSec: 0 }),
     clock,
     log,
-    webhookSecret: () => SECRET
+    webhookSecret: () => SECRET,
+    appWebhooks: h.appWebhooks
   })
   h.app = app
   h.table = table
@@ -636,6 +641,134 @@ describe('github ingress', () => {
       ])
       expect(h.sent).toHaveLength(0)
       expect(h.reports).toHaveLength(0)
+    })
+  })
+
+  describe('an organization App', () => {
+    const GITHUB_APP = '45454545-4545-4454-8454-454545454545'
+    const ORG_APP_ID = 2000
+    const ORG_APP_SECRET = 'ghw_org_app'
+    const ORG_INSTALLATION = 7654321
+    const fromApp = (appId = ORG_APP_ID, secret = ORG_APP_SECRET) => ({
+      secret,
+      headers: {
+        'x-github-hook-installation-target-type': 'integration',
+        'x-github-hook-installation-target-id': String(appId)
+      }
+    })
+    const allowed: RcGithubRerequestResult = {
+      allowed: true,
+      hookId: HOOK,
+      pullNumber: 585,
+      configRevision: '3',
+      dispatchRevision: '5'
+    }
+    const ownCheck = () =>
+      rerequestPayload({
+        installation: { id: ORG_INSTALLATION },
+        check_run: { ...(rerequestPayload().check_run as object), app: { id: ORG_APP_ID } }
+      })
+    const onOrgApp = (github: Parameters<typeof rule>[1] = {}) =>
+      rule({}, { installationIds: [String(ORG_INSTALLATION)], ...github })
+
+    beforeEach(() => {
+      h.appWebhooks.apply({ githubAppId: GITHUB_APP, appId: String(ORG_APP_ID), webhookSecret: ORG_APP_SECRET })
+    })
+
+    it("verifies with the App's own secret, never the built-in App's", async () => {
+      const installed = { action: 'created', installation: { id: ORG_INSTALLATION } }
+      expect((await post('installation', installed, fromApp(ORG_APP_ID, SECRET))).statusCode).toBe(401)
+      expect((await post('installation', installed, fromApp(ORG_APP_ID, 'forged'))).statusCode).toBe(401)
+      expect(h.doorbells).toEqual([])
+      // A header naming an App nothing here knows stays on the built-in App's secret.
+      expect((await post('installation', installed, fromApp(3000, SECRET))).statusCode).toBe(202)
+      expect(h.doorbells).toEqual([{ installationId: String(ORG_INSTALLATION), action: 'created' }])
+    })
+
+    it("rings the CP with the App's id on its installation events", async () => {
+      for (const [event, action] of [
+        ['installation', 'deleted'],
+        ['installation_repositories', 'removed']
+      ] as const) {
+        const res = await post(event, { action, installation: { id: ORG_INSTALLATION } }, fromApp())
+        expect(res.statusCode).toBe(202)
+      }
+      expect(h.doorbells).toEqual([
+        { installationId: String(ORG_INSTALLATION), action: 'deleted', appId: String(ORG_APP_ID) },
+        { installationId: String(ORG_INSTALLATION), action: 'removed', appId: String(ORG_APP_ID) }
+      ])
+    })
+
+    it('fires only the rules of agents working through the App that delivered the event', async () => {
+      h.table.upsert(onOrgApp({ events: ['issues:*'] }))
+      const opened = (installation: number) => issuesPayload({ action: 'opened', installation: { id: installation } })
+
+      await post('issues', opened(ORG_INSTALLATION), fromApp())
+      await flush()
+      expect(h.sent).toHaveLength(1)
+
+      // The same event through the built-in App reaches no rule of this agent.
+      await post('issues', opened(INSTALLATION))
+      await flush()
+      expect(h.sent).toHaveLength(1)
+    })
+
+    it('re-runs its own Check on the installation that delivered it, the CP checking the Check is its', async () => {
+      h.table.upsert(onOrgApp())
+      h.rerequestResult = allowed
+      expect((await post('check_run', ownCheck(), fromApp())).statusCode).toBe(202)
+      await flush()
+
+      expect(h.rerequestRequests).toEqual([
+        {
+          checkRunId: '86617583005',
+          repoId: String(REPO_ID),
+          headSha: 'a'.repeat(40),
+          deliveryKey: 'gh-delivery-1',
+          appId: String(ORG_APP_ID)
+        }
+      ])
+      expect(h.authzRequests).toEqual([expect.objectContaining({ installationId: String(ORG_INSTALLATION) })])
+      expect(h.sent).toHaveLength(1)
+      expect(h.sent[0]).toMatchObject({
+        event: 'check_run:rerequested',
+        github: { sourceInstallationId: String(ORG_INSTALLATION), pullNumber: 585 }
+      })
+    })
+
+    it("dispatches nothing when the CP finds the Check is not this App's", async () => {
+      h.table.upsert(onOrgApp())
+      h.rerequestResult = { allowed: false }
+      await post('check_run', ownCheck(), fromApp())
+      await flush()
+      expect(h.rerequestRequests).toHaveLength(1)
+      expect(h.sent).toEqual([])
+    })
+
+    it('takes the Request review button on its own Check like a re-run, with the stored base', async () => {
+      h.table.upsert(onOrgApp())
+      h.rerequestResult = { ...allowed, baseSha: 'b'.repeat(40) }
+      await post(
+        'check_run',
+        { ...ownCheck(), action: 'requested_action', requested_action: { identifier: 'request_review' } },
+        fromApp()
+      )
+      await flush()
+      expect(h.rerequestRequests).toEqual([
+        expect.objectContaining({ includeBaseSha: true, appId: String(ORG_APP_ID) })
+      ])
+      expect(h.sent).toHaveLength(1)
+      expect(h.sent[0]).toMatchObject({ github: { sourceInstallationId: String(ORG_INSTALLATION) } })
+    })
+
+    it('stops verifying an App the CP withdrew or a replay no longer names', async () => {
+      const installed = { action: 'created', installation: { id: ORG_INSTALLATION } }
+      h.appWebhooks.beginSnapshot('snap-1')
+      h.appWebhooks.endSnapshot('snap-1', [])
+      expect((await post('installation', installed, fromApp())).statusCode).toBe(401)
+      h.appWebhooks.apply({ githubAppId: GITHUB_APP, appId: String(ORG_APP_ID), webhookSecret: ORG_APP_SECRET })
+      h.appWebhooks.remove(GITHUB_APP)
+      expect((await post('installation', installed, fromApp())).statusCode).toBe(401)
     })
   })
 
@@ -1796,6 +1929,33 @@ describe('github ingress', () => {
         expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted' })])
       }
     )
+
+    it("dispatches a same-repository PR authored by another of the org's Apps like the agent's own App's", async () => {
+      h.table.upsert(
+        rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app', internalAppSlugs: ['example-coder'] })
+      )
+      h.authzResult = false
+      const pullRequest = pullPayload().pull_request as Record<string, unknown>
+
+      await post(
+        'pull_request',
+        pullPayload({
+          action: 'opened',
+          sender: { login: 'example-coder[bot]', type: 'Bot' },
+          pull_request: {
+            ...pullRequest,
+            user: { login: 'Example-Coder[bot]', type: 'Bot' },
+            head: { sha: 'a'.repeat(40), repo: { full_name: 'acme/infra' } },
+            base: { sha: 'b'.repeat(40), repo: { full_name: 'acme/infra' } }
+          }
+        })
+      )
+      await flush()
+
+      expect(h.authzRequests).toHaveLength(0)
+      expect(h.sent).toHaveLength(1)
+      expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted' })])
+    })
 
     it.each(['opened', 'synchronize'] as const)(
       "publishes the manual-request Check for another bot's PR %s without authorizing the bot",
@@ -3765,6 +3925,36 @@ describe('githubRuleVerdict (pure predicate)', () => {
     expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:synchronize' })).toBe('needs-authz')
     expect(matches(r, { ...pr, eventAction: 'pull_request:edited' })).toBe(false)
     expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:edited', baseChanged: true })).toBe('needs-authz')
+  })
+
+  it('holds draft revisions back on a draft-skipping rule and reviews the head when the PR leaves draft', () => {
+    const pr: GithubMatchCtx = { ...ctx, event: 'pull_request' }
+    const draft: GithubMatchCtx = { ...pr, isDraft: true }
+    const ready = { ...pr, eventAction: 'pull_request:ready_for_review', isDraft: false }
+    const everyUpdate = rule({}, { events: ['pull_request:*'], skipDrafts: true })
+    const opened = rule({}, { events: ['pull_request:opened'], skipDrafts: true })
+
+    expect(githubRuleMatch(everyUpdate, { ...draft, eventAction: 'pull_request:opened' })).toEqual({
+      verdict: 'no-match',
+      reason: 'draft'
+    })
+    expect(githubRuleVerdict(everyUpdate, { ...draft, eventAction: 'pull_request:synchronize' })).toBe('no-match')
+    expect(githubRuleVerdict(everyUpdate, { ...draft, eventAction: 'pull_request:edited', baseChanged: true })).toBe(
+      'no-match'
+    )
+    expect(githubRuleVerdict(everyUpdate, { ...pr, eventAction: 'pull_request:synchronize', isDraft: false })).toBe(
+      'needs-authz'
+    )
+    expect(githubRuleVerdict(everyUpdate, ready)).toBe('needs-authz')
+    expect(githubRuleVerdict(opened, ready)).toBe('needs-authz')
+    expect(
+      githubRuleVerdict(everyUpdate, { ...pr, eventAction: 'pull_request:converted_to_draft', isDraft: true })
+    ).toBe('no-match')
+    // Without the setting a draft is reviewed as before, and leaving draft stays status-only.
+    expect(
+      githubRuleVerdict(rule({}, { events: ['pull_request:*'] }), { ...draft, eventAction: 'pull_request:opened' })
+    ).toBe('needs-authz')
+    expect(githubRuleMatch(rule({}, { events: ['pull_request:*'] }), ready)).toMatchObject({ reason: 'lifecycle' })
   })
 
   it('trusts only same-repository revisions authored by this App', () => {

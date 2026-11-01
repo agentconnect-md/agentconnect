@@ -159,8 +159,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       multiAgentShareable: true,
       ownerAsDefault: false,
       addressedByConstruction: false,
-      // A Slack DM opens a session per top-level message unless it appends (channel-session-mode.md §8).
-      appendKinds: ['channel', 'im']
+      // A Slack DM opens a session per top-level message unless it appends, and a group DM is a small room (channel-session-mode.md §8).
+      appendKinds: ['channel', 'im', 'mpim']
     }
   ],
   [

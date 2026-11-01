@@ -36,6 +36,7 @@ import {
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
 import { agentStrategyValue } from '@/lib/execution-strategy'
+import { useAgentGithubAppDialog } from '@/components/console/GithubAppDialog'
 import { useStrategyNames } from '@/components/console/ExecutionStrategyField'
 import { permissionModeLabelKey } from '@/lib/permission-mode-i18n'
 import {
@@ -57,10 +58,13 @@ import {
   updateGiteaHook,
   updateGitlabHook,
   uploadAgentIcon,
+  openCoordinatorConversation,
+  githubAppPageUrl,
   type GithubInstallationDto,
   type HookDto,
   type HookRunDto
 } from '@/lib/api'
+import { opensCoordinator } from '@/components/console/playground/coordinator'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
@@ -215,7 +219,7 @@ function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 
   )
 }
 
-// One integration's state pill: a revoked credential, then a rejected one, then whether the agent itself is served.
+// One integration's warning pill: a revoked credential, then a rejected one, then an unserved agent; nothing while healthy.
 function IntegrationStatePill({
   integration,
   agentOffline,
@@ -251,12 +255,7 @@ function IntegrationStatePill({
       </span>
     )
   }
-  return (
-    <span className={`${shape} bg-(--brand-soft) text-(--brand-soft-text)`}>
-      <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-      {t('integrations.connected')}
-    </span>
-  )
+  return null
 }
 
 // One row's settings dialog: the label filter on every thread row, the two review axes on a change-proposal row.
@@ -266,6 +265,7 @@ interface CodeHostReviewSettingsDraft {
   reviewPolicy: HookReviewPolicy
   reportingMode: HookReportingMode
   labelFilter: string[]
+  skipDrafts: boolean
 }
 
 // The review dialog's host plate on the inverse surface — each host keeps its own fill and color.
@@ -312,6 +312,7 @@ function AgentDetail() {
   const permissionT = useTranslations('Common.permissionModes')
   const strategyT = useTranslations('Common.executionStrategy')
   const chatActionsT = useTranslations('Common.chatActions')
+  const labelFilterT = useTranslations('Common.labelFilter')
   const strategyNames = useStrategyNames()
   const { orgPath, activeOrg, myRole } = useOrgs()
   const { me } = useProfile()
@@ -435,10 +436,20 @@ function AgentDetail() {
   const gitlabRows = orderedGitlabHookRows(gitlabHooks)
   const giteaHooks = codeHostHooks.gitea
   const giteaRows = orderedGiteaHookRows(giteaHooks)
+  // The agent works through one GitHub App: its installations back the rows, and GitHub's return lands back on its dialog.
+  const githubAgentAppId = getAgent(id)?.githubAppId ?? null
+  const returnedGithubApp = params.get('github-app')
+  const githubAppDialog = useAgentGithubAppDialog(
+    { id, githubAppId: githubAgentAppId },
+    returnedGithubApp && /^[0-9a-f-]{36}$/.test(returnedGithubApp) ? returnedGithubApp : undefined
+  )
+  const githubAppSlug = githubAppDialog.appSlug
   const githubInstallationsKey =
-    activeOrg && githubHooks.length > 0 ? (['github-review-installations', activeOrg.id] as const) : null
+    activeOrg && githubHooks.length > 0
+      ? (['github-review-installations', activeOrg.id, githubAgentAppId] as const)
+      : null
   const { data: githubInstallationsData } = useSWR<GithubInstallationDto[]>(githubInstallationsKey, () =>
-    fetchGithubInstallations().then((result) => result.installations)
+    fetchGithubInstallations(undefined, githubAgentAppId).then((result) => result.installations)
   )
   const githubInstallations = githubInstallationsData ?? []
   // One deployment talks to exactly one GitLab instance (§24.1), so any connection names the host.
@@ -559,7 +570,8 @@ function AgentDetail() {
       kind: hook.kind,
       reviewPolicy: hook.reviewPolicy,
       reportingMode: hook.reportingMode,
-      labelFilter: hook.labelFilter
+      labelFilter: hook.labelFilter,
+      skipDrafts: hook.skipDrafts
     })
   }
 
@@ -575,10 +587,9 @@ function AgentDetail() {
     }
     const agentId = reviewSettingsHook.agentId
     const hook = reviewSettingsHook
-    const { reviewPolicy, reportingMode, labelFilter } = reviewSettingsDraft
+    const { reviewPolicy, reportingMode, labelFilter, skipDrafts } = reviewSettingsDraft
     const common = { agentId, name: hook.name, enabled: hook.enabled, events: hook.events, labelFilter }
-    // Each host's PUT re-sends its own whole block; only the effect axes and the label filter move. Total
-    // over the providers, so a new host writes through its own endpoint instead of GitHub's.
+    // Each host's PUT re-sends its whole block through its own endpoint; only the dialog's fields move.
     const writers: Record<CodeHostProvider, (() => Promise<HookDto>) | null> = {
       gitea: hook.repoId
         ? () =>
@@ -601,7 +612,8 @@ function AgentDetail() {
                 mentionOnly: hook.mentionOnly,
                 reviewPolicy,
                 reportingMode,
-                gateMode: 'informational'
+                gateMode: 'informational',
+                skipDrafts
               })
           : null,
       gitlab: hook.repoId
@@ -690,6 +702,23 @@ function AgentDetail() {
               setReviewSettingsDraft((current) => (current ? { ...current, labelFilter } : current))
             }}
           />
+        )}
+        {carriesReviews && draft.kind === 'github' && (
+          <label className="flex min-w-0 items-center gap-[7px]">
+            <input
+              type="checkbox"
+              checked={draft.skipDrafts}
+              onChange={(event) => {
+                const skipDrafts = event.target.checked
+                setReviewSettingsError(null)
+                setReviewSettingsDraft((current) => (current ? { ...current, skipDrafts } : current))
+              }}
+              className="accent-(--brand)"
+            />
+            <span className="font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
+              {labelFilterT('skipDrafts')}
+            </span>
+          </label>
         )}
       </div>
     )
@@ -1053,6 +1082,18 @@ function AgentDetail() {
     da.outputMode && da.outputMode !== '—' ? da.outputMode[0]!.toUpperCase() + da.outputMode.slice(1) : da.outputMode
 
   const onPlayground = () => {
+    // auto-session-mode.md §10: the playground is the member's private coordinator with the agent, on its session once it has one.
+    if (activeOrg && !MOCK_MODE && opensCoordinator(da, daemons, memberSets)) {
+      void openCoordinatorConversation(activeOrg.id, da.id)
+        .catch(() => undefined)
+        .then((entry) => {
+          const id =
+            entry?.sessionId ??
+            openPlayground(da, undefined, entry ? { conversationId: entry.conversationId } : undefined)
+          router.push(orgPath(`/sessions/${id}`))
+        })
+      return
+    }
     const pid = openPlayground(da)
     router.push(orgPath(`/sessions/${pid}`))
   }
@@ -2254,12 +2295,32 @@ function AgentDetail() {
                             <span className="font-sans text-[13.5px] font-semibold leading-normal">
                               {t('integrations.github')}
                             </span>
-                            <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-                              <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                              {t('integrations.connected')}
-                            </span>
+                            {githubAppSlug && (
+                              <span className="min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                                {t.rich('integrations.githubVia', {
+                                  slug: () => (
+                                    <a
+                                      className="mono text-inherit underline-offset-2 hover:underline"
+                                      href={githubAppPageUrl(githubAppSlug)}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      {githubAppSlug}
+                                    </a>
+                                  )
+                                })}
+                              </span>
+                            )}
                           </div>
                         </div>
+                        <button
+                          className="iconbtn"
+                          title={t('integrations.githubApp')}
+                          aria-label={t('integrations.githubApp')}
+                          onClick={githubAppDialog.openDialog}
+                        >
+                          <Icon name="app-window" size={15} />
+                        </button>
                         <button
                           className="iconbtn"
                           title={t('integrations.disconnectGithub')}
@@ -2411,10 +2472,6 @@ function AgentDetail() {
                             <span className="font-sans text-[13.5px] font-semibold leading-normal">
                               {t('integrations.gitlab')}
                             </span>
-                            <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-                              <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                              {t('integrations.connected')}
-                            </span>
                           </div>
                           {gitlabInstanceUrl && (
                             <div className="mono mt-[3px] text-[11.5px] font-normal text-(--text-tertiary)">
@@ -2564,10 +2621,6 @@ function AgentDetail() {
                           <div className="flex items-center gap-2">
                             <span className="font-sans text-[13.5px] font-semibold leading-normal">
                               {t('integrations.gitea')}
-                            </span>
-                            <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-                              <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                              {t('integrations.connected')}
                             </span>
                           </div>
                           {giteaInstanceUrl && (
@@ -2990,6 +3043,7 @@ function AgentDetail() {
           and a centered dialog on desktop. The dense repository rows only open
           it; they do not duplicate policy controls. */}
       {routingEvaluationsDrawer}
+      {githubAppDialog.dialog}
 
       {reviewSettingsDraft && reviewSettingsHook && (
         <div

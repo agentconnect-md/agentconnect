@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { SessionListFilters } from '@/lib/api'
+import { sessionFromDto, type SessionDto, type SessionListFilters } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -12,7 +12,8 @@ const mocks = vi.hoisted(() => ({
   search: '',
   listFilters: [] as SessionListFilters[],
   facetFilters: [] as SessionListFilters[],
-  openSheet: null as null | (() => void)
+  openSheet: null as null | (() => void),
+  sessions: [] as unknown[]
 }))
 
 vi.mock('next/link', () => ({
@@ -28,6 +29,12 @@ vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-1' }, orgPath: (path: string) => `/acme${path}` })
 }))
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
+// Marks would fetch their images, which the test environment aborts on teardown.
+vi.mock('@/components/marks', async (original) => ({
+  ...(await original<typeof import('@/components/marks')>()),
+  PlatformMark: () => <span />,
+  AgentIconView: () => <span />
+}))
 vi.mock('@/components/console/PlaygroundProvider', () => ({ usePlayground: () => ({ pgSessionList: [] }) }))
 vi.mock('@/components/console/Shell', () => ({
   useMobileFilterSlot: () => ({
@@ -49,8 +56,8 @@ vi.mock('@/lib/use-session-list', () => ({
   useSessionList: (_orgId: string, filters: SessionListFilters) => {
     mocks.listFilters.push(filters)
     return {
-      sessions: [],
-      total: 0,
+      sessions: mocks.sessions,
+      total: mocks.sessions.length,
       nextCursor: null,
       loadingMore: false,
       loadMore: () => undefined,
@@ -88,6 +95,7 @@ beforeEach(() => {
   mocks.listFilters = []
   mocks.facetFilters = []
   mocks.openSheet = null
+  mocks.sessions = []
 })
 
 afterEach(async () => {
@@ -142,5 +150,38 @@ describe('SessionsView, Show tasks', () => {
     expect(clear).not.toBeNull()
     await act(async () => clear?.click())
     expect(mocks.replace).toHaveBeenLastCalledWith('/acme/sessions')
+  })
+})
+
+// auto-session-mode.md §11: the list labels an Auto conversation's coordinator, on desktop and on a phone alike.
+describe('SessionsView, the coordinator', () => {
+  it('labels the coordinator’s row in both arrangements, and no other row', async () => {
+    const row = (id: string, thread: string, title: string) =>
+      sessionFromDto({
+        sessionId: id,
+        sessionKey: { platform: 'slack', channel: 'C1', thread },
+        agentId: 'agent-1',
+        title,
+        status: 'idle',
+        lastActivityAt: '2026-10-30T09:00:00.000Z',
+        usage: null,
+        triggeredBy: 'U0ALICE',
+        channelName: 'eng',
+        triggeredByName: 'alice',
+        threadUrl: null
+      } as unknown as SessionDto)
+    mocks.sessions = [
+      row('coordinator', 'append:coordinator-1700000000000', 'morning all'),
+      row('task', '1700000000.000100', 'Webhook retries')
+    ]
+    mocks.search = 'view=flat'
+    await render()
+    const tagged = (title: string) =>
+      Array.from(document.querySelectorAll('a.row')).filter(
+        (link) => link.textContent?.includes(title) && link.querySelector('[data-coordinator-tag]')
+      )
+    expect(tagged('morning all')).toHaveLength(1)
+    expect(document.querySelectorAll('[data-coordinator-tag]')).toHaveLength(2)
+    expect(tagged('Webhook retries')).toHaveLength(0)
   })
 })

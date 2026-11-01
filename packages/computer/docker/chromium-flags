@@ -1,0 +1,7 @@
+# AgentConnect computer image: sourced by /usr/bin/chromium before every launch, so an agent's launch gets these too.
+# The container is the sandbox: its seccomp profile refuses the user namespaces Chromium's own sandbox needs.
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --no-first-run --no-default-browser-check --hide-crash-restore-bubble --password-store=basic"
+# In a managed pod the browser leaves only through the daemon's egress forwarder, loopback and WebRTC included (§15.4).
+if [ -n "${AGENTCONNECT_EGRESS_PORT:-}" ]; then
+  export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --proxy-server=http://127.0.0.1:${AGENTCONNECT_EGRESS_PORT} --proxy-bypass-list=<-loopback> --force-webrtc-ip-handling-policy=disable_non_proxied_udp"
+fi

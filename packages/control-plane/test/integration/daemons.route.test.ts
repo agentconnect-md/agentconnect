@@ -27,7 +27,9 @@ import { DaemonId, OrgId } from '../../src/domain/ids.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { retryArm } from '../../src/http/routes/daemons.js'
+import type { DaemonReleaseResolver } from '../../src/registry/daemonRelease.js'
 import {
+  DAEMON_AUTO_UPGRADE_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   RUNTIME_PROBE_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
@@ -707,6 +709,37 @@ describe('PATCH /daemons/:id — rename', () => {
     const row = await prisma.daemon.findUnique({ where: { id: DAEMON } })
     expect(row?.sessionRetention).toBe('90d')
     expect(pushes).toEqual([{ id: DAEMON, keys: { 'sessions.retention': '90d' } }])
+  })
+
+  it('persists workspaceRetention and hot-pushes it to the connected daemon (config/push)', async () => {
+    await seedDaemon()
+    const pushes: { id: string; keys: Record<string, unknown> }[] = []
+    const control = {
+      configPush: (id: string, keys: Record<string, unknown>) => {
+        pushes.push({ id, keys })
+      }
+    } as unknown as ControlSender
+    running = buildHttpApp(prisma, undefined, liveness({ [DAEMON]: { state: 'READY', reachable: true } }), control)
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/daemons/${DAEMON}`,
+      payload: { workspaceRetention: '3d' }
+    })
+    expect(res.statusCode).toBe(200)
+    // The row window keeps its new default.
+    expect(res.json()).toMatchObject({ sessionRetention: '90d', workspaceRetention: '3d' })
+    const row = await prisma.daemon.findUnique({ where: { id: DAEMON } })
+    expect(row?.workspaceRetention).toBe('3d')
+    expect(row?.sessionRetention).toBe('90d')
+    expect(pushes).toEqual([{ id: DAEMON, keys: { 'sessions.workspaceRetention': '3d' } }])
+
+    const bad = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/daemons/${DAEMON}`,
+      payload: { workspaceRetention: '0d' }
+    })
+    expect(bad.statusCode).toBe(400)
   })
 
   it('still 200s a retention change when the daemon is offline (push is best-effort)', async () => {
@@ -1539,5 +1572,181 @@ describe('POST /daemons/pool/runtime-probe', () => {
       403
     )
     expect(sent).toEqual([])
+  })
+})
+
+// ── auto-upgrade (daemon-auto-upgrade.md §3, §6) ─────────────────────────────
+
+type AutoUpgradeDto = DaemonDto & {
+  autoUpgrade: boolean
+  autoUpgradeSupported: boolean
+  lifecycleOp: (LifecycleOp & { trigger: string }) | null
+  lastAutoUpgrade: {
+    id: string
+    status: string
+    targetVersion: string | null
+    outcome: string | null
+    settledAt: string | null
+  } | null
+}
+
+/** A ControlSender spy for both the switch's config pushes and the lifecycle commands. */
+function autoUpgradeControl() {
+  const pushes: { id: string; keys: Record<string, unknown> }[] = []
+  const commands: { method: string; payload: unknown }[] = []
+  const ack: DaemonControlAck = { accepted: true, willDrainUntil: new Date().toISOString() }
+  const control = {
+    configPush: (id: string, keys: Record<string, unknown>) => void pushes.push({ id, keys }),
+    daemonUpgrade: async (_id: string, payload: unknown) => {
+      commands.push({ method: 'upgrade', payload })
+      return { kind: 'acked' as const, epoch: 1, ack }
+    },
+    daemonRestart: async (_id: string, payload: unknown) => {
+      commands.push({ method: 'restart', payload })
+      return { kind: 'acked' as const, epoch: 1, ack }
+    }
+  } as unknown as ControlSender
+  return { control, pushes, commands }
+}
+
+const releaseAt = (latestVersion: string) =>
+  ({
+    get: () => ({ channel: 'latest', latestVersion, availableVersions: [latestVersion] })
+  }) as unknown as DaemonReleaseResolver
+
+describe('PATCH /daemons/:id — auto-upgrade switch', () => {
+  it('turns it on for a daemon that advertises the feature, persists it and hot-pushes it', async () => {
+    await seedDaemon(['worktree-iso', DAEMON_AUTO_UPGRADE_FEATURE])
+    const { control, pushes } = autoUpgradeControl()
+    running = buildHttpApp(prisma, undefined, LIVE, control)
+
+    const before = (
+      await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })
+    ).json() as AutoUpgradeDto
+    expect(before).toMatchObject({ autoUpgrade: false, autoUpgradeSupported: true, lastAutoUpgrade: null })
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/daemons/${DAEMON}`,
+      payload: { autoUpgrade: true }
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.json() as AutoUpgradeDto).autoUpgrade).toBe(true)
+    expect((await prisma.daemon.findUnique({ where: { id: DAEMON } }))?.autoUpgrade).toBe(true)
+    expect(pushes).toEqual([{ id: DAEMON, keys: { 'upgrade.auto': true } }])
+  })
+
+  it('409s turning it on for a daemon without the feature, and writes nothing from the body', async () => {
+    await seedDaemon()
+    const { control, pushes } = autoUpgradeControl()
+    running = buildHttpApp(prisma, undefined, LIVE, control)
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/daemons/${DAEMON}`,
+      payload: { autoUpgrade: true, name: 'renamed' }
+    })
+    expect(res.statusCode).toBe(409)
+    const row = await prisma.daemon.findUnique({ where: { id: DAEMON } })
+    expect(row?.autoUpgrade).toBe(false)
+    expect(row?.name).not.toBe('renamed')
+    expect(pushes).toEqual([])
+    const read = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })).json() as AutoUpgradeDto
+    expect(read.autoUpgradeSupported).toBe(false)
+  })
+
+  it('always allows turning it off, even once the feature is gone', async () => {
+    await seedDaemon()
+    await prisma.daemon.update({ where: { id: DAEMON }, data: { autoUpgrade: true } })
+    running = buildHttpApp(prisma) // offline: the push is best-effort
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/daemons/${DAEMON}`,
+      payload: { autoUpgrade: false }
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.json() as AutoUpgradeDto).autoUpgrade).toBe(false)
+  })
+})
+
+describe('auto-upgrade lifecycle read model', () => {
+  it('keeps deferred rows out of lifecycleOp and reports the last automatic outcome', async () => {
+    await seedDaemon(['worktree-iso', DAEMON_AUTO_UPGRADE_FEATURE])
+    const ops = new PgDaemonLifecycleOpRepo(prisma)
+    const auto = (targetVersion: string) =>
+      ops.open({
+        daemonId: DaemonId(DAEMON),
+        op: 'upgrade',
+        trigger: 'auto',
+        targetVersion,
+        commandEpoch: 1n,
+        acceptedAt: new Date(),
+        deadline: future()
+      })
+    const succeeded = await auto('0.5.0')
+    await ops.settle(succeeded.id, 'succeeded', null, new Date())
+    const deferred = await auto('0.6.0')
+    await ops.recordProgress(
+      DaemonId(DAEMON),
+      1n,
+      { operationId: deferred.id, phase: 'failed', reason: 'busy' },
+      new Date()
+    )
+    expect((await ops.getById(deferred.id))?.status).toBe('deferred')
+
+    running = buildHttpApp(prisma)
+    const rows = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as AutoUpgradeDto[]
+    const row = rows.find((r) => r.daemonId === DAEMON)!
+    expect(row.lifecycleOp).toMatchObject({ id: succeeded.id, trigger: 'auto', status: 'succeeded' })
+    expect(row.lastAutoUpgrade).toMatchObject({ id: succeeded.id, status: 'succeeded', targetVersion: '0.5.0' })
+    expect(row.lastAutoUpgrade?.settledAt).toBeTruthy()
+
+    // A later manual op takes the badge, but not the last automatic outcome.
+    const manual = await ops.open({ daemonId: DaemonId(DAEMON), op: 'restart', commandEpoch: 1n, deadline: future() })
+    const detail = (
+      await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })
+    ).json() as AutoUpgradeDto
+    expect(detail.lifecycleOp).toMatchObject({ id: manual.id, trigger: 'manual', status: 'pending' })
+    expect(detail.lastAutoUpgrade?.id).toBe(succeeded.id)
+
+    // A deferred op stays readable by id.
+    const byId = await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}/lifecycle/${deferred.id}` })
+    expect(byId.json()).toMatchObject({ id: deferred.id, trigger: 'auto', status: 'deferred', outcome: 'busy' })
+  })
+})
+
+describe('manual upgrade below the announced release', () => {
+  it('turns auto-upgrade off and tells the daemon before sending the upgrade', async () => {
+    await seedDaemon(['worktree-iso', DAEMON_AUTO_UPGRADE_FEATURE])
+    await prisma.daemon.update({ where: { id: DAEMON }, data: { autoUpgrade: true } })
+    const { control, pushes, commands } = autoUpgradeControl()
+    running = buildHttpApp(prisma, undefined, LIVE, control, { daemonRelease: releaseAt('1.0.0') })
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/daemons/${DAEMON}/upgrade`,
+      payload: { version: '0.9.0' }
+    })
+    expect(res.statusCode).toBe(202)
+    expect(res.json()).toMatchObject({ trigger: 'manual', targetVersion: '0.9.0' })
+    expect((await prisma.daemon.findUnique({ where: { id: DAEMON } }))?.autoUpgrade).toBe(false)
+    expect(pushes).toEqual([{ id: DAEMON, keys: { 'upgrade.auto': false } }])
+    expect(commands.map((c) => c.method)).toEqual(['upgrade'])
+  })
+
+  it('leaves auto-upgrade on for an upgrade to the announced release or newer', async () => {
+    await seedDaemon(['worktree-iso', DAEMON_AUTO_UPGRADE_FEATURE])
+    await prisma.daemon.update({ where: { id: DAEMON }, data: { autoUpgrade: true } })
+    const { control, pushes } = autoUpgradeControl()
+    running = buildHttpApp(prisma, undefined, LIVE, control, { daemonRelease: releaseAt('1.0.0') })
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/daemons/${DAEMON}/upgrade`,
+      payload: { version: '1.0.0' }
+    })
+    expect(res.statusCode).toBe(202)
+    expect((await prisma.daemon.findUnique({ where: { id: DAEMON } }))?.autoUpgrade).toBe(true)
+    expect(pushes).toEqual([])
   })
 })

@@ -29,6 +29,7 @@ the picture it draws.
 - [daemon-detailed-design.md](designs/daemon-detailed-design.md) — The daemon: CLI, configuration, lifecycle, platform integration, CP interaction.
 - [control-plane-implementation.md](designs/control-plane-implementation.md) — The Control Plane: composition root, persistence, and the HTTP/WS edges.
 - [cli-daemon-split.md](designs/cli-daemon-split.md) — Why `agentconnect` and `agentconnect-daemon` are separate bins, and the contract between them.
+- [daemon-auto-upgrade.md](designs/daemon-auto-upgrade.md) — Per-daemon opt-in auto-upgrade: the CP announces the release, the daemon picks an idle window and rolls back a failed start.
 - [daemon-cp-ws-protocol.md](designs/daemon-cp-ws-protocol.md) — The daemon ↔ CP WebSocket wire specification.
 - [api-versioning.md](designs/api-versioning.md) — The REST `/api/v1` versioning policy.
 - [high-availability.md](designs/high-availability.md) — The availability contract and proposed active-active CP replication for uninterrupted business traffic during CP-only upgrades.
@@ -55,6 +56,8 @@ the picture it draws.
 ### Webchat and console
 
 - **(proposal)** [ahp-adoption.md](designs/ahp-adoption.md) — An open AHP v1 interface for third-party clients: separate legacy/AHP services, feature switches, interoperability, and gateway reuse.
+- **(proposal)** [ahp-repository-picker.md](designs/ahp-repository-picker.md) — Choose an agent's repository from an AHP client's folder picker: a virtual repository namespace over `resourceList`, `defaultDirectory`, and the chosen folder as the session's repository pin.
+- **(proposal)** [ahp-client-sign-in.md](designs/ahp-client-sign-in.md) — Browser sign-in for AHP clients such as VS Code through the CP OAuth server: an `ahp` scope, per-agent resource binding, and token refresh on a live connection.
 - [webchat-multi-agents.md](designs/webchat-multi-agents.md) — Multi-agent webchat conversations: roster, primary agent, activation.
 - [webchat-generated-images.md](designs/webchat-generated-images.md) — Runtime-generated workspace images, explicit publication through `shareFile`, and retained inline previews in webchat.
 - [webchat-side-panels.md](designs/webchat-side-panels.md) — The session-detail right dock.
@@ -89,6 +92,7 @@ the picture it draws.
 - [message-intake.md](designs/message-intake.md) — Record first, judge second, admit last: the channel record every IM message enters, per-agent admissions into sessions, the Decision gate's place in the ladder, the relay evaluation host, and retention.
 - [code-host-decisions.md](designs/code-host-decisions.md) — Decision routing across the agents watching a GitHub repository, judged once on an evaluation host, and By decision on Linear team conversations.
 - [channel-session-mode.md](designs/channel-session-mode.md) — The per-conversation session mode: whether a message opens a new session or appends to the conversation's one session.
+- [auto-session-mode.md](designs/auto-session-mode.md) — Proposed `auto` session mode: a coordinator session hands each channel-root message to a task, opens one, replies, or ignores it; tasks and delegated tasks become one concept.
 - [turn-final-context-refresh.md](designs/turn-final-context-refresh.md) — Turn-final context refresh and answer regeneration on IM turns.
 - [transcript-full-tool-body.md](designs/transcript-full-tool-body.md) — Complete tool-call bodies in transcripts.
 - [agent-authored-attachments.md](designs/agent-authored-attachments.md) — Outbound agent-authored files across platforms.
@@ -122,7 +126,7 @@ the picture it draws.
 - [agent-reachability-graph.md](designs/agent-reachability-graph.md) — Which agents can reach which: the reachability graph.
 - [preset-agents.md](designs/preset-agents.md) — Preset agents and guided onboarding.
 - [agent-assistant.md](designs/agent-assistant.md) — The AgentConnect MCP: system operations for AI tools.
-- [assistant-mode.md](designs/assistant-mode.md) — Assistant mode: one long conversation per place, one shared mind, external places detected by the platform, background tasks and follow-ups.
+- [assistant-mode.md](designs/assistant-mode.md) — Assistant mode: one long conversation per place, one shared mind, external places detected by the platform, background tasks and follow-ups; §5.18 proposes the work board that shows each coordinator the agent's open work.
 - [capability-requests.md](designs/capability-requests.md) — Capability requests: an agent asks for a setting, tool, repository, connection or secret it lacks, a person completes it in the console, and the conversation resumes.
 - [agent-capability-benchmark-harness.md](designs/agent-capability-benchmark-harness.md) — Add-on evaluation and harness neutrality.
 

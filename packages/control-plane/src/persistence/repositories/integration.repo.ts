@@ -68,7 +68,7 @@ import { toDbPlatform } from '../platform.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../../domain/ids.js'
-import { openConversationTrigger } from '../../domain/conversation-defaults.js'
+import { openConversationSessionMode, openConversationTrigger } from '../../domain/conversation-defaults.js'
 
 // The bot row plus its joined creator and current installs (for `agentIds` /
 // `inUseByAgentId`). A shareable bot fans out to many active integrations, so we
@@ -938,6 +938,7 @@ function toChannelRecord(
     key: c.key,
     url: c.url,
     isPrivate: c.isPrivate,
+    isCodeSession: c.isCodeSession,
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
     sessionMode: c.sessionMode as ChannelSessionMode,
@@ -994,20 +995,22 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       authoritative?: boolean
       removed?: string[]
       migrated?: readonly { from: string; to: string }[]
+      autoKinds?: readonly ConversationKind[]
     }
-  ): Promise<{ externalChanged: boolean; migrated?: boolean }> {
+  ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean }> {
     // Read first only to decide whether the spec needs a push; the register snapshot backs up a missed one.
-    const before = new Map(
+    const known = new Map(
       (
         await this.db.integrationChannel.findMany({
           where: { integrationId, channelId: { in: channels.map((c) => c.id) } },
-          select: { channelId: true, externalReason: true }
+          select: { channelId: true, externalReason: true, kind: true, sessionMode: true }
         })
-      ).map((row) => [row.channelId, PlaceExternalReason.safeParse(row.externalReason).data ?? null])
+      ).map((row) => [row.channelId, row])
     )
     // The spec carries only which places are external, so a reason turning sticky changes nothing there.
     const externalChanged = channels.some((c) => {
-      const stored = before.get(c.id) ?? null
+      const row = known.get(c.id)
+      const stored = row ? (PlaceExternalReason.safeParse(row.externalReason).data ?? null) : null
       return (mergePlaceExternalReason(stored, c.externalReason) === null) !== (stored === null)
     })
     if (opts?.authoritative !== false) {
@@ -1019,6 +1022,15 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     // retraction wins over a stale entry the reporter also happened to list.
     const removed = new Set(opts?.removed ?? [])
     const authoritative = opts?.authoritative !== false
+    // A new Auto row, or a room turning into a direct conversation with another mode, has to reach the daemon (auto-session-mode.md §3.2).
+    const sessionModeChanged = channels.some((c) => {
+      if (removed.has(c.id)) return false
+      const row = known.get(c.id)
+      const mode = openConversationSessionMode(c, opts?.autoKinds)
+      if (!row) return mode === 'auto'
+      const converts = (c.kind === 'im' || c.kind === 'mpim') && row.kind !== c.kind
+      return converts && row.sessionMode !== mode
+    })
     for (const c of channels) {
       if (removed.has(c.id)) continue
       // Which columns a re-report is allowed to overwrite. An absent name/isPrivate is
@@ -1032,15 +1044,18 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       // A per-conversation seed (§14.8) outranks the install-wide default (restricted 'off'), which outranks the open one (§14.9); all seed a NEW row only.
       const createTrigger: SeedTrigger =
         opts?.defaultTriggerByChannel?.get(c.id) ?? opts?.defaultTrigger ?? openConversationTrigger(c)
+      const createMode = openConversationSessionMode(c, opts?.autoKinds)
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
           ("integrationId", "channelId", "name", "spaceId", "space", "icon", "color", "key", "url",
-           "isPrivate", "kind", "trigger", "dmUserId", "externalReason", "firstSeenAt", "updatedAt")
+           "isPrivate", "isCodeSession", "kind", "trigger", "sessionMode", "dmUserId", "externalReason",
+           "firstSeenAt", "updatedAt")
         VALUES (
           ${integrationId}::uuid, ${c.id}, ${c.name ?? null}, ${c.spaceId ?? null}, ${c.space ?? null},
           ${c.icon ?? null}, ${c.color ?? null}, ${c.key ?? null}, ${c.url ?? null},
-          ${c.isPrivate ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
-          ${createTrigger}::"ChannelTrigger", ${c.dmUserId ?? null}, ${c.externalReason ?? null}, NOW(), NOW()
+          ${c.isPrivate ?? false}, ${c.isCodeSession ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
+          ${createTrigger}::"ChannelTrigger", ${createMode}::"ChannelSessionMode", ${c.dmUserId ?? null},
+          ${c.externalReason ?? null}, NOW(), NOW()
         )
         ON CONFLICT ("integrationId", "channelId") DO UPDATE SET
           -- Tri-state like the glyph, merged as mergePlaceExternalReason does: a sticky reason is never lifted or replaced.
@@ -1067,6 +1082,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
                        ELSE "integration_channel"."url" END,
           "isPrivate" = CASE WHEN ${setPrivate}::boolean THEN EXCLUDED."isPrivate"
                              ELSE "integration_channel"."isPrivate" END,
+          "isCodeSession" = CASE WHEN ${c.isCodeSession !== undefined}::boolean THEN EXCLUDED."isCodeSession"
+                                 ELSE "integration_channel"."isCodeSession" END,
           -- Learned once and never unlearned: an omitting report (a channel snapshot, an
           -- older reporter) must not blank the member a DM row is with.
           "dmUserId" = CASE WHEN ${c.dmUserId !== undefined}::boolean THEN EXCLUDED."dmUserId"
@@ -1094,6 +1111,12 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
             WHEN ${direct}::boolean AND "integration_channel"."kind" <> EXCLUDED."kind"
               THEN ${createTrigger}::"ChannelTrigger"
             ELSE "integration_channel"."trigger"
+          END,
+          -- The same conversion takes the direct kind's session mode, so a 1:1 DM never keeps a room's Auto.
+          "sessionMode" = CASE
+            WHEN ${direct}::boolean AND "integration_channel"."kind" <> EXCLUDED."kind"
+              THEN ${createMode}::"ChannelSessionMode"
+            ELSE "integration_channel"."sessionMode"
           END,
           -- The same conversion clears a By decision binding, or the trigger/binding CHECK fails.
           "decisionBinding" = CASE
@@ -1129,7 +1152,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         where: { integrationId, channelId: { in: [...removed] } }
       })
     }
-    return migrated ? { externalChanged, migrated } : { externalChanged }
+    return { externalChanged, ...(migrated ? { migrated } : {}), ...(sessionModeChanged ? { sessionModeChanged } : {}) }
   }
 
   // Move one conversation's operator-owned settings to its new platform id and drop the old row; false when there was nothing to move.
@@ -1173,7 +1196,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
   async upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { defaultTrigger?: SeedTrigger }
+    opts?: { defaultTrigger?: SeedTrigger; autoKinds?: readonly ConversationKind[] }
   ): Promise<IntegrationChannelRecord> {
     const row = await this.db.integrationChannel.upsert({
       include: CHANNEL_INCLUDE,
@@ -1189,11 +1212,13 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         key: conversation.key ?? null,
         url: conversation.url ?? null,
         isPrivate: conversation.isPrivate ?? false,
+        isCodeSession: conversation.isCodeSession ?? false,
         kind: conversation.kind ?? 'channel',
         dmUserId: conversation.dmUserId ?? null,
         externalReason: conversation.externalReason ?? null,
         // Restricted installs supply Off; otherwise the same open default replaceSnapshot seeds (§14.9).
-        trigger: opts?.defaultTrigger ?? openConversationTrigger(conversation)
+        trigger: opts?.defaultTrigger ?? openConversationTrigger(conversation),
+        sessionMode: openConversationSessionMode(conversation, opts?.autoKinds)
       },
       // Refresh only known metadata; trigger/agentId stay operator-owned.
       update: {
@@ -1206,6 +1231,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         ...(conversation.color !== undefined ? { color: conversation.color } : {}),
         ...(conversation.key !== undefined ? { key: conversation.key } : {}),
         ...(conversation.url !== undefined ? { url: conversation.url } : {}),
+        ...(conversation.isCodeSession !== undefined ? { isCodeSession: conversation.isCodeSession } : {}),
         ...(conversation.dmUserId ? { dmUserId: conversation.dmUserId } : {})
       }
     })

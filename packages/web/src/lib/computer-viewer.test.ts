@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ComputerViewerGrantDto } from '@/lib/api'
-import { ComputerViewerSession, keyToInput, type ViewerState } from './computer-viewer'
+import { ComputerViewerSession, keyToInput, mediaStats, type ViewerState } from './computer-viewer'
 
 const ID = '00000000-0000-4000-8000-000000000001'
 const status = {
@@ -256,6 +256,42 @@ describe('ComputerViewerSession', () => {
     ])
   })
 
+  it('says which candidates and checks a failed punch had', async () => {
+    const { fetchImpl } = relayFetch({ stun: true })
+    const stats = new Map<string, object>([
+      ['L', { id: 'L', type: 'local-candidate', candidateType: 'srflx', address: '198.51.100.7', port: 6000 }],
+      ['R', { id: 'R', type: 'remote-candidate', candidateType: 'srflx', address: '203.0.113.9', port: 4000 }],
+      [
+        'P',
+        {
+          id: 'P',
+          type: 'candidate-pair',
+          localCandidateId: 'L',
+          remoteCandidateId: 'R',
+          state: 'failed',
+          requestsSent: 9,
+          responsesReceived: 0,
+          requestsReceived: 2
+        }
+      ]
+    ])
+    const { createPeer } = peers(
+      (config) => (config.iceTransportPolicy === 'relay' ? 'connected' : 'failed'),
+      undefined,
+      stats
+    )
+    const { session } = open({
+      fetch: fetchImpl,
+      createPeer,
+      grant: grant({ stunUrls: ['stun:stun-0.example.com:3478'] })
+    })
+    await session.start()
+    expect(session.snapshot().notes).toEqual([
+      'Peer to peer: ICE failed\nBrowser: srflx 198.51.100.7:6000\nDesktop: srflx 203.0.113.9:4000\n' +
+        'Pairs (sent/answered/received): srflx → srflx 203.0.113.9:4000 failed 9/0/2'
+    ])
+  })
+
   it('keeps the ICE-lite direct path when the desktop was issued no STUN', async () => {
     const { calls, fetchImpl } = relayFetch({ stun: false })
     const { createPeer } = peers(() => 'connected')
@@ -296,6 +332,9 @@ describe('ComputerViewerSession', () => {
     })
     await vi.waitFor(() => expect(session.snapshot().frameUrl).toBeTruthy())
     expect(calls.some((c) => c.url.endsWith('/frame'))).toBe(true)
+    // The screenshot fallback measures itself: frames fetched, their bytes, and how long one took.
+    await vi.waitFor(() => expect(session.snapshot().stats?.fps).toBeGreaterThan(0), { timeout: 3000 })
+    expect(session.snapshot().stats).toMatchObject({ kbps: expect.any(Number), latencyMs: expect.any(Number) })
   })
 
   it('takes control, sends input over the DataChannel in order, and renews the token on it', async () => {
@@ -438,6 +477,31 @@ describe('ComputerViewerSession', () => {
       phase: 'error',
       error: 'only the computer’s allowed members can watch it'
     })
+  })
+})
+
+describe('mediaStats', () => {
+  const reports = (bytes: number, frames: number, extra: Record<string, unknown> = {}) => [
+    { id: 'v', type: 'inbound-rtp', kind: 'video', bytesReceived: bytes, framesDecoded: frames, ...extra },
+    { id: 't', type: 'transport', selectedCandidatePairId: 'p' },
+    { id: 'p', type: 'candidate-pair', currentRoundTripTime: 0.0414 }
+  ]
+
+  it('sets a baseline first, then reports rates over the time since the previous sample', () => {
+    const first = mediaStats(reports(1_000, 10), null, 0)
+    expect(first.stats).toEqual({ fps: null, kbps: null, latencyMs: 41 })
+    const second = mediaStats(reports(301_000, 40), first.sample, 1000)
+    expect(second.stats).toEqual({ fps: 30, kbps: 2400, latencyMs: 41 })
+  })
+
+  it('prefers the browser’s own frame rate, and waits out counters that restarted with a new stream', () => {
+    const first = mediaStats(reports(500_000, 900), null, 0)
+    expect(mediaStats(reports(1_000, 2, { framesPerSecond: 24 }), first.sample, 1000).stats).toEqual({
+      fps: 24,
+      kbps: null,
+      latencyMs: 41
+    })
+    expect(mediaStats([], null, 0).stats).toEqual({ fps: null, kbps: null, latencyMs: null })
   })
 })
 

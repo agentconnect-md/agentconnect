@@ -33,7 +33,6 @@ import type {
   BindRule,
   IntegrationSpec,
   IntegrationBindRule,
-  IntegrationSessionMode,
   IntegrationCoreEnvelope,
   ChatAuthority,
   McpServerSpec,
@@ -76,7 +75,7 @@ import {
   type MemoryDefinitionDeps
 } from './agentDefinitions.js'
 import { daemonSupportsAgent, encodeAgentSpecForPeer, requiredDaemonFeatures } from '../domain/daemon-features.js'
-import { encodeIntegrationSpecForPeer } from '../domain/decision-trigger-features.js'
+import { encodeIntegrationSpecForPeer, type ProjectedSessionMode } from '../domain/decision-trigger-features.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
@@ -287,17 +286,21 @@ function mutedChannelIds(channels: IntegrationChannelRecord[], gated: boolean): 
   return channels.filter((c) => c.trigger === 'off').map((c) => c.channelId)
 }
 
-/** Per-conversation session modes (channel-session-mode.md §4): sparse, but complete where `appendKinds` forces one session per place, so the daemon's append default for an unseen place never overrides a known row. */
+/** Per-conversation session modes (channel-session-mode.md §4): sparse, but complete where `appendKinds` forces one session per place, so the daemon's default for an unseen place never overrides a known row. */
 function sessionModeEntries(
   channels: IntegrationChannelRecord[],
   appendKinds: readonly AppendConversationKind[] = []
-): IntegrationSessionMode[] {
+): ProjectedSessionMode[] {
   return channels
-    .map((c) => ({ channel: c.channelId, mode: forcedAppend(c, appendKinds) ? ('append' as const) : c.sessionMode }))
+    .map((c): ProjectedSessionMode =>
+      forcedAppend(c, appendKinds)
+        ? { channel: c.channelId, mode: 'append', assistantPlace: true }
+        : { channel: c.channelId, mode: c.sessionMode }
+    )
     .filter((entry) => appendKinds.length > 0 || entry.mode !== 'createNew')
 }
 
-/** An assistant-mode place keys one session (assistant-mode.md §5.2) where its kind appends, unless a Decision gates it. */
+/** An assistant-mode place keys one session (assistant-mode.md §5.2) where its kind appends, unless a Decision gates it; the coordinator where its daemon reads `auto` (auto-session-mode.md §3.4). */
 function forcedAppend(c: IntegrationChannelRecord, appendKinds: readonly AppendConversationKind[]): boolean {
   return c.trigger !== 'decision' && appendKinds.includes(c.kind)
 }
@@ -725,15 +728,16 @@ export class Placement implements ReconcileService {
       .filter((local) => local.origin === 'cp' || orgIntegrationIds.has(local.integrationId))
       .map((local) => local.integrationId)
 
-    // Console-set finished-session retention — the daemon's reconnect baseline for
-    // the config/push hot update. Parsed defensively: an unexpected stored value
-    // (never written by the validated PATCH route) is simply omitted, which the
-    // daemon reads as "keep local config".
+    // Console-set retention, the reconnect baseline for the config/push hot update; an unexpected stored value is omitted ("keep local config").
     const sessionRetention = SessionRetentionSetting.safeParse(daemon.sessionRetention)
+    const workspaceRetention = SessionRetentionSetting.safeParse(daemon.workspaceRetention)
 
     return {
       routingEpoch: Number(daemon.routingEpoch), // re-issue same — convergence, not bump
       ...(sessionRetention.success ? { sessionRetention: sessionRetention.data } : {}),
+      ...(workspaceRetention.success ? { workspaceRetention: workspaceRetention.data } : {}),
+      // The console's auto-upgrade switch; the config/push `upgrade.auto` hot update rides on this baseline.
+      autoUpgrade: daemon.autoUpgrade,
       // Transport capabilities are connection-level and register.ts replaces
       // this neutral snapshot value immediately before register/ok is sent.
       serverFeatures: [],

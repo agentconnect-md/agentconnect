@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { ChatActions } from './agent.js'
+import { ExecutorStrategyName } from './executor.js'
 
 /** Capability requests (capability-requests.md): a CP advertising it serves `capability/*`, and a daemon advertising it answers `session/capability-settled`. */
 export const CAPABILITY_REQUESTS_FEATURE = 'capability-requests-v1'
@@ -8,6 +10,9 @@ export const CAPABILITY_REQUESTS_V2_FEATURE = 'capability-requests-v2'
 
 /** Phase 3: a CP advertising it takes `secret` asks on the `live` route and ships `AgentSpec.liveSecrets`; a daemon advertising it serves them through `agentconnect-secrets`. */
 export const CAPABILITY_REQUESTS_V3_FEATURE = 'capability-requests-v3'
+
+/** §4.12: a CP advertising it takes every agent-form field in `agent-settings` and the `cron` kind; a daemon advertising it offers them. */
+export const CAPABILITY_REQUESTS_V4_FEATURE = 'capability-requests-v4'
 
 /** The kinds a CP or daemon without `capability-requests-v2` knows. */
 export const CAPABILITY_V1_KINDS: readonly CapabilityKind[] = ['agent-settings', 'mcp-server', 'skill']
@@ -26,17 +31,41 @@ export const CAPABILITY_REASON_MAX = 280
 export const CAPABILITY_NOTE_MAX = 500
 
 /** What an agent may ask for (§4.2). */
-export const CapabilityKind = z.enum(['agent-settings', 'mcp-server', 'skill', 'repository', 'connection', 'secret'])
+export const CapabilityKind = z.enum([
+  'agent-settings',
+  'mcp-server',
+  'skill',
+  'repository',
+  'connection',
+  'secret',
+  'cron'
+])
 export type CapabilityKind = z.infer<typeof CapabilityKind>
 
-/** The `agent-settings` fields an agent may ask for (§4.2); workspace, visibility, sharing, integrations and triggers are not among them. */
+/** The `agent-settings` fields a CP or daemon without `capability-requests-v4` knows. */
+export const CAPABILITY_V1_SETTINGS_FIELDS = [
+  'model',
+  'reasoningEffort',
+  'fastMode',
+  'outputMode',
+  'permissionMode'
+] as const
+
+/** The `agent-settings` fields an agent may ask for (§4.2, §4.12): the agent form's plain values; workspace, visibility and sharing are not among them. */
 export const CapabilitySettingsWant = z
   .object({
     model: z.string().min(1).max(200).optional(),
     reasoningEffort: z.string().min(1).max(50).optional(),
     fastMode: z.boolean().optional(),
     outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).optional(),
-    permissionMode: z.string().min(1).max(100).optional()
+    permissionMode: z.string().min(1).max(100).optional(),
+    runtime: z.string().min(1).max(100).optional(),
+    execution: ExecutorStrategyName.optional(),
+    chatActions: ChatActions.optional(),
+    introduceOnJoin: z.boolean().optional(),
+    showFooter: z.boolean().optional(),
+    showStatusBar: z.boolean().optional(),
+    displayName: z.string().trim().min(1).max(100).optional()
   })
   .strict()
   .refine((want) => Object.values(want).some((value) => value !== undefined), { message: 'name at least one field' })
@@ -106,6 +135,26 @@ export const CapabilitySecretWant = z
   })
 export type CapabilitySecretWant = z.infer<typeof CapabilitySecretWant>
 
+/** A scheduled task (§4.12): a new cron of the agent, or with `cronId` a change to one of its own; `trigger` is the prompt it runs. */
+export const CapabilityCronWant = z
+  .object({
+    cronId: z.string().uuid().optional(),
+    name: z.string().trim().min(1).max(120).optional(),
+    schedule: z.string().trim().min(1).max(100),
+    timezone: z.string().min(1).max(64).optional(),
+    trigger: z.string().trim().min(1).max(2000)
+  })
+  .strict()
+export type CapabilityCronWant = z.infer<typeof CapabilityCronWant>
+
+/** Whether an ask needs a CP and daemon with `capability-requests-v4`: the `cron` kind, or a setting outside the v1 fields. */
+export function capabilityAskNeedsV4(ask: CapabilityAsk): boolean {
+  if (ask.kind === 'cron') return true
+  if (ask.kind !== 'agent-settings') return false
+  const v1: readonly string[] = CAPABILITY_V1_SETTINGS_FIELDS
+  return Object.entries(ask.want).some(([field, value]) => value !== undefined && !v1.includes(field))
+}
+
 /** The kind with its validated `want`; unknown fields are refused, not ignored (§4.2). */
 export const CapabilityAsk = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('agent-settings'), want: CapabilitySettingsWant }),
@@ -113,7 +162,8 @@ export const CapabilityAsk = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('skill'), want: CapabilitySkillWant }),
   z.object({ kind: z.literal('repository'), want: CapabilityRepositoryWant }),
   z.object({ kind: z.literal('connection'), want: CapabilityConnectionWant }),
-  z.object({ kind: z.literal('secret'), want: CapabilitySecretWant })
+  z.object({ kind: z.literal('secret'), want: CapabilitySecretWant }),
+  z.object({ kind: z.literal('cron'), want: CapabilityCronWant })
 ])
 export type CapabilityAsk = z.infer<typeof CapabilityAsk>
 
@@ -139,6 +189,11 @@ export function capabilityTarget(ask: CapabilityAsk): string {
     }
     case 'secret':
       return `${ask.want.use.route}:${ask.want.use.route === 'mcp-header' ? ask.want.use.server : ''}:${ask.want.name}`
+    // A change to one cron is keyed by it; a new one by its schedule and zone, so a reworded prompt joins the open request.
+    case 'cron':
+      return ask.want.cronId
+        ? `cron:${ask.want.cronId}`
+        : `new:${ask.want.schedule}:${ask.want.timezone ?? ''}:${(ask.want.name ?? '').toLowerCase()}`
   }
 }
 

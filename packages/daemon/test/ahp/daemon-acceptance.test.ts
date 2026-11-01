@@ -10,6 +10,7 @@ import { AhpClient } from '@microsoft/agent-host-protocol/client'
 import { WebSocketTransport } from '@microsoft/agent-host-protocol/ws'
 import {
   ActionType,
+  AhpErrorCodes,
   chatReducer,
   ChatInputAnswerState,
   ChatInputAnswerValueKind,
@@ -18,9 +19,11 @@ import {
   ResponsePartKind,
   ToolCallConfirmationReason,
   ToolCallStatus,
+  ToolResultContentType,
   type ActionEnvelope,
   type ChatAction,
-  type ChatState
+  type ChatState,
+  type RootState
 } from '@microsoft/agent-host-protocol'
 import type {
   AhpAttachmentAuthorization,
@@ -266,28 +269,59 @@ async function connect(url: string) {
     seq = snapshot.fromSeq
     for (const envelope of buffered.splice(0)) apply(envelope)
   }
-  const send = (turnId: string, text: string) =>
+  const send = (turnId: string, text: string, extra: Partial<ChatState['turns'][number]['message']> = {}) =>
     client.dispatch(chat, {
       type: ActionType.ChatTurnStarted,
       turnId,
       startedAt: new Date().toISOString(),
-      message: { text, origin: { kind: MessageKind.User } }
+      message: { text, origin: { kind: MessageKind.User }, ...extra }
     })
   return { client, close, subscribe, send, state: () => state, sequence: () => seq, closed: () => closed }
 }
 
 describe('actual Daemon AHP acceptance with official SDK and an ACP process', () => {
+  it('shows a runtime edit as a file edit whose snapshots read back from the transcript', async () => {
+    const files = scaffold()
+    const host = await boot(files.root, registry())
+    const viewer = await host.connect()
+    await viewer.client.initialize({ clientId: 'viewer', protocolVersions: ['1.0.0'] })
+    await viewer.client.request('createSession', { channel: uri, provider: agentId })
+    await viewer.subscribe()
+    viewer.send(randomUUID(), '[ahp:edit]')
+    await expect.poll(() => viewer.state()?.turns.length, WAIT).toBe(1)
+    const tool = viewer
+      .state()!
+      .turns[0]!.responseParts.find(
+        (part) => part.kind === ResponsePartKind.ToolCall && part.toolCall.toolCallId === 'runtime:fixture-edit'
+      )
+    if (tool?.kind !== ResponsePartKind.ToolCall || tool.toolCall.status !== ToolCallStatus.Completed)
+      throw new Error('Missing completed edit')
+    const edit = tool.toolCall.content?.find((item) => item.type === ToolResultContentType.FileEdit)
+    if (edit?.type !== ToolResultContentType.FileEdit) throw new Error('Missing file edit')
+    expect(edit).toMatchObject({ after: { uri: 'file:///work/fixture.txt' }, diff: { added: 1, removed: 1 } })
+    const read = (contentUri: string) =>
+      viewer.client.request('resourceRead', { channel: 'ahp-root://', uri: contentUri })
+    expect(await read(edit.before!.content.uri)).toMatchObject({ data: 'old line\n', encoding: 'utf-8' })
+    expect(await read(edit.after!.content.uri)).toMatchObject({ data: 'new line\n', encoding: 'utf-8' })
+    await expect(
+      read(edit.after!.content.uri.replace(Buffer.from(uri).toString('hex'), Buffer.from(`${uri}x`).toString('hex')))
+    ).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
+    expect(viewer.closed()).toBe(false)
+  })
+
   it('creates, approves, answers, reconnects, cancels and cold-resumes without duplicate execution', async () => {
     const files = scaffold()
     const metadata = registry()
     const host = await boot(files.root, metadata)
     const first = await host.connect()
     const second = await host.connect()
-    await first.client.initialize({
+    const initialized = await first.client.initialize({
       clientId: 'first',
       protocolVersions: ['1.0.0'],
       initialSubscriptions: ['ahp-root://']
     })
+    const root = initialized.snapshots?.find((snapshot) => snapshot.resource === 'ahp-root://')?.state as RootState
+    expect(root.agents[0]?.models).toHaveLength(1)
     await second.client.initialize({ clientId: 'second', protocolVersions: ['1.0.0'] })
     await first.client.request('createSession', { channel: uri, provider: agentId })
     expect(
@@ -295,8 +329,18 @@ describe('actual Daemon AHP acceptance with official SDK and an ACP process', ()
     ).toContain(uri)
     await first.subscribe()
     await second.subscribe()
+    first.client.dispatch(chat, {
+      type: ActionType.ChatDraftChanged,
+      draft: { text: 'typing', origin: { kind: MessageKind.User } }
+    })
+    await expect.poll(() => second.state()?.draft?.text, WAIT).toBe('typing')
     const approval = randomUUID()
-    first.send(approval, '[ahp:approve]')
+    // VS Code's shape: its own model picker, custom agent and editor context ride along and are ignored.
+    first.send(approval, '[ahp:approve]', {
+      model: { id: 'copilot/gpt' },
+      agent: { uri: 'file:///agents/review.agent.md' },
+      attachments: [{ type: 'resource', label: 'main.ts', uri: 'file:///src/main.ts' } as never]
+    })
     await expect
       .poll(
         () =>
@@ -315,6 +359,7 @@ describe('actual Daemon AHP acceptance with official SDK and an ACP process', ()
         (part) => part.kind === ResponsePartKind.ToolCall && part.toolCall.status === ToolCallStatus.PendingConfirmation
       )!
     if (permission.kind !== ResponsePartKind.ToolCall) throw new Error('Missing actual permission request')
+    expect(second.state()!.activeTurn!.message).toEqual({ text: '[ahp:approve]', origin: { kind: MessageKind.User } })
     second.client.dispatch(chat, {
       type: ActionType.ChatToolCallConfirmed,
       turnId: approval,

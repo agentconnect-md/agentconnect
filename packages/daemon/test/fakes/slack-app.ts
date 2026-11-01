@@ -27,6 +27,7 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
       event: () => {},
       action: () => {},
       shortcut: () => {},
+      command: () => {},
       view: () => {},
       client: {
         views: { open: ok, update: ok, publish: ok },
@@ -72,9 +73,10 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           info: async () => ({}),
           conversations: async () => ({ channels: [] })
         },
-        reactions: { add: ok, get: async () => ({ message: { reactions: [] } }) },
+        reactions: { add: ok, remove: ok, get: async () => ({ message: { reactions: [] } }) },
         canvases: {
           create: async () => ({ canvas_id: 'F_FAKE_CANVAS' }),
+          getContent: async () => ({ content: '' }),
           edit: ok,
           sections: { lookup: async () => ({ sections: [] }) }
         },

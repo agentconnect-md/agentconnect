@@ -64,6 +64,10 @@ describe('AHP rollout and carrier boundaries', () => {
     expect(RdAhpAuthorize.safeParse({ attachmentId: id, authorization, handshake }).success).toBe(false)
     expect(RcVerify.parse({ kind: 'ahp-client-key', credential: 'key', agentId: id }).kind).toBe('ahp-client-key')
     expect(RcVerify.safeParse({ kind: 'ahp-client-key', credential: 'key' }).success).toBe(false)
+    const resource = `https://relay.example.test/ahp/agents/${id}`
+    expect(RcVerify.parse({ kind: 'ahp-client-key', credential: 'key', agentId: id, resource })).toMatchObject({
+      resource
+    })
   })
 })
 

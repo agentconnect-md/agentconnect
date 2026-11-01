@@ -47,6 +47,9 @@ const HANDOUT_MIN_MS = 10 * 60 * 1000
 /** Repo-level denials are retried after this — the console-authorization lag. */
 const REPO_DENIAL_TTL_MS = 60 * 1000
 
+/** Pause before the single re-ask after a retryable INTERNAL mint failure. */
+const INTERNAL_RETRY_DELAY_MS = 250
+
 /** The baseline scope set behind `GH_TOKEN` (P2.5 write-back): git contents plus the
  *  issue/PR scopes `gh issue comment` / `gh pr comment` need. The CP clamps
  *  every capability — the workspace repo to the agent's gitAccess, an
@@ -457,10 +460,24 @@ export class GitCredentialCache {
     for (const key of [...this.refreshPosts]) if (key.includes(marker)) this.refreshPosts.delete(key)
   }
 
+  /** A retryable INTERNAL answer is a CP-side transient (e.g. the installation changed mid-mint):
+   *  the CP replied promptly, so one more ask fits inside the helper's IPC timeout. */
+  private async requestWithRetry(payload: Parameters<GitCredentialCacheDeps['request']>[0]): Promise<GitCredGrant> {
+    try {
+      return await this.deps.request(payload)
+    } catch (e) {
+      const { code, retryable } = e as { code?: string; retryable?: boolean }
+      if (code !== 'INTERNAL' || retryable !== true) throw e
+      this.deps.log.warn(`gitcred: transient mint failure for agent ${payload.agentId} — retrying once`)
+      await new Promise((resolve) => setTimeout(resolve, INTERNAL_RETRY_DELAY_MS))
+      return await this.deps.request(payload)
+    }
+  }
+
   private async fetch(key: string, payload: Parameters<GitCredentialCacheDeps['request']>[0]): Promise<Entry> {
     let grant: GitCredGrant
     try {
-      grant = await this.deps.request(payload)
+      grant = await this.requestWithRetry(payload)
     } catch (e) {
       const code = (e as { code?: string }).code
       if (code === 'SCOPE_DENIED') {

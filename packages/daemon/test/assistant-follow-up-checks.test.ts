@@ -48,6 +48,8 @@ function scaffold(agents: { id: string; assistantMode?: Record<string, unknown>;
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      // An ordinary session delegates only with the Auto switch off (auto-session-mode.md §5.1).
+      features: { autoSessionMode: false },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )
@@ -690,10 +692,15 @@ describe('a follow-up owned by its place', () => {
       {
         taskId: item.taskKey,
         kind: 'follow-up',
-        label: 'Watch the release build',
+        title: 'Watch the release build',
         state: 'waiting',
+        running: false,
+        // A follow-up works for whoever asked for it (auto-session-mode.md §5.2).
+        owner: 'U0ALICE',
         startedAt: expect.any(String),
+        lastActivity: expect.any(String),
         nextCheck: new Date(item.nextCheck!).toISOString(),
+        summary: 'Alice asked to hear when the release is out.',
         handedBackResult: false
       }
     ])

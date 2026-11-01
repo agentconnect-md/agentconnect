@@ -59,16 +59,23 @@ export interface ChatRefusal {
   thread?: string
 }
 
-/**
- * What a reaction placed on an INBOUND message means.
- *
- * Core names the intent; the platform picks the glyph, because a reaction
- * vocabulary is platform vocabulary — Slack takes a shortcode (`eyes`), Telegram
- * a literal emoji from a fixed allowed set, Lark an `emoji_type` key (`GLANCE`).
- * Naming the glyph in core would put a platform's alphabet where core can read
- * it; naming the intent keeps the mapping inside the module that owns it.
- */
-export type PlatformReactionIntent = 'seen'
+/** What a reaction on an INBOUND message means (`seen` 👀, `triaging` 🤔); core names the intent and each platform picks its glyph. */
+export type PlatformReactionIntent = 'seen' | 'triaging'
+
+/** The message a task is opened for, where a platform may give the task a conversation of its own (auto-session-mode.md §6.8). */
+export interface TaskPlaceOrigin {
+  agentId: string
+  channel: string
+  /** The platform's own id of the message, as its thread names it. */
+  messageId: string
+  isDm: boolean
+}
+
+/** A task's conversation of its own: a room linked to the message it opened for, whose one session keys on `thread`. */
+export interface TaskPlace {
+  channel: string
+  thread: string
+}
 
 /** One conversation as the platform describes it. Members beyond `id` are
  *  optional because no platform reports all of them (`isMpim`/`user` are Slack's;
@@ -99,6 +106,7 @@ export interface PlatformChannelRef {
   id: string
   name?: string
   isPrivate?: boolean
+  isCodeSession?: boolean
   /** Whether the bot is in it, where a listing also names conversations it is not in (Slack's public channels). */
   joined?: boolean
   /** Detected external on a membership listing (assistant-mode.md §5.3); null when the listing found no share. */
@@ -319,6 +327,8 @@ export interface PlatformCanvasEdit {
  * not of contract, and belongs with the registry.
  */
 export interface PlatformConnection {
+  /** Resolve provider-owned conversation coordinates before admission, for either ingress transport. */
+  prepareInboundMessage?(msg: NormalizedMessage): Promise<void>
   // ── 1. transport lifecycle ──
   start(): Promise<void>
   stop(): Promise<void>
@@ -383,6 +393,10 @@ export interface PlatformConnection {
    *  normalized `channel`: only the native pair addresses a Discord message inside a
    *  thread, whose normalized channel is the parent. */
   react?(container: string, messageId: string, intent: PlatformReactionIntent): Promise<void>
+  /** Take back this bot's reaction for `intent` on an inbound message, as `triaging` ends with its turn (auto-session-mode.md §4.4); best-effort, never throws. */
+  unreact?(container: string, messageId: string, intent: PlatformReactionIntent): Promise<void>
+  /** Open a conversation of its own for a task the coordinator opens for one message, linked to it (a Slack code channel, §6.8); undefined or a rejection keeps the task in the message's thread. */
+  openTaskPlace?(origin: TaskPlaceOrigin, title: string): Promise<TaskPlace | undefined>
   /** Place an ARBITRARY reaction, for the agent-callable tool rather than turn chrome.
    *
    *  Distinct from {@link react} on purpose: that one takes an INTENT because core names it

@@ -183,6 +183,7 @@ export function mergeManagedSlackManifest(
     display_information: { ...managedDisplay, ...currentDisplay },
     features: {
       ...currentFeatures,
+      code_channels: { ...asRecord(currentFeatures.code_channels), ...asRecord(managedFeatures.code_channels) },
       bot_user: { ...managedBotUser, ...currentBotUser, always_online: true },
       app_home: {
         ...managedAppHome,

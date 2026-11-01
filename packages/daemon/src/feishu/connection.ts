@@ -46,7 +46,10 @@ import type {
 } from '../platforms/contract.js'
 
 /** Core names the intent; Feishu's alphabet is `emoji_type` keys — `GLANCE` IS 👀. */
-const FEISHU_REACTION_EMOJI_TYPES: Record<PlatformReactionIntent, string> = { seen: 'GLANCE' }
+const FEISHU_REACTION_EMOJI_TYPES: Record<PlatformReactionIntent, string> = { seen: 'GLANCE', triaging: 'THINKING' }
+
+/** How many recent reactions a connection remembers the id of, which is what taking one back needs. */
+const FEISHU_REACTION_MEMORY = 1000
 
 /**
  * §Feishu / Lark edge unit. Mirrors discord/connection.ts but over the official
@@ -215,8 +218,10 @@ export interface FeishuApi {
   patchCardMessage(messageId: string, card: Record<string, unknown>): Promise<void>
   /** im.message.delete (retract an unfinished/no-response card). */
   deleteMessage(messageId: string): Promise<void>
-  /** im.messageReaction.create — `emojiType` is a Feishu emoji KEY, not a glyph. */
-  addReaction(messageId: string, emojiType: string): Promise<void>
+  /** im.messageReaction.create — `emojiType` is a Feishu emoji KEY, not a glyph. Returns the reaction's id when known. */
+  addReaction(messageId: string, emojiType: string): Promise<{ reactionId?: string }>
+  /** im.messageReaction.delete — by the id its create returned. */
+  deleteReaction(messageId: string, reactionId: string): Promise<void>
   /** im.message.update (in-place text edit). */
   updateText(messageId: string, text: string): Promise<void>
   /** im.messageResource.get(...).writeFile(destPath) — auth'd resource download. */
@@ -464,10 +469,15 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
       await client.im.message.delete({ path: { message_id: messageId } })
     },
     async addReaction(messageId, emojiType) {
-      await client.im.messageReaction.create({
+      const res = await client.im.messageReaction.create({
         path: { message_id: messageId },
         data: { reaction_type: { emoji_type: emojiType } }
       })
+      const reactionId = res?.data?.reaction_id
+      return reactionId ? { reactionId } : {}
+    },
+    async deleteReaction(messageId, reactionId) {
+      await client.im.messageReaction.delete({ path: { message_id: messageId, reaction_id: reactionId } })
     },
     async updateText(messageId, text) {
       await client.im.message.update({
@@ -794,6 +804,8 @@ export class FeishuConnection implements PlatformConnection {
   private permissionNoticeSent = false
   private permissionNoticeInFlight = false
   private permissionNoticeRetryAt = new Map<string, number>()
+  /** The ids of this app's recent reactions by message and intent, oldest first. */
+  private reactionIds = new Map<string, Promise<string | undefined>>()
   /** The appId this connection authenticated with (used to detect a swap). */
   readonly appId: string
   /** The gateway region this connection dialed (feishu.cn vs larksuite.com). Reconcile
@@ -1386,15 +1398,35 @@ export class FeishuConnection implements PlatformConnection {
     // intentionally empty
   }
 
-  /** Turn-start acknowledgement on the message that fired the turn — the only inbound
-   *  activity signal Feishu has, since it exposes no typing indicator. An app whose
-   *  granted scopes predate message reactions degrades to nothing visible. */
+  /** A reaction on an inbound message, Feishu's only activity signal; an app whose scopes predate reactions shows nothing. */
   async react(channel: string, messageId: string, intent: PlatformReactionIntent): Promise<void> {
+    const placed = this.handle.api.addReaction(messageId, FEISHU_REACTION_EMOJI_TYPES[intent]).then(
+      ({ reactionId }) => reactionId,
+      (err: unknown) => {
+        this.rememberPermissionIssue(err, channel)
+        this.deps.log?.debug(`feishu: reaction failed (id=${messageId}): ${(err as Error).message}`)
+        return undefined
+      }
+    )
+    const key = `${messageId}\u001f${intent}`
+    this.reactionIds.delete(key)
+    this.reactionIds.set(key, placed)
+    const oldest = this.reactionIds.size > FEISHU_REACTION_MEMORY ? this.reactionIds.keys().next().value : undefined
+    if (oldest !== undefined) this.reactionIds.delete(oldest)
+    await placed
+  }
+
+  /** Take back the reaction this connection placed for `intent`, by the id its create returned. */
+  async unreact(_channel: string, messageId: string, intent: PlatformReactionIntent): Promise<void> {
+    const key = `${messageId}\u001f${intent}`
+    const placed = this.reactionIds.get(key)
+    this.reactionIds.delete(key)
+    const reactionId = await placed
+    if (!reactionId) return
     try {
-      await this.handle.api.addReaction(messageId, FEISHU_REACTION_EMOJI_TYPES[intent])
+      await this.handle.api.deleteReaction(messageId, reactionId)
     } catch (err) {
-      this.rememberPermissionIssue(err, channel)
-      this.deps.log?.debug(`feishu: reaction failed (id=${messageId}): ${(err as Error).message}`)
+      this.deps.log?.debug(`feishu: removing a reaction failed (id=${messageId}): ${(err as Error).message}`)
     }
   }
 

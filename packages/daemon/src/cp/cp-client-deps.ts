@@ -34,6 +34,7 @@ import { POD_TEMPLATE_HASH_ENV } from '@agentconnect.md/protocol'
 import { ClientTransport, systemClock } from '@agentconnect.md/connection'
 import { CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome, type CpClient, type CpClientDeps } from './client.js'
 import type { ConfigApply } from './config-apply.js'
+import type { AutoUpgradeCpHooks } from '../lifecycle/auto-upgrader.js'
 import { createSessionReader } from './session-reader.js'
 import { createWorkspaceReader, type WorkspaceFilesResolver } from './workspace-reader.js'
 import { createWorkspaceScope } from './workspace-scope.js'
@@ -155,6 +156,8 @@ export interface CpClientReadyHost {
   noteProjector(): CodeHostNoteProjector
   /** The §15 review outbox, for the control-plane frames a finished attempt still owes. */
   codeHostReviews(): { reconcilePending(): Promise<void> }
+  /** Auto-upgrade trial settlement on READY and its register-rejection rollback. */
+  autoUpgrade(): AutoUpgradeCpHooks | undefined
 }
 
 /** Tenant lookups for agent-scoped frames, plus the duty seam the heartbeat carries. */
@@ -295,6 +298,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // Only ever called on the identity path (client.ts states why); the diagnosis is logged there.
     // Non-zero: a failure, not a planned lifecycle exit, so no supervisor treats it as a clean stop.
     onAuthFatal: () => host.exitFatal(1),
+    onRegisterRejected: (err) => host.autoUpgrade()?.onRegisterRejected(err),
     ...(host.bootstrapUpgradeCapable()
       ? {
           onBootstrapUpgrade: (lifecycle: BootstrapLifecycle) =>
@@ -384,6 +388,11 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       void host.drainSessionPurges()
       // ...and every terminal cron outcome the CP has not ACKed, such as a completion that raced the drop.
       void host.cronReportOutbox().drainReports()
+      // READY is an auto-upgrade trial's success signal, and where a rollback is reported.
+      void host
+        .autoUpgrade()
+        ?.onCpReady()
+        .catch((err) => host.log().warn(`cp: auto-upgrade ready hook failed (${(err as Error).message})`))
       // ...and each CP cron's stored last-run stamp — fires while the CP was
       // unreachable would otherwise never land (latest-wins upsert, so
       // re-asserting an already-known stamp is a no-op).

@@ -5,6 +5,8 @@ import {
   COMPUTER_VIEWER_API_PREFIX,
   computerLeaseHolderName,
   RELAY_COMPUTER_MAX_BODY_BYTES,
+  type ComputerFilesMode,
+  type ComputerShellMode,
   type CrHttpRequest,
   type CrHttpResponse
 } from '@agentconnect.md/protocol/computer'
@@ -17,6 +19,8 @@ export interface McpPrincipal {
   viewOnly: boolean
   // Set for an agent session's channel token: the agent daemon behind it reports how each call was approved.
   agent?: { agentId: string; sessionId: string }
+  // The command-line tier the token allows (§5.7); absent for a local client token or an older CP's token.
+  commandLineGrant?: { shell: ComputerShellMode; files: ComputerFilesMode }
 }
 
 const bearer = (authorization: string | undefined): string | undefined =>
@@ -36,7 +40,8 @@ export function channelPrincipal(
   return {
     client: computerLeaseHolderName({ agentId: claims.agt, sessionId: claims.ses }),
     viewOnly: claims.mode === 'view',
-    agent: { agentId: claims.agt, sessionId: claims.ses }
+    agent: { agentId: claims.agt, sessionId: claims.ses },
+    ...(claims.sh || claims.fs ? { commandLineGrant: { shell: claims.sh ?? 'off', files: claims.fs ?? 'off' } } : {})
   }
 }
 

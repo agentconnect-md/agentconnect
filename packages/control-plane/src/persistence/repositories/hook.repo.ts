@@ -12,6 +12,7 @@ import {
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   RETRYABLE_HOOK_DELIVERY_REASONS,
+  hookReviewEventSettles,
   isGithubPullRequestRevisionEvent,
   isRetryableHookDeliveryReason,
   normalizeGitUrl,
@@ -101,6 +102,7 @@ function toRecord(h: HookWithUsers): HookRecord {
     events: h.events,
     commentFamilies: h.commentFamilies as GithubCommentFamily[],
     labelFilter: h.labelFilter,
+    skipDrafts: h.skipDrafts,
     mentionOnly: h.mentionOnly,
     configRevision: h.configRevision,
     dispatchRevision: h.dispatchRevision,
@@ -523,6 +525,7 @@ export class PgHookRepo implements HookRepo {
       events: input.events ?? [],
       commentFamilies: input.commentFamilies ?? [],
       labelFilter: input.labelFilter ?? [],
+      skipDrafts: input.skipDrafts ?? false,
       mentionOnly: input.mentionOnly ?? false,
       targetPlatform: toDbPlatform(input.targetPlatform ?? 'slack'),
       targetChannel: input.targetChannel ?? null,
@@ -1634,7 +1637,12 @@ export class PgHookRepo implements HookRepo {
       }
       if (
         r.state === 'submitted' &&
-        (!r.reviewId || !r.event || !r.verdict || !r.commitId || run.headSha !== r.commitId)
+        (!r.reviewId ||
+          !r.event ||
+          !r.verdict ||
+          !r.commitId ||
+          run.headSha !== r.commitId ||
+          !hookReviewEventSettles(run.reviewEvent, r.event))
       )
         return false
       const updated = await tx.hookRun.updateMany({
@@ -1642,7 +1650,7 @@ export class PgHookRepo implements HookRepo {
           id: run.id,
           reviewAttemptId: r.attemptId,
           reviewAttemptState: { in: ['reserved', 'blocked'] },
-          ...(r.state === 'submitted' ? { reviewEvent: r.event, verdict: r.verdict } : {})
+          ...(r.state === 'submitted' ? { reviewEvent: run.reviewEvent, verdict: r.verdict } : {})
         },
         data: {
           reviewAttemptState: r.state,
@@ -1997,7 +2005,7 @@ export class PgHookRepo implements HookRepo {
               !r.reviewEvent ||
               !r.verdict ||
               !r.reviewCommitId ||
-              run.reviewEvent !== r.reviewEvent ||
+              !hookReviewEventSettles(run.reviewEvent, r.reviewEvent) ||
               run.verdict !== r.verdict ||
               run.headSha !== r.reviewCommitId ||
               (run.reviewId !== null && run.reviewId !== r.reviewId) ||

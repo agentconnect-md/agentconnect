@@ -148,6 +148,56 @@ describe('AHP checkpoint integration', () => {
     })
   })
 
+  it('keeps only the latest bounded plan snapshot on the session channel', async () => {
+    const { state } = await fixture()
+    await state.add(binding)
+    const plan = (turnId: string, entries: { content: string; status: string }[]) =>
+      state.output('physical', { conversationId: 'c', turnId, index: 1, event: { kind: 'plan', entries } })
+    await plan('first', [{ content: 'Read', status: 'completed' }])
+    await plan('second', [
+      { content: 'x'.repeat(600), status: 'in_progress' },
+      ...Array.from({ length: 60 }, (_, i) => ({ content: `step ${i}`, status: 'pending' }))
+    ])
+    const fields = (state.snapshot(binding.sessionUri) as { _meta: Record<string, { plan: unknown }> })._meta[
+      'agentconnect.md'
+    ]!.plan as { turnId: string; entries: { content: string }[] }
+    expect(fields.turnId).toBe('second')
+    expect(fields.entries).toHaveLength(50)
+    expect(fields.entries[0]!.content).toHaveLength(500)
+    expect(JSON.stringify(state.snapshot(chat))).not.toContain('step 1')
+  })
+
+  it('keeps capability request cards on their turn and settles them in place', async () => {
+    const { state } = await fixture()
+    await state.add(binding)
+    const card = (requestId: string, generation = 1) => ({
+      kind: 'capability_request' as const,
+      requestId,
+      generation,
+      summary: `Add ${requestId}`,
+      reason: 'Needed',
+      link: `https://console.example.test/requests/${requestId}`
+    })
+    const send = (turnId: string, event: Parameters<typeof state.output>[1]['event']) =>
+      state.output('physical', { conversationId: 'c', turnId, index: 1, event })
+    const cards = () =>
+      (state.snapshot(binding.sessionUri) as { _meta: Record<string, { capabilities: unknown }> })._meta[
+        'agentconnect.md'
+      ]!.capabilities as Array<{ turnId: string; requestId: string; generation: number; resolved?: unknown }>
+    await send('first', card('a'))
+    await send('later', { kind: 'capability_request_resolved', requestId: 'a', status: 'declined', text: 'Declined' })
+    expect(cards()).toEqual([
+      expect.objectContaining({ turnId: 'first', resolved: { status: 'declined', text: 'Declined' } })
+    ])
+    await send('later', card('a', 2))
+    expect(cards()).toEqual([expect.objectContaining({ turnId: 'first', generation: 2 })])
+    expect(cards()[0]).not.toHaveProperty('resolved')
+    await send('first', { kind: 'capability_request_resolved', requestId: 'a', status: 'completed', text: 'Done' })
+    for (let i = 0; i < 16; i++) await send('next', card(`r${i}`))
+    expect(cards()).toHaveLength(16)
+    expect(cards().map((item) => item.requestId)).not.toContain('a')
+  })
+
   it('continues from the last archive page into existing transcript history', async () => {
     const { checkpoints } = await fixture()
     const value: ChatState = {

@@ -19,11 +19,46 @@ import {
   type Turn
 } from '@microsoft/agent-host-protocol'
 import type { MaskedChatEvent } from '../session/chat-events.js'
-import type { ChatOutput } from '../session/chat-turn.js'
+import type { ChatEvent, ChatOutput } from '../session/chat-turn.js'
 import type { AhpActionJournal } from './action-journal.js'
 import { AhpChatProjection } from './chat-projection.js'
 import type { AhpCatalogNotification } from './connection.js'
 import { AhpAppsProjection, type AhpAppEntry } from './apps.js'
+
+const MAX_PLAN_ENTRIES = 50
+const MAX_PLAN_TEXT = 500
+const MAX_CAPABILITY_CARDS = 16
+
+type CapabilityEvent = Extract<ChatEvent, { kind: 'capability_request' | 'capability_request_resolved' }>
+interface CapabilityCard {
+  turnId: string
+  requestId: string
+  generation: number
+  summary: string
+  reason: string
+  link: string
+  resolved?: { status: string; text: string }
+}
+
+// Capability request cards ride session metadata; the browser declines or follows the link over REST as legacy does.
+function capabilityCards(previous: unknown, turnId: string, event: CapabilityEvent): CapabilityCard[] {
+  const cards = Array.isArray(previous) ? (structuredClone(previous) as CapabilityCard[]) : []
+  const index = cards.findIndex((card) => card.requestId === event.requestId)
+  if (event.kind === 'capability_request_resolved') {
+    if (index >= 0) cards[index]!.resolved = { status: event.status, text: event.text }
+    return cards
+  }
+  const { kind: _kind, ...card } = event
+  // A reopen reissues the card under a new generation in its original turn.
+  const next = { ...card, turnId: index >= 0 ? cards[index]!.turnId : turnId }
+  if (index >= 0) cards[index] = next
+  else cards.push(next)
+  while (cards.length > MAX_CAPABILITY_CARDS) {
+    const settled = cards.findIndex((item) => item.resolved)
+    cards.splice(settled >= 0 ? settled : 0, 1)
+  }
+  return cards
+}
 
 export class AhpStateCapacityError extends Error {
   constructor() {
@@ -265,7 +300,19 @@ export class AhpAgentState {
       if (output.status.steerable !== undefined) fields.steerable = output.status.steerable
       changed = true
     }
-    if (output.event) {
+    if (output.event?.kind === 'plan') {
+      // AHP has no task-list channel, so the turn's latest plan snapshot rides session metadata.
+      fields.plan = {
+        turnId: output.turnId,
+        entries: output.event.entries
+          .slice(0, MAX_PLAN_ENTRIES)
+          .map((entry) => ({ ...entry, content: entry.content.slice(0, MAX_PLAN_TEXT) }))
+      }
+      changed = true
+    } else if (output.event?.kind === 'capability_request' || output.event?.kind === 'capability_request_resolved') {
+      fields.capabilities = capabilityCards(fields.capabilities, output.turnId, output.event)
+      changed = true
+    } else if (output.event) {
       entry.apps ??= new AhpAppsProjection()
       const update = entry.apps.update(output.turnId, output.event)
       if (update) {
@@ -435,4 +482,14 @@ function chatUri(uri: string): string {
 }
 function summaryOf(chat: ChatState): ChatSummary {
   return { resource: chat.resource, title: chat.title, status: chat.status, modifiedAt: chat.modifiedAt }
+}
+
+// Clients such as VS Code refuse to send without a model, so the agent's own model is always offered.
+export function ahpAgentInfo(provider: string, displayName: string, model: string | undefined): AgentInfo {
+  return {
+    provider,
+    displayName,
+    description: '',
+    models: [{ id: model ?? 'default', provider, name: model ?? 'Default' }]
+  }
 }

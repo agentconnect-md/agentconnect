@@ -23,6 +23,7 @@ import {
   type AppliedConfigRevision,
   type ConfigRevisionDecision
 } from '../agents/config-revision.js'
+import { removeTreeSync } from '../workspace/remove-tree.js'
 
 const ROOT_MARKER = '.cp-agent-id'
 const MAX_DEPTH = 4
@@ -214,7 +215,7 @@ export class CpAgentRegistry {
       if (!strictChildRoot(this.agentsDir, root) || readRootMarker(root) !== agentId) {
         throw new Error(`refusing to remove agent "${agentId}": its data root is unsafe or no longer owned`)
       }
-      rmSync(root, { recursive: true, force: true })
+      removeTreeSync(root)
     }
     this.active.delete(agentId)
     this.detached.delete(agentId)

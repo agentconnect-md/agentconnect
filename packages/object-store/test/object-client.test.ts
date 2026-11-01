@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import type { CredentialsProvider } from '../src/credentials.js'
-import { createObjectClient, SourceCacheObjectError } from '../src/object-client.js'
+import { compositeSha256, createObjectClient, headHolds, SourceCacheObjectError } from '../src/object-client.js'
 import { canonicalUri, sha256Hex } from '../src/sigv4.js'
 
 // Header-signed HEAD, PutObjectTagging, DELETE and lifecycle read (source-cache.md §9, §10), against a fake fetch.
@@ -70,6 +70,72 @@ describe('Source Cache object client', () => {
     expect(req!.headers.authorization).toMatch(
       /^AWS4-HMAC-SHA256 Credential=AKID\/20261003\/us-east-1\/s3\/aws4_request,SignedHeaders=host;x-amz-checksum-mode;x-amz-content-sha256;x-amz-date;x-amz-security-token,Signature=[0-9a-f]{64}$/
     )
+  })
+
+  it('reads a HEAD without Content-Length as an unknown length, and a malformed one as an error', async () => {
+    const compressed = new Response(null, {
+      status: 200,
+      headers: { 'content-encoding': 'gzip', 'x-amz-checksum-sha256': 'abc=' }
+    })
+    expect(await harness({ response: compressed }).client.head(KEY)).toEqual({ exists: true, checksumSha256: 'abc=' })
+    const malformed = new Response(null, { status: 200, headers: { 'content-length': '12abc' } })
+    await expect(harness({ response: malformed }).client.head(KEY)).rejects.toBeInstanceOf(SourceCacheObjectError)
+  })
+
+  it('proves stored bytes by checksum, and by length only when the store reports no checksum', () => {
+    const expected = { bytes: 5, sha256: 'abc=' }
+    expect(headHolds({ exists: true, contentLength: 5, checksumSha256: 'abc=' }, expected)).toBe(true)
+    expect(headHolds({ exists: true, checksumSha256: 'abc=' }, expected)).toBe(true)
+    expect(headHolds({ exists: true, contentLength: 5 }, expected)).toBe(true)
+    expect(headHolds({ exists: true }, expected)).toBe(false)
+    expect(headHolds({ exists: true, contentLength: 0, checksumSha256: 'abc=' }, expected)).toBe(false)
+    expect(headHolds({ exists: true, checksumSha256: 'xyz=' }, expected)).toBe(false)
+    expect(headHolds({ exists: false }, expected)).toBe(false)
+  })
+
+  it('accepts a multipart object’s composite checksum only when asked to', () => {
+    const multipart = { exists: true as const, contentLength: 5, checksumSha256: 'abc=-12' }
+    expect(headHolds(multipart, { bytes: 5, sha256: 'abc=', composite: true })).toBe(true)
+    expect(headHolds(multipart, { bytes: 5, sha256: 'abc=' })).toBe(false)
+    expect(headHolds({ ...multipart, checksumSha256: 'abc=-0' }, { bytes: 5, sha256: 'abc=', composite: true })).toBe(
+      false
+    )
+    expect(headHolds({ ...multipart, checksumSha256: 'abc=-1x' }, { bytes: 5, sha256: 'abc=', composite: true })).toBe(
+      false
+    )
+  })
+
+  it('computes S3’s COMPOSITE checksum over the parts’ raw digests', () => {
+    const parts = ['one', 'two'].map((p) => createHash('sha256').update(p).digest())
+    const expected = createHash('sha256').update(Buffer.concat(parts)).digest('base64')
+    expect(compositeSha256(parts.map((p) => p.toString('base64')))).toBe(expected)
+  })
+
+  it('starts a SHA-256 multipart upload with its tag and returns the store’s upload id', async () => {
+    const response = new Response(
+      '<InitiateMultipartUploadResult><Bucket>cache</Bucket><Key>k</Key><UploadId>mp-1</UploadId></InitiateMultipartUploadResult>',
+      { status: 200 }
+    )
+    const { client, captured } = harness({ response })
+    expect(await client.createMultipartUpload(KEY, 'ac-cache=pending')).toBe('mp-1')
+    const [req] = captured
+    expect(req!.method).toBe('POST')
+    expect(req!.url).toBe(`https://s3.example.com${canonicalUri(`/cache/agentconnect/${KEY}`)}?uploads=`)
+    expect(req!.headers['x-amz-checksum-algorithm']).toBe('SHA256')
+    expect(req!.headers['x-amz-tagging']).toBe('ac-cache=pending')
+    expect(req!.headers.authorization).toContain(
+      'SignedHeaders=host;x-amz-checksum-algorithm;x-amz-content-sha256;x-amz-date;x-amz-tagging,'
+    )
+    await expect(
+      harness({
+        response: new Response('<Error><Code>AccessDenied</Code></Error>', { status: 403 })
+      }).client.createMultipartUpload(KEY, 'ac-cache=pending')
+    ).rejects.toMatchObject({ code: 'AccessDenied' })
+    await expect(
+      harness({
+        response: new Response('<InitiateMultipartUploadResult/>', { status: 200 })
+      }).client.createMultipartUpload(KEY, 'ac-cache=pending')
+    ).rejects.toMatchObject({ code: 'NoUploadId' })
   })
 
   it('addresses virtual-hosted style when not forced to path style', async () => {

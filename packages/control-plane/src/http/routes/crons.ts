@@ -224,6 +224,17 @@ export function cronRoutes(deps: HttpDeps) {
           if (wire) {
             await deps.agentDelivery.cronUpsert(agent, wire, cronPushFailed('cron/upsert'))
           }
+          // The agent's open `cron` requests are judged against its crons, which no spec re-projection carries (capability-requests.md §4.12).
+          if (deps.capabilityRequests && req.principal) {
+            const userId = req.principal.userId
+            const profile = await deps.repos.user.getProfile(userId).catch(() => null)
+            const name = profile?.displayName?.trim() || profile?.email || 'A member'
+            await deps.capabilityRequests
+              .orgChanged(orgId, { kind: 'cron', agentId: agent.id }, { kind: 'console', userId, name })
+              .catch((err: unknown) =>
+                app.log.warn({ err }, 'capability request: re-evaluation after a cron save failed')
+              )
+          }
           return toDto(cron, ctxOf(req))
         } finally {
           release()

@@ -51,7 +51,8 @@ export const WITHDRAW_CAPABILITY_REQUEST_ARGS = z.object({
 export const REQUEST_CAPABILITY_TOOL: ToolDescriptor = {
   name: 'requestCapability',
   description:
-    'Ask for something your own setup lacks when it stops you from doing what you were asked: a setting, an ' +
+    'Ask for something your own setup lacks when it stops you from doing what you were asked, or that someone in ' +
+    'this conversation asks you to change about yourself: a setting (your runtime included), a scheduled task, an ' +
     'organization MCP server, a skill, access to a repository, a connection, or a secret. This grants nothing: a ' +
     'person who can change your setup completes or declines it in AgentConnect, and you are woken in this ' +
     'conversation when they do. It returns at once; follow the `message` it returns, then stop the work that needs ' +
@@ -68,7 +69,7 @@ export const REQUEST_CAPABILITY_TOOL: ToolDescriptor = {
         type: 'string',
         enum: [...CapabilityKind.options],
         description:
-          '`agent-settings` (your model, reasoningEffort, fastMode, outputMode or permissionMode), `mcp-server` (an ' +
+          '`agent-settings` (any field of your agent form), `cron` (a scheduled task that runs you), `mcp-server` (an ' +
           'organization MCP server added to your tools), `skill` (a skill added to your setup), `repository` (read ' +
           'or write access to a GitHub or GitLab repository), `connection` (an MCP server signed in, a code host ' +
           'connected, or a chat integration added), or `secret` (a credential set where you need it).'
@@ -76,7 +77,12 @@ export const REQUEST_CAPABILITY_TOOL: ToolDescriptor = {
       want: {
         type: 'object',
         description:
-          'What you need, by kind. agent-settings: only the fields to change, e.g. `{"model": "…"}`. mcp-server: ' +
+          'What you need, by kind. agent-settings: only the fields to change, among model, reasoningEffort, ' +
+          'fastMode, outputMode, permissionMode, runtime, execution, chatActions ("talk" | "approve" | "settings"), ' +
+          'introduceOnJoin, showFooter, showStatusBar and displayName, e.g. `{"runtime": "codex-acp", ' +
+          '"model": "…"}`; a new runtime continues this conversation from a replay of its history. cron: ' +
+          '`{"schedule": "<cron expression>", "timezone": "<IANA zone>", "trigger": "<the prompt it runs>"}`, plus ' +
+          '`"cronId"` to change one of your own. Your workspace, visibility and sharing are not asked for. mcp-server: ' +
           '`{"server": "<name as the organization lists it>"}`. skill: `{"skill": "<source>/<skill>"}`. repository: ' +
           '`{"provider": "github" | "gitlab", "repository": "<owner>/<repo>", "access": "read" | "write"}` (add ' +
           '`"host"` for a self-managed GitLab). connection: `{"type": "mcp-oauth", "server": "<name>"}`, ' +

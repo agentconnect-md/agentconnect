@@ -83,6 +83,23 @@ describe('GitCredentialCache', () => {
     await expect(h.cache.get(AGENT, 'push')).rejects.toBeInstanceOf(GitCredUnavailableError)
   })
 
+  it('re-asks once after a retryable INTERNAL mint failure, so a cold clone survives a CP transient', async () => {
+    const h = build((n) => {
+      if (n === 1) throw Object.assign(new Error('gitcred mint failed'), { code: 'INTERNAL', retryable: true })
+      return grant(`ghs_${n}`, 3540)
+    })
+    expect((await h.cache.get(AGENT, 'clone')).token).toBe('ghs_2')
+    expect(h.calls()).toBe(2)
+  })
+
+  it('fails after the single re-ask when the INTERNAL failure persists', async () => {
+    const h = build(() => {
+      throw Object.assign(new Error('gitcred mint failed'), { code: 'INTERNAL', retryable: true })
+    })
+    await expect(h.cache.get(AGENT, 'clone')).rejects.toBeInstanceOf(GitCredUnavailableError)
+    expect(h.calls()).toBe(2)
+  })
+
   it('treats SCOPE_DENIED as terminal until a new spec clears it', async () => {
     const h = build((n) => {
       if (n === 1) throw Object.assign(new Error('agent is not placed on this daemon'), { code: 'SCOPE_DENIED' })

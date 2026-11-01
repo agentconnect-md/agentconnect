@@ -13,6 +13,7 @@ import {
   type AhpActionScope
 } from '../../src/ahp/application.js'
 import type { ChatSessionApplication, ChatTurnRequest } from '../../src/session/chat-application.js'
+import { canonicalPostId } from '../../src/messages/post-id.js'
 import type { ChatSessionContinuation } from '../../src/session/chat-continuation.js'
 const scope: AhpActionScope = {
   agentId: 'agent',
@@ -99,6 +100,53 @@ it('uses authoritative principal and canonical durable receipt, awaiting publica
   expect(execution).toBe(true)
   expect(f.record).toHaveBeenCalledOnce()
 })
+it("runs VS Code's turn shape as plain text on a continuation, ignoring its model, agent and context", async () => {
+  const f = fixture()
+  const vscode = {
+    ...start,
+    action: {
+      ...start.action,
+      message: {
+        text: 'hello',
+        origin: { kind: MessageKind.User },
+        model: { id: 'copilot/gpt' },
+        agent: { uri: 'file:///agents/review.agent.md' },
+        attachments: [{ type: 'resource', label: 'main.ts', uri: 'file:///src/main.ts' }]
+      }
+    }
+  } as DispatchActionParams
+  await f.application.dispatch({ ...scope, targetSessionId: 'outward' }, vscode, origin, f.hooks)
+  expect(f.prepare.mock.calls[0]?.[0]).toMatchObject({ text: 'hello' })
+  expect(f.prepare.mock.calls[0]?.[0]).not.toHaveProperty('attachments')
+  expect(f.prepare.mock.calls[0]?.[0].post?.postId).toBe(canonicalPostId('turn'))
+  expect(f.host.setRuntime).not.toHaveBeenCalled()
+  expect(f.hooks.admitted).toHaveBeenCalledOnce()
+})
+it('publishes a steering fallback without the client context the runtime never received', async () => {
+  const f = fixture()
+  const steer = {
+    ...start,
+    action: {
+      type: ActionType.ChatPendingMessageSet,
+      kind: 'steering',
+      id: 'steer',
+      message: {
+        text: 'also this',
+        origin: { kind: MessageKind.User },
+        model: { id: 'copilot/gpt' },
+        attachments: [{ type: 'simple', label: 'selection', modelRepresentation: 'secret text' }]
+      }
+    }
+  } as DispatchActionParams
+  await f.application.dispatch(scope, steer, origin, f.hooks)
+  expect(f.hooks.steered).not.toHaveBeenCalled()
+  expect(vi.mocked(f.hooks.echo).mock.calls[0]?.[0]).toEqual({
+    type: ActionType.ChatPendingMessageSet,
+    kind: 'steering',
+    id: 'steer',
+    message: { text: 'also this', origin: { kind: MessageKind.User } }
+  })
+})
 it('does not wait for ACP completion after durable admission', async () => {
   const f = fixture()
   vi.mocked(f.host.dispatch).mockImplementation(async (_turn, _context, options) => {
@@ -163,6 +211,35 @@ it('rejects server-only actions and foreign channels without invoking domain ope
       f.hooks
     )
   ).rejects.toMatchObject({ code: -32602 })
+  expect(f.host.dispatch).not.toHaveBeenCalled()
+})
+
+it("echoes VS Code's draft and read state without touching the runtime", async () => {
+  const f = fixture()
+  const draft = { type: ActionType.ChatDraftChanged, draft: { text: 'half typed', origin: { kind: MessageKind.User } } }
+  for (const action of [
+    draft,
+    { type: ActionType.ChatDraftChanged },
+    { type: ActionType.ChatIsReadChanged, isRead: true }
+  ])
+    await f.application.dispatch(scope, { ...start, action } as DispatchActionParams, origin, f.hooks)
+  expect(vi.mocked(f.hooks.echo).mock.calls.map((call) => call[0])).toEqual([
+    draft,
+    { type: ActionType.ChatDraftChanged },
+    { type: ActionType.ChatIsReadChanged, isRead: true }
+  ])
+  await expect(
+    f.application.dispatch(
+      scope,
+      {
+        ...start,
+        action: { type: ActionType.ChatDraftChanged, draft: { text: 'x', origin: { kind: 'agent' } } }
+      } as DispatchActionParams,
+      origin,
+      f.hooks
+    )
+  ).rejects.toMatchObject({ code: -32602 })
+  expect(f.prepare).not.toHaveBeenCalled()
   expect(f.host.dispatch).not.toHaveBeenCalled()
 })
 

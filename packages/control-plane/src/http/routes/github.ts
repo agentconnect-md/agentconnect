@@ -15,20 +15,26 @@
  * When the deployment has no GITHUB_APP_* config, `deps.github` is absent and
  * none of these routes register — the whole surface 404s.
  */
-import type { FastifyInstance, FastifyReply } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import type { GithubInstallationRecord } from '../../persistence/ports.js'
-import { OrgId } from '../../domain/ids.js'
+import type { GithubAppRecord, GithubInstallationRecord } from '../../persistence/ports.js'
+import { GithubAppRegistrationError } from '../../github/apps.service.js'
+import { AgentId, OrgId } from '../../domain/ids.js'
+import { canEdit, canView } from '../../authorization/policy.js'
 import { GithubApiError } from '../../github/api.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { GithubInstallationClaimConflict } from '../../persistence/errors.js'
-import { orgOf, denyViewerWrite, denyNonOwner } from '../rbac.js'
+import { orgOf, ctxOf, denyViewerWrite, denyNonOwner } from '../rbac.js'
 import {
+  AgentGithubAppDto,
   ErrorDto,
+  GithubAppCoverageDto,
   GithubAppDto,
+  GithubAppManifestDto,
+  GithubAppSwitchRefusedDto,
   GithubBranchListDto,
   GithubInstallationListDto,
   GithubOwnerRepoParam,
@@ -36,7 +42,10 @@ import {
   GithubRepoDto,
   GithubRepoPageDto,
   GithubRepoPageQuery,
-  IdParam
+  GithubOrgAppDto,
+  GithubOrgAppListDto,
+  IdParam,
+  SwitchAgentGithubAppBody
 } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import { resolveWebAppUrl } from '../../config/env.js'
@@ -150,12 +159,20 @@ export function githubRoutes(deps: HttpDeps) {
           tags: [Tag.GitHub],
           summary: 'List GitHub installations',
           description:
-            "The org's live (non-revoked) installations of the deployment GitHub App — the repo picker's first level. Includes the persisted installation-effective Checks permission separately from GitHub's coarse current/outdated App-upgrade verdict; a transient verdict read reports `unknown` without hiding the durable roster. Org-level infrastructure: visible to every member, never restricted.",
+            "The org's live (non-revoked) installations of the built-in GitHub App, or of the organization App `app` names — the repo picker's first level. Includes the persisted installation-effective Checks permission separately from GitHub's coarse current/outdated App-upgrade verdict; a transient verdict read reports `unknown` without hiding the durable roster, and an organization App's verdict is always `unknown`. Org-level infrastructure: visible to every member, never restricted.",
           operationId: 'listGithubInstallations',
+          querystring: z.object({ app: z.string().uuid().optional() }),
           response: { 200: GithubInstallationListDto }
         }
       },
       async (req) => {
+        const appId = req.query.app
+        if (appId) {
+          const rows = (await deps.repos.githubInstallation.listClaimsForOrg(orgOf(req))).filter(
+            (row) => row.githubAppId === appId && row.revokedAt === null
+          )
+          return rows.map((row) => githubInstallationToDto(row, null))
+        }
         const rows = await deps.repos.githubInstallation.listForOrg(orgOf(req))
         let outdated: ReadonlyMap<string, string> | null = null
         try {
@@ -440,6 +457,241 @@ export function githubRoutes(deps: HttpDeps) {
         }
       )
     }
+
+    // ── Organization GitHub Apps (github-app-git-credentials.md §Organization GitHub Apps) ──
+    const apps = deps.githubApps
+    if (apps) {
+      const appDto = async (app: GithubAppRecord) => ({
+        id: app.id,
+        appId: Number(app.appId),
+        slug: app.slug,
+        botUserId: app.botUserId === null ? null : Number(app.botUserId),
+        agentId: app.agentId,
+        installations: (await apps.installationsOf(app.orgId, app.id)).map((i) => ({
+          id: i.id,
+          installationId: Number(i.installationId),
+          accountLogin: i.accountLogin,
+          accountType: i.accountType,
+          repositorySelection: i.repositorySelection,
+          suspended: i.suspendedAt !== null
+        })),
+        createdAt: app.createdAt.toISOString()
+      })
+      const notFound = (reply: FastifyReply, what: 'agent' | 'github app') =>
+        reply.code(404).send({ error: 'Not Found', statusCode: 404, message: `${what} not found` })
+      const conflict = (reply: FastifyReply, message: string) =>
+        reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
+      // The agent the caller may see (404 otherwise); `edit` also needs the right to edit it (403).
+      const agentFor = async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply, edit: boolean) => {
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.params.id))
+        if (!agent || !canView(agent, ctxOf(req))) {
+          await notFound(reply, 'agent')
+          return null
+        }
+        if (edit && (denyViewerWrite(req, reply) || !canEdit(agent, ctxOf(req)))) {
+          if (!reply.sent) {
+            await reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+          }
+          return null
+        }
+        return agent
+      }
+
+      r.get(
+        '/github/apps',
+        {
+          schema: {
+            tags: [Tag.GitHub],
+            summary: "List the organization's GitHub Apps",
+            description:
+              'GitHub Apps beside the built-in App. One agent works through an App at a time (`agentId`); an App no agent uses is free for any agent of the organization.',
+            operationId: 'listGithubApps',
+            response: { 200: GithubOrgAppListDto }
+          }
+        },
+        async (req) => Promise.all((await apps.list(orgOf(req))).map(appDto))
+      )
+
+      r.post(
+        '/github/apps/:id/sync',
+        {
+          schema: {
+            tags: [Tag.GitHub],
+            summary: 'Sync a GitHub App',
+            description: "Re-pull the App's installation roster from GitHub.",
+            operationId: 'syncGithubApp',
+            params: IdParam,
+            response: {
+              200: GithubOrgAppDto,
+              403: ErrorDto,
+              404: ErrorDto,
+              409: ErrorDto,
+              429: ErrorDto,
+              502: ErrorDto
+            }
+          }
+        },
+        async (req, reply) => {
+          if (denyViewerWrite(req, reply)) return reply
+          const app = await apps.get(orgOf(req), req.params.id)
+          if (!app) return notFound(reply, 'github app')
+          try {
+            await apps.sync(orgOf(req), app.id)
+          } catch (e) {
+            if (e instanceof GithubAppRegistrationError) return conflict(reply, e.message)
+            return githubUpstreamFailure(reply, e)
+          }
+          return appDto(app)
+        }
+      )
+
+      r.delete(
+        '/github/apps/:id',
+        {
+          schema: {
+            tags: [Tag.GitHub],
+            summary: 'Delete a GitHub App',
+            description:
+              'Forgets a free App with its key and installations. An App an agent works through, or one with a Check still to close, is refused. The App itself stays on GitHub until someone deletes it there. Owner-only.',
+            operationId: 'deleteGithubApp',
+            params: IdParam,
+            response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          if (denyNonOwner(req, reply)) return reply
+          const app = await apps.get(orgOf(req), req.params.id)
+          if (!app) return notFound(reply, 'github app')
+          if (!(await apps.delete(orgOf(req), app.id))) {
+            return conflict(reply, 'an agent works through this App, or one of its Checks is not finished yet')
+          }
+          return reply.code(204).send(null)
+        }
+      )
+
+      r.get(
+        '/agents/:id/github-app',
+        {
+          schema: {
+            tags: [Tag.GitHub],
+            summary: "Get an agent's GitHub App",
+            description:
+              'The organization GitHub App the agent works through; `app` is null while it uses the built-in App.',
+            operationId: 'getAgentGithubApp',
+            params: IdParam,
+            response: { 200: AgentGithubAppDto, 404: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          const agent = await agentFor(req, reply, false)
+          if (!agent) return reply
+          const app = agent.githubAppId ? await apps.get(orgOf(req), agent.githubAppId) : null
+          return { app: app ? await appDto(app) : null }
+        }
+      )
+
+      r.get(
+        '/agents/:id/github-app/coverage',
+        {
+          schema: {
+            tags: [Tag.GitHub],
+            summary: "Check a GitHub App against an agent's repositories",
+            description:
+              'Every repository and account the agent works on through GitHub (workspace, authorized repositories, reviews), and whether `app` reaches each. `app` absent means the built-in App. An agent switches only when every item is covered.',
+            operationId: 'getAgentGithubAppCoverage',
+            params: IdParam,
+            querystring: z.object({ app: z.string().uuid().optional() }),
+            response: { 200: GithubAppCoverageDto, 404: ErrorDto, 429: ErrorDto, 502: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          const agent = await agentFor(req, reply, false)
+          if (!agent) return reply
+          if (req.query.app && !(await apps.get(orgOf(req), req.query.app))) return notFound(reply, 'github app')
+          try {
+            return { coverage: await apps.coverage(agent, req.query.app ?? null) }
+          } catch (e) {
+            return githubUpstreamFailure(reply, e)
+          }
+        }
+      )
+
+      r.put(
+        '/agents/:id/github-app',
+        {
+          schema: {
+            tags: [Tag.GitHub],
+            summary: "Switch an agent's GitHub App",
+            description:
+              "Moves the agent to a free organization App (`githubAppId`), or back to the built-in App (null). Refused with the coverage list (409) until that App is installed on every repository and account the agent works on; on success every installation the agent records moves to the App's installation on the same account.",
+            operationId: 'switchAgentGithubApp',
+            params: IdParam,
+            body: SwitchAgentGithubAppBody,
+            response: {
+              200: AgentGithubAppDto,
+              403: ErrorDto,
+              404: ErrorDto,
+              409: GithubAppSwitchRefusedDto,
+              429: ErrorDto,
+              502: ErrorDto
+            }
+          }
+        },
+        async (req, reply) => {
+          const agent = await agentFor(req, reply, true)
+          if (!agent) return reply
+          let result
+          try {
+            result = await apps.switch(agent, req.body.githubAppId)
+          } catch (e) {
+            return githubUpstreamFailure(reply, e)
+          }
+          if (!result.ok) {
+            if (result.reason === 'unknown_app') return notFound(reply, 'github app')
+            const message =
+              result.reason === 'not_covered'
+                ? 'the GitHub App is not installed on everything this agent works on'
+                : result.reason === 'app_in_use'
+                  ? 'another agent works through this GitHub App'
+                  : 'the agent changed meanwhile; reload and try again'
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message,
+              reason: result.reason,
+              ...(result.reason === 'not_covered' ? { coverage: result.coverage } : {})
+            })
+          }
+          const app = req.body.githubAppId ? await apps.get(orgOf(req), req.body.githubAppId) : null
+          return { app: app ? await appDto(app) : null }
+        }
+      )
+
+      r.post(
+        '/agents/:id/github-app/manifest',
+        {
+          schema: {
+            tags: [Tag.GitHub],
+            summary: 'Start creating a GitHub App',
+            description:
+              "Returns the form the console posts to GitHub's create-App-from-manifest page, under the account the agent's repositories live on. GitHub then redirects back here, the App is added to the organization (free), and the browser continues to its install page and back to the agent.",
+            operationId: 'startGithubAppManifest',
+            params: IdParam,
+            response: { 200: GithubAppManifestDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          const agent = await agentFor(req, reply, true)
+          if (!agent) return reply
+          try {
+            return await apps.startManifest(orgOf(req), agent)
+          } catch (e) {
+            if (e instanceof GithubAppRegistrationError) return conflict(reply, e.message)
+            throw e
+          }
+        }
+      )
+    }
   }
 }
 
@@ -527,6 +779,90 @@ export function githubCallbackRoutes(deps: HttpDeps) {
           throw e
         }
       }
+    )
+
+    // An agent's dedicated App: GitHub's redirects after "Create" and after each install or update.
+    const apps = deps.githubApps
+    if (!apps) return
+    // Back to the agent that started it, which reopens its GitHub App dialog with this App; a plain-text note without a console.
+    const agentPage = async (orgId: string, agentId: string | undefined, query: string) => {
+      const consoleUrl = resolveWebAppUrl(deps.config)
+      if (!consoleUrl) return reply400Text(query)
+      const slug = orgId ? await deps.repos.org.slugById(orgId) : null
+      const agent = slug && agentId ? await deps.repos.agent.get(OrgId(orgId), AgentId(agentId)) : null
+      const path = slug && agent ? `/${slug}/agents/${encodeURIComponent(agent.id)}` : '/'
+      return `${consoleUrl}${path}?${query}`
+    }
+    const reply400Text = (query: string) => `GitHub App: ${query}. You can close this tab and open the console.`
+    const send = (reply: FastifyReply, target: string) =>
+      target.startsWith('GitHub App:') ? reply.type('text/plain').send(target) : reply.redirect(target)
+
+    r.get(
+      '/github/apps/manifest/callback',
+      {
+        schema: {
+          hide: true,
+          querystring: z.object({ code: z.string().max(256).optional(), state: z.string().max(1024).optional() })
+        }
+      },
+      async (req, reply) => {
+        const retry = () => agentPage('', undefined, 'github-app=retry')
+        if (!req.query.code || !req.query.state) return send(reply, await retry())
+        try {
+          const done = await apps.completeManifest(req.query.state, req.query.code)
+          if (!done) return send(reply, await retry())
+          // GitHub's own install page for the new App: a fixed host, never a request-supplied URL.
+          return reply.redirect(done.installUrl)
+        } catch (e) {
+          if (e instanceof GithubApiError) {
+            req.log.warn({ status: e.status }, 'github app manifest conversion failed')
+            return send(reply, await retry())
+          }
+          throw e
+        }
+      }
+    )
+
+    const setupCallback = async (
+      req: FastifyRequest<{ Params: { id: string; agentId?: string }; Querystring: { setup_action?: string } }>,
+      reply: FastifyReply
+    ) => {
+      try {
+        const app = await apps.completeSetup(req.params.id)
+        if (!app) return send(reply, await agentPage('', undefined, 'github-app=retry'))
+        const agentId = app.agentId ?? req.params.agentId
+        const query =
+          req.query.setup_action === 'request'
+            ? 'github-app=pending-approval'
+            : `github-app=${encodeURIComponent(app.id)}`
+        return send(reply, await agentPage(app.orgId, agentId, query))
+      } catch (e) {
+        if (e instanceof GithubApiError) {
+          req.log.warn({ status: e.status }, 'github app setup sync failed')
+          return send(reply, await agentPage('', undefined, 'github-app=retry'))
+        }
+        throw e
+      }
+    }
+    const setupQuery = z.object({
+      installation_id: z.coerce.number().int().optional(),
+      setup_action: z.string().optional()
+    })
+    r.get(
+      '/github/apps/:id/setup/callback',
+      { schema: { hide: true, params: z.object({ id: z.string().uuid() }), querystring: setupQuery } },
+      setupCallback
+    )
+    r.get(
+      '/github/apps/:id/setup/callback/:agentId',
+      {
+        schema: {
+          hide: true,
+          params: z.object({ id: z.string().uuid(), agentId: z.string().uuid() }),
+          querystring: setupQuery
+        }
+      },
+      setupCallback
     )
   }
 }

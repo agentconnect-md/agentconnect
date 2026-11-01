@@ -157,6 +157,12 @@ export function mergeConfigPush(cfg: Config, keys: Record<string, unknown>): { a
           ok = true
         }
         break
+      case 'sessions.workspaceRetention':
+        if (typeof value === 'string' && SESSION_RETENTION_RE.test(value)) {
+          cfg.sessions.workspaceRetention = value as Config['sessions']['workspaceRetention']
+          ok = true
+        }
+        break
       default:
         ok = false
     }

@@ -59,6 +59,7 @@ describe('buildInstallManifest', () => {
 
   it('http mode: disables Socket Mode and points the Events API request_urls at the relay', () => {
     const m = buildInstallManifest('acme-bot', REDIRECT, { httpRelayBase: 'https://relay.example' }) as {
+      features: { code_channels: { slash_command_url: string } }
       settings: {
         socket_mode_enabled: boolean
         event_subscriptions: { request_url: string; bot_events: string[] }
@@ -66,6 +67,7 @@ describe('buildInstallManifest', () => {
       }
     }
     expect(m.settings.socket_mode_enabled).toBe(false)
+    expect(m.features.code_channels.slash_command_url).toBe('https://relay.example/slack/interactions')
     expect(m.settings.event_subscriptions.request_url).toBe('https://relay.example/slack/events')
     expect(m.settings.interactivity.request_url).toBe('https://relay.example/slack/interactions')
     expect(m.settings.interactivity.message_menu_options_url).toBe('https://relay.example/slack/interactions')
@@ -108,6 +110,7 @@ describe('buildInstallManifest', () => {
       'channels:read',
       'commands',
       'chat:write',
+      'code_channels:manage',
       'chat:write.customize',
       'files:write',
       'groups:history',
@@ -151,6 +154,8 @@ describe('buildInstallManifest', () => {
       'member_joined_channel',
       'channel_left',
       'group_left',
+      'channel_archive',
+      'group_archive',
       'tokens_revoked'
     ])
   })
@@ -196,6 +201,7 @@ describe('mergeManagedSlackManifest', () => {
       _metadata: { major_version: 1, minor_version: 1 },
       display_information: { name: 'Custom app', description: 'Keep this description' },
       features: {
+        code_channels: { enabled: false, custom_future_field: true },
         bot_user: { display_name: 'Custom bot', always_online: false },
         app_home: { home_tab_enabled: false },
         agent_view: { agent_description: 'Keep this agent description' },
@@ -225,6 +231,7 @@ describe('mergeManagedSlackManifest', () => {
     const merged = mergeManagedSlackManifest(current, 'fallback-name', REDIRECT) as {
       display_information: { name: string; description: string }
       features: {
+        code_channels: { enabled: boolean; custom_future_field: boolean }
         bot_user: { display_name: string; always_online: boolean }
         app_home: {
           home_tab_enabled: boolean
@@ -246,6 +253,10 @@ describe('mergeManagedSlackManifest', () => {
     }
 
     expect(merged.display_information).toEqual({ name: 'Custom app', description: 'Keep this description' })
+    expect(merged.features.code_channels).toEqual({
+      enabled: true,
+      custom_future_field: true
+    })
     expect(merged.features.bot_user).toEqual({ display_name: 'Custom bot', always_online: true })
     expect(merged.features.slash_commands).toEqual(current.features.slash_commands)
     expect(merged.features.shortcuts).toEqual([
@@ -279,6 +290,12 @@ describe('mergeManagedSlackManifest', () => {
   it('does not invent a redirect URL when the control plane has no public callback', () => {
     const merged = mergeManagedSlackManifest({}, 'acme-bot') as { oauth_config: { redirect_urls?: string[] } }
     expect(merged.oauth_config.redirect_urls).toBeUndefined()
+  })
+
+  it('enables code channels when refreshing an older app', () => {
+    expect(mergeManagedSlackManifest({}, 'acme-bot')).toMatchObject({
+      features: { code_channels: { enabled: true } }
+    })
   })
 })
 

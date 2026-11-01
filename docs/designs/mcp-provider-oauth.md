@@ -171,8 +171,8 @@ it cannot perform, and any token it did obtain would be stripped by the proxy's 
 session. This was already reachable with a wrong API key on a `headers` provider.
 
 An upstream `401`/`403` is now **contained** the same way an upstream 3xx already was:
-`www-authenticate` and `proxy-authenticate` are stripped and the caller gets an opaque
-`502 upstream authorization failed`. The injected credential is the binding's, so a
+`www-authenticate` and `proxy-authenticate` are stripped and the caller gets a `424` saying
+the upstream rejected the configured credential (see centralized-tool-management.md §5 step 4). The injected credential is the binding's, so a
 rejection is the CP's to repair and never the caller's. The relay's own grant-key 401s stay
 401, so the two remain distinguishable. That is the **only** relay change this feature
 needs.
@@ -198,7 +198,7 @@ to `http/provider-chain.ts` for this second consumer.
 
 The sweep selects a **candidate window** and then applies the same `refreshDue` predicate the
 resolve path uses. Selecting only already-expired rows would renew strictly too late — every
-provider would serve 502s from expiry until the next sweep and exchange finished — and the
+provider would serve 424s from expiry until the next sweep and exchange finished — and the
 margin is per-token, so it cannot be expressed as one SQL bound.
 
 **Every** live publication resolves the injected header through that one resolver, not just
@@ -223,7 +223,7 @@ pushing only the current grant would retire the other one inside a rotation's gr
 
 **The cost, stated plainly.** While the CP is up, an OAuth provider never serves an expired
 token. While the CP is **down**, one expires after its remaining lifetime and calls start
-failing — as a clean 502, per §7. `headers` providers are unaffected. This is a real
+failing — as a clean 424, per §7. `headers` providers are unaffected. This is a real
 narrowing of the graceful-degradation guarantee and it is the price of holding the grant in
 the CP. The reverse channel that would close it (the relay reporting an upstream 401 so the
 CP force-refreshes) needs a new R→C frame, a feature-negotiation bit, and a defence against

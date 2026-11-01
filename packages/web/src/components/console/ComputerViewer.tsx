@@ -1,20 +1,39 @@
 'use client'
 
 // The embedded viewer (computer-use.md §7, §10), on the Computer detail and in the session dock: watch, take over and release; media never crosses the CP.
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+  type WheelEvent
+} from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import { openComputerViewer, type ComputerDto } from '@/lib/api'
+import { useAgo } from '@/lib/computers'
 import {
   ComputerViewerSession,
   keyToInput,
   type ViewerInput,
   type ViewerState,
+  type ViewerStats,
   type ViewerStatus
 } from '@/lib/computer-viewer'
 import { Button, Icon } from '@/components/ui'
 
 type Point = { x: number; y: number }
+
+// `30 fps · 2.4 Mbps · 45 ms`, leaving out what the path cannot measure.
+export function formatStats({ fps, kbps, latencyMs }: ViewerStats): string {
+  const rate = kbps === null ? null : kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${kbps} kbps`
+  return [fps === null ? null : `${fps} fps`, rate, latencyMs === null ? null : `${latencyMs} ms`]
+    .filter(Boolean)
+    .join(' · ')
+}
 const BUTTONS = ['left', 'middle', 'right'] as const
 
 export interface ComputerViewerProps {
@@ -23,22 +42,50 @@ export interface ComputerViewerProps {
   createSession?: (deps: ConstructorParameters<typeof ComputerViewerSession>[0]) => ComputerViewerSession
 }
 
-export function ComputerViewerCard({ computer, createSession }: ComputerViewerProps) {
+export function ComputerViewerCard({
+  computer,
+  createSession,
+  control
+}: ComputerViewerProps & {
+  // Who has control of the desktop, beside the title.
+  control?: ReactNode
+}) {
   const t = useTranslations('Computers.viewer')
+  const ago = useAgo()
   const [open, setOpen] = useState(false)
-  const watchable = computer.status !== 'revoked' && computer.status !== 'offline'
+  const offline = computer.status === 'revoked' || computer.status === 'offline'
+  const asleep = computer.status === 'sleeping'
+  const idle = offline
+    ? {
+        icon: 'monitor-off',
+        text:
+          computer.status === 'offline' && computer.lastSeenAt
+            ? t('offlineSeen', { when: ago(computer.lastSeenAt) })
+            : t('offline')
+      }
+    : asleep
+      ? { icon: 'moon', text: t('asleep') }
+      : { icon: 'monitor', text: t('idle') }
   return (
     <div className="card overflow-hidden max-desktop:rounded-lg" data-computer-viewer>
-      <div className="cardhead flex-wrap gap-2">
-        <span className="cardtitle">{t('title')}</span>
+      <div className="cardhead gap-2">
+        <span className="cardtitle flex-none">{t('title')}</span>
+        <span className="ml-[6px] flex min-w-0 flex-1 items-center gap-[6px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          {control}
+        </span>
         {open ? (
-          <Button variant="secondary" size="sm" className="ml-auto" onClick={() => setOpen(false)}>
-            <Icon name="x" size={14} />
+          <Button variant="secondary" size="sm" className="flex-none" onClick={() => setOpen(false)}>
             {t('close')}
           </Button>
         ) : (
-          <Button variant="primary" size="sm" className="ml-auto" disabled={!watchable} onClick={() => setOpen(true)}>
-            <Icon name="monitor-play" size={14} />
+          <Button
+            variant="primary"
+            size="sm"
+            className="flex-none"
+            disabled={offline || asleep}
+            onClick={() => setOpen(true)}
+          >
+            <Icon name="screen-share" size={14} />
             {t('watch')}
           </Button>
         )}
@@ -46,16 +93,23 @@ export function ComputerViewerCard({ computer, createSession }: ComputerViewerPr
       {open ? (
         <ComputerViewerScreen computer={computer} {...(createSession ? { createSession } : {})} />
       ) : (
-        <div className="px-4 py-5 font-sans text-[13px] font-normal leading-[1.55] text-(--text-tertiary)">
-          {watchable ? t('idle') : t('offline')}
+        <div className="flex aspect-[16/10] flex-col items-center justify-center gap-[10px] bg-[#15111a] px-6">
+          <Icon name={idle.icon} size={26} color="#6f6779" />
+          <span className="max-w-[360px] text-center font-sans text-[13px] font-normal leading-[1.5] text-[#b8b0c4]">
+            {idle.text}
+          </span>
         </div>
       )}
+      <div className="flex items-center gap-[7px] border-t border-(--border-subtle) px-4 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+        <Icon name="shield-check" size={13} className="flex-none" />
+        <span>{t('privacy')}</span>
+      </div>
     </div>
   )
 }
 
 export interface ComputerViewerScreenProps extends ComputerViewerProps {
-  // The session dock's narrow column: tighter chrome, and an expand control that fills the window.
+  // The session dock's narrow column: tighter chrome.
   compact?: boolean
 }
 
@@ -97,7 +151,7 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
 
   const status = state?.status ?? null
   const inControl = status?.inControl ?? false
-  const send = (input: ViewerInput) => void session.current?.send(input)
+  const send = (input: ViewerInput) => session.current?.send(input) ?? Promise.resolve()
   const handlers = useInputHandlers(surface, status, send)
 
   const run = (action: () => Promise<void>) => {
@@ -130,6 +184,15 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
       >
         <StatusLine state={state} />
         <span className="ml-auto flex flex-wrap items-center gap-2">
+          {state?.path && state.stats && (
+            <span
+              className="font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary) tabular-nums"
+              title={t(state.path === 'screenshots' ? 'stats.frameTime' : 'stats.roundTrip')}
+              data-viewer-stats
+            >
+              {formatStats(state.stats)}
+            </span>
+          )}
           {state?.path && (
             <span className="badge" title={state.notes.join('\n') || undefined} data-viewer-path={state.path}>
               <Icon name={state.path === 'screenshots' ? 'image' : 'radio-tower'} size={12} />
@@ -148,21 +211,19 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
                 {t('takeControl')}
               </Button>
             ))}
-          {(compact || expanded) && (
-            <span title={expanded ? t('collapse') : t('expand')} data-viewer-expand>
-              <Button
-                variant="secondary"
-                size="sm"
-                ariaLabel={expanded ? t('collapse') : t('expand')}
-                onClick={() => {
-                  setExpanded((value) => !value)
-                  surface.current?.focus()
-                }}
-              >
-                <Icon name={expanded ? 'minimize-2' : 'maximize-2'} size={14} />
-              </Button>
-            </span>
-          )}
+          <span title={expanded ? t('collapse') : t('expand')} data-viewer-expand>
+            <Button
+              variant="secondary"
+              size="sm"
+              ariaLabel={expanded ? t('collapse') : t('expand')}
+              onClick={() => {
+                setExpanded((value) => !value)
+                surface.current?.focus()
+              }}
+            >
+              <Icon name={expanded ? 'minimize-2' : 'maximize-2'} size={14} />
+            </Button>
+          </span>
         </span>
       </div>
       {state?.error && (
@@ -203,7 +264,7 @@ export function ComputerViewerScreen({ computer, createSession, compact = false 
             tabIndex={0}
             aria-label={t('surface')}
             data-viewer-surface
-            className={inControl ? 'absolute inset-0 cursor-crosshair outline-none' : 'absolute inset-0 outline-none'}
+            className={inControl ? 'absolute inset-0 cursor-default outline-none' : 'absolute inset-0 outline-none'}
             {...handlers}
           />
         </div>
@@ -274,7 +335,7 @@ function StatusLine({ state }: { state: ViewerState | null }) {
 function useInputHandlers(
   surface: React.RefObject<HTMLDivElement | null>,
   status: ViewerStatus | null,
-  send: (input: ViewerInput) => void
+  send: (input: ViewerInput) => Promise<void>
 ) {
   const down = useRef<(Point & { button: (typeof BUTTONS)[number] }) | null>(null)
   const lastClick = useRef<{ at: number; button: string; timer: ReturnType<typeof setTimeout> } | null>(null)
@@ -304,18 +365,17 @@ function useInputHandlers(
   const modifiers = (event: { ctrlKey: boolean; shiftKey: boolean; altKey: boolean }) =>
     [event.ctrlKey && 'ctrl', event.shiftKey && 'shift', event.altKey && 'alt'].filter((m): m is string => Boolean(m))
 
-  // Hover sends only the latest position, never while one is in flight.
+  // Hover sends only the latest position, after the previous move is applied: inputs are serial, so a timer outruns the round trip.
   const queueMove = (p: Point) => {
     moving.current.next = p
     if (moving.current.busy) return
     moving.current.busy = true
     const target = moving.current.next
     moving.current.next = null
-    send({ type: 'move', ...target })
-    setTimeout(() => {
+    void send({ type: 'move', ...target }).finally(() => {
       moving.current.busy = false
       if (moving.current.next) queueMove(moving.current.next)
-    }, 50)
+    })
   }
 
   const flushText = () => {

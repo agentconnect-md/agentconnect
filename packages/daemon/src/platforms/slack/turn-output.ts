@@ -1,68 +1,82 @@
-/**
- * Slack's **turn-output surface** (integration-plugin-architecture.md §7.3,
- * stage S2).
- *
- * Slack is the hard one, and for a reason worth stating plainly: it was the
- * FIRST platform, so its output code never had to justify itself as
- * platform-specific. It simply was "how the daemon posts". The other three
- * extractions found a self-contained applier and lifted it; here the applier had
- * grown seven private helpers in `daemon.ts` that read like core utilities but
- * are Slack API shapes end to end — `chat.postMessage` option bags, block-edit
- * retries, a `chat.delete` for the status bar.
- *
- * WHAT MOVED, AND WHY IT MOVED WITH THE APPLIER. The helpers come along rather
- * than becoming host capabilities. Had they stayed, this platform's host port
- * would be eight functions wide against Telegram's two — and every one of those
- * eight would take or return a Slack type, which is a port in name only. Two
- * groups:
- *
- *  - Applier-private: `postSlackReply` (the born-with-its-footer post boundary) and
- *    `findExistingSlackStatusBarTs`.
- *  - Shared with core call sites: the four option builders and
- *    `clearStaleSlackReplyFooters`. These are PURE functions of the turn record,
- *    so they move as exported functions and core imports them back — the
- *    dependency points core → platform, which is the direction the design wants.
- *
- * WHAT DID NOT MOVE. `progressTs` / `statusBarTs` / `lastReply` /
- * `attribution` and their `*Attempted` flags stay on the core turn record — now
- * clustered there as `chrome` and `reply`. They LOOK like Slack state, and
- * eventually most of them belong in the opaque slot beside `staleReplyFooters` —
- * but core reads them today from suppression, re-anchoring, and human-input paths
- * (`attribution` alone has 30+ readers). The structural `SlackTurn` view below
- * names that surface exactly, which is what makes the follow-up a mechanical
- * field migration instead of an archaeology project. Moving them here in the same
- * change would be the §16 failure mode: relocating a body while silently
- * redefining what it may reach.
- *
- * WEBCHAT / HOOK / DREAM still render through this applier — it is the registry's
- * CORE surface, not merely Slack's (§12). The `platform !== 'slack'` guards in the
- * option builders are what make that safe: a non-Slack origin gets `undefined`
- * options and posts without Slack identity decoration.
- */
+// Slack owns native task views, chrome and reply rendering; core callers retain their platform guards.
 import type { SlackConnection, SlackPostOptions, SlackStatusOptions, SlackTurnStream } from '../../slack/connection.js'
 import type { SlackAction } from '../../slack/render.js'
+import { startCodeDiff, type CodeDiffHost, type CodeDiffOutput } from './code-diff.js'
+import { TaskDiffUnavailable } from '../../workspace/task-diff.js'
 
-/** Slack's opaque per-turn state (§7.3) — the footer edits still owed, plus the turn's
- *  native tool-call chrome stream (slack-streaming-turn-output.md §3). */
+// Slack owns its task diff, native chrome stream and pending footer edits.
 export interface SlackTurnState {
-  /** Older reply sections whose footer-removal update failed. Retried on the next
-   *  body section and once more at finalization, so a transient Slack error cannot
-   *  leave two footers standing. */
+  codeDiff?: CodeDiffOutput
+  // Retry failed footer removals on the next body section and at finalization.
   staleReplyFooters?: { ts: string; text: string }[]
-  /** The turn's chrome stream, until Slack confirms it is settled. Retired only on a definite
-   *  answer, so a transient stop failure still has a handle for the settlement retry. */
+  // Retain the stream until Slack confirms settlement so failed stops can be retried.
   stream?: SlackTurnStream
   /** Coalescing timer for stream appends (§3.5), the Slack analogue of Feishu's. */
   streamTimer?: NodeJS.Timeout
-  /** The stream never opened, so this turn's chrome renders as today's in-place `progress`
-   *  message instead. One-way for the turn — no replacement stream is ever attempted. */
+  // Fall back to in-place progress for this turn without opening a replacement stream.
   streamDegraded?: boolean
-  /** The stream is settled, by our stop or by the person's. Nothing more is appended to it,
-   *  no second stop is issued, and no replacement message is ever posted for chrome. */
+  // A settled stream receives no further appends, stops or replacement messages.
   streamDead?: boolean
-  /** The human this turn's cards are addressed to (`recipient_user_id`, required outside a
-   *  DM). Absent on a cron / hook / dream / agent-to-agent turn, where the bot names itself. */
+  // Cards name this human recipient, or the bot itself when no person started the turn.
   recipient?: string
+}
+
+export async function startSlackCodeDiff(
+  turn: SlackTurn,
+  state: SlackTurnState,
+  host: Pick<CodeDiffHost, 'open' | 'authorize' | 'active' | 'mask' | 'notice' | 'debug'>
+): Promise<string | undefined> {
+  if (!turn.conn || turn.plan.isDm || turn.plan.sessionThread !== turn.plan.channel) return undefined
+  const conn = turn.conn as SlackConnection
+  let hasPublished = false
+  try {
+    const channel = await conn.codeChannel(turn.plan.channel)
+    if (!channel.code || !channel.owners.includes(conn.botUserId)) return undefined
+    const existing = (await conn.codeChannelApi('listViews', { channel_id: turn.plan.channel })) as {
+      views?: { view_id?: string }[]
+    }
+    hasPublished = existing.views?.some((view) => view.view_id === 'code') === true
+  } catch {
+    if (host.active())
+      await host
+        .notice('Code diff is not updating. Slack could not confirm this code channel and its views.')
+        .catch(() => {})
+    return undefined
+  }
+  state.codeDiff = await startCodeDiff({
+    ...host,
+    hasPublished,
+    publish: async (content, signal) => {
+      try {
+        if (content)
+          await conn.codeChannelApi(
+            'setView',
+            {
+              channel_id: turn.plan.channel,
+              type: 'diff',
+              content,
+              base_branch: 'Task start',
+              head_branch: 'Current workspace'
+            },
+            signal
+          )
+        else await conn.codeChannelApi('removeView', { channel_id: turn.plan.channel, view_id: 'code' }, signal)
+      } catch (error) {
+        const code =
+          error instanceof Error
+            ? /^Slack agents\.conversations\.(?:setView|removeView) failed: ([a-z0-9._:-]{1,64})$/i.exec(
+                error.message
+              )?.[1]
+            : undefined
+        throw new TaskDiffUnavailable(
+          code ? `Slack rejected the update (${code}).` : 'Slack did not confirm the update.'
+        )
+      }
+    }
+  })
+  return state.codeDiff
+    ? 'The platform maintains the Code diff from this task’s assigned repositories, including uncommitted changes and commits. Work in those repositories. Do not call setSlackCodeView(type: diff) for this task or overwrite its Code view. HTML and PR views remain available.'
+    : undefined
 }
 
 /** The core turn, as Slack's applier sees it. `Pending` satisfies it structurally.
@@ -431,9 +445,9 @@ async function postSlackReply<TTurn extends SlackTurn>(
 /** Push the stored session title once the status or stream write that just landed registered the thread (an earlier rename is refused). */
 async function flushSessionTitle(conn: SlackConnection, p: SlackTurn): Promise<void> {
   const title = p.chrome.sessionTitleToPush
-  if (!title || !p.plan.thread) return
+  if (!title) return
   p.chrome.sessionTitleToPush = undefined
-  await conn.setTitle(p.plan.channel, p.plan.thread, title)
+  await conn.setTitle(p.plan.channel, p.plan.statusThread, title)
 }
 
 /** The single in-place tool-activity message: post once, then edit. Shared by the legacy
@@ -491,22 +505,32 @@ export async function applySlackAction<TTurn extends SlackTurn>(
   // Chrome variant of the identity: marks status/progress/plan/reasoning/notice/card
   // messages so a peer daemon's thread backfill skips them (they are not conversation).
   const chromeOptions: SlackPostOptions = { ...(identity ?? {}), chrome: true }
+  if (
+    (action.kind === 'status-bar' || action.kind === 'clear-status-bar') &&
+    action.info &&
+    !p.plan.isDm &&
+    p.plan.sessionThread === p.plan.channel
+  ) {
+    const native = await conn.updateCodeContext(p.plan.channel, { info: action.info }).catch(() => {
+      host.debug('slack: native session controls update failed')
+      return false
+    })
+    if (native) action = { kind: 'clear-status-bar' }
+  }
   switch (action.kind) {
     case 'set-status':
       if (p.plan.thread) {
-        await conn.setStatus(
-          p.plan.channel,
-          p.plan.thread,
-          action.text,
-          slackStatusOptions(p.plan.platform, p.plan.agentName, p.plan.iconUrl, p.plan.sessionKey)
-        )
+        await conn.setStatus(p.plan.channel, p.plan.statusThread, action.text, {
+          ...slackStatusOptions(p.plan.platform, p.plan.agentName, p.plan.iconUrl, p.plan.sessionKey),
+          ...(action.lifecycle ? { lifecycle: action.lifecycle } : {})
+        })
         await flushSessionTitle(conn, p)
       }
       return
     case 'set-title':
       // A live runtime title supersedes any stored title still waiting on its first status.
       p.chrome.sessionTitleToPush = undefined
-      if (p.plan.thread) await conn.setTitle(p.plan.channel, p.plan.thread, action.text)
+      if (p.plan.thread) await conn.setTitle(p.plan.channel, p.plan.statusThread, action.text)
       return
     case 'post': {
       const trackReply = action.attributed !== false
@@ -546,6 +570,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         // Same identity as every row — an undecorated stream has no app-profile fallback.
         state.stream = await conn.startTurnStream(p.plan.channel, p.plan.thread, {
           isDm: p.plan.isDm,
+          ...(action.taskDisplayMode ? { taskDisplayMode: action.taskDisplayMode } : {}),
           ...(state.recipient ? { recipientUserId: state.recipient } : {}),
           ...(identity ? { identity } : {})
         })
@@ -594,6 +619,8 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       return
     }
     case 'plan':
+      // A code channel keeps its lifecycle and Plan tab on the channel, independent of the reply target.
+      if (p.plan.statusThread === p.plan.channel) conn.writePlanCanvas(p.plan.channel, action.markdown)
       // Block Kit, not text: the checklist is a native checkbox list (slack/render.ts
       // renderPlan). Same post-once/edit-thereafter contract as `progress` — `action.text`
       // rides along as the notification/fallback string only.

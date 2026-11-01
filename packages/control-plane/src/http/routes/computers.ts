@@ -160,6 +160,7 @@ function toDto(
     canEditAgentAccess: canEditAgentAccess(c, ctx),
     allocation: c.allocation,
     ownerAgentId: c.ownerAgentId,
+    poolSessionId: c.poolSessionId,
     poolPhase: c.poolPhase,
     poolError: c.poolError,
     poolActions: {
@@ -650,7 +651,7 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Set computer policy',
           description:
-            'Replaces how a Computer is used (allowed members, view or control, approvals, app limits, quiet hours, lease limits, screenshot retention in days where 0 stores none). Omitted fields take their defaults. Only the registrant may change the policy of their own self-hosted desktop, and the owner always stays an allowed member. Which agents may use it is its agent access (`PUT /computers/{id}/agent-access`).',
+            'Replaces how a Computer is used (allowed members, view or control, approvals, app limits, quiet hours, lease limits, screenshot retention in days where 0 stores none, and the command-line tier: `shell`, `files` and `fileRoots`, which a managed Computer defaults on and a self-hosted one off). Omitted fields take their defaults. Only the registrant may change the policy of their own self-hosted desktop, and the owner always stays an allowed member. Which agents may use it is its agent access (`PUT /computers/{id}/agent-access`).',
           operationId: 'setComputerPolicy',
           params: IdParam,
           body: ComputerPolicySchema,

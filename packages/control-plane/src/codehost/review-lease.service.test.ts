@@ -99,6 +99,7 @@ function hook(overrides: Partial<HookRecord> = {}): HookRecord {
     family: 'merge_request',
     commentFamilies: [],
     labelFilter: [],
+    skipDrafts: false,
     mentionOnly: false,
     configRevision: 7n,
     dispatchRevision: 9n,

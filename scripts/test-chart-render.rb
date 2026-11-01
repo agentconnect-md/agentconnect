@@ -756,7 +756,7 @@ abort("unexpected file transfer document: #{transfer_doc_of.call(secret_cp)}") u
     'source' => 'static', 'dir' => '/var/run/ac-source-cache',
     'accessKeyIdKey' => 'AWS_ACCESS_KEY_ID', 'secretAccessKeyKey' => 'AWS_SECRET_ACCESS_KEY'
   },
-  'limits' => { 'maxBytes' => '512Mi', 'urlSeconds' => '30m', 'putUrlSeconds' => '15m' }
+  'limits' => { 'partBytes' => '512Mi', 'urlSeconds' => '30m', 'putUrlSeconds' => '15m' }
 }
 abort('the control plane must mount the bucket Secret read-only at 0400') unless
   secret_cp_pod.fetch('volumes').include?({ 'name' => 'source-cache-credentials', 'secret' => { 'secretName' => 'example-source-cache', 'defaultMode' => 0o400 } }) &&
@@ -1001,6 +1001,34 @@ _, _, both_status = Open3.capture3(
   '--set-json', 'computerViewer.turn.urls=["turn:coturn.example.test:3478"]'
 )
 abort('a coturn beside Cloudflare TURN must fail the render') if both_status.success?
+
+# External STUN: the Control Plane issues it in place of the relays' own, and a desktop reaches its UDP port (default 3478).
+xs_rendered, xs_error, xs_status = Open3.capture3(
+  *command, '--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test',
+  '--set-json', 'computerViewer.stun.urls=["stun:stun.cloudflare.com:3478","stun:stun.example.test"]'
+)
+abort("helm template (external STUN) failed:\n#{xs_error}") unless xs_status.success?
+xs_docs = YAML.load_stream(xs_rendered).compact
+xs_template = xs_docs.find { |doc| doc['kind'] == 'SandboxTemplate' && doc.dig('metadata', 'name') == 'example-agentconnect-computer' }
+xs_egress = xs_template.dig('spec', 'networkPolicy', 'egress', 1, 'ports').map { |p| "#{p['protocol']}/#{p['port']}" }
+abort("unexpected desktop media egress with external STUN: #{xs_egress}") unless xs_egress == %w[TCP/443 UDP/3478]
+_, xs_cp = control_plane_of.call(xs_docs)
+xs_url = xs_cp.fetch('env').find { |item| item['name'] == 'COMPUTER_STUN_URLS' }&.fetch('value')
+abort("external STUN must reach the Control Plane: #{xs_url.inspect}") unless xs_url == 'stun:stun.cloudflare.com:3478,stun:stun.example.test'
+abort('external STUN must be off by default') if control_plane_of.call(public_documents)[1].fetch('env').any? { |item| item['name'] == 'COMPUTER_STUN_URLS' }
+abort('desktop UDP egress for peer-to-peer media must be off by default') if
+  xs_template.dig('spec', 'networkPolicy', 'egress').any? { |rule| rule.fetch('ports', []).any? { |p| p['protocol'] == 'UDP' && p['port'].nil? } }
+p2p_rendered, p2p_error, p2p_status = Open3.capture3(
+  *command, '--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test',
+  '--set', 'computerPool.viewerPeerToPeerEgress=true'
+)
+abort("helm template (peer-to-peer egress) failed:\n#{p2p_error}") unless p2p_status.success?
+p2p_template = YAML.load_stream(p2p_rendered).compact.find { |doc| doc['kind'] == 'SandboxTemplate' && doc.dig('metadata', 'name') == 'example-agentconnect-computer' }
+p2p_rule = p2p_template.dig('spec', 'networkPolicy', 'egress').find { |rule| rule['ports'] == [{ 'protocol' => 'UDP' }] } ||
+           abort('peer-to-peer egress must admit UDP on any port')
+p2p_v4 = p2p_rule['to'].map { |peer| peer['ipBlock'] }.compact.find { |block| block['cidr'] == '0.0.0.0/0' }
+abort("peer-to-peer UDP must reach only public addresses: #{p2p_rule['to']}") unless
+  p2p_v4 && %w[10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10].all? { |cidr| p2p_v4.fetch('except', []).include?(cidr) }
 
 # Without the daemon pool nothing can claim a desktop, so the Control Plane must not advertise managed computers.
 poolless_rendered, poolless_error, poolless_status = Open3.capture3(*command, '--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test', '--set', 'daemonPool.enabled=false')

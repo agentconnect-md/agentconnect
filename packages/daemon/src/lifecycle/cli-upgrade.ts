@@ -43,3 +43,21 @@ export async function runCliUpgrade(
     })
   })
 }
+
+/** Run `agentconnect <args> --root <root>`, forwarding its stderr while keeping a bounded tail for failure classification. */
+export async function runCliCommand(
+  cliEntry: string,
+  args: string[],
+  root: string
+): Promise<{ ok: boolean; stderr: string }> {
+  return await new Promise((resolve) => {
+    const child = spawn(process.execPath, [cliEntry, ...args, '--root', root], { stdio: ['ignore', 'inherit', 'pipe'] })
+    let stderr = ''
+    child.stderr?.on('data', (chunk: Buffer) => {
+      process.stderr.write(chunk)
+      stderr = (stderr + chunk.toString('utf8')).slice(-8_192)
+    })
+    child.on('close', (code) => resolve({ ok: code === 0, stderr }))
+    child.on('error', (err) => resolve({ ok: false, stderr: err.message }))
+  })
+}

@@ -23,6 +23,8 @@ export interface CodeHostProjection {
   readonly repoNounShort: string
   /** What this host calls a proposed change, as a copy selector: Gitea stores `merge_request` but says pull request. */
   readonly changeNoun: 'pull_request' | 'merge_request'
+  /** The provider's setup page, relative to the docs root. */
+  readonly docsPath: string
 }
 
 export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> = {
@@ -31,21 +33,24 @@ export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> 
     publicHost: 'github.com',
     repoNoun: 'repository',
     repoNounShort: 'repo',
-    changeNoun: 'pull_request'
+    changeNoun: 'pull_request',
+    docsPath: 'connect-automate/triggers-automation/github'
   },
   gitlab: {
     label: 'GitLab',
     publicHost: 'gitlab.com',
     repoNoun: 'project',
     repoNounShort: 'project',
-    changeNoun: 'merge_request'
+    changeNoun: 'merge_request',
+    docsPath: 'connect-automate/triggers-automation/gitlab'
   },
   gitea: {
     label: 'Gitea',
     publicHost: 'gitea.com',
     repoNoun: 'repository',
     repoNounShort: 'repo',
-    changeNoun: 'pull_request'
+    changeNoun: 'pull_request',
+    docsPath: 'connect-automate/triggers-automation/gitea'
   }
 }
 

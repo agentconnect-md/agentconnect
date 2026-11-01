@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -90,6 +90,17 @@ describe('scanArtifacts', () => {
       'ok-apache@1.0.0',
       'ok-mit@1.0.0'
     ])
+  })
+
+  it("attributes a build-time define to the scanned package's own license", async () => {
+    const { artifacts, options } = await fixture({ 'ok-mit': 'MIT' })
+    const metafile = join(artifacts, '.meta/out.mjs.json')
+    const meta = JSON.parse(readFileSync(metafile, 'utf8')) as { inputs: Record<string, unknown> }
+    meta.inputs['<define:__FIXTURE_SOURCES__>'] = { bytes: 10, imports: [] }
+    writeFileSync(metafile, JSON.stringify(meta))
+    const result = scanArtifacts(artifacts, options)
+    expect(result.violations).toEqual([])
+    expect(result.components.map((component) => component.name)).toEqual(['fixture@1.0.0', 'ok-mit@1.0.0'])
   })
 
   it('fails a seeded AGPL dependency, and the CLI exits non-zero', async () => {

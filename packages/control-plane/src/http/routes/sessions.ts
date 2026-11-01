@@ -36,13 +36,14 @@ import {
   isSubsessionCoordinate,
   SANDBOX_KEEP_ALIVE_FEATURE,
   WEBCHAT_IMAGES_FEATURE,
-  continuableOrigin,
+  continuableSession,
   type SharedImageResolveOk,
   type CodeHostProvider,
   type HookKind
 } from '@agentconnect.md/protocol'
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { makeSessionAccessResolver } from '../session-access.js'
+import { continuationAudience } from '../../domain/continuation-audience.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
@@ -159,6 +160,17 @@ function requestedAgentIds(query: z.infer<typeof SessionFilterQueryDto>): string
 
 const HOOK_TRIGGER_PREFIX = 'hook:'
 const HookIdString = z.string().uuid()
+
+/** The `triggeredBy` values one filter pick stands for: a member's sessions are filed under their user id or, on older rows, their email. */
+async function triggeredByFilter(
+  deps: HttpDeps,
+  orgId: OrgId,
+  value: string | undefined
+): Promise<string[] | undefined> {
+  if (!value) return undefined
+  const member = (await deps.repos.user.listMembers(orgId)).find((m) => m.userId === value || m.email === value)
+  return member ? [member.userId, ...(member.email ? [member.email] : [])] : [value]
+}
 
 /** Which code-host hook definitions this request has to resolve, keyed by provider. A
  *  repository filter stays GitHub-only — the numeric repo id is GitHub's alone; otherwise
@@ -798,6 +810,7 @@ export function sessionRoutes(deps: HttpDeps) {
           req.query,
           true
         )
+        const triggeredBy = await triggeredByFilter(deps, orgOf(req), req.query.triggeredBy)
         // A multi-agent request narrows to the qualifying CONVERSATIONS and then
         // reads facets off every member row the caller can see, rather than only
         // the selected agents' rows: a facet answers "what else can I narrow by",
@@ -809,7 +822,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
-          ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
+          ...(triggeredBy ? { triggeredBy } : {}),
           ...(req.query.tasks === 'exclude' ? { excludeSubsessions: true } : {}),
           codeHostHookIds,
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
@@ -895,6 +908,7 @@ export function sessionRoutes(deps: HttpDeps) {
           req.query,
           false
         )
+        const triggeredBy = await triggeredByFilter(deps, orgOf(req), req.query.triggeredBy)
         // Two or more selected agents ask for the threads they SHARE. The rows stay
         // scoped to those agents (`agentIds`), so `?agentId=a` keeps returning
         // exactly what it always did. Every branch below reads this one binding —
@@ -913,7 +927,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.platform ? { platform: req.query.platform } : {}),
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
-          ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
+          ...(triggeredBy ? { triggeredBy } : {}),
           ...(req.query.activityState ? { activityState: req.query.activityState } : {}),
           ...(req.query.tasks === 'exclude' ? { excludeSubsessions: true } : {}),
           ...(Object.keys(codeHostHookIds).length > 0 ? { codeHostHookIds } : {}),
@@ -1044,11 +1058,13 @@ export function sessionRoutes(deps: HttpDeps) {
         const orgAgentIdSet = new Set<string>(orgAgentIds)
         const agentNames = new Map(orgAgents.map((agent) => [agent.id, agentDisplayName(agent)]))
         const ctx = ctxOf(req)
+        // A threaded task's parent is the session owning it now, which its lineage does not record (auto-session-mode.md §6.2).
+        const parentId = s.parentSessionId ?? s.taskParentSessionId ?? null
         const [parent, children, siblingCandidates, usage, webchatRoster, hookMetadata, channelNames] =
           await Promise.all([
-            s.parentSessionId ? deps.repos.session.get(orgOf(req), s.parentSessionId) : Promise.resolve(null),
+            parentId ? deps.repos.session.get(orgOf(req), parentId) : Promise.resolve(null),
             deps.repos.session.listChildren(SessionId(s.id), orgAgentIds),
-            s.parentSessionId ? deps.repos.session.listChildren(s.parentSessionId, orgAgentIds) : Promise.resolve([]),
+            parentId ? deps.repos.session.listChildren(parentId, orgAgentIds) : Promise.resolve([]),
             deps.repos.sessionUsage.get(s.agentId, s.id),
             // A webchat session's channel IS its conversation id; the roster feeds
             // the adopted-session composer/header, which has no relay socket.
@@ -1065,20 +1081,22 @@ export function sessionRoutes(deps: HttpDeps) {
             (await deps.repos.webchatConversation.hasRemovedParticipants(orgOf(req), s.channel ?? '')))
         const hook = hookMetadataForSession(hookMetadata, s)
         const display = sessionDisplayMetadata(s, hook, channelNames)
-        // Continuation gate (webchat-cross-integration-continuation.md §6.5):
-        // the same predicate + state checks the mint route applies, projected as
-        // one server-computed flag + bounded product-language reason.
+        // Continuation gate (webchat-cross-integration-continuation.md §6.5): the mint route's checks, as one flag and a bounded reason.
         const continuationUnavailableReason = await (async () => {
           const owningAgent = orgAgents.find((agent) => agent.id === s.agentId)
+          // A task is continued by whoever may continue its owning session (auto-session-mode.md §10).
+          const audience = continuationAudience(s, parent)
+          const audienceAccess = audience === s || !audience ? access : await sessionAccess.forSessions(req, [audience])
           if (
             !owningAgent ||
             !canView(owningAgent, ctx) ||
-            !canContinueSession(s, ctx, access.identitySet, access.externalAccess)
+            !audience ||
+            !canContinueSession(audience, ctx, audienceAccess.identitySet, audienceAccess.externalAccess)
           ) {
             return 'unauthorized' as const
           }
           if (s.contentPurgedAt) return 'content_purged' as const
-          if (!continuableOrigin(s.platform ?? '')) return 'unsupported_platform' as const
+          if (!continuableSession(s)) return 'unsupported_platform' as const
           const host = await resolveContinuationHost(deps, s, owningAgent)
           return host.ok ? null : host.reason
         })()

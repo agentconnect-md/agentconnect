@@ -269,8 +269,12 @@ export interface DaemonRecord {
   createdByUserId: string | null
   visibility: ResourceVisibility
   sharedWith: string[] // complete app_user.id audience when visibility='restricted'
-  /** Console-set finished-session retention window ('never' | '7d' | '30d' | '90d'). */
+  /** Console-set retention of a finished session's row and transcript ('never' | '<n>d'). */
   sessionRetention: string
+  /** Console-set retention of a finished session's workspace and sandbox ('never' | '<n>d'). */
+  workspaceRetention: string
+  /** Console-set auto-upgrade switch (daemon-auto-upgrade.md §3). */
+  autoUpgrade: boolean
   lastModifiedAt: Date // last human edit (provision/rename); defaults to createdAt
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
   /** The member set this daemon is in (daemon-groups.md §2); null ⇒ it owns its agents outright. */
@@ -322,6 +326,15 @@ export interface DaemonRepo {
     sessionRetention: string,
     byUserId?: string
   ): Promise<DaemonRecord>
+  /** Set the console's workspace retention window (a human edit — stamps last-modified audit). Org-fenced like {@link DaemonRepo.rename}. */
+  setWorkspaceRetention(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    workspaceRetention: string,
+    byUserId?: string
+  ): Promise<DaemonRecord>
+  /** Set the console's auto-upgrade switch (a human edit when `byUserId` is given). Org-fenced like {@link DaemonRepo.rename}. */
+  setAutoUpgrade(orgId: OrgId, daemonId: DaemonId, autoUpgrade: boolean, byUserId?: string): Promise<DaemonRecord>
   /** Set the visibility + share set (the dedicated `/sharing` write path). Stamps
    *  the last-modified audit; `byUserId` is the editing WebUI principal (absent
    *  under devAuth). Org-fenced like {@link DaemonRepo.rename}. */
@@ -390,11 +403,17 @@ export interface DaemonRepo {
 // ───────────────────────────────────────────────────────────────────────────
 
 export type DaemonLifecycleOpType = 'restart' | 'upgrade'
-export type DaemonLifecycleOpStatus = 'pending' | 'succeeded' | 'failed'
+export type DaemonLifecycleOpStatus = 'pending' | 'succeeded' | 'failed' | 'deferred'
+/** A console command (`manual`) or the daemon's own auto-upgrader (`auto`, daemon-auto-upgrade.md §6). */
+export type DaemonLifecycleOpTrigger = 'manual' | 'auto'
 
 export interface OpenLifecycleOpInput {
   daemonId: DaemonId
   op: DaemonLifecycleOpType
+  /** Defaults to `manual`. */
+  trigger?: DaemonLifecycleOpTrigger
+  /** Opened already armed — the daemon itself started an automatic op. */
+  acceptedAt?: Date
   /** The version the daemon must reach for an upgrade to close `succeeded`; omit for restart. */
   targetVersion?: string
   /** app_user.id that commanded it (audit); absent under devAuth / system. */
@@ -412,6 +431,7 @@ export interface DaemonLifecycleOpRecord {
   id: string
   daemonId: DaemonId
   op: DaemonLifecycleOpType
+  trigger: DaemonLifecycleOpTrigger
   targetVersion: string | null
   initiator: string | null
   status: DaemonLifecycleOpStatus
@@ -442,11 +462,14 @@ export interface DaemonLifecycleOpRepo {
   getById(id: string): Promise<DaemonLifecycleOpRecord | null>
   /** The single pending op for a daemon, or null. */
   pendingForDaemon(daemonId: DaemonId): Promise<DaemonLifecycleOpRecord | null>
-  /** The most recent op for a daemon (ANY status), or null — the fleet DTO reads this so
-   *  a terminal (succeeded/failed) op is still observable by the console after it settles. */
+  /** The most recent non-deferred op for a daemon, or null — terminal ops stay observable to the console. */
   latestForDaemon(daemonId: DaemonId): Promise<DaemonLifecycleOpRecord | null>
-  /** The most recent op per daemon across a set (ANY status) — the batched fleet read (no N+1). */
+  /** The most recent non-deferred op per daemon across a set — the batched fleet read (no N+1). */
   latestForDaemons(daemonIds: DaemonId[]): Promise<DaemonLifecycleOpRecord[]>
+  /** The most recent non-deferred `auto` op per daemon across a set — the console's last automatic outcome. */
+  latestAutoForDaemons(daemonIds: DaemonId[]): Promise<DaemonLifecycleOpRecord[]>
+  /** Delete `deferred` rows settled before `cutoff`; returns how many. */
+  deleteDeferredBefore(cutoff: Date): Promise<number>
   /** Fail every `pending` op past its `deadline` (optionally scoped to one daemon) — the
    *  clock-driven expiry that unblocks a daemon whose command was accepted but which never
    *  re-registered. Returns the number expired. */
@@ -540,6 +563,8 @@ export interface ApiKeyRepo {
   create(input: CreateApiKeyInput): Promise<ApiKeyRecord>
   /** Indexed point-lookup by the unique peppered hash — the credential verification site. */
   findByHash(hash: string): Promise<ApiKeyRecord | null>
+  /** A row by id, revoked or not, so a long-lived grant can recheck the credential behind it. */
+  findById(id: string): Promise<ApiKeyRecord | null>
   /** Throttled liveness write on successful auth. */
   touchLastUsed(id: string, at: Date): Promise<void>
   /** Kill switch: set `revokedAt` (+ reason). Checked on every auth.
@@ -1307,6 +1332,8 @@ export interface AgentRecord {
   /** Nullable on scratch/anonymous and pre-R2a rows; action-time authorization
    *  fails closed until a legacy github workspace is lazily repaired. */
   workspaceRepoId?: bigint
+  /** The agent's dedicated GitHub App (GithubApp.id); absent/null ⇒ the deployment App. */
+  githubAppId?: string | null
   capabilities: string[]
   createdAt: Date
   createdBy: AgentCreator | null // null for daemon/CLI-created agents (no WebUI principal)
@@ -1602,6 +1629,8 @@ export interface AssignmentRepo {
 export interface EventSessionInput {
   sessionId: SessionId
   parentSessionId?: SessionId
+  /** The session owning this one as a task now (auto-session-mode.md §6.2); null clears it, absent keeps it. */
+  taskParentSessionId?: SessionId | null
   agentId: AgentId
   launchId?: LaunchId // absent for Slack/Discord-created sessions (no CP launch fence)
   phase: SessionPhase
@@ -1729,6 +1758,8 @@ export interface SessionExternalAccessSnapshot {
 export interface SessionMetaRecord {
   id: SessionId
   parentSessionId: SessionId | null
+  /** The session owning this one as a task now, which its daemon moves or clears (auto-session-mode.md §6.2). */
+  taskParentSessionId?: SessionId | null
   agentId: AgentId
   launchId: LaunchId | null
   platform: Platform | null
@@ -1808,7 +1839,8 @@ export interface SessionQuery {
 
 export interface SessionFilterQuery extends SessionQuery {
   integration?: Platform | CodeHostProvider
-  triggeredBy?: string
+  /** Rows started by any of these senders — one person's ids, e.g. a member's user id and email. */
+  triggeredBy?: readonly string[]
   /** Live wait state (slack-approval-dm.md §7) — the console bell asks for `awaiting_permission`. */
   activityState?: ActivityState
   /** Leave out tasks: rows whose thread is a `subsession:` coordinate. */
@@ -2059,6 +2091,7 @@ export interface SessionRepo {
       ownerIdentity: string | null
       externalProvider: string | null
       thread: string | null
+      taskParentSessionId: string | null
     }) => boolean
   ): Promise<SessionVisibilityChange>
   /** Raise the daemon-ack watermark (§5.1). Monotonic: a late ack for an older
@@ -2501,7 +2534,7 @@ export interface WebchatConversationRepo {
    *  at creation). Conversation + participant rows commit atomically. */
   create(binding: WebchatConversationBinding, memberAgentIds?: AgentId[]): Promise<void>
   /** Create a single-agent conversation under a caller-derived id unless it exists, converging when two first turns race. */
-  ensure(binding: WebchatConversationBinding, apiKeyId: string): Promise<void>
+  ensure(binding: WebchatConversationBinding, apiKeyId?: string): Promise<void>
   /** The name of the API key that opened each of these conversations through the agent chat API, org-fenced; console conversations are absent. */
   apiKeyNames(orgId: OrgId, conversationIds: readonly string[]): Promise<Map<string, string>>
   /** The live roster (primary first, removed members excluded); empty for an unknown or cross-org conversation, so callers fail closed. */
@@ -2655,6 +2688,10 @@ export interface AcceptWebchatMcpGrantInput {
   now: Date
 }
 
+export interface RenewWebchatMcpGrantInput extends AcceptWebchatMcpGrantInput {
+  expiresAt: Date
+}
+
 export interface RevokeWebchatMcpGrantsInput {
   authorityId: string
   authorityGeneration: number
@@ -2666,6 +2703,7 @@ export interface RevokeWebchatMcpGrantsInput {
 export interface WebchatMcpAccessGrantRepo {
   issue(input: IssueWebchatMcpGrantInput): Promise<WebchatMcpAccessGrantRecord | null>
   accept(input: AcceptWebchatMcpGrantInput): Promise<WebchatMcpAccessGrantRecord | null>
+  renew(input: RenewWebchatMcpGrantInput): Promise<WebchatMcpAccessGrantRecord | null>
   revokeAuthority(input: RevokeWebchatMcpGrantsInput): Promise<boolean>
   getByTokenHash(tokenHash: string): Promise<WebchatMcpAccessGrantRecord | null>
 }
@@ -2874,6 +2912,8 @@ export interface UsageAggregate {
    *  plug figure that would absorb any attribution bug and leave the caller adding up
    *  perfectly, where an independent sum makes the equality a checkable invariant. */
   unattributed?: Omit<AgentUsageAggregate, 'agentId'>
+  /** Each agent's coordinator sessions (auto-session-mode.md §4.6), a part of its `agents` row the reader may attribute, so the console can show it. */
+  coordinators: AgentUsageAggregate[]
   /** Viewer-scoped, splits and per-bucket total alike, so a bucket never hands over
    *  withheld spend resolved in time. It therefore does NOT sum to `totals` — see
    *  `unattributed`. This is a convenience boundary, NOT a security one: `from`/`to` are
@@ -3176,6 +3216,7 @@ export interface UpsertHookInput {
   /** Scopes GitHub's shared issue_comment subscription to this row's family. */
   commentFamilies?: HookCommentFamily[]
   labelFilter?: string[]
+  skipDrafts?: boolean
   mentionOnly?: boolean
   reviewPolicy?: HookReviewPolicy
   reportingMode?: HookReportingMode
@@ -3218,6 +3259,8 @@ export interface HookRecord {
   /** Empty = legacy repo-wide comments; non-empty scopes comments to these subjects. */
   commentFamilies: HookCommentFamily[]
   labelFilter: string[]
+  /** GitHub pull-request rows: draft revisions do not fire, and leaving draft reviews the head. */
+  skipDrafts: boolean
   mentionOnly: boolean
   configRevision: bigint
   dispatchRevision: bigint
@@ -4279,6 +4322,8 @@ export interface GithubInstallationFacts {
 export interface GithubInstallationRecord extends GithubInstallationFacts {
   id: string // our row id (uuid) — what agents reference as provenance
   orgId: OrgId
+  /** The agent's dedicated App this installation belongs to; absent/null ⇒ the deployment App. */
+  githubAppId?: string | null
   revokedAt: Date | null
   createdAt: Date
 }
@@ -4286,18 +4331,28 @@ export interface GithubInstallationRecord extends GithubInstallationFacts {
 export interface GithubInstallationRepo {
   /** Claim/update by GitHub installation id. The setup callback is the only
    * path allowed to create a claim; refresh paths pass the durable claim's org. */
-  upsertFromGithub(orgId: OrgId, facts: GithubInstallationFacts): Promise<GithubInstallationRecord>
+  upsertFromGithub(
+    orgId: OrgId,
+    facts: GithubInstallationFacts,
+    /** The dedicated App the facts were pulled with; omitted ⇒ the deployment App. A row keeps its App. */
+    githubAppId?: string | null
+  ): Promise<GithubInstallationRecord>
   /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
    *  as absent, exactly like a missing row. The claim row IS the tenancy record
    *  for an installation, so this is the read the HTTP surface must use. */
   get(orgId: OrgId, id: string): Promise<GithubInstallationRecord | null>
-  /** Live (non-revoked) installations claimed by the org — the picker's first level. */
+  /** Live (non-revoked) deployment-App installations claimed by the org — the picker's first level. */
   listForOrg(orgId: OrgId): Promise<GithubInstallationRecord[]>
-  /** Every durable claim for an org, including revoked rows. Sync refreshes
+  /** Every durable claim for an org, including revoked rows and every App. Sync refreshes
    * exactly this set, so it never assigns an unclaimed or foreign installation. */
   listClaimsForOrg(orgId: OrgId): Promise<GithubInstallationRecord[]>
-  /** Mint-time resolution: the live installation covering `accountLogin` in this org. */
-  liveByOrgAndAccount(orgId: OrgId, accountLogin: string): Promise<GithubInstallationRecord | null>
+  /** Mint-time resolution: the live installation covering `accountLogin` in this org
+   *  under one App — the deployment App by default, or the dedicated App an agent acts as. */
+  liveByOrgAndAccount(
+    orgId: OrgId,
+    accountLogin: string,
+    githubAppId?: string | null
+  ): Promise<GithubInstallationRecord | null>
   /** Doorbell lookup by GITHUB-side id (revoked rows included — the claim row is
    *  what maps the poke to an org; unknown ⇒ no org claim yet, ignore).
    *  System-tier and deliberately CROSS-ORG: resolving the owning organization
@@ -4313,6 +4368,67 @@ export interface GithubInstallStateStore {
   put(nonce: string, orgId: OrgId, expiresAt: Date): Promise<void>
   /** True iff the nonce existed (it is deleted atomically) — false ⇒ replay/unknown. */
   consume(nonce: string): Promise<boolean>
+}
+
+/** An agent's dedicated GitHub App (github-app-git-credentials.md §Dedicated Apps).
+ *  The private key is never on the record; read it via {@link GithubAppSecretStore}. */
+export interface GithubAppRecord {
+  id: string
+  orgId: OrgId
+  /** The agent working through the App; null ⇒ free for any agent of the org. */
+  agentId: string | null
+  appId: bigint
+  slug: string
+  clientId: string | null
+  botUserId: bigint | null
+  createdAt: Date
+}
+
+/** Why an agent's App could not change: the target is taken, or an account it works on has no installation of it. */
+export type GithubAppSwitchRefusal =
+  { kind: 'app_in_use' } | { kind: 'agent_changed' } | { kind: 'missing_installation'; accountLogin: string }
+
+export interface GithubAppRepo {
+  /** A new, free App of the org. */
+  create(input: {
+    id: string
+    orgId: OrgId
+    appId: bigint
+    slug: string
+    clientId: string | null
+    botUserId: bigint | null
+  }): Promise<GithubAppRecord>
+  /** Org-fenced point read: a cross-org id reads as absent. */
+  get(orgId: OrgId, id: string): Promise<GithubAppRecord | null>
+  /** Cross-org read for the token signer and the App's setup callback, which hold only the App id. */
+  getUnscoped(id: string): Promise<GithubAppRecord | null>
+  /** Cross-org read by GitHub App id, for a delivery its webhook secret verified. */
+  getByAppId(appId: bigint): Promise<GithubAppRecord | null>
+  listForOrg(orgId: OrgId): Promise<GithubAppRecord[]>
+  /** Moves the agent from `from` to `to` (null ⇒ built-in) in one transaction, repointing every installation it records to `to`'s on the same account. */
+  switchAgent(input: {
+    orgId: OrgId
+    agentId: string
+    from: string | null
+    to: string | null
+  }): Promise<{ ok: true } | ({ ok: false } & GithubAppSwitchRefusal)>
+  /** Cascades to the App's installations; refuses (false) while an agent works through it. */
+  deleteFree(orgId: OrgId, id: string): Promise<boolean>
+}
+
+/** One organization App's webhook, as the relay verifies it. */
+export interface GithubAppWebhook {
+  githubAppId: string
+  appId: bigint
+  webhookSecret: string
+}
+
+/** Sealed App private key (base64 PEM), read ONLY by the token signer, and its webhook secret, read only for the relay. */
+export interface GithubAppSecretStore {
+  put(orgId: OrgId, githubAppId: string, privateKeyB64: string, webhookSecret?: string): Promise<void>
+  get(orgId: OrgId, githubAppId: string): Promise<string | null>
+  /** Every App created with a webhook, across orgs. */
+  listWebhooks(): Promise<GithubAppWebhook[]>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -6148,8 +6264,8 @@ export type ChannelActivation =
       decisionNeedsReview: boolean
     }
 
-/** Which session an activation in a conversation joins (channel-session-mode.md §5). */
-export type ChannelSessionMode = 'createNew' | 'append'
+/** Which session an activation in a conversation joins (channel-session-mode.md §5, auto-session-mode.md §3.1). */
+export type ChannelSessionMode = import('@agentconnect.md/protocol').ChannelSessionMode
 
 /** Member channel vs direct conversation (resource-visibility.md §14.3). `mpim` is a
  *  Slack group DM: observed like an `im`, mention-gated like a channel. */
@@ -6180,6 +6296,7 @@ export interface IntegrationChannelRecord {
   key: string | null
   url: string | null
   isPrivate: boolean
+  isCodeSession?: boolean
   kind: ConversationKind
   /** Repeated across shared-bot sibling rows; per-integration for non-shared bots. */
   trigger: ChannelTrigger
@@ -6224,6 +6341,7 @@ export interface ReportedChannel {
   key?: string | null
   url?: string | null
   isPrivate?: boolean
+  isCodeSession?: boolean
   /** Absent = 'channel' (wire compatibility). */
   kind?: ConversationKind
   /** The 1:1 DM counterpart's platform member id — reported for `kind:'im'` only. */
@@ -6257,8 +6375,10 @@ export interface IntegrationChannelRepo {
       removed?: string[]
       /** Conversations whose platform id changed: `from`'s settings move onto `to` unless an editor already chose `to`'s, then `from` is deleted. */
       migrated?: readonly { from: string; to: string }[]
+      /** The kinds a NEW row starts on Auto in (auto-session-mode.md §3.2); absent ⇒ every new row is Per thread. `sessionModeChanged` says a mode the daemon's spec lacks was written. */
+      autoKinds?: readonly ConversationKind[]
     }
-  ): Promise<{ externalChanged: boolean; migrated?: boolean }>
+  ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean }>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */
@@ -6268,7 +6388,7 @@ export interface IntegrationChannelRepo {
   upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,
-    opts?: { defaultTrigger?: SeedTrigger }
+    opts?: { defaultTrigger?: SeedTrigger; autoKinds?: readonly ConversationKind[] }
   ): Promise<IntegrationChannelRecord>
   /** Conversations across EVERY integration of a shared bot — the route compiler's
    *  ownership source. */

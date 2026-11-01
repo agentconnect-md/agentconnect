@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
+import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import {
   AGENTS,
@@ -12,6 +13,7 @@ import {
   canonicalSessionId,
   enrichSessionWithAgent,
   isMergedConversationRow,
+  isSelfSender,
   mergeCanonicalSessions,
   platName,
   sessionChannelDisplay,
@@ -21,7 +23,15 @@ import {
   type Agent,
   type Session
 } from '@/lib/data'
-import { fmtDate, memberDisplayName, type HookKind, type MemberDto, type SessionListFilters } from '@/lib/api'
+import {
+  fetchMySocialAccount,
+  fmtDate,
+  memberDisplayName,
+  type HookKind,
+  type MemberDto,
+  type SessionListFilters
+} from '@/lib/api'
+import { isAuthConfigured } from '@/lib/auth'
 import {
   githubRepoIdFromSessionTriggerFilter,
   sessionSenderLabel,
@@ -40,6 +50,7 @@ import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useMobileFilterSlot } from '@/components/console/Shell'
 import { AgentIconView, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { RestrictedLock } from '@/components/console/VisibilityField'
+import { CoordinatorTag } from '@/components/console/CoordinatorTag'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
@@ -120,6 +131,24 @@ export default function SessionsView() {
     }
     return byIdentity
   }, [members])
+  // One member filed under several senders (user id, or the email older rows carry) is one trigger.
+  const personKey = useCallback((sender: string) => memberByIdentity.get(sender)?.userId ?? sender, [memberByIdentity])
+  // The viewer's linked sign-in accounts, so their own Slack (and other platform) triggers read as theirs too.
+  const { data: socialAccount } = useSWR(
+    isAuthConfigured() && !MOCK_MODE ? 'logto-account-sign-in-methods' : null,
+    fetchMySocialAccount,
+    { revalidateOnFocus: false, revalidateOnReconnect: false, shouldRetryOnError: false }
+  )
+  const isMine = useCallback(
+    (sender: string, platform: string) =>
+      isSelfSender(sender, me) ||
+      (socialAccount?.identities.some(
+        (identity) =>
+          identity.userId === sender && (identity.target === 'lark' ? 'feishu' : identity.target) === platform
+      ) ??
+        false),
+    [me, socialAccount]
+  )
   const triggerLabel = useCallback(
     (s: Session) => {
       return sessionSenderLabel(s.triggeredBy, s.user, agentNameById, memberNameByIdentity, me)
@@ -131,6 +160,7 @@ export default function SessionsView() {
   const fInt = params.get('integration') ?? 'all'
   const fChannel = params.get('channel') ?? 'all'
   const fTrigger = params.get('trigger') ?? 'all'
+  const fTriggerKey = fTrigger === 'all' ? 'all' : personKey(fTrigger)
   const flatView = isFlatSessionView(params)
   // Tasks (delegated tasks, follow-ups, approved proposals) belong to a session, so the list hides them unless asked.
   const showTasks = showsTasks(params)
@@ -157,9 +187,11 @@ export default function SessionsView() {
       (excluded === 'agent' || fAgent === 'all' || session.agentId === fAgent) &&
       (excluded === 'integration' || fInt === 'all' || sessionPlatform(session) === fInt) &&
       (excluded === 'channel' || fChannel === 'all' || sessionChannelFilterValue(session) === fChannel) &&
-      (excluded === 'trigger' || fTrigger === 'all' || session.triggeredBy === fTrigger) &&
+      (excluded === 'trigger' ||
+        fTriggerKey === 'all' ||
+        (!!session.triggeredBy && personKey(session.triggeredBy) === fTriggerKey)) &&
       (showTasks || !session.subsession),
-    [fAgent, fChannel, fInt, fTrigger, showTasks]
+    [fAgent, fChannel, fInt, fTriggerKey, personKey, showTasks]
   )
   const localSourceSessions = useMemo(() => [...pgSessionList, ...demoSessions], [demoSessions, pgSessionList])
   const localSessions = useMemo(
@@ -291,11 +323,11 @@ export default function SessionsView() {
       })
     }
   }
-  // Triggerers are keyed by raw triggeredBy id so same-named entries stay distinct.
+  // Triggerers are keyed by raw triggeredBy id so same-named entries stay distinct; a member's ids fold into one person.
   // Agent ids resolve only through the caller-visible agent roster; hook sessions use
   // their CP-enriched source kind to keep each code host distinct from generic webhooks.
   const triggerAgentSet = new Map<string, Agent>()
-  const peopleSet = new Map<string, { label: string; platform: string; member?: MemberDto }>()
+  const peopleSet = new Map<string, { label: string; platform: string; member?: MemberDto; mine: boolean }>()
   // One bucket per hook kind, keyed by the shared vocabulary rather than by hand — a
   // hook trigger can no longer land in a bucket nobody collects, which is how GitLab
   // sessions used to disappear from this menu instead of getting their own group.
@@ -317,13 +349,20 @@ export default function SessionsView() {
         if (agent) triggerAgentSet.set(triggeredBy, agent)
         break
       }
-      case 'person':
-        peopleSet.set(triggeredBy, {
-          label,
+      case 'person': {
+        const key = personKey(triggeredBy)
+        if (peopleSet.has(key)) break
+        const member = memberByIdentity.get(triggeredBy)
+        const mine = isMine(triggeredBy, source.platform)
+        const name = member ? memberDisplayName(member) : label
+        peopleSet.set(key, {
+          label: mine ? t('mine', { name }) : label,
           platform: source.platform,
-          member: memberByIdentity.get(triggeredBy)
+          member,
+          mine
         })
         break
+      }
       // Everything left is a hook kind — the arms above narrow it, so a new NON-hook
       // trigger kind fails to compile here rather than being silently dropped.
       default: {
@@ -424,8 +463,9 @@ export default function SessionsView() {
       face: <AgentIconView icon={agent.icon} runtime={agent.runtime} size={18} />
     }))
     .sort(byLabel)
-  // People lead with their avatar; their source platform sits on the right.
+  // People lead with their avatar; their source platform sits on the right. The viewer's own come first.
   const triggerPeople: FilterOption[] = [...peopleSet]
+    .sort(([, a], [, b]) => Number(b.mine) - Number(a.mine) || a.label.localeCompare(b.label))
     .map(([v, p]) => ({
       v,
       label: p.label,
@@ -433,7 +473,6 @@ export default function SessionsView() {
       face: <AvatarFace label={p.label} member={p.member} />,
       rightFace: <PlatformMark platform={p.platform} fillPct={100} />
     }))
-    .sort(byLabel)
   // Total over the hook-kind vocabulary: a new code host has to be given a face here.
   const hookTriggerFace: Record<HookKind, ReactNode> = {
     github: (
@@ -464,15 +503,15 @@ export default function SessionsView() {
     .map(([v, label]) => ({ v, label, kind: 'schedule' as const, face: catFace('timer') }))
     .sort(byLabel)
   const triggerGroups: FilterGroup[] = [
-    { label: t('agents'), options: triggerAgents },
     { label: t('people'), options: triggerPeople },
+    { label: t('agents'), options: triggerAgents },
     ...hookTriggerGroups,
     { label: t('schedules'), options: triggerScheds }
   ]
   const triggerFlat: FilterOption[] = [
     triggerAll,
-    ...triggerAgents,
     ...triggerPeople,
+    ...triggerAgents,
     ...hookTriggerGroups.flatMap((group) => group.options),
     ...triggerScheds
   ]
@@ -492,7 +531,7 @@ export default function SessionsView() {
     fAgent !== 'all' && { key: 'agent' as const, label: labelOf(agentOpts, fAgent) },
     fInt !== 'all' && { key: 'integration' as const, label: platName(fInt) },
     fChannel !== 'all' && { key: 'channel' as const, label: labelOf(channelOpts, fChannel) },
-    fTrigger !== 'all' && { key: 'trigger' as const, label: labelOf(triggerFlat, fTrigger) },
+    fTrigger !== 'all' && { key: 'trigger' as const, label: labelOf(triggerFlat, fTriggerKey) },
     showTasks && { key: 'tasks' as const, label: t('showTasks') }
   ].filter((c): c is { key: FilterKey | 'tasks'; label: string } => Boolean(c))
 
@@ -588,7 +627,7 @@ export default function SessionsView() {
           ariaLabel={t('filterChannelsLabel')}
         />
         <FilterSelect
-          value={fTrigger}
+          value={fTriggerKey}
           onChange={(v) => setFilter('trigger', v)}
           options={[triggerAll]}
           groups={triggerGroups}
@@ -694,6 +733,7 @@ export default function SessionsView() {
                 <span className="min-w-0 truncate font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
                   {s.title}
                 </span>
+                <CoordinatorTag show={s.coordinator} />
                 <RestrictedLock show={s.visibility === 'private'} title={t('privateSession')} />
                 <PurgedMark session={s} />
                 {/* Status as a compact pill — the design's badge, driven by the real
@@ -735,6 +775,7 @@ export default function SessionsView() {
                   <span className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
                     {s.title}
                   </span>
+                  <CoordinatorTag show={s.coordinator} />
                   <RestrictedLock show={s.visibility === 'private'} title={t('privateSession')} />
                   <PurgedMark session={s} />
                 </div>
@@ -839,7 +880,7 @@ export default function SessionsView() {
             <PillSection
               label={t('trigger')}
               options={triggerFlat}
-              value={fTrigger}
+              value={fTriggerKey}
               onPick={(v) => setFilter('trigger', v)}
             />
             <PillSection

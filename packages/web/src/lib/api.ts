@@ -65,6 +65,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { isSubsessionCoordinate } from '@agentconnect.md/protocol/subsession-coordinate'
+import { isCoordinatorCoordinate } from '@agentconnect.md/protocol/append-coordinate'
 import {
   appendSessionLabel,
   appendSessionStartedAt,
@@ -121,6 +122,8 @@ export interface WebchatTokenDto {
   token: string
   relayUrl: string
   conversationId: string
+  /** A coordinator conversation's current session, once it has one. */
+  sessionId?: string
   protocol?: 'legacy' | 'ahp'
   ahp?: { url: string; sessionUri?: string; peers?: Array<{ agentId: string; url: string; sessionUri?: string }> }
 }
@@ -187,6 +190,18 @@ export function mintWebchatToken(
     `/orgs/${encodeURIComponent(orgId)}/agents/${encodeURIComponent(agentId)}/webchat/token`,
     { conversationId, protocol }
   )
+}
+
+/** The member's private coordinator conversation with an agent, created on first use, with its current session once it has one (auto-session-mode.md §10). */
+export async function openCoordinatorConversation(
+  orgId: string,
+  agentId: string
+): Promise<{ conversationId: string; sessionId?: string }> {
+  const minted = await apiPost<WebchatTokenDto>(
+    `/orgs/${encodeURIComponent(orgId)}/agents/${encodeURIComponent(agentId)}/webchat/token`,
+    { coordinator: true, protocol: 'legacy' }
+  )
+  return { conversationId: minted.conversationId, ...(minted.sessionId ? { sessionId: minted.sessionId } : {}) }
 }
 
 /**
@@ -382,6 +397,8 @@ export interface AgentDto {
   // Placement is a TARGET: `set` names a member set through `setId` and carries no member id.
   placementKind?: PlacementKindValue
   placementReady?: boolean
+  // Can a new Webchat with this agent attach over AHP? Absent from an older CP, which reads as no.
+  ahpWebchat?: boolean
   // A group agent's confirmed duty holder; absent for a daemon or pool placement and from an older CP.
   holderDaemonId?: string | null
   daemonId: string | null
@@ -411,6 +428,7 @@ export interface AgentDto {
   outboundPolicy: AgentCallPolicy // which peer agents this agent may discover/call
   allowedTargetAgentIds: string[] // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: boolean // #536: self-introduce to peers on a genuine channel join
+  githubAppId?: string | null // the organization GitHub App the agent works through; null or absent ⇒ the built-in App
   execution?: string // the strategy slug sessions run in (session-executors.md §5); absent only on an older CP
   strategies?: StrategyTable // what the placement offers `execution`, host alone for an unplaced agent; absent only on an older CP
   hookKinds: HookKind[] // distinct kinds of enabled inbound triggers (list-view marks)
@@ -980,10 +998,8 @@ export interface SlackConfigInput {
 // gating for restricted agents), only when @-mentioned, or on any message.
 export type ChannelTrigger = 'off' | 'mention' | 'any'
 
-/** Which session an activation in a conversation joins (channel-session-mode.md). Orthogonal
- *  to the trigger: that decides WHETHER the agent responds, this decides which session it
- *  responds in. */
-export type ChannelSessionMode = 'createNew' | 'append'
+/** Which session a conversation's message joins (channel-session-mode.md); `auto` hands each to the coordinator (auto-session-mode.md). */
+export type ChannelSessionMode = 'createNew' | 'append' | 'auto'
 
 // One conversation the integration's bot is in (daemon-reported) + its trigger
 // choice. kind 'im' rows are DM conversations and 'mpim' rows are Slack group DMs;
@@ -998,6 +1014,7 @@ export interface IntegrationChannelDto {
   key: string | null // the conversation's short platform handle — a Linear team's "ENG"; null elsewhere
   url: string | null // the page it opens on the platform; null elsewhere
   isPrivate: boolean
+  isCodeSession?: boolean
   kind: 'channel' | 'im' | 'mpim'
   // 'decision' is By decision; the same PATCH sets it together with its complete gate binding.
   trigger: ChannelTrigger | 'decision'
@@ -1282,15 +1299,31 @@ export interface DaemonViewDto {
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
   lastModifiedAt: string // ISO-8601
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
-  /** How long the daemon keeps FINISHED sessions in its local store before its
-   *  retention sweep deletes them ("Expire sessions"); 'never' disables the sweep. */
+  /** How long a finished session's row and transcript stay on the daemon ("Expire sessions"). */
   sessionRetention: DaemonSessionRetention
+  /** How long a finished session's workspace and sandbox stay, never past its row ("Clean up workspaces"). */
+  workspaceRetention: DaemonSessionRetention
   visibility: ResourceVisibility
   sharedWith: string[]
   canEdit: boolean
   canManageSharing: boolean
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
+  /** The auto-upgrade switch; absent on an older CP ⇒ off. */
+  autoUpgrade?: boolean
+  /** The daemon advertised auto-upgrade support; absent on an older CP ⇒ unsupported. */
+  autoUpgradeSupported?: boolean
+  /** The most recent automatic upgrade; absent on an older CP ⇒ none. */
+  lastAutoUpgrade?: DaemonAutoUpgradeResultDto | null
+}
+
+/** The most recent automatic upgrade on a daemon (daemon-auto-upgrade.md §8). */
+export interface DaemonAutoUpgradeResultDto {
+  id: string
+  status: 'pending' | 'succeeded' | 'failed'
+  targetVersion: string | null
+  outcome: string | null
+  settledAt: string | null
 }
 
 /** The console-settable "Expire sessions" window (PATCH /daemons/:id):
@@ -1306,6 +1339,8 @@ export interface DaemonLifecycleOpDto {
   phase?: import('@agentconnect.md/protocol').DaemonLifecyclePhase | null
   targetVersion: string | null
   outcome: string | null
+  /** Absent on an older CP ⇒ manual. */
+  trigger?: 'manual' | 'auto'
 }
 
 export interface CreateAgentInput {
@@ -2122,6 +2157,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // that a rollout invalidates.
     placementKind: d.placementKind ?? 'daemon',
     placementReady: d.placementReady ?? false,
+    ahpWebchat: d.ahpWebchat === true,
     // The set id rides along: `daemon` alone cannot tell the pool from one of the org's own groups,
     // and only a caller holding the org's set list can (daemon-groups.md §2).
     setId: d.setId ?? null,
@@ -2150,6 +2186,7 @@ export function agentFromDto(d: AgentDto): Agent {
     allowedTargetAgentIds: d.allowedTargetAgentIds ?? [],
     // Unset (older CP) reads as off — the product default.
     introduceOnJoin: d.introduceOnJoin ?? false,
+    githubAppId: d.githubAppId ?? null,
     // An older CP that names no strategy is read as the unplaced agent's host-only table.
     execution: d.execution ?? HOST_STRATEGY,
     strategies: d.strategies ?? HOST_ONLY_TABLE,
@@ -2255,6 +2292,7 @@ export function sessionFromDto(d: SessionDto): Session {
     ...((isWebchat || isHook || d.channelName || dmFallback) && rawChannel ? { channelId: rawChannel } : {}),
     ...(d.threadUrl ? { threadUrl: d.threadUrl } : {}),
     ...(isSubsessionCoordinate(d.sessionKey.thread) ? { subsession: true as const } : {}),
+    ...(isCoordinatorCoordinate(d.sessionKey.thread) ? { coordinator: true as const } : {}),
     user,
     ...(d.triggeredBy ? { triggeredBy: d.triggeredBy } : {}),
     ...(d.hookKind ? { hookKind: d.hookKind } : {}),
@@ -2421,8 +2459,8 @@ export function daemonFromDto(
   // `cloud` is the CP DTO's field name (a REST contract); the console's own word is `pool`.
   const pool = d.cloud ?? false
   // A relaunch that has not reconnected within the offline grace is an offline daemon, however long the op's deadline still runs.
-  const lifecycleOp =
-    d.status === 'offline' && lifecycleStatus(d.lifecycleOp) === 'restarting' ? null : (d.lifecycleOp ?? null)
+  const liveOp = d.status === 'offline' && lifecycleStatus(d.lifecycleOp) === 'restarting' ? null : d.lifecycleOp
+  const lifecycleOp = liveOp ? { ...liveOp, trigger: liveOp.trigger ?? 'manual' } : null
   return {
     daemonId: d.daemonId,
     pool,
@@ -2440,6 +2478,9 @@ export function daemonFromDto(
     lifecycleOp,
     lifecycleStatus: lifecycleStatus(lifecycleOp) ?? null,
     canManageLifecycle: d.canManageLifecycle ?? false,
+    autoUpgrade: d.autoUpgrade ?? false,
+    autoUpgradeSupported: d.autoUpgradeSupported ?? false,
+    lastAutoUpgrade: d.lastAutoUpgrade ?? null,
     // Flag an available upgrade only when both versions parse and latest > running.
     upgradeAvailable: isUpgradeAvailable(d.agentVersion, d.latestVersion),
     // Operational readiness, so `connecting` stays offline for every decision; only presentation reads `reconnecting`.
@@ -2476,7 +2517,8 @@ export function daemonFromDto(
     createdAt: fmtDate(d.createdAt),
     lastModifiedBy: d.lastModifiedBy ?? '', // editor userId; creatorLabel resolves it to a name / "You" at render
     lastModifiedAt: fmtDate(d.lastModifiedAt),
-    sessionRetention: d.sessionRetention ?? '7d', // absent from an older CP ⇒ the daemon-side default
+    sessionRetention: d.sessionRetention,
+    workspaceRetention: d.workspaceRetention,
     visibility: d.visibility,
     sharedWith: d.sharedWith,
     canEdit: d.canEdit,
@@ -2848,6 +2890,8 @@ export interface ComputerDto {
   /** A managed computer's allocation mode (computer-use.md §15.1); null for a self-hosted one. */
   allocation?: ComputerAllocation | null
   ownerAgentId?: string | null
+  /** The session an `ephemeral` computer was made for. */
+  poolSessionId?: string | null
   poolPhase?: ComputerPoolPhase | null
   poolError?: string | null
   /** The pool actions the caller may take now (computer-use.md §10); absent on an older Control Plane. */
@@ -3295,19 +3339,49 @@ export async function transferWorkspaceFile(
   return state
 }
 
-/** A presigned object-store PUT for one chat upload: send exactly these headers and `size` bytes. */
-export interface FileUploadGrantDto {
-  uploadId: string
+/** A presigned object-store request: send exactly these headers (a browser sets content-length itself). */
+export interface SignedRequestDto {
   url: string
   headers: Record<string, string>
-  expiresAt: string
 }
+
+export interface PartUrlDto extends SignedRequestDto {
+  partNumber: number
+}
+
+/** One chat upload's grant: a single PUT of `size` bytes, or a multipart upload's first part PUTs and its complete. */
+export type FileUploadGrantDto = { uploadId: string; expiresAt: string } & (
+  SignedRequestDto | { multipart: { multipartId: string; parts: PartUrlDto[]; complete: SignedRequestDto } }
+)
 
 export function reserveFileUpload(
   agentId: string,
-  body: { name: string; mimeType: string; size: number; sha256: string }
+  body: {
+    name: string
+    mimeType: string
+    size: number
+    sha256: string
+    parts?: { partBytes: number; sha256: string[] }
+  }
 ): Promise<FileUploadGrantDto> {
   return apiPost<FileUploadGrantDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/uploads`, body)
+}
+
+/** More, or fresh, part PUTs (at most 100) and a fresh complete for a multipart chat upload. */
+export function signFileUploadParts(
+  agentId: string,
+  uploadId: string,
+  body: {
+    multipartId: string
+    size: number
+    partBytes: number
+    parts: Array<{ partNumber: number; sha256: string }>
+  }
+): Promise<{ parts: PartUrlDto[]; complete: SignedRequestDto; expiresAt: string }> {
+  return apiPost(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/uploads/${encodeURIComponent(uploadId)}/parts`,
+    body
+  )
 }
 
 /** Read one workspace text file whole before editing it. Every slice must describe
@@ -4187,6 +4261,8 @@ export interface UsageDto {
   // Usage withheld by resource or session access, with no IDs; owners receive complete attribution and no residual.
   // Attributed agents/models plus this independently summed rollup equal totals, including zero-cost withheld rows.
   unattributed?: Omit<UsageAgentDto, 'agentId'>
+  /** The part of each agent's row its Auto coordinators spent (auto-session-mode.md §4.6); absent from an older Control Plane. */
+  coordinators?: UsageAgentDto[]
   // Zero-filled hourly (up to two days) or daily buckets; start is a UTC ISO instant and model '' means unreported.
   // Optional agent/model groupings preserve compatibility with older servers.
   // Series follows attribution: complete for owners, otherwise excluding the unattributed residual from every bucket.
@@ -4354,6 +4430,13 @@ export interface AssistantSubsessionDto {
   kind?: 'delegated' | 'follow-up' | 'approved-proposal'
   /** Present on a follow-up. */
   followUp?: AssistantFollowUpDto
+  /** The task's own summary and when it wrote it (auto-session-mode.md §6.7), read from its daemon; only where `visible`. */
+  summary?: string
+  summaryUpdatedAt?: string
+  /** The start of the message it was opened with, shown until it writes a summary; only where `visible`. */
+  background?: string
+  /** A platform thread is attached: people talk to it there, and it reports nothing to this conversation. */
+  threaded?: boolean
 }
 
 export interface AssistantSubsessionsPageDto {
@@ -4656,6 +4739,23 @@ export async function updateDaemonSessionRetention(
   )
 }
 
+// Set how long a finished session's workspace and sandbox stay ("Clean up workspaces"); the CP hot-pushes it.
+export async function updateDaemonWorkspaceRetention(
+  daemonId: string,
+  workspaceRetention: DaemonSessionRetention
+): Promise<DaemonRow> {
+  return daemonFromDto(
+    await apiPatch<DaemonViewDto>(`${orgBase()}/daemons/${encodeURIComponent(daemonId)}`, { workspaceRetention })
+  )
+}
+
+// Turn the daemon's auto-upgrade on or off; the CP answers 409 when the daemon does not support it.
+export async function updateDaemonAutoUpgrade(daemonId: string, autoUpgrade: boolean): Promise<DaemonRow> {
+  return daemonFromDto(
+    await apiPatch<DaemonViewDto>(`${orgBase()}/daemons/${encodeURIComponent(daemonId)}`, { autoUpgrade })
+  )
+}
+
 // Set a daemon's visibility + share set (PUT /daemons/:id/sharing).
 export async function updateDaemonSharing(daemonId: string, body: SharingInput): Promise<DaemonRow> {
   return daemonFromDto(
@@ -4933,6 +5033,7 @@ export interface HookDto {
   events: string[] // 'issues:*' / 'issue_comment:created' / 'merge_request:*' / …
   commentFamilies: HookCommentFamily[] // thread kinds whose replies may fire this hook
   labelFilter: string[]
+  skipDrafts: boolean // GitHub pull-request rows: draft revisions wait until the PR is marked ready
   mentionOnly: boolean // P3: authored event text must @-mention the agent or App
   configRevision: string // BigInt JSON/wire form; CP-owned, monotonic
   reviewPolicy: HookReviewPolicy
@@ -4983,6 +5084,7 @@ export interface CreateGithubHookInput {
   events: string[] // 'issues:*' etc — at least one
   commentFamilies?: GithubCommentFamily[]
   labelFilter?: string[]
+  skipDrafts?: boolean // pull-request rows only
   mentionOnly?: boolean // require authored event text to @-mention the agent or App
   reviewPolicy?: HookReviewPolicy
   reportingMode?: HookReportingMode
@@ -6457,12 +6559,18 @@ export type GithubInstalledRepoDto = GithubRepoDto & { installationId: string }
 /** Installations list doubles as the enabled-probe: it is viewer-readable (the
  *  install-link route is not — minting a state is a write), and 404 ⇒ the
  *  feature is off on this deployment. */
-export async function fetchGithubInstallations(orgId?: string): Promise<{
+/** The built-in App's installations, or those of the organization App `appId` names. */
+export async function fetchGithubInstallations(
+  orgId?: string,
+  appId?: string | null
+): Promise<{
   enabled: boolean
   installations: GithubInstallationDto[]
 }> {
   try {
-    const installations = await apiGet<GithubInstallationDto[]>(`${orgBase(orgId)}/github/installations`)
+    const installations = await apiGet<GithubInstallationDto[]>(
+      `${orgBase(orgId)}/github/installations${appId ? `?app=${encodeURIComponent(appId)}` : ''}`
+    )
     return { enabled: true, installations }
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return { enabled: false, installations: [] }
@@ -6484,10 +6592,105 @@ export async function fetchGithubInstallUrl(): Promise<string | null> {
   }
 }
 
-/** Refresh the organization's existing claims from GitHub. Unknown App-wide
- * installations are never assigned by this endpoint. */
-export async function syncGithubInstallations(): Promise<GithubInstallationDto[]> {
-  const installations = await apiPost<GithubInstallationDto[]>(`${orgBase()}/github/installations/sync`, {})
+/** The built-in App's slug; null when GitHub is not configured. */
+export async function fetchBuiltinGithubAppSlug(orgId?: string): Promise<string | null> {
+  try {
+    return (await apiGet<{ slug: string | null }>(`${orgBase(orgId)}/github/app`)).slug
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 404 || e.status === 403)) return null
+    throw e
+  }
+}
+
+/** An organization GitHub App: one agent works through it at a time, free when `agentId` is null. */
+export interface GithubOrgAppDto {
+  id: string
+  appId: number
+  slug: string // the bot is `<slug>[bot]`
+  botUserId: number | null
+  agentId: string | null
+  installations: Array<{
+    id: string
+    installationId: number
+    accountLogin: string
+    accountType: string
+    repositorySelection: string
+    suspended: boolean
+  }>
+  createdAt: string
+}
+
+/** The organization's GitHub Apps; 404 ⇒ the feature is off (empty). */
+export async function fetchGithubApps(orgId?: string): Promise<GithubOrgAppDto[]> {
+  try {
+    return await apiGet<GithubOrgAppDto[]>(`${orgBase(orgId)}/github/apps`)
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return []
+    throw e
+  }
+}
+
+/** Re-pulls an organization App's installations from GitHub. */
+export async function syncGithubApp(appId: string): Promise<void> {
+  await apiPost(`${orgBase()}/github/apps/${encodeURIComponent(appId)}/sync`, {})
+  invalidateGithubRepoRosterCache()
+}
+
+/** Forgets a free organization App and its key; one an agent uses, or with a Check still to close, is refused (409). */
+export async function deleteGithubApp(appId: string): Promise<void> {
+  await apiDelete<void>(`${orgBase()}/github/apps/${encodeURIComponent(appId)}`)
+}
+
+/** One thing the agent works on through GitHub, and whether an App reaches it. */
+export interface GithubAppCoverageItem {
+  target: string // `owner/repo`, or an account login
+  kind: 'workspace' | 'repository' | 'review' | 'installation'
+  covered: boolean
+}
+
+/** Whether `appId` (absent ⇒ the built-in App) reaches everything the agent works on. */
+export async function fetchGithubAppCoverage(agentId: string, appId: string | null): Promise<GithubAppCoverageItem[]> {
+  const query = appId ? `?app=${encodeURIComponent(appId)}` : ''
+  return (
+    await apiGet<{ coverage: GithubAppCoverageItem[] }>(
+      `${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app/coverage${query}`
+    )
+  ).coverage
+}
+
+/** Moves the agent to `githubAppId` (null ⇒ built-in); a 409 carries the uncovered items. */
+export async function switchAgentGithubApp(agentId: string, githubAppId: string | null): Promise<void> {
+  await apiPut(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app`, { githubAppId })
+}
+
+/** The form to post to GitHub's create-App-from-manifest page for this agent. */
+export async function startGithubAppManifest(
+  agentId: string
+): Promise<{ action: string; manifest: Record<string, unknown> }> {
+  return apiPost(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app/manifest`, {})
+}
+
+/** An organization GitHub App's public page on GitHub. */
+export function githubAppPageUrl(slug: string): string {
+  return `https://github.com/apps/${encodeURIComponent(slug)}`
+}
+
+/** Where to install the App an agent works through: the built-in App's org-bound link, or an organization App's own page. */
+export async function githubInstallUrlFor(appId: string | null | undefined): Promise<string | null> {
+  if (!appId) return fetchGithubInstallUrl()
+  const app = (await fetchGithubApps()).find((row) => row.id === appId)
+  return app ? `${githubAppPageUrl(app.slug)}/installations/new` : null
+}
+
+/** Refresh the existing claims of the built-in App, or of the organization App `appId` names, from GitHub. */
+export async function syncGithubInstallations(appId?: string | null): Promise<GithubInstallationDto[]> {
+  let installations: GithubInstallationDto[]
+  if (appId) {
+    await apiPost(`${orgBase()}/github/apps/${encodeURIComponent(appId)}/sync`, {})
+    installations = (await fetchGithubInstallations(undefined, appId)).installations
+  } else {
+    installations = await apiPost<GithubInstallationDto[]>(`${orgBase()}/github/installations/sync`, {})
+  }
   invalidateGithubRepoRosterCache()
   return installations
 }
@@ -7795,16 +7998,33 @@ export function createDecisionApi(orgId: string): DecisionApi {
 
 // ── capability requests (capability-requests.md §4.5): an agent's ask, completed or declined by a person ──
 
-export type CapabilityRequestKind = 'agent-settings' | 'mcp-server' | 'skill' | 'repository' | 'connection' | 'secret'
+export type CapabilityRequestKind =
+  'agent-settings' | 'mcp-server' | 'skill' | 'repository' | 'connection' | 'secret' | 'cron'
 export type CapabilityRequestStatus = 'open' | 'completed' | 'declined' | 'expired' | 'withdrawn'
 
-/** The `agent-settings` fields an agent may ask for. */
+/** The `agent-settings` fields an agent may ask for: the agent form's plain values (§4.12). */
 export interface CapabilitySettingsWant {
   model?: string
   reasoningEffort?: string
   fastMode?: boolean
   outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
   permissionMode?: string
+  runtime?: string
+  execution?: string
+  chatActions?: 'talk' | 'approve' | 'settings'
+  introduceOnJoin?: boolean
+  showFooter?: boolean
+  showStatusBar?: boolean
+  displayName?: string
+}
+
+/** A scheduled task: a new cron of the agent, or with `cronId` a change to one of its own; `trigger` is its prompt. */
+export interface CapabilityCronWant {
+  cronId?: string
+  name?: string
+  schedule: string
+  timezone?: string
+  trigger: string
 }
 
 /** A repository on a code host and the tier wanted; `host` names a self-managed GitLab. */
@@ -7835,6 +8055,7 @@ export type CapabilityRequestWant =
   | CapabilityRepositoryWant
   | CapabilityConnectionWant
   | CapabilitySecretWant
+  | CapabilityCronWant
 
 export interface CapabilityRequestAskerDto {
   kind: 'console' | 'member'
@@ -7926,8 +8147,12 @@ export async function saveAgentLiveSecret(
 }
 
 /** Asks for the request to be settled once the change was saved; the outcome is what the server observes, not what was clicked. */
-export async function settleCapabilityRequest(id: string, orgId?: string): Promise<CapabilityRequestDto> {
-  return apiPost<CapabilityRequestDto>(`${capabilityRequestPath(id, orgId)}/settle`, {})
+export async function settleCapabilityRequest(
+  id: string,
+  orgId?: string,
+  saved?: { cronId: string }
+): Promise<CapabilityRequestDto> {
+  return apiPost<CapabilityRequestDto>(`${capabilityRequestPath(id, orgId)}/settle`, saved ?? {})
 }
 
 export async function declineCapabilityRequest(

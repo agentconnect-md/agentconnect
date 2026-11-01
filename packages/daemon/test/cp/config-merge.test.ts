@@ -39,6 +39,18 @@ describe('mergeConfigPush', () => {
     expect(bad.ignored).toEqual(['sessions.retention'])
   })
 
+  it('applies sessions.workspaceRetention and rejects bad values', () => {
+    const cfg = baseCfg()
+    expect(mergeConfigPush(cfg, { 'sessions.workspaceRetention': '3d' }).applied).toEqual([
+      'sessions.workspaceRetention'
+    ])
+    expect(cfg.sessions.workspaceRetention).toBe('3d')
+    expect(mergeConfigPush(cfg, { 'sessions.workspaceRetention': '3' }).ignored).toEqual([
+      'sessions.workspaceRetention'
+    ])
+    expect(cfg.sessions.workspaceRetention).toBe('3d')
+  })
+
   // Lending a machine and its runtime sign-in is its owner's consent (session-executors.md §10): no Control Plane push may give it.
   it('never lets a push switch sandbox.share on', () => {
     const cfg = baseCfg()

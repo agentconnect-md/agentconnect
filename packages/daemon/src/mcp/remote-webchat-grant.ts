@@ -5,6 +5,8 @@ import type {
   WebchatMcpGrantActivate,
   WebchatMcpGrantIssue,
   WebchatMcpGrantIssued,
+  WebchatMcpGrantRenew,
+  WebchatMcpGrantRenewed,
   WebchatMcpGrantRevoke,
   WebchatMcpGrantRevoked,
   WebchatRemoteMcpEntitlement
@@ -16,6 +18,7 @@ const RENEW_BEFORE_EXPIRY_MS = 5 * 60_000
 export interface RemoteWebchatGrantClient {
   issueWebchatMcpGrant(input: WebchatMcpGrantIssue, orgId?: string): Promise<WebchatMcpGrantIssued>
   acceptWebchatMcpGrant(input: WebchatMcpGrantAccept, orgId?: string): Promise<WebchatMcpGrantActivate>
+  renewWebchatMcpGrant?(input: WebchatMcpGrantRenew, orgId?: string): Promise<WebchatMcpGrantRenewed | 'unsupported'>
   revokeWebchatMcpGrant(input: WebchatMcpGrantRevoke, orgId?: string): Promise<WebchatMcpGrantRevoked>
 }
 
@@ -74,6 +77,7 @@ function sameEntitlement(left: WebchatRemoteMcpEntitlement, right: WebchatRemote
  */
 export class RemoteWebchatGrantManager {
   private readonly active = new Map<string, ActiveDescriptor>()
+  private readonly renewals = new WeakMap<ActiveDescriptor, Promise<boolean>>()
 
   constructor(
     private readonly client: RemoteWebchatGrantClient,
@@ -98,12 +102,12 @@ export class RemoteWebchatGrantManager {
     const current = this.active.get(conversationId)
     if (agentId && current?.agentId && current.agentId !== agentId)
       throw new Error('remote MCP conversation belongs to another agent')
-    if (
-      current &&
-      current.expiresAt > now + RENEW_BEFORE_EXPIRY_MS &&
-      sameEntitlement(current.entitlement, entitlement)
-    ) {
-      return { server: current.server, changed: false }
+    if (current && sameEntitlement(current.entitlement, entitlement)) {
+      if (current.expiresAt > now + RENEW_BEFORE_EXPIRY_MS) return { server: current.server, changed: false }
+      // Renewing in place keeps the installed bearer valid: a runtime may ignore a reloaded descriptor.
+      if (current.expiresAt > now && (await this.renewInPlace(conversationId, current, agentId))) {
+        return { server: current.server, changed: false }
+      }
     }
 
     const descriptorInstanceId = current?.descriptorInstanceId ?? stableDescriptorId(conversationId)
@@ -165,6 +169,68 @@ export class RemoteWebchatGrantManager {
       authorityGeneration: issued.authorityGeneration
     })
     return { server, changed: true }
+  }
+
+  /** Renews each grant inside its renewal window whose session `isOpen`; returns the conversations it could not renew. */
+  async renewExpiring(
+    now: number,
+    isOpen: (conversationId: string, agentId: string) => Promise<boolean>
+  ): Promise<string[]> {
+    const failed: string[] = []
+    for (const [conversationId, current] of [...this.active]) {
+      if (!current.agentId || current.expiresAt <= now || current.expiresAt > now + RENEW_BEFORE_EXPIRY_MS) continue
+      if (!(await isOpen(conversationId, current.agentId))) continue
+      if (!(await this.renewInPlace(conversationId, current, current.agentId))) failed.push(conversationId)
+    }
+    return failed
+  }
+
+  /** True when the CP extended the active grant; anything else falls back to rotation. */
+  private renewInPlace(conversationId: string, current: ActiveDescriptor, agentId?: string): Promise<boolean> {
+    // One renewal per descriptor at a time: the sweep and a turn start must not race into a rotation.
+    const inFlight = this.renewals.get(current)
+    if (inFlight) return inFlight
+    const renewal = this.requestRenewal(conversationId, current, agentId).finally(() => this.renewals.delete(current))
+    this.renewals.set(current, renewal)
+    return renewal
+  }
+
+  private async requestRenewal(conversationId: string, current: ActiveDescriptor, agentId?: string): Promise<boolean> {
+    if (!this.client.renewWebchatMcpGrant) return false
+    const renew = {
+      authorityId: current.entitlement.authorityId,
+      authorityGeneration: current.entitlement.authorityGeneration,
+      conversationId,
+      descriptorInstanceId: current.descriptorInstanceId,
+      grantRevision: current.grantRevision,
+      grantId: current.grantId
+    }
+    const orgId = agentId ? this.orgForAgent?.(agentId) : undefined
+    let renewed: WebchatMcpGrantRenewed | 'unsupported'
+    try {
+      renewed = orgId
+        ? await this.client.renewWebchatMcpGrant(renew, orgId)
+        : await this.client.renewWebchatMcpGrant(renew)
+    } catch {
+      return false
+    }
+    if (renewed === 'unsupported') return false
+    const expiresAt = Date.parse(renewed.expiresAt)
+    if (
+      renewed.grantId !== renew.grantId ||
+      renewed.authorityId !== renew.authorityId ||
+      renewed.authorityGeneration !== renew.authorityGeneration ||
+      renewed.conversationId !== renew.conversationId ||
+      renewed.descriptorInstanceId !== renew.descriptorInstanceId ||
+      renewed.grantRevision !== renew.grantRevision ||
+      !Number.isFinite(expiresAt) ||
+      expiresAt < current.expiresAt ||
+      this.active.get(conversationId) !== current
+    ) {
+      return false
+    }
+    current.expiresAt = expiresAt
+    return true
   }
 
   async revoke(

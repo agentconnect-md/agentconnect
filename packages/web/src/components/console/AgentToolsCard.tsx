@@ -2,13 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { fetchAgentDto, type McpProviderCreatedDto } from '@/lib/api'
+import { fetchAgentDto, type McpProviderCreatedDto, type McpProviderDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { MOCK_MODE, type DaemonRow } from '@/lib/data'
 import { mcpCandidates, mcpCapsFor, mcpKindLabel, mcpServersForRuntime } from '@/components/console/McpServersField'
 import { AttachedEmpty, AttachedNote, AttachedRow, AttachMenu } from '@/components/console/AttachedList'
 import { ConnectorsModal } from '@/components/console/ConnectorsModal'
-import { CreateMcpProviderModal } from '@/components/console/McpServersCard'
+import { CreateMcpProviderModal, EditConnectorModal, EditMcpProviderModal } from '@/components/console/McpServersCard'
 import { ProviderMark, useConnectorIcons } from '@/components/console/ToolTile'
 import { Scrim } from '@/components/console/Scrim'
 
@@ -52,6 +52,7 @@ export function AgentToolsCard({
   const { updateAgent, mcpProviders, connectorsEnabled } = useConsoleData()
   const [creating, setCreating] = useState(false)
   const [browsing, setBrowsing] = useState(false)
+  const [editing, setEditing] = useState<McpProviderDto | null>(null)
   // Candidate list = daemon-configured servers ∪ org-registry provider names, gated
   // by the runtime's transport support (registry providers are http-proxied).
   const registryNames = useMemo(() => mcpProviders.map((p) => p.name), [mcpProviders])
@@ -196,6 +197,9 @@ export function AgentToolsCard({
                       : `${mcpKindLabel(provider?.kind)} · ${staleMeta(name)}`
                   }
                   dimmed={!server}
+                  // Registry servers open the same dialog their registry tile does; daemon-local ones have no CP config to edit.
+                  onOpen={provider?.canEdit ? () => setEditing(provider) : undefined}
+                  openTitle={t('editServer')}
                   badge={
                     <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
                       {provider ? t('workspace') : t('daemon')}
@@ -236,6 +240,17 @@ export function AgentToolsCard({
         <Scrim onEscape={() => setCreating(false)}>
           <div className="modal">
             <CreateMcpProviderModal onClose={() => setCreating(false)} onCreated={attachCreated} />
+          </div>
+        </Scrim>
+      )}
+      {editing && (
+        <Scrim onEscape={() => setEditing(null)}>
+          <div className="modal">
+            {editing.kind === 'open_connector' ? (
+              <EditConnectorModal provider={editing} onClose={() => setEditing(null)} />
+            ) : (
+              <EditMcpProviderModal provider={editing} onClose={() => setEditing(null)} />
+            )}
           </div>
         </Scrim>
       )}

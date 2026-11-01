@@ -43,8 +43,35 @@ import {
   fetchWorkspaceGitDiff,
   stageWorkspacePaths,
   transferWorkspaceFile,
-  unstageWorkspacePaths
+  unstageWorkspacePaths,
+  syncGithubInstallations
 } from './api'
+
+describe('syncGithubInstallations', () => {
+  afterEach(() => {
+    setApiOrgId(null)
+    vi.unstubAllGlobals()
+  })
+
+  it("re-pulls an organization App and lists that App's installations, never the built-in App's", async () => {
+    const own = { id: 'row-2', installationId: 43, accountLogin: 'acme' }
+    const fetcher = vi.fn<typeof fetch>(async (url) =>
+      Response.json(String(url).includes('/github/installations?app=') ? [own] : { id: 'app-1' })
+    )
+    vi.stubGlobal('fetch', fetcher)
+    setApiOrgId('org-1')
+
+    await expect(syncGithubInstallations('app-1')).resolves.toEqual([own])
+    const paths = fetcher.mock.calls.map(([url, init]) => [
+      init?.method ?? 'GET',
+      new URL(String(url), 'https://example.test').pathname + new URL(String(url), 'https://example.test').search
+    ])
+    expect(paths).toEqual([
+      ['POST', expect.stringMatching(/\/orgs\/org-1\/github\/apps\/app-1\/sync$/)],
+      ['GET', expect.stringMatching(/\/orgs\/org-1\/github\/installations\?app=app-1$/)]
+    ])
+  })
+})
 
 describe('workspace viewer repository scope', () => {
   afterEach(() => {

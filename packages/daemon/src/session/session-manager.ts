@@ -1,6 +1,13 @@
 import { agentWithRuntime } from '../decisions/model-selection.js'
-import { isAppendCoordinate } from './append-coordinate.js'
-import { isCheckCoordinate, isResearchCoordinate, isSubsessionCoordinate } from './subsession-coordinate.js'
+import { isAppendCoordinate, isCoordinatorCoordinate } from './append-coordinate.js'
+import {
+  isCheckCoordinate,
+  isResearchCoordinate,
+  isSubsessionCoordinate,
+  keepsTaskSummaryAt,
+  mayOpenTasksAt
+} from './subsession-coordinate.js'
+import { isDelegatedTaskCoordinate } from '@agentconnect.md/protocol'
 import { researchRunningLine } from '../assistant/research.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../runtime-defs/claude-runtime.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
@@ -49,13 +56,19 @@ import { openRuntimeSession } from './turn/runtime-session.js'
 import { toolDefinitionsBlock, toolDigests, type SessionToolContext } from './turn/tool-context.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
-import { NO_FOLLOW_UPS, runningSubsessionsBlock, standingSummaryFor } from '../assistant/standing-summary.js'
+import {
+  NO_FOLLOW_UPS,
+  runningSubsessionsBlock,
+  standingSummaryFor,
+  taskSummaryReminder
+} from '../assistant/standing-summary.js'
 import { renderLocalNow } from './local-time.js'
 import { knownTimeZone, TIME_ZONE_LOOKUP_WAIT_MS, within } from '../messages/time-zone.js'
 import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
 import { chatSettingsAllowed } from '../agents/chat-actions.js'
 import { backgroundConversationText, intakeEvidenceText } from '../decisions/evidence.js'
+import { wholeRoomThread } from '../auto-session/coordinator-turns.js'
 
 // The recall lifecycle contract lives with the collaborator that emits it; re-exported
 // here because SessionManagerDeps is the seam production wires its observer through.
@@ -270,6 +283,10 @@ export class SessionManager {
        *  cannot tell that a multi-mention message addresses it — the
        *  response-choice rule then misfires into AC_NO_RESPONSE. */
       slackBotUserIdFor?: (integrationId: string) => string | undefined
+      /** Whether people may write to a delegated task from its console page (auto-session-mode.md §10). */
+      taskPagesTakeMessages?: () => boolean
+      /** Whether only an Auto conversation's coordinator delegates tasks (auto-session-mode.md §5.1). */
+      tasksCoordinatorOnly?: () => boolean
       /** The time zone in the turn's sender's platform profile, for every agent's local time (product-conventions.md "Local time"). */
       senderTimeZoneFor?: (msg: NormalizedMessage, integrationId?: string) => Promise<string | undefined>
       /** The zone of whoever the read rule says started a turn no person is behind: a run's, a report's, another agent's call's. */
@@ -298,6 +315,8 @@ export class SessionManager {
         isDm: boolean
         /** The logical session: its runtime may execute somewhere this agent's others do not (session-executors.md §5). */
         sessionKey: string
+        /** A task the coordinator opened on a platform thread (auto-session-mode.md §6.2). */
+        threadedTask?: boolean
       }) => SessionToolContext
       /**
        * Download an inbound attachment's bytes (§9.2) — resolved by the daemon
@@ -388,6 +407,26 @@ export class SessionManager {
     return dormant.length === 1 ? dormant[0]! : null
   }
 
+  /** Whether a session on a platform thread is a task the coordinator opened there; a failed read counts as not. */
+  private async isThreadedTask(agentId: string, key: string, thread: string): Promise<boolean> {
+    if (isSubsessionCoordinate(thread) || isAppendCoordinate(thread)) return false
+    const row = await this.deps.store.assistantSubsessions.get(agentId, key).catch(() => undefined)
+    return row !== undefined && row.kind !== 'follow-up'
+  }
+
+  /** The coordinator session a task on its own console page belongs to, by outward id: a delegated task holding a thread; undefined for any other session (auto-session-mode.md §10). */
+  private async pageTaskParent(agentId: string, key: string, thread: string): Promise<string | undefined> {
+    if (!isDelegatedTaskCoordinate(thread)) return undefined
+    const index = this.deps.store.assistantSubsessions
+    try {
+      const row = await index.get(agentId, key)
+      if (row === undefined || (await index.threadsOf(agentId, key)).length === 0) return undefined
+      return row.parentSessionId
+    } catch {
+      return undefined
+    }
+  }
+
   async handle(
     agentId: string,
     msg: NormalizedMessage,
@@ -426,6 +465,10 @@ export class SessionManager {
       forceWorkspaceIsolation?: boolean
       /** A daemon-verified cwd prepared before handle() (GitHub exact-ref turns). */
       preparedWorkspaceCwd?: string
+      /** A coordinator turn's rendered batch, which replaces the trigger and its replayed context (auto-session-mode.md §4.3). */
+      coordinatorBatch?: string
+      /** A session with no workspace roots, opening on a shared host in the empty directory this resolves once the host is up (auto-session-mode.md §5.4). */
+      bareCwd?: () => Promise<string | undefined>
     } = {}
   ): Promise<{
     sessionId: string
@@ -465,6 +508,8 @@ export class SessionManager {
     const memScope = (): Promise<MemoryScope> =>
       (memScopeOnce ??= Promise.resolve(this.deps.memoryScopeFor?.(agentId, msg, integrationId, rec) ?? { agentId }))
     const { thread, ts: coordTs } = transcriptCoords(msg)
+    // A coordinator's own instructions carry its rules; the per-message reply reminders would contradict them (auto-session-mode.md §4.3).
+    const coordinator = isCoordinatorCoordinate(thread)
     // webchat's msgId is stable per-conversation, so transcriptCoords yields the SAME ts
     // for every turn — the transcript's (channel,thread,ts) unique index would then dedup
     // every follow-up user message (only the first turn is ever recorded). Prefer the
@@ -478,6 +523,9 @@ export class SessionManager {
     const transportScope = msg.transportScope
     const key = sessionKey(msg.platform, msg.channel, thread, agentId, transportScope)
     let rec = await this.deps.store.getSession(key)
+    // A task the coordinator opened on a platform thread keeps a summary as a delegated one does (auto-session-mode.md §6.7).
+    const threadedTask = await this.isThreadedTask(agentId, key, thread)
+    const pageTaskParent = await this.pageTaskParent(agentId, key, thread)
     const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
     // Affinity is the PHYSICAL thread's (channel-session-mode.md §6.4), which is what the
     // routing ladder looks this agent up by — `upsertSession` can only derive the session's
@@ -562,7 +610,8 @@ export class SessionManager {
       await this.deps.store.upsertSession(rec)
     }
     // send-message-guide.md §9.6: the origin records who created the session, written once with the row and never read for replies.
-    const creatorSessionId = rec ? (rec.originSessionId ?? undefined) : originSessionId
+    // A page task carries no caller, so its coordinator is recorded as its creator, the parent its page is judged by (auto-session-mode.md §10).
+    const creatorSessionId = rec ? (rec.originSessionId ?? undefined) : (originSessionId ?? pageTaskParent)
     // Names a session's branch by whoever opened it, so a shared thread keeps its owner when someone else replies.
     const initiatedBy = await sessionInitiatedBy((ids) => this.deps.store.getDisplayNames(ids), rec?.triggeredBy, msg)
     const workspaceRequest = { sessionKey: key, isolation: workspaceIsolation, initiatedBy }
@@ -589,6 +638,11 @@ export class SessionManager {
     // preparation seam; its daemon can then reject a late post-stop mutation.
     const expectedWarmHost = options.host ? undefined : host
     const hostBoundCwd = options.host ? undefined : this.deps.boundHostCwd?.(agentId, workspaceRequest)
+    // A host launched in a session's own directory keeps its runtime sessions there.
+    const bare = options.bareCwd !== undefined
+    const bareCwd =
+      hostBoundCwd === undefined ? await abortable(async () => await options.bareCwd?.(), signal) : undefined
+    const sessionCwd = options.preparedWorkspaceCwd ?? bareCwd
     if (
       hostBoundCwd !== undefined &&
       options.preparedWorkspaceCwd !== undefined &&
@@ -666,7 +720,8 @@ export class SessionManager {
       ...(integrationId !== undefined ? { integrationId } : {}),
       ...(transportScope !== undefined ? { transportScope } : {}),
       isDm: msg.isDm,
-      sessionKey: key
+      sessionKey: key,
+      ...(threadedTask ? { threadedTask } : {})
     })
 
     let standing: Promise<StandingContext> | undefined
@@ -682,6 +737,11 @@ export class SessionManager {
           slackSelfId:
             msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
           thread,
+          ...(threadedTask ? { threadedTask } : {}),
+          ...(threadedTask && wholeRoomThread({ ...msg, thread }) ? { placeTask: true } : {}),
+          ...(pageTaskParent !== undefined ? { pageTask: true } : {}),
+          ...(this.deps.taskPagesTakeMessages?.() ? { taskPageMessages: true } : {}),
+          ...(this.deps.tasksCoordinatorOnly?.() ? { tasksCoordinatorOnly: true } : {}),
           sessionId: rec?.sessionId,
           originSessionId: creatorSessionId,
           envSecretNames: secretNames.filter((n) => !fileSecretNames.has(n)),
@@ -689,8 +749,8 @@ export class SessionManager {
           liveSecretNames: (agent.liveSecrets ?? []).map((s) => s.name),
           // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
           // accessor, so the prompt names exactly the directories the session got.
-          workspaceRoots: await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
-          onDemandClones: await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
+          workspaceRoots: bare ? [] : await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
+          onDemandClones: bare ? undefined : await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
           memoryIndex,
           ...(memoryGuidance ? { memoryGuidance } : {}),
           usesMeta,
@@ -731,7 +791,7 @@ export class SessionManager {
       ...(this.deps.prepareOutwardBinding
         ? { prepareOutwardBinding: () => this.deps.prepareOutwardBinding!(agentId, key) }
         : {}),
-      ...(options.preparedWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: options.preparedWorkspaceCwd } : {}),
+      ...(sessionCwd !== undefined ? { preparedWorkspaceCwd: sessionCwd } : {}),
       ...(hostBoundCwd !== undefined ? { hostBoundCwd } : {}),
       ...(preparedCwd !== undefined ? { preparedCwd } : {}),
       ...(expectedWarmHost !== undefined ? { expectedWarmHost } : {}),
@@ -740,6 +800,7 @@ export class SessionManager {
           this.deps.prepareWorkspace?.(a, warmHost, workspaceRequest) ?? this.workspaces.prepareWorkspace(a)
         ),
       workspaceDirectories: async (cwd) => {
+        if (bare) return []
         const scope = { sessionKey: key, isolation: workspaceIsolation }
         const directories = await this.workspaces.additionalWorkspaceDirectories(agent, cwd, scope)
         const onDemand = await this.workspaces.sessionOnDemandClones(agent, scope)
@@ -749,8 +810,8 @@ export class SessionManager {
       toolContext,
       sessionQuiescent: (id) => this.deps.sessionSdkQuiescent?.(agentId, key, id) ?? true,
       ...(options.additionalMcpServers !== undefined ? { additionalMcpServers: options.additionalMcpServers } : {}),
-      // A check (assistant-mode.md §5.12) runs in plan mode, whose exits need an approver nobody is; research (§5.15) has nobody to ask either.
-      ...(isCheckCoordinate(thread) || isResearchCoordinate(thread)
+      // A check (assistant-mode.md §5.12) and a coordinator (auto-session-mode.md §5.4) run in plan mode, whose exits need an approver nobody is; research (§5.15) has nobody to ask either.
+      ...(isCheckCoordinate(thread) || isResearchCoordinate(thread) || coordinator
         ? { extraDisallowedTools: CLAUDE_HEADLESS_DISALLOWED_TOOLS }
         : {}),
       // The sticky per-session effort override rides session `_meta` on new/load so the
@@ -902,7 +963,7 @@ export class SessionManager {
       })
       const renderContext = (entries: readonly TranscriptEntry[]): string =>
         renderReplayContext(entries, this.deps.quoteForContextEvent, opened.historyLost ? agentId : undefined)
-      if (plan.shape === 'skip') {
+      if (plan.shape === 'skip' && options.coordinatorBatch === undefined) {
         rec.lastDeliveredTs = plan.deliveredThrough
         rec.state = 'idle'
         rec.updatedAt = Date.now()
@@ -916,7 +977,11 @@ export class SessionManager {
         }
       }
       const context = plan.context
-      if (plan.shape === 'batch') {
+      if (options.coordinatorBatch !== undefined) {
+        // A coordinator turn reads its whole batch, each message under its own id (auto-session-mode.md §4.3).
+        blocks.push({ type: 'text', text: options.coordinatorBatch })
+        contextEvents = [...context.map((entry) => ({ ts: entry.ts, text: entry.text })), { ts, text: msg.text }]
+      } else if (plan.shape === 'batch') {
         blocks.push({ type: 'text', text: `${plan.head}\n${renderContext(context)}` })
         evidenceAt = blocks.length
         contextEvents = context.map((entry) => ({ ts: entry.ts, text: entry.text }))
@@ -959,7 +1024,8 @@ export class SessionManager {
     }
 
     // §9.2 attachments on the current message → image/resource/resource_link blocks.
-    if (ingested.attachments?.length) {
+    // A coordinator only places messages; the task it hands one to receives the attachments.
+    if (ingested.attachments?.length && options.coordinatorBatch === undefined) {
       const attBlocks = await abortable(
         () =>
           buildAttachmentBlocks(ingested.attachments!, {
@@ -1038,7 +1104,7 @@ export class SessionManager {
         standingDigest = preludeStanding.sessionDigest
         promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
       }
-    } else if (await this.shouldRemind(key)) {
+    } else if (!coordinator && (await this.shouldRemind(key))) {
       // A long-running or just-compacted session gets the no-response rule again; a new one already carries it.
       promptPrelude.push({ type: 'text', text: NO_RESPONSE_REMINDER })
       reminded = true
@@ -1060,17 +1126,22 @@ export class SessionManager {
       if (none) this.noFollowUpsSaid.add(key)
       else if (summary) this.noFollowUpsSaid.delete(key)
     }
-    // Every session that can own tasks: its running tasks ride the same points, and any turn after that list changed (send-message-guide.md §8.7).
-    if (rec.sessionId && !isSubsessionCoordinate(thread)) {
+    // Every session that can delegate, the coordinator alone once only it does: its running tasks ride the same points, and any turn after that list changed (send-message-guide.md §8.7).
+    if (rec.sessionId && (this.deps.tasksCoordinatorOnly?.() ? coordinator : mayOpenTasksAt(thread))) {
       // A list that cannot be read is left for a later turn, never a reason to fail this one.
       const running = await runningSubsessionsBlock(
         this.deps.store,
         agentId,
         { sessionId: rec.sessionId, key },
-        { last: this.runningSubsessionsShown.get(key), refresh: opening || reminded }
+        { last: this.runningSubsessionsShown.get(key), refresh: opening || reminded, stoppable: !coordinator }
       ).catch(() => undefined)
       if (running) this.runningSubsessionsShown.set(key, running.shown)
       if (running?.text) promptPrelude.push({ type: 'text', text: running.text })
+    }
+    // A task counts its turns and is reminded of a missing or stale summary (auto-session-mode.md §6.7); a failed read skips it.
+    if (keepsTaskSummaryAt(thread) || threadedTask) {
+      const due = await taskSummaryReminder(this.deps.store.assistantSubsessions, agentId, key).catch(() => undefined)
+      if (due) promptPrelude.push({ type: 'text', text: due })
     }
     // send-message-guide.md §9.5: the messages this session may still answer, refreshed like the running tasks.
     const messages = await this.sessionMessagesBlock(key, options.messageId)
@@ -1087,22 +1158,15 @@ export class SessionManager {
       const since = await this.deps.store.assistantSubsessions.researchRunningSince(agentId).catch(() => undefined)
       if (since !== undefined) promptPrelude.push({ type: 'text', text: researchRunningLine(since, now.zone) })
     }
-    // A trusted direct agent call is addressed to this agent regardless of names
-    // or quoted mentions in its body. State that routing fact per turn so the
-    // generic no-response rule cannot mistake the caller label for an addressee.
-    if (options.directAgentCall === true) {
+    // A trusted direct agent call is addressed to this agent whatever its body names, so the no-response rule cannot misread it.
+    if (options.directAgentCall === true && !coordinator) {
       promptPrelude.push({ type: 'text', text: DIRECT_AGENT_CALL_REMINDER })
     }
-    if (options.outsideHumanScope === true) {
+    if (options.outsideHumanScope === true && !coordinator) {
       promptPrelude.push({ type: 'text', text: OUTSIDE_HUMAN_SCOPE_REMINDER })
     }
-    // The router has already matched the raw platform token against THIS integration's
-    // resolved bot identity. Preserve that trusted fact for the model: an opaque Slack
-    // `<@U…>` id otherwise looks unrelated to the AgentConnect name in standing context,
-    // which can make the agent incorrectly classify its own explicit mention as foreign.
-    // Keep this separate from user text (no rewriting) and only assert it for the router's
-    // explicit-mention rung — never for thread/keyword/auto routing.
-    if (msg.trigger === 'mention') {
+    // Only the router's explicit-mention rung matched this bot's own token, a fact an opaque `<@U…>` id hides from the model.
+    if (msg.trigger === 'mention' && !coordinator) {
       promptPrelude.push({ type: 'text', text: EXPLICIT_MENTION_REMINDER })
     }
     if (promptPrelude.length > 0) blocks.unshift(...promptPrelude)

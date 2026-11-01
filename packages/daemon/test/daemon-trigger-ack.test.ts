@@ -56,7 +56,7 @@ async function harness(opts: { statusShown?: boolean | Error } = {}) {
   const react = vi.fn(async () => {})
   const statusShown = opts.statusShown ?? true
   // The Slack lifecycle facet reports whether Slack took the `processing` write.
-  const setStatus = vi.fn(async () => {
+  const setStatus = vi.fn(async (_channel: string, _thread: string, _text: string, _options?: unknown) => {
     if (statusShown instanceof Error) throw statusShown
     return statusShown
   })
@@ -129,6 +129,18 @@ describe('turn-start acknowledgement', () => {
       await h.dispatch(slackDm)
       expect(h.setStatus).toHaveBeenCalled() // the turn ran and asked for the indicator
       expect(h.react).not.toHaveBeenCalled()
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('starts and clears a Code channel thread reply on the channel lifecycle slot', async () => {
+    const h = await harness()
+    try {
+      await h.dispatch({ ...slackDm, isDm: false, thread: 'C1', replyThread: slackDm.thread })
+      expect(h.setStatus).toHaveBeenCalledWith('C1', 'C1', 'is thinking…', expect.anything())
+      expect(h.setStatus).toHaveBeenLastCalledWith('C1', 'C1', '', undefined)
+      expect(h.setStatus.mock.calls.every(([channel, thread]) => channel === 'C1' && thread === 'C1')).toBe(true)
     } finally {
       await h.close()
     }

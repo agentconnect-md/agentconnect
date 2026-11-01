@@ -9,7 +9,13 @@ const agent = {
   permissionMode: 'default',
   mcpServers: ['GitHub'],
   skills: ['acme/*', 'tools/lint'],
-  runtime: 'claude-acp'
+  runtime: 'claude-acp',
+  execution: 'srt',
+  chatActions: 'talk' as const,
+  introduceOnJoin: false,
+  showFooter: true,
+  showStatusBar: false,
+  displayName: null
 }
 
 describe('capability wording', () => {
@@ -31,6 +37,58 @@ describe('capability wording', () => {
     expect(differs.satisfied).toBe(false)
     expect(differs.outcome).toBe('The model is "small" (you asked for "big") and the output mode is "low".')
     expect(differs.current).toEqual({ model: 'small', outputMode: 'low' })
+  })
+
+  it('judges every agent-form field, and says a new runtime replays the conversation', () => {
+    const ask = { kind: 'agent-settings', want: { runtime: 'codex-acp', model: 'gpt-5' } } as const
+    expect(capabilitySummary(ask)).toBe('set the runtime to "codex-acp" and set the model to "gpt-5"')
+    expect(evaluateCapability(ask, agent)).toMatchObject({
+      satisfied: false,
+      current: { runtime: 'claude-acp', model: 'small' }
+    })
+    const switched = evaluateCapability(ask, { ...agent, runtime: 'codex-acp', model: 'gpt-5' })
+    expect(switched.satisfied).toBe(true)
+    expect(switched.outcome).toContain('from a replay of its history')
+    expect(capabilitySummary({ kind: 'agent-settings', want: { showStatusBar: true } })).toBe('turn the status bar on')
+    expect(evaluateCapability({ kind: 'agent-settings', want: { displayName: 'Ops' } }, agent).outcome).toBe(
+      'The display name is unset (you asked for "Ops").'
+    )
+    expect(capabilityWarnings(ask, agent)).toHaveLength(1)
+    expect(capabilityWarnings({ kind: 'agent-settings', want: { execution: 'host' } }, agent)).toHaveLength(1)
+    expect(capabilityWarnings({ kind: 'agent-settings', want: { chatActions: 'settings' } }, agent)).toHaveLength(1)
+    expect(capabilityWarnings({ kind: 'agent-settings', want: { chatActions: 'talk' } }, agent)).toEqual([])
+  })
+
+  it('judges a cron by the agent’s own crons', () => {
+    const want = { schedule: '0 9 * * 1', timezone: 'Asia/Tokyo', trigger: 'send the report' }
+    const cron = {
+      id: 'c1',
+      name: null,
+      schedule: '0 9 * * 1',
+      timezone: 'Asia/Tokyo',
+      trigger: 'send the report',
+      enabled: true
+    }
+    expect(capabilitySummary({ kind: 'cron', want })).toBe('schedule a task on "0 9 * * 1" (Asia/Tokyo)')
+    expect(evaluateCapability({ kind: 'cron', want }, agent, { crons: [] })).toMatchObject({
+      satisfied: false,
+      current: { cronId: null, exists: false }
+    })
+    expect(evaluateCapability({ kind: 'cron', want }, agent, { crons: [cron] })).toMatchObject({
+      satisfied: true,
+      current: { cronId: 'c1' }
+    })
+    expect(evaluateCapability({ kind: 'cron', want }, agent, { crons: [{ ...cron, enabled: false }] }).satisfied).toBe(
+      false
+    )
+    const change = { kind: 'cron', want: { ...want, cronId: 'c2', schedule: '0 10 * * 1' } } as const
+    const other = { ...cron, id: 'c2' }
+    expect(evaluateCapability(change, agent, { crons: [cron, other] })).toMatchObject({
+      satisfied: false,
+      current: { cronId: 'c2' }
+    })
+    expect(evaluateCapability(change, agent, { crons: [{ ...other, schedule: '0 10 * * 1' }] }).satisfied).toBe(true)
+    expect(capabilityWarnings({ kind: 'cron', want }, agent)).toHaveLength(1)
   })
 
   it('reads MCP servers by name and skills by name or a whole source', () => {

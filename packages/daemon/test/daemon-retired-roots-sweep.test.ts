@@ -24,6 +24,8 @@ function scaffold(additionalRepos: unknown[] = []): string {
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      // These cases judge the row purge on the 7-day window it had before workspaces got their own.
+      sessions: { retention: '7d' },
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )
@@ -137,7 +139,7 @@ describe('a shared session’s on-demand clones are judged with its row (decisio
     // A file where only clones belong: the session's own work, which only a human removes.
     mkdirSync(join(clones, 'example-co'), { recursive: true })
     writeFileSync(join(clones, 'example-co', 'notes.txt'), 'kept\n')
-    // A month on, well past the default retention window, without firing the clock's timers.
+    // A month on, well past the retention window, without firing the clock's timers.
     vi.spyOn(inner.clock, 'now').mockReturnValue(30 * 86_400_000)
 
     await inner.sweepExpiredSessions()

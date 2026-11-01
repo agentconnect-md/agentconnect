@@ -580,12 +580,12 @@ export interface WebChannelListSemantics {
   mentionHint?: WebChannelListMessage
   /** Where a shared bot's By decision lives: `'router'` (absent) is the bot's router, `'conversation'` each row's own gate. */
   sharedDecision?: 'router' | 'conversation'
-  /** Session modes this platform's channel rows offer. Absent ⇒ both, which is every
-   *  platform that has channels. A platform opts out by omitting one rather than core
-   *  branching on a platform name. */
-  sessionModes?: readonly ('createNew' | 'append')[]
+  /** Session modes this platform's channel rows offer; absent ⇒ all three, and a platform opts out by omitting one. */
+  sessionModes?: readonly ('createNew' | 'append' | 'auto')[]
   /** Session modes a 1:1 DM row offers. Absent ⇒ none: the platform's DMs are one continuous session already. */
-  dmSessionModes?: readonly ('createNew' | 'append')[]
+  dmSessionModes?: readonly ('createNew' | 'append' | 'auto')[]
+  /** Session modes a group DM row offers, a small private room (auto-session-mode.md §3.2). Absent ⇒ none: the platform has no group DM of its own. */
+  groupDmSessionModes?: readonly ('createNew' | 'append' | 'auto')[]
   /** Confirmation before a default seat moves off a gated agent, whose only grant it is (body gets `owner`, `room`); absent ⇒ no warning. */
   ownerChangeWarning?: {
     title: WebChannelListMessage
@@ -669,6 +669,8 @@ export interface WebPlatformModule<TApi = unknown> {
   readonly platformId: string
   /** The integration picker's display group; chat is the default for platform modules. */
   readonly integrationGroup?: 'chat' | 'workflow'
+  /** This platform's setup page, relative to the docs root (`helpDocsBase`). */
+  readonly docsPath?: string
   /** Feature flag a deployment must turn on before the console offers installing this platform. Absent ⇒ always offered. */
   readonly requires?: FeatureFlagId
   /** Display-only label for an unresolved human sender; stored identities and known names take precedence. */

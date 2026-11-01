@@ -17,6 +17,7 @@ const SLACK_NATIVE_TS = /^\d+\.\d+$/
 
 export const slackModule: WebPlatformModule<SlackApi> = {
   platformId: 'slack',
+  docsPath: 'connect-automate/chat-platforms/slack',
   Mark: SlackMark,
   wizard: {
     Body: SlackWizardBody,
@@ -51,6 +52,8 @@ export const slackModule: WebPlatformModule<SlackApi> = {
     leave: 'none',
     // A Slack DM opens a session per top-level message, so it can choose one session instead.
     dmSessionModes: ['createNew', 'append'],
+    // A group DM is a small private room, with a room's modes.
+    groupDmSessionModes: ['createNew', 'append', 'auto'],
     // The web client opens any conversation kind under the bot's workspace.
     conversationUrl: ({ channelId, workspaceId }) =>
       workspaceId

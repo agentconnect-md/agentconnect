@@ -5,6 +5,7 @@ import {
   isSlackSystemMessage,
   normalizeSlackMessage,
   normalizeSlackResponseFinalization,
+  slackCodeChannelInfo,
   slackExternalReason,
   type SlackMessageLike
 } from '@agentconnect.md/message'
@@ -18,6 +19,8 @@ import {
   SHARED_AGENT_SELECT_ACTION_ID,
   SHARED_CONFIG_ACTION_ID,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+  SLACK_CODE_MODEL_KEY,
+  SLACK_CODE_CONTEXT_KEY,
   SLACK_STATUS_ACTION,
   decodePermValue,
   decodeSlackStatusOverflowValue,
@@ -48,7 +51,11 @@ const CONFIG_ACTION = 'agent_select'
 /** The subset of a Slack interactive (block_actions / view_submission) payload we read.
  *  `api_app_id` / `team` are demux hints the HTTP route reads BEFORE dispatch. */
 export interface SlackInteractiveBody {
-  type: string
+  type?: string
+  command?: string
+  channel_id?: string
+  user_id?: string
+  team_id?: string
   api_app_id?: string
   team?: { id?: string }
   user?: { id?: string }
@@ -131,6 +138,8 @@ export interface HttpSlackSessionStop extends HttpSlackInteractionReceipt {
   channelId: string
   threadTs: string
   userId?: string
+  /** An archive, which also closes the task the channel holds. */
+  archived?: true
 }
 
 type HttpSlackAgent = { agentId: string; name: string }
@@ -406,6 +415,7 @@ export interface SlackReportedChannel {
   id: string
   name?: string
   isPrivate?: boolean
+  isCodeSession?: boolean
   externalReason?: PlaceExternalReason | null
 }
 
@@ -451,6 +461,31 @@ export interface SlackHttpIngestDeps {
 }
 
 export class SlackHttpIngest {
+  private readonly codeChannels = new Map<string, { at: number; value: Promise<{ code: boolean; owners: string[] }> }>()
+
+  private async prepareCodeChannel(msg: WireNormalizedMessage): Promise<void> {
+    if (!this.web || msg.isDm || msg.isGroupDm) return
+    let entry = this.codeChannels.get(msg.channel)
+    if (!entry || Date.now() - entry.at >= 60000) {
+      const value = this.web.conversations
+        .info({ channel: msg.channel })
+        .then((result) => slackCodeChannelInfo(result.channel))
+      entry = { at: Date.now(), value }
+      if (this.codeChannels.size >= 1000) this.codeChannels.delete(this.codeChannels.keys().next().value!)
+      this.codeChannels.set(msg.channel, entry)
+    }
+    let info: { code: boolean; owners: string[] }
+    try {
+      info = await entry.value
+    } catch {
+      if (this.codeChannels.get(msg.channel) === entry) this.codeChannels.delete(msg.channel)
+      this.deps.log.debug('slack: channel discovery unavailable; retaining inbound coordinates')
+      return
+    }
+    if (!info.code) return
+    msg.thread = msg.channel
+    if (info.owners.includes(this.botUserId)) msg.conversationBotId = this.botUserId
+  }
   private web?: WebClient // bot-token Web API client (auth.test + views.open for the modal)
   private botUserId = ''
   private slackBotId = ''
@@ -514,7 +549,12 @@ export class SlackHttpIngest {
   /** Build the Web API client and run the first credential probe; inbound arrives on the pool-wide HTTP routes, so no socket opens. */
   async start(): Promise<void> {
     const dispatcher = proxyDispatcher()
-    const options: WebClientOptions = { fetch: fetchWithDispatcher(dispatcher) }
+    const options: WebClientOptions = {
+      fetch: fetchWithDispatcher(dispatcher),
+      timeout: 3000,
+      retryConfig: { retries: 0 },
+      rejectRateLimitedCalls: true
+    }
     this.web = this.deps.webClientFactory
       ? this.deps.webClientFactory(this.secrets.botToken, options)
       : new WebClient(this.secrets.botToken, options)
@@ -592,15 +632,27 @@ export class SlackHttpIngest {
       // The native Stop button — not chat either, and the one non-chat event this transport
       // forwards to a daemon, which cancels the turn its conversation owns.
       if (event?.type === 'agent_session_stopped') {
-        if (event.channel && event.thread_ts)
+        if (event.channel)
           this.deps.onSessionStopped({
             channelId: event.channel,
-            threadTs: event.thread_ts,
+            threadTs: event.thread_ts ?? event.channel,
             // No event id ⇒ fall back to the thread + envelope time; a second stop within the
             // same second then dedups, which is harmless — the turn is already cancelled.
-            interactionId: eventId ?? `${event.thread_ts}:${eventAtMs ?? ''}`,
+            interactionId: eventId ?? `${event.thread_ts ?? event.channel}:${eventAtMs ?? ''}`,
             ...(event.user ? { userId: event.user } : {})
           })
+        return
+      }
+      // An archive is a Stop for the channel's session; the daemon ignores it unless the channel is a code channel.
+      if ((event?.type === 'channel_archive' || event?.type === 'group_archive') && event.channel) {
+        this.deps.onSessionStopped({
+          channelId: event.channel,
+          threadTs: event.channel,
+          interactionId: eventId ?? `${event.type}:${event.channel}:${eventAtMs ?? ''}`,
+          ...(event.user ? { userId: event.user } : {}),
+          archived: true
+        })
+        await this.refreshChannels()
         return
       }
       if (event && this.isOwnMembershipChange(event)) {
@@ -636,7 +688,10 @@ export class SlackHttpIngest {
       // Recognition is by daemon-written metadata, so mid-answer `streaming` edits and
       // ordinary human edits still return null here and stay filtered.
       const finalization = normalizeSlackResponseFinalization(event)
-      if (finalization) return await this.deps.onMessage(finalization)
+      if (finalization) {
+        await this.prepareCodeChannel(finalization)
+        return await this.deps.onMessage(finalization)
+      }
       const ownMessage = event.user === this.botUserId || event.bot_id === this.slackBotId
       if (ownMessage || !isRoutableEvent(event)) return
       if (event.type !== 'message' && event.type !== 'app_mention') return
@@ -652,6 +707,7 @@ export class SlackHttpIngest {
         return
       }
       const msg = normalizeSlackMessage(event)
+      if (msg) await this.prepareCodeChannel(msg)
       // The envelope says the conversation is shared with another organization (assistant-mode.md §5.3).
       if (msg && externallyShared) msg.externallyShared = true
       if (msg)
@@ -709,11 +765,12 @@ export class SlackHttpIngest {
         ...(cursor ? { cursor } : {})
       })
       for (const channel of res.channels ?? []) {
-        if (!channel.id || channel.is_im || channel.is_mpim) continue
+        if (!channel.id || channel.is_im || channel.is_mpim || channel.is_archived) continue
         channels.push({
           id: channel.id,
           ...(channel.name ? { name: channel.name } : {}),
           ...(channel.is_private ? { isPrivate: true } : {}),
+          isCodeSession: slackCodeChannelInfo(channel).code,
           externalReason: slackExternalReason(channel)
         })
       }
@@ -722,13 +779,31 @@ export class SlackHttpIngest {
     this.deps.onChannelsChanged(channels)
   }
 
-  /** Handle one verified `/slack/interactions` payload. The returned value is the
-   *  SYNCHRONOUS 200 body (only `block_suggestion` rides data on it — the external
-   *  select options); every other branch returns '' (empty 200) and runs its
-   *  side-effects — `views.open`, forwards — after we've computed the return value.
-   *  Mirrors the old `socket.on('interactive')` branch order (§10.1). */
+  // Check provider ownership before resolving the channel-wide session; never dispatch a settings click as chat.
+  private async openCodeSessionOptions(channelId: string, triggerId: string, userId: string): Promise<void> {
+    try {
+      const result = await this.web?.conversations.info({ channel: channelId })
+      const channel = slackCodeChannelInfo(result?.channel)
+      if (
+        channel.code &&
+        channel.owners.includes(this.botUserId) &&
+        this.deps.onSessionShortcut({ channelId, threadTs: channelId, triggerId, userId, interactionId: triggerId })
+      )
+        return
+    } catch {
+      this.deps.log?.debug('slack: code-channel settings lookup failed')
+    }
+    await this.openUnavailableModal(triggerId)
+  }
+
+  // Acknowledge verified interactions immediately; only suggestions return data in the HTTP response.
   async handleInteraction(body: SlackInteractiveBody): Promise<unknown> {
     try {
+      if (body.command === `/${SLACK_CODE_MODEL_KEY}` || body.command === `/${SLACK_CODE_CONTEXT_KEY}`) {
+        if (body.channel_id && body.trigger_id && body.user_id)
+          void this.openCodeSessionOptions(body.channel_id, body.trigger_id, body.user_id)
+        return ''
+      }
       if (body.type === 'block_suggestion' && body.action_id === SHARED_AGENT_SELECT_ACTION_ID) {
         // The one branch whose result rides the 200 body (replaces `ack({ options })`).
         return { options: httpSlackAgentOptions(this.deps.agents(), body.value) }

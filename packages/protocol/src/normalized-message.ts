@@ -111,6 +111,8 @@ export const NormalizedPlatformMessageSchema = z.object({
   /** Stable logical thread id within `channel`. The output adapter maps this
    * provider-neutral pair onto the provider's concrete send target. */
   thread: z.string().optional(),
+  // Physical reply parent when the provider's session spans the whole conversation.
+  replyThread: z.string().optional(),
   /** Platform-native HTTPS link for the integration represented by this
    *  message's session coordinates. The adapter owns construction; core only
    *  persists and forwards it as session metadata. Optional because some
@@ -133,6 +135,8 @@ export const NormalizedPlatformMessageSchema = z.object({
   }),
   text: z.string(),
   mentionedBots: z.array(z.string()),
+  /** Provider-confirmed bot owning a conversation; an implicit address that does not bypass a muted session. */
+  conversationBotId: z.string().optional(),
   /** Platform ids of the people a message mentions, where the platform marks mentions; absent means unknown. */
   mentionedUsers: z.array(z.string().min(1).max(256)).max(100).optional(),
   /** The mentions `text` opens with, in order, where it reads a mention by label: each one's platform id and literal text. */

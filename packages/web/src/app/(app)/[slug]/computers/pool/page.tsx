@@ -1,8 +1,7 @@
-import type { Metadata } from 'next'
-import ComputerPoolView from '@/components/console/views/ComputerPoolView'
+import { redirect } from 'next/navigation'
 
-export const metadata: Metadata = { title: 'Computer pool · AgentConnect' }
-
-export default function Page() {
-  return <ComputerPoolView />
+// Cloud computers are listed on the Infra page now; keep old links landing on them.
+export default async function Page({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params
+  redirect(`/${encodeURIComponent(slug)}/daemons#cloud-computers`)
 }

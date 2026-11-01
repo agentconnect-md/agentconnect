@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, chmodSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { decodeFrames, encodeFrame, type IpcRequest, type IpcResponse } from './ipc.js'
 import { AskRequired, type AskAnswer, type AskPort } from './ask.js'
-import { executeTool, type OpsDeps, type SessionContext } from './ops.js'
+import { authorizeSessionPublication, executeTool, type OpsDeps, type SessionContext } from './ops.js'
 import { boundWrittenTopics } from './ops/memory.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import type { Logger } from '../log.js'
@@ -45,6 +45,33 @@ export class McpControlServer {
 
   unregister(token: string): void {
     this.sessions.delete(token)
+  }
+
+  // Automatic output can address only a registered session's own conversation, with its current write authority.
+  async authorizeConversationOutput(
+    binding: Pick<SessionContext, 'agentId' | 'platform' | 'channel' | 'thread' | 'transportScope' | 'integrationId'>
+  ): Promise<void> {
+    const ctx = [...this.sessions.values()].find(
+      (entry) =>
+        entry.agentId === binding.agentId &&
+        entry.platform === binding.platform &&
+        entry.channel === binding.channel &&
+        entry.thread === binding.thread &&
+        entry.integrationId === binding.integrationId &&
+        entry.transportScope === binding.transportScope
+    )
+    if (!ctx) throw new Error('No registered session authorizes this task output')
+    await authorizeSessionPublication(
+      ctx,
+      'task workspace output',
+      {
+        kind: 'conversation',
+        platform: ctx.platform,
+        integrationId: ctx.integrationId,
+        channel: ctx.channel
+      },
+      this.deps
+    )
   }
 
   /** Memory topics this session wrote through the bound memory tools. A dream checks

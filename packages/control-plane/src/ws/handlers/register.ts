@@ -15,6 +15,7 @@ import {
   CAPABILITY_REQUESTS_FEATURE,
   CAPABILITY_REQUESTS_V2_FEATURE,
   CAPABILITY_REQUESTS_V3_FEATURE,
+  CAPABILITY_REQUESTS_V4_FEATURE,
   FRAME_FRAGMENTS_FEATURE,
   DECISION_TOOLS_V1_FEATURE,
   DECISION_MODEL_SELECTION_V1_FEATURE,
@@ -31,11 +32,13 @@ import {
   COMPUTER_LEASE_QUEUE_FEATURE,
   COMPUTER_POOL_FEATURE,
   COMPUTER_CHANNEL_FEATURE,
+  COMPUTER_COMMAND_LINE_FEATURE,
   AGENT_PLACEMENT_FEATURE,
   AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
   AGENT_MEMORY_STORE_OPERATION_ID_V1_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
   APPROVAL_DM_ROUTE_V1_FEATURE,
+  WEBCHAT_MCP_GRANT_RENEW_FEATURE,
   ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
   COMPUTER_APPROVERS_V1_FEATURE,
@@ -58,7 +61,8 @@ import {
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
-  SESSION_VISIBILITY_FEATURE
+  SESSION_VISIBILITY_FEATURE,
+  DAEMON_LIFECYCLE_BEGIN_FEATURE
 } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import type { Handler } from './index.js'
@@ -119,9 +123,12 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   // register/ok grows with the daemon's agents and the org's conversations, so it is the first frame that may need fragments.
   if (req.capabilities.features.includes(FRAME_FRAGMENTS_FEATURE)) conn.enableFrameFragments()
   conn.state = 'READY'
+  const release = deps.daemonRelease?.current()
   conn.replyTo(frame, 'register/ok', {
     ...snap,
     relays,
+    // daemon-auto-upgrade.md §4.1: re-announces the release a dropped push may have missed.
+    ...(release ? { release } : {}),
     ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
     // A shared image picks its original's home at publication, before any signing (webchat-generated-images.md §5).
     ...(deps.fileTransfer ? { fileTransfer: { maxBytes: deps.fileTransfer.maxBytes } } : {}),
@@ -159,6 +166,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       'agent-directory-org-scope-v1',
       // webchat-generated-images.md §5: this CP signs `image/original/put|get` and proxies `image/original/resolve`.
       WEBCHAT_IMAGES_FEATURE,
+      // webchat-preset-agentconnect-mcp.md §5.3: this CP slides an active remote MCP grant's expiry in place.
+      ...(deps.webchatRemoteMcp ? [WEBCHAT_MCP_GRANT_RENEW_FEATURE] : []),
       SESSION_LIVE_TAIL_FEATURE,
       SESSION_METADATA_ACK_FEATURE,
       SESSION_PURGE_FEATURE,
@@ -180,6 +189,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       ...(deps.computerLeases ? [COMPUTER_LEASE_QUEUE_FEATURE] : []),
       // computer-use.md §3.7: this CP issues per-session data-plane tokens.
       ...(deps.computerChannelGrants ? [COMPUTER_CHANNEL_FEATURE] : []),
+      // …whose tokens name the command-line tier each Computer's policy allows (computer-use.md §5.7).
+      ...(deps.computerChannelGrants ? [COMPUTER_COMMAND_LINE_FEATURE] : []),
       // computer-use.md §15.1: this CP allocates and wakes managed computers in the pool.
       ...(deps.computerPool ? [COMPUTER_POOL_FEATURE] : []),
       // slack-approval-dm.md §4.2: this CP resolves and revalidates approval-DM recipients.
@@ -213,10 +224,14 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       ...(deps.capabilityRequests ? [CAPABILITY_REQUESTS_V2_FEATURE] : []),
       // …and takes live secret asks, shipping `AgentSpec.liveSecrets` (capability-requests.md §4.9.2).
       ...(deps.capabilityRequests ? [CAPABILITY_REQUESTS_V3_FEATURE] : []),
+      // …and every agent-form field plus the `cron` kind (capability-requests.md §4.12).
+      ...(deps.capabilityRequests ? [CAPABILITY_REQUESTS_V4_FEATURE] : []),
       // A daemon socket reports explicit credential-lifecycle events only to a CP that applies them.
       ...(deps.socketBotRevocation ? [INTEGRATION_REVOKED_FEATURE] : []),
       // A daemon socket reports the tenant its traffic named only to a CP that records it.
-      ...(deps.socketBotTenant ? [INTEGRATION_TENANT_FEATURE] : [])
+      ...(deps.socketBotTenant ? [INTEGRATION_TENANT_FEATURE] : []),
+      // daemon-auto-upgrade.md §6: this CP opens the record of a daemon-chosen upgrade on `daemon/lifecycle/begin`.
+      DAEMON_LIFECYCLE_BEGIN_FEATURE
     ]
   })
   deps.connReg.markReady(conn.daemonId, conn)

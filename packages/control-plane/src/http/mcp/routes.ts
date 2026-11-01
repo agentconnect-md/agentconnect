@@ -246,7 +246,10 @@ export function mcpRoutes(deps: HttpDeps) {
           requestBytes: rawBody,
           parseMetadata: () => invocationMetadata(rawBody)
         })
-        if (claim.kind === 'denied') return sendRemoteGrantDenied(reply)
+        if (claim.kind === 'denied') {
+          req.log.warn({ reason: claim.reason }, 'mcp: remote grant denied')
+          return sendRemoteGrantDenied(reply)
+        }
         if (claim.kind === 'handshake') handshakeOnly = true
         else invocationContext = claim.context
       }

@@ -73,6 +73,7 @@ export interface HookFamilyShape {
   reviewPolicy: string
   reportingMode: string
   gateMode: string
+  skipDrafts?: boolean
 }
 
 /**
@@ -99,6 +100,9 @@ export function hookFamilyShapeError(shape: HookFamilyShape): string | null {
     if (shape.reviewPolicy !== 'off' || shape.reportingMode !== 'off' || shape.gateMode !== 'informational') {
       return 'reviews and run reporting apply to pull-request/merge-request rows'
     }
+  }
+  if (shape.skipDrafts && !(shape.kind === 'github' && shape.family === 'pull_request')) {
+    return 'skipDrafts applies to GitHub pull-request rows'
   }
   return null
 }

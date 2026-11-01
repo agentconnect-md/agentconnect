@@ -638,6 +638,8 @@ export interface Agent {
   /** Server-computed: can a session start right now? For a set placement that is "some member is
    *  live", which is the question the console used to answer with a dead member's liveness. */
   placementReady?: boolean
+  /** Server-computed: can a new Webchat with this agent attach over AHP? Webchat uses AHP only where every participant can. */
+  ahpWebchat?: boolean
   /** A group agent's confirmed duty holder: the member its next turn reaches, whose store holds what can resume. */
   holderDaemonId?: string
   daemon: string
@@ -676,6 +678,7 @@ export interface Agent {
   allowedTargetAgentIds: string[]
   /** #536: when true, the agent introduces itself to peers on a genuine channel join. */
   introduceOnJoin: boolean
+  githubAppId?: string | null // the organization GitHub App the agent works through; null ⇒ the built-in App
   /** The strategy slug sessions run in (session-executors.md §5), `host` when unconfined. */
   execution: string
   /** What the placement offers `execution`, as the Control Plane projected it; host alone for an unplaced agent. */
@@ -1409,6 +1412,8 @@ export interface Session {
   threadUrl?: string
   /** Runs on a reserved background-work coordinate (a task, a follow-up or approved work), so no one continues it from its own page. */
   subsession?: true
+  /** An Auto conversation's coordinator session (auto-session-mode.md §11), labeled wherever sessions are listed. */
+  coordinator?: true
   user: string
   /** Raw platform sender id behind `user` — e.g. `cron:<id>` for a scheduled
    *  fire. Lets the Sessions list link a run back to its schedule. */
@@ -2224,6 +2229,7 @@ export function getSessions(agentId: string): Session[] {
 /** One conversation the integration's bot is in + how it activates there. */
 export interface IntegrationChannelRow {
   channelId: string
+  isCodeSession?: boolean
   /** Bare channel name, no hash (e.g. "deploys"); the UI renders the leading "#".
    *  For a DM row (kind 'im') the counterpart's name. Falls back to the raw id. */
   name: string
@@ -2250,10 +2256,8 @@ export interface IntegrationChannelRow {
   trigger: 'off' | 'mention' | 'any' | 'decision'
   decisionBinding?: ChannelDecisionBinding | null
   decision?: ChannelDecisionView | null
-  /** Which session a message here joins: a new one per thread, or the conversation's one
-   *  ongoing session. Channel rows only — a direct conversation is not a place this choice
-   *  means anything. */
-  sessionMode?: 'createNew' | 'append'
+  /** Which session a message here joins: one per thread, the conversation's one session, or the coordinator's choice (`auto`). */
+  sessionMode?: 'createNew' | 'append' | 'auto'
   /** Effective per-conversation owner for a shared bot. */
   agentId?: string | null
 }
@@ -2400,6 +2404,17 @@ export interface DaemonLifecycleOp {
   phase?: DaemonLifecyclePhase | null
   targetVersion: string | null
   outcome: string | null
+  /** Who opened the op: the owner (`manual`) or the daemon's own upgrader (`auto`); absent ⇒ manual. */
+  trigger?: 'manual' | 'auto'
+}
+
+/** The daemon's most recent automatic upgrade (daemon-auto-upgrade.md §8). */
+export interface DaemonAutoUpgradeResult {
+  id: string
+  status: 'pending' | 'succeeded' | 'failed'
+  targetVersion: string | null
+  outcome: string | null
+  settledAt: string | null
 }
 
 export interface DaemonRow {
@@ -2423,6 +2438,12 @@ export interface DaemonRow {
   lifecycleOp: DaemonLifecycleOp | null
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
   canManageLifecycle: boolean
+  /** The daemon installs new releases itself and restarts when idle. */
+  autoUpgrade: boolean
+  /** The daemon advertised auto-upgrade: supervised by the service or CLI, and not a pool member. */
+  autoUpgradeSupported: boolean
+  /** The most recent automatic upgrade, or null when there has been none. */
+  lastAutoUpgrade: DaemonAutoUpgradeResult | null
   /** Actual daemon connection/readiness. Never replaced by a presentation-only lifecycle state. */
   status: ConnectionStatusKey
   /** An install-wide pool member: managed infrastructure every org shares, one row per
@@ -2485,9 +2506,10 @@ export interface DaemonRow {
   /** Last editor's userId — resolved to a name / "You" at render via creatorLabel; '' for CLI/self-registered. */
   lastModifiedBy: string
   lastModifiedAt: string
-  /** How long the daemon keeps finished sessions before deleting them ("Expire
-   *  sessions"); 'never' disables the retention sweep. */
+  /** How long a finished session's row and transcript stay ("Expire sessions"); 'never' disables the sweep. */
   sessionRetention: DaemonSessionRetention
+  /** How long a finished session's workspace and sandbox stay ("Clean up workspaces"), never past its row. */
+  workspaceRetention: DaemonSessionRetention
   /** 'org' = all members; 'restricted' = sharedWith plus organization owners. */
   visibility: ResourceVisibility
   /** Explicit app_user.id audience when restricted. */

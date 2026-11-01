@@ -1,9 +1,17 @@
 import type { ActionType } from '@microsoft/agent-host-protocol'
-import { agentLabel, isGitWorkspace, type Agent, type Session, type SessionImage, type SessionStep } from '@/lib/data'
+import {
+  agentLabel,
+  isGitWorkspace,
+  type Agent,
+  type Session,
+  type SessionImage,
+  type SessionStep,
+  type SessionUsage
+} from '@/lib/data'
 import { addWebchatConversationAgent, removeWebchatConversationAgent, type SessionMessageDto } from '@/lib/api'
 import { randomUuid } from '@/lib/random-uuid'
 import { reconcilePersistedLiveSteps } from '@/lib/session-transcript'
-import { ahpAnswer, ahpSteps } from '@/lib/ahp/view'
+import { ahpAnswer, ahpSteps, ahpUsageFields } from '@/lib/ahp/view'
 import type { ComposerFile } from '@/lib/webchat-file'
 import type { PlaygroundData, QueuedTurn, WebchatRuntimeConfig } from './contract'
 import { AhpConversation } from './AhpConversation'
@@ -13,6 +21,15 @@ type Entry = {
   session?: Session
   steps: SessionStep[]
   persisted?: { rows: SessionMessageDto[]; agentId: string; prompts?: SessionMessageDto[] }
+  // Turns an adopted session's first attach replayed per peer; its fetched transcript already renders them.
+  replayed?: Map<string, Set<string>>
+}
+const rowKey = (row: SessionMessageDto) => JSON.stringify([row.sender, row.seq, row.ts, row.kind])
+function unionRows(prior: SessionMessageDto[] | undefined, rows: SessionMessageDto[]): SessionMessageDto[] {
+  if (!prior?.length) return rows
+  const keys = new Set(prior.map(rowKey))
+  const added = rows.filter((row) => !keys.has(rowKey(row)))
+  return added.length ? [...prior, ...added] : prior
 }
 const NO_STEPS: SessionStep[] = [],
   NO_FILES: ComposerFile[] = [],
@@ -67,30 +84,50 @@ export class AhpPlaygroundStore {
   private project(id: string, entry: Entry): void {
     const prompts = new Set<string>(),
       connection = entry.connection
-    let steps = [...connection.peers]
-      .flatMap(([agentId, peer]) =>
-        peer.snapshot.chat
-          ? ahpSteps(peer.snapshot.chat, agentId, peer.snapshot.session)
-              .map((step) => ({
-                ...step,
-                ...(step.kind !== 'msg' ? { who: connection.roster.find((p) => p.agentId === agentId)?.name } : {})
-              }))
-              .filter((step) => {
-                if (step.kind !== 'msg') return true
-                if (prompts.has(step.turnId)) return false
-                prompts.add(step.turnId)
-                return true
-              })
-          : []
+    let steps = [...connection.peers].flatMap(([agentId, peer]) => {
+      const chat = peer.snapshot.chat
+      if (!chat) return []
+      const replayed = entry.session ? undefined : (entry.replayed ??= new Map())
+      if (replayed && !replayed.has(agentId)) replayed.set(agentId, new Set(chat.turns.map((turn) => turn.id)))
+      const seen = replayed?.get(agentId)
+      return ahpSteps(
+        seen ? { ...chat, turns: chat.turns.filter((turn) => !seen.has(turn.id)) } : chat,
+        agentId,
+        peer.snapshot.session
       )
-      .sort((a, b) => (a.observedAtMs ?? 0) - (b.observedAtMs ?? 0))
+        .map((step) => ({
+          ...step,
+          ...(step.kind !== 'msg'
+            ? { who: connection.roster.find((p) => p.agentId === agentId)?.name }
+            : connection.sent.has(step.turnId)
+              ? { who: '@you' }
+              : {})
+        }))
+        .filter((step) => {
+          if (step.kind !== 'msg') return true
+          if (prompts.has(step.turnId)) return false
+          prompts.add(step.turnId)
+          return true
+        })
+    })
+    // Each daemon stamps its own copy of a turn, so order by the turn's earliest stamp and keep the prompt's peer first.
+    const starts = new Map<string, number>()
+    for (const step of steps)
+      if (step.observedAtMs != null)
+        starts.set(step.turnId, Math.min(starts.get(step.turnId) ?? step.observedAtMs, step.observedAtMs))
+    steps = steps.sort((a, b) => (starts.get(a.turnId) ?? 0) - (starts.get(b.turnId) ?? 0))
     if (entry.persisted)
       steps = reconcilePersistedLiveSteps(steps, entry.persisted.rows, entry.persisted.agentId, entry.persisted.prompts)
     entry.steps = [...steps, ...connection.notices]
     if (entry.session) {
       const primary = connection.peers.get(connection.agentId)?.snapshot
       const meta = primary?.session?._meta?.['agentconnect.md'] as
-        { sessionId?: string; steerable?: boolean } | undefined
+        | {
+            sessionId?: string
+            steerable?: boolean
+            status?: SessionUsage
+          }
+        | undefined
       const config = primary?.session?.config,
         values = config?.values ?? {}
       const choices = (key: string) =>
@@ -102,12 +139,14 @@ export class AhpPlaygroundStore {
         lastActivityAt: primary?.chat?.modifiedAt ?? entry.session.lastActivityAt,
         channelId: connection.conversationId,
         realSessionId: meta?.sessionId ?? entry.session.realSessionId,
-        participants: connection.roster.length > 1 ? connection.roster : undefined,
+        // Once a conversation had members it keeps its roster, so removing down to one does not fall back to a fetched one.
+        participants: connection.roster.length > 1 || entry.session.participants ? connection.roster : undefined,
         availableModels: choices('model'),
         availableEfforts: choices('effort'),
         availablePermissionModes: choices('permissionMode'),
         fastModeAvailable: !!config?.schema.properties.fastMode,
         steerable: meta?.steerable,
+        ...ahpUsageFields(meta?.status, entry.session.usage),
         ...(typeof values.model === 'string' ? { model: values.model } : {}),
         ...(typeof values.runtime === 'string' ? { runtime: values.runtime, runtimePending: false } : {}),
         ...(typeof values.effort === 'string' ? { effort: values.effort } : {}),
@@ -269,6 +308,13 @@ export class AhpPlaygroundStore {
           await addWebchatConversationAgent(this.orgId, connection.conversationId!, agent.id)
           connection.roster.push({ agentId: agent.id, name: agentLabel(agent) })
         }),
+      pgDiscard: (id) => {
+        const entry = this.entries.get(id)
+        if (!entry) return
+        this.entries.delete(id)
+        void entry.connection.close()
+        this.changed()
+      },
       pgRemoveAgent: (id, agentId) =>
         this.rosterChange(id, async (connection) => {
           await removeWebchatConversationAgent(this.orgId, connection.conversationId!, agentId)
@@ -349,7 +395,13 @@ export class AhpPlaygroundStore {
       reconcileLiveSteps: (id, rows, agentId, prompts) => {
         const entry = this.entries.get(id)
         if (entry) {
-          entry.persisted = { rows, agentId, prompts }
+          // A tail refresh passes only rows since its cursor, and the tail is re-derived from the snapshot, so rows accumulate.
+          const prior = entry.persisted
+          entry.persisted = {
+            rows: unionRows(prior?.rows, rows),
+            agentId,
+            prompts: unionRows(prior ? (prior.prompts ?? prior.rows) : undefined, prompts ?? rows)
+          }
           this.project(id, entry)
         }
       }

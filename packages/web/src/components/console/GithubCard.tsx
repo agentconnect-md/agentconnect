@@ -1,17 +1,23 @@
 import { Fragment, useEffect, useState } from 'react'
+import useSWR, { useSWRConfig } from 'swr'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import {
+  fetchBuiltinGithubAppSlug,
+  fetchGithubApps,
   fetchGithubInstallUrl,
   fetchGithubInstallations,
+  syncGithubApp,
   syncGithubInstallations,
   type GithubInstallationDto
 } from '@/lib/api'
 import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
 import { Scrim } from '@/components/console/Scrim'
+import { GithubAppRow, GithubOrgApps, INSTALLATION_ROW, InstallAppButton } from '@/components/console/GithubOrgApps'
+import { consoleKeys } from '@/lib/swr-keys'
 
 // No 'use client' here: rendered only inside a client boundary — the Integrations page, or the
 // native code-host dialog an admin MCP tool opens in webchat.
@@ -33,6 +39,12 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [uninstalling, setUninstalling] = useState<GithubInstallationDto | null>(null)
+  // Each App is a first-level row over its installations; the built-in App opens expanded.
+  const [builtInOpen, setBuiltInOpen] = useState(true)
+  const { mutate } = useSWRConfig()
+  const { data: builtInSlug } = useSWR(activeOrg ? consoleKeys.githubBuiltinApp(activeOrg.id) : null, ([, id]) =>
+    fetchBuiltinGithubAppSlug(id ?? undefined)
+  )
 
   useEffect(() => {
     if (!activeOrg) return
@@ -62,14 +74,22 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
     }
   }
 
-  // Refresh the org's claimed installations after GitHub changes or an install
-  // finished in the other tab just now.
+  // Re-pull every App's installations from GitHub, the built-in App's and each organization App's; one failing App doesn't stop the rest.
   const sync = async () => {
-    if (busy) return
+    if (busy || !activeOrg) return
     setBusy(true)
     setErr(null)
     try {
-      setInstalls(await syncGithubInstallations())
+      const [builtIn, ...orgApps] = await Promise.allSettled([
+        syncGithubInstallations(),
+        ...(await fetchGithubApps(activeOrg.id)).map((app) => syncGithubApp(app.id))
+      ])
+      if (builtIn?.status === 'fulfilled') setInstalls(builtIn.value)
+      await mutate(consoleKeys.githubApps(activeOrg.id))
+      const failed = [builtIn, ...orgApps].find((result) => result?.status === 'rejected')
+      if (failed?.status === 'rejected') {
+        setErr(failed.reason instanceof Error ? failed.reason.message : String(failed.reason))
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -88,16 +108,10 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
           {t('github.label')}
         </span>
         {enabled === true && canWrite && (
-          <span className="flex items-center gap-2">
-            <Button variant="ghost" onClick={sync}>
-              <Icon name="refresh-cw" size={13} />
-              {busy ? t('github.syncing') : t('github.sync')}
-            </Button>
-            <Button onClick={install}>
-              <Icon name="external-link" size={13} />
-              {t('github.install')}
-            </Button>
-          </span>
+          <Button variant="ghost" onClick={sync}>
+            <Icon name="refresh-cw" size={13} />
+            {busy ? t('github.syncing') : t('github.sync')}
+          </Button>
         )}
       </div>
       {enabled === null && <LoadingState size={22} padding={20} />}
@@ -106,77 +120,89 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
           {t('github.notEnabled')}
         </div>
       )}
-      {enabled === true && installs.length === 0 && (
-        <div className="px-4 py-7 text-center">
-          <div className="font-sans text-[13px] font-semibold leading-normal">{t('github.noInstallations')}</div>
-          <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            {t('github.noInstallationsHint')}
-          </div>
-        </div>
-      )}
-      {/* Desktop only: the row collapses to one stacked column below the
-          breakpoint, where a two-track header would label nothing. */}
-      {enabled === true && installs.length > 0 && (
-        <div className="row h hidden grid-cols-[minmax(0,1fr)_auto] gap-[11px] desktop:grid">
-          <span>{t('installation')}</span>
-          <span>{t('repositoryAccess')}</span>
-        </div>
-      )}
-      {enabled === true &&
-        installs.map((i) => (
-          <Fragment key={i.id}>
-            <div className="row grid-cols-1 gap-2 desktop:grid-cols-[minmax(0,1fr)_auto] desktop:gap-[11px]">
-              <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
-                <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
-                  <span className="flex h-[14px] w-[14px] items-center justify-center">
-                    <GithubMark color="var(--text-primary)" fillPct={SQUARE_MARK_FILL_PCT} />
-                  </span>
-                </span>
-                <span className="mono min-w-0 truncate text-[12.5px]">{i.accountLogin}</span>
-                <span className="badge bg-(--surface-active) text-(--text-tertiary)">
-                  {i.accountType === 'Organization' ? t('github.organization') : t('github.user')}
-                </span>
-                {i.suspended && (
-                  <span className="badge bg-(--status-error-soft) text-(--status-error)">{t('github.suspended')}</span>
-                )}
-                {i.permissionsStatus === 'outdated' && (
-                  <span className="badge bg-(--status-paused-soft) text-(--amber-500)">{t('github.needsUpdate')}</span>
-                )}
+      {enabled === true && (
+        <div data-builtin-app>
+          <GithubAppRow
+            open={builtInOpen}
+            onToggle={() => setBuiltInOpen((open) => !open)}
+            label={builtInOpen ? t('github.collapse') : t('github.expand')}
+            aside={canWrite && <InstallAppButton onClick={() => void install()} />}
+          >
+            <span className="mono min-w-0 truncate text-[12.5px]">{builtInSlug ?? t('github.label')}</span>
+            <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('github.builtIn')}</span>
+          </GithubAppRow>
+          {builtInOpen && installs.length === 0 && (
+            <div className={INSTALLATION_ROW}>
+              <div>
+                <div className="font-sans text-[13px] font-semibold leading-normal">{t('github.noInstallations')}</div>
+                <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                  {t('github.noInstallationsHint')}
+                </div>
               </div>
-              <span className="flex items-center justify-between gap-3 desktop:justify-end">
-                <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                  {i.repositorySelection === 'all' ? t('github.allRepositories') : t('github.selectedRepositories')}
-                </span>
-                {isOwner && (
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    className="text-(--status-error) hover:text-(--status-error)"
-                    onClick={() => setUninstalling(i)}
-                  >
-                    <Icon name="unplug" size={13} />
-                    {t('github.uninstall')}
-                  </Button>
-                )}
-              </span>
             </div>
-            {i.permissionsStatus === 'outdated' && (
-              <div
-                role="status"
-                className="flex flex-col items-start gap-2 border-b border-(--border-subtle) bg-(--status-paused-soft) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--amber-500) desktop:flex-row desktop:items-center desktop:justify-between desktop:gap-3"
-              >
-                <span className="flex min-w-0 items-start gap-2">
-                  <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[2px] flex-none" />
-                  <span>{t('github.permissionsNeedUpdate')}</span>
-                </span>
-                <a href={i.settingsUrl} target="_blank" rel="noopener noreferrer" className="lnk flex-none text-[12px]">
-                  {t('github.updatePermissions')}
-                  <Icon name="external-link" size={12} />
-                </a>
-              </div>
-            )}
-          </Fragment>
-        ))}
+          )}
+          {builtInOpen &&
+            installs.map((i) => (
+              <Fragment key={i.id}>
+                <div className={INSTALLATION_ROW}>
+                  <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
+                    <span className="mono min-w-0 truncate text-[12.5px]">{i.accountLogin}</span>
+                    <span className="badge bg-(--surface-active) text-(--text-tertiary)">
+                      {i.accountType === 'Organization' ? t('github.organization') : t('github.user')}
+                    </span>
+                    {i.suspended && (
+                      <span className="badge bg-(--status-error-soft) text-(--status-error)">
+                        {t('github.suspended')}
+                      </span>
+                    )}
+                    {i.permissionsStatus === 'outdated' && (
+                      <span className="badge bg-(--status-paused-soft) text-(--amber-500)">
+                        {t('github.needsUpdate')}
+                      </span>
+                    )}
+                  </div>
+                  <span className="flex items-center justify-between gap-3 desktop:justify-end">
+                    <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                      {i.repositorySelection === 'all' ? t('github.allRepositories') : t('github.selectedRepositories')}
+                    </span>
+                    {isOwner && (
+                      <button
+                        type="button"
+                        className="iconbtn text-(--status-error)"
+                        title={t('github.uninstall')}
+                        aria-label={t('github.uninstall')}
+                        onClick={() => setUninstalling(i)}
+                      >
+                        <Icon name="unplug" size={14} />
+                      </button>
+                    )}
+                  </span>
+                </div>
+                {i.permissionsStatus === 'outdated' && (
+                  <div
+                    role="status"
+                    className="flex flex-col items-start gap-2 border-b border-(--border-subtle) bg-(--status-paused-soft) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--amber-500) desktop:flex-row desktop:items-center desktop:justify-between desktop:gap-3 desktop:pl-[50px]"
+                  >
+                    <span className="flex min-w-0 items-start gap-2">
+                      <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[2px] flex-none" />
+                      <span>{t('github.permissionsNeedUpdate')}</span>
+                    </span>
+                    <a
+                      href={i.settingsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="lnk flex-none text-[12px]"
+                    >
+                      {t('github.updatePermissions')}
+                      <Icon name="external-link" size={12} />
+                    </a>
+                  </div>
+                )}
+              </Fragment>
+            ))}
+        </div>
+      )}
+      {enabled === true && <GithubOrgApps canWrite={canWrite} isOwner={isOwner} />}
       {err && (
         <div className="px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>
       )}

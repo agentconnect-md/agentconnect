@@ -232,3 +232,13 @@ describe('platform set', () => {
     }
   })
 })
+
+describe('setup docs', () => {
+  it('names a chat-platforms or triggers page for every registered module', () => {
+    for (const id of platformRegistry.ids()) {
+      const module = platformRegistry.get(id)!
+      const section = module.integrationGroup === 'workflow' ? 'triggers-automation' : 'chat-platforms'
+      expect(module.docsPath, id).toMatch(new RegExp(`^connect-automate/${section}/[a-z-]+$`))
+    }
+  })
+})

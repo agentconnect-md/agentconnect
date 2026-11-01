@@ -157,6 +157,7 @@ import {
 } from '../../authorization/policy.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { makeMemoryPlaceAccess } from '../memory-place-access.js'
+import { servesAhpWebchat } from '../webchat-attachment.js'
 import { makeMemorySources, type MemorySource } from '../memory-source.js'
 import { resolveShareSet } from '../sharing.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
@@ -220,6 +221,9 @@ import {
   WorkspaceTransferPendingDto,
   FileUploadBody,
   FileUploadDto,
+  FileUploadPartsBody,
+  FileUploadPartsDto,
+  FileUploadPartsParams,
   WorkspaceDownloadBody,
   PutWorkspaceFileQueryDto,
   PutWorkspaceFileBody,
@@ -438,6 +442,7 @@ function toDto(
     daemonName: a.daemonId ? placementView.daemonName : null,
     setId: a.setId,
     placementReady: placementView.ready,
+    ahpWebchat: placementView.ahpWebchat,
     ...(placementView.holderDaemonId !== undefined ? { holderDaemonId: placementView.holderDaemonId } : {}),
     workspace: workspaceToDto(a.workspace, a.workspaceRepoId),
     workspaceRepoId: a.workspaceRepoId?.toString() ?? null,
@@ -459,6 +464,7 @@ function toDto(
     outboundPolicy: a.outboundPolicy,
     allowedTargetAgentIds: a.allowedTargetAgentIds,
     introduceOnJoin: a.introduceOnJoin,
+    githubAppId: a.githubAppId ?? null,
     execution: a.execution,
     strategies: placementView.strategies,
     hookKinds
@@ -473,16 +479,19 @@ interface PlacementView {
   ready: boolean
   /** Set only for an org's own group: the pool shares its store, and a machine placement names its daemon. */
   holderDaemonId?: string | null
+  ahpWebchat: boolean
 }
 
-const NO_PLACEMENT: PlacementView = { daemonName: null, strategies: UNPLACED, ready: false }
+const NO_PLACEMENT: PlacementView = { daemonName: null, strategies: UNPLACED, ready: false, ahpWebchat: false }
 
 function placementViewOf(deps: HttpDeps, daemon: DaemonView | null): PlacementView {
   const live = daemon ? deps.liveness.get(daemon.daemonId) : undefined
+  const ready = live?.reachable === true && live.state === 'READY'
   return {
     daemonName: daemon?.name ?? null,
     strategies: placementStrategies(daemon ? [daemon.capabilities] : []),
-    ready: live?.reachable === true && live.state === 'READY'
+    ready,
+    ahpWebchat: ready && servesAhpWebchat(deps.config, daemon)
   }
 }
 
@@ -886,6 +895,11 @@ function sendTransferUnavailable(reply: FastifyReply): FastifyReply {
     message: 'this deployment has no object store for file transfers',
     code: 'WORKSPACE_TRANSFER_UNAVAILABLE'
   })
+}
+
+/** A presigned request as the console sends it: its URL and exact headers, without the signer's expiry. */
+function signedRequest({ url, headers }: { url: string; headers: Record<string, string> }) {
+  return { url, headers }
 }
 
 /** A transfer refusal the control plane decided itself; false ⇒ not one. */
@@ -1432,6 +1446,35 @@ export function agentRoutes(deps: HttpDeps) {
       if (daemon?.capabilities.features.includes(feature)) return true
       reply.code(409).send({ error: 'Conflict', statusCode: 409, message, code: 'DAEMON_FEATURE_MISSING' })
       return false
+    }
+
+    // A console upload's preconditions: a visible agent, a transfer bucket, and a live daemon able to fetch uploads.
+    const uploadingAgent = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      id: string
+    ): Promise<(AgentRecord & { daemonId: DaemonId }) | null> => {
+      const agent = await getServingAgent(req, id)
+      if (!agent) {
+        reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        return null
+      }
+      if (!deps.fileTransfer) {
+        sendTransferUnavailable(reply)
+        return null
+      }
+      if (!agent.daemonId) {
+        reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        return null
+      }
+      const capable = await requireDaemonFeature(
+        reply,
+        agent.orgId,
+        agent.daemonId,
+        FILE_TRANSFER_FEATURE,
+        'this agent’s daemon predates control-plane-signed file transfers'
+      )
+      return capable ? { ...agent, daemonId: agent.daemonId } : null
     }
 
     // Version skew: an older daemon simply ignores `repo` and would answer for the PRIMARY
@@ -2458,7 +2501,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Check assistant mode admission',
           description:
-            'Reports whether the agent may switch assistant mode on as it stands, and every reason it may not: no runtime yet, a runtime outside the admission list, memory other than managed, or a daemon group whose members do not share one store. Switching it off is never refused.',
+            'Reports whether the agent may switch assistant mode on as it stands, and every reason it may not: no runtime yet, a runtime outside the admission list, memory other than managed, a daemon group whose members do not share one store, or a conversation that is By decision or in a shared bot’s routing (`routing`, with those conversations in `conversations`). Switching it off is never refused.',
           operationId: 'getAgentAssistantModeAdmission',
           params: IdParam,
           response: { 200: AssistantModeAdmissionDto, 404: ErrorDto }
@@ -2467,7 +2510,7 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const agent = await getOrgAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        return assistantModeAdmissionOf(deps.repos.memberSet, agent)
+        return assistantModeAdmissionOf(deps.repos, agent)
       }
     )
 
@@ -2811,7 +2854,11 @@ export function agentRoutes(deps: HttpDeps) {
 
             const [owner, repo] = gitRepoLabel(existing.workspace.gitRepo).split('/')
             if (!owner || !repo) return conflict('workspace gitRepo is not a github repository')
-            const installation = await deps.repos.githubInstallation.liveByOrgAndAccount(existing.orgId, owner)
+            const installation = await deps.repos.githubInstallation.liveByOrgAndAccount(
+              existing.orgId,
+              owner,
+              existing.githubAppId ?? null
+            )
             if (!installation || installation.suspendedAt) {
               return conflict(`no live GitHub installation covers ${owner}`)
             }
@@ -2905,22 +2952,24 @@ export function agentRoutes(deps: HttpDeps) {
           if (memoryError) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: memoryError })
           }
-          // The friendly admission refusal, with the placement's store check; the row-locked write re-checks the definition.
+          // The friendly admission refusal, with the store and routing checks; the row-locked write re-checks the definition.
           const targetRuntime = req.body.runtime ?? existing.runtime
           const changesDefinition =
             targetRuntime !== existing.runtime ||
             (targetMemory?.provider ?? 'managed') !== (existing.memory?.provider ?? 'managed')
           if (assistantModeEditNeedsAdmission(existing.assistantMode, targetAssistantMode, changesDefinition)) {
-            const admission = await assistantModeAdmissionOf(deps.repos.memberSet, {
-              ...existing,
-              runtime: targetRuntime,
-              memory: targetMemory
-            })
+            // Routing is checked on the switch-on alone: an agent already on keeps its existing rows (§5.18 ①).
+            const alreadyOn = existing.assistantMode?.enabled === true
+            const admission = await assistantModeAdmissionOf(
+              deps.repos,
+              { ...existing, runtime: targetRuntime, memory: targetMemory },
+              { routing: !alreadyOn }
+            )
             if (!admission.admitted) {
               return reply.code(409).send({
                 error: 'Conflict',
                 statusCode: 409,
-                message: assistantModeRefusalMessage(admission.refusals, existing.assistantMode?.enabled === true),
+                message: assistantModeRefusalMessage(admission.refusals, alreadyOn, admission.conversations),
                 code: ASSISTANT_MODE_NOT_ADMITTED
               })
             }
@@ -3177,7 +3226,7 @@ export function agentRoutes(deps: HttpDeps) {
                 req.principal?.userId,
                 req.body.gitRepo,
                 req.body.access,
-                { write: true }
+                { write: true, githubAppId: existing.githubAppId ?? null }
               )
             } catch (e) {
               if (e instanceof WorkspaceCredentialRefused) return conflict(e.message)
@@ -4314,7 +4363,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // A file the console sends with a webchat turn: the control plane presigns a PUT into the transfer bucket.
+    // A file the console sends with a webchat turn: the control plane presigns a PUT, or a multipart upload, into the transfer bucket.
     r.post(
       '/agents/:id/uploads',
       {
@@ -4322,7 +4371,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Reserve a file upload',
           description:
-            'Reserve one file upload for a chat turn with this agent and return a short-lived presigned PUT into the deployment’s object store. The browser hashes the file first (sha256, base64) and must send exactly the returned headers and the declared number of bytes; it then names uploadId in the turn’s files. The agent receives a download link, never the bytes through the control plane. Uploaded objects expire with the store’s lifecycle rule. 409 WORKSPACE_TRANSFER_UNAVAILABLE when the deployment has no transfer bucket or it cannot take one right now, 409 DAEMON_FEATURE_MISSING when the agent’s daemon cannot fetch uploads yet, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
+            'Reserve one file upload for a chat turn with this agent and return short-lived presigned requests into the deployment’s object store. A file of at most the runtime config’s `fileTransfer.partBytes` (or any file when it is absent) goes in one PUT: the browser hashes it (sha256, base64), sends exactly the returned headers and the declared number of bytes, then names uploadId in the turn’s files. A larger file goes in parts: the browser sends `parts` (its part size, at most `partBytes`, and each part’s sha256) with `sha256` set to the composite (the sha256 of the parts’ raw digests), PUTs each part on the returned URLs (asking `…/uploads/:uploadId/parts` for the rest), then POSTs the CompleteMultipartUpload XML to `complete` before naming uploadId. The agent receives a download link, never the bytes through the control plane. Uploaded objects expire with the store’s lifecycle rule. 409 WORKSPACE_TRANSFER_UNAVAILABLE when the deployment has no transfer bucket or it cannot take one right now, 409 DAEMON_FEATURE_MISSING when the agent’s daemon cannot fetch uploads yet, 400 WORKSPACE_TOO_LARGE over the transfer cap, 400 WORKSPACE_UPLOAD_INVALID when the parts do not describe the file.',
           operationId: 'reserveAgentFileUpload',
           params: IdParam,
           body: FileUploadBody,
@@ -4330,31 +4379,56 @@ export function agentRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await getServingAgent(req, req.params.id)
-        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        const transfers = deps.fileTransfer
-        if (!transfers) return sendTransferUnavailable(reply)
-        if (!agent.daemonId) {
-          return reply
-            .code(503)
-            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
-        }
-        const capable = await requireDaemonFeature(
-          reply,
-          agent.orgId,
-          agent.daemonId,
-          FILE_TRANSFER_FEATURE,
-          'this agent’s daemon predates control-plane-signed file transfers'
-        )
-        if (!capable) return reply
+        const agent = await uploadingAgent(req, reply, req.params.id)
+        if (!agent) return reply
         try {
-          const grant = await transfers.reserveUpload({
+          const grant = await deps.fileTransfer!.reserveUpload({
             orgId: agent.orgId,
             agentId: agent.id,
             size: req.body.size,
-            sha256: req.body.sha256
+            sha256: req.body.sha256,
+            ...(req.body.parts ? { parts: req.body.parts } : {})
           })
-          return { ...grant, expiresAt: new Date(grant.expiresAt).toISOString() }
+          const expiresAt = new Date(grant.expiresAt).toISOString()
+          if (!('multipartId' in grant)) return { ...grant, expiresAt }
+          const { uploadId, multipartId, parts, complete } = grant
+          return { uploadId, expiresAt, multipart: { multipartId, parts, complete: signedRequest(complete) } }
+        } catch (err) {
+          if (sendTransferRefusal(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    r.post(
+      '/agents/:id/uploads/:uploadId/parts',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Sign more parts of a file upload',
+          description:
+            'For a file upload reserved in parts, presign the PUTs of up to 100 more parts (or fresh ones for parts whose URLs expired) and a fresh complete. Send the same size and part size the upload was reserved with, the multipartId it returned, and each wanted part’s number and sha256; an empty list returns only a fresh complete. 409 WORKSPACE_TRANSFER_UNAVAILABLE when the deployment cannot take uploads in parts right now, 400 WORKSPACE_UPLOAD_INVALID for a part outside the upload.',
+          operationId: 'signAgentFileUploadParts',
+          params: FileUploadPartsParams,
+          body: FileUploadPartsBody,
+          response: { 200: FileUploadPartsDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await uploadingAgent(req, reply, req.params.id)
+        if (!agent) return reply
+        try {
+          const signed = await deps.fileTransfer!.signUploadParts({
+            orgId: agent.orgId,
+            agentId: agent.id,
+            uploadId: req.params.uploadId,
+            ...req.body
+          })
+          return {
+            parts: signed.parts,
+            complete: signedRequest(signed.complete),
+            expiresAt: new Date(signed.expiresAt).toISOString()
+          }
         } catch (err) {
           if (sendTransferRefusal(reply, err)) return
           throw err

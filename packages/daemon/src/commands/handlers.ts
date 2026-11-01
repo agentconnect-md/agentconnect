@@ -21,14 +21,14 @@ import type { Logger } from '../log.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import { routeRules, type RouteVia } from '../router/routing-table.js'
-import {
-  conversationAdmitted,
-  conversationSessionMode,
-  integrationRouting,
-  type RoutingRule
-} from '../router/routing-rule.js'
+import { conversationAdmitted, integrationRouting, type RoutingRule } from '../router/routing-rule.js'
 import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
-import { appendCoordinateTs, isAppendCoordinate } from '../session/append-coordinate.js'
+import {
+  appendCoordinateTs,
+  isAppendCoordinate,
+  isCoordinatorCoordinate,
+  type ConversationCoordinateKind
+} from '../session/append-coordinate.js'
 import { transcriptCoords } from '../session/session-manager.js'
 import {
   CommandChromeRegistry,
@@ -85,12 +85,13 @@ export interface CommandHost {
   sessionOwnerKey(agentId: string, sessionKey: string): HostKey
   statusInfoFrom(agentId: string, sessionKey: string, acpSessionId?: string): Promise<StatusBarInfo>
   emitStatusBar(p: Pending): Promise<void>
+  refreshIdleStatusBar(rec: SessionRecord): Promise<void>
   interruptTurn(
     agentId: string,
     key: string,
     reason: TurnInterruptReason,
     acpSessionId?: string,
-    opts?: { actor?: InteractionActor }
+    opts?: { actor?: InteractionActor; preserveQueued?: boolean }
   ): Promise<void>
   /** `!queue` admission through the unified per-sessionKey gate — it decides run-now vs enqueue; `admission` makes the write required and reports it. */
   dispatchQueueCommand(
@@ -118,10 +119,16 @@ export interface CommandHost {
     msg: NormalizedMessage,
     opts?: { mint?: boolean }
   ): Promise<string | undefined>
-  /** Whether this conversation appends for this target — the MODE, read from the
-   *  integration and touching no store, so a command can tell "no coordinate yet" from
-   *  "not an append conversation". */
+  /** Whether this conversation's root is one session for this target (append, or `auto`'s coordinator), read from the mode alone. */
   conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean
+  /** The one session a conversation's root keys on for this target: its append session, its coordinator under `auto`, or none. */
+  rootCoordinateKind(
+    agentId: string,
+    integrationId: string | undefined,
+    at: Pick<NormalizedMessage, 'channel'> & Partial<Pick<NormalizedMessage, 'isDm' | 'isGroupDm'>>
+  ): ConversationCoordinateKind | undefined
+  /** A coordinator's `!new` hands its threaded tasks to the session that succeeds it (auto-session-mode.md §8). */
+  adoptCoordinatorTasks(agentId: string, fromKey: string, toKey: string): Promise<void>
   mergedRulesForSource(srcIntegrationIds?: readonly string[]): RoutingRule[]
   transportScopeForIntegrationIds(integrationIds?: readonly string[]): string | undefined
   integrationBelongsToSource(integrationId: string, srcIntegrationIds?: readonly string[]): boolean
@@ -162,6 +169,11 @@ export interface QueueAdmission {
   }) => void | Promise<void>
   /** The dispatch promise, so a dispatch that ends before admission still settles the caller. */
   onDispatched?: (turn: Promise<unknown>) => void
+}
+
+/** A coordinator's queue holds other people's messages, not follow-ups of the stopped turn, so they are still decided (auto-session-mode.md §4.3). */
+function keepsCoordinatorQueue(thread: string): { preserveQueued?: true } {
+  return isCoordinatorCoordinate(thread) ? { preserveQueued: true } : {}
 }
 
 /** The human behind a chat command, in the shape a click reports: with the cross-app id a synced platform matches by. */
@@ -232,10 +244,7 @@ export class CommandHandlers {
       : undefined
   }
 
-  /** Switch a session's model by its local key — the core shared by the webchat
-   *  `set-model` frame and the Slack status-bar select. Records the sticky per-session
-   *  override (re-applied on every turn by dispatch) and, if the ACP session is warm,
-   *  applies it live now and re-pushes the status bar. Never changes the agent default. */
+  // Persist the session model override, apply it to a warm runtime, and refresh its controls.
   async setModelByKey(key: string, model: string): Promise<boolean> {
     const rec = await this.chatRuntimeSession(key)
     if (!rec) return false
@@ -253,16 +262,19 @@ export class CommandHandlers {
     // what the next start reads, so the switch lands there instead of live.
     if (crossProvider) {
       this.host.log().info(`session ${key}: provider change applies when its credential host next starts`)
+      await this.refreshStatusBarForKey(key)
       return true
     }
     const acpSessionId = rec.acpSessionId
     const host = acpSessionId ? this.host.hostForSession(rec.agentId, rec.key) : undefined
-    if (!acpSessionId || !host?.hasSession(acpSessionId)) return true // no live session — applies next turn
+    if (!acpSessionId || !host?.hasSession(acpSessionId)) {
+      await this.refreshStatusBarForKey(key)
+      return true
+    }
     void host
       .setSessionModel(acpSessionId, model)
       .then(async (applied) => {
-        const p = this.host.pending().get(pendingTurnKey(this.host.sessionOwnerKey(rec.agentId, rec.key), acpSessionId))
-        if (applied && p) await this.host.emitStatusBar(p) // reflect the new model on the status bar
+        if (applied) await this.refreshStatusBarForKey(key)
       })
       .catch((err) => this.host.log().warn(`set-model failed: ${(err as Error).message}`))
     return true
@@ -351,14 +363,17 @@ export class CommandHandlers {
     return true
   }
 
-  /** Re-emit the status bar for a session's in-flight turn (if any) so a config change
-   *  (model / effort / fast) is reflected. No-op when the session is idle. */
+  // Refresh active turn chrome or the platform's persistent controls after a settings change.
   async refreshStatusBarForKey(key: string): Promise<void> {
     const rec = await this.host.store().getSession(key)
     const p = rec?.acpSessionId
       ? this.host.pending().get(pendingTurnKey(this.host.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
       : undefined
     if (p) await this.host.emitStatusBar(p)
+    else if (rec)
+      await this.host
+        .refreshIdleStatusBar(rec)
+        .catch((err) => this.host.log().warn(`session controls refresh failed: ${(err as Error).message}`))
   }
 
   /** Set a session's Slack output verbosity by its local key. Purely daemon-side (no ACP):
@@ -613,7 +628,7 @@ export class CommandHandlers {
     // Where the command was sent — the reply lands here (Slack thread_ts; Telegram
     // replies to the command message via its chrome surface's reply anchor). Kept separate from the session the
     // command ACTS on, resolved just below.
-    const replyThread = msg.thread ?? msg.msgId
+    const replyThread = msg.replyThread ?? msg.thread ?? msg.msgId
     // Resolve the session the command acts on. A command that isn't in a session's own
     // thread — notably ANY bare Telegram command, which keys to its own fresh reply
     // thread — falls back to the agent's latest session in this channel, so /stop
@@ -635,7 +650,7 @@ export class CommandHandlers {
     // fallback below must still not fire there — its candidates are createNew-era threads.
     // So the MODE is asked directly rather than inferred from the read coming back empty.
     const appendConversation = this.host.conversationAppends(target.agentId, target.integrationId, msg)
-    let thread = appendCoordinate ?? replyThread
+    let thread = appendCoordinate ?? msg.thread ?? msg.msgId
     let key = sessionKey(msg.platform, msg.channel, thread, target.agentId, msg.transportScope)
     let rec = await this.host.store().getSession(key)
     // A cold turn owns its logical key before SessionManager persists the session row.
@@ -777,16 +792,24 @@ export class CommandHandlers {
   private async runNew(ctx: CommandContext): Promise<CommandEffect> {
     const { target, msg, key, thread, typedKey, rec, inflight, reply } = ctx
     if (isAppendCoordinate(thread)) {
-      // Rotating does not touch a running turn: it finishes on the old coordinate and posts
-      // to its own thread, while later messages resolve to the new one. Refusing here would
-      // be friction with nothing behind it (§7.3).
-      // A caller that loses the CAS does not advance again — it reports the rotation someone
-      // else just performed, which is the same answer from this user's point of view (§3.3).
-      await this.host.store().advanceAppendCoordinate(target.agentId, msg.channel, thread, msg.transportScope)
+      // A running turn finishes on the old coordinate (§7.3); a lost CAS reports the rotation that won (§3.3).
+      const next = await this.host
+        .store()
+        .advanceAppendCoordinate(target.agentId, msg.channel, thread, msg.transportScope)
+      const coordinator = isCoordinatorCoordinate(thread)
+      if (coordinator && isCoordinatorCoordinate(next) && next !== thread)
+        await this.host.adoptCoordinatorTasks(
+          target.agentId,
+          key,
+          sessionKey(msg.platform, msg.channel, next, target.agentId, msg.transportScope)
+        )
       this.logSessionAction('new', key, senderActor(msg))
-      // Deliberately not "the next message": coordinates are resolved at ingress, so a turn
-      // already running and anything queued behind it finish on the retired coordinate.
-      reply('🆕 Started a new session. New messages from here on begin it.')
+      // Not "the next message": a running turn and anything queued behind it finish on the retired coordinate.
+      reply(
+        coordinator
+          ? '🆕 Started a new session for new messages here. Tasks keep working in their threads.'
+          : '🆕 Started a new session. New messages from here on begin it.'
+      )
       return 'applied'
     }
     // BEFORE the in-flight check: a retargeted command would otherwise be told to `!cancel`
@@ -845,18 +868,16 @@ export class CommandHandlers {
     const { target, key, thread, rec, acpSessionId, inflight, reply } = ctx
     // decisions.md §8.3: a stop never waits on Jev, so pending verdicts go first.
     const canceled = (await this.host.cancelDecisionVerdicts?.(target.agentId, ctx.msg, 'stop')) ?? 0
-    // A conversation that appends has ONE session, so the mute latch would silence the
-    // whole room until someone @mentions — a blast radius nobody typing `!stop` in a thread
-    // is asking for. There it interrupts the turn and nothing else (channel-session-mode.md
-    // §6.3); silencing the agent in such a conversation is the console's Off trigger.
+    // Where the conversation appends, a mute would silence its one session for the whole room, so `!stop` only interrupts (§6.3).
     const mutes = !isAppendCoordinate(thread)
-    // Mute the session's thread whether or not a turn is in flight: `!stop` is an
-    // explicit stand-down — implicit routing (thread affinity / keyword / auto)
-    // stays off until the user @mentions the agent again (onInbound clears it).
+    const coordinator = isCoordinatorCoordinate(thread)
+    // A thread stays muted, running turn or not, until someone @mentions the agent there (onInbound clears it).
     if (mutes && (rec || inflight)) await this.setSessionMuted(key, true)
     const muteNote = mutes
       ? 'Muted in this thread — @mention me to resume.'
-      : 'This conversation keeps one session, so nothing is muted.'
+      : coordinator
+        ? 'Tasks keep working; `!stop` in a task’s thread stops that task.'
+        : 'This conversation keeps one session, so nothing is muted.'
     if (!inflight) {
       if (canceled > 0) reply(`🛑 Stopped.${rec ? ` ${muteNote}` : ''}`)
       else reply(rec ? `${mutes ? '🔇 ' : ''}Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
@@ -864,7 +885,8 @@ export class CommandHandlers {
       return canceled > 0 || (mutes && rec !== undefined) ? 'applied' : 'consumed'
     }
     await this.host.interruptTurn(target.agentId, key, mutes ? 'stop' : 'cancel', acpSessionId ?? undefined, {
-      actor: senderActor(ctx.msg)
+      actor: senderActor(ctx.msg),
+      ...keepsCoordinatorQueue(thread)
     })
     reply(`🛑 Stopped. ${muteNote}`)
     return 'applied'
@@ -872,16 +894,16 @@ export class CommandHandlers {
 
   /** `!cancel` — interrupt the in-flight turn without muting the session. */
   private async runCancel(ctx: CommandContext): Promise<CommandEffect> {
-    const { target, key, acpSessionId, inflight, reply } = ctx
+    const { target, key, thread, acpSessionId, inflight, reply } = ctx
     const canceled = (await this.host.cancelDecisionVerdicts?.(target.agentId, ctx.msg, 'cancel')) ?? 0
-    // `!cancel` interrupts the in-flight turn but does NOT mute — the session stays
-    // live so a follow-up message dispatches normally. No-op (with a note) when idle.
+    // No mute, so a follow-up message dispatches normally; idle, it only says so.
     if (!inflight) {
       reply(canceled > 0 ? '🛑 Cancelled.' : 'Nothing is running to cancel.')
       return canceled > 0 ? 'applied' : 'consumed'
     }
     await this.host.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined, {
-      actor: senderActor(ctx.msg)
+      actor: senderActor(ctx.msg),
+      ...keepsCoordinatorQueue(thread)
     })
     reply('🛑 Cancelled.')
     return 'applied'
@@ -1222,7 +1244,7 @@ export class CommandHandlers {
     )?.key
   }
 
-  /** A platform's own "new chat" gesture: rotate each append conversation it reaches, as `!new` does; returns how many rotated. */
+  /** A platform's own "new chat" gesture: rotate each append conversation or coordinator it reaches, as `!new` does; returns how many rotated. */
   async startNewAppendSessions(
     platform: string,
     channel: string,
@@ -1236,16 +1258,26 @@ export class CommandHandlers {
       const integration = agent.integrations.find(
         (candidate) => candidate.platform === platform && srcIntegrationIds.includes(candidate.id)
       )
-      if (!integration || conversationSessionMode(integration, channel) !== 'append') continue
-      if (!conversationAdmitted(integrationRouting(integration), channel)) continue
+      if (!integration) continue
+      // The gesture names no message, so the channel id alone tells a DM from a room.
+      const kind = this.host.rootCoordinateKind(agentId, integration.id, { channel, isDm: false, isGroupDm: false })
+      if (kind === undefined || !conversationAdmitted(integrationRouting(integration), channel)) continue
       // Read-only first: a conversation nobody has spoken in has nothing to rotate, and its first message mints anyway.
-      const current = await this.host.store().currentAppendCoordinate(agentId, channel, transportScope)
+      const current = await this.host.store().currentAppendCoordinate(agentId, channel, transportScope, kind)
       if (current === undefined) continue
       // A coordinate minted at or after the new conversation began already belongs to it: a replayed event rotates nothing.
       if (notBefore !== undefined && (appendCoordinateTs(current) ?? 0) >= notBefore) continue
       const now = notBefore === undefined ? Date.now() : Math.max(Date.now(), notBefore)
-      await this.host.store().advanceAppendCoordinate(agentId, channel, current, transportScope, now)
-      this.logSessionAction('new', sessionKey(platform, channel, current, agentId, transportScope), actor)
+      const next = await this.host.store().advanceAppendCoordinate(agentId, channel, current, transportScope, now)
+      const key = sessionKey(platform, channel, current, agentId, transportScope)
+      // A new chat resets the coordinator as a root `!new` does: its threaded tasks keep working (auto-session-mode.md §8).
+      if (kind === 'coordinator' && isCoordinatorCoordinate(next) && next !== current)
+        await this.host.adoptCoordinatorTasks(
+          agentId,
+          key,
+          sessionKey(platform, channel, next, agentId, transportScope)
+        )
+      this.logSessionAction('new', key, actor)
       rotated++
     }
     return rotated

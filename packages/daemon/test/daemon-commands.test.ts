@@ -1102,6 +1102,14 @@ describe('Daemon in-conversation commands', () => {
     await (daemon as any).onInboundOutcome(dm('200', '!status'))
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining(':bar_chart:'), 'T1', CHROME_REPLY)
 
+    await (daemon as any).onInboundOutcome({ ...dm('300', '!status'), replyThread: 'T-reply' })
+    expect(conn.postMessage).toHaveBeenLastCalledWith(
+      'C1',
+      expect.stringContaining(':bar_chart:'),
+      'T-reply',
+      CHROME_REPLY
+    )
+
     // another thread in the SAME channel with no session of its own → falls back to the
     // channel's latest session (still reports the status line, not "nothing here")
     await (daemon as any).onInboundOutcome({ ...dm('400', '!status'), thread: 'T9' })
@@ -1959,11 +1967,49 @@ describe('Slack interactive status bar', () => {
     await daemon.stop()
   })
 
-  it('removes the persisted session status line after the Agent disables it', async () => {
-    // Exercise the hidden branch without starting the daemon's unrelated file watchers.
-    // Config/default replication is covered separately; this proves the Slack cleanup
-    // action deletes the remembered row and dedupes later usage/turn-end refreshes.
+  it('refreshes idle code-channel controls without enabling the message header', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+    await daemon.start()
+    try {
+      const conn = makeRoutable(daemon)
+      const updateCodeContext = vi.fn(async () => true)
+      Object.assign(conn, { updateCodeContext })
+      const agent = (daemon as any).agents.get('bot-a')
+      agent.chatActions = 'settings'
+      agent.output.showStatusBar = false
+      const key = sessionKey('slack', 'C1', 'C1', 'bot-a', TRANSPORT_SCOPE)
+      const store = (daemon as any).store
+      await store.upsertSession({
+        key,
+        agentId: 'bot-a',
+        platform: 'slack',
+        channel: 'C1',
+        thread: 'C1',
+        transportScope: TRANSPORT_SCOPE,
+        acpSessionId: null,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+      const commands = (daemon as any).commands
+      expect(await commands.setModelByKey(key, 'sonnet')).toBe(true)
+      expect(await commands.setEffortByKey(key, 'high')).toBe(true)
+      expect(updateCodeContext).toHaveBeenLastCalledWith('C1', {
+        info: expect.objectContaining({ model: 'sonnet', effort: 'high' })
+      })
+      expect(conn.postMessage).not.toHaveBeenCalled()
+      updateCodeContext.mockRejectedValueOnce(new Error('temporary Slack failure'))
+      expect(await commands.setOutputModeByKey(key, 'high')).toBe(true)
+      expect(await store.getOutputModeOverride(key)).toBe('high')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('removes the persisted session status line after the Agent disables it', async () => {
+    // Verify hidden-header cleanup without starting unrelated file watchers.
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+    vi.spyOn(daemon as any, 'buildStatusInfo').mockResolvedValue({})
     const conn = {
       deleteMessage: vi.fn(async () => true),
       getThreadReplies: vi.fn(async () => [{ ts: 'legacy', text: ':bar_chart: legacy', isBot: true }])
@@ -1978,20 +2024,19 @@ describe('Slack interactive status bar', () => {
       signals: { applyChain: Promise.resolve() }
     }
 
-    ;(daemon as any).emitStatusBar(pending)
+    await (daemon as any).emitStatusBar(pending)
     await pending.signals.applyChain
     expect(conn.deleteMessage).toHaveBeenCalledWith('C1', 'sb1')
     expect(pending.chrome.statusBarTs).toBeUndefined()
     expect(clearStatusBarTs).toHaveBeenCalledWith(SESSION_KEY)
 
-    ;(daemon as any).emitStatusBar(pending)
+    await (daemon as any).emitStatusBar(pending)
     await pending.signals.applyChain
     expect(conn.deleteMessage).toHaveBeenCalledTimes(1)
 
-    // Never adopt an unowned legacy row for deletion: a shared Slack thread may contain
-    // another Agent's status bar.
+    // Never delete an unowned legacy row from a shared thread.
     const unowned = { ...pending, chrome: {}, signals: { applyChain: Promise.resolve() } }
-    ;(daemon as any).emitStatusBar(unowned)
+    await (daemon as any).emitStatusBar(unowned)
     await unowned.signals.applyChain
     expect(conn.getThreadReplies).not.toHaveBeenCalled()
     expect(conn.deleteMessage).toHaveBeenCalledTimes(1)
@@ -2299,7 +2344,18 @@ describe('Slack interactive status bar', () => {
         () => {}
       )
     ).toEqual({ msgId: 'action-stop', accepted: true })
-    expect(agentSessionStopped).toHaveBeenCalledWith('C1', 'T1', 'U1')
+    expect(agentSessionStopped).toHaveBeenCalledWith('C1', 'T1', 'U1', false)
+    // A forwarded archive says so, which closes the task the channel holds (auto-session-mode.md §6.8).
+    await (daemon as any).handleRelayMsg(
+      action({
+        sessionKey: 'C1/C1',
+        msgId: 'action-archive',
+        userId: 'U1',
+        payload: { kind: 'agent-session-stopped', channelId: 'C1', threadTs: 'C1', archived: true }
+      }),
+      () => {}
+    )
+    expect(agentSessionStopped).toHaveBeenLastCalledWith('C1', 'C1', 'U1', true)
 
     const permissionResolved = vi.fn()
     const permissionRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -3119,7 +3175,7 @@ describe('Slack status-slot settlement', () => {
         statusOptions: { username: 'Agent A', sessionKey: key }
       }
     })
-    const withTask = (state: string | undefined | Error) => {
+    const withTask = (state: string | undefined | Error, statusThread = 'T1') => {
       const c = { setStatus: vi.fn(async () => true) }
       const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
       const get = vi.fn(async () => {
@@ -3127,18 +3183,20 @@ describe('Slack status-slot settlement', () => {
         return state === undefined ? undefined : { state }
       })
       ;(daemon as any).store = { assistantSubsessions: { get } }
-      ;(daemon as any).pending.set('p-0', turn(c, 'parent'))
+      const parent = turn(c, 'parent')
+      parent.plan.statusThread = statusThread
+      ;(daemon as any).pending.set('p-0', parent)
       ;(daemon as any).holdSlackForTask('child', 'parent')
       ;(daemon as any).pending.clear()
       return { c, daemon, get }
     }
     const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
-    it('keeps the thread working after the delegating turn ends, owned by the task', async () => {
-      const { c, daemon } = withTask('open')
-      ;(daemon as any).settleSlackSlot(c, 'C1', 'T1', 'parent')
+    it.each(['T1', 'C1'])('keeps lifecycle slot %s working after the delegating turn ends', async (statusThread) => {
+      const { c, daemon } = withTask('open', statusThread)
+      ;(daemon as any).settleSlackSlot(c, 'C1', statusThread, 'parent')
       await flush()
-      expect(c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', 'is thinking…', {
+      expect(c.setStatus).toHaveBeenCalledExactlyOnceWith('C1', statusThread, 'is thinking…', {
         username: 'Agent A',
         sessionKey: 'child'
       })

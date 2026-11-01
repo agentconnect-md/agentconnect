@@ -8,6 +8,8 @@ import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { createSessionReader, previewAppBody } from '../src/cp/session-reader.js'
 import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
 import { TranscriptRecorder } from '../src/session/transcript-recorder.js'
+import { canonicalPostId } from '../src/messages/post-id.js'
+import { SessionMessage } from '@agentconnect.md/protocol'
 
 /** The admission a session-internal row (tool / plan / card) always carries — its own sender's
  *  session, keyed exactly as {@link readScope} keys a `createNew` conversation. */
@@ -420,6 +422,25 @@ describe('SessionReader', () => {
         attachments: [{ name: 'screen.webp', mimeType: 'image/webp', data: 'aW1hZ2U=' }]
       })
     ])
+    await s.close()
+  })
+
+  it('serves a row an AHP client keyed by a non-UUID turn id under its canonical post id', async () => {
+    const s = await store()
+    seedHistorySession(s, { platform: 'webchat', channel: 'conv-1', thread: 'webchat:conv-1' })
+    await s.appendTranscript({
+      channel: 'conv-1',
+      thread: 'webchat:conv-1',
+      ts: '1',
+      sender: 'alice',
+      ...(await delivered(s, AGENT, 'conv-1', 'webchat:conv-1')),
+      kind: 'text',
+      text: 'from VS Code',
+      postId: 'request_1866be00-76e6-4e68-a870-016d6587d234'
+    })
+    const [message] = (await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })).messages
+    expect(message?.postId).toBe(canonicalPostId('request_1866be00-76e6-4e68-a870-016d6587d234'))
+    expect(SessionMessage.safeParse(message).success).toBe(true)
     await s.close()
   })
 

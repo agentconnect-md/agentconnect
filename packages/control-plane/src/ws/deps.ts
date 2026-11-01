@@ -13,6 +13,7 @@ import type { AgentMemoryTransactionService } from '../agent-memory/transaction.
  * Grows per phase: secrets/watchdog/full-orchestrator deps join in Phase 3.
  */
 import type { AhpSessionService } from '../registry/ahpSessions.js'
+import type { DaemonReleaseResolver } from '../registry/daemonRelease.js'
 import type { DaemonAuth, DaemonRegistry } from '../ports.js'
 import type {
   SessionRepo,
@@ -118,6 +119,8 @@ export interface DaemonWsDeps {
   auth: DaemonAuth
   /** Durable lifecycle intent exposed during auth-only bootstrap. */
   lifecycleOps: DaemonLifecycleOpRepo
+  /** The deployment's announced daemon release for `register/ok.release`; absent ⇒ never announced. */
+  daemonRelease?: Pick<DaemonReleaseResolver, 'current'>
   registry: DaemonRegistry
   orchestrator: ReconcileService
   connReg: ConnectionRegistry
@@ -130,7 +133,7 @@ export interface DaemonWsDeps {
    *  (null — visible to no one until a repair/backfill). */
   webchatConversation?: WebchatConversationRepo
   /** Confidential two-phase grant lifecycle for session-scoped remote MCP. */
-  webchatRemoteMcp?: Pick<WebchatRemoteMcpService, 'issue' | 'accept' | 'revoke'>
+  webchatRemoteMcp?: Pick<WebchatRemoteMcpService, 'issue' | 'accept' | 'renew' | 'revoke'>
   /** Resolves Web API launch provenance for the same classification (§4.4). */
   launch?: LaunchRepo
   /** Tells a service-account owner apart for the same classification; absent ⇒ every owner reads as a person. */

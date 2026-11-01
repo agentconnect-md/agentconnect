@@ -121,7 +121,7 @@ passes on the result, and a checkout fetches only the blobs it needs.
   security releases (2.39.4, 2.40.2, 2.41.1, 2.42.2, 2.43.4, 2.44.1, 2.45.1+);
   2.38.0 and 2.39.3 ignore it.
 
-The daemon image is `node:24-bookworm-slim` (Git 2.39). The runtime sandbox image
+The daemon image is `node:26-bookworm-slim` (Git 2.39). The runtime sandbox image
 is built separately. Its pinned dependency base was run on 2026-10-01 and ships
 Git 2.39.5, which honors `GIT_NO_LAZY_FETCH`. The image verifier requires a
 `GIT_NO_LAZY_FETCH`-honoring release and behaviorally pins `--bundle-uri`, a
@@ -863,9 +863,10 @@ origin.
 
 Console file transfers ([source-cache-file-transfer.md](source-cache-file-transfer.md))
 share the bucket but bypass this ledger: no `source_cache_object` row tracks them, so
-they count toward neither the org total nor the sweep. Their only bound is the per-file
-cap (`limits.transferMaxBytes`) × `WEBCHAT_FILES_MAX` (4) files per turn, collected by the
-2-day `pending` rule. A per-org transfer budget is an open item.
+they count toward neither the org total nor the sweep. Their only bound is the optional
+per-file cap (`limits.transferMaxBytes`; without it S3's 10,000 parts) × `WEBCHAT_FILES_MAX`
+(4) files per turn, collected by the 2-day `pending` rule. A per-org transfer budget is an
+open item.
 
 Accounting lives in the data-plane Postgres, in a new pool-store table
 `source_cache_object`: org, key, kind (`bundle` | `pointer`), state (`pending` |

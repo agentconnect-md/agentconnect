@@ -15,6 +15,7 @@ const FEISHU_MESSAGE_ID = /^om_[A-Za-z0-9_-]+$/
 
 export const feishuModule: WebPlatformModule<FeishuApi> = {
   platformId: 'feishu',
+  docsPath: 'connect-automate/chat-platforms/lark-feishu',
   Mark: FeishuMark,
   wizard: {
     Body: FeishuWizardBody,

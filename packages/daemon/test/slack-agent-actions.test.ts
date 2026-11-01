@@ -49,6 +49,7 @@ function connWith(overrides: ClientOverrides = {}) {
     reactions: { add: async () => ({}), get: async () => ({ message: { reactions: [] } }) },
     canvases: {
       create: async () => ({ canvas_id: 'F1' }),
+      getContent: async () => ({ content: '' }),
       edit: async () => ({}),
       sections: { lookup: async () => ({ sections: [] }) }
     }
@@ -60,6 +61,7 @@ function connWith(overrides: ClientOverrides = {}) {
     event() {},
     action() {},
     shortcut() {},
+    command() {},
     client,
     start: async () => {},
     stop: async () => {}
@@ -195,36 +197,28 @@ describe('SlackConnection canvases', () => {
     })
   })
 
-  // Slack publishes no full canvas read: `canvases:read` buys section ids and nothing else,
-  // so the body comes back down the ordinary credentialed file path — or not at all.
-  it('reads metadata and anchors always, and the body only when the file path serves it', async () => {
+  it('reads complete Markdown through the Canvas API alongside metadata and fresh anchors', async () => {
+    const getContent = vi.fn(async () => ({ content: '# Plan' }))
     const conn = connWith({
       files: {
         info: async () => ({
-          file: { title: 'Plan', permalink: 'https://x/canvas', url_private: 'https://files.slack.com/c/F1' }
+          file: { title: 'Plan', permalink: 'https://example.test/canvas' }
         })
       },
-      canvases: { sections: { lookup: async () => ({ sections: [{ id: 's1' }, {}] }) } }
+      canvases: { getContent, sections: { lookup: async () => ({ sections: [{ id: 's1' }, {}] }) } }
     })
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        headers: new Headers({ 'content-type': 'text/markdown' }),
-        arrayBuffer: async () => new TextEncoder().encode('# Plan').buffer
-      }))
-    )
 
     expect(await conn.readCanvas('F1')).toEqual({
       id: 'F1',
       title: 'Plan',
-      url: 'https://x/canvas',
+      url: 'https://example.test/canvas',
       markdown: '# Plan',
       sections: [{ id: 's1' }]
     })
+    expect(getContent).toHaveBeenCalledWith({ canvas_id: 'F1', content_type: 'markdown' })
   })
 
-  it('still answers with the canvas when the body is not fetchable and the anchors are not granted', async () => {
+  it('preserves an empty body when heading anchors cannot be read', async () => {
     const conn = connWith({
       files: { info: async () => ({ file: { title: 'Plan' } }) },
       canvases: {
@@ -235,8 +229,22 @@ describe('SlackConnection canvases', () => {
         }
       }
     })
-    expect(await conn.readCanvas('F1')).toEqual({ id: 'F1', title: 'Plan' })
+    expect(await conn.readCanvas('F1')).toEqual({ id: 'F1', title: 'Plan', markdown: '' })
   })
+
+  it.each(['missing_scope', 'canvas_not_found'])(
+    'surfaces %s instead of returning a canvas without its body',
+    async (code) => {
+      const conn = connWith({
+        canvases: {
+          getContent: async () => {
+            throw slackError(code)
+          }
+        }
+      })
+      await expect(conn.readCanvas('F1')).rejects.toThrow(code)
+    }
+  )
 
   it('says which conversations a canvas or a list is in, and when Slack listed only some of them', async () => {
     const info = vi.fn(async ({ file }: { file: string }) => ({

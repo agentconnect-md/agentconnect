@@ -4,17 +4,44 @@ import { bucketEndpoint, SOURCE_CACHE_GRACE_SECONDS, type BucketLocation } from 
 import type { CredentialsProvider } from './credentials.js'
 import { amzDate, canonicalQuery, canonicalUri, sha256Hex, signHeaders } from './sigv4.js'
 
-// Header-signed requests made with the bucket's own credentials (source-cache.md §9, §10): HEAD, retag, delete, and the lifecycle read.
+// Header-signed requests made with the bucket's own credentials (source-cache.md §9, §10): HEAD, retag, delete, multipart start, and the lifecycle read.
 
 export type SourceCacheLifecycleTag = 'ac-cache=live' | 'ac-cache=unreferenced'
 
 export type SourceCacheObjectHead =
   | { exists: false }
-  | { exists: true; contentLength: number; checksumSha256?: string; etag?: string; lastModified?: number }
+  | { exists: true; contentLength?: number; checksumSha256?: string; etag?: string; lastModified?: number }
+
+/** Whether a HEAD proves the object is exactly these bytes: a stored checksum decides, the length only when there is none. */
+export function headHolds(
+  head: SourceCacheObjectHead,
+  expected: { bytes: number; sha256: string; composite?: boolean }
+): boolean {
+  if (!head.exists) return false
+  if (head.contentLength !== undefined && head.contentLength !== expected.bytes) return false
+  // The PUT signed both checksum and length, so a matching checksum proves the length a proxy may drop from a HEAD.
+  if (head.checksumSha256 === undefined) return head.contentLength === expected.bytes
+  if (head.checksumSha256 === expected.sha256) return true
+  // A multipart object reports `<compositeSha256>-<parts>`, and each part's PUT signed its own checksum and length.
+  return (
+    expected.composite === true &&
+    /^-[1-9]\d{0,4}$/.test(head.checksumSha256.slice(expected.sha256.length)) &&
+    head.checksumSha256.startsWith(expected.sha256)
+  )
+}
+
+/** The base64 COMPOSITE SHA-256 S3 reports for a multipart object: the digest of its parts' raw digests, in order. */
+export function compositeSha256(parts: readonly string[]): string {
+  const hash = createHash('sha256')
+  for (const part of parts) hash.update(Buffer.from(part, 'base64'))
+  return hash.digest('base64')
+}
 
 export interface SourceCacheObjectClient<K extends string = string> {
   head(key: K): Promise<SourceCacheObjectHead>
   putTagging(key: K, tagging: SourceCacheLifecycleTag): Promise<void>
+  /** Start a SHA-256-checksummed multipart upload tagged `tagging` (`k=v`), returning the store's upload id. */
+  createMultipartUpload(key: K, tagging: string): Promise<string>
   /** Delete an object; an object already gone resolves too. */
   delete(key: K): Promise<void>
   /** The bucket's lifecycle configuration XML, or `none` when the bucket has none. */
@@ -95,7 +122,7 @@ export function createObjectClient<K extends string>(opts: ObjectClientOptions<K
   }
 
   const send = async (input: {
-    method: 'HEAD' | 'PUT' | 'DELETE' | 'GET'
+    method: 'HEAD' | 'PUT' | 'POST' | 'DELETE' | 'GET'
     /** An object key, or `bucket` for a bucket-level subresource such as `?lifecycle`. */
     key: K | 'bucket'
     query?: Record<string, string>
@@ -137,14 +164,17 @@ export function createObjectClient<K extends string>(opts: ObjectClientOptions<K
       const res = await send({ method: 'HEAD', key, headers: { 'x-amz-checksum-mode': 'ENABLED' } })
       if (res.status === 404) return { exists: false }
       if (res.status !== 200) throw new SourceCacheObjectError(res.status, undefined, 'HEAD')
-      const length = Number(res.headers.get('content-length'))
-      if (!Number.isSafeInteger(length) || length < 0) throw new SourceCacheObjectError(res.status, 'NoLength', 'HEAD')
+      // A HEAD may omit Content-Length (RFC 9110 §9.3.2), as a compressing proxy does, so absent is not zero.
+      const rawLength = res.headers.get('content-length')
+      if (rawLength !== null && !(/^\d+$/.test(rawLength) && Number.isSafeInteger(Number(rawLength))))
+        throw new SourceCacheObjectError(res.status, 'NoLength', 'HEAD')
+      const length = rawLength === null ? undefined : Number(rawLength)
       const checksum = res.headers.get('x-amz-checksum-sha256') ?? undefined
       const etag = res.headers.get('etag') ?? undefined
       const lastModified = Date.parse(res.headers.get('last-modified') ?? '')
       return {
         exists: true,
-        contentLength: length,
+        ...(length !== undefined ? { contentLength: length } : {}),
         ...(checksum ? { checksumSha256: checksum } : {}),
         ...(etag ? { etag } : {}),
         ...(Number.isFinite(lastModified) ? { lastModified } : {})
@@ -165,6 +195,18 @@ export function createObjectClient<K extends string>(opts: ObjectClientOptions<K
       if (res.status < 200 || res.status >= 300)
         throw new SourceCacheObjectError(res.status, await errorCode(res), 'retag')
       await res.body?.cancel().catch(() => undefined)
+    },
+    async createMultipartUpload(key, tagging) {
+      const res = await send({
+        method: 'POST',
+        key,
+        query: { uploads: '' },
+        headers: { 'x-amz-checksum-algorithm': 'SHA256', 'x-amz-tagging': tagging }
+      })
+      if (res.status !== 200) throw new SourceCacheObjectError(res.status, await errorCode(res), 'multipart start')
+      const uploadId = /<UploadId>([^<]{1,1024})<\/UploadId>/.exec((await boundedText(res, 64 * 1024)) ?? '')?.[1]
+      if (!uploadId) throw new SourceCacheObjectError(res.status, 'NoUploadId', 'multipart start')
+      return uploadId
     },
     async delete(key) {
       const res = await send({ method: 'DELETE', key, headers: {} })

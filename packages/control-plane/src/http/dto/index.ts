@@ -51,6 +51,7 @@ import {
   MemoryPluginHistoryEvent,
   MemoryPluginOperation,
   PlaceExternalReason,
+  ChannelSessionMode,
   RESERVED_MCP_SERVER_NAME,
   SESSION_RETENTION_RE,
   GitCloneUrlError,
@@ -246,12 +247,31 @@ export const PoolRuntimeProbeDto = z.object({
 export const DaemonLifecycleOpDto = z.object({
   id: z.string(),
   op: z.enum(['restart', 'upgrade']),
+  /** `manual` for a console command, `auto` for the daemon's own auto-upgrader (daemon-auto-upgrade.md §6). */
+  trigger: z.enum(['manual', 'auto']),
   status: z.enum(['pending', 'succeeded', 'failed']),
   phase: DaemonLifecyclePhase.nullable(),
   /** The version an `upgrade` drives toward; null for restart. */
   targetVersion: z.string().nullable(),
   /** Short closure detail (decline reason / timeout); null while pending / on success. */
   outcome: z.string().nullable()
+})
+
+/** `GET /daemons/:id/lifecycle/:opId` — any op by id, including an automatic upgrade the daemon `deferred` while busy. */
+export const DaemonLifecycleOpByIdDto = DaemonLifecycleOpDto.extend({
+  status: z.enum(['pending', 'succeeded', 'failed', 'deferred'])
+})
+
+/** The daemon's most recent automatic upgrade that ran (deferred attempts excluded), for the console's last-outcome line. */
+export const DaemonLastAutoUpgradeDto = z.object({
+  id: z.string(),
+  /** Expiry-projected like `lifecycleOp.status`. */
+  status: z.enum(['pending', 'succeeded', 'failed']),
+  targetVersion: z.string().nullable(),
+  /** Closure detail, e.g. `rolled back: …`; null while pending / on success. */
+  outcome: z.string().nullable(),
+  /** ISO-8601 when it left `pending`; null while pending. */
+  settledAt: z.string().nullable()
 })
 
 export const DaemonViewDto = z.object({
@@ -275,6 +295,12 @@ export const DaemonViewDto = z.object({
    *  still-`pending` op past its deadline reads `failed` here even before it's swept. The
    *  console tracks its OWN command by `id` and renders terminal state from `status`. */
   lifecycleOp: DaemonLifecycleOpDto.nullable(),
+  /** Console-set auto-upgrade switch (daemon-auto-upgrade.md §3). */
+  autoUpgrade: z.boolean(),
+  /** The daemon advertises `daemon-auto-upgrade-v1`, so the switch can be turned on. */
+  autoUpgradeSupported: z.boolean(),
+  /** The most recent automatic upgrade that ran, or null when none has. */
+  lastAutoUpgrade: DaemonLastAutoUpgradeDto.nullable(),
   /** Live connection status overlaid from the in-memory index (not the stale durable field). */
   status: z.string(),
   /** An install-wide pool member (`Daemon.orgId === null`, one row per pool member Pod):
@@ -299,11 +325,10 @@ export const DaemonViewDto = z.object({
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for CLI/self-registered
   lastModifiedAt: z.string(), // ISO-8601; last human edit, defaults to createdAt
   lastModifiedBy: z.string().nullable(), // editor's userId (web resolves to a name / "You"); null for system rows
-  /** Console-set finished-session retention window on the daemon's local store
-   *  ("Expire sessions"): how long finished sessions are kept before the daemon's
-   *  retention sweep deletes them — 'never' disables the sweep, otherwise an
-   *  integer day count as '<n>d' (e.g. '7d'). */
+  /** How long a finished session's row and transcript stay on the daemon: 'never' or a day count as '<n>d'. */
   sessionRetention: z.string().regex(SESSION_RETENTION_RE),
+  /** How long a finished session's workspace, sandbox and runtime home stay, never past its row: 'never' or '<n>d'. */
+  workspaceRetention: z.string().regex(SESSION_RETENTION_RE),
   /** The member set this daemon belongs to (docs/designs/daemon-groups.md §2), or null when it
    *  owns its agents outright. A member serves only what it holds a duty lease for, so this is
    *  what says whether an agent may be pinned here or must be placed on the set. */
@@ -385,14 +410,21 @@ export const MemberSetMemberParams = z.object({ id: z.string(), daemonId: z.stri
 export const UpdateDaemonBody = z
   .object({
     name: z.string().trim().min(1).max(64).optional(),
-    /** How long the daemon keeps FINISHED sessions in its local store before its
-     *  retention sweep deletes them — 'never' disables the sweep, otherwise an
-     *  integer day count as '<n>d' (e.g. '7d'). */
-    sessionRetention: z.string().regex(SESSION_RETENTION_RE).optional()
+    /** How long a finished session's row and transcript stay: 'never' or '<n>d'. */
+    sessionRetention: z.string().regex(SESSION_RETENTION_RE).optional(),
+    /** How long a finished session's workspace and sandbox stay, never past its row: 'never' or '<n>d'. */
+    workspaceRetention: z.string().regex(SESSION_RETENTION_RE).optional(),
+    /** Follow the deployment's announced release unattended; true requires the daemon to advertise `daemon-auto-upgrade-v1`. */
+    autoUpgrade: z.boolean().optional()
   })
-  .refine((b) => b.name !== undefined || b.sessionRetention !== undefined, {
-    message: 'nothing to update'
-  })
+  .refine(
+    (b) =>
+      b.name !== undefined ||
+      b.sessionRetention !== undefined ||
+      b.workspaceRetention !== undefined ||
+      b.autoUpgrade !== undefined,
+    { message: 'nothing to update' }
+  )
 
 /** `POST /daemons/:id/upgrade` — the version the daemon should install + relaunch on. */
 // The version is forwarded to the daemon, which spawns the CLI with it as the
@@ -937,6 +969,8 @@ export const AgentDto = z.object({
    *  `set` placement it is "some live member could serve this", which is the question the console
    *  was answering with a dead Pod's id (#987). */
   placementReady: z.boolean(),
+  // Can a new Webchat with this agent attach over AHP right now? The console uses AHP only where every participant can.
+  ahpWebchat: z.boolean().optional(),
   // A group agent's confirmed duty holder: the member its next turn reaches, so a session recorded there can resume. Absent for a daemon or pool placement.
   holderDaemonId: z.string().nullable().optional(),
   workspace: AgentWorkspaceBody,
@@ -958,6 +992,7 @@ export const AgentDto = z.object({
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
+  githubAppId: z.string().nullable(), // the agent's dedicated GitHub App; null ⇒ the deployment App
   computerUse: AgentComputerUse.nullable(), // derived (computer-use.md §4.1): the Computers granting it and its managed mode; null ⇒ none
   // The strategy sessions run in (session-executors.md §5).
   execution: ExecutorStrategyName,
@@ -1033,6 +1068,7 @@ export const IntegrationChannelDto = z.object({
   key: z.string().nullable(),
   url: z.string().nullable(),
   isPrivate: z.boolean(),
+  isCodeSession: z.boolean(),
   kind: z.enum(['channel', 'im', 'mpim']),
   trigger: z.enum(['off', 'mention', 'any', 'decision']),
   /** The By decision consumer (a gate, or the bot's shared router); present exactly when `trigger` is 'decision'. */
@@ -1051,9 +1087,8 @@ export const IntegrationChannelDto = z.object({
       })
     })
     .nullable(),
-  /** Which session a message here joins (channel-session-mode.md): a new one per thread,
-   *  or the conversation's one long-lived session. */
-  sessionMode: z.enum(['createNew', 'append']),
+  /** Which session a message here joins: one per thread, the conversation's one session, or the coordinator's pick (auto-session-mode.md). */
+  sessionMode: ChannelSessionMode,
   /** Effective per-conversation owner for a shared bot (§10.1); null before convergence
    *  or when ownership does not apply. */
   agentId: z.string().nullable(),
@@ -2023,7 +2058,8 @@ export const UpdateIntegrationChannelBody = z
     trigger: z.enum(['off', 'mention', 'any', 'decision']).optional(),
     // The complete By decision gate; required with, and only with, trigger 'decision'.
     decisionBinding: ChannelDecisionGate.safeExtend({ decisionId: z.string().uuid() }).optional(),
-    sessionMode: z.enum(['createNew', 'append']).optional(),
+    // `auto` is refused (409 SESSION_MODE_UNSUPPORTED) unless every connected daemon serving the conversation advertises it.
+    sessionMode: ChannelSessionMode.optional(),
     agentId: z.string().min(1).optional()
   })
   .refine((b) => b.trigger !== undefined || b.sessionMode !== undefined || b.agentId !== undefined, {
@@ -2368,6 +2404,49 @@ export const GithubAppDto = z.object({
   /** `https://github.com/apps/<slug>/installations/new?state=…` — one-shot, org-bound. */
   installUrl: z.string().nullable()
 })
+
+/** An organization GitHub App (github-app-git-credentials.md §Organization GitHub Apps): one agent at a time, free when `agentId` is null. */
+export const GithubOrgAppDto = z.object({
+  id: z.string(),
+  appId: z.number(), // GitHub-side App id
+  slug: z.string(), // github.com/apps/<slug>; the bot login is `<slug>[bot]`
+  botUserId: z.number().nullable(),
+  agentId: z.string().nullable(), // the agent working through it; null ⇒ free
+  /** Live installations of this App. */
+  installations: z.array(
+    z.object({
+      id: z.string(),
+      installationId: z.number(),
+      accountLogin: z.string(),
+      accountType: z.string(),
+      repositorySelection: z.string(),
+      suspended: z.boolean()
+    })
+  ),
+  createdAt: z.string() // ISO-8601
+})
+export const GithubOrgAppListDto = z.array(GithubOrgAppDto)
+export const AgentGithubAppDto = z.object({ app: GithubOrgAppDto.nullable() })
+/** What the agent works on through GitHub, and whether one App reaches each. */
+export const GithubAppCoverageItemDto = z.object({
+  target: z.string(), // `owner/repo`, or an account login for installation-wide grants and reviews
+  kind: z.enum(['workspace', 'repository', 'review', 'installation']),
+  covered: z.boolean()
+})
+export const GithubAppCoverageDto = z.object({ coverage: z.array(GithubAppCoverageItemDto) })
+export const SwitchAgentGithubAppBody = z.object({
+  /** A free organization App, or null for the built-in App. */
+  githubAppId: z.string().uuid().nullable()
+})
+export const GithubAppSwitchRefusedDto = z.object({
+  error: z.string(),
+  statusCode: z.number(),
+  message: z.string(),
+  reason: z.enum(['not_covered', 'app_in_use', 'agent_changed']),
+  coverage: z.array(GithubAppCoverageItemDto).optional()
+})
+/** The form to POST to GitHub: `manifest` as JSON in a field named `manifest`, to `action`. */
+export const GithubAppManifestDto = z.object({ action: z.string(), manifest: z.record(z.string(), z.unknown()) })
 
 /** One installation of the deployment App, claimed by this org. Infrastructure-class
  *  in the visibility taxonomy (like bots): org-visible, never restricted. */
@@ -3138,6 +3217,8 @@ export const CreateGithubHookBody = HookBodyBase.extend({
   // so a row carrying such a subscription must scope it to its own family.
   commentFamilies: GithubCommentFamilies.default([]),
   labelFilter: HookLabelFilter.default([]),
+  // Pull-request rows only: draft revisions do not fire, and marking the PR ready reviews its head.
+  skipDrafts: z.boolean().default(false),
   // P3 summon mode: every event's authored text must @-mention the assigned
   // agent or the App (thread actors also pass the relay's live maintainer gate).
   mentionOnly: z.boolean().default(false),
@@ -3227,6 +3308,7 @@ export const UpdateHookBody = z.union([
     // preserve the stored enablement state. Old web clients did not echo it.
     enabled: z.boolean().optional(),
     commentFamilies: GithubCommentFamilies.optional(),
+    skipDrafts: z.boolean().optional(),
     mentionOnly: z.boolean().optional(),
     // Whole-definition PUT remains backward-compatible: clients predating R1
     // omit these keys and the route preserves the stored policy.
@@ -3268,6 +3350,7 @@ export const HookDto = z.object({
   // The stored union across code hosts; each row carries its own host's subset.
   commentFamilies: z.array(z.enum(['issues', 'pull_request', 'merge_request'])),
   labelFilter: z.array(z.string()),
+  skipDrafts: z.boolean(),
   mentionOnly: z.boolean(),
   configRevision: z.string(),
   reviewPolicy: HookReviewPolicyEnum,
@@ -3755,20 +3838,60 @@ export const WorkspaceTransferOperationQuery = z
   })
   .strict()
 
+/** A multipart upload's cut: `partBytes` per part but the last, and each part's base64 SHA-256 in order. */
+const FileUploadParts = z
+  .object({
+    partBytes: z.number().int().positive(),
+    sha256: z.array(TransferSha256).min(1).max(10_000)
+  })
+  .strict()
+
 /** One file the console is about to upload for a webchat turn; the browser hashes it first. */
 export const FileUploadBody = z
   .object({
     name: TransferFileName,
     mimeType: TransferMimeType,
     size: z.number().int().positive(),
-    sha256: TransferSha256
+    sha256: TransferSha256, // the file's digest, or with `parts` the composite of the part digests
+    parts: FileUploadParts.optional() // upload in parts (runtime config's `fileTransfer.partBytes` is the largest part)
   })
   .strict()
 
-export const FileUploadDto = z.object({
-  uploadId: z.string(), // name it in the webchat turn's `files` once the PUT succeeded
-  url: z.string(), // presigned PUT
-  headers: z.record(z.string(), z.string()), // send exactly these (a browser sets content-length itself)
+const SignedRequestDto = z.object({
+  url: z.string(),
+  headers: z.record(z.string(), z.string()) // send exactly these (a browser sets content-length itself)
+})
+
+const PartUrlDto = SignedRequestDto.extend({ partNumber: z.number().int().positive() })
+
+const FileUploadMultipartDto = z.object({
+  multipartId: z.string(), // names the store's multipart upload in `…/uploads/:uploadId/parts`
+  parts: z.array(PartUrlDto), // the first parts' PUTs; ask `…/parts` for the rest and before these expire
+  complete: SignedRequestDto // POST the CompleteMultipartUpload XML (each part's ETag and checksum) here
+})
+
+export const FileUploadDto = z.union([
+  // One PUT: name `uploadId` in the webchat turn's `files` once it succeeded.
+  SignedRequestDto.extend({ uploadId: z.string(), expiresAt: z.string() }),
+  // In parts: name `uploadId` once the complete succeeded.
+  z.object({ uploadId: z.string(), expiresAt: z.string(), multipart: FileUploadMultipartDto })
+])
+
+export const FileUploadPartsParams = z.object({ id: z.string(), uploadId: z.string().uuid() })
+
+/** More, or fresh, part URLs for a multipart upload: the same cut it was reserved with, and the parts wanted now. */
+export const FileUploadPartsBody = z
+  .object({
+    multipartId: z.string().min(1).max(1024),
+    size: z.number().int().positive(),
+    partBytes: z.number().int().positive(),
+    parts: z.array(z.object({ partNumber: z.number().int().positive(), sha256: TransferSha256 }).strict()).max(100)
+  })
+  .strict()
+
+export const FileUploadPartsDto = z.object({
+  parts: z.array(PartUrlDto),
+  complete: SignedRequestDto,
   expiresAt: z.string()
 })
 
@@ -4464,6 +4587,8 @@ export const UsageDto = z.object({
   // Usage withheld from attribution by either resource or session access; absent for owners and settlement workloads.
   // The independent rollup has no agent or session IDs and is present even when withheld rows cost zero.
   unattributed: UsageAgentDto.omit({ agentId: true }).optional(),
+  // Each agent's coordinator sessions under Auto, a part of that agent's row, only where the reader may attribute them.
+  coordinators: z.array(UsageAgentDto).optional(),
   // Zero-filled hourly (up to two days) or daily buckets; start is a UTC ISO instant and model '' means unreported.
   // Agent and model groupings include only nonzero deltas.
   // Series follows attribution: complete for owners, otherwise excluding the unattributed residual from every bucket.
@@ -4599,6 +4724,8 @@ export const ComputerDto = z.object({
   allocation: z.enum(COMPUTER_ALLOCATIONS).nullable(),
   /** The agent a `per-agent` or `ephemeral` computer was made for. */
   ownerAgentId: z.string().nullable(),
+  /** The session an `ephemeral` computer was made for. */
+  poolSessionId: z.string().nullable(),
   /** Where the pool has the computer: provisioning, registering, awake, sleeping, waking, failed or reclaiming. */
   poolPhase: z.enum(COMPUTER_POOL_PHASES).nullable(),
   /** Why the pool's last step for it failed, if it did. */

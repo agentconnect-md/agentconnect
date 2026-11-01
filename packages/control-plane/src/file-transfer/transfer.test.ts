@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import type { CredentialsProvider, SourceCacheObjectHead } from '@agentconnect.md/object-store'
+import { compositeSha256, type CredentialsProvider, type SourceCacheObjectHead } from '@agentconnect.md/object-store'
 import { FileTransferConfigSchema, type FileTransferConfig } from './config.js'
 import {
   attachmentDisposition,
   createFileTransfer,
   FileTransferError,
   isTransferObjectKey,
+  PART_URL_BATCH,
   sharedImageKey,
   transferDownloadKey,
   transferUploadKey
@@ -36,14 +37,31 @@ function config(overrides: Record<string, unknown> = {}): FileTransferConfig {
   })
 }
 
-function transfer(head: SourceCacheObjectHead, opts: { enabled?: boolean; cfg?: FileTransferConfig } = {}) {
+const MIB = 1024 * 1024
+
+function transfer(
+  head: SourceCacheObjectHead,
+  opts: { enabled?: boolean; multipart?: boolean; cfg?: FileTransferConfig; started?: string[] } = {}
+) {
   return createFileTransfer({
     config: opts.cfg ?? config({ publicEndpoint: 'https://store.example.test' }),
     credentials,
-    objects: { head: async () => head },
+    objects: {
+      head: async () => head,
+      createMultipartUpload: async (key, tagging) => {
+        opts.started?.push(`${key} ${tagging}`)
+        return 'mp-1'
+      }
+    },
     enabled: () => opts.enabled ?? true,
+    multipart: () => opts.multipart ?? true,
     now: () => NOW
   })
+}
+
+/** `count` distinct part digests. */
+function digests(count: number): string[] {
+  return Array.from({ length: count }, (_, i) => createHash('sha256').update(`part ${i}`).digest('base64'))
 }
 
 describe('transfer keys', () => {
@@ -146,6 +164,19 @@ describe('file transfer signing', () => {
     ).toBeUndefined()
   })
 
+  it('hands the agent a GET when a proxy drops the length from the HEAD but the checksum proves the bytes', async () => {
+    const input = { org: ORG, agentId: AGENT, uploadId: UPLOAD_ID, size: 5, sha256: SHA, network: 'public' as const }
+    expect(await transfer({ exists: true, checksumSha256: SHA }).uploadedFileUrl(input)).toBeDefined()
+    expect(await transfer({ exists: true }).uploadedFileUrl(input)).toBeUndefined()
+  })
+
+  it('hands the agent a GET for a multipart upload whose composite checksum the store reports', async () => {
+    const input = { org: ORG, agentId: AGENT, uploadId: UPLOAD_ID, size: 5, sha256: SHA, network: 'public' as const }
+    expect(await transfer({ exists: true, checksumSha256: `${SHA}-3` }).uploadedFileUrl(input)).toBeDefined()
+    expect(await transfer({ exists: true, checksumSha256: `${SHA}-x` }).uploadedFileUrl(input)).toBeUndefined()
+    expect(await transfer({ exists: true, checksumSha256: `${SHA}3` }).uploadedFileUrl(input)).toBeUndefined()
+  })
+
   it('signs no GET for an upload reserved for another agent', async () => {
     const heads: string[] = []
     const store = createFileTransfer({
@@ -157,7 +188,8 @@ describe('file transfer signing', () => {
           return key === transferUploadKey(ORG, AGENT, UPLOAD_ID)
             ? { exists: true, contentLength: 5, checksumSha256: SHA }
             : { exists: false }
-        }
+        },
+        createMultipartUpload: async () => 'mp-1'
       },
       enabled: () => true,
       now: () => NOW
@@ -195,6 +227,105 @@ describe('file transfer signing', () => {
   })
 })
 
+describe('multipart browser uploads', () => {
+  const cfg = config({ publicEndpoint: 'https://store.example.test', limits: { partBytes: '8Mi' } })
+
+  it('publishes the part size only while the bucket reaps unfinished uploads, and caps by part count', () => {
+    expect(transfer({ exists: false }, { cfg }).uploadLimits()).toEqual({
+      maxBytes: 10_000 * 8 * MIB,
+      partBytes: 8 * MIB
+    })
+    expect(transfer({ exists: false }, { cfg, multipart: false }).uploadLimits()).toEqual({ maxBytes: 8 * MIB })
+    const capped = config({ limits: { partBytes: '8Mi', maxBytes: '1Gi' } })
+    expect(transfer({ exists: false }, { cfg: capped }).uploadLimits()).toEqual({
+      maxBytes: 1024 * MIB,
+      partBytes: 8 * MIB
+    })
+  })
+
+  it('starts a tagged multipart upload and signs each part’s exact length and checksum, then the complete', async () => {
+    const started: string[] = []
+    const parts = digests(3)
+    const size = 2 * 6 * MIB + 7
+    const grant = await transfer({ exists: false }, { cfg, started }).grantMultipartUpload({
+      org: ORG,
+      agentId: AGENT,
+      sha256: compositeSha256(parts),
+      layout: { size, partBytes: 6 * MIB, parts }
+    })
+    expect(started).toEqual([`src/${ORG}/transfer/up/${AGENT}/${grant.uploadId} ac-cache=pending`])
+    expect(grant.multipartId).toBe('mp-1')
+    expect(grant.parts.map((p) => [p.partNumber, p.headers])).toEqual([
+      [1, { 'content-length': String(6 * MIB), 'x-amz-checksum-sha256': parts[0] }],
+      [2, { 'content-length': String(6 * MIB), 'x-amz-checksum-sha256': parts[1] }],
+      [3, { 'content-length': '7', 'x-amz-checksum-sha256': parts[2] }]
+    ])
+    const part = new URL(grant.parts[2]!.url)
+    expect(part.host).toBe('store.example.test')
+    expect(part.pathname).toBe(`/ac-cache/src/${ORG}/transfer/up/${AGENT}/${grant.uploadId}`)
+    expect(part.searchParams.get('partNumber')).toBe('3')
+    expect(part.searchParams.get('uploadId')).toBe('mp-1')
+    expect(part.searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;host;x-amz-checksum-sha256')
+    const complete = new URL(grant.complete.url)
+    expect(complete.searchParams.get('uploadId')).toBe('mp-1')
+    expect(complete.searchParams.get('X-Amz-SignedHeaders')).toBe('host')
+    expect(grant.expiresAt).toBe(NOW + 900_000)
+  })
+
+  it('signs the first batch of parts and the rest on request', async () => {
+    const parts = digests(PART_URL_BATCH + 2)
+    const size = parts.length * 5 * MIB
+    const store = transfer({ exists: false }, { cfg })
+    const grant = await store.grantMultipartUpload({
+      org: ORG,
+      agentId: AGENT,
+      sha256: compositeSha256(parts),
+      layout: { size, partBytes: 5 * MIB, parts }
+    })
+    expect(grant.parts).toHaveLength(PART_URL_BATCH)
+    const more = await store.signParts({
+      org: ORG,
+      agentId: AGENT,
+      uploadId: grant.uploadId,
+      multipartId: grant.multipartId,
+      size,
+      partBytes: 5 * MIB,
+      parts: [{ partNumber: PART_URL_BATCH + 2, sha256: parts[PART_URL_BATCH + 1]! }]
+    })
+    expect(more.parts.map((p) => p.partNumber)).toEqual([PART_URL_BATCH + 2])
+    expect(new URL(more.complete.url).searchParams.get('uploadId')).toBe('mp-1')
+  })
+
+  it('refuses a layout that does not describe the file, or parts the deployment cannot take', async () => {
+    const parts = digests(2)
+    const grant = (over: { sha256?: string; partBytes?: number; size?: number; multipart?: boolean }) =>
+      transfer({ exists: false }, { cfg, multipart: over.multipart ?? true }).grantMultipartUpload({
+        org: ORG,
+        agentId: AGENT,
+        sha256: over.sha256 ?? compositeSha256(parts),
+        layout: { size: over.size ?? 10 * MIB, partBytes: over.partBytes ?? 5 * MIB, parts }
+      })
+    await expect(grant({ sha256: SHA })).rejects.toMatchObject({ reason: 'invalid' })
+    await expect(grant({ size: 15 * MIB })).rejects.toMatchObject({ reason: 'invalid' })
+    await expect(grant({ partBytes: 4 * MIB, size: 8 * MIB })).rejects.toMatchObject({ reason: 'too-large' })
+    await expect(grant({ partBytes: 9 * MIB, size: 18 * MIB })).rejects.toMatchObject({ reason: 'too-large' })
+    await expect(grant({ multipart: false })).rejects.toMatchObject({ reason: 'transfer-unavailable' })
+    const store = transfer({ exists: false }, { cfg })
+    const sign = (partNumber: number) =>
+      store.signParts({
+        org: ORG,
+        agentId: AGENT,
+        uploadId: UPLOAD_ID,
+        multipartId: 'mp-1',
+        size: 10 * MIB,
+        partBytes: 5 * MIB,
+        parts: [{ partNumber, sha256: SHA }]
+      })
+    await expect(sign(3)).rejects.toMatchObject({ reason: 'invalid' })
+    await expect(sign(0)).rejects.toMatchObject({ reason: 'invalid' })
+  })
+})
+
 describe('shared-image originals', () => {
   const AGENT = '11111111-1111-4111-8111-111111111111'
   const ATTACHMENT = '22222222-2222-4222-8222-222222222222'
@@ -224,9 +355,12 @@ describe('shared-image originals', () => {
 })
 
 describe('transfer config', () => {
-  it('defaults the cap and link lifetime and validates the public endpoint', () => {
+  it('defaults to no cap, a 512Mi part and a 30m link, and validates the public endpoint and part size', () => {
     const cfg = config()
-    expect(cfg.limits.maxBytes).toBe(512 * 1024 * 1024)
+    expect(cfg.limits.maxBytes).toBeUndefined()
+    expect(cfg.limits.partBytes).toBe(512 * 1024 * 1024)
+    expect(() => config({ limits: { partBytes: '4Mi' } })).toThrow()
+    expect(() => config({ limits: { partBytes: '6Gi' } })).toThrow()
     expect(cfg.limits.urlSeconds).toBe(1800)
     expect(() => config({ publicEndpoint: 'http://store.example.test' })).toThrow()
     expect(() => config({ limits: { urlSeconds: '13h' } })).toThrow()

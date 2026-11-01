@@ -841,6 +841,19 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(recorded[0]).toMatchObject({ thread: 'tg:172', ts: '172' })
     })
 
+    it('records a root post into a conversation keyed as one session there, and seeds no second session', async () => {
+      // A Slack code channel is one session on the channel, so the post belongs to it, as a reply there does.
+      const { d, spawns, recorded } = tgDeps({}, { roomThread: async (channel) => channel })
+      await executeTool(
+        tgCtx,
+        'sendMessage',
+        { action: 'postMessage', platform: 'telegram', channel: '-100123', message: 'hi' },
+        d
+      )
+      expect(recorded[0]).toMatchObject({ channel: '-100123', thread: '-100123', ts: '172' })
+      expect(spawns).toEqual([])
+    })
+
     it('anchors a peer wake to that same key', async () => {
       // #295 canonicalized only the spawn and left this path on the raw ts, so ONE post yielded
       // two different session keys. A peer wake always posts on the caller's own platform, so
@@ -3255,6 +3268,44 @@ describe('executeTool: replyGithubReviewThreads', () => {
 })
 
 describe('executeTool: platform session tools', () => {
+  it('refuses native reports from a headless turn before any publication', async () => {
+    const postBlocks = vi.fn(async () => '1.001')
+    const d = makeDeps({
+      sessionToolConnectionFor: () => ({ postBlocks }),
+      shareTarget: () => ({ ok: false, reason: 'headless' })
+    })
+    await expect(
+      executeTool(ctx, 'presentSlackReport', { title: 'Report', sections: [{ title: 'Details', text: 'Done' }] }, d)
+    ).rejects.toThrow('no visible conversation')
+    expect(postBlocks).not.toHaveBeenCalled()
+  })
+
+  it('records native reports in the live delivery thread with finalized authorship and the current hop', async () => {
+    const postBlocks = vi.fn(async (..._args: unknown[]) => '1.001')
+    const recordOutbound = vi.fn(async () => undefined)
+    const d = makeDeps({
+      recordOutbound,
+      sessionToolConnectionFor: () => ({ postBlocks }),
+      deliveryThreadNow: () => '2.002',
+      currentHopCount: () => 2,
+      shareTarget: () => ({ ok: true, platform: ctx.platform, channel: ctx.channel, thread: '2.002' })
+    })
+    await executeTool(ctx, 'presentSlackReport', { title: 'Report', sections: [{ title: 'Details', text: 'Done' }] }, d)
+    expect(postBlocks.mock.calls[0]![3]).toBe('2.002')
+    expect(postBlocks.mock.calls[0]![4]).toMatchObject({
+      agentAuthorId: ctx.agentId,
+      response: { deliveryState: 'final', hopCount: 2 }
+    })
+    expect(recordOutbound).toHaveBeenCalledWith(
+      ctx,
+      ctx.channel,
+      '2.002',
+      expect.stringContaining('Report'),
+      '1.001',
+      ctx.integrationId
+    )
+  })
+
   const linearCtx: SessionContext = {
     ...ctx,
     platform: 'linear',

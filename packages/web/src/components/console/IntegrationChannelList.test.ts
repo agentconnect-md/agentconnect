@@ -323,12 +323,16 @@ describe('IntegrationChannelList session mode', () => {
   })
 
   // A Slack DM opens a session per top-level message, so its row may pick one session instead.
-  it('offers it on a Slack DM, but not on a Slack group DM', () => {
+  // auto-session-mode.md §3.2: a Slack group DM is a small room, with a room's modes.
+  it('offers it on a Slack DM and on a Slack group DM', () => {
     const dm = render([{ channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any', sessionMode: 'append' }])
     expect(dm).toContain('title="Respond to · Session mode"')
     expect(dm).toContain('<span>Single session</span>')
-    const group = render([{ channelId: 'G1', name: '@alice, bob', kind: 'mpim', trigger: 'any' }])
-    expect(group).not.toContain('Session mode')
+    const group = render([
+      { channelId: 'G1', name: '@alice, bob', kind: 'mpim', trigger: 'any', sessionMode: 'append' }
+    ])
+    expect(group).toContain('title="Respond to · Session mode"')
+    expect(group).toContain('<span>Single session</span>')
   })
 
   it('offers it nowhere the platform allows only one mode', () => {
@@ -341,25 +345,23 @@ describe('IntegrationChannelList session mode', () => {
   })
 
   // assistant-mode.md §5.2: every place that can hold one session does, whatever its row stores, while the mode is on.
-  it('fixes a room and a Slack DM on one session in assistant mode', () => {
+  it('fixes a room, a Slack DM and a Slack group DM on one session in assistant mode', () => {
     const html = render(
       [
         { channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention', sessionMode: 'createNew' },
-        { channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any' }
+        { channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any' },
+        { channelId: 'G1', name: '@alice, bob', kind: 'mpim', trigger: 'mention' }
       ],
       'slack',
       { assistantMode: true }
     )
     expect(html).toContain('aria-label="Settings for deploys: @-mentions, Single session"')
     expect(html).toContain('aria-label="Settings for alice: On, Single session"')
+    expect(html.match(/, Single session"/g)).toHaveLength(3)
     expect(html).not.toContain('Per thread')
   })
 
-  it('leaves a group DM, a continuous DM, and a team without the choice in assistant mode', () => {
-    const group = render([{ channelId: 'G1', name: '@alice, bob', kind: 'mpim', trigger: 'mention' }], 'slack', {
-      assistantMode: true
-    })
-    expect(group).not.toContain('Session mode')
+  it('leaves a continuous DM and a team without the choice in assistant mode', () => {
     const dm = render([{ channelId: 'D1', name: '@alice', kind: 'im', trigger: 'any' }], 'telegram', {
       assistantMode: true
     })

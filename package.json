@@ -20,8 +20,8 @@
     "eval:validate": "node evals/run-validate.mjs && tsc -p evals/tsconfig.json",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
+    "lint": "eslint . --concurrency=auto",
+    "lint:fix": "eslint . --fix --concurrency=auto",
     "prepare": "sh ./scripts/setup-hooks.sh",
     "test": "pnpm -r test",
     "test:unit": "pnpm -r test:unit && node --test scripts/*.test.mjs",
@@ -35,8 +35,8 @@
   },
   "devDependencies": {
     "@formatjs/icu-messageformat-parser": "^3.5.22",
-    "@types/node": "^24.19.2",
-    "@typescript-eslint/parser": "^8.72.0",
+    "@types/node": "^26.6.6",
+    "@typescript-eslint/parser": "^8.72.1",
     "eslint": "^10.13.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-import-resolver-typescript": "^4.4.5",
@@ -46,15 +46,15 @@
     "prettier": "^3.9.10",
     "prettier-package-json": "^2.8.0",
     "prettier-plugin-sh": "^0.20.2",
-    "promptfoo": "0.124.1",
+    "promptfoo": "0.125.1",
     "semver": "^7.8.5",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.72.0",
+    "typescript-eslint": "^8.72.1",
     "vitest": "^5.0.5",
     "yaml": "^2.9.1"
   },
   "engines": {
-    "node": ">=24.12.0"
+    "node": ">=26.0.0"
   },
   "packageManager": "pnpm@11.19.0"
 }

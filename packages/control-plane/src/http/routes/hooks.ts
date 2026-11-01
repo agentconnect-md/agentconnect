@@ -100,6 +100,7 @@ function toDto(h: HookRecord, publicRelayUrl?: string): HookDtoT {
     events: h.events,
     commentFamilies: h.commentFamilies,
     labelFilter: h.labelFilter,
+    skipDrafts: h.skipDrafts,
     mentionOnly: h.mentionOnly,
     configRevision: h.configRevision.toString(),
     reviewPolicy: h.reviewPolicy,
@@ -248,6 +249,7 @@ export function hookRoutes(deps: HttpDeps) {
       reviewPolicy?: string
       reportingMode?: string
       gateMode?: string
+      skipDrafts?: boolean
     }): string | null =>
       hookFamilyShapeError({
         kind: body.kind,
@@ -256,7 +258,8 @@ export function hookRoutes(deps: HttpDeps) {
         commentFamilies: body.commentFamilies ?? [],
         reviewPolicy: body.reviewPolicy ?? 'off',
         reportingMode: body.reportingMode ?? 'off',
-        gateMode: body.gateMode ?? 'informational'
+        gateMode: body.gateMode ?? 'informational',
+        skipDrafts: body.skipDrafts ?? false
       })
 
     // Sibling rows of one (agent, repo) answer the same threads, so they must
@@ -303,7 +306,11 @@ export function hookRoutes(deps: HttpDeps) {
       status: e.code === 'RATE_LIMITED' ? 429 : 502,
       message: `github: ${e.message}`
     })
-    const resolveGithubRepo = async (orgId: string, repoFullName: string): Promise<RepoResolution> => {
+    const resolveGithubRepo = async (
+      orgId: string,
+      repoFullName: string,
+      githubAppId: string | null
+    ): Promise<RepoResolution> => {
       if (!deps.github) {
         return {
           ok: false,
@@ -313,7 +320,7 @@ export function hookRoutes(deps: HttpDeps) {
       }
       const [owner, repo] = repoFullName.split('/')
       if (!owner || !repo) return notCovered
-      const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(OrgId(orgId), owner)
+      const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(OrgId(orgId), owner, githubAppId)
       if (!ins || ins.suspendedAt) return notCovered
       try {
         const ref = await deps.github.repoRefFor(ins, owner, repo)
@@ -364,7 +371,9 @@ export function hookRoutes(deps: HttpDeps) {
       // After the rows (decision 10): the caller resolved `repoFullName` through its owner's live installation, the coverage proof.
       const installationGranted = async (): Promise<boolean> => {
         const owner = provider === 'github' ? repoFullName.split('/')[0] : undefined
-        const ins = owner ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner) : null
+        const ins = owner
+          ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner, agent.githubAppId ?? null)
+          : null
         if (!ins || ins.suspendedAt) return false
         return (await deps.repos.agentInstallationAuth.listForAgent(agent.id)).some(
           (grant) => grant.provider === 'github' && grant.installationId === ins.installationId
@@ -384,7 +393,9 @@ export function hookRoutes(deps: HttpDeps) {
       if (provider === 'github' && agent.workspace.mode === 'git' && onGithubCom && deps.github) {
         const workspaceLabel = gitRepoLabel(agent.workspace.gitRepo)
         const [owner, repo] = workspaceLabel.split('/')
-        const ins = owner ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner) : null
+        const ins = owner
+          ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner, agent.githubAppId ?? null)
+          : null
         if (ins && repo) {
           try {
             const ref = await deps.github.repoRefFor(ins, owner!, repo)
@@ -550,7 +561,11 @@ export function hookRoutes(deps: HttpDeps) {
       if (!deps.github) {
         return { ok: false, status: 409, message: 'GitHub App is not configured on this deployment (GITHUB_APP_*)' }
       }
-      const installation = await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, account)
+      const installation = await deps.repos.githubInstallation.liveByOrgAndAccount(
+        agent.orgId,
+        account,
+        agent.githubAppId ?? null
+      )
       if (!installation || installation.suspendedAt) {
         return {
           ok: false,
@@ -729,7 +744,8 @@ export function hookRoutes(deps: HttpDeps) {
             family: req.body.family,
             events: req.body.events,
             commentFamilies: req.body.commentFamilies,
-            ...effects!
+            ...effects!,
+            ...(req.body.kind === 'github' ? { skipDrafts: req.body.skipDrafts } : {})
           })
           if (shapeError) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: shapeError })
@@ -841,7 +857,7 @@ export function hookRoutes(deps: HttpDeps) {
                         hmacSecret: null
                       }
                     }
-                    const repo = await resolveGithubRepo(orgId, scope.repoFullName!)
+                    const repo = await resolveGithubRepo(orgId, scope.repoFullName!, agent.githubAppId ?? null)
                     if (!repo.ok) return repo
                     const siblingError = await siblingShapeError(
                       agent.id,
@@ -893,6 +909,7 @@ export function hookRoutes(deps: HttpDeps) {
                   events: req.body.events,
                   commentFamilies: req.body.commentFamilies,
                   labelFilter: req.body.labelFilter,
+                  skipDrafts: req.body.skipDrafts,
                   mentionOnly: req.body.mentionOnly,
                   reviewPolicy: req.body.reviewPolicy,
                   reportingMode: req.body.reportingMode,
@@ -1078,6 +1095,7 @@ export function hookRoutes(deps: HttpDeps) {
           events: string[]
           commentFamilies: HookRecord['commentFamilies']
           labelFilter: string[]
+          skipDrafts: boolean
           mentionOnly: boolean
           reviewPolicy: HookRecord['reviewPolicy']
           reportingMode: HookRecord['reportingMode']
@@ -1090,6 +1108,7 @@ export function hookRoutes(deps: HttpDeps) {
             reportingMode: req.body.reportingMode ?? existing.reportingMode,
             gateMode: req.body.gateMode ?? existing.gateMode
           }
+          const skipDrafts = req.body.skipDrafts ?? existing.skipDrafts
           // The family is immutable, so the edit is re-shaped against the STORED
           // one. A legacy row the split could not place has none and is grandfathered.
           const shapeError = existing.family
@@ -1098,7 +1117,8 @@ export function hookRoutes(deps: HttpDeps) {
                 family: existing.family as HookFamily,
                 events: req.body.events,
                 commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
-                ...effectConfig
+                ...effectConfig,
+                skipDrafts
               })
             : null
           if (shapeError) {
@@ -1173,6 +1193,7 @@ export function hookRoutes(deps: HttpDeps) {
               events: req.body.events,
               commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
               labelFilter: req.body.labelFilter,
+              skipDrafts,
               mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
               ...effectConfig
             }
@@ -1191,7 +1212,7 @@ export function hookRoutes(deps: HttpDeps) {
             // A pure disable or check-off reduces effects, so it reuses the persisted binding even with the grant or GitHub gone.
             const repo = safeLifecycleNarrowing
               ? { ok: true as const, repoId: existing.repoId!, repoFullName: existing.repoFullName! }
-              : await resolveGithubRepo(orgId, scope.repoFullName!)
+              : await resolveGithubRepo(orgId, scope.repoFullName!, agent.githubAppId ?? null)
             if (!repo.ok) {
               const { status, message } = repo
               return reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })
@@ -1242,6 +1263,7 @@ export function hookRoutes(deps: HttpDeps) {
               // Optional on UPDATE so old clients preserve the stored scope.
               commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
               labelFilter: req.body.labelFilter,
+              skipDrafts,
               mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
               ...effectConfig
             }

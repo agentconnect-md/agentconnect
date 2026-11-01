@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { Routes } from 'discord.js'
 import { SlackConnection } from '../src/slack/connection.js'
 import { TelegramConnection, type TelegramApi, type TelegramBotHandle } from '../src/telegram/connection.js'
 import { DiscordConnection } from '../src/discord/connection.js'
@@ -22,6 +23,7 @@ describe('turn-start reactions', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           client: {
             auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
             chat: { postMessage: async () => ({}) },
@@ -49,6 +51,7 @@ describe('turn-start reactions', () => {
           event() {},
           action() {},
           shortcut() {},
+          command() {},
           client: {
             auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
             chat: { postMessage: async () => ({}) },
@@ -149,7 +152,7 @@ describe('turn-start reactions', () => {
   })
 
   it('lark takes its own emoji_type key, addressed by message id alone', async () => {
-    const addReaction = vi.fn(async () => {})
+    const addReaction = vi.fn(async () => ({}))
     const handle = {
       api: { addReaction, getBotInfo: async () => ({}) },
       startWs: async () => {},
@@ -169,5 +172,122 @@ describe('turn-start reactions', () => {
 
     await conn.react('oc_abc', 'om_xyz', 'seen')
     expect(addReaction).toHaveBeenCalledWith('om_xyz', 'GLANCE')
+  })
+})
+
+// auto-session-mode.md §4.4: 🤔 shows while a coordinator turn decides a message and goes when it ends.
+describe('the triaging reaction', () => {
+  it('slack places and removes :thinking_face:', async () => {
+    const add = vi.fn(async () => ({ ok: true }))
+    const remove = vi.fn(async () => ({ ok: true }))
+    const conn = new SlackConnection(
+      {
+        group: { appToken: 'xapp-1', botToken: 'xoxb-a', integrations: [] },
+        onMessage: () => {},
+        newTraceId: () => 't'
+      } as never,
+      () =>
+        ({
+          message() {},
+          event() {},
+          action() {},
+          shortcut() {},
+          command() {},
+          client: {
+            auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
+            chat: { postMessage: async () => ({}) },
+            reactions: { add, remove }
+          },
+          start: async () => {},
+          stop: async () => {}
+        }) as never
+    )
+
+    await conn.react('C1', '1.1', 'triaging')
+    await conn.unreact('C1', '1.1', 'triaging')
+    expect(add).toHaveBeenCalledWith({ channel: 'C1', timestamp: '1.1', name: 'thinking_face' })
+    expect(remove).toHaveBeenCalledWith({ channel: 'C1', timestamp: '1.1', name: 'thinking_face' })
+  })
+
+  it('telegram clears its one reaction only while that reaction is still 🤔', async () => {
+    const setMessageReaction = vi.fn(async () => true)
+    const api = { setMessageReaction, setMyCommands: vi.fn(async () => true) } as unknown as TelegramApi
+    const conn = new TelegramConnection(
+      { group: { botToken: 'tok', integrations: [] }, onMessage: () => {}, newTraceId: () => 't' } as never,
+      () =>
+        ({
+          api,
+          init: async () => {},
+          botInfo: { id: 99 },
+          on: () => {},
+          start: () => {},
+          stop: async () => {}
+        }) as unknown as TelegramBotHandle
+    )
+
+    await conn.react('-100', '7', 'triaging')
+    await conn.unreact('-100', '7', 'triaging')
+    expect(setMessageReaction.mock.calls).toEqual([
+      ['-100', 7, [{ type: 'emoji', emoji: '🤔' }]],
+      ['-100', 7, []]
+    ])
+    setMessageReaction.mockClear()
+    // A task's 👀 replaced it: a bot shows one reaction per message, and that one stays.
+    void conn.react('-100', '8', 'triaging')
+    void conn.react('-100', '8', 'seen')
+    await conn.unreact('-100', '8', 'triaging')
+    expect(setMessageReaction.mock.calls).toEqual([
+      ['-100', 8, [{ type: 'emoji', emoji: '🤔' }]],
+      ['-100', 8, [{ type: 'emoji', emoji: '👀' }]]
+    ])
+  })
+
+  it('discord reacts 🤔 and removes only its own reaction', async () => {
+    const react = vi.fn(async () => ({}))
+    const del = vi.fn(async () => undefined)
+    const conn = new DiscordConnection({
+      group: { botToken: 'token', integrations: [] },
+      onMessage: () => {},
+      newTraceId: () => 'trace',
+      sendIntervalMs: 0
+    })
+    ;(conn as unknown as { client: unknown }).client = {
+      channels: { fetch: async () => ({ messages: { fetch: async () => ({ react }) } }) },
+      rest: { delete: del }
+    }
+
+    await conn.react('THREAD', '11223344', 'triaging')
+    await conn.unreact('THREAD', '11223344', 'triaging')
+    expect(react).toHaveBeenCalledWith('🤔')
+    expect(del).toHaveBeenCalledWith(Routes.channelMessageOwnReaction('THREAD', '11223344', encodeURIComponent('🤔')))
+  })
+
+  it('lark takes back the THINKING reaction by the id its create returned', async () => {
+    const addReaction = vi.fn(async () => ({ reactionId: 'r-1' }))
+    const deleteReaction = vi.fn(async () => {})
+    const handle = {
+      api: { addReaction, deleteReaction, getBotInfo: async () => ({}) },
+      startWs: async () => {},
+      close: () => {}
+    } as unknown as FeishuClientHandle
+    const group: ConsolidatedFeishuGroup = {
+      appId: 'cli_reactions',
+      appSecret: 'secret',
+      mode: 'direct',
+      region: 'lark',
+      integrations: []
+    }
+    const conn = new FeishuConnection(
+      { group, onMessage: () => {}, newTraceId: () => 'trace', sendIntervalMs: 0 } as never,
+      () => handle
+    )
+
+    await conn.unreact('oc_abc', 'om_xyz', 'triaging')
+    expect(deleteReaction).not.toHaveBeenCalled()
+    await conn.react('oc_abc', 'om_xyz', 'triaging')
+    expect(addReaction).toHaveBeenCalledWith('om_xyz', 'THINKING')
+    await conn.unreact('oc_abc', 'om_xyz', 'triaging')
+    await conn.unreact('oc_abc', 'om_xyz', 'triaging')
+    expect(deleteReaction.mock.calls).toEqual([['om_xyz', 'r-1']])
   })
 })

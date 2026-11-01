@@ -13,6 +13,7 @@ import { constants, promises as fs } from 'node:fs'
 import { isAbsolute, relative, sep } from 'node:path'
 import { MemoryConflictError, MemoryPathError, memoryRelSegments, type MemoryFsEntry } from '../memory/fs.js'
 import { fitToBudget, utf8Boundary } from '../wire-slice.js'
+import { removeTree } from '../workspace/remove-tree.js'
 import type { MemoryFsExecutor } from './memory-fs-channel.js'
 import { DirHandle, MissingPathError, withDescent } from './safe-descent.js'
 
@@ -267,7 +268,7 @@ export function createFdMemoryFsExecutor(anchor: string): MemoryFsExecutor {
 
     async rm(root, rel) {
       await withParent(root, rel, false, async (parent, leaf) => {
-        await fs.rm(parent.childPath(leaf), { recursive: true, force: true })
+        await removeTree(parent.childPath(leaf))
       }).catch((err: unknown) => {
         if (!(err instanceof MissingPathError)) throw err
       })

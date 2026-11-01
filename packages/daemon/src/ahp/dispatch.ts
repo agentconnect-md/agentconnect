@@ -9,14 +9,16 @@ import {
 } from '@microsoft/agent-host-protocol'
 import type { AhpAttachmentAuthorization } from '@agentconnect.md/protocol'
 import { chatSessionKey } from '../session/chat-application.js'
+import { continuedByTarget } from '../session/chat-continuation.js'
 import { observeChatTurn } from '../session/chat-observer.js'
 import type { ChatOutput, ChatPost, ChatSink } from '../session/chat-turn.js'
 import type { MaskedChatEvent } from '../session/chat-events.js'
 import type { AhpApplication, AhpActionScope } from './application.js'
+import { publishedMessage } from './action-schema.js'
 import type { AhpActionContext } from './service.js'
 
 export interface AhpDispatchEnvironment {
-  session(sessionId: string, agentId: string): Promise<{ key: string; platform: string } | undefined>
+  session(sessionId: string, agentId: string): Promise<{ key: string; platform: string; thread?: string } | undefined>
   authorized(auth: AhpAttachmentAuthorization): boolean
   canStart(sessionKey: string, turnId: string): boolean
   now(): number
@@ -47,7 +49,7 @@ export async function dispatchAhpAction(
     callerRole: auth.callerRole,
     callerApproves: auth.callerApproves,
     ...(!auth.conversationId ? { apiOrigin: true } : {}),
-    ...(auth.targetSessionId || (local && local.platform !== 'webchat') ? { targetSessionId: binding.sessionId } : {})
+    ...(auth.targetSessionId || (local && continuedByTarget(local)) ? { targetSessionId: binding.sessionId } : {})
   }
   await application.dispatch(scope, params, origin, {
     authorized: () => context.isCurrent() && host.authorized(auth),
@@ -74,6 +76,8 @@ export async function dispatchAhpAction(
     },
     admitted: async (action, acceptedOrigin, result) => {
       if (result.duplicate) throw new Error('Duplicate admission requires snapshot reconciliation')
+      // Only the image the runtime received is shown back; ignored client context may name local paths.
+      const { attachments } = publishedMessage(action.message)
       await state.apply(
         channel,
         {
@@ -82,7 +86,7 @@ export async function dispatchAhpAction(
           message: {
             text: host.mask(auth.agentId, action.message.text),
             origin: { kind: MessageKind.User },
-            ...(action.message.attachments ? { attachments: action.message.attachments } : {})
+            ...(attachments ? { attachments } : {})
           }
         },
         acceptedOrigin

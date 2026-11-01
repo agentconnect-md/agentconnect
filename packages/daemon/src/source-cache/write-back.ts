@@ -288,7 +288,7 @@ export function createSourceCacheWriter(deps: SourceCacheWriterDeps): SourceCach
       const head = await deps.objects.head(objectKey)
       // Fail closed: a store that omits the checksum cannot prove the content, so nothing is committed.
       if (!head.exists) throw new Error('object missing after upload')
-      if (head.contentLength !== staged.bytes) throw new Error('length mismatch')
+      if (head.contentLength !== undefined && head.contentLength !== staged.bytes) throw new Error('length mismatch')
       if (head.checksumSha256 !== staged.sha256)
         throw new Error(head.checksumSha256 ? 'checksum mismatch' : 'checksum absent')
 

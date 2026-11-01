@@ -12,6 +12,8 @@ import {
   decodeSlackStatusOverflowValue,
   SLACK_APP_HOME_ACTION_PREFIX,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+  SLACK_CODE_MODEL_KEY,
+  SLACK_CODE_CONTEXT_KEY,
   type PlaceExternalReason,
   type SlackAppHomeContext
 } from '@agentconnect.md/protocol'
@@ -20,6 +22,7 @@ import {
   isSlackBotPost,
   isSlackSystemMessage,
   normalizeSlackResponseFinalization,
+  slackCodeChannelInfo,
   slackEnvelopeExternallyShared,
   slackExternalReason,
   slackFullMember,
@@ -38,6 +41,8 @@ import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import { markNotJoined } from '../platforms/not-joined.js'
 import { slackMessageUrl } from '../platforms/slack/permalink.js'
+import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../platforms/slack/standing-context.js'
+import { createCodeChannel } from '../platforms/slack/code-channel.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
@@ -50,6 +55,7 @@ import {
   buildPermissionUpdateCard,
   buildStatusModal,
   buildStatusUnavailableModal,
+  renderCodeContextLabels,
   decodePermValue,
   elicitFormViewValues,
   type SlackViewState,
@@ -78,7 +84,9 @@ import type {
   PlatformReactionSummary,
   PlatformScheduledMessage,
   PlatformSearchOptions,
-  PlatformSearchResults
+  PlatformSearchResults,
+  TaskPlace,
+  TaskPlaceOrigin
 } from '../platforms/contract.js'
 
 /**
@@ -200,7 +208,7 @@ const SEARCH_TOKEN_TTL_MS = 30 * 60 * 1000
  * rather than given a key that would be refused.
  */
 /** Core names the intent; Slack's alphabet is emoji shortcodes. */
-const SLACK_REACTION_NAMES: Record<PlatformReactionIntent, string> = { seen: 'eyes' }
+const SLACK_REACTION_NAMES: Record<PlatformReactionIntent, string> = { seen: 'eyes', triaging: 'thinking_face' }
 
 export interface ConsolidatedGroup {
   appToken: string
@@ -301,7 +309,15 @@ export interface SlackStatusOptions {
   /** Logical session this write acts for — recorded as the slot's displayed owner, so the
    *  native Stop can target the turn the user is actually looking at. */
   sessionKey?: string
+  /** `suspended` marks a non-empty status as waiting on a person (Slack's "Needs attention") rather than working. */
+  lifecycle?: 'suspended'
 }
+
+/** The Agent Sessions states `agents.sessions.setStatus` accepts. */
+export type SlackSessionLifecycle = 'processing' | 'active' | 'suspended' | 'closed'
+
+/** The `view_key` of a code channel's Plan tab. */
+export const SLACK_PLAN_VIEW_KEY = 'plan'
 
 /** Slack message `metadata.event_type` marking a message as daemon chrome (see
  *  `SlackPostOptions.chrome`). Exported so the backfill can recognize it. */
@@ -469,6 +485,8 @@ export interface SlackDeps {
   onThreadSessions?: (a: { channel: string; thread: string }) => Promise<string[]>
   /** Release the delegated tasks holding this thread's indicator and return their keys, for a Stop to cancel. */
   onStopThreadTasks?: (a: { channel: string; thread: string }) => string[]
+  /** A code channel was archived: the task it holds closes (auto-session-mode.md §6.8). */
+  onPlaceClosed?: (a: { channel: string; thread: string }) => void
   /** Settle the conversation's ONE status slot after a stop: re-assert a surviving sibling's
    *  `processing`, or transition an empty thread to `active`. Owned by the daemon. */
   onSlotSettle?: (a: { channel: string; thread: string; exclude?: string }) => void
@@ -573,12 +591,23 @@ type SlackSearchContextResponse = {
   response_metadata?: { next_cursor?: string }
 }
 
+type SlackCodeContextItem = NonNullable<
+  NonNullable<Parameters<WebClient['agents']['conversations']['setProperties']>[0]['code_channel']>['context_bar_items']
+>[number]
+
 export type AppLike = {
   message: (handler: (args: { message: unknown; body?: unknown }) => Promise<void> | void) => void
   // `body` is the Events API envelope (team id, event time) Bolt hands every listener beside the event itself.
   event: (type: string, handler: (args: { event: unknown; body?: unknown }) => Promise<void> | void) => void
   action: (actionId: string | RegExp, handler: (args: BlockActionArgs) => Promise<void> | void) => void
   shortcut: (callbackId: string, handler: (args: MessageShortcutArgs) => Promise<void> | void) => void
+  command: (
+    name: string,
+    handler: (args: {
+      ack: () => Promise<void>
+      command: { channel_id: string; user_id: string; trigger_id: string }
+    }) => Promise<void>
+  ) => void
   client: {
     views: {
       open: (a: unknown) => Promise<unknown>
@@ -648,6 +677,11 @@ export type AppLike = {
           user?: string
           topic?: { value?: string }
           purpose?: { value?: string }
+          properties?: {
+            record_channel?: { record_type?: string }
+            agent_session?: { encoded_agent_bot_user_ids?: string[] }
+            code_channel?: { context_bar_items?: SlackCodeContextItem[] }
+          }
         }
       }>
       members: (a: unknown) => Promise<{ members?: string[]; response_metadata?: { next_cursor?: string } }>
@@ -701,19 +735,29 @@ export type AppLike = {
       // users.conversations — channels the AUTHED BOT is a member of (not the
       // workspace-wide conversations.list). Needs channels:read / groups:read.
       conversations: (a: unknown) => Promise<{
-        channels?: { id?: string; name?: string; is_private?: boolean; is_im?: boolean; is_mpim?: boolean }[]
+        channels?: {
+          id?: string
+          name?: string
+          is_private?: boolean
+          is_im?: boolean
+          is_mpim?: boolean
+          is_archived?: boolean
+          properties?: unknown
+        }[]
         response_metadata?: { next_cursor?: string }
       }>
     }
     reactions: {
       add: (a: unknown) => Promise<unknown>
+      remove: (a: unknown) => Promise<unknown>
       // reactions.get needs `reactions:read`, a capability scope — an installation that
       // predates it fails here with missing_scope rather than being marked broken.
       get: (a: unknown) => Promise<{ message?: { reactions?: { name?: string; count?: number; users?: string[] }[] } }>
     }
-    // Slack Canvas (`canvases:write`, plus `canvases:read` for the section anchors).
+    // Canvas bodies and heading anchors require canvases:read; edits require canvases:write.
     canvases: {
       create: (a: unknown) => Promise<{ canvas_id?: string }>
+      getContent: (a: unknown) => Promise<{ content?: string }>
       edit: (a: unknown) => Promise<unknown>
       sections: { lookup: (a: unknown) => Promise<{ sections?: { id?: string }[] }> }
     }
@@ -734,6 +778,10 @@ export type AppLike = {
       }
     }
     agents: {
+      conversations?: Pick<
+        WebClient['agents']['conversations'],
+        'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView' | 'setCanvasContent'
+      >
       sessions: {
         setStatus: (a: unknown) => Promise<unknown>
         rename: (a: unknown) => Promise<unknown>
@@ -961,7 +1009,7 @@ function classifySlackUploadError(err: unknown): UploadFailReason {
 
 function proxyDispatcher(): ProxyAgent | undefined {
   const url = process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY
-  return url ? new ProxyAgent(url) : undefined
+  return url ? new ProxyAgent({ uri: url, requestTls: { allowH2: false } }) : undefined
 }
 
 // Keep Slack independent of the Undici version that claims the process-wide dispatcher.
@@ -993,6 +1041,7 @@ function sendOnlyApp(botToken: string): AppLike {
     event: () => {},
     action: () => {},
     shortcut: () => {},
+    command: () => {},
     client: client as unknown as AppLike['client'],
     start: async () => {},
     stop: async () => {}
@@ -1048,6 +1097,179 @@ export class SlackConnection implements PlatformConnection {
   /** Last title written per `channel:thread` — every turn re-pushes the stored title, so
    *  unchanged repeats must not spend an API call. Grows like sessionLifecycle: unevicted. */
   private lastTitles = new Map<string, string>()
+  private readonly codeChannels = new Map<string, { at: number; value: Promise<{ code: boolean; owners: string[] }> }>()
+  private readonly codeContextStatus = new Map<string, string>()
+
+  // Serialize read/replace with agent context updates so neither writer erases the other's items.
+  async updateCodeContext(
+    channel: string,
+    update: { info?: StatusBarInfo; items?: SlackCodeContextItem[] }
+  ): Promise<boolean> {
+    const api = this.app.client.agents.conversations
+    if (!api) return false
+    const labels = update.info ? renderCodeContextLabels(update.info) : undefined
+    const statusKey = labels ? JSON.stringify(labels) : undefined
+    try {
+      return await this.queue.enqueue(async () => {
+        if (statusKey && this.codeContextStatus.get(channel) === statusKey) return true
+        const { channel: info } = await this.app.client.conversations.info({ channel })
+        const owned = slackCodeChannelInfo(info)
+        if (!owned.code || !owned.owners.includes(this.botUserId)) return false
+        const existing = (info?.properties?.code_channel?.context_bar_items ?? []).map(
+          ({ key, label, icon, url, item_type }) => ({ key, label, icon, url, item_type })
+        )
+        const isControl = (item: SlackCodeContextItem) =>
+          item.key === SLACK_CODE_MODEL_KEY || item.key === SLACK_CODE_CONTEXT_KEY
+        const controls: SlackCodeContextItem[] = labels
+          ? [
+              { key: SLACK_CODE_MODEL_KEY, label: labels.model, icon: 'code', item_type: 'action' },
+              ...(labels.context
+                ? [{ key: SLACK_CODE_CONTEXT_KEY, label: labels.context, icon: 'terminal', item_type: 'action' }]
+                : [])
+            ]
+          : existing.filter(isControl)
+        const items = [...controls, ...(update.items ?? existing).filter((item) => !isControl(item)).slice(0, 3)]
+        if (JSON.stringify(items) !== JSON.stringify(existing))
+          await api.setProperties({
+            channel_id: channel,
+            code_channel: { context_bar_items: items }
+          })
+        if (statusKey) {
+          if (this.codeContextStatus.size >= 1000)
+            this.codeContextStatus.delete(this.codeContextStatus.keys().next().value!)
+          this.codeContextStatus.set(channel, statusKey)
+        }
+        return true
+      })
+    } catch (err) {
+      throw this.toolFailure(err, 'agents.conversations.setProperties')
+    }
+  }
+
+  async codeChannel(channel: string): Promise<{ code: boolean; owners: string[] }> {
+    const cached = this.codeChannels.get(channel)
+    if (cached && Date.now() - cached.at < 60000) return cached.value
+    const value = this.app.client.conversations
+      .info({ channel })
+      .then(({ channel: info }) => slackCodeChannelInfo(info))
+    const entry = { at: Date.now(), value }
+    if (this.codeChannels.size >= 1000) this.codeChannels.delete(this.codeChannels.keys().next().value!)
+    this.codeChannels.set(channel, entry)
+    try {
+      return await value
+    } catch (err) {
+      if (this.codeChannels.get(channel) === entry) this.codeChannels.delete(channel)
+      throw err
+    }
+  }
+
+  /** A code channel is one session keyed on the channel, so a root post there belongs to it (slack-code-channels.md). */
+  async roomThread(channel: string): Promise<string | undefined> {
+    return (await this.codeChannel(channel).catch(() => undefined))?.code ? channel : undefined
+  }
+
+  /** A coordinator's task works in a code channel linked to its message (auto-session-mode.md §6.8); none when the message already sits in one. */
+  async openTaskPlace(origin: TaskPlaceOrigin, title: string): Promise<TaskPlace | undefined> {
+    // The daemon has judged whether the message's sender may have a channel made before it asks.
+    const created = await createCodeChannel(this, { ...origin, ts: origin.messageId }, title, async () => {})
+    if (created.existing) return undefined
+    if (created.channelId === undefined) throw new Error('Slack answered the code channel creation without a channel')
+    // A code channel's one session keys on the channel itself (slack-code-channels.md).
+    return { channel: created.channelId, thread: created.channelId }
+  }
+
+  async prepareInboundMessage(msg: NormalizedMessage): Promise<void> {
+    if (msg.isDm || msg.isGroupDm) {
+      msg.standingContext = SLACK_CONVERSATION_CONTEXT
+      return
+    }
+    if (msg.thread === msg.channel) msg.standingContext = SLACK_CODE_CHANNEL_CONTEXT
+    const info = await this.codeChannel(msg.channel).catch(() => {
+      this.deps.log?.debug('slack: channel discovery unavailable; retaining inbound coordinates')
+      return undefined
+    })
+    if (!info) return
+    msg.standingContext = info.code ? SLACK_CODE_CHANNEL_CONTEXT : SLACK_CONVERSATION_CONTEXT
+    delete msg.conversationBotId
+    if (!info.code) return
+    msg.thread = msg.channel
+    if (info.owners.includes(this.botUserId)) msg.conversationBotId = this.botUserId
+  }
+
+  /** A code channel's Plan tab canvas, its newest unwritten plan, and the writer draining it. */
+  private readonly planCanvases = new Map<string, { canvasId?: string; pending?: string; running?: Promise<void> }>()
+
+  /** Mirror the plan into the code channel's Plan tab: a canvas the team comments on and only the agent edits. */
+  writePlanCanvas(channel: string, markdown: string): void {
+    let slot = this.planCanvases.get(channel)
+    if (!slot) this.planCanvases.set(channel, (slot = {}))
+    slot.pending = markdown
+    const writing = slot
+    writing.running ??= this.drainPlanCanvas(channel, writing).finally(() => (writing.running = undefined))
+  }
+
+  // Only the newest plan is written: updates that arrive during a write collapse into the next one.
+  private async drainPlanCanvas(channel: string, slot: { canvasId?: string; pending?: string }): Promise<void> {
+    while (slot.pending !== undefined) {
+      const markdown = slot.pending
+      slot.pending = undefined
+      try {
+        await this.putPlanCanvas(channel, slot, markdown)
+      } catch (err) {
+        slot.canvasId = undefined
+        this.deps.log?.debug(`slack: plan canvas write failed (ch=${channel}): ${(err as Error).message}`)
+      }
+    }
+  }
+
+  private async putPlanCanvas(channel: string, slot: { canvasId?: string }, markdown: string): Promise<void> {
+    const api = this.app.client.agents.conversations
+    const info = await this.codeChannel(channel)
+    if (!api || !info.code || !info.owners.includes(this.botUserId)) return
+    // A restarted daemon finds the canvas it attached earlier through the channel's views.
+    slot.canvasId ??= (await this.queue.enqueue(() => api.listViews({ channel_id: channel }))).views?.find(
+      (view) => view.view_key === SLACK_PLAN_VIEW_KEY
+    )?.file_id
+    if (slot.canvasId) {
+      const canvasId = slot.canvasId
+      await this.queue.enqueue(() => api.setCanvasContent({ channel, canvas_id: canvasId, content: markdown }))
+      return
+    }
+    const document_content = { type: 'markdown' as const, markdown }
+    const created = await this.queue.enqueue(() => this.app.client.canvases.create({ title: 'Plan', document_content }))
+    if (!created.canvas_id) throw new Error('Slack canvas creation returned no canvas_id')
+    const canvasId = created.canvas_id
+    await this.queue.enqueue(() =>
+      api.setView({
+        channel_id: channel,
+        type: 'canvas',
+        view_key: SLACK_PLAN_VIEW_KEY,
+        name: 'Plan',
+        canvas_id: canvasId,
+        access_level: 'comment'
+      })
+    )
+    slot.canvasId = canvasId
+  }
+
+  async codeChannelApi<K extends 'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView'>(
+    method: K,
+    args: Parameters<WebClient['agents']['conversations'][K]>[0],
+    signal?: AbortSignal
+  ): Promise<unknown> {
+    const api = this.app.client.agents.conversations
+    if (!api) throw new Error('This Slack client does not support code channels')
+    try {
+      return await this.queue.enqueue(() => {
+        signal?.throwIfAborted()
+        return (api[method] as (args: unknown) => Promise<unknown>)(args)
+      })
+    } catch (err) {
+      if (isSendQueueTimeout(err))
+        throw new Error('Slack did not answer in time; the code channel operation may have completed')
+      throw this.toolFailure(err, `agents.conversations.${method}`)
+    }
+  }
   /** Slack app/workspace ids are public metadata used only for the OAuth settings link. */
   private appId = ''
   private teamId = ''
@@ -1218,9 +1440,19 @@ export class SlackConnection implements PlatformConnection {
     // Native stop button, Socket Mode arm. The HTTP arm reaches the same method through the relay.
     this.app.event('agent_session_stopped', async ({ event }) => {
       const ev = event as { channel?: string; thread_ts?: string; user?: string }
-      if (!ev.channel || !ev.thread_ts) return
-      await this.agentSessionStopped(ev.channel, ev.thread_ts, ev.user)
+      if (!ev.channel) return
+      await this.agentSessionStopped(ev.channel, ev.thread_ts ?? ev.channel, ev.user)
     })
+    // Archiving a code channel stops every session sharing it.
+    for (const type of ['channel_archive', 'group_archive'] as const)
+      this.app.event(type, async ({ event }) => {
+        const ev = event as { channel?: string; user?: string }
+        try {
+          if (ev.channel) await this.agentSessionStopped(ev.channel, ev.channel, ev.user, true)
+        } finally {
+          this.deps.onChannelsChanged?.()
+        }
+      })
     // The bot joining (its own member_joined_channel) or leaving (channel_left / group_left) re-lists membership.
     this.app.event('member_joined_channel', async ({ event, body }) => {
       const ev = event as { user?: string; channel?: string; inviter?: string }
@@ -1270,6 +1502,19 @@ export class SlackConnection implements PlatformConnection {
         channel && thread && userId ? await this.deps.onMessageShortcut?.({ channel, thread, userId }) : undefined
       await this.openStatusModal(triggerId, sessionKey)
     })
+    // Native context-bar action keys arrive as slash commands, with a one-shot modal trigger.
+    for (const key of [SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY]) {
+      this.app.command(`/${key}`, async ({ ack, command }) => {
+        await ack()
+        const channel = command.channel_id
+        const info = await this.codeChannel(channel).catch(() => undefined)
+        const sessionKey =
+          info?.code && info.owners.includes(this.botUserId)
+            ? await this.deps.onMessageShortcut?.({ channel, thread: channel, userId: command.user_id })
+            : undefined
+        await this.openStatusModal(command.trigger_id, sessionKey)
+      })
+    }
     // Status-bar interactivity (Block Kit block_actions over Socket Mode). Each handler
     // MUST ack() promptly (Slack drops the interaction / trigger_id after ~3s). Configure
     // opens the controls modal; its selects carry the session key in `view.private_metadata`.
@@ -1492,7 +1737,7 @@ export class SlackConnection implements PlatformConnection {
     threadTs: string | undefined,
     payload: Record<string, unknown>
   ): Promise<{ ts?: string } | undefined> {
-    if (threadTs) {
+    if (threadTs && threadTs !== channel) {
       try {
         await this.app.client.chat.getPermalink({ channel, message_ts: threadTs })
       } catch (err) {
@@ -1501,7 +1746,10 @@ export class SlackConnection implements PlatformConnection {
         return undefined
       }
     }
-    return this.markingNotJoined(channel, () => this.app.client.chat.postMessage(payload))
+    const { thread_ts: thread, ...body } = payload
+    return this.markingNotJoined(channel, () =>
+      this.app.client.chat.postMessage({ ...body, ...(thread && thread !== channel ? { thread_ts: thread } : {}) })
+    )
   }
 
   /** Run one call against a conversation; a `not_in_channel` refusal is tagged so core can ask before the bot joins (#2979). */
@@ -1825,13 +2073,17 @@ export class SlackConnection implements PlatformConnection {
    * SDK, the workspace, or this channel cannot stream, and §7 has already decided whether
    * that latches the capability off or degrades only this turn.
    *
-   * `thread_ts` is REQUIRED — omitting it fails `invalid_thread_ts`, in DMs too (verified
-   * live 2026-08-28; the documented "omit for a top-level message" does not hold).
+   * Ordinary sessions require a thread timestamp; a code channel uses its channel coordinate.
    */
   async startTurnStream(
     channel: string,
     threadTs: string,
-    options: { isDm?: boolean; recipientUserId?: string; identity?: SlackPostOptions } = {}
+    options: {
+      isDm?: boolean
+      recipientUserId?: string
+      identity?: SlackPostOptions
+      taskDisplayMode?: 'timeline' | 'plan'
+    } = {}
   ): Promise<SlackTurnStream | undefined> {
     const start = this.app.client.chat.startStream
     if (typeof start !== 'function') {
@@ -1853,7 +2105,7 @@ export class SlackConnection implements PlatformConnection {
       .enqueue(async () => {
         let result: SlackTurnStream | undefined
         try {
-          result = await this.openStream(start, channel, threadTs, recipient, options.identity)
+          result = await this.openStream(start, channel, threadTs, recipient, options.identity, options.taskDisplayMode)
           return result
         } finally {
           publish(result)
@@ -1867,21 +2119,20 @@ export class SlackConnection implements PlatformConnection {
       })
   }
 
-  /** The `chat.startStream` call itself. Runs inside the send queue's task, so it never
-   *  enqueues again; the caller owns the timeout semantics. */
+  /** Start inside the existing send-queue task; the caller owns the timeout. */
   private async openStream(
     start: (a: unknown) => Promise<{ ts?: string }>,
     channel: string,
     threadTs: string,
     recipient: string | undefined,
-    identity?: SlackPostOptions
+    identity?: SlackPostOptions,
+    taskDisplayMode: 'timeline' | 'plan' = 'timeline'
   ): Promise<SlackTurnStream | undefined> {
-    // `plan` folds every task card into ONE collapsed-by-default container labelled by the
-    // `plan_update` title. `timeline` — the default — renders each card flat and separate.
+    // Work steps render individually; minimal mode keeps interim replies in a folded plan.
     const payload: Record<string, unknown> = {
       channel,
-      thread_ts: threadTs,
-      task_display_mode: 'plan',
+      ...(threadTs !== channel ? { thread_ts: threadTs } : {}),
+      task_display_mode: taskDisplayMode,
       ...(recipient ? { recipient_user_id: recipient } : {}),
       ...(recipient && this.teamId ? { recipient_team_id: this.teamId } : {})
     }
@@ -2103,6 +2354,21 @@ export class SlackConnection implements PlatformConnection {
       .catch(() => {})
   }
 
+  /** Take back this app's reaction for `intent` (`reactions.remove`), queued behind the `react` that placed it. */
+  async unreact(channel: string, messageId: string, intent: PlatformReactionIntent): Promise<void> {
+    await this.queue
+      .enqueue(async () => {
+        try {
+          await this.app.client.reactions.remove({ channel, timestamp: messageId, name: SLACK_REACTION_NAMES[intent] })
+        } catch (err) {
+          this.deps.log?.debug(
+            `slack: reactions.remove failed (ch=${channel} ts=${messageId}): ${(err as Error).message}`
+          )
+        }
+      })
+      .catch(() => {})
+  }
+
   /** Delete one of this app's own messages. Used when chronological re-anchoring
    *  replaces live chrome with a newer message. Best-effort so a cleanup failure
    *  never interrupts the agent turn. */
@@ -2164,10 +2430,14 @@ export class SlackConnection implements PlatformConnection {
     let cursor: string | undefined
     try {
       do {
+        const read =
+          threadTs === channel
+            ? (this.app.client.conversations.history as AppLike['client']['conversations']['replies'])
+            : this.app.client.conversations.replies
         const res = await this.markingNotJoined(channel, () =>
-          this.app.client.conversations.replies({
+          read({
             channel,
-            ts: threadTs,
+            ...(threadTs !== channel ? { ts: threadTs } : {}),
             limit: 200,
             // Without it Slack omits the metadata payload that carries the stable agent author id.
             include_all_metadata: true,
@@ -2216,7 +2486,7 @@ export class SlackConnection implements PlatformConnection {
             if (window?.readState && (index < messages.length - 1 || Boolean(res.has_more))) {
               window.readState.truncated = true
             }
-            return out
+            return out.sort((a, b) => a.ts.localeCompare(b.ts))
           }
         }
         cursor = res.has_more ? res.response_metadata?.next_cursor : undefined
@@ -2227,7 +2497,7 @@ export class SlackConnection implements PlatformConnection {
       )
       if (window?.throwOnError) throw err
     }
-    return out
+    return out.sort((a, b) => a.ts.localeCompare(b.ts))
   }
 
   /** Fetch one bounded, cursor-paginated page of Slack channel messages. */
@@ -2341,7 +2611,7 @@ export class SlackConnection implements PlatformConnection {
           file: file.bytes,
           filename: file.name,
           channel_id: channel,
-          ...(threadTs ? { thread_ts: threadTs } : {}),
+          ...(threadTs && threadTs !== channel ? { thread_ts: threadTs } : {}),
           ...(comment ? { initial_comment: comment } : {})
         })) as SlackUploadV2Result
         // `uploadV2` answers with one completion response per file, each carrying the FILE.
@@ -2396,7 +2666,7 @@ export class SlackConnection implements PlatformConnection {
       {
         files: [{ id: fileId, title: file.name }],
         channel_id: channel,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
+        ...(threadTs && threadTs !== channel ? { thread_ts: threadTs } : {}),
         ...(comment ? { initial_comment: comment } : {})
       },
       options
@@ -2647,12 +2917,13 @@ export class SlackConnection implements PlatformConnection {
           ...(cursor ? { cursor } : {})
         })
         for (const c of res.channels ?? []) {
-          if (!c.id || c.is_im || c.is_mpim) continue
+          if (!c.id || c.is_im || c.is_mpim || c.is_archived) continue
           out.push({
             id: c.id,
             ...(c.name ? { name: c.name } : {}),
             // Explicit either way, so the membership snapshot answers privacy without a lookup.
             isPrivate: c.is_private === true,
+            isCodeSession: slackCodeChannelInfo(c).code,
             externalReason: slackExternalReason(c)
           })
         }
@@ -3189,31 +3460,25 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /**
-   * Read a canvas back.
-   *
-   * Slack publishes NO full-content read: `canvases:read` buys `canvases.sections.lookup`,
-   * which answers with section ids and no text. So the body is fetched the way any other
-   * Slack file is — `files.info` for the private URL, then the credentialed download this
-   * connection already performs — and is simply ABSENT when that path does not serve text.
-   * The metadata and the section anchors an edit needs are always returned.
-   */
+  // Read the complete Markdown body and fresh heading anchors through the Canvas API.
   async readCanvas(canvasId: string): Promise<PlatformCanvas> {
-    let file: { title?: string; permalink?: string; url_private?: string }
     try {
-      const res = await this.app.client.files.info({ file: canvasId })
-      file = res.file ?? {}
+      const [metadata, body, sections] = await Promise.all([
+        this.app.client.files.info({ file: canvasId }),
+        this.app.client.canvases.getContent({ canvas_id: canvasId, content_type: 'markdown' }),
+        this.canvasSections(canvasId)
+      ])
+      if (typeof body.content !== 'string') throw new Error('Slack canvases.getContent returned no content')
+      const file = metadata.file ?? {}
+      return {
+        id: canvasId,
+        ...(file.title ? { title: file.title } : {}),
+        ...(file.permalink ? { url: file.permalink } : {}),
+        markdown: body.content,
+        ...(sections ? { sections } : {})
+      }
     } catch (err) {
       throw this.toolFailure(err, 'reading a canvas')
-    }
-    const sections = await this.canvasSections(canvasId)
-    const bytes = file.url_private ? await this.downloadFile(file.url_private) : null
-    return {
-      id: canvasId,
-      ...(file.title ? { title: file.title } : {}),
-      ...(file.permalink ? { url: file.permalink } : {}),
-      ...(bytes ? { markdown: bytes.toString('utf8') } : {}),
-      ...(sections ? { sections } : {})
     }
   }
 
@@ -3269,15 +3534,7 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /**
-   * The addressable sections of a canvas, or undefined when the workspace did not grant
-   * `canvases:read` — the edit anchors are then unknown, not an error.
-   *
-   * HEADINGS ONLY, and that is the public API's ceiling rather than a choice: `criteria` is
-   * required and its `section_types` vocabulary is `any_header|h1|h2|h3`, so there is no
-   * request that returns every section. The ids are also invalidated by each edit, which is
-   * why `readCanvas` is documented as a call to make immediately before `updateCanvas`.
-   */
+  // Lookup exposes heading anchors only; fetch fresh IDs before each edit and omit them on failure.
   private async canvasSections(canvasId: string): Promise<{ id: string }[] | undefined> {
     try {
       const res = await this.app.client.canvases.sections.lookup({
@@ -3303,30 +3560,25 @@ export class SlackConnection implements PlatformConnection {
    *  (docs/product-conventions.md, "A trigger is acknowledged before it is answered"). */
   async setStatus(channel: string, threadTs: string, status: string, options?: SlackStatusOptions): Promise<boolean> {
     return this.queue.enqueue(() =>
-      this.setSessionLifecycle(channel, threadTs, status ? 'processing' : 'active', options)
+      this.setSessionLifecycle(channel, threadTs, status ? (options?.lifecycle ?? 'processing') : 'active', options)
     )
   }
 
-  /** The native Stop. Socket arm — the daemon holding this socket owns every turn the bot runs,
-   *  so the stop targets the turn the user is looking at: the slot's displayed owner (the last
-   *  `processing` writer), falling back to the thread's newest addressable session. Settlement
-   *  is the daemon's: a surviving sibling's `processing` takes the row over (Slack resolves the
-   *  transient "Stopping…" into it), and only an empty thread transitions to `active` — Slack
-   *  leaves the session in `processing` on its own.
-   *  Relay-forwarded arm (send-only): the same event reaches EVERY participant daemon and
-   *  per-daemon survivor settlement could disagree — one daemon's `active` racing another's
-   *  `processing` re-assert for Slack's one global slot. Until displayed ownership has a
-   *  cross-daemon authority, this arm keeps the globally consistent all-stop: every local turn
-   *  cancels and every daemon's final write is `active`.
-   *  Both arms also stop the delegated tasks holding the thread's indicator, so one Stop ends all its work. */
-  async agentSessionStopped(channel: string, threadTs: string, userId?: string): Promise<void> {
+  // Native Stop targets the displayed socket owner; forwarded stops and archives cancel every local session and task, and an archive closes the task the channel holds.
+  async agentSessionStopped(channel: string, threadTs: string, userId?: string, archived = false): Promise<void> {
     this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
+    // The channel coordinate names a session only in a code channel; an archive of a channel known not to be one is ignored.
+    if (threadTs === channel && (await this.codeChannel(channel).catch(() => undefined))?.code === false) return
     const cancel = (sessionKey: string) =>
       this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
-    if (this.deps.sendOnly) {
+    if (this.deps.sendOnly || archived) {
       const sessionKeys = (await this.deps.onThreadSessions?.({ channel, thread: threadTs })) ?? []
       const tasks = this.deps.onStopThreadTasks?.({ channel, thread: threadTs }) ?? []
-      for (const sessionKey of new Set([...sessionKeys, ...tasks])) cancel(sessionKey)
+      // The session whose own turn archived the channel ends that turn itself, after its wrap-up.
+      const archivedBy = archived ? this.ownArchives.get(channel) : undefined
+      if (archived) this.ownArchives.delete(channel)
+      for (const sessionKey of new Set([...sessionKeys, ...tasks])) if (sessionKey !== archivedBy) cancel(sessionKey)
+      if (archived && threadTs === channel) this.codeChannelArchived(channel)
       await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))
       return
     }
@@ -3337,18 +3589,48 @@ export class SlackConnection implements PlatformConnection {
     this.deps.onSlotSettle?.({ channel, thread: threadTs, ...(target ? { exclude: target } : {}) })
   }
 
+  /** Mark a code channel's session Done (`closed`) before the channel is archived. */
+  async closeCodeSession(channel: string): Promise<boolean> {
+    return this.queue.enqueue(() => this.setSessionLifecycle(channel, channel, 'closed'))
+  }
+
+  /** An archived code channel closes the task it holds, whoever archived it; closing twice is harmless. */
+  codeChannelArchived(channel: string): void {
+    this.deps.onPlaceClosed?.({ channel, thread: channel })
+  }
+
+  /** Sessions archiving their own code channel, by channel, so Slack's archive event does not cancel the turn that asked for it. */
+  private readonly ownArchives = new Map<string, string>()
+
+  /** Archive a code channel for the session `by` whose turn asked, echoing `summaryTs` to the origin, and close its task. */
+  async archiveCodeChannel(channel: string, summaryTs: string | undefined, by: string): Promise<unknown> {
+    await this.closeCodeSession(channel)
+    // Noted before the call: Slack's archive event can arrive before its answer does.
+    this.ownArchives.set(channel, by)
+    try {
+      const archived = await this.codeChannelApi('archive', { channel_id: channel, summary_message_ts: summaryTs })
+      this.codeChannelArchived(channel)
+      return archived
+    } catch (err) {
+      if (this.ownArchives.get(channel) === by) this.ownArchives.delete(channel)
+      throw err
+    }
+  }
+
   // The lifecycle half of setStatus. Posting a message does NOT end the loading UX — only `active` does.
   // Deduped per (channel, thread) INCLUDING the identity, so a same-state write from a different
   // agent still refires — Slack keeps username/icon sticky on the session until rewritten.
   private async setSessionLifecycle(
     channel: string,
     threadTs: string,
-    status: 'processing' | 'active',
+    status: SlackSessionLifecycle,
     options?: SlackStatusOptions
   ): Promise<boolean> {
     const key = `${channel}:${threadTs}`
-    const username = status === 'processing' && !this.statusIdentityUnsupported ? options?.username?.trim() : undefined
-    const iconUrl = status === 'processing' && !this.statusIdentityUnsupported ? options?.icon_url?.trim() : undefined
+    // A waiting session keeps the identity of the agent that is waiting, like a working one.
+    const owned = (status === 'processing' || status === 'suspended') && !this.statusIdentityUnsupported
+    const username = owned ? options?.username?.trim() : undefined
+    const iconUrl = owned ? options?.icon_url?.trim() : undefined
     // The owner joins the dedupe key: an identity-identical handover between two turns must
     // still refire, or the slot's displayed owner would keep pointing the Stop at the old one.
     const signature = `${status}|${username ?? ''}|${iconUrl ?? ''}|${options?.sessionKey ?? ''}`
@@ -3357,14 +3639,15 @@ export class SlackConnection implements PlatformConnection {
     try {
       await this.app.client.agents.sessions.setStatus({
         channel_id: channel,
-        thread_ts: threadTs,
+        ...(threadTs !== channel ? { thread_ts: threadTs } : {}),
         status,
         ...(username ? { username } : {}),
         ...(iconUrl ? { icon_url: iconUrl } : {})
       })
       this.sessionLifecycle.set(key, signature)
-      if (status === 'processing' && options?.sessionKey) this.slotOwner.set(key, options.sessionKey)
-      else if (status === 'active') this.slotOwner.delete(key)
+      if ((status === 'processing' || status === 'suspended') && options?.sessionKey)
+        this.slotOwner.set(key, options.sessionKey)
+      else if (status === 'active' || status === 'closed') this.slotOwner.delete(key)
       return true
     } catch (err) {
       // Identity needs chat:write.customize (the enum alone runs on chat:write). A manually
@@ -3392,7 +3675,7 @@ export class SlackConnection implements PlatformConnection {
       await this.queue.enqueue(() =>
         this.app.client.agents.sessions.rename({
           channel_id: channel,
-          thread_ts: threadTs,
+          ...(threadTs !== channel ? { thread_ts: threadTs } : {}),
           title
         })
       )

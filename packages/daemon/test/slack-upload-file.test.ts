@@ -36,6 +36,7 @@ function connWith(files: Record<string, unknown>) {
     event() {},
     action() {},
     shortcut() {},
+    command() {},
     client: {
       auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
       chat: { postMessage: async () => ({}), getPermalink: async () => ({ permalink: 'https://x/y' }) },

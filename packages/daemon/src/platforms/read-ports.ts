@@ -38,13 +38,15 @@
  * whole point — core no longer knows that either name exists.
  */
 import type { ZodType } from 'zod'
-import type { SessionContext } from '../mcp/ops/context.js'
+import type { SendIdentity, SessionContext } from '../mcp/ops/context.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import { DINGTALK_ATTACHMENT_TOOL } from './dingtalk/attachments.js'
 import { LINEAR_SESSION_TOOLS } from './linear/agent-tools.js'
 import { QQ_ATTACHMENT_TOOL } from './qq/attachments.js'
 import { SLACK_ATTACHMENT_TOOL } from './slack/attachments.js'
+import { SLACK_SESSION_TOOLS } from './slack/agent-tools.js'
+import type { WriteTarget } from '../mcp/ops/place-gate.js'
 import { TELEGRAM_ATTACHMENT_TOOL } from './telegram/attachments.js'
 
 /** The optional {@link import('./contract.js').PlatformConnection} facets core
@@ -87,6 +89,13 @@ export interface PlatformSessionTools {
 
 /** What a session tool acts through beyond its own arguments — daemon facts, never model input. */
 export interface PlatformSessionToolEnv {
+  /** Physical delivery coordinates and origin belong to the current live turn. */
+  readonly deliveryThread: string
+  readonly originMsgId?: string
+  /** Publication is fenced by the live turn and the existing place write rule. */
+  readonly judgeWrite: (target: WriteTarget) => Promise<unknown>
+  readonly postIdentity: () => SendIdentity
+  readonly recordPost: (text: string, ts: string) => Promise<void>
   /** The session's own live platform connection (`sessionToolConnectionFor`). */
   readonly connection: unknown
   /** This turn's footer identity, for a tool that publishes text the agent must be named on.
@@ -181,7 +190,8 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       canvas: true,
       bookmarks: true,
       lists: true,
-      attachmentReadTool: SLACK_ATTACHMENT_TOOL
+      attachmentReadTool: SLACK_ATTACHMENT_TOOL,
+      sessionTools: SLACK_SESSION_TOOLS
     }
   ],
   [

@@ -45,7 +45,7 @@ import {
   createAgentInstallation,
   createAgentRepo,
   fetchGithubInstallations,
-  fetchGithubInstallUrl,
+  githubInstallUrlFor,
   fetchGithubRepoRoster,
   fetchGithubRepoAccess,
   invalidateGithubRepoRosterCache,
@@ -234,7 +234,7 @@ export default function AddAgentRepoModal({
   useEffect(() => {
     let alive = true
     const probeInstalls = () =>
-      fetchGithubInstallations().then(
+      fetchGithubInstallations(undefined, agent.githubAppId).then(
         (r) => alive && setGh(r),
         () => alive && setGh({ enabled: false, installations: [] })
       )
@@ -269,7 +269,7 @@ export default function AddAgentRepoModal({
   }, [gh, reposNonce])
 
   const openGhInstall = async () => {
-    const url = await fetchGithubInstallUrl().catch(() => null)
+    const url = await githubInstallUrlFor(agent.githubAppId).catch(() => null)
     if (url) window.open(url, '_blank', 'noopener,noreferrer')
   }
 
@@ -278,7 +278,7 @@ export default function AddAgentRepoModal({
     setGhSyncing(true)
     setErr(null)
     try {
-      const installations = await syncGithubInstallations()
+      const installations = await syncGithubInstallations(agent.githubAppId)
       setGh({ enabled: true, installations })
       setReposError(null)
       setPrivateReposHidden(false)

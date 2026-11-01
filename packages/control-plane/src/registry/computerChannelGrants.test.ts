@@ -65,6 +65,23 @@ describe('ComputerChannelGrants', () => {
     })
   })
 
+  it('names the command-line tier in the token and the grant: off for a self-hosted desktop, on for a managed one (§5.7)', async () => {
+    const tierOf = async (over: Partial<ComputerRecord>, policy: Record<string, unknown> = {}) => {
+      const result = await setup(over, policy).grants.grant(ORG, CID, who)
+      if (!result.granted) throw new Error('refused')
+      const claims = readComputerChannelToken(result.token)
+      return { grant: [result.shell, result.files], token: [claims?.sh, claims?.fs] }
+    }
+    expect(await tierOf({})).toEqual({ grant: ['off', 'off'], token: ['off', 'off'] })
+    expect(await tierOf({ kind: 'managed' })).toEqual({ grant: ['on', 'read-write'], token: ['on', 'read-write'] })
+    expect(await tierOf({}, { shell: 'ask', files: 'read' })).toEqual({
+      grant: ['ask', 'read'],
+      token: ['ask', 'read']
+    })
+    // A shell drives the display anyway, so a view-only managed computer offers none.
+    expect(await tierOf({ kind: 'managed' }, { agentMode: 'view' })).toMatchObject({ grant: ['off', 'read-write'] })
+  })
+
   it('issues a session token the desktop verifies with its current channel key', async () => {
     const { grants, keys } = setup()
     const result = await grants.grant(ORG, CID, who)

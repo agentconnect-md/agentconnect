@@ -159,7 +159,7 @@ For release summaries and post-release issue closure, use the
 
 ## Commands
 
-Requires **Node >= 24.12.0** (`.nvmrc` = 24.12.0) and **pnpm 11**.
+Requires **Node >= 26.0.0** (`.nvmrc` = 26.13.0) and **pnpm 11**.
 `package.json#engines` is authoritative.
 
 ```bash

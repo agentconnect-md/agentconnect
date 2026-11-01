@@ -25,6 +25,8 @@ function scaffold(integrations: unknown[], extra: Record<string, unknown> = {}):
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
+      // An ordinary session delegates only with the Auto switch off (auto-session-mode.md §5.1).
+      features: { autoSessionMode: false },
       runtimes: { claude: { command: 'node', args: [] } }
     })
   )
@@ -150,6 +152,23 @@ describe('a Slack turn, the sub-sessions it opens, checks, tasks and schedules',
       // The delegation itself is the agent's message; the sub-session reads for Alice, who opened it.
       expect(d.activeGateEntries.get(opened.targetSession).msg.source).toBe('agent')
       expect(await d.readAskersFor(childCtx)).toEqual({ people: [ALICE], nobody: false })
+      // Its own task reads for Alice too, though the task's turn was the agent's message (auto-session-mode.md §6.3).
+      const nested = await d.collab.messageAgent({ ...req, callerThread: child.thread, text: 'check the changelog' })
+      expect(nested).toMatchObject({ delivered: true, subsession: true })
+      const grandchild = await vi.waitFor(async () => {
+        const rec = await d.store.getSession(nested.targetSession)
+        expect(rec).toBeDefined()
+        return rec
+      }, WAIT)
+      expect(d.subsessionOpeners.get(nested.targetSession)).toEqual({ people: [ALICE], nobody: false })
+      await vi.waitFor(
+        async () =>
+          expect(await d.readAskersFor({ ...ctx, thread: grandchild.thread })).toEqual({
+            people: [ALICE],
+            nobody: false
+          }),
+        WAIT
+      )
       // A restart forgets the opener, and the sub-session then reads for nobody.
       d.subsessionOpeners.clear()
       expect(await d.readAskersFor(childCtx)).toEqual(NOBODY)

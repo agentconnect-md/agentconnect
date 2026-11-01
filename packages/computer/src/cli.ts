@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname, networkInterfaces } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { parseArgs } from 'node:util'
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
+import type { ComputerAdminPromptMode, ComputerPolicy } from '@agentconnect.md/protocol/computer'
+import { AdminPromptHelper } from './admin-prompts.js'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
+import { CommandLine, commandLineSupported, narrowedCommandLine } from './command-line.js'
 import { AuditReporter } from './cp/audit-report.js'
 import { ScreenshotStore } from './cp/screenshot-store.js'
 import { disableAutostart, enableAutostart, startAutostartNow } from './autostart.js'
-import { Computer, type ScreenshotStash } from './computer.js'
+import { Computer, type ComputerDeps, type ScreenshotStash } from './computer.js'
 import {
   authenticate,
   configPath,
@@ -20,7 +23,8 @@ import {
   isWildcardHost,
   issueClientToken,
   loadConfig,
-  saveConfig
+  saveConfig,
+  windowsServiceHome
 } from './config.js'
 import { CuaDriver, type DriverTool } from './driver/client.js'
 import { CUA_DRIVER_VERSION, installDriver, installedDriverPath, resolveDriverPath } from './driver/install.js'
@@ -29,7 +33,7 @@ import { canInstallFfmpeg, ffmpegAvailable, FFMPEG_VERSION, installFfmpeg, resol
 import { RtcSessions } from './stream/rtc.js'
 import { ScreenStream } from './stream/screen-stream.js'
 import type { McpServer } from '@modelcontextprotocol/server'
-import { createComputerMcpServer, exposedDriverTools } from './tools.js'
+import { createComputerMcpServer, exposedDriverTools, type CommandLineAccess } from './tools.js'
 import { createViewer, type Viewer, type ViewerPrincipal } from './viewer.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
 import { recordGrants } from './macos-grants.js'
@@ -39,6 +43,7 @@ import { ComputerCpClient } from './cp/client.js'
 import { consoleStopHandler } from './cp/console-stop.js'
 import { DAEMON_CONSOLE_STOP_REASON, startLocalControls, type LocalControls } from './local-controls.js'
 import { macMenuBarHost } from './menu-bar-host.js'
+import { windowsMenuBarHost } from './menu-bar-host-windows.js'
 import { watchAccessibility, type AccessibilityWatch } from './accessibility-watch.js'
 import { RelayLinks } from './cp/relay-links.js'
 import {
@@ -72,6 +77,7 @@ import { publicBaseUrl, rtcAdvertiseAddress } from './public-address.js'
 import { COMPUTER_DAEMON_VERSION } from './version.js'
 import { scheduleDoctor } from './doctor-schedule.js'
 import * as linuxService from './service-linux.js'
+import * as windowsService from './service-windows.js'
 import {
   installService,
   plistPath,
@@ -91,6 +97,7 @@ import {
   overSsh,
   printChecks,
   setupPermissions,
+  setupWindowsFirewall,
   type Check,
   type SetupContext
 } from './setup.js'
@@ -127,10 +134,12 @@ Commands:
   doctor [--json] [--daemon]                   check install, session, permissions, capture, firewall
                                                (read-only; exits 1 when a required check fails);
                                                --daemon also fails when no daemon answers (health checks)
-  autostart enable | disable | start           Windows: start 'run' at logon (per-user Run key)
-  service install | uninstall | start | stop | restart | status
+  autostart enable | disable | start           Windows without the service: start 'run' at logon (Run key)
+  service install | uninstall [--purge] | start | stop | restart | status
                                                background service: macOS .app LaunchAgent (the app holds
-                                               the permissions), Linux systemd user unit (graphical session)
+                                               the permissions), Linux systemd user unit (graphical session),
+                                               Windows service running the daemon as SYSTEM in the signed-in
+                                               session, which can reach UAC prompts (asks for approval)
 
 Data dir: ${dataDir()}`
 
@@ -162,12 +171,38 @@ async function main(): Promise<void> {
       register: { type: 'string' },
       'cp-url': { type: 'string' },
       name: { type: 'string' },
+      purge: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' }
     }
   })
   const [command, ...rest] = positionals
   if (values.help || !command) return void console.log(help())
-  const dir = dataDir()
+  let dir = dataDir()
+  if (process.platform === 'win32') {
+    const installing =
+      (command === 'setup' && !values['no-service']) || (command === 'service' && rest[0] === 'install')
+    // The service's data is the administrators' to change, so these commands ask for approval once and run elevated.
+    const writes =
+      installing ||
+      (command === 'service' && rest[0] === 'uninstall') ||
+      (dir === windowsServiceHome() && ['register', 'init', 'install-driver', 'install-ffmpeg'].includes(command)) ||
+      (dir === windowsServiceHome() && command === 'token' && rest[0] !== 'list')
+    if (writes && !windowsService.isElevated()) {
+      console.log('Asking for administrator approval (UAC)…')
+      const env = Object.fromEntries(
+        Object.entries(process.env).filter(
+          (entry): entry is [string, string] => entry[0].startsWith('AGENTCONNECT_') && entry[1] !== undefined
+        )
+      )
+      if (installing) env.AGENTCONNECT_COMPUTER_HOME = windowsServiceHome()
+      process.exitCode = await windowsService.runElevated(resolve(process.argv[1]!), process.argv.slice(2), env)
+      return
+    }
+    if (installing && dir !== windowsServiceHome()) {
+      windowsService.migrateUserData(dir, windowsServiceHome(), (line) => console.log(line))
+      dir = windowsServiceHome()
+    }
+  }
   const overrides = (config: DaemonConfig): DaemonConfig => ({
     ...config,
     ...(values.host ? { host: values.host } : {}),
@@ -229,7 +264,10 @@ async function main(): Promise<void> {
     case 'doctor': {
       const config = overrides(loadConfig(dir))
       // On macOS the daemon's permissions are what matter; a running daemon checks from inside itself.
-      const remote = process.platform !== 'win32' && !values.here ? await daemonDoctor(config) : undefined
+      const remote =
+        (process.platform !== 'win32' || windowsService.serviceStatus().loaded) && !values.here
+          ? await daemonDoctor(config)
+          : undefined
       const captureMs = Number(values['capture-timeout']) || 15_000
       if (values.daemon && !remote) {
         const down: Check = { name: 'daemon', status: 'fail', detail: `no daemon answers on ${controlBaseUrl(config)}` }
@@ -262,7 +300,7 @@ async function main(): Promise<void> {
       return
     }
     case 'service':
-      return serviceCommand(dir, loadConfig(dir), rest[0])
+      return await serviceCommand(dir, loadConfig(dir), rest[0], Boolean(values.purge))
     case 'autostart': {
       const action = rest[0]
       if (action === 'enable') enableAutostart(dir, serviceEntry())
@@ -342,7 +380,9 @@ function buildComputer(
   refusal?: () => string | undefined,
   report?: AuditSink,
   screenshots?: ScreenshotStash,
-  name = process.env[COMPUTER_NAME_ENV]?.trim() || hostname()
+  adminPrompts?: ComputerDeps['adminPrompts'],
+  name = process.env[COMPUTER_NAME_ENV]?.trim() || hostname(),
+  onHalt?: (reason: string) => void
 ) {
   const wrapper = driverWrapper()
   const driver = new CuaDriver({
@@ -359,6 +399,12 @@ function buildComputer(
     ...(onStatus ? { onStatus } : {}),
     ...(refusal ? { refusal } : {}),
     ...(screenshots ? { screenshots } : {}),
+    // The service's SYSTEM driver would start apps as SYSTEM; they start as the signed-in person instead.
+    ...(process.platform === 'win32' && windowsService.serviceHost()
+      ? { launchApp: (app: string) => windowsService.launchAsUser(app) }
+      : {}),
+    ...(adminPrompts ? { adminPrompts } : {}),
+    ...(onHalt ? { onHalt } : {}),
     profile: { name: name.slice(0, 120), osVersion: osVersion(), session: sessionKind(), isolation: isolationKind() }
   })
   return { driver, computer }
@@ -406,6 +452,9 @@ function startCpChannel(options: {
   viewer: Viewer
   local: () => LocalControls | undefined
   egress?: EgressForwarder | undefined
+  // The command-line tier runs here (§5.7).
+  commandLine?: boolean
+  onPolicy?: (policy: ComputerPolicy) => void
 }): { client: ComputerCpClient; relays: RelayLinks; refreshDoctor(): void; stop(): void } | undefined {
   const { dir, config, registration, authority, computer, driver, screenSize } = options
   const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
@@ -457,7 +506,8 @@ function startCpChannel(options: {
                   session,
                   webrtc: config.webrtc,
                   keyboardActivity: local?.keyboard() ?? false,
-                  egress: options.egress !== undefined
+                  egress: options.egress !== undefined,
+                  commandLine: options.commandLine === true
                 }),
                 doctor: doctorReport([...checks, ...(local?.checks() ?? [])], doctorAt)
               }
@@ -469,6 +519,7 @@ function startCpChannel(options: {
       // Lease limits apply here; the agent daemon asks for approvals (§4.2) and the CP enforces agent grants.
       config.leaseIdleSeconds = policy.leaseIdleSeconds
       config.leaseMaxSeconds = policy.leaseMaxSeconds
+      options.onPolicy?.(policy)
     },
     onLease: (lease) => computer.applyControlLease(lease),
     onReady: (ok) => computer.rename(ok.name),
@@ -521,7 +572,7 @@ function buildViewer(
   consoleViewer?: (authorization: string | undefined) => ViewerPrincipal | undefined,
   advertiseAddress?: string,
   onFfmpegInstalled?: () => void
-): Viewer {
+): Viewer & { statusChanged(): void } {
   const ffmpeg = (): string => resolveFfmpegPath(dir, config.ffmpegPath)
   let ffmpegState: 'ok' | 'missing' | 'downloading' = 'missing'
   if (config.webrtc) {
@@ -546,6 +597,8 @@ function buildViewer(
     fps: config.streamFps,
     maxWidth: config.streamMaxWidth,
     bitrateKbps: config.streamBitrateKbps,
+    // A person driving sees their browser's pointer at once, so the delayed one in the frames would be a second cursor.
+    cursor: () => computer.liveStatus() !== 'human_in_control',
     log
   })
   const rtc = config.webrtc
@@ -575,7 +628,7 @@ function buildViewer(
     streamError: () => stream.lastError,
     ...(refusal ? { refusal } : {})
   })
-  return viewer
+  return { ...viewer, statusChanged: () => stream.refresh() }
 }
 
 async function loadDriverTools(driver: CuaDriver, config: DaemonConfig): Promise<DriverTool[]> {
@@ -649,10 +702,13 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
   }
   // Filled once built; the authority and status callbacks below fire only after that.
   const live: {
-    viewer?: Viewer
+    viewer?: ReturnType<typeof buildViewer>
     channel?: ReturnType<typeof startCpChannel>
     local?: LocalControls
     accessibility?: AccessibilityWatch
+    computer?: Computer
+    // The policy the Control Plane last sent, which narrows a channel token's command-line tier at once (§5.7).
+    policy?: ComputerPolicy
   } = {}
   // Registered with a Control Plane: act only while its channel key is live, never after a revoke (§8.2).
   const authority = new ChannelAuthority({
@@ -687,6 +743,28 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
           log
         })
       : undefined
+  // Windows under the service: the SYSTEM helper watches the secure desktop for UAC prompts (computer-use.md §4.2.1).
+  const adminPromptHelper =
+    process.platform === 'win32' && windowsService.serviceHost() && existsSync(windowsService.adminPromptHelperPath())
+      ? AdminPromptHelper.start(windowsService.adminPromptHelperPath(), {
+          onChange: () => {
+            void live.computer?.adminPromptChanged()
+            live.local?.update()
+          },
+          log
+        })
+      : undefined
+  // Commands and files on this machine for agent sessions whose token allows them; Linux only so far (§5.7).
+  const commandLine =
+    registration && !registration.revokedAt && commandLineSupported()
+      ? new CommandLine({
+          audit: auditSinks(fileAuditSink(join(dir, 'audit.log')), ...(auditReport ? [auditReport.sink] : [])),
+          refusal: () => authority.refusal(),
+          halted: () => live.computer?.haltReason(),
+          dataDir: dir,
+          log
+        })
+      : undefined
   const { driver, computer } = buildComputer(
     dir,
     config,
@@ -694,11 +772,18 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
       setTitle(status)
       live.channel?.client.beat()
       live.local?.update()
+      live.viewer?.statusChanged()
+      // An agent that just took control may be the one a waiting prompt is answered for.
+      void live.computer?.adminPromptChanged()
     },
     () => authority.refusal(),
     auditReport?.sink,
-    screenshotStore?.stash
+    screenshotStore?.stash,
+    adminPromptHelper ? { source: adminPromptHelper, mode: () => config.adminPrompts } : undefined,
+    undefined,
+    (reason) => commandLine?.halt(reason)
   )
+  live.computer = computer
   setTitle('online')
   if (registration?.revokedAt)
     log(`this computer was revoked (${registration.revokedReason ?? 'revoked'}); all input is refused`)
@@ -741,6 +826,30 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     () => live.channel?.refreshDoctor()
   )
   live.viewer = viewer
+  // A registered desktop changes the mode through its Control Plane, which keeps the console and this menu in step.
+  const adminPromptsLocked = (): string | undefined =>
+    !registration || registration.revokedAt || live.channel?.client.servesAdminPrompts()
+      ? undefined
+      : 'Connect to the Control Plane to change this'
+  const keepAdminPrompts = (mode: ComputerAdminPromptMode | undefined): void => {
+    if (config.adminPrompts === mode) return
+    config.adminPrompts = mode
+    // Saved so the next start answers the same way before the Control Plane is reached.
+    try {
+      saveConfig({ ...loadConfig(dir), adminPrompts: mode }, dir)
+    } catch (error) {
+      log(`administrator prompts: could not save the setting: ${(error as Error).message}`)
+    }
+    void computer.adminPromptChanged()
+    live.local?.update()
+  }
+  const setAdminPrompts = async (mode: ComputerAdminPromptMode): Promise<void> => {
+    const client = live.channel?.client
+    if (registration && !registration.revokedAt) {
+      if (!client?.servesAdminPrompts()) throw new Error('the Control Plane is not connected')
+      keepAdminPrompts(await client.setAdminPrompts(mode))
+    } else keepAdminPrompts(mode)
+  }
   live.local = await startLocalControls({
     computer,
     refusal: () => authority.refusal(),
@@ -766,11 +875,69 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
             })
           }
         }
-      : {}),
+      : process.platform === 'win32'
+        ? {
+            menuBar: {
+              helper: windowsService.trayHelperPath(),
+              host: windowsMenuBarHost({
+                dir,
+                ffmpegPath: config.ffmpegPath,
+                driver,
+                name: () => computer.info().name as string | undefined,
+                registration,
+                client: () => live.channel?.client,
+                // The service host starts the daemon again after a non-zero exit and waits for the next sign-in after zero.
+                shutdown: (code) => void shutdown(code),
+                onFfmpegInstalled: () => live.channel?.refreshDoctor(),
+                onFirewallChanged: () => live.channel?.refreshDoctor(),
+                ...(adminPromptHelper
+                  ? {
+                      adminPrompts: {
+                        facts: () => {
+                          const locked = adminPromptsLocked()
+                          const pending = adminPromptHelper.pending()
+                          return {
+                            mode: computer.adminPromptMode(),
+                            editable: locked === undefined,
+                            ...(locked ? { locked } : {}),
+                            ...(pending ? { pending: pending.app ?? 'an app' } : {}),
+                            ...(adminPromptHelper.problem ? { problem: adminPromptHelper.problem } : {})
+                          }
+                        },
+                        set: setAdminPrompts
+                      }
+                    }
+                  : {}),
+                log
+              }),
+              spawnHelper: (path: string) => windowsService.spawnAsUser(path, [])
+            }
+          }
+        : {}),
     log
   })
-  const createMcpServer = ({ client, viewOnly, agent }: McpPrincipal): McpServer =>
-    createComputerMcpServer({ computer, client, driverTools, viewOnly, ...(agent ? { agent } : {}) })
+  // A token's tier, narrowed by the policy pushed since it was signed.
+  const commandLineFor = (granted: McpPrincipal['commandLineGrant']): CommandLineAccess | undefined =>
+    commandLine && granted
+      ? {
+          runner: commandLine,
+          shell: () => narrowedCommandLine(granted, live.policy).shell,
+          files: () => narrowedCommandLine(granted, live.policy).files,
+          roots: () => live.policy?.fileRoots
+        }
+      : undefined
+  const createMcpServer = ({ client, viewOnly, agent, commandLineGrant: granted }: McpPrincipal): McpServer => {
+    const access = commandLineFor(granted)
+    return createComputerMcpServer({
+      computer,
+      client,
+      driverTools,
+      viewOnly,
+      ...(agent ? { agent } : {}),
+      ...(adminPromptHelper ? { adminPrompts: true } : {}),
+      ...(access ? { commandLine: access } : {})
+    })
+  }
   const server = await startHttpServer({
     host: config.host,
     port: config.port,
@@ -798,7 +965,12 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     createMcpServer,
     viewer,
     local: () => live.local,
-    egress
+    egress,
+    commandLine: commandLine !== undefined,
+    onPolicy: (policy) => {
+      live.policy = policy
+      keepAdminPrompts(policy.approvals.adminPrompts)
+    }
   })
   // Behind NAT the local addresses mean nothing to a client, so only the public one is printed.
   const publicBase = publicBaseUrl(config)
@@ -831,6 +1003,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     await auditReport?.flush()
     live.channel?.stop()
     live.local?.close()
+    adminPromptHelper?.close()
     live.accessibility?.stop()
     authority.close()
     releaseDisplay()
@@ -976,9 +1149,15 @@ async function setupMacApp(dir: string, config: DaemonConfig): Promise<Check[]> 
   return (await daemonDoctor(config, 120_000)) ?? doctor(setupContext(dir, config))
 }
 
-function serviceCommand(dir: string, config: DaemonConfig, action: string | undefined): void {
+async function serviceCommand(
+  dir: string,
+  config: DaemonConfig,
+  action: string | undefined,
+  purge: boolean
+): Promise<void> {
   if (process.platform === 'linux') return linuxServiceCommand(dir, config, action)
-  if (process.platform !== 'darwin') throw new Error('service is macOS/Linux-only; on Windows use: autostart enable')
+  if (process.platform === 'win32') return windowsServiceCommand(dir, config, action, purge)
+  if (process.platform !== 'darwin') throw new Error('service is only implemented for macOS, Linux and Windows')
   if (action === 'install' || action === 'start' || action === 'restart') {
     if (!appBundlePath())
       throw new Error('run this from the AgentConnect Computer.app binary (…/Contents/MacOS/agentconnect-computer)')
@@ -1018,6 +1197,54 @@ function linuxServiceCommand(dir: string, config: DaemonConfig, action: string |
       2
     )
   )
+}
+
+// Runs elevated for install and uninstall (main asks for approval first).
+async function windowsServiceCommand(
+  dir: string,
+  config: DaemonConfig,
+  action: string | undefined,
+  purge: boolean
+): Promise<void> {
+  const say = (line: string): void => console.error(line)
+  if (action === 'install') await installWindowsService(dir, config, say)
+  else if (action === 'uninstall') windowsService.uninstallService(windowsServiceHome(), purge, say)
+  else if (action === 'start') windowsService.startService()
+  else if (action === 'stop') windowsService.stopService()
+  else if (action === 'restart') windowsService.restartService()
+  else if (action !== 'status')
+    throw new Error('usage: service install | uninstall [--purge] | start | stop | restart | status')
+  console.log(
+    JSON.stringify(
+      {
+        ...windowsService.serviceStatus(),
+        service: windowsService.SERVICE_NAME,
+        home: dir,
+        log: join(dir, 'daemon.log'),
+        port: config.port
+      },
+      null,
+      2
+    )
+  )
+}
+
+// Copies this bundle and its Node into Program Files, so what SYSTEM runs is the administrators' to change.
+async function installWindowsService(dir: string, config: DaemonConfig, log: (line: string) => void): Promise<void> {
+  windowsService.installService({ entry: serviceEntry(), node: process.execPath, home: dir, log })
+  const installedNode = join(windowsService.installDir(), 'node.exe')
+  await setupWindowsFirewall({ ...setupContext(dir, config), log }, installedNode)
+}
+
+// Windows: the service runs the daemon as SYSTEM in the signed-in session; doctor then checks from inside it.
+async function setupWindowsService(dir: string, config: DaemonConfig): Promise<Check[]> {
+  await installWindowsService(dir, config, (line) => console.log(line))
+  if (!(await waitForDaemon(config, 90_000))) {
+    console.log(`The service did not come up; see ${join(dir, 'daemon.log')}`)
+    return doctor(setupContext(dir, config))
+  }
+  console.log('\nChecking from inside the service:')
+  return (await daemonDoctor(config)) ?? doctor(setupContext(dir, config))
 }
 
 // Linux: approvals ran in this process (tokens land in files the service reuses); then the session service takes over.
@@ -1068,6 +1295,8 @@ async function setup(
   let checks: Check[]
   if (process.platform === 'darwin' && appBundlePath()) {
     checks = await setupMacApp(dir, config)
+  } else if (process.platform === 'win32' && withService) {
+    checks = await setupWindowsService(dir, config)
   } else if (process.platform === 'linux' && withService && !linuxService.inGraphicalSession()) {
     // Over SSH there is no display to check or approve against; the session's autostart entry starts the service.
     linuxService.installService(dir, serviceEntry(), Boolean(managedEntry()))
@@ -1087,7 +1316,9 @@ async function setup(
   const serviceRunning =
     process.platform === 'darwin'
       ? serviceStatus().loaded
-      : process.platform === 'linux' && linuxService.serviceStatus().loaded
+      : process.platform === 'win32'
+        ? windowsService.serviceStatus().loaded
+        : process.platform === 'linux' && linuxService.serviceStatus().loaded
   console.log(
     !ok
       ? `Fix the failed checks, then run: ${selfCommand()} doctor`

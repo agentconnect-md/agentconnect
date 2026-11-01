@@ -3,7 +3,13 @@ import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileS
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig, retiredKeyError } from '../src/config/load-config.js'
-import { ConfigSchema, McpServerDefSchema, RuntimeDefSchema, sessionRetentionMs } from '../src/config/config-schema.js'
+import {
+  ConfigSchema,
+  McpServerDefSchema,
+  RuntimeDefSchema,
+  sessionRetentionMs,
+  workspaceRetentionMs
+} from '../src/config/config-schema.js'
 import { CP_URL_ENV, WORKSPACE_GIT_ORIGINS_ENV } from '@agentconnect.md/protocol'
 
 function tmpRoot(config: unknown): string {
@@ -88,7 +94,8 @@ describe('loadConfig', () => {
     expect(cfg.features.turnFinalContextRefresh).toBe(true)
     expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')
-    expect(cfg.sessions.retention).toBe('7d') // #485 session retention defaults on
+    expect(cfg.sessions.retention).toBe('90d') // #485 session retention defaults on
+    expect(cfg.sessions.workspaceRetention).toBe('7d')
   })
 
   it('defaults explicit mounts to read-only without selecting another backend', () => {
@@ -278,6 +285,16 @@ describe('loadConfig', () => {
     expect(sessionRetentionMs('90d')).toBe(90 * 24 * 3_600_000)
   })
 
+  it('reclaims a workspace no later than its row, and never keeps it past a purge', () => {
+    const DAY = 24 * 3_600_000
+    expect(workspaceRetentionMs({ retention: '90d', workspaceRetention: '7d' })).toBe(7 * DAY)
+    expect(workspaceRetentionMs({ retention: '3d', workspaceRetention: '7d' })).toBe(3 * DAY)
+    expect(workspaceRetentionMs({ retention: '30d', workspaceRetention: 'never' })).toBe(30 * DAY)
+    expect(workspaceRetentionMs({ retention: 'never', workspaceRetention: '7d' })).toBe(7 * DAY)
+    expect(workspaceRetentionMs({ retention: 'never', workspaceRetention: 'never' })).toBeNull()
+    expect(() => loadConfig({ root: tmpRoot({ version: 1, sessions: { workspaceRetention: '0d' } }) })).toThrow()
+  })
+
   it.skipIf(process.platform === 'win32')('repairs an existing config file to owner-only permissions', () => {
     const root = tmpRoot({ version: 1 })
     const file = join(root, 'config.json')
@@ -331,6 +348,13 @@ describe('loadConfig', () => {
     })
     expect(cfg.controlPlane?.url).toBe('wss://override.example/daemon')
     expect(cfg.logging.level).toBe('debug')
+  })
+
+  it('serves AHP by default and lets the file opt out', () => {
+    expect(loadConfig({ root: tmpRoot({ version: 1 }) }).features.ahp.mode).toBe('on')
+    expect(loadConfig({ root: tmpRoot({ version: 1, features: { ahp: { mode: 'off' } } }) }).features.ahp.mode).toBe(
+      'off'
+    )
   })
 
   it('lets --ahp-mode override the file and refuses an unknown mode', () => {

@@ -66,6 +66,8 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
     visibility: d.visibility,
     sharedWith: d.sharedWith,
     sessionRetention: d.sessionRetention,
+    workspaceRetention: d.workspaceRetention,
+    autoUpgrade: d.autoUpgrade,
     lastModifiedAt: d.lastModifiedAt,
     lastModifiedBy: d.lastModifiedBy
       ? { userId: d.lastModifiedBy.id, displayName: d.lastModifiedBy.displayName, email: d.lastModifiedBy.email }
@@ -278,6 +280,34 @@ export class PgDaemonRepo implements DaemonRepo {
     const daemon = await this.db.daemon.update({
       where: { id: daemonId, orgId },
       data: { sessionRetention, lastModifiedAt: new Date(), ...(byUserId ? { lastModifiedByUserId: byUserId } : {}) },
+      include: withUsers
+    })
+    return toRecord(daemon)
+  }
+
+  async setWorkspaceRetention(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    workspaceRetention: string,
+    byUserId?: string
+  ): Promise<DaemonRecord> {
+    const daemon = await this.db.daemon.update({
+      where: { id: daemonId, orgId },
+      data: { workspaceRetention, lastModifiedAt: new Date(), ...(byUserId ? { lastModifiedByUserId: byUserId } : {}) },
+      include: withUsers
+    })
+    return toRecord(daemon)
+  }
+
+  async setAutoUpgrade(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    autoUpgrade: boolean,
+    byUserId?: string
+  ): Promise<DaemonRecord> {
+    const daemon = await this.db.daemon.update({
+      where: { id: daemonId, orgId },
+      data: { autoUpgrade, lastModifiedAt: new Date(), ...(byUserId ? { lastModifiedByUserId: byUserId } : {}) },
       include: withUsers
     })
     return toRecord(daemon)

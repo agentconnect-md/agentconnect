@@ -81,6 +81,7 @@ import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
 import { FollowUpTaskSummary } from '@/components/console/follow-up'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { SessionModelSelectionResult } from '@/components/console/decisions/SessionModelSelectionResult'
+import { CoordinatorTag } from '@/components/console/CoordinatorTag'
 import { agentToneColor } from '@/lib/agent-tone'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
@@ -114,7 +115,8 @@ import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
-import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
+import { splitFilesMarker, type MarkedFile } from '@/lib/webchat-file'
+import { ComposerFileChips, MessageFileCards, stageComposerFile } from '@/components/console/ComposerFiles'
 import { transferCapable, sessionFileDownload, sharedFileMarker, type SharedFile } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
@@ -2208,6 +2210,8 @@ type Turn =
       time: string
       text: string
       image?: SessionImage
+      /** The files its `[attached: …]` marker names, lifted out of `text` into cards. */
+      files?: MarkedFile[]
       isCron: boolean
       cronId: string | null
       /** Sent into the agent's running turn (#1847) rather than as a turn of its own. */
@@ -3171,7 +3175,7 @@ export default function SessionDetailView() {
   }, [defaultHeaderFocusAgentId, headerFocusOptionIds, headerFocusScope])
   // Whose checkout the Files tab and the viewer read: the agent the header is focused on. Empty on a session with no agent at all, and then there is no workspace to offer a tab for.
   const filesAgentId = headerFocusAgentId || null
-  // The Computers the focused agent may use; the Computer tab exists only when there is one.
+  // The Computers granted to the focused agent; its pool computers come through `computerManaged` below.
   const computerIds = useMemo(
     () => (filesAgentId ? (agentById.get(filesAgentId)?.computerUse?.computers ?? []) : []),
     [agentById, filesAgentId]
@@ -3221,6 +3225,14 @@ export default function SessionDetailView() {
   // Which lease the Tasks tab reads. Tasks are NOT a checkout, so this waits on neither the worktree gate `filesSessionId` applies nor the isolation round trip Files and Git hold for — a session's background tasks exist whatever it is checked out into, and the CP says so. What it does need is the CANONICAL session id the lease is keyed by, which is what the focus options already carry. A playground session the daemon has not created yet has no canonical id and no tasks either, so it gets no tab rather than a 404 notice.
   const tasksSessionId =
     headerFocusSessionId && !(syntheticPlayground && headerFocusSessionId === session?.id) ? headerFocusSessionId : null
+  // An agent on a managed computer has one without any grant: its own kept desktop or this session's fresh one.
+  const computerManaged = useMemo(
+    () =>
+      filesAgentId && agentById.get(filesAgentId)?.computerUse?.managed
+        ? { agentId: filesAgentId, sessionId: tasksSessionId }
+        : undefined,
+    [agentById, filesAgentId, tasksSessionId]
+  )
   // The PR tab's scope: the OPEN SESSION — in a merged conversation its representative — because the hook run the CP resolves belongs to the session, not to a participant. Header focus deliberately plays NO part here: focusing another agent re-aims Files/Git/Tasks at that agent's checkout or lease, but a focus change must not re-key this read (§3.4). A synthetic playground id names no CP row and was never hook-dispatched, so it gets no probe rather than a manufactured 404.
   const prSessionId =
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
@@ -3399,7 +3411,7 @@ export default function SessionDetailView() {
           tab.key === 'files' || tab.key === 'git'
             ? filesAgentId !== null && !MOCK_MODE
             : tab.key === 'computer'
-              ? computerIds.length > 0 && !MOCK_MODE
+              ? (computerIds.length > 0 || computerManaged !== undefined) && !MOCK_MODE
               : tab.key === 'tasks'
                 ? // Against its OWN scope (an agent and a canonical session), and dropped once settled with nothing in either group.
                   filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE && tasksTabShown(tasksVerdict)
@@ -3440,6 +3452,7 @@ export default function SessionDetailView() {
         ),
     [
       computerIds.length,
+      computerManaged,
       filesAgentId,
       filesStatus,
       gitStatus,
@@ -3725,7 +3738,7 @@ export default function SessionDetailView() {
   const continuableSessionId =
     session &&
     session.platform !== 'playground' &&
-    session.platform !== 'webchat' &&
+    (session.platform !== 'webchat' || session.subsession === true) &&
     composerDetail?.canContinue === true
       ? session.id
       : null
@@ -3906,18 +3919,20 @@ export default function SessionDetailView() {
       />
     ) : null
   const isPg = session.platform === 'playground'
+  // A task (follow-up, approved proposal or delegated task) is never its conversation's own session.
+  const taskPage = session.subsession === true
   // A persisted webchat session is the same surface as the live playground — continue
   // it in place. `isLive` gates the composer/typing affordance for both.
-  const isWebchat = session.platform === 'webchat'
+  const isWebchat = session.platform === 'webchat' && !taskPage
   const sessionIntegration = sessionPlatform(session)
   // Header channel chip — resolves a headless `cron:<id>` channel to its schedule.
   const channelDisplay = sessionChannelDisplay(session, (id) => crons.find((c) => c.id === id)?.name)
   const usesIntegrationAvatar = session.platform === 'hook' && sessionIntegration === 'github'
-  // A task's channel is synthetic and its thread no platform thread, so its page is read-only; it is stopped from its owning session's Tasks tab.
-  const readOnlySubsession = session.subsession === true
+  // A task's thread is no platform thread, so only a delegated task the server lets this caller continue takes messages, console-only (auto-session-mode.md §10).
+  const readOnlySubsession = taskPage && composerDetail?.canContinue !== true
   // A follow-up's own page also shows its state and checks, read by its session from a daemon that can.
   const followUpPageAgentId =
-    readOnlySubsession &&
+    taskPage &&
     !MOCK_MODE &&
     owner &&
     agentCapabilitySource(owner, daemons, memberSets)?.caps.features?.includes(ASSISTANT_TASK_HANDLE_FEATURE)
@@ -4307,7 +4322,8 @@ export default function SessionDetailView() {
       avatarInitials: turn.avatarInitials,
       isCron: turn.isCron
     })
-    turns.push(turn)
+    const { text, files } = splitFilesMarker(turn.text)
+    turns.push(files.length ? { ...turn, text, files } : turn)
   }
   const botTurnByKey = new Map<string, Extract<Turn, { kind: 'bot' }>>()
   // Another agent speaking in this session — a webchat peer participant or a
@@ -4642,7 +4658,13 @@ export default function SessionDetailView() {
           )
           continue
         }
-        const participant = self ? speaker('@you') : speaker(senderAgentName ?? who, senderAgentName)
+        const cron = asCron(who)
+        const participant = self
+          ? speaker('@you')
+          : speaker(
+              senderAgentName ?? who,
+              cron?.name ?? (cron ? 'Schedule' : (senderAgentName ?? platformSenderFallback(session.platform, who)))
+            )
         pushUserTurn(senderAgent?.id ?? who, {
           kind: 'user',
           key: `u:${liveAnchor(stp)}`,
@@ -4654,8 +4676,8 @@ export default function SessionDetailView() {
           time: stp.time ?? '',
           text: stp.text,
           image: stp.image,
-          isCron: false,
-          cronId: null,
+          isCron: !!cron,
+          cronId: cron?.id ?? null,
           ...(stp.steer ? { steer: true, ...(stp.steered ? { steered: true } : {}) } : {}),
           platform: session.platform
         })
@@ -5042,7 +5064,7 @@ export default function SessionDetailView() {
   const ownerApprovals = Boolean(
     !canReviewApprovals &&
     (isWebchat || (isPg && session.realSessionId)) &&
-    !readOnlySubsession &&
+    !taskPage &&
     ownsThisConversation === true &&
     owner &&
     !owner.name.startsWith(MOCK_PREFIX)
@@ -5050,7 +5072,7 @@ export default function SessionDetailView() {
   // A webchat conversation's proposals, the live Playground's included (assistant-mode.md §5.10): whoever may continue it and editors decide them here; the CP refuses anyone else.
   const conversationProposals = Boolean(
     (isWebchat || (isPg && session.realSessionId)) &&
-    !readOnlySubsession &&
+    !taskPage &&
     owner?.assistantMode?.enabled === true &&
     !owner.name.startsWith(MOCK_PREFIX)
   )
@@ -5114,7 +5136,7 @@ export default function SessionDetailView() {
         <div className="mx-auto w-full min-w-0 max-w-[880px] flex-none">
           <div>
             {/* A task's own page names the session it belongs to and leads back there; its tool calls stay in its transcript. */}
-            {readOnlySubsession && currentSessionDetail ? (
+            {taskPage && currentSessionDetail ? (
               <div
                 data-task-owner=""
                 className="flex min-w-0 items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) max-desktop:border-b max-desktop:border-(--border-subtle) max-desktop:bg-(--surface-card) max-desktop:px-4 max-desktop:py-2 desktop:mb-[6px]"
@@ -5153,6 +5175,7 @@ export default function SessionDetailView() {
               >
                 {session.title}
               </h1>
+              <CoordinatorTag show={session.coordinator} />
               {headerStatusLabel && (
                 <span className="badge flex-none" style={{ background: headerStatus.bg, color: headerStatus.text }}>
                   <span className="dot h-[6px] w-[6px]" style={{ background: headerStatus.dot }} />
@@ -5328,6 +5351,7 @@ export default function SessionDetailView() {
                 onChange={(agentId) => changeHeaderFocus(agentId)}
               />
             </span>
+            <CoordinatorTag show={session.coordinator} />
             {workspaceHref ? (
               // Borderless on purpose (no `iconbtn`): a boxed button in this strip of
               // plain text triggers reads as the odd one out and eats width.
@@ -5587,20 +5611,23 @@ export default function SessionDetailView() {
                                   {turn.steered ? 'Steered' : 'Steering…'}
                                 </span>
                               )}
-                              <div className={SELF_BUBBLE}>
-                                {turn.body?.sessionMessage && (
-                                  <SessionMessageCaption facts={turn.body.sessionMessage} />
-                                )}
-                                {turn.image && (
-                                  <img
-                                    src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
-                                    alt={turn.image.name}
-                                    className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
-                                  />
-                                )}
-                                {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
-                                {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
-                              </div>
+                              {turn.files && <MessageFileCards files={turn.files} />}
+                              {(turn.text || turn.image || turn.body) && (
+                                <div className={SELF_BUBBLE}>
+                                  {turn.body?.sessionMessage && (
+                                    <SessionMessageCaption facts={turn.body.sessionMessage} />
+                                  )}
+                                  {turn.image && (
+                                    <img
+                                      src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
+                                      alt={turn.image.name}
+                                      className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
+                                    />
+                                  )}
+                                  {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
+                                  {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
+                                </div>
+                              )}
                               {/* Sent bubbles are complete by definition — the copy affordance
                         (hover-revealed, right-aligned under the bubble) always mounts.
                         Absolutely positioned into the inter-turn gap so revealing it
@@ -6568,8 +6595,12 @@ export default function SessionDetailView() {
         </DockPanel>
         {/* Mounted while hidden, like PR: its verdict is what puts its tab in the strip once any group has something to show. */}
         <DockPanel active={dockTabKey === 'computer'}>
-          {computerIds.length > 0 ? (
-            <ComputerPanel computerIds={computerIds} active={dockVisible && dockTabKey === 'computer'} />
+          {computerIds.length > 0 || computerManaged ? (
+            <ComputerPanel
+              computerIds={computerIds}
+              {...(computerManaged ? { managed: computerManaged } : {})}
+              active={dockVisible && dockTabKey === 'computer'}
+            />
           ) : null}
         </DockPanel>
         <DockPanel active={dockTabKey === 'tasks'}>

@@ -195,6 +195,9 @@ export const SESSION_VISIBILITY_FEATURE = 'session-visibility-v1'
 /** Daemon/runtime support private, session-scoped remote MCP headers and stable invocation ids. */
 export const WEBCHAT_REMOTE_MCP_FEATURE = 'webchat_remote_mcp_v1'
 
+/** CP answers `webchat/mcp-grant/renew`; a daemon must not send it before seeing this, since a new request type is frame-fatal to an older CP. */
+export const WEBCHAT_MCP_GRANT_RENEW_FEATURE = 'webchat-mcp-grant-renew-v1'
+
 /**
  * Daemon understands multi-agent webchat conversations: `mentions`/`post` on
  * webchat turns, the transcript-only `context` op, agent-attributed
@@ -506,3 +509,9 @@ export const AGENT_MEMORY_STORE_V1_FEATURE = 'agent-memory-store-v1'
 
 /** CP stores `agent/skill-status` reports (source-cache.md §11); a daemon sends none to a CP without it, which would answer UNKNOWN_FRAME. */
 export const AGENT_SKILL_STATUS_V1_FEATURE = 'agent-skill-status-v1'
+
+/** Daemon reads the `auto` session mode (auto-session-mode.md §3.1); the CP refuses `auto` on a row its daemon does not serve with this, and sends that daemon `createNew` instead, since a new enum value is frame-fatal to an older one. */
+export const SESSION_MODE_AUTO_V1_FEATURE = 'session-mode-auto-v1'
+
+/** Daemon continues a delegated task's session from its console page, console-only (auto-session-mode.md §10); the CP opens a task page's composer only on a daemon with it. */
+export const TASK_PAGE_MESSAGES_FEATURE = 'task-page-messages-v1'

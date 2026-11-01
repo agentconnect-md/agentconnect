@@ -4,7 +4,7 @@ import { nodeSatisfies } from '../src/node-engines.js'
 describe('nodeSatisfies', () => {
   it('enforces the daemon minimum >=24.12.0', () => {
     expect(nodeSatisfies('>=24.12.0', '24.12.0')).toBe(true)
-    expect(nodeSatisfies('>=24.12.0', '25.0.0')).toBe(true)
+    expect(nodeSatisfies('>=24.12.0', '26.0.0')).toBe(true)
     expect(nodeSatisfies('>=24.12.0', '24.11.1')).toBe(false)
   })
   it('handles full-triple ranges', () => {

@@ -9,9 +9,7 @@
  * that finds nothing is an empty list, while these either did the thing or did not, so each one
  * lets the platform's own refusal (`missing_scope`, `name_taken`, `not_in_channel`) reach the agent verbatim.
  *
- * NONE of them is a delivery path for the agent's own voice. `sendMessage` and `shareFile`
- * remain the only two, and `scheduleMessage` is deliberately channel-root only for the same
- * reason `sendMessage` is (send-message-routing-rework.md §2.2).
+ * Body posts use message delivery or the platform session tools' fenced publication boundary.
  */
 import { z } from 'zod'
 import type { PlatformCanvasEdit } from '../../platforms/contract.js'

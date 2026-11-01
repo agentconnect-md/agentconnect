@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { AssistantOnboarding } from '@agentconnect.md/protocol'
 import {
   AssistantModeAdmissionRefused,
+  anyAssistantModeAgent,
   assertAssistantModeDefinition,
+  assistantModeAdmissionOf,
   assistantModeEditNeedsAdmission,
   assistantModePermissionModeForEdit,
+  assistantModeRefusalMessage,
+  assistantModeRoutedConversations,
   assistantModeStoreRefusals,
   assistantOnboardingForEdit,
   assistantOnboardingHints,
@@ -12,6 +16,8 @@ import {
   onboardingHintsFor,
   StoredAssistantModePolicyRow
 } from './assistant-mode.js'
+import { AgentId, OrgId } from '../domain/ids.js'
+import type { AgentRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
 
 const ON = { enabled: true }
 const OFF = { enabled: false }
@@ -65,6 +71,90 @@ describe('assistant mode admission edges', () => {
     expect(
       await assistantModeStoreRefusals(sets('org', ['s1', 's2']), { placementKind: 'daemon', setId: null })
     ).toEqual([])
+  })
+})
+
+// assistant-mode.md §4.1, §5.18 ①: a By decision row, or a routed conversation of one of the agent's bots, fails the check.
+describe('the routing check', () => {
+  const gate = { type: 'gate', decisionId: 'decision-1', when: { type: 'boolean', values: [true] } }
+  const routed = { type: 'shared_bot_routing' }
+  const row = (integrationId: string, channelId: string, name: string | null, binding: unknown = null) =>
+    ({
+      integrationId,
+      channelId,
+      name,
+      trigger: binding ? 'decision' : 'mention',
+      decisionBinding: binding
+    }) as unknown as IntegrationChannelRecord
+  // The agent's own installs are int-a (bot-1) and int-b (bot-2); int-x and int-y are other agents' installs.
+  const rowsByBot: Record<string, IntegrationChannelRecord[]> = {
+    'bot-1': [
+      row('int-a', 'C1', 'general', gate),
+      row('int-a', 'C2', 'random'),
+      row('int-x', 'C3', 'support', routed),
+      row('int-x', 'C4', 'sales', gate)
+    ],
+    'bot-2': [row('int-b', 'C5', null, routed), row('int-y', 'C5', 'ops', routed)]
+  }
+  const repos = {
+    memberSet: sets('org', []),
+    integration: {
+      listForAgent: async () =>
+        [
+          { id: 'int-a', botId: 'bot-1' },
+          { id: 'int-b', botId: 'bot-2' }
+        ] as unknown as IntegrationRecord[]
+    },
+    integrationChannel: { listForBot: async (botId: string) => rowsByBot[botId] ?? [] }
+  }
+  const agent = {
+    id: AgentId('agent-1'),
+    runtime: 'claude-acp',
+    memory: null,
+    placementKind: 'daemon' as const,
+    setId: null
+  }
+  const named = [
+    { integrationId: 'int-a', channelId: 'C1', name: 'general' },
+    { integrationId: 'int-a', channelId: 'C3', name: 'support' },
+    { integrationId: 'int-b', channelId: 'C5', name: 'ops' }
+  ]
+
+  it('names its own By decision rows and its bots’ routed conversations once each, never another agent’s gate', async () => {
+    expect(await assistantModeRoutedConversations(repos, agent.id)).toEqual(named)
+  })
+
+  it('refuses the switch-on with the conversations, and skips the check for an agent already on', async () => {
+    expect(await assistantModeAdmissionOf(repos, agent)).toEqual({
+      admitted: false,
+      refusals: ['routing'],
+      conversations: named
+    })
+    expect(await assistantModeAdmissionOf(repos, agent, { routing: false })).toEqual({ admitted: true, refusals: [] })
+    const clear = { ...repos, integrationChannel: { listForBot: async () => [row('int-a', 'C2', 'random')] } }
+    expect(await assistantModeAdmissionOf(clear, agent)).toEqual({ admitted: true, refusals: [] })
+  })
+
+  it('names the conversations to change in the API message, by id where a name is unknown', () => {
+    expect(
+      assistantModeRefusalMessage(['memory-provider', 'routing'], false, [
+        ...named.slice(0, 2),
+        { integrationId: 'int-b', channelId: 'C5', name: null }
+      ])
+    ).toBe(
+      'assistant mode cannot be turned on: memory must be managed; no conversation may be By decision or in a shared bot’s routing (change general, support, C5 first)'
+    )
+  })
+
+  it('finds an agent in assistant mode among a conversation’s agents', async () => {
+    const agents = {
+      get: async (_org: OrgId, id: AgentId) =>
+        ({ id, assistantMode: id === 'agent-on' ? { enabled: true } : { enabled: false } }) as unknown as AgentRecord
+    }
+    const org = OrgId('org-1')
+    expect(await anyAssistantModeAgent(agents, org, [AgentId('agent-off'), AgentId('agent-on')])).toBe(true)
+    expect(await anyAssistantModeAgent(agents, org, [AgentId('agent-off')])).toBe(false)
+    expect(await anyAssistantModeAgent(agents, org, [])).toBe(false)
   })
 })
 

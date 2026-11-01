@@ -24,7 +24,12 @@
  */
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { Prisma } from '../../generated/prisma/client.js'
-import { type DecimalAmount, scaleAmount, unscaleAmount } from '@agentconnect.md/protocol'
+import {
+  COORDINATOR_COORDINATE_PREFIX,
+  type DecimalAmount,
+  scaleAmount,
+  unscaleAmount
+} from '@agentconnect.md/protocol'
 import { MAX_USAGE_WINDOW_DAYS } from '../ports.js'
 import type {
   SessionUsageRepo,
@@ -59,6 +64,8 @@ interface SpendRow {
   sessionId: string
   at: Date
   visible: boolean
+  /** The session is a conversation's coordinator under Auto (auto-session-mode.md §4.6). */
+  coordinator: boolean | null
   source: UsageSource
   model: string | null
   cumulativeTotalTokens: number
@@ -98,7 +105,7 @@ interface Rollup extends Counters {
   sessions: Set<string>
 }
 
-function countersOf(row: Omit<SpendRow, 'visible'>): Counters {
+function countersOf(row: Omit<SpendRow, 'visible' | 'coordinator'>): Counters {
   return {
     totalTokens: row.cumulativeTotalTokens,
     inputTokens: row.cumulativeInputTokens,
@@ -465,6 +472,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       this.db.$queryRaw<SpendRow[]>(Prisma.sql`
         SELECT sp."agentId", sp."sessionId", sp."at", sp."source", NULLIF(sp."model", '') AS model,
                ${visibleSql},
+               starts_with(s."thread", ${COORDINATOR_COORDINATE_PREFIX}) AS coordinator,
         ${spendColumns}
         ${spendScope}
           AND sp."at" >= ${from}
@@ -475,7 +483,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       // first in-window delta counts only what the window itself consumed. It needs no
       // `visible` flag: it only seeds a running counter, and the delta it seeds is
       // attributed by the IN-RANGE row that consumes it.
-      this.db.$queryRaw<Omit<SpendRow, 'visible'>[]>(Prisma.sql`
+      this.db.$queryRaw<Omit<SpendRow, 'visible' | 'coordinator'>[]>(Prisma.sql`
         SELECT DISTINCT ON (sp."agentId", sp."sessionId", sp."source")
                sp."agentId", sp."sessionId", sp."at", sp."source", NULLIF(sp."model", '') AS model,
         ${spendColumns}
@@ -527,7 +535,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // a downward correction contributes a negative delta that nets out, so the cards and
     // the chart always show the same numbers.
     const SEP = '\0'
-    const key = (row: Omit<SpendRow, 'visible'>) => row.agentId + SEP + row.sessionId + SEP + row.source
+    const key = (row: Omit<SpendRow, 'visible' | 'coordinator'>) => row.agentId + SEP + row.sessionId + SEP + row.source
     const previous = new Map<string, Counters>(baselineRows.map((row) => [key(row), countersOf(row)]))
     const totals = emptyRollup()
     const byAgent = new Map<string, Rollup>()
@@ -536,6 +544,8 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // The fifth grouping. It stays empty whenever the caller may attribute everything,
     // which is every read that passes no viewer.
     const unattributed = emptyRollup()
+    // A part of `byAgent`, not a grouping of its own: what each agent's coordinator spent.
+    const byCoordinator = new Map<string, Rollup>()
 
     for (const row of inRange) {
       const skey = key(row)
@@ -550,6 +560,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
         ? [totals, rollupOf(byAgent, row.agentId), rollupOf(byModel, modelKey), rollupOf(bySource, row.source)]
         : [totals, unattributed, rollupOf(bySource, row.source)]
       for (const target of targets) addDelta(target, delta, skey)
+      if (row.visible && row.coordinator) addDelta(rollupOf(byCoordinator, row.agentId), delta, skey)
       // Series: visible rows only, so no bucket resolves a restricted agent's spend in
       // time. Its per-bucket total is therefore the visible sum, NOT `totals` split up.
       if (!row.visible) continue
@@ -596,6 +607,11 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     models.sort((left, right) => right.totalTokens - left.totalTokens)
     const sources: SourceUsageAggregate[] = [...bySource].map(([src, r]) => ({ source: src, ...rollupDto(r) }))
     sources.sort((left, right) => right.totalTokens - left.totalTokens)
+    const coordinators: AgentUsageAggregate[] = [...byCoordinator].map(([agentId, r]) => ({
+      agentId,
+      ...rollupDto(r)
+    }))
+    coordinators.sort((left, right) => right.totalTokens - left.totalTokens)
 
     // Cost currency for the window: the single distinct currency reported. `null` when
     // none or mixed — amounts are summed as-is, so a mixed-currency workspace surfaces
@@ -623,6 +639,7 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       agents,
       models,
       sources,
+      coordinators,
       ...(residual ? { unattributed: residual } : {}),
       series: { bucket, points: series }
     }

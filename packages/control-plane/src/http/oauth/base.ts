@@ -3,7 +3,7 @@
  */
 import type { FastifyRequest } from 'fastify'
 import type { HttpServerConfig } from '../deps.js'
-import { OAUTH_SCOPES } from '../../registry/oauthService.js'
+import { MCP_SCOPES, OAUTH_SCOPES } from '../../registry/oauthService.js'
 
 /** The externally-reachable CP origin. Prefer the configured PUBLIC_CP_URL;
  *  otherwise derive it from the request, honoring a proxy's
@@ -77,7 +77,7 @@ export function protectedResourceMetadata(base: string, config: McpUrlConfig): R
   return {
     resource: mcpResourceUrl(base, config),
     authorization_servers: [oauthAsBase(base, config)],
-    scopes_supported: [...OAUTH_SCOPES],
+    scopes_supported: [...MCP_SCOPES],
     bearer_methods_supported: ['header']
   }
 }
@@ -111,5 +111,5 @@ export function mcpAuthenticateChallenge(base: string, config: McpUrlConfig): st
   const prm = dedicated
     ? `${dedicated}/.well-known/oauth-protected-resource`
     : `${base}/.well-known/oauth-protected-resource${MCP_PUBLIC_PATH}`
-  return `Bearer resource_metadata="${prm}", scope="${OAUTH_SCOPES.join(' ')}"`
+  return `Bearer resource_metadata="${prm}", scope="${MCP_SCOPES.join(' ')}"`
 }

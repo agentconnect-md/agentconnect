@@ -116,6 +116,31 @@ describe('slack http ingress', () => {
     expect(h.events).toHaveLength(0)
   })
 
+  it('authenticates native context-bar form payloads before forwarding their channel and trigger', async () => {
+    const payload = new URLSearchParams({
+      command: '/ac_session_model',
+      channel_id: 'C1',
+      user_id: 'U1',
+      trigger_id: 'trigger',
+      api_app_id: 'A1',
+      team_id: 'T1'
+    }).toString()
+    const post = (signature: string) =>
+      h.app.inject({
+        method: 'POST',
+        url: '/slack/interactions',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-slack-signature': signature },
+        payload
+      })
+    expect((await post('forged')).statusCode).toBe(401)
+    expect(h.interactions).toHaveLength(0)
+    expect((await post(h.goodSignature)).statusCode).toBe(200)
+    expect(h.interactions).toEqual([
+      expect.objectContaining({ command: '/ac_session_model', channel_id: 'C1', trigger_id: 'trigger' })
+    ])
+    expect(h.inboundCalls.at(-1)?.hints).toEqual({ apiAppId: 'A1', teamId: 'T1' })
+  })
+
   it('acks 200, forwards the event async, and passes the demux hints', async () => {
     const res = await postEvent({
       type: 'event_callback',

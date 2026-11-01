@@ -4,7 +4,7 @@ import type { Duplex } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
 import { WebSocketServer, type RawData, type WebSocket } from 'ws'
 import { z } from 'zod'
-import { attachKeepalive } from '@agentconnect.md/connection'
+import { attachKeepalive, WireError } from '@agentconnect.md/connection'
 import {
   AhpAttachmentAuthorization,
   AhpMessageText,
@@ -34,9 +34,10 @@ const NOT_FOUND = -32008
 const UNSUPPORTED_VERSION = -32005
 const INVALID_PARAMS = -32602
 const INTERNAL_ERROR = -32603
-const PREAUTH = { deadlineMs: 30_000, maxMessages: 16 }
-// The authorization server's own scope vocabulary (control-plane `OAUTH_SCOPES`); `authenticate` still takes only personal keys.
-const OAUTH_SCOPES = ['mcp:read', 'mcp:write']
+// VS Code restores its subscriptions and settings before `authenticate`, so the window is bounded mainly by bytes.
+const PREAUTH = { deadlineMs: 30_000, maxMessages: 128, maxBytes: MAX_BUFFER_BYTES }
+// The AS scope that grants AHP alone (control-plane `AHP_SCOPE`); `authenticate` takes such a token or a personal key.
+const OAUTH_SCOPES = ['ahp']
 const identifier = z.string().min(1).max(256)
 const PreauthRequest = z.object({
   jsonrpc: z.literal('2.0'),
@@ -56,15 +57,17 @@ const AuthenticateParams = z.object({
   token: z.string().regex(/^[^\s]{1,8192}$/)
 })
 type CredentialKind = 'ahp-client-key' | 'webchat-token'
-type Credential = { credential: string; kind: CredentialKind }
+// `resource` is the endpoint advertised to the client, which an OAuth token's grant must name.
+type Credential = { credential: string; kind: CredentialKind; resource?: string }
 type DaemonEvent = RdAhpMessage | RdAhpClose
 export interface AhpServerDeps {
   mode(): AhpMode
-  verify(credential: string, agentId: string, kind: CredentialKind): Promise<RcVerifyResult>
+  verify(credential: string, agentId: string, kind: CredentialKind, resource?: string): Promise<RcVerifyResult>
   daemon(daemonId: string): RelayDaemonConnection | undefined
   now?: () => number
   authorizationServer?: string
-  preauth?: { deadlineMs: number; maxMessages: number }
+  log?: { warn(message: string): void }
+  preauth?: { deadlineMs: number; maxMessages: number; maxBytes?: number }
 }
 interface Opened {
   conn: RelayDaemonConnection
@@ -92,6 +95,17 @@ function credentialOf(req: IncomingMessage): Credential | undefined {
   }
   const match = /^Bearer ([^\s]{1,8192})$/i.exec(req.headers.authorization ?? '')
   return match ? { credential: match[1]!, kind: 'ahp-client-key' } : undefined
+}
+
+// An `authenticate` request on a bound socket, which the relay answers itself.
+function reauthenticationOf(message: string): { id: string | number; params: unknown } | undefined {
+  try {
+    const parsed = PreauthRequest.safeParse(JSON.parse(message))
+    if (!parsed.success || parsed.data.method !== 'authenticate' || parsed.data.id === undefined) return undefined
+    return { id: parsed.data.id, params: parsed.data.params }
+  } catch {
+    return undefined
+  }
 }
 
 // A credential-less upgrade, with or without the `ahp` subprotocol, may authenticate in-band.
@@ -186,7 +200,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
     try {
       const started = now()
       const verdict = authorizationOf(
-        await deps.verify(credential.credential, agentId, credential.kind),
+        await deps.verify(credential.credential, agentId, credential.kind, credential.resource),
         agentId,
         credential.kind,
         started,
@@ -226,8 +240,9 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
     }
   }
 
-  const bind = (ws: WebSocket, credential: Credential, agentId: string, attachmentId: string, opened: Opened) => {
+  const bind = (ws: WebSocket, initial: Credential, agentId: string, attachmentId: string, opened: Opened) => {
     const { conn, current } = opened
+    let credential = initial
     let closed = false
     let authorization = opened.authorization
     let expiry: ReturnType<typeof setTimeout> | undefined
@@ -261,42 +276,82 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
       expiry = setTimeout(() => close('unauthorized'), Math.max(0, authorization.grant.expiresAtMs - now()))
       renewal = setTimeout(() => void renew(), Math.max(1000, authorization.grant.expiresAtMs - now() - 5000))
     }
+    // Adoptions run one at a time, so a slow renewal cannot replace a token the client refreshed meanwhile.
+    let adoptions: Promise<unknown> = Promise.resolve()
+    const serially = (run: () => Promise<boolean>): Promise<boolean> => {
+      const next = adoptions.then(run, run)
+      adoptions = next.catch(() => undefined)
+      return next
+    }
+    // Re-verifies a credential for the same caller and agent, then adopts the grant it yields.
+    const adopt = async (candidate: Credential): Promise<boolean> => {
+      const checkedAt = now()
+      const next = authorizationOf(
+        await deps.verify(candidate.credential, agentId, candidate.kind, candidate.resource),
+        agentId,
+        candidate.kind,
+        checkedAt,
+        now()
+      )
+      if (!valid()) return false
+      if (
+        !next ||
+        next.daemonId !== opened.daemonId ||
+        ['orgId', 'agentId', 'userId', 'conversationId', 'targetSessionId'].some(
+          (key) =>
+            next.authorization[key as keyof AhpAttachmentAuthorization] !==
+            authorization[key as keyof AhpAttachmentAuthorization]
+        )
+      )
+        return false
+      if (!(await conn.authorizeAhp({ attachmentId, authorization: next.authorization }))) return false
+      if (!valid()) return false
+      authorization = next.authorization
+      credential = candidate
+      arm()
+      return true
+    }
     const renew = async () => {
       if (!valid()) return
       try {
-        const checkedAt = now()
-        const next = authorizationOf(
-          await deps.verify(credential.credential, agentId, credential.kind),
-          agentId,
-          credential.kind,
-          checkedAt,
-          now()
-        )
-        if (!valid()) return
-        if (
-          !next ||
-          next.daemonId !== opened.daemonId ||
-          ['orgId', 'agentId', 'userId', 'conversationId', 'targetSessionId'].some(
-            (key) =>
-              next.authorization[key as keyof AhpAttachmentAuthorization] !==
-              authorization[key as keyof AhpAttachmentAuthorization]
-          )
-        )
-          return close('unauthorized')
-        if (!(await conn.authorizeAhp({ attachmentId, authorization: next.authorization })))
-          return close('unauthorized')
-        if (!valid()) return
-        authorization = next.authorization
-        arm()
+        if (!(await serially(() => adopt(credential))) && !closed) close('unauthorized')
       } catch {
         close('unauthorized')
       }
     }
+    // A client that refreshes its token pushes `authenticate` again; it never reaches the daemon.
+    const reauthenticate = async (id: string | number, params: unknown) => {
+      const reply = (message: object) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(message))
+      const parsed = AuthenticateParams.safeParse(params)
+      if (!parsed.success || parsed.data.resource !== credential.resource) {
+        reply({ jsonrpc: '2.0', id, error: { code: INVALID_PARAMS, message: 'Unknown protected resource' } })
+        return close('invalid_message')
+      }
+      try {
+        if (await serially(() => adopt({ ...credential, credential: parsed.data.token })))
+          return reply({ jsonrpc: '2.0', id, result: {} })
+      } catch {
+        // Treated as a refused credential below.
+      }
+      if (closed) return
+      reply({ jsonrpc: '2.0', id, error: { code: AUTH_REQUIRED, message: 'Invalid credential' } })
+      close('unauthorized')
+    }
+    const overloaded = (message: string) =>
+      deps.log?.warn(
+        `ahp: attachment ${attachmentId} (agent ${agentId}, daemon ${opened.daemonId}) overloaded: ${message}`
+      )
     const deliver = (event: DaemonEvent) => {
-      if ('reason' in event) return close(event.reason, false)
+      if ('reason' in event) {
+        if (event.reason === 'overloaded') overloaded('closed by the daemon')
+        return close(event.reason, false)
+      }
       if (!valid()) return
       if (!AhpMessageText.safeParse(event.message).success) return close('invalid_message')
-      if (ws.bufferedAmount + Buffer.byteLength(event.message) > MAX_BUFFER_BYTES) return close('overloaded')
+      if (ws.bufferedAmount + Buffer.byteLength(event.message) > MAX_BUFFER_BYTES) {
+        overloaded(`browser socket backed up (${ws.bufferedAmount} bytes)`)
+        return close('overloaded')
+      }
       ws.send(event.message, (error) => {
         if (error) close('unavailable')
       })
@@ -305,7 +360,10 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
       if (!valid()) return
       try {
         conn.sendAhp({ attachmentId, message })
-      } catch {
+      } catch (error) {
+        // Only daemon-link backpressure is overload; a link that is going away is unavailable.
+        if (!(error instanceof WireError && error.code === 'OVERLOADED')) return close('unavailable')
+        overloaded('daemon link backed up')
         close('overloaded')
       }
     }
@@ -320,6 +378,9 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
         if (!valid()) return
         const message = data.toString()
         if (binary || !AhpMessageText.safeParse(message).success) return close('invalid_message')
+        const request =
+          credential.resource && message.includes('"authenticate"') ? reauthenticationOf(message) : undefined
+        if (request) return void reauthenticate(request.id, request.params)
         forward(message)
       },
       closed: () => close('client_closed'),
@@ -344,6 +405,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
     let bound: ReturnType<typeof bind> | undefined
     let client: AhpHandshake | undefined
     let count = 0
+    let bytes = 0
     preauthorizing++
     const leave = () => {
       clearTimeout(deadline)
@@ -367,7 +429,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
     const authenticate = async (id: string | number, token: string) => {
       phase = 'verifying'
       const opened = await open(
-        { credential: token, kind: 'ahp-client-key' },
+        { credential: token, kind: 'ahp-client-key', resource },
         agentId,
         attachmentId,
         () => phase === 'verifying',
@@ -388,7 +450,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
       leave()
       phase = 'bound'
       send({ jsonrpc: '2.0', id, result: {} })
-      bound = bind(ws, { credential: token, kind: 'ahp-client-key' }, agentId, attachmentId, opened)
+      bound = bind(ws, { credential: token, kind: 'ahp-client-key', resource }, agentId, attachmentId, opened)
       for (const message of queued.splice(0)) bound.forward(message)
     }
     ws.on('message', (data, binary) => {
@@ -397,6 +459,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
       if (++count > limits.maxMessages) return end('invalid_message')
       const text = data.toString()
       if (binary || !AhpMessageText.safeParse(text).success) return end('invalid_message')
+      if ((bytes += Buffer.byteLength(text)) > (limits.maxBytes ?? PREAUTH.maxBytes)) return end('invalid_message')
       // A pipelining client's next requests wait for the verdict and reach the daemon only once bound.
       if (phase === 'verifying') return void queued.push(text)
       let request: z.infer<typeof PreauthRequest>
@@ -423,7 +486,7 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
         const agent = {
           provider: agentId,
           displayName: 'AgentConnect agent',
-          description: 'Authenticate with a personal API key to use this agent.',
+          description: 'Sign in with AgentConnect or a personal API key to use this agent.',
           models: [],
           protectedResources: [metadata]
         }
@@ -461,10 +524,11 @@ export function createAhpServer(app: FastifyInstance, deps: AhpServerDeps) {
     if (!match || url.search) return refuse(socket, 400)
     if (stopped || deps.mode() !== 'on' || wss.clients.size + pending >= MAX_ATTACHMENTS) return refuse(socket, 503)
     const agentId = match[1]!.toLowerCase()
-    const credential = credentialOf(req)
+    const resource = resourceOf(req, `/ahp/agents/${agentId}`)
+    const presented = credentialOf(req)
+    const credential = presented?.kind === 'ahp-client-key' && resource ? { ...presented, resource } : presented
     if (!credential) {
       if (!offersPreauth(req)) return refuse(socket, 401)
-      const resource = resourceOf(req, `/ahp/agents/${agentId}`)
       if (!resource) return refuse(socket, 400)
       if (preauthorizing >= MAX_PREAUTH) return refuse(socket, 503)
       return wss.handleUpgrade(req, socket, head, (ws) => {

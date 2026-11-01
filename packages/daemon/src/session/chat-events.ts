@@ -1,4 +1,5 @@
 import type { ElicitCard } from '@agentconnect.md/protocol'
+import type { ToolEdit } from './tool-edits.js'
 
 // Observations of the existing runtime; this stream owns neither execution nor durable history.
 export type MaskedChatEvent = {
@@ -18,6 +19,7 @@ export type MaskedChatEvent = {
       status: 'pending' | 'running' | 'completed' | 'failed'
       input?: string
       output?: string
+      edits?: ToolEdit[]
     }
   | {
       kind: 'permission'

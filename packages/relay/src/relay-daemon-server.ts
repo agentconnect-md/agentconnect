@@ -35,6 +35,8 @@ export interface RelayDaemonServerDeps {
   onRoute: RelayDaemonConnDeps['onRoute']
   onRouteReport: RelayDaemonConnDeps['onRouteReport']
   log: RelayDaemonConnDeps['log']
+  /** A daemon's `rd/*` link became READY (first dial or redial); frames it streamed while unlinked were dropped. */
+  onDaemonReady?: (daemonId: string) => void
   /** Half-open ping/pong sweep cadence (ms). */
   keepaliveMs?: number
 }
@@ -81,6 +83,7 @@ export function createRelayDaemonServer(app: FastifyInstance, deps: RelayDaemonS
       const set = byDaemon.get(daemonId) ?? new Set()
       set.add(conn)
       byDaemon.set(daemonId, set)
+      deps.onDaemonReady?.(daemonId)
     },
     onClosed: (daemonId, conn) => {
       const set = byDaemon.get(daemonId)

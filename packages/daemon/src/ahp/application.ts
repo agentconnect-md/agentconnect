@@ -7,6 +7,7 @@ import {
   PendingMessageKind,
   type ActionOrigin,
   type ChatTurnStartedAction,
+  type ChatDraftChangedAction,
   type ChatPendingMessageSetAction,
   type ChatInputCompletedAction,
   type DispatchActionParams
@@ -25,6 +26,9 @@ import { AhpProtocolError } from './connection.js'
 import {
   startAction,
   steeringAction,
+  draftAction,
+  readAction,
+  publishedMessage,
   cancelAction,
   permissionAction,
   inputAction,
@@ -32,6 +36,7 @@ import {
   contextMetadata,
   messageAttachments
 } from './action-schema.js'
+import { canonicalPostId } from '../messages/post-id.js'
 export { ahpElicitValue } from './action-schema.js'
 
 export interface AhpActionScope {
@@ -121,6 +126,10 @@ export class AhpApplication {
           action
         )
       }
+      case ActionType.ChatDraftChanged:
+        return hooks.echo(parse(draftAction, params.action) as ChatDraftChangedAction, origin)
+      case ActionType.ChatIsReadChanged:
+        return hooks.echo(parse(readAction, params.action), origin)
       case ActionType.ChatTurnCancelled: {
         const action = parse(cancelAction, params.action)
         if (!(await this.host.cancel(scope, action.turnId))) refuse('The turn is no longer cancellable')
@@ -205,7 +214,7 @@ export class AhpApplication {
       author: { ...scope.author, ...(context.timeZone ? { timeZone: context.timeZone } : {}) },
       ...(context.mentions ? { mentions: context.mentions } : {}),
       ...(attachments.length ? { attachments } : {}),
-      post: { postId: action.turnId, at: this.host.now() },
+      post: { postId: canonicalPostId(action.turnId), at: this.host.now() },
       ...(steering ? { steer: true } : {})
     }
     const continuation = scope.targetSessionId
@@ -241,7 +250,7 @@ export class AhpApplication {
           } else {
             if (!result.duplicate && !scope.targetSessionId)
               await this.host.application.recordAdmission(prepared.turn, { ...request, steer: false })
-            if (steering) await hooks.echo(steering, origin)
+            if (steering) await hooks.echo({ ...steering, message: publishedMessage(steering.message) }, origin)
             await hooks.admitted(action, origin, { duplicate: result.duplicate === true })
             if (steering)
               await hooks.echo(

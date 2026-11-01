@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { removeTreeSync } from '../tree-support.js'
 import { chmodSync, cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -744,7 +745,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
       } finally {
         d.k8sPlane = undefined
         await daemon.stop()
-        rmSync(root, { recursive: true, force: true })
+        removeTreeSync(root)
       }
     }
   )
@@ -785,7 +786,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
       expect(readAgentMoveStage(join(root, 'agents'), 'bot-a')).toMatchObject({ moveId: MOVE_ID_2, state: 'staging' })
     } finally {
       await daemon.stop()
-      rmSync(root, { recursive: true, force: true })
+      removeTreeSync(root)
     }
   })
 

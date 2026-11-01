@@ -368,6 +368,12 @@ export interface QueueEntry {
   admissionHold?: Promise<'run' | 'drop'>
   /** Cross-session GitHub coordination must settle before this durable entry can start. */
   coordinationWait?: Promise<void>
+  /** A coordinator turn's batch (auto-session-mode.md §4.3): the queued entries this turn decides on too, settled with it. */
+  coordinatorBatch?: QueueEntry[]
+  /** The coordinator turn's rendered batch, the prompt that replaces its trigger. */
+  coordinatorPrompt?: string
+  /** How this coordinator turn ended, which decides its undecided messages' fallback (§4.5). */
+  coordinatorEnded?: 'answered' | 'failed' | 'stopped'
   /** An admitted continuation waits for its platform mirror; false skips only this entry. */
   admissionWait?: Promise<boolean>
   /** Record chat observation only after admissionWait succeeds. */

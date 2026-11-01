@@ -93,6 +93,7 @@ function githubHook(partial: Record<string, unknown>): unknown {
     enabled: true,
     commentFamilies: [],
     labelFilter: [],
+    skipDrafts: false,
     mentionOnly: false,
     reviewPolicy: 'off',
     reportingMode: 'off',
@@ -240,9 +241,9 @@ describe('AgentDetailView, code-host repository blocks', () => {
   it('titles the card by the host even when every repo shares one owner', async () => {
     const scope = await render()
     // Both fixtures live under acme; the card still says GitHub, so a second account never relabels it.
-    const titles = [...scope.querySelectorAll<HTMLElement>('span.badge')]
-      .filter((el) => el.textContent?.trim() === 'connected')
-      .map((el) => el.previousElementSibling?.textContent?.trim())
+    const titles = [...scope.querySelectorAll<HTMLElement>('span.font-semibold')]
+      .map((el) => el.textContent?.trim())
+      .filter((text) => text === 'GitHub' || text === 'acme')
     expect(titles).toEqual(['GitHub'])
   })
 
@@ -334,6 +335,7 @@ describe('AgentDetailView, code-host repository blocks', () => {
     await act(async () => menuItem('Settings…')!.click())
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
     expect(dialog.textContent).toContain('Issues settings')
+    expect(dialog.textContent).not.toContain('Skip drafts')
     expect(dialog.textContent?.toLowerCase()).not.toContain('review')
     expect(dialog.querySelectorAll('[data-label-filter="open"] [aria-label^="Remove label "]')).toHaveLength(3)
   })
@@ -378,6 +380,7 @@ describe('AgentDetailView, code-host repository blocks', () => {
     expect(prDialog.textContent).toContain('Pull requests settings')
     expect(prDialog.textContent).toContain('PR review')
     expect(prDialog.textContent).toContain('Only with labels')
+    expect(prDialog.textContent).toContain('Skip drafts until marked ready for review')
     expect(prDialog.textContent).toContain('Trusted users')
     await act(async () => byTitle(prDialog, 'Close')[0]!.click())
 
@@ -481,13 +484,23 @@ describe('AgentDetailView, an installation-wide row', () => {
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
     // No repository to keep a trusted-users list on, so the dialog offers none.
     expect(dialog.textContent).not.toContain('Trusted users')
+    const skipDrafts = [...dialog.querySelectorAll('label')]
+      .find((label) => label.textContent?.includes('Skip drafts until marked ready for review'))!
+      .querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    expect(skipDrafts.checked).toBe(false)
+    await act(async () => skipDrafts.click())
     const save = [...dialog.querySelectorAll<HTMLButtonElement>('button')].find(
       (b) => b.textContent?.trim() === 'Save'
     )!
     expect(save.disabled).toBe(false)
     await act(async () => save.click())
     const [, input] = mocks.updateGithubHook.mock.calls[0] as [string, Record<string, unknown>]
-    expect(input).toMatchObject({ githubAccount: 'acme', reviewPolicy: 'comment', reportingMode: 'check' })
+    expect(input).toMatchObject({
+      githubAccount: 'acme',
+      reviewPolicy: 'comment',
+      reportingMode: 'check',
+      skipDrafts: true
+    })
     expect(input).not.toHaveProperty('repoFullName')
   })
 })

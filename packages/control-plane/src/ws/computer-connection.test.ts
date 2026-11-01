@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildComputerCpFrame,
+  COMPUTER_ADMIN_PROMPTS_FEATURE,
   COMPUTER_EGRESS_FEATURE,
   ComputerPolicySchema,
   type ComputerCpFrame
@@ -60,6 +61,7 @@ function setup(
     keyDeliveryMs?: number
     kind?: 'managed' | 'self-hosted'
     egress?: ComputerConnDeps['egress']
+    policies?: ComputerConnDeps['policies']
   } = {}
 ) {
   const clock = new FakeClock(T0)
@@ -100,7 +102,8 @@ function setup(
     ...(over.relays ? { relays: over.relays } : {}),
     ...(over.audit ? { audit: over.audit } : {}),
     ...(over.screenshots ? { screenshots: over.screenshots } : {}),
-    ...(over.egress ? { egress: over.egress } : {})
+    ...(over.egress ? { egress: over.egress } : {}),
+    ...(over.policies ? { policies: over.policies } : {})
   }
   const conn = new ComputerConnection(transport, deps)
   conn.start()
@@ -131,6 +134,27 @@ describe('ComputerConnection', () => {
     registry.pushEgress('org_2', { mode: 'direct' })
     registry.pushEgress('org_1', { mode: 'direct' })
     expect(transport.ofType('computer/egress').map((f) => f.payload)).toEqual([{ egress: { mode: 'direct' } }])
+  })
+
+  it('sends the desktop its command-line tier resolved, so an unset field never reads as a token’s (§5.7)', async () => {
+    const own = setup()
+    own.transport.deliver(auth())
+    await settle()
+    expect(own.transport.ofType('computer/auth/ok')[0]?.payload).toMatchObject({
+      policy: { shell: 'off', files: 'off' }
+    })
+    own.registry.pushPolicy(CID, ComputerPolicySchema.parse({ shell: 'on' }))
+    expect(own.transport.ofType('computer/policy').at(-1)).toMatchObject({
+      payload: { policy: { shell: 'on', files: 'off' } }
+    })
+
+    const pool = setup({ kind: 'managed', egress: vi.fn(async () => ({ mode: 'direct' as const })) })
+    pool.transport.deliver(auth())
+    await settle()
+    pool.registry.pushPolicy(CID, ComputerPolicySchema.parse({ files: 'read' }))
+    expect(pool.transport.ofType('computer/policy').at(-1)).toMatchObject({
+      payload: { policy: { shell: 'on', files: 'read' } }
+    })
   })
 
   it("fails a managed desktop's auth when its egress cannot be read, so it never goes direct by omission", async () => {
@@ -267,6 +291,48 @@ describe('ComputerConnection', () => {
     await settle()
     expect(transport.ofType('error').at(-1)).toMatchObject({ corr: again.id, payload: { retryable: true } })
     expect(transport.closed).toBeUndefined()
+  })
+
+  it('offers computer-admin-prompts-v1 with a policy store, and stores the menu choice beside the rest of the policy', async () => {
+    const setPolicy = vi.fn(
+      async (_o: unknown, _c: unknown, policy: unknown) => ({ policy }) as unknown as ComputerRecord
+    )
+    const { transport } = setup({ policies: { setPolicy } })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/auth/ok')[0]?.payload).toMatchObject({
+      features: expect.arrayContaining([COMPUTER_ADMIN_PROMPTS_FEATURE])
+    })
+    const set = buildComputerCpFrame('computer/admin-prompts', { mode: 'agent' })
+    transport.deliver(set)
+    await settle()
+    expect(setPolicy).toHaveBeenCalledWith(
+      'org_1',
+      CID,
+      expect.objectContaining({
+        screenshotRetentionDays: 7,
+        approvals: { firstInputPerSession: true, adminPrompts: 'agent' }
+      })
+    )
+    expect(transport.ofType('computer/admin-prompts/ok')[0]).toMatchObject({ corr: set.id, payload: { mode: 'agent' } })
+  })
+
+  it('answers the menu choice as illegal without a policy store, and refuses it for a revoked Computer', async () => {
+    const plain = setup()
+    plain.transport.deliver(auth())
+    await settle()
+    expect(plain.transport.ofType('computer/auth/ok')[0]?.payload).not.toHaveProperty('features')
+    plain.transport.deliver(buildComputerCpFrame('computer/admin-prompts', { mode: 'approve' }))
+    await settle()
+    expect(plain.transport.ofType('error')[0]?.payload).toMatchObject({ code: 'PROTOCOL_STATE' })
+
+    const setPolicy = vi.fn(async () => null)
+    const gone = setup({ policies: { setPolicy } })
+    gone.transport.deliver(auth())
+    await settle()
+    gone.transport.deliver(buildComputerCpFrame('computer/admin-prompts', { mode: 'approve' }))
+    await settle()
+    expect(gone.transport.ofType('error')[0]?.payload).toMatchObject({ code: 'CONFLICT' })
   })
 
   it('offers computer-screenshot-v1 with a store, tells the retention, and signs and confirms uploads', async () => {

@@ -337,6 +337,7 @@ describe('toolsForIntegrations', () => {
       'thread',
       'sessionId',
       'taskId',
+      'title',
       'messageId',
       'attachment',
       'platform',
@@ -375,6 +376,8 @@ describe('toolsForIntegrations', () => {
     expect(tool.description).toContain('replyToSession answers a message another session sent you, by its messageId')
     expect(schema.properties.sessionId!.description).toContain('callAgent only')
     expect(schema.properties.messageId!.description).toContain('replyToSession only')
+    expect(schema.properties.title).toMatchObject({ type: 'string', minLength: 1, maxLength: 80 })
+    expect(schema.properties.title!.description).toContain('delegateTask only')
   })
 
   it('states what a channel-root post costs, and points a relayed answer at the message it answers', () => {
@@ -616,5 +619,18 @@ describe('platform session tools (read-ports.ts `sessionTools`)', () => {
 
   it('reserves every platform’s session tool name in the auto-allow set', () => {
     for (const name of LINEAR_TOOL_NAMES) expect(ALL_TOOL_NAMES).toContain(name)
+  })
+
+  it('offers native Slack tools only in Slack sessions', () => {
+    const names = ['presentSlackReport', 'createSlackCodeChannel', 'setSlackCodeView', 'manageSlackCodeChannel']
+    expect(toolsForIntegrations([slackInt], { currentPlatform: 'slack' }).map((t) => t.name)).toEqual(
+      expect.arrayContaining(names)
+    )
+    for (const tool of names) {
+      expect(ALL_TOOL_NAMES).toContain(tool)
+      expect(
+        toolsForIntegrations([slackInt, linearInt], { currentPlatform: 'linear' }).map((t) => t.name)
+      ).not.toContain(tool)
+    }
   })
 })

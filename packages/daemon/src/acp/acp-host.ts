@@ -31,7 +31,13 @@ import {
   ULTRACODE_EFFORT
 } from '../runtime-defs/claude-runtime.js'
 import { isCodexRuntimeDef, runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
-import { codexConfigWithMcpStartupGrace, codexConfigWithUserInputTool } from '../runtimes/codex-config.js'
+import {
+  codexConfigWithGuardianPolicy,
+  codexConfigWithMcpStartupGrace,
+  codexConfigWithProjectDocFallback,
+  codexConfigWithUserInputTool,
+  codexGuardianOperatorPolicy
+} from '../runtimes/codex-config.js'
 import {
   LocalDriver,
   type AcpSandboxLaunch,
@@ -156,6 +162,8 @@ export interface SessionConfigPrefs {
   permissionMode?: string
   /** Optional host-level instruction seed, layered before per-session standing context on supported runtimes. */
   systemPrompt?: string
+  /** The agent's operator-authored instructions, handed to Codex's Guardian as trusted policy. */
+  operatorInstructions?: string
 }
 
 // The launch shape lives with the driver that consumes it; re-exported here because
@@ -199,8 +207,10 @@ export class ModelSelectionError extends Error {
   }
 }
 
-/** The runtime no longer knows the prompted session (claude-agent-acp: -32603 "Session not found"); retrying cannot help (#1915). */
+/** The runtime no longer knows the prompted session; retrying cannot help (#1915). */
 export function isRuntimeSessionGone(err: unknown): boolean {
+  const e = err as { code?: unknown; data?: { sessionId?: unknown } } | null | undefined
+  if (e?.code === -32002 && typeof e.data?.sessionId === 'string') return true
   return failureSignals(err).some((signal) => /\bsession not found\b/i.test(signal))
 }
 
@@ -781,6 +791,22 @@ export class AcpHost {
         env.CODEX_CONFIG = codexConfigWithMcpStartupGrace(env.CODEX_CONFIG)
       } catch (err) {
         this.opts.log?.warn(`acp: leaving Codex's MCP startup grace at its default — ${(err as Error).message}`)
+      }
+      try {
+        env.CODEX_CONFIG = codexConfigWithProjectDocFallback(env.CODEX_CONFIG)
+      } catch (err) {
+        this.opts.log?.warn(`acp: leaving Codex without a CLAUDE.md fallback — ${(err as Error).message}`)
+      }
+      // Standing instructions reach Codex as developer messages, which its Guardian never sees, so it gets the operator's own copy.
+      const guardianPolicy = codexGuardianOperatorPolicy(this.opts.configPrefs?.operatorInstructions)
+      if (guardianPolicy) {
+        try {
+          env.CODEX_CONFIG = codexConfigWithGuardianPolicy(env.CODEX_CONFIG, guardianPolicy)
+        } catch (err) {
+          this.opts.log?.warn(
+            `acp: leaving Codex's Guardian without the operator instructions — ${(err as Error).message}`
+          )
+        }
       }
     }
     // The memory-backend env arrives in `opts.env` from memoryProviderFor at spawn; a host built without it keeps the runtime's default memory.

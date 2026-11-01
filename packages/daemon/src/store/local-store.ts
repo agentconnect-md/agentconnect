@@ -10,21 +10,23 @@ import { ASSISTANT_ITEM_SCHEMA, AssistantItemLedger } from './assistant-items.js
 import { ASSISTANT_CHECK_SCHEMA, AssistantCheckLedger } from './assistant-checks.js'
 import { ASSISTANT_REMINDER_SCHEMA, AssistantReminderLedger } from './assistant-reminders.js'
 import { ASSISTANT_ONBOARDING_SCHEMA, AssistantOnboardingLedger } from './assistant-onboarding.js'
-import { ASSISTANT_SUBSESSION_SCHEMA, AssistantSubsessionIndex } from './assistant-subsessions.js'
+import {
+  ASSISTANT_SUBSESSION_SCHEMA,
+  ASSISTANT_SUBSESSION_THREAD_SCHEMA,
+  AssistantSubsessionIndex
+} from './assistant-subsessions.js'
 import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
 import { newSessionMessageId, SESSION_MESSAGE_SCHEMA, SessionMessages } from './session-messages.js'
 import { CAPABILITY_CARD_SCHEMA, CapabilityCardLedger } from './capability-cards.js'
 import {
   APPEND_COORDINATE_PREFIX,
-  appendCoordinate,
+  COORDINATOR_COORDINATE_PREFIX,
+  coordinateKind,
   isAppendCoordinate,
-  nextAppendCoordinate
+  nextAppendCoordinate,
+  type ConversationCoordinateKind
 } from '../session/append-coordinate.js'
-import {
-  GETTING_TO_KNOW_COORDINATE_PREFIX,
-  isSubsessionCoordinate,
-  checkCoordinate
-} from '../session/subsession-coordinate.js'
+import { GETTING_TO_KNOW_COORDINATE_PREFIX, checkCoordinate } from '../session/subsession-coordinate.js'
 import { monotonicTs } from './monotonic-ts.js'
 import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
@@ -348,6 +350,8 @@ export interface SessionRecord {
   // When the retention sweep last kept this expired session, and when it may judge it again; written by `markSessionRetentionKept`.
   retentionKeptAt?: number | null
   retentionRecheckAt?: number | null
+  // When retention reclaimed its workspace and sandbox while keeping the row; written by `markSessionWorkspaceReclaimed`.
+  workspaceReclaimedAt?: number | null
 }
 
 /** A session's birth verdict (session-executors.md §5, §7): where it executes or why it stayed home, and the strategy it was born with. */
@@ -1323,7 +1327,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 69
+export const SCHEMA_VERSION = 72
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2067,8 +2071,31 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
     ),
   // v69 tells the turn's own editor-path notice from a sub-session's, so a restart's sweep settles each in its own words.
-  async (db, store) => await addColumn(db, store.postgres, 'permission_requests', 'noticeKind', 'TEXT')
+  async (db, store) => await addColumn(db, store.postgres, 'permission_requests', 'noticeKind', 'TEXT'),
+  // v70 records when retention reclaimed a finished session's workspace while keeping its row, so a pass does not judge it again.
+  async (db, store) => await addColumn(db, store.postgres, 'sessions', 'workspaceReclaimedAt', 'INTEGER'),
+  // v71 gives tasks a title, a summary and attached threads (auto-session-mode.md §6.1).
+  async (db, store) => await migrateTaskModel(db, store.postgres),
+  // v72 keeps the start of a task's opening message, which listTasks shows until it writes a summary (auto-session-mode.md §6.7).
+  async (db, store) => await addColumn(db, store.postgres, 'assistant_subsession', 'background', 'TEXT')
 ]
+
+/** Tasks gain a title, taken from their session's first-message title, a summary and the threads attached to them. */
+async function migrateTaskModel(db: StoreTx, postgres: boolean): Promise<void> {
+  await db.exec(ASSISTANT_SUBSESSION_THREAD_SCHEMA)
+  if (!(await tableExists(db, postgres, 'assistant_subsession'))) return
+  for (const [column, type] of [
+    ['title', 'TEXT'],
+    ['summary', 'TEXT'],
+    ['summaryUpdatedAt', 'INTEGER'],
+    ['turnsSinceSummary', 'INTEGER NOT NULL DEFAULT 0']
+  ] as const)
+    await addColumn(db, postgres, 'assistant_subsession', column, type)
+  if (!(await tableExists(db, postgres, 'sessions'))) return
+  await db.exec(`UPDATE assistant_subsession
+    SET title = (SELECT s.title FROM sessions s WHERE s.key = assistant_subsession.childSessionKey)
+    WHERE title IS NULL AND kind = 'delegation'`)
+}
 
 // Binds a platform's recorded conversations to their tenant, then hands each conversation's audience to its inherited children.
 async function bindChatAudience(
@@ -2779,7 +2806,8 @@ export class LocalStore {
         platformStanding TEXT,
         executorDaemonId TEXT, stayedHomeReason TEXT,
         onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyThread TEXT,
-        standingDigest TEXT, toolDigests TEXT, retentionKeptAt INTEGER, retentionRecheckAt INTEGER
+        standingDigest TEXT, toolDigests TEXT, retentionKeptAt INTEGER, retentionRecheckAt INTEGER,
+        workspaceReclaimedAt INTEGER
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -4276,48 +4304,79 @@ export class LocalStore {
     })
   }
 
-  /**
-   * The append coordinate in force for a conversation, minting one when there is none
-   * (channel-session-mode.md §3.3).
-   *
-   * `INSERT OR IGNORE` then read back, the shape `mintOutwardId` already uses: every
-   * concurrent caller converges on whichever insert won, and nobody trusts the value it
-   * proposed. Without that, two messages arriving together into a conversation with no
-   * append session would both read nothing and both mint — two coordinates, two sessions,
-   * for one conversation.
-   */
+  /** The conversation coordinate in force, minted when there is none (channel-session-mode.md §3.3): insert-or-ignore then read back, so concurrent callers converge. */
   async resolveAppendCoordinate(
     agentId: string,
     channel: string,
     transportScope?: string | null,
-    now = Date.now()
+    now = Date.now(),
+    kind: ConversationCoordinateKind = 'append'
   ): Promise<string> {
     const scope = transportScope ?? ''
+    const minted = nextAppendCoordinate(undefined, now, kind)
     await this.db
       .prepare(
         `INSERT OR IGNORE INTO append_reservation (agentId, channel, transportScope, coordinate, updatedAt)
          VALUES (?, ?, ?, ?, ?)`
       )
-      .run(agentId, channel, scope, appendCoordinate(now), now)
+      .run(agentId, channel, scope, minted, now)
     const row = (await this.db
       .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
       .get(agentId, channel, scope)) as { coordinate: string } | undefined
     // The read cannot miss: the insert either created the row or lost to one that exists.
-    return row?.coordinate ?? appendCoordinate(now)
+    const current = row?.coordinate ?? minted
+    // A switch between `append` and `auto` retires the other kind's session: it takes no new messages (auto-session-mode.md §3.5).
+    if (coordinateKind(current) === kind) return current
+    return await this.advanceAppendCoordinate(agentId, channel, current, scope, now, kind)
   }
 
-  /** The coordinate in force, WITHOUT minting one. For readers that must not create a
-   *  conversation by asking about it — a command typed before anyone spoke, or the observer
-   *  recording traffic that routed to nobody. */
+  /** The coordinate in force WITHOUT minting one, for a reader that must not create a conversation by asking; with `kind`, the other kind's reads as none. */
   async currentAppendCoordinate(
     agentId: string,
     channel: string,
-    transportScope?: string | null
+    transportScope?: string | null,
+    kind?: ConversationCoordinateKind
   ): Promise<string | undefined> {
     const row = (await this.db
       .prepare('SELECT coordinate FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ?')
       .get(agentId, channel, transportScope ?? '')) as { coordinate: string } | undefined
-    return row?.coordinate
+    return row && (kind === undefined || coordinateKind(row.coordinate) === kind) ? row.coordinate : undefined
+  }
+
+  /** The agent's conversations whose coordinate in force is a coordinator's (auto-session-mode.md §3.5). */
+  async coordinatorReservations(
+    agentId: string
+  ): Promise<{ channel: string; transportScope?: string; coordinate: string }[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT channel, transportScope, coordinate FROM append_reservation WHERE agentId = ? AND coordinate LIKE ?
+          ORDER BY channel, transportScope`
+      )
+      .all(agentId, `${COORDINATOR_COORDINATE_PREFIX}%`)) as {
+      channel: string
+      transportScope: string
+      coordinate: string
+    }[]
+    return rows.map((row) => ({
+      channel: row.channel,
+      ...(row.transportScope ? { transportScope: row.transportScope } : {}),
+      coordinate: row.coordinate
+    }))
+  }
+
+  /** A conversation that left `auto` drops its coordinator unless it moved meanwhile, so a switch back mints a new one (auto-session-mode.md §3.5). */
+  async retireCoordinator(
+    agentId: string,
+    channel: string,
+    transportScope: string | null | undefined,
+    coordinate: string
+  ): Promise<boolean> {
+    const res = await this.db
+      .prepare(
+        'DELETE FROM append_reservation WHERE agentId = ? AND channel = ? AND transportScope = ? AND coordinate = ?'
+      )
+      .run(agentId, channel, transportScope ?? '', coordinate)
+    return Number(res.changes) > 0
   }
 
   /** A place's one long session (assistant-mode.md §5.2): the append session in force, else the place's only
@@ -4340,24 +4399,17 @@ export class LocalStore {
     return rows.length === 1 ? rows[0] : undefined
   }
 
-  /**
-   * Rotate a conversation onto its next coordinate (`!new`), from the one the caller read.
-   *
-   * A caller that loses the compare-and-set does NOT advance again: it re-reads, finds a
-   * coordinate minted after its own, and concludes the rotation it wanted already happened.
-   * So two `!new` commands issued simultaneously rotate once while two issued in sequence
-   * rotate twice — which is what each pair of users meant. Retrying would rotate a second
-   * time and leave a coordinate nobody ever posts into.
-   */
+  /** Rotate a conversation onto its next coordinate (`!new`) by compare-and-set from the one the caller read; a loser reads the winner's rotation instead of rotating again. */
   async advanceAppendCoordinate(
     agentId: string,
     channel: string,
     from: string,
     transportScope?: string | null,
-    now = Date.now()
+    now = Date.now(),
+    kind: ConversationCoordinateKind = coordinateKind(from)
   ): Promise<string> {
     const scope = transportScope ?? ''
-    const minted = nextAppendCoordinate(from, now)
+    const minted = nextAppendCoordinate(from, now, kind)
     const res = await this.db
       .prepare(
         `UPDATE append_reservation SET coordinate = ?, updatedAt = ?
@@ -4365,9 +4417,11 @@ export class LocalStore {
       )
       .run(minted, now, agentId, channel, scope, from)
     if (Number(res.changes) > 0) return minted
-    // Lost the CAS, or there was no reservation to rotate. Either way the current value is
-    // the answer — a rotation someone else just performed, or a freshly minted coordinate.
-    return await this.resolveAppendCoordinate(agentId, channel, scope, now)
+    // Lost the CAS or nothing to rotate: the current value answers, read as-is so two opposite mode switches cannot rotate forever.
+    return (
+      (await this.currentAppendCoordinate(agentId, channel, scope)) ??
+      (await this.resolveAppendCoordinate(agentId, channel, scope, now, kind))
+    )
   }
 
   /**
@@ -4468,6 +4522,16 @@ export class LocalStore {
         "UPDATE sessions SET retentionKeptAt = ?, retentionRecheckAt = ? WHERE key = ? AND updatedAt = ? AND state IN ('idle', 'closed')"
       )
       .run(keptAt, recheckAt, key, updatedAt)
+    return Number(res.changes) > 0
+  }
+
+  /** Record that retention reclaimed this session's workspace, only while it is still the row that was judged; false when it moved on. */
+  async markSessionWorkspaceReclaimed(key: string, updatedAt: number, reclaimedAt: number): Promise<boolean> {
+    const res = await this.db
+      .prepare(
+        "UPDATE sessions SET workspaceReclaimedAt = ? WHERE key = ? AND updatedAt = ? AND state IN ('idle', 'closed')"
+      )
+      .run(reclaimedAt, key, updatedAt)
     return Number(res.changes) > 0
   }
 
@@ -5279,15 +5343,16 @@ export class LocalStore {
       // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
       if (isAppendCoordinate(rec.thread))
         await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
-      // A purged sub-session leaves its parent's index (assistant-mode.md §5.6).
-      if (isSubsessionCoordinate(rec.thread)) {
-        await tx
-          .prepare('DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?')
-          .run(rec.agentId, key)
-        await tx
-          .prepare('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?')
-          .run(rec.agentId, key)
-      }
+      // A purged task leaves its parent's index, a threaded one on its own thread too, whose threads become unowned (auto-session-mode.md §6.5).
+      await tx
+        .prepare('DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?')
+        .run(rec.agentId, key)
+      await tx
+        .prepare('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?')
+        .run(rec.agentId, key)
+      await tx
+        .prepare('DELETE FROM assistant_subsession_thread WHERE agentId = ? AND childSessionKey = ?')
+        .run(rec.agentId, key)
       // A purged session neither answers nor is answered: its messages go with it (send-message-guide.md §9.3).
       await tx.prepare('DELETE FROM session_message WHERE recipientKey = ?').run(key)
       await tx.prepare('DELETE FROM session_message_sent WHERE senderKey = ?').run(key)
@@ -8555,20 +8620,7 @@ export class LocalStore {
     return inserted.changes === 1
   }
 
-  /**
-   * Admit a message and mint its permanent DELIVERY RECEIPT in ONE transaction.
-   *
-   * The receipt is a born-completed row recording that this delivery was served; the ordinary
-   * row is the replay queue entry, which is deleted the moment the turn settles. A provider
-   * whose redelivery ladder outlives the turn needs both, and needs them to share one fate:
-   *
-   *  - written separately, a crash between them leaves an ordinary row that replays with no
-   *    receipt, so the next redelivery is unrecognizable and runs the turn a second time;
-   *  - committed together, an ordinary row can only exist where its receipt does.
-   *
-   * `admitted` is false when the receipt was already there — the delivery has been served
-   * before, and the caller must run nothing, not merely stay quiet.
-   */
+  /** Atomically admit a message and its permanent receipt; an existing receipt admits nothing. */
   async appendInboxWithReceipt(row: InboxRow, receipt: InboxRow): Promise<{ admitted: boolean }> {
     return await this.transaction(async (raw) => {
       const tx = accessOf(raw)
@@ -8598,11 +8650,10 @@ export class LocalStore {
             loopGuardCounted: r.loopGuardCounted ?? 0,
             enqueuedAt: r.enqueuedAt
           })
-      // The receipt is the CAS. Losing it means another delivery of the same event owns this
-      // work, so the ordinary row is never written and no turn is admitted for this copy.
+      // The receipt is the CAS: a duplicate receipt admits no new work.
       const minted = await insert(receipt)
       if (minted.changes !== 1) return { admitted: false }
-      await insert(row)
+      if ((await insert(row)).changes !== 1) throw new Error('inbox admission row was not inserted')
       return { admitted: true }
     })
   }

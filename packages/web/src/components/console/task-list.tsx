@@ -329,8 +329,8 @@ export function useTaskStops(
   }
 }
 
-/** A row is finished once it reported, failed or ended. */
-export const taskFinished = (row: AssistantSubsessionDto) => row.state !== 'open'
+/** A row is finished once it reported, failed or ended; a threaded task lives on between its turns (auto-session-mode.md §6.5). */
+export const taskFinished = (row: AssistantSubsessionDto) => row.state !== 'open' && !row.threaded
 
 function taskTone(row: AssistantSubsessionDto, followUp: AssistantFollowUpDto | null): MarkTone {
   if (followUp) {
@@ -338,7 +338,9 @@ function taskTone(row: AssistantSubsessionDto, followUp: AssistantFollowUpDto | 
     if (followUp.status === 'waiting') return 'open'
     return followUp.status
   }
-  return row.state === 'open' ? 'running' : row.state === 'failed' ? 'failed' : 'done'
+  if (row.state === 'open') return 'running'
+  if (row.state === 'failed') return 'failed'
+  return row.threaded ? 'open' : 'done'
 }
 
 const STOP_RESULT: Record<Exclude<StopState, 'busy'>, 'stopped' | 'notRunning' | 'stopFailed' | 'stopUpgrade'> = {
@@ -423,11 +425,18 @@ export function BackgroundTaskRow({
     : [
         place,
         <span key="state" data-subsession-state="">
-          {t(`state.${row.state}`)}
+          {t(row.threaded && row.state === 'done' ? 'state.idle' : `state.${row.state}`)}
         </span>,
         <time key="started" dateTime={row.startedAt}>
           {t('started', { time: format.relativeTime(new Date(row.startedAt), { now, style: 'narrow' }) })}
-        </time>
+        </time>,
+        row.summary && row.summaryUpdatedAt ? (
+          <time key="summarized" dateTime={row.summaryUpdatedAt}>
+            {t('summarized', {
+              time: format.relativeTime(new Date(row.summaryUpdatedAt), { now, style: 'narrow' })
+            })}
+          </time>
+        ) : null
       ]
 
   // A follow-up's checks open from its done-when line in Activity, else from its meta line.
@@ -451,11 +460,15 @@ export function BackgroundTaskRow({
       {followUp && row.visible ? <FollowUpWatchLine followUp={followUp} /> : null}
     </>
   )
+  // A task's own summary, or the message it was opened with until it writes one (auto-session-mode.md §6.7).
+  const account = !followUp && row.visible ? (row.summary ?? row.background ?? null) : null
   const preview =
     viaPreview && followUp.doneWhen ? (
       <PreviewLine text={followUp.doneWhen} quiet expanded={expanded} onToggle={() => setExpanded((v) => !v)}>
         <FollowUpChecks followUp={{ ...followUp, doneWhen: null }} />
       </PreviewLine>
+    ) : account ? (
+      <PreviewLine text={account} quiet={!row.summary} expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
     ) : null
 
   return (

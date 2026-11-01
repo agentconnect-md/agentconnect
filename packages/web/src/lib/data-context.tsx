@@ -86,6 +86,8 @@ import {
   provisionDaemon as apiProvisionDaemon,
   renameDaemon as apiRenameDaemon,
   updateDaemonSessionRetention as apiUpdateDaemonSessionRetention,
+  updateDaemonWorkspaceRetention as apiUpdateDaemonWorkspaceRetention,
+  updateDaemonAutoUpgrade as apiUpdateDaemonAutoUpgrade,
   type DaemonSessionRetention,
   deleteDaemon as apiDeleteDaemon,
   restartDaemon as apiRestartDaemon,
@@ -286,6 +288,9 @@ interface ConsoleData {
   renameDaemon: (daemonId: string, name: string) => Promise<void>
   /** Set the daemon's finished-session retention window ("Expire sessions"), then re-pull. */
   setDaemonSessionRetention: (daemonId: string, retention: DaemonSessionRetention) => Promise<void>
+  setDaemonWorkspaceRetention: (daemonId: string, retention: DaemonSessionRetention) => Promise<void>
+  /** Turn a daemon's auto-upgrade on or off, then re-pull. */
+  setDaemonAutoUpgrade: (daemonId: string, enabled: boolean) => Promise<void>
   /** Mint a fresh key for an existing (offline) daemon — the reconnect command. */
   reconnectDaemon: (daemonId: string) => Promise<MintedKeyDto>
   /** Remove an offline daemon from the fleet, then re-pull. */
@@ -371,6 +376,7 @@ export function integrationRowFromDto(
     credentialCode: (revoked ? bot?.revokedCode : bot?.credentialRejectedCode) ?? null,
     channels: d.channels.map((c) => ({
       channelId: c.channelId,
+      isCodeSession: c.isCodeSession ?? false,
       name: c.name || c.channelId,
       ...(c.spaceId ? { spaceId: c.spaceId } : {}),
       ...(c.space ? { space: c.space } : {}),
@@ -1682,6 +1688,32 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateDaemons]
   )
 
+  // Set how long a finished session's workspace stays ("Clean up workspaces"), then re-pull.
+  const setDaemonWorkspaceRetention = useCallback(
+    async (daemonId: string, retention: DaemonSessionRetention) => {
+      await apiUpdateDaemonWorkspaceRetention(daemonId, retention)
+      settleInBackground(mutateDaemons())
+    },
+    [mutateDaemons]
+  )
+
+  // Project the PATCH's own answer onto the fleet row at once, then re-pull.
+  const setDaemonAutoUpgrade = useCallback(
+    async (daemonId: string, enabled: boolean) => {
+      const updated = await apiUpdateDaemonAutoUpgrade(daemonId, enabled)
+      const { autoUpgrade, autoUpgradeSupported, lastAutoUpgrade } = updated
+      await mutateDaemonLiveness(
+        (rows) =>
+          rows?.map((row) =>
+            row.daemonId === daemonId ? { ...row, autoUpgrade, autoUpgradeSupported, lastAutoUpgrade } : row
+          ),
+        { revalidate: false }
+      )
+      settleInBackground(mutateDaemons())
+    },
+    [mutateDaemonLiveness, mutateDaemons]
+  )
+
   // Reconnect: mint a new key + start command for an existing daemon. Like
   // provision, the row flips back to `online` via `refresh()` once it re-auths, so
   // the caller polls rather than this refreshing eagerly.
@@ -1820,6 +1852,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       provisionDaemon,
       renameDaemon,
       setDaemonSessionRetention,
+      setDaemonWorkspaceRetention,
+      setDaemonAutoUpgrade,
       reconnectDaemon,
       deleteDaemon,
       restartDaemon,
@@ -1907,6 +1941,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       provisionDaemon,
       renameDaemon,
       setDaemonSessionRetention,
+      setDaemonWorkspaceRetention,
+      setDaemonAutoUpgrade,
       reconnectDaemon,
       deleteDaemon,
       restartDaemon,

@@ -6,7 +6,7 @@ export const waylandSession = (): boolean => process.platform === 'linux' && Boo
 
 // Python (gi) holds the portal session, which lives only as long as its D-Bus connection, and runs GStreamer to emit Y4M.
 const HELPER = String.raw`#!/usr/bin/env python3
-# Usage: screencast.py TOKEN_FILE FPS [FRAMES]. Asks the ScreenCast portal for the monitor (persisting a restore
+# Usage: screencast.py TOKEN_FILE FPS CURSOR(1|0) [FRAMES]. Asks the ScreenCast portal for the monitor (persisting a restore
 # token so consent is asked once), then streams it as Y4M on stdout until killed.
 import os, signal, subprocess, sys
 import gi
@@ -14,7 +14,8 @@ gi.require_version('Gio', '2.0')
 from gi.repository import Gio, GLib
 
 token_path, fps = sys.argv[1], int(sys.argv[2])
-frames = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+show_cursor = sys.argv[3] == '1'
+frames = int(sys.argv[4]) if len(sys.argv) > 4 else 0
 NAME, PATH = 'org.freedesktop.portal.Desktop', '/org/freedesktop/portal/desktop'
 IFACE = 'org.freedesktop.portal.ScreenCast'
 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
@@ -46,7 +47,8 @@ def request(method, build):
 modes = bus.call_sync(NAME, PATH, 'org.freedesktop.DBus.Properties', 'Get',
                       GLib.Variant('(ss)', (IFACE, 'AvailableCursorModes')), None, Gio.DBusCallFlags.NONE, -1,
                       None).unpack()[0]
-cursor = 2 if modes & 2 else 1
+# 2 embeds the pointer in the frames, 1 hides it.
+cursor = 2 if show_cursor and modes & 2 else 1
 session = request('CreateSession', lambda t: GLib.Variant('(a{sv})', (
     {'handle_token': t, 'session_handle_token': GLib.Variant('s', 'acd%d' % os.getpid())},)))['session_handle']
 options = {'types': GLib.Variant('u', 1), 'multiple': GLib.Variant('b', False),

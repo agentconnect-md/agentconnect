@@ -1,6 +1,8 @@
 // The sendMessage, getToolGuide and listAgents surfaces teach delegated tasks to every agent (send-message-guide.md §2.1).
 import { describe, it, expect } from 'vitest'
-import { COLLABORATION_TOOLS, toolsForIntegrations } from '../src/mcp/tools.js'
+import { COLLABORATION_TOOLS, collaborationTools, toolsForIntegrations } from '../src/mcp/tools.js'
+import { SEND_MESSAGE_ACTIONS } from '../src/mcp/ops/send-message-actions.js'
+import type { TaskReach } from '../src/session/subsession-coordinate.js'
 import type { Integration } from '../src/agents/agent-schema.js'
 import { sendMessageGuide } from '../src/mcp/ops/tool-guide.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
@@ -62,7 +64,10 @@ describe('sendMessage self-delegation wording', () => {
       'reports back into this session automatically each time a round of its work finishes or fails'
     )
     expect(text).toContain('Questions, lookups and short answers never need a task')
-    expect(text).toContain('A task cannot start tasks of its own')
+    expect(text).toContain(
+      'A task may delegate tasks of its own, which report back to it; a task that another task started cannot'
+    )
+    expect(text).toContain('`title` is a short name for the work')
     expect(text).toContain('your own id without `channel` is refused — work of your own that needs no conversation')
     expect(text).not.toMatch(/sub-session|messageSubsession/)
     expect(text).toContain('Your own id (bot-a) with `channel` opens and activates a visible conversation of your own')
@@ -92,5 +97,60 @@ describe('sendMessage self-delegation wording', () => {
         'message mentions, is proposed, not started; when in doubt, do not delegate. "check again" asks for a status, ' +
         'not for the work again.'
     )
+  })
+})
+
+describe('where only the coordinator delegates (auto-session-mode.md §5.1)', () => {
+  const surface = (taskReach: TaskReach) => {
+    const tools = toolsForIntegrations([slackInt], { taskReach })
+    const send = tools.find((tool) => tool.name === 'sendMessage')!
+    const schema = send.inputSchema as { properties: Record<string, { enum?: string[] }> }
+    return { tools, send, schema, actions: schema.properties.action!.enum! }
+  }
+
+  it('gives every other session no delegateTask, and messageTask only for assistant mode’s own tasks', () => {
+    const full = surface('delegate')
+    expect(full.actions).toEqual([...SEND_MESSAGE_ACTIONS])
+    expect(full.send).toEqual(sendTool([slackInt]))
+
+    const assistant = surface('assistant')
+    expect(assistant.actions).toEqual(['callAgent', 'messageTask', 'replyToSession', 'postMessage'])
+    expect(Object.keys(assistant.schema.properties)).toContain('taskId')
+    expect(Object.keys(assistant.schema.properties)).not.toContain('title')
+    expect(assistant.send.description).toContain(
+      'messageTask gives a follow-up of this conversation new instructions, or your organization research another round'
+    )
+
+    const none = surface('none')
+    expect(none.actions).toEqual(['callAgent', 'replyToSession', 'postMessage'])
+    expect(Object.keys(none.schema.properties)).not.toContain('taskId')
+    for (const { send } of [assistant, none]) {
+      expect(send.description).not.toContain('delegateTask')
+      expect(send.description).toContain('replyToSession answers a message another session sent you')
+    }
+    expect(none.send.description).not.toMatch(/messageTask|listTasks|stopTask/)
+  })
+
+  it.each(['listAgents', 'listChannelAgents'])('%s points no other session at delegateTask', (name) => {
+    const tool = surface('none').tools.find((t) => t.name === name)!
+    expect(tool).toEqual(collaborationTools(false).find((t) => t.name === name))
+    expect(tool.description).toMatch(/a new channel-root conversation with yourself\.$/)
+    expect(tool.description).not.toContain('delegateTask')
+  })
+
+  it('says in getToolGuide that only the coordinator delegates, and what messageTask still reaches', () => {
+    const at = ctx([slackInt])
+    const assistant = sendMessageGuide(at, undefined, 'assistant').actions as {
+      action: string
+      availability?: string
+    }[]
+    const note = (list: typeof assistant, action: string) => list.find((entry) => entry.action === action)?.availability
+    expect(note(assistant, 'delegateTask')).toMatch(/^Unavailable here: only an Auto conversation’s coordinator/)
+    expect(note(assistant, 'messageTask')).toMatch(/^Here it reaches only a follow-up of this conversation/)
+    const none = sendMessageGuide(at, undefined, 'none').actions as typeof assistant
+    expect(note(none, 'messageTask')).toBe('Unavailable here: this session has no task it can message.')
+    const callAgent = sendMessageGuide(at, 'callAgent', 'none').rules as string[]
+    expect(callAgent.join('\n')).not.toContain('delegateTask')
+    expect(callAgent.join('\n')).toContain('work of your own that needs no conversation is done in this session.')
   })
 })

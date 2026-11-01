@@ -93,7 +93,8 @@ function member(id: string, over: Partial<DaemonRow> = {}): DaemonRow {
     createdAt: '',
     lastModifiedBy: '',
     lastModifiedAt: '',
-    sessionRetention: '7d',
+    sessionRetention: '90d',
+    workspaceRetention: '7d',
     visibility: 'org',
     sharedWith: [],
     canEdit: false,
@@ -338,7 +339,7 @@ describe('ClusterDetailView', () => {
     act(() => root.unmount())
     host.remove()
 
-    expect(opened).toContain('npx -y @agentconnect.md/cli auth --runtime claude-acp')
+    expect(opened).toContain('npx -y "@agentconnect.md/cli" auth --runtime claude-acp')
   })
 
   it('offers an owner a runtime refresh when the cluster’s members take requests', () => {

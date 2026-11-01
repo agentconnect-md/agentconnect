@@ -2,23 +2,30 @@
 // under ModalProvider), so it's already in the client bundle — and keeping the
 // directive off avoids Next's "props must be serializable" check on onChange.
 
-/**
- * The daemon's "Expire sessions" picker (Add/Edit daemon modals): how long the
- * daemon keeps FINISHED sessions in its local store before its retention sweep
- * deletes them (session row + per-session Git worktree). 'never' disables the
- * sweep; any other value is an integer day count ('<n>d') — the picker offers
- * the common windows plus a custom day input. Rendered as the standard `.inp`
- * field with an invisible overlaid native <select> (same pattern as the
- * lifecycle modal's version picker).
- */
+// The daemon's retention pickers (Add/Edit daemon modals): how long a finished session's row and transcript, or its workspace, stay.
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import type { DaemonSessionRetention } from '@/lib/api'
 
-export const SESSION_RETENTION_DEFAULT: DaemonSessionRetention = '7d'
+export const SESSION_RETENTION_DEFAULT: DaemonSessionRetention = '90d'
+export const WORKSPACE_RETENTION_DEFAULT: DaemonSessionRetention = '7d'
 
-const PRESET_VALUES: DaemonSessionRetention[] = ['7d', '30d', '90d', 'never']
+const KINDS = {
+  session: {
+    presets: ['7d', '30d', '90d', 'never'],
+    defaultValue: SESSION_RETENTION_DEFAULT,
+    scope: 'sessionRetention'
+  },
+  workspace: {
+    presets: ['3d', '7d', '30d', 'never'],
+    defaultValue: WORKSPACE_RETENTION_DEFAULT,
+    scope: 'workspaceRetention'
+  }
+} as const satisfies Record<
+  string,
+  { presets: DaemonSessionRetention[]; defaultValue: DaemonSessionRetention; scope: string }
+>
 
 // Sentinel for the overlaid native <select>; never leaves this component.
 const CUSTOM = '__custom'
@@ -45,23 +52,25 @@ function retentionDays(value: DaemonSessionRetention): number | null {
 }
 
 export function SessionRetentionField({
+  kind = 'session',
   value,
   onChange,
   disabled
 }: {
+  kind?: keyof typeof KINDS
   value: DaemonSessionRetention
   onChange: (value: DaemonSessionRetention) => void
   disabled?: boolean
 }) {
   const t = useTranslations('Daemons.dialog')
-  const presets = PRESET_VALUES.map((preset) => ({
+  const { defaultValue, scope } = KINDS[kind]
+  const presetValues: readonly DaemonSessionRetention[] = KINDS[kind].presets
+  const presets = presetValues.map((preset) => ({
     value: preset,
     label:
-      preset === 'never'
-        ? t('sessionRetention.never')
-        : t('sessionRetention.afterDays', { count: Number.parseInt(preset, 10) })
+      preset === 'never' ? t(`${scope}.never`) : t('sessionRetention.afterDays', { count: Number.parseInt(preset, 10) })
   }))
-  const isPreset = PRESET_VALUES.includes(value)
+  const isPreset = presetValues.includes(value)
   // Sticky custom mode: once the operator picks "Custom…" the day input stays
   // visible even while the typed count momentarily equals a preset (7 → 70).
   const [custom, setCustom] = useState(() => !isPreset)
@@ -99,11 +108,11 @@ export function SessionRetentionField({
 
   return (
     <div className="fld mt-[14px]">
-      <span className="fldlbl">{t('expireSessions')}</span>
+      <span className="fldlbl">{t(`${scope}.label`)}</span>
       <div className={`inp relative ${disabled ? 'opacity-60' : ''}`}>
         <span className="truncate font-sans text-[13px] text-(--text-primary)">
           {label}
-          {!showCustom && value === SESSION_RETENTION_DEFAULT && (
+          {!showCustom && value === defaultValue && (
             <span className="text-(--text-tertiary)"> · {t('sessionRetention.default')}</span>
           )}
         </span>
@@ -113,12 +122,12 @@ export function SessionRetentionField({
           disabled={disabled}
           onChange={(e) => selectPreset(e.target.value)}
           className="absolute inset-0 cursor-pointer opacity-0 disabled:cursor-default"
-          aria-label={t('expireSessions')}
+          aria-label={t(`${scope}.label`)}
         >
           {presets.map((o) => (
             <option key={o.value} value={o.value}>
               {o.label}
-              {o.value === SESSION_RETENTION_DEFAULT ? ` (${t('sessionRetention.default')})` : ''}
+              {o.value === defaultValue ? ` (${t('sessionRetention.default')})` : ''}
             </option>
           ))}
           <option value={CUSTOM}>{t('sessionRetention.custom')}</option>
@@ -138,7 +147,7 @@ export function SessionRetentionField({
               disabled={disabled}
               onChange={(e) => typeDays(e.target.value)}
               className="w-full bg-transparent font-sans text-[13px] text-(--text-primary) outline-none"
-              aria-label={t('sessionRetention.daysAriaLabel')}
+              aria-label={t(`${scope}.daysAriaLabel`)}
               aria-invalid={customInvalid || undefined}
               placeholder={t('sessionRetention.days')}
             />
@@ -154,7 +163,7 @@ export function SessionRetentionField({
         </>
       )}
       <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-        {t('sessionRetention.hint')}
+        {t(`${scope}.hint`)}
       </span>
     </div>
   )

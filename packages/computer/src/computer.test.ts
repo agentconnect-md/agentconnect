@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { redactArgs, type AuditRecord } from './audit.js'
+import type { ComputerAdminPromptMode } from '@agentconnect.md/protocol/computer'
+import type { AdminPrompt, AdminPromptSource } from './admin-prompts.js'
 import { Computer, type ToolOutput } from './computer.js'
+import { DriverToolError } from './driver/client.js'
 import { FakeDriver, testConfig } from './testing.js'
 
 function setup(
@@ -53,6 +56,36 @@ describe('Computer', () => {
     expect(driver.inputCalls()).toEqual(['get_desktop_state', 'click', 'get_desktop_state'])
     expect(driver.calls.find((call) => call.name === 'click')!.args).toEqual({ scope: 'desktop', x: 10, y: 20 })
     expect(output.content.some((block) => block.type === 'image')).toBe(true)
+  })
+
+  it('reports a click the driver sent as delivered when it moved the foreground to another process', async () => {
+    const { driver, computer } = setup({ actionScreenshot: false })
+    const failure = (text: string) => () => {
+      throw new DriverToolError('click', { content: [{ type: 'text', text }] })
+    }
+    driver.handlers.click = failure(
+      'foreground_unavailable: exact target HWND 0x4023a or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x102ae)'
+    )
+    const sent = await computer.click('claude', { x: 10, y: 20 })
+    expect(sent.isError).toBeUndefined()
+    expect(sent.content[0]!.text).toMatch(/^Click sent/)
+    driver.handlers.click = failure('foreground_unavailable: could not bring HWND 0x1 to the foreground')
+    expect(errorOf(await computer.click('claude', { x: 10, y: 20 }))).toMatchObject({ error: 'driver_error' })
+  })
+
+  it('launches through its own launcher instead of the driver when it has one', async () => {
+    const driver = new FakeDriver()
+    const launched: string[] = []
+    const computer = new Computer({
+      driver,
+      config: testConfig({ actionScreenshot: false }),
+      sleep: async () => undefined,
+      launchApp: async (app) => (launched.push(app), `launched ${app} (pid 42)`)
+    })
+    const output = await computer.launch('claude', { app: 'notepad' })
+    expect(launched).toEqual(['notepad'])
+    expect(output.content).toEqual([{ type: 'text', text: 'launched notepad (pid 42)' }])
+    expect(driver.inputCalls()).not.toContain('launch_app')
   })
 
   it('recaptures after the driver restarts because the capture mapping is lost', async () => {
@@ -289,14 +322,87 @@ describe('Computer', () => {
     await computer.viewerInput('alice', { type: 'key', keys: ['win'] })
     const calls = driver.calls.filter((call) => call.name === 'click' || call.name === 'press_key').slice(-2)
     expect(calls.map((call) => call.args)).toEqual([
-      { scope: 'desktop', x: 640, y: 719, button: 'right' },
-      { scope: 'desktop', key: 'win' }
+      { scope: 'desktop', x: 640, y: 719, button: 'right', session: 'viewer' },
+      { scope: 'desktop', key: 'win', session: 'viewer' }
     ])
     expect(audit.at(-1)).toMatchObject({ client: 'alice', tool: 'viewer_key', outcome: 'ok' })
 
     expect(computer.handBack('bob')).toBe(false)
     expect(computer.handBack('alice')).toBe(true)
     expect((await computer.click('claude', { x: 1, y: 1 })).isError).toBeUndefined()
+  })
+
+  it('runs viewer input in its own session with the agent cursor off, set up again when the driver may have lost it', async () => {
+    const { driver, computer, advance } = setup({ actionScreenshot: false })
+    const setupCalls = () =>
+      driver.calls.filter(
+        (call) =>
+          call.args.session === 'viewer' &&
+          ['start_session', 'set_agent_cursor_motion', 'get_desktop_state'].includes(call.name)
+      )
+    const hides = () => driver.calls.filter((call) => call.name === 'set_agent_cursor_enabled')
+    const lastClick = () => driver.calls.filter((call) => call.name === 'click').at(-1)
+    await computer.click('claude', { x: 1, y: 1 })
+    expect(lastClick()).toEqual({ name: 'click', args: { scope: 'desktop', x: 1, y: 1 } })
+
+    computer.takeOver('alice')
+    await computer.viewerInput('alice', { type: 'move', x: 0.5, y: 0.5 })
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    expect(setupCalls().map((call) => call.name)).toEqual([
+      'start_session',
+      'set_agent_cursor_motion',
+      'get_desktop_state'
+    ])
+    // Every action shows the session's cursor again, so each one is followed by hiding it.
+    expect(hides()).toEqual(
+      Array(2).fill({ name: 'set_agent_cursor_enabled', args: { session: 'viewer', enabled: false } })
+    )
+
+    // A restarted driver gets the set-up again.
+    driver.starts++
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    expect(setupCalls()).toHaveLength(6)
+
+    // A named session that idled out refuses every call until start_session revives it.
+    let ended = true
+    for (const name of ['set_agent_cursor_motion', 'get_desktop_state', 'click', 'set_agent_cursor_enabled']) {
+      const ok = driver.handlers[name]
+      driver.handlers[name] = (args) => {
+        if (ended && args.session === 'viewer') {
+          throw new DriverToolError(name, { content: [{ type: 'text', text: 'session has ended' }] })
+        }
+        return ok ? ok(args) : { content: [{ type: 'text', text: `${name} ok` }] }
+      }
+    }
+    driver.handlers.start_session = () => {
+      ended = false
+      return { content: [{ type: 'text', text: 'started' }] }
+    }
+    advance(6 * 60_000)
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    expect(setupCalls()).toHaveLength(9)
+    expect(lastClick()?.args.session).toBe('viewer')
+
+    // macOS refuses cursor settings (it has no overlay), which must not block the click.
+    driver.starts++
+    driver.handlers.set_agent_cursor_motion = () => {
+      throw new DriverToolError('set_agent_cursor_motion', {
+        content: [{ type: 'text', text: 'overlay unavailable' }],
+        structuredContent: { refusal: { code: 'facility_unavailable' } }
+      })
+    }
+    await computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })
+    expect(lastClick()?.args.session).toBe('viewer')
+    expect(hides()).toHaveLength(4)
+
+    // Any other refusal of the settings is a real failure, not a missing overlay.
+    driver.starts++
+    driver.handlers.set_agent_cursor_motion = () => {
+      throw new DriverToolError('set_agent_cursor_motion', { content: [{ type: 'text', text: 'session has ended' }] })
+    }
+    await expect(computer.viewerInput('alice', { type: 'click', x: 0.5, y: 0.5 })).rejects.toMatchObject({
+      code: 'driver_error'
+    })
   })
 
   for (const [revoke, wait] of [
@@ -364,5 +470,135 @@ describe('Computer', () => {
     }
     expect(errorOf(await computer.type('claude', { text: '你好' }))).toMatchObject({ error: 'human_in_control' })
     expect(driver.calls.filter((call) => call.name === 'type_text')).toHaveLength(1)
+  })
+})
+
+describe('administrator prompts (computer-use.md §4.2.1)', () => {
+  const PROMPT: AdminPrompt = {
+    id: '1',
+    kind: 'consent',
+    app: 'Windows Command Processor',
+    publisher: 'Verified publisher: Microsoft Windows',
+    command: '"C:\\Windows\\system32\\cmd.exe" /c whoami',
+    lines: []
+  }
+
+  function prompts(mode: ComputerAdminPromptMode | undefined, prompt: AdminPrompt | undefined = PROMPT) {
+    const answers: Array<[string, string]> = []
+    const source: { current: AdminPrompt | undefined } & AdminPromptSource = {
+      current: prompt,
+      problem: undefined,
+      pending: () => source.current,
+      answer: async (id: string, answer: string) => {
+        answers.push([id, answer])
+        source.current = undefined
+      }
+    }
+    const driver = new FakeDriver()
+    const audit: AuditRecord[] = []
+    const computer = new Computer({
+      driver,
+      config: testConfig({ actionScreenshot: false, humanIdleSeconds: 0 }),
+      audit: (record) => audit.push(record),
+      sleep: async () => undefined,
+      adminPrompts: { source, mode: () => mode }
+    })
+    return { computer, source, answers, audit, driver }
+  }
+
+  it('tells the agent about a waiting prompt that screenshots cannot show, and holds other input until it is answered', async () => {
+    const { computer, driver } = prompts('agent')
+    const shot = await computer.screenshot('claude')
+    const note = JSON.parse(shot.content.at(-1)!.text!) as Record<string, unknown>
+    expect(note).toMatchObject({ admin_prompt: { kind: 'consent', app: 'Windows Command Processor' } })
+    expect(note.note).toContain('computer_admin_prompt')
+    expect(errorOf(await computer.click('claude', { x: 1, y: 1 }))).toMatchObject({
+      error: 'admin_prompt_pending',
+      adminPrompt: { command: PROMPT.command }
+    })
+    expect(driver.inputCalls()).not.toContain('click')
+    // The secure desktop refuses capture: the prompt in words stands in for the screenshot.
+    driver.handlers.get_desktop_state = () => {
+      throw new DriverToolError('get_desktop_state', { content: [{ type: 'text', text: 'BitBlt failed' }] })
+    }
+    const refused = await computer.screenshot('claude')
+    expect(refused.isError).toBeUndefined()
+    expect(JSON.parse(refused.content[0]!.text!)).toMatchObject({ admin_prompt: { kind: 'consent' } })
+  })
+
+  it('lets the agent answer in the agent mode, takes the lease and audits what it approved', async () => {
+    const { computer, answers, audit } = prompts('agent')
+    const output = await computer.adminPrompt('claude', { answer: 'approve' }, undefined)
+    expect(JSON.parse(output.content[0]!.text!)).toMatchObject({ answered: 'approve' })
+    expect(answers).toEqual([['1', 'approve']])
+    expect(computer.info().lease).toMatchObject({ holder: 'claude' })
+    expect(audit.at(-1)).toMatchObject({
+      tool: 'computer_admin_prompt',
+      outcome: 'ok',
+      args: { answer: 'approve', app: 'Windows Command Processor' }
+    })
+    expect(errorOf(await computer.adminPrompt('claude', { answer: 'deny' }, undefined))).toMatchObject({
+      error: 'no_admin_prompt'
+    })
+  })
+
+  it("needs a person's approval to approve in the people mode, the default, but never to deny", async () => {
+    const people = prompts(undefined)
+    expect(
+      errorOf(await people.computer.adminPrompt('claude', { answer: 'approve' }, 'allowed_session'))
+    ).toMatchObject({
+      error: 'approval_required',
+      adminPrompt: { app: 'Windows Command Processor' }
+    })
+    expect(people.answers).toEqual([])
+    // The person's approval counts only with the prompt it was given for.
+    expect(errorOf(await people.computer.adminPrompt('claude', { answer: 'approve' }, 'allowed'))).toMatchObject({
+      error: 'approval_required',
+      adminPrompt: { id: '1' }
+    })
+    await people.computer.adminPrompt('claude', { answer: 'approve', prompt: '1' }, 'allowed')
+    expect(people.answers).toEqual([['1', 'approve']])
+    const deny = prompts('people')
+    await deny.computer.adminPrompt('claude', { answer: 'deny' }, undefined)
+    expect(deny.answers).toEqual([['1', 'deny']])
+  })
+
+  it('refuses an answer decided for a prompt that another one replaced', async () => {
+    const { computer, source, answers } = prompts('people')
+    source.current = { ...PROMPT, id: '2' }
+    expect(errorOf(await computer.adminPrompt('claude', { answer: 'approve', prompt: '1' }, 'allowed'))).toMatchObject({
+      error: 'admin_prompt_changed',
+      adminPrompt: { id: '2' }
+    })
+    expect(answers).toEqual([])
+  })
+
+  it('leaves a password prompt to a person, whatever the mode', async () => {
+    const { computer, answers } = prompts('agent', { ...PROMPT, kind: 'credentials' })
+    expect(errorOf(await computer.adminPrompt('claude', { answer: 'approve' }, 'allowed'))).toMatchObject({
+      error: 'denied'
+    })
+    await computer.adminPrompt('claude', { answer: 'deny' }, undefined)
+    expect(answers).toEqual([['1', 'deny']])
+  })
+
+  it('answers by itself in the always modes, only while an agent holds control, and once per prompt', async () => {
+    const idle = prompts('approve')
+    await idle.computer.adminPromptChanged()
+    expect(idle.answers).toEqual([])
+
+    const { computer, source, answers, audit } = prompts('deny')
+    computer.acquire('claude')
+    await Promise.all([computer.adminPromptChanged(), computer.adminPromptChanged()])
+    expect(answers).toEqual([['1', 'deny']])
+    expect(audit.at(-1)).toMatchObject({ client: 'claude', tool: 'admin_prompt_auto', outcome: 'ok' })
+    source.current = { ...PROMPT, id: '2' }
+    expect(errorOf(await computer.adminPrompt('claude', { answer: 'approve' }, 'allowed'))).toMatchObject({
+      error: 'denied'
+    })
+    const password = prompts('approve', { ...PROMPT, kind: 'credentials' })
+    password.computer.acquire('claude')
+    await password.computer.adminPromptChanged()
+    expect(password.answers).toEqual([])
   })
 })

@@ -31,6 +31,7 @@ import type {
 import { isHonoredRepoGrant } from '../persistence/ports.js'
 import { STALE_REASON_TEXT } from './repository-grant-reattestor.js'
 import { githubRequest, githubRequestPage, mintAppJwt, GithubApiError, type FetchLike, type GithubPage } from './api.js'
+import type { GithubAppRegistry } from './app-registry.js'
 import { githubAppBotIdentity, type GithubAppConfig } from './config.js'
 import {
   InstallationTokenService,
@@ -121,6 +122,8 @@ export interface GithubServiceDeps {
   /** Optional lazy repair of the workspace's rename-proof numeric repo id. */
   agents?: Pick<AgentRepo, 'setWorkspaceRepoId'>
   onInstallationFactsChanged?: (installationId: bigint, orgId: OrgId) => void | Promise<void>
+  /** Organization GitHub Apps; absent ⇒ every installation is signed with the built-in App. */
+  appRegistry?: Pick<GithubAppRegistry, 'configForInstallation'>
   pepper: string
   fetchImpl?: FetchLike
   baseUrl?: string
@@ -235,7 +238,13 @@ export class GithubService {
 
   constructor(private readonly deps: GithubServiceDeps) {
     this.slug = deps.cfg.slug
-    this.tokens = new InstallationTokenService(deps.cfg, deps.clock, deps.fetchImpl, deps.baseUrl)
+    this.tokens = new InstallationTokenService(
+      deps.cfg,
+      deps.clock,
+      deps.fetchImpl,
+      deps.baseUrl,
+      deps.appRegistry ? (installationId) => deps.appRegistry!.configForInstallation(installationId) : undefined
+    )
     this.repoPages = new LRUCache({
       ...cacheOptions(deps.clock, MAX_REPO_PAGE_CACHE_ENTRIES),
       ttl: REPO_PAGE_CACHE_MS,
@@ -329,7 +338,7 @@ export class GithubService {
    */
   async uninstallInstallation(installationId: bigint): Promise<void> {
     try {
-      await this.appRequest<void>(`/app/installations/${installationId}`, 'DELETE')
+      await this.appRequest<void>(`/app/installations/${installationId}`, 'DELETE', false, installationId)
     } catch (e) {
       if (!(e instanceof GithubApiError) || (e.status !== 404 && e.status !== 410)) throw e
     }
@@ -578,7 +587,12 @@ export class GithubService {
    */
   async pullInstallation(installationId: bigint): Promise<GithubInstallationFacts | null> {
     try {
-      const ins = await this.appRequest<GhInstallation>(`/app/installations/${installationId}`)
+      const ins = await this.appRequest<GhInstallation>(
+        `/app/installations/${installationId}`,
+        'GET',
+        false,
+        installationId
+      )
       this.outdatedInstallationsCache = undefined
       return toFacts(ins)
     } catch (e) {
@@ -801,7 +815,7 @@ export class GithubService {
         throw new GitCredDeniedError('gitcred mint rate exceeded — backing off', 'RATE_LIMITED', true)
       }
     }
-    const ins = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner)
+    const ins = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner, agent.githubAppId)
     if (!ins || ins.orgId !== agent.orgId) {
       throw new GitCredDeniedError(`no live github installation covers ${owner}`, 'LEASE_DENIED', false)
     }
@@ -839,7 +853,7 @@ export class GithubService {
   ): Promise<ResolvedAgentRepoAuthorization> {
     const [owner, repo] = repoFullName.split('/')
     if (!owner || !repo) throw new GitCredDeniedError('invalid github repository name', 'SCOPE_DENIED', false)
-    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner)
+    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner, agent.githubAppId)
     if (!installation || installation.orgId !== agent.orgId) {
       throw new GitCredDeniedError(`no live github installation covers ${owner}`, 'LEASE_DENIED', false)
     }
@@ -862,7 +876,11 @@ export class GithubService {
         const workspaceLabel = gitRepoLabel(workspace.gitRepo)
         const [workspaceOwner, workspaceRepo] = workspaceLabel.split('/')
         if (workspaceOwner && workspaceRepo) {
-          const workspaceInstallation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, workspaceOwner)
+          const workspaceInstallation = await this.deps.installations.liveByOrgAndAccount(
+            agent.orgId,
+            workspaceOwner,
+            agent.githubAppId
+          )
           if (workspaceInstallation && !workspaceInstallation.suspendedAt) {
             const workspaceRef = await this.repoRefFor(workspaceInstallation, workspaceOwner, workspaceRepo)
             workspaceRepoId = workspaceRef?.repoId
@@ -979,7 +997,7 @@ export class GithubService {
     if (!owner || !repo) return null
     // By ACCOUNT LOGIN against live rows, like every other mint path: the stored installationId is
     // provenance only, so an uninstall→reinstall self-heals here too.
-    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner)
+    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner, agent.githubAppId)
     if (!installation || installation.orgId !== agent.orgId || installation.suspendedAt) return null
     if (agent.workspaceRepoId !== undefined) {
       return { repoId: agent.workspaceRepoId, repoFullName: label, installationId: installation.installationId }
@@ -1006,7 +1024,7 @@ export class GithubService {
   > {
     const [owner, repo] = repoPath.split('/')
     if (!owner || !repo) return 'not_found'
-    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner)
+    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner, agent.githubAppId)
     if (!installation || installation.orgId !== agent.orgId || installation.suspendedAt) return 'no_access'
     const refused = (e: unknown) => {
       if (e instanceof GitCredDeniedError || e instanceof GithubApiError)
@@ -1107,14 +1125,32 @@ export class GithubService {
     agent: AgentRecord,
     repoId: bigint,
     repoFullName: string,
-    // True for an installation row's Checks, which its grant carries because the grant outlives no row.
-    opts: { installationGrants?: boolean } = {}
+    // installationGrants: true for an installation row's Checks, which its grant carries because the grant outlives no row.
+    // signerAppId: the App that created the Check being updated (null ⇒ built-in), when it differs from the agent's.
+    opts: { installationGrants?: boolean; signerAppId?: string | null } = {}
   ): Promise<{ cred: MintedGitCred; resolved: ResolvedAgentRepoAuthorization }> {
     let resolved = await this.resolveAgentRepoAuthorization(agent, repoId, repoFullName, {
       installationGrants: opts.installationGrants === true
     })
     if (resolved.access !== 'write') {
       throw new GitCredDeniedError('informational Checks require write repository authorization', 'SCOPE_DENIED', false)
+    }
+    if (opts.signerAppId !== undefined && opts.signerAppId !== (agent.githubAppId ?? null)) {
+      // Authority stays the agent's current grant; only GitHub's credential comes from the App that created the Check.
+      const [owner = '', repo = ''] = resolved.repoFullName.split('/')
+      const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner, opts.signerAppId)
+      if (!installation || installation.suspendedAt) {
+        throw new GitCredDeniedError(`no live github installation covers ${owner}`, 'LEASE_DENIED', false)
+      }
+      const ref = await this.repoRefFor(installation, owner, repo)
+      if (!ref || ref.repoId !== resolved.repoId) {
+        throw new GitCredDeniedError(
+          'the App that created this Check no longer reaches the repository',
+          'SCOPE_DENIED',
+          false
+        )
+      }
+      resolved = { ...resolved, installation }
     }
     if (!hasChecksReporterPermissions(resolved.installation)) {
       const refreshed = await this.refreshInstallationFacts(resolved.installation.installationId)
@@ -1132,6 +1168,13 @@ export class GithubService {
     return { cred: minted.cred, resolved }
   }
 
+  /** The App that signs a Check last written through `installationId`: its organization App id, null for the built-in App, undefined when unknown. */
+  async checkSignerAppOf(orgId: OrgId, installationId: bigint | null | undefined): Promise<string | null | undefined> {
+    if (installationId == null) return undefined
+    const row = await this.deps.installations.getByInstallationId(installationId)
+    return row?.orgId === orgId ? (row.githubAppId ?? null) : undefined
+  }
+
   /** Cleanup-only Checks capability for a tombstoned projection after its
    * Agent or per-repository authorization has been deleted. The durable
    * projection supplies org + numeric repo identity; this method still
@@ -1140,7 +1183,8 @@ export class GithubService {
   async mintChecksForProjectionCleanup(
     orgId: OrgId,
     repoId: bigint,
-    repoFullName: string
+    repoFullName: string,
+    lastInstallationId?: bigint | null
   ): Promise<{
     cred: MintedGitCred
     repoId: bigint
@@ -1149,7 +1193,9 @@ export class GithubService {
   }> {
     const [owner, repo] = repoFullName.split('/')
     if (!owner || !repo) throw new GitCredDeniedError('invalid github repository name', 'SCOPE_DENIED', false)
-    let installation = await this.deps.installations.liveByOrgAndAccount(orgId, owner)
+    // Only the App that created a Check can update it, so the last installation picks the App; authority is still re-resolved.
+    const githubAppId = (await this.checkSignerAppOf(orgId, lastInstallationId)) ?? null
+    let installation = await this.deps.installations.liveByOrgAndAccount(orgId, owner, githubAppId)
     if (!installation || installation.suspendedAt) {
       throw new GitCredDeniedError(`no live github installation covers ${owner}`, 'LEASE_DENIED', false)
     }
@@ -1186,7 +1232,11 @@ export class GithubService {
       workspaceLabel = gitRepoLabel(workspace.gitRepo)
       workspaceOwner = workspaceLabel.split('/')[0]
       if (workspaceLabel.toLowerCase() === repoFullName.toLowerCase()) {
-        const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, workspaceOwner!)
+        const installation = await this.deps.installations.liveByOrgAndAccount(
+          agent.orgId,
+          workspaceOwner!,
+          agent.githubAppId
+        )
         if (!installation || installation.suspendedAt) {
           throw new GitCredDeniedError(`no live github installation covers ${workspaceOwner}`, 'LEASE_DENIED', false)
         }
@@ -1219,7 +1269,7 @@ export class GithubService {
     )
     const workspaceRenameCandidate =
       agent.workspaceRepoId !== undefined && workspaceOwner?.toLowerCase() === owner.toLowerCase()
-    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner)
+    const installation = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner, agent.githubAppId)
     // Grants come after rows and skill sources (decision 10); one whose installation is gone still names its account, to deny as a lease.
     const installationGrants = exact || skillExact ? [] : await this.installationGrantsOf(agent)
     const grant = installation
@@ -1368,18 +1418,23 @@ export class GithubService {
   private async appRequest<T>(
     path: string,
     method: 'GET' | 'POST' | 'DELETE' = 'GET',
-    bigIdsAsStrings = false
+    bigIdsAsStrings = false,
+    /** Sign with the App this installation belongs to; omitted ⇒ the built-in App. */
+    installationId?: bigint
   ): Promise<T> {
-    return (await this.appRequestPage<T>(path, bigIdsAsStrings, method)).data
+    return (await this.appRequestPage<T>(path, bigIdsAsStrings, method, installationId)).data
   }
 
   /** {@link appRequest} keeping the `rel="next"` cursor (paginated list reads). */
   private async appRequestPage<T>(
     path: string,
     bigIdsAsStrings = false,
-    method: 'GET' | 'POST' | 'DELETE' = 'GET'
+    method: 'GET' | 'POST' | 'DELETE' = 'GET',
+    installationId?: bigint
   ): Promise<GithubPage<T>> {
-    const jwt = await mintAppJwt(this.deps.cfg)
+    const signer =
+      installationId !== undefined ? await this.deps.appRegistry?.configForInstallation(installationId) : undefined
+    const jwt = await mintAppJwt(signer ?? this.deps.cfg)
     return githubRequestPage<T>(path, {
       method,
       auth: jwt,
@@ -1389,25 +1444,29 @@ export class GithubService {
     })
   }
 
+  /** The user id behind `<slug>[bot]`, from GitHub's public users endpoint (no App JWT or installation token). */
+  async botUserId(slug: string): Promise<number> {
+    const login = `${slug}[bot]`
+    const user = await githubRequest<GhUser>(`/users/${encodeURIComponent(login)}`, {
+      auth: null,
+      fetchImpl: this.deps.fetchImpl,
+      baseUrl: this.deps.baseUrl
+    })
+    if (
+      !Number.isSafeInteger(user.id) ||
+      user.id <= 0 ||
+      user.type !== 'Bot' ||
+      user.login.toLowerCase() !== login.toLowerCase()
+    ) {
+      throw new Error(`unexpected GitHub user response for ${login}`)
+    }
+    return user.id
+  }
+
   private async resolveGitCommitIdentity(): Promise<GitCommitIdentity | undefined> {
-    const login = `${this.slug}[bot]`
     try {
-      // Public endpoint: no App JWT or installation token is needed, and the
-      // process-level promise above keeps this to one request per CP instance.
-      const user = await githubRequest<GhUser>(`/users/${encodeURIComponent(login)}`, {
-        auth: null,
-        fetchImpl: this.deps.fetchImpl,
-        baseUrl: this.deps.baseUrl
-      })
-      if (
-        !Number.isSafeInteger(user.id) ||
-        user.id <= 0 ||
-        user.type !== 'Bot' ||
-        user.login.toLowerCase() !== login.toLowerCase()
-      ) {
-        throw new Error(`unexpected GitHub user response for ${login}`)
-      }
-      return githubAppBotIdentity(this.slug, user.id)
+      // The process-level promise above keeps this to one request per CP instance.
+      return githubAppBotIdentity(this.slug, await this.botUserId(this.slug))
     } catch (error) {
       this.deps.log?.warn(
         `github: bot identity lookup failed; commit attribution disabled (${error instanceof Error ? error.message : String(error)})`

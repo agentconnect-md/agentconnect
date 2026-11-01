@@ -18,6 +18,8 @@ export interface GithubRerequestDeps {
     | 'getRunById'
   >
   appId: number
+  /** The GitHub App id of an installation's organization App; null ⇒ the built-in App's or unknown. */
+  orgAppIdOf?: (installationId: bigint) => Promise<bigint | null>
 }
 
 const TERMINAL_CHECK_STATES = new Set([
@@ -51,6 +53,8 @@ export class GithubRerequestService {
     if (!this.matchesCurrentHook(hook, projection, run) || !this.matchesCurrentRun(run, projection)) {
       return { allowed: false }
     }
+    // An organization App's delivery reaches only a Check that App wrote.
+    if (req.appId !== undefined && !(await this.writtenByApp(projection, req.appId))) return { allowed: false }
 
     return {
       allowed: true,
@@ -128,6 +132,11 @@ export class GithubRerequestService {
       ]
     })
     return targets.length > 0 ? { allowed: true, targets } : { allowed: false }
+  }
+
+  private async writtenByApp(projection: HookReviewProjectionRecord, appId: string): Promise<boolean> {
+    if (projection.lastResolvedInstallationId === null || !this.deps.orgAppIdOf) return false
+    return (await this.deps.orgAppIdOf(projection.lastResolvedInstallationId)) === BigInt(appId)
   }
 
   private matchesProjection(

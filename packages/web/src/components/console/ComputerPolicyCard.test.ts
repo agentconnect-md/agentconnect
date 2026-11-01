@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { ComputerPolicy } from '@agentconnect.md/protocol/computer'
-import { draftOf, policyFromDraft } from './ComputerPolicyCard'
+import { DEFAULT_COMPUTER_ADMIN_PROMPT_MODE, type ComputerPolicy } from '@agentconnect.md/protocol/computer'
+import { DEFAULT_ADMIN_PROMPTS, draftOf, policyFromDraft } from './ComputerPolicyCard'
 
 const policy: ComputerPolicy = {
   allowedMembers: ['u1'],
@@ -19,6 +19,14 @@ describe('the policy form', () => {
   it('round-trips a policy and keeps the fields it does not edit', () => {
     const result = policyFromDraft(policy, draftOf(policy))
     expect(result).toEqual({ policy })
+  })
+
+  it('keeps the administrator prompt mode the taskbar set, and stores a change made here', () => {
+    const windows = { ...policy, approvals: { firstInputPerSession: true, adminPrompts: 'agent' as const } }
+    expect(policyFromDraft(windows, draftOf(windows))).toEqual({ policy: windows })
+    const denied = policyFromDraft(policy, { ...draftOf(policy), adminPrompts: 'deny' })
+    expect('policy' in denied && denied.policy.approvals).toEqual({ firstInputPerSession: true, adminPrompts: 'deny' })
+    expect(DEFAULT_ADMIN_PROMPTS).toBe(DEFAULT_COMPUTER_ADMIN_PROMPT_MODE)
   })
 
   it('drops the retention when blanked, so the deployment default applies', () => {
@@ -66,5 +74,30 @@ describe('the policy form', () => {
       policy: { leaseWaitSeconds: 0 }
     })
     expect(policyFromDraft(policy, { ...draft, screenshotRetentionDays: '-1' })).toEqual({ problem: 'retentionRange' })
+  })
+
+  it('shows the command-line tier in effect and stores it only where it differs from the Computer’s default', () => {
+    const selfHosted = { ownerUserId: 'u1', kind: 'self-hosted' as const }
+    const managed = { ownerUserId: 'u1', kind: 'managed' as const }
+    expect(draftOf(policy, selfHosted)).toMatchObject({ shell: 'off', files: 'off', fileRoots: '' })
+    expect(draftOf(policy, managed)).toMatchObject({ shell: 'on', files: 'read-write' })
+    expect(policyFromDraft(policy, draftOf(policy, managed), managed)).toEqual({ policy })
+    const on = policyFromDraft(policy, { ...draftOf(policy, selfHosted), shell: 'ask', files: 'read' }, selfHosted)
+    expect('policy' in on && [on.policy.shell, on.policy.files]).toEqual(['ask', 'read'])
+    const back = policyFromDraft(
+      { ...policy, shell: 'ask' },
+      { ...draftOf({ ...policy, shell: 'ask' }, selfHosted), shell: 'off' },
+      selfHosted
+    )
+    expect('policy' in back && 'shell' in back.policy).toBe(false)
+  })
+
+  it('stores no shell for a view Computer, and checks the allowed paths', () => {
+    const managed = { ownerUserId: 'u1', kind: 'managed' as const }
+    const view = policyFromDraft(policy, { ...draftOf(policy, managed), agentMode: 'view' }, managed)
+    expect('policy' in view && 'shell' in view.policy).toBe(false)
+    const roots = policyFromDraft(policy, { ...draftOf(policy), fileRoots: ' ~/work \n\n/srv/data' })
+    expect('policy' in roots && roots.policy.fileRoots).toEqual(['~/work', '/srv/data'])
+    expect(policyFromDraft(policy, { ...draftOf(policy), fileRoots: 'work' })).toEqual({ problem: 'rootsInvalid' })
   })
 })

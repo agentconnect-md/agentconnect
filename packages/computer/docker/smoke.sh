@@ -4,12 +4,12 @@ set -euo pipefail
 
 image="${1:?usage: smoke.sh <image>}"
 name="agentconnect-computer-smoke-$$"
-max_bytes=$((1024 * 1024 * 1024))
+max_bytes=$((5 * 1024 * 1024 * 1024 / 2))
 
 size=$(docker image inspect --format '{{.Size}}' "$image")
 echo "image size: $((size / 1024 / 1024)) MiB"
 [ "$size" -le "$max_bytes" ] || {
-  echo "the image is larger than 1 GiB" >&2
+  echo "the image is larger than 2.5 GiB" >&2
   exit 1
 }
 
@@ -74,7 +74,7 @@ grep -q 'token written to' <<< "$logs" || {
 maximized=
 for _ in $(seq 1 30); do
   if docker exec -e DISPLAY=:1 "$name" sh -c \
-    'w=$(wmctrl -l | awk "/Mozilla Firefox/ { print \$1; exit }"); [ -n "$w" ] && xprop -id "$w" _NET_WM_STATE' \
+    'w=$(wmctrl -l | awk "/Chromium\$/ { print \$1; exit }"); [ -n "$w" ] && xprop -id "$w" _NET_WM_STATE' \
     | grep -q MAXIMIZED_HORZ; then
     maximized=1
     break
@@ -118,7 +118,7 @@ wait_log() {
 }
 wait_browser() {
   for _ in $(seq 1 30); do
-    docker exec "$name-reg" pgrep -x firefox-esr > /dev/null && return 0
+    docker exec "$name-reg" pgrep -x chromium > /dev/null && return 0
     sleep 1
   done
 }
@@ -148,7 +148,7 @@ environs=$(docker exec "$name-reg" env -u AGENTCONNECT_REGISTER_TOKEN sh -c '
     echo "== ${dir#/proc/} $comm"
     tr "\0" "\n" < "$dir/environ" 2> /dev/null || true
   done')
-grep -q '^== .* firefox-esr$' <<< "$environs" && grep -q '^== .* xfce4-session$' <<< "$environs" \
+grep -q '^== .* chromium$' <<< "$environs" && grep -q '^== .* xfce4-session$' <<< "$environs" \
   && grep -q '^== .* cua-driver$' <<< "$environs" || {
   grep '^==' <<< "$environs" >&2
   echo "the session, the browser or the driver is not running" >&2

@@ -42,7 +42,7 @@ function pack(v: FakeVersion): Buffer {
   mkdirSync(join(dir, 'package', 'dist'), { recursive: true })
   writeFileSync(
     join(dir, 'package', 'package.json'),
-    JSON.stringify({ name: COMPUTER_PKG, version: v.version, engines: { node: v.engines ?? '>=24.12.0' } })
+    JSON.stringify({ name: COMPUTER_PKG, version: v.version, engines: { node: v.engines ?? '>=26.0.0' } })
   )
   if (v.entry !== false) writeFileSync(join(dir, 'package', 'dist', 'agentconnect-computer.mjs'), `// ${v.version}\n`)
   const buf = execFileSync('tar', ['-czf', '-', '-C', dir, 'package'])
@@ -60,7 +60,7 @@ function publish(versions: FakeVersion[], tags: Record<string, string>): void {
       .digest('base64')}`
     entries[v.version] = {
       version: v.version,
-      engines: { node: v.engines ?? '>=24.12.0' },
+      engines: { node: v.engines ?? '>=26.0.0' },
       dist: { tarball: `${base}/tarballs/${v.version}.tgz`, integrity }
     }
   }
@@ -377,6 +377,8 @@ describe('realComputerOps against the installed daemon', () => {
     expect(ops('linux', { WAYLAND_DISPLAY: 'wayland-0' }).refreshStarts).toBe(true)
     expect(ops('linux', {}).refreshStarts).toBe(false)
     expect(ops('darwin', { DISPLAY: ':0' }).refreshStarts).toBe(false)
+    // The Windows service starts at install and runs the daemon in whoever signs in, so a refresh always activates.
+    expect(ops('win32', {})).toMatchObject({ serviceRunsStore: true, refreshStarts: true })
   })
 
   it('runs macOS service commands inside the app and starts the LaunchAgent only with a desktop login', async () => {

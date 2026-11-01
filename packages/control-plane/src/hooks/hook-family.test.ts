@@ -138,6 +138,15 @@ describe('hook family — one-row shape', () => {
       shape({ kind: 'gitlab', family: 'merge_request', events: ['merge_request:*'], reviewPolicy: 'full' })
     ).toBeNull()
   })
+
+  it('confines draft skipping to GitHub pull-request rows', () => {
+    const drafts = 'skipDrafts applies to GitHub pull-request rows'
+    expect(shape({ skipDrafts: true })).toBeNull()
+    expect(shape({ family: 'issues', events: ['issues:*'], skipDrafts: true })).toBe(drafts)
+    expect(shape({ kind: 'gitlab', family: 'merge_request', events: ['merge_request:*'], skipDrafts: true })).toBe(
+      drafts
+    )
+  })
 })
 
 describe('hook family — sibling anchoring', () => {

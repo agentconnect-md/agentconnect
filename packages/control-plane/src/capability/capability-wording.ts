@@ -2,6 +2,7 @@
 import {
   ASSISTANT_MODE_PERMISSION_MODES,
   type CapabilityAsk,
+  type CapabilityCronWant,
   type CapabilitySettingsWant
 } from '@agentconnect.md/protocol'
 import type { AgentRecord } from '../persistence/ports.js'
@@ -20,22 +21,55 @@ export interface CapabilityFacts {
   integrationConnected?: boolean
   // A live secret of that name exists on the agent; never its value (§4.9.2).
   liveSecretPresent?: boolean
+  // The agent's own crons, which a `cron` ask is judged against (§4.12).
+  crons?: readonly CapabilityCronView[]
+}
+
+/** The cron fields a `cron` predicate reads. */
+export interface CapabilityCronView {
+  id: string
+  name: string | null
+  schedule: string
+  timezone: string
+  trigger: string
+  enabled: boolean
 }
 
 /** The agent fields a predicate reads. */
 export type CapabilityAgentView = Pick<
   AgentRecord,
-  'model' | 'reasoningEffort' | 'fastMode' | 'outputMode' | 'permissionMode' | 'mcpServers' | 'skills' | 'runtime'
+  | 'model'
+  | 'reasoningEffort'
+  | 'fastMode'
+  | 'outputMode'
+  | 'permissionMode'
+  | 'mcpServers'
+  | 'skills'
+  | 'runtime'
+  | 'execution'
+  | 'chatActions'
+  | 'introduceOnJoin'
+  | 'showFooter'
+  | 'showStatusBar'
+  | 'displayName'
 >
 
 type SettingsField = keyof CapabilitySettingsWant
 
+// The runtime first: a model or permission mode is read against the runtime it belongs to.
 const SETTINGS_ORDER: readonly SettingsField[] = [
+  'runtime',
   'model',
   'reasoningEffort',
   'fastMode',
   'outputMode',
-  'permissionMode'
+  'permissionMode',
+  'execution',
+  'chatActions',
+  'introduceOnJoin',
+  'showFooter',
+  'showStatusBar',
+  'displayName'
 ]
 
 const SETTING_LABEL: Record<SettingsField, string> = {
@@ -43,8 +77,18 @@ const SETTING_LABEL: Record<SettingsField, string> = {
   reasoningEffort: 'reasoning effort',
   fastMode: 'fast mode',
   outputMode: 'the output mode',
-  permissionMode: 'the permission mode'
+  permissionMode: 'the permission mode',
+  runtime: 'the runtime',
+  execution: 'the execution strategy',
+  chatActions: 'what people may do in its chats',
+  introduceOnJoin: 'introducing itself on joining a channel',
+  showFooter: 'the reply footer',
+  showStatusBar: 'the status bar',
+  displayName: 'the display name'
 }
+
+// The on/off settings, worded as a switch rather than a value.
+const SWITCHES = new Set<SettingsField>(['fastMode', 'introduceOnJoin', 'showFooter', 'showStatusBar'])
 
 const quote = (value: string): string => JSON.stringify(value)
 
@@ -53,13 +97,43 @@ function settingsFields(want: CapabilitySettingsWant): SettingsField[] {
 }
 
 function settingValue(field: SettingsField, value: unknown): string {
-  if (field === 'fastMode') return value === true ? 'on' : value === false ? 'off' : 'the runtime default'
-  return value === null || value === undefined ? 'the runtime default' : quote(String(value))
+  if (SWITCHES.has(field)) return value === true ? 'on' : value === false ? 'off' : 'the runtime default'
+  if (value === null || value === undefined || value === '')
+    return field === 'displayName' ? 'unset' : 'the runtime default'
+  return quote(String(value))
 }
 
 function asked(field: SettingsField, want: CapabilitySettingsWant): string {
-  if (field === 'fastMode') return `turn fast mode ${want.fastMode ? 'on' : 'off'}`
+  if (SWITCHES.has(field)) return `turn ${SETTING_LABEL[field]} ${want[field] ? 'on' : 'off'}`
   return `set ${SETTING_LABEL[field]} to ${settingValue(field, want[field])}`
+}
+
+/** The agent's value of a field as the predicate compares it: an absent text field reads as unset. */
+function currentSetting(agent: CapabilityAgentView, field: SettingsField): unknown {
+  return agent[field] ?? null
+}
+
+/** A cron as people name it: its name, else its schedule. */
+function cronLabel(want: Pick<CapabilityCronWant, 'name' | 'schedule'>): string {
+  return want.name ? quote(want.name) : `on ${quote(want.schedule)}`
+}
+
+/** The agent's cron a `cron` ask is judged by: the one it names, else an enabled one with the schedule and prompt asked for. */
+export function matchingCron(
+  want: CapabilityCronWant,
+  crons: readonly CapabilityCronView[]
+): { cron: CapabilityCronView | null; satisfied: boolean } {
+  const holds = (c: CapabilityCronView) =>
+    c.enabled &&
+    c.schedule.trim() === want.schedule.trim() &&
+    c.trigger.trim() === want.trigger.trim() &&
+    (want.timezone === undefined || c.timezone === want.timezone)
+  if (want.cronId) {
+    const cron = crons.find((c) => c.id === want.cronId) ?? null
+    return { cron, satisfied: cron !== null && holds(cron) }
+  }
+  const cron = crons.find(holds) ?? null
+  return { cron, satisfied: cron !== null }
 }
 
 function joinPhrases(phrases: readonly string[]): string {
@@ -93,6 +167,13 @@ export function capabilitySummary(ask: CapabilityAsk): string {
       return ask.want.use.route === 'mcp-header'
         ? `set the header ${quote(ask.want.name)} of the MCP server ${quote(ask.want.use.server)}`
         : `set the secret ${quote(ask.want.name)}`
+    case 'cron': {
+      const named = ask.want.name ? ` ${quote(ask.want.name)}` : ''
+      const when = `${quote(ask.want.schedule)}${ask.want.timezone ? ` (${ask.want.timezone})` : ''}`
+      return ask.want.cronId
+        ? `change the scheduled task${named} to run on ${when}`
+        : `schedule a task${named} on ${when}`
+    }
   }
 }
 
@@ -115,14 +196,30 @@ export function evaluateCapability(
   switch (ask.kind) {
     case 'agent-settings': {
       const fields = settingsFields(ask.want)
-      const current = Object.fromEntries(fields.map((field) => [field, agent[field] ?? null]))
-      const satisfied = fields.every((field) => agent[field] === ask.want[field])
+      const current = Object.fromEntries(fields.map((field) => [field, currentSetting(agent, field)]))
+      const satisfied = fields.every((field) => currentSetting(agent, field) === ask.want[field])
       const phrases = fields.map((field) => {
-        const now = `${SETTING_LABEL[field]} is ${settingValue(field, agent[field])}`
-        return agent[field] === ask.want[field] ? now : `${now} (you asked for ${settingValue(field, ask.want[field])})`
+        const value = currentSetting(agent, field)
+        const now = `${SETTING_LABEL[field]} is ${settingValue(field, value)}`
+        return value === ask.want[field] ? now : `${now} (you asked for ${settingValue(field, ask.want[field])})`
       })
       const sentence = joinPhrases(phrases)
-      return { satisfied, outcome: `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`, current }
+      // A new runtime cannot load the old one's session: the conversation goes on from a replay of its history (§4.12).
+      const replayed =
+        ask.want.runtime !== undefined && agent.runtime === ask.want.runtime
+          ? ' This conversation continues in the new runtime from a replay of its history, not the old runtime’s own state.'
+          : ''
+      return { satisfied, outcome: `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.${replayed}`, current }
+    }
+    case 'cron': {
+      const { cron, satisfied } = matchingCron(ask.want, facts.crons ?? [])
+      const label = cronLabel(ask.want)
+      const outcome = satisfied
+        ? `The scheduled task ${label} runs on ${quote(cron!.schedule)} (${cron!.timezone}) with the prompt asked for.`
+        : cron
+          ? `The scheduled task ${label} runs on ${quote(cron.schedule)} (${cron.timezone})${cron.enabled ? '' : ', disabled,'} with ${cron.trigger.trim() === ask.want.trigger.trim() ? 'the prompt asked for' : 'another prompt'} (you asked for ${quote(ask.want.schedule)}).`
+          : `No scheduled task ${label} was set up for this agent.`
+      return { satisfied, outcome, current: { cronId: cron?.id ?? null, exists: cron !== null } }
     }
     case 'mcp-server': {
       const attached = agent.mcpServers.includes(ask.want.server)
@@ -240,12 +337,32 @@ export function capabilityWarnings(
   }
   if (ask.kind === 'secret' && ask.want.use.route === 'live')
     return ['The agent can read this value: its own commands load it when they need it.']
-  if (ask.kind !== 'agent-settings' || ask.want.permissionMode === undefined) return []
-  const modes = agent.runtime ? ASSISTANT_MODE_PERMISSION_MODES[agent.runtime] : undefined
+  if (ask.kind === 'cron')
+    return ['The task runs the agent on its own at each scheduled time, with the prompt shown here.']
+  if (ask.kind !== 'agent-settings') return []
+  const lines: string[] = []
+  if (ask.want.runtime !== undefined && ask.want.runtime !== agent.runtime)
+    lines.push(
+      'Changing the runtime restarts the agent’s sessions; each conversation continues from a replay of its history, and the model must be one the new runtime offers.'
+    )
+  if (ask.want.execution === 'host')
+    lines.push('Without a sandbox the agent’s commands run with the daemon’s own access to its machine.')
+  if (ask.want.chatActions === 'approve' || ask.want.chatActions === 'settings')
+    lines.push(
+      ask.want.chatActions === 'settings'
+        ? 'People in the agent’s chats could then change its settings from there.'
+        : 'People in the agent’s chats could then approve the agent’s actions from there.'
+    )
+  return [...lines, ...permissionWarnings(ask.want, agent)]
+}
+
+// A permission mode is read against the runtime it will run under: the requested one when the request changes it.
+function permissionWarnings(want: CapabilitySettingsWant, agent: Pick<AgentRecord, 'runtime'>): string[] {
+  if (want.permissionMode === undefined) return []
+  const runtime = want.runtime ?? agent.runtime
+  const modes = runtime ? ASSISTANT_MODE_PERMISSION_MODES[runtime] : undefined
   const kind =
-    modes && Object.prototype.hasOwnProperty.call(modes, ask.want.permissionMode)
-      ? modes[ask.want.permissionMode]
-      : undefined
+    modes && Object.prototype.hasOwnProperty.call(modes, want.permissionMode) ? modes[want.permissionMode] : undefined
   if (kind === 'full-access')
     return ['This permission mode never asks before the agent acts: it gets full access to its tools and workspace.']
   if (kind === 'auto') return ['In this permission mode the runtime decides on its own which actions to allow.']

@@ -86,7 +86,8 @@ export const handleAuth: Handler = async (frame, conn, deps) => {
   if (req.bootstrapProtocolVersion === 1) {
     await deps.lifecycleOps.expireOverdue(new Date(deps.clock.now()), verdict.daemonId)
     const op = await deps.lifecycleOps.pendingForDaemon(verdict.daemonId)
-    if (op?.op === 'upgrade' && op.targetVersion) {
+    // An automatic op is the daemon's own; re-delivering it would push a rolled-back host onto the version it fled.
+    if (op?.op === 'upgrade' && op.trigger === 'manual' && op.targetVersion) {
       // An already-target process may READY now; any other version must re-auth after install.
       const commandEpoch =
         req.agentVersion === op.targetVersion

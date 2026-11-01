@@ -53,6 +53,11 @@ import {
 
 export type WebchatAuthor = ChatAuthor
 
+/** Whether two sinks reach the same browsers — one sink, or two on one relay, which delivers a chat to every browser it holds. */
+function sameWebchatRoute(a: WebchatSink, b: WebchatSink): boolean {
+  return a === b || (a.relayId !== undefined && a.relayId === b.relayId)
+}
+
 /** The author a webchat `turn` op names. A relay older than the stable-principal claim sends
  *  only the display handle; falling back to it keeps that relay working, at the cost of the
  *  handle-shaped sender this pairing exists to remove. */
@@ -125,6 +130,8 @@ export interface WebchatHost {
   sendWebchatPost(post: RdWebchatPost): void
   /** The directional call policy for an agent → agent edge. */
   collabAdmits(fromAgentId: string, toAgentId: string): boolean
+  /** A member's private coordinator conversation, which keys its turns on the coordinator (auto-session-mode.md §10). */
+  coordinatorCoordinate?(agentId: string, conversationId: string, authorId: string): Promise<string | undefined>
 }
 
 export class WebchatTransport {
@@ -217,7 +224,10 @@ export class WebchatTransport {
       }
       return { accepted: false, turnId, reason: 'busy' }
     }
-    const initialRuntime = this.application.canChangeRuntime(targetAgentId) ? requestedRuntime : undefined
+    // A coordinator follows the agent's own settings and has no workspace (auto-session-mode.md §5.4).
+    const coordinated = msg.sessionThread !== undefined
+    const initialRuntime =
+      !coordinated && this.application.canChangeRuntime(targetAgentId) ? requestedRuntime : undefined
     const stream = this.createWebchatTurnStream(
       targetAgentId,
       chatId,
@@ -225,7 +235,7 @@ export class WebchatTransport {
       sink,
       initialRuntime,
       remoteMcp,
-      requestedWorktree
+      coordinated ? undefined : requestedWorktree
     )
     // Broadcast the reconciliation post daemon-wide so a cold attach through another relay receives it.
     stream.postSink = (p) => this.host.sendWebchatPost(p)
@@ -450,7 +460,7 @@ export class WebchatTransport {
       stream.lastOutputIndex = Math.max(stream.lastOutputIndex, normalized.output.index)
     }
     if (!stream.replayDisabled) this.bufferWebchatStreamEvent(stream, normalized)
-    if (stream.origin !== stream.transport) this.deliverWebchatStreamEvent(stream.origin, normalized)
+    if (!sameWebchatRoute(stream.origin, stream.transport)) this.deliverWebchatStreamEvent(stream.origin, normalized)
     this.deliverWebchatStreamEvent(stream.transport, normalized)
     if (normalized.kind === 'done') {
       stream.completedAt = this.host.now()

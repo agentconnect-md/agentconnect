@@ -38,7 +38,8 @@ const fleetRow: DaemonFleetDto = {
   createdBy: null,
   lastModifiedAt: '2026-08-01T00:00:00.000Z',
   lastModifiedBy: null,
-  sessionRetention: '7d',
+  sessionRetention: '90d',
+  workspaceRetention: '7d',
   visibility: 'org',
   sharedWith: [],
   canEdit: true,
@@ -101,7 +102,7 @@ describe('daemon read split', () => {
     }
     const reconnecting = daemonFromDto({ ...fleetRow, status: 'connecting', lifecycleOp: op })
     expect(reconnecting.lifecycleStatus).toBe('restarting')
-    expect(reconnecting.lifecycleOp).toEqual(op)
+    expect(reconnecting.lifecycleOp).toEqual({ ...op, trigger: 'manual' })
     // The planned relaunch names itself; Reconnecting is only for a link recovering on its own.
     expect(presentedDaemonStatus(reconnecting)).toBe('restarting')
 

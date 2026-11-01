@@ -162,6 +162,14 @@ for the same reports. The operation stores preparation separately from availabil
 only an authenticated report from its daemon can advance the phase, and a late
 preparation report cannot replace `restarting` or reopen a terminal operation.
 
+A READY daemon that chose an upgrade itself opens the operation with
+`daemon/lifecycle/begin {op:'upgrade',trigger:'auto',fromVersion,targetVersion}` and
+receives `daemon/lifecycle/begin/ok {operationId}`, or `error CONFLICT` while another
+operation is pending; a CP advertises this with `daemon-lifecycle-begin-v1`. A `failed`
+report with reason `busy` settles such an operation as `deferred`. The CP announces the
+target release in `register/ok.release` and `config/push` key `upgrade.latest`
+([daemon-auto-upgrade.md](daemon-auto-upgrade.md)).
+
 **`sessionEpoch` is the global fencing token.** Every C→D control frame that mutates routing or sessions carries the `epoch` it was issued under (see §4 envelope-ext). A daemon **rejects** any control frame whose `epoch < its current sessionEpoch` (a late frame from a pre-reconnect CP view) with `error STALE_EPOCH`.
 
 **Auth failure (`4401`, fatal — don't auto-retry):** a malformed / unknown / bad-secret / **revoked** / **expired** key — or a `user`-principal key presented on the WS — → close `4401` `AUTH_FAILED`. The daemon goes fatal and stops reconnecting; the operator re-onboards (mints a fresh key) or rotates ([daemon-api-key-auth.md](daemon-api-key-auth.md) §7). It does **not** hammer-reconnect on `4401`. **On the projected-identity path this becomes an exit, not a wait:** that credential is re-read from the pod's volume at every boot and the process is restart-supervised, so there is no operator step to stay up for — and a container that took a `4401` can never register at all, because boot blocks on the first registration. The daemon exits non-zero and the restart redials, which puts the retry on the supervisor's backoff instead of on nothing.

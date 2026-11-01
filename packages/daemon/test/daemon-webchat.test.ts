@@ -2070,6 +2070,52 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     await daemon.stop()
   })
 
+  it('streams a resumed turn once per relay: the origin copy only goes to a different relay', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const viaRelay = (relayId: string, events: RdChatEvent[]) => ({
+      relayId,
+      output: (output: WebchatOutput) => events.push({ kind: 'output', output }),
+      done: (done: WebchatDone) => events.push({ kind: 'done', done })
+    })
+    const resumeVia = async (relayId: string, generation: number, events: RdChatEvent[]) => {
+      const msg = rd({ op: 'resume', turnId, generation, afterIndex: 0 }, { msgId: `resume-${generation}` })
+      ;(daemon as any).relayIngressOf.set(msg, relayId)
+      return (daemon as any).handleRelayMsg(msg, (event: RdChatEvent) => events.push(event))
+    }
+    const origin: RdChatEvent[] = []
+    const sameRelay: RdChatEvent[] = []
+    const otherRelay: RdChatEvent[] = []
+    const stream = (daemon as any).webchatTransport.createWebchatTurnStream(
+      AGENT_ID,
+      CONV,
+      turnId,
+      viaRelay('relay-a', origin)
+    )
+    const chunk = (index: number) =>
+      stream.sink.output({ conversationId: CONV, turnId, index, event: { kind: 'message', text: `#${index}` } })
+    const indexes = (events: RdChatEvent[]) => events.map((e) => (e.kind === 'output' ? e.output.index : 'done'))
+
+    chunk(0)
+    // A resume through the turn's own relay: that relay already fans one copy to every browser it holds.
+    expect(await resumeVia('relay-a', 1, sameRelay)).toMatchObject({ accepted: true })
+    chunk(1)
+    expect(indexes(origin)).toEqual([0])
+    expect(indexes(sameRelay)).toEqual([1])
+
+    // A resume through another relay: the requester there must keep its copy too (#2621).
+    expect(await resumeVia('relay-b', 2, otherRelay)).toMatchObject({ accepted: true })
+    chunk(2)
+    stream.sink.done({ conversationId: CONV, turnId, stopReason: 'end_turn' })
+    expect(indexes(origin)).toEqual([0, 2, 'done'])
+    expect(indexes(otherRelay)).toEqual([1, 2, 'done'])
+    expect(indexes(sameRelay)).toEqual([1])
+    await daemon.stop()
+  })
+
   it('accepts a retry after resume arrives before the delayed original turn', async () => {
     const { factory } = streamingHost([])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
