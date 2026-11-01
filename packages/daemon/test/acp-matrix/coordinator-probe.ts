@@ -36,7 +36,10 @@ export const CO_IDS = {
   /** A third public channel, whose task's summary predates the pull request it opened (assistant-mode.md §5.18 ④). */
   exportChannel: 'C0EXAMPLE4',
   exportChannelName: 'data-pipelines',
-  exportTask: 'slack:C0EXAMPLE4:1700000000.000200'
+  exportTask: 'slack:C0EXAMPLE4:1700000000.000200',
+  /** A task that made a code channel of its own for its work, keyed in the thread it was opened in (auto-session-mode.md §6.8). */
+  retryTask: 'slack:C0EXAMPLE1:1700001400.000100',
+  codeChannel: 'C0EXAMPLE5'
 } as const
 
 /** One channel-root message a coordinator turn decides on; `id` is the platform message id it names in its calls. */
@@ -78,6 +81,22 @@ const CHECKOUT_TASK: ProbeTask = {
     next: 'Merge after review, then watch main CI for a day.'
   },
   summaryUpdatedAt: '2026-10-29T09:40:00Z'
+}
+
+/** A task holding the code channel it made, whose runs there report to the coordinator (auto-session-mode.md §6.8). */
+const RETRY_TASK: ProbeTask = {
+  taskId: CO_IDS.retryTask,
+  title: 'Add retry with backoff to the webhook sender',
+  threaded: true,
+  owner: `<@${CO_IDS.alice}>`,
+  lastActive: '2026-11-02T09:30:00Z',
+  running: false,
+  summary: {
+    scope: 'Retry with exponential backoff for the webhook sender in services/notify, worked in its own code channel.',
+    status: 'Done: PR #4907 adds the retry and its tests; CI is green and it waits for review.',
+    next: `<@${CO_IDS.alice}> asked to hear when it is ready for review.`
+  },
+  summaryUpdatedAt: '2026-11-02T09:30:00Z'
 }
 
 /** The follow-up a report speaks for, as its block names it. */
@@ -470,6 +489,7 @@ export type CoScenarioId =
   | 'batch-route-and-new'
   | 'report-reply'
   | 'report-batch'
+  | 'channel-task-report'
   | 'elsewhere-duplicate'
   | 'elsewhere-read-task'
   | 'webchat-new-work'
@@ -635,6 +655,28 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
       }
     ],
     expect: { 'msg-1700001100.000100': { kind: 'reply', mentions: '4821' } }
+  },
+  {
+    // auto-session-mode.md §6.8: a task holding a code channel reports a run there, which is relayed in its origin thread.
+    id: 'channel-task-report',
+    tasks: [CHECKOUT_TASK, RETRY_TASK],
+    messages: [
+      {
+        id: 'msg-1700001400.000900',
+        from: CO_IDS.self,
+        mentionsYou: false,
+        report: true,
+        task: CO_IDS.retryTask,
+        kind: 'delegated task',
+        title: RETRY_TASK.title,
+        text:
+          `[task run] Task "${RETRY_TASK.title}" ended a run in its channel ` +
+          `(https://chat.example.test/archives/${CO_IDS.codeChannel}). Its summary: ${RETRY_TASK.summary.status} ` +
+          `${RETRY_TASK.summary.next}\n\nSpeak to the people here in the language they use, even when this report is in ` +
+          'another.'
+      }
+    ],
+    expect: { 'msg-1700001400.000900': { kind: 'reply', mentions: '4907' } }
   },
   {
     // assistant-mode.md §5.18 ④: reports queued behind a turn ride in its next batch beside the channel messages.

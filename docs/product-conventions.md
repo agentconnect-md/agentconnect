@@ -1335,9 +1335,10 @@ Work already in a Code channel continues there and keeps
 its repository, branch, diff and PR surfaces current; it never creates a second channel
 or delegates the same work merely because the original request was copied into it.
 Quick questions stay in their original conversation. In an Auto conversation on Slack, a task
-the coordinator opens for a message works in a Code channel linked to it, and the message's
-thread links the channel; where no channel can be made, the task answers in the thread.
-Archiving the channel closes the task.
+the coordinator opens for a message works in the message's thread. When its work calls for a Code
+channel, the task makes one, says so in the thread, and holds the channel as one more of its
+threads; at the end of each run there the coordinator hears what the task did and may tell the
+thread. Archiving the channel closes the task.
 
 A Code channel's Tasks tab reads the same task and runtime background-work sources as
 the console's Tasks panel. Open work stays visible, finished work is grouped and collapsed,

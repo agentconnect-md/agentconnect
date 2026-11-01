@@ -4997,3 +4997,14 @@ thread is the asker's place, and a channel is a workspace the task earns. The `o
 leaves the platform contract, `createSlackCodeChannel` is the one creation path, and a task that
 calls it holds the channel as one more thread. A channel a task holds is no place of its own: it is
 not onboarded, and a follow-up taken there belongs to the task's place.
+
+**Eighty-eighth revision (2026-11-02)**: the eighty-seventh, built (auto-session-mode.md §6.8 "As
+shipped", §12). A task's session now answers in two conversations: a message carries the channel of
+its session beside its thread, so a message in a channel a task holds keys on the task's session in
+the origin conversation and is answered in the channel. The code channel tool hands the channel it
+made to the daemon, which attaches it to the calling task, and a run the task ends there is reported
+to its coordinator through the report path of ④ as `kind="delegated task"` with the task's summary.
+Implementing it found that the task index cannot tell a fallback task from a delegated one, so a
+fallback task holds a channel it makes, which auto-session-mode.md §4.5 and §6.8 "Not here" say it
+does not; and that `slack-code-channels.md`, `integration-plugin-architecture.md` and the product
+conventions still described the coordinator opening the channel.

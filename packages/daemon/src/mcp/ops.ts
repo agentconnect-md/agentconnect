@@ -28,7 +28,12 @@ import { z, type ZodType } from 'zod'
 import type { AskDeps } from './ask.js'
 import type { InterceptedPost } from '../assistant/drafts.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
-import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
+import {
+  allAttachmentReadTools,
+  isAttachmentReadTool,
+  sessionToolOwner,
+  type PlatformSessionToolEnv
+} from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
 import { isGettingToKnowCoordinate, isCheckCoordinate, isResearchCoordinate } from '../session/subsession-coordinate.js'
 import { isCoordinatorCoordinate } from '../session/append-coordinate.js'
@@ -248,6 +253,8 @@ export interface OpsDeps
   /** This turn's footer identity for a session tool that publishes agent-authored text
    *  (Linear's `createIssueComment`). Undefined when the agent's footer chrome is off. */
   sessionToolAttributionFor?: (ctx: SessionContext) => Promise<ReplyAttributionInfo | undefined>
+  /** Make a room for the session's work, which a task holds as one more thread (auto-session-mode.md §6.8). */
+  sessionToolRoomFor?: (ctx: SessionContext) => PlatformSessionToolEnv['makeRoom']
   /** Collaboration Arena §6: resolve + execute an evaluation-registry tool.
    *  Returns undefined when `name` is not an evaluation tool. Visibility and
    *  role-aware authorization live behind this seam (the daemon guarantees
@@ -609,9 +616,13 @@ async function executeRegisteredTool(
     if (!conn) throw new Error(`no live ${owner.label} connection for integration ${ctx.integrationId ?? '(none)'}`)
     const attribution = deps.sessionToolAttributionFor
     const deliveryThread = deps.deliveryThreadNow?.(ctx) ?? ctx.deliveryThread
+    const deliveryChannel = deps.deliveryChannelNow?.(ctx) ?? ctx.channel
+    const makeRoom = deps.sessionToolRoomFor?.(ctx)
     return await owner.sessionTools.execute(name, ctx, args, {
       connection: conn,
+      deliveryChannel,
       deliveryThread,
+      ...(makeRoom ? { makeRoom } : {}),
       originMsgId: deps.searchOrigin?.(ctx),
       judgeWrite: (target) => authorizeSessionPublication(ctx, name, target, deps),
       postIdentity: () => ({
@@ -625,7 +636,7 @@ async function executeRegisteredTool(
           mentionedAgentIds: []
         }
       }),
-      recordPost: (text, ts) => deps.recordOutbound(ctx, ctx.channel, deliveryThread, text, ts, ctx.integrationId!),
+      recordPost: (text, ts) => deps.recordOutbound(ctx, deliveryChannel, deliveryThread, text, ts, ctx.integrationId!),
       ...(attribution ? { attribution: () => attribution(ctx) } : {})
     })
   }
@@ -643,6 +654,11 @@ async function executeRegisteredTool(
   if (!gw) throw new Error(`no live platform connection for integration ${ctx.integrationId ?? '(none)'}`)
 
   if (name === 'getCurrentChannel')
-    return await getCurrentChannel(ctx, gw, deps.deliveryThreadNow?.(ctx) ?? ctx.deliveryThread)
+    return await getCurrentChannel(
+      ctx,
+      gw,
+      deps.deliveryThreadNow?.(ctx) ?? ctx.deliveryThread,
+      deps.deliveryChannelNow?.(ctx) ?? ctx.channel
+    )
   throw new Error(`unknown tool: ${name}`)
 }

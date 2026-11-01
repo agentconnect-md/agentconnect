@@ -73,6 +73,7 @@ async function fixture(code = true, deps: Record<string, unknown> = {}) {
   const recordPost = vi.fn(async (_text: string, _ts: string) => undefined)
   const env = {
     connection: conn,
+    deliveryChannel: ctx.channel,
     deliveryThread: ctx.deliveryThread,
     originMsgId: 'slack:C1:1.002',
     judgeWrite,
@@ -159,6 +160,7 @@ describe('Slack native surfaces', () => {
         platform: 'slack',
         channel: 'C1',
         sessionThread: 'C1',
+        statusThread: 'C1',
         sessionKey: 'session',
         isDm: false
       }
@@ -447,27 +449,36 @@ describe('Slack native surfaces', () => {
     await f.conn.stop()
   })
 
-  it('opens a coordinator task’s code channel through the tool’s own creation path (auto-session-mode.md §6.8)', async () => {
+  it('hands the channel it makes to the session as a room keyed on the channel (auto-session-mode.md §6.8)', async () => {
     const f = await fixture(false)
-    const origin = { agentId: ctx.agentId, channel: 'C1', messageId: '1.002', isDm: false }
-    expect(await f.conn.openTaskPlace(origin, 'Flaky test')).toEqual({ channel: 'C2', thread: 'C2' })
-    await SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Flaky test' }, f.env)
-    // The same origin keys the same channel whichever path asks, and Slack keeps its privacy.
-    expect(f.api.create.mock.calls[0]).toEqual(f.api.create.mock.calls[1])
-    expect(f.api.create.mock.calls[0]![0]).toMatchObject({
-      name: 'Flaky test',
-      origin_channel_id: 'C1',
-      origin_message_ts: '1.002'
-    })
-    expect(f.api.create.mock.calls[0]![0]).not.toHaveProperty('is_private')
+    const rooms: unknown[] = []
+    const makeRoom = async <T>(make: () => Promise<{ result: T; room?: { channel: string; thread: string } }>) => {
+      const { result, room } = await make()
+      rooms.push(room)
+      return result
+    }
+    const result = await SLACK_SESSION_TOOLS.execute(
+      'createSlackCodeChannel',
+      ctx,
+      { name: 'Flaky test' },
+      { ...f.env, makeRoom }
+    )
+    expect(result).toMatchObject({ channel_id: 'C2' })
+    expect(rooms).toEqual([{ channel: 'C2', thread: 'C2' }])
+    expect(f.api.create.mock.calls[0]![0]).toMatchObject({ origin_channel_id: 'C1', origin_message_ts: '1.002' })
     await f.conn.stop()
   })
 
-  it('opens no place for a task whose message already sits in a code channel, and rejects what Slack refuses', async () => {
+  it('hands no room for a channel it is already in, nor when Slack refuses', async () => {
     const inside = await fixture(true)
-    expect(
-      await inside.conn.openTaskPlace({ agentId: 'a1', channel: 'C1', messageId: '1.002', isDm: false }, 'Task')
-    ).toBeUndefined()
+    const rooms: unknown[] = []
+    const makeRoom = async <T>(make: () => Promise<{ result: T; room?: { channel: string; thread: string } }>) => {
+      const { result, room } = await make()
+      rooms.push(room)
+      return result
+    }
+    await SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Task' }, { ...inside.env, makeRoom })
+    expect(rooms).toEqual([undefined])
     expect(inside.api.create).not.toHaveBeenCalled()
     await inside.conn.stop()
     const refused = await fixture(false)
@@ -475,13 +486,24 @@ describe('Slack native surfaces', () => {
       Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } })
     )
     await expect(
-      refused.conn.openTaskPlace({ agentId: 'a1', channel: 'C1', messageId: '1.002', isDm: false }, 'Task')
+      SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Task' }, { ...refused.env, makeRoom })
     ).rejects.toThrow()
-    refused.api.create.mockResolvedValueOnce({} as never)
-    await expect(
-      refused.conn.openTaskPlace({ agentId: 'a1', channel: 'C1', messageId: '1.002', isDm: false }, 'Task')
-    ).rejects.toThrow('without a channel')
+    expect(rooms).toEqual([undefined])
     await refused.conn.stop()
+  })
+
+  it('acts in the turn’s own channel when a task answers there from a session kept elsewhere', async () => {
+    const f = await fixture(true)
+    // A task's session lives in its origin thread of C0EXAMPLE1, and this turn runs in the code channel C1 it holds.
+    const task = { ...ctx, channel: 'C0EXAMPLE1', thread: '1.001' }
+    const env = { ...f.env, deliveryChannel: 'C1', deliveryThread: 'C1', originMsgId: 'slack:C1:1.003' }
+    expect(await SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', task, { name: 'Task' }, env)).toMatchObject({
+      channel_id: 'C1',
+      already_exists: true
+    })
+    await SLACK_SESSION_TOOLS.execute('manageSlackCodeChannel', task, { action: 'listViews' }, env)
+    expect(f.api.listViews).toHaveBeenCalledWith({ channel_id: 'C1' })
+    await f.conn.stop()
   })
 
   it('reuses the code channel when Slack delivers the copied origin as a new request', async () => {
@@ -510,7 +532,7 @@ describe('Slack native surfaces', () => {
       'createSlackCodeChannel',
       { ...ctx, channel: 'D1', isDm: true },
       { name: 'Task' },
-      { ...f.env, originMsgId: 'slack:D1:1.002' }
+      { ...f.env, deliveryChannel: 'D1', originMsgId: 'slack:D1:1.002' }
     )
     expect(msg.standingContext).toBe(SLACK_CONVERSATION_CONTEXT)
     expect(f.info).not.toHaveBeenCalled()

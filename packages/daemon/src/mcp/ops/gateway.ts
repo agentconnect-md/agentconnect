@@ -22,6 +22,14 @@ export interface GatewayDeps extends AskDeps {
     thread: string
     transportScope?: string
   }) => string | undefined
+  /** The channel the CURRENT turn arrived in, where a task holding a room answers outside its session's own (auto-session-mode.md §6.8). */
+  deliveryChannelNow?: (ctx: {
+    agentId: string
+    platform: string
+    channel: string
+    thread: string
+    transportScope?: string
+  }) => string | undefined
 }
 
 /** Returned by the history-backed reads when the agent has several bots on the target platform, NONE of them this session's, and the host could not be asked which one to read: observed history belongs to one bot at a time, and a chat reached via one bot is not reachable by another. */

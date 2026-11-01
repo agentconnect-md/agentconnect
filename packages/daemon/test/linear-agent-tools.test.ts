@@ -63,6 +63,7 @@ const run = (
 ) =>
   LINEAR_SESSION_TOOLS.execute(name, ctx, args, {
     connection: c,
+    deliveryChannel: ctx.channel,
     deliveryThread: ctx.deliveryThread,
     judgeWrite: async () => undefined,
     postIdentity: () => ({}),

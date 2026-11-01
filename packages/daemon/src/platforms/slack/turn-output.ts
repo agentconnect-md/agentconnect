@@ -509,7 +509,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     (action.kind === 'status-bar' || action.kind === 'clear-status-bar') &&
     action.info &&
     !p.plan.isDm &&
-    p.plan.sessionThread === p.plan.channel
+    p.plan.statusThread === p.plan.channel
   ) {
     const native = await conn.updateCodeContext(p.plan.channel, { info: action.info }).catch(() => {
       host.debug('slack: native session controls update failed')
