@@ -11,7 +11,7 @@ import { sessionKey, type LocalStore } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { a2aCoordChannel } from '../cp/cp-collab-routes.js'
 import { isSubsessionCoordinate, subsessionCoordinate } from '../session/subsession-coordinate.js'
-import { coordinatorMessageId } from './coordinator-prompt.js'
+import { coordinatorMessageId, type ReportAbout } from './coordinator-prompt.js'
 import {
   answerThreadOf,
   CoordinatorTurns,
@@ -695,7 +695,12 @@ export class CoordinatorSessions {
 }
 
 /** The delivered-message entry for one admitted coordinator message; anything but a channel message is a report (§3.4). */
-export function deliveredMessage(msg: NormalizedMessage, integrationId?: string, streamed = false): DeliveredMessage {
+export function deliveredMessage(
+  msg: NormalizedMessage,
+  integrationId?: string,
+  streamed = false,
+  about?: ReportAbout
+): DeliveredMessage {
   const report = msg.source !== 'user'
   return {
     id: coordinatorMessageId(platformMessageIdOf(msg)),
@@ -703,6 +708,7 @@ export function deliveredMessage(msg: NormalizedMessage, integrationId?: string,
     ...(integrationId !== undefined ? { integrationId } : {}),
     mentionsYou: !report && msg.trigger === 'mention',
     ...(report ? { report: true as const } : {}),
+    ...(report && about ? { about } : {}),
     ...(streamed ? { streamed: true as const } : {})
   }
 }

@@ -230,4 +230,43 @@ describe('a report into a Slack parent that appends reaches its runtime', () => 
     }
     await b.daemon.stop()
   })
+
+  // assistant-mode.md §5.18 ④: a coordinator's batch names the task each report speaks for, beside the messages it rides with.
+  it('carries the task a daemon report speaks for on its turn, as listTasks names it', async () => {
+    const b = await boot()
+    const parent = await humanTurn(b, 'C1', '1700000100.000100')
+    const keyOf = (thread: string) => sessionKey('slack', 'C1', thread, 'bot-a', b.scope)
+    const [followUp, approved, delegated] = [checkCoordinate('p-2'), taskCoordinate('t-2'), subsessionCoordinate('s-2')]
+    await b.d.store.assistantWatchTasks.open({
+      agentId: 'bot-a',
+      title: 'Watch PR #412',
+      origin: { platform: 'slack', channel: 'C1', transportScope: b.scope },
+      owner: { sessionId: parent.sessionId, key: parent.key },
+      taskKey: keyOf(followUp)
+    })
+    await b.d.store.assistantSubsessions.open({
+      agentId: 'bot-a',
+      childSessionKey: keyOf(approved),
+      parentSessionId: parent.sessionId,
+      parentSessionKey: parent.key,
+      title: 'Merge the retry change'
+    })
+    const dispatched = vi.spyOn(b.d, 'dispatch')
+    for (const [i, thread] of [followUp, approved, delegated].entries())
+      expect(
+        await b.d.collab.deliverDaemonReport({
+          agentId: 'bot-a',
+          caller: { platform: 'slack', channel: 'C1', thread, transportScope: b.scope },
+          parentSessionId: parent.sessionId,
+          text: 'done',
+          reportId: `named:${i}`
+        })
+      ).toEqual({ admitted: true })
+    expect(dispatched.mock.calls.map((call) => (call[4] as { reportOf?: unknown } | undefined)?.reportOf)).toEqual([
+      { taskId: keyOf(followUp), kind: 'follow-up', title: 'Watch PR #412' },
+      { taskId: keyOf(approved), kind: 'approved proposal', title: 'Merge the retry change' },
+      { taskId: keyOf(delegated), kind: 'delegated task' }
+    ])
+    await b.daemon.stop()
+  })
 })

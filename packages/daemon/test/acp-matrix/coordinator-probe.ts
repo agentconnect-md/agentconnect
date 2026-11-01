@@ -43,6 +43,10 @@ export interface ChannelMessage {
   text: string
   /** A report delivered to the coordinator rather than a channel message (auto-session-mode.md §3.4). */
   report?: boolean
+  /** The task a report speaks for, as its block names it (assistant-mode.md §5.18 ④). */
+  task?: string
+  kind?: string
+  title?: string
 }
 
 /** An open task as `listTasks` reports it. */
@@ -71,6 +75,9 @@ const CHECKOUT_TASK: ProbeTask = {
   },
   summaryUpdatedAt: '2026-10-29T09:40:00Z'
 }
+
+/** The follow-up a report speaks for, as its block names it. */
+const WATCH_PR = { task: 'followup-pr-4821', kind: 'follow-up', title: 'Watch PR #4821' }
 
 /** Another place's open task as the coordinator's `listTasks` lists it under `elsewhere`. */
 export interface ProbeElsewhereTask {
@@ -392,6 +399,7 @@ export type CoScenarioId =
   | 'batch-mixed'
   | 'batch-route-and-new'
   | 'report-reply'
+  | 'report-batch'
   | 'elsewhere-duplicate'
   | 'webchat-new-work'
   | 'webchat-status'
@@ -547,12 +555,54 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
         from: CO_IDS.self,
         mentionsYou: false,
         report: true,
+        ...WATCH_PR,
         text:
           `[follow-up] "Watch PR #4821" checked: PR #4821 merged and the checkout e2e test passed on main ten times ` +
           `in a row. <@${CO_IDS.alice}> asked to hear when it lands. Answer your people in their language.`
       }
     ],
     expect: { 'msg-1700001100.000100': { kind: 'reply', mentions: '4821' } }
+  },
+  {
+    // assistant-mode.md §5.18 ④: reports queued behind a turn ride in its next batch beside the channel messages.
+    id: 'report-batch',
+    tasks: [CHECKOUT_TASK],
+    messages: [
+      {
+        id: 'msg-1700001300.000100',
+        from: CO_IDS.self,
+        mentionsYou: false,
+        report: true,
+        ...WATCH_PR,
+        text:
+          `[follow-up] "Watch PR #4821" checked: PR #4821 merged and the checkout e2e test passed on main ten times ` +
+          `in a row. <@${CO_IDS.alice}> asked to hear when it lands. Answer your people in their language.`
+      },
+      msg(
+        'msg-1700001300.000200',
+        CO_IDS.bob,
+        true,
+        'the nightly analytics export failed last night, can you find out why and get it running again?'
+      ),
+      {
+        id: 'msg-1700001300.000300',
+        from: CO_IDS.self,
+        mentionsYou: false,
+        report: true,
+        task: 'followup-staging-cert',
+        kind: 'follow-up',
+        title: 'Watch the staging certificate renewal',
+        text:
+          '[follow-up] "Watch the staging certificate renewal" checked: nothing changed. The certificate is still ' +
+          'valid for 41 days and renewal is scheduled; nobody is waiting on this. Next check 2026-11-02T09:00Z. ' +
+          'Answer your people in their language.'
+      }
+    ],
+    expect: {
+      'msg-1700001300.000100': { kind: 'reply', mentions: '4821' },
+      'msg-1700001300.000200': { kind: 'delegate' },
+      'msg-1700001300.000300': { kind: 'ignore', alternatives: ['reply'] }
+    }
   },
   {
     // assistant-mode.md §5.18: a request for work another place already has open is pointed at that task, not delegated again.
