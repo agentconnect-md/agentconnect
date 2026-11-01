@@ -237,10 +237,11 @@ describe('a report into a Slack parent that appends reaches its runtime', () => 
     const parent = await humanTurn(b, 'C1', '1700000100.000100')
     const keyOf = (thread: string) => sessionKey('slack', 'C1', thread, 'bot-a', b.scope)
     const [followUp, approved, delegated] = [checkCoordinate('p-2'), taskCoordinate('t-2'), subsessionCoordinate('s-2')]
-    await b.d.store.assistantItems.create({
+    await b.d.store.assistantWatchTasks.open({
       agentId: 'bot-a',
       title: 'Watch PR #412',
       origin: { platform: 'slack', channel: 'C1', transportScope: b.scope },
+      owner: { sessionId: parent.sessionId, key: parent.key },
       taskKey: keyOf(followUp)
     })
     await b.d.store.assistantSubsessions.open({

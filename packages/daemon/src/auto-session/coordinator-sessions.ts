@@ -523,7 +523,7 @@ export class CoordinatorSessions {
     // A message without a thread moves only to a task on its own page (§10).
     if (
       !row ||
-      row.kind === 'follow-up' ||
+      row.mode === 'watch' ||
       !owners.has(row.parentSessionKey) ||
       (threadless(msg) && pageTaskCoordinate(row.childSessionKey, msg.platform, agentId) === undefined)
     )

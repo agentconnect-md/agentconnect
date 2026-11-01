@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NOBODY, type ConsoleVerdict, type ReadAsker, type TurnAskers } from '../src/assistant/place-access.js'
 import { askerClass, PlaceMembers, turnAskers, type TurnMessage } from '../src/assistant/place-members.js'
+import { CheckedTasks } from '../src/assistant/checked-tasks.js'
 import type { PostInterception } from '../src/assistant/drafts.js'
 import { batchCut } from '../src/auto-session/coordinator-turns.js'
 import { executeTool, type MessageGateway, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
@@ -626,22 +627,27 @@ describe('assistant mode no longer drafts an internal post or bars a 1:1 convers
 
   it('lets a DM that read a private channel post elsewhere, take a follow-up and send to another agent', async () => {
     store = await openTestStore()
-    const ledger = store.assistantItems
+    const s = store
+    const ledger = new CheckedTasks({ watchTasks: s.assistantWatchTasks, items: s.assistantItems })
     const { deps: base, gw, draftPost } = harness({ assistant: true })
     const deps: OpsDeps = {
       ...base,
       assistantItems: {
         ledgerFor: () => ledger,
         askerFor: async () => `slack:T1:${P}`,
-        take: async (ctx, input) =>
-          await ledger.create({
+        take: async (ctx, input) => {
+          const taskKey = 'slack:D_P:subsession:check-1:agent'
+          await s.assistantWatchTasks.open({
             agentId: ctx.agentId,
             title: input.title,
             doneWhen: input.doneWhen,
             origin: { platform: ctx.platform, channel: ctx.channel, transportScope: ctx.transportScope ?? null },
-            taskKey: 'slack:D_P:subsession:check-1:agent',
+            owner: { sessionId: 'sid-owner', key: 'slack:D_P:append:1:agent' },
+            taskKey,
             asker: input.asker
           })
+          return (await ledger.get(ctx.agentId, taskKey))!
+        }
       }
     }
     await executeTool(inDmOfP, 'getChannelHistory', { channel: 'C_PRIV' }, deps)
@@ -674,7 +680,7 @@ describe('assistant mode no longer drafts an internal post or bars a 1:1 convers
     expect(gw.postMessage).toHaveBeenCalledTimes(2)
     expect(deps.messageAgent).toHaveBeenCalledTimes(2)
     expect(draftPost).not.toHaveBeenCalled()
-    expect((await ledger.byTaskKey(AGENT, taken.taskId))?.title).toBe('Ship it')
+    expect((await ledger.get(AGENT, taken.taskId))?.title).toBe('Ship it')
   })
 })
 

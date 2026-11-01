@@ -635,11 +635,12 @@ describe('a daemon’s turns', () => {
       // A follow-up's check reads as the person who confirmed it, in their profile's zone.
       const tenant = await d.tenantScopeForIntegration(d.integrationConfigById(INT))
       const origin = { platform: 'slack', channel: 'D0ALICE', transportScope: scope }
-      await d.store.assistantItems.create({
+      await d.store.assistantWatchTasks.open({
         agentId: AGENT,
         title: 'ship the release notes',
         origin,
         taskKey: sessionKey('slack', 'D0ALICE', checkCoordinate('r1'), AGENT, scope),
+        owner: { sessionId: 'sid-owner', key: sessionKey('slack', 'D0ALICE', 'append:1', AGENT, scope) },
         asker: `slack:${tenant}:U0ALICE`
       })
       const check = live(checkCoordinate('r1'), {

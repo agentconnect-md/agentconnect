@@ -38,6 +38,17 @@ const row = (agentId: string, id: string, parentSessionId = 'sid-parent-1') => (
   now: 1_000
 })
 
+/** A follow-up, a watch task (assistant-mode.md §5.18), indexed under the rows' owner. */
+const openWatch = (s: LocalStore, agentId: string, id: string, now: number) =>
+  s.assistantWatchTasks.open({
+    taskKey: childKey(agentId, id),
+    agentId,
+    title: `Follow-up ${id}`,
+    origin: { platform: 'slack', channel: 'C0GENERAL', transportScope: 'T0EXAMPLE' },
+    owner: { sessionId: 'sid-parent-1', key: row(agentId, id).parentSessionKey },
+    now
+  })
+
 describe('the assistant sub-session index', () => {
   it('records a delegation once, partitioned by agent', async () => {
     const s = await open()
@@ -200,7 +211,7 @@ describe('the assistant sub-session index', () => {
     const owner = { sessionId: 'sid-parent-1', key: row(a, 'x').parentSessionKey }
     await index.open({ ...row(a, 'done'), now: 1_000 })
     await index.open({ ...row(a, 'task-approved'), now: 2_000 })
-    await index.openFollowUp({ ...row(a, 'check-1'), now: 3_000 })
+    await openWatch(s, a, 'check-1', 3_000)
     await index.open({ ...row(a, 'running'), now: 500 })
     await index.finish(a, childKey(a, 'done'), 'done')
     await index.finish(a, childKey(a, 'check-1'), 'failed')
@@ -218,7 +229,7 @@ describe('the assistant sub-session index', () => {
       childKey(a, 'check-1'),
       childKey(a, 'done')
     ])
-    expect(all.rows.find((r) => r.childSessionKey === childKey(a, 'check-1'))).toMatchObject({ kind: 'follow-up' })
+    expect(all.rows.find((r) => r.childSessionKey === childKey(a, 'check-1'))).toMatchObject({ mode: 'watch' })
     // A session that does not own its place's follow-ups lists none of them.
     const without = await index.listForOwner(a, owner, 10, { followUps: false })
     expect([keys(without.rows), without.total]).toEqual([
@@ -256,7 +267,7 @@ describe('the assistant sub-session index', () => {
     await index.open({ ...row(a, 'delegated'), now: 1_000 })
     await index.open({ ...row(a, 'research-1'), now: 2_000 })
     await index.open({ ...row(a, 'task-approved'), now: 3_000 })
-    await index.openFollowUp({ ...row(a, 'check-1'), now: 4_000 })
+    await openWatch(s, a, 'check-1', 4_000)
     const keys = (rows: { childSessionKey: string }[]) => rows.map((r) => r.childSessionKey).sort()
     const own = await index.listForOwner(a, owner, 10, { delegatedTasks: false })
     expect([keys(own.rows), own.total]).toEqual([
@@ -310,7 +321,7 @@ describe('the failure report a sub-session index row holds (assistant-mode.md §
     const index = s.assistantSubsessions
     await index.open({ ...row(a, '1'), now: 2_000 })
     for (const id of ['2', '3', '4']) await index.open(row(a, id))
-    await index.openFollowUp(row(a, 'check-5'))
+    await openWatch(s, a, 'check-5', 1_000)
     await index.checking(a, childKey(a, 'check-5'))
     await index.open(row(b, '6'))
     await index.finish(a, childKey(a, '3'), 'done')
@@ -1063,7 +1074,8 @@ describe.skipIf(!usingPostgresStore())('the v37 → v38 sub-session index on Pos
         agentId: a,
         title: 'Kept across the upgrade',
         origin: { platform: 'slack', channel: 'C0GENERAL', transportScope: null },
-        taskKey: 'slack:C0GENERAL:subsession:check-1:kept'
+        taskKey: 'slack:C0GENERAL:subsession:check-look-1:kept',
+        gettingToKnow: 'joined'
       })
       await first.close()
 

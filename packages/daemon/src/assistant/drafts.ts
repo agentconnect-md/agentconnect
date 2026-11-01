@@ -108,10 +108,10 @@ export interface AssistantDraftsHost {
   takeFollowUp?(draft: AssistantDraft, by: Decider): Promise<FollowUpTake>
   /** A card clicker's asker identity, as their own message there would carry it. */
   memberAsker?(integrationId: string, userId: string): Promise<string | undefined>
-  /** Whether the follow-up an approved follow-up form named was taken. */
-  followUpTaken?(agentId: string, itemId: string): Promise<boolean>
-  /** An observation on a proposal's item, so its next check knows how the proposal went. */
-  observe?(agentId: string, itemId: string, text: string): Promise<void>
+  /** Whether the follow-up an approved follow-up form named, by its task key, was taken. */
+  followUpTaken?(agentId: string, taskKey: string): Promise<boolean>
+  /** An observation on the task a proposal acts on, by its task key, so its next check knows how the proposal went. */
+  observe?(agentId: string, taskKey: string, text: string): Promise<void>
   /** Whether a person's own message in this conversation would start a turn of the agent right now; fails closed. */
   admitsAsker?(agentId: string, integrationId: string, channel: string, isDm: boolean): boolean
 }
@@ -122,7 +122,7 @@ export type TaskStart =
 
 /** How an approved follow-up form went: the follow-up it took, or why it took none. */
 export type FollowUpTake =
-  | { kind: 'taken'; itemId: string; parentSessionId: string }
+  | { kind: 'taken'; taskKey: string; parentSessionId: string }
   | { kind: 'busy'; reason: string }
   | { kind: 'lost' }
   | { kind: 'failed'; reason: string }
@@ -735,7 +735,7 @@ export class AssistantDrafts {
           result: 'decided',
           status: 'succeeded',
           failure: null,
-          followUp: { id: taken.itemId, parentSessionId: taken.parentSessionId }
+          followUp: { id: taken.taskKey, parentSessionId: taken.parentSessionId }
         }
       }
       case 'failed': {

@@ -176,18 +176,19 @@ describe('a Slack turn, the sub-sessions it opens, checks, tasks and schedules',
       // A follow-up's check and an approved proposal read as the person who confirmed the follow-up.
       const tenant = await d.tenantScopeForIntegration(d.integrationConfigById(INT))
       const origin = { platform: 'slack', channel: DM, transportScope: scope }
-      const item = await d.store.assistantItems.create({
+      const item = await d.store.assistantWatchTasks.open({
         agentId: AGENT,
         title: 'ship the release notes',
         origin,
         taskKey: sessionKey('slack', DM, 'subsession:check-r1', AGENT, scope),
+        owner: { sessionId: 'sid-owner', key: sessionKey('slack', DM, 'append:1', AGENT, scope) },
         asker: `slack:${tenant}:U0ALICE`
       })
       const agentMsg = { ...msg, source: 'agent', sender: { id: AGENT, isBot: true } }
       for (const thread of ['subsession:check-r1', 'subsession:task-r1']) {
         d.activeGateEntries.set(sessionKey('slack', DM, thread, AGENT, scope), { msg: agentMsg, integrationId: INT })
       }
-      vi.spyOn(d.store.assistantDrafts, 'taskBySubsession').mockResolvedValue({ proposal: { itemId: item.id } })
+      vi.spyOn(d.store.assistantDrafts, 'taskBySubsession').mockResolvedValue({ proposal: { itemId: item.taskKey } })
       expect(await d.readAskersFor({ ...ctx, thread: 'subsession:check-r1' })).toEqual({
         people: [ALICE],
         nobody: false

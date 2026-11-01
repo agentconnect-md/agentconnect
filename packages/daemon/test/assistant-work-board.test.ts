@@ -100,7 +100,7 @@ async function task(
   return child
 }
 
-/** A follow-up of `channel`, indexed under `owner` as its place's long session. */
+/** A follow-up of `channel`, a watch task (§5.18) owned by `owner` as its place's long session. */
 async function followUp(
   s: LocalStore,
   owner: { key: string; sessionId: string },
@@ -108,24 +108,15 @@ async function followUp(
   id: string,
   over: { title?: string; nextCheck?: number; now: number }
 ) {
-  const taskKey = sessionKey('slack', channel, `subsession:check-${id}`, AGENT, SCOPE)
-  const item = await s.assistantItems.create({
+  return await s.assistantWatchTasks.open({
     agentId: AGENT,
     title: over.title ?? `follow-up ${id}`,
-    ...(over.nextCheck !== undefined ? { nextCheck: over.nextCheck } : {}),
-    status: over.nextCheck !== undefined ? 'active' : 'waiting',
+    ...(over.nextCheck !== undefined ? { nextAt: over.nextCheck } : {}),
     origin: { platform: 'slack', channel, transportScope: SCOPE },
-    taskKey,
+    taskKey: sessionKey('slack', channel, `subsession:check-${id}`, AGENT, SCOPE),
+    owner: { sessionId: owner.sessionId, key: owner.key },
     now: over.now
   })
-  await s.assistantSubsessions.openFollowUp({
-    agentId: AGENT,
-    childSessionKey: taskKey,
-    parentSessionId: owner.sessionId,
-    parentSessionKey: owner.key,
-    now: over.now
-  })
-  return item
 }
 
 const HERE = { platform: 'slack', channel: 'C0HERE', transportScope: SCOPE }
@@ -159,7 +150,7 @@ describe('the board reads open work from both stores', () => {
     const checking = await followUp(s, here, 'C0HERE', 'run', { nextCheck: Date.UTC(2030, 0, 3), now: 6_000 })
     await s.assistantSubsessions.checking(AGENT, checking.taskKey, 6_500)
     const ended = await followUp(s, here, 'C0HERE', 'done', { now: 7_000 })
-    await s.assistantItems.schedule(AGENT, ended.id, { status: 'done', nextCheck: null }, 7_100)
+    await s.assistantWatchTasks.schedule(AGENT, ended.taskKey, { status: 'done', nextAt: null }, 7_100)
 
     const tasks = await readOpenWork(s, AGENT, here, HERE)
     expect(tasks.map((t) => [t.id, t.kind, t.status, t.here])).toEqual([
@@ -235,12 +226,12 @@ describe('the board reads open work from both stores', () => {
     expect(await changedAt()).toBe(6_000)
 
     const item = await followUp(s, here, 'C0HERE', 'f', { nextCheck: Date.UTC(2030, 0, 1), now: 1_000 })
-    const itemChangedAt = async () => (await s.assistantItems.get(AGENT, item.id))?.changedAt
-    await s.assistantItems.schedule(AGENT, item.id, { status: 'active', nextCheck: Date.UTC(2030, 0, 1) }, 2_000)
+    const itemChangedAt = async () => (await s.assistantWatchTasks.get(AGENT, item.taskKey))?.changedAt
+    await s.assistantWatchTasks.schedule(AGENT, item.taskKey, { status: 'active', nextAt: Date.UTC(2030, 0, 1) }, 2_000)
     expect(await itemChangedAt()).toBe(1_000)
-    await s.assistantItems.schedule(AGENT, item.id, { status: 'active', nextCheck: Date.UTC(2030, 0, 2) }, 3_000)
+    await s.assistantWatchTasks.schedule(AGENT, item.taskKey, { status: 'active', nextAt: Date.UTC(2030, 0, 2) }, 3_000)
     expect(await itemChangedAt()).toBe(3_000)
-    await s.assistantItems.schedule(AGENT, item.id, { status: 'waiting', nextCheck: null }, 4_000)
+    await s.assistantWatchTasks.schedule(AGENT, item.taskKey, { status: 'waiting', nextAt: null }, 4_000)
     expect(await itemChangedAt()).toBe(4_000)
     await index.checking(AGENT, item.taskKey, 5_000)
     await index.checking(AGENT, item.taskKey, 5_500)
@@ -249,7 +240,7 @@ describe('the board reads open work from both stores', () => {
 })
 
 describe.skipIf(usingPostgresStore())('the v72 → v73 change times on SQLite', () => {
-  it('seeds a task’s change time from its last activity and a follow-up’s from its last update', async () => {
+  it('seeds a task’s change time from its last activity, a follow-up’s watch row included', async () => {
     const path = tempStorePath('ac-board-v72-')
     const s = await LocalStore.open(path)
     const here = await coordinator(s, 'C0HERE')
@@ -265,7 +256,7 @@ describe.skipIf(usingPostgresStore())('the v72 → v73 change times on SQLite', 
     const upgraded = await LocalStore.open(path)
     stores.push(upgraded)
     expect((await upgraded.assistantSubsessions.get(AGENT, t.key))?.changedAt).toBe(9_000)
-    expect((await upgraded.assistantItems.get(AGENT, item.id))?.changedAt).toBe(2_000)
+    expect((await upgraded.assistantWatchTasks.get(AGENT, item.taskKey))?.changedAt).toBe(2_000)
     const db = new DatabaseSync(path)
     expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
     db.close()

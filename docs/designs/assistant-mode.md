@@ -1360,9 +1360,9 @@ else, and nobody but its own conversation is told of it.
 
 **As shipped.** Choices the text above leaves open:
 
-- **Storage.** Follow-ups live in the item ledger's tables; a follow-up's id is its item id, so a
-  pending proposal's `itemId` still names it. Its session key, `subsession:check-<id>` in its
-  place, is minted when it is taken and is its `taskId`. Each check is a numbered row in a check
+- **Storage.** A follow-up is a watch task in the task store (§5.18 ⑤). Its one id is its session
+  key, `subsession:check-<id>` in its place, minted when it is taken: the `taskId` its tools take and
+  the id a pending proposal's `itemId` names. Each check is a numbered row in a check
   log (`assistant_check`): start, end, what it saw or why it failed, and whether its report got
   through; the newest 50 are kept, and the daily budget counts its starts.
 - **Ownership.** The follow-up's index row names its place's current long session, re-pointed
@@ -3467,9 +3467,10 @@ is not built.
 **Status:** Proposed (eightieth revision, 2026-11-01). Step 1, the admission check, shipped in the
 eighty-first revision ("As shipped" after ①), ③, batches cut by permission class, in the
 eighty-second ("As shipped" after ③), the board itself, ② and the view and reads of ④, in the
-eighty-third ("As shipped" after ② and after ④), and the reports of ④ in the eighty-fourth (the
-last "As shipped" after ④); the title and `readTask` are not implemented. Reviewed in draft by three
-adversarial review rounds; what they changed is noted inline.
+eighty-third ("As shipped" after ② and after ④), the reports of ④ in the eighty-fourth (the last
+"As shipped" after ④), and follow-ups as watch tasks, ⑤, in the eighty-fifth; the title and
+`readTask` are not implemented. Reviewed in draft by three adversarial review rounds; what they
+changed is noted inline.
 
 **Why.** The mode promises one mind: what the agent takes on in one place it knows in the others.
 That holds for memory and for follow-ups, not for the work it is doing. A coordinator
@@ -3487,7 +3488,8 @@ webchat home through coordinators, the shared mind reaches them only at their fi
 **In one line.** A **work board**, the agent's open work across its places, replaces the standing
 list and the running-tasks block for a coordinator; each coordinator receives it as a short index,
 judged by the people in its turn and re-sent only when the index changes, and reads details through
-`listTasks`, `recall` and `readTask`. Four changes carry it; the rest is deferred (end of section).
+`listTasks`, `recall` and `readTask`. Four changes carry it, and a fifth makes follow-ups one kind of
+task with the rest; what is left is deferred (end of section).
 
 **① Admission: no By decision, no shared-bot routing.** Every assistant-mode place runs a
 coordinator, and Auto is exclusive with By decision and shared-bot routing (auto-session-mode.md
@@ -3749,6 +3751,64 @@ taken: the result would sit in a context that answers other people's messages to
   continues the hop count of the turn's first entry, as a report steered into an ordinary session's
   live turn does.
 
+**⑤ Follow-ups are watch tasks.** Every task is one kind of task in one of two modes. A task in
+**work** mode does what it is given: a delegated task, organization research, an approved proposal.
+A task in **watch** mode is a follow-up: read-only, checked on its schedule, and woken by its
+conversation's messages and by what it watches (§5.12, §5.14). Both are rows of the one task store
+(`store/assistant-subsessions.ts`), which gains `mode`, `nextAt` and the schedule a follow-up carried:
+open with or without a next check, done, or stopped.
+
+- _One id._ A watch task's id is its task key, the key of the session its checks run in. It is the
+  `taskId` that `listTasks`, `messageTask`, `stopTask` and the board show, the key its check state and
+  check log are kept under, the id a proposal of its check names, and the id the Control Plane
+  mirrors what it watches under (§5.14). Nothing keeps a second id for a follow-up.
+- _Its sessions._ Its checks run in that one session, retained from check to check (§5.12), which the
+  task holds as a work task holds its own session. So the task's own sessions, which `askerMayRead`
+  judges for a line elsewhere (②) and `readTask` reads (④), are its check session.
+- _Title and summary._ Its title names what it watches; a check that a message moved to something
+  else renames it with `updateTask`. Its summary is its last check's result, which `recordCheck`
+  writes; before its first check, `listTasks` shows what it was taken with.
+- _The same tools._ `followUp` opens a watch task, under the name people ask for it by. `messageTask`
+  runs a check with the message, `stopTask` ends it, `updateTask` renames it from its check, and
+  `listTasks` and the board show `next <time>` while it waits and `running` during a check, in the
+  board's one order.
+- _What stays apart._ A getting-to-know task (§5.13) proposes what to do and is not work: it stays in
+  the item ledger, and its check session's row in the task store is a watch row with no schedule.
+  Approved proposals keep their own rules (§5.10).
+
+**As shipped** (2026-11-01, #3541 phase F). Choices the text above leaves open:
+
+- **Storage.** Store version 74 gives the task row `mode`, in place of the index's `kind`, `nextAt`,
+  the schedule as `watchStatus`, and what a follow-up's item carried: what counts as done, its place,
+  its asker, whether its place is shared, what it watches, its observation counter and its version.
+  Its observations are kept under its task key beside the row, and its summary is the latest of them,
+  cut to a summary's 500 characters. An ended watch task keeps its row with its status, so its page,
+  its proposals and its check log still find it; closing work tasks never deletes one.
+- **Lifetime.** A watch row lives as long as its task, not its session. When retention purges a
+  follow-up's idle check session, the row, its schedule and its observations stay, and its next check
+  opens a new session under the same key, with the stored observations as its handover (§5.12). A
+  getting-to-know task's index row still goes with its session, since its item keeps the record and
+  its check indexes it again.
+- **Migration.** One step on both store backends. Each follow-up item becomes its task row, and one
+  that no index row named gets one under its place's session (an item that never had a session key is
+  given one); its observations follow it, the latest
+  is its summary and what it was taken with its background. The check state and check log of every
+  item, a getting-to-know task's included, and every proposal's and approval's reference to an item,
+  are keyed by its task key from then on, and follow-ups leave the item ledger. The upgraded daemon
+  sends the Control Plane its full set of watches under the new ids, so a wake folded under an old id
+  just before the upgrade is not delivered; scheduled checks are unaffected. The follow-up id the
+  Control Plane accepts grows to 1,024 characters, a task key's limit.
+- **One resolver.** The check loop, the proposal runner and Activity read a checked task by its task
+  key: a watch task from the task store, a getting-to-know task, whose key carries the `check-look-`
+  segment, from the item ledger. The due query reads both, watch tasks first. The board reads a
+  follow-up from its row alone.
+- **Wire.** A follow-up's id in Activity and the console's stop that sends it back carry the task
+  key; the field names (`followUpId`, a proposal's `itemId`) are unchanged. These ids, and the watch
+  frame's, take up to 1,024 characters, a task key's limit, where the Control Plane took 200 or 512;
+  a Control Plane upgraded before its daemons accepts them all, and a daemon ahead of an older one
+  has a set naming a longer key refused, which the next set retries.
+- **Sessions that are not coordinators** keep their standing list (§5.4 ②), read from watch tasks.
+
 **Examples.** Alice, a full member, asks in her DM whether the webhook retry landed: her board
 carries `#eng-platform`'s line, `listTasks` gives its summary ("PR #412 open, CI running"), and she
 is answered from it; before this the coordinator had no way to know the task existed. Dave asks at
@@ -3771,7 +3831,8 @@ stops for coordinators.
 coordinators, replacing the standing list and running block; `recall` offered; `listTasks`
 `elsewhere` and `after` (`feat`). (3) Metadata-free reports join the batch (`refactor`). (4)
 Title-as-current-scope wording, the first-sentence summary rule, `readTask` and inlined ids
-(`feat`). Step 2 needs step 1 for the agents it serves; steps 3 and 4 are independent.
+(`feat`). (5) Follow-ups as watch tasks (`feat`). Step 2 needs step 1 for the agents it serves; steps
+3, 4 and 5 are independent, and step 5 lands before `readTask`, so that reads one id space.
 
 **Open.** Whether a short history of closed work belongs on the board once #3537's retained record
 exists; whether a follow-up's latest check result should be folded into its line; whether the
@@ -3780,10 +3841,7 @@ settlement should show in Activity.
 
 **Deferred, decided to come after these steps.** Routing a delegated task's output through the
 coordinator, and with it a coordinator in a DM whose platform has no threads (Telegram, Discord,
-Feishu, whose whole DM is one thread); a coordinator model of its own; storing follow-ups in the
-task index (a merge would need a mapping between item ids and task keys, the completion criteria
-and versions that proposals and recovery read, and a transactional migration across duty moves,
-none of which the board needs); automatic context rollover (with rules in the system prompt, open
+Feishu, whose whole DM is one thread); a coordinator model of its own; automatic context rollover (with rules in the system prompt, open
 work on the board and the rest behind tools, a compaction loses nothing the next board view and
 `listTasks` do not restore, so the compaction re-send above is the whole requirement); cross-place
 `messageTask`; any change for sessions that are not coordinators.
@@ -4848,3 +4906,13 @@ turn of its own: it rides in the next batch beside the channel messages, in arri
 naming its id or left, which settles it silently. A report that finds the coordinator idle still
 starts a turn at once. Implementing it found that the getting-to-know report is not the only one
 whose turn carries metadata: a report that opens its place's long session keeps its own turn too.
+
+**Eighty-fifth revision (2026-11-01)**: follow-ups are watch tasks (issue #3541, phase F; §5.18 ⑤).
+The board read follow-ups and delegated tasks from two stores, and a follow-up had two ids, its item
+id and the task key of its check session, which an earlier draft of §5.18 confused. A follow-up is
+now a task in watch mode in the one task store, its task key its one id: its checks, its check log,
+its proposals and its watch are keyed by it, and `messageTask`, `stopTask`, `updateTask`, `listTasks`
+and the board treat it as a task. One store step on both backends moves existing follow-ups;
+getting-to-know tasks stay in the item ledger. The line deferring the merge leaves "Deferred": what it
+said a merge would need is the id mapping the migration does once, and proposals and recovery read the
+task key.

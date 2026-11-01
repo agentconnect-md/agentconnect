@@ -1,4 +1,4 @@
-// What a follow-up watches (assistant-mode.md §5.14): the daemon keeps the URL and the outcome, and asks the Control Plane, which only mirrors them, to watch.
+// What a follow-up watches (assistant-mode.md §5.14): the daemon keeps the URL and the outcome on its watch task, and asks the Control Plane, which only mirrors them by the task's key, to watch.
 import {
   FOLLOW_UP_WATCH_MAX,
   followUpWatchLabel,
@@ -7,7 +7,7 @@ import {
   type AssistantFollowUpWatchResult,
   type FollowUpWatchTarget
 } from '@agentconnect.md/protocol'
-import type { AssistantItemLedger, AssistantItemWatch } from '../store/assistant-items.js'
+import type { AssistantWatchTasks, WatchedObject } from '../store/assistant-watch-tasks.js'
 
 /** The Control Plane's half; `request` answers undefined while none that takes watches is reachable. */
 export interface FollowUpWatchPort {
@@ -48,7 +48,7 @@ export function watchTarget(url: string): FollowUpWatchTarget {
 type Entry = AssistantFollowUpWatchResult['results'][number]
 
 /** The stored watch an answer leaves: taken, refused, or waiting for a Control Plane that can say. */
-function watchFrom(url: string, entry: Entry | undefined): AssistantItemWatch {
+function watchFrom(url: string, entry: Entry | undefined): WatchedObject {
   if (entry?.watched)
     return {
       url,
@@ -62,14 +62,14 @@ function watchFrom(url: string, entry: Entry | undefined): AssistantItemWatch {
   return { url, target: null, state: 'pending', reason: null }
 }
 
-function outcomeOf(watch: AssistantItemWatch): WatchOutcome {
+function outcomeOf(watch: WatchedObject): WatchOutcome {
   if (watch.state === 'watching') return { kind: 'watching', target: watch.target ?? watch.url }
   if (watch.state === 'pending') return { kind: 'pending' }
   return { kind: 'refused', reason: watchReasonText(watch.reason) }
 }
 
 export interface FollowUpWatchesHost {
-  items: Pick<AssistantItemLedger, 'setWatch' | 'watching'>
+  watchTasks: Pick<AssistantWatchTasks, 'setWatch' | 'watching'>
   port?: FollowUpWatchPort
   log: { warn(message: string): void }
 }
@@ -99,15 +99,15 @@ export class FollowUpWatches {
   }
 
   /** Watch this URL in place of anything before; a Control Plane out of reach leaves it pending for the next full set. */
-  async set(agentId: string, itemId: string, url: string): Promise<WatchOutcome> {
+  async set(agentId: string, taskKey: string, url: string): Promise<WatchOutcome> {
     const target = watchTarget(url)
     return await this.serial(agentId, async (): Promise<WatchOutcome> => {
-      const answer = await this.ask(agentId, { mode: 'set', watches: [{ followUpId: itemId, target }] })
+      const answer = await this.ask(agentId, { mode: 'set', watches: [{ followUpId: taskKey, target }] })
       const watch = watchFrom(
         url,
-        answer?.results.find((entry) => entry.followUpId === itemId)
+        answer?.results.find((entry) => entry.followUpId === taskKey)
       )
-      if (!(await this.host.items.setWatch(agentId, itemId, watch))) return { kind: 'none' }
+      if (!(await this.host.watchTasks.setWatch(agentId, taskKey, watch))) return { kind: 'none' }
       // A pending watch is retried with the next sweep's full set, not left for the next link.
       if (watch.state === 'pending') this.synced.delete(agentId)
       return outcomeOf(watch)
@@ -115,17 +115,17 @@ export class FollowUpWatches {
   }
 
   /** Stop watching an open follow-up. */
-  async clear(agentId: string, itemId: string): Promise<WatchOutcome> {
+  async clear(agentId: string, taskKey: string): Promise<WatchOutcome> {
     return await this.serial(agentId, async (): Promise<WatchOutcome> => {
-      await this.host.items.setWatch(agentId, itemId, null)
-      await this.ask(agentId, { mode: 'remove', watches: [{ followUpId: itemId }] })
+      await this.host.watchTasks.setWatch(agentId, taskKey, null)
+      await this.ask(agentId, { mode: 'remove', watches: [{ followUpId: taskKey }] })
       return { kind: 'none' }
     })
   }
 
   /** Its follow-up ended: drop the subscription; a lost removal goes with the next full set. */
-  async end(agentId: string, itemId: string): Promise<void> {
-    await this.serial(agentId, () => this.ask(agentId, { mode: 'remove', watches: [{ followUpId: itemId }] }))
+  async end(agentId: string, taskKey: string): Promise<void> {
+    await this.serial(agentId, () => this.ask(agentId, { mode: 'remove', watches: [{ followUpId: taskKey }] }))
   }
 
   /** The agent's whole set, once per link: the Control Plane drops what it does not name. */
@@ -136,8 +136,8 @@ export class FollowUpWatches {
   private async syncNow(agentId: string): Promise<void> {
     const link = this.host.port?.link()
     if (link === undefined || this.synced.get(agentId) === link) return
-    const open = (await this.host.items.watching(agentId)).slice(0, FOLLOW_UP_WATCH_MAX)
-    const targets: Array<{ id: string; url: string; target: FollowUpWatchTarget }> = []
+    const open = (await this.host.watchTasks.watching(agentId)).slice(0, FOLLOW_UP_WATCH_MAX)
+    const targets: Array<{ taskKey: string; url: string; target: FollowUpWatchTarget }> = []
     for (const item of open) {
       try {
         targets.push({ ...item, target: watchTarget(item.url) })
@@ -147,16 +147,16 @@ export class FollowUpWatches {
     }
     const answer = await this.ask(agentId, {
       mode: 'full',
-      watches: targets.map((item) => ({ followUpId: item.id, target: item.target }))
+      watches: targets.map((item) => ({ followUpId: item.taskKey, target: item.target }))
     })
     if (!answer) return
     let pending = false
     for (const item of targets) {
       const watch = watchFrom(
         item.url,
-        answer.results.find((result) => result.followUpId === item.id)
+        answer.results.find((result) => result.followUpId === item.taskKey)
       )
-      await this.host.items.setWatch(agentId, item.id, watch)
+      await this.host.watchTasks.setWatch(agentId, item.taskKey, watch)
       pending ||= watch.state === 'pending'
     }
     // One the Control Plane could not confirm is sent again with the next sweep.

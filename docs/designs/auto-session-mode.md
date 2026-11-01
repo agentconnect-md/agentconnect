@@ -36,7 +36,9 @@ Single session keeps its current meaning: root and thread messages all join one 
 | Background task     | A task with no thread; only its parent talks to it, and it reports to the parent at the end of each round                                |
 | Owned thread        | A thread attached to a task that still exists                                                                                            |
 
-Assistant mode's follow-ups and approved proposals stay the other kinds of task, unchanged.
+A task runs in **work** mode, as every task above does, or in **watch** mode: assistant mode's
+follow-ups, read-only and checked on a schedule ([assistant-mode.md](assistant-mode.md) §5.18 ⑤).
+Approved proposals stay a kind of their own.
 
 ## 3. Mode and configuration
 
@@ -263,19 +265,22 @@ tasks, follow-ups and approved proposals included, and at most the 20 most recen
 tasks. An assistant-mode place's session that is not a coordinator lists with it only its
 follow-ups, research and approved proposals. Each entry: id, title, whether a thread is attached,
 thread links, owner, last activity, whether it is running, and the task's summary with its update
-time (§6.7). The coordinator uses it to place a new message and to
+time (§6.7); a follow-up, a task in watch mode, also its next check. The coordinator uses it to place a new message and to
 answer "how is that going".
 
 The coordinator's `listTasks {after?}` reads the work board ([assistant-mode.md](assistant-mode.md)
 §5.18 ④): `here`, its own open tasks with the fields above, and `elsewhere`, the other places' open
-tasks its batch may see, read only, with place, status, summary and thread links. Each is a page of
+tasks its batch may see, read only, with place, status, summary and thread links. A `here` entry also
+carries its status as the board shows it: a follow-up's is `next <time>` while it waits and `running`
+during a check. Each is a page of
 at most 20 in the board's order, newest change first, continued by its own `nextCursor`, and access
 is judged again on every page.
 
 ### 5.3 `updateTask`
 
 `updateTask {summary, title?}`, a tool of its own. `summary` is required; the title changes only
-together with the summary. Only a task calls it, for itself; both kinds can.
+together with the summary. Only a task calls it, for itself; both kinds can, and so can a follow-up's
+check, to rename what it watches (§6.7).
 
 ### 5.4 The coordinator's limits
 
@@ -312,8 +317,9 @@ together with the summary. Only a task calls it, for itself; both kinds can.
 ### 6.1 Storage
 
 Tasks live in the existing persistent parent–child index
-(`packages/daemon/src/store/assistant-subsessions.ts`, where follow-ups already sit under `kind`),
-which gains a title, a summary and attached threads. The thread-to-task attachment can extend the
+(`packages/daemon/src/store/assistant-subsessions.ts`), which gains a title, a summary and attached
+threads. A row's `mode` tells a task in work mode from a follow-up in watch mode, which keeps its
+schedule (`nextAt`) on the same row ([assistant-mode.md](assistant-mode.md) §5.18 ⑤). The thread-to-task attachment can extend the
 thread participation record of [channel-session-mode.md](channel-session-mode.md) §6.4.
 
 ### 6.2 The two kinds
@@ -360,7 +366,8 @@ coordinate is unchanged, [channel-session-mode.md](channel-session-mode.md) §3.
 
 A threaded task lives as long as its session: when the session ages out after 7 idle days, the task
 closes and leaves `listTasks`. A later reply in its thread is an unowned-thread message and goes to
-the coordinator, which may open a task again.
+the coordinator, which may open a task again. A follow-up lives until it is done or stopped, however
+long it waits between checks; it then keeps its row, marked ended, which no idle close removes.
 
 ### 6.6 Coordinator tasks are threaded
 
@@ -383,6 +390,9 @@ place new messages.
 - **Before the first summary**: `listTasks` shows the title and background the coordinator gave
   (`delegateTask`'s `message`).
 - **Title**: the task may change it with the summary; the coordinator's title is only the first one.
+- **A follow-up**: its summary is its last check's result, which `recordCheck` writes, and before its
+  first check `listTasks` shows what it was taken with. Its title names what it watches; a check that
+  a message moved to something else renames it with `updateTask`. It gets no stale-summary reminder.
 - **Storage**: the summary is conversation content, so the Control Plane does not store it. It lives
   in the daemon's task index (§6.1), and the console's Tasks tab reads it through the BFF from the
   owning daemon, as transcript reads work.

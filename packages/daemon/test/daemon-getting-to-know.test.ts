@@ -236,7 +236,7 @@ describe('a getting-to-know task someone asks for', () => {
     // One check ends it as done; it is listed as a getting-to-know task and takes no messages.
     const item = await d.store.assistantItems.byTaskKey('bot-a', started.taskId)
     expect(item).toMatchObject({ gettingToKnow: 'requested', status: 'done', nextCheck: null })
-    expect(await d.store.assistantChecks.checks('bot-a', item.id, 5)).toEqual([
+    expect(await d.store.assistantChecks.checks('bot-a', item.taskKey, 5)).toEqual([
       expect.objectContaining({ observation: 'Read 2 weeks of the place.', reported: true })
     ])
     const listed = (await executeTool(placeCtx(place), 'listTasks', {}, deps)) as any
@@ -255,7 +255,7 @@ describe('a getting-to-know task someone asks for', () => {
     })
     expect(messaged).toMatchObject({ delivered: false, reason: 'getting_to_know' })
     // The standing list leaves it out: it is no commitment.
-    const summary = await standingSummaryFor(d.store.assistantItems, d.agents.get('bot-a'), {
+    const summary = await standingSummaryFor(d.store.assistantWatchTasks, d.agents.get('bot-a'), {
       platform: 'slack',
       channel: 'C1',
       transportScope: place.scope
@@ -287,7 +287,7 @@ describe('a getting-to-know task someone asks for', () => {
     const { daemon, d, deps } = await boot(scaffold({ budget: 1 }))
     const place = await seedPlace(d)
     await d.store.assistantChecks.db.query(
-      'INSERT INTO assistant_check (agentId, itemId, checkNo, startedAt, reported) VALUES (?, ?, 1, ?, 0)',
+      'INSERT INTO assistant_check (agentId, taskKey, checkNo, startedAt, reported) VALUES (?, ?, 1, ?, 0)',
       ['bot-a', 'an-earlier-check', Date.now() - 60_000]
     )
     const refused = (await executeTool(placeCtx(place), 'getToKnow', {}, deps)) as any
@@ -317,8 +317,8 @@ describe('a getting-to-know task someone asks for', () => {
     const item = await d.store.assistantItems.byTaskKey('bot-a', started.taskId)
     for (let n = 2; n <= CHECK_MAX_FAILURES; n++) {
       await d.store.assistantChecks.db.query(
-        'UPDATE assistant_check_state SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
-        ['bot-a', item.id]
+        'UPDATE assistant_check_state SET retryAt = 0 WHERE agentId = ? AND taskKey = ?',
+        ['bot-a', item.taskKey]
       )
       await d.followUpChecks.sweep()
       await vi.waitFor(() => expect(looks()).toHaveLength(n), WAIT)
@@ -496,8 +496,8 @@ describe('the bot joining a place', () => {
     await settled()
     for (let n = 2; n <= CHECK_MAX_FAILURES; n++) {
       await d.store.assistantChecks.db.query(
-        'UPDATE assistant_check_state SET retryAt = 0 WHERE agentId = ? AND itemId = ?',
-        ['bot-a', item.id]
+        'UPDATE assistant_check_state SET retryAt = 0 WHERE agentId = ? AND taskKey = ?',
+        ['bot-a', item.taskKey]
       )
       await d.followUpChecks.sweep()
       await vi.waitFor(() => expect(looks()).toHaveLength(n), WAIT)

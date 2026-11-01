@@ -15,6 +15,11 @@ import {
   ASSISTANT_SUBSESSION_THREAD_SCHEMA,
   AssistantSubsessionIndex
 } from './assistant-subsessions.js'
+import {
+  ASSISTANT_TASK_OBSERVATION_SCHEMA,
+  AssistantWatchTasks,
+  WATCH_TASK_COLUMN_TYPES
+} from './assistant-watch-tasks.js'
 import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
 import { newSessionMessageId, SESSION_MESSAGE_SCHEMA, SessionMessages } from './session-messages.js'
 import { CAPABILITY_CARD_SCHEMA, CapabilityCardLedger } from './capability-cards.js'
@@ -1327,7 +1332,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 73
+export const SCHEMA_VERSION = 74
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2079,8 +2084,147 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v72 keeps the start of a task's opening message, which listTasks shows until it writes a summary (auto-session-mode.md §6.7).
   async (db, store) => await addColumn(db, store.postgres, 'assistant_subsession', 'background', 'TEXT'),
   // v73 records when a task's status or title last changed, the work board's order (assistant-mode.md §5.18).
-  async (db, store) => await addChangedAt(db, store.postgres)
+  async (db, store) => await addChangedAt(db, store.postgres),
+  // v74 makes follow-ups watch tasks in the task store, one id each, which keys their checks and proposals too (§5.18).
+  async (db, store) => await migrateFollowUpsToWatchTasks(db, store.postgres)
 ]
+
+// What the item ledger's rows carried that a watch task keeps on its task row instead.
+const MOVED_ITEM_COLUMNS = ['watchUrl', 'watchTarget', 'watchState', 'watchReason', 'watchRepoId'] as const
+
+/** Follow-ups become watch tasks (§5.18): each item moves into its task row under its task key, which then keys its checks and the proposals naming it. */
+async function migrateFollowUpsToWatchTasks(db: StoreTx, postgres: boolean): Promise<void> {
+  if (!(await tableExists(db, postgres, 'assistant_subsession'))) return
+  await addColumn(db, postgres, 'assistant_subsession', 'mode', "TEXT NOT NULL DEFAULT 'work'")
+  for (const [column, type] of WATCH_TASK_COLUMN_TYPES)
+    await addColumn(db, postgres, 'assistant_subsession', column, type)
+  if (await columnExists(db, postgres, 'assistant_subsession', 'kind')) {
+    await db.exec("UPDATE assistant_subsession SET mode = 'watch' WHERE kind = 'follow-up'")
+    await db.exec('ALTER TABLE assistant_subsession DROP COLUMN kind')
+  }
+  await db.exec(ASSISTANT_TASK_OBSERVATION_SCHEMA)
+  if (!(await tableExists(db, postgres, 'assistant_item'))) return
+  const watched = await columnExists(db, postgres, 'assistant_item', 'watchUrl')
+  const items = (await db.query('SELECT * FROM assistant_item ORDER BY agentId, id', [])).rows as Record<
+    string,
+    unknown
+  >[]
+  for (const item of items) {
+    const agentId = String(item.agentId)
+    const place = [String(item.originPlatform), String(item.originChannel), String(item.originTransportScope ?? '')]
+    let taskKey = String(item.taskKey ?? '')
+    if (taskKey === '' && item.gettingToKnow == null) {
+      // A follow-up no step gave a session key gets one now, rather than being lost with the item ledger's follow-ups.
+      taskKey = sessionKey(place[0]!, place[1]!, checkCoordinate(monotonicTs()), agentId, place[2] || null)
+      await db.query('UPDATE assistant_item SET taskKey = ? WHERE agentId = ? AND id = ?', [
+        taskKey,
+        agentId,
+        String(item.id)
+      ])
+    }
+    if (item.gettingToKnow != null) {
+      // A getting-to-know task stays in the ledger; its index row learns its place, as a watch row's does.
+      await db.query(
+        `UPDATE assistant_subsession SET mode = 'watch', originPlatform = ?, originChannel = ?, originTransportScope = ?
+          WHERE agentId = ? AND childSessionKey = ?`,
+        [...place, agentId, taskKey]
+      )
+      continue
+    }
+    const indexed = (
+      await db.query('SELECT 1 AS found FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?', [
+        agentId,
+        taskKey
+      ])
+    ).rows[0]
+    if (!indexed) {
+      // An item no index row names gets one under its place's session, else none until its first check re-points it.
+      const owner = await placeSessionInMigration(db, agentId, place[0]!, place[1]!, place[2]!)
+      await db.query(
+        `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt, mode)
+         VALUES (?, ?, ?, ?, 'done', ?, 'watch')`,
+        [agentId, taskKey, owner?.sessionId ?? '', owner?.key ?? '', Number(item.createdAt)]
+      )
+    }
+    const latest = (
+      await db.query(
+        `SELECT text, observedAt FROM assistant_item_observation WHERE agentId = ? AND itemId = ?
+          ORDER BY observationVersion DESC LIMIT 1`,
+        [agentId, String(item.id)]
+      )
+    ).rows[0] as { text: string; observedAt: number } | undefined
+    const updatedAt = Number(item.updatedAt)
+    await db.query(
+      `UPDATE assistant_subsession SET mode = 'watch', state = CASE WHEN state = 'open' THEN 'open' ELSE 'done' END,
+         title = ?, background = ?, summary = ?, summaryUpdatedAt = ?, nextAt = ?, watchStatus = ?, doneWhen = ?,
+         originPlatform = ?, originChannel = ?, originTransportScope = ?, asker = ?, shared = ?, replyThread = ?,
+         watchUrl = ?, watchTarget = ?, watchState = ?, watchReason = ?, watchRepoId = ?, observationVersion = ?,
+         version = ?, updatedAt = ?, changedAt = ?
+        WHERE agentId = ? AND childSessionKey = ?`,
+      [
+        String(item.title),
+        item.summary ? String(item.summary) : null,
+        latest ? cutSummary(latest.text) : null,
+        latest ? Number(latest.observedAt) : null,
+        item.nextCheck ?? null,
+        String(item.status),
+        item.doneWhen ?? null,
+        ...place,
+        item.asker ?? null,
+        Number(item.shared ?? 0),
+        item.replyThread ?? null,
+        ...(watched ? MOVED_ITEM_COLUMNS.map((column) => item[column] ?? null) : MOVED_ITEM_COLUMNS.map(() => null)),
+        Number(item.observationVersion ?? 0),
+        Number(item.version ?? 1),
+        updatedAt,
+        Number(item.changedAt ?? updatedAt),
+        agentId,
+        taskKey
+      ]
+    )
+    await db.query(
+      `INSERT INTO assistant_task_observation (agentId, taskKey, observationVersion, text, author, observedAt)
+       SELECT agentId, ?, observationVersion, text, author, observedAt FROM assistant_item_observation
+        WHERE agentId = ? AND itemId = ?`,
+      [taskKey, agentId, String(item.id)]
+    )
+  }
+  // Checks, and the proposals naming a follow-up or a getting-to-know task, are keyed by its task key from now on.
+  const ITEM_OF = (table: string, column: string) =>
+    `SELECT i.taskKey FROM assistant_item i WHERE i.agentId = ${table}.agentId AND i.id = ${table}.${column}`
+  for (const table of ['assistant_check_state', 'assistant_check'])
+    if (await columnExists(db, postgres, table, 'itemId')) {
+      await db.exec(`DELETE FROM ${table} WHERE NOT EXISTS (${ITEM_OF(table, 'itemId')})`)
+      await db.exec(`UPDATE ${table} SET itemId = (${ITEM_OF(table, 'itemId')})`)
+      await db.exec(`ALTER TABLE ${table} RENAME COLUMN itemId TO taskKey`)
+    }
+  for (const column of ['itemId', 'tookItemId'])
+    if (await columnExists(db, postgres, 'assistant_draft', column))
+      await db.exec(
+        `UPDATE assistant_draft SET ${column} = (${ITEM_OF('assistant_draft', column)})
+          WHERE ${column} IS NOT NULL AND EXISTS (${ITEM_OF('assistant_draft', column)})`
+      )
+  // The follow-ups leave the item ledger, and with them what only they carried.
+  const followUps = 'SELECT id FROM assistant_item WHERE gettingToKnow IS NULL'
+  for (const table of ['assistant_item_observation', 'assistant_item_link'])
+    if (await tableExists(db, postgres, table)) await db.exec(`DELETE FROM ${table} WHERE itemId IN (${followUps})`)
+  await db.exec('DELETE FROM assistant_item WHERE gettingToKnow IS NULL')
+  for (const column of MOVED_ITEM_COLUMNS)
+    if (await columnExists(db, postgres, 'assistant_item', column))
+      await db.exec(`ALTER TABLE assistant_item DROP COLUMN ${column}`)
+  // A watch row with neither a schedule nor a getting-to-know task behind it named an item that is gone.
+  await db.exec(
+    `DELETE FROM assistant_subsession WHERE mode = 'watch' AND watchStatus IS NULL
+       AND NOT EXISTS (SELECT 1 FROM assistant_item i WHERE i.agentId = assistant_subsession.agentId
+         AND i.taskKey = assistant_subsession.childSessionKey)`
+  )
+}
+
+// A task summary's length (auto-session-mode.md §6.7), which a watch task's last result is cut to.
+const cutSummary = (text: string): string => {
+  const chars = [...text.trim()]
+  return chars.length > 500 ? `${chars.slice(0, 499).join('')}…` : chars.join('')
+}
 
 /** Tasks gain a title, taken from their session's first-message title, a summary and the threads attached to them. */
 async function migrateTaskModel(db: StoreTx, postgres: boolean): Promise<void> {
@@ -2094,9 +2238,15 @@ async function migrateTaskModel(db: StoreTx, postgres: boolean): Promise<void> {
   ] as const)
     await addColumn(db, postgres, 'assistant_subsession', column, type)
   if (!(await tableExists(db, postgres, 'sessions'))) return
+  await withTaskKind(db, postgres)
   await db.exec(`UPDATE assistant_subsession
     SET title = (SELECT s.title FROM sessions s WHERE s.key = assistant_subsession.childSessionKey)
     WHERE title IS NULL AND kind = 'delegation'`)
+}
+
+/** A step written before v74 reads the task index's `kind`; a store reshaped from a newer schema gets it back, and v74 folds it into `mode`. */
+async function withTaskKind(db: StoreTx, postgres: boolean): Promise<void> {
+  await addColumn(db, postgres, 'assistant_subsession', 'kind', "TEXT NOT NULL DEFAULT 'delegation'")
 }
 
 // Binds a platform's recorded conversations to their tenant, then hands each conversation's audience to its inherited children.
@@ -2179,7 +2329,10 @@ async function migrateItemsToFollowUps(db: StoreTx, postgres: boolean): Promise<
   ] as const)
     await addColumn(db, postgres, 'assistant_patrol', column, type)
   await db.exec(ASSISTANT_PATROL_SCHEMA_V53)
-  await db.exec(ASSISTANT_SUBSESSION_SCHEMA)
+  await db.exec(ASSISTANT_SUBSESSION_SCHEMA_V73)
+  await withTaskKind(db, postgres)
+  // A check log from a newer schema is keyed by task key already.
+  const checkKey = (await columnExists(db, postgres, 'assistant_check', 'itemId')) ? 'itemId' : 'taskKey'
   // Done and dropped items are not carried.
   const closed = "SELECT id FROM assistant_item WHERE status NOT IN ('active', 'waiting')"
   for (const table of ['assistant_item_observation', 'assistant_item_link', 'assistant_patrol'])
@@ -2248,8 +2401,8 @@ async function migrateItemsToFollowUps(db: StoreTx, postgres: boolean): Promise<
         [since, agentId, id]
       )
       await db.query(
-        'INSERT OR IGNORE INTO assistant_check (agentId, itemId, checkNo, startedAt, reported) VALUES (?, ?, 1, ?, 0)',
-        [agentId, id, since]
+        `INSERT OR IGNORE INTO assistant_check (agentId, ${checkKey}, checkNo, startedAt, reported) VALUES (?, ?, 1, ?, 0)`,
+        [agentId, checkKey === 'itemId' ? id : taskKey, since]
       )
       continue
     }
@@ -2270,11 +2423,16 @@ async function migrateItemsToFollowUps(db: StoreTx, postgres: boolean): Promise<
   await db.exec('DROP TABLE IF EXISTS assistant_item_follower')
 }
 
-// v53 ran against the check state's names before v57 renamed them.
-const ASSISTANT_PATROL_SCHEMA_V53 = ASSISTANT_CHECK_SCHEMA.replace('assistant_check_state', 'assistant_patrol').replace(
-  'checkedNextCheck',
-  'patrolledNextCheck'
+// The task index as v53 created it, keyed by kind until v74 gave it a mode.
+const ASSISTANT_SUBSESSION_SCHEMA_V73 = ASSISTANT_SUBSESSION_SCHEMA.replace(
+  "mode TEXT NOT NULL DEFAULT 'work'",
+  "kind TEXT NOT NULL DEFAULT 'delegation'"
 )
+
+// v53 ran against the check state's names before v57 renamed them, and before v74 keyed them by task key.
+const ASSISTANT_PATROL_SCHEMA_V53 = ASSISTANT_CHECK_SCHEMA.replaceAll('taskKey', 'itemId')
+  .replace('assistant_check_state', 'assistant_patrol')
+  .replace('checkedNextCheck', 'patrolledNextCheck')
 
 /** Every column holding a check's coordinate, alone or inside a session key or a stored message, as v57 rewrites it. */
 const CHECK_COORDINATE_COLUMNS = [
@@ -2308,8 +2466,10 @@ async function migratePatrolsToChecks(db: StoreTx, postgres: boolean): Promise<v
     await db.exec('ALTER TABLE assistant_patrol RENAME TO assistant_check_state')
     await db.exec('ALTER TABLE assistant_check_state RENAME COLUMN patrolledNextCheck TO checkedNextCheck')
   }
-  if (await tableExists(db, postgres, 'assistant_subsession'))
+  if (await tableExists(db, postgres, 'assistant_subsession')) {
+    await withTaskKind(db, postgres)
     await db.exec("UPDATE assistant_subsession SET kind = 'follow-up' WHERE kind = 'patrol'")
+  }
   if (await tableExists(db, postgres, 'assistant_item_observation'))
     await db.exec("UPDATE assistant_item_observation SET author = 'check' WHERE author = 'patrol'")
   for (const [table, column] of CHECK_COORDINATE_COLUMNS)
@@ -2655,6 +2815,8 @@ export class LocalStore {
   readonly assistantDrafts: AssistantDraftLedger
   /** The parent–child index of assistant-mode sub-sessions (assistant-mode.md §5.6). */
   readonly assistantSubsessions: AssistantSubsessionIndex
+  /** Follow-ups, the task index's watch-mode rows (assistant-mode.md §5.18). */
+  readonly assistantWatchTasks: AssistantWatchTasks
   /** Each follow-up's check state and check log (assistant-mode.md §5.12). */
   readonly assistantChecks: AssistantCheckLedger
   /** Reminders the daemon posts at their time with no model turn (assistant-mode.md §5.9). */
@@ -2697,6 +2859,10 @@ export class LocalStore {
     })
     this.assistantDrafts = new AssistantDraftLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.assistantSubsessions = new AssistantSubsessionIndex({
+      query: (sql, params) => this.db.query(sql, params),
+      transaction: (fn) => this.transaction(fn)
+    })
+    this.assistantWatchTasks = new AssistantWatchTasks({
       query: (sql, params) => this.db.query(sql, params),
       transaction: (fn) => this.transaction(fn)
     })
@@ -5359,9 +5525,12 @@ export class LocalStore {
       // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
       if (isAppendCoordinate(rec.thread))
         await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
-      // A purged task leaves its parent's index, a threaded one on its own thread too, whose threads become unowned (auto-session-mode.md §6.5).
+      // A purged task leaves its parent's index, a threaded one on its own thread too (auto-session-mode.md §6.5); a follow-up's row is the task itself, whose next check opens a new session.
       await tx
-        .prepare('DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?')
+        .prepare(
+          `DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?
+             AND NOT (mode = 'watch' AND watchStatus IS NOT NULL)`
+        )
         .run(rec.agentId, key)
       await tx
         .prepare('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?')

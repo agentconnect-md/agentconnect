@@ -84,32 +84,51 @@ async function read<O extends AssistantActivityReadReq['operation']>(
   return result as Extract<ReadResult, { operation: O }>
 }
 
-/** A follow-up taken in the support channel, with its index row under that channel's long session. */
-async function createFollowUp(s: LocalStore, agentId: string, over: Record<string, unknown> = {}) {
-  const key = sessionKey('slack', 'C0SUPPORT', `subsession:check-${randomUUID()}`, agentId, 'T0EXAMPLE')
-  const item = await s.assistantItems.create({
+/** A follow-up taken in the support channel, a watch task under that channel's long session (§5.18); with `gettingToKnow`, a getting-to-know task of it. */
+async function createFollowUp(
+  s: LocalStore,
+  agentId: string,
+  over: { title?: string; nextCheck?: number; now?: number; gettingToKnow?: 'joined' } = {}
+): Promise<{ taskKey: string; title: string }> {
+  const owner = { sessionId: 'sid-parent', key: sessionKey('slack', 'C0SUPPORT', 'append:1', agentId, 'T0EXAMPLE') }
+  const now = over.now ?? 1_000
+  if (over.gettingToKnow) {
+    const key = sessionKey('slack', 'C0SUPPORT', `subsession:check-look-${randomUUID()}`, agentId, 'T0EXAMPLE')
+    const item = await s.assistantItems.create({
+      agentId,
+      title: over.title ?? 'Getting to know support',
+      origin: SUPPORT,
+      taskKey: key,
+      gettingToKnow: over.gettingToKnow,
+      ...(over.nextCheck !== undefined ? { nextCheck: over.nextCheck } : {}),
+      now
+    })
+    await s.assistantSubsessions.openGettingToKnow({
+      agentId,
+      childSessionKey: key,
+      parentSessionId: owner.sessionId,
+      parentSessionKey: owner.key,
+      place: SUPPORT,
+      now
+    })
+    return item
+  }
+  return await s.assistantWatchTasks.open({
     agentId,
-    title: 'Ship the release notes',
+    title: over.title ?? 'Ship the release notes',
     doneWhen: 'The notes are published',
     origin: SUPPORT,
-    taskKey: key,
+    taskKey: sessionKey('slack', 'C0SUPPORT', `subsession:check-${randomUUID()}`, agentId, 'T0EXAMPLE'),
     asker: 'slack:T0EXAMPLE:U0ALICE',
-    now: 1_000,
-    ...over
+    owner,
+    ...(over.nextCheck !== undefined ? { nextAt: over.nextCheck } : {}),
+    now
   })
-  await s.assistantSubsessions.openFollowUp({
-    agentId,
-    childSessionKey: key,
-    parentSessionId: 'sid-parent',
-    parentSessionKey: sessionKey('slack', 'C0SUPPORT', 'append:1', agentId, 'T0EXAMPLE'),
-    now: Number(over.now ?? 1_000)
-  })
-  return item
 }
 
 /** Start one check of a follow-up at `at`. */
-const begin = (s: LocalStore, agentId: string, item: { id: string; taskKey: string }, at: number) =>
-  s.assistantChecks.begin(agentId, item.id, {
+const begin = (s: LocalStore, agentId: string, item: { taskKey: string }, at: number) =>
+  s.assistantChecks.begin(agentId, item.taskKey, {
     key: item.taskKey,
     nextCheck: null,
     observationVersion: 0,
@@ -128,12 +147,12 @@ describe('the Activity view: follow-ups in place of items', () => {
       items: [],
       truncated: false
     })
-    expect((await read(activity, { agentId: a, operation: 'item', itemId: item.id })).item).toBeNull()
-    expect(await activity.write({ agentId: a, operation: 'delete-item', itemId: item.id })).toEqual({
+    expect((await read(activity, { agentId: a, operation: 'item', itemId: item.taskKey })).item).toBeNull()
+    expect(await activity.write({ agentId: a, operation: 'delete-item', itemId: item.taskKey })).toEqual({
       operation: 'delete-item',
       found: false
     })
-    expect(await s.assistantItems.get(a, item.id)).toBeDefined()
+    expect(await s.assistantWatchTasks.get(a, item.taskKey)).toBeDefined()
   })
 
   it('lists a follow-up as a task with its state, next check and newest finished checks', async () => {
@@ -141,12 +160,12 @@ describe('the Activity view: follow-ups in place of items', () => {
     const item = await createFollowUp(s, a, { nextCheck: 86_400_000 })
     for (let i = 1; i <= 7; i++) {
       const begun = await begin(s, a, item, i * 1_000)
-      await s.assistantChecks.endCheck(a, item.id, begun!.checkNo, {
+      await s.assistantChecks.endCheck(a, item.taskKey, begun!.checkNo, {
         observation: `check ${i}`,
         reported: i === 7,
         now: i * 1_000 + 1
       })
-      await s.assistantChecks.succeed(a, item.id, item.taskKey, i * 1_000 + 1)
+      await s.assistantChecks.succeed(a, item.taskKey, item.taskKey, i * 1_000 + 1)
     }
     // A running check has seen nothing yet, so it is not among them.
     await begin(s, a, item, 8_000)
@@ -160,7 +179,7 @@ describe('the Activity view: follow-ups in place of items', () => {
         createdAt: '1970-01-01T00:00:01.000Z',
         kind: 'follow-up',
         followUp: {
-          id: item.id,
+          id: item.taskKey,
           title: 'Ship the release notes',
           doneWhen: 'The notes are published',
           status: 'waiting',
@@ -179,12 +198,7 @@ describe('the Activity view: follow-ups in place of items', () => {
   // assistant-mode.md §5.13: a getting-to-know task is a follow-up row marked as one, with no time of its own to show.
   it('marks a getting-to-know task, which shows no next check while it waits for the scheduled-check slot', async () => {
     const { s, a, activity } = await setup()
-    await createFollowUp(s, a, {
-      title: 'Getting to know support',
-      doneWhen: undefined,
-      nextCheck: 1_000,
-      gettingToKnow: 'joined'
-    })
+    await createFollowUp(s, a, { title: 'Getting to know support', nextCheck: 1_000, gettingToKnow: 'joined' })
     const page = await read(activity, { agentId: a, operation: 'subsessions', limit: 10 })
     expect(page.subsessions).toEqual([
       expect.objectContaining({
@@ -207,12 +221,12 @@ describe('the Activity view: follow-ups in place of items', () => {
       for (let i = 1; i <= 5; i++) {
         const at = (f * 10 + i) * 1_000
         const begun = await begin(s, a, item, at)
-        await s.assistantChecks.endCheck(a, item.id, begun!.checkNo, {
+        await s.assistantChecks.endCheck(a, item.taskKey, begun!.checkNo, {
           observation: long,
           reported: false,
           now: at + 1
         })
-        await s.assistantChecks.succeed(a, item.id, item.taskKey, at + 1)
+        await s.assistantChecks.succeed(a, item.taskKey, item.taskKey, at + 1)
       }
     }
     const bytes = (result: unknown) => Buffer.byteLength(JSON.stringify(result), 'utf8')
@@ -253,13 +267,13 @@ describe('the Activity view: follow-ups in place of items', () => {
     // Five failed checks in a row pause it until it is messaged.
     for (let n = 0; n < 5; n++) {
       await begin(s, a, item, 6_000 + n)
-      await s.assistantChecks.fail(a, item.id, item.taskKey, 6_000 + n, 5_000)
+      await s.assistantChecks.fail(a, item.taskKey, item.taskKey, 6_000 + n, 5_000)
     }
     expect(await status()).toEqual([['follow-up', 'open', 'paused', '1970-01-01T00:00:05.000Z']])
-    await s.assistantItems.schedule(a, item.id, { status: 'done', nextCheck: null })
+    await s.assistantWatchTasks.schedule(a, item.taskKey, { status: 'done', nextAt: null })
     expect(await status()).toEqual([['follow-up', 'done', 'done', null]])
     const other = await createFollowUp(s, a, { title: 'Watch the build', now: 2_000 })
-    await s.assistantItems.schedule(a, other.id, { status: 'dropped', nextCheck: null })
+    await s.assistantWatchTasks.schedule(a, other.taskKey, { status: 'dropped', nextAt: null })
     expect((await status())[0]).toEqual(['follow-up', 'done', 'stopped', null])
   })
 
@@ -321,7 +335,7 @@ describe('the Activity view: follow-ups in place of items', () => {
     const stop = (on: AssistantActivity) =>
       on.write({ agentId: a, operation: 'stop-subsession', sessionId: 'sid-follow-up', actor })
     expect(await stop(withStop)).toEqual({ operation: 'stop-subsession', result: 'stopped' })
-    expect(stopFollowUp).toHaveBeenCalledWith(a, expect.objectContaining({ id: item.id }), actor)
+    expect(stopFollowUp).toHaveBeenCalledWith(a, expect.objectContaining({ taskKey: item.taskKey }), actor)
     stopFollowUp.mockResolvedValueOnce('ended')
     expect(await stop(withStop)).toEqual({ operation: 'stop-subsession', result: 'not-running' })
     expect(stopSession).not.toHaveBeenCalled()
@@ -343,24 +357,26 @@ describe('the Activity view: follow-ups in place of items', () => {
     const item = await createFollowUp(s, a)
     // No check has run, so the row has no session to stop it by; its own id does.
     const [row] = (await read(withStop, { agentId: a, operation: 'subsessions', limit: 10 })).subsessions
-    expect(row).toMatchObject({ sessionId: null, followUp: { id: item.id } })
+    expect(row).toMatchObject({ sessionId: null, followUp: { id: item.taskKey } })
     const actor = { userId: 'usr-1', name: null }
     const stop = (on: AssistantActivity, agentId: string, followUpId: string, parentSessionId = 'sid-parent') =>
       on.write({ agentId, operation: 'stop-follow-up', followUpId, parentSessionId, actor })
-    const result = await stop(withStop, a, item.id)
+    const result = await stop(withStop, a, item.taskKey)
     expect(AssistantActivityWriteResult.parse(result)).toEqual({ operation: 'stop-follow-up', result: 'stopped' })
-    expect(stopFollowUp).toHaveBeenCalledWith(a, expect.objectContaining({ id: item.id }), { userId: 'usr-1' })
+    expect(stopFollowUp).toHaveBeenCalledWith(a, expect.objectContaining({ taskKey: item.taskKey }), {
+      userId: 'usr-1'
+    })
     stopFollowUp.mockResolvedValueOnce('ended')
-    expect(await stop(withStop, a, item.id)).toEqual({ operation: 'stop-follow-up', result: 'not-running' })
+    expect(await stop(withStop, a, item.taskKey)).toEqual({ operation: 'stop-follow-up', result: 'not-running' })
 
     stopFollowUp.mockClear()
     const theirs = await createFollowUp(s, b)
     // Another conversation, another agent's follow-up, an unknown id, and a daemon that cannot end one end nothing.
     for (const [on, agentId, id, parent] of [
-      [withStop, a, item.id, 'sid-elsewhere'],
-      [withStop, a, theirs.id, 'sid-parent'],
+      [withStop, a, item.taskKey, 'sid-elsewhere'],
+      [withStop, a, theirs.taskKey, 'sid-parent'],
       [withStop, a, randomUUID(), 'sid-parent'],
-      [activity, a, item.id, 'sid-parent']
+      [activity, a, item.taskKey, 'sid-parent']
     ] as const) {
       expect(await stop(on, agentId, id, parent)).toEqual({ operation: 'stop-follow-up', result: 'not-found' })
     }
@@ -390,7 +406,7 @@ describe('the Activity view: follow-ups in place of items', () => {
       (await read(activity, { agentId, operation: 'task', sessionId })).task
     const [listed] = (await read(activity, { agentId: a, operation: 'subsessions', limit: 10 })).subsessions
     expect(await one(a, 'sid-follow-up')).toEqual(listed)
-    expect(listed).toMatchObject({ sessionId: 'sid-follow-up', kind: 'follow-up', followUp: { id: item.id } })
+    expect(listed).toMatchObject({ sessionId: 'sid-follow-up', kind: 'follow-up', followUp: { id: item.taskKey } })
 
     // Another agent's task, a session that is no task, and an unknown one read as none.
     expect(await one(b, 'sid-follow-up')).toBeNull()
@@ -1047,9 +1063,9 @@ describe('the Activity view: who it answers', () => {
     expect(await refusal(() => activity.read({ agentId: unknown, operation: 'drafts', limit: 10 }))).toBe(
       'unknown-agent'
     )
-    expect(await refusal(() => activity.write({ agentId: unknown, operation: 'delete-item', itemId: item.id }))).toBe(
-      'unknown-agent'
-    )
+    expect(
+      await refusal(() => activity.write({ agentId: unknown, operation: 'delete-item', itemId: item.taskKey }))
+    ).toBe('unknown-agent')
     const stopUnknown = activity.write({
       agentId: unknown,
       operation: 'stop-subsession',
@@ -1057,7 +1073,7 @@ describe('the Activity view: who it answers', () => {
       actor: { userId: 'usr-1', name: null }
     })
     expect(await refusal(() => stopUnknown)).toBe('unknown-agent')
-    expect(await s.assistantItems.get(a, item.id)).toBeDefined()
+    expect(await s.assistantWatchTasks.get(a, item.taskKey)).toBeDefined()
   })
 
   it('answers an agent outside assistant mode with its permission requests, sub-sessions and drafts, and no items, checks or proposals', async () => {
@@ -1081,7 +1097,12 @@ describe('the Activity view: who it answers', () => {
     const child = (id: string) => sessionKey('webchat', 'conv-1', subsessionCoordinate(id), off)
     const open = { agentId: off, parentSessionId: 'sid-parent', parentSessionKey: parentKey }
     await s.assistantSubsessions.open({ ...open, childSessionKey: child('delegated'), now: 1_000 })
-    await s.assistantSubsessions.openFollowUp({ ...open, childSessionKey: child('check-1'), now: 2_000 })
+    await s.assistantSubsessions.openGettingToKnow({
+      ...open,
+      childSessionKey: child('check-1'),
+      place: { platform: 'webchat', channel: 'conv-1' },
+      now: 2_000
+    })
     await s.upsertSession({
       key: child('delegated'),
       agentId: off,
@@ -1102,7 +1123,7 @@ describe('the Activity view: who it answers', () => {
       task: 'Rebase PR #12 onto main and push.',
       sentence: 'I want to rebase PR #12.',
       why: 'It conflicts with main.',
-      itemId: item.id,
+      itemId: item.taskKey,
       itemVersion: 1,
       source: {
         platform: 'webchat',
@@ -1130,7 +1151,7 @@ describe('the Activity view: who it answers', () => {
       items: [],
       truncated: false
     })
-    expect(await read(activity, { agentId: off, operation: 'item', itemId: item.id })).toEqual({
+    expect(await read(activity, { agentId: off, operation: 'item', itemId: item.taskKey })).toEqual({
       operation: 'item',
       item: null
     })
@@ -1165,11 +1186,11 @@ describe('the Activity view: who it answers', () => {
     ).toEqual({ operation: 'drafts', drafts: [], truncated: false })
 
     // No item is deleted; a sub-session stops as any agent's does.
-    expect(await activity.write({ agentId: off, operation: 'delete-item', itemId: item.id })).toEqual({
+    expect(await activity.write({ agentId: off, operation: 'delete-item', itemId: item.taskKey })).toEqual({
       operation: 'delete-item',
       found: false
     })
-    expect(await s.assistantItems.get(off, item.id)).toBeDefined()
+    expect(await s.assistantWatchTasks.get(off, item.taskKey)).toBeDefined()
     expect(
       await activity.write({
         agentId: off,

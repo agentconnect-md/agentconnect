@@ -416,13 +416,14 @@ describe('a getting-to-know task’s report round on a platform with cards', () 
     })
     const draft = await d.store.assistantDrafts.get(proposalId)
     expect(draft).toMatchObject({ status: 'succeeded', decidedByName: 'Ada' })
-    const taken = await d.store.assistantItems.get('bot-a', draft.proposal.tookItemId)
+    // The follow-up it took is a watch task, named by its task key (assistant-mode.md §5.18).
+    const taken = await d.store.assistantWatchTasks.get('bot-a', draft.proposal.tookItemId)
     expect(taken).toMatchObject({
+      taskKey: draft.proposal.tookItemId,
       title: 'The 2.6 release date',
       doneWhen: 'A date is posted here.',
       status: 'active',
-      nextCheck: Date.parse('2099-01-01T09:00:00Z'),
-      gettingToKnow: null,
+      nextAt: Date.parse('2099-01-01T09:00:00Z'),
       origin: { platform: 'slack', channel: 'C1' }
     })
     expect(taken.asker).toMatch(/^slack:.+:U0ADA$/)
@@ -473,7 +474,7 @@ describe('a getting-to-know task’s report round on a platform with cards', () 
       status: 'succeeded',
       followUp: { id: expect.any(String), parentSessionId: expect.any(String) }
     })
-    expect(await d.store.assistantItems.get('bot-a', decision.followUp.id)).toMatchObject({ asker: 'user:usr-1' })
+    expect(await d.store.assistantWatchTasks.get('bot-a', decision.followUp.id)).toMatchObject({ asker: 'user:usr-1' })
     await daemon.stop()
   })
 })

@@ -1,4 +1,4 @@
-// The follow-up tools (assistant-mode.md §5.12): `followUp` in assistant mode only, and `recordCheck` inside a follow-up's check only.
+// The follow-up tools (assistant-mode.md §5.12): `followUp` in assistant mode only, opening a watch task (§5.18), and `recordCheck` inside a follow-up's check only.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,6 +18,7 @@ import {
   type FollowUpWatchToolPort,
   type WatchOutcomeView
 } from '../src/mcp/ops/assistant-items.js'
+import { CheckedTasks } from '../src/assistant/checked-tasks.js'
 import { watchTarget } from '../src/assistant/follow-up-watches.js'
 import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
 import { typedByPerson } from '../src/memory/layers.js'
@@ -59,29 +60,32 @@ async function setup(options: { enabled?: boolean; watches?: FollowUpWatchToolPo
   let asker: string | undefined = ALICE
   let checking: string | undefined
   const reports: string[] = []
+  const tasks = new CheckedTasks({ watchTasks: s.assistantWatchTasks, items: s.assistantItems })
   const deps = {
     assistantItems: {
-      ledgerFor: () => (options.enabled === false ? undefined : s.assistantItems),
+      ledgerFor: () => (options.enabled === false ? undefined : tasks),
       watches: () => options.watches,
       askerFor: async () => asker,
       take: async (
         ctx: SessionContext,
         input: { title: string; doneWhen: string; nextCheck?: number; summary?: string; asker: string }
-      ) =>
-        await s.assistantItems.create({
+      ) => {
+        await s.assistantWatchTasks.open({
           agentId: ctx.agentId,
           title: input.title,
           doneWhen: input.doneWhen,
-          ...(input.nextCheck !== undefined ? { nextCheck: input.nextCheck } : {}),
-          status: input.nextCheck !== undefined ? 'active' : 'waiting',
-          ...(input.summary !== undefined ? { summary: input.summary } : {}),
+          ...(input.nextCheck !== undefined ? { nextAt: input.nextCheck } : {}),
+          ...(input.summary !== undefined ? { background: input.summary } : {}),
           origin: { platform: ctx.platform, channel: ctx.channel, transportScope: ctx.transportScope ?? null },
+          owner: { sessionId: 'sid-owner', key: 'slack:D0ALICE:append:1:agent-a:slack:scope-1' },
           taskKey: TASK_KEY,
           asker: input.asker
-        }),
+        })
+        return await tasks.get(ctx.agentId, TASK_KEY)
+      },
       check: {
-        itemFor: async () => checking,
-        report: async (_ctx: SessionContext, _itemId: string, text: string) => {
+        taskFor: async () => checking,
+        report: async (_ctx: SessionContext, _taskKey: string, text: string) => {
           if (!checking) return false
           reports.push(text)
           return true
@@ -99,8 +103,8 @@ async function setup(options: { enabled?: boolean; watches?: FollowUpWatchToolPo
     askAs: (identity: string | undefined) => {
       asker = identity
     },
-    check: (itemId: string | undefined) => {
-      checking = itemId
+    check: (taskKey: string | undefined) => {
+      checking = taskKey
     }
   }
 }
@@ -161,7 +165,7 @@ describe('followUp', () => {
       },
       note: expect.stringMatching(/Its first check runs at nextCheck.* Never show the taskId to people/)
     })
-    expect(await s.assistantItems.byTaskKey(AGENT, TASK_KEY)).toMatchObject({
+    expect(await s.assistantWatchTasks.get(AGENT, TASK_KEY)).toMatchObject({
       status: 'active',
       asker: ALICE,
       origin: { platform: 'slack', channel: 'D0ALICE', transportScope: 'slack:scope-1' }
@@ -177,14 +181,14 @@ describe('followUp', () => {
     await expect(call(ALICE_DM, 'followUp', { title: 'x'.repeat(301), doneWhen: 'y' })).rejects.toThrow('300')
     askAs(undefined)
     await expect(call(ALICE_DM, 'followUp', { title: 'x', doneWhen: 'y' })).rejects.toThrow("needs a person's request")
-    expect(await s.assistantItems.list(AGENT)).toEqual([])
+    expect(await s.assistantWatchTasks.list(AGENT)).toEqual([])
   })
 
   it('takes one with no next check as waiting until it is messaged', async () => {
     const { call, s } = await setup()
     const taken = await call(ALICE_DM, 'followUp', { title: 'Watch the deploy', doneWhen: 'It is live' })
     expect(taken.note).toContain('until you message it with messageTask')
-    expect(await s.assistantItems.byTaskKey(AGENT, TASK_KEY)).toMatchObject({ status: 'waiting', nextCheck: null })
+    expect(await s.assistantWatchTasks.get(AGENT, TASK_KEY)).toMatchObject({ status: 'waiting', nextAt: null })
   })
 })
 
@@ -192,24 +196,27 @@ describe('recordCheck', () => {
   it('records what the check saw, sets the next check or ends the follow-up, and keeps a report', async () => {
     const { call, check, reports, s } = await setup()
     const { taskId } = await call(ALICE_DM, 'followUp', { title: 'Watch the deploy', doneWhen: 'It is live' })
-    const item = (await s.assistantItems.byTaskKey(AGENT, taskId))!
-    check(item.id)
+    const item = (await s.assistantWatchTasks.get(AGENT, taskId))!
+    check(item.taskKey)
 
     const later = new Date(NOW + 60 * 60_000).toISOString()
     expect(await call(CHECK, 'recordCheck', { observation: 'Rollout at 40%', nextCheck: later })).toEqual({
       ok: true,
       followUp: { state: 'waiting', nextCheck: later }
     })
-    expect(await s.assistantItems.get(AGENT, item.id)).toMatchObject({ status: 'active', nextCheck: NOW + 60 * 60_000 })
+    expect(await s.assistantWatchTasks.get(AGENT, item.taskKey)).toMatchObject({
+      status: 'active',
+      nextAt: NOW + 60 * 60_000
+    })
     expect(await call(CHECK, 'recordCheck', { observation: 'Rollout paused' })).toMatchObject({
       followUp: { state: 'waiting', nextCheck: null }
     })
-    expect(await s.assistantItems.get(AGENT, item.id)).toMatchObject({ status: 'waiting', nextCheck: null })
+    expect(await s.assistantWatchTasks.get(AGENT, item.taskKey)).toMatchObject({ status: 'waiting', nextAt: null })
     expect(
       await call(CHECK, 'recordCheck', { observation: 'It is live', done: true, report: 'The deploy is live.' })
     ).toEqual({ ok: true, followUp: { state: 'done', nextCheck: null }, report: 'passed on when this check ends' })
     expect(reports).toEqual(['The deploy is live.'])
-    const after = (await s.assistantItems.get(AGENT, item.id))!
+    const after = (await s.assistantWatchTasks.get(AGENT, item.taskKey))!
     expect(after.status).toBe('done')
     expect(after.observations.map((o) => [o.text, o.author])).toEqual([
       ['Rollout at 40%', 'check'],
@@ -220,18 +227,18 @@ describe('recordCheck', () => {
     expect(await call(CHECK, 'recordCheck', { observation: 'Seen again', nextCheck: later })).toMatchObject({
       followUp: { state: 'ended', nextCheck: null }
     })
-    expect((await s.assistantItems.get(AGENT, item.id))?.status).toBe('done')
+    expect((await s.assistantWatchTasks.get(AGENT, item.taskKey))?.status).toBe('done')
   })
 
   it('refuses outside a check, without an observation, too soon, or both ending and rescheduling', async () => {
     const { call, check, s } = await setup()
     const { taskId } = await call(ALICE_DM, 'followUp', { title: 'Watch the deploy', doneWhen: 'It is live' })
-    const item = (await s.assistantItems.byTaskKey(AGENT, taskId))!
+    const item = (await s.assistantWatchTasks.get(AGENT, taskId))!
     await expect(
       call({ ...ALICE_DM, tools: [RECORD_CHECK_TOOL] }, 'recordCheck', { observation: 'x' })
     ).rejects.toThrow('available only in a follow-up’s check')
     await expect(call(CHECK, 'recordCheck', { observation: 'x' })).rejects.toThrow('this check has ended')
-    check(item.id)
+    check(item.taskKey)
     await expect(call(CHECK, 'recordCheck', {})).rejects.toThrow('observation')
     await expect(
       call(CHECK, 'recordCheck', { observation: 'x', nextCheck: new Date(NOW + 60_000).toISOString() })
@@ -243,7 +250,7 @@ describe('recordCheck', () => {
     await expect(call(CHECK, 'followUp', { title: 'x', doneWhen: 'y' })).rejects.toThrow(
       'followUp is not available in a follow-up’s read-only check'
     )
-    expect((await s.assistantItems.get(AGENT, item.id))?.observations).toEqual([])
+    expect((await s.assistantWatchTasks.get(AGENT, item.taskKey))?.observations).toEqual([])
   })
 })
 
@@ -389,7 +396,7 @@ describe('the daemon offers followUp by the agent’s switch', () => {
       expect(inCheck).not.toContain('followUp')
 
       const items = seam.mcp.deps.assistantItems!
-      expect(items.ledgerFor(on)).toBe(seam.store.assistantItems)
+      expect(items.ledgerFor(on)).toBeInstanceOf(CheckedTasks)
       expect(items.ledgerFor(off)).toBeUndefined()
       expect(await items.askerFor(session({ agentId: on }))).toBeUndefined()
     } finally {
@@ -406,16 +413,16 @@ describe('a follow-up’s watch (assistant-mode.md §5.14)', () => {
     const calls: string[] = []
     const watches: FollowUpWatchToolPort = {
       check: (url) => void watchTarget(url),
-      set: async (_agentId, itemId, url) => {
-        calls.push(`set ${itemId} ${url}`)
+      set: async (_agentId, taskKey, url) => {
+        calls.push(`set ${taskKey} ${url}`)
         return outcome
       },
-      clear: async (_agentId, itemId) => {
-        calls.push(`clear ${itemId}`)
+      clear: async (_agentId, taskKey) => {
+        calls.push(`clear ${taskKey}`)
         return { kind: 'none' }
       },
-      end: async (_agentId, itemId) => {
-        calls.push(`end ${itemId}`)
+      end: async (_agentId, taskKey) => {
+        calls.push(`end ${taskKey}`)
       }
     }
     return { watches, calls }
@@ -445,15 +452,15 @@ describe('a follow-up’s watch (assistant-mode.md §5.14)', () => {
     const watching = port()
     const { call, s } = await setup({ watches: watching.watches })
     const taken = await call(ALICE_DM, 'followUp', { title: 'PR #12', doneWhen: 'It merged', watch: PR })
-    const [item] = await s.assistantItems.list(AGENT)
-    expect(watching.calls).toEqual([`set ${item!.id} ${PR}`])
+    const [item] = await s.assistantWatchTasks.list(AGENT)
+    expect(watching.calls).toEqual([`set ${item!.taskKey} ${PR}`])
     expect(taken.watch).toBe('Watching example-org/example-repo#12: its events wake a check early.')
 
     const refusing = port({ kind: 'refused', reason: 'your code-host access does not cover it' })
     const second = await setup({ watches: refusing.watches })
     const result = await second.call(ALICE_DM, 'followUp', { title: 'PR #13', doneWhen: 'It merged', watch: PR })
     // The person confirmed the follow-up, not the watch: it is taken either way.
-    expect(await second.s.assistantItems.list(AGENT)).toHaveLength(1)
+    expect(await second.s.assistantWatchTasks.list(AGENT)).toHaveLength(1)
     expect(result.watch).toBe(
       'Not watched: your code-host access does not cover it. It is checked by time only; tell the person why.'
     )
@@ -472,26 +479,26 @@ describe('a follow-up’s watch (assistant-mode.md §5.14)', () => {
     await expect(none.call(ALICE_DM, 'followUp', { title: 'PR', doneWhen: 'Merged', watch: PR })).rejects.toThrow(
       'watching is not available here'
     )
-    expect(await s.assistantItems.list(AGENT)).toEqual([])
-    expect(await none.s.assistantItems.list(AGENT)).toEqual([])
+    expect(await s.assistantWatchTasks.list(AGENT)).toEqual([])
+    expect(await none.s.assistantWatchTasks.list(AGENT)).toEqual([])
   })
 
   it('moves the watch with a new URL, stops it with an empty one, and ends it with `done`', async () => {
     const watching = port()
     const { call, s, check } = await setup({ watches: watching.watches })
     await call(ALICE_DM, 'followUp', { title: 'Issue #7', doneWhen: 'Its fix merged' })
-    const [item] = await s.assistantItems.list(AGENT)
-    check(item!.id)
+    const [item] = await s.assistantWatchTasks.list(AGENT)
+    check(item!.taskKey)
     const moved = await call(CHECK, 'recordCheck', { observation: 'Fixed by #12.', watch: PR })
     expect(moved.watch).toBe('Watching example-org/example-repo#12: its events wake a check early.')
     await call(CHECK, 'recordCheck', { observation: 'Still open.', watch: '' })
-    await s.assistantItems.setWatch(AGENT, item!.id, {
+    await s.assistantWatchTasks.setWatch(AGENT, item!.taskKey, {
       url: PR,
       target: 'example-org/example-repo#12',
       state: 'watching',
       reason: null
     })
     await call(CHECK, 'recordCheck', { observation: 'Merged.', done: true })
-    expect(watching.calls).toEqual([`set ${item!.id} ${PR}`, `clear ${item!.id}`, `end ${item!.id}`])
+    expect(watching.calls).toEqual([`set ${item!.taskKey} ${PR}`, `clear ${item!.taskKey}`, `end ${item!.taskKey}`])
   })
 })

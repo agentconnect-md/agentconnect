@@ -2,16 +2,16 @@
 import type { Agent } from '../agents/agent-schema.js'
 import { subsessionLabel } from '../permissions/subsession-approval.js'
 import { conversationTrustLevel } from '../router/routing-rule.js'
-import type { AssistantItemLedger, AssistantItemOverview } from '../store/assistant-items.js'
 import type { AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
+import type { AssistantWatchTasks, WatchTaskOverview } from '../store/assistant-watch-tasks.js'
 import type { SessionRecord } from '../store/local-store.js'
 
 /** At most this many follow-ups are listed; the rest are named as "more". */
 export const STANDING_SUMMARY_LIMIT = 30
 
-/** One line per follow-up this place may see; only its own carry the `taskId` its owning session addresses them by. */
+/** One line per follow-up, a watch task, this place may see; only its own carry the `taskId` its owning session addresses them by. */
 export function renderStandingSummary(
-  items: readonly AssistantItemOverview[],
+  items: readonly WatchTaskOverview[],
   more: boolean,
   here: SummaryPlace
 ): string | undefined {
@@ -20,7 +20,7 @@ export function renderStandingSummary(
     const own = samePlace(item.origin, here)
     const where = own ? 'this conversation' : `${item.origin.platform}:${item.origin.channel}`
     const when =
-      item.nextCheck === null ? 'waiting, no check scheduled' : `next check ${new Date(item.nextCheck).toISOString()}`
+      item.nextAt === null ? 'waiting, no check scheduled' : `next check ${new Date(item.nextAt).toISOString()}`
     return `- "${oneLine(item.title)}" — ${where} — ${when}${own ? ` — taskId ${item.taskKey}` : ''}`
   })
   return (
@@ -48,7 +48,7 @@ export interface SummaryPlace {
   integrationId?: string
 }
 
-const samePlace = (origin: AssistantItemOverview['origin'], here: SummaryPlace): boolean =>
+const samePlace = (origin: WatchTaskOverview['origin'], here: SummaryPlace): boolean =>
   origin.platform === here.platform &&
   origin.channel === here.channel &&
   (origin.transportScope ?? null) === (here.transportScope ?? null)
@@ -64,7 +64,7 @@ export function sharedWithOutsiders(agent: Pick<Agent, 'integrations'>, place: S
 
 /** The list for an agent's session: its place's follow-ups and every public channel's, else {@link NO_FOLLOW_UPS}; none outside assistant mode or where people from outside the organization are. */
 export async function standingSummaryFor(
-  ledger: Pick<AssistantItemLedger, 'list'>,
+  watchTasks: Pick<AssistantWatchTasks, 'list'>,
   agent: Pick<Agent, 'id' | 'assistantMode' | 'integrations'> | undefined,
   place: SummaryPlace | undefined
 ): Promise<string | undefined> {
@@ -72,11 +72,10 @@ export async function standingSummaryFor(
   // Follow-ups are internal, so a conversation shared with another organization is not told of them (#2979, B4).
   if (sharedWithOutsiders(agent, place)) return undefined
   const visibleFrom = { platform: place.platform, channel: place.channel, transportScope: place.transportScope ?? null }
-  // A getting-to-know task is no commitment to remind anyone of (assistant-mode.md §5.13).
-  const items = await ledger.list(agent.id, {
+  // A getting-to-know task is no commitment to remind anyone of (assistant-mode.md §5.13), so only watch tasks are read.
+  const items = await watchTasks.list(agent.id, {
     status: ['active', 'waiting'],
     visibleFrom,
-    followUpsOnly: true,
     limit: STANDING_SUMMARY_LIMIT + 1
   })
   if (items.length === 0) return NO_FOLLOW_UPS
@@ -165,7 +164,7 @@ export async function taskSummaryReminder(
   key: string
 ): Promise<string | undefined> {
   const row = await index.get(agentId, key)
-  if (!row || row.kind === 'follow-up') return undefined
+  if (!row || row.mode === 'watch') return undefined
   const before = row.turnsSinceSummary ?? 0
   await index.countTurn(agentId, key)
   if (row.summary === undefined) return before > 0 ? NO_SUMMARY_REMINDER : undefined

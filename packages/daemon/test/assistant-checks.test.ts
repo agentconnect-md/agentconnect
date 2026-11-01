@@ -1,4 +1,4 @@
-// A follow-up's check state, its check log and its row of the sub-session index (assistant-mode.md §5.12): one contract suite, on SQLite and on PostgreSQL.
+// A follow-up's check state, its check log and its watch row of the task store (assistant-mode.md §5.12, §5.18): one contract suite, on SQLite and on PostgreSQL.
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import pg from 'pg'
@@ -29,28 +29,33 @@ const HOUR = 60 * MINUTE
 const key = (agentId: string, id: string, thread = checkCoordinate(id)): string =>
   sessionKey('slack', 'C0GENERAL', thread, agentId, 'T0EXAMPLE')
 
+/** A follow-up, a watch task of the place (§5.18), due at `nextCheck`; `waiting` keeps that next check, `done` ends it. */
 async function item(s: LocalStore, agentId: string, nextCheck: number | undefined, status?: 'waiting' | 'done') {
-  return await s.assistantItems.create({
+  const taskKey = key(agentId, randomUUID())
+  const opened = await s.assistantWatchTasks.open({
     agentId,
+    taskKey,
     title: 'Watch the release',
     doneWhen: 'It is out',
-    ...(nextCheck !== undefined ? { nextCheck } : {}),
-    ...(status ? { status } : {}),
+    ...(nextCheck !== undefined ? { nextAt: nextCheck } : {}),
     origin: ORIGIN,
-    taskKey: key(agentId, randomUUID()),
+    owner: { sessionId: 'sid-parent-1', key: sessionKey('slack', 'C0GENERAL', 'append:1', agentId, 'T0EXAMPLE') },
     now: 1
   })
+  if (!status) return opened
+  await s.assistantWatchTasks.schedule(agentId, taskKey, { status, nextAt: nextCheck ?? null }, 1)
+  return (await s.assistantWatchTasks.get(agentId, taskKey))!
 }
 
 /** A check of the follow-up starts at `now`: scheduled for `nextCheck`, or messaged when that is null. */
 const begin = (
   s: LocalStore,
   agentId: string,
-  it1: { id: string; taskKey: string },
+  it1: { taskKey: string },
   now: number,
   over: { nextCheck?: number | null; observationVersion?: number; staleBefore?: number; exclusive?: boolean } = {}
 ) =>
-  s.assistantChecks.begin(agentId, it1.id, {
+  s.assistantChecks.begin(agentId, it1.taskKey, {
     key: it1.taskKey,
     nextCheck: over.nextCheck ?? null,
     observationVersion: over.observationVersion ?? 0,
@@ -82,13 +87,16 @@ describe('the check state', () => {
     await begin(s, a, checking, 1_000)
     await item(s, agent(), 100)
     expect(await s.assistantChecks.due(a, 5_000, 10)).toEqual([
-      { itemId: first.id, nextCheck: 500 },
-      { itemId: waiting.id, nextCheck: 700 },
-      { itemId: later.id, nextCheck: 2_000 }
+      { taskKey: first.taskKey, nextCheck: 500 },
+      { taskKey: waiting.taskKey, nextCheck: 700 },
+      { taskKey: later.taskKey, nextCheck: 2_000 }
     ])
-    expect(await s.assistantChecks.due(a, 5_000, 1)).toEqual([{ itemId: first.id, nextCheck: 500 }])
+    expect(await s.assistantChecks.due(a, 5_000, 1)).toEqual([{ taskKey: first.taskKey, nextCheck: 500 }])
     // A check running since before the stale bound no longer holds its follow-up back.
-    expect(await s.assistantChecks.due(a, 5_000, 10, 1_001)).toContainEqual({ itemId: checking.id, nextCheck: 600 })
+    expect(await s.assistantChecks.due(a, 5_000, 10, 1_001)).toContainEqual({
+      taskKey: checking.taskKey,
+      nextCheck: 600
+    })
   })
 
   it('checks one next check once, and the next value again, in the follow-up’s one session', async () => {
@@ -97,22 +105,22 @@ describe('the check state', () => {
     const it1 = await item(s, a, 1_000)
     expect(await begin(s, a, it1, 2_000, { nextCheck: 1_000 })).toEqual({ checkNo: 1, messages: null, events: [] })
     expect(await s.assistantChecks.byRunningKey(a, it1.taskKey)).toMatchObject({
-      itemId: it1.id,
+      taskKey: it1.taskKey,
       runningNextCheck: 1_000,
       runningCheck: 1,
       runningSince: 2_000
     })
-    expect(await s.assistantChecks.succeed(a, it1.id, it1.taskKey, 3_000)).toBe(true)
+    expect(await s.assistantChecks.succeed(a, it1.taskKey, it1.taskKey, 3_000)).toBe(true)
     expect(await s.assistantChecks.byRunningKey(a, it1.taskKey)).toBeUndefined()
     expect(await s.assistantChecks.due(a, 10_000, 10)).toEqual([])
     // An overdue check is taken once however late it is.
     expect(await s.assistantChecks.due(a, 10_000_000, 10)).toEqual([])
-    await s.assistantItems.schedule(a, it1.id, { status: 'active', nextCheck: 4_000 })
-    expect(await s.assistantChecks.due(a, 10_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 4_000 }])
+    await s.assistantWatchTasks.schedule(a, it1.taskKey, { status: 'active', nextAt: 4_000 })
+    expect(await s.assistantChecks.due(a, 10_000, 10)).toEqual([{ taskKey: it1.taskKey, nextCheck: 4_000 }])
     // A messaged check leaves the scheduled one due.
     expect(await begin(s, a, it1, 5_000)).toEqual({ checkNo: 2, messages: null, events: [] })
-    await s.assistantChecks.succeed(a, it1.id, it1.taskKey, 5_500)
-    expect(await s.assistantChecks.due(a, 10_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 4_000 }])
+    await s.assistantChecks.succeed(a, it1.taskKey, it1.taskKey, 5_500)
+    expect(await s.assistantChecks.due(a, 10_000, 10)).toEqual([{ taskKey: it1.taskKey, nextCheck: 4_000 }])
   })
 
   it('backs off min(60, 2ⁿ) minutes after each failure and stops at the fifth until it is messaged', async () => {
@@ -122,20 +130,20 @@ describe('the check state', () => {
     const it1 = await item(s, a, 1_000)
     let now = 2_000
     for (let n = 1; n <= CHECK_MAX_FAILURES; n++) {
-      expect(await s.assistantChecks.due(a, now, 10)).toEqual([{ itemId: it1.id, nextCheck: 1_000 }])
+      expect(await s.assistantChecks.due(a, now, 10)).toEqual([{ taskKey: it1.taskKey, nextCheck: 1_000 }])
       await begin(s, a, it1, now, { nextCheck: 1_000 })
-      const failed = await s.assistantChecks.fail(a, it1.id, it1.taskKey, now, 1_000)
+      const failed = await s.assistantChecks.fail(a, it1.taskKey, it1.taskKey, now, 1_000)
       expect(failed).toEqual({ failures: n, stopped: n === CHECK_MAX_FAILURES })
       expect(await s.assistantChecks.due(a, now + checkBackoffMs(n) - 1, 10)).toEqual([])
       now += checkBackoffMs(n)
     }
-    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({ stopped: true })
+    expect(await s.assistantChecks.get(a, it1.taskKey)).toMatchObject({ stopped: true })
     expect(await s.assistantChecks.due(a, now + 10 * 60 * MINUTE, 10)).toEqual([])
     // A new next check does not resume it; a message's check does, with a fresh streak.
-    await s.assistantItems.schedule(a, it1.id, { status: 'active', nextCheck: 3_000 })
+    await s.assistantWatchTasks.schedule(a, it1.taskKey, { status: 'active', nextAt: 3_000 })
     expect(await s.assistantChecks.due(a, now, 10)).toEqual([])
     await begin(s, a, it1, now)
-    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({ stopped: false, failures: 0 })
+    expect(await s.assistantChecks.get(a, it1.taskKey)).toMatchObject({ stopped: false, failures: 0 })
   })
 
   it('keeps the check’s observation baseline and report in the store until it ends', async () => {
@@ -143,14 +151,14 @@ describe('the check state', () => {
     const a = agent()
     const it1 = await item(s, a, 1_000)
     await begin(s, a, it1, 2_000, { nextCheck: 1_000, observationVersion: 3 })
-    expect(await s.assistantChecks.keepReport(a, it1.id, it1.taskKey, 'It shipped.', 2_500)).toBe(true)
-    expect(await s.assistantChecks.keepReport(a, it1.id, key(a, 'other'), 'Not this check.', 2_500)).toBe(false)
+    expect(await s.assistantChecks.keepReport(a, it1.taskKey, it1.taskKey, 'It shipped.', 2_500)).toBe(true)
+    expect(await s.assistantChecks.keepReport(a, it1.taskKey, key(a, 'other'), 'Not this check.', 2_500)).toBe(false)
     expect(await s.assistantChecks.byRunningKey(a, it1.taskKey)).toMatchObject({
       runningObservationVersion: 3,
       runningReport: 'It shipped.'
     })
-    await s.assistantChecks.fail(a, it1.id, it1.taskKey, 3_000, 1_000)
-    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({
+    await s.assistantChecks.fail(a, it1.taskKey, it1.taskKey, 3_000, 1_000)
+    expect(await s.assistantChecks.get(a, it1.taskKey)).toMatchObject({
       runningKey: null,
       runningObservationVersion: null,
       runningReport: null,
@@ -178,11 +186,11 @@ describe('the check state', () => {
     expect(await begin(s, a, it2, 2_200, { nextCheck: 1_000, exclusive: true })).toBeUndefined()
     expect(await begin(s, b, theirs, 2_200, { nextCheck: 1_000, exclusive: true })).toBeDefined()
     expect(await begin(s, a, it2, 2_300)).toBeDefined()
-    await s.assistantChecks.release(a, it2.id, it2.taskKey, 2_400)
+    await s.assistantChecks.release(a, it2.taskKey, it2.taskKey, 2_400)
     // A check older than the stale bound no longer holds anything, and ends in the log as it was.
     expect(await begin(s, a, it2, 3_000, { nextCheck: 1_000, exclusive: true, staleBefore: 2_001 })).toBeDefined()
     expect(await begin(s, a, it1, 3_100, { staleBefore: 2_001 })).toEqual({ checkNo: 2, messages: null, events: [] })
-    expect((await s.assistantChecks.checks(a, it1.id, 10)).map((c) => [c.checkNo, c.endedAt])).toEqual([
+    expect((await s.assistantChecks.checks(a, it1.taskKey, 10)).map((c) => [c.checkNo, c.endedAt])).toEqual([
       [2, null],
       [1, 3_100]
     ])
@@ -195,17 +203,17 @@ describe('the check state', () => {
     // An hour apart, so the oldest checks fall out of the budget window and can be pruned.
     for (let n = 1; n <= ASSISTANT_CHECKS_KEPT + 2; n++) {
       const begun = await begin(s, a, it1, n * HOUR)
-      await s.assistantChecks.endCheck(a, it1.id, begun!.checkNo, {
+      await s.assistantChecks.endCheck(a, it1.taskKey, begun!.checkNo, {
         observation: `seen ${n}`,
         reported: n % 2 === 0,
         now: n * HOUR + 1
       })
-      await s.assistantChecks.succeed(a, it1.id, it1.taskKey, n * HOUR + 1)
+      await s.assistantChecks.succeed(a, it1.taskKey, it1.taskKey, n * HOUR + 1)
     }
-    const checks = await s.assistantChecks.checks(a, it1.id, 100)
+    const checks = await s.assistantChecks.checks(a, it1.taskKey, 100)
     expect(checks).toHaveLength(ASSISTANT_CHECKS_KEPT)
     expect(checks[0]).toEqual({
-      itemId: it1.id,
+      taskKey: it1.taskKey,
       checkNo: ASSISTANT_CHECKS_KEPT + 2,
       startedAt: (ASSISTANT_CHECKS_KEPT + 2) * HOUR,
       endedAt: (ASSISTANT_CHECKS_KEPT + 2) * HOUR + 1,
@@ -220,8 +228,8 @@ describe('the check state', () => {
     expect(await s.assistantChecks.checksSince(a, 999 * HOUR)).toEqual({ count: 0, oldest: null })
     // A released check says nothing, and leaves the log and the budget.
     const begun = await begin(s, a, it1, 60 * HOUR)
-    await s.assistantChecks.release(a, it1.id, it1.taskKey, 60 * HOUR + 1)
-    expect((await s.assistantChecks.checks(a, it1.id, 1))[0]?.checkNo).not.toBe(begun!.checkNo)
+    await s.assistantChecks.release(a, it1.taskKey, it1.taskKey, 60 * HOUR + 1)
+    expect((await s.assistantChecks.checks(a, it1.taskKey, 1))[0]?.checkNo).not.toBe(begun!.checkNo)
     expect((await s.assistantChecks.checksSince(a, 50 * HOUR)).count).toBe(3)
   })
 
@@ -232,12 +240,12 @@ describe('the check state', () => {
     // A minute apart: all inside one window, so a budget above the kept count still sees them all.
     for (let n = 1; n <= ASSISTANT_CHECKS_KEPT + 10; n++) {
       const begun = await begin(s, a, it1, n * MINUTE)
-      await s.assistantChecks.endCheck(a, it1.id, begun!.checkNo, {
+      await s.assistantChecks.endCheck(a, it1.taskKey, begun!.checkNo, {
         observation: `seen ${n}`,
         reported: false,
         now: n * MINUTE + 1
       })
-      await s.assistantChecks.succeed(a, it1.id, it1.taskKey, n * MINUTE + 1)
+      await s.assistantChecks.succeed(a, it1.taskKey, it1.taskKey, n * MINUTE + 1)
     }
     expect((await s.assistantChecks.checksSince(a, 0)).count).toBe(ASSISTANT_CHECKS_KEPT + 10)
   })
@@ -247,19 +255,19 @@ describe('the check state', () => {
     const a = agent()
     const it1 = await item(s, a, undefined, 'waiting')
     const closed = await item(s, a, undefined, 'done')
-    await s.assistantChecks.setPendingMessages(a, it1.id, '["one"]', 1_000)
-    await s.assistantChecks.setPendingMessages(a, closed.id, '["gone"]', 1_000)
-    expect(await s.assistantChecks.withPendingMessages(a, 2_000, 10)).toEqual([it1.id])
+    await s.assistantChecks.setPendingMessages(a, it1.taskKey, '["one"]', 1_000)
+    await s.assistantChecks.setPendingMessages(a, closed.taskKey, '["gone"]', 1_000)
+    expect(await s.assistantChecks.withPendingMessages(a, 2_000, 10)).toEqual([it1.taskKey])
     await begin(s, a, it1, 2_000)
     expect(await s.assistantChecks.withPendingMessages(a, 2_000, 10)).toEqual([])
-    await s.assistantChecks.setPendingMessages(a, it1.id, '["two"]', 2_100)
+    await s.assistantChecks.setPendingMessages(a, it1.taskKey, '["two"]', 2_100)
     // Waiting while a check runs, and while it backs off after a failure.
     expect(await s.assistantChecks.withPendingMessages(a, 2_200, 10)).toEqual([])
-    await s.assistantChecks.fail(a, it1.id, it1.taskKey, 3_000, null)
+    await s.assistantChecks.fail(a, it1.taskKey, it1.taskKey, 3_000, null)
     expect(await s.assistantChecks.withPendingMessages(a, 3_000, 10)).toEqual([])
-    expect(await s.assistantChecks.withPendingMessages(a, 3_000 + checkBackoffMs(1), 10)).toEqual([it1.id])
+    expect(await s.assistantChecks.withPendingMessages(a, 3_000 + checkBackoffMs(1), 10)).toEqual([it1.taskKey])
     expect(await begin(s, a, it1, 9_000_000)).toEqual({ checkNo: 2, messages: '["two"]', events: [] })
-    expect((await s.assistantChecks.get(a, it1.id))?.pendingMessages).toBeNull()
+    expect((await s.assistantChecks.get(a, it1.taskKey))?.pendingMessages).toBeNull()
   })
 
   it('lets only the check in flight settle the follow-up, and a release leaves the check due', async () => {
@@ -267,12 +275,12 @@ describe('the check state', () => {
     const a = agent()
     const it1 = await item(s, a, 1_000)
     await begin(s, a, it1, 2_000, { nextCheck: 1_000 })
-    expect(await s.assistantChecks.succeed(a, it1.id, key(a, 'old'), 4_000)).toBe(false)
-    expect(await s.assistantChecks.fail(a, it1.id, key(a, 'old'), 4_000, 1_000)).toBeUndefined()
-    await s.assistantChecks.release(a, it1.id, it1.taskKey, 4_000)
-    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({ runningKey: null, failures: 0 })
-    expect(await s.assistantChecks.due(a, 5_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 1_000 }])
-    await s.assistantChecks.skip(a, it1.id, 1_000, 5_000)
+    expect(await s.assistantChecks.succeed(a, it1.taskKey, key(a, 'old'), 4_000)).toBe(false)
+    expect(await s.assistantChecks.fail(a, it1.taskKey, key(a, 'old'), 4_000, 1_000)).toBeUndefined()
+    await s.assistantChecks.release(a, it1.taskKey, it1.taskKey, 4_000)
+    expect(await s.assistantChecks.get(a, it1.taskKey)).toMatchObject({ runningKey: null, failures: 0 })
+    expect(await s.assistantChecks.due(a, 5_000, 10)).toEqual([{ taskKey: it1.taskKey, nextCheck: 1_000 }])
+    await s.assistantChecks.skip(a, it1.taskKey, 1_000, 5_000)
     expect(await s.assistantChecks.due(a, 5_000, 10)).toEqual([])
   })
 })
@@ -281,16 +289,16 @@ describe('a follow-up’s row of the sub-session index', () => {
   it('is idle until a check runs, and never counts toward the delegation cap', async () => {
     const s = await open()
     const a = agent()
-    expect(await s.assistantSubsessions.openFollowUp(row(a, '1', 1_000))).toBe(true)
-    expect(await s.assistantSubsessions.openFollowUp(row(a, '1', 2_000))).toBe(false)
-    expect(await s.assistantSubsessions.get(a, key(a, '1'))).toMatchObject({ state: 'done', kind: 'follow-up' })
+    expect(await s.assistantSubsessions.openGettingToKnow({ ...row(a, '1', 1_000), place: ORIGIN })).toBe(true)
+    expect(await s.assistantSubsessions.openGettingToKnow({ ...row(a, '1', 2_000), place: ORIGIN })).toBe(false)
+    expect(await s.assistantSubsessions.get(a, key(a, '1'))).toMatchObject({ state: 'done', mode: 'watch' })
     await s.assistantSubsessions.checking(a, key(a, '1'))
     expect(await s.assistantSubsessions.get(a, key(a, '1'))).toMatchObject({ state: 'open', createdAt: 1_000 })
     // A running check takes none of the delegations' places.
     const cap = { limit: 1, startedSince: 0 }
     const delegation = row(a, 'd1', 1_000, subsessionCoordinate('d1'))
     expect(await s.assistantSubsessions.openWithinLimit(delegation, cap)).toBe(true)
-    expect(await s.assistantSubsessions.get(a, delegation.childSessionKey)).not.toHaveProperty('kind')
+    expect(await s.assistantSubsessions.get(a, delegation.childSessionKey)).not.toHaveProperty('mode')
     expect(await s.assistantSubsessions.openWithinLimit(row(a, 'd2', 1_000, subsessionCoordinate('d2')), cap)).toBe(
       false
     )
@@ -304,16 +312,15 @@ describe('a follow-up’s row of the sub-session index', () => {
     const s = await open()
     const a = agent()
     const mine = await item(s, a, undefined)
-    const elsewhere = await s.assistantItems.create({
+    const elsewhere = await s.assistantWatchTasks.open({
       agentId: a,
       title: 'Elsewhere',
       origin: { ...ORIGIN, channel: 'C0OTHER' },
-      taskKey: sessionKey('slack', 'C0OTHER', checkCoordinate('x'), a, 'T0EXAMPLE')
+      taskKey: sessionKey('slack', 'C0OTHER', checkCoordinate('x'), a, 'T0EXAMPLE'),
+      owner: { sessionId: 'sid-parent-1', key: row(a, 'x', 1_000).parentSessionKey }
     })
-    for (const followUp of [mine, elsewhere])
-      await s.assistantSubsessions.openFollowUp({ ...row(a, 'x', 1_000), childSessionKey: followUp.taskKey })
     const owner = { sessionId: 'sid-current', key: sessionKey('slack', 'C0GENERAL', 'append:2', a, 'T0EXAMPLE') }
-    await s.assistantSubsessions.adoptFollowUps(a, ORIGIN, owner)
+    await s.assistantSubsessions.adoptWatchTasks(a, ORIGIN, owner)
     expect(await s.assistantSubsessions.get(a, mine.taskKey)).toMatchObject({
       parentSessionId: 'sid-current',
       parentSessionKey: owner.key
@@ -368,17 +375,17 @@ async function gettingToKnow(s: LocalStore, agentId: string, nextCheck: number, 
 }
 
 describe('a getting-to-know task in the follow-up tables', () => {
-  it('is marked, left out of a follow-ups-only list, and found as its place’s newest', async () => {
+  it('stays in the item ledger, apart from the watch tasks, and is found as its place’s newest', async () => {
     const s = await open()
     const a = agent()
     const followUp = await item(s, a, 500)
-    expect(followUp.gettingToKnow).toBeNull()
     const older = await gettingToKnow(s, a, 500, 1)
     const newer = await gettingToKnow(s, a, 500, 2)
     expect(newer.gettingToKnow).toBe('joined')
-    expect((await s.assistantItems.list(a, { followUpsOnly: true })).map((i) => i.id)).toEqual([followUp.id])
-    expect((await s.assistantItems.latestGettingToKnow(a, ORIGIN))?.id).toBe(newer.id)
-    expect(older.id).not.toBe(newer.id)
+    expect((await s.assistantWatchTasks.list(a)).map((t) => t.taskKey)).toEqual([followUp.taskKey])
+    expect((await s.assistantItems.list(a)).map((i) => i.taskKey).sort()).toEqual([older.taskKey, newer.taskKey].sort())
+    expect((await s.assistantItems.latestGettingToKnow(a, ORIGIN))?.taskKey).toBe(newer.taskKey)
+    expect(older.taskKey).not.toBe(newer.taskKey)
     expect(await s.assistantItems.latestGettingToKnow(a, { ...ORIGIN, channel: 'C0OTHER' })).toBeUndefined()
     await expect(
       s.assistantItems.create({ agentId: a, title: 't', origin: ORIGIN, taskKey: 'k', gettingToKnow: 'later' as never })
@@ -390,8 +397,8 @@ describe('a getting-to-know task in the follow-up tables', () => {
     const a = agent()
     const look = await gettingToKnow(s, a, 100)
     const followUp = await item(s, a, 500)
-    expect((await s.assistantChecks.due(a, 1_000, 10)).map((d) => d.itemId)).toEqual([followUp.id, look.id])
-    expect((await s.assistantChecks.due(a, 300, 10)).map((d) => d.itemId)).toEqual([look.id])
+    expect((await s.assistantChecks.due(a, 1_000, 10)).map((d) => d.taskKey)).toEqual([followUp.taskKey, look.taskKey])
+    expect((await s.assistantChecks.due(a, 300, 10)).map((d) => d.taskKey)).toEqual([look.taskKey])
   })
 
   it('grants a running check its history up to the cap, and none to a check that is not running', async () => {
@@ -399,10 +406,10 @@ describe('a getting-to-know task in the follow-up tables', () => {
     const a = agent()
     const look = await gettingToKnow(s, a, 100)
     const started = await begin(s, a, look, 1_000, { nextCheck: 100 })
-    expect(await s.assistantChecks.takeHistory(a, look.id, started!.checkNo, 300, 500)).toBe(300)
-    expect(await s.assistantChecks.takeHistory(a, look.id, started!.checkNo, 300, 500)).toBe(200)
-    expect(await s.assistantChecks.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(0)
-    expect(await s.assistantChecks.takeHistory(a, look.id, started!.checkNo + 1, 10, 500)).toBe(0)
+    expect(await s.assistantChecks.takeHistory(a, look.taskKey, started!.checkNo, 300, 500)).toBe(300)
+    expect(await s.assistantChecks.takeHistory(a, look.taskKey, started!.checkNo, 300, 500)).toBe(200)
+    expect(await s.assistantChecks.takeHistory(a, look.taskKey, started!.checkNo, 10, 500)).toBe(0)
+    expect(await s.assistantChecks.takeHistory(a, look.taskKey, started!.checkNo + 1, 10, 500)).toBe(0)
   })
 
   it('is never a dream’s source', async () => {
@@ -433,7 +440,7 @@ describe.skipIf(usingPostgresStore())('the v38 → v39 patrol schema on SQLite',
     const a = agent()
     const old = new DatabaseSync(path)
     old.exec(
-      'ALTER TABLE assistant_subsession DROP COLUMN kind; DROP TABLE assistant_check_state; PRAGMA user_version = 38'
+      'ALTER TABLE assistant_subsession DROP COLUMN mode; DROP TABLE assistant_check_state; PRAGMA user_version = 38'
     )
     old
       .prepare(
@@ -447,7 +454,7 @@ describe.skipIf(usingPostgresStore())('the v38 → v39 patrol schema on SQLite',
     try {
       const delegation = await upgraded.assistantSubsessions.get(a, key(a, 'd', subsessionCoordinate('d')))
       expect(delegation).toMatchObject({ state: 'open' })
-      expect(delegation).not.toHaveProperty('kind')
+      expect(delegation).not.toHaveProperty('mode')
       // The old row still counts toward the cap, and no patrol is in its way.
       expect(
         await upgraded.assistantSubsessions.openWithinLimit(row(a, 'd2', 1_000, subsessionCoordinate('d2')), {
@@ -455,11 +462,10 @@ describe.skipIf(usingPostgresStore())('the v38 → v39 patrol schema on SQLite',
           startedSince: 0
         })
       ).toBe(false)
-      expect(await upgraded.assistantSubsessions.openFollowUp(row(a, 'p', 1_000))).toBe(true)
       const it1 = await item(upgraded, a, 500)
-      expect(await upgraded.assistantChecks.due(a, 1_000, 10)).toEqual([{ itemId: it1.id, nextCheck: 500 }])
+      expect(await upgraded.assistantChecks.due(a, 1_000, 10)).toEqual([{ taskKey: it1.taskKey, nextCheck: 500 }])
       await begin(upgraded, a, it1, 1_000, { nextCheck: 500 })
-      expect(await upgraded.assistantChecks.keepReport(a, it1.id, it1.taskKey, 'It shipped.', 1_000)).toBe(true)
+      expect(await upgraded.assistantChecks.keepReport(a, it1.taskKey, it1.taskKey, 'It shipped.', 1_000)).toBe(true)
       expect(await upgraded.assistantChecks.byRunningKey(a, it1.taskKey)).toMatchObject({
         runningObservationVersion: 0,
         runningReport: 'It shipped.'
@@ -481,8 +487,8 @@ describe.skipIf(usingPostgresStore())('the v38 → v39 patrol schema on SQLite',
     const upgraded = await LocalStore.open(path)
     const a = agent()
     try {
-      expect(await upgraded.assistantSubsessions.openFollowUp(row(a, 'p', 1_000))).toBe(true)
-      expect(await upgraded.assistantSubsessions.get(a, key(a, 'p'))).toMatchObject({ kind: 'follow-up' })
+      expect(await upgraded.assistantSubsessions.openGettingToKnow({ ...row(a, 'p', 1_000), place: ORIGIN })).toBe(true)
+      expect(await upgraded.assistantSubsessions.get(a, key(a, 'p'))).toMatchObject({ mode: 'watch' })
     } finally {
       await upgraded.close()
     }
@@ -505,7 +511,7 @@ describe.skipIf(!usingPostgresStore())('the v38 → v39 patrol schema on Postgre
       await first.close()
 
       await admin.query(`SET search_path TO ${schema}`)
-      await admin.query('ALTER TABLE assistant_subsession DROP COLUMN kind')
+      await admin.query('ALTER TABLE assistant_subsession DROP COLUMN mode')
       await admin.query('DROP TABLE assistant_check_state')
       await admin.query(
         `INSERT INTO assistant_subsession (agentId, childSessionKey, parentSessionId, parentSessionKey, state, createdAt)
@@ -519,7 +525,7 @@ describe.skipIf(!usingPostgresStore())('the v38 → v39 patrol schema on Postgre
       const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
       try {
         expect(await upgraded.assistantSubsessions.get(a, key(a, 'd', subsessionCoordinate('d')))).not.toHaveProperty(
-          'kind'
+          'mode'
         )
         expect(
           await upgraded.assistantSubsessions.openWithinLimit(row(a, 'd2', 1_000, subsessionCoordinate('d2')), {
@@ -527,12 +533,11 @@ describe.skipIf(!usingPostgresStore())('the v38 → v39 patrol schema on Postgre
             startedSince: 0
           })
         ).toBe(false)
-        expect(await upgraded.assistantSubsessions.openFollowUp(row(a, 'p', 1_000))).toBe(true)
         const it1 = await item(upgraded, a, 500)
         await begin(upgraded, a, it1, 1_000, { nextCheck: 500 })
-        expect(await upgraded.assistantChecks.keepReport(a, it1.id, it1.taskKey, 'It shipped.', 1_000)).toBe(true)
+        expect(await upgraded.assistantChecks.keepReport(a, it1.taskKey, it1.taskKey, 'It shipped.', 1_000)).toBe(true)
         expect(await upgraded.assistantChecks.byRunningKey(a, it1.taskKey)).toMatchObject({
-          itemId: it1.id,
+          taskKey: it1.taskKey,
           runningNextCheck: 500,
           runningObservationVersion: 0,
           runningReport: 'It shipped.'
@@ -551,11 +556,12 @@ describe.skipIf(!usingPostgresStore())('the v38 → v39 patrol schema on Postgre
 
 /** A follow-up and a getting-to-know task as a v57 store holds them: items, a running check, the index row, sessions and outward ids. */
 async function seedChecks(s: LocalStore, a: string) {
-  const followUp = await s.assistantItems.create({
+  const followUp = await s.assistantWatchTasks.open({
     agentId: a,
     title: 'Watch the release',
     origin: ORIGIN,
     taskKey: key(a, 'p1'),
+    owner: { sessionId: 'sid-parent-1', key: row(a, 'p1', 1).parentSessionKey },
     now: 1
   })
   const look = await s.assistantItems.create({
@@ -567,7 +573,6 @@ async function seedChecks(s: LocalStore, a: string) {
     now: 1
   })
   await begin(s, a, followUp, 1_000)
-  await s.assistantSubsessions.openFollowUp(row(a, 'p1', 1_000))
   for (const [taskKey, thread] of [
     [followUp.taskKey, checkCoordinate('p1')],
     [look.taskKey, gettingToKnowCoordinate('l1')]
@@ -589,15 +594,23 @@ async function seedChecks(s: LocalStore, a: string) {
   return { followUp, look }
 }
 
-/** What v57 must leave: the new table, column, kind and coordinates on every row seeded above. */
+// Keyed by task key only since v74, so a v56 store held no coordinate there for v57 to rewrite.
+const TASK_KEYED = new Set([
+  'assistant_check_state',
+  'assistant_check',
+  'assistant_patrol',
+  'assistant_task_observation'
+])
+
+/** What v57 must leave: the new table, column, mode and coordinates on every row seeded above. */
 async function expectChecks(s: LocalStore, a: string, seeded: Awaited<ReturnType<typeof seedChecks>>) {
-  expect(await s.assistantItems.get(a, seeded.followUp.id)).toMatchObject({ taskKey: key(a, 'p1') })
+  expect(await s.assistantWatchTasks.get(a, seeded.followUp.taskKey)).toMatchObject({ taskKey: key(a, 'p1') })
   expect(await s.assistantChecks.byRunningKey(a, key(a, 'p1'))).toMatchObject({
-    itemId: seeded.followUp.id,
+    taskKey: seeded.followUp.taskKey,
     checkedNextCheck: null,
     runningCheck: 1
   })
-  expect(await s.assistantSubsessions.get(a, key(a, 'p1'))).toMatchObject({ kind: 'follow-up' })
+  expect(await s.assistantSubsessions.get(a, key(a, 'p1'))).toMatchObject({ mode: 'watch' })
   expect(await s.getSession(key(a, 'p1'))).toMatchObject({ thread: checkCoordinate('p1') })
   expect(await s.getSession(key(a, 'l1', gettingToKnowCoordinate('l1')))).toMatchObject({
     thread: gettingToKnowCoordinate('l1')
@@ -630,9 +643,10 @@ describe.skipIf(usingPostgresStore())('the v56 → v57 check names on SQLite', (
     old.exec(
       'ALTER TABLE assistant_check_state RENAME TO assistant_patrol; ' +
         'ALTER TABLE assistant_patrol RENAME COLUMN checkedNextCheck TO patrolledNextCheck; ' +
-        "UPDATE assistant_subsession SET kind = 'patrol' WHERE kind = 'follow-up'"
+        "ALTER TABLE assistant_subsession ADD COLUMN kind TEXT NOT NULL DEFAULT 'delegation'; " +
+        "UPDATE assistant_subsession SET kind = 'patrol' WHERE mode = 'watch'"
     )
-    for (const [table, column] of textColumns(old))
+    for (const [table, column] of textColumns(old).filter(([table]) => !TASK_KEYED.has(table)))
       old.exec(`UPDATE ${table} SET ${column} = replace(${column}, 'subsession:check-', 'subsession:patrol-')`)
     const oldKey = key(a, 'p1', 'subsession:patrol-p1')
     old
@@ -705,8 +719,9 @@ describe.skipIf(!usingPostgresStore())('the v56 → v57 check names on PostgreSQ
       await admin.query(`SET search_path TO ${schema}`)
       await admin.query('ALTER TABLE assistant_check_state RENAME TO assistant_patrol')
       await admin.query('ALTER TABLE assistant_patrol RENAME COLUMN checkednextcheck TO patrollednextcheck')
-      await admin.query("UPDATE assistant_subsession SET kind = 'patrol' WHERE kind = 'follow-up'")
-      for (const [table, column] of await textColumns())
+      await admin.query("ALTER TABLE assistant_subsession ADD COLUMN kind TEXT NOT NULL DEFAULT 'delegation'")
+      await admin.query("UPDATE assistant_subsession SET kind = 'patrol' WHERE mode = 'watch'")
+      for (const [table, column] of (await textColumns()).filter(([table]) => !TASK_KEYED.has(table)))
         await admin.query(
           `UPDATE ${table} SET ${column} = replace(${column}, 'subsession:check-', 'subsession:patrol-')`
         )
@@ -748,9 +763,9 @@ describe.skipIf(usingPostgresStore())('the v54 → v55 getting-to-know schema on
     const a = agent()
     try {
       const look = await gettingToKnow(upgraded, a, 100)
-      expect((await upgraded.assistantItems.get(a, look.id))?.gettingToKnow).toBe('joined')
+      expect((await upgraded.assistantItems.byTaskKey(a, look.taskKey))?.gettingToKnow).toBe('joined')
       const started = await begin(upgraded, a, look, 1_000, { nextCheck: 100 })
-      expect(await upgraded.assistantChecks.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(10)
+      expect(await upgraded.assistantChecks.takeHistory(a, look.taskKey, started!.checkNo, 10, 500)).toBe(10)
     } finally {
       await upgraded.close()
     }
@@ -782,9 +797,9 @@ describe.skipIf(!usingPostgresStore())('the v54 → v55 getting-to-know schema o
       const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
       try {
         const look = await gettingToKnow(upgraded, a, 100)
-        expect((await upgraded.assistantItems.get(a, look.id))?.gettingToKnow).toBe('joined')
+        expect((await upgraded.assistantItems.byTaskKey(a, look.taskKey))?.gettingToKnow).toBe('joined')
         const started = await begin(upgraded, a, look, 1_000, { nextCheck: 100 })
-        expect(await upgraded.assistantChecks.takeHistory(a, look.id, started!.checkNo, 10, 500)).toBe(10)
+        expect(await upgraded.assistantChecks.takeHistory(a, look.taskKey, started!.checkNo, 10, 500)).toBe(10)
       } finally {
         await upgraded.close()
       }
@@ -817,7 +832,7 @@ describe.skipIf(usingPostgresStore())('the v62 → v63 getting-to-know names on 
     const a = agent()
     try {
       const look = await gettingToKnow(upgraded, a, 100)
-      expect((await upgraded.assistantItems.get(a, look.id))?.gettingToKnow).toBe('joined')
+      expect((await upgraded.assistantItems.byTaskKey(a, look.taskKey))?.gettingToKnow).toBe('joined')
     } finally {
       await upgraded.close()
     }
@@ -853,7 +868,7 @@ describe.skipIf(!usingPostgresStore())('the v62 → v63 getting-to-know names on
       const upgraded = await LocalStore.open({ database, shared: true, ownerId: 'm2', orgForAgent })
       try {
         const look = await gettingToKnow(upgraded, a, 100)
-        expect((await upgraded.assistantItems.get(a, look.id))?.gettingToKnow).toBe('joined')
+        expect((await upgraded.assistantItems.byTaskKey(a, look.taskKey))?.gettingToKnow).toBe('joined')
       } finally {
         await upgraded.close()
       }
@@ -884,11 +899,11 @@ describe('event wake in the check state (assistant-mode.md §5.14)', () => {
   const start = (
     s: LocalStore,
     agentId: string,
-    it1: { id: string; taskKey: string },
+    it1: { taskKey: string },
     now: number,
     startedBy: 'time' | 'message' | 'wake'
   ) =>
-    s.assistantChecks.begin(agentId, it1.id, {
+    s.assistantChecks.begin(agentId, it1.taskKey, {
       key: it1.taskKey,
       nextCheck: null,
       observationVersion: 0,
@@ -903,16 +918,16 @@ describe('event wake in the check state (assistant-mode.md §5.14)', () => {
     const s = await open()
     const a = agent()
     const it1 = await item(s, a, undefined, 'waiting')
-    expect(await s.assistantChecks.recordWake(a, it1.id, wake(1, ['merged'], 1_000))).toBe('recorded')
-    expect(await s.assistantChecks.recordWake(a, it1.id, wake(1, ['merged'], 1_000))).toBe('duplicate')
-    expect(await s.assistantChecks.recordWake(a, it1.id, wake(2, ['checks', 'merged'], 2_000))).toBe('recorded')
-    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({
+    expect(await s.assistantChecks.recordWake(a, it1.taskKey, wake(1, ['merged'], 1_000))).toBe('recorded')
+    expect(await s.assistantChecks.recordWake(a, it1.taskKey, wake(1, ['merged'], 1_000))).toBe('duplicate')
+    expect(await s.assistantChecks.recordWake(a, it1.taskKey, wake(2, ['checks', 'merged'], 2_000))).toBe('recorded')
+    expect(await s.assistantChecks.get(a, it1.taskKey)).toMatchObject({
       wakeId: 2,
       wakeAt: 1_000,
       wakeKinds: ['merged', 'checks'],
       wakeLatestAt: 2_000
     })
-    expect(await s.assistantChecks.wokenDue(a, 3_000, 10, 0, 3_000)).toEqual([it1.id])
+    expect(await s.assistantChecks.wokenDue(a, 3_000, 10, 0, 3_000)).toEqual([it1.taskKey])
   })
 
   it('counts a new subscription’s wakes afresh, so watching again loses none of its events', async () => {
@@ -920,11 +935,11 @@ describe('event wake in the check state (assistant-mode.md §5.14)', () => {
     const a = agent()
     const it1 = await item(s, a, undefined, 'waiting')
     const on = (subscription: number, wakeId: number, at: number) => ({ ...wake(wakeId, ['merged'], at), subscription })
-    expect(await s.assistantChecks.recordWake(a, it1.id, on(7, 5, 1_000))).toBe('recorded')
+    expect(await s.assistantChecks.recordWake(a, it1.taskKey, on(7, 5, 1_000))).toBe('recorded')
     // Stopped and watched again: the Control Plane's new subscription counts from 1.
-    expect(await s.assistantChecks.recordWake(a, it1.id, on(9, 1, 2_000))).toBe('recorded')
-    expect(await s.assistantChecks.recordWake(a, it1.id, on(9, 1, 2_000))).toBe('duplicate')
-    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({ wakeId: 1, wakeSubscription: 9 })
+    expect(await s.assistantChecks.recordWake(a, it1.taskKey, on(9, 1, 2_000))).toBe('recorded')
+    expect(await s.assistantChecks.recordWake(a, it1.taskKey, on(9, 1, 2_000))).toBe('duplicate')
+    expect(await s.assistantChecks.get(a, it1.taskKey)).toMatchObject({ wakeId: 1, wakeSubscription: 9 })
   })
 
   it('drops a wake the check running since before its events answers, and keeps one with a later event', async () => {
@@ -932,13 +947,13 @@ describe('event wake in the check state (assistant-mode.md §5.14)', () => {
     const a = agent()
     const it1 = await item(s, a, undefined, 'waiting')
     await start(s, a, it1, 5_000, 'message')
-    expect(await s.assistantChecks.recordWake(a, it1.id, wake(1, ['comment'], 4_000, 6_000))).toBe('answered')
-    expect((await s.assistantChecks.get(a, it1.id))?.wakeAt).toBeNull()
-    expect(await s.assistantChecks.recordWake(a, it1.id, wake(2, ['merged'], 7_000))).toBe('recorded')
+    expect(await s.assistantChecks.recordWake(a, it1.taskKey, wake(1, ['comment'], 4_000, 6_000))).toBe('answered')
+    expect((await s.assistantChecks.get(a, it1.taskKey))?.wakeAt).toBeNull()
+    expect(await s.assistantChecks.recordWake(a, it1.taskKey, wake(2, ['merged'], 7_000))).toBe('recorded')
     // It waits for the running check to end.
     expect(await s.assistantChecks.wokenDue(a, 8_000, 10, 0, 8_000)).toEqual([])
-    await s.assistantChecks.succeed(a, it1.id, it1.taskKey, 9_000)
-    expect(await s.assistantChecks.wokenDue(a, 9_000, 10, 0, 9_000)).toEqual([it1.id])
+    await s.assistantChecks.succeed(a, it1.taskKey, it1.taskKey, 9_000)
+    expect(await s.assistantChecks.wokenDue(a, 9_000, 10, 0, 9_000)).toEqual([it1.taskKey])
   })
 
   it('lets any check take the wake along, logs what started it, and spaces woken checks apart', async () => {
@@ -947,22 +962,25 @@ describe('event wake in the check state (assistant-mode.md §5.14)', () => {
     const it1 = await item(s, a, undefined, 'waiting')
     // A wake starts nothing while none waits.
     expect(await start(s, a, it1, 1_000, 'wake')).toBeUndefined()
-    await s.assistantChecks.recordWake(a, it1.id, wake(1, ['merged'], 2_000))
+    await s.assistantChecks.recordWake(a, it1.taskKey, wake(1, ['merged'], 2_000))
     expect(await start(s, a, it1, 3_000, 'wake')).toEqual({ checkNo: 1, messages: null, events: ['merged'] })
-    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({
+    expect(await s.assistantChecks.get(a, it1.taskKey)).toMatchObject({
       wakeAt: null,
       wakeKinds: [],
       lastWokenAt: 3_000,
       runningWake: ['merged']
     })
-    await s.assistantChecks.succeed(a, it1.id, it1.taskKey, 4_000)
-    expect((await s.assistantChecks.checks(a, it1.id, 1))[0]).toMatchObject({ startedBy: 'wake', events: ['merged'] })
+    await s.assistantChecks.succeed(a, it1.taskKey, it1.taskKey, 4_000)
+    expect((await s.assistantChecks.checks(a, it1.taskKey, 1))[0]).toMatchObject({
+      startedBy: 'wake',
+      events: ['merged']
+    })
 
-    await s.assistantChecks.recordWake(a, it1.id, wake(2, ['checks'], 5_000))
+    await s.assistantChecks.recordWake(a, it1.taskKey, wake(2, ['checks'], 5_000))
     expect(await s.assistantChecks.wokenDue(a, 6_000, 10, 0, 6_000 - 15 * MINUTE)).toEqual([])
-    expect(await s.assistantChecks.wokenDue(a, 3_000 + 15 * MINUTE, 10, 0, 3_000)).toEqual([it1.id])
+    expect(await s.assistantChecks.wokenDue(a, 3_000 + 15 * MINUTE, 10, 0, 3_000)).toEqual([it1.taskKey])
     // A message's check takes the waiting wake with it and counts once.
-    await s.assistantChecks.setPendingMessages(a, it1.id, '["look again"]', 7_000)
+    await s.assistantChecks.setPendingMessages(a, it1.taskKey, '["look again"]', 7_000)
     expect(await start(s, a, it1, 8_000, 'message')).toEqual({
       checkNo: 2,
       messages: '["look again"]',
@@ -975,13 +993,13 @@ describe('event wake in the check state (assistant-mode.md §5.14)', () => {
     const s = await open()
     const a = agent()
     const it1 = await item(s, a, undefined, 'waiting')
-    await s.assistantChecks.recordWake(a, it1.id, wake(1, ['merged'], 1_000))
+    await s.assistantChecks.recordWake(a, it1.taskKey, wake(1, ['merged'], 1_000))
     await start(s, a, it1, 2_000, 'wake')
-    const running = (await s.assistantChecks.get(a, it1.id))!
-    await s.assistantChecks.release(a, it1.id, it1.taskKey, 3_000)
-    await s.assistantChecks.recordWake(a, it1.id, wake(2, ['comment'], 3_500))
-    await s.assistantChecks.restoreWake(a, it1.id, running.runningWake, 4_000)
-    expect(await s.assistantChecks.get(a, it1.id)).toMatchObject({
+    const running = (await s.assistantChecks.get(a, it1.taskKey))!
+    await s.assistantChecks.release(a, it1.taskKey, it1.taskKey, 3_000)
+    await s.assistantChecks.recordWake(a, it1.taskKey, wake(2, ['comment'], 3_500))
+    await s.assistantChecks.restoreWake(a, it1.taskKey, running.runningWake, 4_000)
+    expect(await s.assistantChecks.get(a, it1.taskKey)).toMatchObject({
       wakeAt: 3_500,
       wakeKinds: ['merged', 'comment'],
       runningWake: []
@@ -996,7 +1014,7 @@ describe('event wake in the check state (assistant-mode.md §5.14)', () => {
     const ended = await item(s, a, undefined, 'done')
     const url = 'https://github.com/example-org/example-repo/pull/12'
     expect(
-      await s.assistantItems.setWatch(a, watched.id, {
+      await s.assistantWatchTasks.setWatch(a, watched.taskKey, {
         url,
         target: 'example-org/example-repo#12',
         state: 'watching',
@@ -1004,20 +1022,25 @@ describe('event wake in the check state (assistant-mode.md §5.14)', () => {
         repoId: '456'
       })
     ).toBe(true)
-    await s.assistantItems.setWatch(a, refused.id, { url, target: null, state: 'refused', reason: 'no_access' })
-    expect(await s.assistantItems.setWatch(a, ended.id, { url, target: null, state: 'pending', reason: null })).toBe(
-      false
-    )
-    expect((await s.assistantItems.get(a, watched.id))?.watch).toEqual({
+    await s.assistantWatchTasks.setWatch(a, refused.taskKey, {
+      url,
+      target: null,
+      state: 'refused',
+      reason: 'no_access'
+    })
+    expect(
+      await s.assistantWatchTasks.setWatch(a, ended.taskKey, { url, target: null, state: 'pending', reason: null })
+    ).toBe(false)
+    expect((await s.assistantWatchTasks.get(a, watched.taskKey))?.watch).toEqual({
       url,
       target: 'example-org/example-repo#12',
       state: 'watching',
       reason: null,
       repoId: '456'
     })
-    expect(await s.assistantItems.watching(a)).toEqual([{ id: watched.id, url }])
-    await s.assistantItems.setWatch(a, watched.id, null)
-    expect((await s.assistantItems.get(a, watched.id))?.watch).toBeNull()
+    expect(await s.assistantWatchTasks.watching(a)).toEqual([{ taskKey: watched.taskKey, url }])
+    await s.assistantWatchTasks.setWatch(a, watched.taskKey, null)
+    expect((await s.assistantWatchTasks.get(a, watched.taskKey))?.watch).toBeNull()
   })
 })
 
@@ -1028,10 +1051,6 @@ describe.skipIf(usingPostgresStore())('the v60 → v61 event wake schema on SQLi
     const old = new DatabaseSync(path)
     old.exec(
       [
-        'ALTER TABLE assistant_item DROP COLUMN watchUrl',
-        'ALTER TABLE assistant_item DROP COLUMN watchTarget',
-        'ALTER TABLE assistant_item DROP COLUMN watchState',
-        'ALTER TABLE assistant_item DROP COLUMN watchReason',
         'ALTER TABLE assistant_check_state DROP COLUMN wakeId',
         'ALTER TABLE assistant_check_state DROP COLUMN wakeAt',
         'ALTER TABLE assistant_check_state DROP COLUMN wakeKinds',
@@ -1049,14 +1068,14 @@ describe.skipIf(usingPostgresStore())('the v60 → v61 event wake schema on SQLi
     const a = agent()
     try {
       const it1 = await item(upgraded, a, undefined, 'waiting')
-      await upgraded.assistantItems.setWatch(a, it1.id, {
+      await upgraded.assistantWatchTasks.setWatch(a, it1.taskKey, {
         url: 'https://github.com/example-org/example-repo/issues/7',
         target: null,
         state: 'pending',
         reason: null
       })
       expect(
-        await upgraded.assistantChecks.recordWake(a, it1.id, {
+        await upgraded.assistantChecks.recordWake(a, it1.taskKey, {
           wakeId: 1,
           kinds: ['closed'],
           latestAt: 1_000,
@@ -1064,7 +1083,7 @@ describe.skipIf(usingPostgresStore())('the v60 → v61 event wake schema on SQLi
           staleBefore: 0
         })
       ).toBe('recorded')
-      expect((await upgraded.assistantItems.get(a, it1.id))?.watch?.state).toBe('pending')
+      expect((await upgraded.assistantWatchTasks.get(a, it1.taskKey))?.watch?.state).toBe('pending')
     } finally {
       await upgraded.close()
     }
@@ -1079,21 +1098,21 @@ describe.skipIf(usingPostgresStore())('the v61 → v62 watched repository id on 
     const path = tempStorePath('ac-assistant-v61-')
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
-    old.exec('ALTER TABLE assistant_item DROP COLUMN watchRepoId; PRAGMA user_version = 61')
+    old.exec('PRAGMA user_version = 61')
     old.close()
     const upgraded = await LocalStore.open(path)
     const a = agent()
     try {
       const it1 = await item(upgraded, a, undefined, 'waiting')
       const url = 'https://gitlab.example.test/example-group/example-project/-/merge_requests/3'
-      await upgraded.assistantItems.setWatch(a, it1.id, {
+      await upgraded.assistantWatchTasks.setWatch(a, it1.taskKey, {
         url,
         target: 'x',
         state: 'watching',
         reason: null,
         repoId: '4455667'
       })
-      expect((await upgraded.assistantItems.get(a, it1.id))?.watch?.repoId).toBe('4455667')
+      expect((await upgraded.assistantWatchTasks.get(a, it1.taskKey))?.watch?.repoId).toBe('4455667')
     } finally {
       await upgraded.close()
     }

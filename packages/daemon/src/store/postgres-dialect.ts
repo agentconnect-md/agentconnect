@@ -340,6 +340,9 @@ export const canonicalColumns = [
   'turnsSinceSummary',
   // the work board's order and its placed rows (assistant-mode.md §5.18)
   'changedAt',
+  // a watch task's schedule (assistant-mode.md §5.18)
+  'nextAt',
+  'watchStatus',
   'ownerPlatform',
   'ownerChannel',
   'ownerTransportScope',

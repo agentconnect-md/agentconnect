@@ -363,7 +363,8 @@ describe.skipIf(!usingPostgresStore())('the v36 → v37 draft tables on PostgreS
         agentId: AGENT,
         title: 'Kept across the upgrade',
         origin: { platform: 'slack', channel: 'C0GENERAL', transportScope: null },
-        taskKey: 'slack:C0GENERAL:subsession:check-1:kept'
+        taskKey: 'slack:C0GENERAL:subsession:check-look-1:kept',
+        gettingToKnow: 'joined'
       })
       await first.close()
 

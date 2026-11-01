@@ -1,4 +1,4 @@
-// What a follow-up watches (assistant-mode.md §5.14): the daemon keeps the URL and the outcome, and the Control Plane mirrors them.
+// What a follow-up watches (assistant-mode.md §5.14): the daemon keeps the URL and the outcome on its watch task, and the Control Plane mirrors them by its task key.
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AssistantFollowUpWatchReq, AssistantFollowUpWatchResult } from '@agentconnect.md/protocol'
 import { FollowUpWatches } from '../src/assistant/follow-up-watches.js'
@@ -43,7 +43,7 @@ async function setup() {
     })
   }
   const watches = new FollowUpWatches({
-    items: s.assistantItems,
+    watchTasks: s.assistantWatchTasks,
     port: {
       request: async (_agentId, req) => {
         requests.push(req)
@@ -56,12 +56,12 @@ async function setup() {
     log: { warn: () => {} }
   })
   const item = async (title: string) =>
-    await s.assistantItems.create({
+    await s.assistantWatchTasks.open({
       agentId: AGENT,
       title,
       doneWhen: 'It merged',
-      status: 'waiting',
       origin: { platform: 'slack', channel: 'C0EXAMPLE', transportScope: null },
+      owner: { sessionId: 'sid-owner', key: `slack:C0EXAMPLE:append:1:${AGENT}` },
       taskKey: `slack:C0EXAMPLE:subsession:check-${title}:${AGENT}`
     })
   return { s, cp, watches, requests, item }
@@ -71,19 +71,22 @@ describe('a follow-up’s watch', () => {
   it('keeps what the Control Plane took, refused, or could not answer', async () => {
     const { s, cp, watches, item } = await setup()
     const one = await item('one')
-    expect(await watches.set(AGENT, one.id, PR)).toEqual({ kind: 'watching', target: 'example-org/example-repo#12' })
+    expect(await watches.set(AGENT, one.taskKey, PR)).toEqual({
+      kind: 'watching',
+      target: 'example-org/example-repo#12'
+    })
 
     cp.answer = (req) => ({ results: [{ followUpId: req.watches[0]!.followUpId, refused: 'no_access' }] })
     const two = await item('two')
-    expect(await watches.set(AGENT, two.id, ISSUE)).toEqual({
+    expect(await watches.set(AGENT, two.taskKey, ISSUE)).toEqual({
       kind: 'refused',
       reason: 'your code-host access does not cover it'
     })
 
     cp.link = undefined
     const three = await item('three')
-    expect(await watches.set(AGENT, three.id, ISSUE)).toEqual({ kind: 'pending' })
-    expect((await s.assistantItems.get(AGENT, three.id))?.watch).toEqual({
+    expect(await watches.set(AGENT, three.taskKey, ISSUE)).toEqual({ kind: 'pending' })
+    expect((await s.assistantWatchTasks.get(AGENT, three.taskKey))?.watch).toEqual({
       url: ISSUE,
       target: null,
       state: 'pending',
@@ -97,16 +100,31 @@ describe('a follow-up’s watch', () => {
     const watched = await item('watched')
     const pending = await item('pending')
     const refused = await item('refused')
-    await s.assistantItems.setWatch(AGENT, watched.id, { url: PR, target: 'x', state: 'watching', reason: null })
-    await s.assistantItems.setWatch(AGENT, pending.id, { url: ISSUE, target: null, state: 'pending', reason: null })
-    await s.assistantItems.setWatch(AGENT, refused.id, { url: PR, target: null, state: 'refused', reason: 'limit' })
+    await s.assistantWatchTasks.setWatch(AGENT, watched.taskKey, {
+      url: PR,
+      target: 'x',
+      state: 'watching',
+      reason: null
+    })
+    await s.assistantWatchTasks.setWatch(AGENT, pending.taskKey, {
+      url: ISSUE,
+      target: null,
+      state: 'pending',
+      reason: null
+    })
+    await s.assistantWatchTasks.setWatch(AGENT, refused.taskKey, {
+      url: PR,
+      target: null,
+      state: 'refused',
+      reason: 'limit'
+    })
 
     await watches.sync(AGENT)
     await watches.sync(AGENT)
     expect(requests.map((req) => [req.mode, req.watches.map((watch) => watch.followUpId).sort()])).toEqual([
-      ['full', [watched.id, pending.id].sort()]
+      ['full', [watched.taskKey, pending.taskKey].sort()]
     ])
-    expect((await s.assistantItems.get(AGENT, pending.id))?.watch).toMatchObject({
+    expect((await s.assistantWatchTasks.get(AGENT, pending.taskKey))?.watch).toMatchObject({
       state: 'watching',
       target: 'example-org/example-repo#7'
     })
@@ -119,18 +137,18 @@ describe('a follow-up’s watch', () => {
   it('lets a full set’s late answer overwrite no change made after it', async () => {
     const { s, cp, watches, requests, item } = await setup()
     const one = await item('one')
-    await s.assistantItems.setWatch(AGENT, one.id, { url: PR, target: null, state: 'pending', reason: null })
+    await s.assistantWatchTasks.setWatch(AGENT, one.taskKey, { url: PR, target: null, state: 'pending', reason: null })
     let release!: () => void
     cp.fullGate = new Promise<void>((resolve) => (release = resolve))
     const slow = watches.sync(AGENT)
     // The move is asked for while the full set's answer is still on its way, and waits behind it.
-    const moved = watches.set(AGENT, one.id, ISSUE)
+    const moved = watches.set(AGENT, one.taskKey, ISSUE)
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(requests.map((req) => req.mode)).toEqual(['full'])
     release()
     await Promise.all([slow, moved])
     expect(requests.map((req) => req.mode)).toEqual(['full', 'set'])
-    expect((await s.assistantItems.get(AGENT, one.id))?.watch).toMatchObject({
+    expect((await s.assistantWatchTasks.get(AGENT, one.taskKey))?.watch).toMatchObject({
       url: ISSUE,
       target: 'example-org/example-repo#7'
     })
@@ -139,22 +157,22 @@ describe('a follow-up’s watch', () => {
   it('sends the full set again on the next sweep while a watch waits for an answer', async () => {
     const { s, cp, watches, requests, item } = await setup()
     const one = await item('one')
-    await s.assistantItems.setWatch(AGENT, one.id, { url: PR, target: null, state: 'pending', reason: null })
+    await s.assistantWatchTasks.setWatch(AGENT, one.taskKey, { url: PR, target: null, state: 'pending', reason: null })
     cp.answer = (req) => ({
       results: req.watches.map((watch) => ({ followUpId: watch.followUpId, refused: 'unavailable' as const }))
     })
     await watches.sync(AGENT)
     await watches.sync(AGENT)
     expect(requests.map((req) => req.mode)).toEqual(['full', 'full'])
-    expect((await s.assistantItems.get(AGENT, one.id))?.watch?.state).toBe('pending')
+    expect((await s.assistantWatchTasks.get(AGENT, one.taskKey))?.watch?.state).toBe('pending')
   })
 
   it('stops watching an open follow-up, and drops an ended one’s subscription', async () => {
     const { s, watches, requests, item } = await setup()
     const one = await item('one')
-    await watches.set(AGENT, one.id, PR)
-    expect(await watches.clear(AGENT, one.id)).toEqual({ kind: 'none' })
-    expect((await s.assistantItems.get(AGENT, one.id))?.watch).toBeNull()
+    await watches.set(AGENT, one.taskKey, PR)
+    expect(await watches.clear(AGENT, one.taskKey)).toEqual({ kind: 'none' })
+    expect((await s.assistantWatchTasks.get(AGENT, one.taskKey))?.watch).toBeNull()
     expect(requests.map((req) => req.mode)).toEqual(['set', 'remove'])
   })
 })
