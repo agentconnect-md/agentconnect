@@ -748,9 +748,11 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
 
       // §12.2: one live membership decision fences the whole fan-out; a denied MR revision leaves an actionable run row.
       const isLifecycle = ctx.family === 'issues' || ctx.family === 'merge_request'
+      // A human push onto a bound account's same-project MR authorizes the pusher: the account never passes the gate.
+      const accountRevisionPushedByOther = needsAuthz.every((rule) => isInternalServiceAccountRevision(rule, ctx))
       // Lifecycle authorizes the subject author, notes the commenter, a reviewer request the assigning actor (§12.2).
       const actorId =
-        ctx.eventAction === 'merge_request:review_requested'
+        ctx.eventAction === 'merge_request:review_requested' || accountRevisionPushedByOther
           ? ctx.actorId
           : isLifecycle
             ? (ctx.subjectAuthorId ?? ctx.actorId)
