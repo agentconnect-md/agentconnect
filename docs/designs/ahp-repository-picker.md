@@ -56,45 +56,79 @@ The listing is the set the agent may already work in, from existing sources:
   `repo-candidates/request { grants: 'all' }` frame.
 
 The daemon caches the result per agent for 60 seconds and caps one listing at 500
-entries. A `partial` reply from the CP is shown as listed; typing narrows it.
+entries. Typeahead filters only that returned set: `repo-candidates` has no
+search or pagination, so a repository beyond the cap, or omitted by a `partial`
+reply, cannot be picked here. The agent can still reach it in the turn when its
+mode allows (on-demand or the selector). Search over grants is separate work.
 
 Authorization does not widen. The connection is already authorized for this
 agent; a repository outside these sources is never listed, and `createSession`
 re-checks the choice against a fresh candidate set.
 
-## 5. Creating a session
+## 5. Sessions over several repositories
 
-`createSession.workingDirectories[0]` selects the pin:
+A task often spans repositories (frontend and backend, a service and its
+library). AHP models that directly: a session owns an ordered
+`workingDirectories` set, chats use the whole set unless they narrow it, and a
+host advertises the shape it supports in
+`AgentCapabilities.multipleWorkingDirectories`. AgentConnect sessions already
+run with one working directory (`cwd`) plus secondary roots, so the mapping is:
 
-| Chosen folder          | Session                                                                                                                                         |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| absent or `/@agent`    | Unchanged: primary repository or scratch, secondaries and the selector as today.                                                                |
-| the primary repository | Same as `/@agent`.                                                                                                                              |
-| another repository     | That repository becomes the session's working directory (`cwd`), materialized like a selector hit, and the selector is skipped for the session. |
-| anything else          | `InvalidParams` naming the folder; no session is created.                                                                                       |
+| AHP                         | AgentConnect                                                                    |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| `workingDirectories[0]`     | The repository whose checkout is the session's `cwd`.                           |
+| `workingDirectories[1..]`   | Further repositories, materialized as secondary roots (additional directories). |
+| One chat over the whole set | One agent turn making coordinated changes, one PR per changed repository.       |
 
-- The pin is stored with the session binding (the provider-neutral form of
-  `GithubHookMetadata.repoFullName`) and survives cold resume.
-- The primary repository and `always` rows stay mounted as secondaries, so
-  cross-repository work behaves as it does elsewhere.
-- Base branch is the repository's default branch. The agent opens its PR from a
-  session branch as it does from Webchat.
-- The session summary reports the pinned folder as its working directory, so
-  VS Code's session list shows which repository each session is about.
+The agent advertises `multipleWorkingDirectories: { immutablePrimary: true }`:
+the runtime is rooted at `cwd` when the session starts, so index `0` never
+changes.
+
+### 5.1 Creating a session
+
+`createSession.workingDirectories` is the user's explicit set:
+
+| Set                               | Session                                                                          |
+| --------------------------------- | -------------------------------------------------------------------------------- |
+| absent, empty, or `[/@agent]`     | Unchanged: primary repository or scratch, secondaries and the selector as today. |
+| `[R]`, `R` the primary repository | Same as `/@agent`.                                                               |
+| `[R, S...]`                       | `R` is `cwd`; each `S` is a pinned secondary root.                               |
+| any entry not a listed repository | `InvalidParams` naming it; no session is created.                                |
+
+- At most five repositories, the selector's own cap; duplicates collapse.
+- Picks are a floor, not a ceiling. The primary repository and `always` rows stay
+  mounted, and the selector still runs over the remaining `decision` candidates
+  for anything the task needs that the user did not pick. Picks never count
+  against what the selector may add beyond the cap.
+- The pinned set is stored with the session binding (the provider-neutral form of
+  `GithubHookMetadata.repoFullName`, extended to a list) and survives cold resume.
+- Base branch is each repository's default branch. The agent opens a PR from a
+  session branch in each repository it changes, as it does from Webchat.
+
+### 5.2 Reporting and changing the set
+
+- Session state reports the complete root set it runs with, `cwd` first, as
+  namespace URIs: picks, the primary, `always` rows and selector hits. VS Code's
+  session list therefore shows every repository the session touches.
+- v1 rejects `session/workingDirectorySet`, `session/workingDirectoryRemoved` and
+  `session/workingDirectoryReplaced` with `InvalidParams`: secondary roots are
+  materialized when the session starts. Adding a repository mid-session reuses
+  the on-demand clone path and is follow-up work.
 
 ## 6. Where it runs
 
 - **Daemon AHP service:** `resourceList`, `resourceResolve` and
   `defaultDirectory`, backed by a candidate port over the daemon's existing CP
-  client. `createSession` validates the pin and hands it to the session start.
-- **Daemon workspace preparation:** accepts a session pin the same way a GitHub
-  hook pins a subject repository.
+  client. `createSession` validates the set and hands it to the session start; session state reports the root set.
+- **Daemon workspace preparation:** accepts a pinned `cwd` the way a GitHub
+  hook pins a subject repository, and pinned secondaries ahead of the selector.
 - **Relay and CP:** no change. The relay forwards bound requests; the CP already
   serves `repo-candidates`.
 
 ## 7. Out of scope
 
 - Choosing a branch other than the default.
+- Adding or removing repositories after the session starts (§5.2).
 - Browsing or reading files inside a repository.
 - Matching the user's local git remote; VS Code's remote picker never sees local
   folders.
@@ -103,7 +137,10 @@ re-checks the choice against a fresh candidate set.
 ## 8. Verification
 
 1. Unit tests for the namespace, the candidate cap and cache, and each
-   `createSession` row of §5.
+   `createSession` row of §5.1, and the reported root set.
 2. On test, from VS Code: the picker opens on the agent's repositories, typeahead
    filters them, a session pinned to a non-primary repository starts in that
-   checkout and opens a PR there, and `/@agent` behaves as today.
+   checkout and opens a PR there, a two-repository session changes both and opens
+   one PR in each, and `/@agent` behaves as today. Confirm how the target VS Code
+   build lets a user pick more than one folder; if it offers only one, the second
+   repository is reached through the selector.
