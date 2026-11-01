@@ -1339,6 +1339,12 @@ the coordinator opens for a message works in a Code channel linked to it, and th
 thread links the channel; where no channel can be made, the task answers in the thread.
 Archiving the channel closes the task.
 
+A Code channel's Tasks tab reads the same task and runtime background-work sources as
+the console's Tasks panel. Open work stays visible, finished work is grouped and collapsed,
+and updates continue after the main reply ends while background work remains. Runtime work
+that has not been reported is identified as unavailable. Task controls and additional history
+remain available through the console; the view does not offer unsupported runtime cancellation.
+
 In a Code channel, the platform keeps the task's assigned, isolated repositories visible
 as a diff while work runs and when it finishes. The comparison starts from the clean
 repository state before the task, so committing changes does not hide them. The agent

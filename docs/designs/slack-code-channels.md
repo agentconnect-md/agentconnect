@@ -150,9 +150,30 @@ Channel discovery supplies standing context identifying an existing code channel
 The agent continues work there, maintains repository/branch/PR context items, and
 publishes PR views when opened and useful HTML previews.
 The agent does not auto-archive a channel at the end of a turn.
-Views initially cover diffs, HTML and PR links, plus the Plan tab below. Arbitrary
+Views cover diffs, HTML and PR links, plus the Plan and Tasks tabs below. Arbitrary
 interactive Block Kit views and runtime-registered slash commands are follow-up
 capabilities.
+
+### Tasks
+
+The daemon maintains one `Tasks` Block Kit view (`agentconnect-tasks`) for the channel's
+session. It reads the same parent-scoped task ledger and runtime background-task snapshot
+as the console's Tasks panel: Tasks, Follow-ups, Subagents and Commands. Ordinary foreground
+tool calls remain in the response's work steps. Unreported runtime tasks are shown as
+unavailable, not as evidence that no background work exists.
+
+Open work stays visible; finished work shares a collapsed container. Waiting follow-ups and
+threaded tasks remain open, matching the console. Running work refreshes every five seconds,
+including after the main response ends; waiting work refreshes every twenty seconds. Idle
+views stop polling once all work has finished and refresh again on the next turn. Channel
+archive and connection shutdown cancel pending updates. Every read checks the channel owner,
+session binding and conversation access, and masks configured secrets before rendering.
+
+The view shows a bounded snapshot and links to the console for further history and task
+controls. Runtime subagents and commands stay read-only, as in the console: reporting a task
+does not imply an individual cancellation API. No agent tool call is needed to publish tasks.
+
+### Plan
 
 The Plan tab is written by the daemon, not by a tool. In a code channel this bot owns,
 each ACP `plan` update is rendered as a markdown checklist and kept in a canvas
