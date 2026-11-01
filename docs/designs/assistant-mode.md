@@ -3522,9 +3522,12 @@ already takes: being allowed to read a source by name is not the same as having 
   could `recall` it by name. The place-only rule of §5.4 ② is replaced.
 - _Permission_: the source is the task's place with **the task's own sessions** as
   `SourcePlace.sessions` (its session key, and for a threaded task every session it holds), not the
-  place's newest sessions that `recall`'s description uses. `askerMayRead`'s console-visibility
-  fallback then checks exactly those ids, so a task whose session its sender made private before
-  it became a task (auto-session-mode.md §6.2) is refused even in a public channel. A discovered
+  place's newest sessions that `recall`'s description uses. The platform-first rule of §5.5 is
+  unchanged: a same-bot asker and a linked identity are judged by the platform without reading
+  the sessions, so a full member passes for a public channel. Where access reaches
+  `askerMayRead`'s console-visibility fallback (a console user, or a chat member who linked no
+  account), it checks exactly those ids, so there a task whose session its sender made private
+  before it became a task (auto-session-mode.md §6.2) is refused even in a public channel. A discovered
   line is shown when every asker of the batch passes `askerMayRead` for that source on the source's
   bot and `readRefusal` does not refuse it; a batch with no askers (reports alone) is `NOBODY`,
   which `readRefusal` limits to public sources on the current bot. The same check runs before a
