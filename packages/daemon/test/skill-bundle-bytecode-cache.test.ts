@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { removeTree, writableTree } from './tree-support.js'
 import {
   reconcileSkillBundles,
   treeDigest,
@@ -44,7 +45,7 @@ describe.skipIf(process.platform === 'win32')('Python bytecode caches in an inst
   })
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   })
 
   it('drops the caches a bundled script left behind and still updates the skill', async () => {
@@ -55,7 +56,8 @@ describe.skipIf(process.platform === 'win32')('Python bytecode caches in an inst
       candidates: [await candidate(join(root, 'v1'), 'py:v1', { 'SKILL.md': skill, 'scripts/run.py': 'print(1)\n' })]
     })
     const target = join(cwd, ...BUNDLE.split('/'))
-    // What `python scripts/run.py` and an `import` from the skill root leave in the installed bundle.
+    // What `python scripts/run.py` and an `import` from the skill root leave in a bundle that has owner-write.
+    await writableTree(target)
     for (const cache of ['scripts/__pycache__', '__pycache__']) {
       await mkdir(join(target, cache))
       await writeFile(join(target, cache, 'run.cpython-312.pyc'), 'bytecode')
@@ -86,6 +88,7 @@ describe.skipIf(process.platform === 'win32')('Python bytecode caches in an inst
     }
     await reconcileSkillBundles(unchanged)
     const cache = join(cwd, ...BUNDLE.split('/'), 'scripts/__pycache__/run.cpython-312.pyc')
+    await writableTree(join(cwd, ...BUNDLE.split('/')))
     await mkdir(join(cache, '..'))
     await writeFile(cache, 'bytecode')
 

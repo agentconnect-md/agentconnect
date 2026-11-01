@@ -35,6 +35,7 @@ import {
 import type { Dirent, Stats } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, dirname, relative, resolve, isAbsolute, sep } from 'node:path'
+import { removeTreeSync } from '../workspace/remove-tree.js'
 import {
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
@@ -1027,14 +1028,14 @@ export function removeAgent(agentsDir: string, agentId: string): void {
       throw new Error(`cannot remove agent "${agentId}": its root is not a child of agentsDir`)
     }
     const parent = dirname(activeDir)
-    rmSync(activeDir, { recursive: true, force: true })
+    removeTreeSync(activeDir)
     // The caller clears the fail-closed marker next. Persist the unlink first.
     syncPath(parent)
     syncPath(agentsDir)
   }
   // `agent/remove` is actual deletion, not detach: purge any cold-move archive too.
   const detached = detachedAgentDir(agentsDir, agentId)
-  rmSync(detached, { recursive: true, force: true })
+  removeTreeSync(detached)
   syncPathIfExists(dirname(detached))
   clearAgentMoveStage(agentsDir, agentId)
   syncPathIfExists(join(agentsDir, STAGED_DIR))

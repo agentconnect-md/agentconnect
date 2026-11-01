@@ -1,10 +1,11 @@
 import { fork, spawn, type ChildProcess } from 'node:child_process'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { removeTree } from './tree-support.js'
 import { detectSandbox } from '../src/acp/sandbox.js'
 import { withSkillWorkspaceLock } from '../src/skills/skill-install-ledger.js'
 
@@ -30,7 +31,7 @@ describe.skipIf(!hasBwrap)('cross-process skill workspace lock', () => {
   afterEach(async () => {
     for (const child of children) child.kill('SIGKILL')
     await Promise.all([...children].map((child) => waitForExit(child).catch(() => undefined)))
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   })
 
   const start = (mode = 'hold', extraArgs: string[] = []): ChildProcess => {
@@ -125,7 +126,7 @@ describe('skill workspace lock database', () => {
   })
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true })
+    await removeTree(root)
   })
 
   it('waits for a peer whose write outlasts the busy timeout instead of failing to open', async () => {

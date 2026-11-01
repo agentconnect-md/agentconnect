@@ -7,6 +7,7 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { removeTree, writableTree } from './tree-support.js'
 import { ShimBundleClient } from '../src/shim/bundle-client.js'
 import { createBundleHandler, type BundleHandler } from '../src/shim/bundle-handler.js'
 import { BUNDLE_PENDING_TAGGING } from '../src/shim/bundle-protocol.js'
@@ -50,7 +51,7 @@ const roots: string[] = []
 const handlers: BundleHandler[] = []
 afterEach(async () => {
   for (const handler of handlers.splice(0)) handler.stop()
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) await removeTree(root)
 })
 
 // An origin with `skills/alpha` on main (two commits) and on dev; a good bundle of main, a hostile one, and the shim's dirs.
@@ -321,7 +322,7 @@ describe.skipIf(process.platform === 'win32')('in-pod skill write-back staging (
     const w = await world()
     const { writeBack: _writeBack, ...s5bPlan } = plan(w)
     const withFeature = await reconcile(shim(w).handler, [s5bPlan])
-    await rm(w.workspace, { recursive: true, force: true })
+    await removeTree(w.workspace)
     await rm(join(w.root, 'state'), { recursive: true, force: true })
     await mkdir(w.workspace)
     const s5b = await reconcile(shim(w, { writeBack: false }).handler, [s5bPlan])
@@ -432,6 +433,7 @@ describe.skipIf(process.platform === 'win32')('unchanged Git plan short-circuit 
       [plan(w)],
       undefined,
       async (roots) => {
+        await writableTree(join(w.workspace, roots[0]!.path))
         await writeFile(join(w.workspace, roots[0]!.path, 'SKILL.md'), 'edited\n')
       },
       true
@@ -439,7 +441,7 @@ describe.skipIf(process.platform === 'win32')('unchanged Git plan short-circuit 
     expect(tampered.secondCalls).toBeGreaterThan(0)
     const w2 = await world()
     const deleted = await twice(w2, [plan(w2)], undefined, async (roots) => {
-      await rm(join(w2.workspace, roots[0]!.path), { recursive: true, force: true })
+      await removeTree(join(w2.workspace, roots[0]!.path))
     })
     expect(deleted.secondCalls).toBeGreaterThan(0)
     expect(deleted.two).toMatchObject({ roots: deleted.one.roots })

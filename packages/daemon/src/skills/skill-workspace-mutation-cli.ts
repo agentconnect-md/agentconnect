@@ -326,6 +326,18 @@ async function inspectBundle(
   }
   const seen = new Set<string>()
   let entries = 0
+  // Removes `dir` bottom-up when it holds only directories; rmdir refuses one that gained an entry meanwhile.
+  const removeFileless = async (dir: string): Promise<boolean> => {
+    for (const entry of await fsp.readdir(dir, { withFileTypes: true })) {
+      entries += 1
+      if (entries > 1_024) fail('skill mutation bundle has too many entries')
+      if (!entry.isDirectory() || !(await removeFileless(join(dir, entry.name)))) return false
+    }
+    return fsp.rmdir(dir).then(
+      () => true,
+      () => false
+    )
+  }
   const walk = async (dir: string, prefix = ''): Promise<void> => {
     for (const entry of await fsp.readdir(dir, { withFileTypes: true })) {
       entries += 1
@@ -348,6 +360,9 @@ async function inspectBundle(
           await fsp.rm(abs, { recursive: true, force: true })
           continue
         }
+        // A runtime's write-staging directory (Claude Code's `.claude/.cc-writes`, made wherever a session works) holds
+        // nothing to vouch for, so a file-less directory is dropped too.
+        if (!directories.has(rel) && (await removeFileless(abs))) continue
         if (!directories.has(rel)) fail('skill mutation bundle contains an unexpected directory')
         await walk(abs, rel)
         continue
@@ -496,8 +511,7 @@ async function populateReservation(
   return publishedIdentity
 }
 
-async function syncDirectoryTree(root: string, receipt: BundleReceipt): Promise<void> {
-  if (process.platform === 'win32') return
+function receiptDirectories(root: string, receipt: BundleReceipt): string[] {
   const dirs = new Set<string>([root])
   for (const file of receipt.files) {
     let current = dirname(join(root, ...file.path.split('/')))
@@ -507,7 +521,29 @@ async function syncDirectoryTree(root: string, receipt: BundleReceipt): Promise<
       current = dirname(current)
     }
   }
-  for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
+  return [...dirs].sort((a, b) => b.length - a.length)
+}
+
+// A final bundle is the runtime's to read and run, never to change: its directories drop owner-write so a runtime's
+// own housekeeping (Claude Code's `.claude/.cc-writes`, made in each directory a session works in) cannot land in
+// it, and its files drop owner-write to match. The helper gives the write bit back only to remove a tree it owns.
+async function setBundleReadOnly(root: string, receipt: BundleReceipt): Promise<void> {
+  if (process.platform === 'win32') return
+  for (const file of receipt.files) await fsp.chmod(join(root, ...file.path.split('/')), file.mode & 0o500)
+  for (const dir of receiptDirectories(root, receipt)) await fsp.chmod(dir, 0o500)
+}
+
+async function setTreeWritable(root: string): Promise<void> {
+  if (process.platform === 'win32') return
+  await fsp.chmod(root, 0o700)
+  for (const entry of await fsp.readdir(root, { withFileTypes: true })) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) await setTreeWritable(join(root, entry.name))
+  }
+}
+
+async function syncDirectoryTree(root: string, receipt: BundleReceipt): Promise<void> {
+  if (process.platform === 'win32') return
+  for (const dir of receiptDirectories(root, receipt)) {
     const handle = await fsp.open(dir, constants.O_RDONLY)
     try {
       await handle.sync()
@@ -634,6 +670,7 @@ async function removeExpectedArtifact(
     const found = await inspectBundle(path, expected)
     if (!sameIdentity(found, expected.identity)) fail('cleanup target was replaced')
   }
+  await setTreeWritable(path)
   await fsp.rm(path, { recursive: true, force: false })
   await syncParent(path)
 }
@@ -838,6 +875,7 @@ async function finalize(spec: FinalizeSpec): Promise<PathIdentity> {
   if (await markerMatches(target, spec.operationId, spec.markerIdentity)) {
     await fsp.rmdir(marker)
   }
+  await setBundleReadOnly(target, spec.expected)
   const finalized = await inspectBundle(target, spec.expected)
   if (!sameIdentity(finalized, spec.expected.identity)) fail('finalized skill identity changed')
   await syncDirectoryTree(target, spec.expected)
