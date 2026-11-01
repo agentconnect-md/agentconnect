@@ -289,7 +289,8 @@ describe('GET /sessions — grouped conversations', () => {
       phase: 'start',
       platform: 'webchat',
       channel: conversationId,
-      thread: `webchat:${conversationId}`
+      thread: `webchat:${conversationId}`,
+      ts: new Date().toISOString()
     })
     const channel = `a2a:${AGENT_A}`
     const thread = 'agentcall:child'
@@ -300,7 +301,8 @@ describe('GET /sessions — grouped conversations', () => {
       phase: 'start',
       platform: 'webchat',
       channel,
-      thread
+      thread,
+      ts: new Date().toISOString()
     })
     const child = await prisma.sessionMeta.findUniqueOrThrow({ where: { id: 'sess-child' } })
     expect(child.visibility).toBe('private')
