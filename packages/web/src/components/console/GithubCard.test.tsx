@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => ({
 // The real hook returns a stable org; a fresh object per render would re-run the card's fetch forever.
 const orgs = vi.hoisted(() => ({ activeOrg: { id: 'org-1' } }))
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => orgs }))
+vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ getAgent: () => undefined }) }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchGithubInstallations: vi.fn(async () => ({ enabled: true, installations: [installation({})] })),

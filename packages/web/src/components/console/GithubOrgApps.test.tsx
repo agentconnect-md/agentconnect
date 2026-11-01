@@ -13,7 +13,13 @@ const mocks = vi.hoisted(() => ({
   deleteGithubApp: vi.fn(async () => undefined)
 }))
 
-vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-1' } }) }))
+const orgs = vi.hoisted(() => ({ activeOrg: { id: 'org-1' }, orgPath: (path: string) => `/acme${path}` }))
+const agents = vi.hoisted(() => ({
+  getAgent: (id: string) =>
+    id === 'agent-1' ? { id, name: 'reviewer', displayName: 'Reviewer', icon: null, runtime: 'codex' } : undefined
+}))
+vi.mock('@/lib/org-context', () => ({ useOrgs: () => orgs }))
+vi.mock('@/lib/data-context', () => ({ useConsoleData: () => agents }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchGithubApps: vi.fn(async () => mocks.apps),
@@ -43,11 +49,7 @@ async function render(props: { isOwner?: boolean; canWrite?: boolean } = {}) {
   await act(async () => {
     root?.render(
       <SWRConfig value={{ provider: () => new Map() }}>
-        <GithubOrgApps
-          canWrite={props.canWrite ?? true}
-          isOwner={props.isOwner ?? true}
-          agentNameOf={(id) => (id === 'agent-1' ? 'Reviewer' : undefined)}
-        />
+        <GithubOrgApps canWrite={props.canWrite ?? true} isOwner={props.isOwner ?? true} />
       </SWRConfig>
     )
   })
@@ -58,12 +60,8 @@ async function render(props: { isOwner?: boolean; canWrite?: boolean } = {}) {
 const row = (slug: string) => document.querySelector<HTMLElement>(`[data-org-app="${slug}"]`)
 const expand = (slug: string) =>
   act(async () => row(slug)!.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click())
-const menuItem = (text: string) =>
-  [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => b.textContent?.includes(text))
-async function menuItems(slug: string): Promise<string[]> {
-  await act(async () => row(slug)!.querySelector<HTMLButtonElement>('button[aria-label="More"]')!.click())
-  return [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].map((b) => b.textContent?.trim() ?? '')
-}
+const labelled = (slug: string, label: string) =>
+  row(slug)!.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
 
 afterEach(async () => {
   if (root) await act(async () => root?.unmount())
@@ -102,16 +100,18 @@ describe('GithubOrgApps', () => {
     await render()
 
     const used = row('review-private')!
-    expect(used.textContent).toContain('used by Reviewer')
+    // The agent using the App leads its row and names it, both linking to the agent.
+    expect(used.querySelector('a[title="Open Reviewer"]')?.getAttribute('href')).toBe('/acme/agents/agent-1')
+    expect(used.querySelector('a.badge')?.textContent).toBe('Reviewer')
     expect(used.querySelector('a.mono')?.getAttribute('href')).toBe('https://github.com/apps/review-private')
     // Installations are the second level: collapsed until the App row is expanded.
     expect(used.textContent).not.toContain('example-org')
     await expand('review-private')
     expect(used.textContent).toContain('example-org')
     expect(used.textContent).toContain('all repositories')
-    // An App an agent uses can't be deleted, so its row has no menu.
-    expect(used.querySelector('button[aria-label="More"]')).toBeNull()
-    expect(used.textContent).toContain('Install on GitHub')
+    // Row actions are icons; an App an agent uses can't be deleted.
+    expect(labelled('review-private', 'Install on GitHub')).not.toBeNull()
+    expect(labelled('review-private', 'Delete App…')).toBeNull()
 
     const free = row('triage-example')!
     expect(free.textContent).toContain('free')
@@ -119,12 +119,11 @@ describe('GithubOrgApps', () => {
     expect(free.textContent).toContain('Not installed on any account yet.')
   })
 
-  it('deletes a free App from its menu after confirming', async () => {
+  it('deletes a free App from its trash button after confirming', async () => {
     mocks.apps = [app({ id: 'app-free', slug: 'triage-example' })]
     await render()
 
-    expect(await menuItems('triage-example')).toEqual(['Delete App…'])
-    await act(async () => menuItem('Delete App')!.click())
+    await act(async () => labelled('triage-example', 'Delete App…')!.click())
     const confirm = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
       (b) => b.textContent?.trim() === 'Delete'
     )
@@ -161,9 +160,8 @@ describe('GithubOrgApps', () => {
   it('lets a viewer expand an App but offers no install or delete', async () => {
     mocks.apps = [app({ id: 'app-free', slug: 'triage-example' })]
     await render({ canWrite: false, isOwner: false })
-    const scope = row('triage-example')!
-    expect(scope.textContent).not.toContain('Install on GitHub')
-    expect(scope.querySelector('button[aria-label="More"]')).toBeNull()
-    expect(scope.querySelector('button[aria-expanded]')).not.toBeNull()
+    expect(labelled('triage-example', 'Install on GitHub')).toBeNull()
+    expect(labelled('triage-example', 'Delete App…')).toBeNull()
+    expect(row('triage-example')!.querySelector('button[aria-expanded]')).not.toBeNull()
   })
 })
