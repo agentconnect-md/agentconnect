@@ -42,6 +42,8 @@ export type AssistantActivityErrorReason = z.infer<typeof AssistantActivityError
 
 const agentId = z.string().uuid()
 const ref = z.string().min(1).max(512)
+// A follow-up's one id, its watch task's key (assistant-mode.md §5.18), which a long place coordinate can stretch.
+const taskKey = z.string().min(1).max(1_024)
 const time = z.string().datetime()
 const name = z.string().max(512).nullable()
 
@@ -108,7 +110,7 @@ export type AssistantActivityFollowUpStatus = z.infer<typeof AssistantActivityFo
 /** A follow-up's own fields (assistant-mode.md §5.12); its row's `state` is `open` until it is done or stopped. */
 export const AssistantActivityFollowUp = z.object({
   /** Its own id from a daemon with `assistant-task-handle-v1`, which `stop-follow-up` ends it by. */
-  id: ref.optional(),
+  id: taskKey.optional(),
   /** Its label; shown only where the row's conversation may be viewed. */
   title: z.string().max(300),
   doneWhen: z.string().max(2_000).nullable(),
@@ -178,7 +180,7 @@ export type AssistantActivityProposalFollowUp = z.infer<typeof AssistantActivity
 export const AssistantActivityProposal = z.object({
   sentence: z.string().min(1).max(ASSISTANT_PROPOSAL_SENTENCE_MAX),
   why: z.string().max(ASSISTANT_PROPOSAL_WHY_MAX),
-  itemId: ref,
+  itemId: taskKey,
   /** The follow-up's title as the daemon last saw it; null once it is gone. */
   itemTitle: z.string().max(300).nullable(),
   /** The follow-up form: what an approval takes, with the approver as its asker; the draft's `text` is then its title. */
@@ -344,7 +346,7 @@ export const AssistantActivityWriteReq = z.discriminatedUnion('operation', [
   z.object({
     agentId,
     operation: z.literal('stop-follow-up'),
-    followUpId: ref,
+    followUpId: taskKey,
     parentSessionId: ref,
     actor: z.object({ userId: ref, name })
   })

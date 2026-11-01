@@ -2111,8 +2111,17 @@ async function migrateFollowUpsToWatchTasks(db: StoreTx, postgres: boolean): Pro
   >[]
   for (const item of items) {
     const agentId = String(item.agentId)
-    const taskKey = String(item.taskKey)
     const place = [String(item.originPlatform), String(item.originChannel), String(item.originTransportScope ?? '')]
+    let taskKey = String(item.taskKey ?? '')
+    if (taskKey === '' && item.gettingToKnow == null) {
+      // A follow-up no step gave a session key gets one now, rather than being lost with the item ledger's follow-ups.
+      taskKey = sessionKey(place[0]!, place[1]!, checkCoordinate(monotonicTs()), agentId, place[2] || null)
+      await db.query('UPDATE assistant_item SET taskKey = ? WHERE agentId = ? AND id = ?', [
+        taskKey,
+        agentId,
+        String(item.id)
+      ])
+    }
     if (item.gettingToKnow != null) {
       // A getting-to-know task stays in the ledger; its index row learns its place, as a watch row's does.
       await db.query(
@@ -2122,7 +2131,6 @@ async function migrateFollowUpsToWatchTasks(db: StoreTx, postgres: boolean): Pro
       )
       continue
     }
-    if (taskKey === '') continue
     const indexed = (
       await db.query('SELECT 1 AS found FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?', [
         agentId,

@@ -1360,10 +1360,9 @@ else, and nobody but its own conversation is told of it.
 
 **As shipped.** Choices the text above leaves open:
 
-- **Storage.** Follow-ups live in the item ledger's tables; a follow-up's id is its item id, so a
-  pending proposal's `itemId` still names it. Since the eighty-fifth revision a follow-up is a watch
-  task in the task store, its task key its one id (§5.18 ⑤). Its session key, `subsession:check-<id>` in its
-  place, is minted when it is taken and is its `taskId`. Each check is a numbered row in a check
+- **Storage.** A follow-up is a watch task in the task store (§5.18 ⑤). Its one id is its session
+  key, `subsession:check-<id>` in its place, minted when it is taken: the `taskId` its tools take and
+  the id a pending proposal's `itemId` names. Each check is a numbered row in a check
   log (`assistant_check`): start, end, what it saw or why it failed, and whether its report got
   through; the newest 50 are kept, and the daily budget counts its starts.
 - **Ownership.** The follow-up's index row names its place's current long session, re-pointed
@@ -3785,8 +3784,14 @@ open with or without a next check, done, or stopped.
   Its observations are kept under its task key beside the row, and its summary is the latest of them,
   cut to a summary's 500 characters. An ended watch task keeps its row with its status, so its page,
   its proposals and its check log still find it; closing work tasks never deletes one.
+- **Lifetime.** A watch row lives as long as its task, not its session. When retention purges a
+  follow-up's idle check session, the row, its schedule and its observations stay, and its next check
+  opens a new session under the same key, with the stored observations as its handover (§5.12). A
+  getting-to-know task's index row still goes with its session, since its item keeps the record and
+  its check indexes it again.
 - **Migration.** One step on both store backends. Each follow-up item becomes its task row, and one
-  that no index row named gets one under its place's session; its observations follow it, the latest
+  that no index row named gets one under its place's session (an item that never had a session key is
+  given one); its observations follow it, the latest
   is its summary and what it was taken with its background. The check state and check log of every
   item, a getting-to-know task's included, and every proposal's and approval's reference to an item,
   are keyed by its task key from then on, and follow-ups leave the item ledger. The upgraded daemon
@@ -3798,7 +3803,10 @@ open with or without a next check, done, or stopped.
   segment, from the item ledger. The due query reads both, watch tasks first. The board reads a
   follow-up from its row alone.
 - **Wire.** A follow-up's id in Activity and the console's stop that sends it back carry the task
-  key; the field names (`followUpId`, a proposal's `itemId`) are unchanged.
+  key; the field names (`followUpId`, a proposal's `itemId`) are unchanged. These ids, and the watch
+  frame's, take up to 1,024 characters, a task key's limit, where the Control Plane took 200 or 512;
+  a Control Plane upgraded before its daemons accepts them all, and a daemon ahead of an older one
+  has a set naming a longer key refused, which the next set retries.
 - **Sessions that are not coordinators** keep their standing list (§5.4 ②), read from watch tasks.
 
 **Examples.** Alice, a full member, asks in her DM whether the webhook retry landed: her board

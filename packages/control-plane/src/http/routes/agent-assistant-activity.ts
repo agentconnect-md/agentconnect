@@ -165,7 +165,7 @@ const SubsessionsQuery = z.object({
     .default(ASSISTANT_ACTIVITY_SUBSESSIONS_MAX)
 })
 const SubsessionParam = IdParam.extend({ sessionId: z.string().min(1).max(512) })
-const FollowUpParam = IdParam.extend({ followUpId: z.string().min(1).max(512) })
+const FollowUpParam = IdParam.extend({ followUpId: z.string().min(1).max(1_024) })
 const FollowUpStopBody = z.object({
   /** The conversation its row is listed under (`parent.sessionId`). */
   parentSessionId: z.string().min(1).max(512)

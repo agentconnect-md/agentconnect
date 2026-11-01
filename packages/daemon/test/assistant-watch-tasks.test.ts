@@ -494,6 +494,30 @@ const V73_ROWS: [string, unknown[]][] = [
   [
     ITEM,
     [
+      'item-nokey',
+      AGENT,
+      'Watch the nightly',
+      null,
+      null,
+      'waiting',
+      '',
+      null,
+      0,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      '',
+      0,
+      1,
+      2_000
+    ]
+  ],
+  [
+    ITEM,
+    [
       'item-look',
       AGENT,
       'Getting to know the channel',
@@ -610,6 +634,9 @@ async function expectMigrated(s: LocalStore, draftId: string): Promise<void> {
     status: 'waiting',
     owner: { sessionId: 'sid-place', key: PLACE_KEY }
   })
+  // One that never had a session key is given one rather than lost.
+  const nokey = (await s.assistantWatchTasks.list(AGENT)).find((t) => t.title === 'Watch the nightly')
+  expect(nokey?.taskKey).toMatch(/^slack:C0EXAMPLE1:subsession:check-[^:]+:agent-watch:T0EXAMPLE$/)
   expect(await s.assistantSubsessions.get(AGENT, key('look-1'))).toMatchObject({ mode: 'watch', place: GENERAL })
   expect(
     await s.assistantSubsessions.get(AGENT, sessionKey('slack', 'C0EXAMPLE1', 'subsession:del-1', AGENT, SCOPE))
