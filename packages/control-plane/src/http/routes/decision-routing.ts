@@ -15,6 +15,7 @@ import { Prisma } from '../../generated/prisma/client.js'
 import { RoutingChannelInvalid, RoutingScopeChanged } from '../../persistence/errors.js'
 import type { AgentRecord, BotRecord, SeedTrigger } from '../../persistence/ports.js'
 import { pickConversationOwner, type RoutingDescription } from '../../orchestrator/httpBot.js'
+import { anyAssistantModeAgent } from '../../agents/assistant-mode.js'
 import { refreshMutationAgent } from '../mutation-agent.js'
 import type { HttpDeps } from '../deps.js'
 import { visibleDecisionChain } from '../decision-access.js'
@@ -87,6 +88,8 @@ const notFound = (message: string, code?: string) => ({
 })
 const forbidden = (message: string) => ({ error: 'Forbidden', statusCode: 403, message })
 const AUTO_ROUTING_CONFLICT = 'A conversation in Auto cannot be added to routing; choose another session mode first.'
+const ASSISTANT_ROUTING_CONFLICT =
+  'A conversation cannot be added to routing while an agent using this bot is in assistant mode.'
 const conflict = (message: string, code?: string) => ({
   error: 'Conflict',
   statusCode: 409,
@@ -178,7 +181,7 @@ export function decisionRoutingRoutes(deps: HttpDeps) {
           summary: 'Save shared-bot routing',
           operationId: 'saveBotDecisionRouting',
           description:
-            'Saves the complete routing configuration and its channel scope in one transaction. `channelIds` is the complete desired scope: an addition must be an enabled group channel and becomes By decision on every sibling row, replacing any gate; every removed channel must appear in `removals` with its replacement trigger and optional default agent. `enabled: false` pauses routing and keeps the scope. Adding channels is refused with `code` DECISION_UNSUPPORTED_CONSUMER (409) while the relay or the evaluation host does not support routing, and a conversation in Auto with `code` SESSION_MODE_CONFLICT (409); an invisible Decision is `code` DECISION_NOT_FOUND (404).',
+            'Saves the complete routing configuration and its channel scope in one transaction. `channelIds` is the complete desired scope: an addition must be an enabled group channel and becomes By decision on every sibling row, replacing any gate; every removed channel must appear in `removals` with its replacement trigger and optional default agent. `enabled: false` pauses routing and keeps the scope. Adding channels is refused with `code` DECISION_UNSUPPORTED_CONSUMER (409) while the relay or the evaluation host does not support routing, and a conversation in Auto, or any addition while an agent using the bot is in assistant mode, with `code` SESSION_MODE_CONFLICT (409); an invisible Decision is `code` DECISION_NOT_FOUND (404).',
           params: IdParam,
           body: BotDecisionRoutingSaveBody,
           response: {
@@ -243,6 +246,14 @@ export function decisionRoutingRoutes(deps: HttpDeps) {
         ])
         const expectedOwners = new Map<string, string>()
         const mutationAgents = new Map<string, AgentRecord>(targets)
+        // Routing may hand a conversation to any agent using the bot, so one in assistant mode keeps additions out (assistant-mode.md §5.18 ①).
+        const assistantOnBot =
+          additions.length > 0 &&
+          (await anyAssistantModeAgent(
+            deps.repos.agent,
+            orgOf(req),
+            installs.map((install) => install.agentId)
+          ))
         for (const channelId of [...additions, ...removed, ...retained]) {
           const conversation = rows.filter((row) => row.channelId === channelId)
           if (conversation.length === 0) return reply.code(404).send(notFound('channel not found'))
@@ -251,6 +262,8 @@ export function decisionRoutingRoutes(deps: HttpDeps) {
           // Auto decides every message itself, so it never runs behind routing (auto-session-mode.md §3.3).
           if (additions.includes(channelId) && conversation.some((row) => row.sessionMode === 'auto'))
             return reply.code(409).send(conflict(AUTO_ROUTING_CONFLICT, 'SESSION_MODE_CONFLICT'))
+          if (assistantOnBot && additions.includes(channelId))
+            return reply.code(409).send(conflict(ASSISTANT_ROUTING_CONFLICT, 'SESSION_MODE_CONFLICT'))
           const owner = pickConversationOwner(installs, conversation)
           const ownerAgent = owner ? await deps.repos.agent.get(orgOf(req), owner.agentId) : null
           if (!owner || !ownerAgent)

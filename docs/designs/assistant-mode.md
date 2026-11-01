@@ -295,14 +295,14 @@ The terms as this design uses them, each with the section that defines it.
 
 ### 4.1 Admission (checked on enable; a failing check locks the switch)
 
-| Dimension                 | Requirement                                                                                                                                                                                                                                                                                                                                                                                                                                   | Why                                                                                                                                                                                                                    |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime                   | On the **admission list**: native cross-session memory can be disabled; a session resumes by id after a runtime restart. **No genuine read-only mode required**: the check guarantee is stated by layer in §5.9, and a runtime without one shows as degraded                                                                                                                                                                                  | Memory bypass, long sessions and resuming tasks after approval depend on it. Registering strict read-only semantics would lock most runtimes out                                                                       |
-| Memory                    | `managed`, kept in the Control Plane (`home: control-plane`). Turning the mode on moves a `daemon` home in the same write, and the owning daemon copies the tree, one way. While the mode is on, a `daemon` home, the forced return and any other provider are refused; turning it off moves nothing back. Per-turn distillation (`autoDistill`) recommended off; if on, the trade-off in [memory-dreaming.md](memory-dreaming.md) §8 applies | The person layer exists for managed memory only; person and place memory must be readable and clearable in the console with no daemon online, and must survive a move. Distillation runs on the credentialed warm host |
-| Self-hosted group         | Every member shares the store (the CP verifies store ids); single daemons unaffected                                                                                                                                                                                                                                                                                                                                                          | Otherwise the ledger, approvals and pending reports stay on the old member after a handover                                                                                                                            |
-| Executors                 | Assistant-mode sessions never spread to remote executors                                                                                                                                                                                                                                                                                                                                                                                      | Not possible today either                                                                                                                                                                                              |
-| One per place             | One assistant-mode agent per place (`transportScope` + channel)                                                                                                                                                                                                                                                                                                                                                                               | With two, who speaks and where reports go has no good answer                                                                                                                                                           |
-| Routing (proposed, §5.18) | No conversation of the agent is By decision, and none is routed through a shared bot's routing rules                                                                                                                                                                                                                                                                                                                                          | Every assistant-mode place runs a coordinator, which Auto's exclusions keep apart from both                                                                                                                            |
+| Dimension         | Requirement                                                                                                                                                                                                                                                                                                                                                                                                                                   | Why                                                                                                                                                                                                                    |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime           | On the **admission list**: native cross-session memory can be disabled; a session resumes by id after a runtime restart. **No genuine read-only mode required**: the check guarantee is stated by layer in §5.9, and a runtime without one shows as degraded                                                                                                                                                                                  | Memory bypass, long sessions and resuming tasks after approval depend on it. Registering strict read-only semantics would lock most runtimes out                                                                       |
+| Memory            | `managed`, kept in the Control Plane (`home: control-plane`). Turning the mode on moves a `daemon` home in the same write, and the owning daemon copies the tree, one way. While the mode is on, a `daemon` home, the forced return and any other provider are refused; turning it off moves nothing back. Per-turn distillation (`autoDistill`) recommended off; if on, the trade-off in [memory-dreaming.md](memory-dreaming.md) §8 applies | The person layer exists for managed memory only; person and place memory must be readable and clearable in the console with no daemon online, and must survive a move. Distillation runs on the credentialed warm host |
+| Self-hosted group | Every member shares the store (the CP verifies store ids); single daemons unaffected                                                                                                                                                                                                                                                                                                                                                          | Otherwise the ledger, approvals and pending reports stay on the old member after a handover                                                                                                                            |
+| Executors         | Assistant-mode sessions never spread to remote executors                                                                                                                                                                                                                                                                                                                                                                                      | Not possible today either                                                                                                                                                                                              |
+| One per place     | One assistant-mode agent per place (`transportScope` + channel)                                                                                                                                                                                                                                                                                                                                                                               | With two, who speaks and where reports go has no good answer                                                                                                                                                           |
+| Routing           | No conversation of the agent is By decision, and none is routed through a shared bot's routing rules                                                                                                                                                                                                                                                                                                                                          | Every assistant-mode place runs a coordinator, which Auto's exclusions keep apart from both                                                                                                                            |
 
 The admission list holds Claude Code (`claude-acp`, and `claude`, its earlier id), Codex (`codex-acp`,
 and `codex`) and OpenCode (`opencode`). A runtime joins it once both facts hold for the version the
@@ -3464,9 +3464,10 @@ is not built.
 
 ### 5.18 The work board
 
-**Status:** Proposed (eightieth revision, 2026-11-01). ③ shipped in the eighty-first revision
-("As shipped" under it); the rest is not implemented. Reviewed in draft by three adversarial review
-rounds; what they changed is noted inline.
+**Status:** Proposed (eightieth revision, 2026-11-01). Step 1, the admission check, shipped in the
+eighty-first revision ("As shipped" after ①), and ③, batches cut by permission class, in the
+eighty-second ("As shipped" after ③); the rest is not implemented. Reviewed in draft by three
+adversarial review rounds; what they changed is noted inline.
 
 **Why.** The mode promises one mind: what the agent takes on in one place it knows in the others.
 That holds for memory and for follow-ups, not for the work it is doing. A coordinator
@@ -3497,6 +3498,18 @@ assistant-mode agent to By decision or adding it to shared-bot routing is refuse
 409 `SESSION_MODE_CONFLICT`. The Control Plane and the console already know both facts; no daemon
 or relay projection changes. Existing agents with such rows keep today's behavior until an editor
 changes them.
+
+**As shipped** (2026-11-01, #3542). The check reads every conversation row of the agent's
+installs whose trigger is By decision, a gate or a bot's router, and every routed conversation of
+a shared bot the agent uses, even one where it has no row, since the router may hand it to any
+agent using the bot. It fails as the `routing` refusal, and the admission response lists those
+conversations (`integrationId`, `channelId`, name) for the panel to name. It runs on the switch-on
+alone: an agent already on is not re-checked when its runtime or memory changes. A conversation
+edit that sets By decision is refused while an agent of the conversation is in assistant mode (on
+a shared bot, any agent using it, since the trigger repeats on every install's row); a routing
+save is refused for an added conversation while an agent using the bot is in assistant mode, and
+never for a pause or a removal. The checks are the routes' own, not row-locked against a
+concurrent switch-on; a row that slips past one keeps the existing behavior, Per thread.
 
 **② The board and who may see a line.** The board is a read over the two stores that exist today,
 the parent–child task index (`store/assistant-subsessions.ts`) and the follow-up item table
@@ -3568,7 +3581,7 @@ and write is judged by that class. A channel of members stays one batch, as toda
 message costs one turn of its own. A read judged by one named message inside a mixed batch is not
 taken: the result would sit in a context that answers other people's messages too.
 
-**As shipped** (#PRNUM, eighty-first revision). Choices the text above leaves open:
+**As shipped** (2026-11-01, #PRNUM). Choices the text above leaves open:
 
 - **Today was narrower than it says.** A coordinator marks its messages headless so that it speaks
   only through its outcomes, and the asker rule took a headless message for one no person sent:
@@ -4728,11 +4741,21 @@ Three adversarial review rounds of the draft moved the design from a place-judge
 discovery-then-permission rule, from offsets to keyset cursors, and from a follow-up store merge
 and automatic rollover to leaving both out.
 
-**Eighty-first revision (2026-11-01)**: a coordinator batch is judged by every sender and cut by
-permission class (§5.18 ③ shipped, #PRNUM; issue #3541, phase B). Its queued messages are folded
-into the turn's askers, so `postMessage` and `callAgent` from a turn that decides several people's
-messages are judged by all of them, and the queue is cut in arrival order where the next sender's
-class differs. Implementing it found that the starting point was narrower than §5.18 said: a
-coordinator's messages are headless, which the asker rule read as no person's, so every coordinator
-turn read and wrote as `NOBODY`; each message now asks as its sender. Reports still head turns of
-their own until phase 3, so a report rides with the messages right behind it.
+**Eighty-first revision (2026-11-01)**: assistant mode refuses By decision and shared-bot routing
+(issue #3541, phase A, #3542; §4.1, §5.18 ① "As shipped"). Every place of an assistant-mode
+agent runs a coordinator, which Auto keeps apart from both, yet a By decision row of such an agent
+was left on Per thread. The Routing row of the admission table is no longer proposed: switching the
+mode on fails while a conversation of the agent is By decision or routed, and the panel names those
+conversations; setting By decision on a conversation an assistant-mode agent shares, or adding a
+conversation to the routing of a bot such an agent uses, is refused with 409
+`SESSION_MODE_CONFLICT`. Rows from before the check keep their behavior until an editor changes
+them.
+
+**Eighty-second revision (2026-11-01)**: a coordinator batch is judged by every sender and cut by
+permission class (issue #3541, phase B, #PRNUM; §5.18 ③ "As shipped"). Its queued messages are
+folded into the turn's askers, so `postMessage` and `callAgent` from a turn that decides several
+people's messages are judged by all of them, and the queue is cut in arrival order where the next
+sender's class differs. Implementing it found that the starting point was narrower than §5.18 said:
+a coordinator's messages are headless, which the asker rule read as no person's, so every
+coordinator turn read and wrote as `NOBODY`; each message now asks as its sender. Reports still head
+turns of their own until phase 3, so a report rides with the messages right behind it.
