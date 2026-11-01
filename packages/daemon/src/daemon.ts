@@ -308,6 +308,7 @@ import {
 } from './daemon/steering-admission.js'
 import { recallQueryFromBlocks } from './memory/recall.js'
 import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
+import { readCodeTasks } from './platforms/slack/code-tasks.js'
 import { monotonicTs } from './store/monotonic-ts.js'
 import { StoreRetentionSweeper, resolveStoreRetentionSettings } from './store/retention.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
@@ -3061,6 +3062,20 @@ export class Daemon {
         this.dispatch(agentId, msg, integrationId, undefined, callMeta),
       handleStatusAction: (a) => this.commands.handleStatusAction(a),
       statusInfoForKey: (key) => this.statusInfoForKey(key),
+      slackCodeTasks: (channel, key, srcIntegrationIds) =>
+        readCodeTasks(
+          {
+            store: this.store,
+            admitted: () => this.commands.slackThreadSessions({ channel, thread: channel }, srcIntegrationIds),
+            open: (session) => this.sessionChatSurfaceOpen(session),
+            assistant: (agentId) => assistantModeOn(this.agents.get(agentId)),
+            runtime: (req) => this.listBackgroundTasks(req),
+            link: (sessionId) => this.sessionLink(sessionId, 'slack'),
+            mask: (agentId, value) => this.maskAgentSecrets(agentId, value)
+          },
+          channel,
+          key
+        ),
       handlePermissionChoice: (a) =>
         void this.routePermissionChoice(a).catch((err) => this.log.warn(`permission choice failed: ${formatErr(err)}`)),
       handleElicitChoice: async (a) => {

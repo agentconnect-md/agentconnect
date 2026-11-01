@@ -22,6 +22,13 @@ describe('conversation key codec', () => {
     expect(decodeConversationKey(id)).toEqual(key)
   })
 
+  it('round-trips a synthetic webchat A2A conversation', () => {
+    const key = { platform: 'webchat', tenantScope: null, channel: 'a2a:agent-lead', thread: 'agentcall:child' }
+    const encoded = encodeConversationKey(key)!
+    expect(encoded).not.toBe(key.channel)
+    expect(decodeConversationKey(encoded)).toEqual(key)
+  })
+
   it('never encodes singletons and rejects garbage', () => {
     expect(encodeConversationKey({ platform: 'hook', tenantScope: null, channel: null, thread: null })).toBeNull()
     expect(encodeConversationKey({ platform: 'slack', tenantScope: null, channel: 'C1', thread: null })).toBeNull()

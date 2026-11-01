@@ -26,6 +26,15 @@ function fakeDaemonEntry(root: string): string {
   return p
 }
 
+/** Whether the lock names `pid` — the exact check the exit-time probe makes. */
+function lockHolds(lock: string, pid: number | undefined): boolean {
+  try {
+    return Number.parseInt(readFileSync(lock, 'utf8').trim(), 10) === pid
+  } catch {
+    return false
+  }
+}
+
 async function waitFor(cond: () => boolean, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -52,7 +61,9 @@ describe('spawnDaemonViaLoginShell', () => {
         readyTimeoutMs: 5000
       }
     )
-    expect(await waitFor(() => existsSync(lock), 5000)).toBe(true)
+    // The pid, not the file: writeFileSync creates the lock before it writes it, so a file that
+    // merely exists can still be empty when the SIGTERM lands and the exit-time probe reads it.
+    expect(await waitFor(() => lockHolds(lock, child.pid), 5000)).toBe(true)
     child.kill('SIGTERM')
     const result = await done
     expect(result.ready).toBe(true)

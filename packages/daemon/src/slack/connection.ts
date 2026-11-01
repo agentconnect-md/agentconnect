@@ -43,6 +43,7 @@ import { markNotJoined } from '../platforms/not-joined.js'
 import { slackMessageUrl } from '../platforms/slack/permalink.js'
 import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../platforms/slack/standing-context.js'
 import { createCodeChannel } from '../platforms/slack/code-channel.js'
+import { CodeTasksViews, SLACK_TASKS_VIEW_KEY, type CodeTasksSnapshot } from '../platforms/slack/code-tasks.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
   STATUS_ACTION,
@@ -483,6 +484,8 @@ export interface SlackDeps {
   /** Every local session in one Slack conversation, newest first — the stop's fallback
    *  resolver when no displayed owner is recorded (e.g. right after a reconnect). */
   onThreadSessions?: (a: { channel: string; thread: string }) => Promise<string[]>
+  // The same scoped task snapshot the console reads, including background runtime work.
+  onCodeTasks?: (channel: string, sessionKey: string) => Promise<CodeTasksSnapshot | undefined>
   /** Release the delegated tasks holding this thread's indicator and return their keys, for a Stop to cancel. */
   onStopThreadTasks?: (a: { channel: string; thread: string }) => string[]
   /** A code channel was archived: the task it holds closes (auto-session-mode.md §6.8). */
@@ -1198,6 +1201,28 @@ export class SlackConnection implements PlatformConnection {
 
   /** A code channel's Plan tab canvas, its newest unwritten plan, and the writer draining it. */
   private readonly planCanvases = new Map<string, { canvasId?: string; pending?: string; running?: Promise<void> }>()
+
+  private readonly taskViews = new CodeTasksViews({
+    read: async (channel, key) => {
+      const info = await this.codeChannel(channel)
+      if (!info.code || !info.owners.includes(this.botUserId)) return undefined
+      return this.deps.onCodeTasks?.(channel, key)
+    },
+    publish: async (channel, blocks, signal) => {
+      await this.codeChannelApi(
+        'setView',
+        {
+          channel_id: channel,
+          type: 'block_kit',
+          view_key: SLACK_TASKS_VIEW_KEY,
+          name: 'Tasks',
+          blocks
+        },
+        signal
+      )
+    },
+    debug: (message) => this.deps.log?.debug(message)
+  })
 
   /** Mirror the plan into the code channel's Plan tab: a canvas the team comments on and only the agent edits. */
   writePlanCanvas(channel: string, markdown: string): void {
@@ -3596,6 +3621,7 @@ export class SlackConnection implements PlatformConnection {
 
   /** An archived code channel closes the task it holds, whoever archived it; closing twice is harmless. */
   codeChannelArchived(channel: string): void {
+    this.taskViews.stop(channel)
     this.deps.onPlaceClosed?.({ channel, thread: channel })
   }
 
@@ -3627,6 +3653,11 @@ export class SlackConnection implements PlatformConnection {
     options?: SlackStatusOptions
   ): Promise<boolean> {
     const key = `${channel}:${threadTs}`
+    if (threadTs === channel && this.deps.onCodeTasks) {
+      if (status === 'closed') this.taskViews.stop(channel)
+      else if (status === 'active') this.taskViews.idle(channel)
+      else if (options?.sessionKey) this.taskViews.watch(channel, options.sessionKey)
+    }
     // A waiting session keeps the identity of the agent that is waiting, like a working one.
     const owned = (status === 'processing' || status === 'suspended') && !this.statusIdentityUnsupported
     const username = owned ? options?.username?.trim() : undefined
@@ -3688,6 +3719,7 @@ export class SlackConnection implements PlatformConnection {
   }
 
   async stop(): Promise<void> {
+    this.taskViews.stop()
     for (const key of [...this.owedStops.keys()]) this.forgetOwedStop(key)
     await this.app.stop()
   }

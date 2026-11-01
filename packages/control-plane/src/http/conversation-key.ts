@@ -3,8 +3,8 @@ import type { ConversationKey } from '../persistence/ports.js'
 /**
  * Conversation key codec (merged-conversation-view.md §5.1).
  *
- * - Webchat: the bare conversation id (a CP-minted UUID; the session row's
- *   `channel` == `thread` == the conversation id).
+ * - Webchat with a CP-minted UUID channel: the bare conversation id.
+ *   Synthetic webchat channels use the four-part form below.
  * - Everything else: base64url of `platform NUL tenantScope NUL channel NUL
  *   thread` — NUL can appear in none of the parts, and base64url keeps the key
  *   path/query safe.
@@ -17,7 +17,7 @@ const SEP = '\u0000'
 
 export function encodeConversationKey(key: ConversationKey): string | null {
   if (key.channel === null || key.thread === null) return null
-  if (key.platform === 'webchat') return key.channel
+  if (key.platform === 'webchat' && UUID_RE.test(key.channel)) return key.channel
   return Buffer.from([key.platform, key.tenantScope ?? '', key.channel, key.thread].join(SEP), 'utf8').toString(
     'base64url'
   )

@@ -83,6 +83,55 @@ async function fixture(code = true, deps: Record<string, unknown> = {}) {
 }
 
 describe('Slack native surfaces', () => {
+  it('publishes Tasks for its owned code channel and stops reading on archive', async () => {
+    const onCodeTasks = vi.fn(async () => ({
+      tasks: [],
+      truncated: false,
+      runtime: { agentId: 'a1', sessionId: 's1', tracked: true, truncated: false, tasks: [] }
+    }))
+    const f = await fixture(true, { onCodeTasks })
+    try {
+      await f.conn.setStatus('C1', 'C1', 'Working', { sessionKey: 'key' })
+      await vi.waitFor(() =>
+        expect(f.api.setView).toHaveBeenCalledWith(
+          expect.objectContaining({
+            channel_id: 'C1',
+            type: 'block_kit',
+            view_key: 'agentconnect-tasks',
+            name: 'Tasks'
+          })
+        )
+      )
+      expect(onCodeTasks).toHaveBeenCalledWith('C1', 'key')
+      f.conn.codeChannelArchived('C1')
+      await f.conn.setStatus('C1', '1700.001', 'Working', { sessionKey: 'thread' })
+      expect(onCodeTasks).toHaveBeenCalledTimes(1)
+    } finally {
+      await f.conn.stop()
+    }
+  })
+
+  it('does not read Tasks when another bot owns the code channel', async () => {
+    const onCodeTasks = vi.fn()
+    const f = await fixture(true, { onCodeTasks })
+    f.info.mockResolvedValue({
+      channel: {
+        properties: {
+          record_channel: { record_type: 'agent_channel' },
+          agent_session: { encoded_agent_bot_user_ids: ['U_OTHER'] }
+        }
+      }
+    })
+    try {
+      await f.conn.setStatus('C1', 'C1', 'Working', { sessionKey: 'key' })
+      await f.conn.setStatus('C1', 'C1', '')
+      expect(onCodeTasks).not.toHaveBeenCalled()
+      expect(f.api.setView).not.toHaveBeenCalled()
+    } finally {
+      await f.conn.stop()
+    }
+  })
+
   it('keeps header-free controls and informational links intact across usage and tool updates', async () => {
     const f = await fixture()
     let items: { key: string; label: string; icon?: string; item_type?: string }[] = [
