@@ -3581,7 +3581,7 @@ and write is judged by that class. A channel of members stays one batch, as toda
 message costs one turn of its own. A read judged by one named message inside a mixed batch is not
 taken: the result would sit in a context that answers other people's messages too.
 
-**As shipped** (2026-11-01, #PRNUM). Choices the text above leaves open:
+**As shipped** (2026-11-01, #3543). Choices the text above leaves open:
 
 - **Today was narrower than it says.** A coordinator marks its messages headless so that it speaks
   only through its outcomes, and the asker rule took a headless message for one no person sent:
@@ -4752,7 +4752,7 @@ conversation to the routing of a bot such an agent uses, is refused with 409
 them.
 
 **Eighty-second revision (2026-11-01)**: a coordinator batch is judged by every sender and cut by
-permission class (issue #3541, phase B, #PRNUM; §5.18 ③ "As shipped"). Its queued messages are
+permission class (issue #3541, phase B, #3543; §5.18 ③ "As shipped"). Its queued messages are
 folded into the turn's askers, so `postMessage` and `callAgent` from a turn that decides several
 people's messages are judged by all of them, and the queue is cut in arrival order where the next
 sender's class differs. Implementing it found that the starting point was narrower than §5.18 said:
