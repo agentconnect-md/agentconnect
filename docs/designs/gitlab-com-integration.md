@@ -1241,6 +1241,15 @@ integration surface:
 Each operation has an allowlisted endpoint and method. The broker does not
 expose an arbitrary path, GraphQL query, request body, or bearer token.
 
+The `gitlab_effect` lease carries the clamp the broker enforces per entry. The
+workspace project earns `write` from a write workspace and `comment` from a
+read one. Another project earns the tier of the agent's explicit additional
+authorization on it, the same authority the Git plane honors (§13.1); the
+grant has already set the agent account's project role to match (§8.3). An
+enabled gitlab hook on the project raises that to at least `comment`, and is
+enough alone for `comment`; a live follow-up watch alone earns `read`.
+Anything else is refused.
+
 This broker surface is new machinery, not an existing seam: today's GitHub
 equivalents are the capability-clamped CLI token plus exactly two structured
 tools (`submitGithubReview` and `replyGithubReviewThreads`). GitLab builds the

@@ -53,7 +53,7 @@ export class GitlabGitcredService {
     return this.effectGrant(orgId, agentId, projectId, 'read')
   }
 
-  /** §14.2 broker effect lease: the same never-agent-visible effect PAT, authorized by the agent's GitLab workspace binding or an enabled gitlab hook (§13.1). */
+  /** §14.2 broker effect lease: the same never-agent-visible effect PAT, authorized by the agent's GitLab workspace, an explicit additional grant, or an enabled gitlab hook (§13.1). */
   async grantForBrokerEffect(
     agent: AgentRecord,
     projectId: bigint,
@@ -67,17 +67,26 @@ export class GitlabGitcredService {
       agent.workspaceRepoId === projectId
         ? agent.workspace.credential
         : undefined
-    if (credential === undefined && !hookAuthorized && !watchAuthorized) {
+    const grant =
+      credential === undefined
+        ? (await this.deps.repoAuths.listForAgent(agent.id)).find(
+            (row) => row.provider === 'gitlab' && row.repoId === projectId
+          )
+        : undefined
+    if (credential === undefined && grant === undefined && !hookAuthorized && !watchAuthorized) {
       throw new GitCredDeniedError('the agent is not authorized for that gitlab project', 'SCOPE_DENIED', false)
     }
-    // The clamp the daemon broker enforces per operation (§13.1): only a write workspace earns full
-    // effect authority; a read workspace or hook-only authorization stays comment-level, and a watch alone reads.
+    // The broker's per-operation clamp (§13.1): a workspace earns write or comment; a grant keeps its tier, a hook lifts to comment, a watch reads.
     const access =
-      credential !== undefined && credential.access !== 'read'
-        ? 'write'
-        : credential !== undefined || hookAuthorized
-          ? 'comment'
-          : 'read'
+      credential !== undefined
+        ? credential.access !== 'read'
+          ? 'write'
+          : 'comment'
+        : grant?.access === 'write'
+          ? 'write'
+          : hookAuthorized || grant?.access === 'comment'
+            ? 'comment'
+            : 'read'
     return this.effectGrant(agent.orgId, agent.id, projectId, access)
   }
 
