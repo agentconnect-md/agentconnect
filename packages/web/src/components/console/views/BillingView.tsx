@@ -44,7 +44,7 @@ import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { fetchAgents } from '@/lib/api'
 import { agentLabel, type Agent } from '@/lib/data'
-import { sumAmounts } from '@/lib/amount'
+import { byAmountDesc, scaleAmount, sumAmounts } from '@/lib/amount'
 import { useOrgs } from '@/lib/org-context'
 import { SEG_FILL, tickInterval } from '@/lib/spend-chart'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -104,11 +104,12 @@ export function rowAttribution(
   agentById: Map<string, Agent>
 ): TxAgentChip[] {
   if (!parts?.length) return []
-  const named: { chip: TxAgentChip; value: number }[] = []
+  const named: { chip: TxAgentChip; value: bigint }[] = []
   const withheld: string[] = []
   for (const part of parts) {
-    const value = Number(part.amount)
-    if (!Number.isFinite(value) || value === 0) continue
+    // Exact scaled value, never a float: past 2^53 a float calls distinct amounts equal and misorders them.
+    const value = scaleAmount(part.amount)
+    if (value === 0n) continue
     // Fails CLOSED: an id the roster cannot resolve (unloaded, errored, or restricted) is withheld.
     const agent = agentById.get(part.agentId)
     // The id never enters a chip it cannot name — `key` included, so it cannot leak through a
@@ -116,7 +117,7 @@ export function rowAttribution(
     if (agent) named.push({ chip: { key: part.agentId, agent, amount: part.amount }, value })
     else withheld.push(part.amount)
   }
-  named.sort((a, b) => b.value - a.value)
+  named.sort((a, b) => (b.value > a.value ? 1 : b.value < a.value ? -1 : 0))
   const chips = named.map(({ chip }) => chip)
   if (withheld.length) chips.push({ key: 'withheld', amount: sumAmounts(withheld) })
   return chips
@@ -164,10 +165,10 @@ export function groupUsage(
   }
   return [...groups].map(([key, g]) => {
     const agents = [...g.agents].map(([k, s]) => ({ key: k, agent: s.agent, amount: sumAmounts(s.amounts) }))
-    const named = agents.filter((c) => c.agent).sort((a, b) => Number(b.amount) - Number(a.amount))
+    const named = agents.filter((c) => c.agent).sort((a, b) => byAmountDesc(a.amount, b.amount))
     const models = [...g.models]
       .map(([model, amounts]) => ({ model, amount: sumAmounts(amounts) }))
-      .sort((a, b) => Number(b.amount) - Number(a.amount))
+      .sort((a, b) => byAmountDesc(a.amount, b.amount))
     return {
       key,
       txs: g.txs,
