@@ -947,9 +947,21 @@ describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
     } as Partial<AgentRecord>)
     expect((await service.grantForBrokerEffect(readWorkspace, PROJECT, false)).access).toBe('comment')
 
-    // Removing the grant leaves only hook or watch authority.
+    // Removing the grant leaves only hook or watch authority; the real hook row keeps the membership the converge would detach.
+    await prisma.hookDef.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        agentId: AGENT,
+        kind: 'gitlab',
+        name: 'second-hook',
+        sessionMode: 'perThread',
+        repoId: SECOND_PROJECT,
+        events: ['issues:*']
+      }
+    })
     const removed = await h.a.app.inject({ method: 'DELETE', url: `${ORG}/agents/${AGENT}/repos/${id}` })
     expect(removed.statusCode).toBe(204)
+    await h.settled()
     await expect(service.grantForBrokerEffect(agent, SECOND_PROJECT, false)).rejects.toMatchObject({
       code: 'SCOPE_DENIED'
     })
