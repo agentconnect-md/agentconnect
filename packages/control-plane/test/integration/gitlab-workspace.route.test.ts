@@ -901,6 +901,62 @@ describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
     expect((await service.grantForAgent(gitlabAgent(), SECOND_PROJECT)).access).toBe('write')
   })
 
+  it('serves broker effects on an authorized project under the grant’s tier, lifted by a hook (§14.2)', async () => {
+    const h = await harness()
+    await secondBinding(h)
+    const created = await h.a.app.inject(authorize({ provider: 'gitlab', projectId: SECOND_PROJECT.toString() }))
+    expect(created.statusCode).toBe(200)
+    const id = (created.json() as { id: string }).id
+    const raise = async (access: 'comment' | 'write') => {
+      const res = await h.a.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/agents/${AGENT}/repos/${id}`,
+        payload: { access }
+      })
+      expect(res.statusCode).toBe(200)
+    }
+    const service = credService(h.bindings)
+    const agent = gitlabAgent()
+
+    // A read or comment grant keeps its own tier; a hook lifts it to comment and a watch adds nothing past it.
+    expect((await service.grantForBrokerEffect(agent, SECOND_PROJECT, false)).access).toBe('read')
+    expect((await service.grantForBrokerEffect(agent, SECOND_PROJECT, false, true)).access).toBe('read')
+    expect((await service.grantForBrokerEffect(agent, SECOND_PROJECT, true)).access).toBe('comment')
+    await raise('comment')
+    expect((await service.grantForBrokerEffect(agent, SECOND_PROJECT, false)).access).toBe('comment')
+    expect((await service.grantForBrokerEffect(agent, SECOND_PROJECT, false, true)).access).toBe('comment')
+    expect((await service.grantForBrokerEffect(agent, SECOND_PROJECT, true)).access).toBe('comment')
+    // A write grant authorizes write effects with or without a hook, matching its Git-plane clamp.
+    await raise('write')
+    expect(await service.grantForBrokerEffect(agent, SECOND_PROJECT, false)).toMatchObject({
+      access: 'write',
+      provider: 'gitlab',
+      externalRepoId: SECOND_PROJECT.toString(),
+      repoFullName: 'example-group/example-second'
+    })
+    expect((await service.grantForBrokerEffect(agent, SECOND_PROJECT, true)).access).toBe('write')
+
+    // The workspace project keeps the workspace's own clamp.
+    expect((await service.grantForBrokerEffect(agent, PROJECT, false)).access).toBe('write')
+    const readWorkspace = gitlabAgent({
+      workspace: {
+        mode: 'git',
+        gitRepo: 'https://gitlab.com/example-group/example-project',
+        credential: { provider: 'gitlab', access: 'read' }
+      }
+    } as Partial<AgentRecord>)
+    expect((await service.grantForBrokerEffect(readWorkspace, PROJECT, false)).access).toBe('comment')
+
+    // Removing the grant leaves only hook or watch authority.
+    const removed = await h.a.app.inject({ method: 'DELETE', url: `${ORG}/agents/${AGENT}/repos/${id}` })
+    expect(removed.statusCode).toBe(204)
+    await expect(service.grantForBrokerEffect(agent, SECOND_PROJECT, false)).rejects.toMatchObject({
+      code: 'SCOPE_DENIED'
+    })
+    expect((await service.grantForBrokerEffect(agent, SECOND_PROJECT, true)).access).toBe('comment')
+    expect((await service.grantForBrokerEffect(agent, SECOND_PROJECT, false, true)).access).toBe('read')
+  })
+
   it('a stale raise that loses to a higher stored tier leaves the account at that tier’s role', async () => {
     const h = await harness()
     await secondBinding(h)

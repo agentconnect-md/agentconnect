@@ -57,8 +57,7 @@ export const GitCredRequest = z.object({
   // explicitly lets the CP apply the hook authorization instead of incorrectly
   // clamping the comment token to the workspace contents gitAccess.
   // gitlab_hook_reply is the §14.1 twin: the note poster's effect lease, gated by an enabled gitlab hook.
-  // gitlab_effect is the §14.2 broker lease: the same never-agent-visible effect PAT, authorized by the
-  // agent's GitLab workspace binding OR an enabled gitlab hook, and clamped by the grant's echoed access.
+  // gitlab_effect is the §14.2 broker lease: the never-agent-visible effect PAT, authorized by workspace, explicit grant, hook or watch.
   // gitea_hook_reply and gitea_effect are the Gitea twins (gitea-integration.md §10.1, §10.2):
   // one connection token serves both, so the helper/broker split of the GitLab arm does not apply.
   // A new value here is frame-fatal to an older CP (§17.3): name it only after GITLAB_EFFECT_V1_FEATURE
