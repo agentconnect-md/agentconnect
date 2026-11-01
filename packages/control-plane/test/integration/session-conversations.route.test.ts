@@ -272,6 +272,67 @@ describe('GET /sessions — grouped conversations', () => {
     expect(invalid.statusCode).toBe(400)
   })
 
+  it('resolves a synthetic A2A child for its parent owner and hides it from another member', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON })
+    const conversationId = 'c5c5c5c5-cccc-4ccc-8ccc-cccccccccccc'
+    await new PgWebchatConversationRepo(prisma).create({
+      conversationId,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(AGENT_A),
+      userId: DEFAULT_OWNER_ID
+    })
+    await reportSession({
+      sessionId: 'sess-parent',
+      agentId: AGENT_A,
+      phase: 'start',
+      platform: 'webchat',
+      channel: conversationId,
+      thread: `webchat:${conversationId}`,
+      ts: new Date().toISOString()
+    })
+    const channel = `a2a:${AGENT_A}`
+    const thread = 'agentcall:child'
+    await reportSession({
+      sessionId: 'sess-child',
+      parentSessionId: 'sess-parent',
+      agentId: AGENT_B,
+      phase: 'start',
+      platform: 'webchat',
+      channel,
+      thread,
+      ts: new Date().toISOString()
+    })
+    const child = await prisma.sessionMeta.findUniqueOrThrow({ where: { id: 'sess-child' } })
+    expect(child.visibility).toBe('private')
+    expect(child.ownerIdentity).toBe(`user:${DEFAULT_OWNER_ID}`)
+
+    const key = encodeConversationKey({ platform: 'webchat', tenantScope: null, channel, thread })!
+    running = buildHttpApp(prisma)
+    const owner = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?conversationKey=${encodeURIComponent(key)}`
+    })
+    expect(owner.statusCode).toBe(200)
+    expect((owner.json() as ConversationsBody).conversations[0]!.sessions.map((row) => row.sessionId)).toEqual([
+      'sess-child'
+    ])
+
+    const stranger = await collaboratorApp()
+    try {
+      const denied = await stranger.app.inject({
+        method: 'GET',
+        url: `${ORG}/sessions?conversationKey=${encodeURIComponent(key)}`
+      })
+      expect(denied.statusCode).toBe(200)
+      expect((denied.json() as ConversationsBody).conversations).toEqual([])
+      expect((await stranger.app.inject({ method: 'GET', url: `${ORG}/sessions/sess-child` })).statusCode).toBe(404)
+    } finally {
+      await stranger.close()
+    }
+  })
+
   it("keeps a webchat conversation's primary as its representative whoever started or replied last", async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })

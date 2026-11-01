@@ -23,4 +23,11 @@ describe('conversation key (browser port)', () => {
     expect(encodeConversationKey({ platform: 'slack', tenantScope: null, channel: null, thread: 'T' })).toBeNull()
     expect(encodeConversationKey({ platform: 'slack', tenantScope: null, channel: 'C', thread: null })).toBeNull()
   })
+
+  it('encodes a synthetic webchat A2A conversation as a four-part key', () => {
+    const key = { platform: 'webchat', tenantScope: null, channel: 'a2a:agent-lead', thread: 'agentcall:child' }
+    expect(encodeConversationKey(key)).toBe(
+      Buffer.from(['webchat', '', key.channel, key.thread].join('\u0000'), 'utf8').toString('base64url')
+    )
+  })
 })
