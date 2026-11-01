@@ -15,7 +15,6 @@ export function parseCsv(source, { headers = true } = {}) {
     row = []
     field = ''
     state = 'start'
-    rowLine = line + 1
   }
 
   for (let i = 0; i < input.length; i++) {
@@ -46,7 +45,7 @@ export function parseCsv(source, { headers = true } = {}) {
       state = 'start'
     } else if (newline) {
       if (char === '\r' && input[i + 1] === '\n') i++
-      finishRow()
+      if (row.length || field || state !== 'start') finishRow()
       line++
       rowLine = line
     } else if (char === '"') {

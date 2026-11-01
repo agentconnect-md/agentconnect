@@ -34,3 +34,13 @@ test('handles BOM, empty values, and a trailing newline', () => {
   assert.deepEqual(parseCsv('\uFEFFname,value\nA,\n'), [{ name: 'A', value: '' }])
   assert.deepEqual(parseCsv(''), [])
 })
+
+test('skips blank lines but preserves quoted empty fields and source line numbers', () => {
+  assert.deepEqual(parseCsv('a,b\n1,2\n\n3,4\n\n'), [
+    { a: '1', b: '2' },
+    { a: '3', b: '4' }
+  ])
+  assert.deepEqual(parseCsv('a\n\n""\n'), [{ a: '' }])
+  assert.deepEqual(parseCsv('a\n\n1', { headers: false }), [['a'], ['1']])
+  assert.throws(() => parseCsv('a,b\n1,2\n\n3'), /Line 4: expected 2 columns, found 1/)
+})
