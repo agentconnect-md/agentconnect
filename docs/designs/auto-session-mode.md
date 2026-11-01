@@ -211,7 +211,7 @@ A message that mentions the agent and has no outcome when the turn ends (a one-m
 When the coordinator's turn fails or times out:
 
 - A message that mentions the agent opens a threaded task directly, as Per thread would, in the
-  message's thread: a fallback task holds no channel (§6.8).
+  message's thread: a fallback task holds no channel (§6.8; not enforced yet, see its "As shipped").
 - Any other message stays silent.
 
 ### 4.6 Usage
@@ -465,8 +465,8 @@ place; a channel is a workspace the task earns.
 - **Fallback.** When the installation lacks code channels, creation fails, or the sender may not make a
   channel, the task stays in its threads; nothing beyond the tool's own answer is shown.
 - **Not here.** A background task (`delegateTask` without a `messageId`) never holds a channel, and
-  neither does a fallback task (§4.5) or a thread session adopted on a switch into `auto` (§3.5). The
-  coordinator asking for a channel on `delegateTask` (a `place` parameter) is not done: the task that
+  neither does a fallback task (§4.5; not enforced yet, see "As shipped") or a thread session adopted
+  on a switch into `auto` (§3.5). The coordinator asking for a channel on `delegateTask` (a `place` parameter) is not done: the task that
   has the work decides.
 
 **As shipped** (2026-11-02, #3567). Choices the text above leaves open:

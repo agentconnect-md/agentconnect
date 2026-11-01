@@ -115,6 +115,12 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
 - **Loop breaker** (`loop-breaker-design.md`): bot-to-bot and agent-to-agent chains must terminate.
 - **Decisions and triggers** (`decisions.md`, `webhook-triggers-and-github-events.md`): who may summon
   an agent, maintainer gates on external PRs/issues, and the prompt boundary around untrusted event text.
+- **A channel a task holds** (`auto-session-mode.md` §6.8): a Slack code channel an Auto coordinator's
+  task made is attached to that task alone, and every message there keys on the task's session in its
+  origin conversation. It is never a place of its own: no coordinator, no long session, no
+  getting-to-know task and no join introduction (`heldByTask`, `gettingToKnowPlaceRefusal`
+  `task-workspace`). Routing, commands, steering and the run report must not let a message in the
+  channel reach another session, another task, or a turn answering in the origin thread.
 
 ## AHP boundaries to audit before public rollout
 
