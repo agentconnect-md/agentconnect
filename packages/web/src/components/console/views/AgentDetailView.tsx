@@ -219,7 +219,7 @@ function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 
   )
 }
 
-// One integration's state pill: a revoked credential, then a rejected one, then whether the agent itself is served.
+// One integration's warning pill: a revoked credential, then a rejected one, then an unserved agent; nothing while healthy.
 function IntegrationStatePill({
   integration,
   agentOffline,
@@ -255,12 +255,7 @@ function IntegrationStatePill({
       </span>
     )
   }
-  return (
-    <span className={`${shape} bg-(--brand-soft) text-(--brand-soft-text)`}>
-      <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-      {t('integrations.connected')}
-    </span>
-  )
+  return null
 }
 
 // One row's settings dialog: the label filter on every thread row, the two review axes on a change-proposal row.
@@ -2300,10 +2295,6 @@ function AgentDetail() {
                             <span className="font-sans text-[13.5px] font-semibold leading-normal">
                               {t('integrations.github')}
                             </span>
-                            <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-                              <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                              {t('integrations.connected')}
-                            </span>
                             {githubAppSlug && (
                               <span className="min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
                                 {t.rich('integrations.githubVia', {
@@ -2481,10 +2472,6 @@ function AgentDetail() {
                             <span className="font-sans text-[13.5px] font-semibold leading-normal">
                               {t('integrations.gitlab')}
                             </span>
-                            <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-                              <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                              {t('integrations.connected')}
-                            </span>
                           </div>
                           {gitlabInstanceUrl && (
                             <div className="mono mt-[3px] text-[11.5px] font-normal text-(--text-tertiary)">
@@ -2634,10 +2621,6 @@ function AgentDetail() {
                           <div className="flex items-center gap-2">
                             <span className="font-sans text-[13.5px] font-semibold leading-normal">
                               {t('integrations.gitea')}
-                            </span>
-                            <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-                              <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                              {t('integrations.connected')}
                             </span>
                           </div>
                           {giteaInstanceUrl && (

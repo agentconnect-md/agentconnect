@@ -1761,7 +1761,28 @@
       "suspended": "suspended",
       "needsUpdate": "needs update",
       "permissionsNeedUpdate": "This installation’s GitHub permissions need updating before all features will work.",
-      "updatePermissions": "Update permissions"
+      "updatePermissions": "Update permissions",
+      "orgApps": {
+        "free": "free",
+        "usedBy": "used by {agent}",
+        "inUse": "in use",
+        "notInstalled": "not installed",
+        "more": "More",
+        "delete": "Delete App…",
+        "deleteTitle": "Delete GitHub App",
+        "deleteBody": "Remove <slug></slug> from this organization? Its key and installations are forgotten here; the App stays on GitHub until you delete it there.",
+        "close": "Close",
+        "cancel": "Cancel",
+        "deleting": "Deleting…",
+        "deleteConfirm": "Delete",
+        "noInstallations": "Not installed on any account yet."
+      },
+      "appColumn": "App",
+      "installationsColumn": "Installations",
+      "builtIn": "built-in",
+      "expand": "Show installations",
+      "collapse": "Hide installations",
+      "installationCount": "{count, plural, one {# installation} other {# installations}}"
     },
     "codeHostActions": {
       "addRepository": "Add repository",
@@ -3044,7 +3065,6 @@
         "title": "Integrations",
         "add": "Add",
         "addIntegration": "Add integration",
-        "connected": "connected",
         "revoked": "revoked",
         "rejected": "rejected",
         "offline": "offline",

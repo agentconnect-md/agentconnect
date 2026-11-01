@@ -205,7 +205,7 @@ export default function IntegrationsView() {
   const { me } = useProfile()
   const { myRole } = useOrgs()
   const { openModal } = useModal()
-  const { bots } = useConsoleData()
+  const { bots, getAgent } = useConsoleData()
   const reconnectOpened = useRef<string | null>(null)
   const isOwner = myRole === 'owner'
   const canWrite = myRole !== 'viewer' // the CP denies viewer writes; hide the controls too
@@ -242,7 +242,14 @@ export default function IntegrationsView() {
       </Section>
 
       <Section label={t('codeHosts')}>
-        <GithubCard canWrite={canWrite} isOwner={isOwner} />
+        <GithubCard
+          canWrite={canWrite}
+          isOwner={isOwner}
+          agentNameOf={(id) => {
+            const agent = getAgent(id)
+            return agent ? (agent.displayName ?? agent.name) : undefined
+          }}
+        />
         {/* Cards own no margin here (see Section) — every card after the first supplies its own gap. */}
         <div className="mt-4">
           <GitlabCard canWrite={canWrite} />

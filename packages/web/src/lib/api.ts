@@ -6630,6 +6630,17 @@ export async function fetchGithubApps(orgId?: string): Promise<GithubOrgAppDto[]
   }
 }
 
+/** Re-pulls an organization App's installations from GitHub. */
+export async function syncGithubApp(appId: string): Promise<void> {
+  await apiPost(`${orgBase()}/github/apps/${encodeURIComponent(appId)}/sync`, {})
+  invalidateGithubRepoRosterCache()
+}
+
+/** Forgets a free organization App and its key; one an agent uses, or with a Check still to close, is refused (409). */
+export async function deleteGithubApp(appId: string): Promise<void> {
+  await apiDelete<void>(`${orgBase()}/github/apps/${encodeURIComponent(appId)}`)
+}
+
 /** One thing the agent works on through GitHub, and whether an App reaches it. */
 export interface GithubAppCoverageItem {
   target: string // `owner/repo`, or an account login
