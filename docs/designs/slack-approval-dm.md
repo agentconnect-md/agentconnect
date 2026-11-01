@@ -110,13 +110,20 @@ The rungs, in order (from the issue discussion):
    passes both gates wins; ties break deterministically (stable audience
    order) so retries pick the same person.
 4. **Agent creator** — `Agent.createdByUserId`.
+5. **Any linked editor** — only when rungs 1–4 hit on none of the offered
+   integrations: one editor linked there, organization owners first, then by
+   join date and user id, walking the integrations in the order offered.
+   Without it, a request asked by someone who may not answer it reaches nobody
+   when the agent is `org`-visible and has no creator who still edits it, though
+   editors are linked.
 
 Authority and notification preference are separate. Organization owners pass
 `canEdit` even when absent from `sharedWith`, so an owner can be selected as
-the requester, session owner, or authorized creator. The role alone adds no
-recipient rung and never displaces an explicitly selected member at rung 3.
-Do not add owners to `sharedWith` or broadcast approvals to them. Click-time
-verification reuses the same live `canEdit` decision and linked-identity check.
+the requester, session owner, or authorized creator, and owners come first
+at rung 5. The role never displaces a rung 1–4 hit, including an explicitly
+selected member at rung 3. Exactly one person is chosen; do not add owners to
+`sharedWith` or broadcast approvals to them. Click-time verification reuses the
+same live `canEdit` decision and linked-identity check.
 
 If no rung produces a target, behavior is **exactly today's**: the chat
 notice plus the console queue. Resolution failing can never fail, delay, or
@@ -204,7 +211,8 @@ rung whose candidate is a Slack id (rung 1; rung 2 for chat-triggered
 sessions) — is skipped rather than fanned out, keeping the fail-closed
 default of no DM. Rungs whose candidate is already a console user (rung 2
 for `user:<id>` owners; rung 4, the creator) are genuine single lookups and
-always run.
+always run. Over the cap, rung 5 looks up only organization owners, one at a
+time.
 
 ### 4.3 Degradation
 
