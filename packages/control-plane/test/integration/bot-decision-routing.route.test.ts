@@ -661,6 +661,34 @@ describe('the router persistence invariants', () => {
   })
 })
 
+// assistant-mode.md §5.18 ①: routing may hand a conversation to any agent using the bot, so none of them may be in assistant mode.
+describe('Assistant mode on a shared bot', () => {
+  it('refuses to add a conversation while an agent using the bot is in assistant mode, and never refuses a removal', async () => {
+    const { botId, a, b } = await seedBot()
+    const { app } = appWith()
+    const decisionId = await createDecision(app)
+    const config = routingConfig(decisionId, a.agentId, b.agentId)
+    expect((await put(app, botId, { config, channelIds: ['C1'], removals: [] })).statusCode).toBe(200)
+    await prisma.agent.update({ where: { id: b.agentId }, data: { assistantMode: { enabled: true } } })
+
+    const refused = await put(app, botId, { config, channelIds: ['C1', 'C2'], removals: [] })
+    expect(refused.statusCode, refused.body).toBe(409)
+    expect(refused.json().code).toBe('SESSION_MODE_CONFLICT')
+    for (const row of await rowsOf('C2')) expect(row).toMatchObject({ trigger: 'any', decisionBinding: null })
+
+    // The conversation already routed stays until an editor removes it, and the removal is taken.
+    const paused = await put(app, botId, { config: { ...config, enabled: false }, channelIds: ['C1'], removals: [] })
+    expect(paused.statusCode, paused.body).toBe(200)
+    const removed = await put(app, botId, {
+      config,
+      channelIds: [],
+      removals: [{ channelId: 'C1', settings: { trigger: 'mention' } }]
+    })
+    expect(removed.statusCode, removed.body).toBe(200)
+    for (const row of await rowsOf('C1')) expect(row).toMatchObject({ trigger: 'mention', decisionBinding: null })
+  })
+})
+
 // auto-session-mode.md §3.3: the coordinator decides every message of an Auto conversation, so routing never holds one.
 describe('Auto conversations on a shared bot', () => {
   it('refuses to add an Auto conversation to routing, in the route and in the save itself', async () => {

@@ -3372,7 +3372,8 @@
           "runtime-unset": "Choose a runtime first.",
           "runtime-not-admitted": "This runtime is not supported yet: it must be able to turn off its own memory and resume a session after a restart.",
           "memory-provider": "Memory must be managed.",
-          "store-not-shared": "Every daemon in this agent’s group must share one store."
+          "store-not-shared": "Every daemon in this agent’s group must share one store.",
+          "routing": "Stop using By decision or shared-bot routing in these conversations first: {names}."
         },
         "blockers": {
           "invalidLimit": "Each limit must be a whole number within its range."

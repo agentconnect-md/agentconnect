@@ -2501,7 +2501,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Check assistant mode admission',
           description:
-            'Reports whether the agent may switch assistant mode on as it stands, and every reason it may not: no runtime yet, a runtime outside the admission list, memory other than managed, or a daemon group whose members do not share one store. Switching it off is never refused.',
+            'Reports whether the agent may switch assistant mode on as it stands, and every reason it may not: no runtime yet, a runtime outside the admission list, memory other than managed, a daemon group whose members do not share one store, or a conversation that is By decision or in a shared bot’s routing (`routing`, with those conversations in `conversations`). Switching it off is never refused.',
           operationId: 'getAgentAssistantModeAdmission',
           params: IdParam,
           response: { 200: AssistantModeAdmissionDto, 404: ErrorDto }
@@ -2510,7 +2510,7 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const agent = await getOrgAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        return assistantModeAdmissionOf(deps.repos.memberSet, agent)
+        return assistantModeAdmissionOf(deps.repos, agent)
       }
     )
 
@@ -2952,22 +2952,24 @@ export function agentRoutes(deps: HttpDeps) {
           if (memoryError) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: memoryError })
           }
-          // The friendly admission refusal, with the placement's store check; the row-locked write re-checks the definition.
+          // The friendly admission refusal, with the store and routing checks; the row-locked write re-checks the definition.
           const targetRuntime = req.body.runtime ?? existing.runtime
           const changesDefinition =
             targetRuntime !== existing.runtime ||
             (targetMemory?.provider ?? 'managed') !== (existing.memory?.provider ?? 'managed')
           if (assistantModeEditNeedsAdmission(existing.assistantMode, targetAssistantMode, changesDefinition)) {
-            const admission = await assistantModeAdmissionOf(deps.repos.memberSet, {
-              ...existing,
-              runtime: targetRuntime,
-              memory: targetMemory
-            })
+            // Routing is checked on the switch-on alone: an agent already on keeps its existing rows (§5.18 ①).
+            const alreadyOn = existing.assistantMode?.enabled === true
+            const admission = await assistantModeAdmissionOf(
+              deps.repos,
+              { ...existing, runtime: targetRuntime, memory: targetMemory },
+              { routing: !alreadyOn }
+            )
             if (!admission.admitted) {
               return reply.code(409).send({
                 error: 'Conflict',
                 statusCode: 409,
-                message: assistantModeRefusalMessage(admission.refusals, existing.assistantMode?.enabled === true),
+                message: assistantModeRefusalMessage(admission.refusals, alreadyOn, admission.conversations),
                 code: ASSISTANT_MODE_NOT_ADMITTED
               })
             }

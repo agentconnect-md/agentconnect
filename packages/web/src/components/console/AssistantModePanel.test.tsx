@@ -11,8 +11,13 @@ type Row = { channelId: string; name: string; kind?: 'channel' | 'im' | 'mpim'; 
 
 const mocks = vi.hoisted(() => ({
   updateAgent: vi.fn(),
-  admission: { admitted: true, refusals: [] as string[] },
+  admission: { admitted: true, refusals: [] } as {
+    admitted: boolean
+    refusals: string[]
+    conversations?: Array<{ integrationId: string; channelId: string; name: string | null }>
+  },
   responsible: vi.fn(async (): Promise<{ userId: string | null }> => ({ userId: 'usr_1' })),
+  fetchAdmission: vi.fn(),
   channels: [] as Row[]
 }))
 
@@ -50,7 +55,7 @@ vi.mock('@/lib/data-context', () => ({
 }))
 
 vi.mock('@/lib/api', () => ({
-  fetchAgentAssistantModeAdmission: vi.fn(async () => mocks.admission),
+  fetchAgentAssistantModeAdmission: mocks.fetchAdmission,
   fetchAgentAssistantResponsibleUser: mocks.responsible,
   memberDisplayName: (m: { name: string | null }) => m.name ?? 'Member'
 }))
@@ -65,6 +70,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 beforeEach(() => {
   mocks.updateAgent.mockReset().mockResolvedValue(undefined)
   mocks.admission = { admitted: true, refusals: [] }
+  mocks.fetchAdmission.mockReset().mockImplementation(async () => mocks.admission)
   mocks.responsible.mockReset().mockResolvedValue({ userId: 'usr_1' })
   mocks.channels = [
     { channelId: 'C1', name: 'general', trigger: 'off' },
@@ -142,6 +148,50 @@ describe('AssistantModePanel', () => {
     await clickButton(host, 'Edit')
     const toggle = host.querySelector<HTMLInputElement>('input[type="checkbox"]')
     expect(toggle?.disabled).toBe(true)
+  })
+
+  // assistant-mode.md §5.18 ①: the routing check names each conversation to change, by id where its name is unknown.
+  it('names the conversations the routing check refuses, and asks again once one leaves By decision', async () => {
+    mocks.channels = [
+      { channelId: 'C1', name: 'general', trigger: 'decision' },
+      { channelId: 'C2', name: 'random', trigger: 'mention' }
+    ]
+    mocks.admission = {
+      admitted: false,
+      refusals: ['routing'],
+      conversations: [
+        { integrationId: INTEGRATION, channelId: 'C1', name: 'general' },
+        { integrationId: INTEGRATION, channelId: 'C9', name: null }
+      ]
+    }
+    const host = await mount()
+    expect(host.querySelector('[data-assistant-mode-locked]')).toBeTruthy()
+    expect(host.querySelector('[data-assistant-mode-refusal="routing"]')?.textContent).toBe(
+      'Stop using By decision or shared-bot routing in these conversations first: general, C9.'
+    )
+    await clickButton(host, 'Edit')
+    expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true)
+
+    // An editor moves the conversation to Mention; the panel asks again and unlocks.
+    expect(mocks.fetchAdmission).toHaveBeenCalledTimes(1)
+    mocks.channels = [{ ...mocks.channels[0]!, trigger: 'mention' }, mocks.channels[1]!]
+    mocks.admission = { admitted: true, refusals: [] }
+    await act(async () =>
+      root?.render(
+        <AssistantModePanel
+          agentId={AGENT}
+          canEdit
+          runtime="claude-acp"
+          memoryProvider="managed"
+          placement="daemon:edge"
+          permissionMode=""
+          askEveryTime={false}
+        />
+      )
+    )
+    expect(mocks.fetchAdmission).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('[data-assistant-mode-locked]')).toBeNull()
+    expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(false)
   })
 
   it('marks the mode Beta beside the card title and beside the switch, and nowhere else', async () => {

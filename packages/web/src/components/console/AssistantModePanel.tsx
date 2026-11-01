@@ -79,12 +79,17 @@ export function AssistantModePanel({
 }) {
   const t = useTranslations('Agents.detail.assistantMode')
   const tCommon = useTranslations('Common')
-  const { updateAgent, members } = useConsoleData()
+  const { updateAgent, members, integrations } = useConsoleData()
   const [admission, setAdmission] = useState<AssistantModeAdmission | null>(null)
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(() => assistantModeDraft(assistantMode))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The routing check reads the agent's By decision conversations, so changing one re-asks too.
+  const decisionConversations = integrations
+    .filter((i) => i.agentId === agentId)
+    .flatMap((i) => i.channels.filter((c) => c.trigger === 'decision').map((c) => `${i.id}:${c.channelId}`))
+    .join(',')
 
   useEffect(() => {
     let live = true
@@ -99,7 +104,7 @@ export function AssistantModePanel({
     return () => {
       live = false
     }
-  }, [agentId, runtime, memoryProvider, placement, assistantMode?.enabled])
+  }, [agentId, runtime, memoryProvider, placement, assistantMode?.enabled, decisionConversations])
 
   const enabled = assistantMode?.enabled === true
   const [responsibleUserId, setResponsibleUserId] = useState<string | null>(null)
@@ -135,7 +140,11 @@ export function AssistantModePanel({
   const responsible = members.find((m) => m.userId === responsibleUserId)
   const responsibleName = responsible ? memberDisplayName(responsible) : null
 
-  const refusalText = (refusal: AssistantModeRefusal) => t(`refusals.${refusal}`)
+  // The routing check names the conversations to change (assistant-mode.md §5.18 ①).
+  const refusalText = (refusal: AssistantModeRefusal) =>
+    refusal === 'routing'
+      ? t('refusals.routing', { names: (admission?.conversations ?? []).map((c) => c.name ?? c.channelId).join(', ') })
+      : t(`refusals.${refusal}`)
 
   const close = () => {
     if (saving) return

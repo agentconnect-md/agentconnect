@@ -7,12 +7,17 @@ import {
   assistantModePermissionModeOnEnable,
   type AgentMemoryBinding,
   type AssistantModeAdmission,
-  type AssistantModeRefusal
+  type AssistantModeRefusal,
+  type AssistantModeRoutedConversation
 } from '@agentconnect.md/protocol'
 import { canEdit } from '../authorization/policy.js'
+import type { AgentId, OrgId } from '../domain/ids.js'
+import { isRoutedChannel } from '../orchestrator/decisionBundle.js'
 import type {
   AgentRecord,
+  AgentRepo,
   BotRepo,
+  IntegrationChannelRepo,
   IntegrationRepo,
   MemberSetRepo,
   OrgMemberRecord,
@@ -45,12 +50,20 @@ const REFUSAL_MESSAGES: Record<AssistantModeRefusal, string> = {
   'runtime-not-admitted':
     'the runtime is not on the assistant mode admission list (its native memory must be able to turn off and its sessions must resume by id after a restart)',
   'memory-provider': 'memory must be managed',
-  'store-not-shared': 'every member of the agent’s daemon group must share one store'
+  'store-not-shared': 'every member of the agent’s daemon group must share one store',
+  routing: 'no conversation may be By decision or in a shared bot’s routing'
 }
 
 /** One sentence naming every refusal, for the API message; an edit to an agent already in the mode is told to turn it off first. */
-export function assistantModeRefusalMessage(refusals: readonly AssistantModeRefusal[], alreadyOn = false): string {
-  const reasons = refusals.map((r) => REFUSAL_MESSAGES[r]).join('; ')
+export function assistantModeRefusalMessage(
+  refusals: readonly AssistantModeRefusal[],
+  alreadyOn = false,
+  conversations: readonly AssistantModeRoutedConversation[] = []
+): string {
+  const named = conversations.map((c) => c.name ?? c.channelId).join(', ')
+  const reasons = refusals
+    .map((r) => (r === 'routing' && named ? `${REFUSAL_MESSAGES[r]} (change ${named} first)` : REFUSAL_MESSAGES[r]))
+    .join('; ')
   return alreadyOn
     ? `assistant mode is on, so this edit is refused: ${reasons}; turn assistant mode off first`
     : `assistant mode cannot be turned on: ${reasons}`
@@ -233,11 +246,52 @@ export async function assistantModeStoreRefusals(
   return shared ? [] : ['store-not-shared']
 }
 
-/** Every admission check for an agent as it stands. */
+/** The routing check (assistant-mode.md §4.1): the agent's By decision conversations, and its bots' routed ones it may be routed into. */
+export async function assistantModeRoutedConversations(
+  repos: {
+    integration: Pick<IntegrationRepo, 'listForAgent'>
+    integrationChannel: Pick<IntegrationChannelRepo, 'listForBot'>
+  },
+  agentId: AgentId
+): Promise<AssistantModeRoutedConversation[]> {
+  const found = new Map<string, AssistantModeRoutedConversation>()
+  for (const integration of await repos.integration.listForAgent(agentId)) {
+    for (const row of await repos.integrationChannel.listForBot(integration.botId)) {
+      if (row.trigger !== 'decision' || (row.integrationId !== integration.id && !isRoutedChannel(row))) continue
+      const key = `${integration.id}:${row.channelId}`
+      const seen = found.get(key)
+      if (!seen || (seen.name === null && row.name !== null))
+        found.set(key, { integrationId: integration.id, channelId: row.channelId, name: row.name })
+    }
+  }
+  return [...found.values()]
+}
+
+/** Whether any of a conversation's agents is in assistant mode, which keeps the conversation off By decision (§5.18 ①). */
+export async function anyAssistantModeAgent(
+  agents: Pick<AgentRepo, 'get'>,
+  orgId: OrgId,
+  agentIds: Iterable<AgentId>
+): Promise<boolean> {
+  for (const id of new Set(agentIds)) if ((await agents.get(orgId, id))?.assistantMode?.enabled === true) return true
+  return false
+}
+
+/** Every admission check for an agent as it stands; `routing: false` skips the check an agent already on is exempt from. */
 export async function assistantModeAdmissionOf(
-  memberSets: Pick<MemberSetRepo, 'get' | 'memberContentStoresOf'>,
-  agent: Pick<AgentRecord, 'runtime' | 'memory' | 'placementKind' | 'setId'>
+  repos: {
+    memberSet: Pick<MemberSetRepo, 'get' | 'memberContentStoresOf'>
+    integration: Pick<IntegrationRepo, 'listForAgent'>
+    integrationChannel: Pick<IntegrationChannelRepo, 'listForBot'>
+  },
+  agent: Pick<AgentRecord, 'id' | 'runtime' | 'memory' | 'placementKind' | 'setId'>,
+  opts: { routing?: boolean } = {}
 ): Promise<AssistantModeAdmission> {
-  const refusals = [...assistantModeDefinitionRefusals(agent), ...(await assistantModeStoreRefusals(memberSets, agent))]
-  return { admitted: refusals.length === 0, refusals }
+  const refusals = [
+    ...assistantModeDefinitionRefusals(agent),
+    ...(await assistantModeStoreRefusals(repos.memberSet, agent))
+  ]
+  const conversations = opts.routing === false ? [] : await assistantModeRoutedConversations(repos, agent.id)
+  if (conversations.length > 0) refusals.push('routing')
+  return { admitted: refusals.length === 0, refusals, ...(conversations.length > 0 ? { conversations } : {}) }
 }
