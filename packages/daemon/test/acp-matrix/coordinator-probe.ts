@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net'
 import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import { z } from 'zod'
 import type { AcpHost } from '../../src/acp/acp-host.js'
+import { renderWorkBoard, type BoardTask } from '../../src/assistant/work-board.js'
 import {
   coordinatorPrompt as shippedCoordinatorPrompt,
   coordinatorTools as shippedCoordinatorTools,
@@ -27,7 +28,11 @@ export const CO_IDS = {
   channelName: 'eng-platform',
   /** A member's private webchat conversation with the agent (auto-session-mode.md §10). */
   conversation: '0e7a1c52-5b2d-5d7e-9f3a-2c1b0d4e6f70',
-  checkoutTask: 'task-checkout-flake'
+  checkoutTask: 'task-checkout-flake',
+  /** Another public channel, whose open task the work board shows elsewhere (assistant-mode.md §5.18). */
+  otherChannel: 'C0EXAMPLE3',
+  otherChannelName: 'notify-service',
+  webhookTask: 'task-webhook-retry'
 } as const
 
 /** One channel-root message a coordinator turn decides on; `id` is the platform message id it names in its calls. */
@@ -65,6 +70,69 @@ const CHECKOUT_TASK: ProbeTask = {
     next: 'Merge after review, then watch main CI for a day.'
   },
   summaryUpdatedAt: '2026-10-29T09:40:00Z'
+}
+
+/** Another place's open task as the coordinator's `listTasks` lists it under `elsewhere`. */
+export interface ProbeElsewhereTask {
+  id: string
+  place: string
+  placeName: string
+  kind: 'delegated task'
+  title: string
+  status: string
+  lastActivity: string
+  summary: string
+  summaryAt: string
+  threads: Array<{ channel: string; thread: string; link: string }>
+}
+
+const WEBHOOK_TASK: ProbeElsewhereTask = {
+  id: CO_IDS.webhookTask,
+  place: `slack:${CO_IDS.otherChannel}`,
+  placeName: CO_IDS.otherChannelName,
+  kind: 'delegated task',
+  title: 'Add retry with backoff to the webhook sender',
+  status: 'running',
+  lastActivity: '2026-10-31T16:20:00Z',
+  summary:
+    'Scope: retry with exponential backoff for the webhook sender in services/notify, so 502s no longer drop events. ' +
+    'Status: PR #412 is open and CI is running. Next: merge once CI passes, then watch delivery errors for a day.',
+  summaryAt: '2026-10-31T16:20:00Z',
+  threads: [
+    {
+      channel: CO_IDS.otherChannel,
+      thread: '1700000000.000100',
+      link: `https://chat.example.test/archives/${CO_IDS.otherChannel}/p1700000000000100`
+    }
+  ]
+}
+
+/** The work board a scenario's coordinator opens with, rendered as the daemon renders it; none when nothing is open. */
+export function boardFor(scenario: Pick<CoordinatorScenario, 'tasks' | 'elsewhere' | 'webchat'>): string | undefined {
+  const channel = scenario.webchat ? CO_IDS.conversation : CO_IDS.channel
+  const here: BoardTask[] = scenario.tasks.map((task) => ({
+    id: task.taskId,
+    kind: 'delegated task',
+    title: task.title,
+    status: task.running ? 'running' : 'idle',
+    place: { platform: scenario.webchat ? 'webchat' : 'slack', channel },
+    changedAt: Date.parse(task.lastActive),
+    here: true,
+    sessions: []
+  }))
+  const elsewhere: BoardTask[] = (scenario.elsewhere ?? []).map((task) => ({
+    id: task.id,
+    kind: task.kind,
+    title: task.title,
+    status: task.status === 'running' ? 'running' : 'idle',
+    place: { platform: 'slack', channel: task.place.replace(/^slack:/, '') },
+    placeName: task.placeName,
+    changedAt: Date.parse(task.lastActivity),
+    here: false,
+    sessions: []
+  }))
+  const board = renderWorkBoard({ here, elsewhere }, new Map(scenario.tasks.map((task) => [task.taskId, task.owner])))
+  return board.empty ? undefined : board.text
 }
 
 /** The coordinator's tool surface, as the daemon ships it. */
@@ -138,6 +206,8 @@ export interface CoScope {
   messages: string[]
   reports?: string[]
   tasks: ProbeTask[]
+  /** Other places' open tasks the people asking may see. */
+  elsewhere?: ProbeElsewhereTask[]
 }
 
 /** Check one `sendMessage` call against the turn: its outcome, or the error text the model reads. */
@@ -205,7 +275,15 @@ function callTool(
   scope: CoScope,
   previous: CoRecordedCall[]
 ): { result: ToolResult; call: CoRecordedCall } {
-  if (name === 'listTasks') return { result: text({ tasks: scope.tasks }), call: { tool: name, args } }
+  if (name === 'listTasks')
+    return {
+      result: text({
+        here: scope.tasks,
+        elsewhere: scope.elsewhere ?? [],
+        note: 'Open tasks in the work board’s order. `here` are this conversation’s own; `elsewhere` are read only.'
+      }),
+      call: { tool: name, args }
+    }
   if (name !== 'sendMessage') {
     const error = `${name} is not available to the coordinator`
     return { result: text(error, true), call: { tool: name, args, error } }
@@ -297,6 +375,8 @@ export interface Expectation {
   taskId?: string
   /** A reply must contain this, case-insensitively. */
   mentions?: string
+  /** A reply must contain one of these, case-insensitively. */
+  mentionsAny?: string[]
   alternatives?: Array<'delegate' | 'route' | 'reply'>
 }
 
@@ -312,14 +392,18 @@ export type CoScenarioId =
   | 'batch-mixed'
   | 'batch-route-and-new'
   | 'report-reply'
+  | 'elsewhere-duplicate'
   | 'webchat-new-work'
   | 'webchat-status'
   | 'webchat-route'
+  | 'webchat-elsewhere-status'
 
 export interface CoordinatorScenario {
   id: CoScenarioId
   messages: ChannelMessage[]
   tasks: ProbeTask[]
+  /** Other places' open tasks on the work board and in `listTasks` (assistant-mode.md §5.18). */
+  elsewhere?: ProbeElsewhereTask[]
   expect: Record<string, Expectation>
   /** A member's webchat conversation: the person reads every text the turn writes (auto-session-mode.md §10). */
   webchat?: true
@@ -471,6 +555,26 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
     expect: { 'msg-1700001100.000100': { kind: 'reply', mentions: '4821' } }
   },
   {
+    // assistant-mode.md §5.18: a request for work another place already has open is pointed at that task, not delegated again.
+    id: 'elsewhere-duplicate',
+    tasks: [CHECKOUT_TASK],
+    elsewhere: [WEBHOOK_TASK],
+    messages: [
+      msg(
+        'msg-1700001200.000100',
+        CO_IDS.bob,
+        true,
+        'can you add retry with backoff to the webhook sender in services/notify? it drops events on 502s'
+      )
+    ],
+    expect: {
+      'msg-1700001200.000100': {
+        kind: 'reply',
+        mentionsAny: [CO_IDS.otherChannelName, 'p1700000000000100', CO_IDS.otherChannel]
+      }
+    }
+  },
+  {
     id: 'webchat-new-work',
     webchat: true,
     tasks: [],
@@ -500,6 +604,15 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
       )
     ],
     expect: { 'msg-8b3f4e5d-2c1a-4e9f-8d7c-3a4b5c6d7e8f': { kind: 'route', taskId: CO_IDS.checkoutTask } }
+  },
+  {
+    // assistant-mode.md §5.18: a status question about another place's work, answered from its Elsewhere line and listTasks.
+    id: 'webchat-elsewhere-status',
+    webchat: true,
+    tasks: [],
+    elsewhere: [WEBHOOK_TASK],
+    messages: [webMsg('msg-9c4a5f6e-3d2b-4fa0-9e8d-4b5c6d7e8f90', 'did the webhook retry land?')],
+    expect: { 'msg-9c4a5f6e-3d2b-4fa0-9e8d-4b5c6d7e8f90': { kind: 'reply', mentions: '412' } }
   }
 ]
 
@@ -537,6 +650,13 @@ export function judgeCoordinator(
       ) {
         degraded = true
         notes.push(`${message.id}: reply lacks "${expected.mentions}"`)
+      } else if (
+        outcome?.kind === 'reply' &&
+        expected.mentionsAny &&
+        !expected.mentionsAny.some((word) => outcome.text.toLowerCase().includes(word.toLowerCase()))
+      ) {
+        degraded = true
+        notes.push(`${message.id}: reply names none of ${expected.mentionsAny.join(', ')}`)
       }
     } else if (got !== 'ignore' && expected.alternatives?.includes(got)) {
       degraded = true
@@ -609,7 +729,8 @@ export async function runCoordinatorScenarios(input: {
       const scope: CoScope = {
         messages: scenario.messages.map((message) => message.id),
         reports: scenario.messages.filter((message) => message.report).map((message) => message.id),
-        tasks: scenario.tasks
+        tasks: scenario.tasks,
+        ...(scenario.elsewhere ? { elsewhere: scenario.elsewhere } : {})
       }
       const started = Date.now()
       let sessionId: string | undefined
@@ -631,8 +752,11 @@ export async function runCoordinatorScenarios(input: {
         // As the daemon runs a coordinator: in the runtime's read-only mode, without the tools that wait for an approver.
         const readOnly = readOnlyExtractionMode(host.permissionModeOptions(sessionId)?.modes ?? [])
         if (readOnly) await host.setSessionPermissionMode(sessionId, readOnly)
+        // As the daemon opens a coordinator turn: its standing instructions, the work board, then the batch.
+        const board = boardFor(scenario)
         const blocks = [
           ...(usesMeta ? [] : [{ type: 'text' as const, text: prompt }]),
+          ...(board ? [{ type: 'text' as const, text: board }] : []),
           { type: 'text' as const, text: renderBatch(scenario.messages, scenario.webchat === true) }
         ]
         tokens = (await support.withTimeout(host.prompt(sessionId, blocks), `${runtime}/coordinator ${scenario.id}`))

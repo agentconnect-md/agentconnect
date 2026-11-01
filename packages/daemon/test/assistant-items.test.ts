@@ -83,7 +83,8 @@ describe('follow-ups: create and read', () => {
       proposals: [],
       version: 1,
       createdAt: 1_000,
-      updatedAt: 1_000
+      updatedAt: 1_000,
+      changedAt: 1_000
     })
     expect(await s.assistantItems.get(AGENT, item.id)).toEqual(item)
     expect(await s.assistantItems.byTaskKey(AGENT, item.taskKey)).toEqual(item)

@@ -58,6 +58,7 @@ function placeWords(input: CoordinatorPromptInput) {
           `You coordinate the agent "${input.agentName}" in a private webchat conversation (${input.channelId}) ` +
           'with one person. Their messages are delivered to you, one per turn.',
         place: 'conversation',
+        taskLink: 'link',
         taskAnswers: 'on its own page, which the conversation links to',
         replyPosts: 'in the conversation',
         finalText:
@@ -70,6 +71,7 @@ function placeWords(input: CoordinatorPromptInput) {
           `${input.selfAddress ? ` Your ${input.platform} user is ${input.selfAddress}.` : ''} Channel messages are ` +
           'delivered to you, one or several per turn.',
         place: 'channel',
+        taskLink: 'thread link',
         taskAnswers: "in the message's thread",
         replyPosts: "in the message's thread",
         finalText: `Your final text is never shown to anyone. After your calls, end the turn with exactly ${NO_RESPONSE_SENTINEL}.`
@@ -86,9 +88,12 @@ const SEND_MESSAGE_DESCRIPTION =
   'thread, and "callAgent" asks the agent toAgent with message; its answer reaches you later as a report.'
 
 const LIST_TASKS_DESCRIPTION =
-  "List your open tasks: id, title, whether a thread is attached, owner, last activity, whether it is running, and the task's " +
-  'own summary (scope, status, next step) with when it was last updated. Use it to tell whether a message belongs to existing ' +
-  'work and to answer status questions.'
+  'List open work, the most recently changed first. "here" holds your own tasks in this conversation: taskId, title, ' +
+  "whether a thread is attached and its links, owner, last activity, whether it is running, and the task's own summary " +
+  '(scope, status, next step) with when it was last updated. "elsewhere" holds the open tasks of other conversations ' +
+  'the people asking may see, read only: place, title, status, summary and thread links. Each list holds at most 20; ' +
+  "pass a list's nextCursor, or the cursor a line of the work board names, as after to read on. Use it to tell " +
+  'whether a message belongs to work already open, here or elsewhere, and to answer status questions.'
 
 const str = (description: string) => ({ type: 'string', description })
 
@@ -125,7 +130,14 @@ export const COORDINATOR_SEND_MESSAGE_TOOL: ToolDescriptor = {
 export const COORDINATOR_LIST_TASKS_TOOL: ToolDescriptor = {
   name: 'listTasks',
   description: LIST_TASKS_DESCRIPTION,
-  inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false }
+  inputSchema: {
+    type: 'object',
+    properties: {
+      after: str('A nextCursor listTasks returned, or a cursor the work board names, to read on in that list.')
+    },
+    required: [],
+    additionalProperties: false
+  }
 }
 
 /** The coordinator's decision tools; memory tools join them in a daemon session (§5.4). */
@@ -135,6 +147,9 @@ export function coordinatorTools(): ToolDescriptor[] {
 
 // What the coordinator keeps for its place as assistant mode's long session: follow-ups, proposals and reminders (§3.4, §5.4).
 const PLACE_TOOLS = new Set(['followUp', 'getToKnow', 'propose', 'remind', 'listReminders', 'cancelReminder'])
+
+// Every agent's read of another of its conversations, judged by the batch's senders (assistant-mode.md §5.18 ④).
+const READ_TOOLS = new Set(['recall'])
 
 /** The place tools that act for one person's request, so in a batch each call names that person's message by `messageId`. */
 export const COORDINATOR_MESSAGE_TOOLS: ReadonlySet<string> = new Set(['followUp', 'getToKnow', 'remind'])
@@ -150,12 +165,16 @@ function placeTool(tool: ToolDescriptor): ToolDescriptor {
   }
 }
 
-/** A coordinator session's whole tool set: its decision tools, and the memory and place tools among the session's own. */
+/** A coordinator session's whole tool set: its decision tools, and the memory, `recall` and place tools among the session's own. */
 export function coordinatorSessionTools(tools: readonly ToolDescriptor[]): ToolDescriptor[] {
   return [
     ...coordinatorTools(),
     ...tools.flatMap((tool) =>
-      MEMORY_TOOL_ACCESS_MODES[tool.name] !== undefined ? [tool] : PLACE_TOOLS.has(tool.name) ? [placeTool(tool)] : []
+      MEMORY_TOOL_ACCESS_MODES[tool.name] !== undefined || READ_TOOLS.has(tool.name)
+        ? [tool]
+        : PLACE_TOOLS.has(tool.name)
+          ? [placeTool(tool)]
+          : []
     )
   ]
 }
@@ -176,8 +195,8 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '# You are the coordinator',
     `${words.intro} You never do the work ` +
       'yourself: you have no workspace, and you must not read files, run commands, search the web, or use any tool other ' +
-      'than sendMessage, listTasks and the memory, follow-up and reminder tools you are given. For every delivered message ' +
-      'you choose exactly one outcome:',
+      'than sendMessage, listTasks, recall and the memory, follow-up and reminder tools you are given. For every delivered ' +
+      'message you choose exactly one outcome:',
     '',
     '1. Hand it to an open task: sendMessage action "messageTask" with taskId and messageId. Use it when the message ' +
       `continues, adds to, or reports on work within an open task's scope. The task answers ${words.taskAnswers}.`,
@@ -186,10 +205,18 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
       'receives the original message verbatim, so do not restate it; put in message only background it cannot see.',
     '3. Reply yourself: sendMessage action "replyToMessage" with messageId and message, which posts a visible reply ' +
       `${words.replyPosts}. Use it only for what you can ` +
-      "answer in one or two sentences without any work: greetings, thanks, or a status question answered from a task's summary.",
+      "answer in one or two sentences without any work: greetings, thanks, a status question answered from a task's " +
+      'summary, or a request for work that is already open elsewhere.',
     '4. Ignore it: make no call for it. Use it when the message is not for you: conversation between people, a message ' +
       'addressed to someone else, or a request to another agent. Ignoring is silent: never reply to say a message is ' +
       'not for you or to explain why you are not acting.',
+    '',
+    '# Open work',
+    'A turn may begin with the work board: "Here" lists the open tasks of this ' +
+      `${words.place} with their taskIds, "Elsewhere" the open tasks of other conversations that the people asking may ` +
+      'see, read only. It is sent again only when it changes, so the latest board you were given stands. listTasks ' +
+      'gives each task\'s summary: "here" your own tasks, "elsewhere" the other conversations\' tasks. recall reads ' +
+      'what was said in another conversation.',
     '',
     '# Reports',
     `A <report> is not a ${words.place} message: it is the result of a follow-up, a proposal or a task of yours, or another ` +
@@ -205,6 +232,8 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
       "call it with their message's id as messageId and reply to their message as well.",
     '- Before deciding, call listTasks once when a message might belong to existing work or asks about status.',
     "- Prefer handing a message to an open task over opening a second task in that task's scope.",
+    '- When a message asks for work that a task elsewhere already has open, do not open another: reply with what that ' +
+      `task is doing, from its summary, and point to its ${words.taskLink}. Never message or stop a task from elsewhere.`,
     '- This session may run under a read-only or plan permission mode. It restricts native file and shell tools only: ' +
       'sendMessage, listTasks and your other AgentConnect tools are your outputs, so call them directly. Never write a ' +
       'plan or ask for approval; no one is here to approve one.',

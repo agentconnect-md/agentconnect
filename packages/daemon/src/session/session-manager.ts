@@ -62,6 +62,7 @@ import {
   standingSummaryFor,
   taskSummaryReminder
 } from '../assistant/standing-summary.js'
+import { boardDigest, boardDue, type RenderedBoard } from '../assistant/work-board.js'
 import { renderLocalNow } from './local-time.js'
 import { knownTimeZone, TIME_ZONE_LOOKUP_WAIT_MS, within } from '../messages/time-zone.js'
 import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/protocol'
@@ -287,6 +288,14 @@ export class SessionManager {
       taskPagesTakeMessages?: () => boolean
       /** Whether only an Auto conversation's coordinator delegates tasks (auto-session-mode.md §5.1). */
       tasksCoordinatorOnly?: () => boolean
+      /** A coordinator's work board for this turn, judged by its batch's senders (assistant-mode.md §5.18); rejects when it cannot be read. */
+      workBoardFor?: (input: {
+        agentId: string
+        sessionKey: string
+        /** Its outward id; a coordinator without one has started no task. */
+        sessionId?: string
+        place: { platform: string; channel: string; transportScope: string | null; integrationId?: string }
+      }) => Promise<RenderedBoard>
       /** The time zone in the turn's sender's platform profile, for every agent's local time (product-conventions.md "Local time"). */
       senderTimeZoneFor?: (msg: NormalizedMessage, integrationId?: string) => Promise<string | undefined>
       /** The zone of whoever the read rule says started a turn no person is behind: a run's, a report's, another agent's call's. */
@@ -357,6 +366,8 @@ export class SessionManager {
   private readonly runningSubsessionsShown = new Map<string, string>()
   // Sessions last told they may see no open follow-ups, so the empty list is said once after a list (assistant-mode.md §5.12).
   private readonly noFollowUpsSaid = new Set<string>()
+  // The digest of the work board each coordinator was last sent; a restart forgets it, so the next turn sends it again (§5.18).
+  private readonly boardShown = new Map<string, string>()
   // The answerable-messages list each session was last shown, so a change re-injects it.
   private readonly sessionMessagesShown = new Map<string, string>()
   // Sessions whose runtime may not hold the current standing context, until a delivered prompt carries it (see standingDelivered).
@@ -1104,9 +1115,9 @@ export class SessionManager {
         standingDigest = preludeStanding.sessionDigest
         promptPrelude.push({ type: 'text', text: preludeStanding.sessionContext })
       }
-    } else if (!coordinator && (await this.shouldRemind(key))) {
-      // A long-running or just-compacted session gets the no-response rule again; a new one already carries it.
-      promptPrelude.push({ type: 'text', text: NO_RESPONSE_REMINDER })
+    } else if (await this.shouldRemind(key, { cadence: !coordinator })) {
+      // A long-running or just-compacted session gets the no-response rule again; a coordinator's own rules carry its outcomes.
+      if (!coordinator) promptPrelude.push({ type: 'text', text: NO_RESPONSE_REMINDER })
       reminded = true
     }
     const place = {
@@ -1116,8 +1127,8 @@ export class SessionManager {
       thread,
       integrationId
     }
-    // The follow-ups this place may see ride the same points: first turn, restart, compaction, every 12th turn (§5.12).
-    if (opening || reminded) {
+    // The follow-ups this place may see ride the same points: first turn, restart, compaction, every 12th turn (§5.12); a coordinator reads its board instead.
+    if ((opening || reminded) && !coordinator) {
       const summary = await standingSummaryFor(this.deps.store.assistantItems, agent, place)
       const none = summary === NO_FOLLOW_UPS
       // An empty list replaces one the context may still hold: never on a fresh context, once until a list is shown again.
@@ -1126,8 +1137,8 @@ export class SessionManager {
       if (none) this.noFollowUpsSaid.add(key)
       else if (summary) this.noFollowUpsSaid.delete(key)
     }
-    // Every session that can delegate, the coordinator alone once only it does: its running tasks ride the same points, and any turn after that list changed (send-message-guide.md §8.7).
-    if (rec.sessionId && (this.deps.tasksCoordinatorOnly?.() ? coordinator : mayOpenTasksAt(thread))) {
+    // Every other session that can delegate: its running tasks ride the same points, and any turn after that list changed (send-message-guide.md §8.7).
+    if (rec.sessionId && !coordinator && !this.deps.tasksCoordinatorOnly?.() && mayOpenTasksAt(thread)) {
       // A list that cannot be read is left for a later turn, never a reason to fail this one.
       const running = await runningSubsessionsBlock(
         this.deps.store,
@@ -1137,6 +1148,18 @@ export class SessionManager {
       ).catch(() => undefined)
       if (running) this.runningSubsessionsShown.set(key, running.shown)
       if (running?.text) promptPrelude.push({ type: 'text', text: running.text })
+    }
+    // A coordinator's work board: on opening, once its text changed, and after a restart or a compaction (assistant-mode.md §5.18 ④).
+    if (coordinator && this.deps.workBoardFor) {
+      // A board that cannot be read is left for a later turn, never a reason to fail this one.
+      const board = await this.deps
+        .workBoardFor({ agentId, sessionKey: key, ...(rec.sessionId ? { sessionId: rec.sessionId } : {}), place })
+        .catch(() => undefined)
+      if (board) {
+        if (boardDue(board, this.boardShown.get(key), { opening, reminded }))
+          promptPrelude.push({ type: 'text', text: board.text })
+        this.boardShown.set(key, boardDigest(board.text))
+      }
     }
     // A task counts its turns and is reminded of a missing or stale summary (auto-session-mode.md §6.7); a failed read skips it.
     if (keepsTaskSummaryAt(thread) || threadedTask) {
@@ -1248,7 +1271,7 @@ export class SessionManager {
    *  Fires every REMINDER_EVERY_TURNS turns, or as soon as a context compaction is detected —
    *  tokens-in-context fell below COMPACTION_DROP_RATIO of the previous turn's (ACP has no
    *  explicit compaction event, only the usage numbers we track via setUsageSnapshot). */
-  private async shouldRemind(key: string): Promise<boolean> {
+  private async shouldRemind(key: string, opts: { cadence: boolean } = { cadence: true }): Promise<boolean> {
     // First turn observed by this daemon process for an already-existing session: reassert
     // immediately. Besides surviving runtime compaction, this migrates long-lived sessions
     // away from a response marker taught by an older daemon release.
@@ -1263,7 +1286,8 @@ export class SessionManager {
     const now = await (await this.deps.store.getUsage(key)).contextUsed
     if (now !== undefined) this.lastContextUsed.set(key, now)
     const compacted = prev !== undefined && now !== undefined && now < prev * COMPACTION_DROP_RATIO
-    const remind = turns >= REMINDER_EVERY_TURNS || compacted
+    // A coordinator is reminded only after a compaction, never on the turn count (assistant-mode.md §5.18 ④).
+    const remind = (opts.cadence && turns >= REMINDER_EVERY_TURNS) || compacted
     this.turnsSinceReminder.set(key, remind ? 0 : turns)
     return remind
   }

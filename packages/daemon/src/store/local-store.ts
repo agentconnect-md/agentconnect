@@ -1327,7 +1327,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 72
+export const SCHEMA_VERSION = 73
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2077,7 +2077,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v71 gives tasks a title, a summary and attached threads (auto-session-mode.md §6.1).
   async (db, store) => await migrateTaskModel(db, store.postgres),
   // v72 keeps the start of a task's opening message, which listTasks shows until it writes a summary (auto-session-mode.md §6.7).
-  async (db, store) => await addColumn(db, store.postgres, 'assistant_subsession', 'background', 'TEXT')
+  async (db, store) => await addColumn(db, store.postgres, 'assistant_subsession', 'background', 'TEXT'),
+  // v73 records when a task's status or title last changed, the work board's order (assistant-mode.md §5.18).
+  async (db, store) => await addChangedAt(db, store.postgres)
 ]
 
 /** Tasks gain a title, taken from their session's first-message title, a summary and the threads attached to them. */
@@ -2136,6 +2138,20 @@ async function bindChatAudience(
     externalResourceKey = (SELECT externalResourceKey FROM audience a WHERE a.key = sessions.key),
     externalResourceKind = 'conversation', sourceBindingKind = 'external'
     WHERE externalProvider IS NULL AND key IN (SELECT key FROM audience)`)
+}
+
+/** Both task stores gain `changedAt`, seeded from the last activity each row already records. */
+async function addChangedAt(db: StoreTx, postgres: boolean): Promise<void> {
+  if (await tableExists(db, postgres, 'assistant_subsession')) {
+    await addColumn(db, postgres, 'assistant_subsession', 'changedAt', 'INTEGER')
+    await db.exec(`UPDATE assistant_subsession
+      SET changedAt = COALESCE((SELECT s.updatedAt FROM sessions s WHERE s.key = assistant_subsession.childSessionKey), createdAt)
+      WHERE changedAt IS NULL`)
+  }
+  if (await tableExists(db, postgres, 'assistant_item')) {
+    await addColumn(db, postgres, 'assistant_item', 'changedAt', 'INTEGER')
+    await db.exec('UPDATE assistant_item SET changedAt = updatedAt WHERE changedAt IS NULL')
+  }
 }
 
 /** Add a column a table lacks, on either dialect; a table that does not exist yet gets it from the CREATE block. */

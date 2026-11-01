@@ -400,7 +400,7 @@ describe('an owning session’s running tasks in the standing summary', () => {
     }
   })
 
-  it('is shown only to the coordinator, without stopTask, once only it delegates (auto-session-mode.md §5.1)', async () => {
+  it('is shown to no session once only the coordinator delegates, whose work board replaces it (assistant-mode.md §5.18 ④)', async () => {
     const { manager, delegate } = await harness(ON)
     const sm = manager({ tasksCoordinatorOnly: () => true })
     const reminderOf = (blocks: { type: string; text?: string }[]) =>
@@ -412,13 +412,8 @@ describe('an owning session’s running tasks in the standing summary', () => {
     const coordinator = 'append:coordinator-1'
     const at = (ts: string) => dm(ts, { sessionThread: coordinator })
     await sm.handle('bot-a', at('200.3'), undefined, INT)
-    const child = await delegate(sessionKey('slack', 'D0ALICE', coordinator, 'bot-a'), 'd-2', 2_000, 'fix the build')
-    expect(reminderOf((await sm.handle('bot-a', at('200.4'), undefined, INT)).blocks)).toBe(
-      `<system-reminder>\n${HEAD.replace(
-        '; you may stop one with stopTask and its taskId once it is no longer needed',
-        ''
-      )}\n- ${child} — fix the build\n</system-reminder>`
-    )
+    await delegate(sessionKey('slack', 'D0ALICE', coordinator, 'bot-a'), 'd-2', 2_000, 'fix the build')
+    expect(reminderOf((await sm.handle('bot-a', at('200.4'), undefined, INT)).blocks)).toBeUndefined()
   })
 
   it('says the list emptied on a refresh too, and only once', async () => {

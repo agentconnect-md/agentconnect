@@ -435,9 +435,9 @@ describe('a coordinator task in a Slack code channel, through the daemon (auto-s
     expect(await index.get('bot-a', placeKey)).toMatchObject({ parentSessionKey: coordinatorKey, title: 'Flaky test' })
     // The coordinator lists it with its channel as its thread, linked.
     const listed = (await executeTool(booted.ctx, 'listTasks', {}, { ...d.mcp.deps, canRun: () => true })) as {
-      tasks: { title: string; threaded: boolean; threads: { channel: string; thread: string; link?: string }[] }[]
+      here: { title: string; threaded: boolean; threads: { channel: string; thread: string; link?: string }[] }[]
     }
-    expect(listed.tasks).toEqual([
+    expect(listed.here).toEqual([
       expect.objectContaining({
         title: 'Flaky test',
         threaded: true,

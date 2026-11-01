@@ -50,7 +50,8 @@ describe('the assistant sub-session index', () => {
       parentSessionId: 'sid-parent-1',
       parentSessionKey: sessionKey('slack', 'C0GENERAL', 'append:1', a, 'T0EXAMPLE'),
       state: 'open',
-      createdAt: 1_000
+      createdAt: 1_000,
+      changedAt: 1_000
     })
     expect(await s.assistantSubsessions.get(agent(), childKey(a, '1'))).toBeUndefined()
   })
@@ -943,7 +944,8 @@ describe.skipIf(usingPostgresStore())('the v43 → v44 failure report columns on
         parentSessionId: 'sid-parent-1',
         parentSessionKey: 'parent',
         state: 'open',
-        createdAt: 1_000
+        createdAt: 1_000,
+        changedAt: 1_000
       })
       expect(await upgraded.assistantSubsessions.claimReport(a, childKey(a, '1'), '{"text":"ended"}')).toBe(true)
       expect(await upgraded.assistantSubsessions.countReportAttempt(a, childKey(a, '1'))).toBe(1)
@@ -989,7 +991,8 @@ describe.skipIf(!usingPostgresStore())('the v43 → v44 failure report columns o
           parentSessionId: 'sid-parent-1',
           parentSessionKey: 'parent',
           state: 'open',
-          createdAt: 1_000
+          createdAt: 1_000,
+          changedAt: 1_000
         })
         expect(await upgraded.assistantSubsessions.claimReport(a, childKey(a, '1'), '{"text":"ended"}')).toBe(true)
         expect(await upgraded.assistantSubsessions.countReportAttempt(a, childKey(a, '1'))).toBe(1)

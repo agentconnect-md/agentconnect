@@ -104,7 +104,11 @@ Assistant mode's follow-ups and approved proposals stay the other kinds of task,
   own, which keeps the report's own metadata (a getting-to-know report's proposals ride on it); the
   channel messages right behind it of one permission class join that turn, adding no asker
   ([assistant-mode.md](assistant-mode.md) §5.18 ③). Proposed: a report without turn metadata joins
-  the batch, and the coordinator's standing list becomes the work board (the same section's ② and ④).
+  the batch (the same section's ④).
+- The coordinator's turns carry the work board ([assistant-mode.md](assistant-mode.md) §5.18 ② and ④)
+  instead of the standing follow-up list and the running-tasks block: its place's open tasks with
+  their ids, and the other places' open tasks every person in its batch may read. It is sent when the
+  session opens, when its text changed, after a compaction and after a restart.
 
 ### 3.5 Switching
 
@@ -254,6 +258,12 @@ thread links, owner, last activity, whether it is running, and the task's summar
 time (§6.7). The coordinator uses it to place a new message and to
 answer "how is that going".
 
+The coordinator's `listTasks {after?}` reads the work board ([assistant-mode.md](assistant-mode.md)
+§5.18 ④): `here`, its own open tasks with the fields above, and `elsewhere`, the other places' open
+tasks its batch may see, read only, with place, status, summary and thread links. Each is a page of
+at most 20 in the board's order, newest change first, continued by its own `nextCursor`, and access
+is judged again on every page.
+
 ### 5.3 `updateTask`
 
 `updateTask {summary, title?}`, a tool of its own. `summary` is required; the title changes only
@@ -262,7 +272,8 @@ together with the summary. Only a task calls it, for itself; both kinds can.
 ### 5.4 The coordinator's limits
 
 - Only AgentConnect tools: `sendMessage` (the task actions and `replyToMessage`, plus `postMessage`
-  and `callAgent`), `listTasks`, memory, and assistant mode's follow-up tools.
+  and `callAgent`), `listTasks`, `recall`, memory, and assistant mode's follow-up tools.
+  - `recall` keeps its parameters and the read rule, judged by every sender of the batch.
   - `postMessage` and `callAgent` run as they do in any session. `callAgent` always asks for an
     answer, which comes back as a report.
   - The place tools are those its place's long session is offered: `followUp`, `getToKnow`, `propose`,
