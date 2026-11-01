@@ -355,6 +355,43 @@ describe('gitlab ingress', () => {
     expect((h.sent[0] as RdMsgHook).event).toBe('merge_request:synchronize')
   })
 
+  it('§12.2: a human push onto the service account’s same-project MR authorizes the pusher, not the account', async () => {
+    h.table.upsert(rule({}, { events: ['merge_request:*'] }))
+    const humanPush = mrPayload({
+      object_attributes: { action: 'update', oldrev: 'c'.repeat(40), author_id: SA_USER },
+      user: { id: 7001, username: 'alice' }
+    })
+    expect((await post(h, humanPush)).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toEqual([expect.objectContaining({ actorExternalId: '7001' })])
+    expect(h.authzRequests[0]?.subjectAuthorExternalId).toBeUndefined()
+    expect(h.sent).toHaveLength(1)
+    expect((h.sent[0] as RdMsgHook).event).toBe('merge_request:synchronize')
+
+    // The pusher's live membership still decides: a refused one leaves the actionable row.
+    h.sent.length = 0
+    h.reports.length = 0
+    h.authzRequests.length = 0
+    h.authzResult = false
+    expect((await post(h, humanPush, { 'webhook-id': 'msg_delivery_2' })).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toEqual([expect.objectContaining({ actorExternalId: '7001' })])
+    expect(h.sent).toHaveLength(0)
+    expect(h.reports).toEqual([
+      expect.objectContaining({ status: 'failed', reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED })
+    ])
+
+    // From a fork it is no internal revision: the gate keeps resolving the MR's author.
+    h.authzRequests.length = 0
+    const forkPush = mrPayload({
+      object_attributes: { action: 'update', oldrev: 'c'.repeat(40), author_id: SA_USER, source_project_id: 12345 },
+      user: { id: 7001, username: 'alice' }
+    })
+    expect((await post(h, forkPush, { 'webhook-id': 'msg_delivery_3' })).statusCode).toBe(202)
+    await flush()
+    expect(h.authzRequests).toEqual([expect.objectContaining({ actorExternalId: String(SA_USER) })])
+  })
+
   it('§12.1: a SIBLING bound account is vetoed even for a same-project MR revision', async () => {
     const vetoSet = { boundServiceAccountUserIds: [String(SA_USER), String(SIBLING_SA_USER)] }
     h.table.upsert(rule({}, { events: ['merge_request:*'], commentFamilies: ['merge_request'], ...vetoSet }))

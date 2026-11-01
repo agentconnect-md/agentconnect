@@ -944,7 +944,10 @@ accidental bot-to-bot stays off while the bot's own merge requests remain
 reviewable through one deliberate exception, scoped to the rule's own
 identity: a same-project merge-request revision authored by the account this
 rule itself names still enters review, matching GitHub's internal-CI lane
-where the App's own same-repository pull requests are reviewed. Every other
+where the App's own same-repository pull requests are reviewed. A revision of
+such a merge request pushed by anyone else is not loop traffic: the Section
+12.2 gate authorizes that pusher instead of the author, since a bound account
+can never pass it. Every other
 member of the veto set stays vetoed even for merge-request revisions, so one
 agent's merge request never wakes a sibling agent's hook. Notes authored by
 any bound account and system-generated notes carrying AgentConnect status or
