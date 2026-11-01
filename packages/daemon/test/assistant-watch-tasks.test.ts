@@ -166,6 +166,58 @@ describe('a follow-up is a watch task of the task store', () => {
   })
 })
 
+describe('a watch task outlives its check session', () => {
+  it('keeps its row, schedule and observations when retention purges the session, and stays due', async () => {
+    const s = await open()
+    await watchTask(s, '1', { nextAt: 90_000 })
+    await s.assistantWatchTasks.appendObservation(AGENT, key('1'), { text: 'PR #412 is open.', now: 2_000 })
+    const lookKey = key('look-1')
+    await s.assistantItems.create({
+      agentId: AGENT,
+      title: 'Getting to know the channel',
+      origin: GENERAL,
+      taskKey: lookKey,
+      gettingToKnow: 'joined'
+    })
+    await s.assistantSubsessions.openGettingToKnow({
+      agentId: AGENT,
+      childSessionKey: lookKey,
+      parentSessionId: OWNER.sessionId,
+      parentSessionKey: OWNER.key,
+      place: GENERAL
+    })
+    for (const [taskKey, thread] of [
+      [key('1'), 'subsession:check-1'],
+      [lookKey, 'subsession:check-look-1']
+    ] as const)
+      await s.upsertSession({
+        key: taskKey,
+        agentId: AGENT,
+        platform: 'slack',
+        channel: GENERAL.channel,
+        thread,
+        transportScope: SCOPE,
+        acpSessionId: `acp-${thread}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: 1
+      })
+    expect(await s.deleteSession(key('1'), { reason: 'retention', at: 3_000 })).toBe(true)
+    expect(await s.deleteSession(lookKey, { reason: 'retention', at: 3_000 })).toBe(true)
+    expect(await s.getSession(key('1'))).toBeUndefined()
+    expect(await s.assistantWatchTasks.get(AGENT, key('1'))).toMatchObject({
+      status: 'active',
+      nextAt: 90_000,
+      summary: 'PR #412 is open.',
+      observations: [expect.objectContaining({ text: 'PR #412 is open.' })]
+    })
+    expect((await s.assistantChecks.due(AGENT, 100_000, 10)).map((d) => d.taskKey)).toEqual([key('1')])
+    // A getting-to-know task's row is only its index entry: it goes, and its item stays for its check to index it again.
+    expect(await s.assistantSubsessions.get(AGENT, lookKey)).toBeUndefined()
+    expect(await s.assistantItems.byTaskKey(AGENT, lookKey)).toBeDefined()
+  })
+})
+
 describe('the firing loop reads the task store', () => {
   it('finds a due watch task by its task key, before a getting-to-know task, and re-schedules from it', async () => {
     const s = await open()

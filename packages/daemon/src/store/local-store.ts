@@ -5517,9 +5517,12 @@ export class LocalStore {
       // Conditional, so a reservation a concurrent `!new` already rotated is left alone.
       if (isAppendCoordinate(rec.thread))
         await this.clearAppendReservation(tx, rec.agentId, rec.channel, rec.transportScope, rec.thread)
-      // A purged task leaves its parent's index, a threaded one on its own thread too, whose threads become unowned (auto-session-mode.md §6.5).
+      // A purged task leaves its parent's index, a threaded one on its own thread too (auto-session-mode.md §6.5); a follow-up's row is the task itself, whose next check opens a new session.
       await tx
-        .prepare('DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?')
+        .prepare(
+          `DELETE FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ?
+             AND NOT (mode = 'watch' AND watchStatus IS NOT NULL)`
+        )
         .run(rec.agentId, key)
       await tx
         .prepare('DELETE FROM assistant_subsession_input WHERE agentId = ? AND childSessionKey = ?')
