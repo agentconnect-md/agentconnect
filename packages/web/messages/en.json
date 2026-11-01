@@ -1766,7 +1766,6 @@
         "free": "free",
         "usedBy": "used by {agent}",
         "inUse": "in use",
-        "notInstalled": "not installed",
         "more": "More",
         "delete": "Delete App…",
         "deleteTitle": "Delete GitHub App",
@@ -1777,12 +1776,9 @@
         "deleteConfirm": "Delete",
         "noInstallations": "Not installed on any account yet."
       },
-      "appColumn": "App",
-      "installationsColumn": "Installations",
       "builtIn": "built-in",
       "expand": "Show installations",
-      "collapse": "Hide installations",
-      "installationCount": "{count, plural, one {# installation} other {# installations}}"
+      "collapse": "Hide installations"
     },
     "codeHostActions": {
       "addRepository": "Add repository",

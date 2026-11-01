@@ -1766,7 +1766,6 @@
         "free": "空闲",
         "usedBy": "{agent} 在用",
         "inUse": "使用中",
-        "notInstalled": "未安装",
         "more": "更多",
         "delete": "删除 App…",
         "deleteTitle": "删除 GitHub App",
@@ -1777,12 +1776,9 @@
         "deleteConfirm": "删除",
         "noInstallations": "还没有安装到任何账号。"
       },
-      "appColumn": "App",
-      "installationsColumn": "安装",
       "builtIn": "内置",
       "expand": "展开安装列表",
-      "collapse": "收起安装列表",
-      "installationCount": "{count, plural, other {# 个安装}}"
+      "collapse": "收起安装列表"
     },
     "codeHostActions": {
       "addRepository": "添加仓库",

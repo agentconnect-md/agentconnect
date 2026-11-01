@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
-import useSWR from 'swr'
+import useSWR, { useSWRConfig } from 'swr'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
@@ -7,8 +7,10 @@ import { GithubMark, LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import {
   fetchBuiltinGithubAppSlug,
+  fetchGithubApps,
   fetchGithubInstallUrl,
   fetchGithubInstallations,
+  syncGithubApp,
   syncGithubInstallations,
   type GithubInstallationDto
 } from '@/lib/api'
@@ -48,6 +50,7 @@ export default function GithubCard({
   const [uninstalling, setUninstalling] = useState<GithubInstallationDto | null>(null)
   // Each App is a first-level row over its installations; the built-in App opens expanded.
   const [builtInOpen, setBuiltInOpen] = useState(true)
+  const { mutate } = useSWRConfig()
   const { data: builtInSlug } = useSWR(activeOrg ? consoleKeys.githubBuiltinApp(activeOrg.id) : null, ([, id]) =>
     fetchBuiltinGithubAppSlug(id ?? undefined)
   )
@@ -80,14 +83,22 @@ export default function GithubCard({
     }
   }
 
-  // Refresh the org's claimed installations after GitHub changes or an install
-  // finished in the other tab just now.
+  // Re-pull every App's installations from GitHub, the built-in App's and each organization App's; one failing App doesn't stop the rest.
   const sync = async () => {
-    if (busy) return
+    if (busy || !activeOrg) return
     setBusy(true)
     setErr(null)
     try {
-      setInstalls(await syncGithubInstallations())
+      const [builtIn, ...orgApps] = await Promise.allSettled([
+        syncGithubInstallations(),
+        ...(await fetchGithubApps(activeOrg.id)).map((app) => syncGithubApp(app.id))
+      ])
+      if (builtIn?.status === 'fulfilled') setInstalls(builtIn.value)
+      await mutate(consoleKeys.githubApps(activeOrg.id))
+      const failed = [builtIn, ...orgApps].find((result) => result?.status === 'rejected')
+      if (failed?.status === 'rejected') {
+        setErr(failed.reason instanceof Error ? failed.reason.message : String(failed.reason))
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -118,14 +129,6 @@ export default function GithubCard({
           {t('github.notEnabled')}
         </div>
       )}
-      {/* Desktop only: the row collapses to one stacked column below the
-          breakpoint, where a two-track header would label nothing. */}
-      {enabled === true && (
-        <div className="row h hidden grid-cols-[minmax(0,1fr)_auto] gap-[11px] desktop:grid">
-          <span>{t('github.appColumn')}</span>
-          <span>{t('github.installationsColumn')}</span>
-        </div>
-      )}
       {enabled === true && (
         <div data-builtin-app>
           <GithubAppRow
@@ -133,19 +136,12 @@ export default function GithubCard({
             onToggle={() => setBuiltInOpen((open) => !open)}
             label={builtInOpen ? t('github.collapse') : t('github.expand')}
             aside={
-              <>
-                <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                  {installs.length > 0
-                    ? t('github.installationCount', { count: installs.length })
-                    : t('github.orgApps.notInstalled')}
-                </span>
-                {canWrite && (
-                  <Button size="xs" variant="ghost" onClick={install}>
-                    <Icon name="external-link" size={13} />
-                    {t('github.install')}
-                  </Button>
-                )}
-              </>
+              canWrite && (
+                <Button size="xs" variant="ghost" onClick={install}>
+                  <Icon name="external-link" size={13} />
+                  {t('github.install')}
+                </Button>
+              )
             }
           >
             <span className="mono min-w-0 truncate text-[12.5px]">{builtInSlug ?? t('github.label')}</span>

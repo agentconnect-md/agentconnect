@@ -6,7 +6,7 @@ import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import { GithubMark } from '@/components/marks'
 import { Scrim } from '@/components/console/Scrim'
-import { deleteGithubApp, fetchGithubApps, githubAppPageUrl, syncGithubApp, type GithubOrgAppDto } from '@/lib/api'
+import { deleteGithubApp, fetchGithubApps, githubAppPageUrl, type GithubOrgAppDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 
@@ -77,8 +77,6 @@ export function GithubOrgApps({
     fetchGithubApps(id ?? undefined)
   )
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
-  const [syncing, setSyncing] = useState<string | null>(null)
-  const [err, setErr] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<GithubOrgAppDto | null>(null)
 
   if (!apps || apps.length === 0) return null
@@ -89,20 +87,6 @@ export function GithubOrgApps({
       if (!next.delete(id)) next.add(id)
       return next
     })
-
-  const sync = async (app: GithubOrgAppDto) => {
-    if (syncing) return
-    setSyncing(app.id)
-    setErr(null)
-    try {
-      await syncGithubApp(app.id)
-      await mutate()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setSyncing(null)
-    }
-  }
 
   return (
     <>
@@ -117,74 +101,55 @@ export function GithubOrgApps({
               label={open ? t('collapse') : t('expand')}
               aside={
                 <>
-                  <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                    {app.installations.length > 0
-                      ? t('installationCount', { count: app.installations.length })
-                      : t('orgApps.notInstalled')}
-                  </span>
                   {canWrite && (
-                    <span className="flex flex-none items-center gap-1">
-                      <a
-                        className="iconbtn"
-                        href={`${githubAppPageUrl(app.slug)}/installations/new`}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={t('install')}
-                        aria-label={t('install')}
-                      >
-                        <Icon name="external-link" size={14} />
-                      </a>
-                      <AnchoredFlyout
-                        ariaLabel={t('orgApps.more')}
-                        align="end"
-                        width={200}
-                        estimatedHeight={88}
-                        triggerClassName="flex"
-                        trigger={({ open: menuOpen, menuId, toggle: toggleMenu }) => (
-                          <button
-                            type="button"
-                            className="iconbtn"
-                            title={t('orgApps.more')}
-                            aria-label={t('orgApps.more')}
-                            aria-haspopup="menu"
-                            aria-expanded={menuOpen}
-                            aria-controls={menuOpen ? menuId : undefined}
-                            onClick={toggleMenu}
-                          >
-                            <Icon name={syncing === app.id ? 'loader' : 'ellipsis'} size={14} />
-                          </button>
-                        )}
-                      >
-                        {({ close }) => (
-                          <>
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className="fopt"
-                              onClick={() => {
-                                close(true)
-                                void sync(app)
-                              }}
-                            >
-                              <span className="min-w-0 flex-1 truncate">{t('sync')}</span>
-                            </button>
-                            {isOwner && app.agentId === null && (
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="fopt text-(--status-error)"
-                                onClick={() => {
-                                  close(true)
-                                  setDeleting(app)
-                                }}
-                              >
-                                <span className="min-w-0 flex-1 truncate">{t('orgApps.delete')}</span>
-                              </button>
-                            )}
-                          </>
-                        )}
-                      </AnchoredFlyout>
-                    </span>
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      onClick={() =>
+                        window.open(`${githubAppPageUrl(app.slug)}/installations/new`, '_blank', 'noopener')
+                      }
+                    >
+                      <Icon name="external-link" size={13} />
+                      {t('install')}
+                    </Button>
+                  )}
+                  {/* Only a free App can be deleted, so only its row has a menu. */}
+                  {isOwner && app.agentId === null && (
+                    <AnchoredFlyout
+                      ariaLabel={t('orgApps.more')}
+                      align="end"
+                      width={200}
+                      estimatedHeight={44}
+                      triggerClassName="flex"
+                      trigger={({ open: menuOpen, menuId, toggle: toggleMenu }) => (
+                        <button
+                          type="button"
+                          className="iconbtn"
+                          title={t('orgApps.more')}
+                          aria-label={t('orgApps.more')}
+                          aria-haspopup="menu"
+                          aria-expanded={menuOpen}
+                          aria-controls={menuOpen ? menuId : undefined}
+                          onClick={toggleMenu}
+                        >
+                          <Icon name="ellipsis" size={14} />
+                        </button>
+                      )}
+                    >
+                      {({ close }) => (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="fopt text-(--status-error)"
+                          onClick={() => {
+                            close(true)
+                            setDeleting(app)
+                          }}
+                        >
+                          <span className="min-w-0 flex-1 truncate">{t('orgApps.delete')}</span>
+                        </button>
+                      )}
+                    </AnchoredFlyout>
                   )}
                 </>
               }
@@ -233,9 +198,6 @@ export function GithubOrgApps({
           </div>
         )
       })}
-      {err && (
-        <div className="px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>
-      )}
       {deleting && (
         <DeleteGithubAppDialog
           app={deleting}
