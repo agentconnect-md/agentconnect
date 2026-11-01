@@ -14,7 +14,7 @@ import { TaskViolationError } from '../src/cp/task-reader.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
 import { ClusterSkillCoordinator } from '../src/skills/cluster-skill-coordinator.js'
 import { readSkillLedger, skillLedgerLocation } from '../src/skills/skill-install-ledger.js'
-import { cwdWorkspaceIncarnation } from '../src/skills/workspace-incarnation.js'
+import { cwdWorkspaceIncarnation, workspaceIncarnationOf } from '../src/skills/workspace-incarnation.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { NO_RESPONSE_SENTINEL } from '../src/session/no-response.js'
 import { localWorkspaceFiles } from '../src/workspace/workspace-files.js'
@@ -624,6 +624,81 @@ describe('Daemon session lifecycle (#118)', () => {
       ])
       expect(fence).toHaveBeenCalledTimes(2)
       expect(prepare).toHaveBeenCalledOnce()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('adopts the ledger a microsandbox workspace kept under its device-bearing key', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      const agent = d.agents.get('bot-a')
+      mkdirSync(agent.workspace.path, { recursive: true })
+      const environment = { id: 'bot-a/agent' }
+      d.microsandbox = { environment: () => environment, stopAll: async () => {} }
+      vi.spyOn(d.localExecutor, 'withEnvironment').mockImplementation((async (
+        _environment: unknown,
+        run: (session: unknown) => Promise<unknown>
+      ) => run({ hasCapability: () => true, generation: 1, isAttached: () => true })) as never)
+      vi.spyOn(d, 'microsandboxContext').mockReturnValue({ environment })
+      const { incarnation, deviceIncarnation } = await workspaceIncarnationOf(agent.workspace.path)
+      // Kept before the key dropped the device, which a reboot can renumber under unchanged files.
+      const kept = {
+        roots: [
+          { path: '.claude/skills/a', sourceId: 'managed:a', sourceKind: 'managed', digest: 'a'.repeat(64), files: [] }
+        ]
+      }
+      const ledgers = new Map([[deviceIncarnation, { revision: 3, ledger: kept }]])
+      vi.spyOn(d.store, 'clusterSkillLedger').mockImplementation((async (_id: string, key: string) =>
+        ledgers.get(key)) as never)
+      const prepare = vi.spyOn(d, 'reconcileSandboxSkills').mockResolvedValue(kept)
+      await d.reconcileMicrosandboxSkills(agent, agent.workspace.path)
+      expect(prepare.mock.calls[0]![1]).toMatchObject({ workspaceIncarnation: incarnation, initialLedger: kept })
+
+      // Once a ledger is kept under the stable key, the old one is no longer consulted.
+      ledgers.set(incarnation, { revision: 1, ledger: { roots: [] } })
+      await d.reconcileMicrosandboxSkills(agent, agent.workspace.path)
+      expect((prepare.mock.calls[1]![1] as { initialLedger?: unknown }).initialLedger).toBeUndefined()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it("adopts a placed session's ledger kept under its executor's device-bearing identity", async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      const agent = d.agents.get('bot-a')
+      const cwd = '/srv/executor/sessions/leaf/workspace'
+      const kept = { roots: [] }
+      d.executorPlane = {
+        placementOf: (key: string) =>
+          key === KEY ? { agentId: 'bot-a', sessionKey: KEY, subject: 'bot-a/leaf' } : undefined,
+        withEnvironment: (_subject: string, work: () => Promise<unknown>) => work(),
+        mountFor: () => '/srv/executor',
+        skillClientFor: () => undefined,
+        workspaceIncarnationFor: () => 'workspace:stable',
+        deviceWorkspaceIncarnationFor: () => 'workspace:device',
+        shimGenerationFor: () => 1,
+        planeFor: () => undefined,
+        launched: () => [],
+        releaseAgent: () => {},
+        stop: async () => {}
+      }
+      vi.spyOn(d.workspaces, 'prepareExecutorWorkspace').mockResolvedValue(cwd)
+      vi.spyOn(d.workspaces, 'excludePlacedSessionSkills').mockResolvedValue(undefined)
+      const ledgers = new Map([[cwdWorkspaceIncarnation('workspace:device', cwd), { revision: 2, ledger: kept }]])
+      vi.spyOn(d.store, 'clusterSkillLedger').mockImplementation((async (_id: string, key: string) =>
+        ledgers.get(key)) as never)
+      const prepare = vi.spyOn(d, 'reconcileSandboxSkills').mockResolvedValue(kept)
+      expect(await d.runAgentWorkspacePreparation(agent, { sessionKey: KEY, isolation: 'session' })).toBe(cwd)
+      expect(prepare.mock.calls[0]![1]).toMatchObject({
+        workspaceIncarnation: cwdWorkspaceIncarnation('workspace:stable', cwd),
+        initialLedger: kept
+      })
     } finally {
       await daemon.stop()
     }

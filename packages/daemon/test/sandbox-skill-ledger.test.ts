@@ -1,4 +1,5 @@
-import { lstat, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { lstat, mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -24,6 +25,20 @@ it('retains skill authority across VM replacement but revokes it when storage is
   await rename(cwd, join(root, 'retired'))
   await mkdir(cwd)
   expect((await microsandboxSkillTarget(replacement, cwd)).workspaceIncarnation).not.toBe(first.workspaceIncarnation)
+})
+
+it('keys a workspace on its path and inode, not the device number a reboot can renumber', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'ac-sandbox-device-'))
+  roots.push(root)
+  const stat = await lstat(root, { bigint: true })
+  const path = await realpath(root)
+  const key = (identity: string[]) => `workspace:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`
+  const session = { request: async () => undefined, hasCapability: () => true }
+  expect(await microsandboxSkillTarget(session, root)).toMatchObject({
+    workspaceIncarnation: key([path, String(stat.ino)]),
+    // The key a ledger was kept under before, which the daemon adopts when the new one has none.
+    deviceIncarnation: key([path, String(stat.dev), String(stat.ino)])
+  })
 })
 
 it('keeps a local VM on daemon acquisition even when its shim holds every capability', async () => {

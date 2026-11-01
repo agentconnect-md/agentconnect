@@ -288,6 +288,7 @@ describe('executor facet', () => {
     it('creates the environment, seeds its HOME, allocates the first generation and admits the key it returns', async () => {
       const { facet } = await start()
       const reply = ready(await facet.prepare(req(3)))
+      const workspace = await workspaceIncarnationOf(join(root!, 'sessions', LEAF))
       expect(reply).toEqual({
         status: 'ready',
         // The executor allocated it: the holder named a launch and no number at all.
@@ -297,8 +298,9 @@ describe('executor facet', () => {
         runtimeRoot: join(root!, 'hs', '1'),
         helperRoot: '/opt/example/dist',
         missingHelpers: ['gitCredentialHelper'],
-        // The session directory's own identity, which its skill ledger is kept under across launches.
-        workspaceIncarnation: await workspaceIncarnationOf(join(root!, 'sessions', LEAF)),
+        // The session directory's own identity, which its skill ledger is kept under across launches, and the device-bearing one an older holder keys on.
+        workspaceIncarnation: workspace.deviceIncarnation,
+        stableWorkspaceIncarnation: workspace.incarnation,
         liveCount: 1
       })
       expect(Buffer.from(reply.psk, 'base64url')).toHaveLength(32)

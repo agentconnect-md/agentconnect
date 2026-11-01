@@ -240,6 +240,20 @@ describe('the key a placed session keeps its skill ledger under', () => {
     await executor.prepareAt(AGENT, KEY, [HOST])
     expect(executor.workspaceIncarnationFor(SUBJECT)).toBe(sent[0]!.launchId)
   })
+
+  it('is the stable identity when the executor reports one, the device-bearing one left to adopt', async () => {
+    const STABLE = 'workspace:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0'
+    const { executor } = plane([ready(2, { workspaceIncarnation: WORKSPACE, stableWorkspaceIncarnation: STABLE })])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.workspaceIncarnationFor(SUBJECT)).toBe(STABLE)
+    expect(executor.deviceWorkspaceIncarnationFor(SUBJECT)).toBe(WORKSPACE)
+  })
+
+  it('has nothing to adopt from an executor that reports one identity', async () => {
+    const { executor } = plane([ready(2, { workspaceIncarnation: WORKSPACE })])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    expect(executor.deviceWorkspaceIncarnationFor(SUBJECT)).toBeUndefined()
+  })
 })
 
 describe('the skills a placed session installs', () => {

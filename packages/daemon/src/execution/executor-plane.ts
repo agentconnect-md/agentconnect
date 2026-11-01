@@ -311,7 +311,13 @@ export class ExecutorPlane implements ExecutionPlane {
   /** The incarnation a skill receipt is fenced on: the session directory the executor reported, which outlives a launch (an idle close, a restart), else the launch for an executor that reports none. */
   workspaceIncarnationFor(subject: string): string | undefined {
     const launch = this.registry.currentLaunch(subject)
-    return launch?.ready?.workspaceIncarnation ?? launch?.sandboxUid
+    return launch?.ready?.stableWorkspaceIncarnation ?? launch?.ready?.workspaceIncarnation ?? launch?.sandboxUid
+  }
+
+  /** The device-bearing identity the ledger was kept under before the stable one, adopted once; undefined when the executor reports only one. */
+  deviceWorkspaceIncarnationFor(subject: string): string | undefined {
+    const ready = this.registry.currentLaunch(subject)?.ready
+    return ready?.stableWorkspaceIncarnation ? ready.workspaceIncarnation : undefined
   }
 
   /** The session `.codex` split its executor reported (prepareExecutorLaunch), for the HOME the holder launches in; undefined for an executor that reports none, or classified another HOME. */

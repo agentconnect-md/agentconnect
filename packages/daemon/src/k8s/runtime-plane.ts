@@ -211,6 +211,8 @@ export interface K8sRuntimePlane extends ExecutionPlane {
   /** `cwd` aims the installs at the runtime's checkout (a placed session); the pool's pods take none and install at their workspace root. */
   skillClientFor?: (subject: string, cwd?: string) => ClusterSkillClient | undefined
   workspaceIncarnationFor?: (subject: string) => string | undefined
+  /** A key the subject's ledger was kept under before `workspaceIncarnationFor`'s, adopted when that one has none. */
+  deviceWorkspaceIncarnationFor?: (subject: string) => string | undefined
   shimGenerationFor?: (subject: string) => number | undefined
   /** Whether the subject's bound pod serves `tunnel` (S5b routes private skill Sources of a pod without `gitcred` through the daemon). */
   servesTunnel?: (subject: string, tunnel: TunnelName) => boolean

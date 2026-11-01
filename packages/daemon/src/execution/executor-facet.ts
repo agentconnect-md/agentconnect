@@ -399,7 +399,7 @@ class Facet implements ExecutorFacet {
     const host = this.deps.endpointHost()
     if (!host) throw new Error('the control connection has no local address to publish')
     // The skill ledger's key: this directory outlives the launch, so its next launch must find the receipts this one leaves.
-    const workspaceIncarnation = await workspaceIncarnationOf(join(this.sessionsDir, env.leaf)).catch(() => undefined)
+    const workspace = await workspaceIncarnationOf(join(this.sessionsDir, env.leaf)).catch(() => undefined)
     if (env.generation !== generation || !env.shim || !this.listener) return refused('launch_retired')
     // The holder cannot list this HOME nor the shared file its credential link points at: this machine classifies it.
     const codexHome = join(this.sessionsDir, env.leaf, 'home')
@@ -415,7 +415,10 @@ class Facet implements ExecutorFacet {
       ...(env.shim.missingHelpers.length > 0 ? { missingHelpers: env.shim.missingHelpers } : {}),
       ...(runtimeLaunch ? { runtimeLaunch } : {}),
       ...(codexState.readOnly.length > 0 ? { codexState: { home: codexHome, ...codexState } } : {}),
-      ...(workspaceIncarnation ? { workspaceIncarnation } : {}),
+      // An older holder keys on the device-bearing identity; a newer one keys on the stable one and adopts the other's ledger.
+      ...(workspace
+        ? { workspaceIncarnation: workspace.deviceIncarnation, stableWorkspaceIncarnation: workspace.incarnation }
+        : {}),
       liveCount: this.liveCount()
     }
     return env.reply
