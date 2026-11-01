@@ -578,13 +578,17 @@ describe('a coordinator task that makes its own code channel, through the daemon
     // The bot's join to the channel it made takes no getting-to-know task and no introduction.
     expect(await d.gettingToKnowOnJoin('bot-a', 'int-bot-a', 'C2')).toBe(true)
     expect(await d.gettingToKnowOnJoin('bot-a', 'int-bot-a', 'C9')).toBe(false)
-    expect(
-      await d.store.assistantItems.latestGettingToKnow('bot-a', {
-        platform: 'slack',
-        channel: 'C2',
-        transportScope: scope
-      })
-    ).toBeUndefined()
+    const held = { platform: 'slack', channel: 'C2', transportScope: scope }
+    expect(await d.store.assistantItems.latestGettingToKnow('bot-a', held)).toBeUndefined()
+    // A getting-to-know task taken for it anyway ends unread, and no long session of its own is opened there.
+    d.agents.get('bot-a').assistantMode = { enabled: true }
+    expect(await d.gettingToKnowFacts('bot-a', { origin: held })).toEqual({
+      refused: 'its place is the channel a task works in'
+    })
+    expect(await d.checkParent('bot-a', held, { open: true })).toBeUndefined()
+    expect(await d.store.currentAppendCoordinate('bot-a', 'C2', scope)).toBeUndefined()
+    // The task's own conversation still opens its long session, its coordinator.
+    expect(await d.checkParent('bot-a', { ...held, channel: 'C1' }, { open: true })).toMatchObject({ channel: 'C1' })
     // A follow-up taken in a run there belongs to the origin conversation and replies in the task's thread.
     const take = vi.spyOn(d.followUpChecks, 'take').mockResolvedValue({ ok: true })
     d.activeTurnShare.set(taskKey, {

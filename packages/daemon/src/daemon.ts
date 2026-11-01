@@ -10574,6 +10574,8 @@ export class Daemon {
     // Under `auto` the place's long session is its coordinator (auto-session-mode.md §3.4).
     const coordinator = mode === 'auto' && this.cfg.features.autoSessionMode
     if (!int || (mode !== 'append' && !coordinator)) return undefined
+    // A channel a task holds has no long session of its own (auto-session-mode.md §6.8).
+    if (await this.heldByTask(agentId, int, place.channel)) return undefined
     const thread = coordinator
       ? await this.resolveCoordinator(agentId, {
           platform: place.platform,
@@ -10602,7 +10604,10 @@ export class Daemon {
     const integrationId = this.integrationIdForTransportScope(agentId, platform, transportScope)
     const int = agent?.integrations.find((candidate) => candidate.id === integrationId)
     if (!agent || !int || !integrationId) return { refused: 'the agent no longer reaches this place' }
-    const refusal = gettingToKnowPlaceRefusal(agent, int, { channel })
+    const refusal = gettingToKnowPlaceRefusal(agent, int, {
+      channel,
+      heldByTask: await this.heldByTask(agentId, int, channel)
+    })
     if (refusal && refusal !== 'external') return { refused: GETTING_TO_KNOW_REFUSAL_REASONS[refusal] }
     const info = await this.placeInfo(integrationId, channel)
     const name = info?.name?.trim()

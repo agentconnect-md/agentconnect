@@ -488,8 +488,11 @@ place; a channel is a workspace the task earns.
   a message in any room keyed as one thread waits while one of the agent's rooms is being attached.
 - **Not a place.** A join of the agent's bot to a channel a task holds takes no getting-to-know task
   and no introduction on join; the join waits, as a message does, while the channel is being
-  attached. A follow-up taken in a run there gets the task's place, as every tool of the task's session
-  does, and replies in the thread the task holds there, the one it was opened in.
+  attached. `gettingToKnowPlaceRefusal` refuses such a channel (`task-workspace`), so a getting-to-know
+  task taken for it before the attach landed ends unread, and a report that would open the place's
+  long session opens none there: no coordinator or appending session is minted for it. A follow-up
+  taken in a run there gets the task's place, as every tool of the task's session does
+  (`placeOfSession`), and replies in the thread the task holds there, the one it was opened in.
 - **A fallback task.** The task index does not tell a fallback task from a delegated one: both are
   tasks opened for a message, so a fallback task holds a channel it makes like any other. The "Not
   here" item above is narrower than the daemon here.

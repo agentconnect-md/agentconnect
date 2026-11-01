@@ -288,16 +288,19 @@ export function gettingToKnowReach(
 }
 
 /** Why a place cannot take a getting-to-know task now; undefined when it can. */
-export type GettingToKnowRefusal = 'assistant-mode-off' | 'direct' | 'no-history' | 'external' | 'off'
+export type GettingToKnowRefusal =
+  'assistant-mode-off' | 'direct' | 'task-workspace' | 'no-history' | 'external' | 'off'
 
-/** Whether the agent's conversation on this bot may take a getting-to-know task: assistant mode, not a 1:1 DM, history declared, internal, and not Off. */
+/** Whether the agent's conversation on this bot may take a getting-to-know task: assistant mode, not a 1:1 DM, no task's workspace, history declared, internal, and not Off. */
 export function gettingToKnowPlaceRefusal(
   agent: Pick<Agent, 'assistantMode'> | undefined,
   int: Integration,
-  place: { channel: string; isDm?: boolean }
+  place: { channel: string; isDm?: boolean; heldByTask?: boolean }
 ): GettingToKnowRefusal | undefined {
   if (!assistantModeOn(agent)) return 'assistant-mode-off'
   if (conversationKindOf({ platform: int.platform, channel: place.channel, isDm: place.isDm }) === 'im') return 'direct'
+  // A channel a task holds is the task's workspace, never a place of its own (auto-session-mode.md §6.8).
+  if (place.heldByTask === true) return 'task-workspace'
   if (!declaresPort(int.platform, 'channelHistory')) return 'no-history'
   if (conversationTrustLevel(int, place.channel) === 'external') return 'external'
   if (!conversationAdmitted(integrationRouting(int), place.channel)) return 'off'
@@ -308,6 +311,7 @@ export function gettingToKnowPlaceRefusal(
 export const GETTING_TO_KNOW_REFUSAL_REASONS: Record<GettingToKnowRefusal, string> = {
   'assistant-mode-off': 'assistant mode is off',
   direct: 'its place is a direct message',
+  'task-workspace': 'its place is the channel a task works in',
   'no-history': 'its platform lets a bot read no history',
   external: 'its place is shared with another organization',
   off: 'its place is Off for the agent'
@@ -317,6 +321,7 @@ export const GETTING_TO_KNOW_REFUSAL_REASONS: Record<GettingToKnowRefusal, strin
 export const GETTING_TO_KNOW_REFUSALS: Record<GettingToKnowRefusal, string> = {
   'assistant-mode-off': 'This agent is not in assistant mode, so it does not get to know places.',
   direct: 'A direct message has nothing to read, so there is nothing to get to know.',
+  'task-workspace': 'This channel is a task’s workspace, not a place of its own, so you do not get to know it.',
   'no-history': 'This platform does not let a bot read history, so you cannot get to know this place.',
   external: 'This place is shared with another organization, so you do not get to know it.',
   off: 'This conversation is Off for the agent, so you do not get to know it.'
