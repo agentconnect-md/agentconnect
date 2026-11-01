@@ -124,7 +124,7 @@ export type SlackStreamChunk =
       details?: string
       output?: string
     }
-  // Minimal mode uses this title for its folded reply history; timeline mode ignores it.
+  // Medium and Minimal use this group title; timeline mode ignores it.
   | { type: 'plan_update'; title: string }
 
 /** Dynamic identity shown under the last reply section. All Slack integration modes use

@@ -2153,7 +2153,7 @@ export class SlackConnection implements PlatformConnection {
     identity?: SlackPostOptions,
     taskDisplayMode: 'timeline' | 'plan' = 'timeline'
   ): Promise<SlackTurnStream | undefined> {
-    // Work steps render individually; minimal mode keeps interim replies in a folded plan.
+    // The output mode chooses grouped steps, individual cards or folded reply history.
     const payload: Record<string, unknown> = {
       channel,
       ...(threadTs !== channel ? { thread_ts: threadTs } : {}),

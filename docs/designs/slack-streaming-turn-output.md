@@ -3,8 +3,8 @@
 **Status:** Implemented — **chrome only**. A Slack turn's TOOL-CALL CHROME rides one native
 `chat.startStream` card stream; the agent's answer does not, and the body pipeline is unchanged.
 What came back is the _progress message_, rendered as a native plan card instead of a
-`chat.postMessage` the daemon edits in place — not body streaming (§1). Work steps use native
-`timeline` cards in every supported Slack conversation: ordinary channel threads, DMs and
+`chat.postMessage` the daemon edits in place — not body streaming (§1). Work steps use a native
+`plan` group in Medium and `timeline` cards in High across ordinary channel threads, DMs and
 code channels. `minimal` keeps a folded `plan` containing earlier replies. `minimal` mode later
 joined the stream with its INTERIM reply segments as history cards, posting only its final
 segment as a message (§5.2), which retired that mode's in-place live reply. Layer 0's Agent Sessions
@@ -212,8 +212,9 @@ or thought is a separate card, with the command while it runs and the bounded re
 finishes. Normal channel threads, DMs and code channels use the same path. Unsupported
 surfaces keep the existing in-place progress fallback.
 
-Minimal uses `plan` so its interim replies remain folded above the final answer. Its container
-starts at `Working…` and ends with a counted earlier-reply label, or `Stopped` / `Failed`.
+Medium and Minimal use `plan_update` for their group titles. Minimal folds interim replies
+above the final answer; its title starts at `Working…` and ends with a counted earlier-reply
+label, or `Stopped` / `Failed`.
 `plan_update` titles are ignored by Slack in timeline mode. No model call generates labels or
 invents result summaries; visible text comes from the runtime's own title, description and output.
 
