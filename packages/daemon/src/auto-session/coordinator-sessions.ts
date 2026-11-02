@@ -610,20 +610,13 @@ export class CoordinatorSessions {
     await this.host.reportTaskOwners(agentId, moved)
   }
 
-  /** End a coordinator turn: a one-message turn's text is its reply, and a mention left without an outcome goes to a task (§4.3, §4.5). */
+  /** End a coordinator turn: its final text is never posted, and a mention left without an outcome goes to a task (§4.3, §4.5). */
   async settleTurn(key: string, agentId: string, ended: 'answered' | 'failed' | 'stopped'): Promise<void> {
     const settled = this.turns.end(key, isNoResponsePrefix)
     // A stopped turn was stopped on purpose: nothing it left undecided is acted on.
     if (!settled || ended === 'stopped') return
-    if (ended === 'answered' && settled.reply !== undefined) {
-      const [message] = settled.undecided
-      // A reply a browser already streamed is committed with its turn.
-      if (message!.streamed) return
-      await this.host
-        .post(agentId, message!.integrationId, message!.msg, settled.reply)
-        .catch((err: unknown) => this.host.warn(`coordinator ${key}: reply to ${message!.id} failed (${String(err)})`))
-      return
-    }
+    // Only a browser that streamed the text shows it, and commits it with its turn; elsewhere the coordinator acts through its calls alone.
+    if (ended === 'answered' && settled.reply !== undefined && settled.undecided[0]!.streamed) return
     for (const message of settled.undecided) {
       if (!message.mentionsYou) continue
       await this.fallBack(key, agentId, message).catch((err: unknown) =>

@@ -532,8 +532,11 @@ export async function settlePost(
   }
   // session-concept case 2a and §2.4: the author joins the post's thread with a session whose origin is the posting one.
   // That session already holds the conversation, so the post seeds no second one.
+  // The posting session's own thread, which a task in a room it holds tells (auto-session-mode.md §6.8), is already its.
+  const ownThread = platform === origin.platform && channel === origin.channel && postedThread === origin.thread
   if (
     !post.seed ||
+    ownThread ||
     roomThread !== undefined ||
     postedThread === undefined ||
     providerPostId === undefined ||
@@ -756,11 +759,12 @@ export async function deliverSendMessage(
             'drop `thread` to post at the channel root, or say where else the update should go.'
         )
       }
-      // The caller's own thread: the ordinary reply already reaches it, and a second delivery
-      // path would compete with the one this turn is already streaming (§2.1).
-      if (wantPlatform === ctx.platform && requestedChannel === ctx.channel && updateThread === ctx.thread) {
+      // The thread this turn delivers to, not the session's: a task in a room it holds may still tell its origin thread (§2.1).
+      const deliveryChannel = deps.deliveryChannelNow?.(ctx) ?? ctx.channel
+      const deliveryThread = deps.deliveryThreadNow?.(ctx) ?? ctx.deliveryThread
+      if (wantPlatform === ctx.platform && requestedChannel === deliveryChannel && updateThread === deliveryThread) {
         throw new Error(
-          'sendMessage: `thread` is the conversation you are answering right now. Your ordinary reply for this ' +
+          'sendMessage: `thread` is the thread this turn is delivering to. Your ordinary reply for this ' +
             'turn already reaches it — no sendMessage needed.'
         )
       }

@@ -24751,7 +24751,7 @@ export class Daemon {
       return
     }
     const isAnswerChunk = update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text'
-    // A one-message coordinator turn answers with the text after its last call (auto-session-mode.md §4.3).
+    // A coordinator turn's text after its last call, which only a browser that streamed it shows (auto-session-mode.md §4.3).
     if (isCoordinatorCoordinate(p.plan.sessionThread)) {
       if (isAnswerChunk) this.coordinators.turns.noteText(p.plan.sessionKey, String(update.content.text ?? ''))
       else if (update?.sessionUpdate === 'tool_call') this.coordinators.turns.noteToolCall(p.plan.sessionKey)

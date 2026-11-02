@@ -289,6 +289,30 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(gw.postMessage).not.toHaveBeenCalled()
     })
 
+    it('judges the caller’s own thread by where this turn delivers, so a task in a room it holds may tell its origin', async () => {
+      // auto-session-mode.md §6.8: the session is keyed on its origin thread while this turn answers in the room.
+      const gw = gatewayWithThread('111.1')
+      const { deps: d } = deps(gw)
+      d.deliveryChannelNow = () => 'C_ROOM'
+      d.deliveryThreadNow = () => 'C_ROOM'
+      await executeTool(
+        ctx,
+        'sendMessage',
+        { action: 'postMessage', channel: 'C_CURRENT', thread: '111.1', message: 'done' },
+        d
+      )
+      expect(gw.postMessage).toHaveBeenCalledWith('C_CURRENT', 'done', '111.1', expect.anything())
+      await expect(
+        executeTool(
+          ctx,
+          'sendMessage',
+          { action: 'postMessage', channel: 'C_ROOM', thread: 'C_ROOM', message: 'hi' },
+          d
+        )
+      ).rejects.toThrow(/the thread this turn is delivering to/)
+      expect(gw.postMessage).toHaveBeenCalledTimes(1)
+    })
+
     it('refuses a thread id that is not a root, rather than posting at the root', async () => {
       // A reply's own id would post into the right thread but key a session no reply reaches.
       const gw = gatewayWithThread()

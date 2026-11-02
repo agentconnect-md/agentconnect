@@ -308,6 +308,8 @@ describe('a coordinator task that makes its own code channel, through the daemon
       task?: SessionContext
       makeChannel?: boolean
       replyToReport?: string
+      taskCalls?: Record<string, unknown>[]
+      coordinatorText?: string
     } = {}
     const coordinatorTurns: string[] = []
     const taskTurns: { sessionId: string; text: string }[] = []
@@ -333,6 +335,11 @@ describe('a coordinator task that makes its own code channel, through the daemon
               )
             )
           }
+          // The sendMessage calls the task makes in this run.
+          for (const args of live.taskCalls?.splice(0) ?? [])
+            toolResults.push(
+              await executeTool(live.task!, 'sendMessage', args, live.d.mcp.deps).catch((err: unknown) => err)
+            )
           onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'on it' } })
           return { stopReason: 'end_turn' }
         }
@@ -351,6 +358,11 @@ describe('a coordinator task that makes its own code channel, through the daemon
               messageId: id,
               message: live.replyToReport
             })
+        if (live.coordinatorText)
+          onUpdate(sessionId, {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: live.coordinatorText }
+          })
         return { stopReason: 'end_turn' }
       }),
       cancel: vi.fn(async () => {}),
@@ -400,8 +412,14 @@ describe('a coordinator task that makes its own code channel, through the daemon
     })
     const coordinatorPosts: { channel: string; thread?: string; text: string }[] = []
     vi.spyOn(d, 'gatewayForIntegration').mockReturnValue({
+      getChannelInfo: vi.fn(async (id: string) => ({ id, isIm: false, isMpim: false, isPrivate: false })),
+      // Every thread named here is a root.
+      getThreadReplies: vi.fn(async (_channel: string, thread: string) => [
+        { sender: 'U1', ts: thread, text: 'root', isBot: false, chrome: false, attachments: [] }
+      ]),
       postMessage: vi.fn(async (channel: string, text: string, thread?: string) => {
         coordinatorPosts.push({ channel, thread, text })
+        return `1700000300.00000${coordinatorPosts.length}`
       })
     })
     const scope: string = d.transportScopeForIntegrationIds(['int-bot-a'])
@@ -549,6 +567,33 @@ describe('a coordinator task that makes its own code channel, through the daemon
     expect(booted.coordinatorPosts).toEqual([
       { channel: 'C1', thread: '1.1', text: 'The flaky test is fixed in PR #12.' }
     ])
+    await booted.daemon.stop()
+  })
+
+  it('lets a task running in the channel it holds tell its origin thread, and keeps the coordinator’s final text to itself', async () => {
+    const booted = await boot()
+    const { d, taskKey } = booted
+    await booted.delegate()
+    await d.store.assistantSubsessions.setSummary('bot-a', taskKey, { summary: 'Done: PR #12 is open.', now: 2_000 })
+    booted.live.taskCalls = [
+      { action: 'postMessage', channel: 'C1', thread: '1.1', message: 'Done. The fix is in PR #12.' },
+      { action: 'postMessage', channel: 'C2', thread: 'C2', message: 'Done.' }
+    ]
+    booted.live.coordinatorText =
+      'The task already told the thread, so I am not posting anything more.\n\nAC_NO_RESPONSE'
+    await booted.route(inChannel('1.5', 'fix the flaky test, with a PR'))
+    // The post seeded no turn of the task's own session, so its run in the channel was still reported.
+    await vi.waitFor(() => expect(booted.coordinatorTurns).toHaveLength(2), WAIT)
+    await booted.idle()
+    const [told, refused] = booted.toolResults.slice(-2)
+    expect(told).toMatchObject({ ok: true, post: { channel: 'C1', thread: '1.1' } })
+    expect(String(refused)).toContain('`thread` is the thread this turn is delivering to')
+    expect(booted.taskTurns).toHaveLength(2)
+    // The task's ordinary reply still reaches the channel its turn delivers to.
+    expect(booted.taskPosts.at(-1)).toEqual({ channel: 'C2', thread: 'C2', text: 'on it' })
+    // Only the task's own words reached the origin thread; the report turn's prose and sentinel posted nothing.
+    expect(booted.coordinatorTurns[1]).toContain('[task run] Task "Flaky test" ended a run in its channel')
+    expect(booted.coordinatorPosts).toEqual([{ channel: 'C1', thread: '1.1', text: 'Done. The fix is in PR #12.' }])
     await booted.daemon.stop()
   })
 
