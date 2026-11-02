@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import { dirname, join } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { runtimeStoreDir } from '../paths.js'
-import { resolveCommandPath } from './probe.js'
+import { resolveLocalInvocation } from './probe.js'
 
 // An ACP adapter is the runtime's PARENT process, outside every inner tool sandbox, so it must not
 // load its code from anywhere the model can write. `npx -y <spec>` did exactly that: it resolved and
@@ -186,9 +186,9 @@ const NPM_TIMEOUT_MS = 5 * 60_000
 export function execFileNpmCommand(env: NodeJS.ProcessEnv = npmStoreEnv()): NpmCommandRunner {
   return (args, opts = {}) =>
     new Promise((resolve, reject) => {
-      const npm = resolveCommandPath('npm', env) ?? 'npm'
+      const npm = resolveLocalInvocation('npm', args, env)
       const options = { cwd: opts.cwd, env, timeout: NPM_TIMEOUT_MS, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }
-      execFile(npm, args, options, (err, stdout, stderr) =>
+      execFile(npm.cmd, npm.args, options, (err, stdout, stderr) =>
         err
           ? reject(new Error(`npm ${args[0] ?? ''} failed: ${(String(stderr) || err.message).trim().slice(0, 400)}`))
           : resolve(String(stdout))
