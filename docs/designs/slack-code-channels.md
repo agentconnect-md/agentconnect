@@ -156,7 +156,9 @@ capabilities.
 ### Tasks
 
 The daemon maintains one `Tasks` Block Kit view (`agentconnect-tasks`) for the channel's
-session. It reads the same parent-scoped task ledger and runtime background-task snapshot
+session, or, in a channel a coordinator's task holds (Coordinator tasks), for the task's
+session, which the task index names as the channel's holder since no session is keyed on it.
+It reads the same parent-scoped task ledger and runtime background-task snapshot
 as the console's Tasks panel: Tasks, Follow-ups, Subagents and Commands. Ordinary foreground
 tool calls remain in the response's work steps. Unreported runtime tasks are shown as
 unavailable, not as evidence that no background work exists.

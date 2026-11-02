@@ -566,7 +566,7 @@ export class CoordinatorSessions {
       .store()
       .assistantSubsessions.taskOfThread(agentId, { ...at, thread: replyThreadOf(msg) })
     if (owner !== undefined) await this.deliverToTask(agentId, owner, message)
-    // A fallback task stays in the message's thread, as Per thread would answer it (§4.5).
+    // A fallback task opens in the message's thread, as Per thread would answer it, and may hold a channel it makes (§4.5).
     else
       await this.openTask(await this.taskOwner(agentId, msg, key), agentId, message, taskTitleFrom(msg.text, 'Message'))
   }

@@ -209,4 +209,62 @@ describe('Code channel Tasks', () => {
       await store.close()
     }
   })
+
+  it('shows the session of the task holding the channel, keyed on its origin thread', async () => {
+    const store = await openTestStore({ database: memoryStoreDatabase() })
+    try {
+      await store.upsertSession({
+        key: 'task-key',
+        agentId: 'a1',
+        platform: 'slack',
+        channel: 'C0',
+        thread: '100.1',
+        transportScope: 'T1',
+        sessionId: 's-task',
+        acpSessionId: 'runtime',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: 1
+      })
+      const index = store.assistantSubsessions
+      await index.open({
+        agentId: 'a1',
+        childSessionKey: 'task-key',
+        parentSessionId: 's-coordinator',
+        parentSessionKey: 'coordinator-key',
+        title: 'Fix the build',
+        openedFor: { place: 'slack:C0', messageId: 'msg-100.1' },
+        now: 1
+      })
+      await index.open({
+        agentId: 'a1',
+        childSessionKey: 'task-child',
+        parentSessionId: 's-task',
+        parentSessionKey: 'task-key',
+        title: 'Run the checks',
+        now: 1
+      })
+      const room = { platform: 'slack', channel: 'C9', transportScope: 'T1', thread: 'C9' }
+      await index.attachThread({ agentId: 'a1', childSessionKey: 'task-key', ...room, sinceRound: 1, now: 1 })
+      const deps = {
+        store,
+        admitted: vi.fn(async () => []),
+        open: () => true,
+        assistant: () => false,
+        runtime: vi.fn(async () => snapshot().runtime),
+        link: (sessionId: string) => `https://console.example.test/sessions/${sessionId}`,
+        mask: <T>(_agent: string, value: T): T => value
+      }
+      const held = await readCodeTasks(deps, 'C9', 'task-key')
+      expect(held?.tasks.map((task) => task.title)).toEqual(['Run the checks'])
+      expect(held?.sessionUrl).toBe('https://console.example.test/sessions/s-task')
+      expect(deps.runtime).toHaveBeenCalledWith({ agentId: 'a1', sessionId: 's-task' })
+      expect(deps.admitted).not.toHaveBeenCalled()
+      expect(await readCodeTasks(deps, 'C8', 'task-key')).toBeUndefined()
+      await index.detachThreads('a1', 'task-key')
+      expect(await readCodeTasks(deps, 'C9', 'task-key')).toBeUndefined()
+    } finally {
+      await store.close()
+    }
+  })
 })

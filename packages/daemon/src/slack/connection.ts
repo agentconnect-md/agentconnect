@@ -1163,7 +1163,7 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /** A code channel is one session keyed on the channel, so a root post there belongs to it (slack-code-channels.md). */
+  /** A code channel is keyed as one thread, the channel, so a root post there belongs to its session or the task holding it (slack-code-channels.md). */
   async roomThread(channel: string): Promise<string | undefined> {
     return (await this.codeChannel(channel).catch(() => undefined))?.code ? channel : undefined
   }
