@@ -233,13 +233,36 @@ describe('a coordinator task and the channel it makes', () => {
     }).sessionContext
     expect(standing).toContain(THREADED_TASK_APPEND)
     expect(THREADED_TASK_APPEND).toContain('at the end of each run there the coordinator gets your summary')
-    const report = roomRunReport('completed', 'Flaky test', 'Done: PR #12 is open.', LINK)
-    expect(report.text).toBe(
-      `[task run] Task "Flaky test" ended a run in its channel (${LINK}). Its summary: Done: PR #12 is open.`
+    // The run's final output is the report; the task's summary, one line, only follows it.
+    const frame = `[task run] Task "Flaky test" ended a run in its channel (${LINK}). Its final output, delivered on its behalf:`
+    const report = roomRunReport(
+      'completed',
+      'Flaky test',
+      'Fixed: PR #12 is open.',
+      'Done: PR #12 is open.\nNext: none.',
+      LINK
     )
-    expect(roomRunReport('failed', 'Flaky test', undefined, undefined).text).toBe(
-      '[task run] Task "Flaky test" stopped in its channel before finishing (error). It has not written a summary yet.'
+    expect(report.text).toBe(`${frame}\n\nFixed: PR #12 is open.\n\nIts summary: Done: PR #12 is open. Next: none.`)
+    expect(report.shown).toEqual({
+      text: 'Fixed: PR #12 is open.',
+      notes: [frame, 'Its summary: Done: PR #12 is open. Next: none.']
+    })
+    expect(roomRunReport('completed', 'Flaky test', 'Fixed.', '  ', LINK)).toEqual({
+      text: `${frame}\n\nFixed.`,
+      shown: { text: 'Fixed.', notes: [frame] }
+    })
+    // A stale summary does not stand in for a result the run did not produce.
+    expect(roomRunReport('completed', 'Flaky test', undefined, 'In progress: next, post the list.', LINK).text).toBe(
+      `[task run] Task "Flaky test" ended a run in its channel (${LINK}) without a final output; any reply it ` +
+        'posted there is its result. Its summary: In progress: next, post the list.'
     )
+    expect(roomRunReport('failed', 'Flaky test', 'half done', undefined, undefined)).toEqual({
+      text: '[task run] Task "Flaky test" stopped in its channel before finishing (error). Anything it posted there is all it reported.',
+      shown: {
+        text: '[task run] Task "Flaky test" stopped in its channel before finishing (error). Anything it posted there is all it reported.',
+        notes: []
+      }
+    })
     const batch = renderCoordinatorBatch(
       [
         {
@@ -309,6 +332,7 @@ describe('a coordinator task that makes its own code channel, through the daemon
       makeChannel?: boolean
       replyToReport?: string
       taskCalls?: Record<string, unknown>[]
+      taskReply?: string
       coordinatorText?: string
     } = {}
     const coordinatorTurns: string[] = []
@@ -340,7 +364,8 @@ describe('a coordinator task that makes its own code channel, through the daemon
             toolResults.push(
               await executeTool(live.task!, 'sendMessage', args, live.d.mcp.deps).catch((err: unknown) => err)
             )
-          onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'on it' } })
+          const text = live.taskReply ?? 'on it'
+          onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
           return { stopReason: 'end_turn' }
         }
         coordinatorTurns.push(prompt)
@@ -551,10 +576,12 @@ describe('a coordinator task that makes its own code channel, through the daemon
     await booted.delegate()
     // A run answering in the asker's own thread reports nothing.
     expect(booted.coordinatorTurns).toHaveLength(1)
+    // A summary the task wrote before it moved, which it did not update as it finished.
     await d.store.assistantSubsessions.setSummary('bot-a', taskKey, {
-      summary: 'Done: PR #12 is open and green.',
+      summary: 'In progress: the fix is pushed; next, open the PR.',
       now: 2_000
     })
+    booted.live.taskReply = 'Done: PR #12 is open and green.'
     booted.live.replyToReport = 'The flaky test is fixed in PR #12.'
     await booted.route(inChannel('1.5', 'fix the flaky test, with a PR'))
     await vi.waitFor(() => expect(booted.coordinatorTurns).toHaveLength(2), WAIT)
@@ -562,8 +589,12 @@ describe('a coordinator task that makes its own code channel, through the daemon
     const reported = booted.coordinatorTurns[1]!
     expect(reported).toContain(`kind="delegated task" title="Flaky test">`)
     expect(reported).toMatch(/<report id="[^"]+" task="[^"]+"/)
-    expect(reported).toContain('[task run] Task "Flaky test" ended a run in its channel')
-    expect(reported).toContain('Its summary: Done: PR #12 is open and green.')
+    // The run's own final reply, the channel linked, and the stale summary only after it.
+    expect(reported).toContain(
+      '[task run] Task "Flaky test" ended a run in its channel (https://fake.slack.com/archives/C2). Its final ' +
+        'output, delivered on its behalf:\n\nDone: PR #12 is open and green.\n\n' +
+        'Its summary: In progress: the fix is pushed; next, open the PR.'
+    )
     expect(booted.coordinatorPosts).toEqual([
       { channel: 'C1', thread: '1.1', text: 'The flaky test is fixed in PR #12.' }
     ])

@@ -14108,15 +14108,22 @@ export class Daemon {
       .finish(entry.agentId, key, 'done')
       .catch((err) => this.log.warn(`task ${key}: settling its turn failed: ${formatErr(err)}`))
     if (entry.msg.sessionChannel === undefined || !wholeRoomThread(entry.msg)) return
+    // Taken whether or not this turn reports, so a later run never carries this turn's output.
+    const output = this.collab.takeFinalOutput(key)
     // A stopped run was stopped there on purpose, and the run goes on while its room's messages are queued.
     if ((ended !== 'completed' && ended !== 'failed') || (this.serialQueue.get(key)?.length ?? 0) > 0) return
-    await this.reportRoomRun(entry, key, ended).catch((err) =>
+    await this.reportRoomRun(entry, key, ended, ended === 'completed' ? output : undefined).catch((err) =>
       this.log.warn(`task ${key}: reporting its run in ${entry.msg.channel} failed: ${formatErr(err)}`)
     )
   }
 
-  /** A task's run in a room it holds reports to its coordinator, which may relay it in the origin thread (auto-session-mode.md §6.8). */
-  private async reportRoomRun(entry: QueueEntry, key: string, ended: 'completed' | 'failed'): Promise<void> {
+  /** A task's run in a room it holds reports its final output to its coordinator, which may relay it in the origin thread (auto-session-mode.md §6.8). */
+  private async reportRoomRun(
+    entry: QueueEntry,
+    key: string,
+    ended: 'completed' | 'failed',
+    output: string | undefined
+  ): Promise<void> {
     const { agentId, msg, integrationId } = entry
     const row = await this.store.assistantSubsessions.get(agentId, key)
     if (!row || row.mode === 'watch') return
@@ -14125,7 +14132,7 @@ export class Daemon {
       { platform: msg.platform, channel: msg.channel, thread: msg.channel },
       integrationId === undefined ? undefined : this.connForIntegration(integrationId)
     )
-    const report = roomRunReport(ended, row.title, row.summary, link)
+    const report = roomRunReport(ended, row.title, output, row.summary, link)
     const delivered = await this.collab.deliverDaemonReport({
       agentId,
       caller: {

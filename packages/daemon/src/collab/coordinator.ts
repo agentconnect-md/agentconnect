@@ -2,6 +2,7 @@
 import { isAppendCoordinate } from '../session/append-coordinate.js'
 import { deriveTitle } from '../session/derive-title.js'
 import { readCheckedTask } from '../assistant/checked-tasks.js'
+import { wholeRoomThread } from '../auto-session/coordinator-turns.js'
 import { subsessionLabel } from '../permissions/subsession-approval.js'
 import {
   SUBSESSION_COORDINATE_PREFIX,
@@ -289,21 +290,27 @@ function endReason(end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
       : (end.reason ?? 'interrupted')
 }
 
-/** What a task holding a room reports to its coordinator at the end of a run there: its summary, which the coordinator may relay in the origin thread (auto-session-mode.md §6.8). */
+/** What a task holding a room reports to its coordinator at the end of a run there: the run's final output, which the coordinator may relay in the origin thread (auto-session-mode.md §6.8). */
 export function roomRunReport(
   outcome: 'completed' | 'failed',
   label: string | null | undefined,
+  output: string | undefined,
   summary: string | undefined,
   link: string | undefined
 ): { text: string; shown: ShownInput } {
   const task = taskName(label, 'Task')
   const where = link ? `in its channel (${link})` : 'in its channel'
-  const frame =
+  // The task's own account, stale when it did not update it, so it only follows the result.
+  const notes = summary?.trim() ? [`Its summary: ${summary.replace(/\s+/g, ' ').trim()}`] : []
+  if (outcome === 'completed' && output) {
+    const frame = `[task run] ${task} ended a run ${where}. Its final output, delivered on its behalf:`
+    return { text: [frame, output, ...notes].join('\n\n'), shown: { text: output, notes: [frame, ...notes] } }
+  }
+  const status =
     outcome === 'completed'
-      ? `[task run] ${task} ended a run ${where}.`
-      : `[task run] ${task} stopped ${where} before finishing (error).`
-  const body = summary?.trim() ? `Its summary: ${summary.trim()}` : 'It has not written a summary yet.'
-  return { text: `${frame} ${body}`, shown: { text: body, notes: [frame] } }
+      ? `[task run] ${task} ended a run ${where} without a final output; any reply it posted there is its result.`
+      : `[task run] ${task} stopped ${where} before finishing (error). Anything it posted there is all it reported.`
+  return { text: [status, ...notes].join(' '), shown: { text: status, notes } }
 }
 
 /** The one short report an approved proposal that ended without its own gets in its owning session; a follow-up's check settles on its own path. */
@@ -515,7 +522,7 @@ export class CollabCoordinator {
   private readonly subsessionAdmitting = new Map<string, number>()
   // The latest round a parent message joined (not opened) and the child accepted, per sub-session.
   private readonly subsessionJoinedRound = new Map<string, number>()
-  // A delegated sub-session's latest final output, which its round-end report carries (send-message-guide.md §8.5).
+  // A delegated sub-session's latest final output for its round-end report (send-message-guide.md §8.5), a held room's for its run report.
   private readonly subsessionFinalOutputs = new Map<string, { round?: number | undefined; text: string }>()
   // Submissions being admitted right now, so a concurrent replay of one waits for its receipt instead.
   private readonly subsessionSubmissions = new Set<string>()
@@ -808,6 +815,13 @@ export class CollabCoordinator {
     } catch (err) {
       this.host.log().warn(`sub-session ${key}: could not settle its round: ${formatErr(err)}`)
     }
+  }
+
+  /** The final output the turn of `key` that just ended left for its report, taken once (auto-session-mode.md §6.8). */
+  takeFinalOutput(key: string): string | undefined {
+    const stashed = this.subsessionFinalOutputs.get(key)
+    this.subsessionFinalOutputs.delete(key)
+    return stashed?.text
   }
 
   /** A task's label as its cards and listTasks name it: its session's title; null when it has none. */
@@ -2157,13 +2171,14 @@ export class CollabCoordinator {
     callMeta: CallMeta | undefined,
     p: { reply: { text: string }; outputSuppressed?: string | undefined }
   ): Promise<void> {
-    // send-message-guide.md §8.5: a delegated sub-session's output rides its round-end report instead.
-    if (isDelegationCoordinate(sessionThreadOf(msg))) {
+    const delegated = isDelegationCoordinate(sessionThreadOf(msg))
+    // send-message-guide.md §8.5: a delegated sub-session's output rides its round-end report instead, a held room's run its run report.
+    if (delegated || (msg.sessionChannel !== undefined && wholeRoomThread(msg))) {
       const output = p.outputSuppressed ? '' : p.reply.text.trim()
       if (output && !isNoResponseBody(output))
         this.subsessionFinalOutputs.set(childKey, { round: callMeta?.subsessionRound, text: output })
       else this.subsessionFinalOutputs.delete(childKey)
-      return
+      if (delegated) return
     }
     if (this.host.draining()) return
     if (p.outputSuppressed) return
