@@ -301,7 +301,7 @@ function scaffold(): string {
 }
 
 describe('a coordinator task that makes its own code channel, through the daemon (auto-session-mode.md §6.8)', () => {
-  async function boot() {
+  async function boot(opts: { sourceGate?: boolean } = {}) {
     const live: {
       d?: any
       ctx?: SessionContext
@@ -367,8 +367,9 @@ describe('a coordinator task that makes its own code channel, through the daemon
     await daemon.start()
     const d = daemon as any
     live.d = d
-    // The harness has no real platform audience to bind a session to.
-    d.bindSessionSource = async () => 'unchanged'
+    // Off unless asked for: the session source gate binds each session to its Slack conversation in the workspace.
+    if (opts.sourceGate) vi.spyOn(d.connByIntegration.get('int-bot-a'), 'workspaceId').mockReturnValue('T_FAKE_TEAM')
+    else d.bindSessionSource = async () => 'unchanged'
     vi.spyOn(d.placeMembers, 'isFullMember').mockResolvedValue(true)
     // The Slack connection the code channel tool acts through: C2 is the code channel Slack makes, C1 is not one.
     let creating: Promise<void> = Promise.resolve()
@@ -548,6 +549,80 @@ describe('a coordinator task that makes its own code channel, through the daemon
     expect(booted.coordinatorPosts).toEqual([
       { channel: 'C1', thread: '1.1', text: 'The flaky test is fixed in PR #12.' }
     ])
+    await booted.daemon.stop()
+  })
+
+  it('lets Slack’s copy in the channel its task holds through the source gate as the task’s own, the binding kept on its origin', async () => {
+    const booted = await boot({ sourceGate: true })
+    const { d, taskKey } = booted
+    await booted.delegate()
+    const binding = async (): Promise<Record<string, unknown>> => await d.store.getSession(taskKey)
+    const before = await binding()
+    expect(before).toMatchObject({
+      externalProvider: 'slack',
+      externalRealmKey: 'T_FAKE_TEAM',
+      externalResourceKind: 'conversation',
+      externalResourceKey: 'C1',
+      externalIntegrationId: 'int-bot-a',
+      sourceBindingKind: 'external',
+      conversationKind: 'channel'
+    })
+    await d.store.assistantSubsessions.setSummary('bot-a', taskKey, {
+      summary: 'Done: PR #12 is open and green.',
+      now: 2_000
+    })
+    booted.live.replyToReport = 'The flaky test is fixed in PR #12.'
+    await booted.route(inChannel('1.5', 'fix the flaky test, with a PR'))
+    await vi.waitFor(() => expect(booted.coordinatorTurns).toHaveLength(2), WAIT)
+    await booted.idle()
+    // No rejection: the task's own session ran the copy and answered in the channel.
+    expect(booted.taskPosts.map((post) => post.text)).not.toContainEqual(expect.stringContaining('another source'))
+    expect(booted.taskTurns).toHaveLength(2)
+    expect(booted.taskTurns[1]!.sessionId).toBe(booted.taskTurns[0]!.sessionId)
+    expect(booted.taskPosts.at(-1)).toEqual({ channel: 'C2', thread: 'C2', text: 'on it' })
+    const after = await binding()
+    for (const field of [
+      'externalProvider',
+      'externalRealmKey',
+      'externalResourceKind',
+      'externalResourceKey',
+      'externalIntegrationId',
+      'sourceBindingKind',
+      'conversationKind'
+    ] as const)
+      expect(after[field]).toBe(before[field])
+    expect(booted.coordinatorTurns[1]).toContain('[task run] Task "Flaky test" ended a run in its channel')
+    expect(booted.coordinatorPosts).toEqual([
+      { channel: 'C1', thread: '1.1', text: 'The flaky test is fixed in PR #12.' }
+    ])
+    await booted.daemon.stop()
+  })
+
+  it('still refuses a message keyed onto a session from a room its task does not hold, or from another realm', async () => {
+    const booted = await boot({ sourceGate: true })
+    const { d, taskKey, scope } = booted
+    await booted.delegate()
+    const gate = async (key: string, msg: NormalizedMessage) =>
+      await d.bindSessionSource('bot-a', key, msg, undefined, undefined)
+    const keyed = (channel: string, sessionThread = '1.1') =>
+      slack('1.8', {
+        msgId: `slack:${channel}:1.8`,
+        channel,
+        thread: channel,
+        sessionChannel: 'C1',
+        sessionThread,
+        transportScope: scope
+      })
+    expect(await gate(taskKey, keyed('C2'))).toBe('unchanged')
+    // A room no task holds, keyed onto a session of another conversation.
+    expect(await gate(taskKey, keyed('C3'))).toBe('mismatch')
+    // The room is the task's, not any session's of the origin conversation: the coordinator's is still another.
+    const coordinatorKey = sessionKey('slack', 'C1', booted.live.ctx!.thread, 'bot-a', scope)
+    expect(await d.store.getSession(coordinatorKey)).toMatchObject({ externalResourceKey: 'C1' })
+    expect(await gate(coordinatorKey, keyed('C2', booted.live.ctx!.thread))).toBe('mismatch')
+    // The room the task holds, from another realm.
+    vi.spyOn(d.connByIntegration.get('int-bot-a'), 'workspaceId').mockReturnValue('T_OTHER_TEAM')
+    expect(await gate(taskKey, keyed('C2'))).toBe('mismatch')
     await booted.daemon.stop()
   })
 
