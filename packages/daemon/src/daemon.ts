@@ -669,6 +669,7 @@ import { FeishuConverger, type FeishuAction } from './feishu/render.js'
 import {
   Scheduler,
   buildSyntheticMessage,
+  cronAnchorText,
   missedOccurrence,
   scheduleFingerprint,
   type ScheduleDefinition
@@ -29909,7 +29910,7 @@ export class Daemon {
         agentId,
         delivery,
         cron.target,
-        `⏰ ${cron.trigger}`,
+        cronAnchorText(cron, new Date(firedAt)),
         `cron "${cron.id}"`,
         cron.origin === 'cp'
           ? (sessionId) => {

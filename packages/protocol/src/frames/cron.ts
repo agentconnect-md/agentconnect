@@ -11,10 +11,9 @@ import { Platform } from './route.js'
  * single source of truth, same model as integrations) — surviving a restart
  * with the CP down.
  *
- * `target` is OPTIONAL output routing: when present, the daemon posts the
- * trigger as a real message in that channel and the agent's session replies in
- * its thread; when absent the fire is headless (the agent works with no
- * platform output).
+ * `target` is OPTIONAL output routing: when present, the daemon posts an anchor
+ * (`name` + fire time, never the `trigger` prompt) in that channel and the
+ * agent's session replies in its thread; when absent the fire is headless.
  */
 
 export const CronTarget = z.object({
@@ -38,6 +37,8 @@ export const CronUpsert = z.object({
   timezone: z.string().min(1), // resolved IANA timezone; daemon converts ticks to UTC instants
   target: CronTarget.optional(), // absent ⇒ headless fire
   trigger: z.string(), // synthetic prompt text injected on fire
+  // Console display name; a targeted fire's channel anchor shows it (with the fire time) instead of `trigger`.
+  name: z.string().min(1).max(120).optional(),
   enabled: z.boolean().default(true),
   // The console user its runs read as (assistant-mode.md §5.5): its last human editor, else its creator; absent ⇒ no person.
   askerUserId: z.string().min(1).max(256).optional()

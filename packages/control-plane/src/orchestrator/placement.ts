@@ -159,6 +159,7 @@ export function cronToUpsert(c: CronRecord): CronUpsert | null {
         }
       : {}),
     trigger: c.trigger,
+    ...(c.name ? { name: c.name } : {}),
     enabled: c.enabled,
     // Its runs read as the person who last set what it does, else its creator (assistant-mode.md §5.5).
     ...((c.lastModifiedBy?.userId ?? c.createdByUserId)

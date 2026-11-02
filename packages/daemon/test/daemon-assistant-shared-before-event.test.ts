@@ -17,6 +17,7 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 const INT = 'int-bot-a'
 const TS = '1700000000.000100'
 const REPLY = 'The digest is ready.'
+const ANCHOR = expect.stringMatching(/^⏰ Daily digest · \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/)
 
 function scaffold(assistant: boolean): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-shared-'))
@@ -61,6 +62,7 @@ function scaffold(assistant: boolean): string {
 async function boot(assistant = true) {
   const root = scaffold(assistant)
   const clock = new FakeClock(Date.now())
+  const prompts: unknown[] = []
   const daemon = new Daemon({
     root,
     clock,
@@ -74,7 +76,8 @@ async function boot(assistant = true) {
         newSession: async () => 'acp-1',
         loadSession: async () => true,
         hasSession: () => true,
-        prompt: async (id: string) => {
+        prompt: async (id: string, blocks: unknown) => {
+          prompts.push(blocks)
           onUpdate(id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: REPLY } })
           return { stopReason: 'end_turn' }
         }
@@ -114,7 +117,9 @@ async function boot(assistant = true) {
   })
   const cron: CronDef = {
     id: 'cron-digest',
+    name: 'Daily digest',
     schedule: '0 9 * * *',
+    timezone: 'UTC',
     trigger: 'post the digest',
     enabled: true,
     target: { platform: 'slack', channel: 'C_ROOM', integrationId: INT }
@@ -154,6 +159,8 @@ async function boot(assistant = true) {
     /** Whether the write rule holds a post from the asker's DM into a channel for approval as shared. */
     sharedFromElsewhere: async (channel = 'C_ROOM'): Promise<boolean> =>
       await d.mcp.deps.targetExternal('bot-a', INT, channel, false),
+    /** Every prompt the agent's runtime received, serialized. */
+    prompts: () => prompts.map((blocks) => JSON.stringify(blocks)),
     /** The channel and text of every post made, in order. */
     posts: () => conn.postMessage.mock.calls.map((call) => (call as unknown[]).slice(0, 2)),
     drafts: async (): Promise<AssistantDraft[]> => {
@@ -170,6 +177,20 @@ async function boot(assistant = true) {
   }
 }
 
+describe('a scheduled run’s anchor', () => {
+  it('names the schedule and its fire time in the channel, while the session is still prompted with the trigger', async () => {
+    const h = await boot()
+    try {
+      await h.fire()
+      expect(h.posts()[0]).toEqual(['C_ROOM', ANCHOR])
+      expect(h.posts().some(([, text]) => String(text).includes('post the digest'))).toBe(false)
+      expect(h.prompts().some((prompt) => prompt.includes('post the digest'))).toBe(true)
+    } finally {
+      await h.close()
+    }
+  })
+})
+
 describe('a channel shared with no event since', () => {
   it('posts a scheduled run’s anchor and reply directly, drafting nothing, and reads external from then on', async () => {
     const h = await boot()
@@ -177,7 +198,7 @@ describe('a channel shared with no event since', () => {
       h.slack.shared.add('C_ROOM')
       await h.fire()
       expect(h.posts()).toEqual([
-        ['C_ROOM', '⏰ post the digest'],
+        ['C_ROOM', ANCHOR],
         ['C_ROOM', REPLY]
       ])
       expect(await h.drafts()).toEqual([])
@@ -268,7 +289,7 @@ describe('a scheduled run in a place already known external', () => {
     try {
       await h.fire('C_EXT')
       expect(h.posts()).toEqual([
-        ['C_EXT', '⏰ post the digest'],
+        ['C_EXT', ANCHOR],
         ['C_EXT', REPLY]
       ])
       expect(await h.drafts()).toEqual([])

@@ -3077,8 +3077,7 @@ const ianaTimezone = z
 
 export const UpsertCronBody = z.object({
   agentId: z.string().uuid(), // the agent this cron drives — required (§3.11)
-  // Console display name ("weekly-deploy-report") — console metadata only,
-  // never delivered to the daemon. Optional for API/legacy compatibility.
+  // Display name ("weekly-deploy-report"); a targeted fire's channel anchor shows it instead of the prompt.
   name: z.string().trim().min(1).max(120).optional(),
   schedule: cronerSchedule,
   // Omitted ⇒ UTC on create, and on an edit the zone the schedule already has. The server never

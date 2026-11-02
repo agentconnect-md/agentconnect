@@ -416,6 +416,7 @@ const CronUpsert = z.object({
     })
     .optional(),
   trigger: z.string(), // synthetic prompt text injected on fire
+  name: z.string().min(1).max(120).optional(), // console display name; labels the channel anchor
   enabled: z.boolean().default(true)
 })
 const CronRemove = z.object({ cronId: z.string().uuid() })
@@ -428,7 +429,7 @@ definition is written to `agent.json`.
 
 On fire — **no CP round-trip**:
 
-- **With `target`**: the daemon posts the `trigger` text as a real message in that channel (the anchor), then starts/resumes the agent's session **threaded under the anchor** so the agent's replies land there — equivalent to a user posting the trigger in-channel.
+- **With `target`**: the daemon posts a real message in that channel (the anchor) reading `⏰ <name> · <fire time> <zone>` — the cron's `name` (else a generic label) and the fire time on the schedule's clock, **not** the `trigger` prompt — then starts/resumes the agent's session **threaded under the anchor** so the agent's replies land there. The session's prompt is still the `trigger` text, unchanged.
 - **Without `target`**: a headless fire — the agent runs the work in its workspace session with no platform output (transcript still recorded, outcome visible in the console).
 
 The outcome is reported via `event/session` / `usage/report`. Each fire of a CP-owned cron is additionally reported via **`cron/report`** (D→C EVT, fire-and-forget) so the console's `lastRunAt` and run history converge: the FIRE report (`{cronId, agentId, firedAt}`) stamps `lastRunAt` (latest-wins, scoped to the owning agent's daemon) and opens a run row, and the COMPLETION report (same key + `{status, durationMs, sessionId?, reason?}`) closes it when the dispatched turn ends. The CP copy is advisory display history; D11 stays authoritative, and the daemon re-asserts its stored fire stamps on reconnect to cover fires while the CP was unreachable. The COMPLETION report is durable: the daemon keeps it in a local outbox, one row per run, and sends it as **`cron/report-sync`** (D→C REQ → `ack`, same payload) to a CP that advertises `cron-report-ack-v1`, releasing the row only on the ACK. The CP's `(cronId, firedAt)` upsert absorbs a re-send, and it ACKs a report it drops as unknown or foreign so the row is released. An older CP receives the completion once as the EVT. The console's "Run now" sends **`cron/run`** (C→D REQ `{cronId}` → ack): the daemon acks acceptance and fires asynchronously — outcome arrives as normal `cron/report`s. Missed-fire compensation (daemon was down across a scheduled tick) uses D11 last-run: default policy is skip stale, fire next.

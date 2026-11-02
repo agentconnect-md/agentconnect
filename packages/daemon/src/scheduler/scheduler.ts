@@ -48,6 +48,13 @@ export function scheduledRunContext(cron: CronDef, now: Date): string {
   return `Scheduled run: ${wallClock(now, zone)} ${zone} — ${whose}.`
 }
 
+/** The channel anchor of a targeted fire: the schedule's name and when it fired — never its prompt, which only the session sees. */
+export function cronAnchorText(cron: CronDef, now: Date): string {
+  const { zone } = firingZone(cron.timezone)
+  const label = cron.name?.trim() || (cron.origin === 'cp' ? 'Scheduled task' : cron.id)
+  return `⏰ ${label} · ${wallClock(now, zone)} ${zone}`
+}
+
 export function buildSyntheticMessage(
   agentId: string,
   cron: CronDef,

@@ -2099,7 +2099,7 @@ model CronDef {
   id                   String             @id @db.Uuid // CronUpsert.cronId
   orgId                String
   agentId              String?            @db.Uuid // required at the API; null only via agent-delete SetNull (inert until re-assigned)
-  name                 String? // console display name ("weekly-deploy-report"); pure console metadata, never on the daemon wire. Null for legacy/CLI rows.
+  name                 String? // console display name ("weekly-deploy-report"); also labels the channel anchor of a targeted fire in place of the prompt. Null for legacy/CLI rows.
   schedule             String // croner expression interpreted in timezone
   timezone             String // IANA timezone resolved by the CP before persistence
   targetPlatform       String             @default("slack")
