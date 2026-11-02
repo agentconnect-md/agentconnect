@@ -38,6 +38,7 @@ export function toCronDef(cron: CronUpsert): CronDef {
         }
       : {}),
     trigger: cron.trigger,
+    ...(cron.name ? { name: cron.name } : {}),
     enabled: cron.enabled !== false,
     origin: 'cp'
   }

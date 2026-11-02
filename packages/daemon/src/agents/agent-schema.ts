@@ -108,7 +108,7 @@ export type Integration = z.infer<typeof IntegrationSchema>
 
 /** A scheduled trigger for THIS agent: every `schedule` tick, prompt the agent
  *  with `trigger`. `target` is optional output routing — when present the daemon
- *  posts the trigger into that channel and the session replies in its thread;
+ *  posts an anchor (name + fire time) into that channel and the session replies in its thread;
  *  absent ⇒ headless fire (no platform output). `origin:"cp"` marks CP-pushed
  *  entries (written by cron/upsert, pruned by drop.crons); hand-authored entries
  *  have no origin and are never touched by the CP. */
@@ -129,6 +129,8 @@ export const CronDefSchema = z.object({
     })
     .optional(),
   trigger: z.string(),
+  // Display name shown on the channel anchor in place of the prompt; absent ⇒ the id (hand-authored) or a generic label.
+  name: z.string().min(1).optional(),
   enabled: z.boolean().default(true),
   origin: z.literal('cp').optional()
 })

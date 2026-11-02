@@ -1136,4 +1136,9 @@ describe('cronToUpsert asker (assistant-mode.md §5.5)', () => {
     expect(cronToUpsert(cron({ createdByUserId: 'user-creator' }))?.askerUserId).toBe('user-creator')
     expect(cronToUpsert(cron({}))).not.toHaveProperty('askerUserId')
   })
+
+  it('carries the display name the anchor shows in place of the prompt, and none for an unnamed row', () => {
+    expect(cronToUpsert(cron({ name: 'weekly-deploy-report' }))?.name).toBe('weekly-deploy-report')
+    expect(cronToUpsert(cron({}))).not.toHaveProperty('name')
+  })
 })

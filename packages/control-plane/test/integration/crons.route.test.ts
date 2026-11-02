@@ -181,7 +181,7 @@ describe('cron replication CP→daemon (REST → cron/upsert·remove)', () => {
       lastModifiedBy: string | null
       lastModifiedAt: string
     }
-    expect(dto.name).toBe('weekly-deploy-report') // console metadata — echoed, never on the wire
+    expect(dto.name).toBe('weekly-deploy-report') // echoed; also labels the fire's channel anchor
     expect(dto.createdBy).toBe('usr_owner000000000000000000') // devAuth = seeded owner userId
     expect(Date.parse(dto.createdAt)).not.toBeNaN()
     expect(dto.lastModifiedBy).toBe(dto.createdBy)

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   buildSyntheticMessage,
+  cronAnchorText,
   isHeadlessCronSession,
   missedOccurrence,
   scheduleFingerprint,
@@ -97,6 +98,25 @@ describe('buildSyntheticMessage', () => {
     expect(buildSyntheticMessage('bot-a', cron('daily'), 't', FIRED_AT).msg).not.toHaveProperty('scheduleTimeZone')
     const unknown = cron('daily', { timezone: 'Not/AZone' })
     expect(buildSyntheticMessage('bot-a', unknown, 't', FIRED_AT).msg).not.toHaveProperty('scheduleTimeZone')
+  })
+})
+
+describe('cronAnchorText', () => {
+  it('shows the schedule’s name and its fire time on the schedule’s clock, never the prompt', () => {
+    const text = cronAnchorText(cron('daily', { name: 'Health report', timezone: 'Asia/Shanghai' }), FIRED_AT)
+    expect(text).toBe('⏰ Health report · 2026-08-30 01:58 Asia/Shanghai')
+    expect(text).not.toContain('post health report')
+  })
+
+  it('falls back to a hand-authored cron’s id, and to a generic label for an unnamed console cron', () => {
+    expect(cronAnchorText(cron('daily', { timezone: 'UTC' }), FIRED_AT)).toBe('⏰ daily · 2026-08-29 17:58 UTC')
+    const unnamed = cron('5b2c7c1e-0000-4000-8000-000000000000', { timezone: 'UTC', origin: 'cp', name: '  ' })
+    expect(cronAnchorText(unnamed, FIRED_AT)).toBe('⏰ Scheduled task · 2026-08-29 17:58 UTC')
+  })
+
+  it('leaves the session prompt as the trigger', () => {
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily', { name: 'Health report' }), 't', FIRED_AT)
+    expect(msg.text.endsWith('\n\npost health report')).toBe(true)
   })
 })
 
