@@ -85,8 +85,8 @@ platform. It moves into a code channel only when it makes one for its work with
   made outside a task, or whose task has closed, stays an ordinary channel session.
 - A message the coordinator hands the task later moves into the channel, and its thread gets
   a link.
-- At the end of each run in the channel the task reports to its coordinator with its summary,
-  and the coordinator may relay it in the message's thread.
+- At the end of each run in the channel the task reports to its coordinator with the run's final
+  output and its summary after it, and the coordinator may relay it in the message's thread.
 - Archiving the channel closes the task. So do 7 idle days, and its coordinator's
   conversation leaving Auto.
 - A thread session adopted on a switch into Auto holds no channel it makes: that channel gets

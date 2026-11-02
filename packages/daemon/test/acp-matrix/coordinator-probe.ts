@@ -671,9 +671,10 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
         title: RETRY_TASK.title,
         text:
           `[task run] Task "${RETRY_TASK.title}" ended a run in its channel ` +
-          `(https://chat.example.test/archives/${CO_IDS.codeChannel}). Its summary: ${RETRY_TASK.summary.status} ` +
-          `${RETRY_TASK.summary.next}\n\nSpeak to the people here in the language they use, even when this report is in ` +
-          'another.'
+          `(https://chat.example.test/archives/${CO_IDS.codeChannel}). Its final output, delivered on its behalf:\n\n` +
+          'PR #4907 is open: the webhook sender retries with exponential backoff, with tests, and CI is green. It is ' +
+          `ready for review.\n\nIts summary: ${RETRY_TASK.summary.status} ${RETRY_TASK.summary.next}\n\nSpeak to the ` +
+          'people here in the language they use, even when this report is in another.'
       }
     ],
     expect: { 'msg-1700001400.000900': { kind: 'reply', mentions: '4907' } }

@@ -5029,3 +5029,12 @@ so the reasons were posted in the asker's thread although the prompt promises th
 to nobody and ④ settles a report with no call silently. The delivery boundary now drops a
 coordinator's final text, sentinel or not, outside webchat, so a one-message turn no longer answers
 with its text and a mention it answered only in text falls back to a task.
+
+**Ninety-first revision (2026-11-02)**: a task's run report from a channel it holds carries the run's
+result (auto-session-mode.md §6.8 "Reports"). The report carried only the task's summary, which nothing
+refreshes at the end of a run, so a task that moved into its channel with an "in progress" summary and
+finished there without updating it reported "in progress", the coordinator had nothing to relay, and
+the asker's thread never heard that the work was done. The report now carries the run's final output,
+delivered on the task's behalf, as a background task's round report carries its round's output, and
+the summary follows it as a supplement when the task has written one. The daemon already kept a turn's
+final output for a delegated round's report; it now keeps it for a run in a channel a task holds too.

@@ -459,7 +459,10 @@ place; a channel is a workspace the task earns.
   task with the channel among its threads and the channel's link.
 - **Reports.** A task whose answer lands where the asker's thread is not reports to its coordinator: a
   background task each round (§6.6), and a task holding a channel at the end of each run there, with the
-  `<report id task kind title>` of [assistant-mode.md](assistant-mode.md) §5.18 ④ carrying its summary.
+  `<report id task kind title>` of [assistant-mode.md](assistant-mode.md) §5.18 ④ carrying the run's
+  final output, delivered on its behalf, with its summary as a supplement. A summary is the task's own
+  account of itself and is stale whenever the task did not update it as it finished, so the report
+  carries what the run produced, as a background task's round report carries the round's output.
   The coordinator may relay it in the origin thread with `replyToMessage`, so "tell me when it is done"
   is answered where it was asked, or leave it. A task answering in the asker's own thread reports
   nothing, as before. A task running in the channel may also tell its origin thread itself with
@@ -506,12 +509,16 @@ place; a channel is a workspace the task earns.
   tasks opened for a message, so a fallback task holds a channel it makes like any other. The "Not
   here" item above is narrower than the daemon here.
 - **The report.** It is sent when a turn delivered in a channel the task holds ends, completed or
-  failed, and no message of the task's waits behind it; a turn stopped there reports nothing. Its
-  text is `[task run] Task "<title>" ended a run in its channel (<link>). Its summary: <summary>`,
-  or that the task has not written one yet, and it rides as any report does, one per run and
-  answered in the thread the task was opened in. A report the coordinator does not admit is logged,
-  not retried. The task's standing instructions say that a run in a channel it makes is reported
-  with its summary, so it keeps that summary current.
+  failed, and no message of the task's waits behind it; a turn stopped there reports nothing. It
+  opens with `[task run] Task "<title>" ended a run in its channel (<link>).` and carries the last
+  turn's final output, delivered on the task's behalf, or says that the run ended without one or
+  stopped there before finishing; then `Its summary: <summary>` follows on one line when the task has
+  written one. The final output is the one a background round's report takes, the turn's reply with
+  nothing interrupted and no sentinel, uncapped, so the report costs the coordinator's next turn the
+  output once per run. It rides as any report does, one per run and answered in the thread the task
+  was opened in. A report the coordinator does not admit is logged, not retried. The task's standing
+  instructions say that the coordinator gets its summary at the end of each run there, so it keeps
+  that summary current.
 - **The tools in the channel.** The Slack tools that default to "this conversation"
   (`setSlackCodeView`, `manageSlackCodeChannel`, `presentSlackReport`) and `getCurrentChannel` act in
   the channel of the turn, and the code channel's native session controls follow the turn there.
