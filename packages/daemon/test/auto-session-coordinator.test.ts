@@ -577,20 +577,44 @@ describe('the coordinator’s outcomes', () => {
     expect(posted).toEqual([{ msg: expect.objectContaining({ msgId: 'slack:C1:1.1' }), text: 'Morning!' }])
   })
 
-  it('answers a one-message turn with its text, and opens a task for a mention left without an outcome', async () => {
+  it('never posts a turn’s final text, sentinel or not, and opens a task for a mention left without an outcome', async () => {
     const { store, sessions, dispatched, posted } = await setup()
     begin(sessions, slack('1.1'))
     sessions.turns.noteText(coordinatorKey, 'Good morning!')
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
-    expect(posted.map((post) => post.text)).toEqual(['Good morning!'])
+    begin(sessions, slack('1.2'))
+    sessions.turns.noteText(coordinatorKey, 'This one is not for me.\n\nAC_NO_RESPONSE')
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
+    // A report turn's prose stays in the coordinator's transcript as well.
+    const report = {
+      ...slack('9.9'),
+      msgId: 'agentcall:C1:assistant-report:9',
+      source: 'agent',
+      transcriptTs: '9.9',
+      thread: '1.1',
+      parentReport: true,
+      text: '[task run] Task "Flaky test" ended a run in its channel.'
+    } as NormalizedMessage
+    sessions.beginTurn(coordinatorKey, 'bot-a', [
+      deliveredMessage({ ...report, sessionThread: COORDINATOR, headless: true }, 'int-bot-a')
+    ])
+    sessions.turns.noteText(coordinatorKey, 'The task already told the thread, so I am not posting anything more.')
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
+    expect(posted).toEqual([])
+    expect(dispatched).toEqual([])
 
     begin(sessions, slack('2.1', { trigger: 'mention', text: '<@UBOT> thoughts?' }))
     sessions.turns.noteText(coordinatorKey, 'AC_NO_RESPONSE')
     await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
-    expect(dispatched.map((one) => one.msg.msgId)).toEqual(['slack:C1:2.1'])
+    // A mention answered in text alone has no outcome either, so a task answers it.
+    begin(sessions, slack('3.1', { trigger: 'mention', text: '<@UBOT> thanks!' }))
+    sessions.turns.noteText(coordinatorKey, 'You are welcome!')
+    await sessions.settleTurn(coordinatorKey, 'bot-a', 'answered')
+    expect(dispatched.map((one) => one.msg.msgId)).toEqual(['slack:C1:2.1', 'slack:C1:3.1'])
     expect(await store.assistantSubsessions.get('bot-a', sessionKey('slack', 'C1', '2.1', 'bot-a'))).toMatchObject({
       title: '<@UBOT> thoughts?'
     })
+    expect(posted).toEqual([])
   })
 
   it('on a failed turn opens tasks for its mentions only, and acts on nothing a stop left', async () => {
@@ -1123,7 +1147,7 @@ describe('auto conversations route to the coordinator', () => {
 })
 
 describe('a coordinator driven through every outcome (auto-session-mode.md §4.2, §4.5)', () => {
-  it('opens a task, hands it a thread, replies by call and by text, ignores, and falls back for a mention', async () => {
+  it('opens a task, hands it a thread, replies by call, posts no final text, and falls back for a mention', async () => {
     // The coordinator's tool context, set once the daemon is up.
     const live: { d?: any; ctx?: SessionContext } = {}
     let taskId = ''
@@ -1134,7 +1158,7 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
       'msg-1.1': { call: () => ({ action: 'delegateTask', messageId: 'msg-1.1', title: 'Flaky test' }) },
       'msg-2.1': { call: () => ({ action: 'messageTask', messageId: 'msg-2.1', taskId }) },
       'msg-3.1': { text: 'Good morning!' },
-      'msg-4.1': { text: 'AC_NO_RESPONSE' },
+      'msg-4.1': { text: 'Lunch is not for me.\n\nAC_NO_RESPONSE' },
       'msg-5.1': { text: 'AC_NO_RESPONSE' },
       'msg-6.1': { call: () => ({ action: 'replyToMessage', messageId: 'msg-6.1', message: 'Glad it helped.' }) }
     }
@@ -1204,12 +1228,11 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
     await send('2.1', { text: 'is the flaky test fixed yet?' })
     await vi.waitFor(() => expect(taskPosts).toHaveLength(2), WAIT)
     await send('3.1', { text: 'morning all' })
-    await vi.waitFor(() => expect(coordinatorPosts).toHaveLength(1), WAIT)
     await send('4.1', { text: 'lunch?' })
     await send('5.1', { ...mention, text: '<@U_FAKE_BOT> thoughts?' })
     await vi.waitFor(() => expect(taskPosts).toHaveLength(3), WAIT)
     await send('6.1', { text: 'thanks, that helped' })
-    await vi.waitFor(() => expect(coordinatorPosts).toHaveLength(2), WAIT)
+    await vi.waitFor(() => expect(coordinatorPosts).toHaveLength(1), WAIT)
     await idle()
 
     const firstTask = sessionKey('slack', 'C1', '1.1', 'bot-a', scope)
@@ -1219,10 +1242,8 @@ describe('a coordinator driven through every outcome (auto-session-mode.md §4.2
     expect(tasks[0]).toContain('fix the flaky test')
     expect(tasks[1]).toContain('is the flaky test fixed yet?')
     expect(tasks[2]).toContain('thoughts?')
-    expect(coordinatorPosts).toEqual([
-      { thread: '3.1', text: 'Good morning!' },
-      { thread: '6.1', text: 'Glad it helped.' }
-    ])
+    // The final texts of 3.1 and 4.1, plain or ending in the sentinel, stayed in the coordinator's transcript.
+    expect(coordinatorPosts).toEqual([{ thread: '6.1', text: 'Glad it helped.' }])
     const index = d.store.assistantSubsessions
     expect((await index.threadsOf('bot-a', firstTask)).map((one: { thread: string }) => one.thread)).toEqual([
       '1.1',

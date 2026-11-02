@@ -797,7 +797,7 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
   }
 ]
 
-/** A single-message turn's final text counts as a reply to it, unless it is the silence sentinel. */
+/** A turn's final text, unless it is the silence sentinel: a webchat browser shows it, a channel never posts it (auto-session-mode.md §4.3). */
 const textReply = (finalText: string): string | undefined => {
   const trimmed = finalText.trim()
   return trimmed === '' || trimmed.startsWith(NO_RESPONSE_SENTINEL) ? undefined : trimmed
@@ -817,7 +817,7 @@ export function judgeCoordinator(
   for (const message of scenario.messages) {
     const expected = scenario.expect[message.id]!
     let outcome = outcomes.get(message.id)
-    const spoken = scenario.messages.length === 1 ? textReply(finalText) : undefined
+    const spoken = scenario.messages.length === 1 && scenario.webchat ? textReply(finalText) : undefined
     if (!outcome && spoken !== undefined) outcome = { kind: 'reply', messageId: message.id, text: spoken }
     const got = outcome?.kind ?? 'ignore'
     if (expected.kind === 'any' ? got !== 'ignore' : got === expected.kind) {

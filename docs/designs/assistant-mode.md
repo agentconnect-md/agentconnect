@@ -5016,3 +5016,16 @@ conversation's, with a notice posted in the channel, and the task never ran ther
 onto a task's session from a room the task holds is now judged as the conversation of that session,
 whose row keeps its binding to the origin; a message keyed onto a session from a room its task does
 not hold, or from another workspace, is still refused.
+
+**Ninetieth revision (2026-11-02)**: a task in a channel it holds can tell its origin thread, and a
+coordinator's final text never posts (auto-session-mode.md §4.3, §6.8 "Reports"). A task whose run was
+in its channel called `postMessage` into its origin thread to say it was done, and `sendMessage`
+refused it as the conversation it was answering, because it compared the target with the session's
+coordinate, the origin thread, while the turn delivered to the channel; the task then wrote that it
+had told the thread, the coordinator read that in the run report and stayed silent, and nobody
+answered. The refusal now follows the thread the turn delivers to. In the same run the coordinator
+ended the report turn with its reasons followed by the sentinel, which is recognized only as a prefix,
+so the reasons were posted in the asker's thread although the prompt promises the final text is shown
+to nobody and ④ settles a report with no call silently. The delivery boundary now drops a
+coordinator's final text, sentinel or not, outside webchat, so a one-message turn no longer answers
+with its text and a mention it answered only in text falls back to a task.
