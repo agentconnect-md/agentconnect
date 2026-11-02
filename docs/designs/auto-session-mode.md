@@ -214,7 +214,8 @@ text alone included) takes the fallback of §4.5: a task opens for it.
 When the coordinator's turn fails or times out:
 
 - A message that mentions the agent opens a threaded task directly, as Per thread would, in the
-  message's thread: a fallback task holds no channel (§6.8; not enforced yet, see its "As shipped").
+  message's thread. It is a task opened for a message like a delegated one, so it may make and hold a
+  code channel for its work under the same rules (§6.8).
 - Any other message stays silent.
 
 ### 4.6 Usage
@@ -477,8 +478,9 @@ place; a channel is a workspace the task earns.
 - **Fallback.** When the installation lacks code channels, creation fails, or the sender may not make a
   channel, the task stays in its threads; nothing beyond the tool's own answer is shown.
 - **Not here.** A background task (`delegateTask` without a `messageId`) never holds a channel, and
-  neither does a fallback task (§4.5; not enforced yet, see "As shipped") or a thread session adopted
-  on a switch into `auto` (§3.5). The coordinator asking for a channel on `delegateTask` (a `place` parameter) is not done: the task that
+  neither does a thread session adopted on a switch into `auto` (§3.5): neither was opened for a
+  message. A fallback task (§4.5) was, and holds a channel it makes as a delegated task does. The
+  coordinator asking for a channel on `delegateTask` (a `place` parameter) is not done: the task that
   has the work decides.
 
 **As shipped** (2026-11-02, #3567). Choices the text above leaves open:
@@ -505,9 +507,9 @@ place; a channel is a workspace the task earns.
   long session opens none there: no coordinator or appending session is minted for it. A follow-up
   taken in a run there gets the task's place, as every tool of the task's session does
   (`placeOfSession`), and replies in the thread the task holds there, the one it was opened in.
-- **A fallback task.** The task index does not tell a fallback task from a delegated one: both are
-  tasks opened for a message, so a fallback task holds a channel it makes like any other. The "Not
-  here" item above is narrower than the daemon here.
+- **A fallback task.** The task index records a fallback task as opened for its message, as it records
+  a delegated one ([assistant-mode.md](assistant-mode.md) "Opened for"), so the attach holds a channel
+  it makes with no rule of its own.
 - **The report.** It is sent when a turn delivered in a channel the task holds ends, completed or
   failed, and no message of the task's waits behind it; a turn stopped there reports nothing. It
   opens with `[task run] Task "<title>" ended a run in its channel (<link>).` and carries the last
@@ -525,9 +527,10 @@ place; a channel is a workspace the task earns.
   The automatic Code diff is published from a turn delivered in the channel, against the starting
   point the task kept on its first turn, in its origin thread, so work done before the channel was
   made is part of it; a task whose repository already had changes then keeps none, as anywhere.
-  The channel's Tasks tab reads a session keyed on the channel, so it stays empty for a task that
-  holds it, and the code channel's standing context is not added to a task whose session opened
-  elsewhere.
+  The channel's Tasks tab shows the session of the task that holds it, with that session's tasks,
+  background work and console link: no session is keyed on the channel, so the read takes the
+  session the task index names as the channel's holder. The code channel's standing context is not
+  added to a task whose session opened elsewhere.
 - **Earlier tasks.** A task the coordinator opened in a code channel before this change keeps the
   channel's session as its own and routes as before; nothing migrates.
 

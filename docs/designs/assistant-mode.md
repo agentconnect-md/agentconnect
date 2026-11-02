@@ -5038,3 +5038,13 @@ the asker's thread never heard that the work was done. The report now carries th
 delivered on the task's behalf, as a background task's round report carries its round's output, and
 the summary follows it as a supplement when the task has written one. The daemon already kept a turn's
 final output for a delegated round's report; it now keeps it for a run in a channel a task holds too.
+
+**Ninety-second revision (2026-11-02)**: a fallback task may hold a code channel it makes, and a
+channel a task holds shows the task's session in its Tasks tab (auto-session-mode.md §4.5, §6.8). The
+rule that a fallback task holds no channel came from the shape in which the coordinator opened a place
+for a task, which §6.8 no longer has: a task now earns a channel by making one for its work, and that
+channel has the same value whichever way the task was opened. The task index already records a
+fallback task as opened for its message, as it records a delegated one, so the design now says what
+the daemon does and nothing tells the two apart. The Tasks tab read only a session keyed on the
+channel, so it stayed empty in a channel a task holds; it now takes the session the task index names
+as the channel's holder, and a channel with a session of its own reads as before.

@@ -1,5 +1,6 @@
 import type { AssistantActivitySubsession, TaskList, TaskListReq } from '@agentconnect.md/protocol'
 import { readTaskSubsessions, type AssistantActivityStore } from '../../cp/assistant-activity.js'
+import type { AssistantSubsessionIndex } from '../../store/assistant-subsessions.js'
 import type { SessionRecord } from '../../store/local-store.js'
 
 export const SLACK_TASKS_VIEW_KEY = 'agentconnect-tasks'
@@ -13,7 +14,7 @@ export interface CodeTasksSnapshot {
 
 export async function readCodeTasks(
   deps: {
-    store: AssistantActivityStore
+    store: AssistantActivityStore & { assistantSubsessions: Pick<AssistantSubsessionIndex, 'taskOfThread'> }
     admitted(): Promise<string[]>
     open(session: SessionRecord): boolean
     assistant(agentId: string): boolean
@@ -25,15 +26,14 @@ export async function readCodeTasks(
   key: string
 ): Promise<CodeTasksSnapshot | undefined> {
   const session = await deps.store.getSession(key)
-  if (
-    !session ||
-    session.platform !== 'slack' ||
-    session.channel !== channel ||
-    session.thread !== channel ||
-    !deps.open(session) ||
-    !(await deps.admitted()).includes(key)
-  )
-    return undefined
+  if (!session || session.platform !== 'slack' || !deps.open(session)) return undefined
+  // A channel a task holds has no session of its own: it shows the task's, keyed on its origin thread (auto-session-mode.md §6.8).
+  const room = { platform: 'slack', channel, transportScope: session.transportScope ?? null, thread: channel }
+  const shown =
+    session.channel === channel && session.thread === channel
+      ? (await deps.admitted()).includes(key)
+      : (await deps.store.assistantSubsessions.taskOfThread(session.agentId, room)) === key
+  if (!shown) return undefined
   const sessionId = session.sessionId ?? session.acpSessionId
   if (!sessionId) return undefined
   const [managed, runtime] = await Promise.all([
