@@ -122,6 +122,8 @@ describe('McpControlServer IPC', () => {
     await expect(server.authorizeConversationOutput(binding)).rejects.toThrow('No registered session')
     const token = server.register(binding)
     await expect(server.authorizeConversationOutput(binding)).resolves.toBeUndefined()
+    // Output into a channel the session's task holds is judged as a write there, which nobody asking may not have.
+    await expect(server.authorizeConversationOutput(binding, 'C0EXAMPLE2')).rejects.toThrow()
     await expect(server.authorizeConversationOutput({ ...binding, transportScope: 'another-bot' })).rejects.toThrow(
       'No registered session'
     )

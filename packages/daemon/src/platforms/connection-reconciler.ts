@@ -224,7 +224,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   srcIntegrationIds(conn: unknown): string[]
   /** Where a platform's finding that a place is external goes (assistant-mode.md §5.3). */
   placeTrust(): PlaceTrust
-  /** A genuine join of the agent's bot to a conversation: true when a getting-to-know task takes it, which replaces the join introduction (assistant-mode.md §5.13). */
+  /** A genuine join of the agent's bot to a conversation: true when a getting-to-know task takes it, which replaces the join introduction (assistant-mode.md §5.13), or when a task holds the channel, which takes neither (auto-session-mode.md §6.8). */
   gettingToKnowOnJoin(agentId: string, integrationId: string, channel: string, inviter?: string): Promise<boolean>
   /** Drain the in-flight turns holding `conn` before it is stopped. */
   waitForConnectionUses(conn: PlatformConnection): Promise<void>

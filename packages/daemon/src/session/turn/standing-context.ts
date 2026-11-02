@@ -75,8 +75,6 @@ export type StandingContextInput = {
   thread: string
   /** A task the coordinator opened on a platform thread (auto-session-mode.md §6.2). */
   threadedTask?: boolean
-  /** A threaded task working in a room of its own the coordinator's platform made for it (§6.8). */
-  placeTask?: boolean
   /** A task the coordinator opened for a message of a conversation without threads, whose page is its conversation (§10). */
   pageTask?: boolean
   /** People may write to a delegated task from its console page (auto-session-mode.md §10). */
@@ -416,19 +414,14 @@ export function buildTaskReportingAppend(
   )
 }
 
-// auto-session-mode.md §6.2, §6.4: a threaded task answers people in its threads and reports nothing to the coordinator.
+// auto-session-mode.md §6.2, §6.4, §6.8: a threaded task answers people in its threads; only its runs in a channel it made are reported.
 export const THREADED_TASK_APPEND =
   `# You are a task\n` +
   `The coordinator of this channel opened you for a message in this thread. People talk to you directly here, and ` +
   `the coordinator may hand you more messages, each from a thread it attaches to you; your answer goes to the ` +
-  `thread each message came from. Nothing is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
-
-// auto-session-mode.md §6.8: a task in a room of its own answers there and reports nothing to the coordinator.
-export const PLACE_TASK_APPEND =
-  `# You are a task\n` +
-  `The coordinator of another conversation opened you for a message there and gave you this conversation of your ` +
-  `own. People talk to you directly here, and the coordinator may move more messages here from its conversation; ` +
-  `you answer here. Nothing is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
+  `thread each message came from. If you make a channel for your work, it becomes one more of your threads: say ` +
+  `here where you moved, and at the end of each run there the coordinator gets your summary, so keep it current. ` +
+  `Nothing else is reported to the coordinator.\n\n${TASK_SUMMARY_REQUEST}`
 
 // auto-session-mode.md §10: a task for a console message answers on its own page and reports nothing to the coordinator.
 export const PAGE_TASK_APPEND =
@@ -482,11 +475,9 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
           keepsTaskSummaryAt(input.thread),
           input.taskPageMessages === true && keepsTaskSummaryAt(input.thread)
         )
-      : input.placeTask
-        ? PLACE_TASK_APPEND
-        : input.threadedTask
-          ? THREADED_TASK_APPEND
-          : ''
+      : input.threadedTask
+        ? THREADED_TASK_APPEND
+        : ''
   const collabAppend = input.tasksCoordinatorOnly === true ? COLLAB_APPEND_WITHOUT_DELEGATION : COLLAB_APPEND
   // A coordinator's own instructions replace the reply and collaboration rules: it only decides where messages go (auto-session-mode.md §5.4).
   const coordinator = isCoordinatorCoordinate(input.thread)

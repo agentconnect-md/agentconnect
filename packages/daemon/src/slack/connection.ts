@@ -42,7 +42,6 @@ import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.j
 import { markNotJoined } from '../platforms/not-joined.js'
 import { slackMessageUrl } from '../platforms/slack/permalink.js'
 import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../platforms/slack/standing-context.js'
-import { createCodeChannel } from '../platforms/slack/code-channel.js'
 import { CodeTasksViews, SLACK_TASKS_VIEW_KEY, type CodeTasksSnapshot } from '../platforms/slack/code-tasks.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import {
@@ -85,9 +84,7 @@ import type {
   PlatformReactionSummary,
   PlatformScheduledMessage,
   PlatformSearchOptions,
-  PlatformSearchResults,
-  TaskPlace,
-  TaskPlaceOrigin
+  PlatformSearchResults
 } from '../platforms/contract.js'
 
 /**
@@ -1169,16 +1166,6 @@ export class SlackConnection implements PlatformConnection {
   /** A code channel is one session keyed on the channel, so a root post there belongs to it (slack-code-channels.md). */
   async roomThread(channel: string): Promise<string | undefined> {
     return (await this.codeChannel(channel).catch(() => undefined))?.code ? channel : undefined
-  }
-
-  /** A coordinator's task works in a code channel linked to its message (auto-session-mode.md §6.8); none when the message already sits in one. */
-  async openTaskPlace(origin: TaskPlaceOrigin, title: string): Promise<TaskPlace | undefined> {
-    // The daemon has judged whether the message's sender may have a channel made before it asks.
-    const created = await createCodeChannel(this, { ...origin, ts: origin.messageId }, title, async () => {})
-    if (created.existing) return undefined
-    if (created.channelId === undefined) throw new Error('Slack answered the code channel creation without a channel')
-    // A code channel's one session keys on the channel itself (slack-code-channels.md).
-    return { channel: created.channelId, thread: created.channelId }
   }
 
   async prepareInboundMessage(msg: NormalizedMessage): Promise<void> {

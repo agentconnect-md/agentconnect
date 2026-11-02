@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { normalizeSlackMessage } from '@agentconnect.md/message'
 import { SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY } from '@agentconnect.md/protocol'
@@ -7,6 +11,9 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { slackThreadUrl } from '../src/platforms/slack/permalink.js'
+import { gitFor } from '../src/workspace/git-injection.js'
+import { LocalGitRunner } from '../src/workspace/git-runner.js'
+import { openTaskDiff } from '../src/workspace/task-diff.js'
 import { planCanvasMarkdown } from '../src/slack/render.js'
 import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../src/platforms/slack/standing-context.js'
 import {
@@ -73,6 +80,7 @@ async function fixture(code = true, deps: Record<string, unknown> = {}) {
   const recordPost = vi.fn(async (_text: string, _ts: string) => undefined)
   const env = {
     connection: conn,
+    deliveryChannel: ctx.channel,
     deliveryThread: ctx.deliveryThread,
     originMsgId: 'slack:C1:1.002',
     judgeWrite,
@@ -159,6 +167,7 @@ describe('Slack native surfaces', () => {
         platform: 'slack',
         channel: 'C1',
         sessionThread: 'C1',
+        statusThread: 'C1',
         sessionKey: 'session',
         isDm: false
       }
@@ -278,12 +287,82 @@ describe('Slack native surfaces', () => {
     }
   })
 
+  it('publishes a task’s diff in the code channel it made against the start it kept in its thread (auto-session-mode.md §6.8)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'task-channel-diff-'))
+    const git = (args: string[]) =>
+      execFileSync('git', args, {
+        cwd: root,
+        env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_COMMITTER_NAME: 'Test' },
+        encoding: 'utf8'
+      })
+    git(['init', '--initial-branch=main'])
+    git(['config', 'user.email', 'test@example.test'])
+    writeFileSync(join(root, 'app.js'), 'export const count = 1\n')
+    git(['add', '.'])
+    git(['commit', '-m', 'initial'])
+    const sources = [
+      { git: new LocalGitRunner(gitFor(root), root, (env) => gitFor(root, undefined, env)), name: 'repo' }
+    ]
+    const thread = await fixture(false)
+    const channel = await fixture(true)
+    try {
+      // Its first turn, in the thread it was opened in, publishes nothing and keeps the task's start.
+      const keepStart = vi.fn(async () => void (await openTaskDiff(sources, 'task-key', true)))
+      const origin = {
+        conn: thread.conn,
+        plan: { channel: 'C1', sessionThread: '1.001', statusThread: '1.001', isDm: false }
+      } as SlackTurn
+      const host = {
+        authorize: async () => {},
+        active: () => true,
+        mask: (text: string) => text,
+        notice: async () => {},
+        debug: () => {}
+      }
+      expect(
+        await startSlackCodeDiff(
+          origin,
+          {},
+          { ...host, open: () => openTaskDiff(sources, 'task-key', false), keepStart }
+        )
+      ).toBeUndefined()
+      expect(keepStart).toHaveBeenCalledOnce()
+      expect(thread.api.setView).not.toHaveBeenCalled()
+      writeFileSync(join(root, 'app.js'), 'export const count = 2\n')
+      // A later turn in the code channel it holds, keyed on the same session, diffs against that start.
+      const state: SlackTurnState = {}
+      const held = {
+        conn: channel.conn,
+        plan: { channel: 'C2', sessionThread: '1.001', statusThread: 'C2', isDm: false }
+      } as SlackTurn
+      expect(
+        await startSlackCodeDiff(held, state, { ...host, open: () => openTaskDiff(sources, 'task-key', false) })
+      ).toContain('platform maintains')
+      await state.codeDiff!.settle()
+      state.codeDiff!.stop()
+      expect(channel.api.setView).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          channel_id: 'C2',
+          type: 'diff',
+          content: expect.stringContaining('+export const count = 2')
+        })
+      )
+    } finally {
+      await thread.conn.stop()
+      await channel.conn.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('updates the owned channel through the authorized platform output without a model tool call', async () => {
     const f = await fixture()
     const state: SlackTurnState = {}
     const authorize = vi.fn(async () => {})
     let content = 'diff --git a/a b/a\n'
-    const turn = { conn: f.conn, plan: { channel: 'C1', sessionThread: 'C1', isDm: false } } as SlackTurn
+    const turn = {
+      conn: f.conn,
+      plan: { channel: 'C1', sessionThread: 'C1', statusThread: 'C1', isDm: false }
+    } as SlackTurn
     const context = await startSlackCodeDiff(turn, state, {
       authorize,
       open: async () => ({ read: async () => content }),
@@ -447,27 +526,36 @@ describe('Slack native surfaces', () => {
     await f.conn.stop()
   })
 
-  it('opens a coordinator task’s code channel through the tool’s own creation path (auto-session-mode.md §6.8)', async () => {
+  it('hands the channel it makes to the session as a room keyed on the channel (auto-session-mode.md §6.8)', async () => {
     const f = await fixture(false)
-    const origin = { agentId: ctx.agentId, channel: 'C1', messageId: '1.002', isDm: false }
-    expect(await f.conn.openTaskPlace(origin, 'Flaky test')).toEqual({ channel: 'C2', thread: 'C2' })
-    await SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Flaky test' }, f.env)
-    // The same origin keys the same channel whichever path asks, and Slack keeps its privacy.
-    expect(f.api.create.mock.calls[0]).toEqual(f.api.create.mock.calls[1])
-    expect(f.api.create.mock.calls[0]![0]).toMatchObject({
-      name: 'Flaky test',
-      origin_channel_id: 'C1',
-      origin_message_ts: '1.002'
-    })
-    expect(f.api.create.mock.calls[0]![0]).not.toHaveProperty('is_private')
+    const rooms: unknown[] = []
+    const makeRoom = async <T>(make: () => Promise<{ result: T; room?: { channel: string; thread: string } }>) => {
+      const { result, room } = await make()
+      rooms.push(room)
+      return result
+    }
+    const result = await SLACK_SESSION_TOOLS.execute(
+      'createSlackCodeChannel',
+      ctx,
+      { name: 'Flaky test' },
+      { ...f.env, makeRoom }
+    )
+    expect(result).toMatchObject({ channel_id: 'C2' })
+    expect(rooms).toEqual([{ channel: 'C2', thread: 'C2' }])
+    expect(f.api.create.mock.calls[0]![0]).toMatchObject({ origin_channel_id: 'C1', origin_message_ts: '1.002' })
     await f.conn.stop()
   })
 
-  it('opens no place for a task whose message already sits in a code channel, and rejects what Slack refuses', async () => {
+  it('hands no room for a channel it is already in, nor when Slack refuses', async () => {
     const inside = await fixture(true)
-    expect(
-      await inside.conn.openTaskPlace({ agentId: 'a1', channel: 'C1', messageId: '1.002', isDm: false }, 'Task')
-    ).toBeUndefined()
+    const rooms: unknown[] = []
+    const makeRoom = async <T>(make: () => Promise<{ result: T; room?: { channel: string; thread: string } }>) => {
+      const { result, room } = await make()
+      rooms.push(room)
+      return result
+    }
+    await SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Task' }, { ...inside.env, makeRoom })
+    expect(rooms).toEqual([undefined])
     expect(inside.api.create).not.toHaveBeenCalled()
     await inside.conn.stop()
     const refused = await fixture(false)
@@ -475,13 +563,24 @@ describe('Slack native surfaces', () => {
       Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } })
     )
     await expect(
-      refused.conn.openTaskPlace({ agentId: 'a1', channel: 'C1', messageId: '1.002', isDm: false }, 'Task')
+      SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Task' }, { ...refused.env, makeRoom })
     ).rejects.toThrow()
-    refused.api.create.mockResolvedValueOnce({} as never)
-    await expect(
-      refused.conn.openTaskPlace({ agentId: 'a1', channel: 'C1', messageId: '1.002', isDm: false }, 'Task')
-    ).rejects.toThrow('without a channel')
+    expect(rooms).toEqual([undefined])
     await refused.conn.stop()
+  })
+
+  it('acts in the turn’s own channel when a task answers there from a session kept elsewhere', async () => {
+    const f = await fixture(true)
+    // A task's session lives in its origin thread of C0EXAMPLE1, and this turn runs in the code channel C1 it holds.
+    const task = { ...ctx, channel: 'C0EXAMPLE1', thread: '1.001' }
+    const env = { ...f.env, deliveryChannel: 'C1', deliveryThread: 'C1', originMsgId: 'slack:C1:1.003' }
+    expect(await SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', task, { name: 'Task' }, env)).toMatchObject({
+      channel_id: 'C1',
+      already_exists: true
+    })
+    await SLACK_SESSION_TOOLS.execute('manageSlackCodeChannel', task, { action: 'listViews' }, env)
+    expect(f.api.listViews).toHaveBeenCalledWith({ channel_id: 'C1' })
+    await f.conn.stop()
   })
 
   it('reuses the code channel when Slack delivers the copied origin as a new request', async () => {
@@ -510,7 +609,7 @@ describe('Slack native surfaces', () => {
       'createSlackCodeChannel',
       { ...ctx, channel: 'D1', isDm: true },
       { name: 'Task' },
-      { ...f.env, originMsgId: 'slack:D1:1.002' }
+      { ...f.env, deliveryChannel: 'D1', originMsgId: 'slack:D1:1.002' }
     )
     expect(msg.standingContext).toBe(SLACK_CONVERSATION_CONTEXT)
     expect(f.info).not.toHaveBeenCalled()

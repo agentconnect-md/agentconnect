@@ -119,6 +119,8 @@ export interface CommandHost {
     msg: NormalizedMessage,
     opts?: { mint?: boolean }
   ): Promise<string | undefined>
+  /** The session of the task holding the message's room keyed as one thread, which a command there acts on (auto-session-mode.md §6.8, §8). */
+  heldRoomSession?(agentId: string, msg: NormalizedMessage): Promise<{ channel: string; thread: string } | undefined>
   /** Whether this conversation's root is one session for this target (append, or `auto`'s coordinator), read from the mode alone. */
   conversationAppends(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): boolean
   /** The one session a conversation's root keys on for this target: its append session, its coordinator under `auto`, or none. */
@@ -199,6 +201,8 @@ interface CommandContext {
   /** The session the command ACTS on — key/thread follow the resolved session, not the reply anchor. */
   key: string
   thread: string
+  /** The session's channel where a task holding the command's room keys it elsewhere (auto-session-mode.md §6.8). */
+  sessionChannel?: string
   /** Where the reply lands — the command message's own thread, kept separate from `thread`. */
   replyThread: string
   /** The key the command was TYPED at, before the latest-session fallback may retarget it.
@@ -643,15 +647,18 @@ export class CommandHandlers {
     // ordinary message would. Every other command only reads, and must not create the
     // conversation it is asking about. Both then take the same append/`createNew` path.
     const mints = command.kind === 'queue'
-    const appendCoordinate = await this.host.sessionCoordinateFor(target.agentId, target.integrationId, msg, {
-      mint: mints
-    })
+    const held = await this.host.heldRoomSession?.(target.agentId, msg)
+    const appendCoordinate =
+      held?.thread ??
+      (await this.host.sessionCoordinateFor(target.agentId, target.integrationId, msg, {
+        mint: mints
+      }))
     // An append conversation nobody has spoken in yet has no coordinate to read, and the
     // fallback below must still not fire there — its candidates are createNew-era threads.
     // So the MODE is asked directly rather than inferred from the read coming back empty.
     const appendConversation = this.host.conversationAppends(target.agentId, target.integrationId, msg)
     let thread = appendCoordinate ?? msg.thread ?? msg.msgId
-    let key = sessionKey(msg.platform, msg.channel, thread, target.agentId, msg.transportScope)
+    let key = sessionKey(msg.platform, held?.channel ?? msg.channel, thread, target.agentId, msg.transportScope)
     let rec = await this.host.store().getSession(key)
     // A cold turn owns its logical key before SessionManager persists the session row.
     // Prefer that exact live gate over the channel's latest historical session; otherwise
@@ -697,6 +704,7 @@ export class CommandHandlers {
       reply,
       key,
       thread,
+      ...(held && held.channel !== msg.channel ? { sessionChannel: held.channel } : {}),
       replyThread,
       typedKey,
       rec,
@@ -991,7 +999,7 @@ export class CommandHandlers {
     command: Extract<AgentCommand, { kind: 'queue' }>,
     ctx: CommandContext
   ): Promise<CommandEffect> {
-    const { msg, target, key, thread, inflight, reply } = ctx
+    const { msg, target, key, thread, sessionChannel, inflight, reply } = ctx
     // queue — now just admission through the UNIFIED per-sessionKey gate (§6.9 #390): the
     // gate itself decides run-now vs enqueue-behind-the-turn; `!queue` only differs in the
     // ACK wording and the queue_full reply. Depth cap + queue-full fast-fail live in the
@@ -1006,9 +1014,11 @@ export class CommandHandlers {
     // bar address `append:…` as a platform thread id.
     // The retarget moves only the admission's coordinate: `transcriptCoords(payload).ts` is
     // unchanged, so the admission binds to the step-1 row that still holds `!queue …` as typed.
-    const payload: NormalizedMessage = isAppendCoordinate(thread)
-      ? { ...msg, text: command.text, sessionThread: thread }
-      : { ...msg, text: command.text, thread }
+    // A room a task holds keys on the task's session the same way, and is still where the reply goes.
+    const payload: NormalizedMessage =
+      isAppendCoordinate(thread) || sessionChannel !== undefined
+        ? { ...msg, text: command.text, sessionThread: thread, ...(sessionChannel ? { sessionChannel } : {}) }
+        : { ...msg, text: command.text, thread }
     // Reject fast (matching the old depth-cap ACK) before admitting so the user sees the
     // "queue full" note rather than a silent drop; the gate would reject identically.
     if (inflight && (this.host.serialQueue().get(key)?.length ?? 0) >= MAX_QUEUED_PER_SESSION) {

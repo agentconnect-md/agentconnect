@@ -211,7 +211,7 @@ A message that mentions the agent and has no outcome when the turn ends (a one-m
 When the coordinator's turn fails or times out:
 
 - A message that mentions the agent opens a threaded task directly, as Per thread would, in the
-  message's thread: a fallback task holds no channel (§6.8).
+  message's thread: a fallback task holds no channel (§6.8; not enforced yet, see its "As shipped").
 - Any other message stays silent.
 
 ### 4.6 Usage
@@ -465,9 +465,55 @@ place; a channel is a workspace the task earns.
 - **Fallback.** When the installation lacks code channels, creation fails, or the sender may not make a
   channel, the task stays in its threads; nothing beyond the tool's own answer is shown.
 - **Not here.** A background task (`delegateTask` without a `messageId`) never holds a channel, and
-  neither does a fallback task (§4.5) or a thread session adopted on a switch into `auto` (§3.5). The
-  coordinator asking for a channel on `delegateTask` (a `place` parameter) is not done: the task that
+  neither does a fallback task (§4.5; not enforced yet, see "As shipped") or a thread session adopted
+  on a switch into `auto` (§3.5). The coordinator asking for a channel on `delegateTask` (a `place` parameter) is not done: the task that
   has the work decides.
+
+**As shipped** (2026-11-02, #3567). Choices the text above leaves open:
+
+- **One session in two conversations.** A message carries the channel of its session beside its
+  thread (`sessionChannel`, read through `sessionChannelOf` beside `sessionThreadOf` wherever a session
+  key, an inbox lane, a gate or a mute is built), so a message in a channel a task holds keys on the task's session in the
+  origin conversation and is delivered, answered and recorded in the channel. Routing looks a room
+  keyed as one thread up among the agent's held threads before it reads the room's mode, and a
+  command typed there (`!new`, `!stop`, `!queue`) acts on the task's session the same way. A message
+  is steered into a running turn only when that turn answers in the message's own channel, so a
+  message in the channel waits for a turn of its own there rather than being answered in the origin
+  thread, and the reverse.
+- **The attach.** `createSlackCodeChannel` hands the channel it made to the daemon through the
+  session tool environment (`makeRoom`), never through the platform contract, and the daemon attaches
+  it to the calling session's task when that task was opened for a message; a thread session adopted
+  on a switch into `auto` was opened for none, so its channel keeps its own session as outside a
+  task. A channel the tool finds the origin already in is not attached again. The wait is per agent:
+  a message in any room keyed as one thread waits while one of the agent's rooms is being attached.
+- **Not a place.** A join of the agent's bot to a channel a task holds takes no getting-to-know task
+  and no introduction on join; the join waits, as a message does, while the channel is being
+  attached. `gettingToKnowPlaceRefusal` refuses such a channel (`task-workspace`), so a getting-to-know
+  task taken for it before the attach landed ends unread, and a report that would open the place's
+  long session opens none there: no coordinator or appending session is minted for it. A follow-up
+  taken in a run there gets the task's place, as every tool of the task's session does
+  (`placeOfSession`), and replies in the thread the task holds there, the one it was opened in.
+- **A fallback task.** The task index does not tell a fallback task from a delegated one: both are
+  tasks opened for a message, so a fallback task holds a channel it makes like any other. The "Not
+  here" item above is narrower than the daemon here.
+- **The report.** It is sent when a turn delivered in a channel the task holds ends, completed or
+  failed, and no message of the task's waits behind it; a turn stopped there reports nothing. Its
+  text is `[task run] Task "<title>" ended a run in its channel (<link>). Its summary: <summary>`,
+  or that the task has not written one yet, and it rides as any report does, one per run and
+  answered in the thread the task was opened in. A report the coordinator does not admit is logged,
+  not retried. The task's standing instructions say that a run in a channel it makes is reported
+  with its summary, so it keeps that summary current.
+- **The tools in the channel.** The Slack tools that default to "this conversation"
+  (`setSlackCodeView`, `manageSlackCodeChannel`, `presentSlackReport`) and `getCurrentChannel` act in
+  the channel of the turn, and the code channel's native session controls follow the turn there.
+  The automatic Code diff is published from a turn delivered in the channel, against the starting
+  point the task kept on its first turn, in its origin thread, so work done before the channel was
+  made is part of it; a task whose repository already had changes then keeps none, as anywhere.
+  The channel's Tasks tab reads a session keyed on the channel, so it stays empty for a task that
+  holds it, and the code channel's standing context is not added to a task whose session opened
+  elsewhere.
+- **Earlier tasks.** A task the coordinator opened in a code channel before this change keeps the
+  channel's session as its own and routes as before; nothing migrates.
 
 ## 7. Thread routing
 
@@ -572,7 +618,8 @@ new work, a message for an open task, a status question, a greeting, chatter bet
 request to another agent, a vague mention, a small edit the coordinator must not do itself, two mixed
 batches, a follow-up's report (§3.4), a batch of one message and two reports, one worth telling
 and one with nothing new, a request for work another channel's task already has open, a question
-about another channel's task that only its latest words answer, and
+about another channel's task that only its latest words answer, a run report from a task holding
+its code channel (§6.8), and
 in a webchat conversation (§10) new work, a status question, a message for an open task and a status
 question about another channel's task.
 
@@ -640,6 +687,16 @@ only `readTask` names it. `claude-acp` (on Claude Opus 5.5) and `codex-acp` each
 `readTask` in any other scenario. Over the 54 runs `claude-acp` called `listTasks` 32 times and
 `codex-acp` 42 times; neither used a tool besides the coordinator tools other than `claude-acp`'s
 `ToolSearch`.
+The same day, with a task making its own code channel (§6.8), no scenario expected a task to open in
+a place: the probe's `delegateTask` already opened its task in the message's thread. One scenario
+was added, `channel-task-report`: a run report from a task holding its code channel, whose summary
+says the pull request is ready and that the asker wanted to hear, to be relayed with
+`replyToMessage`. `claude-acp` (on Claude Opus 5.5) and `codex-acp` each passed 57 / 57 (3
+repetitions each), on an unchanged prompt. In every `channel-task-report` run the coordinator
+relayed the report with `replyToMessage`, addressed to the asker and naming the pull request,
+without calling `listTasks` first. Over the 57 runs `claude-acp` called `listTasks` 34 times and
+`codex-acp` 42 times, and each called `readTask` only in `elsewhere-read-task`; neither used a tool
+besides the coordinator tools other than `claude-acp`'s `ToolSearch`.
 
 The candidate prompt asks the coordinator to express every outcome as a call and to end its turn
 with `AC_NO_RESPONSE`; the judge still accepts a one-message turn's text as its reply (§4.3).

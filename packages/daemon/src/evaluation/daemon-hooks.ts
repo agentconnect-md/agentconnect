@@ -11,7 +11,7 @@ import type { CollabRoutesSnapshot, WebchatDone, WebchatEvent } from '@agentconn
 import type { Integration } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import { ALL_TOOL_NAMES } from '../mcp/tools.js'
-import { stableTurnId, type NormalizedMessage, sessionThreadOf } from '../messages/normalized.js'
+import { stableTurnId, type NormalizedMessage, sessionChannelOf, sessionThreadOf } from '../messages/normalized.js'
 import { sessionKey } from '../store/local-store.js'
 import type { CallMeta } from '../daemon/turn-types.js'
 import type { WebchatSink, WebchatTurnContext } from '../webchat/types.js'
@@ -214,7 +214,7 @@ export class DaemonEvaluationHooks {
       ...dispatchOpts,
       onAdmission: (result) => {
         if (result.accepted && !result.duplicate) {
-          const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
+          const key = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
           settleAdmission({ admitted: true, agentId, sessionKey: key, turnId })
         } else {
           settleAdmission({ admitted: false, reason: deliveryRejectionReason(result) })

@@ -43,6 +43,8 @@ describe('which places take a getting-to-know task', () => {
     expect(gettingToKnowPlaceRefusal(ON, integration({}, 'telegram'), { channel: '-100' })).toBe('no-history')
     expect(gettingToKnowPlaceRefusal(ON, integration({ externalChannels: ['C1'] }), { channel: 'C1' })).toBe('external')
     expect(gettingToKnowPlaceRefusal(ON, integration({ mutedChannels: ['C1'] }), { channel: 'C1' })).toBe('off')
+    // A channel a task holds is the task's workspace, never a place of its own (auto-session-mode.md §6.8).
+    expect(gettingToKnowPlaceRefusal(ON, integration(), { channel: 'C1', heldByTask: true })).toBe('task-workspace')
   })
 
   it('takes one on a join once the row is listed appending, waits while it is not listed, and takes none for an Off row', () => {

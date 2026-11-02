@@ -73,6 +73,8 @@ export interface NormalizedMessage extends Omit<
   transportScope?: string
   // Per-target session coordinate, resolved after routing; delivery uses replyThread when present, otherwise thread.
   sessionThread?: string
+  /** Per-target session channel where it is not `channel`: a room a task holds keys on the task's session (auto-session-mode.md §6.8). */
+  sessionChannel?: string
   /** Ingress-derived title applied only when this message creates a logical
    *  session. A later runtime title remains authoritative and replaces it. */
   initialSessionTitle?: string
@@ -153,6 +155,11 @@ export function fromPlatformMessage(message: NormalizedPlatformMessage, transpor
  */
 export function sessionThreadOf(msg: Pick<NormalizedMessage, 'sessionThread' | 'thread' | 'msgId'>): string {
   return msg.sessionThread ?? msg.thread ?? msg.msgId
+}
+
+/** The channel a message's session lives in, which every site pairing it with {@link sessionThreadOf} reads; delivery keeps `channel`. */
+export function sessionChannelOf(msg: Pick<NormalizedMessage, 'sessionChannel' | 'channel'>): string {
+  return msg.sessionChannel ?? msg.channel
 }
 
 /** A daemon-made message's threads: it replies in `replyThread` with the session's coordinate as `sessionThread` where the two differ, else where the session is. */

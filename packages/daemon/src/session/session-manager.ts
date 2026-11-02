@@ -32,7 +32,13 @@ import { recallQueryFromBlocks } from '../memory/recall.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
-import { stableTurnId, type Attachment, type NormalizedMessage, sessionThreadOf } from '../messages/normalized.js'
+import {
+  stableTurnId,
+  type Attachment,
+  type NormalizedMessage,
+  sessionChannelOf,
+  sessionThreadOf
+} from '../messages/normalized.js'
 import { messageOrderingFor } from '../platforms/message-ordering.js'
 import { attachmentMention, buildAttachmentBlocks } from './attachment-block.js'
 import {
@@ -69,7 +75,6 @@ import type { DecisionRuntimeTarget, RuntimeCommand } from '@agentconnect.md/pro
 import { deriveTitle } from './derive-title.js'
 import { chatSettingsAllowed } from '../agents/chat-actions.js'
 import { backgroundConversationText, intakeEvidenceText } from '../decisions/evidence.js'
-import { wholeRoomThread } from '../auto-session/coordinator-turns.js'
 
 // The recall lifecycle contract lives with the collaborator that emits it; re-exported
 // here because SessionManagerDeps is the seam production wires its observer through.
@@ -532,7 +537,7 @@ export class SessionManager {
     // whole conversation is recorded, and thread stays stable → one session.
     let ts = msg.platform === 'webchat' ? (msg.transcriptTs ?? monotonicTs()) : coordTs
     const transportScope = msg.transportScope
-    const key = sessionKey(msg.platform, msg.channel, thread, agentId, transportScope)
+    const key = sessionKey(msg.platform, sessionChannelOf(msg), thread, agentId, transportScope)
     let rec = await this.deps.store.getSession(key)
     // A task the coordinator opened on a platform thread keeps a summary as a delegated one does (auto-session-mode.md §6.7).
     const threadedTask = await this.isThreadedTask(agentId, key, thread)
@@ -724,7 +729,7 @@ export class SessionManager {
     const toolContext = this.deps.toolContextFor?.({
       agent,
       platform: msg.platform,
-      channel: msg.channel,
+      channel: sessionChannelOf(msg),
       thread,
       // Posting tools default to this turn’s delivery thread, not the session coordinate.
       deliveryThread,
@@ -749,7 +754,6 @@ export class SessionManager {
             msg.platform === 'slack' && integrationId ? this.deps.slackBotUserIdFor?.(integrationId) : undefined,
           thread,
           ...(threadedTask ? { threadedTask } : {}),
-          ...(threadedTask && wholeRoomThread({ ...msg, thread }) ? { placeTask: true } : {}),
           ...(pageTaskParent !== undefined ? { pageTask: true } : {}),
           ...(this.deps.taskPagesTakeMessages?.() ? { taskPageMessages: true } : {}),
           ...(this.deps.tasksCoordinatorOnly?.() ? { tasksCoordinatorOnly: true } : {}),
@@ -787,7 +791,7 @@ export class SessionManager {
         key,
         agentId,
         platform: msg.platform,
-        channel: msg.channel,
+        channel: sessionChannelOf(msg),
         thread,
         transportScope: transportScope ?? null,
         triggeredBy: msg.sessionTriggerId ?? msg.sender.id,

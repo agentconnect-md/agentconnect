@@ -289,6 +289,23 @@ function endReason(end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>): string {
       : (end.reason ?? 'interrupted')
 }
 
+/** What a task holding a room reports to its coordinator at the end of a run there: its summary, which the coordinator may relay in the origin thread (auto-session-mode.md §6.8). */
+export function roomRunReport(
+  outcome: 'completed' | 'failed',
+  label: string | null | undefined,
+  summary: string | undefined,
+  link: string | undefined
+): { text: string; shown: ShownInput } {
+  const task = taskName(label, 'Task')
+  const where = link ? `in its channel (${link})` : 'in its channel'
+  const frame =
+    outcome === 'completed'
+      ? `[task run] ${task} ended a run ${where}.`
+      : `[task run] ${task} stopped ${where} before finishing (error).`
+  const body = summary?.trim() ? `Its summary: ${summary.trim()}` : 'It has not written a summary yet.'
+  return { text: `${frame} ${body}`, shown: { text: body, notes: [frame] } }
+}
+
 /** The one short report an approved proposal that ended without its own gets in its owning session; a follow-up's check settles on its own path. */
 export function subsessionEndReport(end: Pick<SubsessionTurnEnd, 'outcome' | 'reason'>, label?: string | null): string {
   const tail = 'It sent no result; delegate a task if the work is still needed.'
@@ -1158,8 +1175,12 @@ export class CollabCoordinator {
       )
       return item && { taskId: key, kind: item.gettingToKnow ? 'getting to know' : 'follow-up', title: item.title }
     }
-    if (!isSubsessionCoordinate(thread)) return undefined
     const row = await store.assistantSubsessions.get(agentId, key).catch(() => undefined)
+    // A threaded task reports only a run in a room it holds (auto-session-mode.md §6.8).
+    if (!isSubsessionCoordinate(thread))
+      return row && row.mode !== 'watch'
+        ? { taskId: key, kind: 'delegated task', ...(row.title ? { title: row.title } : {}) }
+        : undefined
     const title = subsessionLabel(row?.title, undefined)
     const kind = isTaskCoordinate(thread)
       ? 'approved proposal'

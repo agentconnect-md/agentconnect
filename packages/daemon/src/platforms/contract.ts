@@ -62,21 +62,6 @@ export interface ChatRefusal {
 /** What a reaction on an INBOUND message means (`seen` 👀, `triaging` 🤔); core names the intent and each platform picks its glyph. */
 export type PlatformReactionIntent = 'seen' | 'triaging'
 
-/** The message a task is opened for, where a platform may give the task a conversation of its own (auto-session-mode.md §6.8). */
-export interface TaskPlaceOrigin {
-  agentId: string
-  channel: string
-  /** The platform's own id of the message, as its thread names it. */
-  messageId: string
-  isDm: boolean
-}
-
-/** A task's conversation of its own: a room linked to the message it opened for, whose one session keys on `thread`. */
-export interface TaskPlace {
-  channel: string
-  thread: string
-}
-
 /** One conversation as the platform describes it. Members beyond `id` are
  *  optional because no platform reports all of them (`isMpim`/`user` are Slack's;
  *  `isIm` drives DM canonicalization and session classification on every
@@ -395,8 +380,6 @@ export interface PlatformConnection {
   react?(container: string, messageId: string, intent: PlatformReactionIntent): Promise<void>
   /** Take back this bot's reaction for `intent` on an inbound message, as `triaging` ends with its turn (auto-session-mode.md §4.4); best-effort, never throws. */
   unreact?(container: string, messageId: string, intent: PlatformReactionIntent): Promise<void>
-  /** Open a conversation of its own for a task the coordinator opens for one message, linked to it (a Slack code channel, §6.8); undefined or a rejection keeps the task in the message's thread. */
-  openTaskPlace?(origin: TaskPlaceOrigin, title: string): Promise<TaskPlace | undefined>
   /** Place an ARBITRARY reaction, for the agent-callable tool rather than turn chrome.
    *
    *  Distinct from {@link react} on purpose: that one takes an INTENT because core names it

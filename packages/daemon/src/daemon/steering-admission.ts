@@ -32,14 +32,17 @@ export function steerEligibleEntry(entry: SteerCandidate): boolean {
   )
 }
 
-/** The live prompt of the key a same-key arrival may ride: not being cut, with budget left; undefined ⇒ queue. */
+/** The live prompt of the key a same-key arrival may ride: not being cut, with budget left, answering in the arrival's channel; undefined ⇒ queue. */
 export function selectSteerTarget(
   pendings: Iterable<Pending>,
   sessionKey: string,
-  cap: number = MAX_STEERS_PER_TURN
+  cap: number = MAX_STEERS_PER_TURN,
+  channel?: string
 ): Pending | undefined {
   for (const pending of pendings) {
     if (pending.plan.sessionKey !== sessionKey) continue
+    // A task's session answers in a channel it holds and in its origin thread, so a turn in one takes no message from the other (auto-session-mode.md §6.8).
+    if (channel !== undefined && pending.plan.channel !== channel) return undefined
     // An interrupt marks the entry before it silences the output, so either one means the turn is going.
     const cut = pending.outputSuppressed !== undefined || pending.entry.cancelledReason !== undefined
     if (pending.promptInFlight !== true || cut) return undefined

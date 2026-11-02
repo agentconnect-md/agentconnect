@@ -592,11 +592,6 @@ export class VirtualSlackConnection implements PlatformConnection {
     return undefined
   }
 
-  // Nor a channel for a coordinator's task, which stays in its message's thread.
-  async openTaskPlace(): Promise<undefined> {
-    return undefined
-  }
-
   // Nothing is archived here, since no code channel exists.
   codeChannelArchived(): void {}
 

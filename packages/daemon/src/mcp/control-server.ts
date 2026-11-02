@@ -49,7 +49,8 @@ export class McpControlServer {
 
   // Automatic output can address only a registered session's own conversation, with its current write authority.
   async authorizeConversationOutput(
-    binding: Pick<SessionContext, 'agentId' | 'platform' | 'channel' | 'thread' | 'transportScope' | 'integrationId'>
+    binding: Pick<SessionContext, 'agentId' | 'platform' | 'channel' | 'thread' | 'transportScope' | 'integrationId'>,
+    target = binding.channel
   ): Promise<void> {
     const ctx = [...this.sessions.values()].find(
       (entry) =>
@@ -68,7 +69,7 @@ export class McpControlServer {
         kind: 'conversation',
         platform: ctx.platform,
         integrationId: ctx.integrationId,
-        channel: ctx.channel
+        channel: target
       },
       this.deps
     )

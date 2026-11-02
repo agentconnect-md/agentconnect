@@ -90,8 +90,11 @@ export interface PlatformSessionTools {
 /** What a session tool acts through beyond its own arguments — daemon facts, never model input. */
 export interface PlatformSessionToolEnv {
   /** Physical delivery coordinates and origin belong to the current live turn. */
+  readonly deliveryChannel: string
   readonly deliveryThread: string
   readonly originMsgId?: string
+  /** Make a room of the session's own for its work: a task's session holds it as one more thread, and a message there waits while it is attached (auto-session-mode.md §6.8). */
+  readonly makeRoom?: <T>(make: () => Promise<{ result: T; room?: { channel: string; thread: string } }>) => Promise<T>
   /** Publication is fenced by the live turn and the existing place write rule. */
   readonly judgeWrite: (target: WriteTarget) => Promise<unknown>
   readonly postIdentity: () => SendIdentity

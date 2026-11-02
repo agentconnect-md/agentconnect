@@ -625,12 +625,13 @@ export async function readAttachment(
 export async function getCurrentChannel(
   ctx: SessionContext,
   gw: MessageGateway,
-  deliveryThread: string
+  deliveryThread: string,
+  deliveryChannel = ctx.channel
 ): Promise<unknown> {
-  const info = await gw.getChannelInfo(ctx.channel).catch(() => undefined)
+  const info = await gw.getChannelInfo(deliveryChannel).catch(() => undefined)
   // What the model is told its thread is must be something it can post back to.
   return {
-    channel: ctx.channel,
+    channel: deliveryChannel,
     thread: deliveryThread,
     name: info?.name ?? null,
     isIm: info?.isIm ?? null,

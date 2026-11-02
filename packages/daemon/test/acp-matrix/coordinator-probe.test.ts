@@ -139,6 +139,24 @@ describe('runtime matrix coordinator probe', () => {
     expect(judgeCoordinator(scenario('report-batch'), missed, 'AC_NO_RESPONSE').verdict).toBe('FAIL')
   })
 
+  // auto-session-mode.md §6.8: a run report from a task holding a code channel is relayed in the thread it was asked in.
+  it('passes a channel task’s run report relayed with replyToMessage, and fails one left unsaid', () => {
+    const [report] = scopeOf('channel-task-report').messages
+    expect(renderBatch(scenario('channel-task-report').messages)).toContain(
+      `<report id="${report}" task="${CO_IDS.retryTask}" kind="delegated task" ` +
+        'title="Add retry with backoff to the webhook sender">'
+    )
+    const told = recorded('channel-task-report', [
+      { action: 'replyToMessage', messageId: report, message: '<@U0EXAMPLE1> PR #4907 is ready for review.' }
+    ])
+    expect(judgeCoordinator(scenario('channel-task-report'), told, 'AC_NO_RESPONSE').verdict).toBe('PASS')
+    expect(judgeCoordinator(scenario('channel-task-report'), [], 'AC_NO_RESPONSE').verdict).toBe('FAIL')
+    const handed = recorded('channel-task-report', [
+      { action: 'messageTask', messageId: report, taskId: CO_IDS.retryTask }
+    ])
+    expect(handed[0]).toMatchObject({ error: expect.stringContaining('is a report') })
+  })
+
   // auto-session-mode.md §10: a webchat person reads the turn's text, so text beside a call is degraded there and nowhere else.
   it('probes the webchat prompt, where text beside a call is shown', () => {
     const [id] = scopeOf('webchat-new-work').messages

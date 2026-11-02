@@ -70,29 +70,27 @@ Other bots do not acquire implicit activation from this field.
 ## Coordinator tasks
 
 In an Auto conversation ([auto-session-mode.md](auto-session-mode.md) §6.8), a task the
-coordinator opens with `delegateTask` for a message works in a code channel linked to that
-message instead of in the message's thread. The daemon reaches it through the optional
-`openTaskPlace` member of its platform contract, which the Slack connection implements with
-the same creation path `createSlackCodeChannel` uses: the origin link, the origin-derived
-idempotency key, Slack's privacy match and the author's invite. Only a sender who is a full
-member of the workspace has a channel made, as the tool requires an eligible human asker.
+coordinator opens with `delegateTask` for a message works in the message's thread, as on every
+platform. It moves into a code channel only when it makes one for its work with
+`createSlackCodeChannel`, under the tool's own rules below; the coordinator never asks for one.
 
-- The task's session is the channel session, and the task holds the channel coordinate as
-  its thread. The coordinator links the channel in the message's thread.
-- Slack's copy of the request opens the task: it reaches that session, never a second one.
-  A code channel message that arrives while the channel is still being made waits for it, so
-  the copy runs once the task is indexed, and the copy, from the request's own sender within
-  10 minutes, carries the coordinator's title and background.
+- The task keeps its session, and holds the channel coordinate as one more thread beside the
+  message's thread. A message in the channel reaches the task and is answered there; the
+  message's thread is still answered in place. The task's own reply says where it moved.
+- Slack's copy of the request reaches the task through the channel, never a second session. A
+  code channel message that arrives while the channel is still being attached waits for it,
+  at most 30 seconds.
 - A code channel has no root, so under Auto it never runs a coordinator of its own: every
   message there keys on the channel session, the task's while one holds it. A code channel
   made outside a task, or whose task has closed, stays an ordinary channel session.
 - A message the coordinator hands the task later moves into the channel, and its thread gets
   a link.
+- At the end of each run in the channel the task reports to its coordinator with its summary,
+  and the coordinator may relay it in the message's thread.
 - Archiving the channel closes the task. So do 7 idle days, and its coordinator's
   conversation leaving Auto.
-- Without code channels, when creation fails, or when the sender may not make a channel, the
-  task stays in the message's thread with no further notice. Background tasks (no
-  `messageId`) and the coordinator's fallback tasks never use a code channel.
+- A thread session adopted on a switch into Auto holds no channel it makes: that channel gets
+  its own session, as outside a task.
 
 ## Agent tools
 
@@ -139,7 +137,8 @@ to stay in the original conversation or the task needs earlier discussion that t
 originating message does not contain; quick answers stay in place. This platform
 workflow takes precedence over delegating the same work to a background task.
 Creation leaves the current runtime turn in its original conversation. Slack brings
-the originating request into the new channel, whose session continues the task. The
+the originating request into the new channel, whose session continues the task: the
+channel's own, or the task's own where a coordinator's task made it (Coordinator tasks). The
 original turn links the channel and ends without repeating the work or requiring
 the user to repeat the request. No additional transcript history is copied. Work
 that needs the existing context, or cannot create a channel, is handled as it would be

@@ -503,13 +503,7 @@ import {
   type DreamOperationPolicy,
   type DreamPlaces
 } from './dream/runner.js'
-import {
-  describePlace,
-  judgeSessionParticipation,
-  kindFromRows,
-  memberMakesNew,
-  type PlaceAccessDeps
-} from './mcp/ops/place-gate.js'
+import { describePlace, judgeSessionParticipation, kindFromRows, type PlaceAccessDeps } from './mcp/ops/place-gate.js'
 import { PLACE_SHARE_TTL_MS, PlaceTrust } from './assistant/place-trust.js'
 import { buildCpClientDeps, type CpClientDepsHost } from './cp/cp-client-deps.js'
 import {
@@ -570,7 +564,6 @@ import type {
   PlatformChannelInfo,
   PlatformConnection as ContractConnection,
   RelayCardClicks,
-  TaskPlace,
   Welcome
 } from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
@@ -1004,7 +997,13 @@ import {
   subsessionLabel,
   type SubsessionApprovalRoute
 } from './permissions/subsession-approval.js'
-import { CollabCoordinator, TASK_NOT_FOUND, TASK_NOT_FOUND_MESSAGE, type CollabHost } from './collab/coordinator.js'
+import {
+  CollabCoordinator,
+  roomRunReport,
+  TASK_NOT_FOUND,
+  TASK_NOT_FOUND_MESSAGE,
+  type CollabHost
+} from './collab/coordinator.js'
 import { legacySessionMessageId } from './collab/session-message.js'
 import { CpAgentRegistry } from './cp/cp-agent-registry.js'
 import {
@@ -1045,6 +1044,7 @@ import {
   stableMessageId,
   stableTurnId,
   type NormalizedMessage,
+  sessionChannelOf,
   sessionThreadOf,
   wakeThreadFields
 } from './messages/normalized.js'
@@ -1070,7 +1070,6 @@ import {
   batchCut,
   coordinatorView,
   inThread,
-  platformMessageIdOf,
   reportAboutOf,
   reportJoinsBatch,
   threadless,
@@ -1362,6 +1361,7 @@ import {
   MAX_QUEUED_PER_SESSION,
   MAX_SESSION_PURGE_BATCH,
   MAX_SETTLED_TASKS_PER_SESSION,
+  MAX_STEERS_PER_TURN,
   MAX_TURN_CONTEXT_REGENERATION_MS,
   MAX_TURN_CONTEXT_REGENERATIONS,
   PROBE_ROOT_SWEEP_INTERVAL_MS,
@@ -1821,16 +1821,29 @@ export class Daemon {
         onStart: (p, created) =>
           startSlackCodeDiff(p, turnState<SlackTurnState>(p), {
             open: () => this.turnTaskDiff(p, created),
+            // A coordinator's task saves its starting point on its first turn, where it opened, for a code channel it makes later.
+            keepStart: async () => {
+              if (
+                !created ||
+                !(await this.store.assistantSubsessions.get(p.plan.agentId, p.plan.sessionKey))?.openedFor
+              )
+                return
+              await this.turnTaskDiff(p, created)
+            },
             authorize: async () => {
               try {
-                await this.mcp.authorizeConversationOutput({
-                  agentId: p.plan.agentId,
-                  integrationId: p.plan.integrationId,
-                  platform: p.plan.platform,
-                  channel: p.plan.channel,
-                  thread: p.plan.sessionThread,
-                  transportScope: p.entry.msg.transportScope
-                })
+                // The session is found where it lives; the output goes to the channel this turn runs in.
+                await this.mcp.authorizeConversationOutput(
+                  {
+                    agentId: p.plan.agentId,
+                    integrationId: p.plan.integrationId,
+                    platform: p.plan.platform,
+                    channel: sessionChannelOf(p.entry.msg),
+                    thread: p.plan.sessionThread,
+                    transportScope: p.entry.msg.transportScope
+                  },
+                  p.plan.channel
+                )
               } catch {
                 throw new TaskDiffUnavailable(
                   'Publication is not authorized for this task. Automatic updates have stopped.'
@@ -2010,7 +2023,7 @@ export class Daemon {
     now: () => this.clock.now(),
     dispatch: (agentId, msg, integrationId) => {
       // Its own inbox row beside the coordinator's, which the coordinator's turn still holds.
-      const taskKey = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
+      const taskKey = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
       const deliveryId = `${stableMessageId(msg)}\u001f${taskKey}`
       void this.dispatch(agentId, msg, integrationId, undefined, undefined, { deliveryId }).catch((err) =>
         this.log.warn(`coordinator: handing ${msg.msgId} to its task failed: ${formatErr(err)}`)
@@ -2020,8 +2033,6 @@ export class Daemon {
     showTriaging: (agentId, message) => this.showTriaging(agentId, message),
     sessionLink: (sessionId) => this.sessionLink(sessionId),
     reportTaskOwners: async (agentId, keys) => await this.reportTaskOwners(agentId, keys),
-    openTaskPlace: async (agentId, integrationId, msg, title) =>
-      await this.openTaskPlace(agentId, integrationId, msg, title),
     threadLink: (integrationId, at) =>
       sessionThreadUrlFor(at, integrationId === undefined ? undefined : this.connForIntegration(integrationId)),
     warn: (message) => this.log.warn(message)
@@ -2952,6 +2963,7 @@ export class Daemon {
         await this.sessions.threadOwner(channel, thread, transportScope),
       sessionCoordinateFor: async (agentId, integrationId, msg, opts) =>
         await this.sessionCoordinateFor(agentId, integrationId, msg, opts),
+      heldRoomSession: async (agentId, msg) => await this.heldRoomSession(agentId, msg),
       conversationAppends: (agentId, integrationId, msg) => this.conversationAppends(agentId, integrationId, msg),
       rootCoordinateKind: (agentId, integrationId, at) => this.rootCoordinateKind(agentId, integrationId, at),
       adoptCoordinatorTasks: async (agentId, fromKey, toKey) =>
@@ -4921,6 +4933,19 @@ export class Daemon {
       deliveryThreadNow: (ctx) =>
         this.activeTurnShare.get(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
           ?.thread,
+      // The live turn's channel, which differs from the session's in a room a task holds (auto-session-mode.md §6.8).
+      deliveryChannelNow: (ctx) =>
+        this.activeTurnShare.get(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
+          ?.channel,
+      // A room the session makes for its work: a coordinator's task holds it as one more thread (auto-session-mode.md §6.8).
+      sessionToolRoomFor: (ctx) => (make) =>
+        this.coordinators.makeRoom(ctx.agentId, this.sessionKeyOf(ctx), async () => {
+          const { result, room } = await make()
+          return {
+            result,
+            ...(room ? { room: { ...room, platform: ctx.platform, transportScope: ctx.transportScope ?? null } } : {})
+          }
+        }),
       // A platform's own session tools act through ANY platform's connection — including the one
       // the reply-surface registry above omits (Linear, §4.6).
       sessionToolConnectionFor: (integrationId) => this.anyConnForIntegration(integrationId),
@@ -5140,7 +5165,13 @@ export class Daemon {
           const key = this.sessionKeyOf(ctx)
           const sessionId = await this.store.ensureOutwardSessionId(key, ctx.agentId, this.clock.now())
           // The thread the taking turn replies in, where the follow-up's reports reply too; a coordinator's, the asking message's.
-          const replyThread = ctx.forMessage ? answerThreadOf(ctx.forMessage) : this.activeTurnShare.get(key)?.thread
+          const live = this.activeTurnShare.get(key)
+          // A turn in a channel a task holds takes it for the task's own place, in the task's thread there (auto-session-mode.md §6.8).
+          const replyThread = ctx.forMessage
+            ? answerThreadOf(ctx.forMessage)
+            : live && live.channel !== ctx.channel
+              ? ctx.thread
+              : live?.thread
           return await this.followUpChecks.take({
             agentId: ctx.agentId,
             origin: placeOfSession(ctx),
@@ -10556,6 +10587,8 @@ export class Daemon {
     // Under `auto` the place's long session is its coordinator (auto-session-mode.md §3.4).
     const coordinator = mode === 'auto' && this.cfg.features.autoSessionMode
     if (!int || (mode !== 'append' && !coordinator)) return undefined
+    // A channel a task holds has no long session of its own (auto-session-mode.md §6.8).
+    if (await this.heldByTask(agentId, int, place.channel)) return undefined
     const thread = coordinator
       ? await this.resolveCoordinator(agentId, {
           platform: place.platform,
@@ -10584,7 +10617,10 @@ export class Daemon {
     const integrationId = this.integrationIdForTransportScope(agentId, platform, transportScope)
     const int = agent?.integrations.find((candidate) => candidate.id === integrationId)
     if (!agent || !int || !integrationId) return { refused: 'the agent no longer reaches this place' }
-    const refusal = gettingToKnowPlaceRefusal(agent, int, { channel })
+    const refusal = gettingToKnowPlaceRefusal(agent, int, {
+      channel,
+      heldByTask: await this.heldByTask(agentId, int, channel)
+    })
     if (refusal && refusal !== 'external') return { refused: GETTING_TO_KNOW_REFUSAL_REASONS[refusal] }
     const info = await this.placeInfo(integrationId, channel)
     const name = info?.name?.trim()
@@ -10724,7 +10760,7 @@ export class Daemon {
   /** Bot joins waiting for their place's row before a getting-to-know task (assistant-mode.md §5.13). */
   private readonly pendingGettingToKnowTasks = new PendingGettingToKnowTasks()
 
-  /** A genuine join of the agent's bot to a conversation (§5.13): where a getting-to-know task will run, it waits for the place's row and takes one; true then. */
+  /** A genuine join of the agent's bot to a conversation (§5.13): where a getting-to-know task will run, it waits for the place's row and takes one; true then, and for a channel a task holds, which takes nothing. */
   private async gettingToKnowOnJoin(
     agentId: string,
     integrationId: string,
@@ -10734,6 +10770,8 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     const int = agent?.integrations.find((candidate) => candidate.id === integrationId)
     if (!agent || !int || !this.servesAgent(agentId)) return false
+    // A channel a task holds is its workspace, never a place of its own: the join takes nothing (auto-session-mode.md §6.8).
+    if (await this.heldByTask(agentId, int, channel)) return true
     if (gettingToKnowPlaceRefusal(agent, int, { channel }) !== undefined) return false
     const place: AssistantPlace = {
       platform: int.platform,
@@ -10769,6 +10807,7 @@ export class Daemon {
       }
       // The getting-to-know task's row is the place's record, so a rejoin or a mode switch takes none.
       if (await this.store.assistantItems.latestGettingToKnow(join.agentId, place)) continue
+      if (await this.heldByTask(join.agentId, int, join.channel)) continue
       const asker = join.inviter
         ? memberAskerIdentity(int.platform, await this.tenantScopeForIntegration(int), join.inviter)
         : undefined
@@ -10780,6 +10819,22 @@ export class Daemon {
         ...(asker !== undefined ? { asker } : {})
       })
     }
+  }
+
+  /** Whether one of the agent's tasks holds this room keyed as one thread, under its integration's scope or its socket's; it waits for a room still being attached. */
+  private async heldByTask(agentId: string, int: Integration, channel: string): Promise<boolean> {
+    if (!this.cfg.features.autoSessionMode) return false
+    await this.coordinators.roomsAttached(agentId)
+    const conn = this.anyConnForIntegration(int.id)
+    const scopes = new Set([
+      this.transportScopeForIntegration(int) || null,
+      ...(conn ? [this.transportScopeForIntegrationIds(this.srcIntegrationIds(conn)) ?? null] : [])
+    ])
+    for (const transportScope of scopes) {
+      const at = { platform: int.platform, channel, transportScope, thread: channel }
+      if ((await this.store.assistantSubsessions.taskOfThread(agentId, at)) !== undefined) return true
+    }
+    return false
   }
 
   /** A getting-to-know task's title, by its place's name where the platform gives one. */
@@ -13604,9 +13659,8 @@ export class Daemon {
     // this post. Keying on the observer would let the author's connection read an
     // unrelated scope's mute, dispatch the target anyway, and leave the real tombstone
     // standing — after which the target's own copy deduplicates before it can clear it.
-    const targetCoordinate = await this.sessionCoordinateFor(targetAgentId, integrationId, msg)
-    if (targetCoordinate !== undefined) msg.sessionThread = targetCoordinate
-    const muteKey = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), targetAgentId, targetScope)
+    await this.keySession(targetAgentId, integrationId, msg)
+    const muteKey = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), targetAgentId, targetScope)
     // A conversation that appends is never muted: `!stop` there interrupts the turn and
     // sets no latch (§6.3), and a latch left over from before the flip must not silence the
     // one session the whole room now shares.
@@ -13743,6 +13797,33 @@ export class Daemon {
     })
   }
 
+  /** Key a message on its session for one agent: a room a task holds keys on the task's (auto-session-mode.md §6.8), any other on the coordinate its conversation's mode gives. */
+  private async keySession(agentId: string, integrationId: string | undefined, msg: NormalizedMessage): Promise<void> {
+    const held = await this.heldRoomSession(agentId, msg)
+    if (held) {
+      if (held.channel !== msg.channel) msg.sessionChannel = held.channel
+      if (held.thread !== msg.thread) msg.sessionThread = held.thread
+      return
+    }
+    const coordinate = await this.sessionCoordinateFor(agentId, integrationId, msg)
+    if (coordinate !== undefined) msg.sessionThread = coordinate
+  }
+
+  /** The session of the task holding a room keyed as one thread, whatever the room's own mode; it waits for a room still being attached (auto-session-mode.md §6.8). */
+  private async heldRoomSession(
+    agentId: string,
+    msg: Pick<NormalizedMessage, 'platform' | 'channel' | 'thread' | 'transportScope' | 'isDm' | 'isGroupDm'>
+  ): Promise<{ channel: string; thread: string } | undefined> {
+    if (!wholeRoomThread(msg) || !this.cfg.features.autoSessionMode) return undefined
+    await this.coordinators.roomsAttached(agentId)
+    const index = this.store.assistantSubsessions
+    const at = { platform: msg.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
+    const task = await index.taskOfThread(agentId, { ...at, thread: msg.channel })
+    if (task === undefined) return undefined
+    const session = await this.store.getSession(task)
+    return session ? { channel: session.channel, thread: session.thread } : (await index.threadsOf(agentId, task))[0]
+  }
+
   private async sessionCoordinateFor(
     agentId: string,
     integrationId: string | undefined,
@@ -13774,7 +13855,7 @@ export class Daemon {
   ): Promise<string | undefined> {
     // A scheduled run, a hook or another agent's call names no platform message to decide on, so it keeps its own session.
     if (msg.source !== 'user') return undefined
-    // A room keyed as one thread has no root: its one session takes every message, the task's when it is a task's place (§6.8).
+    // A room keyed as one thread has no root: its one session takes every message, the task's while a task holds it (§6.8).
     if (wholeRoomThread(msg)) return undefined
     const at = { platform: int.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
     // Minted before the thread lookup, so a thread session the switch into `auto` adopts keeps its thread (§3.5).
@@ -14020,12 +14101,53 @@ export class Daemon {
       .catch((err) => this.log.warn(`task ${key}: marking its turn running failed: ${formatErr(err)}`))
   }
 
-  /** A threaded task's turn ended: it is idle until its threads speak again (auto-session-mode.md §6.2). */
-  private async settleThreadedTaskTurn(entry: QueueEntry, key: string): Promise<void> {
+  /** A threaded task's turn ended: it is idle until its threads speak again (auto-session-mode.md §6.2); a run it ended in a room it holds reports (§6.8). */
+  private async settleThreadedTaskTurn(entry: QueueEntry, key: string, ended: TurnAcknowledgementEnd): Promise<void> {
     if (isAppendCoordinate(sessionThreadOf(entry.msg))) return
     await this.store.assistantSubsessions
       .finish(entry.agentId, key, 'done')
       .catch((err) => this.log.warn(`task ${key}: settling its turn failed: ${formatErr(err)}`))
+    if (entry.msg.sessionChannel === undefined || !wholeRoomThread(entry.msg)) return
+    // A stopped run was stopped there on purpose, and the run goes on while its room's messages are queued.
+    if ((ended !== 'completed' && ended !== 'failed') || (this.serialQueue.get(key)?.length ?? 0) > 0) return
+    await this.reportRoomRun(entry, key, ended).catch((err) =>
+      this.log.warn(`task ${key}: reporting its run in ${entry.msg.channel} failed: ${formatErr(err)}`)
+    )
+  }
+
+  /** A task's run in a room it holds reports to its coordinator, which may relay it in the origin thread (auto-session-mode.md §6.8). */
+  private async reportRoomRun(entry: QueueEntry, key: string, ended: 'completed' | 'failed'): Promise<void> {
+    const { agentId, msg, integrationId } = entry
+    const row = await this.store.assistantSubsessions.get(agentId, key)
+    if (!row || row.mode === 'watch') return
+    const owner = await this.store.getSession(row.parentSessionKey)
+    const link = sessionThreadUrlFor(
+      { platform: msg.platform, channel: msg.channel, thread: msg.channel },
+      integrationId === undefined ? undefined : this.connForIntegration(integrationId)
+    )
+    const report = roomRunReport(ended, row.title, row.summary, link)
+    const delivered = await this.collab.deliverDaemonReport({
+      agentId,
+      caller: {
+        platform: msg.platform,
+        channel: sessionChannelOf(msg),
+        thread: sessionThreadOf(msg),
+        ...(msg.transportScope !== undefined ? { transportScope: msg.transportScope } : {})
+      },
+      ...(owner
+        ? { place: { platform: owner.platform, channel: owner.channel, transportScope: owner.transportScope ?? null } }
+        : {}),
+      parentSessionId: row.parentSessionId,
+      text: report.text,
+      shown: report.shown,
+      // One per run: each turn of a threaded task is a round of its own.
+      reportId: `room-run:${key}:${row.round ?? 1}`,
+      hopCount: entry.callMeta?.hopCount ?? 0,
+      ownerSessionKey: row.parentSessionKey,
+      // Its coordinator answers it in the thread the task was opened in.
+      ...(row.replyThread !== undefined ? { replyThread: row.replyThread } : {})
+    })
+    if (!delivered.admitted) this.log.warn(`task ${key}: its run report was not delivered (${delivered.reason})`)
   }
 
   /** The coordinator's empty working directory where its runtime reads files, made there; undefined opens it in the agent's (auto-session-mode.md §5.4). */
@@ -14065,25 +14187,7 @@ export class Daemon {
     return () => void placed.then(() => conn.unreact?.call(conn, at.channel, at.messageId, 'triaging')).catch(() => {})
   }
 
-  /** A conversation of its own for a coordinator's task, where the message's platform makes one and its sender may have the agent make something new (auto-session-mode.md §6.8). */
-  private async openTaskPlace(
-    agentId: string,
-    integrationId: string | undefined,
-    msg: NormalizedMessage,
-    title: string
-  ): Promise<TaskPlace | undefined> {
-    if (integrationId === undefined || msg.source !== 'user') return undefined
-    const conn: Partial<ContractConnection> | undefined = this.anyConnForIntegration(integrationId)
-    if (!conn?.openTaskPlace) return undefined
-    const lookups = this.placeMembers.lookupsFor(agentId)
-    if (!(await memberMakesNew(msg.platform, integrationId, msg.sender.id, lookups))) return undefined
-    return await conn.openTaskPlace(
-      { agentId, channel: msg.channel, messageId: platformMessageIdOf(msg), isDm: msg.isDm },
-      title
-    )
-  }
-
-  /** A task's place closed on its platform, as an archived code channel does: the task it holds closes and its owner hears it (auto-session-mode.md §6.8). */
+  /** A room a task holds closed on its platform, as an archived code channel does: the task closes and its owner hears it (auto-session-mode.md §6.8). */
   private async closeTaskPlace(
     at: { platform: string; channel: string; thread: string },
     srcIntegrationIds: readonly string[]
@@ -14355,8 +14459,7 @@ export class Daemon {
     gate?: GateDispatchOptions
   ): Promise<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }> {
     const { agentId, integrationId, msg: targetMsg, via, primary } = target
-    const coordinate = await this.sessionCoordinateFor(agentId, integrationId, targetMsg)
-    if (coordinate !== undefined) targetMsg.sessionThread = coordinate
+    await this.keySession(agentId, integrationId, targetMsg)
     // Agent-scoped drain: the agent is being reclaimed, so new turns drop while in-flight ones finish.
     if (this.drainingAgents.has(agentId)) {
       this.log.debug(`routing: dropping ${targetMsg.msgId} for agent "${agentId}" (draining)`)
@@ -14364,7 +14467,13 @@ export class Daemon {
     }
     // `!stop` mute: only an explicit @mention dispatches (and clears it); muted traffic stays an observation.
     const targetThread = sessionThreadOf(targetMsg)
-    const muteKey = sessionKey(targetMsg.platform, targetMsg.channel, targetThread, agentId, targetMsg.transportScope)
+    const muteKey = sessionKey(
+      targetMsg.platform,
+      sessionChannelOf(targetMsg),
+      targetThread,
+      agentId,
+      targetMsg.transportScope
+    )
     // An append conversation is never muted (§6.3): a leftover latch must not silence the room's one session.
     if (!isAppendCoordinate(targetThread) && (await this.commands.isSessionMuted(muteKey))) {
       if (via !== 'mention') {
@@ -14400,7 +14509,7 @@ export class Daemon {
             agentId,
             sessionKey: sessionKey(
               targetMsg.platform,
-              targetMsg.channel,
+              sessionChannelOf(targetMsg),
               sessionThreadOf(targetMsg),
               agentId,
               targetMsg.transportScope
@@ -14820,11 +14929,10 @@ export class Daemon {
     // `handleRelayIm` applies the `!stop` gate only on the path this branch returns
     // before, so an implicit continuation is checked against it here — otherwise a muted
     // conversation would silence its humans and none of its agents.
-    const relayCoordinate = await this.sessionCoordinateFor(msg.agentId, msg.integrationId, normalized)
-    if (relayCoordinate !== undefined) normalized.sessionThread = relayCoordinate
+    await this.keySession(msg.agentId, msg.integrationId, normalized)
     const muteKey = sessionKey(
       normalized.platform,
-      normalized.channel,
+      sessionChannelOf(normalized),
       sessionThreadOf(normalized),
       msg.agentId,
       normalized.transportScope
@@ -15108,11 +15216,10 @@ export class Daemon {
     // already in the channel record (step 1), with no admission.
     // Pre-addressed to exactly one agent, so the coordinate resolves for it here — the
     // relay path never reaches the per-target fan-out that resolves it for direct ingress.
-    const imCoordinate = await this.sessionCoordinateFor(msg.agentId, msg.integrationId, normalized)
-    if (imCoordinate !== undefined) normalized.sessionThread = imCoordinate
+    await this.keySession(msg.agentId, msg.integrationId, normalized)
     const muteKey = sessionKey(
       normalized.platform,
-      normalized.channel,
+      sessionChannelOf(normalized),
       sessionThreadOf(normalized),
       msg.agentId,
       normalized.transportScope
@@ -16770,7 +16877,7 @@ export class Daemon {
         agentId,
         transcriptChannel: transcriptChannelKey(msg.channel, msg.transportScope),
         coordinate,
-        sessionKey: sessionKey(msg.platform, msg.channel, coordinate, agentId, msg.transportScope),
+        sessionKey: sessionKey(msg.platform, sessionChannelOf(msg), coordinate, agentId, msg.transportScope),
         currentSeq: intake.seq,
         limit: DEFAULT_DECISION_GATE_LIMITS.backgroundRows
       })
@@ -16795,7 +16902,7 @@ export class Daemon {
       // few lines later and to SessionManager's — a divergence here would mint a second session.
       admission: {
         agentId,
-        sessionKey: sessionKey(msg.platform, msg.channel, thread, agentId, msg.transportScope)
+        sessionKey: sessionKey(msg.platform, sessionChannelOf(msg), thread, agentId, msg.transportScope)
       },
       ts,
       sender: msg.sender.id,
@@ -17037,7 +17144,13 @@ export class Daemon {
     }
     const { thread, ts } = transcriptCoords(entry.msg)
     const mention = attachmentMention(entry.msg.attachments)
-    const liveKey = sessionKey(entry.msg.platform, entry.msg.channel, thread, entry.agentId, entry.msg.transportScope)
+    const liveKey = sessionKey(
+      entry.msg.platform,
+      sessionChannelOf(entry.msg),
+      thread,
+      entry.agentId,
+      entry.msg.transportScope
+    )
     // §5.2a: the live webchat turn now also answers this activation, so its routing and reply scope fold it in.
     const live = routingFolded
       ? undefined
@@ -17077,7 +17190,7 @@ export class Daemon {
    *  failed — leaves the caller on today's queue path. */
   private async steerIntoLiveTurn(key: string, entry: QueueEntry): Promise<boolean> {
     if (!this.cfg.features.sessionSteering || !steerEligibleEntry(entry)) return false
-    const target = selectSteerTarget(this.pending.values(), key)
+    const target = selectSteerTarget(this.pending.values(), key, MAX_STEERS_PER_TURN, entry.msg.channel)
     if (!target) return false
     const host = target.selectedHost?.host ?? this.hostForOwner(target.hostKey)
     if (!host?.steeringSupported?.()) return false
@@ -18663,13 +18776,6 @@ export class Daemon {
     // A sub-session never speaks on the platform, whichever turn wakes it (assistant-mode.md §5.7); a coordinator speaks only through its outcomes (auto-session-mode.md §4.2).
     if (isSubsessionCoordinate(sessionThreadOf(msg)) || isCoordinatorCoordinate(sessionThreadOf(msg)))
       msg.headless = true
-    // The platform's copy of a message a task's place was made for opens that task with its title and background (auto-session-mode.md §6.8).
-    if (wholeRoomThread(msg))
-      await this.coordinators.placeOpening(
-        agentId,
-        sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope),
-        msg
-      )
     // An agent-initiated wake's INBOUND message posts live too (#807 only posted the woken
     // REPLY, so the sender's message appeared on refresh but never in the live view). Mint
     // its canonical post identity before the inbox row persists so a replay reuses it and
@@ -18690,7 +18796,7 @@ export class Daemon {
     // THIS promise, not vanish as an unhandled rejection while the caller waits forever.
     return new Promise<string | null>((resolve, reject) => {
       void (async () => {
-        const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
+        const key = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
         const reviewLane = reviewSubjectLane(hookContext, hookCoordinates(agentId, msg, integrationId))
         const safetyDrainByKey = this.safetyDrainAdmissionKeys.get(agentId)?.has(key) === true
         let admissionSettled = false
@@ -18728,7 +18834,7 @@ export class Daemon {
             if (result.accepted) {
               await this.store.admitActivation(
                 activationKey,
-                sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
+                sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
               )
             } else {
               // Never admitted ⇒ give the claim back, so a retry is a first attempt rather
@@ -19496,7 +19602,7 @@ export class Daemon {
             if (!this.retainsInboxRow(entry, false)) await this.removeInbox(entry)
             if (isSubsessionCoordinate(sessionThreadOf(entry.msg)))
               await this.settleSubsessionTurn(entry, key, ended === 'completed' ? 'completed' : 'interrupted')
-            else if (this.cfg.features.autoSessionMode) await this.settleThreadedTaskTurn(entry, key)
+            else if (this.cfg.features.autoSessionMode) await this.settleThreadedTaskTurn(entry, key, ended)
             await this.settleCoordinatorTurn(entry, key, entry.coordinatorEnded ?? 'stopped', sessionId, {
               replayed: this.retainsInboxRow(entry, false)
             })
@@ -19510,7 +19616,7 @@ export class Daemon {
           // A shutdown drain's throw is the deadline-cancel of an admitted turn, whose row startup replay recovers.
           if (!this.retainsInboxRow(entry, true)) await this.removeInbox(entry)
           if (isSubsessionCoordinate(sessionThreadOf(entry.msg))) await this.settleSubsessionTurn(entry, key, 'failed')
-          else if (this.cfg.features.autoSessionMode) await this.settleThreadedTaskTurn(entry, key)
+          else if (this.cfg.features.autoSessionMode) await this.settleThreadedTaskTurn(entry, key, 'failed')
           await this.settleCoordinatorTurn(entry, key, 'failed', null, { replayed: this.retainsInboxRow(entry, true) })
           entry.reject(err)
           // A coordinator's queue holds separate people's messages, never follow-ups of the failed one: they still run (§4.3).
@@ -22760,7 +22866,7 @@ export class Daemon {
               agentId,
               sessionKey: sessionKey(
                 anchor.msg.platform,
-                anchor.msg.channel,
+                sessionChannelOf(anchor.msg),
                 transcriptCoords(anchor.msg).thread,
                 agentId,
                 anchor.msg.transportScope
@@ -29092,7 +29198,13 @@ export class Daemon {
       // assistant-mode.md §5.7 step 1: an approved task is never re-run; it is reported as uncertain instead.
       if (isTaskCoordinate(sessionThreadOf(msg))) {
         await this.store.removeInbox(row.id)
-        const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), row.agentId, msg.transportScope)
+        const key = sessionKey(
+          msg.platform,
+          sessionChannelOf(msg),
+          sessionThreadOf(msg),
+          row.agentId,
+          msg.transportScope
+        )
         await this.tasks.cut(row.agentId, key, callerOfMessage(msg))
         continue
       }
@@ -29106,7 +29218,13 @@ export class Daemon {
       const cleanup = codeHostThreadWorktreeCleanup(hookContext)
       const deleted = githubDeletedHookEvent(hookContext)
       if (hookContext && (cleanup || deleted)) {
-        const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), row.agentId, msg.transportScope)
+        const key = sessionKey(
+          msg.platform,
+          sessionChannelOf(msg),
+          sessionThreadOf(msg),
+          row.agentId,
+          msg.transportScope
+        )
         const owner: HookCompletionOwner = { inboxId: row.id }
         this.liveInboxIds.add(row.id)
         if (cleanup) void this.githubReviews.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
@@ -29538,9 +29656,8 @@ export class Daemon {
     // A cron firing into a conversation is "equivalent to a user posting the trigger
     // in-channel", so it joins the same session a user's message would — resolved before
     // the key below, which the gate and every later step read.
-    const anchorCoordinate = await this.sessionCoordinateFor(agentId, target?.integrationId, msg)
-    if (anchorCoordinate !== undefined) msg.sessionThread = anchorCoordinate
-    const key = sessionKey(msg.platform, msg.channel, sessionThreadOf(msg), agentId, msg.transportScope)
+    await this.keySession(agentId, target?.integrationId, msg)
+    const key = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
     // Gate BEFORE the anchor side effect. Cron scheduling remains registered while an
     // agent is paused, but a paused/draining/safety-stopping agent must publish nothing
     // and start no turn.

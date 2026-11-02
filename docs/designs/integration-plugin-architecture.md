@@ -448,11 +448,11 @@ member. `container` is the message's NATIVE container rather than the
 normalized `channel` — a Discord message inside a thread reports its parent
 there, and only the native pair can address the message at all.
 
-`openTaskPlace(origin, title)` is another optional member: a conversation of its own for a task an
-Auto coordinator opens for one message, linked to it ([auto-session-mode.md](auto-session-mode.md)
-§6.8). Slack implements it with its code channel creation path; a platform without the member, or a
-rejection, keeps the task in the message's thread. Core reads only the place's coordinates, never
-what kind of conversation it is.
+A platform's own session tool may make a room for the session's work (a Slack code channel):
+it hands core the room's coordinates through the tool environment's `makeRoom`, and a task of an
+Auto coordinator holds the room as one more thread ([auto-session-mode.md](auto-session-mode.md)
+§6.8). It is not a contract member: the coordinator never asks a platform for a room, and core
+reads only the coordinates, never what kind of conversation it is.
 
 Its counterpart `addReaction(channel, messageTs, emoji)` looks like the same member and is
 deliberately not: there the glyph comes from the MODEL, which already knows which platform it

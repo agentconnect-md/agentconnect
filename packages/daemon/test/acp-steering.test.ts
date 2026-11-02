@@ -95,6 +95,13 @@ describe('steer admission policy', () => {
     expect(selectSteerTarget([marked], 'slack:C1:T1:bot-a')).toBeUndefined()
   })
 
+  it('steers only into a turn answering in the arrival’s own channel (auto-session-mode.md §6.8)', () => {
+    const origin = pending({ plan: { sessionKey: 'slack:C1:T1:bot-a', channel: 'C1' } as never })
+    expect(selectSteerTarget([origin], 'slack:C1:T1:bot-a', 3, 'C1')).toBe(origin)
+    // A message in the code channel the task holds waits for its own turn there.
+    expect(selectSteerTarget([origin], 'slack:C1:T1:bot-a', 3, 'C2')).toBeUndefined()
+  })
+
   it('stops steering once the per-turn budget is spent', () => {
     expect(selectSteerTarget([pending({ steerCount: 2 })], 'slack:C1:T1:bot-a', 3)).toBeDefined()
     expect(selectSteerTarget([pending({ steerCount: 3 })], 'slack:C1:T1:bot-a', 3)).toBeUndefined()

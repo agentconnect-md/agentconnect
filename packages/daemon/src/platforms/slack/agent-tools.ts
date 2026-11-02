@@ -202,20 +202,26 @@ async function execute(
   const conn = env.connection as SlackConnection
   if (name === 'createSlackCodeChannel') {
     const a = parseArgs(createArgs, args)
+    const here = env.deliveryChannel
     const origin = env.originMsgId?.split(':')
-    if (origin?.length !== 3 || origin[0] !== 'slack' || origin[1] !== ctx.channel || !/^\d+\.\d+$/.test(origin[2]!))
+    if (origin?.length !== 3 || origin[0] !== 'slack' || origin[1] !== here || !/^\d+\.\d+$/.test(origin[2]!))
       throw new Error('A code channel requires a live Slack message as its origin')
-    const created = await createCodeChannel(
-      conn,
-      { agentId: ctx.agentId, channel: ctx.channel, ts: origin[2]!, isDm: ctx.isDm },
-      a.name,
-      () => env.judgeWrite({ kind: 'new', platform: ctx.platform, integrationId: ctx.integrationId, users: [] })
-    )
-    return created.response
+    const make = async () => {
+      const created = await createCodeChannel(
+        conn,
+        { agentId: ctx.agentId, channel: here, ts: origin[2]!, isDm: ctx.isDm && here === ctx.channel },
+        a.name,
+        () => env.judgeWrite({ kind: 'new', platform: ctx.platform, integrationId: ctx.integrationId, users: [] })
+      )
+      // A code channel's one session keys on the channel itself (slack-code-channels.md), the coordinate a task holds it by.
+      const id = created.existing ? undefined : created.channelId
+      return { result: created.response, ...(id ? { room: { channel: id, thread: id } } : {}) }
+    }
+    return env.makeRoom ? await env.makeRoom(make) : (await make()).result
   }
   if (name === 'setSlackCodeView' || name === 'manageSlackCodeChannel') {
     const a = name === 'setSlackCodeView' ? parseArgs(viewArgs, args) : parseArgs(manageArgs, args)
-    const channel = a.channelId ?? ctx.channel
+    const channel = a.channelId ?? env.deliveryChannel
     await env.judgeWrite({ kind: 'conversation', platform: ctx.platform, integrationId: ctx.integrationId, channel })
     const info = await conn.codeChannel(channel)
     if (!info.code || !info.owners.includes(conn.botUserId))
@@ -258,11 +264,11 @@ async function execute(
     kind: 'conversation',
     platform: ctx.platform,
     integrationId: ctx.integrationId,
-    channel: ctx.channel
+    channel: env.deliveryChannel
   })
   const attribution = await env.attribution?.()
   const ts = await (env.connection as SlackConnection).postBlocks(
-    ctx.channel,
+    env.deliveryChannel,
     [...report.blocks, ...(attribution ? buildAttributionBlocks(attribution).blocks : [])],
     report.text,
     env.deliveryThread,
@@ -270,7 +276,7 @@ async function execute(
   )
   if (!ts) throw new Error('Slack did not post the report; its originating thread may have been deleted')
   await env.recordPost(report.text, ts)
-  return { channel: ctx.channel, ts }
+  return { channel: env.deliveryChannel, ts }
 }
 
 export const SLACK_SESSION_TOOLS: PlatformSessionTools = {
