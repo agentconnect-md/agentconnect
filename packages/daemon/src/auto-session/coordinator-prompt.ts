@@ -2,7 +2,7 @@
 import { READ_TASK_TOOL } from '../mcp/ops/assistant-subsessions.js'
 import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
 import { NO_RESPONSE_SENTINEL } from '../session/no-response.js'
-import { obj, type ToolDescriptor } from '../tool-schema/descriptor.js'
+import { obj, unionOf, type ToolDescriptor } from '../tool-schema/descriptor.js'
 
 /** A delivered message's id is its platform id behind this prefix, so a bare timestamp is never read as a number (§4.3). */
 export const COORDINATOR_MESSAGE_ID_PREFIX = 'msg-'
@@ -110,29 +110,51 @@ const str = (description: string) => ({ type: 'string', description })
 export const COORDINATOR_SEND_MESSAGE_TOOL: ToolDescriptor = {
   name: 'sendMessage',
   description: SEND_MESSAGE_DESCRIPTION,
-  inputSchema: {
-    type: 'object',
-    properties: {
-      action: {
-        type: 'string',
-        enum: ['delegateTask', 'messageTask', 'replyToMessage', 'postMessage', 'callAgent']
+  inputSchema: unionOf([
+    obj(
+      {
+        action: { const: 'delegateTask' },
+        messageId: str('Id of the message to delegate.'),
+        title: str('A short name for the new task, at most eight words.'),
+        message: str('Optional background the task cannot see in the original message.')
       },
-      messageId: str(
-        'Id of the delivered channel message or report this call decides on; not for postMessage or callAgent.'
-      ),
-      taskId: str('messageTask only: the open task to hand the message to.'),
-      title: str('delegateTask only: a short name for the new task, at most eight words.'),
-      message: str(
-        'replyToMessage and postMessage: the text to post. callAgent: what to ask. delegateTask/messageTask: optional ' +
-          'background the task cannot see in the message itself.'
-      ),
-      channel: str('postMessage only: the channel id to post in, normally this one.'),
-      thread: str('postMessage only: the thread to post in; the channel root when omitted.'),
-      toAgent: str('callAgent only: the name of the agent to ask.')
-    },
-    required: ['action'],
-    additionalProperties: false
-  }
+      ['action', 'messageId', 'title']
+    ),
+    obj(
+      {
+        action: { const: 'messageTask' },
+        messageId: str('Id of the message to hand over.'),
+        taskId: str('The open task to hand the message to.'),
+        message: str('Optional background for the task.')
+      },
+      ['action', 'messageId', 'taskId']
+    ),
+    obj(
+      {
+        action: { const: 'replyToMessage' },
+        messageId: str('Id of the message or report to answer.'),
+        message: str('The text to post as a reply.')
+      },
+      ['action', 'messageId', 'message']
+    ),
+    obj(
+      {
+        action: { const: 'postMessage' },
+        channel: str('Channel id to post in, normally this one.'),
+        thread: str('Thread to post in; the channel root when omitted.'),
+        message: str('The text to post.')
+      },
+      ['action', 'message']
+    ),
+    obj(
+      {
+        action: { const: 'callAgent' },
+        toAgent: str('Name of the agent to ask.'),
+        message: str('What to ask the agent.')
+      },
+      ['action', 'toAgent', 'message']
+    )
+  ])
 }
 
 /** The coordinator's `listTasks`, the shared handler under the coordinator's description. */

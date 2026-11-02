@@ -16,7 +16,7 @@ import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../src/runtime-defs/claude-runtime.js'
 import { executeTool } from '../src/mcp/ops.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
-import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
+import type { ObjectUnionSchema, ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import { coordinatorCoordinate, isAppendCoordinate, isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { isNoResponsePrefix } from '../src/session/no-response.js'
 import { sessionKey, type LocalStore } from '../src/store/local-store.js'
@@ -121,6 +121,15 @@ describe('the coordinator prompt and batch', () => {
       'listReminders',
       'propose'
     ])
+    const schema = tools[0]?.inputSchema
+    expect(schema).toHaveProperty('oneOf')
+    if (schema && 'oneOf' in schema) {
+      const reply = (schema as ObjectUnionSchema).oneOf.find(
+        (branch) => (branch.properties.action as { const: string }).const === 'replyToMessage'
+      )
+      expect(reply?.required).toEqual(['action', 'messageId', 'message'])
+      expect(Object.keys(reply?.properties ?? {})).toEqual(['action', 'messageId', 'message'])
+    }
   })
 
   // auto-session-mode.md §3.4: a report reaches the coordinator beside channel messages, framed apart from them.
@@ -575,6 +584,30 @@ describe('the coordinator’s outcomes', () => {
     )
     await sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-1.1', message: 'Morning!' })
     expect(posted).toEqual([{ msg: expect.objectContaining({ msgId: 'slack:C1:1.1' }), text: 'Morning!' }])
+  })
+
+  it('ignores blank fields from other coordinator actions without accepting meaningful ones', async () => {
+    const { sessions, ctx, posted } = await setup()
+    begin(sessions, slack('1.1'))
+    await expect(
+      sessions.decide(ctx, {
+        action: 'replyToMessage',
+        messageId: 'msg-1.1',
+        message: 'Morning!',
+        taskId: '',
+        title: '',
+        channel: '',
+        thread: '',
+        toAgent: ''
+      })
+    ).resolves.toMatchObject({ ok: true })
+    expect(posted).toEqual([{ msg: expect.objectContaining({ msgId: 'slack:C1:1.1' }), text: 'Morning!' }])
+
+    begin(sessions, slack('1.2'))
+    await expect(
+      sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-1.2', message: 'Hello', channel: 'C2' })
+    ).rejects.toThrow(/Unrecognized keys|unrecognized/i)
+    expect(posted).toHaveLength(1)
   })
 
   it('never posts a turn’s final text, sentinel or not, and opens a task for a mention left without an outcome', async () => {
