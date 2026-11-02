@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalizeWindowsSpawnEnv, resolveLocalInvocation } from '../src/acp/spawn-driver.js'
+import { canonicalizeWindowsSpawnEnv } from '../src/acp/spawn-driver.js'
+import { resolveLocalInvocation } from '../src/runtimes/probe.js'
 
 describe('Windows local runtime launch', () => {
   it('canonicalizes a mixed-case PATH before command resolution', () => {
@@ -15,6 +16,16 @@ describe('Windows local runtime launch', () => {
     expect(resolveLocalInvocation(cmd, ['-y', 'pkg'], {}, 'win32', 'node.exe', (path) => path === cli)).toEqual({
       cmd: 'node.exe',
       args: [cli, '-y', 'pkg']
+    })
+  })
+
+  it('runs the npm JavaScript entry with Node instead of spawning npm.cmd', () => {
+    const cmd = 'C:\\npm\\npm.cmd'
+    const cli = 'C:\\npm\\node_modules\\npm\\bin\\npm-cli.js'
+
+    expect(resolveLocalInvocation(cmd, ['view', 'pkg'], {}, 'win32', 'node.exe', (path) => path === cli)).toEqual({
+      cmd: 'node.exe',
+      args: [cli, 'view', 'pkg']
     })
   })
 })

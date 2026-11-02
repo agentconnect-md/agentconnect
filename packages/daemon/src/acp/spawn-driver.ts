@@ -1,9 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
-import { basename, dirname, join, win32 as windowsPath } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { LocalFileSink, type FileSink } from '../shim/file-sink.js'
-import { resolveCommandPath } from '../runtimes/probe.js'
+import { resolveCommandPath, resolveLocalInvocation } from '../runtimes/probe.js'
 import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
 import type { HostKey } from './host-key.js'
 import type { Logger } from '../log.js'
@@ -78,24 +77,6 @@ export interface SpawnedRuntime {
  */
 export interface SpawnDriver {
   launch(request: SpawnRequest): Promise<SpawnedRuntime>
-}
-
-/** Resolve a local command without a shell; Windows npm shims are Node scripts behind `.cmd`. */
-export function resolveLocalInvocation(
-  command: string,
-  args: string[],
-  env: NodeJS.ProcessEnv,
-  platform = process.platform,
-  nodeExecPath = process.execPath,
-  fileExists: (path: string) => boolean = existsSync
-): { cmd: string; args: string[] } {
-  const resolved = resolveCommandPath(command, env) ?? command
-  const pathApi = platform === 'win32' ? windowsPath : { basename, dirname, join }
-  if (platform === 'win32' && pathApi.basename(resolved).toLowerCase() === 'npx.cmd') {
-    const cli = pathApi.join(pathApi.dirname(resolved), 'node_modules', 'npm', 'bin', 'npx-cli.js')
-    if (fileExists(cli)) return { cmd: nodeExecPath, args: [cli, ...args] }
-  }
-  return { cmd: resolved, args }
 }
 
 /** Canonicalize the case-insensitive process keys that plain Windows env objects expose with arbitrary casing. */

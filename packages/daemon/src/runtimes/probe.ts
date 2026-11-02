@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync } from 'node:fs'
-import { basename, delimiter, dirname, join, resolve } from 'node:path'
+import { basename, delimiter, dirname, join, resolve, win32 as windowsPath } from 'node:path'
 import { homedir } from 'node:os'
 import { parse as parseToml } from 'smol-toml'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -73,6 +73,27 @@ export function resolveCommandPath(command: string, env: NodeJS.ProcessEnv = pro
     }
   }
   return undefined
+}
+
+// Windows npm shims are `.cmd` wrappers that `execFile`/`spawn` refuse without a shell (CVE-2024-27980).
+const WINDOWS_NPM_SHIMS: Record<string, string> = { 'npx.cmd': 'npx-cli.js', 'npm.cmd': 'npm-cli.js' }
+
+/** Resolve a local command without a shell; a Windows npm/npx shim runs its JavaScript entry under Node. */
+export function resolveLocalInvocation(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  platform = process.platform,
+  nodeExecPath = process.execPath,
+  fileExists: (path: string) => boolean = existsSync
+): { cmd: string; args: string[] } {
+  const resolved = resolveCommandPath(command, env) ?? command
+  const entry = platform === 'win32' ? WINDOWS_NPM_SHIMS[windowsPath.basename(resolved).toLowerCase()] : undefined
+  if (entry) {
+    const cli = windowsPath.join(windowsPath.dirname(resolved), 'node_modules', 'npm', 'bin', entry)
+    if (fileExists(cli)) return { cmd: nodeExecPath, args: [cli, ...args] }
+  }
+  return { cmd: resolved, args }
 }
 
 /** Extra, runtime-specific check layered (AND) on top of the launcher probe. */
