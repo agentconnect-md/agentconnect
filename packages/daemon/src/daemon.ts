@@ -25318,9 +25318,14 @@ export class Daemon {
     // A console continuation onto a hook session or a task is not a new audience claiming a runtime — it IS that session, whose audience its delivery cannot re-derive, so the row keeps its binding (§9; auto-session-mode.md §10).
     if (msg.adoptedSession && (originKindOf(msg.platform) === 'hook' || isSubsessionCoordinate(sessionThreadOf(msg))))
       return 'unchanged'
+    const existing = await this.store.getSession(key)
     const direct =
       codeHostExternalSource(hookContext) ??
-      (await this.conversationExternalSource(agentId, msg, postlessCall(callMeta)))
+      (await this.conversationExternalSource(
+        agentId,
+        await this.heldRoomAudience(agentId, key, msg, existing),
+        postlessCall(callMeta)
+      ))
     // Conversation audiences require both a realm and integration; repository audiences carry their own proof.
     if (
       direct?.externalResourceKind === 'conversation' &&
@@ -25340,7 +25345,6 @@ export class Daemon {
             externalResourceKey: inherited.resourceKey
           }
         : undefined)
-    const existing = await this.store.getSession(key)
     if (!existing) return 'unchanged'
 
     // An A2A turn with no external lineage cannot enter an externally-bound
@@ -25364,6 +25368,20 @@ export class Daemon {
       return 'unchanged'
     }
     return 'mismatch'
+  }
+
+  /** A message in a room the session's task holds is that task's own audience, judged as the session's conversation (auto-session-mode.md §6.8). */
+  private async heldRoomAudience(
+    agentId: string,
+    key: string,
+    msg: NormalizedMessage,
+    session: SessionRecord | undefined
+  ): Promise<NormalizedMessage> {
+    if (!session || sessionChannelOf(msg) === msg.channel || !wholeRoomThread(msg)) return msg
+    const room = { platform: msg.platform, channel: msg.channel, transportScope: msg.transportScope ?? null }
+    if ((await this.store.assistantSubsessions.taskOfThread(agentId, { ...room, thread: msg.channel })) !== key)
+      return msg
+    return { ...msg, channel: session.channel, thread: session.thread, isDm: session.conversationKind === 'dm' }
   }
 
   private async classifyNewSessionOrThrow(

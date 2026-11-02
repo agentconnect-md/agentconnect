@@ -5008,3 +5008,11 @@ Implementing it found that the task index cannot tell a fallback task from a del
 fallback task holds a channel it makes, which auto-session-mode.md §4.5 and §6.8 "Not here" say it
 does not; and that `slack-code-channels.md`, `integration-plugin-architecture.md` and the product
 conventions still described the coordinator opening the channel.
+
+**Eighty-ninth revision (2026-11-02)**: a message in a room a task holds passes the session source
+gate as the task's own (auto-session-mode.md §6.8 "Routing"). The gate judged a message by its own
+channel, so Slack's copy of the originating message in a channel a task made was refused as another
+conversation's, with a notice posted in the channel, and the task never ran there. A message routed
+onto a task's session from a room the task holds is now judged as the conversation of that session,
+whose row keeps its binding to the origin; a message keyed onto a session from a room its task does
+not hold, or from another workspace, is still refused.

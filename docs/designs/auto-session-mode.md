@@ -447,6 +447,9 @@ place; a channel is a workspace the task earns.
   coordinator of its own whatever its mode: every message there keys on the channel's session, the
   task's while a task holds it. This also keeps a code channel made outside a task, or one whose task has
   closed, an ordinary code channel. `!new`, `!stop` and Slack's native Stop act on that session (§8).
+  A message in a room a task holds passes the session source gate
+  ([session-visibility.md](session-visibility.md) §4.1) as the task's own: it is judged as the
+  conversation of the task's session, whose row keeps its binding to the origin.
 - **More messages.** `messageTask` with a `messageId` moves the message into the channel a task holds,
   where the task answers, and links the channel in the message's thread ("Passed to [title](link)"); the
   thread is not attached, so a later reply there comes back to the coordinator. `listTasks` lists the
