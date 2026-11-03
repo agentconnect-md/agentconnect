@@ -27,6 +27,14 @@ export const CHAT_LINK_HINT =
 /** Why an approval answer was refused: the level or the conversation closed it, else who the person is where permissions are synced. */
 export type ApprovalRefusal = Exclude<ChatActorVerdict, 'allowed'> | 'closed'
 
+/** What only the person whose choice-card press was refused is told; the card stays as everyone else sees it. */
+export const CHOICE_CARD_REFUSALS: Record<ApprovalRefusal, string> = {
+  closed: 'This conversation does not take card presses, so your choice was not sent.',
+  'not-editor': 'Only an Agent editor can press this card.',
+  unlinked: `Only an Agent editor can press this card, from a chat account linked to their console account. ${CHAT_LINK_HINT}`,
+  unavailable: "Who you are can't be checked right now, so your choice was not sent. Try again in a moment."
+}
+
 /** A synced platform's approval refusals carry no console link: the console shows that conversation only to the same people. */
 const SYNCED_APPROVAL_REFUSALS: Record<Exclude<ApprovalRefusal, 'closed'>, string> = {
   'not-editor': 'Only an Agent editor can answer this request.',

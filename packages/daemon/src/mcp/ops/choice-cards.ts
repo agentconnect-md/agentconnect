@@ -1,4 +1,9 @@
-import type { ChoiceCards } from '../../cards/choice-cards.js'
+import {
+  ChoiceCardContentSchema,
+  UpdateChoiceCardSchema,
+  type ChoiceCardPlace,
+  type ChoiceCards
+} from '../../cards/choice-cards.js'
 import type { LocalApiReply } from '../../local-api/server.js'
 import type { SessionContext } from './context.js'
 
@@ -19,25 +24,27 @@ function settle(reply: LocalApiReply): unknown {
   return reply.body
 }
 
-/** Post a card into THIS conversation; every coordinate comes from the trusted session, never the model. */
+const issues = (error: { issues: { path: PropertyKey[]; message: string }[] }) =>
+  error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
+
+/** Post a card into THIS conversation, as the agent's reply would be; every coordinate comes from the trusted session, never the model. */
 export async function postChoiceCard(
   ctx: SessionContext,
   args: Record<string, unknown>,
   deps: ChoiceCardOpsDeps
 ): Promise<unknown> {
   if (!ctx.integrationId) throw new Error('postChoiceCard: this session has no platform conversation.')
-  return settle(
-    await cards(deps).create({
-      agent: ctx.agentId,
-      integrationId: ctx.integrationId,
-      channel: ctx.channel,
-      thread: ctx.deliveryThread,
-      title: String(args.title ?? ''),
-      body: typeof args.body === 'string' ? args.body : '',
-      options: (Array.isArray(args.options) ? args.options : []) as { id: string; label: string }[],
-      ...(typeof args.editText === 'string' ? { editText: args.editText } : {})
-    })
-  )
+  const content = ChoiceCardContentSchema.omit({ expiresAt: true }).safeParse(args)
+  if (!content.success) throw new Error(`postChoiceCard: ${issues(content.error)}`)
+  const place: ChoiceCardPlace = {
+    agentId: ctx.agentId,
+    integrationId: ctx.integrationId,
+    platform: ctx.platform,
+    channel: ctx.channel,
+    thread: ctx.deliveryThread,
+    isDm: ctx.isDm
+  }
+  return settle(await cards(deps).create(place, content.data))
 }
 
 /** Only this agent's own cards can be read or changed by it. */
@@ -61,10 +68,8 @@ export async function updateChoiceCard(
   deps: ChoiceCardOpsDeps
 ): Promise<unknown> {
   const card = await ownCard(ctx, deps, args.cardId)
-  return settle(
-    await cards(deps).update(card.id, {
-      ...(typeof args.state === 'string' ? { state: args.state } : {}),
-      ...(typeof args.label === 'string' || args.label === null ? { label: args.label as string | null } : {})
-    })
-  )
+  const { cardId: _cardId, ...rest } = args
+  const patch = UpdateChoiceCardSchema.safeParse(rest)
+  if (!patch.success) throw new Error(`updateChoiceCard: ${issues(patch.error)}`)
+  return settle(await cards(deps).update(card.id, patch.data))
 }

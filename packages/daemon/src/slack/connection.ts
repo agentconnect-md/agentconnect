@@ -4,7 +4,7 @@ import {
   CARD_TEXT_BLOCK,
   decodeCardValue
 } from '../platforms/slack/choice-card.js'
-import { EDIT_CHOICE } from '../cards/choice-cards.js'
+import { EDIT_CHOICE } from '../platforms/choice-card.js'
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt'
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
 import {
@@ -1359,6 +1359,11 @@ export class SlackConnection implements PlatformConnection {
         ? sendOnlyApp(deps.group.botToken)
         : realSocketModeApp({ token: deps.group.botToken, appToken: deps.group.appToken }, deps.boltDebug)
     this.queue = new PlatformSendQueue(deps.sendIntervalMs ?? 350)
+  }
+
+  /** True for a shared (relay-ingress) bot: this connection registers no action handlers. */
+  get sendOnly(): boolean {
+    return this.deps.sendOnly === true
   }
 
   async start(): Promise<void> {

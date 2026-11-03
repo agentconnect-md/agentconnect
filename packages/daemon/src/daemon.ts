@@ -233,6 +233,7 @@ import {
   chatApprovalsAllowed,
   chatSettingsAllowed,
   chatSurfaceOf,
+  CHOICE_CARD_REFUSALS,
   type ChatActorVerdict,
   type ChatSurface
 } from './agents/chat-actions.js'
@@ -909,8 +910,8 @@ import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@age
 import { z } from 'zod'
 import { LocalApiServer, type LocalApiReply } from './local-api/server.js'
 import { doorbellRoute, type DoorbellRequest } from './local-api/doorbell.js'
-import { ChoiceCards } from './cards/choice-cards.js'
-import { slackChoiceCardSurface } from './platforms/slack/choice-card.js'
+import { ChoiceCards, type ChoiceCardPlace, type CreateChoiceCard } from './cards/choice-cards.js'
+import type { ChoiceCardRow } from './store/choice-cards.js'
 import { OUTSIDE_HUMAN_SCOPE_REMINDER, isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { codeHostReplySnapshot, sessionReplyRoute, sessionWakeFields } from './session/reply-route.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
@@ -1046,7 +1047,7 @@ import { buildConfigApply, type ConfigApplyHost } from './cp/config-apply-handle
 import { SystemMetrics } from './metrics/system-metrics.js'
 import { estimateOpenAiTurnCost } from './usage/openai-public-pricing.js'
 import type { McpServer, SessionUpdate } from '@agentclientprotocol/sdk/unstable'
-import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
+import type { Agent, CronDef, DoorbellDef, Integration } from './agents/agent-schema.js'
 import {
   appendTurnPrompt,
   fromPlatformMessage,
@@ -1137,6 +1138,7 @@ import { feishuApprovalCards } from './platforms/feishu/approval-card.js'
 import { feishuPlatformModule } from './platforms/feishu/module.js'
 import { slackApprovalCards } from './platforms/slack/approval-card.js'
 import { slackCapabilityCards } from './platforms/slack/capability-card.js'
+import { slackChoiceCards } from './platforms/slack/choice-card.js'
 import { discordCapabilityCards } from './platforms/discord/capability-card.js'
 import { feishuCapabilityCards } from './platforms/feishu/capability-card.js'
 import { parseGoogleChatCapabilityClick } from './platforms/googlechat/capability-card.js'
@@ -1824,6 +1826,7 @@ export class Daemon {
         elicitCards: slackElicitCards,
         approvalCards: slackApprovalCards,
         capabilityCards: slackCapabilityCards,
+        choiceCards: slackChoiceCards,
         createConverger: (ctx) =>
           new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? [], ctx.resolveFileLink),
         initialTurnState: (ctx): SlackTurnState => {
@@ -3733,6 +3736,10 @@ export class Daemon {
     await this.openPlatformConnections(agents)
     await this.registerAgentCrons(agents)
     this.watchAgentConfigs()
+    // Before replay: an admitted press's ordinary inbox row is gone once its turn settles.
+    await this.choiceCards()
+      .sweep((agentId) => this.servesAgent(agentId))
+      .catch((err) => this.log.warn(`choice cards: startup sweep failed: ${formatErr(err)}`))
     await this.replayDurableWork()
     await this.startLocalApi(root, cfg)
     this.armTimersAndReadiness(root, startControlPlane)
@@ -29945,7 +29952,10 @@ export class Daemon {
     if (!cfg.localApi.enabled) return
     this.localApi = new LocalApiServer({
       socketPath: localIpcPath(root, 'local'),
-      routes: [doorbellRoute((req) => this.ringDoorbell(req)), ...this.choiceCards().routes()],
+      routes: [
+        doorbellRoute((req) => this.ringDoorbell(req)),
+        ...this.choiceCards().routes((req) => this.choiceCardPlace(req))
+      ],
       log: this.log
     })
     if (!(await this.localApi.start())) this.localApi = undefined
@@ -29953,52 +29963,106 @@ export class Daemon {
 
   private choiceCardService?: ChoiceCards
 
-  /** Sticky choice cards (store-backed, so a click after a restart still starts its turn). */
+  /** Sticky choice cards (choice-cards.md): store-backed, so a press after a restart still starts its turn. */
   private choiceCards(): ChoiceCards {
     return (this.choiceCardService ??= new ChoiceCards({
       ledger: this.store.choiceCards,
-      resolveAgent: (name, integrationId) => {
-        const agent = this.agents.get(name) ?? [...this.agents.values()].find((a) => a.name === name)
-        const integration = integrationId
-          ? agent?.integrations.find((i) => i.id === integrationId)
-          : agent?.integrations[0]
-        return agent && integration
-          ? { agentId: agent.id, integrationId: integration.id, platform: integration.platform }
-          : undefined
-      },
-      surfaceFor: (integrationId) => {
-        const conn = this.connByIntegration.get(integrationId) as Partial<SlackConnection> | undefined
-        return conn?.postBlocks && conn.updateBlocks
-          ? slackChoiceCardSurface(conn as unknown as SlackConnection)
-          : undefined
-      },
-      startTurn: async (card, text) => {
-        const traceId = randomUUID()
-        const msg: NormalizedMessage = {
-          msgId: `card:${card.cardId}`,
-          traceId,
-          source: 'user',
-          platform: card.platform,
-          channel: card.channel,
-          thread: card.thread,
-          sender: { id: card.clickedBy!, isBot: false, ...(card.clickedByName ? { name: card.clickedByName } : {}) },
-          text,
-          mentionedBots: [],
-          isDm: false
+      surfaceFor: (card) => {
+        const facet = this.turnSurfaces.exact(card.platform)?.choiceCards
+        const conn = this.connForIntegration(card.integrationId)
+        if (!facet || !conn || !facet.serves(conn)) return undefined
+        const model = (row: ChoiceCardRow) => ({ ...row, thread: row.thread || undefined })
+        return {
+          post: (row) => facet.post(conn, model(row)),
+          redraw: (row) => facet.redraw(conn, model(row)),
+          ...(facet.tellPrivately
+            ? { tellPrivately: (row, userId, text) => facet.tellPrivately!(conn, model(row), userId, text) }
+            : {})
         }
-        await this.dispatch(card.agentId, msg, card.integrationId, undefined, undefined, { requireDurable: true })
       },
+      // A press is a message from that person in that conversation: judged as one, never as an approval.
+      judge: async (card, actor) => {
+        if (actor.isBot) return ''
+        if (this.chatSurface(card.agentId, card.integrationId, card.channel) !== 'open')
+          return CHOICE_CARD_REFUSALS.closed
+        const verdict = await this.chatActor(card.agentId, card.integrationId, actor)
+        return verdict === 'allowed' ? undefined : CHOICE_CARD_REFUSALS[verdict]
+      },
+      startTurn: (card, text, deliveryId, admitted) => this.dispatchChoiceCardPress(card, text, deliveryId, admitted),
+      hasDelivery: async (deliveryId) =>
+        (await this.store.hasInbox(deliveryId)) || (await this.store.hasInbox(`${deliveryId}:receipt`)),
       now: () => this.clock.now(),
       log: this.log
     }))
   }
 
-  /** The doorbell: a local process asks an agent for a turn at a target its config declares, in a thread there or in a new top-level post. */
-  private async ringDoorbell(req: DoorbellRequest): Promise<LocalApiReply> {
-    const agent = this.agents.get(req.agent)
-    if (!agent) return { status: 404, body: { error: `unknown agent "${req.agent}"` } }
-    const doorbell = agent.doorbells?.find((d) => d.id === req.target)
-    if (!doorbell) return { status: 404, body: { error: `agent "${agent.id}" declares no doorbell "${req.target}"` } }
+  /** Hand a card press to the agent as a turn from the presser, durable under a deterministic id; true once admitted. */
+  private async dispatchChoiceCardPress(
+    card: ChoiceCardRow,
+    text: string,
+    deliveryId: string,
+    admitted: () => Promise<void>
+  ): Promise<boolean> {
+    const msg: NormalizedMessage = {
+      msgId: deliveryId,
+      traceId: randomUUID(),
+      source: 'user',
+      platform: card.platform,
+      channel: card.channel,
+      thread: card.thread,
+      transportScope: this.transportScopeForIntegrationIds([card.integrationId]),
+      sender: { id: card.clickedBy!, isBot: false, ...(card.clickedByName ? { name: card.clickedByName } : {}) },
+      text,
+      mentionedBots: [],
+      isDm: card.isDm
+    }
+    // Keyed as a person's message in that thread would be: an append-mode or task-held room runs it on its session.
+    await this.keySession(card.agentId, card.integrationId, msg)
+    return await new Promise<boolean>((resolve) => {
+      void this.dispatch(card.agentId, msg, card.integrationId, undefined, undefined, {
+        requireDurable: true,
+        deliveryId,
+        // The receipt outlives the turn, so the startup sweep can tell an admitted press from a lost one.
+        receiptId: `${deliveryId}:receipt`,
+        onAdmission: async (result) => {
+          if (result.accepted) await admitted()
+          resolve(result.accepted)
+        }
+      }).then(
+        () => resolve(false),
+        (err) => {
+          this.log.warn(`choice card press dispatch failed for agent "${card.agentId}": ${formatErr(err)}`)
+          resolve(false)
+        }
+      )
+    })
+  }
+
+  /** `POST /v1/cards`: the agent's declared doorbell target is the card's place, as for the doorbell. */
+  private async choiceCardPlace(req: CreateChoiceCard): Promise<ChoiceCardPlace | LocalApiReply> {
+    const found = this.doorbellTarget(req.agent, req.target)
+    if ('status' in found) return found
+    const { agent, doorbell, integration } = found
+    const channel = doorbell.target.channel
+    return {
+      agentId: agent.id,
+      integrationId: integration.id,
+      platform: integration.platform,
+      channel,
+      ...(req.thread ? { thread: req.thread } : {}),
+      isDm: await this.isImChannel(agent.id, integration.id, channel)
+    }
+  }
+
+  /** An agent's declared doorbell and the integration it rings through; 404 unknown agent or target, 409 not served here. */
+  private doorbellTarget(
+    agentId: string,
+    targetId: string
+  ): { agent: LoadedAgent; doorbell: DoorbellDef; integration: Integration } | LocalApiReply {
+    const agent = this.agents.get(agentId)
+    if (!agent) return { status: 404, body: { error: `unknown agent "${agentId}"` } }
+    const doorbell = agent.doorbells?.find((d) => d.id === targetId)
+    if (!doorbell) return { status: 404, body: { error: `agent "${agent.id}" declares no doorbell "${targetId}"` } }
     if (!this.servesAgent(agent.id)) return { status: 409, body: { error: 'agent is served by another member' } }
     const { target } = doorbell
     // Absent integrationId ⇒ the agent's first integration on the target's platform.
@@ -30007,6 +30071,22 @@ export class Daemon {
     )
     if (integration?.platform !== target.platform)
       return { status: 409, body: { error: `doorbell "${doorbell.id}" names no integration of this agent` } }
+    return { agent, doorbell, integration }
+  }
+
+  /** Whether a configured channel is a direct message, by the platform's own answer; unknown ⇒ not. */
+  private async isImChannel(agentId: string, integrationId: string, channel: string): Promise<boolean> {
+    const conn = this.replyConnFor(agentId, integrationId) as
+      { getChannelInfo?: (ch: string) => Promise<{ isIm?: boolean } | undefined> } | undefined
+    return (await conn?.getChannelInfo?.(channel).catch(() => undefined))?.isIm === true
+  }
+
+  /** The doorbell: a local process asks an agent for a turn at a target its config declares, in a thread there or in a new top-level post. */
+  private async ringDoorbell(req: DoorbellRequest): Promise<LocalApiReply> {
+    const found = this.doorbellTarget(req.agent, req.target)
+    if ('status' in found) return found
+    const { agent, doorbell, integration } = found
+    const { target } = doorbell
     const traceId = randomUUID()
     const triggerId = `doorbell:${doorbell.id}`
     let msg: NormalizedMessage = {
@@ -30026,10 +30106,7 @@ export class Daemon {
       isDm: false
     }
     if (req.thread) {
-      const conn = this.replyConnFor(agent.id, integration.id) as
-        { getChannelInfo?: (ch: string) => Promise<{ isIm?: boolean } | undefined> } | undefined
-      const info = await conn?.getChannelInfo?.(target.channel).catch(() => undefined)
-      if (info?.isIm) msg = { ...msg, isDm: true }
+      if (await this.isImChannel(agent.id, integration.id, target.channel)) msg = { ...msg, isDm: true }
       // An append-mode room or a task-held one keys this thread on its configured session, as anchorTrigger does for a new post.
       await this.keySession(agent.id, integration.id, msg)
     } else {

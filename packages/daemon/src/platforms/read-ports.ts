@@ -145,6 +145,8 @@ export interface PlatformReadPorts {
   readonly sharedConversations?: boolean
   /** `createCanvas` / `readCanvas` / `updateCanvas`: a platform-hosted rich-text page. */
   readonly canvas?: boolean
+  /** `postChoiceCard` / `readChoiceCard` / `updateChoiceCard`: the turn surface registers a `choiceCards` facet (choice-cards.md). */
+  readonly choiceCards?: boolean
   /** `listBookmarks` / `addBookmark` / `removeBookmark`: the platform pins links in a channel. */
   readonly bookmarks?: boolean
   /** `readList` / `addListItem` / `updateListItem`: the platform hosts structured lists. */
@@ -191,6 +193,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       sharedConversations: true,
       scheduledMessages: true,
       canvas: true,
+      choiceCards: true,
       bookmarks: true,
       lists: true,
       attachmentReadTool: SLACK_ATTACHMENT_TOOL,
@@ -379,6 +382,7 @@ export type PlatformToolPort =
   | 'publicMessageSearch'
   | 'scheduledMessages'
   | 'canvas'
+  | 'choiceCards'
   | 'bookmarks'
   | 'lists'
 

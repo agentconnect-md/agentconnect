@@ -301,6 +301,7 @@ export const canonicalColumns = [
   'decidedBy',
   'decidedByName',
   'optionsJson',
+  'isDm',
   'editText',
   'clickedBy',
   'clickedByName',
