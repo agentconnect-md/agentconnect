@@ -541,7 +541,7 @@ describe('the Activity view: sub-sessions', () => {
   })
 
   // auto-session-mode.md §10: a task's card counts the messages after the one that opened it, its people's and its own.
-  it('counts a task’s replies, its people’s and its own, and when the newest landed', async () => {
+  it('counts a task’s replies, its people’s and its own, when the newest landed, and the message it was opened for', async () => {
     const { s, a, b, activity } = await setup()
     const parentKey = sessionKey('webchat', 'conversation-1', 'append:coordinator-1', a)
     const coordinate = subsessionCoordinate('page-task')
@@ -549,7 +549,13 @@ describe('the Activity view: sub-sessions', () => {
     const quiet = sessionKey('webchat', 'conversation-1', subsessionCoordinate('quiet'), a)
     const open = { agentId: a, parentSessionId: 'sid-parent', parentSessionKey: parentKey }
     await s.assistantSubsessions.open({ ...open, childSessionKey: quiet, title: 'Draft notes', now: 1_000 })
-    await s.assistantSubsessions.open({ ...open, childSessionKey: task, title: 'Find blockers', now: 2_000 })
+    await s.assistantSubsessions.open({
+      ...open,
+      childSessionKey: task,
+      title: 'Find blockers',
+      openedFor: { place: 'webchat:conversation-1', messageId: 'msg-post-1' },
+      now: 2_000
+    })
     for (const [key, id, thread] of [
       [task, 'sid-task', coordinate],
       [quiet, 'sid-quiet', subsessionCoordinate('quiet')]
@@ -600,12 +606,14 @@ describe('the Activity view: sub-sessions', () => {
       parent: { sessionId: 'sid-parent' }
     })
     const [counted, untouched] = page.subsessions
-    expect(counted).toMatchObject({ sessionId: 'sid-task', replies: 3 })
+    // The message it was opened for, by the platform's own id, which the console draws its card under.
+    expect(counted).toMatchObject({ sessionId: 'sid-task', replies: 3, openedForMessageId: 'post-1' })
     // The fifth row is its newest message; the tool row between them is no reply.
     expect(counted!.lastReplyAt).toBe(new Date(1_700_000_000_000 + 5 * 60_000).toISOString())
     expect(untouched).toMatchObject({ sessionId: 'sid-quiet' })
     expect(untouched).not.toHaveProperty('replies')
     expect(untouched).not.toHaveProperty('lastReplyAt')
+    expect(untouched).not.toHaveProperty('openedForMessageId')
   })
 
   it('lists only the sub-sessions one conversation opened, newest first, a page at a time', async () => {

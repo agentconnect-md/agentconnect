@@ -172,6 +172,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
       return Promise.resolve({ result: 'stopped' })
     }),
     fetchSessionMessages: vi.fn(() => Promise.resolve({ messages: [], nextCursor: null })),
+    fetchAssistantSubsession: vi.fn(() => Promise.reject(new actual.ApiError('not a task', 404))),
     fetchSessionDetail: vi.fn(() => Promise.reject(new Error('no detail'))),
     fetchMySessionIdentity: vi.fn(() => Promise.reject(new Error('no identity'))),
     fetchConversationByKey: vi.fn(() => Promise.reject(new Error('no conversation')))

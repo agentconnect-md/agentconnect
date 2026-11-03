@@ -4,13 +4,7 @@ import { MEMORY_TOOL_ACCESS_MODES } from '../mcp/ops/memory.js'
 import { NO_RESPONSE_SENTINEL } from '../session/no-response.js'
 import { obj, type ToolDescriptor } from '../tool-schema/descriptor.js'
 
-/** A delivered message's id is its platform id behind this prefix, so a bare timestamp is never read as a number (§4.3). */
-export const COORDINATOR_MESSAGE_ID_PREFIX = 'msg-'
-
-/** The id the coordinator names a delivered platform message by. */
-export function coordinatorMessageId(platformMessageId: string): string {
-  return `${COORDINATOR_MESSAGE_ID_PREFIX}${platformMessageId}`
-}
+export { COORDINATOR_MESSAGE_ID_PREFIX, coordinatorMessageId } from './message-id.js'
 
 /** Another agent in the conversation, listed so a message for it is recognized as not this agent's (§9). */
 export interface CoordinatorPeer {

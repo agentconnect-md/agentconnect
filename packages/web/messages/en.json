@@ -318,7 +318,10 @@
       "question": "Waiting for your answer",
       "answer": "Your answer",
       "answerOnPage": "See the whole question on the task’s page",
-      "answerSent": "Sent. It stays open until the task accepts the answer."
+      "answerSent": "Sent. It stays open until the task accepts the answer.",
+      "expand": "Expand the thread",
+      "collapse": "Back to the panel",
+      "expandedElsewhere": "This thread is open in a larger view."
     },
     "githubApp": {
       "title": "GitHub App",

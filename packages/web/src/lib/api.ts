@@ -4441,6 +4441,8 @@ export interface AssistantSubsessionDto {
   replies?: number
   /** When the newest of those replies landed. */
   lastReplyAt?: string
+  /** The platform id of the message a coordinator opened it for (a Slack ts, a webchat post id); only where `visible`. */
+  openedForMessageId?: string
 }
 
 export interface AssistantSubsessionsPageDto {

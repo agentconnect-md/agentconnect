@@ -239,6 +239,19 @@ describe('TaskThreadPanel', () => {
     expect(container.textContent).toContain('You can read this task, but not reply to it here.')
   })
 
+  it('expands into a large view over the page and comes back to the dock', async () => {
+    await render()
+    act(() => container.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
+    const dialog = document.body.querySelector('[role="dialog"]')!
+    expect(dialog.querySelector('[data-task-thread="ses_task"]')?.textContent).toContain('Three of five are clear.')
+    expect(container.querySelector('[data-task-thread]')).toBeNull()
+    expect(container.querySelector('[data-task-thread-placeholder]')).not.toBeNull()
+
+    act(() => dialog.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expect(container.querySelector('[data-task-thread="ses_task"]')).not.toBeNull()
+  })
+
   it('goes back to the task lists', async () => {
     await render()
     act(() => container.querySelector<HTMLButtonElement>('button')!.click())

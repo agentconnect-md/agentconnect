@@ -4,10 +4,12 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
+import { createPortal } from 'react-dom'
 import useSWR from 'swr'
 import { useFormatter, useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { MessageText } from '@/components/console/MessageText'
+import { Scrim } from '@/components/console/Scrim'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { StateMark, taskStateKey, taskTone } from '@/components/console/task-list'
 import { typedInvalidReason } from '@/components/console/session-work'
@@ -46,6 +48,8 @@ export function TaskThreadPanel({
     usePlayground()
   const id = task.sessionId
   const row = useTaskRow(agentId, id, parentSessionId)
+  // Shown large over the page, for a long thread the dock is too narrow to read.
+  const [expanded, setExpanded] = useState(false)
   const busy = isPgBusy(id)
   const { page, error, reload } = useTaskThread(id, row, { busy })
   // The server decides who may continue a task, by its parent's audience; absent or false keeps it read-only.
@@ -81,21 +85,35 @@ export function TaskThreadPanel({
   }
 
   const title = row?.title ?? task.title
-  return (
+  const thread = (
     <div data-task-thread={id} className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-none flex-col gap-[6px] border-b border-(--border-subtle) px-3 py-[10px]">
         <div className="flex items-center gap-2">
           <button
             type="button"
             className="flex cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent px-1 py-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
-            onClick={onBack}
+            onClick={() => {
+              setExpanded(false)
+              onBack()
+            }}
           >
             <Icon name="arrow-left" size={14} />
             {t('back')}
           </button>
+          <button
+            type="button"
+            data-task-thread-expand=""
+            className="iconbtn ml-auto flex h-[26px] w-[26px] flex-none items-center justify-center rounded-sm"
+            title={expanded ? t('collapse') : t('expand')}
+            aria-label={expanded ? t('collapse') : t('expand')}
+            aria-pressed={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            <Icon name={expanded ? 'minimize-2' : 'maximize-2'} size={14} />
+          </button>
           <Link
             href={orgPath(`/sessions/${encodeURIComponent(id)}`)}
-            className="iconbtn ml-auto flex h-[26px] w-[26px] flex-none items-center justify-center rounded-sm"
+            className="iconbtn flex h-[26px] w-[26px] flex-none items-center justify-center rounded-sm"
             title={t('openPage', { title })}
             aria-label={t('openPage', { title })}
           >
@@ -176,6 +194,34 @@ export function TaskThreadPanel({
         setDraft={(text) => setPgInput(id, text)}
       />
     </div>
+  )
+  if (!expanded) return thread
+  // The dock keeps a placeholder, so the thread lives in one place at a time and its scroll, draft and answers carry over.
+  return (
+    <>
+      <div
+        data-task-thread-placeholder=""
+        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+      >
+        {t('expandedElsewhere')}
+        <Button variant="secondary" size="xs" onClick={() => setExpanded(false)}>
+          {t('collapse')}
+        </Button>
+      </div>
+      {createPortal(
+        <Scrim onEscape={() => setExpanded(false)} onClick={(e) => e.target === e.currentTarget && setExpanded(false)}>
+          <div
+            role="dialog"
+            aria-modal
+            aria-label={title}
+            className="flex h-full max-h-[92vh] w-full max-w-[960px] flex-col overflow-hidden rounded-lg border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xl) max-desktop:max-h-none max-desktop:rounded-none max-desktop:border-0"
+          >
+            {thread}
+          </div>
+        </Scrim>,
+        document.body
+      )}
+    </>
   )
 }
 

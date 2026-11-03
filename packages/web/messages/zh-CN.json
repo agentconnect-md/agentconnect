@@ -318,7 +318,10 @@
       "question": "正在等待你的回答",
       "answer": "你的回答",
       "answerOnPage": "在任务页面查看完整问题",
-      "answerSent": "已发送。任务接受回答前，这里会一直保留。"
+      "answerSent": "已发送。任务接受回答前，这里会一直保留。",
+      "expand": "放大会话串",
+      "collapse": "回到面板",
+      "expandedElsewhere": "这个会话串已在大窗口中打开。"
     },
     "githubApp": {
       "title": "GitHub App",
