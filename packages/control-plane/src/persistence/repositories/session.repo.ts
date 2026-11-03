@@ -10,6 +10,7 @@ import {
   isCodeHostProvider,
   GENERIC_HOOK_KIND,
   SUBSESSION_COORDINATE_PREFIX,
+  isCoordinatorCoordinate,
   type CodeHostProvider,
   type HookKind,
   type Platform,
@@ -1804,8 +1805,8 @@ export class PgSessionRepo implements SessionRepo {
   /**
    * §4.3 reclassification, with the §4.5 cascade semantics:
    *
-   *  - **Widening** (`private → org`) cascades only to the session's own background tasks, which
-   *    take its audience (auto-session-mode.md §6.2); every other descendant stays as classified.
+   *  - **Widening** (`private → org`) cascades through a webchat coordinator's whole lineage of its
+   *    owner's rows, and otherwise only to the session's own background tasks (auto-session-mode.md §6.2).
    *  - **Tightening** (`org → private`) cascades to every descendant, including
    *    `explicit` ones: the child holds prompt text copied from the parent, so
    *    leaving it org-visible would defeat the change. Privacy wins.
@@ -1882,8 +1883,15 @@ export class PgSessionRepo implements SessionRepo {
       `)
       const affected = target.map(toRecord)
       if (visibility === 'org') {
+        const wholeLineage = current.platform === 'webchat' && isCoordinatorCoordinate(current.thread)
         affected.push(
-          ...(await this.widenOwnTasks(tx, { id: sessionId, orgId, agentId: locked[0]!.agentId, ownerIdentity }))
+          ...(await this.widenDescendants(tx, {
+            id: sessionId,
+            orgId,
+            agentId: locked[0]!.agentId,
+            ownerIdentity,
+            wholeLineage
+          }))
         )
         return { affected }
       }
@@ -1899,27 +1907,44 @@ export class PgSessionRepo implements SessionRepo {
     })
   }
 
-  /** A widening's reach: the session's own background tasks, which inherited its private audience and owner. */
-  private async widenOwnTasks(
+  /** A widening's reach: a webchat coordinator's whole private lineage, else the session's own background tasks. */
+  private async widenDescendants(
     tx: PrismaLike,
-    root: { id: string; orgId: string; agentId: string; ownerIdentity: string | null }
+    root: { id: string; orgId: string; agentId: string; ownerIdentity: string | null; wholeLineage: boolean }
   ): Promise<SessionMetaRecord[]> {
-    const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
-      UPDATE "session_meta" SET
-        "visibility" = 'org'::"SessionVisibility",
-        "visibilityRev" = "visibilityRev" + 1,
-        "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "parentSessionId" = ${root.id}
-        AND "orgId" = ${root.orgId}
-        AND "agentId" = ${root.agentId}
-        AND "thread" LIKE ${`${SUBSESSION_COORDINATE_PREFIX}%`}
-        AND "externalProvider" IS NULL
-        AND "visibility" = 'private'::"SessionVisibility"
-        AND "visibilitySource" = 'inherited'::"VisibilitySource"
-        AND "ownerIdentity" IS NOT DISTINCT FROM ${root.ownerIdentity}
-      RETURNING *
-    `)
-    return rows.map(toRecord)
+    const { id, orgId, agentId, ownerIdentity, wholeLineage } = root
+    const ownTask = wholeLineage
+      ? Prisma.empty
+      : Prisma.sql`AND "agentId" = ${agentId} AND "thread" LIKE ${`${SUBSESSION_COORDINATE_PREFIX}%`} AND "visibilitySource" = 'inherited'::"VisibilitySource"`
+    const affected: SessionMetaRecord[] = []
+    const seen = new Set<string>([id])
+    let frontier: string[] = [id]
+    while (frontier.length > 0) {
+      // Only the root owner's own rows widen, and only through them: another owner's private child is theirs.
+      const children = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT "id" FROM "session_meta"
+        WHERE "parentSessionId" = ANY(${frontier}::text[]) AND "orgId" = ${orgId}
+          AND "externalProvider" IS NULL AND "ownerIdentity" IS NOT DISTINCT FROM ${ownerIdentity}
+          ${ownTask}
+        ORDER BY "id"
+        FOR UPDATE
+      `)
+      const next = children.map((c) => c.id).filter((childId) => !seen.has(childId))
+      if (next.length === 0) break
+      for (const childId of next) seen.add(childId)
+      const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
+        UPDATE "session_meta" SET
+          "visibility" = 'org'::"SessionVisibility",
+          "visibilitySource" = 'inherited'::"VisibilitySource",
+          "visibilityRev" = "visibilityRev" + 1,
+          "updatedAt" = CURRENT_TIMESTAMP
+        WHERE "id" = ANY(${next}::text[]) AND "orgId" = ${orgId} AND "visibility" = 'private'::"SessionVisibility"
+        RETURNING *
+      `)
+      affected.push(...rows.map(toRecord))
+      frontier = wholeLineage ? next : []
+    }
+    return affected
   }
 
   /**

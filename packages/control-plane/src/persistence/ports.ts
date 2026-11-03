@@ -2075,7 +2075,7 @@ export interface SessionRepo {
     agentIds: AgentId[],
     viewer?: SessionFilterQuery['viewer']
   ): Promise<SessionMetaRecord[]>
-  /** §4.3 reclassification: widening reaches the row's own background tasks, tightening every descendant (§4.5). */
+  /** §4.3 reclassification: widening reaches a webchat coordinator's lineage or a row's own tasks, tightening every descendant (§4.5). */
   setVisibility(
     orgId: OrgId,
     sessionId: SessionId,

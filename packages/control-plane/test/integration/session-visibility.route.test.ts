@@ -1810,64 +1810,82 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
     }
   })
 
-  it('widening a session widens its own background tasks and no other descendant (auto-session-mode.md §6.2)', async () => {
-    const member = await makeUser('sv-widen-tasks', 'collaborator')
-    const daemonId = await seedDaemon(prisma, randomUUID())
-    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
-    const peerAgentId = await seedAgent(prisma, randomUUID(), { daemonId })
-    const owner = `user:${member}`
-    const root = await seedSessionMeta(prisma, `s-widen-root-${randomUUID()}`, agentId, {
-      visibility: 'private',
-      ownerIdentity: owner,
-      platform: 'webchat',
-      channel: randomUUID(),
-      thread: 'append:coordinator-1700000000000'
-    })
-    const inherited = {
-      visibility: 'private',
-      ownerIdentity: owner,
-      parentSessionId: root,
-      platform: 'webchat'
-    } as const
-    const task = await seedSessionMeta(prisma, `s-widen-task-${randomUUID()}`, agentId, {
-      ...inherited,
-      thread: 'subsession:task-a'
-    })
-    const delegated = await seedSessionMeta(prisma, `s-widen-a2a-${randomUUID()}`, peerAgentId, {
-      ...inherited,
-      thread: 'subsession:task-b'
-    })
-    const sameAgentOther = await seedSessionMeta(prisma, `s-widen-other-${randomUUID()}`, agentId, inherited)
-    const grandchild = await seedSessionMeta(prisma, `s-widen-grand-${randomUUID()}`, agentId, {
-      ...inherited,
-      parentSessionId: task,
-      thread: 'subsession:task-c'
-    })
-    await prisma.sessionMeta.updateMany({
-      where: { id: { in: [task, delegated, sameAgentOther, grandchild] } },
-      data: { visibilitySource: 'inherited' }
-    })
-    const app = appAs(member)
+  it.each([
+    ['an ordinary webchat session widens only its own background tasks', undefined, ['task']],
+    [
+      'a webchat coordinator widens its owner’s whole lineage',
+      'append:coordinator-1700000000000',
+      ['task', 'delegated', 'sameAgentOther', 'grandchild']
+    ]
+  ])(
+    '%s; tightening takes every descendant back (auto-session-mode.md §6.2, §10)',
+    async (_label, rootThread, widened) => {
+      const member = await makeUser(`sv-widen-${randomUUID()}`, 'collaborator')
+      const stranger = await makeUser(`sv-widen-stranger-${randomUUID()}`, 'collaborator')
+      const daemonId = await seedDaemon(prisma, randomUUID())
+      const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+      const peerAgentId = await seedAgent(prisma, randomUUID(), { daemonId })
+      const owner = `user:${member}`
+      const root = await seedSessionMeta(prisma, `s-widen-root-${randomUUID()}`, agentId, {
+        visibility: 'private',
+        ownerIdentity: owner,
+        platform: 'webchat',
+        channel: randomUUID(),
+        ...(rootThread ? { thread: rootThread } : {})
+      })
+      const inherited = {
+        visibility: 'private',
+        ownerIdentity: owner,
+        parentSessionId: root,
+        platform: 'webchat'
+      } as const
+      const ids = {
+        task: await seedSessionMeta(prisma, `s-widen-task-${randomUUID()}`, agentId, {
+          ...inherited,
+          thread: 'subsession:task-a'
+        }),
+        delegated: await seedSessionMeta(prisma, `s-widen-a2a-${randomUUID()}`, peerAgentId, {
+          ...inherited,
+          thread: 'subsession:task-b'
+        }),
+        sameAgentOther: await seedSessionMeta(prisma, `s-widen-other-${randomUUID()}`, agentId, inherited),
+        // Another member's private row is theirs, whoever its parent is.
+        foreign: await seedSessionMeta(prisma, `s-widen-foreign-${randomUUID()}`, peerAgentId, {
+          ...inherited,
+          ownerIdentity: `user:${stranger}`
+        })
+      }
+      const grandchild = await seedSessionMeta(prisma, `s-widen-grand-${randomUUID()}`, peerAgentId, {
+        ...inherited,
+        parentSessionId: ids.delegated
+      })
+      const all = { ...ids, grandchild }
+      await prisma.sessionMeta.updateMany({
+        where: { id: { in: Object.values(all) } },
+        data: { visibilitySource: 'inherited' }
+      })
+      const app = appAs(member)
+      const visibilityOf = async (id: string) => (await prisma.sessionMeta.findUnique({ where: { id } }))?.visibility
 
-    const widen = await app.app.inject({
-      method: 'PUT',
-      url: `${ORG}/sessions/${root}/visibility`,
-      payload: { visibility: 'org' }
-    })
-    expect(widen.statusCode).toBe(200)
-    expect(widen.json().cascadedSessionIds).toEqual([task])
-    const visibilityOf = async (id: string) => (await prisma.sessionMeta.findUnique({ where: { id } }))?.visibility
-    expect(await visibilityOf(task)).toBe('org')
-    for (const id of [delegated, sameAgentOther, grandchild]) expect(await visibilityOf(id)).toBe('private')
+      const widen = await app.app.inject({
+        method: 'PUT',
+        url: `${ORG}/sessions/${root}/visibility`,
+        payload: { visibility: 'org' }
+      })
+      expect(widen.statusCode).toBe(200)
+      expect([...widen.json().cascadedSessionIds].sort()).toEqual(widened.map((k) => all[k as keyof typeof all]).sort())
+      for (const [key, id] of Object.entries(all)) {
+        expect(await visibilityOf(id)).toBe(widened.includes(key) ? 'org' : 'private')
+      }
 
-    // Tightening still takes every descendant back.
-    await app.app.inject({
-      method: 'PUT',
-      url: `${ORG}/sessions/${root}/visibility`,
-      payload: { visibility: 'private' }
-    })
-    for (const id of [root, task, delegated, sameAgentOther, grandchild]) expect(await visibilityOf(id)).toBe('private')
-  })
+      await app.app.inject({
+        method: 'PUT',
+        url: `${ORG}/sessions/${root}/visibility`,
+        payload: { visibility: 'private' }
+      })
+      for (const id of [root, ...Object.values(all)]) expect(await visibilityOf(id)).toBe('private')
+    }
+  )
 
   it('re-owns an already-private descendant, so its old owner loses the copied content', async () => {
     const owner = await makeUser('sv-reown', 'owner')
