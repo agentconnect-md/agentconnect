@@ -20210,7 +20210,14 @@ export class Daemon {
           ...(webchatIsolation ? { workspaceIsolation: webchatIsolation } : {}),
           ...reviewWorkspace,
           ...(launchWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: launchWorkspaceCwd } : {}),
-          ...(entry.coordinatorPrompt !== undefined ? { coordinatorBatch: entry.coordinatorPrompt } : {}),
+          ...(entry.coordinatorPrompt !== undefined
+            ? {
+                coordinatorBatch: {
+                  prompt: entry.coordinatorPrompt,
+                  ts: (entry.coordinatorBatch ?? []).map((taken) => transcriptCoords(taken.msg).ts)
+                }
+              }
+            : {}),
           ...(entry.coordinatorPrompt !== undefined
             ? { bareCwd: async () => await this.coordinatorDir(agentId, key, false) }
             : {})

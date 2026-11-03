@@ -21,6 +21,7 @@ import { AcpHost, ModelSelectionError } from '../src/acp/acp-host.js'
 import { fileURLToPath } from 'node:url'
 import { toolContextFingerprint } from '../src/session/turn/tool-context.js'
 import { obj, type ToolDescriptor } from '../src/tool-schema/descriptor.js'
+import { coordinatorCoordinate } from '../src/session/append-coordinate.js'
 
 /** One session's transcript read scope. In a `createNew` conversation the coordinate IS the
  *  physical thread, so a scope built this way reads exactly what `(channel, thread)` used to. */
@@ -1894,6 +1895,81 @@ describe('SessionManager', () => {
     expect(joined).toContain('your runtime session restarted and could not restore its history')
     expect(joined).toContain('[U1] invent a word\n[you] Zephrix')
     expect(joined.endsWith('[U1] which word did you invent?')).toBe(true)
+  })
+
+  // A coordinator answered one batch under acp-1; a new process, or a new runtime, then either loads it back or fails to.
+  const coordinatorAfterOwnReply = async (loadSession: () => Promise<void>) => {
+    const store = await newStore()
+    const coordinate = coordinatorCoordinate(1_700_000_000_000)
+    const root = (ts: string, text: string) => msg({ ts, text, thread: ts, sessionThread: coordinate })
+    const batch = (ts: string, text: string, others: readonly string[] = []) => ({
+      prompt: `[batch] ${text}`,
+      ts: [ts, ...others]
+    })
+    // handle()'s options come after its signal, integration, origin, effort and reply arguments.
+    const asCoordinator = <T>(options: T) => [undefined, undefined, undefined, undefined, undefined, options] as const
+    const host1 = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+    await sm1.handle(
+      'bot-a',
+      root('200.1', 'which database do we use?'),
+      ...asCoordinator({
+        coordinatorBatch: batch('200.1', 'which database do we use?')
+      })
+    )
+    await store.appendTranscript({
+      channel: 'C1',
+      thread: coordinate,
+      ts: '200.2',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'Replied that it is Postgres.'
+    })
+    const host2 = {
+      newSession: vi.fn(async () => 'acp-2'),
+      hasSession: () => false,
+      loadSupported: () => true,
+      loadSession: vi.fn(loadSession)
+    } as any
+    const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
+    // A second message folded into the same batch is admitted before the turn starts.
+    await store.appendTranscript({
+      channel: 'C1',
+      thread: coordinate,
+      ts: '200.4',
+      sender: 'U1',
+      kind: 'text',
+      text: 'and the cache?'
+    })
+    const handled = await sm2.handle(
+      'bot-a',
+      root('200.3', 'which version of it?'),
+      ...asCoordinator({
+        coordinatorBatch: batch('200.3', 'which version of it? / and the cache?', ['200.4'])
+      })
+    )
+    await store.close()
+    return { ...handled, joined: handled.blocks.map((b: any) => b.text).join('\n') }
+  }
+
+  it('replays a coordinator its conversation before the batch when a failed resume recreates its session', async () => {
+    const { sessionId, joined } = await coordinatorAfterOwnReply(async () => {
+      throw new Error('Resource not found')
+    })
+    expect(sessionId).toBe('acp-2')
+    expect(joined).toContain('your runtime session restarted and could not restore its history')
+    expect(joined).toContain('[U1] which database do we use?\n[you] Replied that it is Postgres.')
+    // The batch's own messages are read once, in the batch, never again as history.
+    expect(joined).not.toContain('[U1] which version of it?')
+    expect(joined).not.toContain('[U1] and the cache?')
+    expect(joined.endsWith('[batch] which version of it? / and the cache?')).toBe(true)
+  })
+
+  it('reads a coordinator only its batch when its session loads back', async () => {
+    const { sessionId, joined } = await coordinatorAfterOwnReply(async () => {})
+    expect(sessionId).toBe('acp-1')
+    expect(joined).not.toContain('which database do we use?')
+    expect(joined.endsWith('[batch] which version of it? / and the cache?')).toBe(true)
   })
 
   it('keeps the agent own replies out of the replay when the session loads back', async () => {
