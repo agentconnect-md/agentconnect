@@ -287,7 +287,9 @@ signal.
 The CLI supports:
 
 - a per-user launchd LaunchAgent on macOS;
-- a systemd **system** service on Linux (§4.2.2).
+- a systemd **system** service on Linux (§4.2.2);
+- a per-user Task Scheduler task started at logon on Windows, which runs the hidden
+  `service-run` host instead and has it respawn `run` (daemon-detailed-design.md §2.5).
 
 Other platforms must use foreground `agentconnect run`.
 

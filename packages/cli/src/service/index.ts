@@ -1,5 +1,5 @@
-/** Platform dispatch for the OS-service layer. `pickController` chooses launchd
- *  vs systemd; `resolveController` builds one from runtime/process info;
+/** Platform dispatch for the OS-service layer. `pickController` chooses launchd,
+ *  systemd or a Windows logon task; `resolveController` builds one from runtime/process info;
  *  `installService`/`uninstallService` wrap install with the `<root>/service.json`
  *  pointer, and `listInstances` enumerates every instance installed on the host. */
 import { rmSync } from 'node:fs'
@@ -11,6 +11,7 @@ import { defaultExec } from './exec.js'
 import { cliCommand } from '../invocation.js'
 import { clearInstancePointer, resolveServiceTarget, shellArg, writeInstancePointer } from './instance.js'
 import { LaunchdController } from './launchd.js'
+import { ScheduledTaskController } from './schtasks.js'
 import { SystemdController } from './systemd.js'
 import type { ControllerDeps, Exec, InstalledUnit, InstallOpts, ServiceController } from './types.js'
 
@@ -42,6 +43,7 @@ export { SystemdController, systemdUnitName, type SystemdScope } from './systemd
 export function pickController(platform: NodeJS.Platform, deps: ControllerDeps): ServiceController {
   if (platform === 'darwin') return new LaunchdController(deps)
   if (platform === 'linux') return new SystemdController(deps)
+  if (platform === 'win32') return new ScheduledTaskController(deps)
   throw new Error(`system service install is not supported on ${platform} yet — use \`${cliCommand()} run\``)
 }
 

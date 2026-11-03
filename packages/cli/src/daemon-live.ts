@@ -21,11 +21,15 @@ export function daemonLockPid(root: string): number | null {
 /** The live daemon's pid, or null when no live daemon owns this root. ESRCH ⇒ dead; EPERM/other ⇒ alive. */
 export function liveDaemonPid(root: string): number | null {
   const pid = daemonLockPid(root)
-  if (pid === null) return null
+  return pid !== null && pidAlive(pid) ? pid : null
+}
+
+/** Does a process with this pid exist? ESRCH ⇒ dead; EPERM/other ⇒ alive. */
+export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
-    return pid
+    return true
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'ESRCH' ? null : pid
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH'
   }
 }
