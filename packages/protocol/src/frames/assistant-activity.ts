@@ -154,7 +154,11 @@ export const AssistantActivitySubsession = z.object({
   /** The start of the message it was opened with, shown until it writes a summary (§6.7). */
   background: z.string().max(TASK_TEXT_MAX).optional(),
   /** A platform thread is attached, so people talk to it there and it reports nothing to its parent (§6.2). */
-  threaded: z.boolean().optional()
+  threaded: z.boolean().optional(),
+  /** Messages its people and the task posted after the one that opened it (§10); absent from an older daemon. */
+  replies: z.number().int().min(0).optional(),
+  /** When the newest of those landed; absent with no reply. */
+  lastReplyAt: time.optional()
 })
 export type AssistantActivitySubsession = z.infer<typeof AssistantActivitySubsession>
 

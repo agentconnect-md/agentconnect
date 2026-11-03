@@ -299,6 +299,27 @@
       "stopFailed": "Couldn’t stop it. Try again.",
       "stopUpgrade": "Upgrade this agent’s daemon to stop tasks here."
     },
+    "taskThread": {
+      "replies": "{count, plural, one {# reply} other {# replies}}",
+      "reply": "Reply",
+      "lastReply": "last reply {time}",
+      "open": "Open the thread of {title}",
+      "openPage": "Open {title} on its own page",
+      "back": "Tasks",
+      "earlier": "Earlier messages are on the task’s page",
+      "loading": "Loading the thread…",
+      "loadFailed": "Couldn’t load this thread. Try again.",
+      "you": "You",
+      "person": "Someone",
+      "working": "{agent} is working…",
+      "replyPlaceholder": "Reply to this task…",
+      "readOnly": "You can read this task, but not reply to it here.",
+      "send": "Send reply",
+      "question": "Waiting for your answer",
+      "answer": "Your answer",
+      "answerOnPage": "See the whole question on the task’s page",
+      "answerSent": "Sent. It stays open until the task accepts the answer."
+    },
     "githubApp": {
       "title": "GitHub App",
       "close": "Close",

@@ -6257,6 +6257,27 @@ export class LocalStore {
     return flat.length > DREAM_TOOL_INPUT_CHARS ? `${flat.slice(0, DREAM_TOOL_INPUT_CHARS)}…` : flat
   }
 
+  /** How many messages one session holds, people's and its agent's, and when its newest landed (epoch µs); scoped like `transcriptPageForAgent`. */
+  async sessionTextStats(scope: TranscriptSessionScope): Promise<{ count: number; lastEventTimeUs: number | null }> {
+    const row = (await this.db
+      .prepare(
+        `SELECT COUNT(*) AS n, MAX(eventTimeUs) AS last FROM transcript
+         WHERE orgId = ? AND channel = ? AND kind = 'text'
+           AND ${SESSION_ROW_SCOPE_SQL}
+           AND ${AGENT_DELIVERY_SCOPE_SQL}`
+      )
+      .get(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        scope.coordinate,
+        scope.sessionKey,
+        scope.agentId,
+        scope.agentId
+      )) as { n: number | string | null; last: number | string | null } | undefined
+    const count = Number(row?.n ?? 0)
+    return { count, lastEventTimeUs: count > 0 && row?.last != null ? Number(row.last) : null }
+  }
+
   async dreamTranscriptText(
     scope: TranscriptSessionScope,
     limit: number,

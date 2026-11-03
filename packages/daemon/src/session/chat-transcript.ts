@@ -18,6 +18,8 @@ export async function appendChatTextRow(
     trustedAgentBot?: boolean
     attachments?: SessionImageAttachment[]
     sharedImage?: SharedImage
+    /** JSON `UserTurnBody` the console reads off the row. */
+    body?: string
   }
 ): Promise<string> {
   let slot = BigInt(ts)

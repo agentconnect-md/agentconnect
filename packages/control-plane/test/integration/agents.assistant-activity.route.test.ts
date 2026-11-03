@@ -760,7 +760,7 @@ async function tablesHolding(needle: string): Promise<string[]> {
 
 // auto-session-mode.md §6.7: a task's summary is conversation content, read through from the daemon and never stored here.
 describe('a task’s summary', () => {
-  it('is passed through to whoever may view the task, and stored nowhere', async () => {
+  it('is passed through to whoever may view the task with its reply count, and stored nowhere', async () => {
     await seedAssistant()
     const { team, teamChild, dm, dmChild } = await seedConversations()
     const member = await makeUser(`summary-member-${randomUUID()}`, 'collaborator')
@@ -777,7 +777,9 @@ describe('a task’s summary', () => {
       summary,
       summaryUpdatedAt: '2026-10-09T10:00:00.000Z',
       background,
-      threaded: true
+      threaded: true,
+      replies: 3,
+      lastReplyAt: '2026-10-09T10:05:00.000Z'
     }
     control.subsessions = [task, { ...task, sessionId: dmChild, parentSessionId: dm }]
 
@@ -791,7 +793,9 @@ describe('a task’s summary', () => {
         summary,
         summaryUpdatedAt: '2026-10-09T10:00:00.000Z',
         background,
-        threaded: true
+        threaded: true,
+        replies: 3,
+        lastReplyAt: '2026-10-09T10:05:00.000Z'
       })
     ])
 
@@ -801,6 +805,8 @@ describe('a task’s summary', () => {
     expect(hidden).not.toHaveProperty('summary')
     expect(hidden).not.toHaveProperty('summaryUpdatedAt')
     expect(hidden).not.toHaveProperty('background')
+    expect(hidden).not.toHaveProperty('replies')
+    expect(hidden).not.toHaveProperty('lastReplyAt')
 
     // The scan finds what is stored (the child's title), so finding neither text means neither was kept.
     expect(await tablesHolding('Fix the flaky test')).toContain('session_meta')

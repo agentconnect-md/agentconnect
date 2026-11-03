@@ -154,6 +154,7 @@ import {
   sessionTurnInFlight,
   stripBoldMarks,
   toggleWorkPanel,
+  typedInvalidReason,
   workCounts,
   workPanelOpen,
   workSummary,
@@ -183,6 +184,9 @@ import {
   tasksTabStatus,
   type TasksPanelVerdict
 } from '@/components/console/dock/TasksPanel'
+import { TaskThreadPanel } from '@/components/console/dock/TaskThreadPanel'
+import { TaskThreadCard } from '@/components/console/TaskThreadCard'
+import { taskLinkOfBody, type TaskLink } from '@/components/console/task-link'
 import {
   PullRequestPanel,
   pullRequestTabStatus,
@@ -613,6 +617,7 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
   const shared = k === 'text' ? sharedFileMarker(m.text) : null
   // A delivered session message shows its body; its header facts and the agent's guidance fold beneath it.
   const sessionMessage = k === 'text' ? parseUserTurnBody(m.body)?.sessionMessage : undefined
+  const taskLink = k === 'text' ? taskLinkOfBody(m.body) : null
   return {
     lane: '',
     laneColor: 'var(--text-tertiary)',
@@ -628,6 +633,7 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
     // The download names the session that shared the file, which in a merged conversation is the row's source.
     ...(shared ? { file: shared.file, ...(toolSessionId ? { toolSessionId } : {}) } : {}),
     ...(sessionMessage ? { sessionMessage } : {}),
+    ...(taskLink ? { taskLink } : {}),
     ...(k === 'text' && m.sharedImage
       ? {
           sharedImage: m.sharedImage,
@@ -670,6 +676,8 @@ interface FmtStep {
   peerCopy?: boolean
   // The facts of a delivered session message (an agent call, reply, or a task's input or report), folded under its body.
   sessionMessage?: SessionMessageTurnFacts
+  // A coordinator's post that links to a task, drawn as the task's card.
+  taskLink?: TaskLink
   // Present only on real-transcript tool rows that carry a captured body.
   msg?: SessionMessageDto
   // Conversation rows keep their owning session out-of-band so full-body reads
@@ -899,69 +907,6 @@ function selectionHint(min: number, max?: number): string {
   if (min > 0 && max !== undefined) return min === max ? `Select exactly ${min}` : `Select ${min}–${max}`
   if (min > 0) return `Select at least ${min}`
   return max !== undefined ? `Select up to ${max}` : 'Select any that apply'
-}
-
-// What each schema `format` asks of a typed answer, named the way the reader has to fix it.
-const FORMAT_HINT: Record<string, { test: (v: string) => boolean; why: string }> = {
-  email: { test: (v) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(v), why: 'Enter an email address' },
-  uri: {
-    test: (v) => {
-      try {
-        return !!new URL(v).protocol
-      } catch {
-        return false
-      }
-    },
-    why: 'Enter a URL, including its scheme'
-  },
-  date: {
-    // `2025-13-01` matches the shape but is not a date, and toISOString THROWS on it — this
-    // runs during render, so an ordinary invalid draft would crash the view, not fail a check.
-    test: (v) => {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false
-      const d = new Date(`${v}T00:00:00Z`)
-      return !Number.isNaN(d.getTime()) && v === d.toISOString().slice(0, 10)
-    },
-    why: 'Enter a date as YYYY-MM-DD'
-  },
-  'date-time': {
-    test: (v) =>
-      /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(v) && !isNaN(Date.parse(v)),
-    why: 'Enter a date and time, e.g. 2025-01-31T09:00:00Z'
-  }
-}
-
-/** Why a typed draft is not yet answerable, or undefined once it is — the same constraints the
- *  daemon re-checks, said in words the reader can act on rather than as a silent dead control. */
-function typedInvalidReason(elicit: Pick<ElicitFieldSpec, 'text' | 'number'>, draft: string): string | undefined {
-  const num = elicit.number
-  if (num) {
-    if (!draft.trim()) return 'Enter a number'
-    const value = Number(draft)
-    if (!Number.isFinite(value)) return 'Enter a number'
-    if (num.integer && !Number.isInteger(value)) return 'Enter a whole number'
-    if (num.minimum !== undefined && value < num.minimum) return `Enter ${num.minimum} or more`
-    if (num.maximum !== undefined && value > num.maximum) return `Enter ${num.maximum} or less`
-    return undefined
-  }
-  const text = elicit.text
-  if (!text) return undefined
-  if (text.minLength !== undefined && draft.length < text.minLength)
-    return `Enter at least ${text.minLength} character${text.minLength === 1 ? '' : 's'}`
-  if (!draft.length) return 'Enter an answer'
-  // Also what keeps the pattern below cheap: the daemon sizes maxLength down to the pattern
-  // cap, so a long draft is refused here rather than matched on every keystroke.
-  if (text.maxLength !== undefined && draft.length > text.maxLength) return `Enter at most ${text.maxLength} characters`
-  const format = text.format ? FORMAT_HINT[text.format] : undefined
-  if (format && !format.test(draft)) return format.why
-  if (text.pattern !== undefined) {
-    try {
-      if (!new RegExp(text.pattern).test(draft)) return `Match ${text.pattern}`
-    } catch {
-      return 'This field cannot be answered here'
-    }
-  }
-  return undefined
 }
 
 /** What a typed card's control starts out holding: the schema's `default`, or nothing. */
@@ -1793,6 +1738,7 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     ...(stp.kind === 'capability' && stp.capability ? { capability: stp.capability } : {}),
     ...(stp.kind === 'app' && stp.app ? { app: stp.app } : {}),
     ...(stp.demoted ? { demoted: true } : {}),
+    ...(stp.taskLink ? { taskLink: stp.taskLink } : {}),
     ...(platform ? { platform } : {}),
     ...(stp.sharedImage ? sharedImageFields(stp) : stp.kind === 'done' ? sharedFileFields(stp) : {}),
     // The live wire frame carries no body (kept off the hot path); attach just
@@ -3312,6 +3258,19 @@ export default function SessionDetailView() {
   const [dockTab, setDockTab] = useState(DOCK_TABS[0]!.key)
   // A closed drawer leaves its panels mounted, so the Computer viewer must hear that it is off screen and hand control back.
   const [dockVisible, setDockVisible] = useState(true)
+  // The coordinator task whose thread the Tasks tab shows in place of its lists, held for the session it was opened in.
+  const [taskThread, setTaskThread] = useState<{ scope: string; link: TaskLink } | null>(null)
+  const openThread = taskThread?.scope === id ? taskThread.link : null
+  // Bumped when a card opens a thread, so a collapsed dock comes on screen to show it.
+  const [dockReveal, setDockReveal] = useState(0)
+  const openTaskThread = useCallback(
+    (link: TaskLink) => {
+      setTaskThread({ scope: id, link })
+      setDockTab('tasks')
+      setDockReveal((n) => n + 1)
+    },
+    [id]
+  )
   // The Files tab's `refresh-cw` action: re-reads the tree and the git status without remounting the panel, so the reader's filter and expanded folders survive it.
   const [filesRefreshTick, setFilesRefreshTick] = useState(0)
   // Reported by the panel, like the Sessions verdict: only it knows whether its first root listing has answered.
@@ -3413,8 +3372,9 @@ export default function SessionDetailView() {
             : tab.key === 'computer'
               ? (computerIds.length > 0 || computerManaged !== undefined) && !MOCK_MODE
               : tab.key === 'tasks'
-                ? // Against its OWN scope (an agent and a canonical session), and dropped once settled with nothing in either group.
-                  filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE && tasksTabShown(tasksVerdict)
+                ? // Against its OWN scope (an agent and a canonical session), and dropped once settled with nothing in either group; an open thread keeps it.
+                  (openThread !== null && !MOCK_MODE) ||
+                  (filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE && tasksTabShown(tasksVerdict))
                 : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
                   tab.key !== 'pr' ||
                   (prSessionId !== null &&
@@ -3444,7 +3404,7 @@ export default function SessionDetailView() {
                   : tab.key === 'tasks'
                     ? {
                         ...tab,
-                        status: tasksStatus,
+                        status: openThread ? 'ready' : tasksStatus,
                         // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
                         ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
                       }
@@ -3465,6 +3425,7 @@ export default function SessionDetailView() {
       prVerdict.url,
       sessionsStatus,
       localizedDockTabs,
+      openThread,
       tasksSessionId,
       tasksStatus,
       tasksVerdict
@@ -5672,6 +5633,8 @@ export default function SessionDetailView() {
                             const saidSteps = turn.steps.filter(
                               (s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE && s.lane !== PLAN_LANE
                             )
+                            // A coordinator's link to a task it opened or passed a message to is a card that opens the task's thread.
+                            const taskLinks = saidSteps.map((s) => s.taskLink ?? null)
                             const textSteps = saidSteps.filter(
                               (s) => s.lane !== ELICIT_LANE && s.lane !== APP_LANE && s.lane !== CAPABILITY_LANE
                             )
@@ -5817,6 +5780,18 @@ export default function SessionDetailView() {
                                                 onAnswer: (value: ElicitAnswerValue) =>
                                                   answerElicitation(turn.agentId, st.elicit?.requestId, value)
                                               }
+                                            : {})}
+                                        />
+                                      </div>
+                                    ) : taskLinks[si] && turn.agentId ? (
+                                      <div key={`t:${si}`} className={si > 0 ? 'mt-2' : ''}>
+                                        <TaskThreadCard
+                                          agentId={turn.agentId}
+                                          link={taskLinks[si]}
+                                          parentSessionId={turn.agentId === filesAgentId ? subsessionsSessionId : null}
+                                          selected={openThread?.sessionId === taskLinks[si].sessionId}
+                                          {...(turn.agentId === session.agentId
+                                            ? { onOpen: () => openTaskThread(taskLinks[si]!) }
                                             : {})}
                                         />
                                       </div>
@@ -6498,6 +6473,7 @@ export default function SessionDetailView() {
           if (key === 'tasks') setTasksRefreshTick((tick) => tick + 1)
         }}
         overlayKey={`${session.id}:${viewerPath ?? ''}`}
+        revealKey={dockReveal}
         label={t('panels')}
         onVisibleChange={setDockVisible}
       >
@@ -6604,17 +6580,31 @@ export default function SessionDetailView() {
           ) : null}
         </DockPanel>
         <DockPanel active={dockTabKey === 'tasks'}>
-          {filesAgentId && tasksSessionId ? (
-            <TasksPanel
-              agentId={filesAgentId}
-              sessionId={tasksSessionId}
-              delegated={subsessionsSessionId !== null}
-              active={dockTabKey === 'tasks'}
-              turnActive={focusBusy}
-              refreshTick={tasksRefreshTick}
-              onVerdictChange={setTasksVerdict}
+          {openThread && session.agentId ? (
+            <TaskThreadPanel
+              key={openThread.sessionId}
+              agentId={session.agentId}
+              agentName={session.agentName ?? ''}
+              task={openThread}
+              parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
+              onBack={() => setTaskThread(null)}
             />
           ) : null}
+          {/* Mounted under an open thread too, so its verdict keeps the tab's badge and the reader comes back to the same lists. */}
+          <div className={openThread ? 'hidden' : 'contents'}>
+            {filesAgentId && tasksSessionId ? (
+              <TasksPanel
+                agentId={filesAgentId}
+                sessionId={tasksSessionId}
+                delegated={subsessionsSessionId !== null}
+                active={dockTabKey === 'tasks' && !openThread}
+                turnActive={focusBusy}
+                refreshTick={tasksRefreshTick}
+                onVerdictChange={setTasksVerdict}
+                {...(session.agentId ? { onOpenThread: openTaskThread } : {})}
+              />
+            ) : null}
+          </div>
         </DockPanel>
       </SessionDock>
     </div>

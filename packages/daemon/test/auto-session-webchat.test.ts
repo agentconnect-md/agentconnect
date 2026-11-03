@@ -8,7 +8,7 @@ import { Daemon } from '../src/daemon.js'
 import { coordinatorSessionTools } from '../src/auto-session/coordinator-prompt.js'
 import { isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { isSubsessionCoordinate } from '../src/session/subsession-coordinate.js'
-import { sessionKey } from '../src/store/local-store.js'
+import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
 import { WAIT } from './wait-support.js'
 
@@ -76,11 +76,15 @@ async function boot(
   await daemon.start()
   const d = daemon as any
   d.orgForAgent = () => ORG
-  const posts: { text: string; initiator?: string }[] = []
+  const posts: { text: string; initiator?: string; taskLink?: unknown }[] = []
   d.relays = {
     stop: vi.fn(async () => {}),
-    sendWebchatPost: vi.fn((post: { post: { text: string }; initiator?: string }) =>
-      posts.push({ text: post.post.text, ...(post.initiator ? { initiator: post.initiator } : {}) })
+    sendWebchatPost: vi.fn((post: { post: { text: string; taskLink?: unknown }; initiator?: string }) =>
+      posts.push({
+        text: post.post.text,
+        ...(post.initiator ? { initiator: post.initiator } : {}),
+        ...(post.post.taskLink ? { taskLink: post.post.taskLink } : {})
+      })
     )
   }
   let turns = 0
@@ -211,9 +215,18 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md ย
     expect(task?.originSessionId).toBe(await d.store.ensureOutwardSessionId(coordinatorKey, AGENT))
     expect(first.streamed).toBe('')
     // The link is the coordinator's one post; the task's answer is on its page, never in this conversation.
+    // It names its task, which the console draws as the task's card rather than reading the link's words.
+    const opened = { sessionId: task.sessionId, title: 'Fix the [retry]', how: 'opened' }
     expect(posts).toEqual([
-      { text: `Started a task: [Fix the \\[retry\\]](${d.sessionLink(task.sessionId)})`, initiator: 'agent' }
+      {
+        text: `Started a task: [Fix the \\[retry\\]](${d.sessionLink(task.sessionId)})`,
+        initiator: 'agent',
+        taskLink: opened
+      }
     ])
+    const recorded = await d.store.transcriptPage(transcriptChannelKey(CONV), `webchat:${CONV}`, null, 50, AGENT)
+    const linkRow = recorded.rows.find((row: { text: string }) => row.text.startsWith('Started a task:'))
+    expect(JSON.parse(linkRow?.body ?? '{}')).toEqual({ taskLink: opened })
     // The task answered on its page; nothing reached the coordinator, which is not woken by its end.
     expect(coordinatorPrompts).toHaveLength(1)
     // The coordinator reads of a conversation, never a channel (auto-session-mode.md ยง10).
@@ -230,7 +243,8 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md ย
     ])
     expect(posts.at(-1)).toEqual({
       text: `Passed to [Fix the \\[retry\\]](${d.sessionLink(task.sessionId)})`,
-      initiator: 'agent'
+      initiator: 'agent',
+      taskLink: { ...opened, how: 'handed' }
     })
     expect(await index.get(AGENT, taskId)).toMatchObject({ state: 'done', round: 2 })
     expect((await index.get(AGENT, taskId))?.endReport).toBeUndefined()

@@ -6,7 +6,8 @@ import type {
   PlanEntry,
   SessionImageAttachment,
   SharedImage,
-  SharedImageDownload
+  SharedImageDownload,
+  TaskLinkFacts
 } from '@agentconnect.md/protocol'
 import type { ToolEdit } from './tool-edits.js'
 
@@ -132,6 +133,7 @@ export interface ChatPost {
     at: number
     attachments?: SessionImageAttachment[]
     image?: SharedImage
+    taskLink?: TaskLinkFacts
   }
 }
 

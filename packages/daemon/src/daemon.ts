@@ -172,7 +172,9 @@ import {
   COMPUTER_CHANNEL_FEATURE,
   COMPUTER_COMMAND_LINE_FEATURE,
   COMPUTER_LEASE_FEATURE,
-  MAX_WORKSPACE_DOWNLOAD_BYTES
+  MAX_WORKSPACE_DOWNLOAD_BYTES,
+  type TaskLinkFacts,
+  type UserTurnBody
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
@@ -2030,7 +2032,8 @@ export class Daemon {
         this.log.warn(`coordinator: handing ${msg.msgId} to its task failed: ${formatErr(err)}`)
       )
     },
-    post: (agentId, integrationId, msg, text) => this.postCoordinatorReply(agentId, integrationId, msg, text),
+    post: (agentId, integrationId, msg, text, taskLink) =>
+      this.postCoordinatorReply(agentId, integrationId, msg, text, taskLink),
     showTriaging: (agentId, message) => this.showTriaging(agentId, message),
     sessionLink: (sessionId) => this.sessionLink(sessionId),
     reportTaskOwners: async (agentId, keys) => await this.reportTaskOwners(agentId, keys),
@@ -14223,9 +14226,10 @@ export class Daemon {
     agentId: string,
     integrationId: string | undefined,
     msg: NormalizedMessage,
-    text: string
+    text: string,
+    taskLink?: TaskLinkFacts
   ): Promise<void> {
-    if (threadless(msg)) return await this.postWebchatAgentMessage(agentId, msg, text)
+    if (threadless(msg)) return await this.postWebchatAgentMessage(agentId, msg, text, taskLink)
     const gateway: MessageGateway | undefined =
       integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
     if (!gateway) throw new Error('the conversation is not connected right now; nothing was posted')
@@ -14239,7 +14243,12 @@ export class Daemon {
   }
 
   /** The coordinator's own post in a webchat conversation, recorded in its session and shown live (auto-session-mode.md §10). */
-  private async postWebchatAgentMessage(agentId: string, msg: NormalizedMessage, text: string): Promise<void> {
+  private async postWebchatAgentMessage(
+    agentId: string,
+    msg: NormalizedMessage,
+    text: string,
+    taskLink?: TaskLinkFacts
+  ): Promise<void> {
     const conversationId = msg.channel
     if (!UUID_RE.test(conversationId))
       throw new Error('the conversation is no webchat conversation; nothing was posted')
@@ -14256,13 +14265,21 @@ export class Daemon {
           agentId,
           sessionKey: sessionKey(msg.platform, conversationId, sessionThreadOf(msg), agentId, msg.transportScope)
         },
-        text
+        text,
+        ...(taskLink ? { body: JSON.stringify({ taskLink } satisfies UserTurnBody) } : {})
       }
     )
     this.relays?.sendWebchatPost({
       conversationId,
       agentId,
-      post: { postId, conversationId, author: { kind: 'agent', agentId }, text, at: Number(at) },
+      post: {
+        postId,
+        conversationId,
+        author: { kind: 'agent', agentId },
+        text,
+        at: Number(at),
+        ...(taskLink ? { taskLink } : {})
+      },
       initiator: 'agent'
     })
   }

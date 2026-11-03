@@ -176,6 +176,7 @@ export function SessionDock({
   onTabAction,
   onOverflow,
   overlayKey,
+  revealKey = 0,
   label = 'Panels',
   onVisibleChange,
   children
@@ -191,6 +192,8 @@ export function SessionDock({
   onOverflow?: () => void
   /** What the dock is open beside; a change closes the overlay, so a tapped row does not leave the drawer over the session it opened. */
   overlayKey?: string
+  /** Bumped to bring the panel on screen, as when the transcript opens a task's thread in it; a column above `wide:` is already there. */
+  revealKey?: number
   /** Accessible name for the strip, the collapsed-band trigger and its overlay, and the app-bar action that replaces it on mobile. */
   label?: string
   /** Whether a panel is on screen: always above `wide:`, only while the drawer is open below it; children stay mounted either way. */
@@ -299,6 +302,9 @@ export function SessionDock({
     return () => registerMobileAction(null)
   }, [vacant, label, open, toggleOverlay, registerMobileAction])
   useEffect(() => setOpen(false), [overlayKey])
+  useEffect(() => {
+    if (revealKey > 0 && window.innerWidth < DOCK_WIDE_MIN) setOpen(true)
+  }, [revealKey])
   // A latch left standing when the panel loses its content would re-open over the next session that arrives.
   useEffect(() => {
     if (vacant) setOpen(false)

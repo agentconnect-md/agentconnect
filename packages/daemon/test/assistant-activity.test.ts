@@ -540,6 +540,74 @@ describe('the Activity view: sub-sessions', () => {
     expect(page.subsessions[1]).not.toHaveProperty('threaded')
   })
 
+  // auto-session-mode.md §10: a task's card counts the messages after the one that opened it, its people's and its own.
+  it('counts a task’s replies, its people’s and its own, and when the newest landed', async () => {
+    const { s, a, b, activity } = await setup()
+    const parentKey = sessionKey('webchat', 'conversation-1', 'append:coordinator-1', a)
+    const coordinate = subsessionCoordinate('page-task')
+    const task = sessionKey('webchat', 'conversation-1', coordinate, a)
+    const quiet = sessionKey('webchat', 'conversation-1', subsessionCoordinate('quiet'), a)
+    const open = { agentId: a, parentSessionId: 'sid-parent', parentSessionKey: parentKey }
+    await s.assistantSubsessions.open({ ...open, childSessionKey: quiet, title: 'Draft notes', now: 1_000 })
+    await s.assistantSubsessions.open({ ...open, childSessionKey: task, title: 'Find blockers', now: 2_000 })
+    for (const [key, id, thread] of [
+      [task, 'sid-task', coordinate],
+      [quiet, 'sid-quiet', subsessionCoordinate('quiet')]
+    ] as const)
+      await s.upsertSession({
+        key,
+        agentId: a,
+        platform: 'webchat',
+        channel: 'conversation-1',
+        thread,
+        acpSessionId: `acp-${id}`,
+        sessionId: id,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: 2_000
+      })
+    let ts = 0
+    const say = (key: string, thread: string, sender: string, text: string, kind: 'text' | 'tool' = 'text') =>
+      s.appendTranscript({
+        channel: 'conversation-1',
+        thread,
+        ts: String(1_700_000_000_000 + ++ts * 60_000),
+        sender,
+        kind,
+        text,
+        admission: { agentId: a, sessionKey: key }
+      })
+    await say(task, coordinate, 'dana', 'find what blocks api 1.5')
+    await say(task, coordinate, a, 'Three of five release PRs are clear.')
+    await say(task, coordinate, a, 'gh pr list', 'tool')
+    await say(task, coordinate, 'dana', 'and the orders migration?')
+    await say(task, coordinate, a, 'It ships in 1.5.')
+    await say(quiet, subsessionCoordinate('quiet'), 'dana', 'draft the release notes')
+    // Another agent's row on the same coordinate is not this task's.
+    await s.appendTranscript({
+      channel: 'conversation-1',
+      thread: coordinate,
+      ts: String(1_700_000_000_000 + ++ts * 60_000),
+      sender: b,
+      kind: 'text',
+      text: 'not mine'
+    })
+
+    const page = await read(activity, {
+      agentId: a,
+      operation: 'subsessions',
+      limit: 10,
+      parent: { sessionId: 'sid-parent' }
+    })
+    const [counted, untouched] = page.subsessions
+    expect(counted).toMatchObject({ sessionId: 'sid-task', replies: 3 })
+    // The fifth row is its newest message; the tool row between them is no reply.
+    expect(counted!.lastReplyAt).toBe(new Date(1_700_000_000_000 + 5 * 60_000).toISOString())
+    expect(untouched).toMatchObject({ sessionId: 'sid-quiet' })
+    expect(untouched).not.toHaveProperty('replies')
+    expect(untouched).not.toHaveProperty('lastReplyAt')
+  })
+
   it('lists only the sub-sessions one conversation opened, newest first, a page at a time', async () => {
     const { s, a, b, activity } = await setup()
     const parentKey = sessionKey('slack', 'C0SUPPORT', 'append:1', a, 'T0EXAMPLE')

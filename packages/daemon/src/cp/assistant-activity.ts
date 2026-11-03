@@ -27,7 +27,7 @@ import type { AssistantItemLedger } from '../store/assistant-items.js'
 import type { AssistantWatchTasks } from '../store/assistant-watch-tasks.js'
 import type { AssistantCheckLedger } from '../store/assistant-checks.js'
 import type { AssistantSubsession, AssistantSubsessionIndex } from '../store/assistant-subsessions.js'
-import type { SessionRecord } from '../store/local-store.js'
+import { transcriptChannelKey, type SessionRecord, type TranscriptSessionScope } from '../store/local-store.js'
 
 /** A refused request → `BAD_PAYLOAD` with `reason` in the error frame's details. */
 export class AssistantActivityViolationError extends Error {
@@ -60,6 +60,7 @@ export interface AssistantActivityStore {
     transportScope?: string | null
   ): Promise<SessionRecord | undefined>
   getDisplayNames(ids: string[]): Promise<Map<string, string>>
+  sessionTextStats(scope: TranscriptSessionScope): Promise<{ count: number; lastEventTimeUs: number | null }>
 }
 
 export interface AssistantActivityDeps {
@@ -314,6 +315,7 @@ async function taskOf(
     return { ...base, state: ended ? 'done' : 'open', kind: 'follow-up', ...(followUp ? { followUp } : {}) }
   }
   const threads = await store.assistantSubsessions.threadsOf(agentId, row.childSessionKey)
+  const replies = child?.agentId === agentId ? await repliesOf(store, agentId, child) : undefined
   return {
     ...base,
     // A sub-session whose failure report is still on its way has ended, as `failed` shows.
@@ -324,8 +326,27 @@ async function taskOf(
     ...(row.summary ? { summary: row.summary } : {}),
     ...(row.summary && row.summaryUpdatedAt !== undefined ? { summaryUpdatedAt: iso(row.summaryUpdatedAt) } : {}),
     ...(row.background ? { background: row.background } : {}),
-    ...(threads.length > 0 ? { threaded: true } : {})
+    ...(threads.length > 0 ? { threaded: true } : {}),
+    ...replies
   }
+}
+
+/** A task's replies (auto-session-mode.md §10): every message after the one it was opened with, its people's and its own. */
+async function repliesOf(
+  store: AssistantActivityStore,
+  agentId: string,
+  child: SessionRecord
+): Promise<Pick<AssistantActivitySubsession, 'replies' | 'lastReplyAt'>> {
+  const { count, lastEventTimeUs } = await store.sessionTextStats({
+    agentId,
+    sessionKey: child.key,
+    transcriptChannel: transcriptChannelKey(child.channel, child.transportScope),
+    coordinate: child.thread
+  })
+  const replies = count - 1
+  // None yet reads as absent, as from a daemon that does not count them.
+  if (replies < 1 || lastEventTimeUs === null) return {}
+  return { replies, lastReplyAt: new Date(lastEventTimeUs / 1000).toISOString() }
 }
 
 /** A follow-up as the task list carries it: its id, state, next check and newest finished checks. */

@@ -349,3 +349,69 @@ export function workSummary(thinkCount: number, toolCount: number, editCount: nu
   if (editCount > 0) parts.push(`${parts.length ? 'edited' : 'Edited'} ${plural(editCount, 'file')}`)
   return parts.join(', ')
 }
+
+// What each schema `format` asks of a typed answer, named the way the reader has to fix it.
+const FORMAT_HINT: Record<string, { test: (v: string) => boolean; why: string }> = {
+  email: { test: (v) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(v), why: 'Enter an email address' },
+  uri: {
+    test: (v) => {
+      try {
+        return !!new URL(v).protocol
+      } catch {
+        return false
+      }
+    },
+    why: 'Enter a URL, including its scheme'
+  },
+  date: {
+    // `2025-13-01` matches the shape but is not a date, and toISOString THROWS on it — this
+    // runs during render, so an ordinary invalid draft would crash the view, not fail a check.
+    test: (v) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false
+      const d = new Date(`${v}T00:00:00Z`)
+      return !Number.isNaN(d.getTime()) && v === d.toISOString().slice(0, 10)
+    },
+    why: 'Enter a date as YYYY-MM-DD'
+  },
+  'date-time': {
+    test: (v) =>
+      /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(v) && !isNaN(Date.parse(v)),
+    why: 'Enter a date and time, e.g. 2025-01-31T09:00:00Z'
+  }
+}
+
+/** Why a typed draft is not yet answerable, or undefined once it is — the same constraints the
+ *  daemon re-checks, said in words the reader can act on rather than as a silent dead control. */
+export function typedInvalidReason(
+  elicit: Pick<ElicitFieldSpec, 'text' | 'number'>,
+  draft: string
+): string | undefined {
+  const num = elicit.number
+  if (num) {
+    if (!draft.trim()) return 'Enter a number'
+    const value = Number(draft)
+    if (!Number.isFinite(value)) return 'Enter a number'
+    if (num.integer && !Number.isInteger(value)) return 'Enter a whole number'
+    if (num.minimum !== undefined && value < num.minimum) return `Enter ${num.minimum} or more`
+    if (num.maximum !== undefined && value > num.maximum) return `Enter ${num.maximum} or less`
+    return undefined
+  }
+  const text = elicit.text
+  if (!text) return undefined
+  if (text.minLength !== undefined && draft.length < text.minLength)
+    return `Enter at least ${text.minLength} character${text.minLength === 1 ? '' : 's'}`
+  if (!draft.length) return 'Enter an answer'
+  // Also what keeps the pattern below cheap: the daemon sizes maxLength down to the pattern
+  // cap, so a long draft is refused here rather than matched on every keystroke.
+  if (text.maxLength !== undefined && draft.length > text.maxLength) return `Enter at most ${text.maxLength} characters`
+  const format = text.format ? FORMAT_HINT[text.format] : undefined
+  if (format && !format.test(draft)) return format.why
+  if (text.pattern !== undefined) {
+    try {
+      if (!new RegExp(text.pattern).test(draft)) return `Match ${text.pattern}`
+    } catch {
+      return 'This field cannot be answered here'
+    }
+  }
+  return undefined
+}

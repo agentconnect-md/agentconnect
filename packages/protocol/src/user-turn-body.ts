@@ -72,6 +72,16 @@ export const SessionMessageTurnFacts = z.object({
 })
 export type SessionMessageTurnFacts = z.infer<typeof SessionMessageTurnFacts>
 
+/** The task a coordinator's post links to (auto-session-mode.md §10): the console draws it as a card that opens the task's thread. */
+export const TaskLinkFacts = z.object({
+  /** The task's outward session id. */
+  sessionId: z.string().min(1).max(200),
+  title: z.string().max(300),
+  /** `opened` started the task for the message; `handed` passed the message to one already running. */
+  how: z.enum(['opened', 'handed'])
+})
+export type TaskLinkFacts = z.infer<typeof TaskLinkFacts>
+
 /**
  * What lies behind one user-turn `text` row, transported as a JSON STRING in `SessionMessage.body`.
  * `prompt` is the text the model actually received when it differs from the row's `text` (replay
@@ -82,6 +92,8 @@ export const UserTurnBody = z.object({
   prompt: z.string().optional(),
   linear: LinearTurnFacts.optional(),
   codehost: CodehostTurnFacts.optional(),
-  sessionMessage: SessionMessageTurnFacts.optional()
+  sessionMessage: SessionMessageTurnFacts.optional(),
+  /** On a coordinator's own post: the task it links to. */
+  taskLink: TaskLinkFacts.optional()
 })
 export type UserTurnBody = z.infer<typeof UserTurnBody>

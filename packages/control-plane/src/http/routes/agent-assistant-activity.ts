@@ -142,7 +142,11 @@ const SubsessionDto = z.object({
   /** The start of the message the task was opened with, shown until it writes a summary; only where `visible`. */
   background: z.string().optional(),
   /** A platform thread is attached: people there talk to the task, and it reports nothing to the conversation that opened it. */
-  threaded: z.boolean().optional()
+  threaded: z.boolean().optional(),
+  /** How many messages its people and the task posted after the one that opened it; only where `visible`, from a daemon that counts them. */
+  replies: z.number().int().min(0).optional(),
+  /** When the newest of those replies landed. */
+  lastReplyAt: z.string().optional()
 })
 const SubsessionsPageDto = z.object({
   subsessions: z.array(SubsessionDto),
@@ -471,6 +475,8 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         ...(visible && s.summary ? { summary: s.summary } : {}),
         ...(visible && s.summary && s.summaryUpdatedAt ? { summaryUpdatedAt: s.summaryUpdatedAt } : {}),
         ...(visible && s.background ? { background: s.background } : {}),
+        ...(visible && s.replies !== undefined ? { replies: s.replies } : {}),
+        ...(visible && s.replies && s.lastReplyAt ? { lastReplyAt: s.lastReplyAt } : {}),
         ...(followUp
           ? {
               followUp: {
@@ -625,7 +631,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         schema: {
           tags: [Tag.Agents],
           summary: 'List an agent’s tasks',
-          description: `Lists the tasks the agent started (its delegated tasks, follow-ups and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. From an agent whose daemon keeps follow-ups, each row names its \`kind\` and the page says \`followUps: true\`; a follow-up carries its status (waiting, checking, paused after five failed checks, done or stopped) and next check, and, where the caller may view its conversation, what counts as done, its newest checks with what started each (its time, a message, or events on what it watches), the pull request, merge request or issue it watches with that watch's state, and, from a daemon that ends one by it, its \`id\` for \`stopAssistantFollowUp\`: until its first check runs it has no session, and \`canStop\` follows its conversation. A follow-up is listed under its place’s current long session. A task carries \`threaded\` when a platform thread is attached and, where the caller may view it, its own \`summary\` with \`summaryUpdatedAt\` and the \`background\` it was opened with, from a daemon that keeps them; each call reads them from the daemon again. Nothing is stored by this call.`,
+          description: `Lists the tasks the agent started (its delegated tasks, follow-ups and approved proposals), running first and then the most recent, at most \`limit\` (${ASSISTANT_ACTIVITY_SUBSESSIONS_MAX} by default and at most). With \`parentSessionId\` it lists only what that conversation started, newest first, a page at a time: pass a page’s \`nextCursor\` back as \`cursor\` for the next one; the conversation must be one the caller may view, and the agent’s daemon must support it (409 \`DAEMON_FEATURE_MISSING\` otherwise). Anyone who can view the agent sees each one’s state and start; its title, its session and the conversation that started it are included only where the caller may view that conversation, and \`canStop\` says whether the caller may stop its current turn. An agent outside assistant mode is answered only when its daemon lists every agent’s tasks, and 409 \`ASSISTANT_MODE_OFF\` otherwise. From an agent whose daemon keeps follow-ups, each row names its \`kind\` and the page says \`followUps: true\`; a follow-up carries its status (waiting, checking, paused after five failed checks, done or stopped) and next check, and, where the caller may view its conversation, what counts as done, its newest checks with what started each (its time, a message, or events on what it watches), the pull request, merge request or issue it watches with that watch's state, and, from a daemon that ends one by it, its \`id\` for \`stopAssistantFollowUp\`: until its first check runs it has no session, and \`canStop\` follows its conversation. A follow-up is listed under its place’s current long session. A task carries \`threaded\` when a platform thread is attached and, where the caller may view it, its own \`summary\` with \`summaryUpdatedAt\`, the \`background\` it was opened with, and its \`replies\` (the messages its people and the task posted after the one that opened it) with \`lastReplyAt\`, from a daemon that keeps them; each call reads them from the daemon again. Nothing is stored by this call.`,
           operationId: 'listAssistantSubsessions',
           params: IdParam,
           querystring: SubsessionsQuery,
