@@ -210,9 +210,10 @@ changed.
   `persistence/repositories/session.repo.ts`, `ws/handlers/event-session.ts`)
   are unchanged: they resolve `hook:<id>` to a CP hook definition, which a
   doorbell does not have.
-- **Not changed yet — console label.** The web console's `sessionTriggerKind`
-  (`web/src/lib/session-trigger.ts`) knows `cron:` and `hook:` only, so it labels
-  a `doorbell:` trigger as a person. Teaching it the prefix is a follow-up.
+- **Console label.** The web console's `sessionTriggerKind`
+  (`web/src/lib/session-trigger.ts`) classifies a `doorbell:` trigger as its own
+  `doorbell` kind, so the Sessions trigger filter lists it under Doorbells with a
+  bell glyph and the sender's configured name, never under People.
 
 ## Not in scope
 

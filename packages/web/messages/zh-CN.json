@@ -668,6 +668,7 @@
       "people": "人员",
       "mine": "{name}（我）",
       "schedules": "定时任务",
+      "doorbells": "门铃",
       "count": "{count, plural, other {# 个会话}}",
       "schedule": "定时任务",
       "openSchedule": "打开定时任务",
