@@ -660,4 +660,36 @@ describe('a channel coordinator’s task cards', () => {
     const answer = [...(container?.querySelectorAll('div') ?? [])].find((el) => el.textContent === 'Looking into it.')!
     expect(Boolean(answer.compareDocumentPosition(cards[0]!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
   })
+
+  it('keeps the cards of every message in a batch the coordinator answered in one turn', async () => {
+    daemonFeatures.push('activity-every-agent-v1')
+    wire.messages = [
+      { ...message(1, 'sam', 'find what blocks 1.5'), ts: '1700000001.000100' },
+      { ...message(2, 'dana', 'and draft the notes'), ts: '1700000002.000100' },
+      { ...message(3, 'lee', 'nice'), ts: '1700000003.000100' },
+      { ...message(4, 'agent-1', 'On it, two tasks.'), ts: '1700000004.000100' }
+    ]
+    const task = (sessionId: string, title: string, openedForMessageId: string) => ({
+      sessionId,
+      title,
+      state: 'open',
+      startedAt: '2026-10-01T00:00:00.000Z',
+      visible: true,
+      canStop: true,
+      parent: null,
+      threaded: true,
+      openedForMessageId
+    })
+    wire.subsessions = [
+      task('child-1', 'Find what blocks 1.5', '1700000001.000100'),
+      task('child-2', 'Draft the notes', '1700000002.000100')
+    ]
+    await open({ platform: 'slack', channel: 'C0123', thread: 'append:coordinator-1700000000000' })
+
+    const cards = [...(container?.querySelectorAll('[data-task-card]') ?? [])]
+    expect(cards.map((card) => card.getAttribute('data-task-card'))).toEqual(['child-1', 'child-2'])
+    const answer = [...(container?.querySelectorAll('div') ?? [])].find((el) => el.textContent === 'On it, two tasks.')!
+    for (const card of cards)
+      expect(Boolean(answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+  })
 })

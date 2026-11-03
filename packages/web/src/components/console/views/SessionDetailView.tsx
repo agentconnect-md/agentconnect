@@ -4689,12 +4689,13 @@ export default function SessionDetailView() {
   // A coordinator's task cards, under the first turn of the coordinator after the message each task was opened for.
   const openedTaskCards = new Map<string, TaskLink[]>()
   if (tasksByMessage.size > 0) {
-    let opened: TaskLink[] | undefined
+    // A coordinator answers a batch of messages in one turn, so every message since its last turn adds its tasks.
+    let opened: TaskLink[] = []
     for (const t of turns) {
-      if (t.kind === 'user') opened = t.messageId ? tasksByMessage.get(t.messageId) : undefined
-      else if (opened && t.agentId === session.agentId) {
-        openedTaskCards.set(t.key, opened)
-        opened = undefined
+      if (t.kind === 'user') opened = [...opened, ...((t.messageId && tasksByMessage.get(t.messageId)) || [])]
+      else if (t.agentId === session.agentId) {
+        if (opened.length > 0) openedTaskCards.set(t.key, opened)
+        opened = []
       }
     }
   }

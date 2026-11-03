@@ -2,7 +2,7 @@
 
 // One coordinator task's thread in the dock (auto-session-mode.md §10): what it and its people said, and a composer that continues it console-only.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { createPortal } from 'react-dom'
 import useSWR from 'swr'
@@ -50,6 +50,29 @@ export function TaskThreadPanel({
   const row = useTaskRow(agentId, id, parentSessionId)
   // Shown large over the page, for a long thread the dock is too narrow to read.
   const [expanded, setExpanded] = useState(false)
+  const listRef = useRef<HTMLDivElement | null>(null)
+  // The thread's own node, created once on the client and moved between the two slots below.
+  const [host] = useState(() => {
+    if (typeof document === 'undefined') return null
+    const node = document.createElement('div')
+    node.className = 'flex min-h-0 flex-1 flex-col'
+    return node
+  })
+  const dockSlot = useRef<HTMLDivElement | null>(null)
+  const dialogSlot = useRef<HTMLDivElement | null>(null)
+  // Where the list was scrolled when the thread last moved: a detached node loses its scroll position.
+  const scrollTop = useRef<number | null>(null)
+  const toggleExpanded = (next: boolean): void => {
+    scrollTop.current = listRef.current?.scrollTop ?? null
+    setExpanded(next)
+  }
+  useLayoutEffect(() => {
+    const slot = expanded ? dialogSlot.current : dockSlot.current
+    if (!host || !slot || host.parentNode === slot) return
+    slot.appendChild(host)
+    if (scrollTop.current !== null && listRef.current) listRef.current.scrollTop = scrollTop.current
+    scrollTop.current = null
+  }, [expanded, host])
   const busy = isPgBusy(id)
   const { page, error, reload } = useTaskThread(id, row, { busy })
   // The server decides who may continue a task, by its parent's audience; absent or false keeps it read-only.
@@ -70,7 +93,6 @@ export function TaskThreadPanel({
     wasBusy.current = busy
   }, [busy, reload])
 
-  const listRef = useRef<HTMLDivElement | null>(null)
   const last = entries[entries.length - 1]
   const tail = `${entries.length}:${last?.text.length ?? 0}`
   useEffect(() => {
@@ -93,7 +115,7 @@ export function TaskThreadPanel({
             type="button"
             className="flex cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent px-1 py-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
             onClick={() => {
-              setExpanded(false)
+              toggleExpanded(false)
               onBack()
             }}
           >
@@ -107,7 +129,7 @@ export function TaskThreadPanel({
             title={expanded ? t('collapse') : t('expand')}
             aria-label={expanded ? t('collapse') : t('expand')}
             aria-pressed={expanded}
-            onClick={() => setExpanded((v) => !v)}
+            onClick={() => toggleExpanded(!expanded)}
           >
             <Icon name={expanded ? 'minimize-2' : 'maximize-2'} size={14} />
           </button>
@@ -195,32 +217,40 @@ export function TaskThreadPanel({
       />
     </div>
   )
-  if (!expanded) return thread
-  // The dock keeps a placeholder, so the thread lives in one place at a time and its scroll, draft and answers carry over.
+  // One mounted thread whose node moves between the dock and the large view, so its drafts, answers and scroll survive the switch.
   return (
     <>
-      <div
-        data-task-thread-placeholder=""
-        className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
-      >
-        {t('expandedElsewhere')}
-        <Button variant="secondary" size="xs" onClick={() => setExpanded(false)}>
-          {t('collapse')}
-        </Button>
-      </div>
-      {createPortal(
-        <Scrim onEscape={() => setExpanded(false)} onClick={(e) => e.target === e.currentTarget && setExpanded(false)}>
-          <div
-            role="dialog"
-            aria-modal
-            aria-label={title}
-            className="flex h-full max-h-[92vh] w-full max-w-[960px] flex-col overflow-hidden rounded-lg border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xl) max-desktop:max-h-none max-desktop:rounded-none max-desktop:border-0"
-          >
-            {thread}
-          </div>
-        </Scrim>,
-        document.body
+      {expanded ? (
+        <div
+          data-task-thread-placeholder=""
+          className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+        >
+          {t('expandedElsewhere')}
+          <Button variant="secondary" size="xs" onClick={() => toggleExpanded(false)}>
+            {t('collapse')}
+          </Button>
+        </div>
+      ) : (
+        <div ref={dockSlot} className="flex min-h-0 flex-1 flex-col" />
       )}
+      {expanded
+        ? createPortal(
+            <Scrim
+              onEscape={() => toggleExpanded(false)}
+              onClick={(e) => e.target === e.currentTarget && toggleExpanded(false)}
+            >
+              <div
+                ref={dialogSlot}
+                role="dialog"
+                aria-modal
+                aria-label={title}
+                className="flex h-full max-h-[92vh] w-full max-w-[960px] flex-col overflow-hidden rounded-lg border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xl) max-desktop:max-h-none max-desktop:rounded-none max-desktop:border-0"
+              />
+            </Scrim>,
+            document.body
+          )
+        : null}
+      {host ? createPortal(thread, host) : null}
     </>
   )
 }

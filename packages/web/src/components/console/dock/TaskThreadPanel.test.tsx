@@ -252,6 +252,32 @@ describe('TaskThreadPanel', () => {
     expect(container.querySelector('[data-task-thread="ses_task"]')).not.toBeNull()
   })
 
+  it('keeps one mounted thread across expanding and collapsing, with a half-typed answer intact', async () => {
+    wire.live = [
+      {
+        kind: 'elicit',
+        turnId: 't1',
+        text: 'Which release tag?',
+        elicit: { requestId: 'q-4', options: [], text: {} }
+      }
+    ]
+    await render()
+    const thread = container.querySelector('[data-task-thread="ses_task"]')!
+    const input = thread.querySelector<HTMLInputElement>('[data-thread-question="q-4"] input')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'v1.5')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => thread.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
+    // The same node, moved into the large view rather than rebuilt there.
+    expect(document.body.querySelector('[role="dialog"] [data-task-thread="ses_task"]')).toBe(thread)
+    expect(thread.querySelector<HTMLInputElement>('[data-thread-question="q-4"] input')).toBe(input)
+    expect(input.value).toBe('v1.5')
+    act(() => thread.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
+    expect(container.querySelector('[data-task-thread="ses_task"]')).toBe(thread)
+    expect(input.value).toBe('v1.5')
+  })
+
   it('goes back to the task lists', async () => {
     await render()
     act(() => container.querySelector<HTMLButtonElement>('button')!.click())
