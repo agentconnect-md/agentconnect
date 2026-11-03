@@ -63,6 +63,8 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     isPgBusy: () => false,
     reconcileLiveSteps: () => {},
     markSessionTarget: (id: string) => wire.calls.push(`target:${id}`),
+    pgAnswerElicitation: (id: string, agentId: string, requestId: string, value: unknown) =>
+      wire.calls.push(`answer:${id}:${agentId}:${requestId}:${String(value)}`),
     pgSend: (id: string, agentId: string) => {
       wire.calls.push(`send:${id}:${agentId}:${wire.drafts[id] ?? ''}`)
       return true
@@ -155,6 +157,48 @@ describe('TaskThreadPanel', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
     expect(wire.calls).toEqual(['target:ses_task', 'send:ses_task:agent_1:does 1.5 include the orders migration?'])
+  })
+
+  it('shows the agent’s open question and answers a plain choice from the panel', async () => {
+    wire.live = [
+      {
+        kind: 'elicit',
+        turnId: 't1',
+        text: 'Merge #1291 now?',
+        elicit: {
+          requestId: 'q-1',
+          options: [
+            { value: 'yes', label: 'Merge' },
+            { value: 'no', label: 'Wait' }
+          ]
+        }
+      }
+    ]
+    await render()
+    const question = container.querySelector('[data-thread-question="q-1"]')!
+    expect(question.textContent).toContain('Waiting for your answer')
+    expect(container.textContent).toContain('Merge #1291 now?')
+    act(() =>
+      Array.from(question.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Merge')!
+        .click()
+    )
+    expect(wire.calls).toEqual(['target:ses_task', 'answer:ses_task:agent_1:q-1:yes'])
+  })
+
+  it('points a question the panel cannot answer to the task’s page', async () => {
+    wire.live = [
+      {
+        kind: 'elicit',
+        turnId: 't1',
+        text: 'Fill in the release form',
+        elicit: { requestId: 'q-2', options: [], fields: [] }
+      }
+    ]
+    await render()
+    const question = container.querySelector('[data-thread-question="q-2"]')!
+    expect(question.querySelector('a')?.getAttribute('href')).toBe('/acme/sessions/ses_task')
+    expect(question.querySelector('button')).toBeNull()
   })
 
   it('stays read-only where this reader may not continue the task', async () => {

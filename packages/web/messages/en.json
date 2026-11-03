@@ -314,7 +314,10 @@
       "working": "{agent} is working…",
       "replyPlaceholder": "Reply to this task…",
       "readOnly": "You can read this task, but not reply to it here.",
-      "send": "Send reply"
+      "send": "Send reply",
+      "question": "Waiting for your answer",
+      "answer": "Your answer",
+      "answerOnPage": "See the whole question on the task’s page"
     },
     "githubApp": {
       "title": "GitHub App",

@@ -2,11 +2,11 @@
 
 // One coordinator task's thread in the dock (auto-session-mode.md §10): what it and its people said, and a composer that continues it console-only.
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { useFormatter, useTranslations } from 'next-intl'
-import { Icon } from '@/components/ui'
+import { Button, Icon } from '@/components/ui'
 import { MessageText } from '@/components/console/MessageText'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { StateMark, taskStateKey, taskTone } from '@/components/console/task-list'
@@ -41,7 +41,8 @@ export function TaskThreadPanel({
   const tl = useTranslations('Common.taskList')
   const format = useFormatter()
   const { orgPath } = useOrgs()
-  const { getLiveSteps, isPgBusy, markSessionTarget, pgSend, setPgInput, reconcileLiveSteps } = usePlayground()
+  const { getLiveSteps, isPgBusy, markSessionTarget, pgSend, setPgInput, reconcileLiveSteps, pgAnswerElicitation } =
+    usePlayground()
   const id = task.sessionId
   const row = useTaskRow(agentId, id, parentSessionId)
   const busy = isPgBusy(id)
@@ -144,7 +145,18 @@ export function TaskThreadPanel({
             you={t('you')}
             person={t('person')}
             time={entry.at ? format.dateTime(new Date(entry.at), { hour: 'numeric', minute: '2-digit' }) : null}
-          />
+          >
+            {entry.question ? (
+              <ThreadQuestion
+                question={entry.question}
+                pageHref={orgPath(`/sessions/${encodeURIComponent(id)}`)}
+                onAnswer={(requestId, value) => {
+                  markSessionTarget(id)
+                  pgAnswerElicitation(id, agentId, requestId, value)
+                }}
+              />
+            ) : null}
+          </ThreadMessage>
         ))}
         {busy ? (
           <span role="status" className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -171,13 +183,15 @@ function ThreadMessage({
   agentName,
   you,
   person,
-  time
+  time,
+  children
 }: {
   entry: ThreadEntry
   agentName: string
   you: string
   person: string
   time: string | null
+  children?: ReactNode
 }) {
   const agent = entry.who === 'agent'
   const name = agent ? agentName : (entry.name ?? (entry.live ? you : person))
@@ -197,9 +211,84 @@ function ThreadMessage({
           <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">{time}</span>
         ) : null}
       </div>
-      <div className="min-w-0 whitespace-pre-wrap break-words font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)">
-        <MessageText text={entry.text} platform="webchat" />
-      </div>
+      {entry.text.trim() ? (
+        <div className="min-w-0 whitespace-pre-wrap break-words font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)">
+          <MessageText text={entry.text} platform="webchat" />
+        </div>
+      ) : null}
+      {children}
+    </div>
+  )
+}
+
+/** The agent's open question: a plain choice or a line of text answers here; any other form is shown on the task's page. */
+function ThreadQuestion({
+  question,
+  pageHref,
+  onAnswer
+}: {
+  question: NonNullable<ThreadEntry['question']>
+  pageHref: string
+  onAnswer: (requestId: string, value: string) => void
+}) {
+  const t = useTranslations('Common.taskThread')
+  const [answered, setAnswered] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  return (
+    <div
+      data-thread-question={question.requestId}
+      className="mt-1 flex flex-col gap-2 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2"
+    >
+      <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+        {t('question')}
+      </span>
+      {question.text ? (
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (!draft.trim() || answered !== null) return
+            setAnswered(draft)
+            onAnswer(question.requestId, draft)
+          }}
+        >
+          <input
+            aria-label={t('answer')}
+            placeholder={t('answer')}
+            value={draft}
+            disabled={answered !== null}
+            onChange={(event) => setDraft(event.target.value)}
+            className="min-w-0 flex-1 rounded-sm border border-(--border-default) bg-(--surface-card) px-2 py-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary) outline-none focus:border-(--brand)"
+          />
+          <Button variant="primary" size="xs" type="submit" disabled={answered !== null || !draft.trim()}>
+            {t('send')}
+          </Button>
+        </form>
+      ) : question.choices ? (
+        <div className="flex flex-wrap gap-2">
+          {question.choices.map((choice) => (
+            <Button
+              key={choice.value}
+              variant={answered === choice.value ? 'primary' : 'secondary'}
+              size="xs"
+              disabled={answered !== null}
+              onClick={() => {
+                setAnswered(choice.value)
+                onAnswer(question.requestId, choice.value)
+              }}
+            >
+              {choice.label}
+            </Button>
+          ))}
+        </div>
+      ) : (
+        <Link
+          href={pageHref}
+          className="w-fit font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) hover:underline"
+        >
+          {t('answerOnPage')}
+        </Link>
+      )}
     </div>
   )
 }

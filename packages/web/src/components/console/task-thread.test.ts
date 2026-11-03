@@ -41,4 +41,34 @@ describe('threadEntries', () => {
       ['agent', 'CI is rerunning.', true]
     ])
   })
+
+  it('keeps the agent’s open question, recorded or live, once, and says how the panel can answer it', () => {
+    const ask = (requestId: string, extra: Record<string, unknown> = {}) => ({
+      requestId,
+      options: [
+        { value: 'yes', label: 'Yes' },
+        { value: 'no', label: 'No' }
+      ],
+      ...extra
+    })
+    const recorded = {
+      ...row(3, 'agent_1', 'Ship it?', 'elicit'),
+      body: JSON.stringify(ask('q-recorded'))
+    }
+    const settled = {
+      ...row(4, 'agent_1', 'Old question', 'elicit'),
+      body: JSON.stringify(ask('q-settled', { outcome: 'accepted' }))
+    }
+    const live: SessionStep[] = [
+      { kind: 'elicit', turnId: 't2', text: 'Ship it?', elicit: ask('q-recorded') },
+      { kind: 'elicit', turnId: 't2', text: '', elicit: { requestId: 'q-text', options: [], text: {} } },
+      { kind: 'elicit', turnId: 't2', text: 'Fill the form', elicit: { requestId: 'q-form', options: [], fields: [] } }
+    ]
+    const entries = threadEntries(threadMessages(page([recorded, settled])), live, 'agent_1')
+    expect(entries.map((e) => [e.text, e.question])).toEqual([
+      ['Ship it?', { requestId: 'q-recorded', choices: ask('q-recorded').options, text: false }],
+      ['', { requestId: 'q-text', choices: null, text: true }],
+      ['Fill the form', { requestId: 'q-form', choices: null, text: false }]
+    ])
+  })
 })

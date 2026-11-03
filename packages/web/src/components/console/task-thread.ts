@@ -13,6 +13,7 @@ import {
 } from '@/lib/api'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 import type { SessionStep } from '@/lib/data'
+import { elicitCard } from '@/components/console/session-work'
 
 /** Rows the conversation's list reads in one page; a task older than these reads its own row. */
 const ROWS_PAGE = 50
@@ -70,10 +71,13 @@ export function messageTime(m: Pick<SessionMessageDto, 'ts' | 'eventTimeUs'>): s
   return Number.isNaN(parsed) ? null : new Date(parsed).toISOString()
 }
 
-/** The thread's spoken messages, oldest first; tool and reasoning rows stay on the task's own page. */
+/** The thread's spoken messages and open questions, oldest first; tool and reasoning rows stay on the task's own page. */
 export function threadMessages(page: SessionHistoryDto | undefined): SessionMessageDto[] {
   return [...(page?.messages ?? [])]
-    .filter((m) => (m.kind || 'text').toLowerCase() === 'text' && m.text.trim() !== '')
+    .filter((m) => {
+      const kind = (m.kind || 'text').toLowerCase()
+      return kind === 'text' ? m.text.trim() !== '' : kind === 'elicit' && openQuestion(elicitCard(m.body)) !== null
+    })
     .sort((a, b) => a.seq - b.seq)
 }
 
@@ -106,6 +110,19 @@ export interface ThreadEntry {
   at: string | null
   /** Still streaming, or sent and not yet on the daemon's record. */
   live: boolean
+  /** The agent's open question: a plain choice or a line of text the panel answers, else one it only points to. */
+  question?: { requestId: string; choices: { value: string; label: string }[] | null; text: boolean }
+}
+
+/** A question the agent is still waiting on, and how the panel can answer it. */
+function openQuestion(ask: SessionStep['elicit'] | null | undefined): ThreadEntry['question'] | null {
+  if (!ask || ask.outcome) return null
+  const plain = !ask.multi && !ask.number && !ask.fields && !ask.url
+  return {
+    requestId: ask.requestId,
+    choices: plain && !ask.text && ask.options.length > 0 ? ask.options : null,
+    text: plain && !!ask.text
+  }
 }
 
 /** Persisted messages, then what this visit sent and is streaming back, which the next read retires. */
@@ -114,15 +131,24 @@ export function threadEntries(
   liveSteps: readonly SessionStep[],
   agentId: string
 ): ThreadEntry[] {
-  const persisted: ThreadEntry[] = messages.map((m) => ({
-    key: `m:${m.seq}`,
-    who: m.sender === agentId ? 'agent' : 'person',
-    name: m.senderName ?? null,
-    text: m.text,
-    at: messageTime(m),
-    live: false
-  }))
+  const persisted: ThreadEntry[] = messages.map((m) => {
+    const question = (m.kind || '').toLowerCase() === 'elicit' ? openQuestion(elicitCard(m.body)) : null
+    return {
+      key: `m:${m.seq}`,
+      who: m.sender === agentId || question ? 'agent' : 'person',
+      name: m.senderName ?? null,
+      text: m.text,
+      at: messageTime(m),
+      live: false,
+      ...(question ? { question } : {})
+    }
+  })
+  const recorded = new Set(persisted.flatMap((entry) => (entry.question ? [entry.question.requestId] : [])))
   const live = liveSteps.flatMap((step, i): ThreadEntry[] => {
+    const question = step.kind === 'elicit' ? openQuestion(step.elicit) : null
+    if (question && recorded.has(question.requestId)) return []
+    // A question is never left out: the task waits on it, so the thread shows it even with no text.
+    if (question) return [{ key: `l:${i}`, who: 'agent', name: null, text: step.text, at: null, live: true, question }]
     if (step.hidden || !step.text.trim()) return []
     if (step.kind === 'msg')
       return [{ key: `l:${i}`, who: 'person', name: null, text: step.text, at: null, live: true }]

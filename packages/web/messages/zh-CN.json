@@ -300,7 +300,7 @@
       "stopUpgrade": "升级此 Agent 的 Daemon 后才能在这里停止任务。"
     },
     "taskThread": {
-      "replies": "{count} 条回复",
+      "replies": "{count, plural, other {# 条回复}}",
       "reply": "回复",
       "lastReply": "最后回复于 {time}",
       "open": "打开 {title} 的会话串",
@@ -314,7 +314,10 @@
       "working": "{agent} 正在处理…",
       "replyPlaceholder": "回复这个任务…",
       "readOnly": "你可以查看这个任务，但不能在这里回复。",
-      "send": "发送回复"
+      "send": "发送回复",
+      "question": "正在等待你的回答",
+      "answer": "你的回答",
+      "answerOnPage": "在任务页面查看完整问题"
     },
     "githubApp": {
       "title": "GitHub App",
