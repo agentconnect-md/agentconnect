@@ -1905,8 +1905,8 @@ export class PgSessionRepo implements SessionRepo {
         RETURNING *
       `)
       const affected = target.map(toRecord)
+      const wholeLineage = current.platform === 'webchat' && isCoordinatorCoordinate(current.thread)
       if (visibility === 'org') {
-        const wholeLineage = current.platform === 'webchat' && isCoordinatorCoordinate(current.thread)
         affected.push(
           ...(await this.widenDescendants(tx, {
             id: sessionId,
@@ -1918,26 +1918,28 @@ export class PgSessionRepo implements SessionRepo {
         )
         return { affected }
       }
-      // A human tightening overrides a descendant's own re-classification — privacy wins.
+      // A human tightening overrides a descendant's own re-classification — privacy wins — except a
+      // webchat coordinator's: a row its owner changed is independent of it, with everything below.
       affected.push(
         ...(await this.tightenDescendants(
           tx,
           { id: sessionId, orgId, ownerIdentity: current.ownerIdentity },
-          { includeExplicit: true }
+          wholeLineage ? { includeExplicit: false, throughExplicit: false } : { includeExplicit: true }
         ))
       )
       return { affected }
     })
   }
 
-  /** A widening's reach: a webchat coordinator's whole private lineage, else the session's own background tasks. */
+  /** A widening's reach: a webchat coordinator's whole private lineage short of rows changed on their own, else the session's own background tasks. */
   private async widenDescendants(
     tx: PrismaLike,
     root: { id: string; orgId: string; agentId: string; ownerIdentity: string | null; wholeLineage: boolean }
   ): Promise<SessionMetaRecord[]> {
     const { id, orgId, agentId, ownerIdentity, wholeLineage } = root
+    // A row its owner changed is independent of the coordinator, with everything below it.
     const ownTask = wholeLineage
-      ? Prisma.empty
+      ? Prisma.sql`AND "visibilitySource" <> 'explicit'::"VisibilitySource"`
       : Prisma.sql`AND "agentId" = ${agentId} AND "thread" LIKE ${`${SUBSESSION_COORDINATE_PREFIX}%`} AND "visibilitySource" = 'inherited'::"VisibilitySource"`
     const affected: SessionMetaRecord[] = []
     const seen = new Set<string>([id])
@@ -1985,17 +1987,19 @@ export class PgSessionRepo implements SessionRepo {
    * `includeExplicit` separates the callers. A human tightening (§4.3) overrides a descendant's
    * own decision; convergence on data ARRIVAL must not, because widening a child stays its
    * owner's own decision (§4.5) and would otherwise be undone by the parent's next milestone.
-   * Idempotent either way — the predicate matches only rows that still differ.
+   * Idempotent either way — the predicate matches only rows that still differ. `throughExplicit: false`
+   * also leaves an explicit row's subtree alone, for a root whose descendants' own decisions stand.
    */
   private async tightenDescendants(
     tx: PrismaLike,
     root: { id: string; orgId: string; ownerIdentity: string | null },
-    { includeExplicit }: { includeExplicit: boolean }
+    { includeExplicit, throughExplicit = true }: { includeExplicit: boolean; throughExplicit?: boolean }
   ): Promise<SessionMetaRecord[]> {
     const { id, orgId, ownerIdentity } = root
     const keepExplicit = includeExplicit
       ? Prisma.empty
       : Prisma.sql`AND "visibilitySource" <> 'explicit'::"VisibilitySource"`
+    const skipExplicit = throughExplicit ? Prisma.empty : keepExplicit
     const affected: SessionMetaRecord[] = []
     const seen = new Set<string>([id])
     let frontier: string[] = [id]
@@ -2003,6 +2007,7 @@ export class PgSessionRepo implements SessionRepo {
       const children = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT "id" FROM "session_meta"
         WHERE "parentSessionId" = ANY(${frontier}::text[]) AND "orgId" = ${orgId}
+          ${skipExplicit}
         ORDER BY "id"
         FOR UPDATE
       `)

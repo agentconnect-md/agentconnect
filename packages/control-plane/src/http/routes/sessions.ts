@@ -32,6 +32,7 @@ import {
   AutoMergeErrorReason,
   CODE_HOST_PROVIDERS,
   isCodeHostHookKind,
+  isCoordinatorCoordinate,
   isSessionIdentityPlatform,
   isSubsessionCoordinate,
   SANDBOX_KEEP_ALIVE_FEATURE,
@@ -639,15 +640,31 @@ export function sessionRoutes(deps: HttpDeps) {
     const subsessionFacts = async (
       req: FastifyRequest,
       session: SessionMetaRecord
-    ): Promise<{ subsession?: SubsessionFacts }> => {
-      if (!isSubsessionCoordinate(session.thread)) return {}
-      const parent = session.parentSessionId ? await deps.repos.session.get(orgOf(req), session.parentSessionId) : null
+    ): Promise<{ subsession?: SubsessionFacts; webchatCoordinatorTaskOf?: string | null }> => {
+      const onSubsession = isSubsessionCoordinate(session.thread)
+      const owningId = session.taskParentSessionId ?? (onSubsession ? session.parentSessionId : null)
+      if (!owningId)
+        return onSubsession
+          ? { subsession: { parentSessionId: null, parentAgentId: null, agentId: session.agentId } }
+          : {}
+      const owning = await deps.repos.session.get(orgOf(req), SessionId(owningId))
+      // auto-session-mode.md §10: a webchat coordinator's task is its owner's to change, like the coordinator itself.
+      const webchatCoordinatorTaskOf =
+        owning?.platform === 'webchat' && isCoordinatorCoordinate(owning.thread) ? owning.id : null
+      if (!onSubsession) return { webchatCoordinatorTaskOf }
+      const parent =
+        session.parentSessionId === owningId
+          ? owning
+          : session.parentSessionId
+            ? await deps.repos.session.get(orgOf(req), SessionId(session.parentSessionId))
+            : null
       return {
         subsession: {
           parentSessionId: session.parentSessionId,
           parentAgentId: parent?.agentId ?? null,
           agentId: session.agentId
-        }
+        },
+        webchatCoordinatorTaskOf
       }
     }
 

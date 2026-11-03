@@ -1887,6 +1887,109 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
     }
   )
 
+  it('keeps a webchat coordinator’s task its owner changed independent of the coordinator, both ways (auto-session-mode.md §10)', async () => {
+    const member = await makeUser(`sv-independent-${randomUUID()}`, 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const peerAgentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const owner = `user:${member}`
+    const coordinator = await seedSessionMeta(prisma, `s-ind-coord-${randomUUID()}`, agentId, {
+      visibility: 'private',
+      ownerIdentity: owner,
+      platform: 'webchat',
+      channel: randomUUID(),
+      thread: 'append:coordinator-1700000000000'
+    })
+    const asTask = {
+      visibility: 'private',
+      ownerIdentity: owner,
+      parentSessionId: coordinator,
+      platform: 'webchat'
+    } as const
+    const published = await seedSessionMeta(prisma, `s-ind-pub-${randomUUID()}`, agentId, {
+      ...asTask,
+      thread: 'subsession:task-a'
+    })
+    const hidden = await seedSessionMeta(prisma, `s-ind-hid-${randomUUID()}`, agentId, {
+      ...asTask,
+      thread: 'subsession:task-b'
+    })
+    const follower = await seedSessionMeta(prisma, `s-ind-fol-${randomUUID()}`, agentId, {
+      ...asTask,
+      thread: 'subsession:task-c'
+    })
+    // Below a task its owner changed, the rows follow that task rather than the coordinator.
+    const underPublished = await seedSessionMeta(prisma, `s-ind-under-${randomUUID()}`, peerAgentId, {
+      ...asTask,
+      parentSessionId: published
+    })
+    await prisma.sessionMeta.updateMany({
+      where: { id: { in: [published, hidden, follower] } },
+      data: { visibilitySource: 'inherited', taskParentSessionId: coordinator }
+    })
+    await prisma.sessionMeta.update({ where: { id: underPublished }, data: { visibilitySource: 'inherited' } })
+    const app = appAs(member)
+    const put = (id: string, visibility: 'org' | 'private') =>
+      app.app.inject({ method: 'PUT', url: `${ORG}/sessions/${id}/visibility`, payload: { visibility } })
+    const visibilityOf = async (id: string) => (await prisma.sessionMeta.findUnique({ where: { id } }))?.visibility
+
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/sessions/${published}` })).json()).toMatchObject({
+      canChangeVisibility: true
+    })
+    // A task may be wider than its private coordinator.
+    expect((await put(published, 'org')).statusCode).toBe(200)
+    expect(await visibilityOf(coordinator)).toBe('private')
+    expect(await visibilityOf(underPublished)).toBe('private')
+    expect((await put(underPublished, 'org')).statusCode).toBe(200)
+
+    expect((await put(coordinator, 'org')).statusCode).toBe(200)
+    expect(await visibilityOf(hidden)).toBe('org')
+    // …or narrower than its public one.
+    expect((await put(hidden, 'private')).statusCode).toBe(200)
+
+    expect((await put(coordinator, 'private')).statusCode).toBe(200)
+    expect(await visibilityOf(follower)).toBe('private')
+    expect(await visibilityOf(published)).toBe('org')
+    expect(await visibilityOf(underPublished)).toBe('org')
+    expect(await visibilityOf(hidden)).toBe('private')
+
+    expect((await put(coordinator, 'org')).statusCode).toBe(200)
+    expect(await visibilityOf(follower)).toBe('org')
+    expect(await visibilityOf(hidden)).toBe('private')
+  })
+
+  it('keeps a Slack coordinator’s task locked to its owner’s audience', async () => {
+    const member = await makeUser(`sv-slack-task-${randomUUID()}`, 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const owner = `user:${member}`
+    const coordinator = await seedSessionMeta(prisma, `s-slack-coord-${randomUUID()}`, agentId, {
+      ownerIdentity: owner,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'append:coordinator-1700000000000'
+    })
+    const task = await seedSessionMeta(prisma, `s-slack-task-${randomUUID()}`, agentId, {
+      ownerIdentity: owner,
+      parentSessionId: coordinator,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'subsession:task-a'
+    })
+    await prisma.sessionMeta.update({ where: { id: task }, data: { taskParentSessionId: coordinator } })
+    const app = appAs(member)
+
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/sessions/${task}` })).json()).toMatchObject({
+      canChangeVisibility: false
+    })
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${task}/visibility`,
+      payload: { visibility: 'private' }
+    })
+    expect(res.statusCode).toBe(403)
+  })
+
   it('re-owns an already-private descendant, so its old owner loses the copied content', async () => {
     const owner = await makeUser('sv-reown', 'owner')
     const other = await makeUser('sv-reown-other', 'collaborator')
