@@ -348,6 +348,27 @@ describe('canChangeSessionVisibility', () => {
     )
   })
 
+  it('lets the recorded owner change a webchat coordinator’s task on its own, and only while that coordinator owns it', () => {
+    const principal = ctx(CREATOR, 'collaborator')
+    const lineage = { parentSessionId: 'sid-coordinator', parentAgentId: 'agent-a', agentId: 'agent-a' }
+    const task = {
+      ...session('private', `user:${CREATOR}`, 'subsession:task-1'),
+      subsession: lineage,
+      taskParentSessionId: 'sid-coordinator'
+    }
+    const allowedOn = (resource: SessionViewable, who = principal) =>
+      canChangeSessionVisibility(resource, who, identitySetOf(who))
+    expect(allowedOn({ ...task, webchatCoordinatorTaskOf: 'sid-coordinator' })).toBe(true)
+    expect(allowedOn({ ...task, taskParentSessionId: null, webchatCoordinatorTaskOf: 'sid-coordinator' })).toBe(true)
+    expect(allowedOn({ ...task, webchatCoordinatorTaskOf: 'sid-coordinator' }, ctx(OTHER, 'owner'))).toBe(false)
+    // Re-owned since the read, or never read as a coordinator's: the task keeps its owner's audience.
+    expect(allowedOn({ ...task, taskParentSessionId: 'sid-other', webchatCoordinatorTaskOf: 'sid-coordinator' })).toBe(
+      false
+    )
+    expect(allowedOn({ ...task, webchatCoordinatorTaskOf: null })).toBe(false)
+    expect(allowedOn(task)).toBe(false)
+  })
+
   it('refuses a threaded task while a session owns it, and its sender once none does (auto-session-mode.md §6.2)', () => {
     const principal = ctx(CREATOR, 'collaborator')
     const task = session('org', `user:${CREATOR}`, '1700000000.000100')

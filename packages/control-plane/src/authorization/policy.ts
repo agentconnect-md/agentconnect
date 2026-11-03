@@ -36,6 +36,8 @@ export interface SessionViewable {
   subsession?: SubsessionFacts
   /** The session owning this one as a task now; a task takes its owner's audience (auto-session-mode.md §6.2). */
   taskParentSessionId?: string | null
+  /** The webchat coordinator read as this task's owning session; its tasks are their owner's to change (auto-session-mode.md §10). */
+  webchatCoordinatorTaskOf?: string | null
 }
 
 /** The lineage of a session on a `subsession:` coordinate (assistant-mode.md §5.6). */
@@ -92,6 +94,12 @@ function isOwnSubsession(resource: SessionViewable): boolean {
 /** One member's webchat coordinator (auto-session-mode.md §10) is an append coordinate with no other participant. */
 function isOwnersOnlyAppend(resource: SessionViewable): boolean {
   return resource.platform === 'webchat' && isCoordinatorCoordinate(resource.thread)
+}
+
+/** A task whose owning session is still the webchat coordinator the route read; unread or re-owned fails closed. */
+function isWebchatCoordinatorTask(resource: SessionViewable): boolean {
+  const owning = resource.taskParentSessionId ?? resource.subsession?.parentSessionId ?? null
+  return owning !== null && resource.webchatCoordinatorTaskOf === owning
 }
 
 function identityOwnsSession(resource: SessionViewable, identitySet: ReadonlySet<string>): boolean {
@@ -153,15 +161,15 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     // An `append` session is the whole conversation's long-lived session: its
     // recorded owner is only the first poster, so its audience is no one's to
     // change (channel-session-mode.md §9). An unread coordinate counts as one.
-    // A webchat coordinator is one member's conversation, so it stays its owner's (auto-session-mode.md §10).
+    // A webchat coordinator is one member's conversation, so it and each of its tasks stay its owner's (auto-session-mode.md §10).
     // The same holds for an agent's own background work (assistant-mode.md §5.6) and for a task while a session owns it (auto-session-mode.md §6.2).
     case AuthorizationAction.SessionChangeVisibility:
       return (
         !request.resource.externalProvider &&
         request.resource.thread !== undefined &&
         (!isAppendCoordinate(request.resource.thread) || isOwnersOnlyAppend(request.resource)) &&
-        !isOwnSubsession(request.resource) &&
-        !request.resource.taskParentSessionId &&
+        (isWebchatCoordinatorTask(request.resource) ||
+          (!isOwnSubsession(request.resource) && !request.resource.taskParentSessionId)) &&
         identityOwnsSession(request.resource, request.identitySet)
       )
     // Continuation is an organization WRITE riding on view (webchat-cross-

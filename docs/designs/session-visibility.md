@@ -455,10 +455,13 @@ state marker:
   via `parentSessionId`), including `explicit` ones — privacy tightening wins
   over an earlier widening decision, matching the fail-closed rule of §4.2.
   Cascaded rows get the parent's owner and `visibilitySource = 'inherited'`.
+  A webchat coordinator is the exception: its owner may change any of its
+  tasks on their own, so its cascade skips an `explicit` row and everything
+  below it ([auto-session-mode.md](auto-session-mode.md) §10).
 - **Parent widened later (`private` → `org`).** A webchat coordinator widens
-  its whole lineage of its owner's rows, so its tasks and their delegations
-  open and close together with it ([auto-session-mode.md](auto-session-mode.md)
-  §10). Any other session reaches only its own background tasks: its agent's
+  its whole lineage of its owner's rows short of an `explicit` row, so its
+  tasks and their delegations open and close together with it unless its owner
+  changed one on its own (§10 there). Any other session reaches only its own background tasks: its agent's
   `subsession:` children that still hold the parent's inherited private
   audience and owner. A task takes the audience of the session that owns it and
   refuses a change of its own (§6.2 there), so without this a task opened
@@ -470,6 +473,9 @@ state marker:
 `explicit` is therefore protected against **settlement** (the automatic
 reconciliation above) but not against a **tightening cascade** — the §3 enum
 semantics are exactly these two rules, and privacy wins on the conflict.
+Wherever an `explicit` row is kept — settlement, the convergence a private
+milestone runs, and a webchat coordinator's own cascades — its subtree is kept
+with it: what lies below follows that row's decision, not the ancestor's.
 
 **Serialization.** Child classification and parent tightening race: a child
 milestone that reads its parent's `visibility = 'org'` could otherwise commit

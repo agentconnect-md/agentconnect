@@ -353,7 +353,8 @@ The rules follow from whether a thread is attached; there is no separate switch.
 
 Both kinds inherit the parent's visibility and refuse changes to it. A background task follows
 its parent both ways: tightening the parent tightens it, and widening widens it
-([session-visibility.md](session-visibility.md) §4.5).
+([session-visibility.md](session-visibility.md) §4.5). A webchat coordinator's task is the
+exception (§10).
 
 - A background task's coordinate and lineage already tell the Control Plane that it is a task.
 - A threaded task is a session on a platform thread. It is classified as any session there is, which
@@ -591,6 +592,8 @@ not addressed to this agent. Cost grows with the number of agents.
   - Its owner may publish it to the organization or pull it back, as with any owned webchat session,
     and every descendant session the owner owns follows both ways. A channel's coordinator stays the
     conversation's (channel-session-mode.md §9).
+  - Its owner may also change any of its tasks on its own, wider or narrower than the coordinator.
+    That task is then independent: later changes to the coordinator skip it and everything below it.
   - Every message in it goes to the conversation's coordinator coordinate and counts as addressed to
     the agent, so a message left without an outcome opens a task (§4.5). A message's id is its
     webchat post id.
