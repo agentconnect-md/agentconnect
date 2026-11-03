@@ -1776,6 +1776,29 @@ export class PgSessionRepo implements SessionRepo {
     })
   }
 
+  async taskLockedSessions(
+    orgId: OrgId,
+    agentId: AgentId
+  ): Promise<
+    Array<{ id: SessionId; daemonId: string | null; contentSetId: string | null; contentStoreId: string | null }>
+  > {
+    const rows = await this.db.sessionMeta.findMany({
+      where: { orgId, agentId, taskParentSessionId: { not: null } },
+      select: { id: true, daemonId: true, contentSetId: true, contentStoreId: true },
+      orderBy: { id: 'asc' }
+    })
+    return rows.map((row) => ({ ...row, id: SessionId(row.id) }))
+  }
+
+  async releaseTaskLocks(orgId: OrgId, agentId: AgentId, sessionIds: readonly SessionId[]): Promise<number> {
+    if (sessionIds.length === 0) return 0
+    const { count } = await this.db.sessionMeta.updateMany({
+      where: { orgId, agentId, id: { in: [...sessionIds] }, taskParentSessionId: { not: null } },
+      data: { taskParentSessionId: null }
+    })
+    return count
+  }
+
   async listChildren(
     parentSessionId: SessionId,
     agentIds: AgentId[],

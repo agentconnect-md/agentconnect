@@ -40,6 +40,7 @@ import type {
   BotSecretStore,
   CronRepo,
   MemberSetRepo,
+  SessionRepo,
   AgentMoveOpts,
   AgentWorkspace,
   AgentWorkspaceCredential,
@@ -49,7 +50,7 @@ import type {
 } from '../persistence/ports.js'
 import { AgentWorkspaceIntegrationConflict, GiteaBindingUnavailable } from '../persistence/errors.js'
 import { isCanonicalGithubAddress } from '../domain/git-host.js'
-import type { AgentId, DaemonId } from '../domain/ids.js'
+import type { AgentId, DaemonId, SessionId } from '../domain/ids.js'
 import {
   claimScopeOf,
   isPlaced,
@@ -133,6 +134,11 @@ export interface AgentMoveDeps {
   /** Set membership, for deciding whether a detached source is still an eligible holder of the
    *  new placement. Absent ⇒ no source is ever unstaged, the pre-pool behavior. */
   memberSets?: Pick<MemberSetRepo, 'setIdOf' | 'memberIdsOf'>
+  /** The task locks a move strands, and which members share each session's store. Absent ⇒ none is released. */
+  taskLocks?: {
+    sessions: Pick<SessionRepo, 'taskLockedSessions' | 'releaseTaskLocks'>
+    stores: Pick<MemberSetRepo, 'sharedStoreMemberIdsOf'>
+  }
   /** Live-connection reads for the set-commit unstage broadcast. Absent ⇒ no member is broadcast to. */
   liveness?: DaemonLiveness
   /** Resolves the members currently serving an agent — the sources a move must quiesce when
@@ -621,6 +627,7 @@ export class AgentMoveService {
       await this.restoreSourceIfStillOwner(agent, source, sourceBundle)
       throw new AgentMoveConflict('agent placement changed concurrently; refresh and retry')
     }
+    await this.releaseStrandedTasks(moved)
 
     // A pool target has no daemon to bootstrap, and that is the design rather than a gap: the
     // ledger grants the agent's group to a live member, which installs exactly this bundle
@@ -655,6 +662,32 @@ export class AgentMoveService {
 
     await this.convergeDerived(stable.agent, stable.bundle.httpBotIds)
     return stable.agent
+  }
+
+  /** Release the task locks of sessions the new placement cannot read: their coordinator stayed in a store it left, so nothing else ever would (auto-session-mode.md §6.2). */
+  private async releaseStrandedTasks(moved: AgentRecord): Promise<void> {
+    const { taskLocks, memberSets } = this.deps
+    if (!taskLocks) return
+    try {
+      const target = placementTargetOf(moved)
+      const holders: string[] =
+        target.kind === 'daemon'
+          ? [target.daemonId]
+          : target.kind === 'set' && memberSets
+            ? await memberSets.memberIdsOf(target.setId)
+            : []
+      const stranded: SessionId[] = []
+      const locked = await taskLocks.sessions.taskLockedSessions(moved.orgId, moved.id)
+      for (const session of locked) {
+        // Only a shared store follows the agent: the source cutover ended what a private one held, on its recorder too.
+        const sharers = await taskLocks.stores.sharedStoreMemberIdsOf(session)
+        if (!holders.some((holder) => sharers.includes(holder))) stranded.push(session.id)
+      }
+      await taskLocks.sessions.releaseTaskLocks(moved.orgId, moved.id, stranded)
+    } catch (err) {
+      // The placement is committed; a lock left behind costs a visibility change, never the move.
+      this.deps.log?.warn({ err, agentId: moved.id }, 'agent move: releasing stranded task locks failed')
+    }
   }
 
   /** Clear staging fences wherever the new placement makes a daemon an eligible holder again (#1093). */

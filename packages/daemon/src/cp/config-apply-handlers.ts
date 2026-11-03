@@ -146,6 +146,8 @@ export interface ConfigApplyRuntimeHost {
   gitCreds(): GitCredentialCache | undefined
   gitCredServer(): GitCredServer | undefined
   quiesceAgentWorkspaceAuthority(agentId: string): Promise<void>
+  /** End the agent's coordinators and their tasks where this machine's own store holds them, at a move's source cutover. */
+  retireCoordinatorsForMove(agentId: string): Promise<void>
   discardClusterSandbox(agentId: string): Promise<void>
   /** Stop a departing agent's cluster pods, keeping their claims and volumes. */
   suspendClusterSandboxes(agentId: string): Promise<void>
@@ -527,11 +529,12 @@ export function applyAgentDetach(host: ConfigApplyHost, detach: AgentDetach): Pr
     })
     host.moveStagedAgents().add(agentId)
     host.drainingAgents().add(agentId)
-    // A placement cutover does not preserve the old execution context.
-    // Start cancellation before any remote cleanup await, then wait only
-    // for runtime authority to stop. Workspace edits keep the graceful
-    // drain because they resume the same local agent after mutating files.
-    if (detach.discardActiveTurns) await host.quiesceAgentWorkspaceAuthority(agentId)
+    // A cutover keeps no old execution context and only waits for runtime authority to stop; a workspace edit drains gracefully.
+    if (detach.discardActiveTurns) {
+      await host.quiesceAgentWorkspaceAuthority(agentId)
+      // A cutover leaves this machine's coordinators behind for good; a workspace edit resumes them here.
+      await host.retireCoordinatorsForMove(agentId)
+    }
     // Placement is revalidated by the CP for every remote-MCP request.
     // Clearing the memory-only descriptors prevents local reuse while the
     // durable revocation sweep converges.

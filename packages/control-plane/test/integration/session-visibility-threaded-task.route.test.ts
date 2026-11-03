@@ -1,4 +1,4 @@
-// A threaded task takes its owning session's audience while one owns it, which its daemon moves and clears (auto-session-mode.md §6.2).
+// A threaded task takes its owning session's audience while one owns it, which its daemon moves and clears, and a move releases where it strands it (auto-session-mode.md §6.2).
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
@@ -108,5 +108,37 @@ describe('session visibility of a threaded task', () => {
     expect((await detail(app, second)).childSessions).toEqual([])
     expect(await put(app, task, 'private')).toBe(200)
     expect((await row(task)).visibility).toBe('private')
+  })
+})
+
+describe('task locks a move strands', () => {
+  it('lists the agent own task-locked sessions with their content store, and releases only those named', async () => {
+    const sender = await makeUser(`sv-move-${randomUUID()}`)
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const otherAgent = await seedAgent(prisma, randomUUID(), { daemonId })
+    const coordinator = `s-coordinator-${randomUUID()}`
+    const named = (n: string) => `s-${n}-${randomUUID()}`
+    const kept = named('kept')
+    const released = named('released')
+    const plain = named('plain')
+    const foreign = named('foreign')
+    await milestone(agentId, coordinator, 'append:coordinator-1700000000000', sender)
+    await milestone(agentId, kept, '1700000000.000100', sender, coordinator)
+    await milestone(agentId, released, '1700000000.000200', sender, coordinator)
+    await milestone(agentId, plain, '1700000000.000300', sender)
+    await milestone(otherAgent, foreign, '1700000000.000400', sender, coordinator)
+    const org = OrgId(DEFAULT_ORG_ID)
+
+    const locked = await repo().taskLockedSessions(org, agentId)
+    expect(locked.map((s) => s.id).sort()).toEqual([kept, released].sort())
+    expect(locked[0]).toMatchObject({ daemonId: null, contentSetId: null, contentStoreId: null })
+
+    // Another agent's session is never released through this agent, whatever id the caller names.
+    expect(await repo().releaseTaskLocks(org, agentId, [SessionId(released), SessionId(foreign)])).toBe(1)
+    expect((await row(released)).taskParentSessionId).toBeNull()
+    expect((await row(kept)).taskParentSessionId).toBe(coordinator)
+    expect((await row(foreign)).taskParentSessionId).toBe(coordinator)
+    expect(await repo().releaseTaskLocks(org, agentId, [])).toBe(0)
   })
 })

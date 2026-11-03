@@ -2075,6 +2075,13 @@ export interface SessionRepo {
     agentIds: AgentId[],
     viewer?: SessionFilterQuery['viewer']
   ): Promise<SessionMetaRecord[]>
+  /** The agent's sessions a coordinator holds as threaded tasks, with where each was written (auto-session-mode.md §6.2). */
+  taskLockedSessions(
+    orgId: OrgId,
+    agentId: AgentId
+  ): Promise<Array<{ id: SessionId; daemonId: string | null } & SessionContentStore>>
+  /** Release these sessions from their coordinator, which unlocks their visibility; how many still held one. */
+  releaseTaskLocks(orgId: OrgId, agentId: AgentId, sessionIds: readonly SessionId[]): Promise<number>
   /** §4.3 reclassification: widening reaches a webchat coordinator's lineage or a row's own tasks, tightening every descendant (§4.5). */
   setVisibility(
     orgId: OrgId,
