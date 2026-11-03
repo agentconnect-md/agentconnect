@@ -334,6 +334,20 @@ describe('canChangeSessionVisibility', () => {
     ).toBe(true)
   })
 
+  it('lets the recorded owner reclassify a webchat coordinator, and no other append session (auto-session-mode.md §10)', () => {
+    const principal = ctx(CREATOR, 'collaborator')
+    const coordinator = session('private', `user:${CREATOR}`, 'append:coordinator-1700000000000')
+    const allowedOn = (resource: SessionViewable, who = principal) =>
+      canChangeSessionVisibility(resource, who, identitySetOf(who))
+    expect(allowedOn({ ...coordinator, platform: 'webchat' })).toBe(true)
+    expect(allowedOn({ ...coordinator, platform: 'webchat' }, ctx(OTHER, 'owner'))).toBe(false)
+    expect(allowedOn({ ...coordinator, platform: 'slack' })).toBe(false)
+    expect(allowedOn(coordinator)).toBe(false)
+    expect(allowedOn({ ...session('private', `user:${CREATOR}`, 'append:1700000000000'), platform: 'webchat' })).toBe(
+      false
+    )
+  })
+
   it('refuses a threaded task while a session owns it, and its sender once none does (auto-session-mode.md §6.2)', () => {
     const principal = ctx(CREATOR, 'collaborator')
     const task = session('org', `user:${CREATOR}`, '1700000000.000100')

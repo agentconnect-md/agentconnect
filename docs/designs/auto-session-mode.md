@@ -349,7 +349,9 @@ The rules follow from whether a thread is attached; there is no separate switch.
 | Concurrency cap  | Not counted in `maxConcurrentSubsessions`                                            | Counted                                        |
 | Owner            | The sender of the message it opened for; later messages keep it                      | The parent's owner                             |
 
-Both kinds inherit the parent's visibility and refuse changes to it.
+Both kinds inherit the parent's visibility and refuse changes to it. A background task follows
+its parent both ways: tightening the parent tightens it, and so does widening, which reaches the
+parent's own background tasks only ([session-visibility.md](session-visibility.md) §4.5).
 
 - A background task's coordinate and lineage already tell the Control Plane that it is a task.
 - A threaded task is a session on a platform thread. It is classified as any session there is, which
@@ -578,6 +580,8 @@ not addressed to this agent. Cost grows with the number of agents.
     conversation when the console mints with the `coordinator` flag, and the daemon recognizes it
     from the turn's author, agent and organization, so neither the relay nor the Control Plane's
     schema carries a marker. Only its owner resumes it, and it takes no other participants.
+  - Its owner may publish it to the organization or pull it back, as with any owned webchat session;
+    its tasks follow. A channel's coordinator stays the conversation's (channel-session-mode.md §9).
   - Every message in it goes to the conversation's coordinator coordinate and counts as addressed to
     the agent, so a message left without an outcome opens a task (§4.5). A message's id is its
     webchat post id.

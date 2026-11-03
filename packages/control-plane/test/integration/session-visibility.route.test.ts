@@ -1367,6 +1367,55 @@ describe('session visibility — PUT /sessions/:id/visibility (§4.3)', () => {
     expect((await prisma.sessionMeta.findUnique({ where: { id: session } }))?.visibility).toBe('org')
   })
 
+  it('lets a webchat coordinator’s owner reclassify it, while a Slack coordinator stays shared (auto-session-mode.md §10)', async () => {
+    const member = await makeUser('sv-put-coordinator', 'collaborator')
+    const other = await makeUser('sv-put-coordinator-other', 'owner')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const coordinator = await seedSessionMeta(prisma, `s-put-coord-${randomUUID()}`, agentId, {
+      visibility: 'private',
+      ownerIdentity: `user:${member}`,
+      platform: 'webchat',
+      channel: randomUUID(),
+      thread: 'append:coordinator-1700000000000'
+    })
+    const channelCoordinator = await seedSessionMeta(prisma, `s-put-coord-slack-${randomUUID()}`, agentId, {
+      ownerIdentity: `user:${member}`,
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'append:coordinator-1700000000000'
+    })
+    const app = appAs(member)
+
+    const detail = await app.app.inject({ method: 'GET', url: `${ORG}/sessions/${coordinator}` })
+    expect(detail.json()).toMatchObject({ visibility: 'private', canChangeVisibility: true })
+    for (const visibility of ['org', 'private'] as const) {
+      const res = await app.app.inject({
+        method: 'PUT',
+        url: `${ORG}/sessions/${coordinator}/visibility`,
+        payload: { visibility }
+      })
+      expect(res.statusCode).toBe(200)
+      expect((await prisma.sessionMeta.findUnique({ where: { id: coordinator } }))?.visibility).toBe(visibility)
+    }
+    // An organization owner gains nothing from the exemption: the grant stays the recorded owner's.
+    const byOther = await appAs(other).app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${coordinator}/visibility`,
+      payload: { visibility: 'org' }
+    })
+    expect(byOther.statusCode).toBe(404)
+
+    const channelDetail = await app.app.inject({ method: 'GET', url: `${ORG}/sessions/${channelCoordinator}` })
+    expect(channelDetail.json()).toMatchObject({ visibility: 'org', canChangeVisibility: false })
+    const channelRes = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${channelCoordinator}/visibility`,
+      payload: { visibility: 'private' }
+    })
+    expect(channelRes.statusCode).toBe(403)
+  })
+
   it('refuses a former owner’s widen queued behind a concurrent re-owning tighten', async () => {
     const initiator = await makeUser('sv-queued-init', 'collaborator')
     const newOwner = await makeUser('sv-queued-newowner', 'collaborator')
@@ -1759,6 +1808,65 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
     for (const id of [child, grandchild]) {
       expect((await prisma.sessionMeta.findUnique({ where: { id } }))?.visibility).toBe('private')
     }
+  })
+
+  it('widening a session widens its own background tasks and no other descendant (auto-session-mode.md §6.2)', async () => {
+    const member = await makeUser('sv-widen-tasks', 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const peerAgentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const owner = `user:${member}`
+    const root = await seedSessionMeta(prisma, `s-widen-root-${randomUUID()}`, agentId, {
+      visibility: 'private',
+      ownerIdentity: owner,
+      platform: 'webchat',
+      channel: randomUUID(),
+      thread: 'append:coordinator-1700000000000'
+    })
+    const inherited = {
+      visibility: 'private',
+      ownerIdentity: owner,
+      parentSessionId: root,
+      platform: 'webchat'
+    } as const
+    const task = await seedSessionMeta(prisma, `s-widen-task-${randomUUID()}`, agentId, {
+      ...inherited,
+      thread: 'subsession:task-a'
+    })
+    const delegated = await seedSessionMeta(prisma, `s-widen-a2a-${randomUUID()}`, peerAgentId, {
+      ...inherited,
+      thread: 'subsession:task-b'
+    })
+    const sameAgentOther = await seedSessionMeta(prisma, `s-widen-other-${randomUUID()}`, agentId, inherited)
+    const grandchild = await seedSessionMeta(prisma, `s-widen-grand-${randomUUID()}`, agentId, {
+      ...inherited,
+      parentSessionId: task,
+      thread: 'subsession:task-c'
+    })
+    await prisma.sessionMeta.updateMany({
+      where: { id: { in: [task, delegated, sameAgentOther, grandchild] } },
+      data: { visibilitySource: 'inherited' }
+    })
+    const app = appAs(member)
+
+    const widen = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${root}/visibility`,
+      payload: { visibility: 'org' }
+    })
+    expect(widen.statusCode).toBe(200)
+    expect(widen.json().cascadedSessionIds).toEqual([task])
+    const visibilityOf = async (id: string) => (await prisma.sessionMeta.findUnique({ where: { id } }))?.visibility
+    expect(await visibilityOf(task)).toBe('org')
+    for (const id of [delegated, sameAgentOther, grandchild]) expect(await visibilityOf(id)).toBe('private')
+
+    // Tightening still takes every descendant back.
+    await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${root}/visibility`,
+      payload: { visibility: 'private' }
+    })
+    for (const id of [root, task, delegated, sameAgentOther, grandchild]) expect(await visibilityOf(id)).toBe('private')
   })
 
   it('re-owns an already-private descendant, so its old owner loses the copied content', async () => {

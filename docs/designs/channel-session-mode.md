@@ -597,7 +597,10 @@ continue from the console, with the privacy bit pushed to the daemon to exclude 
 turns from memory capture. An `append` session's audience follows its conversation, so it
 is not one person's to change. The `session.visibility.change` policy enforces this from
 the session's recorded `thread`, treating an unread coordinate as `append`, and the console
-shows the tier read-only for such a session.
+shows the tier read-only for such a session. A webchat coordinator is the one exception: it
+is one member's conversation with no other participant
+([auto-session-mode.md](auto-session-mode.md) §10), so its owner reclassifies it as any
+owned webchat session.
 
 The eventual home for "audience = the conversation" is the existing external tier —
 `externalProvider` + `externalScopeId` bound to an `ExternalScope`, which nulls
