@@ -631,7 +631,10 @@ not addressed to this agent. Cost grows with the number of agents.
     session id, title, and whether the task was opened or handed the message). The console draws a
     post that carries it as the task's card, which opens the task's thread beside the conversation,
     where people read and reply. The card shows the task's `replies`: the messages its people and
-    the task posted after the one that opened it, which the daemon counts.
+    the task posted after the one that opened it, which the daemon counts. A coordinator on a
+    platform with threads posts no link card, so its task row carries `openedForMessageId`, the
+    platform id of the message it was opened for. The console draws the card under the
+    coordinator's turn that answered that message, on any platform, once per task.
   - `messageTask` with a `messageId` moves the message into the task's conversation, which answers on
     its page, and attaches its id as one more thread; the coordinator posts a link card.
 - Existing ordinary webchat conversations stay as they are.

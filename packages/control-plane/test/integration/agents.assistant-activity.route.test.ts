@@ -779,7 +779,8 @@ describe('a task’s summary', () => {
       background,
       threaded: true,
       replies: 3,
-      lastReplyAt: '2026-10-09T10:05:00.000Z'
+      lastReplyAt: '2026-10-09T10:05:00.000Z',
+      openedForMessageId: '1700000000.000100'
     }
     control.subsessions = [task, { ...task, sessionId: dmChild, parentSessionId: dm }]
 
@@ -795,7 +796,8 @@ describe('a task’s summary', () => {
         background,
         threaded: true,
         replies: 3,
-        lastReplyAt: '2026-10-09T10:05:00.000Z'
+        lastReplyAt: '2026-10-09T10:05:00.000Z',
+        openedForMessageId: '1700000000.000100'
       })
     ])
 
@@ -807,6 +809,7 @@ describe('a task’s summary', () => {
     expect(hidden).not.toHaveProperty('background')
     expect(hidden).not.toHaveProperty('replies')
     expect(hidden).not.toHaveProperty('lastReplyAt')
+    expect(hidden).not.toHaveProperty('openedForMessageId')
 
     // The scan finds what is stored (the child's title), so finding neither text means neither was kept.
     expect(await tablesHolding('Fix the flaky test')).toContain('session_meta')

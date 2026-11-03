@@ -158,7 +158,9 @@ export const AssistantActivitySubsession = z.object({
   /** Messages its people and the task posted after the one that opened it (§10); absent from an older daemon. */
   replies: z.number().int().min(0).optional(),
   /** When the newest of those landed; absent with no reply. */
-  lastReplyAt: time.optional()
+  lastReplyAt: time.optional(),
+  /** The platform id of the message a coordinator opened it for (§10), which the console draws its card under. */
+  openedForMessageId: z.string().max(200).optional()
 })
 export type AssistantActivitySubsession = z.infer<typeof AssistantActivitySubsession>
 

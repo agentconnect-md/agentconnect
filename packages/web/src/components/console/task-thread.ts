@@ -13,6 +13,7 @@ import {
 } from '@/lib/api'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 import type { SessionStep } from '@/lib/data'
+import type { TaskLink } from '@/components/console/task-link'
 import { elicitCard } from '@/components/console/session-work'
 
 /** Rows the conversation's list reads in one page; a task older than these reads its own row. */
@@ -42,6 +43,18 @@ function useConversationTasks(agentId: string, parentSessionId: string | null): 
   if (!parentSessionId || (error && !data)) return undefined
   if (!data) return null
   return new Map(data.subsessions.flatMap((row) => (row.sessionId ? [[row.sessionId, row] as const] : [])))
+}
+
+/** A coordinator conversation's tasks by the platform id of the message each was opened for, as the transcript places their cards. */
+export function useTasksByMessage(agentId: string, parentSessionId: string | null): ReadonlyMap<string, TaskLink[]> {
+  const listed = useConversationTasks(agentId, parentSessionId)
+  const byMessage = new Map<string, TaskLink[]>()
+  for (const row of listed?.values() ?? []) {
+    if (!row.sessionId || !row.openedForMessageId) continue
+    const link: TaskLink = { sessionId: row.sessionId, title: row.title ?? '', how: 'opened' }
+    byMessage.set(row.openedForMessageId, [...(byMessage.get(row.openedForMessageId) ?? []), link])
+  }
+  return byMessage
 }
 
 /** One task's row: its conversation's list when that carries it, else the task's own read. */

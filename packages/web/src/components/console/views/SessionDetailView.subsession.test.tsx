@@ -24,6 +24,8 @@ const wire = vi.hoisted(() => ({
   /** What the single-task read answers; null answers 404. */
   task: null as unknown,
   taskReads: [] as Array<[string, string]>,
+  /** The conversation's task list. */
+  subsessions: [] as unknown[],
   integrations: [] as unknown[]
 }))
 const spies = vi.hoisted(() => ({
@@ -70,6 +72,9 @@ vi.mock('@/lib/api', async (importOriginal) => {
     fetchWorkspaceGitStatus: vi.fn(() => Promise.resolve({ isRepo: false })),
     fetchWorkspaceGitLog: vi.fn(() =>
       Promise.resolve({ isRepo: false, commits: [], truncated: false, tracking: null })
+    ),
+    fetchAssistantSubsessions: vi.fn(() =>
+      Promise.resolve({ subsessions: wire.subsessions, truncated: false, nextCursor: null })
     ),
     fetchAssistantSubsession: vi.fn((agentId: string, sessionId: string) => {
       wire.taskReads.push([agentId, sessionId])
@@ -319,6 +324,7 @@ beforeEach(() => {
   wire.draft = 'more please'
   wire.task = null
   wire.taskReads = []
+  wire.subsessions = []
   wire.integrations = []
   daemonFeatures.length = 0
   spies.pgAttach.mockClear()
@@ -613,5 +619,77 @@ describe.each([
 
     expect(wire.taskReads).toEqual([])
     expect(summary()).toBeNull()
+  })
+})
+
+// auto-session-mode.md §10: a channel coordinator posts no link card, so its task's card stands under the turn that answered the message the task was opened for.
+describe('a channel coordinator’s task cards', () => {
+  it('draws a task’s card under the coordinator’s answer to the message it was opened for', async () => {
+    daemonFeatures.push('activity-every-agent-v1')
+    wire.messages = [
+      { ...message(1, 'sam', 'what is new in Node.js?'), ts: '1700000001.000100' },
+      { ...message(2, 'agent-1', 'Looking into it.'), ts: '1700000002.000100' },
+      { ...message(3, 'sam', 'thanks'), ts: '1700000003.000100' },
+      { ...message(4, 'agent-1', 'Any time.'), ts: '1700000004.000100' }
+    ]
+    wire.subsessions = [
+      {
+        sessionId: 'child-1',
+        title: 'Node.js release notes',
+        state: 'done',
+        startedAt: '2026-10-01T00:00:00.000Z',
+        visible: true,
+        canStop: false,
+        parent: null,
+        threaded: true,
+        openedForMessageId: '1700000001.000100'
+      }
+    ]
+    await open({ platform: 'slack', channel: 'C0123', thread: 'append:coordinator-1700000000000' })
+
+    const cards = [...(container?.querySelectorAll('[data-task-card]') ?? [])]
+    expect(cards.map((card) => card.getAttribute('data-task-card'))).toEqual(['child-1'])
+    expect(cards[0]!.textContent).toContain('Node.js release notes')
+    expect(cards[0]!.textContent).toContain('Idle')
+    // Under the coordinator's answer to that message, before the later exchange.
+    const after = (node: Node, text: string) =>
+      [...(container?.querySelectorAll('div') ?? [])].some(
+        (el) => el.textContent === text && Boolean(node.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)
+      )
+    expect(after(cards[0]!, 'thanks')).toBe(true)
+    const answer = [...(container?.querySelectorAll('div') ?? [])].find((el) => el.textContent === 'Looking into it.')!
+    expect(Boolean(answer.compareDocumentPosition(cards[0]!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+  })
+
+  it('keeps the cards of every message in a batch the coordinator answered in one turn', async () => {
+    daemonFeatures.push('activity-every-agent-v1')
+    wire.messages = [
+      { ...message(1, 'sam', 'find what blocks 1.5'), ts: '1700000001.000100' },
+      { ...message(2, 'dana', 'and draft the notes'), ts: '1700000002.000100' },
+      { ...message(3, 'lee', 'nice'), ts: '1700000003.000100' },
+      { ...message(4, 'agent-1', 'On it, two tasks.'), ts: '1700000004.000100' }
+    ]
+    const task = (sessionId: string, title: string, openedForMessageId: string) => ({
+      sessionId,
+      title,
+      state: 'open',
+      startedAt: '2026-10-01T00:00:00.000Z',
+      visible: true,
+      canStop: true,
+      parent: null,
+      threaded: true,
+      openedForMessageId
+    })
+    wire.subsessions = [
+      task('child-1', 'Find what blocks 1.5', '1700000001.000100'),
+      task('child-2', 'Draft the notes', '1700000002.000100')
+    ]
+    await open({ platform: 'slack', channel: 'C0123', thread: 'append:coordinator-1700000000000' })
+
+    const cards = [...(container?.querySelectorAll('[data-task-card]') ?? [])]
+    expect(cards.map((card) => card.getAttribute('data-task-card'))).toEqual(['child-1', 'child-2'])
+    const answer = [...(container?.querySelectorAll('div') ?? [])].find((el) => el.textContent === 'On it, two tasks.')!
+    for (const card of cards)
+      expect(Boolean(answer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
   })
 })

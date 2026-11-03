@@ -187,6 +187,7 @@ import {
 import { TaskThreadPanel } from '@/components/console/dock/TaskThreadPanel'
 import { TaskThreadCard } from '@/components/console/TaskThreadCard'
 import { taskLinkOfBody, type TaskLink } from '@/components/console/task-link'
+import { useTasksByMessage } from '@/components/console/task-thread'
 import {
   PullRequestPanel,
   pullRequestTabStatus,
@@ -2170,6 +2171,8 @@ type Turn =
       body?: UserTurnBody
       /** The persisted row's transcript seq, which a By decision evaluation of this message is keyed by. */
       seq?: number
+      /** The platform's id of a recorded message (a webchat post id, a Slack ts), which a coordinator's task names. */
+      messageId?: string
     }
   // `wake` marks a block opened by a background-task wake that no reply has
   // merged into yet — the run that follows binds to it, then clears the flag.
@@ -3261,6 +3264,11 @@ export default function SessionDetailView() {
   // The coordinator task whose thread the Tasks tab shows in place of its lists, held for the session it was opened in.
   const [taskThread, setTaskThread] = useState<{ scope: string; link: TaskLink } | null>(null)
   const openThread = taskThread?.scope === id ? taskThread.link : null
+  // A coordinator's tasks by the message each was opened for, read only on a coordinator's own page.
+  const tasksByMessage = useTasksByMessage(
+    filesAgentId ?? '',
+    session?.coordinator && filesAgentId === session.agentId ? subsessionsSessionId : null
+  )
   // Bumped when a card opens a thread, so a collapsed dock comes on screen to show it.
   const [dockReveal, setDockReveal] = useState(0)
   const openTaskThread = useCallback(
@@ -4475,6 +4483,7 @@ export default function SessionDetailView() {
         pushUserTurn(senderAgent?.id ?? m.sender, {
           kind: 'user',
           key: `u:${rowAnchor(m)}`,
+          messageId: m.postId ?? m.ts,
           sp: participant,
           agent: senderAgent ?? null,
           avatarUrl: m.senderAvatarUrl ?? (self ? viewer.picture : memberPictureByIdentity.get(m.sender)),
@@ -4673,6 +4682,20 @@ export default function SessionDetailView() {
         last.steps.push(step)
         if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time
+      }
+    }
+  }
+
+  // A coordinator's task cards, under the first turn of the coordinator after the message each task was opened for.
+  const openedTaskCards = new Map<string, TaskLink[]>()
+  if (tasksByMessage.size > 0) {
+    // A coordinator answers a batch of messages in one turn, so every message since its last turn adds its tasks.
+    let opened: TaskLink[] = []
+    for (const t of turns) {
+      if (t.kind === 'user') opened = [...opened, ...((t.messageId && tasksByMessage.get(t.messageId)) || [])]
+      else if (t.agentId === session.agentId) {
+        if (opened.length > 0) openedTaskCards.set(t.key, opened)
+        opened = []
       }
     }
   }
@@ -5839,6 +5862,19 @@ export default function SessionDetailView() {
                                       </div>
                                     )
                                   )}
+                                  {(openedTaskCards.get(turn.key) ?? [])
+                                    .filter((link) => !taskLinks.some((shown) => shown?.sessionId === link.sessionId))
+                                    .map((link) => (
+                                      <div key={`o:${link.sessionId}`} className={saidSteps.length > 0 ? 'mt-2' : ''}>
+                                        <TaskThreadCard
+                                          agentId={session.agentId!}
+                                          link={link}
+                                          parentSessionId={subsessionsSessionId}
+                                          selected={openThread?.sessionId === link.sessionId}
+                                          onOpen={() => openTaskThread(link)}
+                                        />
+                                      </div>
+                                    ))}
                                   {workSteps.length > 0 && (
                                     <>
                                       {/* One row: the work toggle, with the bubble's copy button at

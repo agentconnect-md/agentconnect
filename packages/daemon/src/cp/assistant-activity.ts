@@ -16,6 +16,7 @@ import {
 import type { Agent } from '../agents/agent-schema.js'
 import type { DecisionConversation, DraftDecision } from '../assistant/drafts.js'
 import { assistantModeOn } from '../mcp/ops/assistant-items.js'
+import { platformMessageIdOf } from '../auto-session/message-id.js'
 import {
   isSubsessionCoordinate,
   isTaskCoordinate,
@@ -316,6 +317,7 @@ async function taskOf(
   }
   const threads = await store.assistantSubsessions.threadsOf(agentId, row.childSessionKey)
   const replies = child?.agentId === agentId ? await repliesOf(store, agentId, child) : undefined
+  const openedFor = row.openedFor ? platformMessageIdOf(row.openedFor.messageId) : undefined
   return {
     ...base,
     // A sub-session whose failure report is still on its way has ended, as `failed` shows.
@@ -327,7 +329,8 @@ async function taskOf(
     ...(row.summary && row.summaryUpdatedAt !== undefined ? { summaryUpdatedAt: iso(row.summaryUpdatedAt) } : {}),
     ...(row.background ? { background: row.background } : {}),
     ...(threads.length > 0 ? { threaded: true } : {}),
-    ...replies
+    ...replies,
+    ...(openedFor ? { openedForMessageId: openedFor } : {})
   }
 }
 

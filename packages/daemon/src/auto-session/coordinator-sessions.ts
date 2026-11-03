@@ -171,9 +171,9 @@ const openedForOf = (message: DeliveredMessage) => ({
   messageId: message.id
 })
 
-// A link a title cannot break out of.
 // The wire's bound on a link card's title, so an over-long one never drops the post at the relay.
 const TASK_LINK_TITLE_MAX = 300
+// A link a title cannot break out of.
 const linkText = (title: string): string => title.replace(/[[\]\\]/g, (char) => `\\${char}`)
 
 /** A task title the daemon gives: the text's first line, cut to a task title's length. */
