@@ -1364,6 +1364,7 @@ export function buildContainer(
     sessionOwners: connReg,
     placement: placementResolver,
     memberSets: repos.memberSet,
+    taskLocks: { sessions: repos.session, stores: repos.memberSet },
     liveness: connReg,
     recomputeDuties: (orgId: string) => dutyRecompute.recomputeOrg(orgId),
     log: { warn: (o, m) => http.log.warn(o, m) }

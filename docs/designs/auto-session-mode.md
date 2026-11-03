@@ -366,6 +366,12 @@ its parent both ways: tightening the parent tightens it, and widening widens it
   ([session-visibility.md](session-visibility.md) §4.3).
 - Becoming a task never widens a session that its sender made private earlier. The lock only keeps
   its audience from changing while the task belongs to the coordinator.
+- A move is a hard cutover, and a coordinator and its tasks stay in the store that holds them. At
+  the source's cutover a daemon on a store of its own retires the agent's coordinators and closes
+  their threaded tasks, so a later move back revives neither. Once the placement commits, the
+  Control Plane releases the lock of every task whose store the new placement does not share,
+  since no daemon left serving the agent can report it. A shared store keeps both for the next
+  member.
 
 ### 6.3 Nesting
 

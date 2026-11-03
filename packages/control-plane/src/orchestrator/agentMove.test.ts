@@ -1,7 +1,14 @@
-import { onDaemon, onSet, placementTargetOf, samePlacement, type PlacementTarget } from '../domain/placement.js'
+import {
+  onDaemon,
+  onSet,
+  placementColumns,
+  placementTargetOf,
+  samePlacement,
+  type PlacementTarget
+} from '../domain/placement.js'
 import { describe, expect, it } from 'vitest'
 import type { Ack, AgentActivate, AgentDetach, AgentUpsert } from '@agentconnect.md/protocol'
-import { AgentId, BotId, CronId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
+import { AgentId, BotId, CronId, DaemonId, IntegrationId, OrgId, SessionId } from '../domain/ids.js'
 import type {
   AgentRecord,
   AgentRepo,
@@ -203,6 +210,16 @@ function make(
     redundantGrant?: { repoFullName: string; repoId: bigint }
     /** An installation grant that commits inside the detach → workspace-CAS window. */
     installationGrantDuringWorkspaceCas?: { accountLogin: string }
+    /** Sessions a coordinator holds as tasks, and the members sharing each content store. */
+    taskLocks?: {
+      sessions: Array<{
+        id: string
+        daemonId: string | null
+        contentSetId: string | null
+        contentStoreId: string | null
+      }>
+      storeMembers: Record<string, string[]>
+    }
   } = {}
 ) {
   let current: AgentRecord = {
@@ -223,6 +240,7 @@ function make(
   // member's connection rejects, so it is the interesting value here.
   const frameOrgs: Array<string | undefined> = []
   const releasedLive: (typeof SESSION_KEY)[] = []
+  const releasedTaskLocks: string[] = []
   const mutations = new AgentMutationGate()
   const repo = {
     getUnscoped: async () => current,
@@ -284,7 +302,7 @@ function make(
     },
     movePlacement: async (_id: string, expected: PlacementTarget, target: PlacementTarget) => {
       if (opts.casMiss || !samePlacement(placementTargetOf(current), expected)) return null
-      current = agent(target.kind === 'daemon' ? target.daemonId : null)
+      current = { ...agent(null), ...placementColumns(target) } as AgentRecord
       return current
     }
   } as unknown as AgentRepo
@@ -408,6 +426,24 @@ function make(
     mutations,
     recomputeDuties: opts.recomputeDuties,
     sessionOwners: { releaseSession: (key) => void releasedLive.push(key as typeof SESSION_KEY) },
+    ...(opts.taskLocks
+      ? {
+          taskLocks: {
+            sessions: {
+              taskLockedSessions: async () =>
+                opts.taskLocks!.sessions.map((session) => ({ ...session, id: SessionId(session.id) })),
+              releaseTaskLocks: async (_orgId: string, _agentId: string, ids: readonly string[]) => {
+                releasedTaskLocks.push(...ids)
+                return ids.length
+              }
+            },
+            stores: {
+              sharedStoreMemberIdsOf: async (session: { contentStoreId: string | null }) =>
+                (session.contentStoreId && opts.taskLocks!.storeMembers[session.contentStoreId]) || []
+            }
+          }
+        }
+      : {}),
     ...(opts.sets
       ? {
           memberSets: {
@@ -425,7 +461,18 @@ function make(
         }
       : {})
   })
-  return { service, calls, activations, upserts, detaches, frameOrgs, mutations, releasedLive, current: () => current }
+  return {
+    service,
+    calls,
+    activations,
+    upserts,
+    detaches,
+    frameOrgs,
+    mutations,
+    releasedLive,
+    releasedTaskLocks,
+    current: () => current
+  }
 }
 
 describe('AgentMoveService', () => {
@@ -779,6 +826,37 @@ describe('AgentMoveService', () => {
     expect(t.activations).toHaveLength(1)
     expect(t.activations[0]?.agentId).toBe(AGENT)
     expect(t.activations[0]?.moveId).toBeUndefined()
+  })
+
+  // A private store stays with its machine, and a shared one follows the agent only to members holding it (auto-session-mode.md §6.2).
+  const TASKS = [
+    { id: 'task-private', daemonId: SOURCE, contentSetId: null, contentStoreId: null },
+    { id: 'task-shared-with-target', daemonId: SOURCE, contentSetId: SET, contentStoreId: 'store-1' },
+    { id: 'task-shared-elsewhere', daemonId: SOURCE, contentSetId: SET, contentStoreId: 'store-2' }
+  ]
+
+  it('a move releases the task locks its new daemon cannot read, keeping those on a store it shares', async () => {
+    const t = make({
+      taskLocks: { sessions: TASKS, storeMembers: { 'store-1': [SOURCE, TARGET], 'store-2': [SOURCE] } }
+    })
+    await t.service.move(t.current(), onDaemon(TARGET))
+    expect(t.releasedTaskLocks).toEqual(['task-private', 'task-shared-elsewhere'])
+  })
+
+  it('a move into a set keeps the task locks on a store its members share', async () => {
+    const t = make({
+      sets: { setIdOf: { [MEMBER]: SET }, members: { [SET]: [MEMBER] } },
+      readyDaemons: [MEMBER],
+      taskLocks: { sessions: TASKS, storeMembers: { 'store-1': [MEMBER], 'store-2': [SOURCE] } }
+    })
+    await t.service.move(t.current(), onSet(SET))
+    expect(t.releasedTaskLocks).toEqual(['task-private', 'task-shared-elsewhere'])
+  })
+
+  it('a move whose placement CAS misses releases no task lock', async () => {
+    const t = make({ casMiss: true, taskLocks: { sessions: TASKS, storeMembers: {} } })
+    await expect(t.service.move(t.current(), onDaemon(TARGET))).rejects.toThrow()
+    expect(t.releasedTaskLocks).toEqual([])
   })
 
   it('a staged source that is itself a member keeps its exact token and is not broadcast to twice', async () => {

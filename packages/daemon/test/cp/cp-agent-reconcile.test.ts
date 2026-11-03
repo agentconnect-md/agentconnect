@@ -449,6 +449,58 @@ describe('Daemon CP agent → memory + reconcile', () => {
     await daemon.stop()
   })
 
+  it.each([
+    { cutover: true, kept: false },
+    { cutover: false, kept: true }
+  ])(
+    'a source cutover retires the coordinator and its tasks, a workspace edit keeps them (cutover $cutover)',
+    async ({ cutover, kept }) => {
+      const root = root1()
+      writeAgent(root, 'bot-a')
+      const { daemon } = makeDaemon(root)
+      await daemon.start()
+      const store = (daemon as any).store
+      const index = store.assistantSubsessions
+      const coordinate = await store.resolveAppendCoordinate('bot-a', 'C1', null, 1_000, 'coordinator')
+      const taskKey = 'slack:C1:200.1:bot-a'
+      await index.open({
+        agentId: 'bot-a',
+        childSessionKey: taskKey,
+        parentSessionId: 'coordinator-session',
+        parentSessionKey: `slack:C1:${coordinate}:bot-a`,
+        title: 'Add retries',
+        replyThread: '200.1',
+        now: 1_000
+      })
+      await index.attachThread({
+        agentId: 'bot-a',
+        childSessionKey: taskKey,
+        platform: 'slack',
+        channel: 'C1',
+        transportScope: '',
+        thread: '200.1',
+        sinceRound: 1,
+        now: 1_000
+      })
+
+      await expect(
+        seam(daemon).applyAgentDetach({
+          agentId: 'bot-a',
+          moveId: MOVE_ID,
+          ...(cutover ? { discardActiveTurns: true } : {})
+        })
+      ).resolves.toEqual({ ok: true })
+
+      expect(await store.currentAppendCoordinate('bot-a', 'C1', null, 'coordinator')).toBe(
+        kept ? coordinate : undefined
+      )
+      expect(
+        await index.taskOfThread('bot-a', { platform: 'slack', channel: 'C1', transportScope: null, thread: '200.1' })
+      ).toBe(kept ? taskKey : undefined)
+      await daemon.stop()
+    }
+  )
+
   it('rejects scratch conversion when the drained workspace is non-empty and reopens the agent gate', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')

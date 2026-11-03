@@ -30,6 +30,7 @@ export function buildAgentMoves(deps: HttpDeps, log: FastifyBaseLogger): AgentMo
     sessionOwners: deps.sessionOwners,
     placement: deps.placementResolver,
     memberSets: deps.repos.memberSet,
+    taskLocks: { sessions: deps.repos.session, stores: deps.repos.memberSet },
     liveness: deps.liveness,
     ...(deps.recomputeDuties ? { recomputeDuties: deps.recomputeDuties } : {}),
     log

@@ -14044,6 +14044,25 @@ export class Daemon {
     }
   }
 
+  /** A move's source cutover on this machine's own store: the agent's coordinators and their threaded tasks end here, so a later move back revives neither (auto-session-mode.md §6.2). */
+  private async retireCoordinatorsForMove(agentId: string): Promise<void> {
+    // A shared store keeps them for whichever member serves the agent next (daemon-groups.md §5).
+    if (this.dataPlane) return
+    const index = this.store.assistantSubsessions
+    const released: string[] = []
+    for (const at of await index.threadedConversations(agentId)) {
+      for (const task of await index.threadedTasksIn(agentId, at))
+        if (await index.closeTask(agentId, task.childSessionKey, this.clock.now())) released.push(task.childSessionKey)
+    }
+    // Durably queued: the Control Plane takes it if the move rolls back here, and drops it once the agent is placed elsewhere.
+    await this.reportTaskOwners(agentId, released)
+    let retired = 0
+    for (const { channel, transportScope, coordinate } of await this.store.coordinatorReservations(agentId))
+      if (await this.store.retireCoordinator(agentId, channel, transportScope, coordinate)) retired += 1
+    if (released.length > 0 || retired > 0)
+      this.log.info(`move: ${agentId} left ${retired} coordinator(s) and closed ${released.length} task(s) here`)
+  }
+
   /** Whether a task's coordinator still runs in its conversation, read from its session; undefined when the owner is no coordinator session recorded here. */
   private async coordinatorRunsAuto(agentId: string, ownerKey: string): Promise<boolean | undefined> {
     const owner = await this.store.getSession(ownerKey)
@@ -29501,6 +29520,11 @@ export class Daemon {
       gitCreds: () => this.gitCreds,
       gitCredServer: () => this.gitCredServer,
       quiesceAgentWorkspaceAuthority: (agentId) => this.quiesceAgentWorkspaceAuthority(agentId),
+      // Best effort: a store error leaves the old coordinator behind, which must not keep the agent from moving.
+      retireCoordinatorsForMove: (agentId) =>
+        this.retireCoordinatorsForMove(agentId).catch((err) =>
+          this.log.warn(`move: retiring ${agentId}'s coordinators failed: ${formatErr(err)}`)
+        ),
       discardClusterSandbox: (agentId) => this.discardClusterSandbox(agentId),
       suspendClusterSandboxes: (agentId) => this.suspendClusterSandboxes(agentId),
       revokeRemoteWebchatGrantsForAgent: (agentId, reason) =>
