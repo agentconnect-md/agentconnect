@@ -97,7 +97,11 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
     the file mode is the authority, so any process of the daemon's OS user may call it. Windows refuses
     to start it. It is never in a sandbox's allow-list or tunnels. `POST /v1/doorbell` takes an agent id
     and a doorbell id that agent's `agent.json` declares; the caller cannot name a channel, only a thread
-    inside the declared target's channel. Bodies are capped at 64 KiB.
+    inside the declared target's channel. `POST /v1/cards` (`choice-cards.md`) places a choice card at
+    such a declared target the same way; `GET`/`PATCH /v1/cards/:id` read any card and set only a
+    settled state or a label, never `open`, never a card mid-handoff, never the press record. A card's
+    press is judged as a message from that person (conversation surface, synced chat actor, no bots)
+    before it starts a turn. Bodies are capped at 64 KiB.
 
 ## Invariants worth attacking
 

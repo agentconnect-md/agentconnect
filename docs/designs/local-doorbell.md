@@ -9,7 +9,8 @@ this host sees (a build, a log, a local queue) and wants the agent to act on it.
 
 The doorbell is the first route of the daemon's **local API**: HTTP served on a
 local IPC socket that only the daemon's OS user can open. Issue #3579 proposed
-it.
+it. The second is the choice-card routes, which place a card at the same declared
+targets: see [choice-cards.md](choice-cards.md).
 
 ## Why a host-local seam in addition to webhook triggers
 
