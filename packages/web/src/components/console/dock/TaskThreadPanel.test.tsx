@@ -186,6 +186,37 @@ describe('TaskThreadPanel', () => {
     expect(wire.calls).toEqual(['target:ses_task', 'answer:ses_task:agent_1:q-1:yes'])
   })
 
+  it('checks a typed answer against its constraints, and keeps it editable after sending', async () => {
+    wire.live = [
+      {
+        kind: 'elicit',
+        turnId: 't1',
+        text: 'Which release tag?',
+        elicit: { requestId: 'q-3', options: [], text: { minLength: 5 } }
+      }
+    ]
+    await render()
+    const question = container.querySelector('[data-thread-question="q-3"]')!
+    const input = question.querySelector('input')!
+    const submit = question.querySelector<HTMLButtonElement>('button[type="submit"]')!
+    const type = (value: string) =>
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+    type('v1.5')
+    expect(question.querySelector('[data-thread-question-invalid]')?.textContent).toBe('Enter at least 5 characters')
+    expect(submit.disabled).toBe(true)
+    type('v1.5.0')
+    act(() => submit.click())
+    expect(wire.calls).toEqual(['target:ses_task', 'answer:ses_task:agent_1:q-3:v1.5.0'])
+    // The daemon may still refuse it, so the answer stays editable and can be sent again once changed.
+    expect(input.disabled).toBe(false)
+    type('v1.5.1')
+    act(() => submit.click())
+    expect(wire.calls.at(-1)).toBe('answer:ses_task:agent_1:q-3:v1.5.1')
+  })
+
   it('points a question the panel cannot answer to the task’s page', async () => {
     wire.live = [
       {

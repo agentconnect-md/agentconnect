@@ -10,6 +10,7 @@ import { Button, Icon } from '@/components/ui'
 import { MessageText } from '@/components/console/MessageText'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { StateMark, taskStateKey, taskTone } from '@/components/console/task-list'
+import { typedInvalidReason } from '@/components/console/session-work'
 import {
   threadEntries,
   threadMessages,
@@ -232,8 +233,10 @@ function ThreadQuestion({
   onAnswer: (requestId: string, value: string) => void
 }) {
   const t = useTranslations('Common.taskThread')
-  const [answered, setAnswered] = useState<string | null>(null)
+  // What was last sent: the control stays live, so an answer the daemon refuses can be corrected, until it settles the question and the thread drops it.
+  const [sent, setSent] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  const invalid = question.text ? typedInvalidReason({ text: question.text }, draft) : undefined
   return (
     <div
       data-thread-question={question.requestId}
@@ -244,36 +247,48 @@ function ThreadQuestion({
       </span>
       {question.text ? (
         <form
-          className="flex items-center gap-2"
+          className="flex flex-col gap-1"
           onSubmit={(event) => {
             event.preventDefault()
-            if (!draft.trim() || answered !== null) return
-            setAnswered(draft)
+            if (invalid) return
+            setSent(draft)
             onAnswer(question.requestId, draft)
           }}
         >
-          <input
-            aria-label={t('answer')}
-            placeholder={t('answer')}
-            value={draft}
-            disabled={answered !== null}
-            onChange={(event) => setDraft(event.target.value)}
-            className="min-w-0 flex-1 rounded-sm border border-(--border-default) bg-(--surface-card) px-2 py-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary) outline-none focus:border-(--brand)"
-          />
-          <Button variant="primary" size="xs" type="submit" disabled={answered !== null || !draft.trim()}>
-            {t('send')}
-          </Button>
+          <div className="flex items-center gap-2">
+            <input
+              aria-label={t('answer')}
+              placeholder={t('answer')}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              className="min-w-0 flex-1 rounded-sm border border-(--border-default) bg-(--surface-card) px-2 py-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary) outline-none focus:border-(--brand)"
+            />
+            <Button variant="primary" size="xs" type="submit" disabled={invalid !== undefined || draft === sent}>
+              {t('send')}
+            </Button>
+          </div>
+          {draft && invalid ? (
+            <span
+              data-thread-question-invalid=""
+              className="font-sans text-[11.5px] font-normal leading-normal text-(--status-error)"
+            >
+              {invalid}
+            </span>
+          ) : sent !== null ? (
+            <span role="status" className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+              {t('answerSent')}
+            </span>
+          ) : null}
         </form>
       ) : question.choices ? (
         <div className="flex flex-wrap gap-2">
           {question.choices.map((choice) => (
             <Button
               key={choice.value}
-              variant={answered === choice.value ? 'primary' : 'secondary'}
+              variant={sent === choice.value ? 'primary' : 'secondary'}
               size="xs"
-              disabled={answered !== null}
               onClick={() => {
-                setAnswered(choice.value)
+                setSent(choice.value)
                 onAnswer(question.requestId, choice.value)
               }}
             >

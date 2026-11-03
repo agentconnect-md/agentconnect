@@ -317,7 +317,8 @@
       "send": "Send reply",
       "question": "Waiting for your answer",
       "answer": "Your answer",
-      "answerOnPage": "See the whole question on the task’s page"
+      "answerOnPage": "See the whole question on the task’s page",
+      "answerSent": "Sent. It stays open until the task accepts the answer."
     },
     "githubApp": {
       "title": "GitHub App",

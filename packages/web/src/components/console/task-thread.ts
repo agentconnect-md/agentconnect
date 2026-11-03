@@ -111,7 +111,12 @@ export interface ThreadEntry {
   /** Still streaming, or sent and not yet on the daemon's record. */
   live: boolean
   /** The agent's open question: a plain choice or a line of text the panel answers, else one it only points to. */
-  question?: { requestId: string; choices: { value: string; label: string }[] | null; text: boolean }
+  question?: {
+    requestId: string
+    choices: { value: string; label: string }[] | null
+    /** A line of text, with the constraints the daemon checks it against. */
+    text: NonNullable<NonNullable<SessionStep['elicit']>['text']> | null
+  }
 }
 
 /** A question the agent is still waiting on, and how the panel can answer it. */
@@ -121,7 +126,7 @@ function openQuestion(ask: SessionStep['elicit'] | null | undefined): ThreadEntr
   return {
     requestId: ask.requestId,
     choices: plain && !ask.text && ask.options.length > 0 ? ask.options : null,
-    text: plain && !!ask.text
+    text: plain && ask.text ? ask.text : null
   }
 }
 

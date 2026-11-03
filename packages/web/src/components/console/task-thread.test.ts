@@ -61,14 +61,14 @@ describe('threadEntries', () => {
     }
     const live: SessionStep[] = [
       { kind: 'elicit', turnId: 't2', text: 'Ship it?', elicit: ask('q-recorded') },
-      { kind: 'elicit', turnId: 't2', text: '', elicit: { requestId: 'q-text', options: [], text: {} } },
+      { kind: 'elicit', turnId: 't2', text: '', elicit: { requestId: 'q-text', options: [], text: { minLength: 5 } } },
       { kind: 'elicit', turnId: 't2', text: 'Fill the form', elicit: { requestId: 'q-form', options: [], fields: [] } }
     ]
     const entries = threadEntries(threadMessages(page([recorded, settled])), live, 'agent_1')
     expect(entries.map((e) => [e.text, e.question])).toEqual([
-      ['Ship it?', { requestId: 'q-recorded', choices: ask('q-recorded').options, text: false }],
-      ['', { requestId: 'q-text', choices: null, text: true }],
-      ['Fill the form', { requestId: 'q-form', choices: null, text: false }]
+      ['Ship it?', { requestId: 'q-recorded', choices: ask('q-recorded').options, text: null }],
+      ['', { requestId: 'q-text', choices: null, text: { minLength: 5 } }],
+      ['Fill the form', { requestId: 'q-form', choices: null, text: null }]
     ])
   })
 })
