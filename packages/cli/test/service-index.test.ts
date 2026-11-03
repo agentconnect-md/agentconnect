@@ -58,8 +58,12 @@ describe('pickController', () => {
   it('returns the systemd controller on linux', () => {
     expect(pickController('linux', deps).label).toBe('agentconnect.service')
   })
-  it('throws an actionable error on win32', () => {
-    expect(() => pickController('win32', deps)).toThrow(/not supported on win32/i)
+  it('returns the logon-task controller on win32', () => {
+    expect(pickController('win32', deps).label).toBe('AgentConnectDaemon')
+    expect(pickController('win32', { ...deps, instance: 'dev' }).label).toBe('AgentConnectDaemon-dev')
+  })
+  it('throws an actionable error on a platform with no service manager', () => {
+    expect(() => pickController('freebsd', deps)).toThrow(/not supported on freebsd/i)
   })
   it("names a named instance's unit", () => {
     expect(pickController('linux', { ...deps, instance: 'dev' }).label).toBe('agentconnect@dev.service')
@@ -313,6 +317,6 @@ describe('controllerFor', () => {
 
 describe('listInstances', () => {
   it('is empty on a platform with no service support', () => {
-    expect(listInstances({ home: tmp('ac-home-'), platform: 'win32' })).toEqual([])
+    expect(listInstances({ home: tmp('ac-home-'), platform: 'freebsd' })).toEqual([])
   })
 })

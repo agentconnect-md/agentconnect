@@ -5,6 +5,7 @@ import { selfHealCliEntry } from './self-heal.js'
 import { delegate } from './delegate.js'
 import { runComputer } from './computer/commands.js'
 import { runShell } from './run-shell.js'
+import { runServiceHost } from './service-host.js'
 import {
   classifyInvocation,
   firstPositional,
@@ -92,6 +93,8 @@ async function main(): Promise<void> {
 
   // ── Route by the first positional command (honoring global options before it),
   //    reserving only CLI-owned commands; everything else delegates verbatim (§4.2).
+  // The Windows logon task's supervisor (service/schtasks.ts) — never typed by hand, so not in the help.
+  if (firstPositional(argv) === 'service-run') return runServiceHost(root, cliEntry)
   const route = classifyInvocation(argv)
   if (route === 'run') return runShell(root, argv)
   if (route === 'delegate') return delegate(root, argv)
@@ -149,7 +152,7 @@ async function main(): Promise<void> {
 
   program
     .command('up')
-    .description('Start the installed background service (launchd / systemd)')
+    .description('Start the installed background service (launchd / systemd / Windows Task Scheduler)')
     .action(async () => {
       const c = controller()
       requireInstalled(c)
@@ -220,7 +223,9 @@ async function main(): Promise<void> {
 
   program
     .command('install-service')
-    .description('Install the launchd / systemd service (does not start it — run `agentconnect up`)')
+    .description(
+      'Install the launchd / systemd service, or a Windows logon task (does not start it — run `agentconnect up`)'
+    )
     .action(async () => {
       try {
         const outcome = await performInstallService(serviceParams())

@@ -27,6 +27,11 @@ export function servicePointerPath(root: string): string {
   return join(root, 'service.json')
 }
 
+/** `<root>/service.pid` — the Windows logon task's run-shell pid, which `down` stops by tree. */
+export function serviceRunPidPath(root: string): string {
+  return join(root, 'service.pid')
+}
+
 export function logsDir(root: string): string {
   return join(root, 'logs')
 }

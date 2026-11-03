@@ -4,6 +4,7 @@
  *  without an import cycle. */
 import { homedir } from 'node:os'
 import { scanLaunchAgents } from './launchd.js'
+import { scanScheduledTasks } from './schtasks.js'
 import { scanSystemdUnits } from './systemd.js'
 import type { InstalledUnit } from './types.js'
 
@@ -21,6 +22,7 @@ export function listInstances(scope: DiscoveryScope = {}): InstalledUnit[] {
   const platform = scope.platform ?? process.platform
   if (platform === 'darwin') return scanLaunchAgents(home)
   if (platform === 'linux') return scanSystemdUnits(home, scope.systemUnitDir)
+  if (platform === 'win32') return scanScheduledTasks(home)
   return []
 }
 
