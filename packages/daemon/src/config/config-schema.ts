@@ -208,6 +208,8 @@ export const ConfigSchema = z.object({
       z.object({ backend: z.literal('postgres'), configFile: z.string().min(1) })
     ])
     .default({ backend: 'sqlite' }),
+  // The local API (local-doorbell.md): HTTP on `<root>/run/local.sock` for the daemon's own OS user; opt-in, never on Windows.
+  localApi: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
   agentsDir: z.string().optional(), // resolved against root if absent
   runtimes: z.record(z.string(), RuntimeDefSchema).optional(),
   // MCP servers this daemon can attach to agent sessions (reported to the CP as
