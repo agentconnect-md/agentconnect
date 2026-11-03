@@ -10,6 +10,7 @@ import {
   isCodeHostProvider,
   GENERIC_HOOK_KIND,
   SUBSESSION_COORDINATE_PREFIX,
+  isCoordinatorCoordinate,
   type CodeHostProvider,
   type HookKind,
   type Platform,
@@ -1804,8 +1805,8 @@ export class PgSessionRepo implements SessionRepo {
   /**
    * §4.3 reclassification, with the §4.5 cascade semantics:
    *
-   *  - **Widening** (`private → org`) never cascades — each descendant stays as
-   *    classified; widening a child remains its owner's own decision.
+   *  - **Widening** (`private → org`) cascades through a webchat coordinator's whole lineage of its
+   *    owner's rows, and otherwise only to the session's own background tasks (auto-session-mode.md §6.2).
    *  - **Tightening** (`org → private`) cascades to every descendant, including
    *    `explicit` ones: the child holds prompt text copied from the parent, so
    *    leaving it org-visible would defeat the change. Privacy wins.
@@ -1824,6 +1825,7 @@ export class PgSessionRepo implements SessionRepo {
       ownerIdentity: string | null
       externalProvider: string | null
       thread: string | null
+      platform: string
       taskParentSessionId: string | null
     }) => boolean
   ): Promise<SessionVisibilityChange> {
@@ -1837,10 +1839,12 @@ export class PgSessionRepo implements SessionRepo {
           ownerIdentity: string | null
           externalProvider: string | null
           thread: string | null
+          platform: string
+          agentId: string
           taskParentSessionId: string | null
         }>
       >(Prisma.sql`
-        SELECT "visibility", "ownerIdentity", "externalProvider", "thread", "taskParentSessionId"
+        SELECT "visibility", "ownerIdentity", "externalProvider", "thread", "platform", "agentId", "taskParentSessionId"
         FROM "session_meta" WHERE "id" = ${sessionId} AND "orgId" = ${orgId} FOR UPDATE
       `)
       // The org fence rides the row-lock read, so a cross-org id takes the same
@@ -1853,6 +1857,7 @@ export class PgSessionRepo implements SessionRepo {
         ownerIdentity: locked[0]!.ownerIdentity,
         externalProvider: locked[0]!.externalProvider,
         thread: locked[0]!.thread,
+        platform: locked[0]!.platform,
         // A task adopted after the route's read is locked by the time this write holds the row (auto-session-mode.md §6.2).
         taskParentSessionId: locked[0]!.taskParentSessionId
       }
@@ -1877,7 +1882,19 @@ export class PgSessionRepo implements SessionRepo {
         RETURNING *
       `)
       const affected = target.map(toRecord)
-      if (visibility === 'org') return { affected }
+      if (visibility === 'org') {
+        const wholeLineage = current.platform === 'webchat' && isCoordinatorCoordinate(current.thread)
+        affected.push(
+          ...(await this.widenDescendants(tx, {
+            id: sessionId,
+            orgId,
+            agentId: locked[0]!.agentId,
+            ownerIdentity,
+            wholeLineage
+          }))
+        )
+        return { affected }
+      }
       // A human tightening overrides a descendant's own re-classification — privacy wins.
       affected.push(
         ...(await this.tightenDescendants(
@@ -1888,6 +1905,46 @@ export class PgSessionRepo implements SessionRepo {
       )
       return { affected }
     })
+  }
+
+  /** A widening's reach: a webchat coordinator's whole private lineage, else the session's own background tasks. */
+  private async widenDescendants(
+    tx: PrismaLike,
+    root: { id: string; orgId: string; agentId: string; ownerIdentity: string | null; wholeLineage: boolean }
+  ): Promise<SessionMetaRecord[]> {
+    const { id, orgId, agentId, ownerIdentity, wholeLineage } = root
+    const ownTask = wholeLineage
+      ? Prisma.empty
+      : Prisma.sql`AND "agentId" = ${agentId} AND "thread" LIKE ${`${SUBSESSION_COORDINATE_PREFIX}%`} AND "visibilitySource" = 'inherited'::"VisibilitySource"`
+    const affected: SessionMetaRecord[] = []
+    const seen = new Set<string>([id])
+    let frontier: string[] = [id]
+    while (frontier.length > 0) {
+      // Only the root owner's own rows widen, and only through them: another owner's private child is theirs.
+      const children = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT "id" FROM "session_meta"
+        WHERE "parentSessionId" = ANY(${frontier}::text[]) AND "orgId" = ${orgId}
+          AND "externalProvider" IS NULL AND "ownerIdentity" IS NOT DISTINCT FROM ${ownerIdentity}
+          ${ownTask}
+        ORDER BY "id"
+        FOR UPDATE
+      `)
+      const next = children.map((c) => c.id).filter((childId) => !seen.has(childId))
+      if (next.length === 0) break
+      for (const childId of next) seen.add(childId)
+      const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
+        UPDATE "session_meta" SET
+          "visibility" = 'org'::"SessionVisibility",
+          "visibilitySource" = 'inherited'::"VisibilitySource",
+          "visibilityRev" = "visibilityRev" + 1,
+          "updatedAt" = CURRENT_TIMESTAMP
+        WHERE "id" = ANY(${next}::text[]) AND "orgId" = ${orgId} AND "visibility" = 'private'::"SessionVisibility"
+        RETURNING *
+      `)
+      affected.push(...rows.map(toRecord))
+      frontier = wholeLineage ? next : []
+    }
+    return affected
   }
 
   /**

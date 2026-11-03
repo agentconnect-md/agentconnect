@@ -2075,10 +2075,7 @@ export interface SessionRepo {
     agentIds: AgentId[],
     viewer?: SessionFilterQuery['viewer']
   ): Promise<SessionMetaRecord[]>
-  /** §4.3 reclassification. Widening touches only the target row; tightening
-   *  cascades to every descendant (transitively, `explicit` ones included —
-   *  privacy wins) under the lock-then-scan-to-fixpoint protocol of §4.5. Every
-   *  rewritten row's `visibilityRev` is bumped in the same transaction. */
+  /** §4.3 reclassification: widening reaches a webchat coordinator's lineage or a row's own tasks, tightening every descendant (§4.5). */
   setVisibility(
     orgId: OrgId,
     sessionId: SessionId,
@@ -2091,6 +2088,7 @@ export interface SessionRepo {
       ownerIdentity: string | null
       externalProvider: string | null
       thread: string | null
+      platform: string
       taskParentSessionId: string | null
     }) => boolean
   ): Promise<SessionVisibilityChange>

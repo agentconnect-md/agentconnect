@@ -1,5 +1,5 @@
 // Human authorization after authentication and organization selection; see docs/designs/authorization-policy.md.
-import { isAppendCoordinate, isSubsessionCoordinate } from '@agentconnect.md/protocol'
+import { isAppendCoordinate, isCoordinatorCoordinate, isSubsessionCoordinate } from '@agentconnect.md/protocol'
 import type { SessionExternalAccessSnapshot, SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
 
 export type { Shareable, ViewCtx } from '../persistence/ports.js'
@@ -30,6 +30,8 @@ export interface SessionViewable {
   /** The session's thread coordinate; null when it has none. Omitted means unread, which
    *  `session.visibility.change` treats as an `append` coordinate (fail closed). */
   thread?: string | null
+  /** The session's platform; unread means not webchat, so a coordinator coordinate stays shared (fail closed). */
+  platform?: string | null
   /** What recognises an agent's own background work; unread on a `subsession:` coordinate counts as it. */
   subsession?: SubsessionFacts
   /** The session owning this one as a task now; a task takes its owner's audience (auto-session-mode.md §6.2). */
@@ -85,6 +87,11 @@ function isOwnSubsession(resource: SessionViewable): boolean {
   if (!isSubsessionCoordinate(resource.thread)) return false
   const facts = resource.subsession
   return facts === undefined || (facts.parentSessionId !== null && facts.parentAgentId === facts.agentId)
+}
+
+/** One member's webchat coordinator (auto-session-mode.md §10) is an append coordinate with no other participant. */
+function isOwnersOnlyAppend(resource: SessionViewable): boolean {
+  return resource.platform === 'webchat' && isCoordinatorCoordinate(resource.thread)
 }
 
 function identityOwnsSession(resource: SessionViewable, identitySet: ReadonlySet<string>): boolean {
@@ -146,12 +153,13 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     // An `append` session is the whole conversation's long-lived session: its
     // recorded owner is only the first poster, so its audience is no one's to
     // change (channel-session-mode.md §9). An unread coordinate counts as one.
+    // A webchat coordinator is one member's conversation, so it stays its owner's (auto-session-mode.md §10).
     // The same holds for an agent's own background work (assistant-mode.md §5.6) and for a task while a session owns it (auto-session-mode.md §6.2).
     case AuthorizationAction.SessionChangeVisibility:
       return (
         !request.resource.externalProvider &&
         request.resource.thread !== undefined &&
-        !isAppendCoordinate(request.resource.thread) &&
+        (!isAppendCoordinate(request.resource.thread) || isOwnersOnlyAppend(request.resource)) &&
         !isOwnSubsession(request.resource) &&
         !request.resource.taskParentSessionId &&
         identityOwnsSession(request.resource, request.identitySet)

@@ -455,10 +455,17 @@ state marker:
   via `parentSessionId`), including `explicit` ones — privacy tightening wins
   over an earlier widening decision, matching the fail-closed rule of §4.2.
   Cascaded rows get the parent's owner and `visibilitySource = 'inherited'`.
-- **Parent widened later (`private` → `org`).** Never cascades. Each
-  descendant stays as classified; widening a child remains a per-session §4.3
-  decision by its owner (a private child is invisible to everyone else,
-  org owners included).
+- **Parent widened later (`private` → `org`).** A webchat coordinator widens
+  its whole lineage of its owner's rows, so its tasks and their delegations
+  open and close together with it ([auto-session-mode.md](auto-session-mode.md)
+  §10). Any other session reaches only its own background tasks: its agent's
+  `subsession:` children that still hold the parent's inherited private
+  audience and owner. A task takes the audience of the session that owns it and
+  refuses a change of its own (§6.2 there), so without this a task opened
+  before the widening would stay private with no one able to open it. Every
+  other descendant, and any row another member owns, stays as classified;
+  widening it remains a per-session §4.3 decision by its owner (a private child
+  is invisible to everyone else, org owners included).
 
 `explicit` is therefore protected against **settlement** (the automatic
 reconciliation above) but not against a **tightening cascade** — the §3 enum
