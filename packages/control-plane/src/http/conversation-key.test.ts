@@ -22,6 +22,14 @@ describe('conversation key codec', () => {
     expect(decodeConversationKey(id)).toEqual(key)
   })
 
+  it('round-trips a coordinator thread on a webchat conversation id', () => {
+    const id = 'c0c0c0c0-cccc-4ccc-8ccc-cccccccccccc'
+    const key = { platform: 'webchat', tenantScope: null, channel: id, thread: 'append:coordinator-1700000000000' }
+    const encoded = encodeConversationKey(key)!
+    expect(encoded).not.toBe(id)
+    expect(decodeConversationKey(encoded)).toEqual(key)
+  })
+
   it('round-trips a synthetic webchat A2A conversation', () => {
     const key = { platform: 'webchat', tenantScope: null, channel: 'a2a:agent-lead', thread: 'agentcall:child' }
     const encoded = encodeConversationKey(key)!

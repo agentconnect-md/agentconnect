@@ -19,9 +19,19 @@ describe('conversation key (browser port)', () => {
 
   it('uses the bare conversation id for webchat and refuses singletons', () => {
     const id = 'c0c0c0c0-cccc-4ccc-8ccc-cccccccccccc'
-    expect(encodeConversationKey({ platform: 'webchat', tenantScope: null, channel: id, thread: id })).toBe(id)
+    expect(
+      encodeConversationKey({ platform: 'webchat', tenantScope: null, channel: id, thread: `webchat:${id}` })
+    ).toBe(id)
     expect(encodeConversationKey({ platform: 'slack', tenantScope: null, channel: null, thread: 'T' })).toBeNull()
     expect(encodeConversationKey({ platform: 'slack', tenantScope: null, channel: 'C', thread: null })).toBeNull()
+  })
+
+  it('encodes a coordinator thread on a webchat conversation id as a four-part key', () => {
+    const id = 'c0c0c0c0-cccc-4ccc-8ccc-cccccccccccc'
+    const key = { platform: 'webchat', tenantScope: null, channel: id, thread: 'append:coordinator-1700000000000' }
+    expect(encodeConversationKey(key)).toBe(
+      Buffer.from(['webchat', '', id, key.thread].join('\u0000'), 'utf8').toString('base64url')
+    )
   })
 
   it('encodes a synthetic webchat A2A conversation as a four-part key', () => {

@@ -143,7 +143,9 @@ aggregation that still streams per-source and persists nothing is the fallback
 
 ### 5.1 Key encoding
 
-- Webchat: `conversationId` (already a UUID; the session row's `channel`).
+- Webchat: `conversationId` (already a UUID; the session row's `channel`) when the
+  thread is the ordinary `webchat:<conversationId>`; any other thread on that channel,
+  such as a coordinator's `append:` coordinate, takes the four-part form below.
 - Slack: `platform:tenantScope:channel:thread` (empty scope segment when
   unknown), base64url-encoded for the URL. `thread` falls back to the
   channel-root marker exactly as sessions record it, so a channel-root
