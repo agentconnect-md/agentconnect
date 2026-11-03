@@ -32,11 +32,14 @@ const tmp = (prefix: string) => mkdtempSync(join(tmpdir(), prefix))
 // A pid no process holds on either platform, for a stale pid file.
 const DEAD_PID = 2147483646
 
-function controller(replies: Record<string, Reply> = {}, instance?: string) {
+function controller(replies: Record<string, Reply> = {}, instance?: string, startupTimeoutMs = 0) {
   const home = tmp('ac-home-')
   const root = tmp('ac-root-')
   const fake = fakeExec(replies)
-  const c = new ScheduledTaskController({ root, home, uid: 0, exec: fake.exec, ...(instance ? { instance } : {}) })
+  const c = new ScheduledTaskController(
+    { root, home, uid: 0, exec: fake.exec, ...(instance ? { instance } : {}) },
+    { timeoutMs: startupTimeoutMs, pollMs: 5 }
+  )
   return { c, home, root, ...fake }
 }
 
@@ -150,6 +153,34 @@ describe('ScheduledTaskController lifecycle', () => {
       'schtasks.exe /Run': { code: 1, stderr: 'ERROR: The system cannot find the file specified.' }
     })
     await expect(refused.c.up()).rejects.toThrow(/could not start/)
+  })
+
+  it('up waits for the daemon pid, so an upgrade health check does not sample a task still starting', async () => {
+    const ctx = { root: '' }
+    const started = controller(
+      {
+        'schtasks.exe /Run': () => {
+          setTimeout(() => {
+            writeFileSync(join(ctx.root, 'service.pid'), `${process.pid}\n`)
+            writeFileSync(join(ctx.root, 'daemon.lock'), `${process.pid}\n`)
+          }, 50)
+          return {}
+        }
+      },
+      undefined,
+      5_000
+    )
+    ctx.root = started.root
+    await started.c.install(opts)
+    await started.c.up()
+    expect(await started.c.status()).toMatchObject({ running: true, pid: process.pid })
+  })
+
+  it('up gives up quietly at its deadline and leaves the verdict to the caller', async () => {
+    const { c } = controller({}, undefined, 30)
+    await c.install(opts)
+    await c.up()
+    expect(await c.status()).toMatchObject({ installed: true, running: false })
   })
 
   it('status reads the host pid file and reports the daemon pid', async () => {

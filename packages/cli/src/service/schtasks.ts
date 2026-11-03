@@ -159,7 +159,10 @@ export class ScheduledTaskController implements ServiceController {
   readonly label: string
   private readonly xmlPath: string
 
-  constructor(private readonly deps: ControllerDeps) {
+  constructor(
+    private readonly deps: ControllerDeps,
+    private readonly startup: { timeoutMs: number; pollMs: number } = { timeoutMs: 30_000, pollMs: 250 }
+  ) {
     this.label = scheduledTaskName(deps.instance)
     this.xmlPath = join(scheduledTasksDir(deps.home), `${this.label}.xml`)
   }
@@ -208,6 +211,16 @@ export class ScheduledTaskController implements ServiceController {
   async up(): Promise<void> {
     const r = await this.deps.exec('schtasks.exe', ['/Run', '/TN', this.label])
     if (r.code !== 0) throw new Error(`schtasks could not start ${this.label}: ${(r.stderr || r.stdout).trim()}`)
+    await this.awaitStartup()
+  }
+
+  // `/Run` returns before the host and daemon write their pids; a timeout is left for the caller's health check to judge.
+  private async awaitStartup(): Promise<void> {
+    const deadline = Date.now() + this.startup.timeoutMs
+    while (Date.now() < deadline) {
+      if ((await this.status()).pid !== undefined) return
+      await new Promise((r) => setTimeout(r, this.startup.pollMs))
+    }
   }
 
   /** Ending a task leaves its children running, so the host's tree is killed first, and the daemon's if it outlived it. */
