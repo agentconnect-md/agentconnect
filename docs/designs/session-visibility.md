@@ -473,6 +473,9 @@ state marker:
 `explicit` is therefore protected against **settlement** (the automatic
 reconciliation above) but not against a **tightening cascade** — the §3 enum
 semantics are exactly these two rules, and privacy wins on the conflict.
+Wherever an `explicit` row is kept — settlement, the convergence a private
+milestone runs, and a webchat coordinator's own cascades — its subtree is kept
+with it: what lies below follows that row's decision, not the ancestor's.
 
 **Serialization.** Child classification and parent tightening race: a child
 milestone that reads its parent's `visibility = 'org'` could otherwise commit

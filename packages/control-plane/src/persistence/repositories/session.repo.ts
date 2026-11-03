@@ -1924,7 +1924,7 @@ export class PgSessionRepo implements SessionRepo {
         ...(await this.tightenDescendants(
           tx,
           { id: sessionId, orgId, ownerIdentity: current.ownerIdentity },
-          wholeLineage ? { includeExplicit: false, throughExplicit: false } : { includeExplicit: true }
+          { includeExplicit: !wholeLineage }
         ))
       )
       return { affected }
@@ -1987,19 +1987,18 @@ export class PgSessionRepo implements SessionRepo {
    * `includeExplicit` separates the callers. A human tightening (§4.3) overrides a descendant's
    * own decision; convergence on data ARRIVAL must not, because widening a child stays its
    * owner's own decision (§4.5) and would otherwise be undone by the parent's next milestone.
-   * Idempotent either way — the predicate matches only rows that still differ. `throughExplicit: false`
-   * also leaves an explicit row's subtree alone, for a root whose descendants' own decisions stand.
+   * Idempotent either way — the predicate matches only rows that still differ. A kept explicit row
+   * also keeps its subtree: what lies below it follows that decision, not the root's.
    */
   private async tightenDescendants(
     tx: PrismaLike,
     root: { id: string; orgId: string; ownerIdentity: string | null },
-    { includeExplicit, throughExplicit = true }: { includeExplicit: boolean; throughExplicit?: boolean }
+    { includeExplicit }: { includeExplicit: boolean }
   ): Promise<SessionMetaRecord[]> {
     const { id, orgId, ownerIdentity } = root
     const keepExplicit = includeExplicit
       ? Prisma.empty
       : Prisma.sql`AND "visibilitySource" <> 'explicit'::"VisibilitySource"`
-    const skipExplicit = throughExplicit ? Prisma.empty : keepExplicit
     const affected: SessionMetaRecord[] = []
     const seen = new Set<string>([id])
     let frontier: string[] = [id]
@@ -2007,7 +2006,7 @@ export class PgSessionRepo implements SessionRepo {
       const children = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT "id" FROM "session_meta"
         WHERE "parentSessionId" = ANY(${frontier}::text[]) AND "orgId" = ${orgId}
-          ${skipExplicit}
+          ${keepExplicit}
         ORDER BY "id"
         FOR UPDATE
       `)

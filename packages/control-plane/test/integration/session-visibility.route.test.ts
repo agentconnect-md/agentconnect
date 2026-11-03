@@ -1941,6 +1941,29 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
     expect(await visibilityOf(coordinator)).toBe('private')
     expect(await visibilityOf(underPublished)).toBe('private')
     expect((await put(underPublished, 'org')).statusCode).toBe(200)
+    // A delegation opened below the published task inherits it, and the private coordinator's next
+    // milestone converges its lineage without crossing that task.
+    const repo = new PgSessionRepo(prisma)
+    const delegation = `s-ind-deleg-${randomUUID()}`
+    const milestone = (sessionId: string, parentSessionId?: string) =>
+      repo.recordMilestone({
+        sessionId: SessionId(sessionId),
+        ...(parentSessionId ? { parentSessionId: SessionId(parentSessionId) } : {}),
+        agentId: parentSessionId ? peerAgentId : agentId,
+        phase: 'start',
+        platform: 'webchat',
+        channel: randomUUID(),
+        at: new Date(),
+        classification: parentSessionId
+          ? { inherit: true }
+          : { visibility: 'private', ownerIdentity: owner, source: 'default' }
+      })
+    await milestone(delegation, published)
+    expect(await visibilityOf(delegation)).toBe('org')
+    await milestone(coordinator)
+    expect(await visibilityOf(delegation)).toBe('org')
+    expect(await visibilityOf(underPublished)).toBe('org')
+    expect(await visibilityOf(follower)).toBe('private')
 
     expect((await put(coordinator, 'org')).statusCode).toBe(200)
     expect(await visibilityOf(hidden)).toBe('org')
