@@ -481,8 +481,8 @@ export class SessionManager {
       forceWorkspaceIsolation?: boolean
       /** A daemon-verified cwd prepared before handle() (GitHub exact-ref turns). */
       preparedWorkspaceCwd?: string
-      /** A coordinator turn's rendered batch, which replaces the trigger and its replayed context (auto-session-mode.md §4.3). */
-      coordinatorBatch?: string
+      /** A coordinator turn's rendered batch, which replaces the trigger and its replayed context, and its messages' transcript ids (auto-session-mode.md §4.3). */
+      coordinatorBatch?: { prompt: string; ts: readonly string[] }
       /** A session with no workspace roots, opening on a shared host in the empty directory this resolves once the host is up (auto-session-mode.md §5.4). */
       bareCwd?: () => Promise<string | undefined>
     } = {}
@@ -994,7 +994,11 @@ export class SessionManager {
       const context = plan.context
       if (options.coordinatorBatch !== undefined) {
         // A coordinator turn reads its whole batch, each message under its own id (auto-session-mode.md §4.3).
-        blocks.push({ type: 'text', text: options.coordinatorBatch })
+        const batchTs = new Set([ts, ...options.coordinatorBatch.ts])
+        // A runtime session recreated without its history reads the conversation before the batch first, as any session does.
+        const before = opened.historyLost ? context.filter((entry) => !batchTs.has(entry.ts)) : []
+        if (before.length > 0) blocks.push({ type: 'text', text: `${plan.head}\n${renderContext(before)}` })
+        blocks.push({ type: 'text', text: options.coordinatorBatch.prompt })
         contextEvents = [...context.map((entry) => ({ ts: entry.ts, text: entry.text })), { ts, text: msg.text }]
       } else if (plan.shape === 'batch') {
         blocks.push({ type: 'text', text: `${plan.head}\n${renderContext(context)}` })

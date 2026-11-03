@@ -158,7 +158,9 @@ Approved proposals stay a kind of their own.
 
 The coordinator runs one turn at a time. Root messages that arrive while it runs are delivered
 together in its next turn, with the reports that arrived among them (§3.4), and it decides each one
-separately. Queued messages are never dropped.
+separately. Queued messages are never dropped. A coordinator whose runtime session could not be
+restored (a runtime change, a failed load) reads its conversation so far ahead of the batch, as any
+recreated session does.
 A batch holds one permission class, so the queue is cut in arrival order where the next sender's
 class differs, and every sender of a batch is asked on its turn
 ([assistant-mode.md](assistant-mode.md) §5.18 ③).
