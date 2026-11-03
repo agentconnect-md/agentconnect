@@ -37,18 +37,26 @@ export { useShortTime }
 
 export type MarkTone = 'running' | 'open' | 'paused' | 'waiting' | 'done' | 'failed' | 'stopped'
 
+// The session palette: green while it works, amber while it waits, red when it failed, grey at rest.
 const MARK: Record<MarkTone, string> = {
-  running: 'bg-(--status-info)',
-  open: 'border-[1.5px] border-(--status-info)',
+  running: 'bg-(--status-online)',
+  open: 'border-[1.5px] border-(--border-strong)',
   paused: 'border-[1.5px] border-(--status-paused)',
   waiting: 'bg-(--status-paused)',
-  done: 'bg-(--status-online)',
+  done: 'bg-(--border-strong)',
   failed: 'bg-(--status-error)',
   stopped: 'border-[1.5px] border-(--border-strong)'
 }
 
-export function StateMark({ tone }: { tone: MarkTone }) {
-  return <span aria-hidden data-state-mark={tone} className={`mt-[6px] h-2 w-2 flex-none rounded-full ${MARK[tone]}`} />
+/** `inline` drops the top offset that aligns the mark with a row's first line, for a mark centred in a one-line card. */
+export function StateMark({ tone, inline = false }: { tone: MarkTone; inline?: boolean }) {
+  return (
+    <span
+      aria-hidden
+      data-state-mark={tone}
+      className={`h-2 w-2 flex-none rounded-full ${inline ? '' : 'mt-[6px]'} ${MARK[tone]}`}
+    />
+  )
 }
 
 /** A group: its sentence-case name and how many rows it shows; the caller leaves out a group with none. */
@@ -329,10 +337,14 @@ export function useTaskStops(
   }
 }
 
+/** A task's state label: a threaded task that answered waits for its next message, so it reads as idle. */
+export const taskStateKey = (row: AssistantSubsessionDto) =>
+  row.threaded && row.state === 'done' ? 'state.idle' : (`state.${row.state}` as const)
+
 /** A row is finished once it reported, failed or ended; a threaded task lives on between its turns (auto-session-mode.md §6.5). */
 export const taskFinished = (row: AssistantSubsessionDto) => row.state !== 'open' && !row.threaded
 
-function taskTone(row: AssistantSubsessionDto, followUp: AssistantFollowUpDto | null): MarkTone {
+export function taskTone(row: AssistantSubsessionDto, followUp: AssistantFollowUpDto | null): MarkTone {
   if (followUp) {
     if (followUp.status === 'checking') return 'running'
     if (followUp.status === 'waiting') return 'open'
@@ -367,7 +379,9 @@ export function BackgroundTaskRow({
   stop,
   onStop,
   withPlace = false,
-  dim = false
+  dim = false,
+  onOpen,
+  replies
 }: {
   row: AssistantSubsessionDto
   now: number
@@ -375,6 +389,10 @@ export function BackgroundTaskRow({
   onStop: (row: AssistantSubsessionDto) => Promise<void>
   withPlace?: boolean
   dim?: boolean
+  /** Opens the task's thread in place, instead of following its title to the task's page. */
+  onOpen?: () => void
+  /** The thread's reply count, at the row's right. */
+  replies?: ReactNode
 }) {
   const t = useTranslations('Common.taskList')
   const tf = useTranslations('Common.followUp')
@@ -389,20 +407,30 @@ export function BackgroundTaskRow({
   const ownPlace = withPlace && !parent ? (row.place ?? null) : null
   const lastCheck = followUp?.recentChecks[0]
 
-  const title = row.sessionId ? (
-    <Link
-      className="min-w-0 truncate text-inherit no-underline hover:underline"
-      href={orgPath(`/sessions/${encodeURIComponent(row.sessionId)}`)}
-    >
-      {row.title ?? t('untitled')}
-    </Link>
-  ) : row.visible && followUp ? (
-    <span className="min-w-0 truncate">{row.title ?? t('untitled')}</span>
-  ) : row.visible ? (
-    <span className="min-w-0 truncate font-normal text-(--text-secondary)">{t('starting')}</span>
-  ) : (
-    <span className="min-w-0 truncate font-normal text-(--text-tertiary)">{t('hidden')}</span>
-  )
+  const title =
+    row.sessionId && onOpen ? (
+      <button
+        type="button"
+        data-task-open-thread=""
+        className="min-w-0 cursor-pointer truncate border-0 bg-transparent p-0 text-left font-[inherit] text-inherit hover:underline"
+        onClick={onOpen}
+      >
+        {row.title ?? t('untitled')}
+      </button>
+    ) : row.sessionId ? (
+      <Link
+        className="min-w-0 truncate text-inherit no-underline hover:underline"
+        href={orgPath(`/sessions/${encodeURIComponent(row.sessionId)}`)}
+      >
+        {row.title ?? t('untitled')}
+      </Link>
+    ) : row.visible && followUp ? (
+      <span className="min-w-0 truncate">{row.title ?? t('untitled')}</span>
+    ) : row.visible ? (
+      <span className="min-w-0 truncate font-normal text-(--text-secondary)">{t('starting')}</span>
+    ) : (
+      <span className="min-w-0 truncate font-normal text-(--text-tertiary)">{t('hidden')}</span>
+    )
 
   const place = parent ? (
     <ParentPlace parent={parent} />
@@ -425,7 +453,7 @@ export function BackgroundTaskRow({
     : [
         place,
         <span key="state" data-subsession-state="">
-          {t(row.threaded && row.state === 'done' ? 'state.idle' : `state.${row.state}`)}
+          {t(taskStateKey(row))}
         </span>,
         <time key="started" dateTime={row.startedAt}>
           {t('started', { time: format.relativeTime(new Date(row.startedAt), { now, style: 'narrow' }) })}
@@ -480,13 +508,18 @@ export function BackgroundTaskRow({
       dim={dim}
       attrs={{ 'data-subsession-row': row.state, 'data-follow-up': followUp?.status }}
       actions={
-        stoppable ? (
-          <RowAction
-            label={followUp ? t('end') : t('stop')}
-            disabled={stop === 'busy' || confirming}
-            pinned={stop === 'busy' || confirming}
-            onClick={() => (followUp ? setConfirming(true) : void onStop(row))}
-          />
+        stoppable || replies ? (
+          <>
+            {stoppable ? (
+              <RowAction
+                label={followUp ? t('end') : t('stop')}
+                disabled={stop === 'busy' || confirming}
+                pinned={stop === 'busy' || confirming}
+                onClick={() => (followUp ? setConfirming(true) : void onStop(row))}
+              />
+            ) : null}
+            {replies}
+          </>
         ) : null
       }
       after={

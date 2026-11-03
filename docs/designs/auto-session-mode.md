@@ -616,7 +616,11 @@ not addressed to this agent. Cost grows with the number of agents.
     receives the original message, records the coordinator as its parent, and is told that its
     person reads it on its page.
   - The coordinator posts a link card: an agent post with a Markdown link, titled with the task's
-    title, to the task's page.
+    title, to the task's page. The post and its transcript row also carry `taskLink` (the task's
+    session id, title, and whether the task was opened or handed the message). The console draws a
+    post that carries it as the task's card, which opens the task's thread beside the conversation,
+    where people read and reply. The card shows the task's `replies`: the messages its people and
+    the task posted after the one that opened it, which the daemon counts.
   - `messageTask` with a `messageId` moves the message into the task's conversation, which answers on
     its page, and attaches its id as one more thread; the coordinator posts a link card.
 - Existing ordinary webchat conversations stay as they are.

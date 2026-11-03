@@ -20,6 +20,7 @@ import {
   type MarkTone
 } from '@/components/console/task-list'
 import type { DockTabStatus } from './SessionDock'
+import type { TaskLink } from '@/components/console/task-link'
 import {
   SUBSESSIONS_UNSETTLED,
   SubsessionsPanel,
@@ -125,7 +126,8 @@ export function TasksPanel({
   active = true,
   turnActive = false,
   refreshTick = 0,
-  onVerdictChange
+  onVerdictChange,
+  onOpenThread
 }: {
   agentId: string
   /** The ACP session whose tasks this reads; the daemon keys both reads by it. */
@@ -139,6 +141,8 @@ export function TasksPanel({
   /** Bumped by the tab's `refresh-cw` action: re-reads both without remounting. */
   refreshTick?: number
   onVerdictChange?: (verdict: TasksPanelVerdict) => void
+  /** Opens a threaded task's thread in this tab. */
+  onOpenThread?: (link: TaskLink) => void
 }) {
   const t = useTranslations('Sessions.detail.tasksPanel')
   const scope = `${agentId}\n${sessionId}`
@@ -192,6 +196,7 @@ export function TasksPanel({
             refreshTick={refreshTick}
             showFinished={showFinished}
             onVerdictChange={onDelegatedVerdict}
+            {...(onOpenThread ? { onOpenThread } : {})}
           />
         ) : null}
         <TurnTasksGroups

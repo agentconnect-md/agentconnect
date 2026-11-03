@@ -34,6 +34,7 @@ import type {
   McpAppOutcome,
   McpAppRpc,
   McpAppRpcResult,
+  TaskLinkFacts,
   WebchatFileAttachment
 } from '@agentconnect.md/protocol'
 import { useConsoleData } from '@/lib/data-context'
@@ -249,6 +250,8 @@ type WebchatPost = {
   text: string
   /** A shared image the agent published; rendered as one card per postId whatever its copy. */
   image?: Omit<SharedImageState, 'download'>
+  /** A coordinator's link to a task, drawn as the task's card. */
+  taskLink?: TaskLinkFacts
 }
 
 /** One roster entry from the relay `ready` frame. */
@@ -1652,7 +1655,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                             postId: post.postId,
                             agentId,
                             ...(participantName(id, agentId) ? { who: participantName(id, agentId) } : {}),
-                            text: post.text
+                            text: post.text,
+                            ...(post.taskLink ? { taskLink: post.taskLink } : {})
                           })
                         ]
                   )

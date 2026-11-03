@@ -15,6 +15,8 @@ import {
 } from '@/lib/api'
 import { followUpOf, taskRunning } from '@/components/console/follow-up'
 import { BackgroundTaskRow, TaskGroup, taskFinished, useTaskStops } from '@/components/console/task-list'
+import { ThreadReplyCount } from '@/components/console/TaskThreadCard'
+import type { TaskLink } from '@/components/console/task-link'
 
 /** Rows one read asks for; "Show more" pages on by the cursor the last one returned. */
 export const SUBSESSIONS_PAGE = 20
@@ -104,7 +106,8 @@ export function SubsessionsPanel({
   turnActive = false,
   refreshTick = 0,
   showFinished = false,
-  onVerdictChange
+  onVerdictChange,
+  onOpenThread
 }: {
   agentId: string
   /** The conversation's own session: only its tasks are listed. */
@@ -118,6 +121,8 @@ export function SubsessionsPanel({
   /** The finished toggle is open, so finished rows are drawn dimmed in their groups. */
   showFinished?: boolean
   onVerdictChange?: (verdict: SubsessionsPanelVerdict) => void
+  /** Opens a threaded task's thread beside the conversation, where its row would follow a link to its page. */
+  onOpenThread?: (link: TaskLink) => void
 }) {
   const t = useTranslations('Sessions.detail.subsessionsPanel')
   const tl = useTranslations('Common.taskList')
@@ -234,6 +239,12 @@ export function SubsessionsPanel({
       stop={stopOf(row)}
       onStop={stop}
       dim={taskFinished(row)}
+      {...(onOpenThread && row.threaded && row.sessionId
+        ? {
+            onOpen: () => onOpenThread({ title: row.title ?? '', sessionId: row.sessionId!, how: 'opened' }),
+            replies: <ThreadReplyCount replies={row.replies} />
+          }
+        : {})}
     />
   )
 

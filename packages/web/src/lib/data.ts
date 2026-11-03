@@ -9,6 +9,7 @@ import type {
   ChannelDecisionBinding
 } from '@agentconnect.md/protocol/decision'
 import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import type { TaskLinkFacts } from '@agentconnect.md/protocol/user-turn-body'
 import { autoOrFullAccessPermissionMode } from '@agentconnect.md/protocol/assistant-permission-modes'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
 import {
@@ -1300,6 +1301,8 @@ export interface SessionStep {
    *  drops the step outright once a persisted row carries the same `postId`, from
    *  ANY conversation participant's session — not just this step's own author. */
   postId?: string
+  /** A coordinator's post that links to a task, which the transcript draws as the task's card. */
+  taskLink?: TaskLinkFacts
   /** The agent's in-band question — present only on an `elicit` step. `outcome` is absent
    *  while the card is live and set once the daemon settles it (answered, dismissed, or
    *  cancelled with the turn), which is what collapses the card in place. */

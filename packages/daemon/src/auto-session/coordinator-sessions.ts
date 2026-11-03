@@ -1,5 +1,6 @@
 // The coordinator session's outcomes (auto-session-mode.md §4.2–§4.5, §5.1): open a threaded task, hand a message to one, reply, or fall back.
 import { z } from 'zod'
+import type { TaskLinkFacts } from '@agentconnect.md/protocol'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { SessionContext } from '../mcp/ops/context.js'
 import { parseArgs, requiredString, ToolArgumentError } from '../mcp/ops/args.js'
@@ -33,8 +34,14 @@ export interface CoordinatorSessionsHost {
   now(): number
   /** Admit a message into the session its coordinates key; the turn runs on its own. */
   dispatch(agentId: string, msg: NormalizedMessage, integrationId?: string): void
-  /** Post the agent's own text in a message's thread. */
-  post(agentId: string, integrationId: string | undefined, msg: NormalizedMessage, text: string): Promise<void>
+  /** Post the agent's own text in a message's thread; `taskLink` marks a webchat post as a link to that task (§10). */
+  post(
+    agentId: string,
+    integrationId: string | undefined,
+    msg: NormalizedMessage,
+    text: string,
+    taskLink?: TaskLinkFacts
+  ): Promise<void>
   /** Show on a message that a turn is deciding it (🤔, §4.4); the returned call takes that back. */
   showTriaging(agentId: string, message: DeliveredMessage): () => void
   /** The console page of a session, by its outward id. */
@@ -165,6 +172,8 @@ const openedForOf = (message: DeliveredMessage) => ({
 })
 
 // A link a title cannot break out of.
+// The wire's bound on a link card's title, so an over-long one never drops the post at the relay.
+const TASK_LINK_TITLE_MAX = 300
 const linkText = (title: string): string => title.replace(/[[\]\\]/g, (char) => `\\${char}`)
 
 /** A task title the daemon gives: the text's first line, cut to a task title's length. */
@@ -429,15 +438,20 @@ export class CoordinatorSessions {
     how: 'opened' | 'handed',
     url?: string
   ): Promise<void> {
-    const target =
-      url ?? this.host.sessionLink(await this.host.store().ensureOutwardSessionId(taskKey, agentId, this.host.now()))
-    const link = `[${linkText(title?.trim() || 'the task')}](${target})`
+    const sessionId = url
+      ? undefined
+      : await this.host.store().ensureOutwardSessionId(taskKey, agentId, this.host.now())
+    const target = url ?? this.host.sessionLink(sessionId!)
+    const name = title?.trim() || 'the task'
+    const link = `[${linkText(name)}](${target})`
     await this.host
       .post(
         agentId,
         message.integrationId,
         message.msg,
-        how === 'opened' ? `Started a task: ${link}` : `Passed to ${link}`
+        how === 'opened' ? `Started a task: ${link}` : `Passed to ${link}`,
+        // A task on its own page is a card the console opens beside the conversation; a platform room stays a link.
+        sessionId ? { sessionId, title: name.slice(0, TASK_LINK_TITLE_MAX), how } : undefined
       )
       .catch((err: unknown) =>
         this.host.warn(`coordinator: linking ${message.id} to ${taskKey} failed (${String(err)})`)

@@ -184,7 +184,13 @@ export type McpAppBody = z.infer<typeof McpAppBody>
 
 // The user-turn body schemas live in a bundler-safe leaf (the console validates with them);
 // re-exported here so every wire consumer keeps finding them beside the tool and plan bodies.
-export { CodehostTurnFacts, LinearTurnFacts, SessionMessageTurnFacts, UserTurnBody } from '../user-turn-body.js'
+export {
+  CodehostTurnFacts,
+  LinearTurnFacts,
+  SessionMessageTurnFacts,
+  TaskLinkFacts,
+  UserTurnBody
+} from '../user-turn-body.js'
 
 /** One bounded webchat image persisted only in the daemon-local transcript. */
 export const SessionImageAttachment = WebchatImageAttachment

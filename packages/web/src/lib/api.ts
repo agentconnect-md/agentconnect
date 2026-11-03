@@ -4437,6 +4437,10 @@ export interface AssistantSubsessionDto {
   background?: string
   /** A platform thread is attached: people talk to it there, and it reports nothing to this conversation. */
   threaded?: boolean
+  /** Messages its people and the task posted after the one that opened it, counted by its daemon; only where `visible`. */
+  replies?: number
+  /** When the newest of those replies landed. */
+  lastReplyAt?: string
 }
 
 export interface AssistantSubsessionsPageDto {

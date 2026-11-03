@@ -1517,3 +1517,64 @@ describe('the Tasks tab’s Delegated group', () => {
     }
   })
 })
+
+describe('a coordinator’s task cards', () => {
+  const linkCard = 'Started a task: [Find what blocks api 1.5](https://console.example.test/acme/sessions/child-1)'
+  const coordinatorTurn = () => {
+    wire.playground = true
+    wire.steps = [
+      { kind: 'msg', who: 'sam', text: 'get api 1.5 ready to ship', turnId: 't1' },
+      { kind: 'done', agentId: 'agent-1', text: 'On it.', turnId: 't1' },
+      {
+        kind: 'done',
+        agentId: 'agent-1',
+        text: linkCard,
+        turnId: 't1',
+        segmentId: 's2',
+        taskLink: { sessionId: 'child-1', title: 'Find what blocks api 1.5', how: 'opened' }
+      },
+      // The same words without the daemon's mark stay a message.
+      {
+        kind: 'done',
+        agentId: 'agent-1',
+        text: 'Started a task: [Old](https://console.example.test/acme/sessions/old-1)',
+        turnId: 't1',
+        segmentId: 's3'
+      }
+    ]
+  }
+
+  it('draws the coordinator’s link to a task as a card, not as a link in a bubble', async () => {
+    coordinatorTurn()
+    await render()
+    const card = container?.querySelector('[data-task-card="child-1"]')
+    expect(card?.textContent).toContain('Find what blocks api 1.5')
+    expect(text()).not.toContain('Find what blocks api 1.5)')
+    expect(container?.querySelectorAll('[data-task-card]')).toHaveLength(1)
+    expect(text()).toContain('On it.')
+    expect(container?.querySelector('[data-task-thread]')).toBeNull()
+  })
+
+  it('opens the task’s thread in the Tasks tab, and goes back to the lists', async () => {
+    coordinatorTurn()
+    await render()
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>('[data-task-card="child-1"] button')?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(container?.querySelector('[data-dock-tab="tasks"]')?.getAttribute('aria-selected')).toBe('true')
+    const thread = container?.querySelector('[data-task-thread="child-1"]')
+    expect(thread?.textContent).toContain('Find what blocks api 1.5')
+    expect(thread?.querySelector('textarea[aria-label="Reply to this task…"]')).not.toBeNull()
+    expect(container?.querySelector('[data-task-card="child-1"] button')?.getAttribute('aria-expanded')).toBe('true')
+
+    await act(async () => {
+      Array.from(thread?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+        .find((button) => button.textContent === 'Tasks')
+        ?.click()
+      await Promise.resolve()
+    })
+    expect(container?.querySelector('[data-task-thread]')).toBeNull()
+  })
+})

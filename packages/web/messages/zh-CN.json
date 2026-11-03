@@ -299,6 +299,23 @@
       "stopFailed": "停止失败，请重试。",
       "stopUpgrade": "升级此 Agent 的 Daemon 后才能在这里停止任务。"
     },
+    "taskThread": {
+      "replies": "{count} 条回复",
+      "reply": "回复",
+      "lastReply": "最后回复于 {time}",
+      "open": "打开 {title} 的会话串",
+      "openPage": "在单独页面打开 {title}",
+      "back": "任务",
+      "earlier": "更早的消息在任务页面上",
+      "loading": "正在加载会话串…",
+      "loadFailed": "无法加载这个会话串，请重试。",
+      "you": "你",
+      "person": "某人",
+      "working": "{agent} 正在处理…",
+      "replyPlaceholder": "回复这个任务…",
+      "readOnly": "你可以查看这个任务，但不能在这里回复。",
+      "send": "发送回复"
+    },
     "githubApp": {
       "title": "GitHub App",
       "close": "关闭",
