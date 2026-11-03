@@ -364,6 +364,39 @@ describe('GET /sessions — grouped conversations', () => {
     expect(conv.sessions[0]!.sessionId).toBe('sess-member')
     expect(conv.representativeSessionId).toBe('sess-primary')
   })
+
+  it('resolves a coordinator session by the key the grouped list gives it', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
+    const CONVO = 'c6c6c6c6-cccc-4ccc-8ccc-cccccccccccc'
+    await new PgWebchatConversationRepo(prisma).create({
+      conversationId: CONVO,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(AGENT_A),
+      userId: DEFAULT_OWNER_ID
+    })
+    running = buildHttpApp(prisma)
+    await reportSession({
+      sessionId: 'sess-coordinator',
+      agentId: AGENT_A,
+      phase: 'start',
+      platform: 'webchat',
+      channel: CONVO,
+      thread: 'append:coordinator-1700000000000',
+      ts: new Date().toISOString()
+    })
+
+    const list = await running.app.inject({ method: 'GET', url: `${ORG}/sessions` })
+    const key = (list.json() as ConversationsBody).conversations[0]!.key!
+    expect(key).not.toBe(CONVO)
+    const res = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?conversationKey=${encodeURIComponent(key)}`
+    })
+    expect((res.json() as ConversationsBody).conversations[0]!.sessions.map((s) => s.sessionId)).toEqual([
+      'sess-coordinator'
+    ])
+  })
 })
 
 /**
