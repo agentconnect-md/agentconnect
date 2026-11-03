@@ -146,6 +146,12 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
   correlated, bounded read-back requests made by authorized Web UI callers.
   Those reads are transient and do not put live platform traffic or ACP output
   streams on the CP path.
+- It serves host-local IPC endpoints under `<root>/run/` (`localIpcPath`): the
+  MCP control socket the `mcp-bridge` dials, the git-credential socket, and,
+  when the operator enables it, the local API socket a same-user process uses to
+  start a turn ([local-doorbell.md](local-doorbell.md)). Each is a unix socket
+  only the daemon's OS user can open, never a TCP port; sandboxes reach only the
+  first two.
 
 ### 4.3 Platform Adapters (`slack-adapter`, `telegram-adapter`, etc.)
 
