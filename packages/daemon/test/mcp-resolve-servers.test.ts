@@ -73,4 +73,31 @@ describe('resolveAgentMcpServers', () => {
     const servers = resolveAgentMcpServers({ enabled: ['search', 'legacy'], defs, caps: undefined })
     expect(servers.map((s) => s.name)).toEqual(['search', 'legacy'])
   })
+  it('adds the session coordinate as X-AC-* headers only to a server that opted in', () => {
+    const scoped = {
+      ...defs,
+      worker: McpServerDefSchema.parse({
+        transport: 'http',
+        url: 'http://127.0.0.1:8770/mcp',
+        headers: [{ name: 'Authorization', value: 'Bearer w' }],
+        sessionHeaders: true
+      })
+    }
+    const servers = resolveAgentMcpServers({
+      enabled: ['search', 'worker', 'files'],
+      defs: scoped,
+      session: { channel: 'C1', thread: '1700000000.000100', key: 'agent:C1:1700000000.000100' }
+    })
+    expect(servers[0]).toMatchObject({ name: 'search', headers: [{ name: 'Authorization', value: 'Bearer t' }] })
+    expect(servers[1]).toMatchObject({
+      name: 'worker',
+      headers: [
+        { name: 'Authorization', value: 'Bearer w' },
+        { name: 'X-AC-Channel', value: 'C1' },
+        { name: 'X-AC-Thread', value: '1700000000.000100' },
+        { name: 'X-AC-Session', value: 'agent:C1:1700000000.000100' }
+      ]
+    })
+    expect(servers[2]).not.toHaveProperty('headers')
+  })
 })

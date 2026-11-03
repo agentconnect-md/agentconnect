@@ -59,6 +59,8 @@ export const McpServerDefSchema = z
     // http/sse transports: the server endpoint (required for http/sse).
     url: z.string().optional(),
     headers: NameValueList,
+    // http/sse: also send the session's X-AC-Channel, X-AC-Thread and X-AC-Session headers, so the server knows the caller.
+    sessionHeaders: z.boolean().optional(),
     // MCP Apps (webchat-mcp-apps.md §4): this server is hosted by the DAEMON rather than attached
     // to the runtime, so the daemon can advertise the `io.modelcontextprotocol/ui` extension, read
     // the server's `ui://` templates, and render them in webchat. Opt-in rather than probed on
