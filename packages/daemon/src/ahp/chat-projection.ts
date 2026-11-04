@@ -11,7 +11,8 @@ import {
   ConfirmationOptionKind,
   ChatInputResponseKind,
   type ChatAction,
-  type ChatState
+  type ChatState,
+  type ResponsePart
 } from '@microsoft/agent-host-protocol'
 import type { MaskedChatEvent } from '../session/chat-events.js'
 import type { ToolEdit } from '../session/tool-edits.js'
@@ -84,18 +85,18 @@ export class AhpChatProjection {
     if (!active || active.id !== event.turnId || event.generation !== this.generation) return
     const turnId = active.id
     switch (event.kind) {
-      case 'discarded':
+      case 'discarded': {
         if (event.nextGeneration <= this.generation) return
+        const settled = active.responseParts
         this.emit({ type: ActionType.ChatTruncated, turnId: this.value.turns.at(-1)?.id })
         this.generation = event.nextGeneration
         this.part = undefined
-        this.emit({
-          type: ActionType.ChatTurnStarted,
-          turnId,
-          startedAt: new Date(event.at).toISOString(),
-          message: active.message
-        })
+        // The restarted turn keeps its start, so a live "Working for" does not reset when an answer is regenerated.
+        this.emit({ type: ActionType.ChatTurnStarted, turnId, startedAt: active.startedAt, message: active.message })
+        // The discarded answer goes, but the work it did stands, as the saved transcript keeps it.
+        for (const part of settled) this.replayWork(turnId, part)
         return
+      }
       case 'boundary':
         this.part = undefined
         return
@@ -319,6 +320,47 @@ export class AhpChatProjection {
 
   private sessionUri(): string {
     return `ahp-session:${this.value.resource.slice('ahp-chat:'.length, -'/main'.length)}`
+  }
+
+  private replayWork(turnId: string, part: ResponsePart): void {
+    if (part.kind === ResponsePartKind.Reasoning) {
+      const id = `${turnId}:${this.generation}:${++this.partSequence}`
+      this.emit({
+        type: ActionType.ChatResponsePart,
+        turnId,
+        part: { kind: ResponsePartKind.Reasoning, id, content: '' }
+      })
+      this.emit({ type: ActionType.ChatReasoning, turnId, partId: id, content: part.content })
+      return
+    }
+    if (part.kind !== ResponsePartKind.ToolCall || part.toolCall.status !== ToolCallStatus.Completed) return
+    const tool = part.toolCall
+    const toolCallId = tool.toolCallId
+    this.emit({
+      type: ActionType.ChatToolCallStart,
+      turnId,
+      toolCallId,
+      toolName: tool.toolName,
+      displayName: tool.displayName
+    })
+    this.emit({
+      type: ActionType.ChatToolCallReady,
+      turnId,
+      toolCallId,
+      invocationMessage: tool.invocationMessage ?? tool.displayName,
+      ...(tool.toolInput !== undefined ? { toolInput: tool.toolInput } : {}),
+      confirmed: ToolCallConfirmationReason.NotNeeded
+    })
+    this.emit({
+      type: ActionType.ChatToolCallComplete,
+      turnId,
+      toolCallId,
+      result: {
+        success: tool.success,
+        pastTenseMessage: tool.pastTenseMessage ?? tool.displayName,
+        ...(tool.content ? { content: tool.content } : {})
+      }
+    })
   }
 
   private tool(id: string) {

@@ -102,6 +102,28 @@ describe('AHP official chat reducer projection', () => {
     converges()
   })
 
+  it('keeps the work a regenerated answer already did, and the turn start', () => {
+    const { projection, emit, converges } = fixture()
+    emit({ kind: 'started', text: 'Run it', origin: 'user' })
+    emit({ kind: 'reasoning', text: 'Planning' })
+    emit({ kind: 'tool', id: 't1', title: 'Terminal', status: 'pending' })
+    emit({ kind: 'tool', id: 't1', title: 'echo test', status: 'running', input: 'echo test' })
+    emit({ kind: 'tool', id: 't1', title: 'echo test', status: 'completed', output: 'test' })
+    emit({ kind: 'tool', id: 't2', title: 'Terminal', status: 'running' })
+    emit({ kind: 'text', text: 'discard me' })
+    emit({ kind: 'discarded', nextGeneration: 1, at: 5000 })
+    emit({ kind: 'text', text: 'retained', generation: 1 })
+    emit({ kind: 'finished', outcome: 'complete', generation: 1, at: 6000 })
+    const turn = projection.snapshot().turns[0]!
+    expect(turn.startedAt).toBe(new Date(1000).toISOString())
+    expect(turn.responseParts).toMatchObject([
+      { kind: 'reasoning', content: 'Planning' },
+      { kind: 'toolCall', toolCall: { toolCallId: 'runtime:t1', status: 'completed', success: true } },
+      { kind: 'markdown', content: 'retained' }
+    ])
+    expect(JSON.stringify(turn.responseParts)).not.toContain('discard me')
+    converges()
+  })
   it('discards through standard truncation and fences the prior generation', () => {
     const { projection, emit, converges } = fixture()
     emit({ kind: 'started', text: 'Hello', origin: 'user' })
