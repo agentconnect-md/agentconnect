@@ -41,6 +41,36 @@ describe('standard AHP view', () => {
     ])
     expect(ahpSteps(running, 'agent').at(-1)).toMatchObject({ kind: 'tool', text: 'sleep 10 && echo first' })
   })
+  it('stamps a finished turn last step with the turn end, so its time is its own duration', () => {
+    const finished = {
+      resource: 'ahp-chat:/test',
+      title: 'Chat',
+      status: 1,
+      turns: [
+        {
+          id: 'done-turn',
+          startedAt: '2026-10-19T00:00:00Z',
+          duration: 12_000,
+          state: 1,
+          message: { text: 'Question', origin: { kind: 'user' } },
+          responseParts: [
+            {
+              kind: 'toolCall',
+              toolCall: { toolCallId: 't', displayName: 'Read', status: 'completed', success: true }
+            },
+            { kind: 'markdown', id: 'a', content: 'Answer' }
+          ]
+        }
+      ]
+    } as unknown as ChatState
+    const start = Date.parse('2026-10-19T00:00:00Z')
+    const steps = ahpSteps(finished, 'agent')
+    expect(steps.map((step) => step.observedAtMs)).toEqual([start, start, start + 12_000])
+    // A running turn has no duration yet: its steps keep its start.
+    expect(
+      ahpSteps(chat([{ kind: 'markdown', id: 'a', content: 'x' }]), 'agent').map((step) => step.observedAtMs)
+    ).toEqual([start, start])
+  })
   it('places the turn plan snapshot ahead of its work', () => {
     const state = chat([{ kind: 'toolCall', toolCall: { toolCallId: 'tool', displayName: 'Read', status: 'running' } }])
     const entries = [{ content: 'Read', status: 'in_progress' }]
