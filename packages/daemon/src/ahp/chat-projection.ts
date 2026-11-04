@@ -136,6 +136,13 @@ export class AhpChatProjection {
           })
           tool = this.tool(toolCallId)
         }
+        // A call still streaming its parameters can be retitled (Claude's "Terminal" becomes the command), so the live view names what runs.
+        if (event.status === 'pending' && tool?.status === ToolCallStatus.Streaming) {
+          const shown = tool.invocationMessage
+          const current = typeof shown === 'string' ? shown : (shown?.markdown ?? tool.displayName)
+          if (event.title && event.title !== current)
+            this.emit({ type: ActionType.ChatToolCallDelta, turnId, toolCallId, invocationMessage: event.title })
+        }
         if (event.status !== 'pending' && tool?.status === ToolCallStatus.Streaming) {
           this.emit({
             type: ActionType.ChatToolCallReady,

@@ -52,6 +52,20 @@ describe('AHP official chat reducer projection', () => {
     converges()
   })
 
+  it('retitles a call still streaming its parameters, so the live view names the command', () => {
+    const { projection, actions, emit, converges } = fixture()
+    emit({ kind: 'started', text: 'Run it', origin: 'user' })
+    emit({ kind: 'tool', id: 'bash', title: 'Terminal', status: 'pending' })
+    emit({ kind: 'tool', id: 'bash', title: 'sleep 10 && echo first', status: 'pending' })
+    emit({ kind: 'tool', id: 'bash', title: 'sleep 10 && echo first', status: 'pending' })
+    expect(actions.filter((action) => action.type === ActionType.ChatToolCallDelta)).toHaveLength(1)
+    expect(projection.snapshot().activeTurn?.responseParts.at(-1)).toMatchObject({
+      toolCall: { status: 'streaming', displayName: 'Terminal', invocationMessage: 'sleep 10 && echo first' }
+    })
+    emit({ kind: 'tool', id: 'bash', title: 'sleep 10 && echo first', status: 'completed', output: 'first' })
+    emit({ kind: 'finished', outcome: 'complete', at: 2000 })
+    converges()
+  })
   it('attaches remembered edits to a successful tool result as file edits', () => {
     const { projection, emit, converges } = fixture()
     const edit = { index: 0, path: '/work/a.ts', created: false, added: 2, removed: 1, beforeBytes: 14, afterBytes: 17 }
