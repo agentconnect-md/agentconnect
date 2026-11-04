@@ -47,7 +47,11 @@ export function AgentTurnHeader({ name, work, children }: { name: string; work?:
 function TurnFold({ work }: { work: TurnWork }) {
   const t = useTranslations('Sessions.detail')
   const now = useNow(work.running && work.span !== null)
-  const ms = turnDurationMs(work.span, work.running, now)
+  const live = turnDurationMs(work.span, work.running, now)
+  // A live stream may stamp every step with the turn's start, so a turn that just finished keeps the time it ticked to.
+  const [lastLive, setLastLive] = useState<number | null>(null)
+  if (work.running && live !== null && live !== lastLive) setLastLive(live)
+  const ms = live ?? (work.running ? null : lastLive)
   const duration = ms === null ? null : formatTurnDuration(ms)
   return (
     <button

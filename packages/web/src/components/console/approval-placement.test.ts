@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentPermissionRequestDto } from '@/lib/api'
 import {
+  askedApprovalIds,
   APPROVAL_TURN_SLACK_MS,
   approvalAnswerPlace,
   approvalTurnKey,
@@ -105,5 +106,17 @@ describe('where a settled request was answered', () => {
     expect(approvalAnswerPlace('user')).toBeNull()
     expect(approvalAnswerPlace(null)).toBeNull()
     expect(approvalAnswerPlace(undefined)).toBeNull()
+  })
+})
+
+describe('askedApprovalIds', () => {
+  it('names the requests a live turn already shows as its own confirmation card', () => {
+    const steps = [
+      { elicit: { requestId: 'tool:turn-1:req-1' } },
+      { elicit: { requestId: 'question-7' } },
+      {},
+      { elicit: { requestId: 'tool:turn-1:req-2' } }
+    ]
+    expect([...askedApprovalIds(steps)]).toEqual(['req-1', 'req-2'])
   })
 })

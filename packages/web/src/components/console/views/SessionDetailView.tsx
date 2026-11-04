@@ -86,7 +86,7 @@ import { agentToneColor } from '@/lib/agent-tone'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
 import { TranscriptApprovalsProvider, TurnApprovals } from '@/components/console/TurnApprovals'
-import { approvalTurnStart, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
+import { approvalTurnStart, askedApprovalIds, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
@@ -5794,7 +5794,7 @@ export default function SessionDetailView() {
                                         </div>
                                       )}
                                       {/* A tool call's approval sits where the turn asked it, after the work that led there. */}
-                                      <TurnApprovals turnKey={turn.key} />
+                                      <TurnApprovals turnKey={turn.key} asked={askedApprovalIds(turn.steps)} />
                                       {noticeSteps.length > 0 && (
                                         <div className="flex min-w-0 flex-col gap-[3px]">
                                           {noticeSteps.map((st, si) => (
@@ -6004,15 +6004,22 @@ export default function SessionDetailView() {
                                 .map((agentId) => agentById.get(agentId))
                                 .filter((agent): agent is Agent => agent !== undefined)
                             : []
-                        const rows = busyAgents.length > 0 ? busyAgents : [owner]
-                        // 26px mark + 10px gap, same geometry as an agent turn's row, so the
-                        // dots start on the same left edge as that agent's bubbles above.
+                        // An agent whose turn for this exchange already shows says it is working in that turn's header.
+                        const answering = new Set(
+                          turns.flatMap((turn, i) =>
+                            turn.kind === 'bot' && i > lastExchangeAt ? [turn.agentId || owner?.id] : []
+                          )
+                        )
+                        const rows = (busyAgents.length > 0 ? busyAgents : [owner]).filter(
+                          (agent) => !answering.has(agent?.id)
+                        )
+                        // 26px mark + 10px gap, an agent turn's geometry, so the dots start on its prose's left edge.
                         return rows.map((agent, i) => (
                           <div key={agent?.id ?? i} className="flex items-center gap-[10px] desktop:mt-[14px]">
                             <span className="av h-[26px] w-[26px] flex-none rounded-md">
                               <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agentRuntime} size={26} />
                             </span>
-                            <div className="inline-flex items-center gap-1 rounded-[11px] bg-(--brand-soft) px-[14px] py-[11px]">
+                            <div className="inline-flex items-center gap-1 py-[11px]">
                               <span className="tdot" />
                               <span className="tdot [animation-delay:.18s]" />
                               <span className="tdot [animation-delay:.36s]" />

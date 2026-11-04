@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatState, SessionState } from '@microsoft/agent-host-protocol'
-import { ahpAnswer, ahpSteps, ahpUsageFields } from './view'
+import { ahpAnswer, ahpSteps, ahpToolTitle, ahpUsageFields } from './view'
 const chat = (parts: unknown[]): ChatState =>
   ({
     resource: 'ahp-chat:/test',
@@ -27,6 +27,19 @@ describe('standard AHP view', () => {
     expect(steps.map((step) => step.kind)).toEqual(['msg', 'done', 'plan', 'done', 'tool'])
     expect(steps.filter((step) => step.kind === 'done').map((step) => step.segmentId)).toEqual(['one', 'two'])
     expect(steps.at(-1)).toMatchObject({ toolCallId: 'tool', toolSessionId: 'outward' })
+  })
+  it('titles a runtime call by its refined title once the runtime sends one', () => {
+    const tool = { toolCallId: 't', displayName: 'Terminal' }
+    expect(ahpToolTitle(tool)).toBe('Terminal')
+    expect(ahpToolTitle({ ...tool, invocationMessage: 'sleep 10 && echo first' })).toBe('sleep 10 && echo first')
+    expect(ahpToolTitle({ ...tool, invocationMessage: 'ls', pastTenseMessage: { markdown: 'ls -la' } })).toBe('ls -la')
+    expect(
+      ahpToolTitle({ toolName: 'agentconnect.permission', displayName: 'Approve Bash', invocationMessage: 'rm -rf x' })
+    ).toBe('Approve Bash')
+    const running = chat([
+      { kind: 'toolCall', toolCall: { ...tool, status: 'running', invocationMessage: 'sleep 10 && echo first' } }
+    ])
+    expect(ahpSteps(running, 'agent').at(-1)).toMatchObject({ kind: 'tool', text: 'sleep 10 && echo first' })
   })
   it('places the turn plan snapshot ahead of its work', () => {
     const state = chat([{ kind: 'toolCall', toolCall: { toolCallId: 'tool', displayName: 'Read', status: 'running' } }])
