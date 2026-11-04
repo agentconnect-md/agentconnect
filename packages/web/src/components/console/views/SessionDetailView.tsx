@@ -161,6 +161,7 @@ import {
   toggleWorkPanel,
   turnSpan,
   withPromptStart,
+  exchangePromptMs,
   agentTurnStreaming,
   typedInvalidReason,
   workCounts,
@@ -1791,11 +1792,6 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
         }
       : {})
   }
-}
-
-/** When the message an agent turn answers was sent: a person's turn just before it, not a steer into a running one. */
-function promptTimeMs(turn: Turn | undefined): number | undefined {
-  return turn?.kind === 'user' && !turn.steer ? turn.timeMs : undefined
 }
 
 /** A row's send time as an optional field. */
@@ -5793,7 +5789,7 @@ export default function SessionDetailView() {
                                               running: streaming,
                                               span: withPromptStart(
                                                 turnSpan(turn.steps.map((st) => st.timeMs)),
-                                                promptTimeMs(turns[ti - 1])
+                                                exchangePromptMs(turns, ti)
                                               ),
                                               liveLine,
                                               liveKey
