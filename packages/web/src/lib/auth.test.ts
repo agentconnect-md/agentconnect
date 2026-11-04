@@ -57,11 +57,23 @@ describe('console authentication', () => {
       location: {
         href: 'https://console.example.test/agents',
         origin: 'https://console.example.test',
+        pathname: '/agents',
+        search: '',
         replace: logto.replace
       }
     })
     vi.stubGlobal('document', { cookie: '' })
+    const session = new Map<string, string>()
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => session.get(key) ?? null,
+      setItem: (key: string, value: string) => void session.set(key, value),
+      removeItem: (key: string) => void session.delete(key)
+    })
   })
+
+  function visit(pathname: string, search = ''): void {
+    Object.assign(window.location, { pathname, search, href: `https://console.example.test${pathname}${search}` })
+  }
 
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -97,6 +109,30 @@ describe('console authentication', () => {
     expect(logto.clearAllTokens).toHaveBeenCalledOnce()
     expect(document.cookie).toBe('ac.org=; path=/; max-age=0')
     expect(logto.replace).toHaveBeenCalledOnce()
+    expect(logto.replace).toHaveBeenCalledWith('/login')
+  })
+
+  it('returns to the page the session expired on, such as an OAuth consent request', async () => {
+    visit('/oauth/consent', '?client_id=c1&redirect_uri=https%3A%2F%2Fconsole.example.test%2Fcb&state=s1')
+    logto.getAccessToken.mockRejectedValue(requestError('oidc.invalid_grant'))
+    const { getToken } = await import('./auth')
+
+    await getToken().catch(() => undefined)
+
+    expect(sessionStorage.getItem('ac.returnTo')).toBe(
+      '/oauth/consent?client_id=c1&redirect_uri=https%3A%2F%2Fconsole.example.test%2Fcb&state=s1'
+    )
+    expect(logto.replace).toHaveBeenCalledWith('/login')
+  })
+
+  it.each(['/login', '/auth/callback'])('keeps no return path from the sign-in page %s', async (pathname) => {
+    visit(pathname, '?code=abc')
+    logto.getAccessToken.mockRejectedValue(requestError('oidc.invalid_grant'))
+    const { getToken } = await import('./auth')
+
+    await getToken().catch(() => undefined)
+
+    expect(sessionStorage.getItem('ac.returnTo')).toBeNull()
     expect(logto.replace).toHaveBeenCalledWith('/login')
   })
 

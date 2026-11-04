@@ -25,6 +25,7 @@ import { identifyUser, resetAnalytics } from '@/lib/analytics'
 import { forgetOwnershipProof } from '@/lib/ownership-proof'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
 import { enableJwksCacheRecovery } from '@/lib/logto-jwks'
+import { writeFlowState } from '@/lib/flow-state'
 
 declare global {
   interface Window {
@@ -165,6 +166,13 @@ function clearLocalSessionMetadata(): void {
   forgetOwnershipProof()
 }
 
+// Re-entry returns to the page the session expired on, such as an OAuth consent request, not to the console home.
+function rememberReturnPath(): void {
+  const { pathname, search } = window.location
+  if (pathname === '/login' || pathname.startsWith('/auth/')) return
+  writeFlowState('returnTo', pathname + search)
+}
+
 async function clearInvalidGrantSession(c: LogtoClient): Promise<void> {
   invalidGrantCleanup ??= (async () => {
     clearLocalSessionMetadata()
@@ -174,6 +182,7 @@ async function clearInvalidGrantSession(c: LogtoClient): Promise<void> {
       // A storage failure must not strand the console on a session that can no
       // longer refresh. Starting a new sign-in flow will replace stale state.
     }
+    rememberReturnPath()
     window.location.replace('/login')
   })()
   await invalidGrantCleanup
