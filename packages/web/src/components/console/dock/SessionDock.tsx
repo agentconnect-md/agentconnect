@@ -3,10 +3,13 @@
 // The session detail page's right dock — the SHELL only: tab strip, resize edge, and the box the caller's active panel draws into.
 
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -24,6 +27,7 @@ import {
   DOCK_WIDTH_MAX,
   DOCK_WIDTH_MIN,
   DOCK_WIDTH_PROPERTY,
+  expandedDockWidth,
   fitDockWidth,
   readDockWidth,
   writeDockWidth
@@ -83,13 +87,36 @@ const PLACEHOLDER =
   'flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)'
 
 // The reserved track, shared by the dock and `SessionDockSlot`: its −30px bleeds over `.content`'s padding so track + padding = the panel, it is `relative` so the vacant state's handle can sit on its left edge, and it holds the dock's width in EVERY status — a column given back when a verdict lands moves the transcript sideways, which is the invariant it exists for (§8).
-const TRACK = 'relative -mr-[30px] hidden w-[var(--dock-width)] flex-none wide:block'
+const TRACK =
+  'relative -mr-[30px] hidden w-[var(--dock-width)] flex-none transition-[width] duration-200 ease-out motion-reduce:transition-none wide:block'
 // Open below `wide:` the track carries only its out-of-flow child, so `contents` — a box would still be a flex item spending the row's gap.
 const TRACK_OVERLAY = '-mr-[30px] contents w-[var(--dock-width)] flex-none wide:block'
 
 // One panel node, three bands, FIXED in each: a sticky box in the padded `.content` scroller never sits flush, and the width is `DOCK_WIDTH_PROPERTY` so `max-desktop:w-auto` can override it for the sheet.
 const PANEL =
   'fixed top-0 right-0 bottom-0 z-50 flex w-[var(--dock-width)] flex-col border-l border-(--border-subtle) bg-(--surface-app) shadow-(--shadow-lg) max-desktop:top-auto max-desktop:left-0 max-desktop:h-[80vh] max-desktop:w-auto max-desktop:rounded-t-lg max-desktop:border-t max-desktop:border-l-0 max-desktop:pb-[env(safe-area-inset-bottom,0px)] wide:z-auto wide:shadow-none'
+
+// Expanded above `wide:` the column takes the design's lifted shadow; the width eases between the two sizes, never under a drag.
+const PANEL_EXPANDED = PANEL.replace('wide:shadow-none', 'wide:shadow-(--shadow-lg)')
+const EASE_WIDTH = 'transition-[width] duration-200 ease-out motion-reduce:transition-none'
+// A drag follows the pointer, so the track's ease is switched off under it.
+const NO_EASE = 'transition-none'
+
+/** Whether the dock is drawn at its expanded share of the page, and the switch for it, for a panel's own header to carry. */
+export interface DockExpand {
+  /** False where expanding means nothing: the phone sheet, or before the viewport is measured. */
+  available: boolean
+  expanded: boolean
+  setExpanded: (next: boolean) => void
+}
+
+/** Exported so a hosted panel's tests can stand in for the dock. */
+export const DockExpandContext = createContext<DockExpand>({ available: false, expanded: false, setExpanded: () => {} })
+
+/** The enclosing dock's expand switch; outside a dock it is unavailable and inert. */
+export function useDockExpand(): DockExpand {
+  return useContext(DockExpandContext)
+}
 
 const TRIGGER_BASE =
   'flex h-9 w-9 items-center justify-center rounded-full border bg-(--surface-card) shadow-(--shadow-sm) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none'
@@ -179,6 +206,7 @@ export function SessionDock({
   revealKey = 0,
   label = 'Panels',
   onVisibleChange,
+  stripHidden = false,
   children
 }: {
   /** The strip, in order. The dock does not sort, filter or hide them. */
@@ -198,6 +226,8 @@ export function SessionDock({
   label?: string
   /** Whether a panel is on screen: always above `wide:`, only while the drawer is open below it; children stay mounted either way. */
   onVisibleChange?: (visible: boolean) => void
+  /** Drop the tab strip, for a panel that draws its own header in its place (a task's thread). */
+  stripHidden?: boolean
   /** The active panel. A function receives the live rendered width, for a body that lays out differently at 380px than at 760px. */
   children: ReactNode | ((width: number) => ReactNode)
 }) {
@@ -214,6 +244,13 @@ export function SessionDock({
   // The rendered width, and the only one anything below here sees: a 700px preference yields to the transcript on a 1366px laptop.
   const width = fitDockWidth(preferred ?? DOCK_WIDTH_DEFAULT, viewportWidth)
   const [dragging, setDragging] = useState(false)
+  // Expanded is a view of this page, never a preference: it is not stored, and the phone sheet is already the viewport's width.
+  const [expandWanted, setExpandWanted] = useState(false)
+  // Offered only where the share is wider than the dock already is, so expanding never narrows it.
+  const expandTarget = expandedDockWidth(viewportWidth)
+  const expandAvailable = !isMobile && viewportWidth > 0 && expandTarget > width
+  const expanded = expandAvailable && expandWanted
+  const renderedWidth = expanded ? expandTarget : width
   // Below `wide:` this latch is the ONLY visibility source: hover does not follow width, and a CSS reveal would fight `aria-expanded`.
   const [open, setOpen] = useState(false)
   // The drag reads the live width and viewport without re-binding its window listeners.
@@ -242,7 +279,7 @@ export function SessionDock({
   }, [width, viewportWidth])
 
   // Held back until the dock has a width of its own, so the property never hears the default over the one already on screen.
-  usePublishedWidth(preferred === null ? null : width)
+  usePublishedWidth(expanded ? renderedWidth : preferred === null ? null : width)
 
   // Fitted before it is stored, so the edge stops at the transcript's floor rather than persisting a width the reader never saw.
   const applyWidth = useCallback((next: number) => {
@@ -307,8 +344,15 @@ export function SessionDock({
   }, [revealKey])
   // A latch left standing when the panel loses its content would re-open over the next session that arrives.
   useEffect(() => {
-    if (vacant) setOpen(false)
+    if (vacant) {
+      setOpen(false)
+      setExpandWanted(false)
+    }
   }, [vacant])
+  const expand = useMemo<DockExpand>(
+    () => ({ available: expandAvailable, expanded, setExpanded: setExpandWanted }),
+    [expandAvailable, expanded]
+  )
   // Above `wide:` the panel is the column: nothing hides it, its close button and scrim are `wide:hidden`, so a latch carried across the boundary is unclosable state.
   useEffect(() => {
     if (!overlayBand) setOpen(false)
@@ -407,35 +451,41 @@ export function SessionDock({
   )
 
   // Rendered width, not the preference: the sheet is phone-wide, where a stored 700px dock would draw five labels into ~390px.
-  const showEveryLabel = !isMobile && width > DOCK_LABEL_WIDTH
+  const showEveryLabel = !isMobile && renderedWidth > DOCK_LABEL_WIDTH
   const panelId = `${uid}-panel`
   const tabId = (key: string) => `${uid}-tab-${key}`
   // The roving tab stop: the active tab, or the first, so a strip whose caller selected nothing is still reachable.
   const focusKey = active?.key ?? tabs[0]?.key
-  const body = typeof children === 'function' ? children(width) : children
+  const body = typeof children === 'function' ? children(renderedWidth) : children
   // A dialog only where the panel is an OVERLAY: above `wide:` the same node is an ordinary column, and its close button and scrim are both `wide:hidden`.
   const modal = !vacant && open && overlayBand
   // Only where the reported width is the width on screen: in the phone-wide sheet it would rewrite the desktop preference for nothing.
-  const resizeHandle = isMobile ? null : (
-    <div
-      role="separator"
-      aria-orientation="vertical"
-      aria-label={t('resizePanel')}
-      aria-valuenow={width}
-      aria-valuemin={DOCK_WIDTH_MIN}
-      // The widest the drag can actually land, asked of the very function that clamps it so the two cannot drift: the geometric ceiling alone under-reports at 1440px (504) and OVER-reports at 1920px (984 against a 760 cap).
-      aria-valuemax={fitDockWidth(DOCK_WIDTH_MAX, viewportWidth)}
-      tabIndex={0}
-      onPointerDown={startDrag}
-      onKeyDown={onHandleKey}
-      className={dragging ? HANDLE_DRAGGING : HANDLE_IDLE}
-    />
-  )
+  // Expanded, the width is the page's share rather than the reader's, so there is no edge to drag.
+  const resizeHandle =
+    isMobile || expanded ? null : (
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={t('resizePanel')}
+        aria-valuenow={width}
+        aria-valuemin={DOCK_WIDTH_MIN}
+        // The widest the drag can actually land, asked of the very function that clamps it so the two cannot drift: the geometric ceiling alone under-reports at 1440px (504) and OVER-reports at 1920px (984 against a 760 cap).
+        aria-valuemax={fitDockWidth(DOCK_WIDTH_MAX, viewportWidth)}
+        tabIndex={0}
+        onPointerDown={startDrag}
+        onKeyDown={onHandleKey}
+        className={dragging ? HANDLE_DRAGGING : HANDLE_IDLE}
+      />
+    )
 
   // ONE tree across every status: `body` keeps a single position, so crossing the `vacant` boundary reconciles it instead of remounting the panel that owns the fetch.
   return (
-    <>
-      <div className={!vacant && open ? TRACK_OVERLAY : TRACK} data-dock-track="">
+    <DockExpandContext.Provider value={expand}>
+      <div
+        className={`${!vacant && open ? TRACK_OVERLAY : TRACK}${dragging ? ` ${NO_EASE}` : ''}`}
+        data-dock-track=""
+        data-dock-expanded={expanded ? '' : undefined}
+      >
         {/* Vacant, the track is the whole dock: the gutter it reserves is the reader's to narrow, and inside a `wide:`-only box the handle is reachable in exactly the band where the width means anything. */}
         {vacant ? resizeHandle : null}
         {/* Vacant: mounted and undrawn — unmounting would silence the next verdict and lose the panel's scroll position; preflight's `[hidden]` is `!important`, and dropping `PANEL` describes no box either. */}
@@ -446,10 +496,16 @@ export function SessionDock({
           role={modal ? 'dialog' : undefined}
           aria-modal={modal ? true : undefined}
           aria-label={modal ? label : undefined}
-          className={vacant ? 'hidden' : PANEL}
+          className={vacant ? 'hidden' : `${expanded ? PANEL_EXPANDED : PANEL}${dragging ? '' : ` ${EASE_WIDTH}`}`}
+          // Escape takes an expanded dock back to its own width; one a popover inside already handled stays expanded.
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape' || !expanded || event.defaultPrevented) return
+            event.preventDefault()
+            setExpandWanted(false)
+          }}
         >
           {vacant ? null : resizeHandle}
-          {vacant ? null : (
+          {vacant || stripHidden ? null : (
             <div className="flex flex-none items-center border-b border-(--border-subtle) pl-[5px]">
               {/* Zero gap between tabs by design; the strip scrolls rather than wraps. */}
               <div
@@ -508,6 +564,19 @@ export function SessionDock({
                     <Icon name={active.actionIcon} size={15} />
                   </button>
                 ) : null}
+                {expandAvailable ? (
+                  <button
+                    type="button"
+                    aria-label={expanded ? t('collapsePanel') : t('expandPanel')}
+                    title={expanded ? t('collapsePanel') : t('expandPanel')}
+                    aria-pressed={expanded}
+                    data-dock-expand=""
+                    onClick={() => setExpandWanted(!expanded)}
+                    className={ACTION_BTN}
+                  >
+                    <Icon name={expanded ? 'minimize-2' : 'maximize-2'} size={14} />
+                  </button>
+                ) : null}
                 {onOverflow ? (
                   <button
                     type="button"
@@ -538,7 +607,7 @@ export function SessionDock({
           <div
             role={vacant ? undefined : 'tabpanel'}
             id={panelId}
-            aria-labelledby={!vacant && active ? tabId(active.key) : undefined}
+            aria-labelledby={!vacant && !stripHidden && active ? tabId(active.key) : undefined}
             className="flex min-h-0 flex-1 flex-col"
           >
             {/* Which of the two it is, is the whole difference between "wait" and "there is nothing here". */}
@@ -588,6 +657,6 @@ export function SessionDock({
       {!vacant && open ? (
         <div data-dock-scrim="" className="fixed inset-0 z-30 wide:hidden" onClick={closeOverlay} aria-hidden="true" />
       ) : null}
-    </>
+    </DockExpandContext.Provider>
   )
 }

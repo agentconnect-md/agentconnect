@@ -58,6 +58,16 @@ export function fitDockWidth(width: number, viewportWidth: number): number {
   return Math.min(clampDockWidth(width), dockWidthCeiling(viewportWidth))
 }
 
+/** Share of the page an expanded dock takes, as the console design draws it. */
+export const DOCK_EXPANDED_SHARE = 0.64
+
+/** An expanded dock's width: its share of the page beside the rail, never below the minimum nor past the viewport. Never stored. */
+export function expandedDockWidth(viewportWidth: number): number {
+  if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) return DOCK_WIDTH_MAX
+  const share = Math.round((viewportWidth - DOCK_INLINE_CHROME) * DOCK_EXPANDED_SHARE)
+  return Math.min(viewportWidth, Math.max(DOCK_WIDTH_MIN, share))
+}
+
 // Hand-rolled rather than shipped from the functions above: this runs as source text before any bundle, so it can only use what the page already has.
 /** Pre-paint script: `fitDockWidth(readDockWidth(''), innerWidth)` on the root, before console markup is parsed. SSR has no storage, so no render can do this. */
 export const DOCK_WIDTH_INIT =

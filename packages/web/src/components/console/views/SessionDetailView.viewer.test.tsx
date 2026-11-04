@@ -1564,10 +1564,11 @@ describe('a coordinator’s task cards', () => {
       await Promise.resolve()
     })
     await render()
-    expect(container?.querySelector('[data-dock-tab="tasks"]')?.getAttribute('aria-selected')).toBe('true')
+    // The thread's own header stands in for the tab strip while it is open.
+    expect(container?.querySelector('[data-dock-tab]')).toBeNull()
     const thread = container?.querySelector('[data-task-thread="child-1"]')
     expect(thread?.textContent).toContain('Find what blocks api 1.5')
-    expect(thread?.querySelector('textarea[aria-label="Reply to this task…"]')).not.toBeNull()
+    expect(thread?.querySelector('textarea[aria-label="Reply in this task…"]')).not.toBeNull()
     expect(container?.querySelector('[data-task-card="child-1"] button')?.getAttribute('aria-expanded')).toBe('true')
 
     await act(async () => {
@@ -1577,5 +1578,7 @@ describe('a coordinator’s task cards', () => {
       await Promise.resolve()
     })
     expect(container?.querySelector('[data-task-thread]')).toBeNull()
+    await render()
+    expect(container?.querySelector('[role="tablist"]')).not.toBeNull()
   })
 })
