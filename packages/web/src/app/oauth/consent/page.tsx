@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { isAuthConfigured, getUser, login } from '@/lib/auth'
 import { getOAuthConsentContext, postOAuthConsent, type OAuthConsentContext } from '@/lib/api'
+import { writeFlowState } from '@/lib/flow-state'
 import { Spinner } from '@/components/marks'
 
 // The OAuth consent screen (agent-assistant.md §7.3). The CP's /oauth/authorize
@@ -49,14 +50,9 @@ export default function OAuthConsentPage() {
     }
     setParams(p)
     void (async () => {
-      // When auth is enabled, ensure the user is signed in first — stashing this URL
-      // so /auth/callback returns here. With auth disabled the CP's devAuth admits us.
+      // Sign in first and come back here; an expired session returns here too (auth.ts). No-auth installs skip this.
       if (isAuthConfigured() && !(await getUser())) {
-        try {
-          sessionStorage.setItem('ac.returnTo', window.location.pathname + window.location.search)
-        } catch {
-          /* ignore */
-        }
+        writeFlowState('returnTo', window.location.pathname + window.location.search)
         await login()
         return
       }
