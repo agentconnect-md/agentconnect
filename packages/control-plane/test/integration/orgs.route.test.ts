@@ -242,6 +242,8 @@ describe('POST /orgs', () => {
       expect(welcome.statusCode).toBe(400)
       const dash = await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { name: 'X', slug: '-' } })
       expect(dash.statusCode).toBe(400) // the default org's reserved segment
+      const gateway = await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { name: 'X', slug: 'mobile' } })
+      expect(gateway.statusCode).toBe(400) // a gateway-owned prefix on the console host
     } finally {
       await close()
     }
