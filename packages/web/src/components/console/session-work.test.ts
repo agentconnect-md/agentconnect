@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { McpAppBody } from '@/lib/data'
 import {
+  agentTurnStreaming,
+  withPromptStart,
   capabilityCard,
   liveCapabilityIds,
   appStepKey,
@@ -411,5 +413,41 @@ describe('capabilityCard', () => {
   })
   it('lists the live cards by request', () => {
     expect([...liveCapabilityIds([{ capability: { requestId: 'r-1' } }, {}])]).toEqual(['r-1'])
+  })
+})
+
+describe('withPromptStart', () => {
+  const at = (ms: number) => Date.parse('2026-11-04T08:00:00Z') + ms
+  it('measures a one-step turn from the message it answers', () => {
+    expect(withPromptStart({ startMs: at(7000), endMs: at(7000) }, at(0))).toEqual({ startMs: at(0), endMs: at(7000) })
+    expect(withPromptStart(null, at(0))).toEqual({ startMs: at(0), endMs: at(0) })
+  })
+  it('keeps a span its own steps measure, and ignores a later or missing prompt', () => {
+    const span = { startMs: at(1000), endMs: at(9000) }
+    expect(withPromptStart(span, at(0))).toBe(span)
+    const instant = { startMs: at(1000), endMs: at(1000) }
+    expect(withPromptStart(instant, at(1000))).toBe(instant)
+    expect(withPromptStart(instant, undefined)).toBe(instant)
+  })
+})
+
+describe('agentTurnStreaming', () => {
+  const base = { turnInFlight: true, busyLanes: ['A'], agentId: 'A' }
+  it('does not stream a turn that answered before the latest prompt', () => {
+    // [user, bot(A), user]: the new prompt's reply has not rendered yet.
+    expect(agentTurnStreaming({ ...base, index: 1, lastIndex: 2, lastExchangeAt: 2, agentLastIndex: 1 })).toBe(false)
+  })
+  it('keeps streaming the running turn through a steer and while its lane is busy', () => {
+    // [user, bot(A), steer]: a steer opens no exchange.
+    expect(agentTurnStreaming({ ...base, index: 1, lastIndex: 2, lastExchangeAt: 0, agentLastIndex: 1 })).toBe(true)
+    expect(agentTurnStreaming({ ...base, index: 1, lastIndex: 1, lastExchangeAt: 0, agentLastIndex: 1 })).toBe(true)
+    expect(
+      agentTurnStreaming({ ...base, turnInFlight: false, index: 1, lastIndex: 1, lastExchangeAt: 0, agentLastIndex: 1 })
+    ).toBe(false)
+  })
+  it('falls back to the trailing turn without lanes', () => {
+    const lane = { turnInFlight: true, busyLanes: [], lastExchangeAt: 0, agentLastIndex: undefined }
+    expect(agentTurnStreaming({ ...lane, index: 1, lastIndex: 1 })).toBe(true)
+    expect(agentTurnStreaming({ ...lane, index: 1, lastIndex: 2 })).toBe(false)
   })
 })

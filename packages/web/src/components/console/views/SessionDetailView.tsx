@@ -160,6 +160,8 @@ import {
   stepStatusMark,
   toggleWorkPanel,
   turnSpan,
+  withPromptStart,
+  agentTurnStreaming,
   typedInvalidReason,
   workCounts,
   workPanelOpen,
@@ -1791,6 +1793,16 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
   }
 }
 
+/** When the message an agent turn answers was sent: a person's turn just before it, not a steer into a running one. */
+function promptTimeMs(turn: Turn | undefined): number | undefined {
+  return turn?.kind === 'user' && !turn.steer ? turn.timeMs : undefined
+}
+
+/** A row's send time as an optional field. */
+function timeMsField(ms: number | null): { timeMs?: number } {
+  return ms === null ? {} : { timeMs: ms }
+}
+
 // A live image step's card fields: its caption and file come off the same trailing share marker a history row carries.
 function sharedImageFields(stp: SessionStep): Partial<FmtStep> {
   const shared = sharedFileMarker(stp.text)
@@ -2181,6 +2193,8 @@ type Turn =
       avatarInitials?: string
       sourceLabel: string
       time: string
+      /** When it was sent, where known: a turn answering it with a single timed step measures from here. */
+      timeMs?: number
       text: string
       image?: SessionImage
       /** The files its `[attached: …]` marker names, lifted out of `text` into cards. */
@@ -4520,6 +4534,7 @@ export default function SessionDetailView() {
           avatarInitials: self ? viewer.initials : undefined,
           sourceLabel: platName(sessionIntegration),
           time: formatTranscriptRowTime(m),
+          ...timeMsField(transcriptRowTimeMs(m)),
           text: m.text,
           image: m.attachments?.[0],
           isCron: !!cron,
@@ -4579,6 +4594,7 @@ export default function SessionDetailView() {
           avatarInitials: self ? viewer.initials : undefined,
           sourceLabel: platName(sessionIntegration),
           time: stp.time ?? (firstMsg ? session.time : ''),
+          ...(stp.observedAtMs !== undefined ? { timeMs: stp.observedAtMs } : {}),
           text: stp.text,
           image: stp.image,
           isCron: !!cron,
@@ -4674,6 +4690,7 @@ export default function SessionDetailView() {
           avatarInitials: self ? viewer.initials : undefined,
           sourceLabel: platName(sessionIntegration),
           time: stp.time ?? '',
+          ...(stp.observedAtMs !== undefined ? { timeMs: stp.observedAtMs } : {}),
           text: stp.text,
           image: stp.image,
           isCron: !!cron,
@@ -5708,11 +5725,15 @@ export default function SessionDetailView() {
                               const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
                               const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
                               // The lane names the busy agent only, so only that agent's last turn streams.
-                              const streaming =
-                                turnInFlight &&
-                                (turn.agentId && busyLanes.length > 0
-                                  ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
-                                  : ti === turns.length - 1)
+                              const streaming = agentTurnStreaming({
+                                turnInFlight,
+                                index: ti,
+                                lastIndex: turns.length - 1,
+                                lastExchangeAt,
+                                agentId: turn.agentId,
+                                busyLanes,
+                                agentLastIndex: turn.agentId ? lastBotTurnIndexByAgent.get(turn.agentId) : undefined
+                              })
                               const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
                               // Work runs while any tool row is unsettled (parallel calls update in place) or a trailing work step is unfinished.
                               const stepDone = (st?: FmtStep) =>
@@ -5770,7 +5791,10 @@ export default function SessionDetailView() {
                                               open: openWork,
                                               onToggle: () => toggleWork(turn.key ?? '', openWork),
                                               running: streaming,
-                                              span: turnSpan(turn.steps.map((st) => st.timeMs)),
+                                              span: withPromptStart(
+                                                turnSpan(turn.steps.map((st) => st.timeMs)),
+                                                promptTimeMs(turns[ti - 1])
+                                              ),
                                               liveLine,
                                               liveKey
                                             }
@@ -5793,8 +5817,6 @@ export default function SessionDetailView() {
                                           ))}
                                         </div>
                                       )}
-                                      {/* A tool call's approval sits where the turn asked it, after the work that led there. */}
-                                      <TurnApprovals turnKey={turn.key} asked={askedApprovalIds(turn.steps)} />
                                       {noticeSteps.length > 0 && (
                                         <div className="flex min-w-0 flex-col gap-[3px]">
                                           {noticeSteps.map((st, si) => (
@@ -5919,6 +5941,8 @@ export default function SessionDetailView() {
                                             />
                                           </div>
                                         ))}
+                                      {/* A tool call's approval closes the turn that asked it, after what the agent said before asking. */}
+                                      <TurnApprovals turnKey={turn.key} asked={askedApprovalIds(turn.steps)} />
                                       {/* A finished turn's answer gets its copy button on its own line. */}
                                       {!streaming && answerText && (
                                         <div className="flex">

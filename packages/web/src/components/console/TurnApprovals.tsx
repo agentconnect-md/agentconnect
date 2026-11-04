@@ -7,6 +7,7 @@ import { Button, Icon } from '@/components/ui'
 import { optionDecision, usePermissionDecision, usePermissionRequests } from '@/components/console/ApprovalRequestsCard'
 import {
   approvalAnswerPlace,
+  approvalCommandText,
   placeTranscriptApprovals,
   type ApprovalTurnAnchor
 } from '@/components/console/approval-placement'
@@ -97,7 +98,7 @@ function PendingApproval({
         <span className="min-w-0 break-words">
           <span className="font-medium text-(--text-primary)">{t('approvalNeeded')}</span>{' '}
           <code className="break-all rounded-xs bg-(--surface-sunken) px-1 font-mono text-[12.5px]">
-            {request.command}
+            {approvalCommandText(request.command)}
           </code>
         </span>
       </div>
@@ -179,7 +180,7 @@ function SettledApproval({ request }: { request: AgentPermissionRequestDto }) {
       <Icon name="message-square-more" size={14} className="mt-[2px] flex-none" />
       <span className="min-w-0 break-words">
         <span className="font-medium text-(--text-secondary)">{t('approvalAsked')}</span>{' '}
-        <span className="break-all font-mono text-[12px]">{request.command}</span>
+        <span className="break-all font-mono text-[12px]">{approvalCommandText(request.command)}</span>
         {' · '}
         <span className="text-(--text-secondary)">{outcome}</span>
         {answerer ? ` · ${answerer}` : null}

@@ -25,7 +25,11 @@ import { approvalSourceKey } from '@/lib/approval-notifications'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmStrip } from '@/components/console/ConfirmStrip'
 import { ProposedFollowUp } from '@/components/console/follow-up'
-import { placedApprovalIds, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
+import {
+  approvalCommandText,
+  placedApprovalIds,
+  type ApprovalTurnAnchor
+} from '@/components/console/approval-placement'
 
 /** How a decision on a conversation's proposal ended here: its outcome, or why it was no longer waiting. */
 interface SettledProposal {
@@ -240,9 +244,9 @@ export function ApprovalRequestsCard({
                     className={`mt-[2px] line-clamp-2 break-words text-[11.5px] leading-[1.45] text-(--text-secondary) ${
                       request.kind === 'join' ? 'font-sans' : 'font-mono'
                     }`}
-                    title={request.command}
+                    title={approvalCommandText(request.command)}
                   >
-                    {request.command}
+                    {approvalCommandText(request.command)}
                   </div>
                 </div>
                 {request.status === 'pending' && request.options?.length ? (
