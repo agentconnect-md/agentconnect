@@ -35,23 +35,32 @@ function useNow(ticking: boolean): number {
 
 /** An agent turn's one header line: its name, then — when it did work — a fold control that opens that work. */
 export function AgentTurnHeader({ name, work, children }: { name: string; work?: TurnWork; children?: ReactNode }) {
+  // Held here, not in the fold: a regenerated answer can drop the turn's work for a render, which would unmount the fold.
+  const ms = useTurnDuration(work)
   return (
     <div className="mb-[5px] flex min-w-0 items-center gap-[7px]">
       <span className={`${AGENT_NAME} max-w-[50%] flex-none truncate`}>{name}</span>
       {children}
-      {work && <TurnFold work={work} />}
+      {work && <TurnFold work={work} ms={ms} />}
     </div>
   )
 }
 
-function TurnFold({ work }: { work: TurnWork }) {
+/** The duration a turn shows: ticking while it runs, then held once it finishes until its own steps can measure it. */
+export function useTurnDuration(work: TurnWork | undefined): number | null {
+  const running = work?.running ?? false
+  const now = useNow(running && !!work?.span)
+  const live = work ? turnDurationMs(work.span, running, now) : null
+  // A finished turn keeps the time it ticked to; seeming to run again (a new prompt not yet listed) does not extend it.
+  const [held, setHeld] = useState<{ ms: number | null; settled: boolean }>({ ms: null, settled: false })
+  if (work && running && !held.settled && live !== null && live !== held.ms) setHeld({ ms: live, settled: false })
+  if (work && !running && held.ms !== null && !held.settled) setHeld({ ms: held.ms, settled: true })
+  if (held.settled) return !running && live !== null ? live : held.ms
+  return live ?? (running ? null : held.ms)
+}
+
+function TurnFold({ work, ms }: { work: TurnWork; ms: number | null }) {
   const t = useTranslations('Sessions.detail')
-  const now = useNow(work.running && work.span !== null)
-  const live = turnDurationMs(work.span, work.running, now)
-  // A live stream may stamp every step with the turn's start, so a turn that just finished keeps the time it ticked to.
-  const [lastLive, setLastLive] = useState<number | null>(null)
-  if (work.running && live !== null && live !== lastLive) setLastLive(live)
-  const ms = live ?? (work.running ? null : lastLive)
   const duration = ms === null ? null : formatTurnDuration(ms)
   return (
     <button
