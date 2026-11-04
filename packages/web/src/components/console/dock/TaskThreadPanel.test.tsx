@@ -6,7 +6,8 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { SessionStep } from '@/lib/data'
+import type { SessionMessageDto } from '@/lib/api'
+import type { Agent, SessionStep } from '@/lib/data'
 
 const taskRow = vi.hoisted(() => ({
   sessionId: 'ses_task',
@@ -24,7 +25,8 @@ const wire = vi.hoisted(() => ({
   canContinue: true as boolean | null,
   drafts: {} as Record<string, string>,
   live: [] as SessionStep[],
-  calls: [] as string[]
+  calls: [] as string[],
+  extra: [] as SessionMessageDto[]
 }))
 
 vi.mock(import('@/lib/api'), async (importOriginal) => ({
@@ -47,7 +49,8 @@ vi.mock(import('@/lib/api'), async (importOriginal) => ({
           text: 'find what blocks api 1.5'
         },
         { seq: 2, sender: 'agent_1', ts: '2026-11-03T09:01:00.000Z', kind: 'tool', text: 'gh pr list' },
-        { seq: 3, sender: 'agent_1', ts: '2026-11-03T09:02:00.000Z', kind: 'text', text: 'Three of five are clear.' }
+        { seq: 3, sender: 'agent_1', ts: '2026-11-03T09:02:00.000Z', kind: 'text', text: 'Three of five are clear.' },
+        ...wire.extra
       ],
       nextCursor: null,
       liveCursor: null,
@@ -104,12 +107,15 @@ const task = { title: 'Find what blocks api 1.5', sessionId: 'ses_task', how: 'o
 let container: HTMLDivElement
 let root: ReturnType<typeof createRoot>
 let back: ReturnType<typeof vi.fn<() => void>>
+let props: Partial<Parameters<typeof TaskThreadPanel>[0]> = {}
 
 beforeEach(() => {
   wire.canContinue = true
   wire.drafts = {}
   wire.live = []
   wire.calls = []
+  wire.extra = []
+  props = {}
   back = vi.fn()
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -135,6 +141,7 @@ async function render(dock: DockExpand = NO_DOCK) {
               task={task}
               parentSessionId="ses_coordinator"
               onBack={back}
+              {...props}
             />
           </DockExpandContext.Provider>
         </SWRConfig>
@@ -294,6 +301,51 @@ describe('TaskThreadPanel', () => {
     expect(pressed.getAttribute('aria-label')).toBe('Collapse the panel')
     act(() => pressed.click())
     expect(setExpanded).toHaveBeenLastCalledWith(false)
+  })
+
+  it('draws another agent’s post as that agent, without its attribution line', async () => {
+    const support = { id: 'agent_cs', name: 'customer-support', runtime: 'codex', icon: null } as unknown as Agent
+    props = { agentById: new Map([['agent_cs', support]]), platform: 'slack' }
+    const footer =
+      'sent by <https://test-app.agentconnect.md/acme/agents/agent_cs|customer-support> (Codex · gpt-6.1-sol) · <https://test-app.agentconnect.md/acme/sessions/s1|open in session>'
+    wire.extra = [
+      {
+        seq: 4,
+        sender: 'B0SUPPORT',
+        trustedAgentBot: true,
+        ts: '2026-11-03T09:03:00.000Z',
+        kind: 'text',
+        text: `I only handle Sentio support.\n\n${footer}`
+      },
+      { seq: 5, sender: 'B0STRANGER', ts: '2026-11-03T09:04:00.000Z', kind: 'text', text: `Not ours.\n\n${footer}` }
+    ]
+    await render()
+    const peer = container.querySelector('[data-thread-agent="agent_cs"]')!
+    expect(peer.getAttribute('data-thread-message')).toBe('agent')
+    expect(peer.textContent).toContain('customer-support')
+    expect(peer.textContent).toContain('I only handle Sentio support.')
+    expect(peer.textContent).not.toContain('sent by')
+    // A bot whose provenance the daemon did not vouch for stays a person, attribution and all.
+    const stranger = Array.from(container.querySelectorAll('[data-thread-message="person"]')).at(-1)!
+    expect(stranger.textContent).toContain('Someone')
+    expect(stranger.textContent).toContain('sent by')
+  })
+
+  it('shows a person’s own picture where the platform supplied one', async () => {
+    wire.extra = [
+      {
+        seq: 4,
+        sender: 'U0SAM',
+        senderName: 'Sam',
+        senderAvatarUrl: 'https://avatars.example/sam.png',
+        ts: '2026-11-03T09:03:00.000Z',
+        kind: 'text',
+        text: 'Rerun it.'
+      }
+    ]
+    await render()
+    const avatars = Array.from(container.querySelectorAll<HTMLImageElement>('[data-thread-avatar]'))
+    expect(avatars.map((img) => img.getAttribute('src'))).toEqual(['https://avatars.example/sam.png'])
   })
 
   it('goes back to the task lists', async () => {
