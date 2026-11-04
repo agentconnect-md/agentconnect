@@ -13,6 +13,7 @@ const wire = vi.hoisted(() => ({
   detail: null as unknown,
   chatActions: 'approve' as 'talk' | 'approve' | 'settings',
   requests: [] as AgentPermissionRequestDto[],
+  messages: [] as unknown[],
   conversationReads: [] as string[],
   agentReads: [] as string[],
   decisions: [] as unknown[][]
@@ -40,7 +41,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>()
   return {
     ...actual,
-    fetchSessionMessages: vi.fn(() => Promise.resolve({ messages: [], nextCursor: null })),
+    fetchSessionMessages: vi.fn(() => Promise.resolve({ messages: wire.messages, nextCursor: null })),
     fetchSessionDetail: vi.fn(() => Promise.resolve(wire.detail)),
     fetchMySessionIdentity: vi.fn(() => Promise.reject(new Error('no identity'))),
     fetchConversationByKey: vi.fn(() => Promise.reject(new Error('no conversation'))),
@@ -254,6 +255,7 @@ beforeEach(() => {
   wire.detail = detail(true)
   wire.chatActions = 'approve'
   wire.requests = [request]
+  wire.messages = []
   wire.conversationReads = []
   wire.agentReads = []
   wire.decisions = []
@@ -322,6 +324,59 @@ describe('a webchat conversation’s pending requests', () => {
     expect(container?.textContent).not.toContain('Pending requests')
     expect(wire.conversationReads).toEqual([])
     expect(wire.agentReads).toEqual([])
+  })
+})
+
+describe('a webchat conversation’s tool-call approvals', () => {
+  // The agent's turn started at 10:00:30; the owner's message came 30s before it.
+  const turnRows = [
+    { ts: '1790416800', seq: 1, sender: 'sam', kind: 'text', text: 'run the tests' },
+    { ts: '1790416830', seq: 2, sender: 'agent-1', kind: 'text', text: 'Running them now.' }
+  ]
+  const askedAt = new Date(1_790_416_840_000).toISOString()
+  const strip = () =>
+    [...(container?.querySelectorAll('.card') ?? [])].find((card) => card.textContent?.includes('Pending requests'))
+
+  it('asks inside the turn that was running, answered there, and leaves the strip to what is not a tool call', async () => {
+    wire.messages = turnRows
+    wire.requests = [
+      { ...request, createdAt: askedAt, options: [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }] },
+      {
+        ...request,
+        id: 'join-1',
+        createdAt: askedAt,
+        command: 'Let Ops bot join #general to post there?',
+        kind: 'join'
+      }
+    ]
+    await render()
+    const card = container?.querySelector('[data-turn-approval="request-1"]')
+    expect(card?.textContent).toContain('Approval needed:')
+    expect(card?.textContent).toContain('Bash: npm test')
+    expect(strip()?.textContent).toContain('Let Ops bot join #general to post there?')
+    expect(strip()?.textContent).not.toContain('Bash: npm test')
+
+    await act(async () => card?.querySelector('button')?.click())
+    expect(wire.decisions).toEqual([['session-1', 'request-1', 'allow', 'once']])
+  })
+
+  it('collapses a settled one to a line that says what was asked, how it ended, who answered and where', async () => {
+    wire.messages = turnRows
+    wire.requests = [
+      {
+        ...request,
+        createdAt: askedAt,
+        status: 'allowed',
+        resolvedAt: askedAt,
+        resolvedBy: 'slack:T1:U1',
+        resolvedByName: 'Dana Reyes'
+      }
+    ]
+    await render()
+    const line = container?.querySelector('[data-turn-approval="request-1"]')
+    expect(line?.textContent).toContain('Asked: Bash: npm test · Allowed · Answered by Dana Reyes in Slack ·')
+    expect(line?.querySelector('button')).toBeNull()
+    expect(strip()).toBeUndefined()
   })
 })
 

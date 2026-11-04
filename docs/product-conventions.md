@@ -90,10 +90,10 @@ Who counts as "people" depends on whether the product can tell who someone is:
 - **A platform without that sync**: anyone who can talk to the agent in that conversation.
 - **Webchat** always knows who someone is: the agent's editors, and at the second and third
   levels also the conversation's owner, even one whose role only lets them view. The owner
-  answers the conversation's approvals, its tasks' included, among its pending
-  requests above the composer. Anyone else who tries to change a setting there is told, on their
-  own screen only, who may. A conversation started through the agent's chat API belongs to the
-  API key's owner.
+  answers the conversation's approvals in the conversation, each at the agent turn that asked
+  it, and its tasks' among its pending requests above the composer. Anyone else who tries to
+  change a setting there is told, on their own screen only, who may. A conversation started
+  through the agent's chat API belongs to the API key's owner.
 
 Every level keeps these rules:
 

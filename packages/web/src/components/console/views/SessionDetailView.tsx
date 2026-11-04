@@ -83,7 +83,10 @@ import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSele
 import { SessionModelSelectionResult } from '@/components/console/decisions/SessionModelSelectionResult'
 import { CoordinatorTag } from '@/components/console/CoordinatorTag'
 import { agentToneColor } from '@/lib/agent-tone'
-import { AGENT_BUBBLE, AGENT_NAME, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
+import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
+import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
+import { TranscriptApprovalsProvider, TurnApprovals } from '@/components/console/TurnApprovals'
+import { approvalTurnStart, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
@@ -154,7 +157,9 @@ import {
   planLabel,
   sessionTurnInFlight,
   stripBoldMarks,
+  stepStatusMark,
   toggleWorkPanel,
+  turnSpan,
   typedInvalidReason,
   workCounts,
   workPanelOpen,
@@ -472,9 +477,15 @@ function ComposerSendButton({
   )
 }
 
-// One agent-turn step rendered from a real transcript message. Maps the daemon
-// transcript kind (text | tool | reasoning | plan | elicit) onto the existing lane styling.
+// One agent-turn step from a real transcript row, dated by the row's own time.
 function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string): FmtStep {
+  const step = msgStepBody(m, toolSessionId, platform)
+  const timeMs = transcriptRowTimeMs(m)
+  return timeMs === null ? step : { ...step, timeMs }
+}
+
+// Maps the daemon transcript kind (text | tool | reasoning | plan | elicit | app | capability) onto the lane styling.
+function msgStepBody(m: SessionMessageDto, toolSessionId?: string, platform?: string): FmtStep {
   const k = (m.kind || 'text').toLowerCase()
   // A recorded elicitation card (#1794). It renders through the SAME component a live card does,
   // just without an `onAnswer` — a reader loading the conversation later sees the question, what
@@ -632,6 +643,8 @@ interface FmtStep {
   code: string
   files: { tag: string; path: string; color: string }[]
   time?: string
+  // Epoch ms of the row or live event, which dates the turn's approximate duration.
+  timeMs?: number
   // The turn's task list — present only on a PLAN_LANE step, and empty when the row
   // arrived without a readable body.
   plan?: PlanEntry[]
@@ -1563,10 +1576,20 @@ function stripMdMarkers(s: string): string {
     .replace(/`([^`]+)`/g, '$1')
 }
 
-// One work step, Claude-Code style: a one-line clickable title with a trailing
-// chevron; expanding reveals the step's full text and extras (command, files,
-// captured tool body). A row with nothing beyond its title line isn't expandable.
-function WorkStepRow({ step, sessionId, divider }: { step: FmtStep; sessionId?: string; divider: boolean }) {
+// One work step: a status mark and a one-line title that expands to its text and extras; a title-only row does not expand.
+function WorkStepRow({
+  step,
+  sessionId,
+  divider,
+  live
+}: {
+  step: FmtStep
+  sessionId?: string
+  divider: boolean
+  // The turn still streams; a finished turn's unsettled tool shows its plain dot, not a spinner that never stops.
+  live: boolean
+}) {
+  const t = useTranslations('Sessions.detail')
   const [open, setOpen] = useState(false)
   // Tool rows keep their title in `code` (msgStep), so fall back to its first line.
   // trimStart: reasoning text can open with blank lines, which must not blank the title.
@@ -1576,8 +1599,11 @@ function WorkStepRow({ step, sessionId, divider }: { step: FmtStep; sessionId?: 
   const codeBeyondTitle = !!step.code && (!!step.text || step.code.includes('\n'))
   const expandable = !!step.msg || step.files.length > 0 || codeBeyondTitle || step.text.includes('\n')
   const failed = (step.msg?.toolStatus ?? '').toLowerCase() === 'failed'
+  const status = stepStatusMark(step.msg?.toolStatus)
+  const mark = status === 'running' && !live ? null : status
+  const markLabel = mark === 'running' ? t('stepRunning') : mark === 'done' ? t('stepDone') : t('stepFailed')
   return (
-    <div className={divider ? 'border-t border-(--border-subtle)' : ''}>
+    <div className={divider ? 'border-t border-(--border-subtle)' : ''} data-step-status={mark ?? undefined}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -1586,17 +1612,40 @@ function WorkStepRow({ step, sessionId, divider }: { step: FmtStep; sessionId?: 
           expandable ? 'cursor-pointer hover:bg-(--surface-hover)' : ''
         }`}
       >
-        <span
-          className="dot h-[7px] w-[7px] flex-none"
-          style={{ background: step.dot }}
-          title={LANE_TITLE[step.lane]}
-        />
+        {mark ? (
+          <span aria-hidden className="flex h-[13px] w-[13px] flex-none items-center justify-center">
+            {mark === 'running' ? (
+              <Icon name="loader" size={13} color="var(--status-paused)" className="animate-spin" />
+            ) : mark === 'done' ? (
+              <Icon name="circle-check" size={13} color="var(--status-online)" />
+            ) : (
+              <Icon name="circle-x" size={13} color="var(--status-error)" />
+            )}
+          </span>
+        ) : (
+          <span
+            className="dot h-[7px] w-[7px] flex-none"
+            style={{ background: step.dot }}
+            title={LANE_TITLE[step.lane]}
+          />
+        )}
         <span
           className={`min-w-0 truncate leading-[1.5] ${step.text ? 'font-sans text-[13px]' : 'mono text-[12px]'}`}
           style={{ fontWeight: step.weight, color: failed ? 'var(--red-600)' : step.textColor }}
         >
           {title}
         </span>
+        {/* The step's state in words at the row's right edge, as the mockup's "done" / "running". */}
+        {mark && (
+          <span
+            data-step-meta=""
+            className={`ml-auto flex-none pl-2 font-sans text-[12px] leading-normal font-normal ${
+              mark === 'failed' ? 'text-(--status-error)' : 'text-(--text-tertiary)'
+            }`}
+          >
+            {markLabel}
+          </span>
+        )}
         {expandable && (
           <Icon
             name={open ? 'chevron-down' : 'chevron-right'}
@@ -1710,6 +1759,7 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     code: stp.code ?? '',
     files: (stp.files ?? []).map((f) => ({ tag: f.tag, path: f.path, color: fileColor(f.tag) })),
     time: stp.time ?? '',
+    ...(stp.observedAtMs !== undefined && Number.isFinite(stp.observedAtMs) ? { timeMs: stp.observedAtMs } : {}),
     ...(stp.kind === 'planblock' ? { plan: stp.plan ?? [] } : {}),
     ...(stp.kind === 'elicit' && stp.elicit ? { elicit: stp.elicit } : {}),
     ...(stp.kind === 'capability' && stp.capability ? { capability: stp.capability } : {}),
@@ -4414,8 +4464,12 @@ export default function SessionDetailView() {
         // Daemon background-task wakes belong to the owning agent, not to a person —
         // in a merged conversation that is the SOURCE member's agent.
         if (isBgTaskWake(m.sender)) {
+          const wakeMs = transcriptRowTimeMs(m)
           pushOwnerWakeTurn(
-            thinkStep(m.text, formatTranscriptRowTime(m), rowPlatform),
+            {
+              ...thinkStep(m.text, formatTranscriptRowTime(m), rowPlatform),
+              ...(wakeMs === null ? {} : { timeMs: wakeMs })
+            },
             rowAnchor(m),
             sourceTurnKey,
             conversationSourceAgentByMessageRef.current.get(m)
@@ -5018,7 +5072,7 @@ export default function SessionDetailView() {
   // meta row → transcript. Both form factors put the run's numbers behind the
   // same Details popover. Breakpoint differences are CSS-gated (desktop: /
   // max-desktop:), never JS-forked.
-  // The approval strip rides the sticky composer footer on a live session (the top slot otherwise) while something waits; the Requests popover keeps the history.
+  // The approval strip rides the sticky composer footer on a live session (the top slot otherwise) while something the transcript does not place waits; the Requests popover keeps the history.
   const canReviewApprovals = Boolean(owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId)
   // A webchat conversation's owner answers its requests here through the conversation: all of them where people in chat may approve, else the join confirmations that ask them, as the CP narrows the list.
   const ownerApprovals = Boolean(
@@ -5036,6 +5090,24 @@ export default function SessionDetailView() {
     owner?.assistantMode?.enabled === true &&
     !owner.name.startsWith(MOCK_PREFIX)
   )
+  // Each agent turn as approval placement reads it: a tool call's request shows at the turn that asked it, not in the strip.
+  // A turn before the last message that opened a new exchange (a steer joins the running turn) is closed.
+  let lastExchangeAt = -1
+  turns.forEach((turn, i) => {
+    if (turn.kind === 'user' && !turn.steer) lastExchangeAt = i
+  })
+  const approvalTurns: ApprovalTurnAnchor[] = turns.flatMap((turn, i) =>
+    turn.kind === 'bot'
+      ? [
+          {
+            key: turn.key,
+            ...(turn.agentId ? { agentId: turn.agentId } : {}),
+            startMs: approvalTurnStart(turn.steps.map((st) => st.timeMs)),
+            closed: i < lastExchangeAt
+          }
+        ]
+      : []
+  )
   const approvalCard = (className: string) =>
     (canReviewApprovals || ownerApprovals || conversationProposals) && session.agentId ? (
       <ApprovalRequestsCard
@@ -5046,6 +5118,7 @@ export default function SessionDetailView() {
         permissions={canReviewApprovals || ownerApprovals}
         conversationPermissions={ownerApprovals}
         proposals={conversationProposals}
+        transcriptTurns={approvalTurns}
         className={className}
       />
     ) : null
@@ -5532,403 +5605,352 @@ export default function SessionDetailView() {
                   />
                 )}
                 {turns.length > 0 && (
-                  <div className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
-                    {turns.map((turn, ti) => (
-                      // The turn's clock time is its own centred line above the message —
-                      // a shared separator for both sides, instead of a label-row tail
-                      // that never lines up with the bubble edge on either side.
-                      <div key={turn.key} className="flex flex-col gap-[5px]">
-                        {turn.time && (
-                          <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
-                            {turn.time}
-                          </div>
-                        )}
-                        {turn.kind === 'user' ? (
-                          // 2b: user turns are right-aligned brand-soft bubbles. A sender label
-                          // sits above the bubble only when it isn't you (platform user / cron).
-                          <div className="group/turn flex items-start justify-end gap-[9px]">
-                            <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
-                              {showsSenderLabel(turn) && (
-                                <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-                                  {turn.isCron && turn.cronId ? (
-                                    <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
-                                      {turn.sp.name}
-                                    </Link>
-                                  ) : (
-                                    <span>{turn.sp.name}</span>
-                                  )}
-                                </span>
-                              )}
-                              {turn.steer && (
-                                // A glyph and one word; the full meaning sits in the tooltip.
-                                <span
-                                  className="flex items-center gap-1 pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)"
-                                  title={
-                                    turn.steered ? 'Steered into the running reply' : 'Steering into the running reply…'
-                                  }
-                                >
-                                  {turn.steered ? <Icon name="corner-down-right" size={11} /> : <Spinner size={10} />}
-                                  {turn.steered ? 'Steered' : 'Steering…'}
-                                </span>
-                              )}
-                              {turn.files && <MessageFileCards files={turn.files} />}
-                              {(turn.text || turn.image || turn.body) && (
-                                <div className={SELF_BUBBLE}>
-                                  {turn.body?.sessionMessage && (
-                                    <SessionMessageCaption facts={turn.body.sessionMessage} />
-                                  )}
-                                  {turn.image && (
-                                    <img
-                                      src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
-                                      alt={turn.image.name}
-                                      className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
-                                    />
-                                  )}
-                                  {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
-                                  {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
-                                </div>
-                              )}
-                              {/* Sent bubbles are complete by definition — the copy affordance
-                        (hover-revealed, right-aligned under the bubble) always mounts.
-                        Absolutely positioned into the inter-turn gap so revealing it
-                        never changes the row's height. */}
-                              {turn.text && (
-                                <span className="absolute right-0 top-full">
-                                  <CopyTurnButton text={turn.text} />
-                                </span>
-                              )}
+                  <TranscriptApprovalsProvider
+                    agentId={session.agentId ?? ''}
+                    sessionId={session.realSessionId ?? session.id}
+                    enabled={(canReviewApprovals || ownerApprovals) && Boolean(session.agentId)}
+                    conversationPermissions={ownerApprovals}
+                    turns={approvalTurns}
+                  >
+                    <div className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
+                      {turns.map((turn, ti) => (
+                        // The turn's clock time is its own centred line above the message, a separator shared by both sides.
+                        <div key={turn.key} className="flex flex-col gap-[5px]">
+                          {turn.time && (
+                            <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
+                              {turn.time}
                             </div>
-                            <ParticipantAvatar
-                              agent={turn.agent}
-                              avatarUrl={turn.avatarUrl}
-                              avatarInitials={turn.avatarInitials}
-                              platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
-                              sp={turn.sp}
-                              isCron={turn.isCron}
-                              // Optically centre the 26px mark on the bubble's FIRST LINE, not
-                              // on the bubble's top edge: 9px of padding plus half of a 21px
-                              // line puts that centre 19.5px down, while a top-aligned mark
-                              // centres at 13px — the 6px it looked too high by. A labelled row
-                              // keeps the mark level with its label instead, like the bot side.
-                              className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
-                            />
-                          </div>
-                        ) : (
-                          (() => {
-                            // 2b: the spoken answer (MSG/DONE) is plain text; the agent's work
-                            // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
-                            // A daemon notice (a sandbox pod coming up) is neither: it renders
-                            // as its own standalone line above the answer.
-                            const noticeSteps = turn.steps.filter((s) => s.lane === NOTICE_LANE)
-                            // The turn's plan: its own block, so it is neither a spoken answer nor
-                            // collapsed work. A turn carries at most one (the row is upserted), but
-                            // a merged conversation interleaves turns from several sources.
-                            const planSteps = turn.steps.filter((s) => s.lane === PLAN_LANE)
-                            // What the turn SAID, in the order it said it: spoken bubbles and the
-                            // agent's in-band question cards interleaved. A card gets its own
-                            // block rather than a bubble — it is addressed to the reader, not
-                            // spoken at them — but it stays where it was asked, since an agent
-                            // that explains itself and then asks must not read as asking first.
-                            const saidSteps = turn.steps.filter(
-                              (s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE && s.lane !== PLAN_LANE
-                            )
-                            // A coordinator's link to a task it opened or passed a message to is a card that opens the task's thread.
-                            const taskLinks = saidSteps.map((s) => s.taskLink ?? null)
-                            const textSteps = saidSteps.filter(
-                              (s) => s.lane !== ELICIT_LANE && s.lane !== APP_LANE && s.lane !== CAPABILITY_LANE
-                            )
-                            const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
-                            // Reasoning steps / tool commands / edited FILES (distinct paths across
-                            // EDIT rows, since one EDIT row can touch several files).
-                            const { thinkCount, toolCount, editCount } = workCounts(workSteps)
-                            const summary = workSummary(thinkCount, toolCount, editCount)
-                            // Is this turn still streaming? A multi-agent live webchat runs
-                            // several reply lanes at once, so a TAGGED turn asks its own lane
-                            // (an earlier still-active participant must not show the copy
-                            // affordance or lose its live line just because a later turn renders
-                            // below it). Lane-less/single-agent streams keep the trailing-turn
-                            // fallback. statusLabel carries the RAW session state — the
-                            // active-turn predicate lives (and is tested) in session-work.ts.
-                            const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
-                            const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
-                            // The lane only says WHICH AGENT is busy — restrict the match to that
-                            // agent's LAST turn so its finished history stays non-streaming.
-                            const streaming =
-                              turnInFlight &&
-                              (turn.agentId && busyLanes.length > 0
-                                ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
-                                : ti === turns.length - 1)
-                            const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
-                            // Is the WORK itself still running? `streaming` alone is turn-level —
-                            // it stays true while the spoken answer streams AFTER the last tool
-                            // finished, which must not keep the live line alive. ACP tool calls
-                            // can also run in PARALLEL, each update replacing its original row
-                            // in place (keyed by toolCallId) — so "the newest row is finished"
-                            // does not mean the work is: any non-terminal tool row keeps the
-                            // work running, and the LATEST such row is what the toggle line
-                            // reports. With no active tool, a trailing unfinished work step
-                            // still counts (THINK rows carry no status and run until
-                            // superseded); a trailing text step means the agent moved on to its
-                            // answer.
-                            const stepDone = (st?: FmtStep) =>
-                              ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
-                            const activeTool = [...workSteps]
-                              .reverse()
-                              .find((st) => st.msg?.toolCallId && !stepDone(st))
-                            const lastStep = turn.steps[turn.steps.length - 1]
-                            const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
-                            const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
-                            const workRunning = streaming && liveStep !== undefined
-                            // While work runs, the toggle line also carries what is running RIGHT
-                            // NOW — the live step's first line (tool rows keep the command in
-                            // `code`) — so a collapsed panel still shows live progress.
-                            // trimStart skips the blank lines reasoning text can open with; a
-                            // reasoning line also drops its markdown markers (same as the row title).
-                            const liveRaw =
-                              workRunning && liveStep
-                                ? (liveStep.text || liveStep.code)?.trimStart().split('\n', 1)[0]?.trim()
-                                : undefined
-                            const liveLine = liveRaw && liveStep?.text ? stripMdMarkers(liveRaw) : liveRaw
-                            // Step identity for the fade-in key: two consecutive steps can show
-                            // the SAME first line, and a keyed-by-text span would keep its DOM
-                            // node and never replay the animation.
-                            const liveKey =
-                              liveStep && liveLine
-                                ? `${liveStep.msg?.toolCallId ?? turn.steps.indexOf(liveStep)}:${liveLine}`
-                                : undefined
-                            // Keyed by agent id where there is one so the colour survives a
-                            // rename; a mock/playground row without an id falls back to the
-                            // display name, which is stable for as long as the row is.
-                            const turnTone = agentToneColor(turn.agentId || turn.agentName)
-                            // What the bubble-level copy button copies: the spoken answer.
-                            const answerText = textSteps
-                              .map((st) => st.text)
-                              .filter(Boolean)
-                              .join('\n\n')
-                            return (
-                              <div
-                                key={`${session.id}:${ti}`}
-                                className="group/turn flex items-start gap-2 desktop:gap-[10px]"
-                              >
-                                <span className="av h-[26px] w-[26px] flex-none rounded-md">
-                                  <AgentIconView
-                                    icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
-                                    runtime={
-                                      (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
-                                      (agentRuntime || turn.model)
-                                    }
-                                    size={26}
-                                  />
-                                </span>
-                                <div className="min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
-                                  <div className="mb-[5px] flex items-center gap-[7px]">
-                                    <span className={AGENT_NAME}>{turn.agentName}</span>
-                                  </div>
-                                  {noticeSteps.length > 0 && (
-                                    <div
-                                      className={`flex min-w-0 flex-col gap-[3px] ${saidSteps.length > 0 || workSteps.length > 0 ? 'mb-2' : ''}`}
-                                    >
-                                      {noticeSteps.map((st, si) => (
-                                        <span
-                                          key={`n:${si}`}
-                                          className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
-                                        >
-                                          {st.text}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  )}
-                                  {planSteps.length > 0 && (
-                                    <div
-                                      className={`flex min-w-0 flex-col gap-2 ${saidSteps.length > 0 || workSteps.length > 0 ? 'mb-2' : ''}`}
-                                    >
-                                      {planSteps.map((st, si) => (
-                                        <PlanBlock key={`p:${si}`} step={st} />
-                                      ))}
-                                    </div>
-                                  )}
-                                  {/* One bubble per text step: a turn that answers in two chunks
-                            arrives as two delivered messages, so one wrapper around the set
-                            would merge messages the platform kept apart. A question card sits
-                            between them wherever the agent asked it. */}
-                                  {saidSteps.map((st, si) =>
-                                    st.lane === APP_LANE ? (
-                                      <div key={`a:${st.app?.appId ?? si}`} className={si > 0 ? 'mt-2' : ''}>
-                                        <McpAppRow
-                                          step={st}
-                                          sessionId={st.toolSessionId ?? toolSid}
-                                          {...(appRpc
-                                            ? { onRpc: (appId, rpc) => appRpc(turn.agentId, appId, rpc) }
-                                            : {})}
-                                          {...(appReport
-                                            ? { onReport: (text: string) => appReport(turn.agentId, text) }
-                                            : {})}
-                                          {...(closeApp ? { onClose: (appId) => closeApp(turn.agentId, appId) } : {})}
-                                        />
-                                      </div>
-                                    ) : st.lane === CAPABILITY_LANE && st.capability ? (
-                                      <div key={`c:${st.capability.requestId}`} className={si > 0 ? 'mt-2' : ''}>
-                                        <CapabilityRequestCard body={st.capability} />
-                                      </div>
-                                    ) : st.lane === ELICIT_LANE ? (
-                                      <div key={`e:${st.elicit?.requestId ?? si}`} className={si > 0 ? 'mt-2' : ''}>
-                                        <ElicitationCard
-                                          step={st}
-                                          {...(answerElicitation
-                                            ? {
-                                                onAnswer: (value: ElicitAnswerValue) =>
-                                                  answerElicitation(turn.agentId, st.elicit?.requestId, value)
-                                              }
-                                            : {})}
-                                        />
-                                      </div>
-                                    ) : taskLinks[si] && turn.agentId ? (
-                                      <div key={`t:${si}`} className={si > 0 ? 'mt-2' : ''}>
-                                        <TaskThreadCard
-                                          agentId={turn.agentId}
-                                          link={taskLinks[si]}
-                                          parentSessionId={turn.agentId === filesAgentId ? subsessionsSessionId : null}
-                                          selected={openThread?.sessionId === taskLinks[si].sessionId}
-                                          {...(turn.agentId === session.agentId
-                                            ? { onOpen: () => openTaskThread(taskLinks[si]!) }
-                                            : {})}
-                                        />
-                                      </div>
+                          )}
+                          {turn.kind === 'user' ? (
+                            // User turns are right-aligned bubbles; a sender label shows only when it isn't you.
+                            <div className="group/turn flex items-start justify-end gap-[9px]">
+                              <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
+                                {showsSenderLabel(turn) && (
+                                  <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
+                                    {turn.isCron && turn.cronId ? (
+                                      <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
+                                        {turn.sp.name}
+                                      </Link>
                                     ) : (
-                                      <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
-                                        {st.sharedImage ? (
-                                          <SharedImageCard
-                                            {...(st.postId ? { postId: st.postId } : {})}
-                                            image={st.sharedImage}
-                                            {...(st.text ? { caption: st.text } : {})}
-                                            {...(st.file ? { file: st.file } : {})}
-                                            {...(turn.agentId ? { agentId: turn.agentId } : {})}
-                                            {...(st.peerCopy ? {} : { sessionId: st.toolSessionId ?? toolSid })}
-                                          />
-                                        ) : (
-                                          <>
-                                            {st.sessionMessage && <SessionMessageCaption facts={st.sessionMessage} />}
-                                            {st.image && (
-                                              <img
-                                                src={`data:${st.image.mimeType};base64,${st.image.data}`}
-                                                alt={st.image.name}
-                                                className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
-                                              />
-                                            )}
-                                            {st.text && (
-                                              <div className="whitespace-pre-wrap">
-                                                <MessageText text={st.text} platform={st.platform} />
-                                              </div>
-                                            )}
-                                            {st.file && (
-                                              <div className={st.text ? 'mt-2' : ''}>
-                                                <SharedFileChip
-                                                  file={st.file}
-                                                  agentId={turn.agentId}
-                                                  sessionId={st.toolSessionId ?? toolSid}
-                                                />
-                                              </div>
-                                            )}
-                                            {st.sessionMessage && (
-                                              <UserTurnDetails body={{ sessionMessage: st.sessionMessage }} />
-                                            )}
-                                          </>
-                                        )}
-                                        <StepExtras step={st} sessionId={toolSid} />
-                                      </div>
-                                    )
-                                  )}
-                                  {(openedTaskCards.get(turn.key) ?? [])
-                                    .filter((link) => !taskLinks.some((shown) => shown?.sessionId === link.sessionId))
-                                    .map((link) => (
-                                      <div key={`o:${link.sessionId}`} className={saidSteps.length > 0 ? 'mt-2' : ''}>
-                                        <TaskThreadCard
-                                          agentId={session.agentId!}
-                                          link={link}
-                                          parentSessionId={subsessionsSessionId}
-                                          selected={openThread?.sessionId === link.sessionId}
-                                          onOpen={() => openTaskThread(link)}
-                                        />
-                                      </div>
-                                    ))}
-                                  {workSteps.length > 0 && (
-                                    <>
-                                      {/* One row: the work toggle, with the bubble's copy button at
-                                the line's end — mounted only once the turn has finished. */}
-                                      <div className="mt-2 flex min-w-0 items-center gap-[6px]">
-                                        <button
-                                          type="button"
-                                          onClick={() => toggleWork(turn.key ?? '', openWork)}
-                                          className="inline-flex min-w-0 items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
-                                          title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
-                                        >
-                                          <Icon
-                                            name={openWork ? 'chevron-down' : 'chevron-right'}
-                                            size={13}
-                                            color="var(--text-tertiary)"
-                                          />
-                                          <span className="flex-none">{summary || t('details')}</span>
-                                          {liveLine && (
-                                            // Keyed by step identity + content: a new step (or a new
-                                            // first line within one) remounts the span, replaying the
-                                            // ac-rise fade-in (honors reduced-motion in globals.css).
-                                            <span key={liveKey} className="work-live min-w-0 truncate">
-                                              · {liveLine}
-                                            </span>
-                                          )}
-                                        </button>
-                                        {!streaming && answerText && <CopyTurnButton text={answerText} />}
-                                      </div>
-                                      {openWork && (
-                                        <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
-                                          {/* All work steps show, streaming or not — a live turn's
-                                    panel grows as steps arrive so the whole run is visible. */}
+                                      <span>{turn.sp.name}</span>
+                                    )}
+                                  </span>
+                                )}
+                                {turn.steer && (
+                                  // A glyph and one word; the full meaning sits in the tooltip.
+                                  <span
+                                    className="flex items-center gap-1 pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)"
+                                    title={
+                                      turn.steered
+                                        ? 'Steered into the running reply'
+                                        : 'Steering into the running reply…'
+                                    }
+                                  >
+                                    {turn.steered ? <Icon name="corner-down-right" size={11} /> : <Spinner size={10} />}
+                                    {turn.steered ? 'Steered' : 'Steering…'}
+                                  </span>
+                                )}
+                                {turn.files && <MessageFileCards files={turn.files} />}
+                                {(turn.text || turn.image || turn.body) && (
+                                  <div className={SELF_BUBBLE}>
+                                    {turn.body?.sessionMessage && (
+                                      <SessionMessageCaption facts={turn.body.sessionMessage} />
+                                    )}
+                                    {turn.image && (
+                                      <img
+                                        src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
+                                        alt={turn.image.name}
+                                        className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
+                                      />
+                                    )}
+                                    {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
+                                    {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
+                                  </div>
+                                )}
+                                {/* A sent bubble's hover copy button sits in the inter-turn gap, so revealing it never shifts the row. */}
+                                {turn.text && (
+                                  <span className="absolute right-0 top-full">
+                                    <CopyTurnButton text={turn.text} />
+                                  </span>
+                                )}
+                              </div>
+                              <ParticipantAvatar
+                                agent={turn.agent}
+                                avatarUrl={turn.avatarUrl}
+                                avatarInitials={turn.avatarInitials}
+                                platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
+                                sp={turn.sp}
+                                isCron={turn.isCron}
+                                // Centre the 26px mark on the bubble's first line; a labelled row keeps it level with the label.
+                                className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
+                              />
+                            </div>
+                          ) : (
+                            (() => {
+                              // The answer reads as prose, work folds under the header line, and a daemon notice stands on its own line.
+                              const noticeSteps = turn.steps.filter((s) => s.lane === NOTICE_LANE)
+                              // The turn's plan is its own block, neither spoken answer nor folded work.
+                              const planSteps = turn.steps.filter((s) => s.lane === PLAN_LANE)
+                              // What the turn SAID, in order: prose blocks and question cards stay where the agent put them.
+                              const saidSteps = turn.steps.filter(
+                                (s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE && s.lane !== PLAN_LANE
+                              )
+                              // A coordinator's link to a task it opened or passed a message to is a card that opens the task's thread.
+                              const taskLinks = saidSteps.map((s) => s.taskLink ?? null)
+                              const textSteps = saidSteps.filter(
+                                (s) => s.lane !== ELICIT_LANE && s.lane !== APP_LANE && s.lane !== CAPABILITY_LANE
+                              )
+                              const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
+                              // Reasoning steps / tool commands / distinct edited files.
+                              const { thinkCount, toolCount, editCount } = workCounts(workSteps)
+                              const summary = workSummary(thinkCount, toolCount, editCount)
+                              // A tagged turn asks its own busy lane (multi-agent webchat); untagged streams fall back to the trailing turn.
+                              const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
+                              const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
+                              // The lane names the busy agent only, so only that agent's last turn streams.
+                              const streaming =
+                                turnInFlight &&
+                                (turn.agentId && busyLanes.length > 0
+                                  ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
+                                  : ti === turns.length - 1)
+                              const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
+                              // Work runs while any tool row is unsettled (parallel calls update in place) or a trailing work step is unfinished.
+                              const stepDone = (st?: FmtStep) =>
+                                ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
+                              const activeTool = [...workSteps]
+                                .reverse()
+                                .find((st) => st.msg?.toolCallId && !stepDone(st))
+                              const lastStep = turn.steps[turn.steps.length - 1]
+                              const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
+                              const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
+                              const workRunning = streaming && liveStep !== undefined
+                              // The live line: the running step's first line (tool rows keep the command in `code`), markdown stripped.
+                              const liveRaw =
+                                workRunning && liveStep
+                                  ? (liveStep.text || liveStep.code)?.trimStart().split('\n', 1)[0]?.trim()
+                                  : undefined
+                              const liveLine = liveRaw && liveStep?.text ? stripMdMarkers(liveRaw) : liveRaw
+                              // Step identity keys the fade-in, since two consecutive steps can share a first line.
+                              const liveKey =
+                                liveStep && liveLine
+                                  ? `${liveStep.msg?.toolCallId ?? turn.steps.indexOf(liveStep)}:${liveLine}`
+                                  : undefined
+                              // Keyed by agent id so the colour survives a rename; an id-less row falls back to its name.
+                              const turnTone = agentToneColor(turn.agentId || turn.agentName)
+                              // What the turn's copy button copies: the spoken answer.
+                              const answerText = textSteps
+                                .map((st) => st.text)
+                                .filter(Boolean)
+                                .join('\n\n')
+                              return (
+                                <div
+                                  key={`${session.id}:${ti}`}
+                                  className="group/turn flex items-start gap-2 desktop:gap-[10px]"
+                                >
+                                  <span className="av h-[26px] w-[26px] flex-none rounded-md">
+                                    <AgentIconView
+                                      icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
+                                      runtime={
+                                        (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
+                                        (agentRuntime || turn.model)
+                                      }
+                                      size={26}
+                                    />
+                                  </span>
+                                  <div
+                                    className="min-w-0 flex-1"
+                                    style={{ '--agent-accent': turnTone } as CSSProperties}
+                                  >
+                                    <AgentTurnHeader
+                                      name={turn.agentName}
+                                      {...(workSteps.length > 0
+                                        ? {
+                                            work: {
+                                              summary,
+                                              open: openWork,
+                                              onToggle: () => toggleWork(turn.key ?? '', openWork),
+                                              running: streaming,
+                                              span: turnSpan(turn.steps.map((st) => st.timeMs)),
+                                              liveLine,
+                                              liveKey
+                                            }
+                                          }
+                                        : {})}
+                                    />
+                                    <div className="flex min-w-0 flex-col gap-[10px]">
+                                      {/* Work happens before the answer, so the open panel sits right under the header. */}
+                                      {workSteps.length > 0 && openWork && (
+                                        <div className="overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
                                           {workSteps.map((st, si) => (
                                             <WorkStepRow
-                                              // Keyed by tool identity where there is one, so an
-                                              // open row survives re-renders as new steps stream
-                                              // in. Steps without a tool id (THINK rows) fall back
-                                              // to the index; within one agent's turn a toolCallId
-                                              // appears once.
+                                              // Keyed by tool identity so an open row survives new steps streaming in; THINK rows use the index.
                                               key={st.msg?.toolCallId ?? `i:${si}`}
                                               step={st}
                                               sessionId={toolSid}
                                               divider={si > 0}
+                                              live={streaming}
                                             />
                                           ))}
                                         </div>
                                       )}
-                                    </>
-                                  )}
-                                  {/* A turn with no work has no toggle row — the finished
-                            bubble's copy button gets its own line instead. */}
-                                  {workSteps.length === 0 && !streaming && answerText && (
-                                    <div className="mt-2 flex">
-                                      <CopyTurnButton text={answerText} />
+                                      {/* A tool call's approval sits where the turn asked it, after the work that led there. */}
+                                      <TurnApprovals turnKey={turn.key} />
+                                      {noticeSteps.length > 0 && (
+                                        <div className="flex min-w-0 flex-col gap-[3px]">
+                                          {noticeSteps.map((st, si) => (
+                                            <span
+                                              key={`n:${si}`}
+                                              className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+                                            >
+                                              {st.text}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+                                      {planSteps.map((st, si) => (
+                                        <PlanBlock key={`p:${si}`} step={st} />
+                                      ))}
+                                      {/* One prose block per text step: a turn that answers in two chunks delivered two messages, so they stay apart. */}
+                                      {saidSteps.map((st, si) =>
+                                        st.lane === APP_LANE ? (
+                                          <div key={`a:${st.app?.appId ?? si}`}>
+                                            <McpAppRow
+                                              step={st}
+                                              sessionId={st.toolSessionId ?? toolSid}
+                                              {...(appRpc
+                                                ? { onRpc: (appId, rpc) => appRpc(turn.agentId, appId, rpc) }
+                                                : {})}
+                                              {...(appReport
+                                                ? { onReport: (text: string) => appReport(turn.agentId, text) }
+                                                : {})}
+                                              {...(closeApp
+                                                ? { onClose: (appId) => closeApp(turn.agentId, appId) }
+                                                : {})}
+                                            />
+                                          </div>
+                                        ) : st.lane === CAPABILITY_LANE && st.capability ? (
+                                          <div key={`c:${st.capability.requestId}`}>
+                                            <CapabilityRequestCard body={st.capability} />
+                                          </div>
+                                        ) : st.lane === ELICIT_LANE ? (
+                                          <div key={`e:${st.elicit?.requestId ?? si}`}>
+                                            <ElicitationCard
+                                              step={st}
+                                              {...(answerElicitation
+                                                ? {
+                                                    onAnswer: (value: ElicitAnswerValue) =>
+                                                      answerElicitation(turn.agentId, st.elicit?.requestId, value)
+                                                  }
+                                                : {})}
+                                            />
+                                          </div>
+                                        ) : taskLinks[si] && turn.agentId ? (
+                                          <div key={`t:${si}`}>
+                                            <TaskThreadCard
+                                              agentId={turn.agentId}
+                                              link={taskLinks[si]}
+                                              parentSessionId={
+                                                turn.agentId === filesAgentId ? subsessionsSessionId : null
+                                              }
+                                              selected={openThread?.sessionId === taskLinks[si].sessionId}
+                                              {...(turn.agentId === session.agentId
+                                                ? { onOpen: () => openTaskThread(taskLinks[si]!) }
+                                                : {})}
+                                            />
+                                          </div>
+                                        ) : (
+                                          <div key={si} className={AGENT_PROSE} data-agent-prose="">
+                                            {st.sharedImage ? (
+                                              <SharedImageCard
+                                                {...(st.postId ? { postId: st.postId } : {})}
+                                                image={st.sharedImage}
+                                                {...(st.text ? { caption: st.text } : {})}
+                                                {...(st.file ? { file: st.file } : {})}
+                                                {...(turn.agentId ? { agentId: turn.agentId } : {})}
+                                                {...(st.peerCopy ? {} : { sessionId: st.toolSessionId ?? toolSid })}
+                                              />
+                                            ) : (
+                                              <>
+                                                {st.sessionMessage && (
+                                                  <SessionMessageCaption facts={st.sessionMessage} />
+                                                )}
+                                                {st.image && (
+                                                  <img
+                                                    src={`data:${st.image.mimeType};base64,${st.image.data}`}
+                                                    alt={st.image.name}
+                                                    className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
+                                                  />
+                                                )}
+                                                {st.text && (
+                                                  <div className="whitespace-pre-wrap">
+                                                    <MessageText text={st.text} platform={st.platform} />
+                                                  </div>
+                                                )}
+                                                {st.file && (
+                                                  <div className={st.text ? 'mt-2' : ''}>
+                                                    <SharedFileChip
+                                                      file={st.file}
+                                                      agentId={turn.agentId}
+                                                      sessionId={st.toolSessionId ?? toolSid}
+                                                    />
+                                                  </div>
+                                                )}
+                                                {st.sessionMessage && (
+                                                  <UserTurnDetails body={{ sessionMessage: st.sessionMessage }} />
+                                                )}
+                                              </>
+                                            )}
+                                            <StepExtras step={st} sessionId={toolSid} />
+                                          </div>
+                                        )
+                                      )}
+                                      {(openedTaskCards.get(turn.key) ?? [])
+                                        .filter(
+                                          (link) => !taskLinks.some((shown) => shown?.sessionId === link.sessionId)
+                                        )
+                                        .map((link) => (
+                                          <div key={`o:${link.sessionId}`}>
+                                            <TaskThreadCard
+                                              agentId={session.agentId!}
+                                              link={link}
+                                              parentSessionId={subsessionsSessionId}
+                                              selected={openThread?.sessionId === link.sessionId}
+                                              onOpen={() => openTaskThread(link)}
+                                            />
+                                          </div>
+                                        ))}
+                                      {/* A finished turn's answer gets its copy button on its own line. */}
+                                      {!streaming && answerText && (
+                                        <div className="flex">
+                                          <CopyTurnButton text={answerText} />
+                                        </div>
+                                      )}
                                     </div>
-                                  )}
+                                  </div>
                                 </div>
-                              </div>
-                            )
-                          })()
-                        )}
-                        {turn.kind === 'user' &&
-                          turn.seq !== undefined &&
-                          (() => {
-                            const record = decisionResults.bySeq.get(turn.seq)
-                            return record ? (
-                              <DecisionResultMarker
-                                record={record}
-                                decisionName={decisionCatalog?.decisions.find((d) => d.id === record.decisionId)?.name}
-                                onOpen={() => setOpenDecisionSeq(record.seq)}
-                              />
-                            ) : turn.body?.codehost?.routing ? (
-                              <CodeHostDecisionResult facts={turn.body.codehost} onOpen={setOpenRouting} />
-                            ) : null
-                          })()}
-                      </div>
-                    ))}
-                  </div>
+                              )
+                            })()
+                          )}
+                          {turn.kind === 'user' &&
+                            turn.seq !== undefined &&
+                            (() => {
+                              const record = decisionResults.bySeq.get(turn.seq)
+                              return record ? (
+                                <DecisionResultMarker
+                                  record={record}
+                                  decisionName={
+                                    decisionCatalog?.decisions.find((d) => d.id === record.decisionId)?.name
+                                  }
+                                  onOpen={() => setOpenDecisionSeq(record.seq)}
+                                />
+                              ) : turn.body?.codehost?.routing ? (
+                                <CodeHostDecisionResult facts={turn.body.codehost} onOpen={setOpenRouting} />
+                              ) : null
+                            })()}
+                        </div>
+                      ))}
+                    </div>
+                  </TranscriptApprovalsProvider>
                 )}
                 {openDecisionSeq !== null && decisionResults.lane && (
                   <DecisionEvaluationsDrawer

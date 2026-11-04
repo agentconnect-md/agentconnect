@@ -1,12 +1,16 @@
-// Transcript speech bubbles shared by the session page and a task's dock thread; full literal strings so Tailwind's scanner sees them (STYLE.md §8).
+// Transcript turn styles shared by the session page and a task's dock thread; full literal strings so Tailwind's scanner sees them (STYLE.md §8).
 
-/** An agent's bubble, tinted with the speaker's `--agent-accent`; the indigo fallback keeps a turn with no accent visible. */
-export const AGENT_BUBBLE =
-  'w-fit max-w-full rounded-[12px_12px_12px_4px] border px-2.5 py-2 font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) desktop:max-w-[calc(100%-35px)] desktop:px-3 desktop:py-[9px] border-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_var(--bubble-edge),var(--surface-card))] bg-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_var(--bubble-tint),var(--surface-card))]'
+/** One block of an agent's answer: plain document prose with no bubble chrome — only people get bubbles. */
+export const AGENT_PROSE =
+  'min-w-0 max-w-full break-words font-sans text-[14px] font-normal leading-[1.6] text-(--text-primary)'
 
 /** The speaking agent's name, its accent pulled 62% toward the text colour so gold or green passes contrast. */
 export const AGENT_NAME =
   'font-sans text-[13px] font-semibold leading-normal text-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_62%,var(--text-primary))]'
+
+/** The agent turn's fold line beside its name: duration, work summary and the live step, one click to open the work. */
+export const TURN_FOLD =
+  'inline-flex min-w-0 cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)'
 
 /** A person's own bubble: neutral, its tail corner mirrored. */
 export const SELF_BUBBLE =
