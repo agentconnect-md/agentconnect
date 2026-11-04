@@ -81,6 +81,18 @@ function field(q: ChatInputQuestion): ElicitFieldSpec | undefined {
   }
 }
 
+/** Every live step carries its turn's start, so a finished turn's last reply step carries its end: the turn's own duration. */
+function stampTurnEnd(
+  steps: SessionStep[],
+  turn: { id: string; duration?: number },
+  startMs: number | undefined
+): void {
+  if (startMs === undefined || !('state' in turn) || typeof turn.duration !== 'number') return
+  const last = steps.at(-1)
+  if (!last || last.turnId !== turn.id || last.kind === 'msg') return
+  steps[steps.length - 1] = { ...last, observedAtMs: startMs + turn.duration }
+}
+
 export function ahpSteps(chat: ChatState, agentId: string, session?: SessionState): SessionStep[] {
   const steps: SessionStep[] = []
   const meta = session?._meta?.['agentconnect.md'] as
@@ -196,6 +208,7 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
     for (const { turnId, resolved: _resolved, ...capability } of meta?.capabilities ?? [])
       if (turnId === turn.id)
         steps.push({ ...base, kind: 'capability', text: capability.summary, capability, boundary: true })
+    stampTurnEnd(steps, turn, base.observedAtMs)
   }
   if (chat.steeringMessage)
     steps.push({
