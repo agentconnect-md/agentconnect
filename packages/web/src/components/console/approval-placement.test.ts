@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentPermissionRequestDto } from '@/lib/api'
 import {
+  approvalCommandText,
   askedApprovalIds,
   APPROVAL_TURN_SLACK_MS,
   approvalAnswerPlace,
@@ -118,5 +119,14 @@ describe('askedApprovalIds', () => {
       { elicit: { requestId: 'tool:turn-1:req-2' } }
     ]
     expect([...askedApprovalIds(steps)]).toEqual(['req-1', 'req-2'])
+  })
+})
+
+describe('approvalCommandText', () => {
+  it('names a command once when the record repeats it as title and detail', () => {
+    expect(approvalCommandText('ls /missing: ls /missing')).toBe('ls /missing')
+    expect(approvalCommandText('Bash: rm -rf /tmp/x')).toBe('Bash: rm -rf /tmp/x')
+    expect(approvalCommandText('echo a: b')).toBe('echo a: b')
+    expect(approvalCommandText('')).toBe('')
   })
 })

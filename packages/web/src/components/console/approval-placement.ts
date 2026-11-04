@@ -92,3 +92,13 @@ export function askedApprovalIds(steps: readonly { elicit?: { requestId?: string
   }
   return ids
 }
+
+/** A request's command as shown: a record whose title and detail match ("ls x: ls x") names it once. */
+export function approvalCommandText(command: string): string {
+  const half = (command.length - 2) / 2
+  if (Number.isInteger(half) && half > 0 && command.slice(half, half + 2) === ': ') {
+    const head = command.slice(0, half)
+    if (head === command.slice(half + 2)) return head
+  }
+  return command
+}

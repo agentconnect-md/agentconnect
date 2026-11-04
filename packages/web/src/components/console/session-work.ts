@@ -367,6 +367,33 @@ export function turnDurationMs(
   return span.endMs > span.startMs ? span.endMs - span.startMs : null
 }
 
+/** Whether an agent turn is the one still streaming: its busy lane's latest turn, never one that answered before the latest prompt. */
+export function agentTurnStreaming(p: {
+  turnInFlight: boolean
+  index: number
+  lastIndex: number
+  /** The latest prompt that opened an exchange (a steer joins the running turn instead); -1 for none. */
+  lastExchangeAt: number
+  agentId?: string | undefined
+  busyLanes: readonly string[]
+  agentLastIndex: number | undefined
+}): boolean {
+  if (!p.turnInFlight || p.index < p.lastExchangeAt) return false
+  return p.agentId && p.busyLanes.length > 0
+    ? p.busyLanes.includes(p.agentId) && p.agentLastIndex === p.index
+    : p.index === p.lastIndex
+}
+
+/** A span its own steps cannot measure (one instant, or none) starts at the message the turn answers, when that came earlier. */
+export function withPromptStart(
+  span: { startMs: number; endMs: number } | null,
+  promptMs: number | undefined
+): { startMs: number; endMs: number } | null {
+  if (promptMs === undefined || !Number.isFinite(promptMs)) return span
+  if (span && (span.endMs > span.startMs || promptMs >= span.startMs)) return span
+  return { startMs: promptMs, endMs: span?.endMs ?? promptMs }
+}
+
 /** "42s", "1m 9s", "1h 3m" — a finished sub-second span reads "1s", never a fake "0s". */
 export function formatTurnDuration(ms: number): string {
   const total = ms > 0 ? Math.max(1, Math.round(ms / 1000)) : 0
