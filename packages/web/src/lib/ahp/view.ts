@@ -25,6 +25,16 @@ import type { McpAppCard, McpAppOutcome } from '@agentconnect.md/protocol'
 
 const text = (value: StringOrMarkdown | undefined): string =>
   typeof value === 'string' ? value : (value?.markdown ?? '')
+/** A runtime call's latest title: the start names it generically ("Terminal"), running and finished states carry the refined one (the command). */
+export function ahpToolTitle(tool: {
+  toolName?: string
+  displayName: string
+  invocationMessage?: StringOrMarkdown
+  pastTenseMessage?: StringOrMarkdown
+}): string {
+  if (tool.toolName === 'agentconnect.permission') return tool.displayName
+  return text(tool.pastTenseMessage).trim() || text(tool.invocationMessage).trim() || tool.displayName
+}
 function field(q: ChatInputQuestion): ElicitFieldSpec | undefined {
   const base = {
     propName: q.id,
@@ -132,7 +142,7 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
         steps.push({
           ...base,
           kind: 'tool',
-          text: tool.displayName,
+          text: ahpToolTitle(tool),
           toolCallId: tool.toolCallId,
           toolStatus: tool.status === 'completed' ? (tool.success ? 'completed' : 'failed') : tool.status,
           toolSessionId: meta?.sessionId

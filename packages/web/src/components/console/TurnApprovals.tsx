@@ -48,9 +48,12 @@ export function TranscriptApprovalsProvider({
 }
 
 /** The tool-call approvals one agent turn asked: a waiting one as a card to answer, a settled one as a quiet line. */
-export function TurnApprovals({ turnKey }: { turnKey: string }) {
+export function TurnApprovals({ turnKey, asked }: { turnKey: string; asked?: ReadonlySet<string> }) {
   const ctx = useContext(TranscriptApprovalsContext)
-  const requests = ctx?.byTurn.get(turnKey)
+  // A waiting request the turn already draws as its own confirmation card is answered there.
+  const requests = ctx?.byTurn
+    .get(turnKey)
+    ?.filter((request) => request.status !== 'pending' || !asked?.has(request.id))
   if (!ctx || !requests?.length) return null
   return (
     <div className="flex min-w-0 flex-col gap-2">

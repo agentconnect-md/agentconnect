@@ -82,3 +82,13 @@ export function approvalAnswerPlace(resolvedBy: string | null | undefined): Appr
   const label = platformLabel(prefix)
   return label ? { kind: 'platform', name: label.name } : null
 }
+
+/** Permission requests a live turn already draws as its own confirmation card (`tool:<turn>:<request>`). */
+export function askedApprovalIds(steps: readonly { elicit?: { requestId?: string } | undefined }[]): Set<string> {
+  const ids = new Set<string>()
+  for (const step of steps) {
+    const requestId = step.elicit?.requestId
+    if (requestId?.startsWith('tool:')) ids.add(requestId.slice(requestId.lastIndexOf(':') + 1))
+  }
+  return ids
+}
