@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { McpAppBody } from '@/lib/data'
 import {
   agentTurnStreaming,
+  exchangePromptMs,
   withPromptStart,
   capabilityCard,
   liveCapabilityIds,
@@ -449,5 +450,19 @@ describe('agentTurnStreaming', () => {
     const lane = { turnInFlight: true, busyLanes: [], lastExchangeAt: 0, agentLastIndex: undefined }
     expect(agentTurnStreaming({ ...lane, index: 1, lastIndex: 1 })).toBe(true)
     expect(agentTurnStreaming({ ...lane, index: 1, lastIndex: 2 })).toBe(false)
+  })
+})
+
+describe('exchangePromptMs', () => {
+  const user = (timeMs: number, steer = false) => ({ kind: 'user', timeMs, steer })
+  const bot = (agentId?: string) => ({ kind: 'bot', ...(agentId ? { agentId } : {}) })
+  it('finds the prompt past another agent answering it', () => {
+    expect(exchangePromptMs([user(100), bot('A'), bot('B')], 2)).toBe(100)
+    expect(exchangePromptMs([user(100), user(150, true), bot('A')], 2)).toBe(100)
+  })
+  it('stops at the agent own earlier turn, so a later wake does not measure from an old prompt', () => {
+    expect(exchangePromptMs([user(100), bot('A'), bot('B'), bot('A')], 3)).toBeUndefined()
+    expect(exchangePromptMs([user(100), bot(), bot()], 2)).toBeUndefined()
+    expect(exchangePromptMs([bot('A')], 0)).toBeUndefined()
   })
 })

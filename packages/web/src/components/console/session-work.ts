@@ -384,6 +384,21 @@ export function agentTurnStreaming(p: {
     : p.index === p.lastIndex
 }
 
+/** When the message an agent turn answers was sent: the latest person's turn above it, past other agents' replies, unless this agent already answered it. */
+export function exchangePromptMs(
+  turns: readonly { kind: string; steer?: boolean; timeMs?: number; agentId?: string }[],
+  index: number
+): number | undefined {
+  const agentId = turns[index]?.kind === 'bot' ? turns[index].agentId : undefined
+  for (let i = index - 1; i >= 0; i--) {
+    const turn = turns[i]!
+    if (turn.kind === 'user') {
+      if (!turn.steer) return turn.timeMs
+    } else if (!agentId || turn.agentId === agentId) return undefined
+  }
+  return undefined
+}
+
 /** A span its own steps cannot measure (one instant, or none) starts at the message the turn answers, when that came earlier. */
 export function withPromptStart(
   span: { startMs: number; endMs: number } | null,
