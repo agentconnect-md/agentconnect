@@ -2,17 +2,17 @@
 
 // One coordinator task's thread in the dock (auto-session-mode.md §10): what it and its people said, and a composer that continues it console-only.
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
-import { createPortal } from 'react-dom'
 import useSWR from 'swr'
 import { useFormatter, useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
+import { AgentIconView } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
-import { Scrim } from '@/components/console/Scrim'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
-import { StateMark, taskStateKey, taskTone } from '@/components/console/task-list'
+import { taskStateKey, taskTone, type MarkTone } from '@/components/console/task-list'
 import { typedInvalidReason } from '@/components/console/session-work'
+import { AGENT_BUBBLE, AGENT_NAME, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import {
   threadEntries,
   threadMessages,
@@ -21,13 +21,41 @@ import {
   type ThreadEntry
 } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
+import { useDockExpand } from '@/components/console/dock/SessionDock'
 import { fetchSessionDetail } from '@/lib/api'
+import { agentToneColor } from '@/lib/agent-tone'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
+import type { AgentIcon } from '@/lib/agent-icon'
 import { useOrgs } from '@/lib/org-context'
+
+const HEADER_BTN =
+  'flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none'
+
+// The state pill's colours by tone, as the design's task badge draws them.
+const BADGE: Record<MarkTone, string> = {
+  running: 'bg-(--status-online-soft) text-(--status-online-text)',
+  waiting: 'bg-(--status-paused-soft) text-(--text-primary)',
+  paused: 'bg-(--status-paused-soft) text-(--text-primary)',
+  failed: 'bg-(--status-error-soft) text-(--status-error)',
+  open: 'bg-(--surface-active) text-(--text-tertiary)',
+  done: 'bg-(--surface-active) text-(--text-tertiary)',
+  stopped: 'bg-(--surface-active) text-(--text-tertiary)'
+}
+const BADGE_DOT: Record<MarkTone, string> = {
+  running: 'bg-(--status-online)',
+  waiting: 'bg-(--status-paused)',
+  paused: 'border-[1.5px] border-(--status-paused)',
+  failed: 'bg-(--status-error)',
+  open: 'border-[1.5px] border-(--border-strong)',
+  done: 'bg-(--border-strong)',
+  stopped: 'border-[1.5px] border-(--border-strong)'
+}
 
 export function TaskThreadPanel({
   agentId,
   agentName,
+  agentIcon,
+  agentRuntime,
   task,
   parentSessionId,
   onBack
@@ -35,6 +63,9 @@ export function TaskThreadPanel({
   /** The coordinator's agent, which runs the task. */
   agentId: string
   agentName: string
+  /** The agent's avatar, as the transcript draws it beside its turns. */
+  agentIcon?: AgentIcon | null | undefined
+  agentRuntime?: string | undefined
   task: TaskLink
   /** The conversation whose task list carries this one's state; null reads the task alone. */
   parentSessionId: string | null
@@ -42,37 +73,15 @@ export function TaskThreadPanel({
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
+  const td = useTranslations('Sessions.detail.sessionDock')
   const format = useFormatter()
   const { orgPath } = useOrgs()
   const { getLiveSteps, isPgBusy, markSessionTarget, pgSend, setPgInput, reconcileLiveSteps, pgAnswerElicitation } =
     usePlayground()
+  const dock = useDockExpand()
   const id = task.sessionId
   const row = useTaskRow(agentId, id, parentSessionId)
-  // Shown large over the page, for a long thread the dock is too narrow to read.
-  const [expanded, setExpanded] = useState(false)
   const listRef = useRef<HTMLDivElement | null>(null)
-  // The thread's own node, created once on the client and moved between the two slots below.
-  const [host] = useState(() => {
-    if (typeof document === 'undefined') return null
-    const node = document.createElement('div')
-    node.className = 'flex min-h-0 flex-1 flex-col'
-    return node
-  })
-  const dockSlot = useRef<HTMLDivElement | null>(null)
-  const dialogSlot = useRef<HTMLDivElement | null>(null)
-  // Where the list was scrolled when the thread last moved: a detached node loses its scroll position.
-  const scrollTop = useRef<number | null>(null)
-  const toggleExpanded = (next: boolean): void => {
-    scrollTop.current = listRef.current?.scrollTop ?? null
-    setExpanded(next)
-  }
-  useLayoutEffect(() => {
-    const slot = expanded ? dialogSlot.current : dockSlot.current
-    if (!host || !slot || host.parentNode === slot) return
-    slot.appendChild(host)
-    if (scrollTop.current !== null && listRef.current) listRef.current.scrollTop = scrollTop.current
-    scrollTop.current = null
-  }, [expanded, host])
   const busy = isPgBusy(id)
   const { page, error, reload } = useTaskThread(id, row, { busy })
   // The server decides who may continue a task, by its parent's audience; absent or false keeps it read-only.
@@ -107,62 +116,83 @@ export function TaskThreadPanel({
   }
 
   const title = row?.title ?? task.title
-  const thread = (
+  const tone = row ? taskTone(row, null) : null
+  const pageHref = orgPath(`/sessions/${encodeURIComponent(id)}`)
+  const avatar = <AgentIconView icon={agentIcon ?? null} runtime={agentRuntime ?? ''} size={24} />
+  const accent = { '--agent-accent': agentToneColor(agentId || agentName) } as CSSProperties
+  return (
     <div data-task-thread={id} className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-none flex-col gap-[6px] border-b border-(--border-subtle) px-3 py-[10px]">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="flex cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent px-1 py-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
-            onClick={() => {
-              toggleExpanded(false)
-              onBack()
-            }}
+      <div className="flex h-[43px] min-w-0 flex-none items-center gap-[6px] border-b border-(--border-subtle) pr-2 pl-[10px]">
+        <button
+          type="button"
+          data-task-thread-back=""
+          title={t('backTitle')}
+          onClick={onBack}
+          className="flex-none cursor-pointer rounded-sm border-0 bg-transparent px-[2px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:text-(--text-primary) hover:underline"
+        >
+          {t('back')}
+        </button>
+        <Icon name="chevron-right" size={13} color="var(--text-tertiary)" className="flex-none" />
+        <h3
+          title={title}
+          className="m-0 min-w-0 flex-[0_1_auto] truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)"
+        >
+          {title}
+        </h3>
+        {row && tone ? (
+          <span
+            data-task-thread-state={tone}
+            className={`inline-flex flex-none items-center gap-[5px] rounded-full px-2 py-[2px] font-sans text-[11px] font-semibold leading-normal ${BADGE[tone]}`}
           >
-            <Icon name="arrow-left" size={14} />
-            {t('back')}
-          </button>
+            <span aria-hidden className={`h-[6px] w-[6px] flex-none rounded-full ${BADGE_DOT[tone]}`} />
+            {tl(taskStateKey(row))}
+          </span>
+        ) : null}
+        <span className="flex-1" />
+        <Link
+          href={pageHref}
+          className={HEADER_BTN}
+          title={t('openPage', { title })}
+          aria-label={t('openPage', { title })}
+        >
+          <Icon name="arrow-up-right" size={14} />
+        </Link>
+        {dock.available ? (
           <button
             type="button"
             data-task-thread-expand=""
-            className="iconbtn ml-auto flex h-[26px] w-[26px] flex-none items-center justify-center rounded-sm"
-            title={expanded ? t('collapse') : t('expand')}
-            aria-label={expanded ? t('collapse') : t('expand')}
-            aria-pressed={expanded}
-            onClick={() => toggleExpanded(!expanded)}
+            className={HEADER_BTN}
+            title={dock.expanded ? td('collapsePanel') : td('expandPanel')}
+            aria-label={dock.expanded ? td('collapsePanel') : td('expandPanel')}
+            aria-pressed={dock.expanded}
+            onClick={() => dock.setExpanded(!dock.expanded)}
           >
-            <Icon name={expanded ? 'minimize-2' : 'maximize-2'} size={14} />
+            <Icon name={dock.expanded ? 'minimize-2' : 'maximize-2'} size={14} />
           </button>
-          <Link
-            href={orgPath(`/sessions/${encodeURIComponent(id)}`)}
-            className="iconbtn flex h-[26px] w-[26px] flex-none items-center justify-center rounded-sm"
-            title={t('openPage', { title })}
-            aria-label={t('openPage', { title })}
-          >
-            <Icon name="external-link" size={14} />
-          </Link>
-        </div>
-        <div className="flex min-w-0 items-center gap-2 px-1">
-          {row ? <StateMark tone={taskTone(row, null)} inline /> : null}
-          <h3 className="m-0 min-w-0 flex-1 truncate font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-            {title}
-          </h3>
-          {row ? (
-            <span className="flex-none font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-              {tl(taskStateKey(row))}
-            </span>
-          ) : null}
-        </div>
+        ) : null}
+        <button
+          type="button"
+          data-task-thread-close=""
+          className={HEADER_BTN}
+          title={t('close')}
+          aria-label={t('close')}
+          onClick={onBack}
+        >
+          <Icon name="x" size={14} />
+        </button>
+      </div>
+      <div ref={listRef} className="flex min-h-0 flex-1 flex-col gap-[14px] overflow-auto px-4 pt-[14px] pb-[18px]">
         {row?.summary ? (
-          <p className="m-0 px-1 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+          <p
+            data-task-thread-summary=""
+            className="m-0 rounded-lg border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[10px] font-sans text-[12.5px] font-normal leading-[1.55] whitespace-pre-wrap text-(--text-secondary)"
+          >
             {row.summary}
           </p>
         ) : null}
-      </div>
-      <div ref={listRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto px-4 py-3">
         {page?.nextCursor ? (
           <Link
-            href={orgPath(`/sessions/${encodeURIComponent(id)}`)}
+            href={pageHref}
             className="w-fit font-sans text-[12px] font-normal leading-normal text-(--text-tertiary) hover:underline"
           >
             {t('earlier')}
@@ -183,6 +213,8 @@ export function TaskThreadPanel({
             key={entry.key}
             entry={entry}
             agentName={agentName}
+            avatar={avatar}
+            accent={accent}
             you={t('you')}
             person={t('person')}
             time={entry.at ? format.dateTime(new Date(entry.at), { hour: 'numeric', minute: '2-digit' }) : null}
@@ -190,7 +222,7 @@ export function TaskThreadPanel({
             {entry.question ? (
               <ThreadQuestion
                 question={entry.question}
-                pageHref={orgPath(`/sessions/${encodeURIComponent(id)}`)}
+                pageHref={pageHref}
                 onAnswer={(requestId, value) => {
                   markSessionTarget(id)
                   pgAnswerElicitation(id, agentId, requestId, value)
@@ -200,9 +232,15 @@ export function TaskThreadPanel({
           </ThreadMessage>
         ))}
         {busy ? (
-          <span role="status" className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            {t('working', { agent: agentName })}
-          </span>
+          <div className="flex items-start gap-[9px]" style={accent}>
+            <span className="av h-6 w-6 flex-none rounded-md">{avatar}</span>
+            <span
+              role="status"
+              className="rounded-[11px] bg-(--brand-soft) px-[13px] py-[7px] font-sans text-[12.5px] font-normal leading-normal text-(--brand-soft-text)"
+            >
+              {t('working', { agent: agentName })}
+            </span>
+          </div>
         ) : null}
       </div>
       <ThreadComposer
@@ -210,6 +248,7 @@ export function TaskThreadPanel({
         canReply={canReply}
         checking={detail === undefined}
         placeholder={t('replyPlaceholder')}
+        hint={t('replyHint', { agent: agentName })}
         readOnly={t('readOnly')}
         sendLabel={t('send')}
         onSend={send}
@@ -217,47 +256,20 @@ export function TaskThreadPanel({
       />
     </div>
   )
-  // One mounted thread whose node moves between the dock and the large view, so its drafts, answers and scroll survive the switch.
-  return (
-    <>
-      {expanded ? (
-        <div
-          data-task-thread-placeholder=""
-          className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
-        >
-          {t('expandedElsewhere')}
-          <Button variant="secondary" size="xs" onClick={() => toggleExpanded(false)}>
-            {t('collapse')}
-          </Button>
-        </div>
-      ) : (
-        <div ref={dockSlot} className="flex min-h-0 flex-1 flex-col" />
-      )}
-      {expanded
-        ? createPortal(
-            <Scrim
-              onEscape={() => toggleExpanded(false)}
-              onClick={(e) => e.target === e.currentTarget && toggleExpanded(false)}
-            >
-              <div
-                ref={dialogSlot}
-                role="dialog"
-                aria-modal
-                aria-label={title}
-                className="flex h-full max-h-[92vh] w-full max-w-[960px] flex-col overflow-hidden rounded-lg border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xl) max-desktop:max-h-none max-desktop:rounded-none max-desktop:border-0"
-              />
-            </Scrim>,
-            document.body
-          )
-        : null}
-      {host ? createPortal(thread, host) : null}
-    </>
-  )
+}
+
+/** A person's initials for their avatar: the first letters of the first two words, else the first character. */
+function initials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean)
+  if (words.length >= 2) return `${[...words[0]!][0]}${[...words[1]!][0]}`.toUpperCase()
+  return ([...(words[0] ?? '?')][0] ?? '?').toUpperCase()
 }
 
 function ThreadMessage({
   entry,
   agentName,
+  avatar,
+  accent,
   you,
   person,
   time,
@@ -265,35 +277,51 @@ function ThreadMessage({
 }: {
   entry: ThreadEntry
   agentName: string
+  avatar: ReactNode
+  accent: CSSProperties
   you: string
   person: string
   time: string | null
   children?: ReactNode
 }) {
-  const agent = entry.who === 'agent'
-  const name = agent ? agentName : (entry.name ?? (entry.live ? you : person))
-  return (
-    <div data-thread-message={entry.who} className="flex min-w-0 flex-col gap-[3px]">
-      <div className="flex items-baseline gap-2">
-        <span
-          className={`font-sans text-[13px] font-semibold leading-normal ${
-            agent
-              ? 'text-[color:color-mix(in_oklab,var(--indigo-500)_62%,var(--text-primary))]'
-              : 'text-(--text-primary)'
-          }`}
-        >
-          {name}
-        </span>
-        {time ? (
-          <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">{time}</span>
-        ) : null}
-      </div>
-      {entry.text.trim() ? (
-        <div className="min-w-0 whitespace-pre-wrap break-words font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)">
-          <MessageText text={entry.text} platform="webchat" />
+  const said = entry.text.trim() ? <MessageText text={entry.text} platform="webchat" /> : null
+  if (entry.who === 'agent')
+    return (
+      <div data-thread-message="agent" className="flex min-w-0 items-start gap-[9px]" style={accent}>
+        <span className="av h-6 w-6 flex-none rounded-md">{avatar}</span>
+        <div className="min-w-0 flex-1">
+          <div className="mb-1 flex items-center gap-[7px]">
+            <span className={`${AGENT_NAME} text-[12.5px]`}>{agentName}</span>
+            {time ? (
+              <span className="font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">{time}</span>
+            ) : null}
+          </div>
+          {said ? (
+            <div className={`${AGENT_BUBBLE} min-w-0 whitespace-pre-wrap break-words text-[13px]`}>{said}</div>
+          ) : null}
+          {children}
         </div>
-      ) : null}
-      {children}
+      </div>
+    )
+  const name = entry.name ?? (entry.live ? you : person)
+  return (
+    <div data-thread-message="person" className="flex min-w-0 items-start justify-end gap-2">
+      <div className="flex min-w-0 max-w-[calc(100%-50px)] flex-col items-end">
+        <span className="mb-1 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)">
+          {name}
+          {time ? (
+            <span className="ml-[6px] font-mono text-[10.5px] font-normal text-(--text-tertiary)">{time}</span>
+          ) : null}
+        </span>
+        {said ? <div className={`${SELF_BUBBLE} min-w-0 whitespace-pre-wrap break-words`}>{said}</div> : null}
+        {children}
+      </div>
+      <span
+        aria-hidden
+        className="mt-[2px] flex h-[22px] w-[22px] flex-none items-center justify-center rounded-full bg-(--brand-soft) font-sans text-[9px] font-semibold leading-none text-(--brand-soft-text)"
+      >
+        {initials(name)}
+      </span>
     </div>
   )
 }
@@ -389,6 +417,7 @@ function ThreadComposer({
   canReply,
   checking,
   placeholder,
+  hint,
   readOnly,
   sendLabel,
   onSend,
@@ -398,6 +427,8 @@ function ThreadComposer({
   canReply: boolean
   checking: boolean
   placeholder: string
+  /** Who a reply reaches, under the box. */
+  hint: string
   readOnly: string
   sendLabel: string
   onSend: () => void
@@ -412,8 +443,8 @@ function ThreadComposer({
       </div>
     )
   return (
-    <div className="flex-none px-3 pt-2 pb-3">
-      <div className="flex items-end gap-2 rounded-[11px] border border-(--border-default) bg-(--surface-card) py-2 pr-2 pl-3 shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]">
+    <div className="flex-none border-t border-(--border-subtle) px-3 pt-[10px] pb-3">
+      <div className="flex flex-col rounded-[10px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]">
         <textarea
           aria-label={placeholder}
           placeholder={placeholder}
@@ -427,17 +458,25 @@ function ThreadComposer({
               onSend()
             }
           }}
-          className="max-h-[160px] min-h-[40px] min-w-0 flex-1 resize-none border-0 bg-transparent p-0 font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+          className="max-h-[160px] min-h-[44px] min-w-0 resize-none border-0 bg-transparent px-3 pt-[10px] pb-[2px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
         />
-        <button
-          type="button"
-          className="sendbtn h-[26px] w-[26px] flex-none rounded-[7px]"
-          aria-label={sendLabel}
-          disabled={!canReply || !hasText}
-          onClick={onSend}
-        >
-          <Icon name="arrow-up" size={14} />
-        </button>
+        <div className="flex items-center gap-2 pt-[5px] pr-[7px] pb-[6px] pl-[10px]">
+          <span
+            data-task-thread-hint=""
+            className="min-w-0 flex-1 truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
+          >
+            {hint}
+          </span>
+          <button
+            type="button"
+            className="sendbtn h-[26px] w-[26px] flex-none rounded-[7px]"
+            aria-label={sendLabel}
+            disabled={!canReply || !hasText}
+            onClick={onSend}
+          >
+            <Icon name="arrow-up" size={14} />
+          </button>
+        </div>
       </div>
     </div>
   )

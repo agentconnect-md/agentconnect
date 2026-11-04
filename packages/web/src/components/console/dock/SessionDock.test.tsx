@@ -23,6 +23,7 @@ import {
   DockPanel,
   SessionDock,
   SessionDockSlot,
+  useDockExpand,
   type DockTab,
   type DockTabStatus
 } from './SessionDock'
@@ -36,6 +37,7 @@ import {
   DOCK_WIDTH_MIN,
   DOCK_WIDTH_PROPERTY,
   dockWidthCeiling,
+  expandedDockWidth,
   fitDockWidth,
   readDockWidth,
   writeDockWidth
@@ -1197,5 +1199,81 @@ describe('SessionDock tab strip keyboard', () => {
     render(dock({ onTabChange }))
     press('ArrowDown')
     expect(onTabChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('SessionDock expand', () => {
+  const expandButton = () => container.querySelector<HTMLButtonElement>('[data-dock-expand]')
+  const track = () => container.querySelector<HTMLElement>('[data-dock-track]')!
+
+  it('widens to its share of the page without storing it, drops the resize edge, and comes back', () => {
+    writeDockWidth('org-1', 480)
+    window.innerWidth = 1920
+    render(dock())
+    click(expandButton())
+    expect(appliedWidth()).toBe(`${expandedDockWidth(1920)}px`)
+    expect(track().hasAttribute('data-dock-expanded')).toBe(true)
+    expect(expandButton()?.getAttribute('aria-pressed')).toBe('true')
+    expect(container.querySelector('[role="separator"]')).toBeNull()
+    expect(readDockWidth('org-1')).toBe(480)
+    click(expandButton())
+    expect(appliedWidth()).toBe('480px')
+    expect(container.querySelector('[role="separator"]')).not.toBeNull()
+  })
+
+  it('takes the design’s share beside the rail, and never less than the minimum', () => {
+    expect(expandedDockWidth(1920)).toBe(Math.round((1920 - DOCK_INLINE_CHROME) * 0.64))
+    expect(expandedDockWidth(800)).toBe(DOCK_WIDTH_MIN)
+    expect(expandedDockWidth(300)).toBe(300)
+  })
+
+  it('comes back to its own width on Escape from inside the panel', () => {
+    window.innerWidth = 1920
+    render(dock())
+    click(expandButton())
+    act(() => {
+      container
+        .querySelector('[data-body]')!
+        .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    expect(track().hasAttribute('data-dock-expanded')).toBe(false)
+    expect(appliedWidth()).toBe(`${DOCK_WIDTH_DEFAULT}px`)
+  })
+
+  it('hands the switch to the panel it hosts', () => {
+    window.innerWidth = 1920
+    function Panel() {
+      const { available, expanded, setExpanded } = useDockExpand()
+      return (
+        <button
+          type="button"
+          data-panel-expand={String(expanded)}
+          disabled={!available}
+          onClick={() => setExpanded(!expanded)}
+        >
+          expand
+        </button>
+      )
+    }
+    render(
+      <SessionDock tabs={TABS} activeKey="files" onTabChange={() => {}}>
+        <Panel />
+      </SessionDock>
+    )
+    click(container.querySelector('[data-panel-expand]'))
+    expect(container.querySelector('[data-panel-expand]')?.getAttribute('data-panel-expand')).toBe('true')
+    expect(appliedWidth()).toBe(`${expandedDockWidth(1920)}px`)
+  })
+
+  it('offers no expand in the phone sheet, which is already the viewport’s width', () => {
+    window.innerWidth = 390
+    render(dock())
+    expect(expandButton()).toBeNull()
+  })
+
+  it('drops the strip for a panel that draws its own header', () => {
+    render(dock({ stripHidden: true }))
+    expect(container.querySelector('[role="tablist"]')).toBeNull()
+    expect(container.querySelector('[data-body]')).not.toBeNull()
   })
 })

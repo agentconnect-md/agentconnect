@@ -83,6 +83,7 @@ import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSele
 import { SessionModelSelectionResult } from '@/components/console/decisions/SessionModelSelectionResult'
 import { CoordinatorTag } from '@/components/console/CoordinatorTag'
 import { agentToneColor } from '@/lib/agent-tone'
+import { AGENT_BUBBLE, AGENT_NAME, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
@@ -224,31 +225,6 @@ import {
 } from '@/lib/session-runtime-controls'
 
 type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
-
-// Transcript speech bubbles. Utilities, not globals.css classes (STYLE.md §12) —
-// only the theme-dependent numbers live as tokens (`--bubble-*`, defined in both
-// theme blocks), so nothing here has to branch on the theme.
-//
-// AGENT_BUBBLE is tinted with the SPEAKING agent's accent (`--agent-accent`, set per
-// turn from lib/agent-tone.ts): the accent is mixed INTO the live surface rather than
-// used as a background, which is what lets one hex read correctly in both themes and
-// makes a new hue cost one array entry instead of a second colour table. The `var()`
-// fallback matters — an invalid var() inside color-mix drops the whole declaration,
-// so a turn with no accent gets an indigo-tinted bubble, never an invisible one
-// (not --brand: magenta's tint reads as a warning/error banner, see agent-tone.ts).
-// AGENT_NAME pulls that accent 62% toward the text colour: gold or green at full
-// strength fails contrast on the light surface.
-// SELF_BUBBLE is the reader's own, deliberately neutral, tail corner mirrored.
-// Full literal strings so Tailwind's scanner sees them (STYLE.md §8).
-// Desktop reserves the user-side mark column (26px avatar + 9px gap) so both bubble
-// columns share one right edge. Mobile removes that redundant reserve and trims the
-// bubble padding while preserving the same multi-agent avatar and colour language.
-const AGENT_BUBBLE =
-  'w-fit max-w-full rounded-[12px_12px_12px_4px] border px-2.5 py-2 font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) desktop:max-w-[calc(100%-35px)] desktop:px-3 desktop:py-[9px] border-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_var(--bubble-edge),var(--surface-card))] bg-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_var(--bubble-tint),var(--surface-card))]'
-const AGENT_NAME =
-  'font-sans text-[13px] font-semibold leading-normal text-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_62%,var(--text-primary))]'
-const SELF_BUBBLE =
-  'max-w-full rounded-[12px_12px_4px_12px] border border-(--bubble-self-edge) bg-(--bubble-self) px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)'
 
 // Session composer chips (mirrors HomeView); effort and approval live in the model picker.
 const COMPOSER_CHIP =
@@ -6512,6 +6488,7 @@ export default function SessionDetailView() {
         revealKey={dockReveal}
         label={t('panels')}
         onVisibleChange={setDockVisible}
+        stripHidden={dockTabKey === 'tasks' && openThread !== null}
       >
         {/* Both panels stay mounted; only the active one draws. Sessions owns the verdict that sets its own tab status, and Files owns the tree, the filter and the scroll position a tab switch must not spend. */}
         <DockPanel active={dockTabKey === 'sessions'}>
@@ -6621,6 +6598,8 @@ export default function SessionDetailView() {
               key={openThread.sessionId}
               agentId={session.agentId}
               agentName={session.agentName ?? ''}
+              agentIcon={owner?.icon}
+              agentRuntime={agentRuntime || undefined}
               task={openThread}
               parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
               onBack={() => setTaskThread(null)}

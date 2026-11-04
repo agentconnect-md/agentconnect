@@ -312,16 +312,16 @@
       "you": "You",
       "person": "Someone",
       "working": "{agent} is working…",
-      "replyPlaceholder": "Reply to this task…",
+      "replyPlaceholder": "Reply in this task…",
       "readOnly": "You can read this task, but not reply to it here.",
       "send": "Send reply",
       "question": "Waiting for your answer",
       "answer": "Your answer",
       "answerOnPage": "See the whole question on the task’s page",
       "answerSent": "Sent. It stays open until the task accepts the answer.",
-      "expand": "Expand the thread",
-      "collapse": "Back to the panel",
-      "expandedElsewhere": "This thread is open in a larger view."
+      "replyHint": "Goes to {agent} in this task only",
+      "close": "Close",
+      "backTitle": "Back to all tasks"
     },
     "githubApp": {
       "title": "GitHub App",
@@ -878,7 +878,9 @@
         "closePanels": "Close panels",
         "loading": "Loading",
         "loadingDots": "Loading…",
-        "nothingToShow": "Nothing to show"
+        "nothingToShow": "Nothing to show",
+        "expandPanel": "Expand the panel",
+        "collapsePanel": "Collapse the panel"
       },
       "gitPanel": {
         "staged": "Staged",

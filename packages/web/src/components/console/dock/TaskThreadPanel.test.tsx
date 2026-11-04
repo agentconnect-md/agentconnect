@@ -85,9 +85,16 @@ vi.mock('next/link', () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>
 }))
 
+// The avatar's image would fetch from the test origin; its own tests cover it.
+vi.mock(import('@/components/marks'), async (importOriginal) => ({
+  ...(await importOriginal()),
+  AgentIconView: () => <span data-agent-avatar="" />
+}))
+
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/acme${path}` }) }))
 
 import { TaskThreadPanel } from './TaskThreadPanel'
+import { DockExpandContext, type DockExpand } from './SessionDock'
 import { renderWithIntl } from '@/i18n/test-utils'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -114,18 +121,22 @@ afterEach(() => {
   container.remove()
 })
 
-async function render() {
+const NO_DOCK: DockExpand = { available: false, expanded: false, setExpanded: () => {} }
+
+async function render(dock: DockExpand = NO_DOCK) {
   await act(async () => {
     root.render(
       renderWithIntl(
         <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-          <TaskThreadPanel
-            agentId="agent_1"
-            agentName="deploy-bot"
-            task={task}
-            parentSessionId="ses_coordinator"
-            onBack={back}
-          />
+          <DockExpandContext.Provider value={dock}>
+            <TaskThreadPanel
+              agentId="agent_1"
+              agentName="deploy-bot"
+              task={task}
+              parentSessionId="ses_coordinator"
+              onBack={back}
+            />
+          </DockExpandContext.Provider>
         </SWRConfig>
       )
     )
@@ -239,43 +250,50 @@ describe('TaskThreadPanel', () => {
     expect(container.textContent).toContain('You can read this task, but not reply to it here.')
   })
 
-  it('expands into a large view over the page and comes back to the dock', async () => {
+  it('heads the thread with its title and state, and goes back from the crumb or the close button', async () => {
     await render()
-    act(() => container.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
-    const dialog = document.body.querySelector('[role="dialog"]')!
-    expect(dialog.querySelector('[data-task-thread="ses_task"]')?.textContent).toContain('Three of five are clear.')
-    expect(container.querySelector('[data-task-thread]')).toBeNull()
-    expect(container.querySelector('[data-task-thread-placeholder]')).not.toBeNull()
-
-    act(() => dialog.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
-    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
-    expect(container.querySelector('[data-task-thread="ses_task"]')).not.toBeNull()
+    const header = container.querySelector('[data-task-thread="ses_task"] h3')!
+    expect(header.textContent).toBe('Find what blocks api 1.5')
+    expect(container.querySelector('[data-task-thread-state]')?.getAttribute('data-task-thread-state')).toBe('running')
+    act(() => container.querySelector<HTMLButtonElement>('[data-task-thread-close]')!.click())
+    expect(back).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps one mounted thread across expanding and collapsing, with a half-typed answer intact', async () => {
-    wire.live = [
-      {
-        kind: 'elicit',
-        turnId: 't1',
-        text: 'Which release tag?',
-        elicit: { requestId: 'q-4', options: [], text: {} }
-      }
-    ]
+  it('draws the agent’s answer and the person’s message as bubbles on their own sides', async () => {
     await render()
-    const thread = container.querySelector('[data-task-thread="ses_task"]')!
-    const input = thread.querySelector<HTMLInputElement>('[data-thread-question="q-4"] input')!
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'v1.5')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    act(() => thread.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
-    // The same node, moved into the large view rather than rebuilt there.
-    expect(document.body.querySelector('[role="dialog"] [data-task-thread="ses_task"]')).toBe(thread)
-    expect(thread.querySelector<HTMLInputElement>('[data-thread-question="q-4"] input')).toBe(input)
-    expect(input.value).toBe('v1.5')
-    act(() => thread.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
-    expect(container.querySelector('[data-task-thread="ses_task"]')).toBe(thread)
-    expect(input.value).toBe('v1.5')
+    const said = Array.from(container.querySelectorAll('[data-thread-message]')).map((m) => [
+      m.getAttribute('data-thread-message'),
+      m.textContent
+    ])
+    expect(said[0]).toEqual(['person', expect.stringContaining('find what blocks api 1.5')])
+    expect(said[0]![1]).toContain('DR')
+    expect(said[1]).toEqual(['agent', expect.stringContaining('Three of five are clear.')])
+  })
+
+  it('tells the reader who a reply reaches', async () => {
+    await render()
+    expect(container.querySelector('textarea')?.getAttribute('placeholder')).toBe('Reply in this task…')
+    expect(container.querySelector('[data-task-thread-hint]')?.textContent).toBe('Goes to deploy-bot in this task only')
+  })
+
+  it('carries no expand switch outside a dock that offers one', async () => {
+    await render()
+    expect(container.querySelector('[data-task-thread-expand]')).toBeNull()
+  })
+
+  it('flips the enclosing dock’s expand switch from its header', async () => {
+    const setExpanded = vi.fn()
+    await render({ available: true, expanded: false, setExpanded })
+    const button = container.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!
+    expect(button.getAttribute('aria-label')).toBe('Expand the panel')
+    act(() => button.click())
+    expect(setExpanded).toHaveBeenCalledWith(true)
+    await render({ available: true, expanded: true, setExpanded })
+    const pressed = container.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!
+    expect(pressed.getAttribute('aria-pressed')).toBe('true')
+    expect(pressed.getAttribute('aria-label')).toBe('Collapse the panel')
+    act(() => pressed.click())
+    expect(setExpanded).toHaveBeenLastCalledWith(false)
   })
 
   it('goes back to the task lists', async () => {
