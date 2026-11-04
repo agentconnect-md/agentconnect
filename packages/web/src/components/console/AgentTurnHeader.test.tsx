@@ -42,3 +42,23 @@ it('shows no duration for a finished turn it never saw run', () => {
   act(() => root.render(<AgentTurnHeader name="test" work={work(false)} />))
   expect(container.textContent).not.toMatch(/Work(ed|ing) for/)
 })
+
+it('does not extend a finished turn that briefly seems to run again', () => {
+  act(() => root.render(<AgentTurnHeader name="test" work={work(true)} />))
+  act(() => vi.advanceTimersByTime(27_000))
+  act(() => root.render(<AgentTurnHeader name="test" work={work(false)} />))
+  act(() => vi.advanceTimersByTime(11_000))
+  // A new prompt is busy before it is listed, so the previous turn reads as running for a render.
+  act(() => root.render(<AgentTurnHeader name="test" work={work(true)} />))
+  act(() => vi.advanceTimersByTime(2_000))
+  act(() => root.render(<AgentTurnHeader name="test" work={work(false)} />))
+  expect(container.textContent).toContain('Worked for 27s')
+})
+
+it('keeps its time when a regenerated answer drops the turn work for a render', () => {
+  act(() => root.render(<AgentTurnHeader name="test" work={work(true)} />))
+  act(() => vi.advanceTimersByTime(10_000))
+  act(() => root.render(<AgentTurnHeader name="test" />))
+  act(() => root.render(<AgentTurnHeader name="test" work={work(false)} />))
+  expect(container.textContent).toContain('Worked for 10s')
+})
