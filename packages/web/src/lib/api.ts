@@ -1904,10 +1904,13 @@ export interface OAuthConsentContext {
   organizations: { id: string; slug: string; name: string | null; role: string }[]
 }
 
-/** Approval-screen data for a pending /authorize request: who's asking, for what
- *  scopes, and which of the caller's orgs they can bind the grant to. */
-export function getOAuthConsentContext(clientId: string, scope?: string): Promise<OAuthConsentContext> {
-  const qs = new URLSearchParams({ client_id: clientId, ...(scope ? { scope } : {}) })
+/** Approval-screen data for a pending /authorize request: who's asking, for what scopes, and which orgs can take the grant; the CP refuses an unregistered `redirectUri`. */
+export function getOAuthConsentContext(
+  clientId: string,
+  redirectUri: string,
+  scope?: string
+): Promise<OAuthConsentContext> {
+  const qs = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, ...(scope ? { scope } : {}) })
   return apiGet<OAuthConsentContext>(`/oauth/consent/context?${qs.toString()}`)
 }
 
