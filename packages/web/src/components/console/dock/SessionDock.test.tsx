@@ -1265,6 +1265,22 @@ describe('SessionDock expand', () => {
     expect(appliedWidth()).toBe(`${expandedDockWidth(1920)}px`)
   })
 
+  it('offers no expand where the share would not widen the dock', () => {
+    window.innerWidth = 800
+    render(dock())
+    expect(expandedDockWidth(800)).toBeLessThan(DOCK_WIDTH_DEFAULT)
+    expect(expandButton()).toBeNull()
+  })
+
+  it('offers no expand to a dock already dragged wider than the share', () => {
+    writeDockWidth('org-1', 760)
+    window.innerWidth = 1280
+    render(dock())
+    expect(Number(container.querySelector('[role="separator"]')!.getAttribute('aria-valuenow'))).toBe(760)
+    expect(expandedDockWidth(1280)).toBeLessThan(760)
+    expect(expandButton()).toBeNull()
+  })
+
   it('offers no expand in the phone sheet, which is already the viewport’s width', () => {
     window.innerWidth = 390
     render(dock())

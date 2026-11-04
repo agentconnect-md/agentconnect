@@ -246,9 +246,11 @@ export function SessionDock({
   const [dragging, setDragging] = useState(false)
   // Expanded is a view of this page, never a preference: it is not stored, and the phone sheet is already the viewport's width.
   const [expandWanted, setExpandWanted] = useState(false)
-  const expandAvailable = !isMobile && viewportWidth > 0
+  // Offered only where the share is wider than the dock already is, so expanding never narrows it.
+  const expandTarget = expandedDockWidth(viewportWidth)
+  const expandAvailable = !isMobile && viewportWidth > 0 && expandTarget > width
   const expanded = expandAvailable && expandWanted
-  const renderedWidth = expanded ? expandedDockWidth(viewportWidth) : width
+  const renderedWidth = expanded ? expandTarget : width
   // Below `wide:` this latch is the ONLY visibility source: hover does not follow width, and a CSS reveal would fight `aria-expanded`.
   const [open, setOpen] = useState(false)
   // The drag reads the live width and viewport without re-binding its window listeners.
