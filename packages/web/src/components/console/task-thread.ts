@@ -118,7 +118,11 @@ export function useTaskThread(
 export interface ThreadEntry {
   key: string
   who: 'agent' | 'person'
+  /** Another agent that spoke here, as its attribution names it; absent for the task's own agent. */
+  agentId?: string
   name: string | null
+  /** A person's provider-hosted picture. */
+  avatarUrl?: string
   text: string
   at: string | null
   /** Still streaming, or sent and not yet on the daemon's record. */
@@ -143,19 +147,30 @@ function openQuestion(ask: SessionStep['elicit'] | null | undefined): ThreadEntr
   }
 }
 
+/** A peer agent's text without its trailing "sent by" line, which the thread draws as the speaker instead. */
+export function withoutAttribution(text: string): string {
+  return text.replace(/\n*sent by <https?:\/\/[^\n]*\/agents\/[^\n]*$/, '').trimEnd()
+}
+
 /** Persisted messages, then what this visit sent and is streaming back, which the next read retires. */
 export function threadEntries(
   messages: readonly SessionMessageDto[],
   liveSteps: readonly SessionStep[],
-  agentId: string
+  agentId: string,
+  /** Which other agent wrote a message, when one did. */
+  peerAgent?: (m: SessionMessageDto) => string | undefined
 ): ThreadEntry[] {
   const persisted: ThreadEntry[] = messages.map((m) => {
     const question = (m.kind || '').toLowerCase() === 'elicit' ? openQuestion(elicitCard(m.body)) : null
+    const own = m.sender === agentId || question !== null
+    const peer = own ? undefined : peerAgent?.(m)
     return {
       key: `m:${m.seq}`,
-      who: m.sender === agentId || question ? 'agent' : 'person',
+      who: own || peer ? 'agent' : 'person',
+      ...(peer && peer !== agentId ? { agentId: peer } : {}),
       name: m.senderName ?? null,
-      text: m.text,
+      ...(!own && !peer && m.senderAvatarUrl ? { avatarUrl: m.senderAvatarUrl } : {}),
+      text: peer ? withoutAttribution(m.text) : m.text,
       at: messageTime(m),
       live: false,
       ...(question ? { question } : {})

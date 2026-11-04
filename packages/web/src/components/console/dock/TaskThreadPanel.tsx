@@ -2,7 +2,7 @@
 
 // One coordinator task's thread in the dock (auto-session-mode.md §10): what it and its people said, and a composer that continues it console-only.
 
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { useFormatter, useTranslations } from 'next-intl'
@@ -24,6 +24,8 @@ import type { TaskLink } from '@/components/console/task-link'
 import { useDockExpand } from '@/components/console/dock/SessionDock'
 import { fetchSessionDetail } from '@/lib/api'
 import { agentToneColor } from '@/lib/agent-tone'
+import { agentLabel, type Agent } from '@/lib/data'
+import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib/session-trigger'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { useOrgs } from '@/lib/org-context'
@@ -56,6 +58,8 @@ export function TaskThreadPanel({
   agentName,
   agentIcon,
   agentRuntime,
+  agentById,
+  platform = '',
   task,
   parentSessionId,
   onBack
@@ -66,6 +70,10 @@ export function TaskThreadPanel({
   /** The agent's avatar, as the transcript draws it beside its turns. */
   agentIcon?: AgentIcon | null | undefined
   agentRuntime?: string | undefined
+  /** The org's agents, so another agent that speaks in the thread is drawn as itself. */
+  agentById?: ReadonlyMap<string, Agent>
+  /** The conversation's platform, whose bot attribution names a speaking agent. */
+  platform?: string
   task: TaskLink
   /** The conversation whose task list carries this one's state; null reads the task alone. */
   parentSessionId: string | null
@@ -88,7 +96,14 @@ export function TaskThreadPanel({
   const { data: detail } = useSWR(['session-detail', id], ([, sid]) => fetchSessionDetail(sid), CONSOLE_SWR_CONFIG)
   const canReply = detail?.canContinue === true
   const messages = threadMessages(page)
-  const entries = threadEntries(messages, getLiveSteps(id), agentId)
+  // The session page's own reading of a bot post: its sender is an agent, or its trusted attribution names one.
+  const peerAgent = useMemo(() => {
+    if (!agentById) return undefined
+    const authors = sessionAttributionAgentAuthors(platform, messages, agentById)
+    return (m: (typeof messages)[number]) =>
+      agentById.has(m.sender) ? m.sender : (sessionAttributionAgentId(platform, m, agentById) ?? authors.get(m.sender))
+  }, [agentById, platform, messages])
+  const entries = threadEntries(messages, getLiveSteps(id), agentId, peerAgent)
 
   // A read that lands after the turn ends retires the live copy of what it now carries.
   useEffect(() => {
@@ -118,8 +133,21 @@ export function TaskThreadPanel({
   const title = row?.title ?? task.title
   const tone = row ? taskTone(row, null) : null
   const pageHref = orgPath(`/sessions/${encodeURIComponent(id)}`)
-  const avatar = <AgentIconView icon={agentIcon ?? null} runtime={agentRuntime ?? ''} size={24} />
-  const accent = { '--agent-accent': agentToneColor(agentId || agentName) } as CSSProperties
+  const own: Speaker = {
+    name: agentName,
+    avatar: <AgentIconView icon={agentIcon ?? null} runtime={agentRuntime ?? ''} size={24} />,
+    accent: { '--agent-accent': agentToneColor(agentId || agentName) } as CSSProperties
+  }
+  // Another agent speaks as itself: its name, its avatar, its accent.
+  const speakerOf = (entry: ThreadEntry): Speaker => {
+    const peer = entry.agentId ? agentById?.get(entry.agentId) : undefined
+    if (!peer) return own
+    return {
+      name: agentLabel(peer),
+      avatar: <AgentIconView icon={peer.icon ?? null} runtime={peer.runtime ?? ''} size={24} />,
+      accent: { '--agent-accent': agentToneColor(peer.id) } as CSSProperties
+    }
+  }
   return (
     <div data-task-thread={id} className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-[43px] min-w-0 flex-none items-center gap-[6px] border-b border-(--border-subtle) pr-2 pl-[10px]">
@@ -212,9 +240,7 @@ export function TaskThreadPanel({
           <ThreadMessage
             key={entry.key}
             entry={entry}
-            agentName={agentName}
-            avatar={avatar}
-            accent={accent}
+            speaker={speakerOf(entry)}
             you={t('you')}
             person={t('person')}
             time={entry.at ? format.dateTime(new Date(entry.at), { hour: 'numeric', minute: '2-digit' }) : null}
@@ -232,8 +258,8 @@ export function TaskThreadPanel({
           </ThreadMessage>
         ))}
         {busy ? (
-          <div className="flex items-start gap-[9px]" style={accent}>
-            <span className="av h-6 w-6 flex-none rounded-md">{avatar}</span>
+          <div className="flex items-start gap-[9px]" style={own.accent}>
+            <span className="av h-6 w-6 flex-none rounded-md">{own.avatar}</span>
             <span
               role="status"
               className="rounded-[11px] bg-(--brand-soft) px-[13px] py-[7px] font-sans text-[12.5px] font-normal leading-normal text-(--brand-soft-text)"
@@ -265,20 +291,23 @@ function initials(name: string): string {
   return ([...(words[0] ?? '?')][0] ?? '?').toUpperCase()
 }
 
+/** Who an agent entry is drawn as. */
+interface Speaker {
+  name: string
+  avatar: ReactNode
+  accent: CSSProperties
+}
+
 function ThreadMessage({
   entry,
-  agentName,
-  avatar,
-  accent,
+  speaker,
   you,
   person,
   time,
   children
 }: {
   entry: ThreadEntry
-  agentName: string
-  avatar: ReactNode
-  accent: CSSProperties
+  speaker: Speaker
   you: string
   person: string
   time: string | null
@@ -287,11 +316,16 @@ function ThreadMessage({
   const said = entry.text.trim() ? <MessageText text={entry.text} platform="webchat" /> : null
   if (entry.who === 'agent')
     return (
-      <div data-thread-message="agent" className="flex min-w-0 items-start gap-[9px]" style={accent}>
-        <span className="av h-6 w-6 flex-none rounded-md">{avatar}</span>
+      <div
+        data-thread-message="agent"
+        data-thread-agent={entry.agentId}
+        className="flex min-w-0 items-start gap-[9px]"
+        style={speaker.accent}
+      >
+        <span className="av h-6 w-6 flex-none rounded-md">{speaker.avatar}</span>
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex items-center gap-[7px]">
-            <span className={`${AGENT_NAME} text-[12.5px]`}>{agentName}</span>
+            <span className={`${AGENT_NAME} text-[12.5px]`}>{speaker.name}</span>
             {time ? (
               <span className="font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">{time}</span>
             ) : null}
@@ -316,12 +350,22 @@ function ThreadMessage({
         {said ? <div className={`${SELF_BUBBLE} min-w-0 whitespace-pre-wrap break-words`}>{said}</div> : null}
         {children}
       </div>
-      <span
-        aria-hidden
-        className="mt-[2px] flex h-[22px] w-[22px] flex-none items-center justify-center rounded-full bg-(--brand-soft) font-sans text-[9px] font-semibold leading-none text-(--brand-soft-text)"
-      >
-        {initials(name)}
-      </span>
+      {entry.avatarUrl ? (
+        <img
+          src={entry.avatarUrl}
+          alt=""
+          aria-hidden
+          data-thread-avatar=""
+          className="mt-[2px] h-[22px] w-[22px] flex-none rounded-full object-cover"
+        />
+      ) : (
+        <span
+          aria-hidden
+          className="mt-[2px] flex h-[22px] w-[22px] flex-none items-center justify-center rounded-full bg-(--brand-soft) font-sans text-[9px] font-semibold leading-none text-(--brand-soft-text)"
+        >
+          {initials(name)}
+        </span>
+      )}
     </div>
   )
 }

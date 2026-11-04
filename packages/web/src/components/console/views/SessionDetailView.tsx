@@ -6600,6 +6600,8 @@ export default function SessionDetailView() {
               agentName={session.agentName ?? ''}
               agentIcon={owner?.icon}
               agentRuntime={agentRuntime || undefined}
+              agentById={agentById}
+              platform={session.platform ?? ''}
               task={openThread}
               parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
               onBack={() => setTaskThread(null)}
