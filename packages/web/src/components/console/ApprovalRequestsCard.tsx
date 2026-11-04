@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import type { KeyedMutator } from 'swr'
 import Link from 'next/link'
 import { useFormatter, useTranslations } from 'next-intl'
 import useSWR from 'swr'
@@ -24,6 +25,7 @@ import { approvalSourceKey } from '@/lib/approval-notifications'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmStrip } from '@/components/console/ConfirmStrip'
 import { ProposedFollowUp } from '@/components/console/follow-up'
+import { placedApprovalIds, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
 
 /** How a decision on a conversation's proposal ended here: its outcome, or why it was no longer waiting. */
 interface SettledProposal {
@@ -40,7 +42,8 @@ export function ApprovalRequestsCard({
   className = '',
   permissions = true,
   conversationPermissions = false,
-  proposals = false
+  proposals = false,
+  transcriptTurns
 }: {
   agentId: string
   sessionId?: string
@@ -55,31 +58,19 @@ export function ApprovalRequestsCard({
   conversationPermissions?: boolean
   /** Also this webchat conversation's proposals (assistant-mode.md §5.10), for whoever may continue it and editors; needs `sessionId`. */
   proposals?: boolean
+  /** The transcript's agent turns: a tool call's request placed at one of them is answered there instead. */
+  transcriptTurns?: readonly ApprovalTurnAnchor[]
 }) {
   const t = useTranslations('Agents.detail.integrations')
   const ta = useTranslations('Agents.detail.activity')
   const { activeOrg, orgPath } = useOrgs()
-  const notifications = useOptionalNotifications()
-  const conversation = conversationPermissions ? sessionId : undefined
-  const requestsKey =
-    MOCK_MODE || !permissions
-      ? null
-      : conversation
-        ? consoleKeys.sessionPermissionRequests(activeOrg?.id, conversation)
-        : consoleKeys.agentPermissionRequests(activeOrg?.id, agentId)
   const {
     data: allRequests,
     error,
     isLoading,
-    mutate
-  } = useSWR<AgentPermissionRequestDto[]>(
-    requestsKey,
-    ([, , resource, id]) =>
-      resource === 'session-permission-requests'
-        ? fetchSessionPermissionRequests(id as string)
-        : fetchAgentPermissionRequests(id as string),
-    { refreshInterval: 3_000 }
-  )
+    mutate,
+    conversation
+  } = usePermissionRequests({ agentId, sessionId, permissions, conversationPermissions })
   // SWR stops polling an errored key: a refusal ends it, the console's retry resumes it after a failed read.
   const proposalsKey =
     MOCK_MODE || !proposals || !sessionId
@@ -97,15 +88,18 @@ export function ApprovalRequestsCard({
   const [settledProposals, setSettledProposals] = useState<Record<string, SettledProposal>>({})
   // Decisions sent without an answer: still waiting they say so, gone they may have started.
   const [unconfirmed, setUnconfirmed] = useState<Record<string, AssistantConversationProposalDto>>({})
-  const [busy, setBusy] = useState<string | null>(null)
+  const { decide, busy, decisionError } = usePermissionDecision(agentId, conversation, mutate)
   // Collapse follows what is listed, and a toggle overrides it only until the listed ids change: a count can repeat with new rows.
   const [collapseOverride, setCollapseOverride] = useState<{ key: string; collapsed: boolean } | null>(null)
-  const [decisionError, setDecisionError] = useState<string | null>(null)
   // A conversation also answers what its background work asks (assistant-mode.md §5.6).
   const fromSubsession = (request: AgentPermissionRequestDto) =>
     sessionId !== undefined && request.parentSessionId === sessionId && request.sessionId !== sessionId
+  const placed =
+    sessionId && transcriptTurns && allRequests ? placedApprovalIds(transcriptTurns, allRequests, sessionId) : undefined
   const sessionRequests = sessionId
-    ? allRequests?.filter((request) => request.sessionId === sessionId || fromSubsession(request))
+    ? allRequests?.filter(
+        (request) => (request.sessionId === sessionId || fromSubsession(request)) && !placed?.has(request.id)
+      )
     : allRequests
   const pendingRequests = sessionRequests?.filter((request) => request.status === 'pending') ?? []
   const listedProposals = proposalPage?.proposals ?? []
@@ -130,36 +124,6 @@ export function ApprovalRequestsCard({
   const requests = pendingOnly ? sessionRequests && pendingRequests : sessionRequests
 
   if (pendingOnly && pendingCount === 0 && settledRows.length === 0) return null
-
-  const decide = async (request: AgentPermissionRequestDto, decision: 'allow' | 'deny', optionId?: string) => {
-    if (busy || request.status !== 'pending') return
-    setBusy(`${request.id}:${optionId ?? decision}`)
-    setDecisionError(null)
-    try {
-      if (conversation) await decideSessionPermissionRequest(conversation, request.id, decision, optionId)
-      else await decideAgentPermissionRequest(agentId, request.id, decision, optionId)
-      // A decision made here needs no bell item to say so (slack-approval-dm.md §7).
-      if (request.sessionId) notifications?.markSourceRead(approvalSourceKey(request.sessionId))
-      void mutate(
-        (rows) =>
-          rows?.map((row) =>
-            row.id === request.id
-              ? {
-                  ...row,
-                  status: decision === 'allow' ? ('allowed' as const) : ('denied' as const),
-                  resolvedAt: new Date().toISOString()
-                }
-              : row
-          ),
-        { revalidate: false }
-      )
-    } catch {
-      setDecisionError(t('requestUpdateError'))
-      void mutate()
-    } finally {
-      setBusy(null)
-    }
-  }
 
   const settleProposal = (proposal: AssistantConversationProposalDto, text: string, tone: string) =>
     setSettledProposals((prev) => ({ ...prev, [proposal.id]: { proposal, text, tone } }))
@@ -342,7 +306,7 @@ export function ApprovalRequestsCard({
       )}
       {decisionError && (
         <div className="border-t border-(--border-subtle) px-3 py-2 font-sans text-[11.5px] text-(--red-600)">
-          {decisionError}
+          {decisionError.message}
         </div>
       )}
     </>
@@ -374,6 +338,79 @@ export function ApprovalRequestsCard({
       {collapsed ? null : body}
     </div>
   )
+}
+
+/** One conversation's permission requests, through the conversation for its owner, else the agent's queue; one SWR key, so every reader shares one poll. */
+export function usePermissionRequests({
+  agentId,
+  sessionId,
+  permissions,
+  conversationPermissions
+}: {
+  agentId: string
+  sessionId?: string | undefined
+  permissions: boolean
+  conversationPermissions: boolean
+}) {
+  const { activeOrg } = useOrgs()
+  const conversation = conversationPermissions ? sessionId : undefined
+  const requestsKey =
+    MOCK_MODE || !permissions
+      ? null
+      : conversation
+        ? consoleKeys.sessionPermissionRequests(activeOrg?.id, conversation)
+        : consoleKeys.agentPermissionRequests(activeOrg?.id, agentId)
+  const swr = useSWR<AgentPermissionRequestDto[]>(
+    requestsKey,
+    ([, , resource, id]) =>
+      resource === 'session-permission-requests'
+        ? fetchSessionPermissionRequests(id as string)
+        : fetchAgentPermissionRequests(id as string),
+    { refreshInterval: 3_000 }
+  )
+  return { data: swr.data, error: swr.error, isLoading: swr.isLoading, mutate: swr.mutate, conversation }
+}
+
+/** Answers a permission request with one of its options, through the conversation when one is given. */
+export function usePermissionDecision(
+  agentId: string,
+  conversation: string | undefined,
+  mutate: KeyedMutator<AgentPermissionRequestDto[]>
+) {
+  const t = useTranslations('Agents.detail.integrations')
+  const notifications = useOptionalNotifications()
+  const [busy, setBusy] = useState<string | null>(null)
+  const [decisionError, setDecisionError] = useState<{ requestId: string; message: string } | null>(null)
+  const decide = async (request: AgentPermissionRequestDto, decision: 'allow' | 'deny', optionId?: string) => {
+    if (busy || request.status !== 'pending') return
+    setBusy(`${request.id}:${optionId ?? decision}`)
+    setDecisionError(null)
+    try {
+      if (conversation) await decideSessionPermissionRequest(conversation, request.id, decision, optionId)
+      else await decideAgentPermissionRequest(agentId, request.id, decision, optionId)
+      // A decision made here needs no bell item to say so (slack-approval-dm.md §7).
+      if (request.sessionId) notifications?.markSourceRead(approvalSourceKey(request.sessionId))
+      void mutate(
+        (rows) =>
+          rows?.map((row) =>
+            row.id === request.id
+              ? {
+                  ...row,
+                  status: decision === 'allow' ? ('allowed' as const) : ('denied' as const),
+                  resolvedAt: new Date().toISOString()
+                }
+              : row
+          ),
+        { revalidate: false }
+      )
+    } catch {
+      setDecisionError({ requestId: request.id, message: t('requestUpdateError') })
+      void mutate()
+    } finally {
+      setBusy(null)
+    }
+  }
+  return { decide, busy, decisionError }
 }
 
 /** A follow-up's proposal waiting in this conversation: the sentence first, its reason and task folded, Activity's confirm before deciding. */
@@ -528,7 +565,7 @@ function SettledProposalRow({
   )
 }
 
-function optionDecision(option: AgentPermissionOptionDto): 'allow' | 'deny' {
+export function optionDecision(option: AgentPermissionOptionDto): 'allow' | 'deny' {
   return option.kind === 'allow_once' || option.kind === 'allow_always' ? 'allow' : 'deny'
 }
 

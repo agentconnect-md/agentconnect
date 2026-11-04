@@ -350,6 +350,43 @@ export function workSummary(thinkCount: number, toolCount: number, editCount: nu
   return parts.join(', ')
 }
 
+/** The first and last of a turn's own step timestamps, or null when none of its steps carries one. */
+export function turnSpan(stamps: readonly (number | undefined)[]): { startMs: number; endMs: number } | null {
+  const finite = stamps.filter((ms): ms is number => ms !== undefined && Number.isFinite(ms))
+  return finite.length ? { startMs: Math.min(...finite), endMs: Math.max(...finite) } : null
+}
+
+/** A turn's approximate duration: start to now while running, first to last step once done; null rather than a guess. */
+export function turnDurationMs(
+  span: { startMs: number; endMs: number } | null,
+  running: boolean,
+  nowMs: number
+): number | null {
+  if (!span) return null
+  if (running) return Math.max(0, nowMs - span.startMs)
+  return span.endMs > span.startMs ? span.endMs - span.startMs : null
+}
+
+/** "42s", "1m 9s", "1h 3m" — a finished sub-second span reads "1s", never a fake "0s". */
+export function formatTurnDuration(ms: number): string {
+  const total = ms > 0 ? Math.max(1, Math.round(ms / 1000)) : 0
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const seconds = total % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
+}
+
+/** A tool step's status mark: running for pending/in_progress, done, failed, or none when it reports no status. */
+export function stepStatusMark(toolStatus: string | undefined): 'running' | 'done' | 'failed' | null {
+  const status = (toolStatus ?? '').toLowerCase()
+  if (status === 'pending' || status === 'in_progress') return 'running'
+  if (status === 'completed') return 'done'
+  if (status === 'failed') return 'failed'
+  return null
+}
+
 // What each schema `format` asks of a typed answer, named the way the reader has to fix it.
 const FORMAT_HINT: Record<string, { test: (v: string) => boolean; why: string }> = {
   email: { test: (v) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(v), why: 'Enter an email address' },

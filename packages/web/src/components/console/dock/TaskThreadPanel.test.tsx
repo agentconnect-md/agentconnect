@@ -266,15 +266,15 @@ describe('TaskThreadPanel', () => {
     expect(back).toHaveBeenCalledTimes(1)
   })
 
-  it('draws the agent’s answer and the person’s message as bubbles on their own sides', async () => {
+  it('draws the person’s message as a bubble and the agent’s answer as prose, on their own sides', async () => {
     await render()
-    const said = Array.from(container.querySelectorAll('[data-thread-message]')).map((m) => [
-      m.getAttribute('data-thread-message'),
-      m.textContent
-    ])
+    const messages = Array.from(container.querySelectorAll('[data-thread-message]'))
+    const said = messages.map((m) => [m.getAttribute('data-thread-message'), m.textContent])
     expect(said[0]).toEqual(['person', expect.stringContaining('find what blocks api 1.5')])
     expect(said[0]![1]).toContain('DR')
     expect(said[1]).toEqual(['agent', expect.stringContaining('Three of five are clear.')])
+    expect(messages[0]!.querySelector('[data-agent-prose]')).toBeNull()
+    expect(messages[1]!.querySelector('[data-agent-prose]')?.textContent).toContain('Three of five are clear.')
   })
 
   it('tells the reader who a reply reaches', async () => {
@@ -307,7 +307,7 @@ describe('TaskThreadPanel', () => {
     const support = { id: 'agent_cs', name: 'customer-support', runtime: 'codex', icon: null } as unknown as Agent
     props = { agentById: new Map([['agent_cs', support]]), platform: 'slack' }
     const footer =
-      'sent by <https://test-app.agentconnect.md/acme/agents/agent_cs|customer-support> (Codex · gpt-6.1-sol) · <https://test-app.agentconnect.md/acme/sessions/s1|open in session>'
+      'sent by <https://console.example.test/acme/agents/agent_cs|customer-support> (Codex · gpt-6.1-sol) · <https://console.example.test/acme/sessions/s1|open in session>'
     wire.extra = [
       {
         seq: 4,
@@ -315,7 +315,7 @@ describe('TaskThreadPanel', () => {
         trustedAgentBot: true,
         ts: '2026-11-03T09:03:00.000Z',
         kind: 'text',
-        text: `I only handle Sentio support.\n\n${footer}`
+        text: `I only handle Acme support.\n\n${footer}`
       },
       { seq: 5, sender: 'B0STRANGER', ts: '2026-11-03T09:04:00.000Z', kind: 'text', text: `Not ours.\n\n${footer}` }
     ]
@@ -323,7 +323,7 @@ describe('TaskThreadPanel', () => {
     const peer = container.querySelector('[data-thread-agent="agent_cs"]')!
     expect(peer.getAttribute('data-thread-message')).toBe('agent')
     expect(peer.textContent).toContain('customer-support')
-    expect(peer.textContent).toContain('I only handle Sentio support.')
+    expect(peer.textContent).toContain('I only handle Acme support.')
     expect(peer.textContent).not.toContain('sent by')
     // A bot whose provenance the daemon did not vouch for stays a person, attribution and all.
     const stranger = Array.from(container.querySelectorAll('[data-thread-message="person"]')).at(-1)!

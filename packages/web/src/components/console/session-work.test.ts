@@ -13,8 +13,12 @@ import {
   planEntries,
   planLabel,
   sessionTurnInFlight,
+  formatTurnDuration,
+  stepStatusMark,
   stripBoldMarks,
   toggleWorkPanel,
+  turnDurationMs,
+  turnSpan,
   workCounts,
   workPanelOpen,
   workSummary
@@ -81,6 +85,49 @@ describe('workSummary', () => {
 
   it('is empty when there is no work', () => {
     expect(workSummary(0, 0, 0)).toBe('')
+  })
+})
+
+describe('turn duration', () => {
+  it('spans the first to the last of the turn’s own timestamps, skipping steps without one', () => {
+    expect(turnSpan([undefined, 5_000, 2_000, Number.NaN, 9_000])).toEqual({ startMs: 2_000, endMs: 9_000 })
+    expect(turnSpan([undefined, undefined])).toBeNull()
+    expect(turnSpan([])).toBeNull()
+  })
+
+  it('runs to now while the turn streams, and to its last step once done', () => {
+    const span = { startMs: 10_000, endMs: 40_000 }
+    expect(turnDurationMs(span, true, 144_000)).toBe(134_000)
+    expect(turnDurationMs(span, false, 144_000)).toBe(30_000)
+    // A clock behind the first stamp reads zero, not a negative span.
+    expect(turnDurationMs(span, true, 5_000)).toBe(0)
+  })
+
+  it('omits the duration rather than inventing one', () => {
+    expect(turnDurationMs(null, true, 1_000)).toBeNull()
+    expect(turnDurationMs(null, false, 1_000)).toBeNull()
+    // A finished turn whose steps share one instant has no measurable span.
+    expect(turnDurationMs({ startMs: 7_000, endMs: 7_000 }, false, 99_000)).toBeNull()
+  })
+
+  it('formats seconds, minutes and hours', () => {
+    expect(formatTurnDuration(0)).toBe('0s')
+    expect(formatTurnDuration(300)).toBe('1s')
+    expect(formatTurnDuration(42_000)).toBe('42s')
+    expect(formatTurnDuration(69_000)).toBe('1m 9s')
+    expect(formatTurnDuration(134_000)).toBe('2m 14s')
+    expect(formatTurnDuration(3_780_000)).toBe('1h 3m')
+  })
+})
+
+describe('stepStatusMark', () => {
+  it('reads a tool step’s status, and nothing for a step without one', () => {
+    expect(stepStatusMark('pending')).toBe('running')
+    expect(stepStatusMark('in_progress')).toBe('running')
+    expect(stepStatusMark('completed')).toBe('done')
+    expect(stepStatusMark('FAILED')).toBe('failed')
+    expect(stepStatusMark(undefined)).toBeNull()
+    expect(stepStatusMark('')).toBeNull()
   })
 })
 

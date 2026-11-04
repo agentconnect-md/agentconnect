@@ -12,7 +12,8 @@ import { MessageText } from '@/components/console/MessageText'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { taskStateKey, taskTone, type MarkTone } from '@/components/console/task-list'
 import { typedInvalidReason } from '@/components/console/session-work'
-import { AGENT_BUBBLE, AGENT_NAME, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
+import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
+import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
 import {
   threadEntries,
   threadMessages,
@@ -324,14 +325,15 @@ function ThreadMessage({
       >
         <span className="av h-6 w-6 flex-none rounded-md">{speaker.avatar}</span>
         <div className="min-w-0 flex-1">
-          <div className="mb-1 flex items-center gap-[7px]">
-            <span className={`${AGENT_NAME} text-[12.5px]`}>{speaker.name}</span>
+          <AgentTurnHeader name={speaker.name}>
             {time ? (
               <span className="font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">{time}</span>
             ) : null}
-          </div>
+          </AgentTurnHeader>
           {said ? (
-            <div className={`${AGENT_BUBBLE} min-w-0 whitespace-pre-wrap break-words text-[13px]`}>{said}</div>
+            <div className={`${AGENT_PROSE} whitespace-pre-wrap`} data-agent-prose="">
+              {said}
+            </div>
           ) : null}
           {children}
         </div>
