@@ -643,6 +643,13 @@ not addressed to this agent. Cost grows with the number of agents.
     coordinator's turn that answered that message, on any platform, once per task.
   - `messageTask` with a `messageId` moves the message into the task's conversation, which answers on
     its page, and attaches its id as one more thread; the coordinator posts a link card.
+  - A link card arriving while the person watches opens its task's thread in the dock, the latest
+    one when several arrive; cards already in the conversation when the page opened do not.
+- **Administration.** The conversation's AgentConnect admin MCP entitlement
+  ([webchat-preset-agentconnect-mcp.md](webchat-preset-agentconnect-mcp.md) §5.4) installs nothing on
+  the coordinator, which only routes, and installs its own grant on each page task it opens, so a
+  request to change the configuration is delegated and done by the task. A write the task asks for
+  waits for approval on the task's thread, and the decision is a notice to the task.
 - Existing ordinary webchat conversations stay as they are.
 
 ## 11. Console

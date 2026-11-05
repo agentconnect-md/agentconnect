@@ -66,17 +66,26 @@ export function approvalNotice(
   )
 }
 
+/** Which operations a session raised: those whose id its own recorded rows carry, as a pending write's tool result names it. */
+export function raisedIn(rows: readonly { text?: string; body?: string }[] | null | undefined) {
+  return (operationId: string) =>
+    (rows ?? []).some((row) => row.body?.includes(operationId) || row.text?.includes(operationId))
+}
+
 export function WebchatMcpApprovalCard({
   orgId,
   agentId,
   conversationId,
   className = '',
+  raisedHere,
   onDecided
 }: {
   orgId: string
   agentId: string
   conversationId: string
   className?: string
+  /** Only the operations this session raised, where a conversation's tasks raise theirs under its grant; absent shows all. */
+  raisedHere?: (operationId: string) => boolean
   /** A decision the agent has to hear about: it received an operationId and
    *  ended its turn, so nothing else would tell it the operation is settled.
    *  Only ever called for a decision whose outcome is known. */
@@ -92,7 +101,9 @@ export function WebchatMcpApprovalCard({
   const [error, setError] = useState<string | null>(null)
   const [settled, setSettled] = useState<SettledOperation[]>([])
   const settledIds = new Set(settled.map((entry) => entry.operation.operationId))
-  const pending = (data ?? []).filter((operation) => !settledIds.has(operation.operationId))
+  const pending = (data ?? []).filter(
+    (operation) => !settledIds.has(operation.operationId) && (raisedHere?.(operation.operationId) ?? true)
+  )
   if (pending.length === 0 && settled.length === 0) return null
 
   const upsertSettled = (entry: SettledOperation) =>

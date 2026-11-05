@@ -45,6 +45,9 @@ export interface RemoteWebchatGrantLedger {
 }
 
 interface ActiveDescriptor {
+  conversationId: string
+  /** The session a task's own descriptor serves; absent for the conversation's own session. */
+  sessionKey?: string
   agentId?: string
   entitlement: WebchatRemoteMcpEntitlement
   descriptorInstanceId: string
@@ -54,12 +57,19 @@ interface ActiveDescriptor {
   server: McpServer
 }
 
-function stableDescriptorId(conversationId: string): string {
-  const bytes = createHash('sha256').update('agentconnect:webchat-mcp-descriptor:v1\0').update(conversationId).digest()
+function stableDescriptorId(conversationId: string, sessionKey?: string): string {
+  const hash = createHash('sha256').update('agentconnect:webchat-mcp-descriptor:v1\0').update(conversationId)
+  if (sessionKey !== undefined) hash.update('\0').update(sessionKey)
+  const bytes = hash.digest()
   bytes[6] = (bytes[6]! & 0x0f) | 0x50
   bytes[8] = (bytes[8]! & 0x3f) | 0x80
   const hex = bytes.subarray(0, 16).toString('hex')
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+/** One descriptor per runtime session: the conversation's own session, or a task it opened (webchat-preset-agentconnect-mcp.md §5.2). */
+function descriptorKey(conversationId: string, sessionKey?: string): string {
+  return sessionKey === undefined ? conversationId : `${conversationId}\0${sessionKey}`
 }
 
 function sameEntitlement(left: WebchatRemoteMcpEntitlement, right: WebchatRemoteMcpEntitlement): boolean {
@@ -70,13 +80,11 @@ function sameEntitlement(left: WebchatRemoteMcpEntitlement, right: WebchatRemote
   )
 }
 
-/**
- * Owns the secret, session-scoped remote-MCP descriptor. Tokens exist only in
- * this process and are installed only after the CP activates the exact staged
- * revision.
- */
+/** Owns each runtime session's secret remote-MCP descriptor, held only in memory and installed only once the CP activates its revision. */
 export class RemoteWebchatGrantManager {
   private readonly active = new Map<string, ActiveDescriptor>()
+  /** The newest entitlement each conversation's turns carried, which a task the conversation opened inherits. */
+  private readonly latest = new Map<string, { agentId: string; entitlement: WebchatRemoteMcpEntitlement }>()
   private readonly renewals = new WeakMap<ActiveDescriptor, Promise<boolean>>()
 
   constructor(
@@ -93,24 +101,46 @@ export class RemoteWebchatGrantManager {
     return (await this.provision(conversationId, entitlement, now)).server
   }
 
+  /** Remember the entitlement a conversation's turn carried, for the tasks it opens; the coordinator itself installs none. */
+  noteEntitlement(conversationId: string, agentId: string, entitlement: WebchatRemoteMcpEntitlement): void {
+    const known = this.latest.get(conversationId)
+    if (known && known.agentId !== agentId) return
+    if (known && known.entitlement.authorityGeneration > entitlement.authorityGeneration) return
+    this.latest.set(conversationId, { agentId, entitlement: { ...entitlement } })
+  }
+
+  /** The conversation's newest unexpired entitlement for `agentId`, which a task it opened provisions its own grant under. */
+  inheritedEntitlement(
+    conversationId: string,
+    agentId: string,
+    now = Date.now()
+  ): WebchatRemoteMcpEntitlement | undefined {
+    const known = this.latest.get(conversationId)
+    if (!known || known.agentId !== agentId || Date.parse(known.entitlement.expiresAt) <= now) return undefined
+    return known.entitlement
+  }
+
   async provision(
     conversationId: string,
     entitlement: WebchatRemoteMcpEntitlement,
     now = Date.now(),
-    agentId?: string
+    agentId?: string,
+    sessionKey?: string
   ): Promise<{ server: McpServer; changed: boolean }> {
-    const current = this.active.get(conversationId)
+    const key = descriptorKey(conversationId, sessionKey)
+    const current = this.active.get(key)
     if (agentId && current?.agentId && current.agentId !== agentId)
       throw new Error('remote MCP conversation belongs to another agent')
+    if (agentId) this.noteEntitlement(conversationId, agentId, entitlement)
     if (current && sameEntitlement(current.entitlement, entitlement)) {
       if (current.expiresAt > now + RENEW_BEFORE_EXPIRY_MS) return { server: current.server, changed: false }
       // Renewing in place keeps the installed bearer valid: a runtime may ignore a reloaded descriptor.
-      if (current.expiresAt > now && (await this.renewInPlace(conversationId, current, agentId))) {
+      if (current.expiresAt > now && (await this.renewInPlace(current, agentId))) {
         return { server: current.server, changed: false }
       }
     }
 
-    const descriptorInstanceId = current?.descriptorInstanceId ?? stableDescriptorId(conversationId)
+    const descriptorInstanceId = current?.descriptorInstanceId ?? stableDescriptorId(conversationId, sessionKey)
     const orgId = agentId ? this.orgForAgent?.(agentId) : undefined
     const issue = {
       authorityId: entitlement.authorityId,
@@ -153,7 +183,9 @@ export class RemoteWebchatGrantManager {
       url: issued.mcpUrl,
       headers: [{ name: 'Authorization', value: `Bearer ${issued.token}` }]
     }
-    this.active.set(conversationId, {
+    this.active.set(key, {
+      conversationId,
+      ...(sessionKey !== undefined ? { sessionKey } : {}),
       ...(agentId ? { agentId } : {}),
       entitlement: { ...entitlement },
       descriptorInstanceId,
@@ -174,29 +206,36 @@ export class RemoteWebchatGrantManager {
   /** Renews each grant inside its renewal window whose session `isOpen`; returns the conversations it could not renew. */
   async renewExpiring(
     now: number,
-    isOpen: (conversationId: string, agentId: string) => Promise<boolean>
+    isOpen: (conversationId: string, agentId: string, sessionKey?: string) => Promise<boolean>
   ): Promise<string[]> {
     const failed: string[] = []
-    for (const [conversationId, current] of [...this.active]) {
+    for (const [key, current] of [...this.active]) {
+      // A task's expired grant is never revoked on its own (revocation is the conversation's), so it is dropped here.
+      if (current.sessionKey !== undefined && current.expiresAt <= now) this.active.delete(key)
       if (!current.agentId || current.expiresAt <= now || current.expiresAt > now + RENEW_BEFORE_EXPIRY_MS) continue
-      if (!(await isOpen(conversationId, current.agentId))) continue
-      if (!(await this.renewInPlace(conversationId, current, current.agentId))) failed.push(conversationId)
+      const open =
+        current.sessionKey === undefined
+          ? await isOpen(current.conversationId, current.agentId)
+          : await isOpen(current.conversationId, current.agentId, current.sessionKey)
+      if (!open) continue
+      if (!(await this.renewInPlace(current, current.agentId))) failed.push(current.conversationId)
     }
     return failed
   }
 
   /** True when the CP extended the active grant; anything else falls back to rotation. */
-  private renewInPlace(conversationId: string, current: ActiveDescriptor, agentId?: string): Promise<boolean> {
+  private renewInPlace(current: ActiveDescriptor, agentId?: string): Promise<boolean> {
     // One renewal per descriptor at a time: the sweep and a turn start must not race into a rotation.
     const inFlight = this.renewals.get(current)
     if (inFlight) return inFlight
-    const renewal = this.requestRenewal(conversationId, current, agentId).finally(() => this.renewals.delete(current))
+    const renewal = this.requestRenewal(current, agentId).finally(() => this.renewals.delete(current))
     this.renewals.set(current, renewal)
     return renewal
   }
 
-  private async requestRenewal(conversationId: string, current: ActiveDescriptor, agentId?: string): Promise<boolean> {
+  private async requestRenewal(current: ActiveDescriptor, agentId?: string): Promise<boolean> {
     if (!this.client.renewWebchatMcpGrant) return false
+    const conversationId = current.conversationId
     const renew = {
       authorityId: current.entitlement.authorityId,
       authorityGeneration: current.entitlement.authorityGeneration,
@@ -225,7 +264,7 @@ export class RemoteWebchatGrantManager {
       renewed.grantRevision !== renew.grantRevision ||
       !Number.isFinite(expiresAt) ||
       expiresAt < current.expiresAt ||
-      this.active.get(conversationId) !== current
+      this.active.get(descriptorKey(conversationId, current.sessionKey)) !== current
     ) {
       return false
     }
@@ -238,7 +277,7 @@ export class RemoteWebchatGrantManager {
     entitlement: WebchatRemoteMcpEntitlement,
     reason: WebchatMcpGrantRevoke['reason']
   ): Promise<void> {
-    const agentId = this.active.get(conversationId)?.agentId
+    const agentId = this.descriptorsOf(conversationId)[0]?.agentId ?? this.latest.get(conversationId)?.agentId
     try {
       const input = {
         authorityId: entitlement.authorityId,
@@ -250,9 +289,7 @@ export class RemoteWebchatGrantManager {
       if (orgId) await this.client.revokeWebchatMcpGrant(input, orgId)
       else await this.client.revokeWebchatMcpGrant(input)
     } catch (error) {
-      // The obligation outlives this call: queue a durable retry BEFORE the
-      // failure surfaces, so lifecycle teardown may proceed while the CP-side
-      // authority is still guaranteed to be revoked eventually.
+      // Queue a durable retry before the failure surfaces, so teardown proceeds while revocation still happens.
       this.ledger?.markRevoking({
         conversationId,
         ...(agentId ? { agentId } : {}),
@@ -260,12 +297,8 @@ export class RemoteWebchatGrantManager {
         authorityGeneration: entitlement.authorityGeneration,
         reason
       })
-      // Also forget the local descriptor: the authority is queued for durable
-      // revocation, so nothing may reuse or renew this conversation's plaintext.
-      const failed = this.active.get(conversationId)
-      if (failed && sameEntitlement(failed.entitlement, entitlement)) {
-        this.active.delete(conversationId)
-      }
+      // The authority is queued for revocation, so nothing may reuse or renew its plaintext.
+      this.forgetAuthority(conversationId, entitlement)
       throw error
     }
     this.ledger?.clear({
@@ -273,48 +306,89 @@ export class RemoteWebchatGrantManager {
       authorityId: entitlement.authorityId,
       authorityGeneration: entitlement.authorityGeneration
     })
-    const current = this.active.get(conversationId)
-    if (current && sameEntitlement(current.entitlement, entitlement)) {
-      this.active.delete(conversationId)
-    }
+    this.forgetAuthority(conversationId, entitlement)
   }
 
   async revokeConversation(conversationId: string, reason: WebchatMcpGrantRevoke['reason']): Promise<void> {
-    const current = this.active.get(conversationId)
-    if (!current) return
-    await this.revoke(conversationId, current.entitlement, reason)
+    const failures = await this.revokeEach(
+      this.authoritiesOf((_agentId, conversation) => conversation === conversationId),
+      reason
+    )
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) throw new AggregateError(failures, `remote MCP revoke failed for ${conversationId}`)
   }
 
-  /** Conversations holding an active grant for `agentId`. */
+  /** Conversations holding an active grant, or an entitlement their tasks inherit, for `agentId`. */
   conversationsForAgent(agentId: string): string[] {
-    return [...this.active].filter(([, descriptor]) => descriptor.agentId === agentId).map(([id]) => id)
+    const ids = new Set<string>()
+    for (const descriptor of this.active.values())
+      if (descriptor.agentId === agentId) ids.add(descriptor.conversationId)
+    for (const [conversationId, known] of this.latest) if (known.agentId === agentId) ids.add(conversationId)
+    return [...ids]
+  }
+
+  /** Drop the descriptors of `agentId`'s task sessions `pick` selects, so the next turn there installs a freshly issued grant. */
+  forgetSessions(agentId: string, pick: (sessionKey: string) => boolean): void {
+    for (const [key, descriptor] of [...this.active])
+      if (descriptor.agentId === agentId && descriptor.sessionKey !== undefined && pick(descriptor.sessionKey))
+        this.active.delete(key)
   }
 
   async revokeAgent(agentId: string, reason: WebchatMcpGrantRevoke['reason']): Promise<void> {
-    const entries = [...this.active.entries()].filter(([, descriptor]) => descriptor.agentId === agentId)
-    const results = await Promise.allSettled(
-      entries.map(([conversationId, descriptor]) => this.revoke(conversationId, descriptor.entitlement, reason))
+    const failures = await this.revokeEach(
+      this.authoritiesOf((agentOf) => agentOf === agentId),
+      reason
     )
-    const failures = results.filter((result) => result.status === 'rejected')
-    if (failures.length) {
-      throw new AggregateError(
-        failures.map((result) => result.reason),
-        `remote MCP revoke failed for agent ${agentId}`
-      )
-    }
+    if (failures.length) throw new AggregateError(failures, `remote MCP revoke failed for agent ${agentId}`)
   }
 
   async revokeAll(reason: WebchatMcpGrantRevoke['reason']): Promise<void> {
-    const entries = [...this.active.entries()]
-    const results = await Promise.allSettled(
-      entries.map(([conversationId, descriptor]) => this.revoke(conversationId, descriptor.entitlement, reason))
+    const failures = await this.revokeEach(
+      this.authoritiesOf(() => true),
+      reason
     )
-    const failures = results.filter((result) => result.status === 'rejected')
-    if (failures.length)
-      throw new AggregateError(
-        failures.map((result) => result.reason),
-        'remote MCP revoke failed'
-      )
+    if (failures.length) throw new AggregateError(failures, 'remote MCP revoke failed')
+  }
+
+  /** Revoke every listed authority, each attempted; returns the failures. */
+  private async revokeEach(
+    entries: [string, WebchatRemoteMcpEntitlement][],
+    reason: WebchatMcpGrantRevoke['reason']
+  ): Promise<unknown[]> {
+    const results = await Promise.allSettled(
+      entries.map(([conversationId, entitlement]) => this.revoke(conversationId, entitlement, reason))
+    )
+    return results.flatMap((result) => (result.status === 'rejected' ? [result.reason as unknown] : []))
+  }
+
+  private descriptorsOf(conversationId: string): ActiveDescriptor[] {
+    return [...this.active.values()].filter((descriptor) => descriptor.conversationId === conversationId)
+  }
+
+  /** Every distinct authority a picked conversation's descriptors or remembered entitlement name: tasks may straddle a rotation. */
+  private authoritiesOf(
+    pick: (agentId: string | undefined, conversationId: string) => boolean
+  ): [string, WebchatRemoteMcpEntitlement][] {
+    const found = new Map<string, [string, WebchatRemoteMcpEntitlement]>()
+    const add = (conversationId: string, entitlement: WebchatRemoteMcpEntitlement) => {
+      const key = `${conversationId}\0${entitlement.authorityId}\0${entitlement.authorityGeneration}`
+      if (!found.has(key)) found.set(key, [conversationId, entitlement])
+    }
+    for (const descriptor of this.active.values())
+      if (pick(descriptor.agentId, descriptor.conversationId)) add(descriptor.conversationId, descriptor.entitlement)
+    for (const [conversationId, known] of this.latest)
+      if (pick(known.agentId, conversationId)) add(conversationId, known.entitlement)
+    return [...found.values()]
+  }
+
+  /** Drop every local descriptor and the remembered entitlement of a revoked authority. */
+  private forgetAuthority(conversationId: string, entitlement: WebchatRemoteMcpEntitlement): void {
+    const same = (other: WebchatRemoteMcpEntitlement) =>
+      other.authorityId === entitlement.authorityId && other.authorityGeneration === entitlement.authorityGeneration
+    for (const [key, descriptor] of [...this.active])
+      if (descriptor.conversationId === conversationId && same(descriptor.entitlement)) this.active.delete(key)
+    const known = this.latest.get(conversationId)
+    if (known && same(known.entitlement)) this.latest.delete(conversationId)
   }
 
   private assertIssued(

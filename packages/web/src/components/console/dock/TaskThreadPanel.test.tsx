@@ -26,7 +26,8 @@ const wire = vi.hoisted(() => ({
   drafts: {} as Record<string, string>,
   live: [] as SessionStep[],
   calls: [] as string[],
-  extra: [] as SessionMessageDto[]
+  extra: [] as SessionMessageDto[],
+  operations: [] as unknown[]
 }))
 
 vi.mock(import('@/lib/api'), async (importOriginal) => ({
@@ -35,6 +36,13 @@ vi.mock(import('@/lib/api'), async (importOriginal) => ({
     Promise.resolve({ subsessions: [taskRow], truncated: false, nextCursor: null })
   ),
   fetchAssistantSubsession: vi.fn(),
+  listWebchatMcpOperations: vi.fn(() => Promise.resolve(wire.operations as never)),
+  decideWebchatMcpOperation: vi.fn((_org: string, _agent: string, _conv: string, operationId: string) =>
+    Promise.resolve({
+      ...(wire.operations as { operationId: string }[]).find((op) => op.operationId === operationId),
+      status: 'completed'
+    } as never)
+  ),
   fetchSessionDetail: vi.fn(() => Promise.resolve({ id: 'ses_task', canContinue: wire.canContinue } as never)),
   fetchSessionMessages: vi.fn(() =>
     Promise.resolve({
@@ -68,6 +76,10 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     markSessionTarget: (id: string) => wire.calls.push(`target:${id}`),
     pgAnswerElicitation: (id: string, agentId: string, requestId: string, value: unknown) =>
       wire.calls.push(`answer:${id}:${agentId}:${requestId}:${String(value)}`),
+    pgNotice: (id: string, agentId: string, text: string) => {
+      wire.calls.push(`notice:${id}:${agentId}:${text}`)
+      return true
+    },
     pgSend: (id: string, agentId: string) => {
       wire.calls.push(`send:${id}:${agentId}:${wire.drafts[id] ?? ''}`)
       return true
@@ -115,6 +127,7 @@ beforeEach(() => {
   wire.live = []
   wire.calls = []
   wire.extra = []
+  wire.operations = []
   props = {}
   back = vi.fn()
   container = document.createElement('div')
@@ -369,6 +382,45 @@ describe('TaskThreadPanel', () => {
     await render()
     const avatars = Array.from(container.querySelectorAll<HTMLImageElement>('[data-thread-avatar]'))
     expect(avatars.map((img) => img.getAttribute('src'))).toEqual(['https://avatars.example/sam.png'])
+  })
+
+  it('asks for approval of only the writes this task raised, and tells the task the outcome', async () => {
+    const pending = (operationId: string, toolName: string) => ({
+      operationId,
+      toolName,
+      arguments: {},
+      status: 'awaiting_confirmation',
+      createdAt: '2026-11-03T09:03:00.000Z',
+      confirmationExpiresAt: '2026-11-03T09:13:00.000Z',
+      completedAt: null
+    })
+    const mine = '6f1d3c55-0a3e-4b8e-9d55-6a4c1b7e2f10'
+    wire.operations = [pending(mine, 'updateAgent'), pending('0b6c9d2e-5f8a-4c1b-8e3d-7a9f2c4e6b11', 'deleteCron')]
+    wire.extra = [
+      {
+        seq: 4,
+        sender: 'agent_1',
+        ts: '2026-11-03T09:03:00.000Z',
+        kind: 'tool',
+        text: 'updateAgent',
+        body: JSON.stringify({ output: JSON.stringify({ status: 'awaiting_confirmation', operationId: mine }) })
+      }
+    ]
+    props = { approvals: { orgId: 'org1', conversationId: 'conv_coordinator' } }
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    const approve = [...container.querySelectorAll('button')].filter((b) => b.textContent?.includes('Approve'))
+    expect(approve).toHaveLength(1)
+    expect(container.textContent).toContain('updateAgent')
+    expect(container.textContent).not.toContain('deleteCron')
+    await act(async () => approve[0]!.click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(wire.calls).toContain('target:ses_task')
+    expect(wire.calls.find((call) => call.startsWith('notice:ses_task:agent_1:'))).toContain(mine)
   })
 
   it('goes back to the task lists', async () => {

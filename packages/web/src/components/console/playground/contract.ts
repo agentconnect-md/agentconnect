@@ -29,7 +29,12 @@ export interface PlaygroundData {
    *  adds more participants — the conversation's roster is fixed at creation
    *  (webchat-multi-agents.md §3.1); the first agent is the primary. `conversationId`
    *  opens it on a conversation that exists already, such as the member's coordinator. */
-  openPlayground: (agent: Agent, members?: Agent[], options?: { worktree?: boolean; conversationId?: string }) => string
+  openPlayground: (
+    agent: Agent,
+    members?: Agent[],
+    /** `coordinator` marks the member's coordinator conversation (auto-session-mode.md §10) before it has a session. */
+    options?: { worktree?: boolean; conversationId?: string; coordinator?: boolean }
+  ) => string
   /** Add a participant to a LIVE conversation (mid-conversation join,
    *  webchat-multi-agents.md §3.1). Registers the agent with the CP, then
    *  rebuilds the socket so the relay re-verifies and caches the grown roster.

@@ -1089,7 +1089,11 @@ function AgentDetail() {
         .then((entry) => {
           const id =
             entry?.sessionId ??
-            openPlayground(da, undefined, entry ? { conversationId: entry.conversationId } : undefined)
+            openPlayground(
+              da,
+              undefined,
+              entry ? { conversationId: entry.conversationId, coordinator: true } : undefined
+            )
           router.push(orgPath(`/sessions/${id}`))
         })
       return

@@ -173,6 +173,7 @@ import {
   COMPUTER_COMMAND_LINE_FEATURE,
   COMPUTER_LEASE_FEATURE,
   MAX_WORKSPACE_DOWNLOAD_BYTES,
+  isDelegatedTaskCoordinate,
   type TaskLinkFacts,
   type UserTurnBody
 } from '@agentconnect.md/protocol'
@@ -1233,7 +1234,8 @@ import type {
   CodeHostProvider,
   McpAppOutcome,
   RuntimeStrategyEntries,
-  ChannelSessionMode
+  ChannelSessionMode,
+  WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { HostPasses } from './daemon/host-passes.js'
@@ -14099,6 +14101,31 @@ export class Daemon {
       this.log.info(`move: ${agentId} left ${retired} coordinator(s) and closed ${released.length} task(s) here`)
   }
 
+  /** The webchat entitlement a turn installs admin MCP under: its own conversation's, or for a page task of a member's webchat coordinator that conversation's newest (webchat-preset-agentconnect-mcp.md §5.2). */
+  private async adminMcpEntitlement(
+    agentId: string,
+    key: string,
+    msg: NormalizedMessage,
+    webchat: ChatTurnContext | undefined
+  ): Promise<{ conversationId: string; entitlement: WebchatRemoteMcpEntitlement; sessionKey?: string } | undefined> {
+    const grants = this.remoteWebchatGrants
+    if (!grants) return undefined
+    const thread = sessionThreadOf(msg)
+    if (webchat?.remoteMcp) {
+      if (!isCoordinatorCoordinate(thread))
+        return { conversationId: webchat.conversationId, entitlement: webchat.remoteMcp }
+      // The coordinator only routes (auto-session-mode.md §5.4): it installs nothing, and the tasks it opens inherit.
+      grants.noteEntitlement(webchat.conversationId, agentId, webchat.remoteMcp)
+      return undefined
+    }
+    if (!isDelegatedTaskCoordinate(thread)) return undefined
+    const task = await this.store.assistantSubsessions.get(agentId, key)
+    const parent = task ? await this.store.getSession(task.parentSessionKey) : undefined
+    if (!parent || parent.platform !== 'webchat' || !isCoordinatorCoordinate(parent.thread)) return undefined
+    const entitlement = grants.inheritedEntitlement(parent.channel, agentId, this.clock.now())
+    return entitlement ? { conversationId: parent.channel, entitlement, sessionKey: key } : undefined
+  }
+
   /** Whether a task's coordinator still runs in its conversation, read from its session; undefined when the owner is no coordinator session recorded here. */
   private async coordinatorRunsAuto(agentId: string, ownerKey: string): Promise<boolean | undefined> {
     const owner = await this.store.getSession(ownerKey)
@@ -20210,15 +20237,16 @@ export class Daemon {
       // A prior provider post-turn operation is serialized. Managed needs this
       // barrier before reading its index; external recordTurn only durably enqueues.
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
-      // The runtime calls admin MCP directly over HTTP under the conversation grant.
-      // Webchat is the entitlement — every agent gets the catalog there, no agent gets it elsewhere.
-      if (webchat?.remoteMcp && this.remoteWebchatGrants) {
+      // The runtime calls admin MCP directly over HTTP under its own grant of the owner's webchat entitlement.
+      const adminMcp = await this.adminMcpEntitlement(agentId, key, msg, webchat)
+      if (adminMcp && this.remoteWebchatGrants) {
         try {
           const provisioned = await this.remoteWebchatGrants.provision(
-            webchat.conversationId,
-            webchat.remoteMcp,
+            adminMcp.conversationId,
+            adminMcp.entitlement,
             this.clock.now(),
-            agentId
+            agentId,
+            adminMcp.sessionKey
           )
           remoteMcpServer = provisioned.server
           if (provisioned.changed) {
@@ -22866,6 +22894,8 @@ export class Daemon {
         this.log.error(`reconcile: host teardown failed for "${agentId}" (${owner}): ${formatErr(err)}`)
       }
       await this.webchatMcpRevocations.revokeRemoteWebchatConversations(conversations, 'agent_detached')
+      // A task's grant is its conversation's to revoke; its successor process installs a fresh one instead.
+      this.remoteWebchatGrants?.forgetSessions(agentId, (key) => this.sessionOwnerKey(agentId, key) === owner)
     }
     const record: HostRetirement = {
       entries: new Set([...turns.values()].map((turn) => turn.entry)),
@@ -26648,8 +26678,10 @@ export class Daemon {
     this.webchatGrantRenewTimer = this.clock.setTimeout(async () => {
       this.webchatGrantRenewTimer = undefined
       const failed = await this.remoteWebchatGrants
-        ?.renewExpiring(this.clock.now(), async (conversationId, agentId) => {
-          const session = await this.store.getSession(this.webchatTransport.webchatSessionKey(conversationId, agentId))
+        ?.renewExpiring(this.clock.now(), async (conversationId, agentId, sessionKey) => {
+          const session = await this.store.getSession(
+            sessionKey ?? this.webchatTransport.webchatSessionKey(conversationId, agentId)
+          )
           return session !== undefined && session.state !== 'closed'
         })
         .catch((err) => {
