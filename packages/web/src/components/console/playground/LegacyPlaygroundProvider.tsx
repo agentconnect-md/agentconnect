@@ -1350,34 +1350,35 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const unstreamedRef = useRef<Map<string, Set<string>>>(new Map())
   const unstreamedTimers = useRef<Map<string, number>>(new Map())
   const [unstreamedBy, setUnstreamedBy] = useState<Record<string, boolean>>({})
-  const markUnstreamed = useCallback(
-    (id: string, agentId: string | undefined, live: boolean): void => {
-      const agents = unstreamedRef.current.get(id) ?? new Set<string>()
-      if (agentId === undefined) agents.clear()
-      else if (live) agents.add(agentId)
-      else agents.delete(agentId)
-      const on = agents.size > 0
-      if (on) unstreamedRef.current.set(id, agents)
-      else unstreamedRef.current.delete(id)
-      setUnstreamedBy((cur) => (!!cur[id] === on ? cur : { ...cur, [id]: on }))
-      const timer = unstreamedTimers.current.get(id)
-      if (!on) {
-        if (timer !== undefined) window.clearTimeout(timer)
+  const markUnstreamed = useCallback((id: string, agentId: string | undefined, live: boolean): void => {
+    const agents = unstreamedRef.current.get(id) ?? new Set<string>()
+    if (agentId === undefined) agents.clear()
+    else if (live) agents.add(agentId)
+    else agents.delete(agentId)
+    const on = agents.size > 0
+    if (on) unstreamedRef.current.set(id, agents)
+    else unstreamedRef.current.delete(id)
+    setUnstreamedBy((cur) => (!!cur[id] === on ? cur : { ...cur, [id]: on }))
+    const timer = unstreamedTimers.current.get(id)
+    if (!on) {
+      if (timer !== undefined) window.clearTimeout(timer)
+      unstreamedTimers.current.delete(id)
+      return
+    }
+    // Activity can stop before the daemon marks the stream complete, so keep asking until a verdict clears it.
+    if (timer !== undefined) return
+    unstreamedTimers.current.set(
+      id,
+      window.setTimeout(() => {
         unstreamedTimers.current.delete(id)
-        return
-      }
-      // Activity can stop before the daemon marks the stream complete, so keep asking until a verdict clears it.
-      if (timer !== undefined) return
-      unstreamedTimers.current.set(
-        id,
-        window.setTimeout(() => {
-          unstreamedTimers.current.delete(id)
-          probeAttach(id)
-        }, UNSTREAMED_REPROBE_MS)
-      )
-    },
-    [probeAttach]
-  )
+        // Ask only these agents, even beside another participant's live lane: every verdict re-arms or clears, and a close clears.
+        const ws = conns.current.get(id)?.ws
+        if (ws?.readyState !== WebSocket.OPEN) return
+        for (const probeId of unstreamedRef.current.get(id) ?? [])
+          ws.send(JSON.stringify({ type: 'attach', agentId: probeId }))
+      }, UNSTREAMED_REPROBE_MS)
+    )
+  }, [])
 
   /** Open (or reuse) the webchat socket for a session. `conversationId` RESUMES an
    *  existing conversation (adopted webchat sessions); omit it for a fresh playground

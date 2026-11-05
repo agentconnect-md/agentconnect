@@ -1299,7 +1299,7 @@ describe('cold-attach retirement anchor', () => {
     }
   }
 
-  async function coldAttach() {
+  async function coldAttach(participants = [{ agentId: 'agent-1' }]) {
     AttachSocket.instances = []
     Reflect.set(globalThis, 'WebSocket', AttachSocket)
     const api = await import('@/lib/api')
@@ -1312,7 +1312,7 @@ describe('cold-attach retirement anchor', () => {
       socket.readyState = 1
       socket.onopen?.()
       socket.onmessage?.({
-        data: JSON.stringify({ type: 'ready', conversationId: 'c-cold', participants: [{ agentId: 'agent-1' }] })
+        data: JSON.stringify({ type: 'ready', conversationId: 'c-cold', participants })
       })
     })
     return socket
@@ -1446,6 +1446,30 @@ describe('cold-attach retirement anchor', () => {
         vi.advanceTimersByTime(10_000)
       })
       expect(attachProbes(socket)).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps re-probing an unstreamed participant while another one streams', async () => {
+    const socket = await coldAttach([{ agentId: 'agent-1' }, { agentId: 'agent-2' }])
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    try {
+      const verdict = (ack: Record<string, unknown>) =>
+        act(() => socket.onmessage?.({ data: JSON.stringify({ type: 'attached', ack }) }))
+      verdict({ accepted: false, turnId: 'turn-long', agentId: 'agent-1', reason: 'stream_gap' })
+      verdict({ accepted: true, turnId: 'turn-live', agentId: 'agent-2' })
+      expect(isPgBusy('s-cold')).toBe(true)
+      const probesFor = (agentId: string) => attachProbes(socket).filter((frame) => frame.agentId === agentId)
+      const before = probesFor('agent-1').length
+      act(() => {
+        vi.advanceTimersByTime(5_000)
+      })
+      // agent-2's lane must not swallow agent-1's retry.
+      expect(probesFor('agent-1')).toHaveLength(before + 1)
+      expect(probesFor('agent-2')).toHaveLength(1)
+      verdict({ accepted: false, agentId: 'agent-1', reason: 'stream_not_found' })
+      expect(isPgTurnUnstreamed('s-cold')).toBe(false)
     } finally {
       vi.useRealTimers()
     }
