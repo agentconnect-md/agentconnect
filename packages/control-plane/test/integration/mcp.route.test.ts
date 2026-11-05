@@ -989,6 +989,16 @@ describe('POST /api/v1/mcp — write tools (P1, §6.2 ✎)', () => {
     const audits = await prisma.auditEvent.findMany({ where: { kind: 'mcp_tool_call' }, orderBy: { id: 'asc' } })
     expect(audits.map((r) => (r.details as { tool: string; status: number }).status)).toEqual([201, 200, 200])
 
+    // An env patch touches only the keys it names; the agent's other variables survive.
+    await callTool(app, key, 'updateAgent', { agentId: agent.id, env: { LOG_LEVEL: 'info', REGION: 'us' } })
+    const envPatched = await callTool(app, key, 'updateAgent', {
+      agentId: agent.id,
+      env: { LOG_LEVEL: 'debug', REGION: null }
+    })
+    expect(envPatched.isError).toBeUndefined()
+    const read = await callTool(app, key, 'getAgent', { agentId: agent.id })
+    expect((JSON.parse(toolText(read)) as { env: Record<string, string> }).env).toEqual({ LOG_LEVEL: 'debug' })
+
     // Wrong confirm (the displayName, not the slug): blocked at 412, agent untouched.
     const blocked = await callTool(app, key, 'deleteAgent', { agentId: agent.id, confirm: 'MCP Made' })
     expect(blocked.isError).toBe(true)

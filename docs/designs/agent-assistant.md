@@ -248,7 +248,11 @@ the browser under their own Console session, and the model only opens the page.
 
 The Decision tools write a Decision's executable half only — its audience is
 access control and stays in the console — and `updateAgent` carries `decisionIds`,
-`modelSelection` and `repositorySelector`. The three previews store nothing, but
+`modelSelection` and `repositorySelector`. `updateAgent` also patches the agent's plain
+environment variables key by key, merging over the live set because the REST body
+replaces `env` wholesale. No tool takes a secret value: a delegated approval would store
+it in the operation row, and the product never asks for one in chat, so the model opens
+`configureAgent` on its secrets section and the user types it there. The three previews store nothing, but
 each is a billed evaluator call on the organization's provider credentials, so
 they are write tools: a read-only token cannot reach them, and they draw from the
 write budget. Their sample is message content (`contentArgs`), so audit records
