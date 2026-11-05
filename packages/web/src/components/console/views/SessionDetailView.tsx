@@ -179,6 +179,8 @@ import {
   type TasksPanelVerdict
 } from '@/components/console/dock/TasksPanel'
 import { TaskThreadPanel } from '@/components/console/dock/TaskThreadPanel'
+import { TaskExpandedView } from '@/components/console/dock/TaskExpandedView'
+import { useIsMobile } from '@/lib/use-is-mobile'
 import { TaskThreadCard } from '@/components/console/TaskThreadCard'
 import { type TaskLink } from '@/components/console/task-link'
 import { useTasksByMessage } from '@/components/console/task-thread'
@@ -1599,6 +1601,9 @@ function MobileSessionFamilyLinks({
   )
 }
 
+/** How an open coordinator task is drawn: over the coordinator with its own tools, or as the side panel's quick look. */
+type TaskViewMode = 'panel' | 'expanded'
+
 /** The dock's tabs. PR / Tasks are each one more entry (§9), not a stub; Sessions' §1 `plus` action awaits a new-session flow. */
 const DOCK_TABS: DockTab[] = [
   { key: 'sessions', label: 'Sessions', icon: 'messages-square' },
@@ -2456,9 +2461,17 @@ export default function SessionDetailView() {
   const [dockTab, setDockTab] = useState(DOCK_TABS[0]!.key)
   // A closed drawer leaves its panels mounted, so the Computer viewer must hear that it is off screen and hand control back.
   const [dockVisible, setDockVisible] = useState(true)
-  // The coordinator task whose thread the Tasks tab shows in place of its lists, held for the session it was opened in.
-  const [taskThread, setTaskThread] = useState<{ scope: string; link: TaskLink } | null>(null)
-  const openThread = taskThread?.scope === id ? taskThread.link : null
+  // The coordinator task open on this page, held for the session it was opened in: expanded over the coordinator, or in the side panel.
+  const [taskThread, setTaskThread] = useState<{ scope: string; link: TaskLink; mode: TaskViewMode } | null>(null)
+  const isMobile = useIsMobile()
+  const taskMode: TaskViewMode | null = taskThread?.scope === id ? (isMobile ? 'panel' : taskThread.mode) : null
+  // The side panel's thread; an expanded task draws over the page instead, leaving the panel on its lists.
+  const openThread = taskThread?.scope === id && taskMode === 'panel' ? taskThread.link : null
+  const expandedTask = taskThread?.scope === id && taskMode === 'expanded' ? taskThread.link : null
+  const setTaskMode = useCallback(
+    (mode: TaskViewMode) => setTaskThread((current) => (current ? { ...current, mode } : current)),
+    []
+  )
   // A coordinator's tasks by the message each was opened for, read only on a coordinator's own page.
   const tasksByMessage = useTasksByMessage(
     filesAgentId ?? '',
@@ -2466,9 +2479,14 @@ export default function SessionDetailView() {
   )
   // Bumped when a card opens a thread, so a collapsed dock comes on screen to show it.
   const [dockReveal, setDockReveal] = useState(0)
+  // A card opens its task expanded, the Tasks list in the side panel; a task the coordinator opens on its own keeps the current view.
   const openTaskThread = useCallback(
-    (link: TaskLink) => {
-      setTaskThread({ scope: id, link })
+    (link: TaskLink, mode?: TaskViewMode) => {
+      setTaskThread((current) => ({
+        scope: id,
+        link,
+        mode: mode ?? (current?.scope === id ? current.mode : 'panel')
+      }))
       setDockTab('tasks')
       setDockReveal((n) => n + 1)
     },
@@ -4341,7 +4359,37 @@ export default function SessionDetailView() {
     // Height-locked to the `.content` scroller (`h-full`, not `min-h-full`): the row no longer
     // grows with the transcript, so the page itself never scrolls. The transcript column and the
     // dock are each their own overflow region and scroll independently.
-    <div className="flex h-full min-h-0 items-stretch">
+    <div className="relative flex h-full min-h-0 items-stretch">
+      {expandedTask && session.agentId ? (
+        <TaskExpandedView
+          key={expandedTask.sessionId}
+          agentId={session.agentId}
+          taskSessionId={expandedTask.sessionId}
+          computerIds={computerIds}
+          computerManaged={computerManaged !== undefined}
+          canWrite={canWriteWorkspace}
+          onShrink={() => setTaskMode('panel')}
+          thread={(branch) => (
+            <TaskThreadPanel
+              variant="expanded"
+              agentId={session.agentId!}
+              agentName={session.agentName ?? ''}
+              agentIcon={owner?.icon}
+              agentRuntime={agentRuntime || undefined}
+              agentById={agentById}
+              platform={session.platform ?? ''}
+              task={expandedTask}
+              parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
+              {...(activeOrg && session.coordinator && webchatConversationId
+                ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }
+                : {})}
+              branch={branch}
+              onShrink={() => setTaskMode('panel')}
+              onBack={() => setTaskThread(null)}
+            />
+          )}
+        />
+      ) : null}
       {/* The viewer is full-width in every band (§7) — a file wants the columns a transcript does not. The 880px cap is the only geometry that changes: the dock's reserved TRACK keeps its column either way, which is the one thing §7 forbids trading. */}
       {/* The SCROLLER is full-width so its vertical scrollbar rides the far-right edge of the
           transcript area, not the centre of a capped box. `overflow-x-hidden` is load-bearing: a
@@ -5019,9 +5067,11 @@ export default function SessionDetailView() {
                                               parentSessionId={
                                                 turn.agentId === filesAgentId ? subsessionsSessionId : null
                                               }
-                                              selected={openThread?.sessionId === taskLinks[si].sessionId}
+                                              selected={
+                                                (openThread ?? expandedTask)?.sessionId === taskLinks[si].sessionId
+                                              }
                                               {...(turn.agentId === session.agentId
-                                                ? { onOpen: () => openTaskThread(taskLinks[si]!) }
+                                                ? { onOpen: () => openTaskThread(taskLinks[si]!, 'expanded') }
                                                 : {})}
                                             />
                                           </div>
@@ -5081,8 +5131,8 @@ export default function SessionDetailView() {
                                               agentId={session.agentId!}
                                               link={link}
                                               parentSessionId={subsessionsSessionId}
-                                              selected={openThread?.sessionId === link.sessionId}
-                                              onOpen={() => openTaskThread(link)}
+                                              selected={(openThread ?? expandedTask)?.sessionId === link.sessionId}
+                                              onOpen={() => openTaskThread(link, 'expanded')}
                                             />
                                           </div>
                                         ))}
@@ -5808,6 +5858,7 @@ export default function SessionDetailView() {
                 ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }
                 : {})}
               onBack={() => setTaskThread(null)}
+              {...(isMobile ? {} : { onExpand: () => setTaskMode('expanded') })}
             />
           ) : null}
           {/* Mounted under an open thread too, so its verdict keeps the tab's badge and the reader comes back to the same lists. */}
@@ -5821,7 +5872,7 @@ export default function SessionDetailView() {
                 turnActive={focusBusy}
                 refreshTick={tasksRefreshTick}
                 onVerdictChange={setTasksVerdict}
-                {...(session.agentId ? { onOpenThread: openTaskThread } : {})}
+                {...(session.agentId ? { onOpenThread: (link: TaskLink) => openTaskThread(link, 'panel') } : {})}
               />
             ) : null}
           </div>

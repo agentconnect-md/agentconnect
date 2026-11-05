@@ -322,7 +322,11 @@
       "answerSent": "Sent. It stays open until the task accepts the answer.",
       "replyHint": "Goes to {agent} in this task only",
       "close": "Close",
-      "backTitle": "Back to all tasks"
+      "backTitle": "Back to all tasks",
+      "coordinator": "Coordinator",
+      "coordinatorTitle": "Back to the coordinator",
+      "shrink": "Shrink to the side panel",
+      "sliver": "Back to the coordinator"
     },
     "githubApp": {
       "title": "GitHub App",

@@ -36,6 +36,10 @@ vi.mock(import('@/lib/api'), async (importOriginal) => ({
     Promise.resolve({ subsessions: [taskRow], truncated: false, nextCursor: null })
   ),
   fetchAssistantSubsession: vi.fn(),
+  stopAssistantSubsession: vi.fn((_agent: string, id: string) => {
+    wire.calls.push(`stop:${id}`)
+    return Promise.resolve({ result: 'stopped' as const })
+  }),
   listWebchatMcpOperations: vi.fn(() => Promise.resolve(wire.operations as never)),
   decideWebchatMcpOperation: vi.fn((_org: string, _agent: string, _conv: string, operationId: string) =>
     Promise.resolve({
@@ -201,6 +205,31 @@ describe('TaskThreadPanel', () => {
     const folds = [...container.querySelectorAll('[data-turn-fold]')].map((el) => el.textContent)
     expect(folds.at(-1)).toContain('Worked for 1m 0s')
     expect(folds.at(-1)).toContain('Thought through 1 step')
+  })
+
+  it('draws the expanded header: the coordinator crumb, the branch, Stop for a running task, and shrink', async () => {
+    const shrink = vi.fn()
+    props = { variant: 'expanded', branch: 'task/blockers-1.5', onShrink: shrink }
+    await render()
+    const crumb = container.querySelector<HTMLButtonElement>('[data-task-thread-back]')!
+    expect(crumb.textContent).toBe('Coordinator')
+    expect(container.querySelector('[data-task-thread-branch]')?.textContent).toBe('task/blockers-1.5')
+    await act(async () => crumb.click())
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-shrink]')!.click())
+    expect(shrink).toHaveBeenCalledTimes(2)
+    expect(container.querySelector('[data-task-thread-expand]')).toBeNull()
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-stop]')!.click())
+    expect(wire.calls).toContain('stop:ses_task')
+  })
+
+  it('offers the side panel an expand that opens the task expanded', async () => {
+    const expand = vi.fn()
+    props = { onExpand: expand }
+    await render()
+    expect(container.querySelector('[data-task-thread-back]')?.textContent).toBe('Tasks')
+    expect(container.querySelector('[data-task-thread-branch]')).toBeNull()
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
+    expect(expand).toHaveBeenCalledOnce()
   })
 
   it('sends a reply onto the task’s own session', async () => {

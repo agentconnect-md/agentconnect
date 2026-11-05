@@ -322,7 +322,11 @@
       "answerSent": "已发送。任务接受回答前，这里会一直保留。",
       "replyHint": "只发给这个任务里的 {agent}",
       "close": "关闭",
-      "backTitle": "回到全部任务"
+      "backTitle": "回到全部任务",
+      "coordinator": "协调会话",
+      "coordinatorTitle": "回到协调会话",
+      "shrink": "收回到侧边栏",
+      "sliver": "回到协调会话"
     },
     "githubApp": {
       "title": "GitHub App",
