@@ -1,11 +1,6 @@
 import { isControlCommandText } from '../commands/commands.js'
-import {
-  transcriptPromptText,
-  type LocalStore,
-  type TranscriptEntry,
-  type TranscriptRow,
-  type TranscriptSessionScope
-} from '../store/local-store.js'
+import type { LocalStore, TranscriptEntry, TranscriptRow, TranscriptSessionScope } from '../store/local-store.js'
+import { renderReplayContext } from './turn/replay-plan.js'
 
 export const MAX_CONTEXT_REFRESH_EVENTS = 50
 
@@ -131,14 +126,11 @@ export class ThreadContextCoordinator {
   }
 }
 
-/** Stable, provider-neutral replacement prompt. The bounded newest suffix matches
- * the daemon's existing replay cap and keeps chronological order inside the suffix.
- * `deliveredPrefix`: segments of the answer already committed at a tool/thought
- * boundary were delivered and stand — only the closing segment is regenerable. */
+/** Bounded replacement context; `deliveredPrefix` preserves answer segments already sent at a tool/thought boundary. */
 export function contextUpdateText(
   events: readonly TranscriptRow[],
   quoteFor?: (event: TranscriptRow) => string | undefined,
-  opts?: { deliveredPrefix?: boolean }
+  opts?: { deliveredPrefix?: boolean; senderLabel?: (sender: string) => string }
 ): string {
   const suffix = events.slice(-MAX_CONTEXT_REFRESH_EVENTS)
   const elided = events.length - suffix.length
@@ -156,17 +148,15 @@ export function contextUpdateText(
       'unless it matters to the user.)'
   const deltaHeading =
     elided > 0 ? `(new thread messages — ${elided} earlier message(s) elided)` : '(new thread messages)'
-  const rows = suffix.flatMap((event) => {
-    const quote = quoteFor?.(event)
-    return [...(quote ? [quote] : []), `[${event.sender}] ${transcriptPromptText(event)}`]
-  })
-  return `${heading}\n\n${deltaHeading}\n${rows.join('\n')}`
+  const rows = renderReplayContext(suffix, quoteFor, undefined, opts?.senderLabel)
+  return `${heading}\n\n${deltaHeading}\n${rows}`
 }
 
 /** Initial-fence deltas use a shorter heading: there is no discarded candidate yet. */
 export function initialContextDeltaText(
   events: readonly TranscriptRow[],
-  quoteFor?: (event: TranscriptRow) => string | undefined
+  quoteFor?: (event: TranscriptRow) => string | undefined,
+  senderLabel?: (sender: string) => string
 ): string {
   const suffix = events.slice(-MAX_CONTEXT_REFRESH_EVENTS)
   const elided = events.length - suffix.length
@@ -174,11 +164,8 @@ export function initialContextDeltaText(
     elided > 0
       ? `(additional thread messages before this turn started — ${elided} earlier message(s) elided)`
       : '(additional thread messages before this turn started)'
-  const rows = suffix.flatMap((event) => {
-    const quote = quoteFor?.(event)
-    return [...(quote ? [quote] : []), `[${event.sender}] ${transcriptPromptText(event)}`]
-  })
-  return `${heading}\n${rows.join('\n')}`
+  const rows = renderReplayContext(suffix, quoteFor, undefined, senderLabel)
+  return `${heading}\n${rows}`
 }
 
 /** Appended to a turn replayed from the durable inbox; `historyRestored` is false when the runtime session was recreated. */

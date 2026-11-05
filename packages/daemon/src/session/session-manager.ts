@@ -280,6 +280,8 @@ export class SessionManager {
       /** Daemon-observed reply-source sidecar for context rows. Standalone/test
        * callers omit it and preserve the historical transcript-only behavior. */
       quoteForContextEvent?: (event: TranscriptEntry, replayed: readonly TranscriptEntry[]) => string | undefined
+      /** Prompt-only sender identity, including an exact mention when known in this turn's delivery conversation. */
+      senderLabelFor?: (agentId: string, msg: NormalizedMessage, sender: string) => string
       /** The agent runtime's advertised slash commands, for skill-invocation translation
        *  (skill-invocation.ts). Absent (tests / chat CLI) ⇒ no translation. */
       advertisedCommandsFor?: (agentId: string) => readonly RuntimeCommand[]
@@ -379,7 +381,11 @@ export class SessionManager {
   private readonly standingRefreshDue = new Set<string>()
 
   /** send-message-guide.md §9.5: the messages this session may answer, open obligations first, unless only this turn's own one; an unreadable store lists none. */
-  private async sessionMessagesBlock(key: string, current: string | undefined): Promise<string | undefined> {
+  private async sessionMessagesBlock(
+    key: string,
+    current: string | undefined,
+    senderLabel: (sender: string) => string
+  ): Promise<string | undefined> {
     const messages = this.deps.store.sessionMessages
     if (!messages) return undefined
     try {
@@ -388,7 +394,7 @@ export class SessionManager {
         messages.countFor(key)
       ])
       if (listed.length === 0 || (count === 1 && listed[0]!.messageId === current)) return undefined
-      return buildSessionMessagesBlock({ messages: listed, more: Math.max(0, count - listed.length) })
+      return buildSessionMessagesBlock({ messages: listed, more: Math.max(0, count - listed.length), senderLabel })
     } catch {
       return undefined
     }
@@ -517,6 +523,7 @@ export class SessionManager {
     const configuredAgent = this.deps.agentById(agentId)
     const agent = configuredAgent ? agentWithRuntime(configuredAgent, options.runtimeTarget) : undefined
     if (!agent) throw new Error(`unknown agent ${agentId}`)
+    const senderLabel = (sender: string) => this.deps.senderLabelFor?.(agentId, msg, sender) ?? sender
     const memoryEnabled = this.deps.memoryEnabled !== false
     const currentMemoryProvider = memoryEnabled ? memoryKindOf(agent) : 'none'
     // The conversation's memory layers, resolved once and only when a fresh session seeds and injects them.
@@ -949,7 +956,8 @@ export class SessionManager {
       backgroundBlock = backgroundConversationText(
         rows.filter((row) => row.seq !== intake.seq),
         this.deps.quoteForContextEvent,
-        currentThread
+        currentThread,
+        senderLabel
       )
     }
     const evidenceBlock = intakeEvidenceText(intake)
@@ -977,7 +985,12 @@ export class SessionManager {
         historyLost: opened.historyLost
       })
       const renderContext = (entries: readonly TranscriptEntry[]): string =>
-        renderReplayContext(entries, this.deps.quoteForContextEvent, opened.historyLost ? agentId : undefined)
+        renderReplayContext(
+          entries,
+          this.deps.quoteForContextEvent,
+          opened.historyLost ? agentId : undefined,
+          senderLabel
+        )
       if (plan.shape === 'skip' && options.coordinatorBatch === undefined) {
         rec.lastDeliveredTs = plan.deliveredThrough
         rec.state = 'idle'
@@ -1008,11 +1021,7 @@ export class SessionManager {
         if (context.length > 0) blocks.push({ type: 'text', text: `${plan.head}\n${renderContext(context)}` })
         const quotedBlock = quotedSourceBlock(msg, { replayed: context })
         if (quotedBlock) blocks.push({ type: 'text', text: quotedBlock })
-        // session-concept §2.1: inbound human input carries its sender (`from`), so deliver the
-        // trigger in the same `[sender] text` shape as thread context — otherwise the agent has
-        // no idea WHO is speaking and must guess from ambient account context. Synthetic
-        // (cron/hook) triggers stay bare, and an agent delivery already names its caller in the
-        // forwarded text (`From <caller>: …` from prepareAgentDelivery).
+        // Label people and mapped agent senders like history; synthetic triggers retain their own headers.
         // A typed `/skill` is translated into the instruction shape the runtime acts on; the
         // transcript keeps the user's own words — prompt ≠ transcript is this seam's contract.
         // A delivery that assembled a prompt (a Linear delegation, a code-host event) carries it on
@@ -1031,9 +1040,12 @@ export class SessionManager {
         // marker (it renders transcript rows), which is why only this arm was missing it.
         const triggerMarker = attachmentMention(ingested.attachments)
         const withMarker = (text: string): string => (triggerMarker ? `${text}\n${triggerMarker}` : text)
+        const sender = senderLabel(msg.sender.id)
         blocks.push({
           type: 'text',
-          text: withMarker(msg.source === 'user' ? `[${msg.sender.id}] ${triggerText}` : promptText)
+          text: withMarker(
+            msg.source === 'user' || sender !== msg.sender.id ? `[${sender}] ${triggerText}` : promptText
+          )
         })
         evidenceAt = blocks.length
         contextEvents = [...context.map((entry) => ({ ts: entry.ts, text: entry.text })), { ts, text: msg.text }]
@@ -1175,7 +1187,7 @@ export class SessionManager {
       if (due) promptPrelude.push({ type: 'text', text: due })
     }
     // send-message-guide.md §9.5: the messages this session may still answer, refreshed like the running tasks.
-    const messages = await this.sessionMessagesBlock(key, options.messageId)
+    const messages = await this.sessionMessagesBlock(key, options.messageId, senderLabel)
     if (messages === undefined) this.sessionMessagesShown.delete(key)
     else if (opening || reminded || this.sessionMessagesShown.get(key) !== messages) {
       this.sessionMessagesShown.set(key, messages)

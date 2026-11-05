@@ -70,6 +70,14 @@ describe('ThreadContextCoordinator', () => {
       ['U1', 'human clarification'],
       ['bot-b', 'peer answer']
     ])
+    const senderLabel = (sender: string) => (sender === 'bot-b' ? `${sender} (mention: <@UPEER>)` : sender)
+    for (const prompt of [
+      initialContextDeltaText(refresh.events, undefined, senderLabel),
+      contextUpdateText(refresh.events, undefined, { senderLabel })
+    ]) {
+      expect(prompt).toContain('[bot-b (mention: <@UPEER>)] peer answer')
+      expect(prompt).toContain('[U1] human clarification')
+    }
     expect(refresh.revision).toBe(await db.threadTranscriptRevision(readScope('scope:C1', 'T1', 'agent')))
     expect(refresh.completeness).toBe('observed-only')
     await db.close()

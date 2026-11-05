@@ -105,7 +105,8 @@ const BACKGROUND_HEAD =
 export function backgroundConversationText(
   rows: readonly ChannelTextRow[],
   quoteFor?: (event: TranscriptEntry, replayed: readonly TranscriptEntry[]) => string | undefined,
-  currentThread?: string
+  currentThread?: string,
+  senderLabel?: (sender: string) => string
 ): string | undefined {
   if (rows.length === 0) return undefined
   const entries = rows as unknown as readonly TranscriptEntry[]
@@ -113,7 +114,10 @@ export function backgroundConversationText(
     const quote = quoteFor?.(entries[index]!, entries)
     const where =
       row.thread === null ? ' (thread unknown)' : row.thread !== currentThread ? ` (thread ${row.thread})` : ''
-    return [...(quote ? [quote] : []), `[${row.sender}]${where} ${transcriptPromptText(row)}`]
+    return [
+      ...(quote ? [quote] : []),
+      `[${senderLabel?.(row.sender) ?? row.sender}]${where} ${transcriptPromptText(row)}`
+    ]
   })
   return [BACKGROUND_HEAD, ...lines].join('\n')
 }

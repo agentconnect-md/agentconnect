@@ -199,6 +199,78 @@ function pairingKey(daemon: Daemon, targetAgentId = 'bot-b'): string {
 }
 
 describe('agent-authored platform mentions (send-message-routing-rework.md §6)', () => {
+  it('labels prompt senders with current-channel mentions while keeping stored agent identities', async () => {
+    const { daemon } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }, { id: 'bot-c' }, { id: 'bot-d' }], {
+      botUserIds: { 'bot-a': 'UOWN', 'bot-b': 'USHARED', 'bot-c': 'USHARED', 'bot-d': 'UDEDICATED' }
+    })
+    const d = daemon as any
+    try {
+      const key = sessionKey('slack', 'C_ORIGIN', '100.1', 'bot-a')
+      for (const [index, sender] of ['bot-b', 'bot-d', 'U_HUMAN', 'unknown-agent'].entries()) {
+        await d.store.appendTranscript({
+          channel: 'C1',
+          thread: 'C1',
+          ts: `100.${index + 1}`,
+          sender,
+          kind: 'text',
+          text: 'earlier message',
+          admission: { agentId: 'bot-a', sessionKey: key },
+          orgAgentId: 'bot-a'
+        })
+      }
+      await d.store.sessionMessages.recordReceived({
+        messageId: 'msg-peer',
+        recipientKey: key,
+        recipientAgentId: 'bot-a',
+        sourceAgentId: 'bot-b',
+        sourceSessionId: 'peer-session',
+        kind: 'call',
+        replyState: 'open',
+        hopCount: 1,
+        now: 1
+      })
+      const wake: NormalizedMessage = {
+        msgId: 'slack:C1:100.9',
+        traceId: 'test',
+        platform: 'slack',
+        channel: 'C1',
+        thread: 'C1',
+        sessionChannel: 'C_ORIGIN',
+        sessionThread: '100.1',
+        source: 'agent',
+        sender: { id: 'bot-b', isBot: true },
+        text: 'current message',
+        mentionedBots: [],
+        isDm: false
+      }
+      const turn = await d.sessions.handle('bot-a', wake)
+      const prompt = turn.blocks.map((block: { text?: string }) => block.text ?? '').join('\n')
+      expect(prompt).toContain('[bot-b (mention: <@USHARED> bot-b)] earlier message')
+      expect(prompt).toContain('[bot-d (mention: <@UDEDICATED>)] earlier message')
+      expect(prompt).toContain('[U_HUMAN] earlier message')
+      expect(prompt).toContain('[unknown-agent] earlier message')
+      expect(prompt).toContain('[bot-b (mention: <@USHARED> bot-b)] current message')
+      expect(prompt).toContain('from agent bot-b (mention: <@USHARED> bot-b), session peer-session')
+      expect((await d.store.sessionMessages.received('msg-peer')).sourceAgentId).toBe('bot-b')
+      const stored = await d.store.db
+        .prepare("SELECT sender FROM transcript WHERE text = 'earlier message' ORDER BY ts")
+        .all()
+      expect(stored.map((row: { sender: string }) => row.sender)).toEqual([
+        'bot-b',
+        'bot-d',
+        'U_HUMAN',
+        'unknown-agent'
+      ])
+      // The same task now answers elsewhere: no address from C1 may leak into its new delivery conversation.
+      const moved = await d.sessions.handle('bot-a', { ...wake, msgId: 'slack:C2:101.1', channel: 'C2', thread: 'C2' })
+      const movedPrompt = moved.blocks.map((block: { text?: string }) => block.text ?? '').join('\n')
+      expect(movedPrompt).toContain('from agent bot-b, session peer-session')
+      expect(movedPrompt).not.toContain('<@USHARED>')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it('wakes the peer whose connection observed it, with the trusted hop already advanced', async () => {
     // The one positive case. Delivery follows the ordinary ladder on the OBSERVING
     // connection, not a recipient set parsed out of the body — a peer is meant to see what

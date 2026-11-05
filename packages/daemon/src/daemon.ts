@@ -5585,6 +5585,8 @@ export class Daemon {
         }),
       memoryEnabled: this.evaluationProfile.memory === 'configured',
       quoteForContextEvent: (event, replayed) => this.observedQuoteBlock(event, replayed),
+      senderLabelFor: (agentId, msg, sender) =>
+        this.promptSenderLabel({ agentId, platform: msg.platform, channel: msg.channel }, sender),
       // The session integration's own bot identity (auth.test-resolved on both
       // socket and send-only connections) for the `# Agent` Slack-identity line.
       slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
@@ -9957,6 +9959,13 @@ export class Daemon {
       integrationId: int.id,
       name: target.displayName ?? null
     }
+  }
+
+  /** Retain the stored identity and label its exact address in the reader's delivery conversation, without provider I/O. */
+  private promptSenderLabel(at: { agentId: string; platform: string; channel: string }, sender: string): string {
+    const orgId = this.cpCollab.orgForAgent(at.agentId)
+    const mention = orgId ? this.cpCollab.mentionAddress(orgId, at.platform, at.channel, sender) : undefined
+    return mention ? `${sender} (mention: ${mention})` : sender
   }
 
   /** A coordinator's standing instructions for one conversation, naming the other agents in it (auto-session-mode.md §9). */
@@ -16934,7 +16943,8 @@ export class Daemon {
       background = backgroundConversationText(
         rows.filter((row) => row.seq !== intake.seq),
         (event, replayed) => this.observedQuoteBlock(event, replayed),
-        rows.find((row) => row.seq === intake.seq)?.thread ?? undefined
+        rows.find((row) => row.seq === intake.seq)?.thread ?? undefined,
+        (sender) => this.promptSenderLabel({ agentId: entry.agentId, ...entry.msg }, sender)
       )
     }
     return { ...(background ? { background } : {}), ...(evidence ? { evidence } : {}) }
@@ -21451,7 +21461,11 @@ export class Daemon {
       if (initialEvents.length > 0) {
         deltaBlocks.push({
           type: 'text',
-          text: initialContextDeltaText(initialEvents, (event) => this.observedQuoteBlock(event, initialEvents))
+          text: initialContextDeltaText(
+            initialEvents,
+            (event) => this.observedQuoteBlock(event, initialEvents),
+            (sender) => this.promptSenderLabel(p.plan, sender)
+          )
         })
       }
       promptBlocks.push(...deltaBlocks)
@@ -21812,7 +21826,8 @@ export class Daemon {
           text:
             invalidatingEvents.length > 0
               ? contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents), {
-                  deliveredPrefix: p.plan.stageAnswer && p.reply.text.length > 0
+                  deliveredPrefix: p.plan.stageAnswer && p.reply.text.length > 0,
+                  senderLabel: (sender) => this.promptSenderLabel(p.plan, sender)
                 })
               : WEBCHAT_ROUTING_UPDATE_TEXT
         },
