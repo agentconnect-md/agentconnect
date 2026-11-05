@@ -207,6 +207,7 @@ export function SessionDock({
   label = 'Panels',
   onVisibleChange,
   stripHidden = false,
+  suppressed = false,
   children
 }: {
   /** The strip, in order. The dock does not sort, filter or hide them. */
@@ -228,6 +229,8 @@ export function SessionDock({
   onVisibleChange?: (visible: boolean) => void
   /** Drop the tab strip, for a panel that draws its own header in its place (a task's thread). */
   stripHidden?: boolean
+  /** Something covers the page (an expanded task): the drawer closes and its floating trigger steps aside. */
+  suppressed?: boolean
   /** The active panel. A function receives the live rendered width, for a body that lays out differently at 380px than at 760px. */
   children: ReactNode | ((width: number) => ReactNode)
 }) {
@@ -339,6 +342,9 @@ export function SessionDock({
     return () => registerMobileAction(null)
   }, [vacant, label, open, toggleOverlay, registerMobileAction])
   useEffect(() => setOpen(false), [overlayKey])
+  useEffect(() => {
+    if (suppressed) setOpen(false)
+  }, [suppressed])
   useEffect(() => {
     if (revealKey > 0 && window.innerWidth < DOCK_WIDE_MIN) setOpen(true)
   }, [revealKey])
@@ -638,7 +644,7 @@ export function SessionDock({
         </div>
       </div>
       {/* 769px–`wide:`: a floating top-right button opened by CLICK, no CSS hover/focus reveal — see the latch above for why. */}
-      {vacant ? null : (
+      {vacant || suppressed ? null : (
         <div className="fixed top-[10px] right-[14px] z-40 hidden desktop:max-wide:block">
           <button
             type="button"
