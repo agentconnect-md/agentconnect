@@ -281,6 +281,51 @@ describe('webchat session-targeted continuation', () => {
     await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
     await daemon.stop()
   })
+
+  it("continues a channel coordinator at the channel's top level, never under its coordinate as a thread", async () => {
+    const { daemon, d, prompts, postMessage, postAsAuthor } = await boot(() => 'coordinator reply')
+    const coordinate = 'append:coordinator-1700000000000'
+    const coordKey = `slack:C1:${coordinate}:${AGENT}`
+    await d.store.upsertSession({
+      key: coordKey,
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinate,
+      acpSessionId: 'acp-coordinator',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await d.store.setSessionClassification(coordKey, {
+      sourceBindingKind: 'external',
+      externalProvider: 'slack',
+      externalRealmKey: 'T1',
+      externalResourceKind: 'conversation',
+      externalResourceKey: 'C1',
+      externalIntegrationId: 'int-a'
+    })
+    const events: RdChatEvent[] = []
+
+    const ack = await d.handleRelayMsg(turn('from console', { targetSessionId: 'acp-coordinator' }), (e) =>
+      events.push(e)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    expect(postAsAuthor).toHaveBeenCalledWith(
+      'C1',
+      undefined,
+      { text: 'from console', attributedText: '[owner via console] from console' },
+      { name: 'owner' },
+      { agentAuthorId: AGENT }
+    )
+    expect(prompts).toHaveLength(1)
+    // The turn ran as the conversation's coordinator, keyed on its coordinate.
+    expect(prompts[0]!.text).toContain(`Thread: ${coordinate}`)
+    expect(prompts[0]!.text).toContain('You are the coordinator')
+    for (const call of postMessage.mock.calls as unknown[][]) expect(call[2]).not.toBe(coordinate)
+    await daemon.stop()
+  })
 })
 
 // ── mirror routing claim (§5.2) ──────────────────────────────────────────────

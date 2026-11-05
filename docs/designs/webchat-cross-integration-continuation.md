@@ -233,7 +233,11 @@ the existing output rules.**
   the Slack send boundary swaps in the attributed body atomically (on the very
   post that proves the scope missing, not only once latched) and reports which
   body landed so the routing re-stamp re-supplies it. This uses the same
-  integration client the session's replies use.
+  integration client the session's replies use. A session keyed on a whole
+  conversation (an `append` or channel-coordinator coordinate,
+  [channel-session-mode.md](channel-session-mode.md) §3) has no platform thread, so
+  its mirror and replies post at the conversation's top level; the coordinate stays
+  the session's key and is never sent to the platform as a thread.
 - The mirror is an ordinary authenticated platform message, and delivery must
   be PROVEN: only a returned provider message id counts — an undefined result
   (a provider that swallows send failures) takes the same refusal path as an
