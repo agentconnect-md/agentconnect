@@ -8,7 +8,8 @@ import { renderWorkBoard, type BoardTask } from '../../src/assistant/work-board.
 import {
   coordinatorPrompt as shippedCoordinatorPrompt,
   coordinatorTools as shippedCoordinatorTools,
-  renderCoordinatorBatch
+  renderCoordinatorBatch,
+  withoutBlankCoordinatorFields
 } from '../../src/auto-session/coordinator-prompt.js'
 import { readOnlyExtractionMode } from '../../src/memory/distill.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../../src/runtime-defs/claude-runtime.js'
@@ -306,7 +307,8 @@ export function decide(
   scope: CoScope,
   decided: ReadonlySet<string>
 ): { outcome: CoOutcome } | { error: string } {
-  const parsed = outcomeArgs.safeParse(args)
+  // The daemon reads a blank field as absent before it validates, as here.
+  const parsed = outcomeArgs.safeParse(withoutBlankCoordinatorFields(args))
   if (!parsed.success) return { error: `sendMessage: ${parsed.error.issues.map((issue) => issue.message).join('; ')}` }
   const call = parsed.data
   if (!scope.messages.includes(call.messageId))
