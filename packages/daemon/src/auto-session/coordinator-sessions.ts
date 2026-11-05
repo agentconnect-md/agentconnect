@@ -50,22 +50,6 @@ export interface CoordinatorSessionsHost {
 }
 
 const optionalBackground = z.string('argument message must be a string').optional()
-// Some runtimes fill every optional tool field with ''; ignore only blank fields belonging to other actions.
-const DECISION_FIELDS = new Set(['messageId', 'taskId', 'title', 'message', 'channel', 'thread', 'toAgent'])
-const DECISION_KEYS: Record<string, readonly string[]> = {
-  delegateTask: ['messageId', 'title', 'message'],
-  messageTask: ['messageId', 'taskId', 'message'],
-  replyToMessage: ['messageId', 'message']
-}
-
-function coordinatorCallArgs(args: Record<string, unknown>): Record<string, unknown> {
-  const allowed = DECISION_KEYS[String(args.action)]
-  if (!allowed) return args
-  return Object.fromEntries(
-    Object.entries(args).filter(([key, value]) => value !== '' || allowed.includes(key) || !DECISION_FIELDS.has(key))
-  )
-}
-
 const CALL = z.discriminatedUnion(
   'action',
   [
@@ -212,7 +196,7 @@ export class CoordinatorSessions {
   async decide(ctx: SessionContext, args: Record<string, unknown>): Promise<unknown> {
     let call: z.output<typeof CALL>
     try {
-      call = parseArgs(CALL, coordinatorCallArgs(args))
+      call = parseArgs(CALL, args)
     } catch (err) {
       if (err instanceof ToolArgumentError) throw new Error(`sendMessage: ${err.issues.join('; ')}`)
       throw err
