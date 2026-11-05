@@ -42,6 +42,9 @@ export interface SentSessionMessage {
   senderKey: string
   senderAgentId: string
   senderSessionId: string
+  /** The sending turn's reply sink, retained even if its session moves to another thread. */
+  replyChannel?: string
+  replyThread?: string | null
   recipientAgentId: string
   kind: SessionMessageKind
   createdAt: number
@@ -75,6 +78,8 @@ export const SESSION_MESSAGE_SCHEMA = `
         senderKey TEXT NOT NULL,
         senderAgentId TEXT NOT NULL,
         senderSessionId TEXT NOT NULL,
+        replyChannel TEXT,
+        replyThread TEXT,
         recipientAgentId TEXT NOT NULL,
         kind TEXT NOT NULL,
         createdAt INTEGER NOT NULL
@@ -119,6 +124,9 @@ function sentOf(row: Row): SentSessionMessage {
     senderKey: String(row.senderKey),
     senderAgentId: String(row.senderAgentId),
     senderSessionId: String(row.senderSessionId),
+    ...(row.replyChannel != null
+      ? { replyChannel: String(row.replyChannel), replyThread: text(row.replyThread) ?? null }
+      : {}),
     recipientAgentId: String(row.recipientAgentId),
     kind: String(row.kind) as SessionMessageKind,
     createdAt: Number(row.createdAt)
@@ -230,8 +238,8 @@ export class SessionMessages {
   async recordSent(message: Omit<SentSessionMessage, 'createdAt'> & { now: number }): Promise<void> {
     await this.db.query(
       `INSERT OR IGNORE INTO session_message_sent
-         (messageId, senderKey, senderAgentId, senderSessionId, recipientAgentId, kind, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (messageId, senderKey, senderAgentId, senderSessionId, recipientAgentId, kind, createdAt, replyChannel, replyThread)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         message.messageId,
         message.senderKey,
@@ -239,7 +247,9 @@ export class SessionMessages {
         message.senderSessionId,
         message.recipientAgentId,
         message.kind,
-        message.now
+        message.now,
+        message.replyChannel ?? null,
+        message.replyThread ?? null
       ]
     )
   }

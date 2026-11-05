@@ -339,7 +339,8 @@ const COLLAB_SELF_DELEGATION =
 const COLLAB_AFTER_SELF =
   `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
   `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
-  `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use \`postMessage\` with \`toUser\` — never put ` +
+  `a peer's exact \`mention\` token; agent IDs in history and message headers are internal IDs, never platform mention tokens). ` +
+  `To reach HUMAN users elsewhere, use \`postMessage\` with \`toUser\` — never put ` +
   `an AgentConnect agent or your own bot identity in \`toUser\`: ` +
   `\`{"action":"postMessage","toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
   `@-mention at the channel root. In that channel form, pass ` +

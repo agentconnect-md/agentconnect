@@ -449,6 +449,10 @@ place; a channel is a workspace the task earns.
   (`slack:<channel>:<channel>`, attached as §6.4 attaches a thread), so a message in the channel
   reaches the task and is answered there, while the origin thread stays attached and is answered in
   place. The task's own words tell the thread where it moved; the coordinator posts nothing.
+  The attachment records the creating turn's delivery thread for reports. Session-only wakes
+  (capability settlement and PR feedback) use the latest turn's saved delivery channel and thread,
+  while replies to agent messages use the sending turn's target saved with that message.
+  These targets change only delivery; the task keeps its original session coordinates.
 - **The first message.** Slack copies the linked message into the new channel. The copy reaches the
   task through the channel it holds, never a second session, and carries nothing new: the task already
   has the message, its title and its background. The daemon dispatches nothing itself. A message in a
@@ -475,8 +479,10 @@ place; a channel is a workspace the task earns.
   final output, delivered on its behalf, with its summary as a supplement. A summary is the task's own
   account of itself and is stale whenever the task did not update it as it finished, so the report
   carries what the run produced, as a background task's round report carries the round's output.
-  The coordinator may relay it in the origin thread with `replyToMessage`, so "tell me when it is done"
-  is answered where it was asked, or leave it. A task answering in the asker's own thread reports
+  The coordinator may relay it with `replyToMessage` in the thread that requested the channel,
+  recorded when the channel was attached, or leave it. A task opened in thread A that makes its
+  channel for work requested in thread B therefore reports to B. Older attachments without that
+  record retain the task's recorded report thread. A task answering in the asker's own thread reports
   nothing, as before. A task running in the channel may also tell its origin thread itself with
   `postMessage`, since its turn's own reply goes to the channel: `sendMessage` refuses only the thread
   the turn is delivering to as the conversation it already answers, not the thread the session is

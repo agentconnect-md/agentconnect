@@ -330,6 +330,7 @@ describe('a coordinator task that makes its own code channel, through the daemon
       ctx?: SessionContext
       task?: SessionContext
       makeChannel?: boolean
+      messageTask?: string
       replyToReport?: string
       taskCalls?: Record<string, unknown>[]
       taskReply?: string
@@ -371,9 +372,9 @@ describe('a coordinator task that makes its own code channel, through the daemon
         coordinatorTurns.push(prompt)
         for (const id of ids)
           await live.d.coordinators.decide(live.ctx, {
-            action: 'delegateTask',
+            action: live.messageTask ? 'messageTask' : 'delegateTask',
+            ...(live.messageTask ? { taskId: live.messageTask } : { title: 'Flaky test' }),
             messageId: id,
-            title: 'Flaky test',
             message: 'it fails on main only'
           })
         for (const id of reports)
@@ -475,8 +476,8 @@ describe('a coordinator task that makes its own code channel, through the daemon
     const taskKey = sessionKey('slack', 'C1', '1.1', 'bot-a', scope)
     const channelKey = sessionKey('slack', 'C2', 'C2', 'bot-a', scope)
     // Opens the task for a request, which makes its channel in its first run.
-    const delegate = async () => {
-      live.makeChannel = true
+    const delegate = async (makeChannel = true) => {
+      live.makeChannel = makeChannel
       await route(slack('1.1', { text: 'fix the flaky test, with a PR' }))
       await vi.waitFor(() => expect(taskTurns).toHaveLength(1), WAIT)
       await idle()
@@ -591,6 +592,29 @@ describe('a coordinator task that makes its own code channel, through the daemon
     expect(booted.taskTurns[1]!.sessionId).toBe(booted.taskTurns[0]!.sessionId)
     expect(await booted.d.store.getSession(booted.channelKey)).toBeUndefined()
     await booted.daemon.stop()
+  })
+
+  it('relays a room report to the thread that requested the room, not the task opening thread', async () => {
+    const booted = await boot()
+    try {
+      await booted.delegate(false)
+      booted.live.messageTask = booted.taskKey
+      booted.live.makeChannel = true
+      await booted.route(slack('2.1', { text: 'do the next part in a Code channel' }))
+      await vi.waitFor(() => expect(booted.taskTurns).toHaveLength(2), WAIT)
+      await booted.idle()
+      expect(booted.create).toHaveBeenCalledWith(expect.objectContaining({ origin_message_ts: '2.1' }))
+      booted.live.replyToReport = 'The work requested here is ready.'
+      await booted.route(inChannel('2.5', 'finish it'))
+      await vi.waitFor(
+        () => expect(booted.coordinatorPosts.some((p) => p.text === booted.live.replyToReport)).toBe(true),
+        WAIT
+      )
+      await booted.idle()
+      expect(booted.coordinatorPosts.at(-1)).toEqual({ channel: 'C1', thread: '2.1', text: booted.live.replyToReport })
+    } finally {
+      await booted.daemon.stop()
+    }
   })
 
   it('reports each run in its channel to the coordinator, which relays it in the origin thread', async () => {

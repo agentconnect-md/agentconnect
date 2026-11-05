@@ -739,9 +739,9 @@ injected body to a platform, so relaying an answer upward is a hand-off rather t
 broadcast.
 
 The parent session is then resumed as an **ordinary turn** — it keeps its reply sink and
-chrome, so what the parent decides to say lands in the parent's own conversation, where
-the humans who delegated the work are waiting. Delegated work that reports back is
-therefore visible to them, which is the point of reporting back at all.
+chrome, so what the parent decides to say lands in the conversation and thread of the turn
+that sent the answered message, even if the same task has since worked elsewhere. Delegated
+work that reports back is therefore visible to them, which is the point of reporting back at all.
 
 The parent should not restate what its conversation already shows; that is the standing
 "be quiet about mechanics" rule, not a transport guarantee. An earlier revision muted the
@@ -1338,7 +1338,8 @@ Quick questions stay in their original conversation. In an Auto conversation on 
 the coordinator opens for a message works in the message's thread. When its work calls for a Code
 channel, the task makes one, says so in the thread, and holds the channel as one more of its
 threads; at the end of each run there the coordinator hears what the task did and may tell the
-thread. Archiving the channel closes the task.
+thread that requested that channel, even when the task originally opened in another thread.
+Archiving the channel closes the task.
 
 A Code channel's Tasks tab reads the same task and runtime background-work sources as
 the console's Tasks panel. Open work stays visible, finished work is grouped and collapsed,

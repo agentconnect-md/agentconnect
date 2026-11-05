@@ -1208,10 +1208,11 @@ export class SessionManager {
     rec.state = 'prompting'
     rec.updatedAt = Date.now()
     await this.deps.store.upsertSession(rec)
-    // Where an appending session's turn replies, for a later wake keyed by the session alone (a pull request's feedback).
-    const replyThread = isAppendCoordinate(thread) ? (msg.thread ?? null) : null
-    if ((rec.replyThread ?? null) !== replyThread) {
-      await this.deps.store.setSessionReplyThread(key, replyThread)
+    // Session-only wakes continue at the latest turn's delivery target, including rooms held by a task.
+    const replyThread = msg.replyThread ?? msg.thread ?? null
+    if (rec.replyChannel !== msg.channel || (rec.replyThread ?? null) !== replyThread) {
+      await this.deps.store.setSessionReplyTarget(key, msg.channel, replyThread)
+      rec.replyChannel = msg.channel
       rec.replyThread = replyThread
     }
 

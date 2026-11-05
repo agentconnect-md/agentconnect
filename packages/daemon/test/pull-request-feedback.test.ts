@@ -98,7 +98,7 @@ describe('pull request feedback continuation', () => {
 
 describe('pull request feedback in a direct message that is one long session', () => {
   /** The message the feedback dispatches into a Slack DM session at `thread` that recorded `replyThread`. */
-  async function feedbackInto(thread: string, replyThread: string | null) {
+  async function feedbackInto(thread: string, replyThread: string | null, replyChannel?: string) {
     const daemon = new Daemon({ sandboxMechanism: null } as never)
     const session = {
       key: sessionKey('slack', 'D-ADA', thread, AGENT_ID),
@@ -110,6 +110,7 @@ describe('pull request feedback in a direct message that is one long session', (
       thread,
       transportScope: null,
       conversationKind: 'dm',
+      replyChannel,
       replyThread
     } as unknown as SessionRecord
     const inner = daemon as never as {
@@ -138,9 +139,25 @@ describe('pull request feedback in a direct message that is one long session', (
     ).resolves.toEqual({ deliveryKey: 'delivery-review-2', accepted: true })
     const [, message, integrationId] = inner.dispatch.mock.calls[0]! as [string, NormalizedMessage, string]
     expect(integrationId).toBe('int-s')
-    expect(message).toMatchObject({ source: 'system', platform: 'slack', channel: 'D-ADA', isDm: true })
+    expect(message).toMatchObject({
+      source: 'system',
+      platform: 'slack',
+      channel: replyChannel ?? 'D-ADA',
+      isDm: !replyChannel || replyChannel === 'D-ADA'
+    })
     return message
   }
+
+  it('resumes a task in its Code channel without moving its original session', async () => {
+    const message = await feedbackInto('1700.0001', 'C-CODE', 'C-CODE')
+    expect(message).toMatchObject({
+      channel: 'C-CODE',
+      thread: 'C-CODE',
+      sessionChannel: 'D-ADA',
+      sessionThread: '1700.0001',
+      isDm: false
+    })
+  })
 
   it('replies under the message the session last replied under', async () => {
     const message = await feedbackInto('append:1000', '1700.0001')

@@ -39,7 +39,7 @@ import { sendAgentMsgUntilReady } from '../cp/agentmsg-retry.js'
 import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { isNoResponseBody } from '../session/no-response.js'
-import { codeHostReplySnapshot, sessionReplyRoute } from '../session/reply-route.js'
+import { codeHostReplySnapshot, sessionReplyRoute, sessionWakeFields } from '../session/reply-route.js'
 import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import { isPlatformMemberId } from '../platforms/member-id.js'
 import { threadKeyForPost } from '../platforms/thread-keys.js'
@@ -605,9 +605,14 @@ export class CollabCoordinator {
     recipientAgentId: string
     kind: SessionMessageKind
   }): Promise<void> {
+    const turn = this.host.activeGateEntries().get(message.senderKey)?.msg
     await this.host
       .store()
-      .sessionMessages.recordSent({ ...message, now: this.host.clock().now() })
+      .sessionMessages.recordSent({
+        ...message,
+        ...(turn ? { replyChannel: turn.channel, replyThread: turn.replyThread ?? turn.thread ?? null } : {}),
+        now: this.host.clock().now()
+      })
       .catch((err) => this.host.log().warn(`sent message ${message.messageId} not recorded: ${formatErr(err)}`))
   }
 
@@ -2773,13 +2778,7 @@ export class CollabCoordinator {
         traceId: deliveryId,
         source: 'agent',
         platform: local.platform,
-        channel: local.channel,
-        // A synthetic stored thread is the session's, never a reply target, so the source posts at the root.
-        ...(isAppendCoordinate(local.thread)
-          ? { sessionThread: local.thread }
-          : local.thread
-            ? { thread: local.thread }
-            : {}),
+        ...sessionWakeFields(local, await store.sessionMessages.sent(inReplyTo)),
         ...(local.transportScope ? { transportScope: local.transportScope } : {}),
         // Ordered as new content in the source session; a UUID-derived ts would be mis-ordered and dropped.
         transcriptTs: monotonicTs(),
@@ -2793,8 +2792,7 @@ export class CollabCoordinator {
             : []
           : resolved?.botUserId
             ? [resolved.botUserId]
-            : [],
-        isDm: false
+            : []
       }
       let settleAdmission!: (result: { accepted: boolean; reason?: string }) => void
       const admitted = new Promise<{ accepted: boolean; reason?: string }>((resolve) => {

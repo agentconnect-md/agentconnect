@@ -906,7 +906,7 @@ import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { z } from 'zod'
 import { OUTSIDE_HUMAN_SCOPE_REMINDER, isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
-import { codeHostReplySnapshot, sessionReplyRoute } from './session/reply-route.js'
+import { codeHostReplySnapshot, sessionReplyRoute, sessionWakeFields } from './session/reply-route.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
 import { sessionPodOf } from './cp/agent-wake.js'
@@ -4942,14 +4942,21 @@ export class Daemon {
         this.activeTurnShare.get(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
           ?.channel,
       // A room the session makes for its work: a coordinator's task holds it as one more thread (auto-session-mode.md §6.8).
-      sessionToolRoomFor: (ctx) => (make) =>
-        this.coordinators.makeRoom(ctx.agentId, this.sessionKeyOf(ctx), async () => {
-          const { result, room } = await make()
-          return {
-            result,
-            ...(room ? { room: { ...room, platform: ctx.platform, transportScope: ctx.transportScope ?? null } } : {})
-          }
-        }),
+      sessionToolRoomFor: (ctx) => (make) => {
+        const share = this.activeTurnShare.get(this.sessionKeyOf(ctx))
+        return this.coordinators.makeRoom(
+          ctx.agentId,
+          this.sessionKeyOf(ctx),
+          async () => {
+            const { result, room } = await make()
+            return {
+              result,
+              ...(room ? { room: { ...room, platform: ctx.platform, transportScope: ctx.transportScope ?? null } } : {})
+            }
+          },
+          share?.channel === ctx.channel ? share.thread : undefined
+        )
+      },
       // A platform's own session tools act through ANY platform's connection — including the one
       // the reply-surface registry above omits (Linear, §4.6).
       sessionToolConnectionFor: (integrationId) => this.anyConnForIntegration(integrationId),
@@ -11394,16 +11401,12 @@ export class Daemon {
       transcriptTs: monotonicTs(),
       source: 'system',
       platform: session.platform,
-      channel: session.channel,
-      // Keyed by the session alone, so it replies where the session's latest turn did.
-      ...wakeThreadFields(session.thread, session.replyThread ?? undefined),
+      ...sessionWakeFields(session),
       ...(session.transportScope ? { transportScope: session.transportScope } : {}),
       sender: { id: 'capability-request', name: 'AgentConnect', isBot: true },
       text,
       ...(originKind === 'hook' || originKind === 'dream' ? { headless: true } : {}),
       mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
-      isDm: session.conversationKind === 'dm',
-      ...(session.conversationKind === 'group_dm' ? { isGroupDm: true } : {}),
       trigger: 'auto',
       capabilityWake: {
         requestId: req.requestId,
@@ -14181,6 +14184,14 @@ export class Daemon {
       integrationId === undefined ? undefined : this.connForIntegration(integrationId)
     )
     const report = roomRunReport(ended, row.title, output, row.summary, link)
+    const room = (await this.store.assistantSubsessions.threadsOf(agentId, key)).find(
+      (held) =>
+        held.platform === msg.platform &&
+        held.channel === msg.channel &&
+        held.thread === msg.channel &&
+        (held.transportScope ?? '') === (msg.transportScope ?? '')
+    )
+    const replyThread = room?.reportThread ?? row.replyThread
     const delivered = await this.collab.deliverDaemonReport({
       agentId,
       caller: {
@@ -14199,8 +14210,8 @@ export class Daemon {
       reportId: `room-run:${key}:${row.round ?? 1}`,
       hopCount: entry.callMeta?.hopCount ?? 0,
       ownerSessionKey: row.parentSessionKey,
-      // Its coordinator answers it in the thread the task was opened in.
-      ...(row.replyThread !== undefined ? { replyThread: row.replyThread } : {})
+      // The room's requesting thread stays stable even when the task later works in other threads.
+      ...(replyThread !== undefined ? { replyThread } : {})
     })
     if (!delivered.admitted) this.log.warn(`task ${key}: its run report was not delivered (${delivered.reason})`)
   }
@@ -16119,14 +16130,7 @@ export class Daemon {
         traceId: msg.deliveryId,
         source: 'agent',
         platform: origin.platform,
-        channel: origin.channel,
-        // Same as the local branch: a synthetic stored thread is the session's, not a
-        // delivery target, so it rides `sessionThread` and the reply posts at the root.
-        ...(isAppendCoordinate(origin.thread)
-          ? { sessionThread: origin.thread }
-          : origin.thread
-            ? { thread: origin.thread }
-            : {}),
+        ...sessionWakeFields(origin, msg.inReplyTo ? await this.store.sessionMessages.sent(msg.inReplyTo) : undefined),
         ...(origin.transportScope ? { transportScope: origin.transportScope } : {}),
         // Ordered as NEW content in the origin session (see replyToSession's local branch).
         transcriptTs: monotonicTs(),
@@ -16134,7 +16138,6 @@ export class Daemon {
         ...this.collab.sessionInput(callMeta, msg.text),
         mentionedBots:
           replyIntegrationId && this.botUserIds[replyIntegrationId] ? [this.botUserIds[replyIntegrationId]!] : [],
-        isDm: false,
         // #966: a report resumes the parent session-only — never a live
         // conversation post (postAgentWakeInbound skips report deliveries).
         parentReport: true
@@ -16988,13 +16991,7 @@ export class Daemon {
     this.log.debug(`transcript: admitted inbound msg ch=${msg.channel} thread=${thread} ts=${ts} agent=${agentId}`)
   }
 
-  /**
-   * Pull real Slack thread history for cold backfill or a warm-turn snapshot
-   * (§8.4/§8.5/§9.2), relabeling
-   * THIS agent's own past bot frames to its agentId (so the §8.5 own-message filter
-   * still suppresses them) and folding any attachment metadata into the text (so
-   * cold replay matches the live transcript's `[attached: …]` mention).
-   */
+  /** Read Slack history, map this bot's own rows to the agent, and include attachment mentions (§8.4/§8.5/§9.2). */
   private async fetchThreadHistory(
     agentId: string,
     channel: string,
@@ -25635,16 +25632,12 @@ export class Daemon {
       transcriptTs: monotonicTs(),
       source: 'system',
       platform: session.platform,
-      channel: session.channel,
-      // Keyed by the session alone, so it replies where the session's latest turn did.
-      ...wakeThreadFields(session.thread, session.replyThread ?? undefined),
+      ...sessionWakeFields(session),
       ...(session.transportScope ? { transportScope: session.transportScope } : {}),
       sender: { id: provider.provider, name: displayName, isBot: true },
       text,
       ...(originKind === 'hook' || originKind === 'dream' ? { headless: true } : {}),
       mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
-      isDm: session.conversationKind === 'dm',
-      ...(session.conversationKind === 'group_dm' ? { isGroupDm: true } : {}),
       trigger: 'auto'
     }
     const externalOrigin = this.externalAudienceForSessionRecord(session)

@@ -94,6 +94,21 @@ describe('capability wake', () => {
     expect(options).toMatchObject({ requireDurable: true, deliveryId: `capability:${REQUEST_ID}:2:${SESSION_ID}` })
   })
 
+  it('continues a task in its latest Code channel while keeping its session identity', async () => {
+    const { inner, key } = harness()
+    const rec = (await inner.store.getSessionByOutwardId(SESSION_ID, AGENT_ID))!
+    rec.replyChannel = 'C-CODE'
+    rec.replyThread = 'C-CODE'
+    await inner.dispatchCapabilityWake(wake(key), 'reminder', askers)
+    expect(inner.dispatch.mock.calls[0]![1]).toMatchObject({
+      channel: 'C-CODE',
+      thread: 'C-CODE',
+      sessionChannel: rec.channel,
+      sessionThread: rec.thread,
+      isDm: false
+    })
+  })
+
   it('answers paused, and not_found for a session that is gone', async () => {
     const paused = harness({ accepted: false, reason: 'paused' })
     await expect(paused.inner.dispatchCapabilityWake(wake(paused.key), 'r', askers)).resolves.toEqual({

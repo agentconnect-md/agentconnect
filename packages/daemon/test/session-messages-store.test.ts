@@ -39,6 +39,47 @@ async function session(store: LocalStore, agent: string, sessionId: string, thre
 }
 
 describe('the session-message record', () => {
+  it.skipIf(usingPostgresStore())(
+    'upgrades delivery targets from v75 and retains a sent target across a restart',
+    async () => {
+      const path = tempStorePath()
+      const fresh = await LocalStore.open(path)
+      await session(fresh, 'agent-a', 'sid-a')
+      await fresh.close()
+      const old = new DatabaseSync(path)
+      old.exec('ALTER TABLE sessions DROP COLUMN replyChannel')
+      old.exec('ALTER TABLE session_message_sent DROP COLUMN replyChannel')
+      old.exec('ALTER TABLE session_message_sent DROP COLUMN replyThread')
+      old.exec('ALTER TABLE assistant_subsession_thread DROP COLUMN reportThread')
+      old.exec('PRAGMA user_version = 75')
+      old.close()
+      const upgraded = await LocalStore.open(path)
+      await upgraded.sessionMessages.recordSent({
+        messageId: 'msg-saved',
+        senderKey: key('agent-a'),
+        senderAgentId: 'agent-a',
+        senderSessionId: 'sid-a',
+        recipientAgentId: 'agent-b',
+        kind: 'call',
+        now: 1,
+        replyChannel: 'C-CODE',
+        replyThread: null
+      })
+      await upgraded.setSessionReplyTarget(key('agent-a'), 'C-LATER', '2.2')
+      await upgraded.close()
+      const reopened = await LocalStore.open(path)
+      try {
+        expect(await reopened.sessionMessages.sent('msg-saved')).toMatchObject({
+          replyChannel: 'C-CODE',
+          replyThread: null
+        })
+        expect(await reopened.getSession(key('agent-a'))).toMatchObject({ replyChannel: 'C-LATER', replyThread: '2.2' })
+      } finally {
+        await reopened.close()
+      }
+    }
+  )
+
   it('records a message once, names a conflict for another recipient, and settles its obligation once', async () => {
     const store = await openTestStore()
     try {
@@ -100,8 +141,13 @@ describe('the session-message record', () => {
         senderSessionId: 'sid-a',
         recipientAgentId: 'agent-b',
         kind: 'call',
-        now: 1
+        now: 1,
+        replyChannel: 'C-CODE',
+        replyThread: null
       })
+      expect(await messages.sent('msg-to-b')).toMatchObject({ replyChannel: 'C-CODE', replyThread: null })
+      await store.setSessionReplyTarget(key('agent-a'), 'C-LATER', '2.2')
+      expect(await store.getSession(key('agent-a'))).toMatchObject({ replyChannel: 'C-LATER', replyThread: '2.2' })
       // Purging A drops what A received, what A sent, and what anyone received from A.
       expect(await store.deleteSession(key('agent-a'))).toBe(true)
       expect(await messages.received('msg-to-a')).toBeUndefined()
