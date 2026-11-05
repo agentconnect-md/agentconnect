@@ -78,11 +78,11 @@ function TurnFold({ work, ms }: { work: TurnWork; ms: number | null }) {
           {' ·'}
         </span>
       )}
-      <span className="min-w-0 truncate desktop:flex-none">{work.summary || t('details')}</span>
+      <span className="min-w-0 flex-[0_1_auto] truncate">{work.summary || t('details')}</span>
       {!work.running && <Icon name="check" size={13} color="var(--text-tertiary)" className="flex-none" />}
       {work.liveLine && (
         // Keyed by step identity + content so a new step remounts the span and replays its fade-in.
-        <span key={work.liveKey} className="work-live min-w-0 truncate">
+        <span key={work.liveKey} className="work-live min-w-0 flex-[0_1000_auto] truncate">
           · {work.liveLine}
         </span>
       )}

@@ -11,7 +11,7 @@ import { AgentIconView } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { taskStateKey, taskTone, type MarkTone } from '@/components/console/task-list'
-import { turnSpan, typedInvalidReason } from '@/components/console/session-work'
+import { exchangePromptMs, turnSpan, typedInvalidReason, withPromptStart } from '@/components/console/session-work'
 import { turnWork, WorkStepList } from '@/components/console/WorkPanel'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
@@ -119,6 +119,12 @@ export function TaskThreadPanel({
     wasBusy.current = busy
   }, [busy, reload])
 
+  // Each entry as the prompt lookup reads it, so a turn its own rows cannot measure dates from the message it answers.
+  const promptTurns = entries.map((entry) => ({
+    kind: entry.who === 'person' ? 'user' : 'bot',
+    ...(entry.at ? { timeMs: Date.parse(entry.at) } : {}),
+    ...(entry.agentId ? { agentId: entry.agentId } : {})
+  }))
   const last = entries[entries.length - 1]
   const tail = `${entries.length}:${last?.text.length ?? 0}`
   useEffect(() => {
@@ -244,6 +250,7 @@ export function TaskThreadPanel({
             entry={entry}
             sessionId={id}
             streaming={busy && i === entries.length - 1}
+            promptMs={exchangePromptMs(promptTurns, i)}
             speaker={speakerOf(entry)}
             you={t('you')}
             person={t('person')}
@@ -304,6 +311,7 @@ function ThreadMessage({
   entry,
   sessionId,
   streaming,
+  promptMs,
   speaker,
   you,
   person,
@@ -315,6 +323,8 @@ function ThreadMessage({
   sessionId: string
   /** The task is still answering and this is its latest entry. */
   streaming: boolean
+  /** When the message this turn answers was sent, for a turn whose own rows cannot measure it. */
+  promptMs: number | undefined
   speaker: Speaker
   you: string
   person: string
@@ -345,7 +355,7 @@ function ThreadMessage({
                     open: openWork,
                     onToggle: () => setOpenWork((open) => !open),
                     running: streaming,
-                    span: turnSpan(entry.times ?? []),
+                    span: withPromptStart(turnSpan(entry.times ?? []), promptMs),
                     liveLine,
                     liveKey
                   }
@@ -353,7 +363,9 @@ function ThreadMessage({
               : {})}
           >
             {time ? (
-              <span className="font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">{time}</span>
+              <span className="flex-none whitespace-nowrap font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
+                {time}
+              </span>
             ) : null}
           </AgentTurnHeader>
           <div className="flex min-w-0 flex-col gap-[10px]">
