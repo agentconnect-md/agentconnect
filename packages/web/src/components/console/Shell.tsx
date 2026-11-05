@@ -11,6 +11,7 @@
 // (`.mtop`), which is where the section/entity title still shows.
 
 import { createContext, Fragment, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import { RailFoldContext } from '@/components/console/rail-fold'
 import { useTranslations } from 'next-intl'
 import { SiModelcontextprotocol } from 'react-icons/si'
 import { SWRConfig } from 'swr'
@@ -521,7 +522,19 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     setThemePref(next)
   }, [])
   const toggleTheme = useCallback(() => selectTheme(nextThemePreference(themePref)), [selectTheme, themePref])
+  // A page's fold and the reader's toggle while it lasts; the toggle is not saved, and the fold's end drops it.
+  const [railFold, setRailFoldState] = useState(false)
+  const [railFoldPin, setRailFoldPin] = useState<boolean | null>(null)
+  const setRailFold = useCallback((fold: boolean) => {
+    setRailFoldState(fold)
+    setRailFoldPin(null)
+  }, [])
+  const railShownCollapsed = railFold ? (railFoldPin ?? true) : railCollapsed
   const toggleRail = useCallback(() => {
+    if (railFold) {
+      setRailFoldPin((pin) => !(pin ?? true))
+      return
+    }
     setRailCollapsed((v) => {
       const next = !v
       try {
@@ -531,7 +544,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
       }
       return next
     })
-  }, [])
+  }, [railFold])
 
   const signOut = useCallback(() => {
     if (isAuthConfigured()) void logout()
@@ -694,402 +707,404 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     <MobileFilterContext.Provider value={{ filter: mobileFilter, register: setMobileFilter }}>
       <MobileActionContext.Provider value={{ action: mobileAction, register: setMobileAction }}>
         <CrumbContext.Provider value={{ register: setCrumbSlot }}>
-          <div className={`app${isListRoute ? '' : ' pushed'}${mounted ? ' mounted' : ''}`}>
-            {/* ===== RAIL =====
+          <RailFoldContext.Provider value={setRailFold}>
+            <div className={`app${isListRoute ? '' : ' pushed'}${mounted ? ' mounted' : ''}`}>
+              {/* ===== RAIL =====
           Only collapsed, icon-only controls get titles; the global layer turns
           those titles into the console's themed tooltips. */}
-            <aside className={`rail${railCollapsed ? ' collapsed' : ''}${railAnim ? ' rail-anim' : ''}`}>
-              <div className="railbrand">
-                <Link
-                  href={orgPath('/home')}
-                  className="railbrand-logo cursor-pointer select-none"
-                  aria-label={t('actions.goHome')}
-                >
-                  <LogoMark size={24} />
-                  <span className="brandword font-sans text-[16px] font-semibold leading-normal tracking-[-.02em] text-white">
-                    {t('brandAgent')}
-                    <span className="text-(--magenta-300)">{t('brandConnect')}</span>
-                  </span>
-                </Link>
-                <button
-                  type="button"
-                  onClick={toggleRail}
-                  className="railiconbtn railtoggle"
-                  // No `title`: the icon already reads as the collapse/expand affordance,
-                  // and a tooltip on the collapsed rail's own toggle is noise. Screen
-                  // readers still get the state from aria-label.
-                  aria-label={railCollapsed ? t('actions.expandSidebar') : t('actions.collapseSidebar')}
-                >
-                  <Icon name={railCollapsed ? 'panel-left-open' : 'panel-left-close'} size={16} />
-                </button>
-                {/* Search sits at the rail's outer edge, permanently visible — with no
+              <aside className={`rail${railShownCollapsed ? ' collapsed' : ''}${railAnim ? ' rail-anim' : ''}`}>
+                <div className="railbrand">
+                  <Link
+                    href={orgPath('/home')}
+                    className="railbrand-logo cursor-pointer select-none"
+                    aria-label={t('actions.goHome')}
+                  >
+                    <LogoMark size={24} />
+                    <span className="brandword font-sans text-[16px] font-semibold leading-normal tracking-[-.02em] text-white">
+                      {t('brandAgent')}
+                      <span className="text-(--magenta-300)">{t('brandConnect')}</span>
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={toggleRail}
+                    className="railiconbtn railtoggle"
+                    // No `title`: the icon already reads as the collapse/expand affordance,
+                    // and a tooltip on the collapsed rail's own toggle is noise. Screen
+                    // readers still get the state from aria-label.
+                    aria-label={railShownCollapsed ? t('actions.expandSidebar') : t('actions.collapseSidebar')}
+                  >
+                    <Icon name={railShownCollapsed ? 'panel-left-open' : 'panel-left-close'} size={16} />
+                  </button>
+                  {/* Search sits at the rail's outer edge, permanently visible — with no
               top bar it is the console's only search affordance, so unlike the
               collapse toggle beside it, it never hides. Collapsed, CSS swaps it for
               the `.railsrnav` row below. */}
+                  <button
+                    type="button"
+                    onClick={openSearch}
+                    className="railiconbtn railsrbtn"
+                    title={t('actions.search')}
+                    aria-label={t('actions.search')}
+                  >
+                    <Icon name="search" size={16} />
+                  </button>
+                </div>
+                {/* The search dialog itself. It renders in the rail so the trigger and the
+            dialog share one component; `rail` re-seats the open state as a centred
+            command palette (globals.css `.railsr`). */}
+                <GlobalSearch rail />
                 <button
                   type="button"
                   onClick={openSearch}
-                  className="railiconbtn railsrbtn"
+                  className="navitem railsrnav"
                   title={t('actions.search')}
                   aria-label={t('actions.search')}
                 >
-                  <Icon name="search" size={16} />
+                  <Icon name="search" size={18} />
+                  <span>{t('actions.search')}</span>
                 </button>
-              </div>
-              {/* The search dialog itself. It renders in the rail so the trigger and the
-            dialog share one component; `rail` re-seats the open state as a centred
-            command palette (globals.css `.railsr`). */}
-              <GlobalSearch rail />
-              <button
-                type="button"
-                onClick={openSearch}
-                className="navitem railsrnav"
-                title={t('actions.search')}
-                aria-label={t('actions.search')}
-              >
-                <Icon name="search" size={18} />
-                <span>{t('actions.search')}</span>
-              </button>
-              {NAV_GROUPS.map((g) => g.filter(navVisible)).map((group, groupIndex) => (
-                <Fragment key={group[0]?.href ?? groupIndex}>
-                  {groupIndex > 0 && <div className="navsep" />}
-                  {group.map((item) => {
-                    const on = isActive(barePath, item.href)
-                    return (
-                      <Link
-                        key={item.href}
-                        href={orgPath(item.href)}
-                        title={railCollapsed ? navLabel(item.href, item.label) : undefined}
-                        className={on ? 'navitem on' : 'navitem'}
-                      >
-                        {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
-                        <Icon name={item.icon} size={18} />
-                        <span>{navLabel(item.href, item.label)}</span>
-                      </Link>
-                    )
-                  })}
-                </Fragment>
-              ))}
-              {/* Rail footer. In auth mode this is the account block: avatar + name +
+                {NAV_GROUPS.map((g) => g.filter(navVisible)).map((group, groupIndex) => (
+                  <Fragment key={group[0]?.href ?? groupIndex}>
+                    {groupIndex > 0 && <div className="navsep" />}
+                    {group.map((item) => {
+                      const on = isActive(barePath, item.href)
+                      return (
+                        <Link
+                          key={item.href}
+                          href={orgPath(item.href)}
+                          title={railShownCollapsed ? navLabel(item.href, item.label) : undefined}
+                          className={on ? 'navitem on' : 'navitem'}
+                        >
+                          {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
+                          <Icon name={item.icon} size={18} />
+                          <span>{navLabel(item.href, item.label)}</span>
+                        </Link>
+                      )
+                    })}
+                  </Fragment>
+                ))}
+                {/* Rail footer. In auth mode this is the account block: avatar + name +
             active org, whose menu carries everything the deleted top bar used to —
             org switching, Profile, Settings, the theme toggle, sign-out. No-auth has
             no identity and one implicit org, so it keeps just the theme toggle. The
             Help menu shows in both modes — the docs links are useful either way. */}
-              <div className="railfoot">
-                {authOn ? (
-                  <RailAccount
-                    display={display}
-                    collapsed={railCollapsed}
-                    orgs={orgs}
-                    activeOrg={activeOrg}
-                    setActiveOrg={setActiveOrg}
-                    orgPath={orgPath}
-                    onCreateOrg={goCreateOrg}
-                    canCreateOrg={canCreateOrg}
-                    theme={themePref}
-                    onSelectTheme={selectTheme}
-                    onSignOut={signOut}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    onClick={toggleTheme}
-                    className="railiconbtn"
-                    title={t(THEME_SWITCH_LABEL[nextThemePreference(themePref)])}
-                    aria-label={t('actions.toggleTheme')}
+                <div className="railfoot">
+                  {authOn ? (
+                    <RailAccount
+                      display={display}
+                      collapsed={railShownCollapsed}
+                      orgs={orgs}
+                      activeOrg={activeOrg}
+                      setActiveOrg={setActiveOrg}
+                      orgPath={orgPath}
+                      onCreateOrg={goCreateOrg}
+                      canCreateOrg={canCreateOrg}
+                      theme={themePref}
+                      onSelectTheme={selectTheme}
+                      onSignOut={signOut}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={toggleTheme}
+                      className="railiconbtn"
+                      title={t(THEME_SWITCH_LABEL[nextThemePreference(themePref)])}
+                      aria-label={t('actions.toggleTheme')}
+                    >
+                      <Icon name={THEME_ICON[nextThemePreference(themePref)]} size={16} />
+                    </button>
+                  )}
+                  <div
+                    className={
+                      railShownCollapsed ? 'flex flex-none justify-center' : 'mr-[-3px] flex flex-none justify-center'
+                    }
                   >
-                    <Icon name={THEME_ICON[nextThemePreference(themePref)]} size={16} />
-                  </button>
-                )}
-                <div
-                  className={
-                    railCollapsed ? 'flex flex-none justify-center' : 'mr-[-3px] flex flex-none justify-center'
-                  }
-                >
-                  <NotificationBell variant="rail" />
-                </div>
-                {/* Same 22px box as the brand row's search button, and the same 2px
+                    <NotificationBell variant="rail" />
+                  </div>
+                  {/* Same 22px box as the brand row's search button, and the same 2px
               inset from the rail's edge — the two sit on one vertical centre line. */}
-                <div className="railhelp relative mr-[2px] flex-none">
-                  <button
-                    type="button"
-                    onClick={() => setHelpMenu((v) => !v)}
-                    className="railiconbtn"
-                    title={t('help.menu')}
-                    aria-label={t('help.menu')}
-                  >
-                    <Icon name="circle-question-mark" size={16} color={helpMenu ? 'var(--brand)' : undefined} />
-                  </button>
-                  {helpMenu && (
-                    <>
-                      <div className="fixed inset-0 z-45" onClick={() => setHelpMenu(false)} />
-                      <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-max rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
-                        {/* The desktop way back to a skipped checklist, both auth modes — the
+                  <div className="railhelp relative mr-[2px] flex-none">
+                    <button
+                      type="button"
+                      onClick={() => setHelpMenu((v) => !v)}
+                      className="railiconbtn"
+                      title={t('help.menu')}
+                      aria-label={t('help.menu')}
+                    >
+                      <Icon name="circle-question-mark" size={16} color={helpMenu ? 'var(--brand)' : undefined} />
+                    </button>
+                    {helpMenu && (
+                      <>
+                        <div className="fixed inset-0 z-45" onClick={() => setHelpMenu(false)} />
+                        <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-max rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
+                          {/* The desktop way back to a skipped checklist, both auth modes — the
                           pill has no other desktop re-entry point. Owner-only, like the
                           checklist itself. */}
-                        {activeOrg?.role === 'owner' && (
+                          {activeOrg?.role === 'owner' && (
+                            <button
+                              className="dmi"
+                              onClick={() => {
+                                setHelpMenu(false)
+                                openGettingStarted()
+                              }}
+                            >
+                              <Icon name="rocket" size={15} color="var(--text-tertiary)" />
+                              {t('help.gettingStarted')}
+                            </button>
+                          )}
                           <button
                             className="dmi"
                             onClick={() => {
                               setHelpMenu(false)
-                              openGettingStarted()
+                              setConnectAiOpen(true)
                             }}
                           >
-                            <Icon name="rocket" size={15} color="var(--text-tertiary)" />
-                            {t('help.gettingStarted')}
+                            <SiModelcontextprotocol className="text-(--text-tertiary)" aria-hidden />
+                            {t('help.connectAi')}
                           </button>
-                        )}
-                        <button
-                          className="dmi"
-                          onClick={() => {
-                            setHelpMenu(false)
-                            setConnectAiOpen(true)
-                          }}
-                        >
-                          <SiModelcontextprotocol className="text-(--text-tertiary)" aria-hidden />
-                          {t('help.connectAi')}
-                        </button>
-                        <a
-                          className="dmi no-underline"
-                          href={help.docs}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={() => setHelpMenu(false)}
-                        >
-                          <Icon name="book-open" size={15} color="var(--text-tertiary)" />
-                          {t('help.documentation')}
-                        </a>
-                        {/* No-auth has no account menu, so its language control lives here. */}
-                        {!authOn && <LanguageSubmenu onPicked={() => setHelpMenu(false)} />}
-                        <div className="dmsep" />
-                        <button
-                          className="dmi"
-                          onClick={() => {
-                            setHelpMenu(false)
-                            setShortcutsOpen(true)
-                          }}
-                        >
-                          <Icon name="command" size={15} color="var(--text-tertiary)" />
-                          {t('help.keyboardShortcuts')}
-                        </button>
-                        <a
-                          className="dmi no-underline"
-                          href={help.releases}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={() => setHelpMenu(false)}
-                        >
-                          <Icon name="gift" size={15} color="var(--text-tertiary)" />
-                          {t('help.whatsNew')}
-                          {help.version && (
-                            <span className="rounded-full bg-(--surface-active) px-[6px] font-mono text-[10px] font-medium leading-[16px] text-(--text-tertiary)">
-                              {help.version}
-                            </span>
-                          )}
-                        </a>
-                        <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
-                          <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
-                          {t('help.support')}
-                        </a>
-                      </div>
-                    </>
-                  )}
+                          <a
+                            className="dmi no-underline"
+                            href={help.docs}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => setHelpMenu(false)}
+                          >
+                            <Icon name="book-open" size={15} color="var(--text-tertiary)" />
+                            {t('help.documentation')}
+                          </a>
+                          {/* No-auth has no account menu, so its language control lives here. */}
+                          {!authOn && <LanguageSubmenu onPicked={() => setHelpMenu(false)} />}
+                          <div className="dmsep" />
+                          <button
+                            className="dmi"
+                            onClick={() => {
+                              setHelpMenu(false)
+                              setShortcutsOpen(true)
+                            }}
+                          >
+                            <Icon name="command" size={15} color="var(--text-tertiary)" />
+                            {t('help.keyboardShortcuts')}
+                          </button>
+                          <a
+                            className="dmi no-underline"
+                            href={help.releases}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => setHelpMenu(false)}
+                          >
+                            <Icon name="gift" size={15} color="var(--text-tertiary)" />
+                            {t('help.whatsNew')}
+                            {help.version && (
+                              <span className="rounded-full bg-(--surface-active) px-[6px] font-mono text-[10px] font-medium leading-[16px] text-(--text-tertiary)">
+                                {help.version}
+                              </span>
+                            )}
+                          </a>
+                          <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
+                            <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
+                            {t('help.support')}
+                          </a>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
-            </aside>
+              </aside>
 
-            {/* ===== MAIN =====
+              {/* ===== MAIN =====
           Desktop has NO top bar (design v2 is a pure left/right split): no breadcrumb,
           no parent back-link, no title strip. The rail states where you are, and each
           detail view owns its own heading. Mobile still needs one — `.mtop` below. */}
-            <div className="main">
-              {githubNotice && (
-                <div
-                  role={githubNotice.tone === 'warning' ? 'alert' : 'status'}
-                  className="fixed top-[72px] right-4 left-4 z-50 flex items-start gap-3 rounded-md border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-md) desktop:top-4 desktop:left-auto desktop:w-[460px]"
-                >
-                  <Icon
-                    name={githubNotice.tone === 'success' ? 'circle-check' : 'triangle-alert'}
-                    size={16}
-                    color={githubNotice.tone === 'success' ? 'var(--status-online)' : 'var(--amber-500)'}
-                    className="mt-[1px] flex-none"
-                  />
-                  <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    {githubNoticeMessage}
-                  </span>
-                  {authOn ? (
-                    <Link
-                      href={orgPath('/settings')}
-                      className="lnk flex-none text-[12px]"
-                      onClick={() => setGithubNotice(null)}
-                    >
-                      {t('navigation.organizationSettings')}
-                    </Link>
-                  ) : (
+              <div className="main">
+                {githubNotice && (
+                  <div
+                    role={githubNotice.tone === 'warning' ? 'alert' : 'status'}
+                    className="fixed top-[72px] right-4 left-4 z-50 flex items-start gap-3 rounded-md border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-md) desktop:top-4 desktop:left-auto desktop:w-[460px]"
+                  >
+                    <Icon
+                      name={githubNotice.tone === 'success' ? 'circle-check' : 'triangle-alert'}
+                      size={16}
+                      color={githubNotice.tone === 'success' ? 'var(--status-online)' : 'var(--amber-500)'}
+                      className="mt-[1px] flex-none"
+                    />
+                    <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                      {githubNoticeMessage}
+                    </span>
+                    {authOn ? (
+                      <Link
+                        href={orgPath('/settings')}
+                        className="lnk flex-none text-[12px]"
+                        onClick={() => setGithubNotice(null)}
+                      >
+                        {t('navigation.organizationSettings')}
+                      </Link>
+                    ) : (
+                      <button
+                        type="button"
+                        className="lnk flex-none text-[12px]"
+                        onClick={() => {
+                          setGithubNotice(null)
+                          openModal('agent')
+                        }}
+                      >
+                        {t('actions.addAgent')}
+                      </button>
+                    )}
                     <button
                       type="button"
-                      className="lnk flex-none text-[12px]"
-                      onClick={() => {
-                        setGithubNotice(null)
-                        openModal('agent')
-                      }}
+                      className="iconbtn -m-1 h-7 w-7 flex-none"
+                      aria-label={t('notices.dismissGithub')}
+                      onClick={() => setGithubNotice(null)}
                     >
-                      {t('actions.addAgent')}
+                      <Icon name="x" size={14} />
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    className="iconbtn -m-1 h-7 w-7 flex-none"
-                    aria-label={t('notices.dismissGithub')}
-                    onClick={() => setGithubNotice(null)}
-                  >
-                    <Icon name="x" size={14} />
-                  </button>
-                </div>
-              )}
-              {/* ===== MOBILE APP BAR (hidden ≥ tablet) — section vs push variant ===== */}
-              <header className="mtop">
-                {isListRoute ? (
-                  <>
-                    <button
-                      className="mappbtn relative"
-                      aria-label={t('actions.openMenu')}
-                      aria-expanded={mobileSheet !== null}
-                      onClick={() => setMobileSheet('menu')}
-                    >
-                      <Icon name="menu" size={20} />
-                      {unreadCount > 0 && (
-                        <span className="absolute top-[10px] right-[9px] h-2 w-2 rounded-full bg-(--brand) ring-2 ring-(--surface-card)" />
-                      )}
-                    </button>
-                    <span className="mtop-title">{crumb}</span>
-                    {addKind && (
-                      <button className="mappbtn" aria-label={t('actions.add')} onClick={() => openModal(addKind)}>
-                        <Icon name="circle-plus" size={22} />
-                      </button>
-                    )}
-                    {/* Sessions registers a filter slot; surface it as an app-bar button
-                  with a dot when any filter is active (design's Sessions tab). */}
-                    {barePath === '/sessions' && mobileFilter && (
+                  </div>
+                )}
+                {/* ===== MOBILE APP BAR (hidden ≥ tablet) — section vs push variant ===== */}
+                <header className="mtop">
+                  {isListRoute ? (
+                    <>
                       <button
                         className="mappbtn relative"
-                        aria-label={t('actions.filterSessions')}
-                        onClick={mobileFilter.open}
+                        aria-label={t('actions.openMenu')}
+                        aria-expanded={mobileSheet !== null}
+                        onClick={() => setMobileSheet('menu')}
                       >
-                        <Icon name="sliders-horizontal" size={20} />
-                        {mobileFilter.active && (
-                          <span className="absolute top-[9px] right-[10px] h-[7px] w-[7px] rounded-full border-[1.5px] border-(--surface-card) bg-(--brand)" />
+                        <Icon name="menu" size={20} />
+                        {unreadCount > 0 && (
+                          <span className="absolute top-[10px] right-[9px] h-2 w-2 rounded-full bg-(--brand) ring-2 ring-(--surface-card)" />
                         )}
                       </button>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <button className="mappbtn" aria-label={t('actions.back')} onClick={goBack}>
-                      <Icon name="arrow-left" size={20} />
-                    </button>
-                    <span className="mtop-title">{pushTitle}</span>
-                    {mobileAction && (
-                      <button
-                        className={`mappbtn${mobileAction.active ? ' text-(--brand)' : ''}`}
-                        aria-label={mobileAction.label}
-                        aria-expanded={mobileAction.active}
-                        onClick={mobileAction.onClick}
-                      >
-                        <Icon
-                          name={mobileAction.icon}
-                          size={20}
-                          color={mobileAction.active ? 'var(--brand)' : undefined}
-                        />
+                      <span className="mtop-title">{crumb}</span>
+                      {addKind && (
+                        <button className="mappbtn" aria-label={t('actions.add')} onClick={() => openModal(addKind)}>
+                          <Icon name="circle-plus" size={22} />
+                        </button>
+                      )}
+                      {/* Sessions registers a filter slot; surface it as an app-bar button
+                  with a dot when any filter is active (design's Sessions tab). */}
+                      {barePath === '/sessions' && mobileFilter && (
+                        <button
+                          className="mappbtn relative"
+                          aria-label={t('actions.filterSessions')}
+                          onClick={mobileFilter.open}
+                        >
+                          <Icon name="sliders-horizontal" size={20} />
+                          {mobileFilter.active && (
+                            <span className="absolute top-[9px] right-[10px] h-[7px] w-[7px] rounded-full border-[1.5px] border-(--surface-card) bg-(--brand)" />
+                          )}
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <button className="mappbtn" aria-label={t('actions.back')} onClick={goBack}>
+                        <Icon name="arrow-left" size={20} />
                       </button>
-                    )}
-                    {isSessionDetail && (
-                      <button
-                        className="mappbtn"
-                        aria-label={linkCopied ? t('actions.linkCopied') : t('actions.copyLink')}
-                        onClick={copyLink}
-                      >
-                        <Icon
-                          name={linkCopied ? 'check' : 'link'}
-                          size={20}
-                          color={linkCopied ? 'var(--brand)' : undefined}
-                        />
-                      </button>
-                    )}
-                  </>
-                )}
-              </header>
+                      <span className="mtop-title">{pushTitle}</span>
+                      {mobileAction && (
+                        <button
+                          className={`mappbtn${mobileAction.active ? ' text-(--brand)' : ''}`}
+                          aria-label={mobileAction.label}
+                          aria-expanded={mobileAction.active}
+                          onClick={mobileAction.onClick}
+                        >
+                          <Icon
+                            name={mobileAction.icon}
+                            size={20}
+                            color={mobileAction.active ? 'var(--brand)' : undefined}
+                          />
+                        </button>
+                      )}
+                      {isSessionDetail && (
+                        <button
+                          className="mappbtn"
+                          aria-label={linkCopied ? t('actions.linkCopied') : t('actions.copyLink')}
+                          onClick={copyLink}
+                        >
+                          <Icon
+                            name={linkCopied ? 'check' : 'link'}
+                            size={20}
+                            color={linkCopied ? 'var(--brand)' : undefined}
+                          />
+                        </button>
+                      )}
+                    </>
+                  )}
+                </header>
 
-              <div className="content">
-                <SearchOpenContext.Provider value={openSearch}>
-                  <OrgGate>{children}</OrgGate>
-                </SearchOpenContext.Provider>
+                <div className="content">
+                  <SearchOpenContext.Provider value={openSearch}>
+                    <OrgGate>{children}</OrgGate>
+                  </SearchOpenContext.Provider>
+                </div>
               </div>
-            </div>
 
-            {/* ===== MOBILE DRAWER, its sheets, and the full-screen search (mobile-only; opened from the app bar) ===== */}
-            {mobileSheet && (
-              <MobileDrawer
-                barePath={barePath}
-                authOn={authOn}
-                orgPath={orgPath}
-                display={display}
-                activeOrg={activeOrg}
-                theme={themePref}
-                onToggleTheme={toggleTheme}
-                onSearch={() => {
-                  setMobileSheet(null)
-                  setMobileSearch(true)
-                }}
-                onOpenAccount={() => setMobileSheet('account')}
-                onOpenHelp={() => setMobileSheet('help')}
-                onClose={closeSheets}
-              />
-            )}
-            {mobileSheet === 'account' && (
-              <MobileAccountSheet
-                display={display}
-                orgPath={orgPath}
-                orgs={orgs}
-                activeOrg={activeOrg}
-                setActiveOrg={setActiveOrg}
-                onCreateOrg={goCreateOrg}
-                canCreateOrg={canCreateOrg}
-                theme={themePref}
-                onSelectTheme={selectTheme}
-                onSignOut={signOut}
-                onNavigate={closeSheets}
-                onClose={() => setMobileSheet('menu')}
-              />
-            )}
-            {mobileSheet === 'help' && (
-              <MobileHelpSheet
-                authOn={authOn}
-                isOwner={activeOrg?.role === 'owner'}
-                help={help}
-                onGettingStarted={() => {
-                  closeSheets()
-                  openGettingStarted()
-                }}
-                onConnectAi={() => {
-                  closeSheets()
-                  setConnectAiOpen(true)
-                }}
-                onNavigate={closeSheets}
-                onClose={() => setMobileSheet('menu')}
-              />
-            )}
-            {mobileSearch && <GlobalSearch mobile autoFocus onClose={() => setMobileSearch(false)} />}
-            {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-            {connectAiOpen && <ConnectAiModal onClose={() => setConnectAiOpen(false)} moreUrl={help.mcp} />}
-            {/* Getting-started pill + drawer (design 1a/1b): a corner checklist derived from
+              {/* ===== MOBILE DRAWER, its sheets, and the full-screen search (mobile-only; opened from the app bar) ===== */}
+              {mobileSheet && (
+                <MobileDrawer
+                  barePath={barePath}
+                  authOn={authOn}
+                  orgPath={orgPath}
+                  display={display}
+                  activeOrg={activeOrg}
+                  theme={themePref}
+                  onToggleTheme={toggleTheme}
+                  onSearch={() => {
+                    setMobileSheet(null)
+                    setMobileSearch(true)
+                  }}
+                  onOpenAccount={() => setMobileSheet('account')}
+                  onOpenHelp={() => setMobileSheet('help')}
+                  onClose={closeSheets}
+                />
+              )}
+              {mobileSheet === 'account' && (
+                <MobileAccountSheet
+                  display={display}
+                  orgPath={orgPath}
+                  orgs={orgs}
+                  activeOrg={activeOrg}
+                  setActiveOrg={setActiveOrg}
+                  onCreateOrg={goCreateOrg}
+                  canCreateOrg={canCreateOrg}
+                  theme={themePref}
+                  onSelectTheme={selectTheme}
+                  onSignOut={signOut}
+                  onNavigate={closeSheets}
+                  onClose={() => setMobileSheet('menu')}
+                />
+              )}
+              {mobileSheet === 'help' && (
+                <MobileHelpSheet
+                  authOn={authOn}
+                  isOwner={activeOrg?.role === 'owner'}
+                  help={help}
+                  onGettingStarted={() => {
+                    closeSheets()
+                    openGettingStarted()
+                  }}
+                  onConnectAi={() => {
+                    closeSheets()
+                    setConnectAiOpen(true)
+                  }}
+                  onNavigate={closeSheets}
+                  onClose={() => setMobileSheet('menu')}
+                />
+              )}
+              {mobileSearch && <GlobalSearch mobile autoFocus onClose={() => setMobileSearch(false)} />}
+              {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+              {connectAiOpen && <ConnectAiModal onClose={() => setConnectAiOpen(false)} moreUrl={help.mcp} />}
+              {/* Getting-started pill + drawer (design 1a/1b): a corner checklist derived from
           live state, self-gated (desktop, setup-started, incomplete). */}
-            <GettingStarted />
-            {/* Renders every `title` in the console on the design system's timing
+              <GettingStarted />
+              {/* Renders every `title` in the console on the design system's timing
           instead of the browser's ~1s native tooltip. Portals to <body>. */}
-            <NotificationToastContainer />
-            <TooltipLayer />
-          </div>
+              <NotificationToastContainer />
+              <TooltipLayer />
+            </div>
+          </RailFoldContext.Provider>
         </CrumbContext.Provider>
       </MobileActionContext.Provider>
     </MobileFilterContext.Provider>

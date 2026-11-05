@@ -1563,7 +1563,7 @@ describe('a coordinator’s task cards', () => {
     expect(container?.querySelector('[data-task-thread]')).toBeNull()
   })
 
-  it('opens the task’s thread in the Tasks tab, and goes back to the lists', async () => {
+  it('opens a task card expanded over the coordinator, shrinks it to the side panel, and goes back to the lists', async () => {
     coordinatorTurn()
     await render()
     await act(async () => {
@@ -1571,15 +1571,30 @@ describe('a coordinator’s task cards', () => {
       await Promise.resolve()
     })
     await render()
-    // The thread's own header stands in for the tab strip while it is open.
-    expect(container?.querySelector('[data-dock-tab]')).toBeNull()
-    const thread = container?.querySelector('[data-task-thread="child-1"]')
+    // Expanded: the task covers the coordinator, which stays as a strip to go back by, with its own tools beside the thread.
+    const expanded = container?.querySelector('[data-task-expanded="child-1"]')
+    expect(expanded).not.toBeNull()
+    expect(expanded?.querySelector('[data-task-expanded-sliver]')).not.toBeNull()
+    expect(expanded?.querySelector('[data-task-expanded-tab="files"]')?.getAttribute('aria-pressed')).toBe('true')
+    const thread = expanded?.querySelector('[data-task-thread="child-1"]')
     expect(thread?.textContent).toContain('Find what blocks api 1.5')
-    expect(thread?.querySelector('textarea[aria-label="Reply in this task…"]')).not.toBeNull()
+    expect(thread?.querySelector('[data-task-thread-back]')?.textContent).toBe('Coordinator')
     expect(container?.querySelector('[data-task-card="child-1"] button')?.getAttribute('aria-expanded')).toBe('true')
 
+    // Shrunk: the same task's thread in the side panel, whose expand goes back.
     await act(async () => {
-      Array.from(thread?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      thread?.querySelector<HTMLButtonElement>('[data-task-thread-shrink]')?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(container?.querySelector('[data-task-expanded]')).toBeNull()
+    const panel = container?.querySelector('[data-task-thread="child-1"]')
+    expect(panel?.querySelector('textarea[aria-label="Reply in this task…"]')).not.toBeNull()
+    expect(container?.querySelector('[data-dock-tab]')).toBeNull()
+    expect(panel?.querySelector('[data-task-thread-expand]')).not.toBeNull()
+
+    await act(async () => {
+      Array.from(panel?.querySelectorAll<HTMLButtonElement>('button') ?? [])
         .find((button) => button.textContent === 'Tasks')
         ?.click()
       await Promise.resolve()

@@ -36,6 +36,10 @@ vi.mock(import('@/lib/api'), async (importOriginal) => ({
     Promise.resolve({ subsessions: [taskRow], truncated: false, nextCursor: null })
   ),
   fetchAssistantSubsession: vi.fn(),
+  stopAssistantSubsession: vi.fn((_agent: string, id: string) => {
+    wire.calls.push(`stop:${id}`)
+    return Promise.resolve({ result: 'stopped' as const })
+  }),
   listWebchatMcpOperations: vi.fn(() => Promise.resolve(wire.operations as never)),
   decideWebchatMcpOperation: vi.fn((_org: string, _agent: string, _conv: string, operationId: string) =>
     Promise.resolve({
@@ -203,6 +207,31 @@ describe('TaskThreadPanel', () => {
     expect(folds.at(-1)).toContain('Thought through 1 step')
   })
 
+  it('draws the expanded header: the coordinator crumb, the branch, Stop for a running task, and shrink', async () => {
+    const shrink = vi.fn()
+    props = { variant: 'expanded', branch: 'task/blockers-1.5', onShrink: shrink }
+    await render()
+    const crumb = container.querySelector<HTMLButtonElement>('[data-task-thread-back]')!
+    expect(crumb.textContent).toBe('Coordinator')
+    expect(container.querySelector('[data-task-thread-branch]')?.textContent).toBe('task/blockers-1.5')
+    await act(async () => crumb.click())
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-shrink]')!.click())
+    expect(shrink).toHaveBeenCalledTimes(2)
+    expect(container.querySelector('[data-task-thread-expand]')).toBeNull()
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-stop]')!.click())
+    expect(wire.calls).toContain('stop:ses_task')
+  })
+
+  it('offers the side panel an expand that opens the task expanded', async () => {
+    const expand = vi.fn()
+    props = { onExpand: expand }
+    await render()
+    expect(container.querySelector('[data-task-thread-back]')?.textContent).toBe('Tasks')
+    expect(container.querySelector('[data-task-thread-branch]')).toBeNull()
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
+    expect(expand).toHaveBeenCalledOnce()
+  })
+
   it('sends a reply onto the task’s own session', async () => {
     wire.drafts.ses_task = 'does 1.5 include the orders migration?'
     await render()
@@ -238,6 +267,23 @@ describe('TaskThreadPanel', () => {
         .click()
     )
     expect(wire.calls).toEqual(['target:ses_task', 'answer:ses_task:agent_1:q-1:yes'])
+  })
+
+  it('keeps an unfinished answer when the thread remounts, as switching the task view does', async () => {
+    wire.live = [
+      { kind: 'elicit', turnId: 't1', text: 'Which tag?', elicit: { requestId: 'q-keep', options: [], text: {} } }
+    ]
+    await render()
+    const input = container.querySelector<HTMLInputElement>('[data-thread-question="q-keep"] input')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'v1.5.')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => root.unmount())
+    root = createRoot(container)
+    props = { variant: 'expanded', onShrink: () => {} }
+    await render()
+    expect(container.querySelector<HTMLInputElement>('[data-thread-question="q-keep"] input')!.value).toBe('v1.5.')
   })
 
   it('checks a typed answer against its constraints, and keeps it editable after sending', async () => {

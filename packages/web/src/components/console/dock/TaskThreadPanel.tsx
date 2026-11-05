@@ -10,7 +10,8 @@ import { Button, Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
-import { taskStateKey, taskTone, type MarkTone } from '@/components/console/task-list'
+import { taskStateKey, taskTone, useTaskStops, type MarkTone } from '@/components/console/task-list'
+import { taskStopKey } from '@/components/console/follow-up'
 import { exchangePromptMs, turnSpan, typedInvalidReason, withPromptStart } from '@/components/console/session-work'
 import { turnWork, WorkStepList } from '@/components/console/WorkPanel'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
@@ -66,7 +67,11 @@ export function TaskThreadPanel({
   task,
   parentSessionId,
   approvals,
-  onBack
+  onBack,
+  variant = 'panel',
+  onExpand,
+  onShrink,
+  branch
 }: {
   /** The coordinator's agent, which runs the task. */
   agentId: string
@@ -84,6 +89,14 @@ export function TaskThreadPanel({
   /** The coordinator's webchat conversation, whose grant the task writes under: its writes wait for approval here. */
   approvals?: { orgId: string; conversationId: string }
   onBack: () => void
+  /** `expanded` draws the task over its coordinator (crumb, branch, shrink); `panel` is the side panel's quick look. */
+  variant?: 'panel' | 'expanded'
+  /** The side panel's expand, which opens the task expanded. */
+  onExpand?: () => void
+  /** The expanded view's shrink and its "Coordinator" crumb, which put the task back in the side panel. */
+  onShrink?: () => void
+  /** The branch the task's own worktree is on, as its Git panel read it. */
+  branch?: string | null
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
@@ -103,6 +116,9 @@ export function TaskThreadPanel({
   const dock = useDockExpand()
   const id = task.sessionId
   const row = useTaskRow(agentId, id, parentSessionId)
+  const { stopOf, stop } = useTaskStops(agentId, parentSessionId ?? id, () => {})
+  const stopState = row ? stopOf(row) : undefined
+  const stoppable = !!row && row.state === 'open' && taskStopKey(row) !== null && stopState !== 'stopped'
   const listRef = useRef<HTMLDivElement | null>(null)
   const busy = isPgBusy(id)
   const { page, error, reload } = useTaskThread(id, row, { busy })
@@ -174,11 +190,11 @@ export function TaskThreadPanel({
         <button
           type="button"
           data-task-thread-back=""
-          title={t('backTitle')}
-          onClick={onBack}
+          title={variant === 'expanded' ? t('coordinatorTitle') : t('backTitle')}
+          onClick={variant === 'expanded' ? (onShrink ?? onBack) : onBack}
           className="flex-none cursor-pointer rounded-sm border-0 bg-transparent px-[2px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:text-(--text-primary) hover:underline"
         >
-          {t('back')}
+          {variant === 'expanded' ? t('coordinator') : t('back')}
         </button>
         <Icon name="chevron-right" size={13} color="var(--text-tertiary)" className="flex-none" />
         <h3
@@ -196,7 +212,30 @@ export function TaskThreadPanel({
             {tl(taskStateKey(row))}
           </span>
         ) : null}
+        {variant === 'expanded' && branch ? (
+          <span
+            data-task-thread-branch=""
+            title={branch}
+            className="inline-flex min-w-0 flex-[0_100_auto] items-center gap-1 rounded-sm bg-(--surface-sunken) px-[6px] py-[2px] font-mono text-[11px] leading-normal text-(--text-secondary)"
+          >
+            <Icon name="git-fork" size={11} className="flex-none" />
+            <span className="truncate">{branch}</span>
+          </span>
+        ) : null}
         <span className="flex-1" />
+        {stoppable ? (
+          <button
+            type="button"
+            data-task-thread-stop=""
+            disabled={stopState === 'busy'}
+            className={HEADER_BTN}
+            title={tl('stop')}
+            aria-label={tl('stop')}
+            onClick={() => void stop(row)}
+          >
+            <Icon name="square" size={13} />
+          </button>
+        ) : null}
         <Link
           href={pageHref}
           className={HEADER_BTN}
@@ -205,7 +244,29 @@ export function TaskThreadPanel({
         >
           <Icon name="arrow-up-right" size={14} />
         </Link>
-        {dock.available ? (
+        {variant === 'expanded' && onShrink ? (
+          <button
+            type="button"
+            data-task-thread-shrink=""
+            className={HEADER_BTN}
+            title={t('shrink')}
+            aria-label={t('shrink')}
+            onClick={onShrink}
+          >
+            <Icon name="minimize-2" size={14} />
+          </button>
+        ) : onExpand ? (
+          <button
+            type="button"
+            data-task-thread-expand=""
+            className={HEADER_BTN}
+            title={td('expandPanel')}
+            aria-label={td('expandPanel')}
+            onClick={onExpand}
+          >
+            <Icon name="maximize-2" size={14} />
+          </button>
+        ) : dock.available ? (
           <button
             type="button"
             data-task-thread-expand=""
@@ -442,6 +503,20 @@ function ThreadMessage({
   )
 }
 
+/** A question's typed answer and what was last sent, kept by request so expanding, shrinking or reading a file keeps them. */
+const questionAnswers = new Map<string, { draft: string; sent: string | null }>()
+
+function useQuestionAnswer(
+  requestId: string
+): [{ draft: string; sent: string | null }, (next: { draft: string; sent: string | null }) => void] {
+  const [answer, setAnswer] = useState(() => questionAnswers.get(requestId) ?? { draft: '', sent: null })
+  const update = (next: { draft: string; sent: string | null }) => {
+    questionAnswers.set(requestId, next)
+    setAnswer(next)
+  }
+  return [answer, update]
+}
+
 /** The agent's open question: a plain choice or a line of text answers here; any other form is shown on the task's page. */
 function ThreadQuestion({
   question,
@@ -454,8 +529,9 @@ function ThreadQuestion({
 }) {
   const t = useTranslations('Common.taskThread')
   // What was last sent: the control stays live, so an answer the daemon refuses can be corrected, until it settles the question and the thread drops it.
-  const [sent, setSent] = useState<string | null>(null)
-  const [draft, setDraft] = useState('')
+  const [{ draft, sent }, setAnswer] = useQuestionAnswer(question.requestId)
+  const setDraft = (value: string) => setAnswer({ draft: value, sent })
+  const setSent = (value: string) => setAnswer({ draft, sent: value })
   const invalid = question.text ? typedInvalidReason({ text: question.text }, draft) : undefined
   return (
     <div
