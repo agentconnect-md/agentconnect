@@ -48,7 +48,7 @@ const AuthSchema = z.discriminatedUnion('mode', [
     }),
     // Provider ids are deployment data (for example github, google, lark), not a closed core enum.
     socialProviders: z.array(z.string().trim().min(1)),
-    // The enterprise SSO connector the console signs in through; null when the deployment offers none.
+    // The SSO connector the console signs in through; null when the deployment offers none.
     sso: z
       .strictObject({ connectorId: z.string().trim().min(1), name: z.string().trim().min(1) })
       .nullable()
@@ -115,7 +115,7 @@ const SsoDomainSchema = z
   .toLowerCase()
   .regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, 'must be an email domain')
 
-/** The deployment's one enterprise SSO connector. Logto mints its id at creation; the IdP details arrive later. */
+/** The deployment's one SSO connector. Logto mints its id at creation; the IdP details arrive later. */
 const LogtoSsoConnectorSchema = z.strictObject({
   connectorId: z.string().trim().min(1),
   protocol: z.enum(['oidc', 'saml']),
@@ -300,7 +300,7 @@ export const DeploymentConfigValuesV1Schema = z
           .optional(),
         /** Deployment Slack App identity reused for Slack social sign-in. */
         slackConnector: LogtoSlackConnectorSchema.nullable().optional(),
-        /** Enterprise SSO (OIDC or SAML) connector. */
+        /** SSO (OIDC or SAML) connector. */
         ssoConnector: LogtoSsoConnectorSchema.nullable().optional()
       })
       .nullable(),

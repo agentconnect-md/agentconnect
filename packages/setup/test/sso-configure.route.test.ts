@@ -106,7 +106,7 @@ function server() {
 const post = (app: FastifyInstance, url: string, payload: unknown) =>
   app.inject({ method: 'POST', url, headers, payload: payload as Record<string, unknown> })
 
-describe('enterprise SSO configuration', () => {
+describe('SSO configuration', () => {
   it('creates the connector, takes the OIDC client, and signs in through it alone', async () => {
     const { app, admin, secrets, reconciled, created } = server()
 

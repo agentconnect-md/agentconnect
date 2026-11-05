@@ -39,7 +39,7 @@ export default function Auth({
   sso
 }: {
   providers: readonly SocialLoginProvider[]
-  /** The deployment's enterprise SSO connector, offered ahead of the social buttons. */
+  /** The deployment's SSO connector, offered ahead of the social buttons. */
   sso?: { connectorId: string; name: string }
 }) {
   const router = useRouter()
@@ -47,7 +47,7 @@ export default function Auth({
   // Configured sign-in starts at Logto; no-auth deployments enter the app directly.
   const authOn = isAuthConfigured()
   const social = (provider: SocialLoginTarget) => (authOn ? void login(provider) : router.push('/'))
-  const enterprise = (connectorId: string) => (authOn ? void loginWithSso(connectorId) : router.push('/'))
+  const signInWithSso = (connectorId: string) => (authOn ? void loginWithSso(connectorId) : router.push('/'))
 
   return (
     <div className="authpage">
@@ -59,7 +59,7 @@ export default function Auth({
             <p className="asub">{t('subtitle')}</p>
             <div className="mt-[26px] flex flex-col gap-[10px]">
               {sso && (
-                <button type="button" className="sso" onClick={() => enterprise(sso.connectorId)}>
+                <button type="button" className="sso" onClick={() => signInWithSso(sso.connectorId)}>
                   <span className="grid w-[220px] grid-cols-[18px_minmax(0,1fr)] items-center gap-2.5 text-left">
                     <span className="flex h-[18px] w-[18px] items-center justify-center">
                       <Icon name="key-round" size={18} />
