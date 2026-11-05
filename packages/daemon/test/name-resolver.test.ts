@@ -55,6 +55,17 @@ describe('SlackNameResolver', () => {
     expect(conn.getChannelInfo).toHaveBeenCalledTimes(1)
   })
 
+  it('names a bot sender from its post’s bot profile without a lookup, once per TTL', async () => {
+    const saved = vi.fn()
+    const conn = fakeConn()
+    const r = new SlackNameResolver(saved)
+    r.noteMessage(conn, { channel: 'C1', sender: { id: 'B99', isBot: true, name: 'example-bot' } })
+    r.noteMessage(conn, { channel: 'C1', sender: { id: 'B99', isBot: true, name: 'example-bot' } })
+    await flush()
+    expect(saved.mock.calls.filter(([id]) => id === 'B99')).toEqual([['B99', 'example-bot']])
+    expect(conn.getUserProfile).not.toHaveBeenCalled()
+  })
+
   it('labels a DM channel by its counterpart user, "@"-prefixed, once', async () => {
     const saved = new Map<string, string>()
     const conn = fakeConn({ getChannelInfo: vi.fn(async (id: string) => ({ id, isIm: true, user: 'U7' })) as never })

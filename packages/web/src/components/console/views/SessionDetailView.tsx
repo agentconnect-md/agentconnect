@@ -1409,9 +1409,12 @@ function ParticipantAvatar({
   platformMark,
   sp,
   isCron,
+  href,
   className = ''
 }: {
   agent: Agent | null
+  /** The agent's page; an agent's mark opens it. */
+  href?: string
   avatarUrl?: string | null
   avatarInitials?: string
   platformMark?: string
@@ -1420,13 +1423,17 @@ function ParticipantAvatar({
   /** Caller-side box tweaks — today only the transcript's vertical nudge. */
   className?: string
 }) {
+  const boxClass = `av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
+    !agent && !isCron ? 'bg-transparent' : ''
+  } ${className}`
+  if (agent && href)
+    return (
+      <Link href={href} className={boxClass} title={sp.name} aria-label={sp.name}>
+        <AgentIconView icon={agent.icon} runtime={agent.runtime} size={26} />
+      </Link>
+    )
   return (
-    <span
-      className={`av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
-        !agent && !isCron ? 'bg-transparent' : ''
-      } ${className}`}
-      title={sp.name}
-    >
+    <span className={boxClass} title={sp.name}>
       {agent ? (
         <AgentIconView icon={agent.icon} runtime={agent.runtime} size={26} />
       ) : isCron ? (
@@ -4921,6 +4928,9 @@ export default function SessionDetailView() {
                               </div>
                               <ParticipantAvatar
                                 agent={turn.agent}
+                                {...(turn.agent
+                                  ? { href: orgPath(`/agents/${encodeURIComponent(turn.agent.id)}`) }
+                                  : {})}
                                 avatarUrl={turn.avatarUrl}
                                 avatarInitials={turn.avatarInitials}
                                 platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
@@ -4971,16 +4981,32 @@ export default function SessionDetailView() {
                                   key={`${session.id}:${ti}`}
                                   className="group/turn flex items-start gap-2 desktop:gap-[10px]"
                                 >
-                                  <span className="av h-[26px] w-[26px] flex-none rounded-md">
-                                    <AgentIconView
-                                      icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
-                                      runtime={
-                                        (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
-                                        (agentRuntime || turn.model)
-                                      }
-                                      size={26}
-                                    />
-                                  </span>
+                                  {(() => {
+                                    const turnAgent = turn.agentId ? agentById.get(turn.agentId) : owner
+                                    const mark = (
+                                      <AgentIconView
+                                        icon={(turnAgent ?? owner)?.icon}
+                                        runtime={
+                                          (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
+                                          (agentRuntime || turn.model)
+                                        }
+                                        size={26}
+                                      />
+                                    )
+                                    // Only a turn whose agent is known links, never the owner fallback the icon may borrow.
+                                    return turnAgent ? (
+                                      <Link
+                                        href={orgPath(`/agents/${encodeURIComponent(turnAgent.id)}`)}
+                                        className="av h-[26px] w-[26px] flex-none rounded-md"
+                                        title={turn.agentName}
+                                        aria-label={turn.agentName}
+                                      >
+                                        {mark}
+                                      </Link>
+                                    ) : (
+                                      <span className="av h-[26px] w-[26px] flex-none rounded-md">{mark}</span>
+                                    )
+                                  })()}
                                   <div
                                     className="min-w-0 flex-1"
                                     style={{ '--agent-accent': turnTone } as CSSProperties}
