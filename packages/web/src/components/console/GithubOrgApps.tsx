@@ -8,7 +8,7 @@ import { AgentIconView, GithubMark } from '@/components/marks'
 import { useConsoleData } from '@/lib/data-context'
 import { Scrim } from '@/components/console/Scrim'
 import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
-import { deleteGithubApp, fetchGithubApps, githubAppPageUrl, type GithubOrgAppDto } from '@/lib/api'
+import { deleteGithubApp, fetchGithubApps, githubAppLogoUrl, githubAppPageUrl, type GithubOrgAppDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 
@@ -20,6 +20,7 @@ export function GithubAppRow({
   onToggle,
   label,
   icon,
+  appId,
   children,
   aside,
   dataAttr
@@ -27,8 +28,10 @@ export function GithubAppRow({
   open: boolean
   onToggle: () => void
   label: string
-  /** Leads the row; absent ⇒ the GitHub mark. */
+  /** Leads the row; absent ⇒ the App's own logo. */
   icon?: ReactNode
+  /** The GitHub-side App id the logo is fetched by; unknown ⇒ the GitHub mark. */
+  appId?: number | null
   children: ReactNode
   aside: ReactNode
   dataAttr?: string
@@ -49,17 +52,39 @@ export function GithubAppRow({
         >
           <Icon name="chevron-down" size={14} className={open ? undefined : '-rotate-90'} />
         </button>
-        {icon ?? (
-          <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
-            <span className="flex h-[14px] w-[14px] items-center justify-center">
-              <GithubMark color="var(--text-primary)" fillPct={SQUARE_MARK_FILL_PCT} />
-            </span>
-          </span>
-        )}
+        {icon ?? <GithubAppLogo appId={appId} />}
         {children}
       </div>
       <span className="flex items-center justify-between gap-3 desktop:justify-end">{aside}</span>
     </div>
+  )
+}
+
+/** The App's own logo in the row's 28px tile; the GitHub mark until its id is known or if the image fails. */
+function GithubAppLogo({ appId }: { appId?: number | null }) {
+  const [broken, setBroken] = useState<number | null>(null)
+  const tile =
+    'flex h-7 w-7 flex-none items-center justify-center overflow-hidden rounded-[7px] border border-(--border-default) bg-(--surface-card)'
+  if (appId != null && broken !== appId) {
+    return (
+      <span className={tile} data-github-app-logo={appId}>
+        <img
+          alt=""
+          src={githubAppLogoUrl(appId, 28)}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          className="h-full w-full object-cover"
+          onError={() => setBroken(appId)}
+        />
+      </span>
+    )
+  }
+  return (
+    <span className={tile}>
+      <span className="flex h-[14px] w-[14px] items-center justify-center">
+        <GithubMark color="var(--text-primary)" fillPct={SQUARE_MARK_FILL_PCT} />
+      </span>
+    </span>
   )
 }
 
@@ -116,6 +141,7 @@ export function GithubOrgApps({ canWrite, isOwner }: { canWrite: boolean; isOwne
               open={open}
               onToggle={() => toggle(app.id)}
               label={open ? t('collapse') : t('expand')}
+              appId={app.appId}
               icon={
                 agent ? (
                   <Link

@@ -148,7 +148,7 @@ export function githubRoutes(deps: HttpDeps) {
         // The install URL embeds a signed state claiming THIS org — that is a
         // write-intent (starts a connection change), so viewers don't get one.
         if (denyViewerWrite(req, reply)) return
-        return { enabled: true, slug: gh.slug, installUrl: await gh.installUrl(orgOf(req)) }
+        return { enabled: true, slug: gh.slug, appId: gh.appId, installUrl: await gh.installUrl(orgOf(req)) }
       }
     )
 
