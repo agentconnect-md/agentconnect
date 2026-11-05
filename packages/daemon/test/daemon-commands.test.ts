@@ -1551,7 +1551,10 @@ describe('Daemon managed-agent bot ingress', () => {
     await (daemon as any).onInboundOutcome(botMessage('external-auto', 'AEXTERNAL', []))
     expect(host.prompt).not.toHaveBeenCalled()
 
-    const relayManaged = botMessage('relay-managed', 'AMANAGED', ['UBOTA'])
+    const relayManaged = {
+      ...botMessage('relay-managed', 'AMANAGED', ['UBOTA']),
+      sender: { id: 'U-AMANAGED', isBot: true, appId: 'AMANAGED', avatarUrl: 'https://avatars.example.test/peer.png' }
+    }
     const relayAck = await (daemon as any).handleRelayMsg(
       {
         source: 'im',
@@ -1574,6 +1577,11 @@ describe('Daemon managed-agent bot ingress', () => {
       recoverable: false
     })
     expect(host.prompt).not.toHaveBeenCalled()
+    // Recorded but never dispatched, so its avatar is stored at ingress.
+    const scope = (daemon as any).transportScopeForIntegrationIds(['int-a'])
+    expect((await (daemon as any).store.getProfileAvatars(scope, ['U-AMANAGED'])).get('U-AMANAGED')).toBe(
+      'https://avatars.example.test/peer.png'
+    )
 
     await (daemon as any).onInboundOutcome(botMessage('external-mention', 'AEXTERNAL', ['UBOTA']))
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
@@ -1621,6 +1629,67 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
       null
     )
     expect(rows.some((r: any) => r.text === 'beep from another bot' && r.sender === 'B999')).toBe(true)
+
+    await daemon.stop()
+  })
+
+  it('marks a live post from another AgentConnect bot as trusted, and a third-party bot as not', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    const store = (daemon as any).store
+    ;(daemon as any).cpCollab.replace({
+      generation: 1,
+      channels: [
+        {
+          orgId: 'org-1',
+          platform: 'slack',
+          channelId: 'C1',
+          agents: [
+            {
+              agentId: 'managed-peer',
+              daemonId: 'daemon-peer',
+              integrationId: 'integration-peer',
+              botAppId: 'AMANAGED',
+              callPolicy: 'all',
+              allowedCallerAgentIds: []
+            }
+          ]
+        }
+      ]
+    })
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    const botPost = (ts: string, sender: string, appId: string, text: string) => ({
+      msgId: `slack:C1:${ts}`,
+      traceId: ts,
+      source: 'user',
+      platform: 'slack',
+      channel: 'C1',
+      thread: 'T1',
+      transportScope: TRANSPORT_SCOPE,
+      sender: { id: sender, isBot: true, appId },
+      text,
+      mentionedBots: [],
+      isDm: false
+    })
+
+    await (daemon as any).onInboundOutcome(botPost('200', 'BPEER', 'AMANAGED', 'peer agent answer'))
+    await (daemon as any).onInboundOutcome(botPost('201', 'BOTHER', 'AEXTERNAL', 'third-party bot post'))
+    const rows = await store.transcriptSince(
+      {
+        transcriptChannel: transcriptChannelKey('C1', TRANSPORT_SCOPE),
+        coordinate: 'T1',
+        sessionKey: 'slack:C1:T1:bot-a',
+        agentId: 'bot-a'
+      },
+      null
+    )
+    expect(rows.find((r: any) => r.sender === 'BPEER')?.trustedAgentBot).toBeTruthy()
+    expect(rows.find((r: any) => r.sender === 'BOTHER')?.trustedAgentBot).toBeFalsy()
 
     await daemon.stop()
   })

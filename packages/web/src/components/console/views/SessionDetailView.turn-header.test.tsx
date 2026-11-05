@@ -245,6 +245,12 @@ describe('a finished agent turn', () => {
     expect(panelStep.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('links its agent mark to the agent’s page', async () => {
+    await render()
+    const turnRow = container!.querySelector('[data-agent-prose]')!.closest('[class*="group/turn"]')!
+    expect(turnRow.querySelector('a[href="/acme/agents/agent-1"]')).not.toBeNull()
+  })
+
   it('omits the duration when no step carries a timestamp', async () => {
     wire.messages = (wire.messages as SessionMessageDto[]).map((m) => ({ ...m, ts: '' }))
     await render()

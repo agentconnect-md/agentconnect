@@ -13431,6 +13431,11 @@ export class Daemon {
     return this.isManagedAgentBotIdentity(msg.platform, msg.channel, msg.sender.id, msg.sender.appId)
   }
 
+  /** Live ingress marks another AgentConnect bot's post as backfill does, so the console can name its agent. */
+  private isTrustedAgentBotPost(msg: NormalizedMessage): boolean {
+    return msg.sender.isBot && this.isAgentBotMessage(msg)
+  }
+
   /**
    * Promote an inbound message's UNTRUSTED authorship claim to a verified author, or
    * return null (send-message-routing-rework.md §4).
@@ -15145,6 +15150,14 @@ export class Daemon {
     const conn = this.connByIntegration.get(msg.integrationId)
     if (conn) this.nameResolver?.noteMessage(conn, normalized)
     await conn?.prepareInboundMessage?.(normalized)
+    // Before routing, as direct ingress does: a bot post is recorded but never dispatched, and dispatch is the other writer.
+    if (normalized.sender.avatarUrl && normalized.transportScope)
+      await this.store.setProfileAvatar(
+        normalized.transportScope,
+        normalized.sender.id,
+        normalized.sender.avatarUrl,
+        Date.now()
+      )
     // The relay saw the provider event, so it forwarded the ephemeral search credential
     // beside the payload. Hand it to the adapter and keep no copy — it is never persisted,
     // logged, or reported onward, and `normalized` (which IS persisted) never carries it.
@@ -16935,7 +16948,8 @@ export class Daemon {
         text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
         // Deliberately BODYLESS: the body is first-wins, and the authoritative ingest — which runs
         // after the review batch and workspace finish rewriting the prompt — is the writer that persists it.
-        ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
+        ...(msg.quoted?.text ? { quoted: msg.quoted } : {}),
+        ...(this.isTrustedAgentBotPost(msg) ? { trustedAgentBot: true } : {})
       })
       this.log.debug(`transcript: recorded inbound msg ch=${msg.channel} thread=${thread} ts=${ts}`)
       // A lookup, not the insert's id: a redelivery inserts nothing yet names the same row.
@@ -17034,7 +17048,8 @@ export class Daemon {
       kind: 'text',
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
       // Bodyless for the same reason as step 1: the authoritative ingest persists the prompt.
-      ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
+      ...(msg.quoted?.text ? { quoted: msg.quoted } : {}),
+      ...(this.isTrustedAgentBotPost(msg) ? { trustedAgentBot: true } : {})
     })
     this.log.debug(`transcript: admitted inbound msg ch=${msg.channel} thread=${thread} ts=${ts} agent=${agentId}`)
   }

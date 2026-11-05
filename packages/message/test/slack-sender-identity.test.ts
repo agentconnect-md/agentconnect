@@ -19,6 +19,18 @@ describe('Slack sender identity', () => {
     expect(isSlackBotPost({ subtype: 'bot_message' })).toBe(true)
   })
 
+  it('names a bot post after its bot profile, and never a person’s post', () => {
+    const botPost = { ...base, bot_id: 'B0EXAMPLE', bot_profile: { app_id: 'A0EXAMPLE', name: 'example-bot' } }
+    expect(normalizeSlackMessage(botPost)?.sender).toEqual({
+      id: 'B0EXAMPLE',
+      isBot: true,
+      name: 'example-bot',
+      appId: 'A0EXAMPLE'
+    })
+    const personal = { ...base, user: 'U0EXAMPLE', bot_profile: { name: 'example-bot' } }
+    expect(normalizeSlackMessage(personal)?.sender.name).toBeUndefined()
+  })
+
   it('keeps a person’s ordinary post a person’s', () => {
     expect(normalizeSlackMessage({ ...base, user: 'U0EXAMPLE' })?.sender.isBot).toBe(false)
   })
