@@ -326,9 +326,10 @@ export class CoordinatorSessions {
     })
     // A thread whose session already ran becomes a task now; a new session reports its owner with its first turn.
     await this.host.reportTaskOwners(agentId, [taskKey])
+    // On the task's thread, which a top-level message whose platform gives it none (a console message's copy) lacks.
     this.host.dispatch(
       agentId,
-      messageForTask(msg, { title, ...(background ? { background } : {}) }),
+      messageForTask({ ...msg, thread }, { title, ...(background ? { background } : {}) }),
       message.integrationId
     )
     return taskKey
@@ -566,10 +567,13 @@ export class CoordinatorSessions {
       (await store.assistantSubsessions.threadsOf(agentId, taskKey))[0]?.thread
     this.host.dispatch(
       agentId,
-      messageForTask(message.msg, {
-        ...(sessionThread ? { sessionThread } : {}),
-        ...(background ? { background } : {})
-      }),
+      messageForTask(
+        { ...message.msg, thread: replyThreadOf(message.msg) },
+        {
+          ...(sessionThread ? { sessionThread } : {}),
+          ...(background ? { background } : {})
+        }
+      ),
       message.integrationId
     )
   }

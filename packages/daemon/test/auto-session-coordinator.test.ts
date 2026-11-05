@@ -547,6 +547,26 @@ describe('the coordinator’s outcomes', () => {
     expect(dispatched[1]!.msg).toMatchObject({ thread: '2.1', sessionThread: '1.1', text: 'also this' })
   })
 
+  it('opens and hands tasks a top-level message with no thread of its own on its id, as a console message’s copy arrives', async () => {
+    const { store, sessions, ctx, dispatched } = await setup()
+    const consoleCopy = (ts: string, text: string) =>
+      slack(ts, { msgId: `webchat-cont:conv-1:turn-${ts}`, thread: undefined, transcriptTs: ts, text })
+    begin(sessions, consoleCopy('1.1', 'fix it'))
+    const { taskId } = (await sessions.decide(ctx, { action: 'delegateTask', messageId: 'msg-1.1', title: 'Fix' })) as {
+      taskId: string
+    }
+    expect(taskId).toBe(sessionKey('slack', 'C1', '1.1', 'bot-a'))
+    // Keyed where the index holds the task, so its row finds its session, and answered in the copy's thread.
+    expect(dispatched[0]!.msg).toMatchObject({ thread: '1.1', text: 'fix it' })
+    expect(dispatched[0]!.msg.sessionThread).toBeUndefined()
+    begin(sessions, consoleCopy('2.1', 'also this'))
+    await sessions.decide(ctx, { action: 'messageTask', messageId: 'msg-2.1', taskId })
+    expect(
+      await store.assistantSubsessions.taskOfThread('bot-a', { platform: 'slack', channel: 'C1', thread: '2.1' })
+    ).toBe(taskId)
+    expect(dispatched[1]!.msg).toMatchObject({ thread: '2.1', sessionThread: '1.1', text: 'also this' })
+  })
+
   it('refuses to hand a channel message to a background task', async () => {
     const { store, sessions, ctx } = await setup()
     const background = sessionKey('slack', 'C1', 'subsession:7', 'bot-a')

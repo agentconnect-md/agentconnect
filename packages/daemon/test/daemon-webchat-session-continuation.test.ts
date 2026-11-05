@@ -324,6 +324,8 @@ describe('webchat session-targeted continuation', () => {
     expect(prompts[0]!.text).toContain(`Thread: ${coordinate}`)
     expect(prompts[0]!.text).toContain('You are the coordinator')
     for (const call of postMessage.mock.calls as unknown[][]) expect(call[2]).not.toBe(coordinate)
+    // The message is the copy in the channel, as channel ingress records it, so a task opened for it takes that thread.
+    expect(prompts[0]!.text).toContain('msg-100.200000')
     await daemon.stop()
   })
 })
