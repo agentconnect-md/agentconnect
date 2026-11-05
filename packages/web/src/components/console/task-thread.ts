@@ -185,6 +185,16 @@ export function threadEntries(
     const ms = typeof at === 'string' ? Date.parse(at) : at
     if (ms !== null && ms !== undefined && Number.isFinite(ms)) entry.times!.push(ms)
   }
+  // While a reply streams, its tool and reasoning rows are already saved; the live turn shows them once.
+  const shown = liveSteps.filter((step) => !step.hidden)
+  const liveTools = new Set(shown.flatMap((step) => (step.kind === 'tool' && step.toolCallId ? [step.toolCallId] : [])))
+  const liveStarts = shown.flatMap((step) => (step.observedAtMs !== undefined ? [step.observedAtMs] : []))
+  const liveSince = liveStarts.length ? Math.min(...liveStarts) : undefined
+  const streamedHere = (m: SessionMessageDto, kind: string): boolean => {
+    if (kind === 'tool') return !!m.toolCallId && liveTools.has(m.toolCallId)
+    const at = Date.parse(messageTime(m) ?? '')
+    return kind === 'reasoning' && liveSince !== undefined && Number.isFinite(at) && at >= liveSince
+  }
   for (const m of messages) {
     const kind = (m.kind || 'text').toLowerCase()
     const question = kind === 'elicit' ? openQuestion(elicitCard(m.body)) : null
@@ -202,6 +212,7 @@ export function threadEntries(
       continue
     }
     if (kind === 'tool' || kind === 'reasoning') {
+      if (streamedHere(m, kind)) continue
       const own = ownTurn(`m:${m.seq}`, messageTime(m), false)
       own.work!.push(msgStep(m))
       stamp(own, messageTime(m))
