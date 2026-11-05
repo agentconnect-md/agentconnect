@@ -389,4 +389,26 @@ describe('RemoteWebchatGrantManager', () => {
     await manager.provision(conversationId, entitlement, 0, 'agent-1', taskKey)
     expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(2)
   })
+
+  it('revokes every authority a conversation’s tasks straddle across a rotation', async () => {
+    const client = workingClient()
+    const manager = new RemoteWebchatGrantManager(client)
+    const rotated = { ...entitlement, authorityId: '66666666-6666-4666-8666-666666666666', authorityGeneration: 3 }
+    await manager.provision(conversationId, entitlement, 0, 'agent-1', 'webchat:a2a:subsession:1:agent-1')
+    await manager.provision(conversationId, rotated, 0, 'agent-1', 'webchat:a2a:subsession:2:agent-1')
+
+    await manager.revokeConversation(conversationId, 'session_expired')
+
+    const generations = () =>
+      (client.revokeWebchatMcpGrant as any).mock.calls.map(([input]: [any]) => input.authorityGeneration)
+    expect(generations().sort()).toEqual([2, 3])
+    expect(manager.inheritedEntitlement(conversationId, 'agent-1', 0)).toBeUndefined()
+    expect(manager.conversationsForAgent('agent-1')).toEqual([])
+
+    await manager.provision(conversationId, entitlement, 0, 'agent-1', 'webchat:a2a:subsession:1:agent-1')
+    await manager.provision(conversationId, rotated, 0, 'agent-1', 'webchat:a2a:subsession:2:agent-1')
+    await manager.revokeAgent('agent-1', 'agent_detached')
+    expect(generations().sort()).toEqual([2, 2, 3, 3])
+    expect(manager.conversationsForAgent('agent-1')).toEqual([])
+  })
 })

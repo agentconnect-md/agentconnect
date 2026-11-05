@@ -310,10 +310,12 @@ export class RemoteWebchatGrantManager {
   }
 
   async revokeConversation(conversationId: string, reason: WebchatMcpGrantRevoke['reason']): Promise<void> {
-    const entitlement =
-      this.descriptorsOf(conversationId)[0]?.entitlement ?? this.latest.get(conversationId)?.entitlement
-    if (!entitlement) return
-    await this.revoke(conversationId, entitlement, reason)
+    const failures = await this.revokeEach(
+      this.authoritiesOf((_agentId, conversation) => conversation === conversationId),
+      reason
+    )
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) throw new AggregateError(failures, `remote MCP revoke failed for ${conversationId}`)
   }
 
   /** Conversations holding an active grant, or an entitlement their tasks inherit, for `agentId`. */
@@ -333,45 +335,50 @@ export class RemoteWebchatGrantManager {
   }
 
   async revokeAgent(agentId: string, reason: WebchatMcpGrantRevoke['reason']): Promise<void> {
-    const entries = this.authoritiesOf((agentOf) => agentOf === agentId)
-    const results = await Promise.allSettled(
-      entries.map(([conversationId, entitlement]) => this.revoke(conversationId, entitlement, reason))
+    const failures = await this.revokeEach(
+      this.authoritiesOf((agentOf) => agentOf === agentId),
+      reason
     )
-    const failures = results.filter((result) => result.status === 'rejected')
-    if (failures.length) {
-      throw new AggregateError(
-        failures.map((result) => result.reason),
-        `remote MCP revoke failed for agent ${agentId}`
-      )
-    }
+    if (failures.length) throw new AggregateError(failures, `remote MCP revoke failed for agent ${agentId}`)
   }
 
   async revokeAll(reason: WebchatMcpGrantRevoke['reason']): Promise<void> {
-    const entries = this.authoritiesOf(() => true)
+    const failures = await this.revokeEach(
+      this.authoritiesOf(() => true),
+      reason
+    )
+    if (failures.length) throw new AggregateError(failures, 'remote MCP revoke failed')
+  }
+
+  /** Revoke every listed authority, each attempted; returns the failures. */
+  private async revokeEach(
+    entries: [string, WebchatRemoteMcpEntitlement][],
+    reason: WebchatMcpGrantRevoke['reason']
+  ): Promise<unknown[]> {
     const results = await Promise.allSettled(
       entries.map(([conversationId, entitlement]) => this.revoke(conversationId, entitlement, reason))
     )
-    const failures = results.filter((result) => result.status === 'rejected')
-    if (failures.length)
-      throw new AggregateError(
-        failures.map((result) => result.reason),
-        'remote MCP revoke failed'
-      )
+    return results.flatMap((result) => (result.status === 'rejected' ? [result.reason as unknown] : []))
   }
 
   private descriptorsOf(conversationId: string): ActiveDescriptor[] {
     return [...this.active.values()].filter((descriptor) => descriptor.conversationId === conversationId)
   }
 
-  /** One authority per conversation, whichever of its descriptors or remembered entitlement names it. */
-  private authoritiesOf(pick: (agentId: string | undefined) => boolean): [string, WebchatRemoteMcpEntitlement][] {
-    const found = new Map<string, WebchatRemoteMcpEntitlement>()
+  /** Every distinct authority a picked conversation's descriptors or remembered entitlement name: tasks may straddle a rotation. */
+  private authoritiesOf(
+    pick: (agentId: string | undefined, conversationId: string) => boolean
+  ): [string, WebchatRemoteMcpEntitlement][] {
+    const found = new Map<string, [string, WebchatRemoteMcpEntitlement]>()
+    const add = (conversationId: string, entitlement: WebchatRemoteMcpEntitlement) => {
+      const key = `${conversationId}\0${entitlement.authorityId}\0${entitlement.authorityGeneration}`
+      if (!found.has(key)) found.set(key, [conversationId, entitlement])
+    }
     for (const descriptor of this.active.values())
-      if (pick(descriptor.agentId) && !found.has(descriptor.conversationId))
-        found.set(descriptor.conversationId, descriptor.entitlement)
+      if (pick(descriptor.agentId, descriptor.conversationId)) add(descriptor.conversationId, descriptor.entitlement)
     for (const [conversationId, known] of this.latest)
-      if (pick(known.agentId) && !found.has(conversationId)) found.set(conversationId, known.entitlement)
-    return [...found]
+      if (pick(known.agentId, conversationId)) add(conversationId, known.entitlement)
+    return [...found.values()]
   }
 
   /** Drop every local descriptor and the remembered entitlement of a revoked authority. */

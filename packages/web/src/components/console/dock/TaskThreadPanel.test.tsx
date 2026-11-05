@@ -36,12 +36,12 @@ vi.mock(import('@/lib/api'), async (importOriginal) => ({
     Promise.resolve({ subsessions: [taskRow], truncated: false, nextCursor: null })
   ),
   fetchAssistantSubsession: vi.fn(),
-  listWebchatMcpOperations: vi.fn(() => Promise.resolve(wire.operations)),
+  listWebchatMcpOperations: vi.fn(() => Promise.resolve(wire.operations as never)),
   decideWebchatMcpOperation: vi.fn((_org: string, _agent: string, _conv: string, operationId: string) =>
     Promise.resolve({
       ...(wire.operations as { operationId: string }[]).find((op) => op.operationId === operationId),
       status: 'completed'
-    })
+    } as never)
   ),
   fetchSessionDetail: vi.fn(() => Promise.resolve({ id: 'ses_task', canContinue: wire.canContinue } as never)),
   fetchSessionMessages: vi.fn(() =>
