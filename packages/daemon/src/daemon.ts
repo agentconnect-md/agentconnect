@@ -17018,9 +17018,10 @@ export class Daemon {
             // A shareable Slack app gives every agent-authored message the same bot_id.
             // Prefer stable per-message metadata only after verifying the producing app,
             // so an unrelated app cannot impersonate this or a peer Agent and trip the
-            // SessionManager own-author filter.
-            sender:
-              (trustedAgentBot ? r.agentAuthorId : undefined) ?? (r.isBot && ours.has(r.sender) ? agentId : r.sender),
+            // SessionManager own-author filter. A row under this bot's own user is this
+            // agent's even when it is no bot post: Slack writes its notices of what the bot
+            // did there, such as a Code channel's "added view", which are not conversation.
+            sender: (trustedAgentBot ? r.agentAuthorId : undefined) ?? (ours.has(r.sender) ? agentId : r.sender),
             ts: r.ts,
             text: mention ? `${r.text}\n${mention}`.trim() : r.text,
             ...(trustedAgentBot ? { trustedAgentBot: true } : {})
