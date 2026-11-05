@@ -95,7 +95,7 @@ describe('console authentication', () => {
     })
   })
 
-  it('goes straight to the enterprise SSO connector', async () => {
+  it('goes straight to the SSO connector', async () => {
     const { loginWithSso } = await import('./auth')
 
     await loginWithSso('sso-connector')

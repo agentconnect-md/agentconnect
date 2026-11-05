@@ -47,7 +47,7 @@ export interface LogtoSetupDesired {
   sso?: LogtoSsoDesired
 }
 
-/** The enterprise SSO connector's IdP settings, in Logto's own config shape. */
+/** The SSO connector's IdP settings, in Logto's own config shape. */
 export interface LogtoSsoDesired {
   connectorId: string
   displayName: string

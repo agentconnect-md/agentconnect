@@ -1729,7 +1729,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     }
   })
 
-  // Step one of enterprise SSO: Logto mints the connector, and its URLs go to the identity provider's team.
+  // Step one of SSO: Logto mints the connector, and its URLs go to the identity provider's team.
   app.post('/api/v1/create/sso', { preHandler: requireConfigurationAccess }, async (request, reply) => {
     const parsed = CreateSsoBody.safeParse(request.body)
     if (!parsed.success) return problem(reply, 400, 'an SSO protocol (oidc or saml) and a display name are required')

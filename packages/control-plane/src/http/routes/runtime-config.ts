@@ -10,7 +10,7 @@ const PublicBrowserAuth = z
     appId: z.string().min(1),
     apiResource: z.string().url().nullable(),
     socialProviders: z.array(z.string().min(1)),
-    // The enterprise SSO connector the console's sign-in button starts; null when the deployment offers none.
+    // The SSO connector the console's sign-in button starts; null when the deployment offers none.
     sso: z
       .object({ connectorId: z.string().min(1), name: z.string().min(1) })
       .strict()

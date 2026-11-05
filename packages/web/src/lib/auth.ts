@@ -142,7 +142,7 @@ export async function login(provider?: SocialLoginTarget): Promise<void> {
   )
 }
 
-/** Start sign-in through the deployment's enterprise SSO connector. */
+/** Start sign-in through the deployment's SSO connector. */
 export async function loginWithSso(connectorId: string): Promise<void> {
   await navigateWithSession((c) =>
     c.signIn({

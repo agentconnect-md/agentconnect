@@ -1,6 +1,6 @@
 import { LOGTO_LOGIN_APPS } from '../logto-connectors.js'
 
-// The enterprise SSO form, rendered in first-run setup and in the settings page under its own id prefix.
+// The SSO form, rendered in first-run setup and in the settings page under its own id prefix.
 const ssoForm = (prefix: string) => String.raw`
           <label class="field">Protocol<select id="${prefix}-protocol"><option value="oidc">OIDC</option><option value="saml">SAML</option></select></label>
           <label class="field">Name on the sign-in button<input id="${prefix}-name" value="SSO" autocomplete="off"></label>
@@ -123,7 +123,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
         <h3>Choose a sign-in provider</h3>
         <p class="muted">Logto Management API access is ready. Configure one provider to enable sign-in.</p>
         <label class="field">Sign-in provider
-          <select id="bootstrap-provider"><option value="google">Google (works on localhost)</option><option value="github">GitHub integration App</option><option id="bootstrap-slack-option" value="slack">Slack integration App</option><option value="sso">Enterprise SSO (OIDC or SAML)</option></select>
+          <select id="bootstrap-provider"><option value="google">Google (works on localhost)</option><option value="github">GitHub integration App</option><option id="bootstrap-slack-option" value="slack">Slack integration App</option><option value="sso">Single sign-on (OIDC or SAML)</option></select>
         </label>
         <div id="bootstrap-google" class="panel">
           <h3>Google OAuth client</h3>
@@ -154,7 +154,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <button id="bootstrap-slack-submit">Create Slack App and configure Logto</button>
         </div>
         <div id="bootstrap-sso" class="panel" hidden>
-          <h3>Enterprise SSO</h3>
+          <h3>Single sign-on</h3>
           <p class="muted">Sign in through the organization's identity provider. Logto creates the connector first, so its URLs can be registered with the identity provider.</p>
           ${ssoForm('bootstrap-sso')}
         </div>
@@ -168,7 +168,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
     <nav class="setup-nav" aria-label="Deployment settings">
       <a href="#startup-section">Startup</a>
       <a href="#logto-section">Logto</a>
-      <a href="#sso-section">Enterprise SSO</a>
+      <a href="#sso-section">Single sign-on</a>
       <a href="#github-section">GitHub</a>
       <a href="#gitlab-section">GitLab</a>
       <a href="#gitea-section">Gitea</a>
@@ -397,7 +397,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
       <section id="sso-section" class="panel setup-section" aria-labelledby="sso-heading">
         <div class="provider-head">
-          <div><h3 id="sso-heading">Enterprise SSO</h3><p class="muted">OIDC or SAML identity provider for console sign-in.</p></div>
+          <div><h3 id="sso-heading">Single sign-on</h3><p class="muted">OIDC or SAML identity provider for console sign-in.</p></div>
           <span id="sso-match" class="badge">Not configured</span>
         </div>
         ${ssoForm('sso')}

@@ -33,7 +33,7 @@ the bundled bare `localhost` origins. Slack remains disabled until every
 required public service URL uses HTTPS.
 
 An organization that signs in through its own identity provider can choose
-**Enterprise SSO (OIDC or SAML)** instead of a social provider. Setup first asks
+**Single sign-on (OIDC or SAML)** instead of a social provider. Setup first asks
 Logto to create the connector and shows the redirect URI (OIDC) or the ACS URL
 and SP entity ID (SAML) to register with the identity provider; the provider's
 issuer and client, or its SAML metadata, come next, together with at least one
