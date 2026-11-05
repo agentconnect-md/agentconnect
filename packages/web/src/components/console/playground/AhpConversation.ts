@@ -39,7 +39,12 @@ export class AhpConversation {
   private attached = false
   private reconnectTimer?: ReturnType<typeof setTimeout>
   private reconnectAttempts = 0
-  private readonly connectionNotices = new Set<string>()
+  // The one standing notice that reports the connection's latest failure.
+  private connectionNotice?: string
+  private readonly online = () => {
+    this.reconnectAttempts = 0
+    if (this.attached) this.reconnect()
+  }
   constructor(
     readonly orgId: string,
     public agentId: string,
@@ -47,7 +52,9 @@ export class AhpConversation {
     private readonly onChange: () => void,
     private readonly onRefused: (turn: QueuedTurn) => void,
     private readonly refresh: () => void
-  ) {}
+  ) {
+    globalThis.addEventListener?.('online', this.online)
+  }
   get busy(): boolean {
     return (
       this.pending ||
@@ -57,11 +64,13 @@ export class AhpConversation {
   warn(error: unknown, connection = false): void {
     if (this.closed) return
     const text = error instanceof Error ? error.message : 'The conversation could not be updated.'
-    if (this.notices.at(-1)?.text !== text) {
-      const turnId = `local:${randomUuid()}`
+    if (connection) {
+      const index = this.notices.findIndex((notice) => notice.turnId === this.connectionNotice)
+      const turnId = index >= 0 ? this.notices.splice(index, 1)[0]!.turnId : `local:${randomUuid()}`
+      this.connectionNotice = turnId
       this.notices.push({ kind: 'notice', turnId, text, standing: true })
-      if (connection) this.connectionNotices.add(turnId)
-    }
+    } else if (this.notices.at(-1)?.text !== text)
+      this.notices.push({ kind: 'notice', turnId: `local:${randomUuid()}`, text, standing: true })
     this.onChange()
   }
   private changed(): void {
@@ -120,9 +129,10 @@ export class AhpConversation {
       if (this.closed) return
       this.attached = true
       this.reconnectAttempts = 0
-      // A successful reconnect retires the interruption notices it answers.
-      for (let index = this.notices.length - 1; index >= 0; index--)
-        if (this.connectionNotices.delete(this.notices[index]!.turnId)) this.notices.splice(index, 1)
+      // A successful reconnect retires the interruption notice it answers.
+      const index = this.notices.findIndex((notice) => notice.turnId === this.connectionNotice)
+      if (index >= 0) this.notices.splice(index, 1)
+      this.connectionNotice = undefined
       this.changed()
     })().finally(() => {
       this.connecting = undefined
@@ -322,6 +332,7 @@ export class AhpConversation {
   }
   async close(): Promise<void> {
     this.closed = true
+    globalThis.removeEventListener?.('online', this.online)
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     await Promise.all([...this.peers.values()].map((peer) => peer.close()))
   }
