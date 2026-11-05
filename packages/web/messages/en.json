@@ -1,5 +1,6 @@
 {
   "Common": {
+    "organizationLoadError": "Couldn’t load your organizations. Check your connection and try again.",
     "metadata": {
       "description": "Multi-agent platform bridging IM platforms to AI coding agents"
     },

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const logto = vi.hoisted(() => ({
   signIn: vi.fn(),
+  handleSignInCallback: vi.fn(),
   isAuthenticated: vi.fn(),
   getAccessToken: vi.fn(),
   clearAccessToken: vi.fn(),
@@ -11,13 +12,15 @@ const logto = vi.hoisted(() => ({
   clientConfig: undefined as unknown
 }))
 
-vi.mock('@logto/browser', () => ({
+vi.mock('@logto/browser', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@logto/browser')>()),
   default: class MockLogtoClient {
     constructor(config: unknown) {
       logto.clientConfig = config
     }
     isAuthenticated = logto.isAuthenticated
     signIn = logto.signIn
+    handleSignInCallback = logto.handleSignInCallback
     getAccessToken = logto.getAccessToken
     clearAccessToken = logto.clearAccessToken
     clearAllTokens = logto.clearAllTokens
@@ -41,6 +44,7 @@ describe('console authentication', () => {
   beforeEach(() => {
     vi.resetModules()
     logto.signIn.mockReset().mockResolvedValue(undefined)
+    logto.handleSignInCallback.mockReset().mockResolvedValue(undefined)
     logto.isAuthenticated.mockReset().mockResolvedValue(true)
     logto.getAccessToken.mockReset()
     logto.clearAccessToken.mockReset().mockResolvedValue(undefined)
@@ -109,6 +113,17 @@ describe('console authentication', () => {
     await login()
 
     expect(logto.signIn).toHaveBeenCalledWith({ redirectUri: 'https://console.example.test/auth/callback' })
+  })
+
+  it('exchanges the authorization code once across repeated callback effects', async () => {
+    visit('/auth/callback', '?code=example-code&state=example-state')
+    const { completeLogin } = await import('./auth')
+
+    await Promise.all([completeLogin(), completeLogin()])
+    await completeLogin()
+
+    expect(logto.handleSignInCallback).toHaveBeenCalledOnce()
+    expect(logto.handleSignInCallback).toHaveBeenCalledWith(window.location.href)
   })
 
   it('clears the local session and silently redirects when the refresh grant is invalid', async () => {

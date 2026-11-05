@@ -1,5 +1,6 @@
 {
   "Common": {
+    "organizationLoadError": "无法加载你的组织，请检查网络连接后重试。",
     "metadata": {
       "description": "连接即时通信平台与 AI 编程 Agent 的多 Agent 平台"
     },
