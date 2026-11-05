@@ -1809,6 +1809,9 @@ export class Daemon {
     return registry
   })()
 
+  // The last Code diff notice posted per session and channel.
+  private readonly codeDiffNotices = new Map<string, string>()
+
   private readonly turnSurfaces: TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage> =
     (() => {
       const registry = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
@@ -1860,6 +1863,14 @@ export class Daemon {
             notice: async (text) => {
               this.enqueueApply(p, { kind: 'post', text, attributed: false })
               await p.signals.applyChain
+            },
+            lastNotice: {
+              get: () => this.codeDiffNotices.get(`${p.plan.sessionKey}\0${p.plan.channel}`),
+              set: (text) => {
+                const key = `${p.plan.sessionKey}\0${p.plan.channel}`
+                if (text === undefined) this.codeDiffNotices.delete(key)
+                else this.codeDiffNotices.set(key, text)
+              }
             },
             debug: (message) => this.log.debug(message)
           }),
@@ -20889,23 +20900,29 @@ export class Daemon {
       sessionOf: (id, outwardId) => this.store.getSessionByOutwardId(outwardId, id),
       runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
     })
-    const roots: Array<{ path: string; name: string }> = []
+    const roots: Array<{ path: string; name: string; title?: string; branch: string }> = []
     if (agent.workspace.mode === 'git-repo') {
       const primary = await scope.location(agent.id, p.outwardSessionId)
-      if (primary) roots.push({ path: primary.root, name: 'workspace' })
+      if (primary)
+        roots.push({
+          path: primary.root,
+          name: 'workspace',
+          title: 'the working directory',
+          branch: agent.workspace.gitBranch
+        })
     }
     for (const root of await this.workspaces.sessionAdditionalRoots(agent, {
       sessionKey: session.key,
       isolation: 'session'
     })) {
       if (!roots.some((existing) => existing.path === root.path))
-        roots.push({ path: root.path, name: root.repoFullName })
+        roots.push({ path: root.path, name: root.repoFullName, branch: root.branch })
     }
     return openTaskDiff(
-      roots.map((root) => {
-        const git = this.workspaces.consoleWorkspaceGitRunner(agent.id, root.path, undefined, session.key)
+      roots.map(({ path, ...root }) => {
+        const git = this.workspaces.consoleWorkspaceGitRunner(agent.id, path, undefined, session.key)
         if (!git) throw new TaskDiffUnavailable('The task workspace is unavailable.')
-        return { git, name: root.name }
+        return { git, ...root }
       }),
       session.key,
       created && session.lastTurnOutcome == null

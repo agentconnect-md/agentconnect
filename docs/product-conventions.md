@@ -1353,13 +1353,15 @@ that has not been reported is identified as unavailable. Task controls and addit
 remain available through the console; the view does not offer unsupported runtime cancellation.
 
 In a Code channel, the platform keeps the task's assigned, isolated repositories visible
-as a diff while work runs and when it finishes. The comparison starts from the clean
-repository state before the task, so committing changes does not hide them. The agent
+as a diff while work runs and when it finishes. Each repository is compared with the
+point where the task's branch left its base branch, as a pull request would be, so
+committing, rebasing or merging the base branch neither hides the task's work nor adds
+work that landed elsewhere. The agent is told which repositories the diff covers, and
 still explains the work and publishes useful HTML previews and PR links. If enabled
-diff updates fail, the conversation says why. Existing tasks
-without a saved starting point, shared checkouts and unrelated directories are not
-silently published or given repeated eligibility warnings; the same conversation-write
-authorization applies to automatic output.
+diff updates fail, the conversation says why, once until the diff publishes again.
+Existing tasks without a base branch or a saved starting point, shared checkouts and
+unrelated directories are not silently published or given repeated eligibility
+warnings; the same conversation-write authorization applies to automatic output.
 
 Otherwise every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
 delegated task of its own: `sendMessage` with action `delegateTask` and only a `message`. Where the

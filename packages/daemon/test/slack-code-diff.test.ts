@@ -10,7 +10,7 @@ function setup() {
   const read = vi.fn(async () => content)
   const host: CodeDiffHost = {
     authorize: vi.fn(async () => {}),
-    open: vi.fn(async () => ({ read })),
+    open: vi.fn(async () => ({ repositories: [{ title: 'repo' }], read })),
     active: () => active,
     mask: (text) => text.replaceAll('secret', '[redacted]'),
     publish: vi.fn(async () => {}),
