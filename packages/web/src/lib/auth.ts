@@ -19,7 +19,7 @@
 // resource Logto returns an opaque token the CP can't verify, so we fall back to
 // the id token (whose `aud` is the app id — set the CP's OIDC_AUDIENCE to the app
 // id in that case).
-import LogtoClient, { isLogtoRequestError, Prompt, UserScope } from '@logto/browser'
+import LogtoClient, { isLogtoRequestError, LogtoClientError, Prompt, UserScope } from '@logto/browser'
 import { MOCK_MODE } from '@/lib/data'
 import { identifyUser, resetAnalytics } from '@/lib/analytics'
 import { forgetOwnershipProof } from '@/lib/ownership-proof'
@@ -68,66 +68,103 @@ export function getLogtoPublicConfig(): { endpoint: string; appId: string } | un
 
 let client: LogtoClient | undefined
 
-/** Lazily build the LogtoClient (browser-only — touches window/localStorage). */
-function getClient(): LogtoClient | undefined {
+function createClient(): LogtoClient | undefined {
   if (typeof window === 'undefined') return undefined
   const { endpoint, appId, apiResource } = readConfig()
   if (!endpoint || !appId) return undefined
-  if (!client) {
-    client = new LogtoClient({
-      endpoint,
-      appId,
-      // Request the profile claims so the CP can read email/name (from the token or
-      // its /userinfo endpoint), plus identities for the user-facing Account API.
-      scopes: [UserScope.Email, UserScope.Profile, UserScope.Identities, UserScope.Roles],
-      ...(apiResource ? { resources: [apiResource] } : {})
-    })
-    enableJwksCacheRecovery(client)
-  }
-  return client
+  const c = new LogtoClient({
+    endpoint,
+    appId,
+    // Request profile claims for identity display and the Account API.
+    scopes: [UserScope.Email, UserScope.Profile, UserScope.Identities, UserScope.Roles],
+    ...(apiResource ? { resources: [apiResource] } : {})
+  })
+  enableJwksCacheRecovery(c)
+  return c
+}
+
+function getClient(): LogtoClient | undefined {
+  return (client ??= createClient())
+}
+
+let sessionQueue: Promise<unknown> = Promise.resolve()
+let sessionRedirecting = false
+
+// All audiences and tabs rotate the same refresh token; hold the lock through the SDK's storage writes.
+async function withSession<T>(operation: (c: LogtoClient) => Promise<T>): Promise<T | undefined> {
+  const config = getLogtoPublicConfig()
+  if (typeof window === 'undefined' || !config) return undefined
+  // A fresh SDK instance reads the persisted token cache after the preceding holder releases the lock.
+  const run = () => operation(createClient()!)
+  if (navigator.locks) return navigator.locks.request(`ac.auth:${config.appId}`, run)
+  // Browsers without Web Locks still serialize token audiences within this page.
+  const pending = sessionQueue.then(run, run)
+  sessionQueue = pending.catch(() => undefined)
+  return pending
+}
+
+async function withAuthenticatedSession<T>(operation: (c: LogtoClient) => Promise<T>): Promise<T | undefined> {
+  return withSession(async (c) => {
+    // Queued reads must not replace an intentional sign-in or SSO sign-out navigation.
+    if (sessionRedirecting) throw new LogtoClientError('not_authenticated')
+    try {
+      if (!(await c.isAuthenticated())) throw new LogtoClientError('not_authenticated')
+      return await operation(c)
+    } catch (error) {
+      if (
+        (isLogtoRequestError(error) && error.code === 'oidc.invalid_grant') ||
+        (error instanceof LogtoClientError && error.code === 'not_authenticated')
+      ) {
+        await expireSession(c)
+      }
+      throw error
+    }
+  })
+}
+
+async function navigateWithSession(operation: (c: LogtoClient) => Promise<void>): Promise<void> {
+  await withSession(async (c) => {
+    await operation(c)
+    sessionRedirecting = true
+  })
 }
 
 /** Start sign-in, jumping straight to a social connector when given. */
 export async function login(provider?: SocialLoginTarget): Promise<void> {
-  const c = getClient()
-  if (!c) return
-  await c.signIn({
-    redirectUri: `${window.location.origin}/auth/callback`,
-    ...(provider
-      ? { directSignIn: { method: 'social', target: provider }, prompt: [Prompt.Login, Prompt.Consent] }
-      : {})
-  })
+  await navigateWithSession((c) =>
+    c.signIn({
+      redirectUri: `${window.location.origin}/auth/callback`,
+      ...(provider
+        ? { directSignIn: { method: 'social', target: provider }, prompt: [Prompt.Login, Prompt.Consent] }
+        : {})
+    })
+  )
 }
 
 /** Start sign-in through the deployment's enterprise SSO connector. */
 export async function loginWithSso(connectorId: string): Promise<void> {
-  const c = getClient()
-  if (!c) return
-  await c.signIn({
-    redirectUri: `${window.location.origin}/auth/callback`,
-    directSignIn: { method: 'sso', target: connectorId },
-    prompt: [Prompt.Login, Prompt.Consent]
-  })
+  await navigateWithSession((c) =>
+    c.signIn({
+      redirectUri: `${window.location.origin}/auth/callback`,
+      directSignIn: { method: 'sso', target: connectorId },
+      prompt: [Prompt.Login, Prompt.Consent]
+    })
+  )
 }
 
-/**
- * Start sign-up. Social-only tenants auto-provision on first login, so this is
- * the same flow as `login()` but opens Logto's register screen first.
- */
+// Social-only sign-up uses the same flow with the register screen selected.
 export async function signUp(): Promise<void> {
-  const c = getClient()
-  if (!c) return
-  await c.signIn({
-    redirectUri: `${window.location.origin}/auth/callback`,
-    firstScreen: 'register'
-  })
+  await navigateWithSession((c) =>
+    c.signIn({
+      redirectUri: `${window.location.origin}/auth/callback`,
+      firstScreen: 'register'
+    })
+  )
 }
 
 /** Complete the redirect on the /auth/callback page. */
 export async function completeLogin(): Promise<void> {
-  const c = getClient()
-  if (!c) return
-  await c.handleSignInCallback(window.location.href)
+  await withSession((c) => c.handleSignInCallback(window.location.href))
 }
 
 /** The signed-in user's display profile, derived from the id token claims. */
@@ -161,11 +198,6 @@ export function initialsFrom(name: string, email?: string): string {
 // round-trip. Null when signed out or auth is disabled.
 let cachedUser: AuthUser | null = null
 
-// Multiple API reads can discover the same dead refresh token at once. Share
-// one cleanup so they do not race several redirects to the login page.
-let invalidGrantCleanup: Promise<void> | undefined
-let unauthorizedTokenReset: Promise<void> | undefined
-
 function clearLocalSessionMetadata(): void {
   cachedUser = null
   resetAnalytics()
@@ -184,73 +216,50 @@ function rememberReturnPath(): void {
   writeFlowState('returnTo', pathname + search)
 }
 
-async function clearInvalidGrantSession(c: LogtoClient): Promise<void> {
-  invalidGrantCleanup ??= (async () => {
-    clearLocalSessionMetadata()
-    try {
-      await c.clearAllTokens()
-    } catch {
-      // A storage failure must not strand the console on a session that can no
-      // longer refresh. Starting a new sign-in flow will replace stale state.
-    }
-    rememberReturnPath()
-    window.location.replace('/login')
-  })()
-  await invalidGrantCleanup
+async function expireSession(c: LogtoClient): Promise<void> {
+  if (sessionRedirecting) return
+  clearLocalSessionMetadata()
+  try {
+    await c.clearAllTokens()
+  } catch {
+    // A new sign-in replaces stale storage; failed cleanup must not prevent navigation.
+  }
+  rememberReturnPath()
+  window.location.replace('/login')
+  sessionRedirecting = true
 }
 
-/**
- * Force one refresh after a resource server rejects an access token. The SDK
- * normally refreshes by expiry, but a token can be rejected just before its
- * local expiry check notices it. Concurrent 401s share the same rotation; a
- * caller holding the old token reuses a refresh another request already won.
- */
+// Recheck the persisted cache inside the lock so concurrent 401s reuse a completed refresh.
 export async function refreshTokenAfterUnauthorized(
   rejectedToken?: string,
   audience: 'control-plane' | 'account' = 'control-plane'
 ): Promise<string | undefined> {
-  const c = getClient()
-  if (!c || !(await c.isAuthenticated())) return undefined
   const { apiResource } = readConfig()
   const resource = audience === 'control-plane' ? apiResource : undefined
-  const currentToken = await accessToken(c, resource)
-  if (rejectedToken && currentToken !== rejectedToken) return currentToken
-
-  unauthorizedTokenReset ??= c.clearAccessToken().finally(() => {
-    unauthorizedTokenReset = undefined
+  return withAuthenticatedSession(async (c) => {
+    const currentToken = await accessToken(c, resource)
+    if (rejectedToken && currentToken !== rejectedToken) return currentToken
+    await c.clearAccessToken()
+    return accessToken(c, resource)
   })
-  await unauthorizedTokenReset
-  return accessToken(c, resource)
 }
 
-/** A refreshed token was rejected too: clear the unusable local session and
- * return to sign-in. No-op in the intentionally unauthenticated OSS mode. */
+// A second rejection ends the local session; no-auth installations remain unaffected.
 export async function redirectExpiredSession(): Promise<void> {
-  const c = getClient()
-  if (!c) return
-  await clearInvalidGrantSession(c)
+  await withSession(expireSession)
 }
 
-// Many in-flight calls can hit the same ACCOUNT_GONE reply at once; share one
-// sign-out so they do not race several redirects (mirrors invalidGrantCleanup).
+// Concurrent ACCOUNT_GONE replies share one sign-out.
 let accountGoneSignOut: Promise<void> | undefined
 
-/**
- * Sign out because the CP says this session's account is gone (401
- * `ACCOUNT_GONE` — an admin deleted it). Ends the Logto session too, so the
- * next sign-in is a deliberate one: whatever is signed in now maps to nothing
- * and every further request would fail the same way.
- */
+// ACCOUNT_GONE ends SSO too, so the next sign-in cannot silently reuse a deleted account.
 export async function signOutDeletedAccount(): Promise<void> {
-  const c = getClient()
-  if (!c) return
-  accountGoneSignOut ??= (async () => {
+  accountGoneSignOut ??= navigateWithSession(async (c) => {
     clearLocalSessionMetadata()
     try {
       await c.signOut(`${window.location.origin}/login`)
     } catch {
-      // End-session unreachable — drop the local tokens at least, so the console
-      // cannot keep replaying a session that has no account behind it.
+      // Clear local tokens even if the remote end-session endpoint is unreachable.
       try {
         await c.clearAllTokens()
       } catch {
@@ -258,7 +267,7 @@ export async function signOutDeletedAccount(): Promise<void> {
       }
       window.location.replace('/login')
     }
-  })()
+  })
   await accountGoneSignOut
 }
 
@@ -324,73 +333,46 @@ export async function getIdTokenRaw(): Promise<string | undefined> {
 
 /** Bearer token for CP calls — a JWT for the CP API resource, else the id token. */
 export async function getToken(): Promise<string | undefined> {
-  const c = getClient()
-  if (!c || !(await c.isAuthenticated())) return undefined
   const { apiResource } = readConfig()
-  if (apiResource) {
-    return accessToken(c, apiResource)
-  }
-  return (await c.getIdToken()) ?? undefined
+  return withAuthenticatedSession(async (c) =>
+    apiResource ? accessToken(c, apiResource) : ((await c.getIdToken()) ?? undefined)
+  )
 }
 
-/**
- * Opaque OP token for Logto's browser-facing Account API. This is deliberately
- * different from `getToken()`: the Control Plane receives a resource JWT, while
- * `/api/my-account` requires an access token minted without a resource.
- */
+// The Account API requires an opaque access token minted without a resource.
 export async function getAccountToken(): Promise<string | undefined> {
-  const c = getClient()
-  if (!c || !(await c.isAuthenticated())) return undefined
-  return accessToken(c)
+  return withAuthenticatedSession((c) => accessToken(c))
 }
 
 async function accessToken(c: LogtoClient, resource?: string): Promise<string> {
-  try {
-    return resource ? await c.getAccessToken(resource) : await c.getAccessToken()
-  } catch (error) {
-    // A rejected refresh grant cannot recover through retries. Expire only
-    // the local app session and let Logto's SSO session make re-entry cheap.
-    if (!isLogtoRequestError(error) || error.code !== 'oidc.invalid_grant') throw error
-    await clearInvalidGrantSession(c)
-    throw error
-  }
+  return resource ? c.getAccessToken(resource) : c.getAccessToken()
 }
 
-/**
- * Drop whatever session this browser holds so the next sign-in starts clean.
- * Used by flows that must NOT inherit the last signed-in identity (activation
- * links: the residual session may belong to another — or a since-deleted —
- * account, and redeeming under it activates the wrong user).
- *
- * Returns `'redirecting'` when an active session was ended through Logto (the
- * browser is already leaving for the end-session endpoint and lands on
- * `/login`, so the caller must stop), or `'cleared'` when there was nothing to
- * end and only local token storage was wiped (the caller keeps driving).
- */
+// Clear the previous identity; callers must stop when an active SSO session is 'redirecting'.
 export async function resetSession(): Promise<'redirecting' | 'cleared'> {
-  const c = getClient()
-  if (!c) return 'cleared'
-  clearLocalSessionMetadata()
-  if (await c.isAuthenticated()) {
-    // Ends the Logto SSO session too — a local-only wipe would silently sign the
-    // same account straight back in, which is the bug this exists to avoid.
-    // `/login` (not the caller's path) because Logto only accepts a registered
-    // post-logout redirect URI; the caller stashes where to resume.
-    await c.signOut(`${window.location.origin}/login`)
-    return 'redirecting'
-  }
-  try {
-    await c.clearAllTokens()
-  } catch {
-    /* storage failure — a fresh sign-in replaces the stale state anyway */
-  }
-  return 'cleared'
+  return (
+    (await withSession(async (c) => {
+      clearLocalSessionMetadata()
+      if (await c.isAuthenticated()) {
+        // End SSO too so activation links cannot silently inherit another account's identity.
+        await c.signOut(`${window.location.origin}/login`)
+        sessionRedirecting = true
+        return 'redirecting' as const
+      }
+      try {
+        await c.clearAllTokens()
+      } catch {
+        // A fresh sign-in replaces stale state if storage is unavailable.
+      }
+      return 'cleared' as const
+    })) ?? 'cleared'
+  )
 }
 
 /** Clear the local session and redirect to Logto's end-session endpoint. */
 export async function logout(): Promise<void> {
-  const c = getClient()
-  if (!c) return
-  clearLocalSessionMetadata()
-  await c.signOut(`${window.location.origin}/login`)
+  await navigateWithSession(async (c) => {
+    clearLocalSessionMetadata()
+    await c.signOut(`${window.location.origin}/login`)
+  })
 }

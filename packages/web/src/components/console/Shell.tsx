@@ -18,6 +18,7 @@ import Link from 'next/link'
 import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { ConsoleDataProvider, useConsoleData } from '@/lib/data-context'
 import { OrgProvider, useOrgs, orgColor, subPath } from '@/lib/org-context'
+import { OrgGate } from './OrgGate'
 import { getMyAccess, type OrgDto } from '@/lib/api'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 import { agentLabel, poolLabel } from '@/lib/data'
@@ -169,8 +170,8 @@ export const useCrumbSlot = () => useContext(CrumbContext)
 
 export default function ConsoleShell({ children }: { children: ReactNode }) {
   return (
-    <OrgProvider>
-      <SWRConfig value={CONSOLE_SWR_CONFIG}>
+    <SWRConfig value={CONSOLE_SWR_CONFIG}>
+      <OrgProvider>
         <ConsoleDataProvider>
           <PlaygroundProvider>
             <DecisionsPrototypeProvider>
@@ -183,8 +184,8 @@ export default function ConsoleShell({ children }: { children: ReactNode }) {
             </DecisionsPrototypeProvider>
           </PlaygroundProvider>
         </ConsoleDataProvider>
-      </SWRConfig>
-    </OrgProvider>
+      </OrgProvider>
+    </SWRConfig>
   )
 }
 
@@ -603,7 +604,9 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
           <ThemeToggle theme={themePref} onToggle={toggleTheme} />
           {isAuthConfigured() && <UserMenu display={display} orgPath={orgPath} onSignOut={signOut} />}
         </header>
-        <div className="flex-1 overflow-auto">{children}</div>
+        <div className="flex-1 overflow-auto">
+          <OrgGate>{children}</OrgGate>
+        </div>
         <TooltipLayer />
       </div>
     )
@@ -1018,7 +1021,9 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
               </header>
 
               <div className="content">
-                <SearchOpenContext.Provider value={openSearch}>{children}</SearchOpenContext.Provider>
+                <SearchOpenContext.Provider value={openSearch}>
+                  <OrgGate>{children}</OrgGate>
+                </SearchOpenContext.Provider>
               </div>
             </div>
 

@@ -14,6 +14,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams, usePathname, useRouter } from 'next/navigation'
+import useSWR from 'swr'
 import {
   fetchOrgs,
   setApiOrgId,
@@ -159,6 +160,7 @@ interface OrgContextValue {
 }
 
 const Ctx = createContext<OrgContextValue | null>(null)
+const EMPTY_ORGS: OrgDto[] = []
 
 export function OrgProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
@@ -166,29 +168,21 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   const params = useParams<{ slug?: string }>()
   const slug = typeof params.slug === 'string' ? decodeURIComponent(params.slug) : '-'
 
-  const [orgs, setOrgs] = useState<OrgDto[]>([])
   const [rememberedOrgId, setRememberedOrgId] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
+  const {
+    data,
+    error: cause,
+    isLoading: loading,
+    mutate
+  } = useSWR('console:orgs', fetchOrgs, {
+    onSuccess: (next) => setRememberedOrgId(next[0]?.id ?? null)
+  })
+  const orgs = data ?? EMPTY_ORGS
+  const error = cause == null ? null : cause instanceof Error ? cause.message : String(cause)
   const refreshOrgs = useCallback(async () => {
-    try {
-      const next = await fetchOrgs()
-      setOrgs(next)
-      setRememberedOrgId(next[0]?.id ?? null)
-      setError(null)
-    } catch (cause) {
-      // CP unreachable — leave whatever we had and surface the failure through
-      // the provider instead of issuing requests under a fake org id.
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void refreshOrgs()
-  }, [refreshOrgs])
+    // SWR retains usable rows and exposes refresh failures without rejecting mutation callers.
+    await mutate().catch(() => undefined)
+  }, [mutate])
 
   const hasOrgSegment = pathname.split('/')[1] === slug
   // A proxy rewrite can supply the internal `-` param while the visible URL is
@@ -223,22 +217,23 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!activeOrg || !hasOrgSegment) return
     writeLastSlug(activeOrg.slug)
-    // A different explicit URL is a new choice. Track successful writes
-    // separately from the list so a quick B → A switch cannot mistake stale
-    // ordering for the server's current preference.
+    // Track selection writes separately so a quick B → A switch cannot reuse stale list ordering.
     if (rememberedOrgId !== activeOrg.id) {
       void apiSelectOrg(activeOrg.id)
-        .then(() => {
+        .then(async () => {
           setRememberedOrgId(activeOrg.id)
-          setOrgs((prev) => {
-            if (prev[0]?.id === activeOrg.id) return prev
-            const selected = prev.find((org) => org.id === activeOrg.id)
-            return selected ? [selected, ...prev.filter((org) => org.id !== selected.id)] : prev
-          })
+          await mutate(
+            (prev = EMPTY_ORGS) => {
+              if (prev[0]?.id === activeOrg.id) return prev
+              const selected = prev.find((org) => org.id === activeOrg.id)
+              return selected ? [selected, ...prev.filter((org) => org.id !== selected.id)] : prev
+            },
+            { revalidate: false }
+          )
         })
         .catch(() => {})
     }
-  }, [activeOrg, hasOrgSegment, rememberedOrgId])
+  }, [activeOrg, hasOrgSegment, rememberedOrgId, mutate])
 
   const orgPath = useCallback((path: string) => `/${activeOrg?.slug ?? slug}${path}`, [activeOrg, slug])
 
@@ -258,15 +253,16 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     async (input: { name?: string; slug: string }) => {
       const org = await apiCreateOrg(input)
       // Append optimistically BEFORE switching so activeOrg never goes null.
-      setOrgs((prev) => (prev.some((candidate) => candidate.id === org.id) ? prev : [...prev, org]))
-      // A brand-new org holds nothing at all, so the same rule applies even more plainly —
-      // and it is never the active one, so the no-op arm cannot fire here.
+      await mutate((prev = EMPTY_ORGS) => (prev.some((candidate) => candidate.id === org.id) ? prev : [...prev, org]), {
+        revalidate: false
+      })
+      // A new org has no matching detail IDs, so switchOrgTarget chooses a portable destination.
       writeLastSlug(org.slug)
       router.push(switchOrgTarget(org, undefined, pathname, slug)!)
       await refreshOrgs()
       return org
     },
-    [pathname, slug, refreshOrgs, router]
+    [pathname, slug, refreshOrgs, router, mutate]
   )
 
   const updateOrg = useCallback(
@@ -310,13 +306,11 @@ export function OrgProvider({ children }: { children: ReactNode }) {
       if (!activeOrg) throw new Error('no active organization')
       const departedOrgId = activeOrg.id
       await apiRemoveMember(userId)
-      // Authorization is gone once DELETE commits. Drop the stale local row
-      // before the network refresh so a transient list failure cannot keep
-      // issuing requests under an organization the caller no longer belongs to.
-      setOrgs((prev) => prev.filter((org) => org.id !== departedOrgId))
+      // Drop the departed org immediately so a failed refresh cannot retain its request scope.
+      await mutate((prev = EMPTY_ORGS) => prev.filter((org) => org.id !== departedOrgId), { revalidate: false })
       await refreshOrgs()
     },
-    [activeOrg, refreshOrgs]
+    [activeOrg, refreshOrgs, mutate]
   )
 
   const value = useMemo<OrgContextValue>(

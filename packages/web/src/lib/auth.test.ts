@@ -11,7 +11,8 @@ const logto = vi.hoisted(() => ({
   clientConfig: undefined as unknown
 }))
 
-vi.mock('@logto/browser', () => ({
+vi.mock('@logto/browser', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@logto/browser')>()),
   default: class MockLogtoClient {
     constructor(config: unknown) {
       logto.clientConfig = config
