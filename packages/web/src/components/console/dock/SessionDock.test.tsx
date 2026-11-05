@@ -707,6 +707,17 @@ describe('SessionDock collapsed bands', () => {
     expect(trigger().getAttribute('aria-expanded')).toBe('true')
   })
 
+  it('closes and drops its trigger while something covers the page, as an expanded task does', () => {
+    render(dock())
+    click(trigger())
+    expect(trigger().getAttribute('aria-expanded')).toBe('true')
+    render(dock({ suppressed: true }))
+    expect(container.querySelector('[data-dock-trigger]')).toBeNull()
+    expect(container.querySelector('[data-dock-scrim]')).toBeNull()
+    render(dock())
+    expect(trigger().getAttribute('aria-expanded')).toBe('false')
+  })
+
   // The panel node never moves between containers, which is what a two-container shell got wrong.
   it('renders the hosted body exactly once, open or closed', () => {
     render(dock())

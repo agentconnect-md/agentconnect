@@ -2468,29 +2468,28 @@ export default function SessionDetailView() {
   // The side panel's thread; an expanded task draws over the page instead, leaving the panel on its lists.
   const openThread = taskThread?.scope === id && taskMode === 'panel' ? taskThread.link : null
   const expandedTask = taskThread?.scope === id && taskMode === 'expanded' ? taskThread.link : null
-  const setTaskMode = useCallback(
-    (mode: TaskViewMode) => setTaskThread((current) => (current ? { ...current, mode } : current)),
-    []
-  )
+  // Bumped when a task opens in the side panel, so a collapsed dock comes on screen to show it.
+  const [dockReveal, setDockReveal] = useState(0)
+  const setTaskMode = useCallback((mode: TaskViewMode) => {
+    setTaskThread((current) => (current ? { ...current, mode } : current))
+    // A task shrunk to the side panel lands there, so a collapsed band opens its drawer to show it.
+    if (mode === 'panel') setDockReveal((n) => n + 1)
+  }, [])
   // A coordinator's tasks by the message each was opened for, read only on a coordinator's own page.
   const tasksByMessage = useTasksByMessage(
     filesAgentId ?? '',
     session?.coordinator && filesAgentId === session.agentId ? subsessionsSessionId : null
   )
-  // Bumped when a card opens a thread, so a collapsed dock comes on screen to show it.
-  const [dockReveal, setDockReveal] = useState(0)
   // A card opens its task expanded, the Tasks list in the side panel; a task the coordinator opens on its own keeps the current view.
   const openTaskThread = useCallback(
     (link: TaskLink, mode?: TaskViewMode) => {
-      setTaskThread((current) => ({
-        scope: id,
-        link,
-        mode: mode ?? (current?.scope === id ? current.mode : 'panel')
-      }))
+      const next = mode ?? (taskThread?.scope === id ? taskThread.mode : 'panel')
+      setTaskThread({ scope: id, link, mode: next })
       setDockTab('tasks')
-      setDockReveal((n) => n + 1)
+      // Only a task opened in the side panel brings that panel on screen; an expanded one covers the page.
+      if (next === 'panel' || isMobile) setDockReveal((n) => n + 1)
     },
-    [id]
+    [id, isMobile, taskThread]
   )
   // A task the coordinator opens or hands a message to while the reader watches comes on screen in the dock.
   const followedTaskPosts = useRef<{ scope: string; seen: Set<string> } | null>(null)
@@ -5739,6 +5738,7 @@ export default function SessionDetailView() {
         label={t('panels')}
         onVisibleChange={setDockVisible}
         stripHidden={dockTabKey === 'tasks' && openThread !== null}
+        suppressed={expandedTask !== null}
       >
         {/* Both panels stay mounted; only the active one draws. Sessions owns the verdict that sets its own tab status, and Files owns the tree, the filter and the scroll position a tab switch must not spend. */}
         <DockPanel active={dockTabKey === 'sessions'}>
