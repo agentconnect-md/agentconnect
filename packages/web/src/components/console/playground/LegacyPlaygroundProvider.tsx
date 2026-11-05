@@ -1850,7 +1850,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
 
   const openPlayground = useCallback(
-    (da: Agent, members?: Agent[], options?: { worktree?: boolean; conversationId?: string }): string => {
+    (
+      da: Agent,
+      members?: Agent[],
+      options?: { worktree?: boolean; conversationId?: string; coordinator?: boolean }
+    ): string => {
       const id = newPlaygroundSessionId(da.id)
       if (options?.conversationId) conversationIds.current.set(id, options.conversationId)
       if (da.workspace && isGitWorkspace(da.workspace)) {
@@ -1897,7 +1901,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             cost: '—',
             toolCount: '0',
             statusLabel: 'Live',
-            steps: []
+            steps: [],
+            ...(options?.coordinator ? { coordinator: true as const } : {})
           }
         }
       })

@@ -322,4 +322,71 @@ describe('RemoteWebchatGrantManager', () => {
     await expect(manager.revokeAgent('agent-1', 'agent_detached')).resolves.toBeUndefined()
     expect(client.revokeWebchatMcpGrant).toHaveBeenCalledTimes(1)
   })
+
+  it("gives a task its own descriptor and token under its conversation's authority", async () => {
+    const client = workingClient()
+    let issued = 0
+    client.issueWebchatMcpGrant = vi.fn(async (input: any) => ({
+      ...input,
+      grantId: `3333333${++issued}-3333-4333-8333-333333333333`,
+      grantRevision: 1,
+      token: `secret-token-${issued}-that-is-longer-than-thirty-two-bytes`,
+      expiresAt: '2030-01-01T00:00:00.000Z',
+      mcpUrl: 'https://cp.example/api/v1/mcp'
+    }))
+    const manager = new RemoteWebchatGrantManager(client)
+    const own = await manager.provision(conversationId, entitlement, 0, 'agent-1')
+    const task = await manager.provision(conversationId, entitlement, 0, 'agent-1', 'webchat:a2a:subsession:1:agent-1')
+
+    const [ownIssue, taskIssue] = (client.issueWebchatMcpGrant as any).mock.calls.map(([input]: [any]) => input)
+    expect(taskIssue).toMatchObject({ conversationId, authorityId, authorityGeneration: 2 })
+    expect(taskIssue.descriptorInstanceId).not.toBe(ownIssue.descriptorInstanceId)
+    expect(task.server).not.toEqual(own.server)
+    // Each session keeps its own descriptor on later turns.
+    expect(
+      (await manager.provision(conversationId, entitlement, 0, 'agent-1', 'webchat:a2a:subsession:1:agent-1')).server
+    ).toBe(task.server)
+  })
+
+  it("hands a task the conversation's newest unexpired entitlement, and none once revoked", async () => {
+    const client = workingClient()
+    const manager = new RemoteWebchatGrantManager(client)
+    const now = Date.parse('2029-01-01T00:00:00.000Z')
+    expect(manager.inheritedEntitlement(conversationId, 'agent-1', now)).toBeUndefined()
+
+    manager.noteEntitlement(conversationId, 'agent-1', entitlement)
+    manager.noteEntitlement(conversationId, 'agent-1', { ...entitlement, authorityGeneration: 1 })
+    expect(manager.inheritedEntitlement(conversationId, 'agent-1', now)).toEqual(entitlement)
+    expect(manager.inheritedEntitlement(conversationId, 'agent-2', now)).toBeUndefined()
+    expect(manager.inheritedEntitlement(conversationId, 'agent-1', Date.parse(entitlement.expiresAt))).toBeUndefined()
+    expect(manager.conversationsForAgent('agent-1')).toEqual([conversationId])
+
+    await manager.provision(conversationId, entitlement, 0, 'agent-1', 'webchat:a2a:subsession:1:agent-1')
+    await manager.revokeConversation(conversationId, 'session_expired')
+    expect(client.revokeWebchatMcpGrant).toHaveBeenCalledTimes(1)
+    expect(manager.inheritedEntitlement(conversationId, 'agent-1', now)).toBeUndefined()
+    expect(manager.conversationsForAgent('agent-1')).toEqual([])
+  })
+
+  it("renews a task's grant while its own session is open and drops it once expired", async () => {
+    const client = {
+      ...workingClient(),
+      renewWebchatMcpGrant: vi.fn(async (input: any) => ({ ...input, expiresAt: '2030-01-01T01:00:00.000Z' }))
+    }
+    const manager = new RemoteWebchatGrantManager(client)
+    const taskKey = 'webchat:a2a:subsession:1:agent-1'
+    await manager.provision(conversationId, entitlement, 0, 'agent-1', taskKey)
+    const isOpen = vi.fn(async () => true)
+    const expiry = Date.parse(entitlement.expiresAt)
+
+    await manager.renewExpiring(expiry - 60_000, isOpen)
+    expect(isOpen).toHaveBeenCalledWith(conversationId, 'agent-1', taskKey)
+    expect(client.renewWebchatMcpGrant).toHaveBeenCalledTimes(1)
+
+    await manager.renewExpiring(Date.parse('2030-01-01T02:00:00.000Z'), isOpen)
+    expect(isOpen).toHaveBeenCalledTimes(1)
+    manager.noteEntitlement(conversationId, 'agent-1', entitlement)
+    await manager.provision(conversationId, entitlement, 0, 'agent-1', taskKey)
+    expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(2)
+  })
 })

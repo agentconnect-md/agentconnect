@@ -31,6 +31,7 @@ import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { useOrgs } from '@/lib/org-context'
+import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 
 const HEADER_BTN =
   'flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none'
@@ -64,6 +65,7 @@ export function TaskThreadPanel({
   platform = '',
   task,
   parentSessionId,
+  approvals,
   onBack
 }: {
   /** The coordinator's agent, which runs the task. */
@@ -79,6 +81,8 @@ export function TaskThreadPanel({
   task: TaskLink
   /** The conversation whose task list carries this one's state; null reads the task alone. */
   parentSessionId: string | null
+  /** The coordinator's webchat conversation, whose grant the task writes under: its writes wait for approval here. */
+  approvals?: { orgId: string; conversationId: string }
   onBack: () => void
 }) {
   const t = useTranslations('Common.taskThread')
@@ -86,8 +90,16 @@ export function TaskThreadPanel({
   const td = useTranslations('Sessions.detail.sessionDock')
   const format = useFormatter()
   const { orgPath } = useOrgs()
-  const { getLiveSteps, isPgBusy, markSessionTarget, pgSend, setPgInput, reconcileLiveSteps, pgAnswerElicitation } =
-    usePlayground()
+  const {
+    getLiveSteps,
+    isPgBusy,
+    markSessionTarget,
+    pgSend,
+    pgNotice,
+    setPgInput,
+    reconcileLiveSteps,
+    pgAnswerElicitation
+  } = usePlayground()
   const dock = useDockExpand()
   const id = task.sessionId
   const row = useTaskRow(agentId, id, parentSessionId)
@@ -271,6 +283,20 @@ export function TaskThreadPanel({
           </div>
         ) : null}
       </div>
+      {approvals ? (
+        <WebchatMcpApprovalCard
+          orgId={approvals.orgId}
+          agentId={agentId}
+          conversationId={approvals.conversationId}
+          className="mx-3 mt-2"
+          raisedHere={raisedIn(page?.messages)}
+          // The task asked and ended its turn, so the decision is news only a notice to it delivers.
+          onDecided={(operation, decision, outcome) => {
+            markSessionTarget(id)
+            pgNotice(id, agentId, approvalNotice(operation, decision, outcome))
+          }}
+        />
+      ) : null}
       <ThreadComposer
         sessionId={id}
         canReply={canReply}

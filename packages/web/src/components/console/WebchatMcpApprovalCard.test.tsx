@@ -19,7 +19,7 @@ vi.mock('@/lib/api', () => ({
   listWebchatMcpOperations: (...args: unknown[]) => list(...args)
 }))
 
-const { WebchatMcpApprovalCard, approvalNotice } = await import('./WebchatMcpApprovalCard')
+const { WebchatMcpApprovalCard, approvalNotice, raisedIn } = await import('./WebchatMcpApprovalCard')
 
 type Decided = NonNullable<ComponentProps<typeof WebchatMcpApprovalCard>['onDecided']>
 const decidedSpy = () => vi.fn<Decided>()
@@ -132,5 +132,44 @@ describe('approvalNotice', () => {
     const failed = { ...PENDING, status: 'failed' as const }
     expect(approvalNotice(PENDING, 'deny', failed)).toContain('denied')
     expect(approvalNotice(PENDING, 'approve', failed)).toContain('failed')
+  })
+})
+
+describe('raisedIn', () => {
+  // A coordinator's tasks write under its conversation's grant: each session shows only the writes its own rows name.
+  const pendingRow = {
+    body: JSON.stringify({
+      output: JSON.stringify({ status: 'awaiting_confirmation', operationId: PENDING.operationId })
+    })
+  }
+
+  it('claims an operation whose id a recorded tool result carries', () => {
+    expect(raisedIn([{ text: 'createAgent' }, pendingRow])(PENDING.operationId)).toBe(true)
+    expect(raisedIn([{ text: 'createAgent' }])(PENDING.operationId)).toBe(false)
+    expect(raisedIn(undefined)(PENDING.operationId)).toBe(false)
+  })
+
+  it('leaves another session’s write off this card', async () => {
+    await act(async () => {
+      root.render(
+        <WebchatMcpApprovalCard orgId="org1" agentId="agent1" conversationId="conv1" raisedHere={raisedIn([])} />
+      )
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(host.textContent).not.toContain('Approve')
+
+    await act(async () => {
+      root.render(
+        <WebchatMcpApprovalCard
+          orgId="org1"
+          agentId="agent1"
+          conversationId="conv1"
+          raisedHere={raisedIn([pendingRow])}
+        />
+      )
+    })
+    expect(host.textContent).toContain('Approve')
   })
 })

@@ -199,7 +199,7 @@ import {
 } from '@/lib/session-rail-filter'
 import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
-import { approvalNotice, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
+import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 import { agentStrategyValue, HOST_STRATEGY, strategyModelSource, strategyUsesImage } from '@/lib/execution-strategy'
 import {
@@ -2474,6 +2474,23 @@ export default function SessionDetailView() {
     },
     [id]
   )
+  // A task the coordinator opens or hands a message to while the reader watches comes on screen in the dock.
+  const followedTaskPosts = useRef<{ scope: string; seen: Set<string> } | null>(null)
+  const coordinatorLive = session?.coordinator ? getLiveSteps(session.id) : null
+  useEffect(() => {
+    if (!coordinatorLive || !session) return
+    const posts = coordinatorLive.flatMap((step) => (step.taskLink && step.postId ? [step] : []))
+    // Links already on screen when the page opened were read before; only one arriving now moves the dock.
+    if (followedTaskPosts.current?.scope !== session.id) {
+      followedTaskPosts.current = { scope: session.id, seen: new Set(posts.map((step) => step.postId!)) }
+      return
+    }
+    const { seen } = followedTaskPosts.current
+    const fresh = posts.filter((step) => !seen.has(step.postId!))
+    for (const step of fresh) seen.add(step.postId!)
+    const latest = fresh[fresh.length - 1]?.taskLink
+    if (latest) openTaskThread(latest)
+  }, [coordinatorLive, openTaskThread, session])
   // The Files tab's `refresh-cw` action: re-reads the tree and the git status without remounting the panel, so the reader's filter and expanded folders survive it.
   const [filesRefreshTick, setFilesRefreshTick] = useState(0)
   // Reported by the panel, like the Sessions verdict: only it knows whether its first root listing has answered.
@@ -5239,6 +5256,8 @@ export default function SessionDetailView() {
                           agentId={session.agentId}
                           conversationId={webchatConversationId}
                           className="mb-2"
+                          // A coordinator's tasks write under its conversation's grant, and each answers its own on its thread.
+                          {...(session.coordinator ? { raisedHere: raisedIn(visibleMsgs) } : {})}
                           // A delegated write never executes in the agent's own request: it
                           // answered with an operationId and the turn ended, so the decision is
                           // news the conversation has to deliver, or a flow that writes stops
@@ -5785,6 +5804,9 @@ export default function SessionDetailView() {
               platform={session.platform ?? ''}
               task={openThread}
               parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
+              {...(activeOrg && session.coordinator && webchatConversationId
+                ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }
+                : {})}
               onBack={() => setTaskThread(null)}
             />
           ) : null}
