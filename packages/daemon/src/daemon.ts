@@ -907,6 +907,7 @@ import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@age
 import { z } from 'zod'
 import { OUTSIDE_HUMAN_SCOPE_REMINDER, isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { codeHostReplySnapshot, sessionReplyRoute } from './session/reply-route.js'
+import { sessionIntegrationId } from './session/integration-scope.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
 import { sessionPodOf } from './cp/agent-wake.js'
@@ -25529,26 +25530,15 @@ export class Daemon {
     return candidates.find((integration) => this.transportScopeForIntegration(integration) === transportScope)?.id
   }
 
-  /** Reply-transport resolution for a SESSION row (replyToSession / background-task wake).
-   *  A channel-free session identity (`hook`/`dream`) carries a transportScope derived from
-   *  whichever integration the spawn-side resolution picked — requested-platform preferred,
-   *  else the agent's FIRST integration (`resolveAgentIntegration`) — so no platform filter
-   *  can reconstruct the choice. The persisted scope embeds its integration's real platform
-   *  in the digest prefix, so matching it across ALL of the agent's integrations is
-   *  unambiguous; an unscoped row mirrors the same first-integration fallback. Real
-   *  platforms keep the platform-filtered lookup. */
+  /** Reply-transport resolution for a SESSION row (replyToSession / background-task wake); see `sessionIntegrationId`. */
   private integrationIdForSessionTransport(
     agentId: string,
     platform: string,
     transportScope?: string | null
   ): string | undefined {
-    if (platform !== 'hook' && platform !== 'dream') {
-      return this.integrationIdForTransportScope(agentId, platform, transportScope)
-    }
-    const integrations = this.agents.get(agentId)?.integrations
-    if (!integrations?.length) return undefined
-    if (!transportScope) return integrations[0]?.id
-    return integrations.find((integration) => this.transportScopeForIntegration(integration) === transportScope)?.id
+    return sessionIntegrationId(this.agents.get(agentId)?.integrations, platform, transportScope, (integration) =>
+      this.transportScopeForIntegration(integration)
+    )
   }
 
   /** Resume the exact session linked to a PR; GitHub bodies and logs are fetched by the agent at the edge. */
