@@ -7,7 +7,7 @@ import {
 import { LifecycleCleanupBlockedError } from '../daemon/turn-types.js'
 import { formatErr } from '../daemon/text.js'
 import { isHeadlessCronSession } from '../scheduler/scheduler.js'
-import type { NormalizedMessage } from '../messages/normalized.js'
+import { sessionThreadOf, wakeThreadFields, type NormalizedMessage } from '../messages/normalized.js'
 import type { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
@@ -128,7 +128,8 @@ export class ChatSessionContinuation {
       source: 'user',
       platform: local.platform,
       channel: local.channel,
-      ...(local.thread ? { thread: local.thread } : {}),
+      // An append or coordinator coordinate is no platform thread: the turn posts at the conversation's top level.
+      ...wakeThreadFields(local.thread),
       ...(local.transportScope ? { transportScope: local.transportScope } : {}),
       transcriptTs: shared ? String(shared.at) : monotonicTs(),
       ...(shared ? { transcriptPostId: shared.postId } : {}),
@@ -141,13 +142,7 @@ export class ChatSessionContinuation {
       adoptedSession: true,
       ...(synthetic ? { headless: true, syntheticChannel: true } : task ? { headless: true } : {})
     }
-    const key = sessionKey(
-      message.platform,
-      message.channel,
-      message.thread ?? message.msgId,
-      agentId,
-      message.transportScope
-    )
+    const key = sessionKey(message.platform, message.channel, sessionThreadOf(message), agentId, message.transportScope)
     if (key !== local.key) {
       this.host.warn(`chat continuation: key mismatch for session ${targetSessionId} (${key} != ${local.key})`)
       return { accepted: false, reason: 'not_found' }
@@ -247,7 +242,7 @@ export class ChatSessionContinuation {
         const conn = integration.conn
         const landed = await conn.postAsAuthor(
           local.channel,
-          local.thread || undefined,
+          message.thread,
           { text, attributedText },
           { name: author.name, ...(author.pictureUrl ? { iconUrl: author.pictureUrl } : {}) },
           { agentAuthorId: agentId }
@@ -255,7 +250,7 @@ export class ChatSessionContinuation {
         mirrorId = landed?.ts
         if (landed) authorMirror = { conn, ts: landed.ts, text: landed.text }
       } else {
-        mirrorId = await integration.conn.postMessage(local.channel, attributedText, local.thread || undefined)
+        mirrorId = await integration.conn.postMessage(local.channel, attributedText, message.thread)
       }
       if (!mirrorId) throw new Error('provider returned no message id')
       settleMirror(true)
