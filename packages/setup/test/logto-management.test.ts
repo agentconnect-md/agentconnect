@@ -634,6 +634,13 @@ describe('Logto enterprise SSO connector', () => {
       sso: { id: 'sso-1', exists: true, matches: true },
       signInExperienceMatches: true
     })
+    // Clearing an optional setting must reach Logto, which keeps whatever config it was last sent.
+    const scoped = { ...desired, sso: { ...desired.sso, config: { ...desired.sso.config, scope: 'groups' } } }
+    await logto.client.reconcileSetup(scoped)
+    expect(logto.ssoConnectors[0]?.config).toMatchObject({ scope: 'groups' })
+    await expect(logto.client.inspectSetup(desired)).resolves.toMatchObject({ sso: { matches: false } })
+    await expect(logto.client.reconcileSetup(desired)).resolves.toMatchObject({ sso: { changed: true } })
+    expect(logto.ssoConnectors[0]?.config).not.toHaveProperty('scope')
     // Leaving SSO turns Logto's single sign-on back off.
     await logto.client.reconcileSetup({ ...base, socialProviders: [] })
     expect(logto.signInExperience()).toMatchObject({ singleSignOnEnabled: false })

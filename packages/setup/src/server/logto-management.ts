@@ -194,10 +194,12 @@ function parseSsoConnector(value: unknown): LogtoSsoConnector | null {
   }
 }
 
-/** Every desired setting is already in force; a secret Logto returns masked or omits cannot be compared. */
+/** Logto stores exactly the config it was sent, so a setting left in Logto but cleared here is a mismatch; a masked secret only has to be present. */
 function ssoConfigMatches(current: Record<string, unknown>, desired: Record<string, unknown>): boolean {
-  return Object.entries(desired).every(([key, value]) =>
-    key === 'clientSecret' ? typeof current[key] === 'string' : isDeepStrictEqual(current[key], value)
+  return [...new Set([...Object.keys(current), ...Object.keys(desired)])].every((key) =>
+    key === 'clientSecret'
+      ? (typeof current[key] === 'string') === key in desired
+      : isDeepStrictEqual(current[key], desired[key])
   )
 }
 
