@@ -75,10 +75,7 @@ export interface PlaygroundData {
     conversationId?: string,
     participants?: Array<{ agentId: string; name: string; primary?: boolean }>
   ) => boolean
-  /** Reattach a webchat session after a cold page load: probe the conversation's
-   *  daemons for a turn still streaming (the reload wiped the busy flag, lanes,
-   *  and streamed reply) and, on a hit, recreate the lane, restore the typing
-   *  indicator, and replay the reply from the start. No-op while already busy. */
+  /** Probe the conversation's daemons for a turn this view is not streaming (after a reload, or one started elsewhere) and reattach on a hit; no-op while busy. */
   pgAttach: (id: string, agentId: string, conversationId: string) => void
   /** Mark `id` (a CP session id) as a session-targeted continuation: the socket
    *  mints through the session-target token route and the daemon dispatches

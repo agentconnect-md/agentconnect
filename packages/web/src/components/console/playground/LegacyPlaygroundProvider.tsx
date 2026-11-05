@@ -151,7 +151,12 @@ interface Conn {
   conversationId?: string
   closing?: boolean
   reconnectTimer?: number
+  /** The verified participants an attach probe asks; unset until the socket is verified. */
+  probeIds?: string[]
 }
+
+// A live socket's re-probe runs at most this often, so a stream it cannot attach does not probe on every activity.
+const ATTACH_REPROBE_MS = 1000
 
 /** A reply event as it arrives from the relay (mirrors protocol WebchatEvent). */
 type WebchatEvent =
@@ -1327,6 +1332,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [applyStreamResult]
   )
 
+  const lastProbeAt = useRef<Map<string, number>>(new Map())
+  const probeTimers = useRef<Map<string, number>>(new Map())
+  /** Ask each verified participant's daemon whether a turn this socket has no lane for is streaming; a hit reattaches it. */
+  const probeAttach = useCallback((id: string): void => {
+    const conn = conns.current.get(id)
+    const ws = conn?.ws
+    if (!conn?.probeIds || ws?.readyState !== WebSocket.OPEN) return
+    if (busyRef.current[id] || lanesOfLanes(streamCursors.current, id).length > 0) return
+    lastProbeAt.current.set(id, Date.now())
+    for (const probeId of conn.probeIds) ws.send(JSON.stringify({ type: 'attach', agentId: probeId }))
+  }, [])
+
   /** Open (or reuse) the webchat socket for a session. `conversationId` RESUMES an
    *  existing conversation (adopted webchat sessions); omit it for a fresh playground
    *  turn (the CP mints the id). */
@@ -1584,15 +1601,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                     }
                   })
                 }
+                conn.probeIds = m.participants?.length ? m.participants.map((p) => p.agentId) : [agentId]
                 resendUnackedSteers(ws)
                 if (resumeStream && busyRef.current[id]) {
                   sendResume(ws)
-                } else if (probeOnReady && !busyRef.current[id] && lanesOf(id).length === 0) {
-                  // Cold-load discovery: ask each verified participant's daemon
-                  // whether a turn is still streaming here (see the 'attached'
-                  // handler below). Idle daemons answer with a quiet refusal.
-                  const probeIds = m.participants?.length ? m.participants.map((p) => p.agentId) : [agentId]
-                  for (const probeId of probeIds) ws.send(JSON.stringify({ type: 'attach', agentId: probeId }))
+                } else if (probeOnReady) {
+                  // Cold-load discovery: each verified participant's daemon names a still-streaming turn (see 'attached'); idle ones refuse quietly.
+                  probeAttach(id)
                 }
               } else if (m.type === 'output') {
                 if (m.output) receiveOutput(id, m.output)
@@ -1795,7 +1810,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       conns.current.set(id, conn)
       return conn
     },
-    [activeOrg, deltaBuffer, failStream, receiveDone, receiveOutput, pushStep, setBusy]
+    [activeOrg, deltaBuffer, failStream, receiveDone, receiveOutput, pushStep, setBusy, probeAttach]
   )
 
   const openPlayground = useCallback(
@@ -2531,14 +2546,31 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     conns.current.delete(id)
   }, [])
 
-  /** See PlaygroundData.pgAttach. Doubles as socket warming: a reused live conn
-   *  skips the probe (its ready already passed — nothing was lost in a reload). */
+  /** See PlaygroundData.pgAttach. Doubles as socket warming; a live verified socket is re-probed, throttled, since it never hears a turn started elsewhere. */
   const pgAttach = useCallback(
     (id: string, agentId: string, conversationId: string): void => {
       if (!conversationId || busyRef.current[id]) return
-      connect(id, agentId, conversationId, false, true).ready.catch(() => {})
+      const conn = conns.current.get(id)
+      const live =
+        conn?.probeIds &&
+        conn.ws?.readyState === WebSocket.OPEN &&
+        (!conn.conversationId || conn.conversationId === conversationId)
+      if (!live) {
+        connect(id, agentId, conversationId, false, true).ready.catch(() => {})
+        return
+      }
+      if (probeTimers.current.has(id)) return
+      const wait = (lastProbeAt.current.get(id) ?? 0) + ATTACH_REPROBE_MS - Date.now()
+      if (wait <= 0) return probeAttach(id)
+      probeTimers.current.set(
+        id,
+        window.setTimeout(() => {
+          probeTimers.current.delete(id)
+          probeAttach(id)
+        }, wait)
+      )
     },
-    [connect]
+    [connect, probeAttach]
   )
 
   const value = useMemo<PlaygroundData>(

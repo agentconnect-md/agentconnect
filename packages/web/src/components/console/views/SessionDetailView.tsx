@@ -3681,12 +3681,21 @@ export default function SessionDetailView() {
     void refreshTail()
   }, [visibleTailReady, sessionBusy, sessionActivityVersion, sessionStreamGeneration, refreshTail])
 
-  // A reload mid-turn wipes the provider's live state, so probe the conversation's daemons for a still-streaming turn and reattach.
+  // Probe for a still-streaming turn on load and on each activity, since a turn started in another tab never reaches this socket.
   useEffect(() => {
     if (!sid || !session || session.platform !== 'webchat' || session.subsession) return
     if (!session.channelId || !session.agentId) return
     pgAttach(sid, session.agentId, session.channelId)
-  }, [sid, session?.platform, session?.subsession, session?.channelId, session?.agentId, pgAttach])
+  }, [
+    sid,
+    session?.platform,
+    session?.subsession,
+    session?.channelId,
+    session?.agentId,
+    pgAttach,
+    sessionActivityVersion,
+    sessionStreamGeneration
+  ])
 
   // Everything above only APPENDS rows; nothing ever moved the viewport, so a
   // live session's newest output landed below the fold. Follow it — but only for

@@ -1283,6 +1283,9 @@ describe('a stream whose frames a relay gap dropped', () => {
 // is the anchor that keeps the transcript tail from rendering the answer twice.
 describe('cold-attach retirement anchor', () => {
   class AttachSocket extends StubSocket {
+    // pgAttach re-probes only a socket whose readyState matches WebSocket.OPEN.
+    static OPEN = 1
+    static CLOSED = 3
     static instances: AttachSocket[] = []
     onopen?: () => void
     onmessage?: (e: { data: string }) => void
@@ -1352,6 +1355,64 @@ describe('cold-attach retirement anchor', () => {
     const replayed = getLiveSteps('s-cold').filter((s) => s.turnId === 'turn-cold')
     expect(replayed.length).toBeGreaterThan(0)
     expect(replayed.every((s) => s.postId === 'post-cold')).toBe(true)
+  })
+
+  const attachProbes = (socket: AttachSocket) =>
+    socket.send.mock.calls.map((c) => JSON.parse(String(c[0]))).filter((frame) => frame.type === 'attach')
+
+  it('re-probes a live idle socket and reattaches a turn started elsewhere', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+    try {
+      const socket = await coldAttach()
+      await act(async () => {
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: 'attached',
+            ack: { accepted: false, agentId: 'agent-1', reason: 'stream_not_found' }
+          })
+        })
+      })
+      expect(isPgBusy('s-cold')).toBe(false)
+      now.mockReturnValue(12_000)
+      await act(async () => {
+        pgAttach('s-cold', 'agent-1', 'c-cold')
+      })
+      expect(AttachSocket.instances).toHaveLength(1)
+      expect(attachProbes(socket)).toHaveLength(2)
+      await act(async () => {
+        socket.onmessage?.({
+          data: JSON.stringify({ type: 'attached', ack: { accepted: true, turnId: 'turn-away', agentId: 'agent-1' } })
+        })
+      })
+      expect(isPgBusy('s-cold')).toBe(true)
+      // Busy now: further activity does not probe again.
+      now.mockReturnValue(14_000)
+      await act(async () => {
+        pgAttach('s-cold', 'agent-1', 'c-cold')
+      })
+      expect(attachProbes(socket)).toHaveLength(2)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('throttles re-probes into one trailing probe', async () => {
+    const socket = await coldAttach()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    try {
+      act(() => {
+        pgAttach('s-cold', 'agent-1', 'c-cold')
+        pgAttach('s-cold', 'agent-1', 'c-cold')
+        pgAttach('s-cold', 'agent-1', 'c-cold')
+      })
+      expect(attachProbes(socket)).toHaveLength(1)
+      act(() => {
+        vi.advanceTimersByTime(1_000)
+      })
+      expect(attachProbes(socket)).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('anchors when the reply post arrives after done (the failure path order)', async () => {
