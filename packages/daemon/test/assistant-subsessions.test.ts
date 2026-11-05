@@ -459,7 +459,7 @@ describe('the task model: title, summary and attached threads (auto-session-mode
     const index = s.assistantSubsessions
     await index.open(row(a, '1'))
     await index.open(row(a, '2'))
-    expect(await index.attachThread(thread(a, '1', '100.1'))).toBe(true)
+    expect(await index.attachThread({ ...thread(a, '1', '100.1'), reportThread: '200.1' })).toBe(true)
     expect(await index.attachThread({ ...thread(a, '1', '100.2'), now: 3_000 })).toBe(true)
     // A thread already attached stays with its task, and an unknown task takes none.
     expect(await index.attachThread(thread(a, '2', '100.1'))).toBe(false)
@@ -472,6 +472,7 @@ describe('the task model: title, summary and attached threads (auto-session-mode
       channel: 'C0GENERAL',
       transportScope: 'T0EXAMPLE',
       thread: '100.1',
+      reportThread: '200.1',
       sinceRound: 1,
       attachedAt: 2_000
     })

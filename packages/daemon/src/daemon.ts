@@ -4942,8 +4942,9 @@ export class Daemon {
         this.activeTurnShare.get(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
           ?.channel,
       // A room the session makes for its work: a coordinator's task holds it as one more thread (auto-session-mode.md §6.8).
-      sessionToolRoomFor: (ctx) => (make) =>
-        this.coordinators.makeRoom(
+      sessionToolRoomFor: (ctx) => (make) => {
+        const share = this.activeTurnShare.get(this.sessionKeyOf(ctx))
+        return this.coordinators.makeRoom(
           ctx.agentId,
           this.sessionKeyOf(ctx),
           async () => {
@@ -4953,8 +4954,9 @@ export class Daemon {
               ...(room ? { room: { ...room, platform: ctx.platform, transportScope: ctx.transportScope ?? null } } : {})
             }
           },
-          this.activeTurnShare.get(this.sessionKeyOf(ctx))?.thread
-        ),
+          share?.channel === ctx.channel ? share.thread : undefined
+        )
+      },
       // A platform's own session tools act through ANY platform's connection — including the one
       // the reply-surface registry above omits (Linear, §4.6).
       sessionToolConnectionFor: (integrationId) => this.anyConnForIntegration(integrationId),

@@ -800,7 +800,7 @@ describe('a follow-up owned by its place', () => {
     await settled()
     expect(reports()[0]!.msg).toMatchObject({ thread: '200.1', sessionThread: place.coordinate })
 
-    await d.store.setSessionReplyThread(place.key, '300.1')
+    await d.store.setSessionReplyTarget(place.key, 'C1', '300.1')
     await takeFollowUp(d, { title: 'Watch the docs build' })
     await d.followUpChecks.sweep()
     await vi.waitFor(() => expect(reports()).toHaveLength(2), WAIT)

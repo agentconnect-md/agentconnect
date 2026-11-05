@@ -141,8 +141,13 @@ describe('the session-message record', () => {
         senderSessionId: 'sid-a',
         recipientAgentId: 'agent-b',
         kind: 'call',
-        now: 1
+        now: 1,
+        replyChannel: 'C-CODE',
+        replyThread: null
       })
+      expect(await messages.sent('msg-to-b')).toMatchObject({ replyChannel: 'C-CODE', replyThread: null })
+      await store.setSessionReplyTarget(key('agent-a'), 'C-LATER', '2.2')
+      expect(await store.getSession(key('agent-a'))).toMatchObject({ replyChannel: 'C-LATER', replyThread: '2.2' })
       // Purging A drops what A received, what A sent, and what anyone received from A.
       expect(await store.deleteSession(key('agent-a'))).toBe(true)
       expect(await messages.received('msg-to-a')).toBeUndefined()
