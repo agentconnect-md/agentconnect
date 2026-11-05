@@ -70,6 +70,30 @@ describe('task diff against a fixed baseline', () => {
     expect(await resumed.read()).toBe('')
   })
 
+  it('compares with where the task left its base branch, so the base moving on and a rebase add nothing', async () => {
+    const root = repository()
+    git(root, ['update-ref', 'refs/remotes/origin/main', 'HEAD'])
+    git(root, ['checkout', '-q', '-b', 'task'])
+    // A task with no saved start is adopted: its base branch is the comparison.
+    const diff = await openTaskDiff([{ git: hostGitRunner(root), name: 'project', branch: 'main' }], 'old-task', false)
+    expect(diff.repositories).toEqual([{ title: 'project', base: 'origin/main' }])
+    writeFileSync(join(root, 'app.js'), 'export const count = 2\n')
+    git(root, ['commit', '-qam', 'task change'])
+    git(root, ['checkout', '-q', 'main'])
+    writeFileSync(join(root, 'upstream.js'), 'export const landed = true\n')
+    git(root, ['add', 'upstream.js'])
+    git(root, ['commit', '-qm', 'landed elsewhere'])
+    git(root, ['update-ref', 'refs/remotes/origin/main', 'HEAD'])
+    git(root, ['checkout', '-q', 'task'])
+    git(root, ['rebase', '-q', 'origin/main'])
+    writeFileSync(join(root, 'notes.txt'), 'uncommitted\n')
+    const patch = await diff.read()
+    expect(patch).toContain('+export const count = 2')
+    expect(patch).toContain('+uncommitted')
+    expect(patch).not.toContain('landed')
+    expect(git(root, ['for-each-ref', 'refs/agentconnect'])).toBe('')
+  })
+
   it('does not adopt existing work or a task without a saved baseline', async () => {
     const root = repository()
     const sources = [{ git: hostGitRunner(root), name: 'project' }]

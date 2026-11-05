@@ -13,7 +13,7 @@ import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { slackThreadUrl } from '../src/platforms/slack/permalink.js'
 import { gitFor } from '../src/workspace/git-injection.js'
 import { LocalGitRunner } from '../src/workspace/git-runner.js'
-import { openTaskDiff } from '../src/workspace/task-diff.js'
+import { openTaskDiff, TaskDiffUnavailable } from '../src/workspace/task-diff.js'
 import { planCanvasMarkdown } from '../src/slack/render.js'
 import { SLACK_CODE_CHANNEL_CONTEXT, SLACK_CONVERSATION_CONTEXT } from '../src/platforms/slack/standing-context.js'
 import {
@@ -365,28 +365,36 @@ describe('Slack native surfaces', () => {
     } as SlackTurn
     const context = await startSlackCodeDiff(turn, state, {
       authorize,
-      open: async () => ({ read: async () => content }),
+      open: async () => ({
+        repositories: [
+          { title: 'the working directory', base: 'origin/main' },
+          { title: 'example-org/example-repo', base: 'origin/main' }
+        ],
+        read: async () => content
+      }),
       active: () => true,
       mask: (text) => text,
       notice: async () => {},
       debug: () => {}
     })
     try {
-      expect(context).toContain('platform maintains')
+      expect(context).toContain(
+        'Code diff of the working directory (against origin/main) and example-org/example-repo (against origin/main)'
+      )
       await state.codeDiff!.settle()
       expect(authorize).toHaveBeenCalledTimes(2)
       expect(f.api.setView).toHaveBeenCalledExactlyOnceWith({
         channel_id: 'C1',
         type: 'diff',
         content: 'diff --git a/a b/a\n',
-        base_branch: 'Task start',
+        base_branch: 'origin/main',
         head_branch: 'Current workspace'
       })
       f.api.listViews.mockResolvedValue({ views: [{ view_id: 'code' }] })
       content = ''
       await startSlackCodeDiff(turn, state, {
         authorize,
-        open: async () => ({ read: async () => content }),
+        open: async () => ({ repositories: [{ title: 'repo' }], read: async () => content }),
         active: () => true,
         mask: (text) => text,
         notice: async () => {},
@@ -396,6 +404,51 @@ describe('Slack native surfaces', () => {
       expect(f.api.removeView).toHaveBeenCalledExactlyOnceWith({ channel_id: 'C1', view_id: 'code' })
     } finally {
       state.codeDiff?.stop()
+      await f.conn.stop()
+    }
+  })
+
+  it('reports a failure that persists across turns once, and again after the diff has published', async () => {
+    const f = await fixture()
+    const turn = {
+      conn: f.conn,
+      plan: { channel: 'C1', sessionThread: 'C1', statusThread: 'C1', isDm: false }
+    } as SlackTurn
+    let last: string | undefined
+    const notice = vi.fn(async (_text: string) => {})
+    const tooLarge = new TaskDiffUnavailable('The task diff is too large to display completely in Slack.')
+    let read = async (): Promise<string> => {
+      throw tooLarge
+    }
+    const turnOnce = async (): Promise<void> => {
+      const state: SlackTurnState = {}
+      await startSlackCodeDiff(turn, state, {
+        authorize: async () => {},
+        open: async () => ({ repositories: [{ title: 'repo' }], read: () => read() }),
+        active: () => true,
+        mask: (text) => text,
+        notice,
+        lastNotice: { get: () => last, set: (text) => void (last = text) },
+        debug: () => {}
+      })
+      await state.codeDiff?.settle()
+      state.codeDiff?.stop()
+    }
+    try {
+      await turnOnce()
+      await turnOnce()
+      expect(notice).toHaveBeenCalledExactlyOnceWith(
+        'Code diff is not updating. The task diff is too large to display completely in Slack.'
+      )
+      read = async () => 'diff --git a/a b/a\n'
+      await turnOnce()
+      expect(f.api.setView).toHaveBeenCalledOnce()
+      read = async () => {
+        throw tooLarge
+      }
+      await turnOnce()
+      expect(notice).toHaveBeenCalledTimes(2)
+    } finally {
       await f.conn.stop()
     }
   })

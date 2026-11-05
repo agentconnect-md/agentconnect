@@ -189,13 +189,21 @@ unchanged.
 ### Automatic task diffs
 
 The daemon maintains the Code view for a task with isolated, assigned Git repositories.
-Before its first runtime prompt it pins each clean repository's HEAD under a session-scoped
-Git ref. Later turns and daemon restarts reuse that ref. Commits made during the task remain
-in the diff, alongside staged, unstaged and untracked files; ignored files are excluded.
-Reads use the session's execution-plane Git runner and never change its working tree or index.
-Other directories and shared checkouts are not scanned. An existing task without a saved
-baseline is not adopted automatically, and a dirty initial checkout is refused. These
-ineligible sessions retain their existing output path without a recurring error message.
+Each repository's session checkout is cut from `origin/<branch>`, and every read compares the
+working tree with the merge base of that ref and HEAD (`git diff --merge-base`), the comparison
+a pull request makes. Commits made during the task remain in the diff, alongside staged,
+unstaged and untracked files; ignored files are excluded. Rebasing onto or merging the base
+branch adds nothing that landed there, and a task that takes a Code channel long after it
+opened brings no older start with it. The view's base label names the branch.
+
+A repository with no `origin/<branch>` ref falls back to a session-scoped Git ref pinned at its
+clean HEAD before the session's first runtime prompt; later turns and daemon restarts reuse it.
+Such a repository is not adopted without a saved baseline, and a dirty initial checkout is
+refused; it is left out of the diff, and a session left with no repository retains its existing
+output path without a recurring error message. Reads use the session's execution-plane Git
+runner and never change its working tree or index. Other directories, shared checkouts and
+repositories the agent clones itself are not scanned. The turn's context names the
+repositories the diff covers and the base of each.
 
 One serialized publisher samples the workspace every five seconds while the turn runs and
 flushes once at settlement. Unchanged content is deduplicated, secrets are masked, and oversized
@@ -206,7 +214,9 @@ releases its connection; an HTTP request already accepted by Slack cannot be rec
 Only the current owned Code channel is eligible. The registered session's live-turn and
 conversation-write authorization is checked before opening the workspace and before every
 publication. A refusal or synchronization failure stops updates for the turn and produces a
-visible reason. Moving output into the platform does not authorize a previously refused send.
+visible reason; the same reason in later turns is not repeated until the diff publishes again
+(the record is in memory, so a daemon restart reports it once more). Moving output into the
+platform does not authorize a previously refused send.
 The runtime is told when the platform owns its diff; it retains the HTML/PR tools and manual
 diff publication for separately authorized work outside automatic synchronization.
 

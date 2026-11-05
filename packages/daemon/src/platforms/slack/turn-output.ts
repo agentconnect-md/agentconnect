@@ -2,7 +2,7 @@
 import type { SlackConnection, SlackPostOptions, SlackStatusOptions, SlackTurnStream } from '../../slack/connection.js'
 import type { SlackAction } from '../../slack/render.js'
 import { startCodeDiff, type CodeDiffHost, type CodeDiffOutput } from './code-diff.js'
-import { TaskDiffUnavailable } from '../../workspace/task-diff.js'
+import { TaskDiffUnavailable, type TaskDiff } from '../../workspace/task-diff.js'
 
 // Slack owns its task diff, native chrome stream and pending footer edits.
 export interface SlackTurnState {
@@ -26,10 +26,12 @@ export async function startSlackCodeDiff(
   state: SlackTurnState,
   host: Pick<CodeDiffHost, 'open' | 'authorize' | 'active' | 'mask' | 'notice' | 'debug'> & {
     keepStart?: () => Promise<void>
+    // The notice this channel last showed for its task; a failure that persists across turns is reported once.
+    lastNotice?: { get(): string | undefined; set(text: string | undefined): void }
   }
 ): Promise<string | undefined> {
   if (!turn.conn || turn.plan.isDm) return undefined
-  // A task may move into a code channel it makes later, so its turn elsewhere keeps its starting point (auto-session-mode.md §6.8).
+  // A task may move into a code channel it makes later, so its turn elsewhere keeps a start for a repository without a base branch (auto-session-mode.md §6.8).
   if (turn.plan.statusThread !== turn.plan.channel) {
     await host.keepStart?.().catch(() => {})
     return undefined
@@ -50,11 +52,19 @@ export async function startSlackCodeDiff(
         .catch(() => {})
     return undefined
   }
+  let source: TaskDiff | undefined
   state.codeDiff = await startCodeDiff({
     ...host,
+    open: async () => (source = await host.open()),
+    notice: async (text) => {
+      if (host.lastNotice?.get() === text) return
+      host.lastNotice?.set(text)
+      await host.notice(text)
+    },
     hasPublished,
     publish: async (content, signal) => {
       try {
+        const bases = new Set(source?.repositories.map((repository) => repository.base ?? 'Task start'))
         if (content)
           await conn.codeChannelApi(
             'setView',
@@ -62,12 +72,13 @@ export async function startSlackCodeDiff(
               channel_id: turn.plan.channel,
               type: 'diff',
               content,
-              base_branch: 'Task start',
+              base_branch: bases.size === 1 ? [...bases][0] : 'Base branches',
               head_branch: 'Current workspace'
             },
             signal
           )
         else await conn.codeChannelApi('removeView', { channel_id: turn.plan.channel, view_id: 'code' }, signal)
+        host.lastNotice?.set(undefined)
       } catch (error) {
         const code =
           error instanceof Error
@@ -81,9 +92,11 @@ export async function startSlackCodeDiff(
       }
     }
   })
-  return state.codeDiff
-    ? 'The platform maintains the Code diff from this task’s assigned repositories, including uncommitted changes and commits. Work in those repositories. Do not call setSlackCodeView(type: diff) for this task or overwrite its Code view. HTML and PR views remain available.'
-    : undefined
+  if (!state.codeDiff || !source) return undefined
+  const repositories = new Intl.ListFormat('en').format(
+    source.repositories.map(({ title, base }) => `${title} (against ${base ?? 'where this task started'})`)
+  )
+  return `The platform maintains the Code diff of ${repositories}, including uncommitted changes and commits. Work there: changes anywhere else, including a repository you clone yourself, do not appear in it. Do not call setSlackCodeView(type: diff) for this task or overwrite its Code view. HTML and PR views remain available.`
 }
 
 /** The core turn, as Slack's applier sees it. `Pending` satisfies it structurally.
