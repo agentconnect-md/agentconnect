@@ -15,9 +15,9 @@
       "dismiss": "关闭"
     },
     "modelProvider": {
-      "label": "凭据",
-      "daemon": "Daemon 本机凭据",
-      "saved": "使用已保存的凭据（Beta）"
+      "label": "模型登录",
+      "daemon": "Daemon 本机登录",
+      "saved": "Provider key（Beta）"
     },
     "chatActions": {
       "label": "聊天中可以做什么",
@@ -2856,8 +2856,8 @@
         "invalidRules": "请检查条件：每个答案只能分配一次，Score 区间不能重叠，且至少保留一条规则。",
         "missingModel": "请为每条规则和兜底配置选择可用的模型。",
         "savedModelUnavailable": "请选择已在 Providers 中配置 key 的模型。",
-        "savedCredentialsLoading": "正在加载已保存的凭据…",
-        "savedCredentialsLoadError": "无法加载已保存的凭据。",
+        "savedCredentialsLoading": "正在加载 provider keys…",
+        "savedCredentialsLoadError": "无法加载 provider keys。",
         "retry": "重试",
         "fallback": "没有规则匹配，或评估不可用时使用。",
         "providerModel": "模型",
