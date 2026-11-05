@@ -22,6 +22,9 @@ const KEYS = [
   // connector targets; unset/`*` ⇒ all). The console is the only side that reads
   // it — see lib/social-login-providers.
   'SOCIAL_PROVIDERS',
+  // The enterprise SSO connector the sign-in page offers, and the name on its button.
+  'SSO_CONNECTOR_ID',
+  'SSO_NAME',
   'CP_URL',
   'RELAY_URL',
   // The deployment's GitLab instance base URL (workspace tile derivation). Served
@@ -81,6 +84,7 @@ interface RuntimeConfigResponse {
       appId: string
       apiResource: string | null
       socialProviders: string[]
+      sso?: null | { connectorId: string; name: string }
     }
     gitlab?: null | { instanceUrl: string }
   }
@@ -140,6 +144,10 @@ async function loadDeploymentEnv(): Promise<DeploymentEnv | null> {
     env.LOGTO_APP_ID = body.config.auth.appId
     if (body.config.auth.apiResource) env.LOGTO_API_RESOURCE = body.config.auth.apiResource
     env.SOCIAL_PROVIDERS = body.config.auth.socialProviders.join(',')
+    if (body.config.auth.sso) {
+      env.SSO_CONNECTOR_ID = body.config.auth.sso.connectorId
+      env.SSO_NAME = body.config.auth.sso.name
+    }
   }
   if (body.config.gitlab?.instanceUrl) env.GITLAB_URL = body.config.gitlab.instanceUrl
   return { config: env, topology }
@@ -162,7 +170,14 @@ export const resolvePublicEnv = cache(async (): Promise<Record<string, string>> 
       persisted = await currentDeploymentEnv()
     } catch {}
     if (persisted?.config) {
-      for (const key of ['LOGTO_ENDPOINT', 'LOGTO_APP_ID', 'LOGTO_API_RESOURCE', 'SOCIAL_PROVIDERS']) {
+      for (const key of [
+        'LOGTO_ENDPOINT',
+        'LOGTO_APP_ID',
+        'LOGTO_API_RESOURCE',
+        'SOCIAL_PROVIDERS',
+        'SSO_CONNECTOR_ID',
+        'SSO_NAME'
+      ]) {
         delete env[key]
       }
       Object.assign(env, persisted.config)

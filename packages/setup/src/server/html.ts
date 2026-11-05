@@ -1,5 +1,28 @@
 import { LOGTO_LOGIN_APPS } from '../logto-connectors.js'
 
+// The enterprise SSO form, rendered in first-run setup and in the settings page under its own id prefix.
+const ssoForm = (prefix: string) => String.raw`
+          <label class="field">Protocol<select id="${prefix}-protocol"><option value="oidc">OIDC</option><option value="saml">SAML</option></select></label>
+          <label class="field">Name on the sign-in button<input id="${prefix}-name" value="SSO" autocomplete="off"></label>
+          <div class="row"><button id="${prefix}-create">Create SSO connector</button></div>
+          <div id="${prefix}-details" hidden>
+            <p>Register these with the identity provider:</p><ul id="${prefix}-urls" class="uris"></ul>
+            <div id="${prefix}-oidc">
+              <label class="field">Issuer URL<input id="${prefix}-issuer" type="url" autocomplete="off"></label>
+              <label class="field">Client ID<input id="${prefix}-client-id" autocomplete="off"></label>
+              <label class="field">Client secret<input id="${prefix}-client-secret" type="password" autocomplete="new-password" placeholder="Required when the issuer or client ID changes"></label>
+              <label class="field">Additional scopes<input id="${prefix}-scope" autocomplete="off" placeholder="openid profile email are always requested"></label>
+              <label><input id="${prefix}-trust-email" type="checkbox" checked> Trust email addresses when the identity provider does not say whether they are verified</label>
+            </div>
+            <div id="${prefix}-saml" hidden>
+              <label class="field">IdP metadata URL<input id="${prefix}-metadata-url" type="url" autocomplete="off"></label>
+              <label class="field">Or IdP metadata XML<textarea id="${prefix}-metadata" rows="4"></textarea></label>
+              <label class="field">Email attribute<input id="${prefix}-email-attribute" autocomplete="off" placeholder="email"></label>
+            </div>
+            <label class="field">Email domains, comma-separated<input id="${prefix}-domains" autocomplete="off" placeholder="example.com"></label>
+            <div class="row"><button id="${prefix}-submit">Save SSO and configure Logto</button></div>
+          </div>`
+
 // One small, dependency-free deployment administration page.
 export const SETUP_HTML = String.raw`<!doctype html>
 <html lang="en">
@@ -100,7 +123,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
         <h3>Choose a sign-in provider</h3>
         <p class="muted">Logto Management API access is ready. Configure one provider to enable sign-in.</p>
         <label class="field">Sign-in provider
-          <select id="bootstrap-provider"><option value="google">Google (works on localhost)</option><option value="github">GitHub integration App</option><option id="bootstrap-slack-option" value="slack">Slack integration App</option></select>
+          <select id="bootstrap-provider"><option value="google">Google (works on localhost)</option><option value="github">GitHub integration App</option><option id="bootstrap-slack-option" value="slack">Slack integration App</option><option value="sso">Enterprise SSO (OIDC or SAML)</option></select>
         </label>
         <div id="bootstrap-google" class="panel">
           <h3>Google OAuth client</h3>
@@ -130,6 +153,11 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <label class="field">Temporary App configuration token<input id="bootstrap-slack-token" type="password" autocomplete="new-password"></label>
           <button id="bootstrap-slack-submit">Create Slack App and configure Logto</button>
         </div>
+        <div id="bootstrap-sso" class="panel" hidden>
+          <h3>Enterprise SSO</h3>
+          <p class="muted">Sign in through the organization's identity provider. Logto creates the connector first, so its URLs can be registered with the identity provider.</p>
+          ${ssoForm('bootstrap-sso')}
+        </div>
         <button id="bootstrap-back">Back to Logto credentials</button>
       </div>
     </section>
@@ -140,6 +168,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
     <nav class="setup-nav" aria-label="Deployment settings">
       <a href="#startup-section">Startup</a>
       <a href="#logto-section">Logto</a>
+      <a href="#sso-section">Enterprise SSO</a>
       <a href="#github-section">GitHub</a>
       <a href="#gitlab-section">GitLab</a>
       <a href="#gitea-section">Gitea</a>
@@ -364,6 +393,15 @@ export const SETUP_HTML = String.raw`<!doctype html>
           </div>
         </div>
         <div class="row"><button id="save-linear">Save Linear application</button><button id="cancel-linear-configuration" hidden>Cancel</button><button id="clear-linear" class="danger" hidden>Clear configuration</button></div>
+      </section>
+
+      <section id="sso-section" class="panel setup-section" aria-labelledby="sso-heading">
+        <div class="provider-head">
+          <div><h3 id="sso-heading">Enterprise SSO</h3><p class="muted">OIDC or SAML identity provider for console sign-in.</p></div>
+          <span id="sso-match" class="badge">Not configured</span>
+        </div>
+        ${ssoForm('sso')}
+        <div class="row"><button id="sso-remove" class="danger" hidden>Remove SSO sign-in</button></div>
       </section>
 
       <section id="google-section" class="panel setup-section" aria-labelledby="google-heading">
@@ -606,6 +644,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       url.searchParams.set('code_challenge', challenge);
       url.searchParams.set('code_challenge_method', 'S256');
       if (config.resource) url.searchParams.set('resource', config.resource);
+      if (config.ssoConnectorId) url.searchParams.set('direct_sign_in', 'sso:' + config.ssoConnectorId);
       location.assign(url);
     }
 
@@ -646,6 +685,100 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('bootstrap-google').hidden = provider !== 'google';
       el('bootstrap-github').hidden = provider !== 'github';
       el('bootstrap-slack').hidden = provider !== 'slack';
+      el('bootstrap-sso').hidden = provider !== 'sso';
+    }
+
+    // The SSO connector each form shows: the saved one in settings, the one just created during first-run setup.
+    const ssoState = {};
+
+    function ssoUrls(connector) {
+      const base = ((bootstrapInfo && bootstrapInfo.logtoEndpoint) || '').replace(/\/+$/, '');
+      const id = encodeURIComponent(connector.connectorId);
+      return connector.protocol === 'oidc'
+        ? ['Redirect URI: ' + base + '/callback/' + id]
+        : ['ACS URL: ' + base + '/api/authn/single-sign-on/saml/' + id, 'SP entity ID: ' + base + '/enterprise-sso/' + id];
+    }
+
+    function renderSso(prefix, connector) {
+      ssoState[prefix] = connector || undefined;
+      if (connector) {
+        el(prefix + '-protocol').value = connector.protocol;
+        el(prefix + '-name').value = connector.name;
+        el(prefix + '-domains').value = (connector.domains || []).join(', ');
+        renderUriList(prefix + '-urls', ssoUrls(connector));
+        const oidc = connector.oidc || {};
+        el(prefix + '-issuer').value = oidc.issuer || '';
+        el(prefix + '-client-id').value = oidc.clientId || '';
+        el(prefix + '-scope').value = oidc.scope || '';
+        el(prefix + '-trust-email').checked = connector.oidc ? oidc.trustUnverifiedEmail : true;
+        const saml = connector.saml || {};
+        el(prefix + '-metadata-url').value = saml.metadataUrl || '';
+        el(prefix + '-metadata').value = saml.metadata || '';
+        el(prefix + '-email-attribute').value = (saml.attributeMapping && saml.attributeMapping.email) || '';
+      }
+      updateSsoProtocol(prefix);
+    }
+
+    function updateSsoProtocol(prefix) {
+      const connector = ssoState[prefix];
+      const protocol = el(prefix + '-protocol').value;
+      const current = Boolean(connector && connector.protocol === protocol);
+      el(prefix + '-oidc').hidden = protocol !== 'oidc';
+      el(prefix + '-saml').hidden = protocol !== 'saml';
+      // Another protocol is another connector, so its details wait until it is created.
+      el(prefix + '-details').hidden = !current;
+      el(prefix + '-create').hidden = current;
+    }
+
+    async function createSso(prefix) {
+      const name = el(prefix + '-name').value;
+      const result = await json(await fetch(api + '/create/sso', {
+        method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+        body: JSON.stringify({ protocol: el(prefix + '-protocol').value, name })
+      }));
+      renderSso(prefix, { connectorId: result.connectorId, protocol: result.protocol, name, domains: [], oidc: null, saml: null });
+      message('SSO connector created. Register its URLs with the identity provider, then enter the provider details.');
+    }
+
+    async function saveSso(prefix) {
+      const protocol = el(prefix + '-protocol').value;
+      const secret = el(prefix + '-client-secret').value;
+      const metadataUrl = el(prefix + '-metadata-url').value.trim();
+      const metadata = el(prefix + '-metadata').value.trim();
+      const emailAttribute = el(prefix + '-email-attribute').value.trim();
+      const connector = {
+        name: el(prefix + '-name').value,
+        domains: el(prefix + '-domains').value.split(',').map((domain) => domain.trim()).filter(Boolean),
+        ...(protocol === 'oidc'
+          ? { oidc: {
+              issuer: el(prefix + '-issuer').value.trim(),
+              clientId: el(prefix + '-client-id').value.trim(),
+              ...(secret ? { clientSecret: secret } : {}),
+              scope: el(prefix + '-scope').value.trim(),
+              trustUnverifiedEmail: el(prefix + '-trust-email').checked
+            } }
+          : { saml: {
+              ...(metadataUrl ? { metadataUrl } : {}),
+              ...(metadata ? { metadata } : {}),
+              ...(emailAttribute ? { attributeMapping: { email: emailAttribute } } : {})
+            } })
+      };
+      await json(await fetch(api + '/configure/sso', {
+        method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+        body: JSON.stringify({ connector })
+      }));
+      el(prefix + '-client-secret').value = '';
+      await reconcileLogto(Boolean(secret));
+      await load();
+    }
+
+    async function removeSso() {
+      await json(await fetch(api + '/configure/sso', {
+        method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+        body: JSON.stringify({ connector: null })
+      }));
+      await reconcileLogto();
+      await load();
     }
 
     function showBootstrapStep(step) {
@@ -728,6 +861,10 @@ export const SETUP_HTML = String.raw`<!doctype html>
       text('logto-management-id', logto && logto.managementAppId);
       text('logto-management-resource', logto && logto.managementResource);
       secretText('logto-management-secret-display', byKey, 'logto.managementAppSecret', Boolean(logto));
+      const sso = logto && logto.ssoConnector;
+      renderSso('sso', sso);
+      el('sso-remove').hidden = !sso;
+      match('sso-match', !sso ? '' : sso.oidc || sso.saml ? 'pass' : 'warn', !sso ? 'Not configured' : sso.oidc || sso.saml ? 'Configured' : 'Needs identity provider');
       text('logto-browser-endpoint', logto && logto.browser && bootstrapInfo.logtoEndpoint);
       text('logto-browser-id', values.auth.mode === 'oidc' ? values.auth.browserClient.appId : null);
       text('logto-browser-resource', logto && logto.browser && logto.browser.apiResource);
@@ -1949,6 +2086,12 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('bootstrap-logto-submit').onclick = () => bootstrapLogto().catch((error) => message(error.message, true));
     el('bootstrap-back').onclick = () => showBootstrapStep('logto');
     el('bootstrap-google-submit').onclick = () => bootstrapGoogle().catch((error) => message(error.message, true));
+    for (const prefix of ['bootstrap-sso', 'sso']) {
+      el(prefix + '-protocol').onchange = () => updateSsoProtocol(prefix);
+      el(prefix + '-create').onclick = () => createSso(prefix).catch((error) => message(error.message, true));
+      el(prefix + '-submit').onclick = () => saveSso(prefix).catch((error) => message(error.message, true));
+    }
+    el('sso-remove').onclick = () => removeSso().catch((error) => message(error.message, true));
     el('bootstrap-github-submit').onclick = () => bootstrapGithub().catch((error) => message(error.message, true));
     el('bootstrap-slack-submit').onclick = () => bootstrapSlack().catch((error) => message(error.message, true));
     el('create-github').onclick = () => startGithub('github').catch((error) => message(error.message, true));

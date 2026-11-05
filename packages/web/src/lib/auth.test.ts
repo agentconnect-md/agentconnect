@@ -91,6 +91,18 @@ describe('console authentication', () => {
     })
   })
 
+  it('goes straight to the enterprise SSO connector', async () => {
+    const { loginWithSso } = await import('./auth')
+
+    await loginWithSso('sso-connector')
+
+    expect(logto.signIn).toHaveBeenCalledWith({
+      redirectUri: 'https://console.example.test/auth/callback',
+      directSignIn: { method: 'sso', target: 'sso-connector' },
+      prompt: ['login', 'consent']
+    })
+  })
+
   it('allows normal SSO when no provider was selected', async () => {
     const { login } = await import('./auth')
 

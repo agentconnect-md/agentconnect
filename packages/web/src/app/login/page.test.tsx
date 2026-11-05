@@ -82,6 +82,34 @@ it('renders the configured sign-in buttons before hydration and keeps the same D
   expect(container.querySelector('button')).toBe(buttons[0])
 })
 
+it('offers only the SSO connector when the deployment has no social provider', async () => {
+  vi.spyOn(publicEnv, 'resolvePublicEnv').mockResolvedValueOnce({
+    SOCIAL_PROVIDERS: '',
+    SSO_CONNECTOR_ID: 'sso-connector',
+    SSO_NAME: 'Example SSO'
+  })
+  vi.stubEnv('NEXT_PUBLIC_SOCIAL_PROVIDERS', undefined)
+  container = document.createElement('div')
+  container.innerHTML = renderToString(await LoginPage())
+  expect([...container.querySelectorAll('button')].map((button) => button.textContent)).toEqual([
+    'Continue with Example SSO'
+  ])
+})
+
+it('puts the SSO connector ahead of the social providers', async () => {
+  vi.spyOn(publicEnv, 'resolvePublicEnv').mockResolvedValueOnce({
+    SOCIAL_PROVIDERS: 'github',
+    SSO_CONNECTOR_ID: 'sso-connector',
+    SSO_NAME: 'Example SSO'
+  })
+  container = document.createElement('div')
+  container.innerHTML = renderToString(await LoginPage())
+  expect([...container.querySelectorAll('button')].map((button) => button.textContent)).toEqual([
+    'Continue with Example SSO',
+    'Continue with GitHub'
+  ])
+})
+
 it('retains the build-time provider fallback when the runtime snapshot has no provider setting', async () => {
   // Next.js inlines direct NEXT_PUBLIC_* reads; the resolver's dynamic env lookup cannot see build-only values.
   vi.spyOn(publicEnv, 'resolvePublicEnv').mockResolvedValueOnce({})

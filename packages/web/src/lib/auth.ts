@@ -99,6 +99,17 @@ export async function login(provider?: SocialLoginTarget): Promise<void> {
   })
 }
 
+/** Start sign-in through the deployment's enterprise SSO connector. */
+export async function loginWithSso(connectorId: string): Promise<void> {
+  const c = getClient()
+  if (!c) return
+  await c.signIn({
+    redirectUri: `${window.location.origin}/auth/callback`,
+    directSignIn: { method: 'sso', target: connectorId },
+    prompt: [Prompt.Login, Prompt.Consent]
+  })
+}
+
 /**
  * Start sign-up. Social-only tenants auto-provision on first login, so this is
  * the same flow as `login()` but opens Logto's register screen first.

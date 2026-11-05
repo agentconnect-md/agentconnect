@@ -23,6 +23,87 @@ export interface GithubDeploymentCredentials {
 
 type CurrentDeploymentConfig = { values: DeploymentConfigValuesV1 }
 
+type LogtoValues = NonNullable<DeploymentConfigValuesV1['logto']>
+type SsoConnectorValues = NonNullable<LogtoValues['ssoConnector']>
+
+/** An SSO connector counts as a sign-in method once it has its identity provider. */
+function ssoReady(logto: LogtoValues): boolean {
+  const sso = logto.ssoConnector
+  return Boolean(sso && (sso.oidc || sso.saml))
+}
+
+/** The connector Logto just minted, before the operator has the IdP details. */
+export function logtoSsoConnectorCreatedPut(
+  current: CurrentDeploymentConfig,
+  created: { connectorId: string; protocol: 'oidc' | 'saml'; name: string }
+): DeploymentConfigPut {
+  const logto = current.values.logto
+  if (!logto?.browser) throw new Error('save Logto browser configuration first')
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      logto: { ...logto, ssoConnector: { ...created, domains: [], oidc: null, saml: null } }
+    },
+    secrets: { 'logto.ssoConnectorClientSecret': null }
+  })
+}
+
+export interface LogtoSsoConnectorSettings {
+  name: string
+  domains: string[]
+  oidc?: { issuer: string; clientId: string; clientSecret?: string; scope: string; trustUnverifiedEmail: boolean }
+  saml?: {
+    metadataUrl?: string
+    metadata?: string
+    attributeMapping?: { id?: string; email?: string; name?: string }
+  }
+}
+
+/** The IdP details for the created connector; null removes SSO sign-in. */
+export function logtoSsoConnectorPut(
+  current: CurrentDeploymentConfig,
+  settings: LogtoSsoConnectorSettings | null
+): DeploymentConfigPut {
+  const logto = current.values.logto
+  if (!logto?.browser) throw new Error('save Logto browser configuration first')
+  if (!settings) {
+    if (logto.browser.socialProviders.length === 0) throw new Error('keep at least one sign-in provider configured')
+    return DeploymentConfigPutSchema.parse({
+      values: { ...current.values, logto: { ...logto, ssoConnector: null } },
+      secrets: { 'logto.ssoConnectorClientSecret': null }
+    })
+  }
+  const existing = logto.ssoConnector
+  if (!existing) throw new Error('create the SSO connector first')
+  const { oidc, saml } = settings
+  if (existing.protocol === 'oidc' ? !oidc || saml : !saml || oidc) {
+    throw new Error(`this connector uses ${existing.protocol.toUpperCase()}; send its settings only`)
+  }
+  let next: SsoConnectorValues
+  if (oidc) {
+    const sameClient = existing.oidc?.issuer === oidc.issuer && existing.oidc.clientId === oidc.clientId
+    if (!oidc.clientSecret && !sameClient) throw new Error('a new OIDC client requires its client secret')
+    const { clientSecret: _secret, ...stored } = oidc
+    next = { ...existing, name: settings.name, domains: settings.domains, oidc: stored, saml: null }
+  } else {
+    next = {
+      ...existing,
+      name: settings.name,
+      domains: settings.domains,
+      oidc: null,
+      saml: {
+        metadataUrl: saml?.metadataUrl ?? null,
+        metadata: saml?.metadata ?? null,
+        attributeMapping: saml?.attributeMapping ?? {}
+      }
+    }
+  }
+  return DeploymentConfigPutSchema.parse({
+    values: { ...current.values, logto: { ...logto, ssoConnector: next } },
+    ...(oidc?.clientSecret ? { secrets: { 'logto.ssoConnectorClientSecret': oidc.clientSecret } } : {})
+  })
+}
+
 export function githubDeploymentPut(
   current: CurrentDeploymentConfig,
   credentials: GithubDeploymentCredentials,
@@ -116,7 +197,7 @@ export function logtoGitlabSignInPut(current: CurrentDeploymentConfig, enabled: 
   const socialProviders = enabled
     ? [...new Set([...logto.browser.socialProviders, 'gitlab'])]
     : logto.browser.socialProviders.filter((target) => target !== 'gitlab')
-  if (!socialProviders.length) throw new Error('keep at least one sign-in provider configured')
+  if (!socialProviders.length && !ssoReady(logto)) throw new Error('keep at least one sign-in provider configured')
   return DeploymentConfigPutSchema.parse({
     values: {
       ...current.values,
@@ -340,7 +421,9 @@ export function logtoLoginAppPut(
   const socialProviders = credentials
     ? [...new Set([...logto.browser.socialProviders, provider])]
     : logto.browser.socialProviders.filter((target) => target !== provider)
-  if (!credentials && socialProviders.length === 0) throw new Error('keep at least one sign-in provider configured')
+  if (!credentials && socialProviders.length === 0 && !ssoReady(logto)) {
+    throw new Error('keep at least one sign-in provider configured')
+  }
   const secret = credentials ? credentials.clientSecret : null
   // Clearing Microsoft sign-in also stops the Teams app it is.
   const teams = provider !== 'azuread' ? undefined : credentials ? teamsTenantId : null

@@ -489,3 +489,187 @@ describe('Logto setup reconciliation', () => {
     expect(connectors).toHaveLength(1)
   })
 })
+
+describe('Logto enterprise SSO connector', () => {
+  function fakeLogto(options: { rejectConfig?: string } = {}) {
+    const ssoConnectors: Record<string, unknown>[] = []
+    let minted = 0
+    const patches: Record<string, unknown>[] = []
+    let application: Record<string, unknown> | undefined
+    let signInExperience: Record<string, unknown> = {
+      signIn: { methods: [] },
+      signUp: { identifiers: [], password: false, verify: false },
+      socialSignInConnectorTargets: [],
+      singleSignOnEnabled: false,
+      signInMode: 'SignInAndRegister'
+    }
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/oidc/token') return response({ access_token: 'management-token', expires_in: 3600 })
+      if (url.pathname === '/api/applications' && init?.method === 'POST') {
+        application = { id: 'browser-app', ...JSON.parse(String(init.body)) }
+        return response(application)
+      }
+      if (url.pathname === '/api/applications') return response(application ? [application] : [])
+      if (url.pathname === '/api/connectors') return response([])
+      if (url.pathname === '/api/sso-connectors' && init?.method === 'POST') {
+        const connector = {
+          id: `sso-${++minted}`,
+          config: {},
+          domains: [],
+          ...JSON.parse(String(init.body))
+        }
+        ssoConnectors.push(connector)
+        return response(connector)
+      }
+      if (url.pathname === '/api/sso-connectors') return response(ssoConnectors)
+      if (url.pathname.startsWith('/api/sso-connectors/')) {
+        const connector = ssoConnectors.find((item) => item.id === url.pathname.split('/').at(-1))
+        if (!connector) return response({ code: 'entity.not_found', message: 'not found' }, 404)
+        if (init?.method === 'DELETE') {
+          ssoConnectors.splice(ssoConnectors.indexOf(connector), 1)
+          return new Response(null, { status: 204 })
+        }
+        if (init?.method === 'PATCH') {
+          if (options.rejectConfig)
+            return response({ code: 'connector.invalid_config', message: options.rejectConfig }, 400)
+          const patch = JSON.parse(String(init.body)) as Record<string, unknown>
+          patches.push(patch)
+          Object.assign(connector, patch)
+        }
+        return response(connector)
+      }
+      if (url.pathname === '/api/sign-in-exp' && init?.method === 'PATCH') {
+        signInExperience = { ...signInExperience, ...JSON.parse(String(init.body)) }
+        return response(signInExperience)
+      }
+      if (url.pathname === '/api/sign-in-exp') return response(signInExperience)
+      if (url.pathname === '/api/roles' && url.search)
+        return response([{ id: 'r', name: 'ADMIN', type: 'User', isDefault: false }])
+      return response({}, 404)
+    }
+    return {
+      client: new LogtoAdminClaimClient(config, fetcher),
+      ssoConnectors,
+      patches,
+      signInExperience: () => signInExperience
+    }
+  }
+
+  const base = {
+    applicationName: 'AgentConnect',
+    redirectUris: ['http://localhost:3000/auth/callback'],
+    postLogoutRedirectUris: ['http://localhost:3000/login'],
+    socialProviders: []
+  }
+
+  it('creates the connector once without IdP settings and finds it again on retry', async () => {
+    const logto = fakeLogto()
+    await expect(
+      logto.client.createSsoConnector({ providerName: 'OIDC', displayName: 'Example SSO' })
+    ).resolves.toEqual({
+      id: 'sso-1',
+      created: true
+    })
+    await expect(
+      logto.client.createSsoConnector({ providerName: 'OIDC', displayName: 'Example SSO' })
+    ).resolves.toEqual({
+      id: 'sso-1',
+      created: false
+    })
+    expect(logto.ssoConnectors).toEqual([
+      {
+        id: 'sso-1',
+        config: {},
+        domains: [],
+        providerName: 'OIDC',
+        connectorName: 'agentconnect-sso',
+        branding: { displayName: 'Example SSO' }
+      }
+    ])
+    // Switching protocol replaces the managed connector rather than keeping two.
+    await expect(
+      logto.client.createSsoConnector({ providerName: 'SAML', displayName: 'Example SSO' })
+    ).resolves.toEqual({
+      id: 'sso-2',
+      created: true
+    })
+    expect(logto.ssoConnectors).toMatchObject([
+      { id: 'sso-2', providerName: 'SAML', connectorName: 'agentconnect-sso' }
+    ])
+  })
+
+  it('applies the IdP settings, turns single sign-on on, and settles', async () => {
+    const logto = fakeLogto()
+    const { id } = await logto.client.createSsoConnector({ providerName: 'OIDC', displayName: 'Example SSO' })
+    const desired = {
+      ...base,
+      sso: {
+        connectorId: id,
+        displayName: 'Example SSO',
+        providerName: 'OIDC' as const,
+        domains: ['example.test'],
+        config: {
+          issuer: 'https://idp.example.test',
+          clientId: 'client',
+          clientSecret: 'secret',
+          trustUnverifiedEmail: true
+        }
+      }
+    }
+
+    await expect(logto.client.reconcileSetup(desired)).resolves.toMatchObject({
+      sso: { id: 'sso-1', changed: true },
+      signInExperienceChanged: true
+    })
+    expect(logto.patches).toEqual([
+      { config: desired.sso.config, domains: ['example.test'], branding: { displayName: 'Example SSO' } }
+    ])
+    expect(logto.signInExperience()).toMatchObject({ singleSignOnEnabled: true, socialSignInConnectorTargets: [] })
+    await expect(logto.client.reconcileSetup(desired)).resolves.toMatchObject({
+      changed: false,
+      sso: { id: 'sso-1', changed: false }
+    })
+    await expect(logto.client.inspectSetup(desired)).resolves.toMatchObject({
+      sso: { id: 'sso-1', exists: true, matches: true },
+      signInExperienceMatches: true
+    })
+    // Clearing an optional setting must reach Logto, which keeps whatever config it was last sent.
+    const scoped = { ...desired, sso: { ...desired.sso, config: { ...desired.sso.config, scope: 'groups' } } }
+    await logto.client.reconcileSetup(scoped)
+    expect(logto.ssoConnectors[0]?.config).toMatchObject({ scope: 'groups' })
+    await expect(logto.client.inspectSetup(desired)).resolves.toMatchObject({ sso: { matches: false } })
+    await expect(logto.client.reconcileSetup(desired)).resolves.toMatchObject({ sso: { changed: true } })
+    expect(logto.ssoConnectors[0]?.config).not.toHaveProperty('scope')
+    // Leaving SSO turns Logto's single sign-on back off.
+    await logto.client.reconcileSetup({ ...base, socialProviders: [] })
+    expect(logto.signInExperience()).toMatchObject({ singleSignOnEnabled: false })
+  })
+
+  it('names a connector deleted in Logto and carries Logto’s reason for a refused setting', async () => {
+    const missing = fakeLogto()
+    const sso = {
+      connectorId: 'sso-gone',
+      displayName: 'Example SSO',
+      providerName: 'SAML' as const,
+      domains: [],
+      config: { metadataUrl: 'https://idp.example.test/metadata' }
+    }
+    await expect(missing.client.reconcileSetup({ ...base, sso })).rejects.toMatchObject({
+      code: 'SSO_CONNECTOR_MISSING'
+    })
+    await expect(missing.client.inspectSetup({ ...base, sso })).resolves.toMatchObject({
+      sso: { id: 'sso-gone', exists: false, matches: false }
+    })
+
+    const refused = fakeLogto({ rejectConfig: 'connector config invalid' })
+    const { id } = await refused.client.createSsoConnector({ providerName: 'SAML', displayName: 'Example SSO' })
+    const error = await refused.client
+      .reconcileSetup({ ...base, sso: { ...sso, connectorId: id } })
+      .catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(LogtoManagementError)
+    expect(error).toMatchObject({ code: 'SSO_CONNECTOR_REJECTED', status: 400 })
+    expect((error as Error).message).toContain('connector config invalid')
+    expect((error as Error).message).toContain('SSRF_ALLOWED_ADDRESSES')
+  })
+})

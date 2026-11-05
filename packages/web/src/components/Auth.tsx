@@ -5,7 +5,8 @@ import { useTranslations } from 'next-intl'
 import LanguageSwitcher from '@/components/LanguageSwitcher'
 import { LogoMark, Wordmark } from '@/components/marks'
 import SocialLoginButtons from '@/components/SocialLoginButtons'
-import { isAuthConfigured, login } from '@/lib/auth'
+import { Icon } from '@/components/ui'
+import { isAuthConfigured, login, loginWithSso } from '@/lib/auth'
 import type { SocialLoginProvider, SocialLoginTarget } from '@/lib/social-login-providers'
 
 function BrandPanel() {
@@ -33,12 +34,20 @@ function BrandPanel() {
   )
 }
 
-export default function Auth({ providers }: { providers: readonly SocialLoginProvider[] }) {
+export default function Auth({
+  providers,
+  sso
+}: {
+  providers: readonly SocialLoginProvider[]
+  /** The deployment's enterprise SSO connector, offered ahead of the social buttons. */
+  sso?: { connectorId: string; name: string }
+}) {
   const router = useRouter()
   const t = useTranslations('Auth.login')
-  // Configured SSO starts sign-in; no-auth deployments enter the app directly.
+  // Configured sign-in starts at Logto; no-auth deployments enter the app directly.
   const authOn = isAuthConfigured()
-  const sso = (provider: SocialLoginTarget) => (authOn ? void login(provider) : router.push('/'))
+  const social = (provider: SocialLoginTarget) => (authOn ? void login(provider) : router.push('/'))
+  const enterprise = (connectorId: string) => (authOn ? void loginWithSso(connectorId) : router.push('/'))
 
   return (
     <div className="authpage">
@@ -49,7 +58,17 @@ export default function Auth({ providers }: { providers: readonly SocialLoginPro
             <h1 className="atitle">{t('title')}</h1>
             <p className="asub">{t('subtitle')}</p>
             <div className="mt-[26px] flex flex-col gap-[10px]">
-              <SocialLoginButtons providers={providers} onContinue={sso} />
+              {sso && (
+                <button type="button" className="sso" onClick={() => enterprise(sso.connectorId)}>
+                  <span className="grid w-[220px] grid-cols-[18px_minmax(0,1fr)] items-center gap-2.5 text-left">
+                    <span className="flex h-[18px] w-[18px] items-center justify-center">
+                      <Icon name="key-round" size={18} />
+                    </span>
+                    <span className="whitespace-nowrap">{t('continueWith', { provider: sso.name })}</span>
+                  </span>
+                </button>
+              )}
+              <SocialLoginButtons providers={providers} onContinue={social} />
             </div>
             <p className="mt-5 text-center font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
               {t('firstTime')}

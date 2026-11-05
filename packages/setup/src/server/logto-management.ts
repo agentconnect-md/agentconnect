@@ -43,6 +43,31 @@ export interface LogtoSetupDesired {
   telegram?: { clientId: string; clientSecret: string }
   discord?: { clientId: string; clientSecret: string }
   azuread?: { clientId: string; clientSecret: string }
+  /** Set once the connector has its IdP details; until then sign-in leaves single sign-on off. */
+  sso?: LogtoSsoDesired
+}
+
+/** The enterprise SSO connector's IdP settings, in Logto's own config shape. */
+export interface LogtoSsoDesired {
+  connectorId: string
+  displayName: string
+  providerName: LogtoSsoProviderName
+  domains: readonly string[]
+  config: Record<string, unknown>
+}
+
+export type LogtoSsoProviderName = 'OIDC' | 'SAML'
+
+/** The one connector Setup manages; a fixed internal name lets a retried create find it again. */
+export const MANAGED_SSO_CONNECTOR_NAME = 'agentconnect-sso'
+
+interface LogtoSsoConnector {
+  id: string
+  providerName: string
+  connectorName: string
+  domains: string[]
+  branding: Record<string, unknown>
+  config: Record<string, unknown>
 }
 
 interface LogtoRole {
@@ -73,6 +98,7 @@ interface LogtoSignInExperience {
   signIn: Record<string, unknown>
   signUp: Record<string, unknown>
   socialSignInConnectorTargets: string[]
+  singleSignOnEnabled: boolean
   signInMode: unknown
 }
 
@@ -112,6 +138,7 @@ export interface LogtoSetupInspection {
     matches: boolean
     diff: LogtoConfigurationDiff[]
   }>
+  sso: { id: string; exists: boolean; matches: boolean; diff: LogtoConfigurationDiff[] } | null
   signInExperienceMatches: boolean
   signInExperienceDiff: LogtoConfigurationDiff[]
 }
@@ -120,6 +147,7 @@ export interface LogtoSetupReconcileResult {
   changed: boolean
   application: { id: string; created: boolean; changed: boolean }
   connectors: Array<{ target: string; id: string; created: boolean; changed: boolean }>
+  sso: { id: string; changed: boolean } | null
   signInExperienceChanged: boolean
   adminRoleCreated: boolean
 }
@@ -140,13 +168,39 @@ export class LogtoManagementError extends Error {
       | 'GITHUB_CONNECTOR_CREDENTIALS_REQUIRED'
       | 'GOOGLE_CONNECTOR_CREDENTIALS_REQUIRED'
       | 'SLACK_CONNECTOR_CREDENTIALS_REQUIRED'
-      | 'SOCIAL_CONNECTOR_UNSUPPORTED',
+      | 'SOCIAL_CONNECTOR_UNSUPPORTED'
+      | 'SSO_CONNECTOR_MISSING'
+      | 'SSO_CONNECTOR_REJECTED',
     message: string,
-    readonly status?: number
+    readonly status?: number,
+    /** Logto's own message for a refused request, when it sent one. */
+    readonly detail?: string
   ) {
     super(message)
     this.name = 'LogtoManagementError'
   }
+}
+
+function parseSsoConnector(value: unknown): LogtoSsoConnector | null {
+  const row = asRecord(value)
+  if (typeof row.id !== 'string' || typeof row.providerName !== 'string') return null
+  return {
+    id: row.id,
+    providerName: row.providerName,
+    connectorName: typeof row.connectorName === 'string' ? row.connectorName : '',
+    domains: stringArray(row.domains),
+    branding: asRecord(row.branding),
+    config: asRecord(row.config)
+  }
+}
+
+/** Logto stores exactly the config it was sent, so a setting left in Logto but cleared here is a mismatch; a masked secret only has to be present. */
+function ssoConfigMatches(current: Record<string, unknown>, desired: Record<string, unknown>): boolean {
+  return [...new Set([...Object.keys(current), ...Object.keys(desired)])].every((key) =>
+    key === 'clientSecret'
+      ? (typeof current[key] === 'string') === key in desired
+      : isDeepStrictEqual(current[key], desired[key])
+  )
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -456,7 +510,10 @@ export class LogtoAdminClaimClient {
       sameStrings(signInExperience.socialSignInConnectorTargets, desired.socialProviders)
     )
     addDiff(signInExperienceDiff, 'Sign-in mode', signInExperience.signInMode ?? null, 'SignInAndRegister')
+    addDiff(signInExperienceDiff, 'Single sign-on', signInExperience.singleSignOnEnabled, desired.sso !== undefined)
+    const sso = desired.sso ? await this.inspectSsoConnector(desired.sso) : null
     return {
+      sso,
       application: {
         id: application?.id ?? null,
         exists: application !== undefined,
@@ -505,7 +562,11 @@ export class LogtoAdminClaimClient {
           diff
         }
       }),
-      signInExperienceMatches: this.signInExperienceMatches(signInExperience, desired.socialProviders),
+      signInExperienceMatches: this.signInExperienceMatches(
+        signInExperience,
+        desired.socialProviders,
+        desired.sso !== undefined
+      ),
       signInExperienceDiff
     }
   }
@@ -516,18 +577,142 @@ export class LogtoAdminClaimClient {
   ): Promise<LogtoSetupReconcileResult> {
     const application = await this.ensureApplication(desired)
     const connectors = await this.ensureConnectors(desired, options.refreshConnectorSecrets ?? false)
-    const signInExperienceChanged = await this.ensureSignInExperience(desired.socialProviders)
+    const sso = desired.sso
+      ? await this.ensureSsoConnector(desired.sso, options.refreshConnectorSecrets ?? false)
+      : null
+    const signInExperienceChanged = await this.ensureSignInExperience(
+      desired.socialProviders,
+      desired.sso !== undefined
+    )
     const adminRoleCreated = (await this.ensureAdminRole()).created
     return {
       changed:
         application.changed ||
         connectors.some((connector) => connector.changed) ||
+        (sso?.changed ?? false) ||
         signInExperienceChanged ||
         adminRoleCreated,
       application,
       connectors,
+      sso,
       signInExperienceChanged,
       adminRoleCreated
+    }
+  }
+
+  /** Create the managed SSO connector without IdP settings, or find the one a retried create left; Logto mints its id. */
+  async createSsoConnector(input: { providerName: LogtoSsoProviderName; displayName: string }): Promise<{
+    id: string
+    created: boolean
+  }> {
+    const existing = (await this.listSsoConnectors()).find(
+      (connector) => connector.connectorName === MANAGED_SSO_CONNECTOR_NAME
+    )
+    if (existing?.providerName === input.providerName) return { id: existing.id, created: false }
+    // A protocol switch replaces the managed connector: its URLs were registered for the old protocol anyway.
+    if (existing) {
+      await this.request(`/api/sso-connectors/${encodeURIComponent(existing.id)}`, { method: 'DELETE' })
+    }
+    const response = await this.ssoRequest('/api/sso-connectors', 'POST', {
+      providerName: input.providerName,
+      connectorName: MANAGED_SSO_CONNECTOR_NAME,
+      branding: { displayName: input.displayName }
+    })
+    const created = parseSsoConnector(await response.json().catch(() => null))
+    if (!created) throw new LogtoManagementError('LOGTO_UNAVAILABLE', 'Logto returned an invalid SSO connector')
+    return { id: created.id, created: true }
+  }
+
+  private async inspectSsoConnector(
+    desired: LogtoSsoDesired
+  ): Promise<{ id: string; exists: boolean; matches: boolean; diff: LogtoConfigurationDiff[] }> {
+    const connector = await this.getSsoConnector(desired.connectorId)
+    if (!connector) {
+      return {
+        id: desired.connectorId,
+        exists: false,
+        matches: false,
+        diff: [{ field: 'SSO connector', current: 'Missing', expected: desired.connectorId }]
+      }
+    }
+    const diff: LogtoConfigurationDiff[] = []
+    addDiff(diff, 'SSO protocol', connector.providerName, desired.providerName)
+    addDiff(diff, 'SSO display name', connector.branding.displayName ?? null, desired.displayName)
+    addDiff(
+      diff,
+      'SSO email domains',
+      connector.domains,
+      desired.domains,
+      sameStrings(connector.domains, desired.domains)
+    )
+    if (!ssoConfigMatches(connector.config, desired.config)) {
+      diff.push({ field: 'SSO identity provider settings', current: 'Different', expected: 'Configured' })
+    }
+    return { id: connector.id, exists: true, matches: diff.length === 0, diff }
+  }
+
+  private async ensureSsoConnector(
+    desired: LogtoSsoDesired,
+    refreshSecret: boolean
+  ): Promise<{ id: string; changed: boolean }> {
+    const connector = await this.getSsoConnector(desired.connectorId)
+    if (!connector) {
+      throw new LogtoManagementError(
+        'SSO_CONNECTOR_MISSING',
+        'the SSO connector no longer exists in Logto; create it again and give the identity provider its new URLs'
+      )
+    }
+    if (connector.providerName !== desired.providerName) {
+      throw new LogtoManagementError(
+        'SSO_CONNECTOR_REJECTED',
+        `the Logto SSO connector uses ${connector.providerName}, not ${desired.providerName}`
+      )
+    }
+    const matches =
+      !refreshSecret &&
+      connector.branding.displayName === desired.displayName &&
+      sameStrings(connector.domains, desired.domains) &&
+      ssoConfigMatches(connector.config, desired.config)
+    if (matches) return { id: connector.id, changed: false }
+    await this.ssoRequest(`/api/sso-connectors/${encodeURIComponent(connector.id)}`, 'PATCH', {
+      config: desired.config,
+      domains: desired.domains,
+      branding: { ...connector.branding, displayName: desired.displayName }
+    })
+    return { id: connector.id, changed: true }
+  }
+
+  private async listSsoConnectors(): Promise<LogtoSsoConnector[]> {
+    const rows = await this.getJson<unknown>('/api/sso-connectors')
+    if (!Array.isArray(rows))
+      throw new LogtoManagementError('LOGTO_UNAVAILABLE', 'Logto returned invalid SSO connectors')
+    return rows.map(parseSsoConnector).filter((connector): connector is LogtoSsoConnector => connector !== null)
+  }
+
+  private async getSsoConnector(id: string): Promise<LogtoSsoConnector | undefined> {
+    try {
+      return parseSsoConnector(await this.getJson(`/api/sso-connectors/${encodeURIComponent(id)}`)) ?? undefined
+    } catch (error) {
+      if (error instanceof LogtoManagementError && error.status === 404) return undefined
+      throw error
+    }
+  }
+
+  /** Logto validates SSO settings against the IdP itself, so its refusal carries the reason the operator needs. */
+  private async ssoRequest(path: string, method: 'POST' | 'PATCH', body: Record<string, unknown>): Promise<Response> {
+    try {
+      return await this.request(path, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      })
+    } catch (error) {
+      if (!(error instanceof LogtoManagementError) || !error.status || error.status >= 500) throw error
+      throw new LogtoManagementError(
+        'SSO_CONNECTOR_REJECTED',
+        `Logto rejected the SSO connector settings${error.detail ? `: ${error.detail.replace(/\.+$/, '')}` : ''}. An identity provider on a private network also needs its address in Logto's SSRF_ALLOWED_ADDRESSES.`,
+        error.status
+      )
     }
   }
 
@@ -787,11 +972,12 @@ export class LogtoAdminClaimClient {
       signIn: asRecord(value.signIn),
       signUp: asRecord(value.signUp),
       socialSignInConnectorTargets: stringArray(value.socialSignInConnectorTargets),
+      singleSignOnEnabled: value.singleSignOnEnabled === true,
       signInMode: value.signInMode
     }
   }
 
-  private signInExperienceMatches(current: LogtoSignInExperience, targets: readonly string[]): boolean {
+  private signInExperienceMatches(current: LogtoSignInExperience, targets: readonly string[], sso: boolean): boolean {
     const methods = current.signIn.methods
     const identifiers = current.signUp.identifiers
     const secondaryIdentifiers = current.signUp.secondaryIdentifiers
@@ -805,13 +991,14 @@ export class LogtoAdminClaimClient {
       (secondaryIdentifiers === undefined ||
         (Array.isArray(secondaryIdentifiers) && secondaryIdentifiers.length === 0)) &&
       current.signInMode === 'SignInAndRegister' &&
-      sameStrings(current.socialSignInConnectorTargets, targets)
+      sameStrings(current.socialSignInConnectorTargets, targets) &&
+      current.singleSignOnEnabled === sso
     )
   }
 
-  private async ensureSignInExperience(targets: readonly string[]): Promise<boolean> {
+  private async ensureSignInExperience(targets: readonly string[], sso: boolean): Promise<boolean> {
     const current = await this.getSignInExperience()
-    if (this.signInExperienceMatches(current, targets)) return false
+    if (this.signInExperienceMatches(current, targets, sso)) return false
     await this.request('/api/sign-in-exp', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
@@ -819,6 +1006,7 @@ export class LogtoAdminClaimClient {
         signIn: { methods: [] },
         signUp: { identifiers: [], password: false, verify: false, secondaryIdentifiers: [] },
         socialSignInConnectorTargets: targets,
+        singleSignOnEnabled: sso,
         signInMode: 'SignInAndRegister'
       })
     })
@@ -869,10 +1057,12 @@ export class LogtoAdminClaimClient {
       )
     }
     if (!response.ok) {
+      const body = asRecord(await response.json().catch(() => null))
       throw new LogtoManagementError(
         'LOGTO_UNAVAILABLE',
         `Logto request failed: HTTP ${response.status}`,
-        response.status
+        response.status,
+        typeof body.message === 'string' ? body.message : undefined
       )
     }
     return response
