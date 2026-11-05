@@ -92,6 +92,8 @@ export function TaskExpandedView({
       </button>
       <div className="task-slide flex min-h-0 min-w-0 flex-1 border-l border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xl)">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {/* The thread stays mounted under an open file, so its scroll and anything typed in it survive the look. */}
+          <div className={file ? 'hidden' : 'flex min-h-0 min-w-0 flex-1 flex-col'}>{thread(branch)}</div>
           {file ? (
             <SessionViewer
               key={`${agentId}:${sessionId ?? 'primary'}:${file.path}`}
@@ -104,9 +106,7 @@ export function TaskExpandedView({
               {...(canWrite ? { onIndexChanged: () => setGitTick((n) => n + 1) } : {})}
               onClose={() => setFile(null)}
             />
-          ) : (
-            thread(branch)
-          )}
+          ) : null}
         </div>
         <div className="flex min-h-0 w-[38%] max-w-[520px] min-w-[300px] flex-none flex-col border-l border-(--border-subtle)">
           <div className="flex h-[43px] flex-none items-stretch gap-4 border-b border-(--border-subtle) px-3">

@@ -503,6 +503,20 @@ function ThreadMessage({
   )
 }
 
+/** A question's typed answer and what was last sent, kept by request so expanding, shrinking or reading a file keeps them. */
+const questionAnswers = new Map<string, { draft: string; sent: string | null }>()
+
+function useQuestionAnswer(
+  requestId: string
+): [{ draft: string; sent: string | null }, (next: { draft: string; sent: string | null }) => void] {
+  const [answer, setAnswer] = useState(() => questionAnswers.get(requestId) ?? { draft: '', sent: null })
+  const update = (next: { draft: string; sent: string | null }) => {
+    questionAnswers.set(requestId, next)
+    setAnswer(next)
+  }
+  return [answer, update]
+}
+
 /** The agent's open question: a plain choice or a line of text answers here; any other form is shown on the task's page. */
 function ThreadQuestion({
   question,
@@ -515,8 +529,9 @@ function ThreadQuestion({
 }) {
   const t = useTranslations('Common.taskThread')
   // What was last sent: the control stays live, so an answer the daemon refuses can be corrected, until it settles the question and the thread drops it.
-  const [sent, setSent] = useState<string | null>(null)
-  const [draft, setDraft] = useState('')
+  const [{ draft, sent }, setAnswer] = useQuestionAnswer(question.requestId)
+  const setDraft = (value: string) => setAnswer({ draft: value, sent })
+  const setSent = (value: string) => setAnswer({ draft, sent: value })
   const invalid = question.text ? typedInvalidReason({ text: question.text }, draft) : undefined
   return (
     <div
