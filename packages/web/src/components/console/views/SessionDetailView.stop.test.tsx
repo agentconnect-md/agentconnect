@@ -10,6 +10,7 @@ import type { Agent, Session } from '@/lib/data'
 const live = vi.hoisted(() => ({
   steps: [] as unknown[],
   busy: true,
+  unstreamed: false,
   hasText: false,
   pgSend: vi.fn(() => true),
   pgCancel: vi.fn()
@@ -129,6 +130,7 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     setPgFiles: () => {},
     getPgWorktree: () => false,
     isPgBusy: () => live.busy,
+    isPgTurnUnstreamed: () => live.unstreamed,
     setPgImage: () => {},
     openPlayground: () => 'pg_new',
     pgSend: live.pgSend,
@@ -180,6 +182,7 @@ beforeEach(() => {
   })) as unknown as typeof window.matchMedia
   live.steps = [{ kind: 'msg', who: '@you', turnId: 'turn-1', text: 'usage report please', time: '11:37:42 AM' }]
   live.busy = true
+  live.unstreamed = false
   live.hasText = false
   live.pgSend.mockClear()
   live.pgCancel.mockClear()
@@ -222,5 +225,15 @@ describe('the composer send button during a running turn', () => {
 
     expect(sendButton().getAttribute('aria-label')).toBe('Send message')
     expect(sendButton().disabled).toBe(true)
+  })
+
+  it('offers Stop for a turn this page sees but cannot stream', async () => {
+    live.busy = false
+    live.unstreamed = true
+    await render()
+
+    expect(sendButton().getAttribute('aria-label')).toBe('Stop response')
+    await act(async () => sendButton().click())
+    expect(live.pgCancel).toHaveBeenCalledWith('session-1', 'agent-1', 'conv-1')
   })
 })

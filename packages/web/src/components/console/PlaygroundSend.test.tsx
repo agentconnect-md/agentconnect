@@ -80,6 +80,7 @@ let pgSetFast: ReturnType<typeof usePlayground>['pgSetFast']
 let markSessionTarget: ReturnType<typeof usePlayground>['markSessionTarget']
 let getBusyLaneAgentIds: ReturnType<typeof usePlayground>['getBusyLaneAgentIds']
 let isPgBusy: ReturnType<typeof usePlayground>['isPgBusy']
+let isPgTurnUnstreamed: ReturnType<typeof usePlayground>['isPgTurnUnstreamed']
 
 function Probe() {
   const pg = usePlayground()
@@ -106,6 +107,7 @@ function Probe() {
   markSessionTarget = pg.markSessionTarget
   getBusyLaneAgentIds = pg.getBusyLaneAgentIds
   isPgBusy = pg.isPgBusy
+  isPgTurnUnstreamed = pg.isPgTurnUnstreamed
   return null
 }
 
@@ -1283,6 +1285,9 @@ describe('a stream whose frames a relay gap dropped', () => {
 // is the anchor that keeps the transcript tail from rendering the answer twice.
 describe('cold-attach retirement anchor', () => {
   class AttachSocket extends StubSocket {
+    // pgAttach re-probes only a socket whose readyState matches WebSocket.OPEN.
+    static OPEN = 1
+    static CLOSED = 3
     static instances: AttachSocket[] = []
     onopen?: () => void
     onmessage?: (e: { data: string }) => void
@@ -1294,7 +1299,7 @@ describe('cold-attach retirement anchor', () => {
     }
   }
 
-  async function coldAttach() {
+  async function coldAttach(participants = [{ agentId: 'agent-1' }]) {
     AttachSocket.instances = []
     Reflect.set(globalThis, 'WebSocket', AttachSocket)
     const api = await import('@/lib/api')
@@ -1307,7 +1312,7 @@ describe('cold-attach retirement anchor', () => {
       socket.readyState = 1
       socket.onopen?.()
       socket.onmessage?.({
-        data: JSON.stringify({ type: 'ready', conversationId: 'c-cold', participants: [{ agentId: 'agent-1' }] })
+        data: JSON.stringify({ type: 'ready', conversationId: 'c-cold', participants })
       })
     })
     return socket
@@ -1352,6 +1357,137 @@ describe('cold-attach retirement anchor', () => {
     const replayed = getLiveSteps('s-cold').filter((s) => s.turnId === 'turn-cold')
     expect(replayed.length).toBeGreaterThan(0)
     expect(replayed.every((s) => s.postId === 'post-cold')).toBe(true)
+  })
+
+  const attachProbes = (socket: AttachSocket) =>
+    socket.send.mock.calls.map((c) => JSON.parse(String(c[0]))).filter((frame) => frame.type === 'attach')
+
+  it('re-probes a live idle socket and reattaches a turn started elsewhere', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+    try {
+      const socket = await coldAttach()
+      await act(async () => {
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: 'attached',
+            ack: { accepted: false, agentId: 'agent-1', reason: 'stream_not_found' }
+          })
+        })
+      })
+      expect(isPgBusy('s-cold')).toBe(false)
+      now.mockReturnValue(12_000)
+      await act(async () => {
+        pgAttach('s-cold', 'agent-1', 'c-cold')
+      })
+      expect(AttachSocket.instances).toHaveLength(1)
+      expect(attachProbes(socket)).toHaveLength(2)
+      await act(async () => {
+        socket.onmessage?.({
+          data: JSON.stringify({ type: 'attached', ack: { accepted: true, turnId: 'turn-away', agentId: 'agent-1' } })
+        })
+      })
+      expect(isPgBusy('s-cold')).toBe(true)
+      // Busy now: further activity does not probe again.
+      now.mockReturnValue(14_000)
+      await act(async () => {
+        pgAttach('s-cold', 'agent-1', 'c-cold')
+      })
+      expect(attachProbes(socket)).toHaveLength(2)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  it('throttles re-probes into one trailing probe', async () => {
+    const socket = await coldAttach()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    try {
+      act(() => {
+        pgAttach('s-cold', 'agent-1', 'c-cold')
+        pgAttach('s-cold', 'agent-1', 'c-cold')
+        pgAttach('s-cold', 'agent-1', 'c-cold')
+      })
+      expect(attachProbes(socket)).toHaveLength(1)
+      act(() => {
+        vi.advanceTimersByTime(1_000)
+      })
+      expect(attachProbes(socket)).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('offers Stop for a turn the daemon cannot replay and keeps asking until it ends', async () => {
+    const socket = await coldAttach()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    try {
+      const gap = {
+        type: 'attached',
+        ack: { accepted: false, turnId: 'turn-long', agentId: 'agent-1', reason: 'stream_gap' }
+      }
+      act(() => socket.onmessage?.({ data: JSON.stringify(gap) }))
+      expect(isPgTurnUnstreamed('s-cold')).toBe(true)
+      expect(isPgBusy('s-cold')).toBe(false)
+      // No activity arrives, yet the turn is asked about again.
+      act(() => {
+        vi.advanceTimersByTime(5_000)
+      })
+      expect(attachProbes(socket)).toHaveLength(2)
+      act(() =>
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: 'attached',
+            ack: { accepted: false, agentId: 'agent-1', reason: 'stream_not_found' }
+          })
+        })
+      )
+      expect(isPgTurnUnstreamed('s-cold')).toBe(false)
+      act(() => {
+        vi.advanceTimersByTime(10_000)
+      })
+      expect(attachProbes(socket)).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps re-probing an unstreamed participant while another one streams', async () => {
+    const socket = await coldAttach([{ agentId: 'agent-1' }, { agentId: 'agent-2' }])
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    try {
+      const verdict = (ack: Record<string, unknown>) =>
+        act(() => socket.onmessage?.({ data: JSON.stringify({ type: 'attached', ack }) }))
+      verdict({ accepted: false, turnId: 'turn-long', agentId: 'agent-1', reason: 'stream_gap' })
+      verdict({ accepted: true, turnId: 'turn-live', agentId: 'agent-2' })
+      expect(isPgBusy('s-cold')).toBe(true)
+      const probesFor = (agentId: string) => attachProbes(socket).filter((frame) => frame.agentId === agentId)
+      const before = probesFor('agent-1').length
+      act(() => {
+        vi.advanceTimersByTime(5_000)
+      })
+      // agent-2's lane must not swallow agent-1's retry.
+      expect(probesFor('agent-1')).toHaveLength(before + 1)
+      expect(probesFor('agent-2')).toHaveLength(1)
+      verdict({ accepted: false, agentId: 'agent-1', reason: 'stream_not_found' })
+      expect(isPgTurnUnstreamed('s-cold')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops an unstreamed turn when the socket closes', async () => {
+    const socket = await coldAttach()
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'attached',
+          ack: { accepted: false, turnId: 'turn-long', agentId: 'agent-1', reason: 'stream_gap' }
+        })
+      })
+    })
+    expect(isPgTurnUnstreamed('s-cold')).toBe(true)
+    await act(async () => socket.onclose?.())
+    expect(isPgTurnUnstreamed('s-cold')).toBe(false)
   })
 
   it('anchors when the reply post arrives after done (the failure path order)', async () => {

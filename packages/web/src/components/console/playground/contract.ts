@@ -23,6 +23,8 @@ export interface PlaygroundData {
   pgSetWorktree: (id: string, worktree: boolean) => void
   /** Is a turn in flight for this session id? Drives its typing indicator + send-disable. */
   isPgBusy: (id: string) => boolean
+  /** A turn runs that this view sees only through the transcript (the daemon cannot replay it), so Stop still applies. */
+  isPgTurnUnstreamed: (id: string) => boolean
   /** Create a new sandbox session and return its id. Does not navigate. `members`
    *  adds more participants — the conversation's roster is fixed at creation
    *  (webchat-multi-agents.md §3.1); the first agent is the primary. `conversationId`
@@ -75,10 +77,7 @@ export interface PlaygroundData {
     conversationId?: string,
     participants?: Array<{ agentId: string; name: string; primary?: boolean }>
   ) => boolean
-  /** Reattach a webchat session after a cold page load: probe the conversation's
-   *  daemons for a turn still streaming (the reload wiped the busy flag, lanes,
-   *  and streamed reply) and, on a hit, recreate the lane, restore the typing
-   *  indicator, and replay the reply from the start. No-op while already busy. */
+  /** Probe the conversation's daemons for a turn this view is not streaming (after a reload, or one started elsewhere) and reattach on a hit; no-op while busy. */
   pgAttach: (id: string, agentId: string, conversationId: string) => void
   /** Mark `id` (a CP session id) as a session-targeted continuation: the socket
    *  mints through the session-target token route and the daemon dispatches

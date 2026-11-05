@@ -26,7 +26,8 @@ const wire = vi.hoisted(() => ({
   taskReads: [] as Array<[string, string]>,
   /** The conversation's task list. */
   subsessions: [] as unknown[],
-  integrations: [] as unknown[]
+  integrations: [] as unknown[],
+  activity: {} as Record<string, number>
 }))
 const spies = vi.hoisted(() => ({
   pgAttach: vi.fn(),
@@ -114,7 +115,7 @@ vi.mock('@/lib/data-context', () => ({
     integrations: wire.integrations,
     orgSetIds: new Set<string>(),
     members: [],
-    sessionActivityVersionById: {},
+    sessionActivityVersionById: wire.activity,
     sessionStreamGeneration: 0,
     revalidateSessionLists: () => {}
   })
@@ -156,6 +157,7 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     setPgFiles: () => {},
     getPgWorktree: () => false,
     isPgBusy: () => wire.busy,
+    isPgTurnUnstreamed: () => false,
     setPgImage: () => {},
     openPlayground: () => 'pg_new',
     pgSend: spies.pgSend,
@@ -326,6 +328,7 @@ beforeEach(() => {
   wire.taskReads = []
   wire.subsessions = []
   wire.integrations = []
+  wire.activity = {}
   daemonFeatures.length = 0
   spies.pgAttach.mockClear()
   spies.pgCancel.mockClear()
@@ -443,6 +446,16 @@ describe.each([
 
     expect(composer()).not.toBeNull()
     expect(button('Stop response')).not.toBeNull()
+    expect(spies.pgAttach).toHaveBeenCalledWith('session-1', 'agent-1', 'conv-1')
+  })
+
+  it('probes the webchat socket again when the session reports activity', async () => {
+    await open(WEBCHAT)
+    spies.pgAttach.mockClear()
+
+    wire.activity = { 'session-1': 1 }
+    await open(WEBCHAT)
+
     expect(spies.pgAttach).toHaveBeenCalledWith('session-1', 'agent-1', 'conv-1')
   })
 
