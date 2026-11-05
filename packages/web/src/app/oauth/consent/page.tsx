@@ -57,7 +57,7 @@ export default function OAuthConsentPage() {
         return
       }
       try {
-        const c = await getOAuthConsentContext(clientId, p.scope)
+        const c = await getOAuthConsentContext(clientId, redirectUri, p.scope)
         setCtx(c)
         setOrgId(c.organizations[0]?.id ?? '')
       } catch (e) {
@@ -84,6 +84,7 @@ export default function OAuthConsentPage() {
   }
 
   const appName = ctx?.clientName || t('application')
+  const destination = params ? redirectDestination(params.redirectUri) : null
   const scopeLabels: Record<string, string> = {
     'mcp:read': t('scopes.read'),
     'mcp:write': t('scopes.write'),
@@ -103,11 +104,28 @@ export default function OAuthConsentPage() {
         ) : (
           <>
             <div className="flex flex-col gap-[6px]">
-              <h1 className="text-[18px] font-semibold leading-tight text-(--text-primary)">
+              <h1 className="text-[18px] font-semibold leading-tight text-(--text-primary) [overflow-wrap:anywhere]">
                 {t('title', { appName })}
               </h1>
-              <p className="text-[13px] leading-normal text-(--text-secondary)">{t('description', { appName })}</p>
+              <p className="text-[13px] leading-normal text-(--text-secondary) [overflow-wrap:anywhere]">
+                {t('description', { appName })}
+              </p>
             </div>
+
+            {destination && (
+              <div className="flex flex-col gap-[6px]">
+                <span className="text-[12px] font-medium uppercase tracking-wide text-(--text-tertiary)">
+                  {t('redirectLabel')}
+                </span>
+                <span
+                  className="mono text-[14px] font-semibold leading-normal text-(--text-primary) [overflow-wrap:anywhere]"
+                  title={params?.redirectUri}
+                >
+                  {destination.local ? t('thisDevice', { host: destination.host }) : destination.host}
+                </span>
+                <p className="text-[12px] leading-normal text-(--text-secondary)">{t('selfReportedName')}</p>
+              </div>
+            )}
 
             <div className="flex flex-col gap-[8px]">
               <span className="text-[12px] font-medium uppercase tracking-wide text-(--text-tertiary)">
@@ -166,4 +184,16 @@ export default function OAuthConsentPage() {
       </div>
     </div>
   )
+}
+
+/** The host the authorization code will be sent to — the one thing on this screen the requesting app cannot choose freely. */
+function redirectDestination(redirectUri: string): { host: string; local: boolean } | null {
+  let url: URL
+  try {
+    url = new URL(redirectUri)
+  } catch {
+    return null
+  }
+  const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]'
+  return { host: url.host, local }
 }

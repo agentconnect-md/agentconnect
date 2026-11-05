@@ -42,6 +42,12 @@ export function oauthConsentRoutes(deps: HttpDeps) {
       const client = await deps.oauth.getActiveClient(clientId)
       if (!client)
         return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'unknown or expired client' })
+      // The page shows this redirect_uri's host as the code's destination, so refuse one the client never registered.
+      const redirectUri = str(q.redirect_uri)
+      if (redirectUri && !redirectUriMatches(client.redirectUris, redirectUri))
+        return reply
+          .code(400)
+          .send({ error: 'Bad Request', statusCode: 400, message: 'invalid client or redirect_uri' })
       const scopes = normalizeScopes(str(q.scope))
       if (!scopes) return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid scope' })
       const orgs = await deps.repos.org.listForUser(req.principal!.userId)

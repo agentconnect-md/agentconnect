@@ -392,6 +392,19 @@ describe('OAuth security rejections', () => {
     expect(res.status).toBe(400) // NOT a 302 to the attacker's URL
   })
 
+  it('the consent screen refuses a redirect_uri the client never registered', async () => {
+    const { base } = await start()
+    const clientId = await registerClient(base)
+    const context = (redirectUri: string) =>
+      req(
+        base,
+        'GET',
+        `/api/v1/oauth/consent/context?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}`
+      )
+    expect((await context('https://evil.example.com/steal')).status).toBe(400)
+    expect((await context(REDIRECT)).status).toBe(200)
+  })
+
   it('fails the token exchange on a wrong PKCE verifier', async () => {
     const { base } = await start()
     const clientId = await registerClient(base)
