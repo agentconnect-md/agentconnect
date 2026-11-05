@@ -137,18 +137,18 @@ function historyLostHead(elided: number): string {
   return elided > 0 ? `(${base}; ${elided} earlier message(s) elided)` : `(${base})`
 }
 
-/** Render replayed entries as the `[sender] text` lines the prompt carries, with each
- * entry's optional quote line ahead of it. */
-export function renderReplayContext(
-  entries: readonly TranscriptEntry[],
-  quoteFor?: (event: TranscriptEntry, replayed: readonly TranscriptEntry[]) => string | undefined,
+/** Render prompt sender labels and optional quotes without changing stored identities. */
+export function renderReplayContext<T extends Pick<TranscriptEntry, 'sender' | 'kind' | 'text' | 'body'>>(
+  entries: readonly T[],
+  quoteFor?: (event: T, replayed: readonly T[]) => string | undefined,
   /** The sender whose rows render as `[you]`, set when the agent's own replies are replayed. */
-  ownSender?: string
+  ownSender?: string,
+  senderLabel?: (sender: string) => string
 ): string {
   return entries
     .flatMap((event) => {
       const quote = quoteFor?.(event, entries)
-      const sender = ownSender !== undefined && event.sender === ownSender ? 'you' : event.sender
+      const sender = event.sender === ownSender ? 'you' : (senderLabel?.(event.sender) ?? event.sender)
       return [...(quote ? [quote] : []), `[${sender}] ${transcriptPromptText(event)}`]
     })
     .join('\n')

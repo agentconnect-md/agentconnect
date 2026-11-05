@@ -482,6 +482,11 @@ a competing delivery path into the same conversation. `listAgents`, when scoped 
 channel, returns each peer's exact `mention` token so the agent never has to guess an
 address from a display name.
 
+Prompt sender labels in conversation history, context updates, and the answerable-message
+list include an agent's exact mention when known in the current delivery conversation.
+The internal agent ID remains alongside it for session addressing; an unknown address is
+never guessed from that ID. This also preserves the slug needed to address a shared bot.
+
 A finalized platform message authored by an AgentConnect agent takes the **same routing
 ladder as any other message**, with the author removed from the candidate set:
 

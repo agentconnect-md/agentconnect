@@ -441,11 +441,12 @@ export function buildSessionMessagesBlock(input: {
     'messageId' | 'kind' | 'sourceAgentId' | 'sourceSessionId' | 'inReplyTo' | 'replyState'
   >[]
   more: number
+  senderLabel?: (sender: string) => string
 }): string {
   const lines = input.messages.map(
     (message) =>
       `- ${message.messageId}: ${message.kind === 'reply' ? 'a reply' : message.kind === 'report' ? 'a report' : 'a message'} ` +
-      `from agent ${message.sourceAgentId}, session ${message.sourceSessionId}` +
+      `from agent ${input.senderLabel?.(message.sourceAgentId) ?? message.sourceAgentId}, session ${message.sourceSessionId}` +
       (message.inReplyTo ? `, to your message ${message.inReplyTo}` : '') +
       (message.replyState === 'open' && message.kind !== 'taskInput' ? ' — waiting on your reply' : '')
   )
