@@ -179,6 +179,17 @@ describe('TaskThreadPanel', () => {
     expect(turn.textContent).toContain('gh pr list')
   })
 
+  it('dates a turn its own rows cannot measure from the message it answers', async () => {
+    wire.extra = [
+      { seq: 4, sender: 'user_dana', ts: '2026-11-03T09:03:00.000Z', kind: 'text', text: 'and the docs?' },
+      { seq: 5, sender: 'agent_1', ts: '2026-11-03T09:04:00.000Z', kind: 'reasoning', text: 'Nothing to add' }
+    ]
+    await render()
+    const folds = [...container.querySelectorAll('[data-turn-fold]')].map((el) => el.textContent)
+    expect(folds.at(-1)).toContain('Worked for 1m 0s')
+    expect(folds.at(-1)).toContain('Thought through 1 step')
+  })
+
   it('sends a reply onto the task’s own session', async () => {
     wire.drafts.ses_task = 'does 1.5 include the orders migration?'
     await render()
