@@ -570,6 +570,41 @@ describe('MCP write tools — bodies and upsert semantics', () => {
     ])
   })
 
+  it('updateAgent merges an env patch over the live variables, since REST replaces env wholesale', async () => {
+    const { ctx, calls } = recordingCtx()
+    ctx.get = async (path) => {
+      calls.push({ method: 'GET', path })
+      return { statusCode: 200, body: JSON.stringify({ id: AGENT_UUID, env: { KEEP: '1', DROP: 'x', SET: 'old' } }) }
+    }
+    const tool = findTool('updateAgent')!
+    const args = tool.schema.parse({ agentId: AGENT_UUID, env: { SET: 'new', DROP: null, ADD: 'a' } })
+    await tool.call(ctx, args)
+    expect(calls).toEqual([
+      { method: 'GET', path: `/orgs/${ORG_ID}/agents/${AGENT_UUID}` },
+      {
+        method: 'PATCH',
+        path: `/orgs/${ORG_ID}/agents/${AGENT_UUID}`,
+        body: { env: { KEEP: '1', SET: 'new', ADD: 'a' } }
+      }
+    ])
+  })
+
+  it('updateAgent writes nothing when the env read fails, and never takes secret values', async () => {
+    const { ctx, calls } = recordingCtx()
+    ctx.get = async () => ({ statusCode: 404, body: '{"message":"not found"}' })
+    const tool = findTool('updateAgent')!
+    const result = await tool.call(ctx, tool.schema.parse({ agentId: AGENT_UUID, env: { A: '1' } }))
+    expect(result.statusCode).toBe(404)
+    expect(calls.some((call) => call.method !== 'GET')).toBe(false)
+    for (const extra of [
+      { secrets: { TOKEN: 'x' } },
+      { liveSecrets: { TOKEN: { value: 'x' } } },
+      { env: { 'BAD-NAME': '1' } }
+    ]) {
+      expect(tool.schema.safeParse({ agentId: AGENT_UUID, ...extra }).success).toBe(false)
+    }
+  })
+
   it('createAgent posts the curated body to the org agents collection', async () => {
     const { calls } = await run('createAgent', { name: 'helper', runtime: 'claude', fastMode: true })
     expect(calls).toEqual([

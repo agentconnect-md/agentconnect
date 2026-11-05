@@ -218,6 +218,21 @@ const AgentSlug = z
 
 const OutputMode = z.enum(['none', 'minimal', 'low', 'medium', 'high'])
 
+/** Mirrors the REST env var name rule (dto) — the route re-validates names, values and the size budget. */
+const EnvVarName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'invalid env var name')
+
+/** The agent's own variables after a per-key patch: a string sets one, `null` removes it, the rest are kept. */
+function mergedEnv(current: unknown, patch: Record<string, string | null>): Record<string, string> {
+  const env: Record<string, string> = {}
+  if (current !== null && typeof current === 'object' && !Array.isArray(current))
+    for (const [key, value] of Object.entries(current)) if (typeof value === 'string') env[key] = value
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete env[key]
+    else env[key] = value
+  }
+  return env
+}
+
 /** What `configureAgent` accepts — the editor intent's caller-supplied half. */
 const ConfigureAgentIntent = z
   .object({ agentId: z.string().uuid(), section: z.enum(AGENT_SETUP_SECTIONS).optional() })
@@ -377,8 +392,7 @@ export const MCP_TOOLS: McpToolDef[] = [
     }
   },
   {
-    // Every field of an agent's configuration — env vars, secrets, memory, sharing, placement —
-    // is edited here, so the model opens the editor instead of growing a write tool per field.
+    // The editor covers what no write tool takes — secret values above all, which are typed only into the dialog.
     name: 'configureAgent',
     description:
       'Open the Console agent editor on one agent, so the user can change its configuration — display name, runtime and model, behavior, placement, environment variables, secrets and sharing. Optionally open it on a section (basics, runtime, access, secrets). Never ask for a secret value in chat; it is typed into the dialog. Opening saves nothing; the user submits the form. For a single field the tool can set on its own, updateAgent is the direct path.',
@@ -950,7 +964,7 @@ export const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'updateAgent',
     description:
-      'Update an agent’s configuration (partial update — only the fields you pass change; pass null to clear a nullable field). The name slug is immutable.',
+      'Update an agent’s configuration (partial update — only the fields you pass change; pass null to clear a nullable field). The name slug is immutable. `env` sets or removes individual plain environment variables and keeps the rest. Secret values are never accepted by any tool: never ask for one in chat — open configureAgent on its secrets section so the user types it into the dialog.',
     write: true,
     schema: z
       .object({
@@ -964,6 +978,12 @@ export const MCP_TOOLS: McpToolDef[] = [
         fastMode: z.boolean().nullable().optional(),
         permissionMode: z.string().min(1).nullable().optional(),
         pause: z.boolean().optional().describe('true pauses the agent; false resumes it'),
+        env: z
+          .record(EnvVarName, z.string().nullable())
+          .optional()
+          .describe(
+            'Plain (non-secret) environment variables for the agent’s runtime, merged key by key: a string sets one, null removes it, omitted keys are kept. Never put a token, password or key here'
+          ),
         decisionIds: AgentDecisionIds.nullable()
           .optional()
           .describe(
@@ -985,7 +1005,14 @@ export const MCP_TOOLS: McpToolDef[] = [
     call: async (ctx, a) => {
       const agentId = canonicalUuid(a.agentId)
       if (!agentId) return invalidAgentId()
-      return ctx.send('PATCH', org(ctx, `/agents/${seg(agentId)}`), bodyOf(a, 'agentId'))
+      const body = bodyOf(a, 'agentId')
+      if (a.env !== undefined) {
+        // REST replaces `env` wholesale, so a one-key patch is merged over the live variables first.
+        const current = await ctx.get(org(ctx, `/agents/${seg(agentId)}`))
+        if (current.statusCode !== 200) return current
+        body.env = mergedEnv(jsonObject(current.body)?.env, a.env as Record<string, string | null>)
+      }
+      return ctx.send('PATCH', org(ctx, `/agents/${seg(agentId)}`), body)
     }
   },
   {
