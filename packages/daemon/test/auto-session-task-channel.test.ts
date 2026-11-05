@@ -550,6 +550,29 @@ describe('a coordinator task that makes its own code channel, through the daemon
     await booted.daemon.stop()
   })
 
+  it('answers a join its task asked for in the channel it holds there, not in its coordinator’s channel (#3612)', async () => {
+    const booted = await boot()
+    const { d } = booted
+    await booted.delegate()
+    // A call from a turn in C2 waited on a join card; the answer came after that turn ended, so its
+    // outcome starts a turn of its own, replying in the thread the asking turn replied in: C2's.
+    await d.deliverJoinOutcome(booted.live.task, {
+      tool: 'getThreadHistory',
+      name: 'design',
+      purpose: 'read',
+      to: 'Ada Example',
+      thread: 'C2',
+      result: { messages: [] }
+    })
+    await vi.waitFor(() => expect(booted.taskTurns).toHaveLength(2), WAIT)
+    await booted.idle()
+    // The task's own session runs it, and its reply reaches the channel it holds.
+    expect(booted.taskTurns[1]!.sessionId).toBe(booted.taskTurns[0]!.sessionId)
+    expect(booted.taskTurns[1]!.text).toContain('ran once the bot joined')
+    expect(booted.taskPosts.at(-1)).toEqual({ channel: 'C2', thread: 'C2', text: 'on it' })
+    await booted.daemon.stop()
+  })
+
   it('holds Slack’s copy that arrives while the channel is still being attached, then hands it to the task', async () => {
     const booted = await boot()
     let created!: () => void

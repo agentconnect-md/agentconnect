@@ -11519,7 +11519,7 @@ export class Daemon {
     const rec = await this.store.getSession(this.sessionKeyOf(ctx))
     if (!rec) return void this.log.debug(`join outcome for ${outcome.tool} dropped: no session row`)
     // The result continues that person's request, so the turn it starts reads and writes as them; a refusal speaks for no one.
-    this.dispatchJoinNotice(
+    await this.dispatchJoinNotice(
       ctx.agentId,
       rec,
       outcome.thread,
@@ -11534,7 +11534,7 @@ export class Daemon {
     if (!rec) return
     const tool = ask.tool ?? 'the call'
     const call = { tool, name: ask.name, purpose: ask.purpose, to: null }
-    this.dispatchJoinNotice(
+    await this.dispatchJoinNotice(
       agentId,
       rec,
       ask.thread,
@@ -11542,31 +11542,55 @@ export class Daemon {
     )
   }
 
+  /** The room `thread` names when this session's task holds it: a room is keyed as one thread, its own channel id (auto-session-mode.md §6.8). */
+  private async heldRoomNamed(
+    agentId: string,
+    rec: SessionRecord,
+    thread: string | undefined
+  ): Promise<string | undefined> {
+    if (thread === undefined || thread === rec.thread || thread === rec.channel) return undefined
+    const room = { platform: rec.platform, channel: thread, thread, transportScope: rec.transportScope ?? null }
+    return (await this.store.assistantSubsessions.taskOfThread(agentId, room)) === rec.key ? thread : undefined
+  }
+
   /** A join notice as a new message in its session, replying in the asking turn's `thread`; `onBehalfOf` is the person the turn it starts speaks for, as a sub-session's opener is. */
-  private dispatchJoinNotice(
+  private async dispatchJoinNotice(
     agentId: string,
     rec: SessionRecord,
     thread: string | undefined,
     text: string,
     onBehalfOf?: ReadAsker
-  ): void {
+  ): Promise<void> {
     const integrationId = this.integrationIdForSessionTransport(agentId, rec.platform, rec.transportScope)
     const traceId = randomUUID()
+    const room = await this.heldRoomNamed(agentId, rec, thread)
     const msg: NormalizedMessage = {
       msgId: `join:${rec.channel}:${traceId}`,
       transcriptTs: monotonicTs(),
       traceId: `join:${traceId}`,
       source: 'agent',
       platform: rec.platform,
-      channel: rec.channel,
-      // Where the asking turn replied is the delivery thread, and the session's own coordinate keys it when that differs.
-      ...wakeThreadFields(rec.thread, thread),
+      ...(room === undefined
+        ? {
+            channel: rec.channel,
+            // Where the asking turn replied is the delivery thread, and the session's own coordinate keys it when that differs.
+            ...wakeThreadFields(rec.thread, thread),
+            isDm: rec.conversationKind === 'dm',
+            ...(rec.conversationKind === 'group_dm' ? { isGroupDm: true } : {})
+          }
+        : {
+            // The asking turn ran in a room the session's task holds: the reply goes there, keyed on the task's
+            // session, as a message the coordinator moves into the room is (auto-session-mode.md §6.8).
+            channel: room,
+            thread: room,
+            ...(rec.channel !== room ? { sessionChannel: rec.channel } : {}),
+            sessionThread: rec.thread,
+            isDm: false
+          }),
       ...(rec.transportScope ? { transportScope: rec.transportScope } : {}),
       sender: { id: 'join-confirmation', isBot: true },
       text,
-      mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
-      isDm: rec.conversationKind === 'dm',
-      ...(rec.conversationKind === 'group_dm' ? { isGroupDm: true } : {})
+      mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : []
     }
     if (onBehalfOf) {
       this.joinWakeOpeners.set(msg.msgId, { people: [onBehalfOf], nobody: false })
