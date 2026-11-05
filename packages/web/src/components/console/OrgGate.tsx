@@ -5,11 +5,12 @@ import { useTranslations } from 'next-intl'
 import { LoadingState } from '@/components/marks'
 import { Button } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
+import { MOCK_MODE } from '@/lib/data'
 
 export function OrgGate({ children }: { children: ReactNode }) {
   const { activeOrg, loading, error, refreshOrgs } = useOrgs()
   const t = useTranslations('Common')
-  if (activeOrg) return children
+  if (MOCK_MODE || activeOrg) return children
   if (error) {
     return (
       <div className="flex min-h-64 flex-col items-center justify-center gap-4 p-6 text-center">

@@ -75,6 +75,7 @@ function createClient(): LogtoClient | undefined {
   const c = new LogtoClient({
     endpoint,
     appId,
+    requestTimeoutMs: 15_000,
     // Request profile claims for identity display and the Account API.
     scopes: [UserScope.Email, UserScope.Profile, UserScope.Identities, UserScope.Roles],
     ...(apiResource ? { resources: [apiResource] } : {})
@@ -162,9 +163,11 @@ export async function signUp(): Promise<void> {
   )
 }
 
-/** Complete the redirect on the /auth/callback page. */
-export async function completeLogin(): Promise<void> {
-  await withSession((c) => c.handleSignInCallback(window.location.href))
+let loginCompletion: Promise<void> | undefined
+
+// Repeated callback effects must share one authorization-code exchange, including across lock holders.
+export function completeLogin(): Promise<void> {
+  return (loginCompletion ??= withSession((c) => c.handleSignInCallback(window.location.href)))
 }
 
 /** The signed-in user's display profile, derived from the id token claims. */

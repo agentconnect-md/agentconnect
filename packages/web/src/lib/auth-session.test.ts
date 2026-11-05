@@ -69,7 +69,10 @@ beforeEach(async () => {
   await storage.setItem('refreshToken', 'refresh-0')
 })
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
 
 it.each(['idToken', 'refreshToken'] as const)('redirects when shared storage loses its %s', async (key) => {
   const { getToken } = await import('./auth')
@@ -111,6 +114,31 @@ it('keeps token reads optional when authentication is not configured', async () 
   await expect(getToken()).resolves.toBeUndefined()
   expect(replace).not.toHaveBeenCalled()
   expect(grants).toEqual([])
+})
+
+it('releases the session lock after a timed-out token request so another caller can recover', async () => {
+  const timeout = AbortSignal.timeout.bind(AbortSignal)
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => timeout(20))
+  const respond = vi.mocked(fetch).getMockImplementation()!
+  let stalled = false
+  vi.mocked(fetch).mockImplementation(async (input, init) => {
+    if (String(input).endsWith('/token') && !stalled) {
+      stalled = true
+      return new Promise((_, reject) => {
+        const signal = init!.signal!
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    }
+    return respond(input, init)
+  })
+  const { getToken } = await import('./auth')
+
+  const results = await Promise.allSettled([getToken(), getToken()])
+
+  expect(results[0]).toMatchObject({ status: 'rejected', reason: { name: 'TimeoutError' } })
+  expect(results[1]).toEqual({ status: 'fulfilled', value: 'access-1' })
+  expect(AbortSignal.timeout).toHaveBeenCalledWith(15_000)
+  expect(replace).not.toHaveBeenCalled()
 })
 
 it('shares refreshed tokens across independent page instances, including concurrent 401 recovery', async () => {
