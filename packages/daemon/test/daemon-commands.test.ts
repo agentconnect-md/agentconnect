@@ -1659,6 +1659,32 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     await daemon.stop()
   })
 
+  it('backfill relabels a notice Slack posts under the agent’s own bot user to agentId (#3613)', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon) as any
+    conn.botUserId = 'UBOT'
+    conn.botId = 'BBOT'
+    conn.getThreadReplies = vi.fn(async () => [
+      { sender: 'U2', ts: '100.1', text: 'human asks', isBot: false, attachments: [] },
+      // Slack's own notice that the daemon added Code channel views: the bot's user, but no bot_id, so no bot post
+      { sender: 'UBOT', ts: '100.2', text: 'added view: Tasks, Code', isBot: false, attachments: [] }
+    ])
+
+    const out = await (daemon as any).fetchThreadHistory('bot-a', 'C1', 'T1')
+    // The agent's own, so a turn's final refresh never reads it as the conversation changing.
+    expect(out).toEqual([
+      { sender: 'U2', ts: '100.1', text: 'human asks' },
+      { sender: 'bot-a', ts: '100.2', text: 'added view: Tasks, Code' }
+    ])
+
+    await daemon.stop()
+  })
+
   it('keeps a shared Slack image on its transcript row so the console can replay it', async () => {
     // Slack hands out an auth-gated file URL, so the row can only carry the image if the
     // daemon fetches it — without that the console showed just `[attached: …]`. The fetch
