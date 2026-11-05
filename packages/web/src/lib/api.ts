@@ -6601,10 +6601,11 @@ export async function fetchGithubInstallUrl(): Promise<string | null> {
   }
 }
 
-/** The built-in App's slug; null when GitHub is not configured. */
-export async function fetchBuiltinGithubAppSlug(orgId?: string): Promise<string | null> {
+/** The built-in App's slug and GitHub-side id; null when GitHub is not configured. */
+export async function fetchBuiltinGithubApp(orgId?: string): Promise<{ slug: string; appId: number | null } | null> {
   try {
-    return (await apiGet<{ slug: string | null }>(`${orgBase(orgId)}/github/app`)).slug
+    const { slug, appId } = await apiGet<{ slug: string | null; appId: number | null }>(`${orgBase(orgId)}/github/app`)
+    return slug ? { slug, appId } : null
   } catch (e) {
     if (e instanceof ApiError && (e.status === 404 || e.status === 403)) return null
     throw e
@@ -6677,6 +6678,11 @@ export async function startGithubAppManifest(
   agentId: string
 ): Promise<{ action: string; manifest: Record<string, unknown> }> {
   return apiPost(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app/manifest`, {})
+}
+
+/** A GitHub App's own logo (GitHub's generated pattern when none is uploaded), sized for a `px` box at 2x. */
+export function githubAppLogoUrl(appId: number, px: number): string {
+  return `https://avatars.githubusercontent.com/in/${appId}?s=${px * 2}`
 }
 
 /** An organization GitHub App's public page on GitHub. */

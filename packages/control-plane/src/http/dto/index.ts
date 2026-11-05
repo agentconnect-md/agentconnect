@@ -2401,6 +2401,7 @@ export const GithubAppDto = z.object({
   enabled: z.boolean(),
   /** github.com/apps/<slug>; null when the feature is disabled. */
   slug: z.string().nullable(),
+  appId: z.number().nullable(), // GitHub-side App id; its logo is avatars.githubusercontent.com/in/<appId>
   /** `https://github.com/apps/<slug>/installations/new?state=…` — one-shot, org-bound. */
   installUrl: z.string().nullable()
 })

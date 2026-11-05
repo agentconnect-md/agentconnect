@@ -45,7 +45,7 @@ vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ getAgent: () => 
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchGithubInstallations: vi.fn(async () => ({ enabled: true, installations: [installation({})] })),
-  fetchBuiltinGithubAppSlug: vi.fn(async () => 'example-connect'),
+  fetchBuiltinGithubApp: vi.fn(async () => ({ slug: 'example-connect', appId: 1000 })),
   fetchGithubApps: vi.fn(async () => [orgApp('app-a', 'review-example'), orgApp('app-b', 'triage-example')]),
   syncGithubInstallations: mocks.syncGithubInstallations,
   syncGithubApp: mocks.syncGithubApp
@@ -97,5 +97,19 @@ describe('GithubCard', () => {
     expect(mocks.syncGithubApp.mock.calls.map(([id]) => id)).toEqual(['app-a', 'app-b'])
     expect(scope.textContent).toContain('second-org')
     expect(scope.textContent).toContain('the private key of this App is missing')
+  })
+
+  it("leads the built-in and each free App with the App's own logo, falling back to the GitHub mark when it fails", async () => {
+    const scope = await render()
+    const logos = [...scope.querySelectorAll<HTMLImageElement>('[data-github-app-logo] img')]
+    expect(logos.map((img) => img.getAttribute('src'))).toEqual([
+      'https://avatars.githubusercontent.com/in/1000?s=56',
+      'https://avatars.githubusercontent.com/in/2001?s=56',
+      'https://avatars.githubusercontent.com/in/2001?s=56'
+    ])
+
+    await act(async () => logos[0]!.dispatchEvent(new Event('error')))
+    expect(scope.querySelector('[data-builtin-app] [data-github-app-logo]')).toBeNull()
+    expect(scope.querySelectorAll('[data-github-app-logo] img')).toHaveLength(2)
   })
 })

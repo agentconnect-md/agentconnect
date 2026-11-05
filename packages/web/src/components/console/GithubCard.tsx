@@ -6,7 +6,7 @@ import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import {
-  fetchBuiltinGithubAppSlug,
+  fetchBuiltinGithubApp,
   fetchGithubApps,
   fetchGithubInstallUrl,
   fetchGithubInstallations,
@@ -42,8 +42,8 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
   // Each App is a first-level row over its installations; the built-in App opens expanded.
   const [builtInOpen, setBuiltInOpen] = useState(true)
   const { mutate } = useSWRConfig()
-  const { data: builtInSlug } = useSWR(activeOrg ? consoleKeys.githubBuiltinApp(activeOrg.id) : null, ([, id]) =>
-    fetchBuiltinGithubAppSlug(id ?? undefined)
+  const { data: builtIn } = useSWR(activeOrg ? consoleKeys.githubBuiltinApp(activeOrg.id) : null, ([, id]) =>
+    fetchBuiltinGithubApp(id ?? undefined)
   )
 
   useEffect(() => {
@@ -126,9 +126,10 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
             open={builtInOpen}
             onToggle={() => setBuiltInOpen((open) => !open)}
             label={builtInOpen ? t('github.collapse') : t('github.expand')}
+            appId={builtIn?.appId}
             aside={canWrite && <InstallAppButton onClick={() => void install()} />}
           >
-            <span className="mono min-w-0 truncate text-[12.5px]">{builtInSlug ?? t('github.label')}</span>
+            <span className="mono min-w-0 truncate text-[12.5px]">{builtIn?.slug ?? t('github.label')}</span>
             <span className="badge bg-(--surface-active) text-(--text-tertiary)">{t('github.builtIn')}</span>
           </GithubAppRow>
           {builtInOpen && installs.length === 0 && (

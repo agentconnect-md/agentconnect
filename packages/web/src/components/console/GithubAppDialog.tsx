@@ -11,7 +11,7 @@ import { FieldSelect, type FieldSelectOption } from '@/components/console/FieldS
 import { Scrim } from '@/components/console/Scrim'
 import {
   ApiError,
-  fetchBuiltinGithubAppSlug,
+  fetchBuiltinGithubApp,
   fetchGithubAppCoverage,
   fetchGithubApps,
   startGithubAppManifest,
@@ -84,9 +84,10 @@ export function GithubAppDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const { data: builtInSlug } = useSWR(consoleKeys.githubBuiltinApp(orgId), ([, id]) =>
-    fetchBuiltinGithubAppSlug(id ?? undefined)
+  const { data: builtIn } = useSWR(consoleKeys.githubBuiltinApp(orgId), ([, id]) =>
+    fetchBuiltinGithubApp(id ?? undefined)
   )
+  const builtInSlug = builtIn?.slug
   const { data: apps } = useSWR(consoleKeys.githubApps(orgId), ([, id]) => fetchGithubApps(id ?? undefined))
   const checking = choice !== current && choice !== CREATE
   const coverageKey = checking ? (['github-app-coverage', agent.id, choice] as const) : null
