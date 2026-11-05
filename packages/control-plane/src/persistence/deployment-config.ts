@@ -121,7 +121,7 @@ const LogtoSsoConnectorSchema = z.strictObject({
   protocol: z.enum(['oidc', 'saml']),
   /** Shown on the console's sign-in button. */
   name: z.string().trim().min(1).max(64),
-  /** Email domains Logto routes to this connector on its own sign-in page. */
+  /** Email domains Logto routes to this connector; Logto offers the connector only once it has one. */
   domains: z.array(SsoDomainSchema).default([]),
   /** OIDC IdP; the client secret is the write-only 'logto.ssoConnectorClientSecret'. */
   oidc: z
@@ -344,6 +344,14 @@ export const DeploymentConfigValuesV1Schema = z
           code: 'custom',
           path: ['logto', 'ssoConnector', 'saml'],
           message: 'set exactly one of metadataUrl and metadata'
+        })
+      }
+      // Logto offers no sign-in through a connector without a domain, direct sign-in included.
+      if ((sso.oidc || sso.saml) && sso.domains.length === 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['logto', 'ssoConnector', 'domains'],
+          message: 'needs at least one email domain once the identity provider is set'
         })
       }
     }

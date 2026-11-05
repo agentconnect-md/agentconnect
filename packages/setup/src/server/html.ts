@@ -19,7 +19,7 @@ const ssoForm = (prefix: string) => String.raw`
               <label class="field">Or IdP metadata XML<textarea id="${prefix}-metadata" rows="4"></textarea></label>
               <label class="field">Email attribute<input id="${prefix}-email-attribute" autocomplete="off" placeholder="email"></label>
             </div>
-            <label class="field">Email domains, comma-separated<input id="${prefix}-domains" autocomplete="off" placeholder="example.com"></label>
+            <label class="field">Email domains (at least one), comma-separated<input id="${prefix}-domains" autocomplete="off" placeholder="example.com" required></label>
             <div class="row"><button id="${prefix}-submit">Save SSO and configure Logto</button></div>
           </div>`
 
