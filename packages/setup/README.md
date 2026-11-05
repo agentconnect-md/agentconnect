@@ -32,6 +32,13 @@ Google is the shortest local sign-in path because its Web OAuth client accepts
 the bundled bare `localhost` origins. Slack remains disabled until every
 required public service URL uses HTTPS.
 
+An organization that signs in through its own identity provider can choose
+**Enterprise SSO (OIDC or SAML)** instead of a social provider. Setup first asks
+Logto to create the connector and shows the redirect URI (OIDC) or the ACS URL
+and SP entity ID (SAML) to register with the identity provider; the provider's
+issuer and client, or its SAML metadata, come next. An identity provider on a
+private network also needs its address in `LOGTO_SSRF_ALLOWED_ADDRESSES`.
+
 ## Run from source
 
 Start the database and optional Logto services, then run the server directly:

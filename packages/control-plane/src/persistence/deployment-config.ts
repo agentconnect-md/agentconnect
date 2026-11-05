@@ -46,17 +46,20 @@ const AuthSchema = z.discriminatedUnion('mode', [
       appId: z.string().min(1),
       apiResource: NullableUrlSchema
     }),
-    // Provider ids are deployment data (for example github, google, lark), not
-    // a closed core enum. An enabled social-only login needs at least one.
-    socialProviders: z.array(z.string().trim().min(1)).min(1)
+    // Provider ids are deployment data (for example github, google, lark), not a closed core enum.
+    socialProviders: z.array(z.string().trim().min(1)),
+    // The enterprise SSO connector the console signs in through; null when the deployment offers none.
+    sso: z
+      .strictObject({ connectorId: z.string().trim().min(1), name: z.string().trim().min(1) })
+      .nullable()
+      .default(null)
   })
 ])
 
 const LogtoBrowserSchema = z.strictObject({
   applicationName: z.string().trim().min(1).default('AgentConnect'),
   apiResource: NullableUrlSchema.default(null),
-  // The setup wizard persists and verifies Management API access before the
-  // operator chooses a sign-in provider. Auth itself still requires one.
+  // Management API access is verified before a sign-in provider is chosen; auth itself needs one or an SSO connector.
   socialProviders: z.array(z.string().trim().min(1)).default([])
 })
 
@@ -105,6 +108,47 @@ const LogtoSlackConnectorSchema = z.preprocess(
     clientId: z.string().trim().min(1)
   })
 )
+
+const SsoDomainSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, 'must be an email domain')
+
+/** The deployment's one enterprise SSO connector. Logto mints its id at creation; the IdP details arrive later. */
+const LogtoSsoConnectorSchema = z.strictObject({
+  connectorId: z.string().trim().min(1),
+  protocol: z.enum(['oidc', 'saml']),
+  /** Shown on the console's sign-in button. */
+  name: z.string().trim().min(1).max(64),
+  /** Email domains Logto routes to this connector on its own sign-in page. */
+  domains: z.array(SsoDomainSchema).default([]),
+  /** OIDC IdP; the client secret is the write-only 'logto.ssoConnectorClientSecret'. */
+  oidc: z
+    .strictObject({
+      issuer: HttpUrlSchema,
+      clientId: z.string().trim().min(1),
+      scope: z.string().trim().default(''),
+      trustUnverifiedEmail: z.boolean().default(false)
+    })
+    .nullable()
+    .default(null),
+  /** SAML IdP metadata, by URL or inline XML. */
+  saml: z
+    .strictObject({
+      metadataUrl: HttpUrlSchema.nullable().default(null),
+      metadata: z.string().trim().min(1).nullable().default(null),
+      attributeMapping: z
+        .strictObject({
+          id: z.string().trim().min(1).optional(),
+          email: z.string().trim().min(1).optional(),
+          name: z.string().trim().min(1).optional()
+        })
+        .default({})
+    })
+    .nullable()
+    .default(null)
+})
 
 const RegionalLoginAppSchema = z.strictObject({
   loginAppId: z.string().trim().min(1)
@@ -255,7 +299,9 @@ export const DeploymentConfigValuesV1Schema = z
           .nullable()
           .optional(),
         /** Deployment Slack App identity reused for Slack social sign-in. */
-        slackConnector: LogtoSlackConnectorSchema.nullable().optional()
+        slackConnector: LogtoSlackConnectorSchema.nullable().optional(),
+        /** Enterprise SSO (OIDC or SAML) connector. */
+        ssoConnector: LogtoSsoConnectorSchema.nullable().optional()
       })
       .nullable(),
     features: z.strictObject({
@@ -283,7 +329,32 @@ export const DeploymentConfigValuesV1Schema = z
         })
       }
     }
+    const sso = values.logto?.ssoConnector
+    if (sso) {
+      const other = sso.protocol === 'oidc' ? 'saml' : 'oidc'
+      if (sso[other] !== null) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['logto', 'ssoConnector', other],
+          message: `must be null for ${sso.protocol}`
+        })
+      }
+      if (sso.saml && (sso.saml.metadataUrl === null) === (sso.saml.metadata === null)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['logto', 'ssoConnector', 'saml'],
+          message: 'set exactly one of metadataUrl and metadata'
+        })
+      }
+    }
     if (values.auth.mode === 'oidc') {
+      if (values.auth.socialProviders.length === 0 && values.auth.sso === null) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['auth', 'socialProviders'],
+          message: 'an enabled login needs a social provider or an SSO connector'
+        })
+      }
       const tokenAudience = values.auth.browserClient.apiResource ?? values.auth.browserClient.appId
       if (values.auth.audience !== tokenAudience) {
         ctx.addIssue({
@@ -324,7 +395,8 @@ export const DEPLOYMENT_SECRET_KEYS = [
   'logto.googleConnectorClientSecret',
   'logto.telegramConnectorClientSecret',
   'logto.discordConnectorClientSecret',
-  'logto.azureadConnectorClientSecret'
+  'logto.azureadConnectorClientSecret',
+  'logto.ssoConnectorClientSecret'
 ] as const
 
 export const DeploymentSecretKeySchema = z.enum(DEPLOYMENT_SECRET_KEYS)
@@ -543,6 +615,12 @@ export function deploymentSecretsRequiringRefresh(
       previous?.logto?.githubConnector?.clientId !== next.logto.githubConnector.clientId)
   const logtoGoogleConnectorChanged =
     next.logto?.googleConnector && previous?.logto?.googleConnector?.clientId !== next.logto.googleConnector.clientId
+  // An OIDC client is named by its issuer and client id; either changing is a different client.
+  const nextSsoOidc = next.logto?.ssoConnector?.oidc
+  const previousSsoOidc = previous?.logto?.ssoConnector?.oidc
+  const logtoSsoClientChanged =
+    nextSsoOidc &&
+    (previousSsoOidc?.issuer !== nextSsoOidc.issuer || previousSsoOidc?.clientId !== nextSsoOidc.clientId)
   return [
     ...(githubAppChanged ? (['github.privateKeyB64'] as const) : []),
     ...(next.github && githubWebhookEnabled && githubAppChanged ? (['github.webhookSecret'] as const) : []),
@@ -556,6 +634,7 @@ export function deploymentSecretsRequiringRefresh(
     ...(logtoIdentityChanged ? (['logto.managementAppSecret'] as const) : []),
     ...(logtoGithubConnectorChanged ? (['logto.githubConnectorClientSecret'] as const) : []),
     ...(logtoGoogleConnectorChanged ? (['logto.googleConnectorClientSecret'] as const) : []),
+    ...(logtoSsoClientChanged ? (['logto.ssoConnectorClientSecret'] as const) : []),
     ...(['telegram', 'discord', 'azuread'] as const).flatMap((provider) => {
       const key = `${provider}Connector` as const
       return next.logto?.[key] && previous?.logto?.[key]?.clientId !== next.logto[key].clientId
@@ -579,6 +658,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
     ...(values.logto ? (['logto.managementAppSecret'] as const) : []),
     ...(values.logto?.githubConnector ? (['logto.githubConnectorClientSecret'] as const) : []),
     ...(values.logto?.googleConnector ? (['logto.googleConnectorClientSecret'] as const) : []),
+    ...(values.logto?.ssoConnector?.oidc ? (['logto.ssoConnectorClientSecret'] as const) : []),
     ...(['telegram', 'discord', 'azuread'] as const).flatMap((provider) =>
       values.logto?.[`${provider}Connector`] ? ([`logto.${provider}ConnectorClientSecret`] as const) : []
     )

@@ -50,6 +50,8 @@ import {
   logtoLoginAppPut,
   logtoGithubConnectorPut,
   logtoGitlabSignInPut,
+  logtoSsoConnectorCreatedPut,
+  logtoSsoConnectorPut,
   slackDeploymentPut
 } from '../deployment-config-client.js'
 import {
@@ -91,7 +93,8 @@ import {
   LogtoManagementError,
   type LogtoManagementConfig,
   type LogtoNamedConnector,
-  type LogtoSetupDesired
+  type LogtoSetupDesired,
+  type LogtoSsoDesired
 } from './logto-management.js'
 
 const PutDeploymentConfigBody = z.strictObject({
@@ -183,6 +186,42 @@ const ConfigureGoogleBody = z.strictObject({
   clientSecret: z.string().min(1).max(10_000).optional()
 })
 
+const SsoProtocol = z.enum(['oidc', 'saml'])
+const SsoName = z.string().trim().min(1).max(64)
+
+const CreateSsoBody = z.strictObject({ protocol: SsoProtocol, name: SsoName })
+
+const ConfigureSsoBody = z.strictObject({
+  connector: z
+    .strictObject({
+      name: SsoName,
+      domains: z.array(z.string().trim().min(1).max(253)).max(50).default([]),
+      oidc: z
+        .strictObject({
+          issuer: z.string().trim().min(1).max(2_000),
+          clientId: z.string().trim().min(1).max(500),
+          clientSecret: z.string().min(1).max(10_000).optional(),
+          scope: z.string().trim().max(500).default(''),
+          trustUnverifiedEmail: z.boolean()
+        })
+        .optional(),
+      saml: z
+        .strictObject({
+          metadataUrl: z.string().trim().min(1).max(2_000).optional(),
+          metadata: z.string().trim().min(1).max(200_000).optional(),
+          attributeMapping: z
+            .strictObject({
+              id: z.string().trim().min(1).max(500).optional(),
+              email: z.string().trim().min(1).max(500).optional(),
+              name: z.string().trim().min(1).max(500).optional()
+            })
+            .optional()
+        })
+        .optional()
+    })
+    .nullable()
+})
+
 const LoginAppProvider = z.enum(['telegram', 'discord', 'azuread'])
 const ConfigureLoginAppBody = z.strictObject({
   application: ConfigureGoogleBody.nullable(),
@@ -235,7 +274,9 @@ export interface SetupServerDeps {
   makeLogtoCheckClient?: (
     config: LogtoManagementConfig
   ) => Pick<LogtoAdminClaimClient, 'verifyClientCredentials' | 'inspectAdminRole' | 'inspectSetup'>
-  makeLogtoSetupClient?: (config: LogtoManagementConfig) => Pick<LogtoAdminClaimClient, 'reconcileSetup'>
+  makeLogtoSetupClient?: (
+    config: LogtoManagementConfig
+  ) => Pick<LogtoAdminClaimClient, 'reconcileSetup' | 'createSsoConnector'>
   feishuRegistrationProvider?: Pick<FeishuRegistrationProvider, 'begin' | 'poll'>
   auditFeishuAppSetup?: FeishuAppSetupAuditor
   slackConfigApi?: Pick<SlackConfigApi, 'createApp' | 'exportApp' | 'updateApp'>
@@ -370,6 +411,46 @@ interface ResolvedLogtoSetup {
   endpoint: string
   apiResource: string | null
   socialProviders: string[]
+  /** The SSO connector the console signs in through, once it has its IdP details. */
+  sso: { connectorId: string; name: string } | null
+}
+
+/** The SSO connector's IdP settings in Logto's shape; undefined until the operator has supplied them. */
+function ssoDesired(record: DeploymentConfigRuntime): LogtoSsoDesired | undefined {
+  const connector = record.values.logto?.ssoConnector
+  if (!connector) return undefined
+  const base = { connectorId: connector.connectorId, displayName: connector.name, domains: connector.domains }
+  if (connector.protocol === 'oidc') {
+    const clientSecret = record.secrets['logto.ssoConnectorClientSecret']
+    if (!connector.oidc || !clientSecret) return undefined
+    const { issuer, clientId, scope, trustUnverifiedEmail } = connector.oidc
+    return {
+      ...base,
+      providerName: 'OIDC',
+      config: { issuer, clientId, clientSecret, ...(scope ? { scope } : {}), trustUnverifiedEmail }
+    }
+  }
+  if (!connector.saml) return undefined
+  const { metadataUrl, metadata, attributeMapping } = connector.saml
+  return {
+    ...base,
+    providerName: 'SAML',
+    config: {
+      ...(metadataUrl ? { metadataUrl } : { metadata }),
+      ...(Object.keys(attributeMapping).length > 0 ? { attributeMapping } : {})
+    }
+  }
+}
+
+/** Where the IdP sends people back: OIDC needs the callback, SAML the ACS URL and SP entity ID. */
+function ssoServiceProviderUrls(endpoint: string, connectorId: string, protocol: 'oidc' | 'saml') {
+  const id = encodeURIComponent(connectorId)
+  return protocol === 'oidc'
+    ? { redirectUri: appendPath(endpoint, `/callback/${id}`) }
+    : {
+        assertionConsumerServiceUrl: appendPath(endpoint, `/api/authn/single-sign-on/saml/${id}`),
+        entityId: appendPath(endpoint, `/enterprise-sso/${id}`)
+      }
 }
 
 function appendPath(origin: string, path: string): string {
@@ -424,11 +505,14 @@ function logtoSetup(
   const applicationId = auth.mode === 'oidc' ? auth.browserClient.appId : undefined
   const webOrigin = new URL(services.web).origin
   const setupOrigin = new URL(setupUrl).origin
+  const sso = ssoDesired(record)
   return {
     endpoint: resolvedEndpoint,
     apiResource: browser.apiResource,
     socialProviders: [...browser.socialProviders],
+    sso: sso ? { connectorId: sso.connectorId, name: sso.displayName } : null,
     desired: {
+      ...(sso ? { sso } : {}),
       ...(applicationId ? { applicationId } : {}),
       applicationName: browser.applicationName,
       redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(setupOrigin, '/auth/callback')],
@@ -755,7 +839,11 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     }
     if (error instanceof LogtoManagementError) {
       const status =
-        error.code === 'LOGTO_UNAVAILABLE' ? 502 : error.code === 'SOCIAL_CONNECTOR_UNSUPPORTED' ? 400 : 409
+        error.code === 'LOGTO_UNAVAILABLE'
+          ? 502
+          : error.code === 'SOCIAL_CONNECTOR_UNSUPPORTED' || error.code === 'SSO_CONNECTOR_REJECTED'
+            ? 400
+            : 409
       return problem(reply, status, error.message, error.code)
     }
     request.log.error({ err: error }, 'setup-server request failed')
@@ -782,6 +870,8 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         endpoint: logtoEndpoint,
         appId: auth.browserClient.appId,
         resource: auth.browserClient.apiResource,
+        // With SSO the only way in, sign-in goes straight to it instead of Logto's email-routing page.
+        ssoConnectorId: auth.socialProviders.length === 0 && auth.sso ? auth.sso.connectorId : null,
         redirectUri: new URL('/auth/callback', deps.publicUrl).toString(),
         ...endpoints
       }
@@ -1639,6 +1729,67 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     }
   })
 
+  // Step one of enterprise SSO: Logto mints the connector, and its URLs go to the identity provider's team.
+  app.post('/api/v1/create/sso', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = CreateSsoBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'an SSO protocol (oidc or saml) and a display name are required')
+    return serializeMutation(async () => {
+      const runtime = await deps.store.getRuntime(['logto.managementAppSecret'])
+      const config = logtoConfig(runtime, logtoManagementEndpoint)
+      if (!runtime || !config) return problem(reply, 409, 'save the Logto Management API configuration first')
+      if (!runtime.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
+      const { protocol, name } = parsed.data
+      const client = deps.makeLogtoSetupClient?.(config) ?? new LogtoAdminClaimClient(config)
+      const created = await client.createSsoConnector({
+        providerName: protocol === 'oidc' ? 'OIDC' : 'SAML',
+        displayName: name
+      })
+      const kept = runtime.values.logto.ssoConnector
+      const saved =
+        kept?.connectorId === created.id && kept.protocol === protocol
+          ? null
+          : await deps.store.replace({
+              expectedRevision: runtime.revision,
+              ...logtoSsoConnectorCreatedPut(runtime, { connectorId: created.id, protocol, name })
+            })
+      return {
+        revision: saved?.revision ?? runtime.revision,
+        connectorId: created.id,
+        protocol,
+        ...ssoServiceProviderUrls(logtoEndpoint, created.id, protocol)
+      }
+    })
+  })
+
+  // Step two: the identity provider's details; the caller then runs reconcile/logto. Null removes SSO sign-in.
+  app.post('/api/v1/configure/sso', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = ConfigureSsoBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'invalid SSO connector settings')
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current) return problem(reply, 409, 'save deployment settings before configuring SSO')
+      let put: ReturnType<typeof logtoSsoConnectorPut>
+      try {
+        put = logtoSsoConnectorPut(current, parsed.data.connector)
+      } catch (error) {
+        const issue = error instanceof z.ZodError ? error.issues[0] : undefined
+        const message = issue
+          ? `${issue.path.slice(2).join('.') || 'SSO connector'} ${issue.message}`
+          : error instanceof Error
+            ? error.message
+            : 'invalid SSO connector settings'
+        return problem(reply, 400, message)
+      }
+      const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+      const connector = saved.values.logto?.ssoConnector
+      return {
+        revision: saved.revision,
+        restartRequired: true as const,
+        ...(connector ? ssoServiceProviderUrls(logtoEndpoint, connector.connectorId, connector.protocol) : {})
+      }
+    })
+  })
+
   app.post('/api/v1/reconcile/logto', { preHandler: requireConfigurationAccess }, async (request, reply) =>
     serializeMutation(async () => {
       const parsed = ReconcileLogtoBody.safeParse(request.body ?? {})
@@ -1650,6 +1801,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         'logto.telegramConnectorClientSecret',
         'logto.discordConnectorClientSecret',
         'logto.azureadConnectorClientSecret',
+        'logto.ssoConnectorClientSecret',
         'slack.clientSecret',
         'github.clientSecret',
         'gitlab.clientSecret'
@@ -1669,6 +1821,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       const githubSecret = runtime.secrets['github.clientSecret']
       const shouldReconnectGithub =
         setup.socialProviders.length === 0 &&
+        setup.sso === null &&
         runtime.values.auth.mode === 'oidc' &&
         runtime.values.auth.socialProviders.includes('github') &&
         github !== null &&
@@ -1688,8 +1841,12 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         setup = logtoSetup(runtime, deps.publicUrl, localAuthBootstrap.services, logtoEndpoint)
         if (!setup) return problem(reply, 409, 'save Logto browser desired state before creating Logto resources')
       }
-      if (setup.socialProviders.length === 0) {
-        return problem(reply, 409, 'configure a Logto sign-in provider before creating Logto resources')
+      if (setup.socialProviders.length === 0 && setup.sso === null) {
+        return problem(
+          reply,
+          409,
+          'configure a Logto sign-in provider or an SSO connector before creating Logto resources'
+        )
       }
 
       const client = deps.makeLogtoSetupClient?.(config) ?? new LogtoAdminClaimClient(config)
@@ -1703,7 +1860,8 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
           appId: reconciled.application.id,
           apiResource: setup.apiResource
         },
-        socialProviders: setup.socialProviders
+        socialProviders: setup.socialProviders,
+        sso: setup.sso
       }
       const nextValues = { ...runtime.values, auth }
       const configChanged = JSON.stringify(runtime.values) !== JSON.stringify(nextValues)
@@ -1722,6 +1880,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         restartRequired: changed,
         application: reconciled.application,
         connectors: reconciled.connectors,
+        sso: reconciled.sso,
         signInExperienceChanged: reconciled.signInExperienceChanged,
         adminRoleCreated: reconciled.adminRoleCreated
       }
@@ -1738,6 +1897,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       'logto.telegramConnectorClientSecret',
       'logto.discordConnectorClientSecret',
       'logto.azureadConnectorClientSecret',
+      'logto.ssoConnectorClientSecret',
       'gitlab.clientSecret',
       'slack.clientSecret'
     ])
@@ -1924,6 +2084,24 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
               .flatMap((connector) => connector.diff)
           }
     )
+    if (setupInspection.sso) {
+      findings.push(
+        setupInspection.sso.matches
+          ? {
+              id: 'logto.sso_connector',
+              status: 'pass',
+              message: `Logto SSO connector ${setupInspection.sso.id} matches its saved identity provider.`
+            }
+          : {
+              id: 'logto.sso_connector',
+              status: 'fail',
+              message: setupInspection.sso.exists
+                ? 'The Logto SSO connector differs from its saved identity provider.'
+                : 'The Logto SSO connector no longer exists; create it again.',
+              diff: setupInspection.sso.diff
+            }
+      )
+    }
     findings.push(
       setupInspection.signInExperienceMatches
         ? {

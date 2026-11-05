@@ -72,9 +72,72 @@ describe('DeploymentConfigValuesV1Schema', () => {
       }).success
     ).toBe(false)
   })
+
+  const oidcAuth = {
+    mode: 'oidc' as const,
+    audience: 'web-app',
+    browserClient: { appId: 'web-app', apiResource: null }
+  }
+
+  it('lets an SSO connector stand in for every social provider', () => {
+    const sso = { connectorId: 'sso-1', name: 'Example SSO' }
+    expect(
+      DeploymentConfigValuesV1Schema.parse({ ...base, auth: { ...oidcAuth, socialProviders: [], sso } }).auth
+    ).toEqual({ ...oidcAuth, socialProviders: [], sso })
+    expect(
+      DeploymentConfigValuesV1Schema.parse({ ...base, auth: { ...oidcAuth, socialProviders: ['github'] } }).auth
+    ).toEqual({ ...oidcAuth, socialProviders: ['github'], sso: null })
+    expect(
+      DeploymentConfigValuesV1Schema.safeParse({ ...base, auth: { ...oidcAuth, socialProviders: [] } }).success
+    ).toBe(false)
+  })
+
+  it('keeps one protocol per SSO connector and lower-cases its domains', () => {
+    const oidc = { issuer: 'https://idp.example.test', clientId: 'client' }
+    const parsed = DeploymentConfigValuesV1Schema.parse({
+      ...base,
+      logto: {
+        ...base.logto,
+        ssoConnector: { connectorId: 'sso-1', protocol: 'oidc', name: 'Example SSO', domains: ['Example.TEST'], oidc }
+      }
+    }).logto?.ssoConnector
+    expect(parsed).toEqual({
+      connectorId: 'sso-1',
+      protocol: 'oidc',
+      name: 'Example SSO',
+      domains: ['example.test'],
+      oidc: { ...oidc, scope: '', trustUnverifiedEmail: false },
+      saml: null
+    })
+    const withSso = (ssoConnector: object) =>
+      DeploymentConfigValuesV1Schema.safeParse({ ...base, logto: { ...base.logto, ssoConnector } }).success
+    const saml = { connectorId: 'sso-1', protocol: 'saml', name: 'Example SSO' }
+    expect(withSso({ ...saml, oidc })).toBe(false)
+    expect(withSso({ ...saml, saml: { metadataUrl: 'https://idp.example.test/metadata' } })).toBe(true)
+    expect(withSso({ ...saml, saml: {} })).toBe(false)
+    expect(withSso({ ...saml, saml: { metadataUrl: 'https://idp.example.test/m', metadata: '<xml/>' } })).toBe(false)
+    expect(withSso({ ...saml, domains: ['not a domain'] })).toBe(false)
+  })
 })
 
 describe('deploymentSecretsRequiringRefresh', () => {
+  it('binds the SSO client secret to its issuer and client ID', () => {
+    const withOidc = (issuer: string, clientId: string) =>
+      DeploymentConfigValuesV1Schema.parse({
+        ...base,
+        logto: {
+          ...base.logto,
+          ssoConnector: { connectorId: 'sso-1', protocol: 'oidc', name: 'Example SSO', oidc: { issuer, clientId } }
+        }
+      })
+    const first = withOidc('https://idp.example.test', 'client')
+    expect(deploymentSecretsRequiringRefresh(base, first)).toEqual(['logto.ssoConnectorClientSecret'])
+    expect(deploymentSecretsRequiringRefresh(first, first)).toEqual([])
+    expect(deploymentSecretsRequiringRefresh(first, withOidc('https://other.example.test', 'client'))).toEqual([
+      'logto.ssoConnectorClientSecret'
+    ])
+  })
+
   it.each(['telegram', 'discord', 'azuread'] as const)('binds the %s login secret to its client ID', (provider) => {
     const key = `${provider}Connector` as const
     const next = DeploymentConfigValuesV1Schema.parse({

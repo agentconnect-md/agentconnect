@@ -95,7 +95,8 @@ describe('applyDeploymentEnvironment', () => {
                 appId: 'web-app',
                 apiResource: 'https://api.example.test'
               },
-              socialProviders: ['github']
+              socialProviders: ['github'],
+              sso: null
             },
             github: { appId: 123, slug: 'agentconnect-example', clientId: 'Iv1.example' },
             slack: { appId: 'A123', clientId: '123.456' },

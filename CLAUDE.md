@@ -259,8 +259,8 @@ Tests never call `index.ts`; they call `buildApp(...)` with the Testcontainers
 
 ## Human auth (Web UI) — opt-in OIDC
 
-Console sign-in is optional social login through Logto. Setup Server owns the
-browser application, API Resource, enabled sign-in methods, Management API
+Console sign-in is optional social or enterprise SSO login through Logto. Setup Server
+owns the browser application, API Resource, enabled sign-in methods, Management API
 application, and provider connectors in the typed deployment document; provider
 secrets are write-only entries in the deployment secret store.
 
@@ -270,8 +270,9 @@ secrets are write-only entries in the deployment secret store.
   startup topology; the required token audience comes from the persisted browser auth
   configuration. The base Compose stack stays in loopback-only no-auth mode until
   Setup Server bootstraps sign-in.
-- **Web** uses `@logto/browser` (`src/lib/auth.ts`); the login UI is social-only
-  (`src/components/Auth.tsx`), redirect landing at `src/app/auth/callback`.
+- **Web** uses `@logto/browser` (`src/lib/auth.ts`); the login UI offers the social
+  providers and, when Setup has configured one, an enterprise SSO connector (OIDC or SAML)
+  ahead of them (`src/components/Auth.tsx`), redirect landing at `src/app/auth/callback`.
 - **Runtime config:** `src/lib/public-env.tsx` reads the Control Plane's
   `/api/v1/runtime-config` snapshot at request time and emits `window.__AC_ENV`, so a
   prebuilt Web image receives the persisted auth state without build-time tenant

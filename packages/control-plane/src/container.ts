@@ -2298,7 +2298,8 @@ export function buildContainer(
                       issuer: config.OIDC_ISSUER,
                       appId: opts.deploymentConfig.values.auth.browserClient.appId,
                       apiResource: opts.deploymentConfig.values.auth.browserClient.apiResource,
-                      socialProviders: opts.deploymentConfig.values.auth.socialProviders
+                      socialProviders: opts.deploymentConfig.values.auth.socialProviders,
+                      sso: opts.deploymentConfig.values.auth.sso
                     }
                   : null,
               // The console derives workspace tiles from this host (§7).

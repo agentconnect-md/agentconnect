@@ -1,9 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { SOCIAL_LOGIN_CATALOG, parseEnabledTargets, selectEnabledProviders } from './social-login-providers'
+import {
+  SOCIAL_LOGIN_CATALOG,
+  parseEnabledTargets,
+  selectEnabledProviders,
+  selectOfferedProviders
+} from './social-login-providers'
 
 const targets = (raw: string | undefined) => selectEnabledProviders(raw).map((p) => p.target)
 
 describe('social login provider selection', () => {
+  it('reads an empty list as SSO-only once an SSO connector is configured', () => {
+    expect(selectOfferedProviders('', true)).toEqual([])
+    expect(selectOfferedProviders('github', true).map((provider) => provider.target)).toEqual(['github'])
+    expect(selectOfferedProviders('', false).map((provider) => provider.target)).toEqual(['google', 'slack', 'github'])
+  })
+
   it('keeps the original providers by default and requires an explicit wildcard for the whole catalog', () => {
     expect(parseEnabledTargets(undefined)).toEqual(new Set(['github', 'google', 'slack']))
     expect(targets(undefined)).toEqual(['google', 'slack', 'github'])

@@ -80,5 +80,16 @@ export function selectEnabledProviders(raw: string | undefined): readonly Social
 /** The providers to render. Reads the runtime config the server inlined. */
 export function socialLoginProviders(): readonly SocialLoginProvider[] {
   const src = typeof window === 'undefined' ? process.env : (window.__AC_ENV ?? {})
-  return selectEnabledProviders(src.SOCIAL_PROVIDERS || process.env.NEXT_PUBLIC_SOCIAL_PROVIDERS)
+  return selectOfferedProviders(
+    src.SOCIAL_PROVIDERS || process.env.NEXT_PUBLIC_SOCIAL_PROVIDERS,
+    Boolean(src.SSO_CONNECTOR_ID)
+  )
+}
+
+/** With an SSO connector, an empty list means SSO is the only way in, not the legacy default set. */
+export function selectOfferedProviders(
+  raw: string | undefined,
+  ssoConfigured: boolean
+): readonly SocialLoginProvider[] {
+  return !raw?.trim() && ssoConfigured ? [] : selectEnabledProviders(raw)
 }

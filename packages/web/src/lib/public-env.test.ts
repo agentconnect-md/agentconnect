@@ -25,6 +25,40 @@ it.each([
   expect(await resolvePublicEnv()).toMatchObject(expected)
 })
 
+it('publishes the SSO connector from the persisted auth config and drops a stale env one', async () => {
+  vi.resetModules()
+  vi.stubEnv('CP_INTERNAL_URL', 'https://example.test/api/v1')
+  vi.stubEnv('SSO_CONNECTOR_ID', 'stale-connector')
+  const auth = (sso: object | null) => ({
+    endpoint: 'https://auth.example.test',
+    issuer: 'https://auth.example.test/oidc',
+    appId: 'console',
+    apiResource: null,
+    socialProviders: [],
+    sso
+  })
+  const fetch = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          schemaVersion: '1',
+          revision: 1,
+          config: { auth: auth({ connectorId: 'sso-connector', name: 'Example SSO' }) }
+        })
+      )
+  )
+  vi.stubGlobal('fetch', fetch)
+  const { resolvePublicEnv } = await import('./public-env')
+  expect(await resolvePublicEnv()).toMatchObject({ SSO_CONNECTOR_ID: 'sso-connector', SSO_NAME: 'Example SSO' })
+
+  vi.resetModules()
+  fetch.mockImplementation(
+    async () => new Response(JSON.stringify({ schemaVersion: '1', revision: 2, config: { auth: auth(null) } }))
+  )
+  const fresh = await import('./public-env')
+  expect(await fresh.resolvePublicEnv()).not.toHaveProperty('SSO_CONNECTOR_ID')
+})
+
 it('picks up a changed CP protocol after its refresh window and keeps serving through a CP outage', async () => {
   vi.resetModules()
   vi.useFakeTimers()

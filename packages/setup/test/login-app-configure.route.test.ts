@@ -26,7 +26,8 @@ function server(existingConnectors: readonly string[] = ['telegram', 'discord', 
         mode: 'oidc',
         audience: 'browser-app',
         browserClient: { appId: 'browser-app', apiResource: null },
-        socialProviders: ['google']
+        socialProviders: ['google'],
+        sso: null
       },
       logto: {
         managementAppId: 'management-app',
@@ -113,9 +114,13 @@ function server(existingConnectors: readonly string[] = ['telegram', 'discord', 
           changed: true,
           application: { id: 'browser-app', created: false, changed: false },
           connectors: [],
+          sso: null,
           signInExperienceChanged: true,
           adminRoleCreated: false
         }
+      },
+      createSsoConnector: async () => {
+        throw new Error('not used')
       }
     })
   })
