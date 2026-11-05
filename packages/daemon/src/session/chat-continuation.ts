@@ -253,6 +253,8 @@ export class ChatSessionContinuation {
         mirrorId = await integration.conn.postMessage(local.channel, attributedText, message.thread)
       }
       if (!mirrorId) throw new Error('provider returned no message id')
+      // The copy in the conversation is the message, as channel ingress names it: its transcript row, and a coordinator's task thread.
+      message.transcriptTs = mirrorId
       settleMirror(true)
     } catch (error) {
       this.host.warn(`chat continuation: mirror post failed for ${local.key}: ${formatErr(error)}`)

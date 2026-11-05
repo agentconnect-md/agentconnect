@@ -237,7 +237,10 @@ the existing output rules.**
   conversation (an `append` or channel-coordinator coordinate,
   [channel-session-mode.md](channel-session-mode.md) §3) has no platform thread, so
   its mirror and replies post at the conversation's top level; the coordinate stays
-  the session's key and is never sent to the platform as a thread.
+  the session's key and is never sent to the platform as a thread. Once the mirror
+  lands, its provider message id becomes the message's own, as channel ingress
+  names a message: the transcript row carries it, and a coordinator that opens a
+  task for the message opens it in that post's thread.
 - The mirror is an ordinary authenticated platform message, and delivery must
   be PROVEN: only a returned provider message id counts — an undefined result
   (a provider that swallows send failures) takes the same refusal path as an
