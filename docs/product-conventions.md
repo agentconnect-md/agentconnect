@@ -2621,10 +2621,10 @@ model when the runtime offers one, so the agent follows the runtime's own recomm
 ## Agent model credentials
 
 Provider keys are organization-scoped, encrypted and write-only. On desktop,
-Runs on and Credentials appear side by side in the same row. A self-hosted agent
-has two credential choices:
-Daemon credentials (the default) and Use saved credential (Beta). Only the saved
-credential choice is Beta. With saved credentials, model pickers offer only models
+Runs on and Model sign-in appear side by side in the same row. A self-hosted agent
+has two Model sign-in choices:
+Daemon's login (the default) and Provider key (Beta). Only the Provider key
+choice is Beta. With saved credentials, model pickers offer only models
 whose Anthropic or OpenAI key is configured, including Decision rules and their
 fallback. The daemon matches the key to each session's selected runtime and model.
 While saved credentials load, the form preserves the selected model and blocks saving
