@@ -102,6 +102,8 @@ export interface AssistantSubsessionThread {
   thread: string
   /** The first work round that no longer reports to the parent (§6.2). */
   sinceRound: number
+  /** The thread that asked for this room, where its coordinator relays its reports. */
+  reportThread?: string
   attachedAt: number
 }
 
@@ -124,6 +126,7 @@ export const ASSISTANT_SUBSESSION_THREAD_SCHEMA = `
         thread TEXT NOT NULL,
         childSessionKey TEXT NOT NULL,
         sinceRound INTEGER NOT NULL DEFAULT 1,
+        reportThread TEXT,
         attachedAt INTEGER NOT NULL,
         PRIMARY KEY (agentId, platform, channel, transportScope, thread)
       );
@@ -291,6 +294,7 @@ function threadOf(row: Row): AssistantSubsessionThread {
     ...(row.transportScope != null && row.transportScope !== '' ? { transportScope: String(row.transportScope) } : {}),
     thread: String(row.thread),
     sinceRound: Number(row.sinceRound ?? 1),
+    ...(row.reportThread != null ? { reportThread: String(row.reportThread) } : {}),
     attachedAt: Number(row.attachedAt)
   }
 }
@@ -878,9 +882,9 @@ export class AssistantSubsessionIndex {
   async attachThread(input: Omit<AssistantSubsessionThread, 'attachedAt'> & { now: number }): Promise<boolean> {
     const { changes } = await this.db.query(
       `INSERT OR IGNORE INTO assistant_subsession_thread
-         (agentId, platform, channel, transportScope, thread, childSessionKey, sinceRound, attachedAt)
+         (agentId, platform, channel, transportScope, thread, childSessionKey, sinceRound, attachedAt, reportThread)
        SELECT CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS TEXT),
-              CAST(? AS INTEGER), CAST(? AS INTEGER)
+              CAST(? AS INTEGER), CAST(? AS INTEGER), CAST(? AS TEXT)
         WHERE EXISTS (SELECT 1 FROM assistant_subsession WHERE agentId = ? AND childSessionKey = ? AND mode = 'work'
           AND closedAt IS NULL)`,
       [
@@ -892,6 +896,7 @@ export class AssistantSubsessionIndex {
         input.childSessionKey,
         input.sinceRound,
         input.now,
+        input.reportThread ?? null,
         input.agentId,
         input.childSessionKey
       ]

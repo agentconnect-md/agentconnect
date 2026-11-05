@@ -1,6 +1,7 @@
 import { isCodeHostProvider } from '@agentconnect.md/protocol'
 import type { SessionRecord } from '../store/local-store.js'
 import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
+import { wakeThreadFields, type NormalizedMessage } from '../messages/normalized.js'
 
 export interface SessionReplyRoute {
   integrationId?: string
@@ -29,4 +30,24 @@ export function sessionReplyRoute(
   const integrationId = integrationForSession(session.agentId, session.platform, session.transportScope)
   if (session.transportScope && !integrationId) return undefined
   return integrationId ? { integrationId } : {}
+}
+
+/** A saved delivery target never changes the session a continuation belongs to. */
+export function sessionWakeFields(
+  session: SessionRecord,
+  target?: { replyChannel?: string | null; replyThread?: string | null }
+): Pick<NormalizedMessage, 'channel' | 'thread' | 'sessionChannel' | 'sessionThread' | 'isDm' | 'isGroupDm'> {
+  const channel = target?.replyChannel ?? session.replyChannel ?? session.channel
+  const thread = target?.replyChannel != null ? target.replyThread : session.replyThread
+  const sameChannel = channel === session.channel
+  return {
+    channel,
+    ...wakeThreadFields(session.thread, thread ?? undefined),
+    ...(thread === null && (target?.replyChannel != null || session.replyChannel != null)
+      ? { thread: undefined, sessionThread: session.thread }
+      : {}),
+    ...(!sameChannel ? { sessionChannel: session.channel, sessionThread: session.thread } : {}),
+    isDm: sameChannel && session.conversationKind === 'dm',
+    ...(sameChannel && session.conversationKind === 'group_dm' ? { isGroupDm: true } : {})
+  }
 }

@@ -1750,6 +1750,8 @@ export class SlackConnection implements PlatformConnection {
     payload: Record<string, unknown>
   ): Promise<{ ts?: string } | undefined> {
     if (threadTs && threadTs !== channel) {
+      if (/^[CGD][A-Z0-9]+$/.test(threadTs))
+        throw new Error('Slack reply target names a different channel, not a message thread')
       try {
         await this.app.client.chat.getPermalink({ channel, message_ts: threadTs })
       } catch (err) {

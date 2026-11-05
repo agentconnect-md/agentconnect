@@ -148,6 +148,27 @@ async function openB1(run: Run, over: Partial<MessageAgentReq> = {}): Promise<Se
 }
 
 describe('A → B1 ← C: replies addressed to the message they answer (send-message-guide.md §9.1, §9.7)', () => {
+  it('a local reply returns to the sending turn after its task moved elsewhere', async () => {
+    const run = await boot()
+    try {
+      run.d.activeGateEntries.set(callerKeyOf(A), { msg: { channel: 'wc-room', thread: 'wc-room' } })
+      const b1 = await openB1(run)
+      run.d.activeGateEntries.delete(callerKeyOf(A))
+      const [sent] = await run.fromSource(b1.key, `sid-${A}`)
+      await run.d.store.setSessionReplyTarget(callerKeyOf(A), 'wc-later', '2.2')
+      const dispatch = vi.spyOn(run.d, 'dispatch')
+      expect(await run.replyFrom(b1, sent!.messageId)).toMatchObject({ delivered: true, targetSession: callerKeyOf(A) })
+      expect(dispatch.mock.calls.find(([id]) => id === A)?.[1]).toMatchObject({
+        channel: 'wc-room',
+        thread: 'wc-room',
+        sessionChannel: `wc-${A}`,
+        sessionThread: '100.1'
+      })
+    } finally {
+      await run.daemon.stop()
+    }
+  })
+
   it('B1 holds three messages and answers each by id, in C’s turn, later, and after a restart, reaching only its source', async () => {
     const root = scaffold([A, B, C, D])
     const fromC = 'please check the Windows behavior'
@@ -884,10 +905,14 @@ describe('remote sessions: ids travel with the delivery, and a reply lands only 
           return { deliveryId: payload.deliveryId, delivered: payload.targetSessionId === 'remote-b1' }
         })
       }
+      run.d.activeGateEntries.set(callerKeyOf(C), { msg: { channel: 'wc-room', thread: 'wc-room' } })
       expect(await run.call(C, { toAgentId: REMOTE, targetSessionId: 'remote-b1', needsReply: true })).toEqual({
         delivered: true,
         targetSession: 'remote-b1'
       })
+      run.d.activeGateEntries.delete(callerKeyOf(C))
+      await run.d.store.setSessionReplyTarget(callerKeyOf(C), 'wc-later', '2.2')
+      const dispatch = vi.spyOn(run.d, 'dispatch')
       const messageId = String(sent[0]!.messageId)
       expect(sent[0]).toMatchObject({
         toAgentId: REMOTE,
@@ -931,6 +956,12 @@ describe('remote sessions: ids travel with the delivery, and a reply lands only 
       expect(run.prompts.get(C)!.join('\n')).not.toContain('the answer')
       const accepted = await reply({})
       expect(accepted).toMatchObject({ delivered: true, childSessionId: callerKeyOf(C) })
+      expect(dispatch.mock.calls.find(([id]) => id === C)?.[1]).toMatchObject({
+        channel: 'wc-room',
+        thread: 'wc-room',
+        sessionChannel: `wc-${C}`,
+        sessionThread: '100.1'
+      })
       await vi.waitFor(() => expect(run.prompts.get(C)!.join('\n')).toContain('the answer'), WAIT)
       expect(run.prompts.get(C)!.join('\n')).toContain(`to your message ${messageId}:\nthe answer`)
       expect(run.prompts.get(A)!.join('\n')).not.toContain('the answer')

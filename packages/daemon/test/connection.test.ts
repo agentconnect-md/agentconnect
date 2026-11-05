@@ -2054,6 +2054,20 @@ describe('SlackConnection chat.postMessage boundary', () => {
     stop: async () => {}
   })
 
+  it('rejects a different channel used as a thread instead of treating it as a deleted root', async () => {
+    const postMessage = vi.fn(async () => ({ ts: '100.2' }))
+    const getPermalink = vi.fn(async () => ({ permalink: 'https://example.test/thread' }))
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withPostMessage(postMessage, getPermalink) as any
+    )
+    await expect(conn.postMessage('C1', 'body', 'C2')).rejects.toThrow('different channel')
+    expect(getPermalink).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
+    await expect(conn.postMessage('C2', 'body', 'C2')).resolves.toBe('100.2')
+    expect(postMessage).toHaveBeenCalledWith(expect.not.objectContaining({ thread_ts: 'C2' }))
+  })
+
   it('silently skips a reply when its thread root was deleted', async () => {
     const postMessage = vi.fn(async () => ({ ts: '100.2' }))
     const missingRoot = Object.assign(new Error('An API error occurred: message_not_found'), {

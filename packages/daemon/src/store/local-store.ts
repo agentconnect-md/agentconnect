@@ -348,7 +348,8 @@ export interface SessionRecord {
   birthStrategy?: string | null
   // The repositories the selector chose for this session (multi-repository-workspaces.md decision 19), a JSON array pinned once by `pinSelectedRepos`; null until then and on a session born before the selector.
   selectedRepos?: string | null
-  // Where an appending session's latest turn replied (channel-session-mode.md §3.1), written by `setSessionReplyThread`; null at the conversation's top level and on every other session.
+  // The latest turn's delivery target, independent of the session's stable coordinates.
+  replyChannel?: string | null
   replyThread?: string | null
   // A digest of the standing context its model last received (session-concept.md §2.3), written by `setSessionStandingDigest`; null on a session from before it was recorded.
   standingDigest?: string | null
@@ -1334,7 +1335,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 75
+export const SCHEMA_VERSION = 76
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2090,7 +2091,14 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
   // v74 makes follow-ups watch tasks in the task store, one id each, which keys their checks and proposals too (§5.18).
   async (db, store) => await migrateFollowUpsToWatchTasks(db, store.postgres),
   // v75 keeps a closed task's row for a window, with the message it was opened for and what it opened (§5.18 ④).
-  async (db, store) => await migrateRetainedTasks(db, store.postgres)
+  async (db, store) => await migrateRetainedTasks(db, store.postgres),
+  // v76 preserves delivery targets for session wakes, message replies and room reports.
+  async (db, store) => {
+    await addColumn(db, store.postgres, 'sessions', 'replyChannel', 'TEXT')
+    await addColumn(db, store.postgres, 'session_message_sent', 'replyChannel', 'TEXT')
+    await addColumn(db, store.postgres, 'session_message_sent', 'replyThread', 'TEXT')
+    await addColumn(db, store.postgres, 'assistant_subsession_thread', 'reportThread', 'TEXT')
+  }
 ]
 
 /** Tasks gain when they closed, the message they were opened for, what they opened and a getting-to-know task's marker; an ended watch task counts as closed when it last changed. */
@@ -3008,7 +3016,7 @@ export class LocalStore {
         conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT,
         platformStanding TEXT,
         executorDaemonId TEXT, stayedHomeReason TEXT,
-        onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyThread TEXT,
+        onDemandClones INTEGER, birthStrategy TEXT, selectedRepos TEXT, replyChannel TEXT, replyThread TEXT,
         standingDigest TEXT, toolDigests TEXT, retentionKeptAt INTEGER, retentionRecheckAt INTEGER,
         workspaceReclaimedAt INTEGER
       );
@@ -4703,9 +4711,11 @@ export class LocalStore {
       .run(p.sessionKey, p.transportScope ?? '')
   }
 
-  /** Where an appending session's latest turn replied, or null at its top level; a wake keyed by the session alone replies there. */
-  async setSessionReplyThread(key: string, thread: string | null): Promise<void> {
-    await this.db.prepare('UPDATE sessions SET replyThread = ? WHERE key = ?').run(thread, key)
+  /** Save the latest turn's delivery target for continuations addressed only by session. */
+  async setSessionReplyTarget(key: string, channel: string, thread: string | null): Promise<void> {
+    await this.db
+      .prepare('UPDATE sessions SET replyChannel = ?, replyThread = ? WHERE key = ?')
+      .run(channel, thread, key)
   }
 
   /** The digest of the standing context this session's model holds, or null for none yet; compared when the session resumes. */

@@ -4529,9 +4529,9 @@ describe.skipIf(usingPostgresStore())('the v48 → v49 reply thread on SQLite', 
     const upgraded = await LocalStore.open(path)
     // A row from before the column replies where the session is.
     expect((await upgraded.getSession(key))?.replyThread).toBeNull()
-    await upgraded.setSessionReplyThread(key, '1700.0001')
+    await upgraded.setSessionReplyTarget(key, 'C1', '1700.0001')
     expect((await upgraded.getSession(key))?.replyThread).toBe('1700.0001')
-    await upgraded.setSessionReplyThread(key, null)
+    await upgraded.setSessionReplyTarget(key, 'C1', null)
     expect((await upgraded.getSession(key))?.replyThread).toBeNull()
     await upgraded.close()
     const db = new DatabaseSync(path)

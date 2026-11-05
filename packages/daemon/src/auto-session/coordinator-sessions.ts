@@ -338,7 +338,8 @@ export class CoordinatorSessions {
   async makeRoom<T>(
     agentId: string,
     taskKey: string,
-    make: () => Promise<{ result: T; room?: TaskRoom & { platform: string; transportScope?: string | null } }>
+    make: () => Promise<{ result: T; room?: TaskRoom & { platform: string; transportScope?: string | null } }>,
+    reportThread?: string
   ): Promise<T> {
     const index = this.host.store().assistantSubsessions
     const row = await index.get(agentId, taskKey)
@@ -353,6 +354,7 @@ export class CoordinatorSessions {
           ...room,
           transportScope: room.transportScope ?? '',
           sinceRound: row.round ?? 1,
+          ...(reportThread !== undefined ? { reportThread } : {}),
           now: this.host.now()
         })
         if (!held && (await index.taskOfThread(agentId, room)) !== taskKey)

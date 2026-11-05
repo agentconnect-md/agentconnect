@@ -279,7 +279,7 @@ describe('SessionManager', () => {
   })
 
   // A wake keyed by the session alone, as a pull request's feedback is, replies where the session's latest turn did.
-  it('records where an append session’s latest turn replied, and nothing for a per-thread session', async () => {
+  it('records the latest delivery target while keeping the session coordinate stable', async () => {
     const store = await newStore()
     const sm = new SessionManager({ store, hostFor: async () => fakeHost(), agentById: () => agent, memory })
     const coordinate = 'append:1700000000000'
@@ -294,9 +294,25 @@ describe('SessionManager', () => {
     await sm.handle('bot-a', msg({ ts: '300.1', thread: undefined, text: 'third', sessionThread: coordinate }))
     expect((await s.getSession(key))?.replyThread).toBeNull()
 
-    // A per-thread session is its own reply thread, so nothing is recorded.
     await sm.handle('bot-a', msg({ ts: '400.1', thread: '400.1', text: 'fourth' }))
-    expect((await s.getSession(sessionKey('slack', 'C1', '400.1', 'bot-a')))?.replyThread ?? null).toBeNull()
+    const taskKey = sessionKey('slack', 'C1', '400.1', 'bot-a')
+    await sm.handle(
+      'bot-a',
+      msg({
+        ts: '500.1',
+        channel: 'C2',
+        thread: 'C2',
+        sessionChannel: 'C1',
+        sessionThread: '400.1',
+        text: 'in its room'
+      })
+    )
+    expect(await s.getSession(taskKey)).toMatchObject({
+      channel: 'C1',
+      thread: '400.1',
+      replyChannel: 'C2',
+      replyThread: 'C2'
+    })
     await s.close()
   })
 
