@@ -14,14 +14,15 @@ import {
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 import type { SessionStep } from '@/lib/data'
 import type { TaskLink } from '@/components/console/task-link'
-import { elicitCard } from '@/components/console/session-work'
+import { elicitCard, WORK_LANES } from '@/components/console/session-work'
+import { fmtStep, msgStep, type FmtStep } from '@/components/console/transcript-steps'
 
 /** Rows the conversation's list reads in one page; a task older than these reads its own row. */
 const ROWS_PAGE = 50
 const RUNNING_POLL_MS = 5_000
 const IDLE_POLL_MS = 30_000
-/** Messages one thread read takes: the newest page; earlier ones are on the task's own page. */
-const THREAD_PAGE = 50
+/** Rows one thread read takes, work included: the newest page; earlier ones are on the task's own page. */
+const THREAD_PAGE = 100
 
 const running = (row: AssistantSubsessionDto | undefined) => row?.state === 'open'
 
@@ -84,12 +85,14 @@ export function messageTime(m: Pick<SessionMessageDto, 'ts' | 'eventTimeUs'>): s
   return Number.isNaN(parsed) ? null : new Date(parsed).toISOString()
 }
 
-/** The thread's spoken messages and open questions, oldest first; tool and reasoning rows stay on the task's own page. */
+/** The thread's messages, the agent's work and its open questions, oldest first. */
 export function threadMessages(page: SessionHistoryDto | undefined): SessionMessageDto[] {
   return [...(page?.messages ?? [])]
     .filter((m) => {
       const kind = (m.kind || 'text').toLowerCase()
-      return kind === 'text' ? m.text.trim() !== '' : kind === 'elicit' && openQuestion(elicitCard(m.body)) !== null
+      if (kind === 'text') return m.text.trim() !== ''
+      if (kind === 'elicit') return openQuestion(elicitCard(m.body)) !== null
+      return kind === 'tool' || kind === 'reasoning'
     })
     .sort((a, b) => a.seq - b.seq)
 }
@@ -124,6 +127,12 @@ export interface ThreadEntry {
   /** A person's provider-hosted picture. */
   avatarUrl?: string
   text: string
+  /** An agent turn's answer, one block per message it posted. */
+  prose?: string[]
+  /** An agent turn's work rows, which its header folds as the session page does. */
+  work?: FmtStep[]
+  /** When each of an agent turn's rows happened, which dates its duration. */
+  times?: number[]
   at: string | null
   /** Still streaming, or sent and not yet on the daemon's record. */
   live: boolean
@@ -152,7 +161,7 @@ export function withoutAttribution(text: string): string {
   return text.replace(/\n*sent by <https?:\/\/[^\n]*\/agents\/[^\n]*$/, '').trimEnd()
 }
 
-/** Persisted messages, then what this visit sent and is streaming back, which the next read retires. */
+/** Persisted messages, then what this visit sent and is streaming back; one agent's consecutive work and replies make one turn. */
 export function threadEntries(
   messages: readonly SessionMessageDto[],
   liveSteps: readonly SessionStep[],
@@ -160,34 +169,104 @@ export function threadEntries(
   /** Which other agent wrote a message, when one did. */
   peerAgent?: (m: SessionMessageDto) => string | undefined
 ): ThreadEntry[] {
-  const persisted: ThreadEntry[] = messages.map((m) => {
-    const question = (m.kind || '').toLowerCase() === 'elicit' ? openQuestion(elicitCard(m.body)) : null
-    const own = m.sender === agentId || question !== null
-    const peer = own ? undefined : peerAgent?.(m)
-    return {
+  const entries: ThreadEntry[] = []
+  let turn: ThreadEntry | null = null
+  const ownTurn = (key: string, at: string | null, live: boolean): ThreadEntry => {
+    if (turn) return turn
+    turn = { key, who: 'agent', name: null, text: '', prose: [], work: [], times: [], at, live }
+    entries.push(turn)
+    return turn
+  }
+  const say = (entry: ThreadEntry, text: string) => {
+    entry.prose!.push(text)
+    entry.text = entry.prose!.join('\n\n')
+  }
+  const stamp = (entry: ThreadEntry, at: string | number | null | undefined) => {
+    const ms = typeof at === 'string' ? Date.parse(at) : at
+    if (ms !== null && ms !== undefined && Number.isFinite(ms)) entry.times!.push(ms)
+  }
+  // While a reply streams, its tool and reasoning rows are already saved; the live turn shows them once.
+  const shown = liveSteps.filter((step) => !step.hidden)
+  const liveTools = new Set(shown.flatMap((step) => (step.kind === 'tool' && step.toolCallId ? [step.toolCallId] : [])))
+  const liveStarts = shown.flatMap((step) => (step.observedAtMs !== undefined ? [step.observedAtMs] : []))
+  const liveSince = liveStarts.length ? Math.min(...liveStarts) : undefined
+  const streamedHere = (m: SessionMessageDto, kind: string): boolean => {
+    if (kind === 'tool') return !!m.toolCallId && liveTools.has(m.toolCallId)
+    const at = Date.parse(messageTime(m) ?? '')
+    return kind === 'reasoning' && liveSince !== undefined && Number.isFinite(at) && at >= liveSince
+  }
+  for (const m of messages) {
+    const kind = (m.kind || 'text').toLowerCase()
+    const question = kind === 'elicit' ? openQuestion(elicitCard(m.body)) : null
+    if (question) {
+      turn = null
+      entries.push({
+        key: `m:${m.seq}`,
+        who: 'agent',
+        name: m.senderName ?? null,
+        text: m.text,
+        at: messageTime(m),
+        live: false,
+        question
+      })
+      continue
+    }
+    if (kind === 'tool' || kind === 'reasoning') {
+      if (streamedHere(m, kind)) continue
+      const own = ownTurn(`m:${m.seq}`, messageTime(m), false)
+      own.work!.push(msgStep(m))
+      stamp(own, messageTime(m))
+      continue
+    }
+    if (m.sender === agentId) {
+      const own = ownTurn(`m:${m.seq}`, messageTime(m), false)
+      say(own, m.text)
+      stamp(own, messageTime(m))
+      continue
+    }
+    turn = null
+    const peer = peerAgent?.(m)
+    entries.push({
       key: `m:${m.seq}`,
-      who: own || peer ? 'agent' : 'person',
+      who: peer ? 'agent' : 'person',
       ...(peer && peer !== agentId ? { agentId: peer } : {}),
       name: m.senderName ?? null,
-      ...(!own && !peer && m.senderAvatarUrl ? { avatarUrl: m.senderAvatarUrl } : {}),
+      ...(!peer && m.senderAvatarUrl ? { avatarUrl: m.senderAvatarUrl } : {}),
       text: peer ? withoutAttribution(m.text) : m.text,
       at: messageTime(m),
-      live: false,
-      ...(question ? { question } : {})
-    }
-  })
-  const recorded = new Set(persisted.flatMap((entry) => (entry.question ? [entry.question.requestId] : [])))
-  const live = liveSteps.flatMap((step, i): ThreadEntry[] => {
+      live: false
+    })
+  }
+  const recorded = new Set(entries.flatMap((entry) => (entry.question ? [entry.question.requestId] : [])))
+  turn = null
+  liveSteps.forEach((step, i) => {
     const question = step.kind === 'elicit' ? openQuestion(step.elicit) : null
-    if (question && recorded.has(question.requestId)) return []
     // A question is never left out: the task waits on it, so the thread shows it even with no text.
-    if (question) return [{ key: `l:${i}`, who: 'agent', name: null, text: step.text, at: null, live: true, question }]
-    if (step.hidden || !step.text.trim()) return []
-    if (step.kind === 'msg')
-      return [{ key: `l:${i}`, who: 'person', name: null, text: step.text, at: null, live: true }]
-    if (step.kind === 'done' && !step.demoted)
-      return [{ key: `l:${i}`, who: 'agent', name: null, text: step.text, at: null, live: true }]
-    return []
+    if (question) {
+      turn = null
+      if (!recorded.has(question.requestId))
+        entries.push({ key: `l:${i}`, who: 'agent', name: null, text: step.text, at: null, live: true, question })
+      return
+    }
+    if (step.hidden) return
+    if (step.kind === 'msg') {
+      turn = null
+      if (step.text.trim())
+        entries.push({ key: `l:${i}`, who: 'person', name: null, text: step.text, at: null, live: true })
+      return
+    }
+    if (step.kind === 'done' && !step.demoted) {
+      if (!step.text.trim()) return
+      const own = ownTurn(`l:${i}`, null, true)
+      say(own, step.text)
+      stamp(own, step.observedAtMs)
+      return
+    }
+    const fmt = fmtStep(step)
+    if (!WORK_LANES.has(fmt.lane)) return
+    const own = ownTurn(`l:${i}`, null, true)
+    own.work!.push(fmt)
+    stamp(own, step.observedAtMs)
   })
-  return [...persisted, ...live]
+  return entries
 }

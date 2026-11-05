@@ -167,6 +167,18 @@ describe('TaskThreadPanel', () => {
     expect(container.textContent).not.toContain('gh pr list')
   })
 
+  it('draws an agent turn as the session page does: its work folded under one header, then its answer', async () => {
+    await render()
+    const turn = container.querySelector('[data-thread-message="agent"]')!
+    const fold = turn.querySelector<HTMLButtonElement>('[data-turn-fold]')!
+    expect(fold.textContent).toContain('Worked for 1m 0s')
+    expect(fold.textContent).toContain('Ran 1 command')
+    expect(turn.querySelectorAll('[data-agent-prose]')).toHaveLength(1)
+    expect(turn.textContent).not.toContain('gh pr list')
+    await act(async () => fold.click())
+    expect(turn.textContent).toContain('gh pr list')
+  })
+
   it('sends a reply onto the task’s own session', async () => {
     wire.drafts.ses_task = 'does 1.5 include the orders migration?'
     await render()
