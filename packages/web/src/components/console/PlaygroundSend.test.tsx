@@ -80,6 +80,7 @@ let pgSetFast: ReturnType<typeof usePlayground>['pgSetFast']
 let markSessionTarget: ReturnType<typeof usePlayground>['markSessionTarget']
 let getBusyLaneAgentIds: ReturnType<typeof usePlayground>['getBusyLaneAgentIds']
 let isPgBusy: ReturnType<typeof usePlayground>['isPgBusy']
+let isPgTurnUnstreamed: ReturnType<typeof usePlayground>['isPgTurnUnstreamed']
 
 function Probe() {
   const pg = usePlayground()
@@ -106,6 +107,7 @@ function Probe() {
   markSessionTarget = pg.markSessionTarget
   getBusyLaneAgentIds = pg.getBusyLaneAgentIds
   isPgBusy = pg.isPgBusy
+  isPgTurnUnstreamed = pg.isPgTurnUnstreamed
   return null
 }
 
@@ -1413,6 +1415,55 @@ describe('cold-attach retirement anchor', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('offers Stop for a turn the daemon cannot replay and keeps asking until it ends', async () => {
+    const socket = await coldAttach()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    try {
+      const gap = {
+        type: 'attached',
+        ack: { accepted: false, turnId: 'turn-long', agentId: 'agent-1', reason: 'stream_gap' }
+      }
+      act(() => socket.onmessage?.({ data: JSON.stringify(gap) }))
+      expect(isPgTurnUnstreamed('s-cold')).toBe(true)
+      expect(isPgBusy('s-cold')).toBe(false)
+      // No activity arrives, yet the turn is asked about again.
+      act(() => {
+        vi.advanceTimersByTime(5_000)
+      })
+      expect(attachProbes(socket)).toHaveLength(2)
+      act(() =>
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: 'attached',
+            ack: { accepted: false, agentId: 'agent-1', reason: 'stream_not_found' }
+          })
+        })
+      )
+      expect(isPgTurnUnstreamed('s-cold')).toBe(false)
+      act(() => {
+        vi.advanceTimersByTime(10_000)
+      })
+      expect(attachProbes(socket)).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops an unstreamed turn when the socket closes', async () => {
+    const socket = await coldAttach()
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'attached',
+          ack: { accepted: false, turnId: 'turn-long', agentId: 'agent-1', reason: 'stream_gap' }
+        })
+      })
+    })
+    expect(isPgTurnUnstreamed('s-cold')).toBe(true)
+    await act(async () => socket.onclose?.())
+    expect(isPgTurnUnstreamed('s-cold')).toBe(false)
   })
 
   it('anchors when the reply post arrives after done (the failure path order)', async () => {

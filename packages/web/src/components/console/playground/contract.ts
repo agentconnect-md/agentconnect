@@ -23,6 +23,8 @@ export interface PlaygroundData {
   pgSetWorktree: (id: string, worktree: boolean) => void
   /** Is a turn in flight for this session id? Drives its typing indicator + send-disable. */
   isPgBusy: (id: string) => boolean
+  /** A turn runs that this view sees only through the transcript (the daemon cannot replay it), so Stop still applies. */
+  isPgTurnUnstreamed: (id: string) => boolean
   /** Create a new sandbox session and return its id. Does not navigate. `members`
    *  adds more participants — the conversation's roster is fixed at creation
    *  (webchat-multi-agents.md §3.1); the first agent is the primary. `conversationId`

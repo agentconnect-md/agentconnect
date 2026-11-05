@@ -157,6 +157,8 @@ interface Conn {
 
 // A live socket's re-probe runs at most this often, so a stream it cannot attach does not probe on every activity.
 const ATTACH_REPROBE_MS = 1000
+// How often a turn this tab cannot stream is re-probed until a verdict says it ended.
+const UNSTREAMED_REPROBE_MS = 5000
 
 /** A reply event as it arrives from the relay (mirrors protocol WebchatEvent). */
 type WebchatEvent =
@@ -1344,6 +1346,39 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     for (const probeId of conn.probeIds) ws.send(JSON.stringify({ type: 'attach', agentId: probeId }))
   }, [])
 
+  // Agents whose live turn the daemon can no longer replay from its start (`stream_gap`): no lane, but Stop still applies.
+  const unstreamedRef = useRef<Map<string, Set<string>>>(new Map())
+  const unstreamedTimers = useRef<Map<string, number>>(new Map())
+  const [unstreamedBy, setUnstreamedBy] = useState<Record<string, boolean>>({})
+  const markUnstreamed = useCallback(
+    (id: string, agentId: string | undefined, live: boolean): void => {
+      const agents = unstreamedRef.current.get(id) ?? new Set<string>()
+      if (agentId === undefined) agents.clear()
+      else if (live) agents.add(agentId)
+      else agents.delete(agentId)
+      const on = agents.size > 0
+      if (on) unstreamedRef.current.set(id, agents)
+      else unstreamedRef.current.delete(id)
+      setUnstreamedBy((cur) => (!!cur[id] === on ? cur : { ...cur, [id]: on }))
+      const timer = unstreamedTimers.current.get(id)
+      if (!on) {
+        if (timer !== undefined) window.clearTimeout(timer)
+        unstreamedTimers.current.delete(id)
+        return
+      }
+      // Activity can stop before the daemon marks the stream complete, so keep asking until a verdict clears it.
+      if (timer !== undefined) return
+      unstreamedTimers.current.set(
+        id,
+        window.setTimeout(() => {
+          unstreamedTimers.current.delete(id)
+          probeAttach(id)
+        }, UNSTREAMED_REPROBE_MS)
+      )
+    },
+    [probeAttach]
+  )
+
   /** Open (or reuse) the webchat socket for a session. `conversationId` RESUMES an
    *  existing conversation (adopted webchat sessions); omit it for a fresh playground
    *  turn (the CP mints the id). */
@@ -1472,6 +1507,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               if (conn.reconnectTimer) window.clearTimeout(conn.reconnectTimer)
               conn.reconnectTimer = undefined
               dropSelf()
+              markUnstreamed(id, undefined, false)
               if (busyRef.current[id] || hasUnackedSteers(id)) scheduleReconnect()
               else setBusy(id, false)
             }
@@ -1705,12 +1741,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 const cursor = key ? streamCursors.current.get(key) : undefined
                 if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
               } else if (m.type === 'attached') {
-                // Cold-load probe verdict: a hit names the in-flight turn — recreate
-                // its lane, seed the cursor's generation from the daemon's (so our
-                // resume outruns pre-reload generations), restore busy, and pull the
-                // stream from the start through the ordinary resume path. A miss is
-                // the normal idle answer and stays silent.
+                // A probe hit recreates the turn's lane at the daemon's generation, restores busy and resumes from the start; a miss is the idle answer.
                 const a = m.ack
+                // Any other verdict for that agent ends a turn this tab could only see, not stream.
+                if (typeof a?.agentId === 'string')
+                  markUnstreamed(id, a.agentId, a.accepted === false && a.reason === 'stream_gap')
                 if (a?.accepted === true && typeof a.turnId === 'string' && typeof a.agentId === 'string') {
                   const key = laneKey(id, a.agentId)
                   if (!streamCursors.current.has(key) && !finishedFor(id, a.turnId)?.has(a.agentId)) {
@@ -1810,7 +1845,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       conns.current.set(id, conn)
       return conn
     },
-    [activeOrg, deltaBuffer, failStream, receiveDone, receiveOutput, pushStep, setBusy, probeAttach]
+    [activeOrg, deltaBuffer, failStream, receiveDone, receiveOutput, pushStep, setBusy, probeAttach, markUnstreamed]
   )
 
   const openPlayground = useCallback(
@@ -2513,6 +2548,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const getPgInput = useCallback((id: string) => pgDrafts.current[id] ?? '', [])
   const getPgImage = useCallback((id: string) => pgImageBy[id], [pgImageBy])
   const isPgBusy = useCallback((id: string) => !!pgBusyBy[id], [pgBusyBy])
+  const isPgTurnUnstreamed = useCallback((id: string) => !!unstreamedBy[id], [unstreamedBy])
   const getLiveSteps = useCallback((id: string) => (wcSteps[id] ?? NO_STEPS).filter((step) => !step.hidden), [wcSteps])
   const reconcileLiveSteps = useCallback(
     (id: string, persisted: SessionMessageDto[], agentId: string, promptRows?: SessionMessageDto[]): void => {
@@ -2585,6 +2621,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       getPgWorktree,
       pgSetWorktree,
       isPgBusy,
+      isPgTurnUnstreamed,
       openPlayground,
       pgAddAgent,
       pgRemoveAgent,
@@ -2621,6 +2658,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       getPgWorktree,
       pgSetWorktree,
       isPgBusy,
+      isPgTurnUnstreamed,
       openPlayground,
       pgAddAgent,
       pgRemoveAgent,

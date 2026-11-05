@@ -131,6 +131,7 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     setPgFiles: () => {},
     getPgWorktree: () => false,
     isPgBusy: () => false,
+    isPgTurnUnstreamed: () => false,
     setPgImage: () => {},
     openPlayground: () => 'pg_new',
     pgSend: () => {},

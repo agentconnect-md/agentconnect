@@ -163,7 +163,7 @@ export function createPlaygroundSelector(
       }
     return (id: string, ...args: unknown[]) => {
       const hint = property === 'pgAttach' && typeof args[0] === 'string' ? args[0] : undefined
-      const selected = owner(id, !property.startsWith('get') && property !== 'isPgBusy', STAGED.has(property), hint)
+      const selected = owner(id, !property.startsWith('get') && !property.startsWith('is'), STAGED.has(property), hint)
       return Reflect.apply(selected.adapter[property] as (...args: unknown[]) => unknown, selected.adapter, [
         selected.id,
         ...args

@@ -2686,6 +2686,7 @@ export default function SessionDetailView() {
     setPgFiles,
     getPgWorktree,
     isPgBusy,
+    isPgTurnUnstreamed,
     setPgImage,
     pgSend,
     pgNotice,
@@ -6513,7 +6514,7 @@ export default function SessionDetailView() {
                           <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
                           <ComposerSendButton
                             sessionId={session.id}
-                            busy={pgBusy}
+                            busy={pgBusy || isPgTurnUnstreamed(session.id)}
                             imagePreparing={imagePreparing || filesUploading}
                             hasImage={!!pgImage || pgFiles.some((f) => f.status === 'ready')}
                             mentionJoining={mentionJoining}
