@@ -127,6 +127,44 @@ describe('createRelayDaemonServer (rd/* accept edge)', () => {
     expect(onDaemonReady).toHaveBeenLastCalledWith(DAEMON_ID)
   })
 
+  it('routes to the newest link while an older one is still registered half-open', async () => {
+    const verify = vi.fn(async () => ({ ok: true, daemonId: DAEMON_ID, orgId: 'org-1' }) as RcVerifyResult)
+    const base = await start(verify)
+    const hello = buildRelayDaemonFrame('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })
+
+    // The old socket stays open here: a peer gone without a FIN looks exactly like this until keepalive.
+    const stale = await dial(base, RELAY_DAEMON_SUBPROTOCOL)
+    stale.send(JSON.stringify(hello))
+    await nextFrame(stale, 'rd/hello/ok')
+    const fresh = await dial(base, RELAY_DAEMON_SUBPROTOCOL)
+    fresh.send(JSON.stringify(hello))
+    await nextFrame(fresh, 'rd/hello/ok')
+    await tick()
+    expect(rd!.size()).toBe(2)
+
+    const staleFrames: string[] = []
+    stale.on('message', (d: Buffer) => staleFrames.push((JSON.parse(d.toString()) as RelayDaemonFrame).type))
+    const received = nextFrame(fresh, 'rd/msg')
+    void rd!
+      .get(DAEMON_ID)!
+      .sendMsg(
+        {
+          source: 'hook',
+          agentId: DAEMON_ID,
+          sessionKey: 'example-org/example-repo#releases',
+          msgId: 'h:d:release',
+          hookId: RELAY_ID,
+          deliveryKey: 'd',
+          firedAt: '2026-01-01T00:00:00.000Z'
+        },
+        { maxTries: 1 }
+      )
+      .catch(() => {})
+    expect((await received).type).toBe('rd/msg')
+    await tick()
+    expect(staleFrames).not.toContain('rd/msg')
+  })
+
   it('offers a projected-token pool member as the webchat rendezvous candidate', async () => {
     const verify = vi.fn(async () => ({ ok: true, daemonId: DAEMON_ID }) as RcVerifyResult)
     const base = await start(verify)

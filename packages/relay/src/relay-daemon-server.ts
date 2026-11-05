@@ -45,8 +45,7 @@ export interface RelayDaemonServer {
   readonly wss: WebSocketServer
   /** Drop every `rd/*` connection for `daemonId` (on a CP `rc/daemon-revoke`). */
   revoke(daemonId: string): void
-  /** A live `rd/*` connection to `daemonId`, if this relay holds one — the browser
-   *  gateway routes a webchat turn onto it. Returns any of the (normally one) sockets. */
+  /** The daemon's most recently READY `rd/*` connection; an older one may be half-open until keepalive drops it. */
   get(daemonId: string): RelayDaemonConnection | undefined
   /** Any live duty-governed pool connection — the webchat rendezvous fallback when a recorded
    *  member is gone (§4.4): a pool member claims the duty on receipt or names the holder, and
@@ -56,6 +55,9 @@ export interface RelayDaemonServer {
   /** Number of authenticated daemon connections (observability / tests). */
   size(): number
 }
+
+/** A daemon's connections, most recently READY first (a Set iterates in insertion order). */
+const newestFirst = (set: Set<RelayDaemonConnection>): RelayDaemonConnection[] => [...set].reverse()
 
 export function createRelayDaemonServer(app: FastifyInstance, deps: RelayDaemonServerDeps): RelayDaemonServer {
   const byDaemon = new Map<string, Set<RelayDaemonConnection>>()
@@ -132,11 +134,12 @@ export function createRelayDaemonServer(app: FastifyInstance, deps: RelayDaemonS
       for (const conn of [...set]) conn.close(CLOSE_REVOKED, 'daemon credential revoked')
     },
     get(daemonId: string): RelayDaemonConnection | undefined {
-      return byDaemon.get(daemonId)?.values().next().value
+      const set = byDaemon.get(daemonId)
+      return set ? newestFirst(set)[0] : undefined
     },
     rendezvousCandidate(): { daemonId: string; conn: RelayDaemonConnection } | undefined {
       for (const [daemonId, set] of byDaemon) {
-        for (const conn of set) if (conn.credentialKind === 'daemon-token') return { daemonId, conn }
+        for (const conn of newestFirst(set)) if (conn.credentialKind === 'daemon-token') return { daemonId, conn }
       }
       return undefined
     },
