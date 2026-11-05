@@ -24,10 +24,8 @@ import {
   displayedEffort,
   effortLabel,
   fastModeAvailableFor,
-  fileColor,
   isSelfSender,
   isSetPlacementKind,
-  lane,
   modelCapability,
   modelLabel,
   MOCK_MODE,
@@ -60,7 +58,6 @@ import {
   fetchConversationByKey,
   fetchMySessionIdentity,
   fetchSessionDetail,
-  fetchToolBody,
   fmtCountCompact,
   fmtDate,
   memberDisplayName,
@@ -72,8 +69,7 @@ import {
   type SessionProfileProvider,
   type SessionDetailDto,
   type SessionMessageDto,
-  type SessionRelationDto,
-  type ToolBody
+  type SessionRelationDto
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
@@ -93,14 +89,10 @@ import { AgentIconView, LoadingState, PlatformMark, SocialLoginMark, Spinner } f
 import { MessageText } from '@/components/console/MessageText'
 import { SharedFileChip } from '@/components/console/SharedFileChip'
 import { SharedImageCard } from '@/components/console/SharedImageCard'
-import type { SharedImageState } from '@/lib/shared-image'
 import { platformSenderFallback } from '../platforms/registry'
-import { McpAppCard, type McpAppCardProps } from '@/components/console/McpAppCard'
-import { ComputerScreenshots } from '@/components/console/ComputerScreenshots'
-import { screenshotRefsIn } from '@/lib/computer-screenshots'
 import { SessionMessageCaption, UserTurnDetails } from '../UserTurnDetails'
 import { parseUserTurnBody } from '@/lib/user-turn-body'
-import type { McpAppRpc, SessionMessageTurnFacts, UserTurnBody } from '@agentconnect.md/protocol'
+import type { McpAppRpc, UserTurnBody } from '@agentconnect.md/protocol'
 import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -121,7 +113,7 @@ import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { splitFilesMarker, type MarkedFile } from '@/lib/webchat-file'
 import { ComposerFileChips, MessageFileCards, stageComposerFile } from '@/components/console/ComposerFiles'
-import { transferCapable, sessionFileDownload, sharedFileMarker, type SharedFile } from '@/lib/shared-file'
+import { transferCapable, sessionFileDownload } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
@@ -144,7 +136,6 @@ import {
   appStepKey,
   liveAppKeys,
   mcpAppCard,
-  mergeFetchedAppCard,
   APP_LANE,
   ELICIT_LANE,
   elicitStepKey,
@@ -153,21 +144,15 @@ import {
   NOTICE_LANE,
   PLAN_LANE,
   WORK_LANES,
-  planEntries,
   planLabel,
   sessionTurnInFlight,
-  stripBoldMarks,
-  stepStatusMark,
   toggleWorkPanel,
   turnSpan,
   withPromptStart,
   exchangePromptMs,
   agentTurnStreaming,
   typedInvalidReason,
-  workCounts,
-  workPanelOpen,
-  workSummary,
-  type PlanEntry
+  workPanelOpen
 } from '@/components/console/session-work'
 import { CapabilityRequestCard } from '@/components/console/CapabilityRequestCard'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
@@ -195,7 +180,7 @@ import {
 } from '@/components/console/dock/TasksPanel'
 import { TaskThreadPanel } from '@/components/console/dock/TaskThreadPanel'
 import { TaskThreadCard } from '@/components/console/TaskThreadCard'
-import { taskLinkOfBody, type TaskLink } from '@/components/console/task-link'
+import { type TaskLink } from '@/components/console/task-link'
 import { useTasksByMessage } from '@/components/console/task-thread'
 import {
   PullRequestPanel,
@@ -231,7 +216,16 @@ import {
   sessionPermissionSelection,
   sessionRuntimeChangesEnabled
 } from '@/lib/session-runtime-controls'
-
+import {
+  msgStep,
+  type FmtStep,
+  plainStep,
+  isBgTaskWake,
+  thinkStep,
+  fmtStep,
+  timeMsField
+} from '@/components/console/transcript-steps'
+import { CopyTurnButton, StepExtras, McpAppRow, turnWork, WorkStepList } from '@/components/console/WorkPanel'
 type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 
 // Session composer chips (mirrors HomeView); effort and approval live in the model picker.
@@ -477,300 +471,6 @@ function ComposerSendButton({
     >
       <Icon name={stop ? 'square' : 'arrow-up'} size={stop ? 10 : 14} />
     </button>
-  )
-}
-
-// One agent-turn step from a real transcript row, dated by the row's own time.
-function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string): FmtStep {
-  const step = msgStepBody(m, toolSessionId, platform)
-  const timeMs = transcriptRowTimeMs(m)
-  return timeMs === null ? step : { ...step, timeMs }
-}
-
-// Maps the daemon transcript kind (text | tool | reasoning | plan | elicit | app | capability) onto the lane styling.
-function msgStepBody(m: SessionMessageDto, toolSessionId?: string, platform?: string): FmtStep {
-  const k = (m.kind || 'text').toLowerCase()
-  // A recorded elicitation card (#1794). It renders through the SAME component a live card does,
-  // just without an `onAnswer` — a reader loading the conversation later sees the question, what
-  // was offered and what was answered, with every control inert. A row whose body cannot be read
-  // falls through to plain text, which is at least the question itself.
-  // A recorded MCP App card (webchat-mcp-apps.md §8), rendered by the SAME component a live card
-  // is: the row keeps the template, so a reloaded page comes back rather than a record of itself.
-  if (k === 'app') {
-    const card = mcpAppCard(m.body)
-    if (card)
-      return {
-        lane: APP_LANE,
-        laneColor: 'var(--text-tertiary)',
-        dot: 'var(--text-disabled)',
-        weight: 400,
-        textColor: 'var(--text-primary)',
-        codeColor: 'var(--text-secondary)',
-        text: m.text,
-        code: '',
-        files: [],
-        app: card,
-        time: formatTranscriptRowTime(m),
-        ...(platform ? { platform } : {}),
-        // The template is stripped from a transcript page, so a truncated row carries its own
-        // coordinates and the card pulls the page back through the full-body read.
-        ...(m.bodyTruncated ? { msg: m, ...(toolSessionId ? { toolSessionId } : {}) } : {})
-      }
-  }
-  if (k === 'capability') {
-    const card = capabilityCard(m.body)
-    if (card)
-      return {
-        lane: CAPABILITY_LANE,
-        laneColor: 'var(--text-tertiary)',
-        dot: 'var(--text-disabled)',
-        weight: 400,
-        textColor: 'var(--text-primary)',
-        codeColor: 'var(--text-secondary)',
-        text: m.text,
-        code: '',
-        files: [],
-        capability: card,
-        time: formatTranscriptRowTime(m),
-        ...(platform ? { platform } : {})
-      }
-  }
-  if (k === 'elicit') {
-    const card = elicitCard(m.body)
-    if (card)
-      return {
-        lane: ELICIT_LANE,
-        laneColor: 'var(--text-tertiary)',
-        dot: 'var(--text-disabled)',
-        weight: 400,
-        textColor: 'var(--text-primary)',
-        codeColor: 'var(--text-secondary)',
-        text: m.text,
-        code: '',
-        files: [],
-        elicit: card,
-        time: formatTranscriptRowTime(m),
-        ...(platform ? { platform } : {})
-      }
-  }
-  if (k === 'plan') {
-    return {
-      lane: PLAN_LANE,
-      laneColor: 'var(--text-tertiary)',
-      dot: 'var(--text-disabled)',
-      weight: 400,
-      textColor: 'var(--text-secondary)',
-      codeColor: 'var(--text-secondary)',
-      text: m.text,
-      code: '',
-      files: [],
-      plan: planEntries(m.body),
-      time: formatTranscriptRowTime(m),
-      ...(platform ? { platform } : {})
-    }
-  }
-  if (k === 'tool') {
-    return {
-      lane: 'TOOL',
-      laneColor: 'var(--blue-500)',
-      dot: 'var(--blue-500)',
-      weight: 500,
-      textColor: 'var(--text-secondary)',
-      codeColor: 'var(--text-secondary)',
-      text: '',
-      code: m.text,
-      files: [],
-      time: formatTranscriptRowTime(m),
-      ...(platform ? { platform } : {}),
-      // Carry the raw message so the row can render the captured tool body (input /
-      // output / content / diff / locations) below the title, on demand.
-      ...(m.body ? { msg: m, ...(toolSessionId ? { toolSessionId } : {}) } : {})
-    }
-  }
-  if (k === 'reasoning') {
-    return {
-      lane: 'THINK',
-      laneColor: 'var(--brand)',
-      // Purple, not brand magenta — a magenta dot reads as an error marker.
-      dot: 'var(--purple-500)',
-      weight: 500,
-      textColor: 'var(--text-tertiary)',
-      codeColor: 'var(--text-secondary)',
-      // De-bolded: runtimes write every thought heading as `**heading**`, and a heading-only
-      // run rendered as a slab of bold. The Slack plan card strips the same marks.
-      text: stripBoldMarks(m.text),
-      code: '',
-      files: [],
-      time: formatTranscriptRowTime(m),
-      ...(platform ? { platform } : {})
-    }
-  }
-  const shared = k === 'text' ? sharedFileMarker(m.text) : null
-  // A delivered session message shows its body; its header facts and the agent's guidance fold beneath it.
-  const sessionMessage = k === 'text' ? parseUserTurnBody(m.body)?.sessionMessage : undefined
-  const taskLink = k === 'text' ? taskLinkOfBody(m.body) : null
-  return {
-    lane: '',
-    laneColor: 'var(--text-tertiary)',
-    dot: 'var(--text-disabled)',
-    weight: 400,
-    textColor: 'var(--text-primary)',
-    codeColor: 'var(--text-secondary)',
-    text: shared ? shared.caption : m.text,
-    code: '',
-    files: [],
-    time: formatTranscriptRowTime(m),
-    ...(platform ? { platform } : {}),
-    // The download names the session that shared the file, which in a merged conversation is the row's source.
-    ...(shared ? { file: shared.file, ...(toolSessionId ? { toolSessionId } : {}) } : {}),
-    ...(sessionMessage ? { sessionMessage } : {}),
-    ...(taskLink ? { taskLink } : {}),
-    ...(k === 'text' && m.sharedImage
-      ? {
-          sharedImage: m.sharedImage,
-          ...(m.postId ? { postId: m.postId } : {}),
-          ...(toolSessionId ? { toolSessionId } : {})
-        }
-      : {})
-  }
-}
-
-interface FmtStep {
-  lane: string
-  laneColor: string
-  dot: string
-  weight: number
-  textColor: string
-  codeColor: string
-  text: string
-  code: string
-  files: { tag: string; path: string; color: string }[]
-  time?: string
-  // Epoch ms of the row or live event, which dates the turn's approximate duration.
-  timeMs?: number
-  // The turn's task list — present only on a PLAN_LANE step, and empty when the row
-  // arrived without a readable body.
-  plan?: PlanEntry[]
-  // The agent's in-band question — present only on an ELICIT_LANE step.
-  elicit?: NonNullable<SessionStep['elicit']>
-  // A capability request card — present only on a CAPABILITY_LANE step.
-  capability?: NonNullable<SessionStep['capability']>
-  app?: NonNullable<SessionStep['app']>
-  // A superseded answer collapsed into this lane — carried so the summary can skip it.
-  demoted?: boolean
-  // A peer participant's message attachment (rendered like the user bubble's).
-  image?: SessionImage
-  // A file the agent shared, parsed off the row's trailing marker and rendered as a download chip.
-  file?: SharedFile
-  // A shared image card (webchat-generated-images.md) and the canonical post that names it.
-  sharedImage?: SharedImageState
-  postId?: string
-  // A peer participant's copy: its original resolves only through the author's own session, which this row does not name.
-  peerCopy?: boolean
-  // The facts of a delivered session message (an agent call, reply, or a task's input or report), folded under its body.
-  sessionMessage?: SessionMessageTurnFacts
-  // A coordinator's post that links to a task, drawn as the task's card.
-  taskLink?: TaskLink
-  // Present only on real-transcript tool rows that carry a captured body.
-  msg?: SessionMessageDto
-  // Conversation rows keep their owning session out-of-band so full-body reads
-  // do not accidentally target the representative member.
-  toolSessionId?: string
-  // The platform this row was authored on — the key `MessageText` resolves its
-  // renderer under (§10). Per STEP, not per turn or per page: a merged
-  // conversation interleaves sources, so neighbouring rows can differ.
-  platform?: string
-}
-
-// A bare text step (no lane chrome) — how a peer participant's message renders
-// inside its agent block.
-function plainStep(text: string, time?: string, image?: SessionImage, platform?: string): FmtStep {
-  return {
-    lane: '',
-    laneColor: 'var(--text-tertiary)',
-    dot: 'var(--text-disabled)',
-    weight: 400,
-    textColor: 'var(--text-primary)',
-    codeColor: 'var(--text-secondary)',
-    text,
-    code: '',
-    files: [],
-    ...(time ? { time } : {}),
-    ...(image ? { image } : {}),
-    ...(platform ? { platform } : {})
-  }
-}
-
-// A daemon background-task wake (`background-task:<taskId>` author, see the
-// daemon's deferred-wake dispatch) is agent machinery, not a message from any
-// person — it must never render as a right-side human bubble.
-function isBgTaskWake(sender: string | undefined | null): boolean {
-  return !!sender?.startsWith('background-task:')
-}
-
-// A THINK-lane work row built from bare text — how a background-task wake
-// renders inside the owner agent's turn (same styling as msgStep's reasoning).
-function thinkStep(text: string, time?: string, platform?: string): FmtStep {
-  return {
-    lane: 'THINK',
-    laneColor: 'var(--brand)',
-    dot: 'var(--purple-500)',
-    weight: 500,
-    textColor: 'var(--text-tertiary)',
-    codeColor: 'var(--text-secondary)',
-    text: stripBoldMarks(text),
-    code: '',
-    files: [],
-    ...(time ? { time } : {}),
-    ...(platform ? { platform } : {})
-  }
-}
-
-// Hover-revealed copy-to-clipboard for a FINISHED chat bubble (the call sites
-// skip it while the turn streams). Visibility rides the turn container's
-// `group/turn` hover, so the affordance stays out of the transcript until
-// pointed at; keyboard focus reveals it too.
-function CopyTurnButton({ text }: { text: string }) {
-  const t = useTranslations('Sessions.detail')
-  const [copied, setCopied] = useState(false)
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        void navigator.clipboard?.writeText(text)?.catch?.(() => {})
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1600)
-      }}
-      title={copied ? t('copied') : t('copyMessage')}
-      className="inline-flex h-[20px] w-[20px] flex-none items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-tertiary) opacity-0 transition-opacity hover:text-(--text-secondary) focus-visible:opacity-100 group-hover/turn:opacity-100 max-desktop:opacity-100"
-    >
-      <Icon name={copied ? 'check' : 'copy'} size={12} />
-    </button>
-  )
-}
-
-// A step's non-text extras (code block, file chips, captured tool body) — rendered
-// identically in a turn's plain answer and in its collapsed "work" rows.
-function StepExtras({ step, sessionId, autoOpenTool }: { step: FmtStep; sessionId?: string; autoOpenTool?: boolean }) {
-  const toolSessionId = step.toolSessionId ?? sessionId
-  return (
-    <>
-      {step.code && (
-        <div className="codeblk mt-[7px]" style={{ color: step.codeColor }}>
-          {step.code}
-        </div>
-      )}
-      {step.files.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-[6px]">
-          {step.files.map((f, fi) => (
-            <span key={fi} className="scope">
-              <span style={{ color: f.color }}>{f.tag}</span> {f.path}
-            </span>
-          ))}
-        </div>
-      )}
-      {step.msg && toolSessionId && <ToolBodyDetail msg={step.msg} sessionId={toolSessionId} autoOpen={autoOpenTool} />}
-    </>
   )
 }
 
@@ -1561,117 +1261,6 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   )
 }
 
-// What the dot before a work-step title means, surfaced on hover.
-const LANE_TITLE: Record<string, string> = {
-  THINK: 'Reasoning',
-  PLAN: 'Plan',
-  TOOL: 'Tool command',
-  EDIT: 'File edit'
-}
-
-// Reasoning text is markdown — drop paired emphasis/backtick/heading markers so a
-// title line never shows raw `**`/`` ` `` wrappers.
-function stripMdMarkers(s: string): string {
-  return s
-    .replace(/^#{1,6}\s+/, '')
-    .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/__(.+?)__/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
-}
-
-// One work step: a status mark and a one-line title that expands to its text and extras; a title-only row does not expand.
-function WorkStepRow({
-  step,
-  sessionId,
-  divider,
-  live
-}: {
-  step: FmtStep
-  sessionId?: string
-  divider: boolean
-  // The turn still streams; a finished turn's unsettled tool shows its plain dot, not a spinner that never stops.
-  live: boolean
-}) {
-  const t = useTranslations('Sessions.detail')
-  const [open, setOpen] = useState(false)
-  // Tool rows keep their title in `code` (msgStep), so fall back to its first line.
-  // trimStart: reasoning text can open with blank lines, which must not blank the title.
-  const rawTitle = (step.text || step.code || '').trimStart().split('\n', 1)[0]?.trim() || step.lane || 'Step'
-  const title = step.text ? stripMdMarkers(rawTitle) : rawTitle
-  // Single-line code with no text IS the title — expanding must not repeat it.
-  const codeBeyondTitle = !!step.code && (!!step.text || step.code.includes('\n'))
-  const expandable = !!step.msg || step.files.length > 0 || codeBeyondTitle || step.text.includes('\n')
-  const failed = (step.msg?.toolStatus ?? '').toLowerCase() === 'failed'
-  const status = stepStatusMark(step.msg?.toolStatus)
-  const mark = status === 'running' && !live ? null : status
-  const markLabel = mark === 'running' ? t('stepRunning') : mark === 'done' ? t('stepDone') : t('stepFailed')
-  return (
-    <div className={divider ? 'border-t border-(--border-subtle)' : ''} data-step-status={mark ?? undefined}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        disabled={!expandable}
-        className={`flex w-full min-w-0 items-center gap-[8px] border-0 bg-transparent px-[14px] py-[10px] text-left ${
-          expandable ? 'cursor-pointer hover:bg-(--surface-hover)' : ''
-        }`}
-      >
-        {mark ? (
-          <span aria-hidden className="flex h-[13px] w-[13px] flex-none items-center justify-center">
-            {mark === 'running' ? (
-              <Icon name="loader" size={13} color="var(--status-paused)" className="animate-spin" />
-            ) : mark === 'done' ? (
-              <Icon name="circle-check" size={13} color="var(--status-online)" />
-            ) : (
-              <Icon name="circle-x" size={13} color="var(--status-error)" />
-            )}
-          </span>
-        ) : (
-          <span
-            className="dot h-[7px] w-[7px] flex-none"
-            style={{ background: step.dot }}
-            title={LANE_TITLE[step.lane]}
-          />
-        )}
-        <span
-          className={`min-w-0 truncate leading-[1.5] ${step.text ? 'font-sans text-[13px]' : 'mono text-[12px]'}`}
-          style={{ fontWeight: step.weight, color: failed ? 'var(--red-600)' : step.textColor }}
-        >
-          {title}
-        </span>
-        {/* The step's state in words at the row's right edge, as the mockup's "done" / "running". */}
-        {mark && (
-          <span
-            data-step-meta=""
-            className={`ml-auto flex-none pl-2 font-sans text-[12px] leading-normal font-normal ${
-              mark === 'failed' ? 'text-(--status-error)' : 'text-(--text-tertiary)'
-            }`}
-          >
-            {markLabel}
-          </span>
-        )}
-        {expandable && (
-          <Icon
-            name={open ? 'chevron-down' : 'chevron-right'}
-            size={13}
-            color="var(--text-tertiary)"
-            className="flex-none"
-          />
-        )}
-      </button>
-      {open && (
-        <div className="px-[14px] pb-[12px] pl-[29px]">
-          {step.text.includes('\n') && (
-            <div className="whitespace-pre-wrap font-sans text-[13px] leading-[1.5]" style={{ color: step.textColor }}>
-              <MessageText text={step.text} platform={step.platform} />
-            </div>
-          )}
-          <StepExtras step={codeBeyondTitle ? step : { ...step, code: '' }} sessionId={sessionId} autoOpenTool />
-        </div>
-      )}
-    </div>
-  )
-}
-
 function fmtTranscriptDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'
   const totalSeconds = Math.round(ms / 1000)
@@ -1743,437 +1332,6 @@ function minTime(...values: Array<number | null | undefined>): number | null {
 function maxTime(...values: Array<number | null | undefined>): number | null {
   const finite = values.filter((v): v is number => v != null && Number.isFinite(v))
   return finite.length > 0 ? Math.max(...finite) : null
-}
-
-function fmtStep(stp: SessionStep, platform?: string): FmtStep {
-  const L = lane(stp.kind)
-  return {
-    lane: L.lane,
-    laneColor: L.laneColor,
-    dot: L.dot,
-    weight: L.weight,
-    textColor: L.textColor,
-    codeColor: L.codeColor,
-    // Live reasoning ('plan' steps) de-bolds exactly as the persisted THINK rows do — the
-    // same run must not read bold while streaming and plain once re-read from history. A
-    // DEMOTED step is a superseded answer collapsed into this lane, still message text, and
-    // keeps its emphasis.
-    text: stp.kind === 'plan' && !stp.demoted ? stripBoldMarks(stp.text) : stp.text,
-    code: stp.code ?? '',
-    files: (stp.files ?? []).map((f) => ({ tag: f.tag, path: f.path, color: fileColor(f.tag) })),
-    time: stp.time ?? '',
-    ...(stp.observedAtMs !== undefined && Number.isFinite(stp.observedAtMs) ? { timeMs: stp.observedAtMs } : {}),
-    ...(stp.kind === 'planblock' ? { plan: stp.plan ?? [] } : {}),
-    ...(stp.kind === 'elicit' && stp.elicit ? { elicit: stp.elicit } : {}),
-    ...(stp.kind === 'capability' && stp.capability ? { capability: stp.capability } : {}),
-    ...(stp.kind === 'app' && stp.app ? { app: stp.app } : {}),
-    ...(stp.demoted ? { demoted: true } : {}),
-    ...(stp.taskLink ? { taskLink: stp.taskLink } : {}),
-    ...(platform ? { platform } : {}),
-    ...(stp.sharedImage ? sharedImageFields(stp) : stp.kind === 'done' ? sharedFileFields(stp) : {}),
-    // The live wire frame carries no body (kept off the hot path); attach just
-    // enough of a SessionMessageDto shape for ToolBodyDetail to pull the same
-    // full body a history row shows, via `fetchToolBody` (no inline preview yet,
-    // so it fetches on open rather than rendering one immediately).
-    ...(stp.kind === 'tool' && stp.toolCallId
-      ? {
-          msg: {
-            seq: 0,
-            sender: '',
-            ts: '',
-            kind: 'tool',
-            text: stp.text,
-            toolCallId: stp.toolCallId,
-            toolStatus: stp.toolStatus
-          } satisfies SessionMessageDto,
-          // A member participant's call lives in ITS daemon session, not the
-          // row's primary — carry it so StepExtras targets the right session.
-          ...(stp.toolSessionId ? { toolSessionId: stp.toolSessionId } : {})
-        }
-      : {})
-  }
-}
-
-/** A row's send time as an optional field. */
-function timeMsField(ms: number | null): { timeMs?: number } {
-  return ms === null ? {} : { timeMs: ms }
-}
-
-// A live image step's card fields: its caption and file come off the same trailing share marker a history row carries.
-function sharedImageFields(stp: SessionStep): Partial<FmtStep> {
-  const shared = sharedFileMarker(stp.text)
-  return {
-    sharedImage: stp.sharedImage!,
-    text: shared ? shared.caption : stp.text,
-    ...(shared ? { file: shared.file } : {}),
-    ...(stp.postId ? { postId: stp.postId } : {}),
-    ...(stp.toolSessionId ? { toolSessionId: stp.toolSessionId } : {})
-  }
-}
-
-// A live shared-file step (a document shareFile posted as its own message): the chip's file comes off the marker, like a history row's.
-function sharedFileFields(stp: SessionStep): Partial<FmtStep> {
-  const shared = sharedFileMarker(stp.text)
-  if (!shared) return {}
-  return {
-    text: shared.caption,
-    file: shared.file,
-    ...(stp.postId ? { postId: stp.postId } : {}),
-    ...(stp.toolSessionId ? { toolSessionId: stp.toolSessionId } : {})
-  }
-}
-
-// ── captured tool body rendering ──────────────────────────────────────────────
-// The daemon captures the full ACP ToolCall (input / output / content / diff /
-// terminal / locations) and ships a ≤32 KiB JSON preview inline; the full body is
-// pulled on demand. Everything below renders that structured body faithfully.
-
-// ACP status → badge colouring (completed green, failed red, in-flight amber).
-function statusBadge(s?: string): { bg: string; text: string; dot: string } | null {
-  const v = (s || '').toLowerCase()
-  if (!v) return null
-  if (v === 'completed') return { bg: 'var(--status-online-soft)', text: 'var(--green-500)', dot: 'var(--green-500)' }
-  if (v === 'failed') return { bg: 'var(--status-error-soft)', text: 'var(--red-600)', dot: 'var(--red-600)' }
-  // pending / in_progress
-  return { bg: 'var(--status-paused-soft)', text: 'var(--amber-500)', dot: 'var(--amber-500)' }
-}
-
-// Pretty-print a free-form value (rawInput/rawOutput) — objects as indented JSON,
-// strings verbatim (so a command / file body reads naturally).
-function fmtValue(v: unknown): string {
-  if (typeof v === 'string') return v
-  try {
-    return JSON.stringify(v, null, 2)
-  } catch {
-    return String(v)
-  }
-}
-
-function CodeBlock({ children }: { children: string }) {
-  return <div className="codeblk mt-[6px] max-h-80 overflow-auto">{children}</div>
-}
-
-function DetailLabel({ children }: { children: string }) {
-  return (
-    <div className="mono mt-[10px] text-[10px] font-semibold tracking-[.04em] text-(--text-tertiary)">{children}</div>
-  )
-}
-
-// One ACP ToolCallContent block: { type:'content', content } | { type:'diff', path,
-// oldText, newText } | { type:'terminal', terminalId }. Kept opaque in the schema,
-// so narrow structurally here.
-function ContentBlock({ block }: { block: unknown }) {
-  const t = useTranslations('Sessions.detail')
-  if (!block || typeof block !== 'object') return <CodeBlock>{fmtValue(block)}</CodeBlock>
-  const b = block as Record<string, unknown>
-  if (b.type === 'diff') {
-    const path = typeof b.path === 'string' ? b.path : ''
-    const oldText = typeof b.oldText === 'string' ? b.oldText : b.oldText == null ? '' : fmtValue(b.oldText)
-    const newText = typeof b.newText === 'string' ? b.newText : b.newText == null ? '' : fmtValue(b.newText)
-    return (
-      <div className="mt-[6px]">
-        {path && <span className="scope mb-1 inline-block">{path}</span>}
-        <div className="codeblk max-h-80 overflow-auto whitespace-pre-wrap">
-          {oldText.split('\n').map((l, i) => (
-            <div key={`o${i}`} className="text-(--red-600)">
-              - {l}
-            </div>
-          ))}
-          {newText.split('\n').map((l, i) => (
-            <div key={`n${i}`} className="text-(--green-500)">
-              + {l}
-            </div>
-          ))}
-        </div>
-      </div>
-    )
-  }
-  if (b.type === 'terminal') {
-    const ref = typeof b.terminalId === 'string' ? b.terminalId : fmtValue(b.terminalId)
-    return (
-      <div className="mt-[6px]">
-        <span className="scope">{t('terminal', { ref })}</span>
-      </div>
-    )
-  }
-  if (b.type === 'content') {
-    const inner = b.content as Record<string, unknown> | undefined
-    // ACP content block: usually { type:'text', text } — surface text directly.
-    if (inner && typeof inner === 'object' && typeof inner.text === 'string') return <CodeBlock>{inner.text}</CodeBlock>
-    return <CodeBlock>{fmtValue(b.content)}</CodeBlock>
-  }
-  return <CodeBlock>{fmtValue(block)}</CodeBlock>
-}
-
-/**
- * One MCP App card in the transcript, with the template its row was recorded with.
- *
- * A transcript page strips the template (a card is hundreds of KiB), so a row that came back
- * truncated is one fetch away from its page: this pulls the whole body back through the same
- * on-demand daemon read a large tool body uses, and hands the card its `html`. Until then — and
- * forever, if the read fails — the card renders exactly as it did before the template was kept.
- */
-function McpAppRow({
-  step,
-  sessionId,
-  onRpc,
-  onReport,
-  onClose
-}: {
-  step: FmtStep
-  sessionId?: string
-  onRpc?: McpAppCardProps['onRpc']
-  onReport?: McpAppCardProps['onReport']
-  onClose?: McpAppCardProps['onClose']
-}) {
-  const [full, setFull] = useState<NonNullable<FmtStep['app']> | null>(null)
-  const app = step.app
-  const appId = app?.appId
-  const toolCallId = step.msg?.toolCallId
-  const wants = !!appId && !!toolCallId && !!sessionId && !app?.html
-  useEffect(() => {
-    if (!wants) return
-    let live = true
-    fetchToolBody(sessionId!, toolCallId!).then(
-      (body) => {
-        const card = mcpAppCard(body)
-        if (live && card?.appId === appId) setFull(card)
-      },
-      () => {
-        // A card that cannot be fetched stays the preview it already is.
-      }
-    )
-    return () => {
-      live = false
-    }
-  }, [wants, sessionId, toolCallId, appId])
-  // The fetch supplies what the ROW shed; the row itself stays authoritative for everything it
-  // still carries. `outcome` is why that distinction matters: the fetched copy is a snapshot from
-  // whenever it was read, so letting it win would put a card the reader has since closed back on
-  // screen, frame and all, until the next reload.
-  const whole = app && full?.appId === app.appId && !app.html ? { ...step, app: mergeFetchedAppCard(app, full) } : step
-  return (
-    <McpAppCard
-      step={whole}
-      {...(onRpc ? { onRpc } : {})}
-      {...(onReport ? { onReport } : {})}
-      {...(onClose ? { onClose } : {})}
-    />
-  )
-}
-
-// The expandable body panel for one tool row: input, output, content blocks,
-// locations, plus a "view full" affordance when only a truncated preview is inline.
-function ToolBodyDetail({
-  msg,
-  sessionId,
-  autoOpen
-}: {
-  msg: SessionMessageDto
-  sessionId: string
-  autoOpen?: boolean
-}) {
-  const t = useTranslations('Sessions.detail')
-  const [open, setOpen] = useState(false)
-  const [full, setFull] = useState<{ source: SessionMessageDto; body: string } | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-
-  // A same-seq live update replaces `msg` with a fresher preview; fence the fetched
-  // full body against the (toolCallId, preview) it was fetched under so an older
-  // full response can never mask the new preview. Compared by CONTENT, not object
-  // identity: a live-streamed step rebuilds its `msg` on every render (fmtStep), so
-  // an identity fence would discard the fetch the moment the next chunk repaints.
-  const fullBody = full && full.source.toolCallId === msg.toolCallId && full.source.body === msg.body ? full.body : null
-  const bodyStr = fullBody ?? msg.body ?? null
-  let body: ToolBody | null = null
-  let parseErr = false
-  if (bodyStr) {
-    try {
-      body = JSON.parse(bodyStr) as ToolBody
-    } catch {
-      parseErr = true
-    }
-  }
-
-  const truncated = msg.bodyTruncated && fullBody == null
-  // Screenshots a computer tool stored, named by hash in its result (computer-use.md §9).
-  const screenshotRefs = useMemo(() => screenshotRefsIn(bodyStr, body?.screenshots), [bodyStr, body?.screenshots])
-  const badge = statusBadge(body?.status ?? msg.toolStatus)
-  const kind = body?.kind ?? msg.toolKind
-  const bytes = msg.bodyBytes
-
-  const loadFull = () => {
-    if (loading) return
-    setLoading(true)
-    setErr(null)
-    fetchToolBody(sessionId, msg.toolCallId ?? body?.toolCallId ?? '').then(
-      (s) => {
-        setFull({ source: msg, body: s })
-        setLoading(false)
-        setOpen(true)
-      },
-      (e) => {
-        setErr(e instanceof Error ? e.message : String(e))
-        setLoading(false)
-      }
-    )
-  }
-
-  const kb = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`)
-
-  // Live-only refresh: a fetched body is a point-in-time snapshot of a still-running
-  // call (rawOutput lands only on completion). The streamed tool_update flips
-  // `msg.toolStatus`; use that as the refetch signal so an open panel fills in the
-  // OUTPUT without waiting for the turn-end transcript reconciliation. Persisted
-  // rows (msg.body present) keep their own preview lifecycle and never refetch here.
-  const liveStale =
-    open &&
-    !loading &&
-    msg.body == null &&
-    full != null &&
-    full.source.toolCallId === msg.toolCallId &&
-    full.source.toolStatus !== msg.toolStatus
-  useEffect(() => {
-    if (liveStale) loadFull()
-    // loadFull is redefined per render (plain closure); liveStale already gates the
-    // refetch to one flip per status change, so it is deliberately the only dep.
-  }, [liveStale])
-
-  // A live step carries no inline preview at all (the hot-path frame never ships
-  // one) — opening it has nothing to show yet, so fetch the full body the same
-  // way the "View full" affordance does for a truncated persisted preview.
-  const toggle = () => {
-    if (!open && bodyStr == null) {
-      loadFull()
-      return
-    }
-    setOpen((o) => !o)
-  }
-
-  // autoOpen: the surrounding work row was expanded — that chevron is the only
-  // toggle, so show the body straight away instead of a second "View detail"
-  // click. Mount-time only (the row unmounts this on collapse); a live row with
-  // no inline preview fetches its full body the way the toggle would.
-  useEffect(() => {
-    if (!autoOpen) return
-    if (bodyStr == null) loadFull()
-    else setOpen(true)
-    // The one-shot open must not re-fire on body/preview churn while open.
-  }, [autoOpen])
-
-  return (
-    <div className="mt-[6px]">
-      <div className="flex flex-wrap items-center gap-2">
-        {autoOpen ? (
-          loading && <Spinner size={13} />
-        ) : (
-          <button
-            onClick={toggle}
-            disabled={loading}
-            className="inline-flex cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)"
-          >
-            {loading ? <Spinner size={13} /> : <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} />}
-            {open ? 'Hide detail' : 'View detail'}
-          </button>
-        )}
-        {err && bodyStr == null && (
-          <span className="font-sans text-[10.5px] font-medium leading-normal text-(--red-600)">{err}</span>
-        )}
-        {/* "Search completed" as plain text — the status colours the words, no chips. */}
-        {(kind || badge) && (
-          <span
-            className="font-sans text-[11.5px] font-medium leading-normal"
-            style={{ color: badge?.text ?? 'var(--text-tertiary)' }}
-          >
-            {[kind && kind.charAt(0).toUpperCase() + kind.slice(1), body?.status ?? msg.toolStatus]
-              .filter(Boolean)
-              .join(' ')}
-          </span>
-        )}
-        {truncated && bytes != null && (
-          <span className="font-sans text-[10.5px] font-medium leading-normal text-(--text-tertiary)">
-            {t('truncatedPreview', { size: kb(bytes) })}
-          </span>
-        )}
-      </div>
-
-      {open && (
-        <div className="mt-1">
-          {parseErr ? (
-            <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--red-600)">
-              {t('toolBodyParseError')}
-            </div>
-          ) : body ? (
-            <>
-              {body.rawInput != null && (
-                <>
-                  <DetailLabel>{t('input')}</DetailLabel>
-                  <CodeBlock>{fmtValue(body.rawInput)}</CodeBlock>
-                </>
-              )}
-              {body.rawOutput != null && (
-                <>
-                  <DetailLabel>{t('output')}</DetailLabel>
-                  <CodeBlock>{fmtValue(body.rawOutput)}</CodeBlock>
-                </>
-              )}
-              {body.content && body.content.length > 0 && (
-                <>
-                  <DetailLabel>{t('content')}</DetailLabel>
-                  {body.content.map((c, i) => (
-                    <ContentBlock key={i} block={c} />
-                  ))}
-                </>
-              )}
-              {screenshotRefs.length > 0 && (
-                <>
-                  <DetailLabel>{t('screenshots')}</DetailLabel>
-                  <ComputerScreenshots sessionId={sessionId} refs={screenshotRefs} />
-                </>
-              )}
-              {body.locations && body.locations.length > 0 && (
-                <>
-                  <DetailLabel>{t('locations')}</DetailLabel>
-                  <div className="mt-[6px] flex flex-wrap gap-[6px]">
-                    {body.locations.map((l, i) => (
-                      <span key={i} className="scope">
-                        {l.path}
-                        {l.line != null ? `:${l.line}` : ''}
-                      </span>
-                    ))}
-                  </div>
-                </>
-              )}
-              {(truncated || body.truncated) && (
-                <div className="mt-[10px]">
-                  {err && (
-                    <div className="mb-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--red-600)">
-                      {err}
-                    </div>
-                  )}
-                  <button
-                    onClick={loadFull}
-                    disabled={loading}
-                    className={`iconbtn w-auto gap-[6px] px-[11px] py-1 font-sans text-[11.5px] font-semibold leading-normal ${
-                      loading ? 'opacity-60' : ''
-                    }`}
-                  >
-                    {loading ? <Spinner size={13} /> : <Icon name="maximize-2" size={13} />}
-                    {t('viewFull')}
-                  </button>
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              {t('noToolBody')}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
 }
 
 type Turn =
@@ -5723,11 +4881,6 @@ export default function SessionDetailView() {
                               const textSteps = saidSteps.filter(
                                 (s) => s.lane !== ELICIT_LANE && s.lane !== APP_LANE && s.lane !== CAPABILITY_LANE
                               )
-                              const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
-                              // Reasoning steps / tool commands / distinct edited files.
-                              const { thinkCount, toolCount, editCount } = workCounts(workSteps)
-                              const summary = workSummary(thinkCount, toolCount, editCount)
-                              // A tagged turn asks its own busy lane (multi-agent webchat); untagged streams fall back to the trailing turn.
                               const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
                               const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
                               // The lane names the busy agent only, so only that agent's last turn streams.
@@ -5741,27 +4894,7 @@ export default function SessionDetailView() {
                                 agentLastIndex: turn.agentId ? lastBotTurnIndexByAgent.get(turn.agentId) : undefined
                               })
                               const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
-                              // Work runs while any tool row is unsettled (parallel calls update in place) or a trailing work step is unfinished.
-                              const stepDone = (st?: FmtStep) =>
-                                ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
-                              const activeTool = [...workSteps]
-                                .reverse()
-                                .find((st) => st.msg?.toolCallId && !stepDone(st))
-                              const lastStep = turn.steps[turn.steps.length - 1]
-                              const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
-                              const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
-                              const workRunning = streaming && liveStep !== undefined
-                              // The live line: the running step's first line (tool rows keep the command in `code`), markdown stripped.
-                              const liveRaw =
-                                workRunning && liveStep
-                                  ? (liveStep.text || liveStep.code)?.trimStart().split('\n', 1)[0]?.trim()
-                                  : undefined
-                              const liveLine = liveRaw && liveStep?.text ? stripMdMarkers(liveRaw) : liveRaw
-                              // Step identity keys the fade-in, since two consecutive steps can share a first line.
-                              const liveKey =
-                                liveStep && liveLine
-                                  ? `${liveStep.msg?.toolCallId ?? turn.steps.indexOf(liveStep)}:${liveLine}`
-                                  : undefined
+                              const { workSteps, summary, liveLine, liveKey } = turnWork(turn.steps, streaming)
                               // Keyed by agent id so the colour survives a rename; an id-less row falls back to its name.
                               const turnTone = agentToneColor(turn.agentId || turn.agentName)
                               // What the turn's copy button copies: the spoken answer.
@@ -5810,18 +4943,7 @@ export default function SessionDetailView() {
                                     <div className="flex min-w-0 flex-col gap-[10px]">
                                       {/* Work happens before the answer, so the open panel sits right under the header. */}
                                       {workSteps.length > 0 && openWork && (
-                                        <div className="overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
-                                          {workSteps.map((st, si) => (
-                                            <WorkStepRow
-                                              // Keyed by tool identity so an open row survives new steps streaming in; THINK rows use the index.
-                                              key={st.msg?.toolCallId ?? `i:${si}`}
-                                              step={st}
-                                              sessionId={toolSid}
-                                              divider={si > 0}
-                                              live={streaming}
-                                            />
-                                          ))}
-                                        </div>
+                                        <WorkStepList steps={workSteps} sessionId={toolSid} live={streaming} />
                                       )}
                                       {noticeSteps.length > 0 && (
                                         <div className="flex min-w-0 flex-col gap-[3px]">

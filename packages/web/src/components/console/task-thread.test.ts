@@ -71,4 +71,33 @@ describe('threadEntries', () => {
       ['Fill the form', { requestId: 'q-form', choices: null, text: null }]
     ])
   })
+
+  it('makes one agent turn of its consecutive work and replies, each reply its own block', () => {
+    const entries = threadEntries(
+      threadMessages(
+        page([
+          row(1, 'user_dana', 'go'),
+          row(2, 'agent_1', 'Planning', 'reasoning'),
+          row(3, 'agent_1', 'gh pr list', 'tool'),
+          row(4, 'agent_1', 'Three are clear.'),
+          row(5, 'agent_1', 'Two need review.'),
+          row(6, 'bot_peer', 'Noted.'),
+          row(7, 'agent_1', 'Thanks.')
+        ])
+      ),
+      [
+        { kind: 'tool', turnId: 't1', text: 'pnpm test', toolCallId: 'c1', toolStatus: 'in_progress' },
+        { kind: 'done', turnId: 't1', text: 'Tests are running.' }
+      ],
+      'agent_1',
+      (m) => (m.sender === 'bot_peer' ? 'agent_peer' : undefined)
+    )
+    expect(entries.map((e) => [e.who, e.prose ?? e.text, (e.work ?? []).map((w) => w.lane), e.live])).toEqual([
+      ['person', 'go', [], false],
+      ['agent', ['Three are clear.', 'Two need review.'], ['THINK', 'TOOL'], false],
+      ['agent', 'Noted.', [], false],
+      ['agent', ['Thanks.'], [], false],
+      ['agent', ['Tests are running.'], ['TOOL'], true]
+    ])
+  })
 })

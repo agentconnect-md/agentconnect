@@ -11,7 +11,8 @@ import { AgentIconView } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { taskStateKey, taskTone, type MarkTone } from '@/components/console/task-list'
-import { typedInvalidReason } from '@/components/console/session-work'
+import { turnSpan, typedInvalidReason } from '@/components/console/session-work'
+import { turnWork, WorkStepList } from '@/components/console/WorkPanel'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
 import {
@@ -237,10 +238,12 @@ export function TaskThreadPanel({
             {t('loadFailed')}
           </span>
         ) : null}
-        {entries.map((entry) => (
+        {entries.map((entry, i) => (
           <ThreadMessage
             key={entry.key}
             entry={entry}
+            sessionId={id}
+            streaming={busy && i === entries.length - 1}
             speaker={speakerOf(entry)}
             you={t('you')}
             person={t('person')}
@@ -258,13 +261,11 @@ export function TaskThreadPanel({
             ) : null}
           </ThreadMessage>
         ))}
-        {busy ? (
-          <div className="flex items-start gap-[9px]" style={own.accent}>
+        {/* Until the agent's turn shows, which then says it is working in its header, as the session page does. */}
+        {busy && !(last?.who === 'agent' && last.live && !last.agentId) ? (
+          <div className="flex items-center gap-[9px]" style={own.accent}>
             <span className="av h-6 w-6 flex-none rounded-md">{own.avatar}</span>
-            <span
-              role="status"
-              className="rounded-[11px] bg-(--brand-soft) px-[13px] py-[7px] font-sans text-[12.5px] font-normal leading-normal text-(--brand-soft-text)"
-            >
+            <span role="status" className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
               {t('working', { agent: agentName })}
             </span>
           </div>
@@ -301,6 +302,8 @@ interface Speaker {
 
 function ThreadMessage({
   entry,
+  sessionId,
+  streaming,
   speaker,
   you,
   person,
@@ -308,37 +311,66 @@ function ThreadMessage({
   children
 }: {
   entry: ThreadEntry
+  /** The task's session, which a work row's full tool body is read from. */
+  sessionId: string
+  /** The task is still answering and this is its latest entry. */
+  streaming: boolean
   speaker: Speaker
   you: string
   person: string
   time: string | null
   children?: ReactNode
 }) {
+  const [openWork, setOpenWork] = useState(false)
   const said = entry.text.trim() ? <MessageText text={entry.text} platform="webchat" /> : null
-  if (entry.who === 'agent')
+  if (entry.who === 'agent') {
+    // The same turn the session page draws: one header folding the work, then one prose block per message posted.
+    const { workSteps, summary, liveLine, liveKey } = turnWork(entry.work ?? [], streaming)
+    const prose = entry.prose ?? (entry.text.trim() ? [entry.text] : [])
     return (
       <div
         data-thread-message="agent"
         data-thread-agent={entry.agentId}
-        className="flex min-w-0 items-start gap-[9px]"
+        className="group/turn flex min-w-0 items-start gap-[9px]"
         style={speaker.accent}
       >
         <span className="av h-6 w-6 flex-none rounded-md">{speaker.avatar}</span>
         <div className="min-w-0 flex-1">
-          <AgentTurnHeader name={speaker.name}>
+          <AgentTurnHeader
+            name={speaker.name}
+            {...(workSteps.length > 0
+              ? {
+                  work: {
+                    summary,
+                    open: openWork,
+                    onToggle: () => setOpenWork((open) => !open),
+                    running: streaming,
+                    span: turnSpan(entry.times ?? []),
+                    liveLine,
+                    liveKey
+                  }
+                }
+              : {})}
+          >
             {time ? (
               <span className="font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">{time}</span>
             ) : null}
           </AgentTurnHeader>
-          {said ? (
-            <div className={`${AGENT_PROSE} whitespace-pre-wrap`} data-agent-prose="">
-              {said}
-            </div>
-          ) : null}
-          {children}
+          <div className="flex min-w-0 flex-col gap-[10px]">
+            {workSteps.length > 0 && openWork ? (
+              <WorkStepList steps={workSteps} sessionId={sessionId} live={streaming} />
+            ) : null}
+            {prose.map((text, i) => (
+              <div key={i} className={`${AGENT_PROSE} whitespace-pre-wrap`} data-agent-prose="">
+                <MessageText text={text} platform="webchat" />
+              </div>
+            ))}
+            {children}
+          </div>
         </div>
       </div>
     )
+  }
   const name = entry.name ?? (entry.live ? you : person)
   return (
     <div data-thread-message="person" className="flex min-w-0 items-start justify-end gap-2">
