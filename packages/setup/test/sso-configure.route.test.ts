@@ -206,9 +206,13 @@ describe('enterprise SSO configuration', () => {
       (await post(app, '/api/v1/configure/sso', { connector: { name: 'Example SAML', saml: {} } })).statusCode
     ).toBe(400)
     const saml = { metadataUrl: 'https://idp.example.test/metadata', attributeMapping: { email: 'mail' } }
-    expect((await post(app, '/api/v1/configure/sso', { connector: { name: 'Example SAML', saml } })).statusCode).toBe(
-      200
-    )
+    // Without a domain Logto would silently refuse the connector at sign-in, so Setup refuses it here.
+    const noDomain = await post(app, '/api/v1/configure/sso', { connector: { name: 'Example SAML', saml } })
+    expect(noDomain.statusCode).toBe(400)
+    expect(noDomain.body).toContain('email domain')
+    const configure = (domains: string[]) =>
+      post(app, '/api/v1/configure/sso', { connector: { name: 'Example SAML', domains, saml } })
+    expect((await configure(['example.test'])).statusCode).toBe(200)
     expect((await post(app, '/api/v1/reconcile/logto', {})).statusCode).toBe(200)
     expect(reconciled.at(-1)?.sso).toMatchObject({
       providerName: 'SAML',
