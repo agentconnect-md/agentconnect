@@ -121,6 +121,8 @@ describe('the coordinator prompt and batch', () => {
       'listReminders',
       'propose'
     ])
+    // send-message-guide.md goal 3: one flat object, no top-level oneOf for runtimes that ignore it.
+    expect(tools[0]?.inputSchema).not.toHaveProperty('oneOf')
   })
 
   // auto-session-mode.md §3.4: a report reaches the coordinator beside channel messages, framed apart from them.
@@ -575,6 +577,57 @@ describe('the coordinator’s outcomes', () => {
     )
     await sessions.decide(ctx, { action: 'replyToMessage', messageId: 'msg-1.1', message: 'Morning!' })
     expect(posted).toEqual([{ msg: expect.objectContaining({ msgId: 'slack:C1:1.1' }), text: 'Morning!' }])
+  })
+
+  it('reads a blank or null field as absent on every action, and still rejects a meaningful foreign one', async () => {
+    const { sessions, ctx, posted } = await setup()
+    const asked: unknown[] = []
+    const deps = {
+      coordinatorDecision: (c: SessionContext, a: Record<string, unknown>) => sessions.decide(c, a),
+      messageAgent: vi.fn(async (req: unknown) => {
+        asked.push(req)
+        return { delivered: true }
+      })
+    } as never
+    const blanks = { messageId: '', taskId: '', title: '', channel: '', thread: '', toAgent: '' }
+    begin(sessions, slack('1.1'))
+    await expect(
+      executeTool(
+        ctx,
+        'sendMessage',
+        { ...blanks, action: 'replyToMessage', messageId: 'msg-1.1', message: 'Morning!', taskId: null },
+        deps
+      )
+    ).resolves.toMatchObject({ ok: true })
+    expect(posted).toEqual([{ msg: expect.objectContaining({ msgId: 'slack:C1:1.1' }), text: 'Morning!' }])
+
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { ...blanks, action: 'callAgent', toAgent: 'billing', message: 'Done?' },
+      deps
+    )
+    expect(asked).toEqual([expect.objectContaining({ needsReply: true })])
+
+    // A blank channel names no channel rather than an empty one.
+    await expect(
+      executeTool(ctx, 'sendMessage', { ...blanks, action: 'postMessage', message: 'Heads-up' }, deps)
+    ).rejects.toThrow(/requires `toUser` or `channel`/)
+
+    // A blank field the action requires is still missing.
+    begin(sessions, slack('1.2'))
+    await expect(
+      executeTool(ctx, 'sendMessage', { action: 'replyToMessage', messageId: 'msg-1.2', message: '  ' }, deps)
+    ).rejects.toThrow(/replyToMessage needs a message/)
+    await expect(
+      executeTool(
+        ctx,
+        'sendMessage',
+        { action: 'replyToMessage', messageId: 'msg-1.2', message: 'Hi', channel: 'C2' },
+        deps
+      )
+    ).rejects.toThrow(/unrecognized/i)
+    expect(posted).toHaveLength(1)
   })
 
   it('never posts a turn’s final text, sentinel or not, and opens a task for a mention left without an outcome', async () => {

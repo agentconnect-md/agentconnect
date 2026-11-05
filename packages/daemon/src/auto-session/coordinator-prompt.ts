@@ -100,6 +100,22 @@ const LIST_TASKS_DESCRIPTION =
 
 const str = (description: string) => ({ type: 'string', description })
 
+/** The coordinator's `sendMessage` arguments besides `action`; each description names the actions it serves. */
+const SEND_MESSAGE_FIELDS = {
+  messageId: str(
+    'Id of the delivered channel message or report this call decides on; not for postMessage or callAgent.'
+  ),
+  taskId: str('messageTask only: the open task to hand the message to.'),
+  title: str('delegateTask only: a short name for the new task, at most eight words.'),
+  message: str(
+    'replyToMessage and postMessage: the text to post. callAgent: what to ask. delegateTask/messageTask: optional ' +
+      'background the task cannot see in the message itself.'
+  ),
+  channel: str('postMessage only: the channel id to post in, normally this one.'),
+  thread: str('postMessage only: the thread to post in; the channel root when omitted.'),
+  toAgent: str('callAgent only: the name of the agent to ask.')
+}
+
 /** The coordinator's `sendMessage`: the three decisions, each naming its message. */
 export const COORDINATOR_SEND_MESSAGE_TOOL: ToolDescriptor = {
   name: 'sendMessage',
@@ -111,22 +127,22 @@ export const COORDINATOR_SEND_MESSAGE_TOOL: ToolDescriptor = {
         type: 'string',
         enum: ['delegateTask', 'messageTask', 'replyToMessage', 'postMessage', 'callAgent']
       },
-      messageId: str(
-        'Id of the delivered channel message or report this call decides on; not for postMessage or callAgent.'
-      ),
-      taskId: str('messageTask only: the open task to hand the message to.'),
-      title: str('delegateTask only: a short name for the new task, at most eight words.'),
-      message: str(
-        'replyToMessage and postMessage: the text to post. callAgent: what to ask. delegateTask/messageTask: optional ' +
-          'background the task cannot see in the message itself.'
-      ),
-      channel: str('postMessage only: the channel id to post in, normally this one.'),
-      thread: str('postMessage only: the thread to post in; the channel root when omitted.'),
-      toAgent: str('callAgent only: the name of the agent to ask.')
+      ...SEND_MESSAGE_FIELDS
     },
     required: ['action'],
     additionalProperties: false
   }
+}
+
+/** A blank or null advertised field is absent: some runtimes fill every field they leave unused with ''. */
+export function withoutBlankCoordinatorFields(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(args).filter(
+      ([key, value]) =>
+        !Object.hasOwn(SEND_MESSAGE_FIELDS, key) ||
+        (value !== null && (typeof value !== 'string' || value.trim() !== ''))
+    )
+  )
 }
 
 /** The coordinator's `listTasks`, the shared handler under the coordinator's description. */

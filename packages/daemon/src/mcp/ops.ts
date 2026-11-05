@@ -69,7 +69,7 @@ import {
   type MemoryOpsDeps
 } from './ops/memory.js'
 import { parseAgentTarget, type MessagingDeps } from './ops/messaging.js'
-import { COORDINATOR_MESSAGE_TOOLS } from '../auto-session/coordinator-prompt.js'
+import { COORDINATOR_MESSAGE_TOOLS, withoutBlankCoordinatorFields } from '../auto-session/coordinator-prompt.js'
 import { sendMessage, validateSendMessageAction } from './ops/send-message-actions.js'
 import { taskReachOf } from './ops/task-reach.js'
 import { getToolGuide, GET_TOOL_GUIDE_ARGS } from './ops/tool-guide.js'
@@ -478,6 +478,7 @@ export async function executeTool(
   if (isCoordinatorCoordinate(ctx.thread)) {
     if (!ctx.tools.some((tool) => tool.name === name))
       throw new Error(`${name} is not available to the coordinator, which only decides where each message goes`)
+    if (name === 'sendMessage') args = withoutBlankCoordinatorFields(args)
     if (name === 'sendMessage' && args.action !== 'postMessage' && args.action !== 'callAgent') {
       if (!deps.coordinatorDecision) throw new Error('sendMessage: the coordinator is not available on this daemon')
       return await deps.coordinatorDecision(ctx, args)
