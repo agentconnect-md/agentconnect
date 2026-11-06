@@ -54,7 +54,8 @@ export function TaskThreadPanel({
   approvals,
   onBack,
   taskApprovals,
-  runtimeContext
+  runtimeContext,
+  personPicture
 }: {
   /** The coordinator's agent, which runs the task. */
   agentId: string
@@ -82,6 +83,8 @@ export function TaskThreadPanel({
     agentRuntime: string
     editable: boolean
   }
+  /** A person's console photo by sender, as the session page draws it; undefined asks for this visit's own sends. */
+  personPicture?: (sender: string | undefined) => string | undefined
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
@@ -154,8 +157,10 @@ export function TaskThreadPanel({
   const title = row?.title ?? task.title
   const tone = row ? taskTone(row, null) : null
   const pageHref = orgPath(`/sessions/${encodeURIComponent(id)}`)
+  const agentHref = (agent: string): string => orgPath(`/agents/${encodeURIComponent(agent)}`)
   const own: Speaker = {
     name: agentName,
+    ...(agentId ? { href: agentHref(agentId) } : {}),
     avatar: <AgentIconView icon={agentIcon ?? null} runtime={agentRuntime ?? ''} size={24} />,
     accent: { '--agent-accent': agentToneColor(agentId || agentName) } as CSSProperties
   }
@@ -165,6 +170,7 @@ export function TaskThreadPanel({
     if (!peer) return own
     return {
       name: agentLabel(peer),
+      href: agentHref(peer.id),
       avatar: <AgentIconView icon={peer.icon ?? null} runtime={peer.runtime ?? ''} size={24} />,
       accent: { '--agent-accent': agentToneColor(peer.id) } as CSSProperties
     }
@@ -259,6 +265,7 @@ export function TaskThreadPanel({
               streaming={busy && i === entries.length - 1}
               promptMs={exchangePromptMs(promptTurns, i)}
               speaker={speakerOf(entry)}
+              picture={entry.who === 'person' ? (entry.avatarUrl ?? personPicture?.(entry.sender)) : undefined}
               you={t('you')}
               person={t('person')}
               time={entry.at ? format.dateTime(new Date(entry.at), { hour: 'numeric', minute: '2-digit' }) : null}
@@ -282,7 +289,7 @@ export function TaskThreadPanel({
         {/* Until the agent's turn shows, which then says it is working in its header, as the session page does. */}
         {busy && !(last?.who === 'agent' && last.live && !last.agentId) ? (
           <div className="flex items-center gap-[9px]" style={own.accent}>
-            <span className="av h-6 w-6 flex-none rounded-md">{own.avatar}</span>
+            <SpeakerAvatar speaker={own} />
             <span role="status" className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
               {t('working', { agent: agentName })}
             </span>
@@ -356,6 +363,18 @@ interface Speaker {
   name: string
   avatar: ReactNode
   accent: CSSProperties
+  /** The agent's page, which its mark opens as the session page's does. */
+  href?: string
+}
+
+function SpeakerAvatar({ speaker }: { speaker: Speaker }) {
+  const box = 'av h-6 w-6 flex-none rounded-md'
+  if (!speaker.href) return <span className={box}>{speaker.avatar}</span>
+  return (
+    <Link href={speaker.href} data-thread-agent-link="" className={box} title={speaker.name} aria-label={speaker.name}>
+      {speaker.avatar}
+    </Link>
+  )
 }
 
 function ThreadMessage({
@@ -364,6 +383,7 @@ function ThreadMessage({
   streaming,
   promptMs,
   speaker,
+  picture,
   you,
   person,
   time,
@@ -377,6 +397,8 @@ function ThreadMessage({
   /** When the message this turn answers was sent, for a turn whose own rows cannot measure it. */
   promptMs: number | undefined
   speaker: Speaker
+  /** A person's photo: the platform's, else their console one. */
+  picture: string | undefined
   you: string
   person: string
   time: string | null
@@ -395,7 +417,7 @@ function ThreadMessage({
         className="group/turn flex min-w-0 items-start gap-[9px]"
         style={speaker.accent}
       >
-        <span className="av h-6 w-6 flex-none rounded-md">{speaker.avatar}</span>
+        <SpeakerAvatar speaker={speaker} />
         <div className="min-w-0 flex-1">
           <AgentTurnHeader
             name={speaker.name}
@@ -447,9 +469,9 @@ function ThreadMessage({
         {said ? <div className={`${SELF_BUBBLE} min-w-0 whitespace-pre-wrap break-words`}>{said}</div> : null}
         {children}
       </div>
-      {entry.avatarUrl ? (
+      {picture ? (
         <img
-          src={entry.avatarUrl}
+          src={picture}
           alt=""
           aria-hidden
           data-thread-avatar=""

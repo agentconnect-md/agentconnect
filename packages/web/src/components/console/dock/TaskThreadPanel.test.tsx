@@ -463,6 +463,30 @@ describe('TaskThreadPanel', () => {
     expect(avatars.map((img) => img.getAttribute('src'))).toEqual(['https://avatars.example/sam.png'])
   })
 
+  it('shows a member’s console photo where the platform supplied none, and the reader’s own for this visit’s sends', async () => {
+    const asked: (string | undefined)[] = []
+    props = {
+      personPicture: (sender) => {
+        asked.push(sender)
+        return sender === 'user_dana' ? 'https://avatars.example/dana.png' : 'https://avatars.example/me.png'
+      }
+    }
+    wire.live = [{ kind: 'msg', text: 'and the sixth?' } as SessionStep]
+    await render()
+    const avatars = Array.from(container.querySelectorAll<HTMLImageElement>('[data-thread-avatar]'))
+    expect(avatars.map((img) => img.getAttribute('src'))).toEqual([
+      'https://avatars.example/dana.png',
+      'https://avatars.example/me.png'
+    ])
+    expect(asked).toContain(undefined)
+  })
+
+  it('opens the agent’s page from its mark', async () => {
+    await render()
+    const link = container.querySelector('[data-thread-message="agent"] [data-thread-agent-link]')
+    expect(link?.getAttribute('href')).toBe('/acme/agents/agent_1')
+  })
+
   it('asks for approval of only the writes this task raised, and tells the task the outcome', async () => {
     const pending = (operationId: string, toolName: string) => ({
       operationId,
