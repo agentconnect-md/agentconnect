@@ -28,6 +28,8 @@ export interface HttpServerOptions {
   viewer?: Viewer
   // Checks only the running daemon can answer (its tray and hotkey), appended to doctor's.
   localChecks?: () => Check[]
+  // Linux: the per-agent desktops switch and the desktops it runs (computer-use.md §3.9).
+  desktops?: { set(on: boolean): Promise<void>; describe(): unknown }
 }
 
 export interface RunningHttpServer {
@@ -168,6 +170,10 @@ async function control(
     computer.pause(LOCAL_OWNER_STOP_REASON)
     options.log('PAUSED by local owner: all agent input is blocked until resume')
     return send(res, 200, computer.info())
+  }
+  if (path === '/control/desktops' && options.desktops) {
+    if (req.method === 'POST') await options.desktops.set(query.get('on') === '1')
+    return send(res, 200, options.desktops.describe())
   }
   if (path === '/control/resume' && req.method === 'POST') {
     computer.resume()

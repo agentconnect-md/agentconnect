@@ -10,6 +10,9 @@ import { AdminPromptHelper } from './admin-prompts.js'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
 import { browserCloseCommand, browserCommand } from './browser/command.js'
 import { CommandLine, commandLineSupported, narrowedCommandLine } from './command-line.js'
+import { installable, offerDesktopInstall } from './linux/desktops-install.js'
+import { describeDesktops, probeDesktopSupport, type DesktopSupport } from './linux/desktops-support.js'
+import { DesktopManager } from './linux/desktops.js'
 import { AuditReporter } from './cp/audit-report.js'
 import { ScreenshotStore } from './cp/screenshot-store.js'
 import { disableAutostart, enableAutostart, startAutostartNow } from './autostart.js'
@@ -42,7 +45,12 @@ import { appBundlePath, managedEntry, menuBarHelperPath, runSelf, selfCommand, s
 import { ChannelAuthority } from './cp/authority.js'
 import { ComputerCpClient } from './cp/client.js'
 import { consoleStopHandler } from './cp/console-stop.js'
-import { DAEMON_CONSOLE_STOP_REASON, startLocalControls, type LocalControls } from './local-controls.js'
+import {
+  DAEMON_CONSOLE_STOP_REASON,
+  startLocalControls,
+  type LocalControls,
+  type LocallyControlled
+} from './local-controls.js'
 import { macMenuBarHost } from './menu-bar-host.js'
 import { windowsMenuBarHost } from './menu-bar-host-windows.js'
 import { watchAccessibility, type AccessibilityWatch } from './accessibility-watch.js'
@@ -136,15 +144,17 @@ Commands:
                                                (read-only; exits 1 when a required check fails);
                                                --daemon also fails when no daemon answers (health checks)
   autostart enable | disable | start           Windows without the service: start 'run' at logon (Run key)
+  browser --profile DIR [--master DIR] [--source DIR]... [--browser PATH] [-- ARGS]
+                                               start a desktop's Chromium on its own profile, first merging the
+                                               logins of the other profiles into it (or hand ARGS to the running one)
+  browser-close --profile DIR [--display :N]   close that browser the way a person would, so it saves its cookies
+  desktops [on | off | status]                 Linux: give each agent its own desktop (where the machine can:
+                                               Xvfb, D-Bus and Xfce), or let agents share this one (the default)
   service install | uninstall [--purge] | start | stop | restart | status
                                                background service: macOS .app LaunchAgent (the app holds
                                                the permissions), Linux systemd user unit (graphical session),
                                                Windows service running the daemon as SYSTEM in the signed-in
                                                session, which can reach UAC prompts (asks for approval)
-  browser --profile DIR [--master DIR] [--source DIR]... [--browser PATH] [-- ARGS]
-                                               start a desktop's Chromium on its own profile, first merging the
-                                               logins of the other profiles into it (or hand ARGS to the running one)
-  browser-close --profile DIR [--display :N]   close that browser the way a person would, so it saves its cookies
 
 Data dir: ${dataDir()}`
 
@@ -177,6 +187,7 @@ async function main(): Promise<void> {
       'cp-url': { type: 'string' },
       name: { type: 'string' },
       purge: { type: 'boolean' },
+      desktop: { type: 'string' },
       profile: { type: 'string' },
       master: { type: 'string' },
       source: { type: 'string', multiple: true },
@@ -312,6 +323,12 @@ async function main(): Promise<void> {
     }
     case 'service':
       return await serviceCommand(dir, loadConfig(dir), rest[0], Boolean(values.purge))
+    case 'browser':
+      return browserCommand(values, rest, log, dir)
+    case 'browser-close':
+      return browserCloseCommand(values, log)
+    case 'desktops':
+      return desktopsCommand(dir, rest[0])
     case 'autostart': {
       const action = rest[0]
       if (action === 'enable') enableAutostart(dir, serviceEntry())
@@ -320,10 +337,6 @@ async function main(): Promise<void> {
       else throw new Error('usage: autostart enable | disable | start')
       return void console.log(`autostart ${action}: ok`)
     }
-    case 'browser':
-      return browserCommand(values, rest, log)
-    case 'browser-close':
-      return browserCloseCommand(values, log)
     default:
       throw new Error(`unknown command "${command}"\n\n${help()}`)
   }
@@ -397,7 +410,8 @@ function buildComputer(
   screenshots?: ScreenshotStash,
   adminPrompts?: ComputerDeps['adminPrompts'],
   name = process.env[COMPUTER_NAME_ENV]?.trim() || hostname(),
-  onHalt?: (reason: string) => void
+  onHalt?: (reason: string) => void,
+  owner?: Pick<ComputerDeps, 'onOwnerPause' | 'onOwnerResume'>
 ) {
   const wrapper = driverWrapper()
   const driver = new CuaDriver({
@@ -420,6 +434,7 @@ function buildComputer(
       : {}),
     ...(adminPrompts ? { adminPrompts } : {}),
     ...(onHalt ? { onHalt } : {}),
+    ...owner,
     profile: { name: name.slice(0, 120), osVersion: osVersion(), session: sessionKind(), isolation: isolationKind() }
   })
   return { driver, computer }
@@ -722,6 +737,8 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     local?: LocalControls
     accessibility?: AccessibilityWatch
     computer?: Computer
+    // Linux: the per-agent desktops (computer-use.md §3.9).
+    desktops?: DesktopManager
     // The policy the Control Plane last sent, which narrows a channel token's command-line tier at once (§5.7).
     policy?: ComputerPolicy
   } = {}
@@ -733,6 +750,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     onLost: (state) => {
       const reason = state.kind === 'revoked' ? 'computer revoked' : 'Control Plane unreachable'
       computer.suspend(reason)
+      live.desktops?.suspendAll(reason)
       live.viewer?.disconnectAll(reason)
       // No new data-plane calls without a live key; the next roster push after reconnecting reattaches.
       live.channel?.relays.stop()
@@ -796,7 +814,8 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     screenshotStore?.stash,
     adminPromptHelper ? { source: adminPromptHelper, mode: () => config.adminPrompts } : undefined,
     undefined,
-    (reason) => commandLine?.halt(reason)
+    (reason) => commandLine?.halt(reason),
+    { onOwnerPause: (reason) => live.desktops?.pauseAll(reason), onOwnerResume: () => live.desktops?.resumeAll() }
   )
   live.computer = computer
   setTitle('online')
@@ -810,6 +829,61 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     scale: sized(screenSize.scale_factor) || 1
   })
   log(`Cua Driver ${driver.version ?? '?'} started (${resolveDriverPath(dir, config.driverPath)})`)
+  // Re-probed when switched on, so packages `desktops on` just installed count without a restart.
+  const desktopSupport: { current: DesktopSupport } | undefined =
+    process.platform === 'linux' ? { current: await probeDesktopSupport() } : undefined
+  if (desktopSupport) {
+    log(`per-agent desktops: ${describeDesktops(config.perAgentDesktops, desktopSupport.current)}`)
+  }
+  if (desktopSupport) {
+    live.desktops = new DesktopManager({
+      dataDir: dir,
+      config,
+      support: () => desktopSupport.current,
+      self: [process.execPath, resolve(process.argv[1]!)],
+      build: ({ id, label, env, launchBrowser }) => {
+        const prefixed = (line: string): void => log(`desktop ${id}: ${line}`)
+        const desktopDriver = new CuaDriver({
+          command: resolveDriverPath(dir, config.driverPath),
+          callTimeoutMs: config.driverCallTimeoutMs,
+          log: prefixed,
+          env
+        })
+        const desktop = new Computer({
+          driver: desktopDriver,
+          config,
+          audit: auditSinks(fileAuditSink(join(dir, 'audit.log')), ...(auditReport ? [auditReport.sink] : [])),
+          log: prefixed,
+          onStatus: () => live.local?.update(),
+          refusal: () => authority.refusal(),
+          ...(screenshotStore ? { screenshots: screenshotStore.stash } : {}),
+          launchBrowser,
+          profile: {
+            name: `${String(computer.info().name)} · ${label}`.slice(0, 120),
+            osVersion: osVersion(),
+            session: 'xvfb',
+            isolation: isolationKind()
+          }
+        })
+        return { driver: desktopDriver, computer: desktop }
+      },
+      log,
+      onChange: () => live.local?.update()
+    })
+  }
+  // The tray's switch applies at once and saves itself so the next start agrees.
+  const setDesktops = async (on: boolean): Promise<void> => {
+    config.perAgentDesktops = on
+    try {
+      saveConfig({ ...loadConfig(dir), perAgentDesktops: on }, dir)
+    } catch (error) {
+      log(`per-agent desktops: could not save the setting: ${(error as Error).message}`)
+    }
+    if (on && desktopSupport && !desktopSupport.current.supported) desktopSupport.current = await probeDesktopSupport()
+    log(`per-agent desktops switched ${on ? 'on' : 'off'}`)
+    live.local?.update()
+    if (!on) await live.desktops?.stopAll('per-agent desktops switched off')
+  }
   if (process.platform === 'darwin') await warnMissingMacPermissions(driver)
   // Under launchd the .app asks for its own grants once; the dialogs appear on the Mac's screen.
   if (process.platform === 'darwin' && appBundlePath() && !process.stdin.isTTY) {
@@ -865,11 +939,41 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
       keepAdminPrompts(await client.setAdminPrompts(mode))
     } else keepAdminPrompts(mode)
   }
+  // The indicator shows an agent working on any desktop; pause and resume reach every desktop through the main one.
+  const ownerView: LocallyControlled = {
+    liveStatus: () => {
+      const own = computer.liveStatus()
+      const busy = live.desktops?.runningDesktops().some((desktop) => desktop.computer.liveStatus() === 'busy')
+      return own === 'online' && busy ? 'busy' : own
+    },
+    pauseReason: () => computer.pauseReason(),
+    pause: (reason) => computer.pause(reason),
+    resume: () => computer.resume(),
+    noteHumanInput: () => computer.noteHumanInput(),
+    leaseActivity: () =>
+      computer.leaseActivity() ??
+      live.desktops
+        ?.runningDesktops()
+        .map((desktop) => desktop.computer.leaseActivity())
+        .find((lease) => lease !== undefined)
+  }
   live.local = await startLocalControls({
-    computer,
+    computer: ownerView,
     refusal: () => authority.refusal(),
     stopHotkey: config.stopHotkey,
     headless: sessionKind() === 'xvfb',
+    ...(desktopSupport
+      ? {
+          desktops: {
+            state: () => ({
+              on: config.perAgentDesktops,
+              available: desktopSupport.current.supported,
+              ...(desktopSupport.current.reason ? { note: desktopSupport.current.reason } : {})
+            }),
+            toggle: () => void setDesktops(!config.perAgentDesktops)
+          }
+        }
+      : {}),
     ...(process.platform === 'darwin'
       ? {
           menuBar: {
@@ -942,9 +1046,22 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
         }
       : undefined
   const createMcpServer = ({ client, viewOnly, agent, commandLineGrant: granted }: McpPrincipal): McpServer => {
-    const access = commandLineFor(granted)
+    // An agent's calls go to its own desktop while per-agent desktops are on; a local client token counts as one agent.
+    const key = agent ? agent.agentId : `client:${client}`
+    const label = agent ? agent.agentId : client
+    const desktops = live.desktops
+    const mine = desktops ? () => desktops.forKey(key, label) : undefined
+    const routed = (): Promise<Computer> =>
+      mine && desktops?.enabled() ? mine().then((desktop) => desktop.computer) : Promise.resolve(computer)
+    const tier = commandLineFor(granted)
+    const access = tier
+      ? {
+          ...tier,
+          env: () => (mine && desktops?.enabled() ? mine().then((desktop) => desktop.env) : Promise.resolve(undefined))
+        }
+      : undefined
     return createComputerMcpServer({
-      computer,
+      computer: routed,
       client,
       driverTools,
       viewOnly,
@@ -967,7 +1084,20 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     createMcpServer,
     log,
     viewer,
-    localChecks: () => live.local?.checks() ?? []
+    localChecks: () => live.local?.checks() ?? [],
+    ...(live.desktops
+      ? {
+          desktops: {
+            set: setDesktops,
+            describe: () => ({
+              on: Boolean(live.desktops?.enabled()),
+              switchedOn: config.perAgentDesktops,
+              max: live.desktops?.max(),
+              desktops: live.desktops?.list()
+            })
+          }
+        }
+      : {})
   })
   live.channel = startCpChannel({
     dir,
@@ -1022,6 +1152,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     live.accessibility?.stop()
     authority.close()
     releaseDisplay()
+    await live.desktops?.close().catch(() => undefined)
     await Promise.allSettled([server.close(), driver.close(), egress?.stop()])
     process.exit(exitCode)
   }
@@ -1306,6 +1437,10 @@ async function setup(
   if (config.webrtc && !config.ffmpegPath && !ffmpegAvailable(resolveFfmpegPath(dir)) && canInstallFfmpeg()) {
     await installFfmpeg(dir).catch((error: Error) => console.log(`ffmpeg install failed: ${error.message}`))
   }
+  // With per-agent desktops on and only packages missing, setup offers to install them (§3.9).
+  if (process.platform === 'linux' && config.perAgentDesktops) {
+    await offerDesktopInstall(await probeDesktopSupport(), { log: (line) => console.log(line) })
+  }
   console.log('')
   let checks: Check[]
   if (process.platform === 'darwin' && appBundlePath()) {
@@ -1378,6 +1513,40 @@ async function stdio(dir: string, config: DaemonConfig): Promise<void> {
   }
   process.stdin.once('end', () => void shutdown())
   process.once('SIGTERM', () => void shutdown())
+}
+
+// Flips the per-agent desktops switch in the config and says what it means on this machine (computer-use.md §3.9).
+async function desktopsCommand(dir: string, action: string | undefined): Promise<void> {
+  if (action !== undefined && !['on', 'off', 'status'].includes(action))
+    throw new Error('usage: desktops [on | off | status]')
+  let config = loadConfig(dir)
+  if (action === 'on' || action === 'off') {
+    config = { ...config, perAgentDesktops: action === 'on' }
+    saveConfig(config, dir)
+  }
+  let support = await probeDesktopSupport()
+  if (action === 'on') support = await offerDesktopInstall(support, { log: (line) => console.log(line) })
+  console.log(`Per-agent desktops: ${describeDesktops(config.perAgentDesktops, support)}`)
+  if (!support.supported && support.fix && !installable(support)) console.log(`  → ${support.fix}`)
+  // A running daemon switches at once; otherwise the saved config applies at its next start.
+  const response = await fetch(
+    `${controlBaseUrl(config)}/control/desktops${action === 'on' || action === 'off' ? `?on=${action === 'on' ? 1 : 0}` : ''}`,
+    {
+      method: action === 'on' || action === 'off' ? 'POST' : 'GET',
+      headers: { [CONTROL_HEADER]: '1' },
+      signal: AbortSignal.timeout(5000)
+    }
+  ).catch(() => undefined)
+  if (response?.ok) {
+    const running = (await response.json()) as {
+      on: boolean
+      desktops?: { id: string; label: string; display?: string }[]
+    }
+    console.log(`The running daemon has them ${running.on ? 'on' : 'off'}.`)
+    for (const desktop of running.desktops ?? [])
+      console.log(`  ${desktop.id}  ${desktop.label}${desktop.display ? `  running on ${desktop.display}` : ''}`)
+  } else if (action === 'on' || action === 'off')
+    console.log('No daemon is running here; the setting applies at its next start.')
 }
 
 async function controlCommand(config: DaemonConfig, command: 'status' | 'pause' | 'resume'): Promise<void> {

@@ -49,6 +49,26 @@ export async function closeBrowser(options: CloseOptions): Promise<CloseOutcome>
   return 'killed'
 }
 
+/** Waits until a window manager runs on the display (it sets _NET_SUPPORTING_WM_CHECK on the root); false on timeout. */
+export async function waitForWindowManager(display: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const x = await X11Connection.connect({ display })
+      try {
+        const check = await internAtom(x, '_NET_SUPPORTING_WM_CHECK')
+        if ((await cardinal(x, x.setup.root, check, 33)) !== undefined) return true
+      } finally {
+        x.close()
+      }
+    } catch {
+      // The display may still be coming up.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  return false
+}
+
 async function exited(pid: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
@@ -92,12 +112,12 @@ async function queryTree(x: X11Connection, window: number): Promise<number[]> {
   return Array.from({ length: count }, (_, i) => reply.readUInt32LE(32 + i * 4))
 }
 
-// The first 32-bit value of a window property, or undefined when unset.
-async function cardinal(x: X11Connection, window: number, property: number): Promise<number | undefined> {
+// The first 32-bit value of a window property of the given type (0 = any; 33 = WINDOW), or undefined when unset.
+async function cardinal(x: X11Connection, window: number, property: number, type = 0): Promise<number | undefined> {
   const body = Buffer.alloc(20)
   body.writeUInt32LE(window, 0)
   body.writeUInt32LE(property, 4)
-  body.writeUInt32LE(0, 8)
+  body.writeUInt32LE(type, 8)
   body.writeUInt32LE(0, 12)
   body.writeUInt32LE(1, 16)
   const reply = await x.request(request(OP_GET_PROPERTY, 0, body)).catch(() => undefined)
