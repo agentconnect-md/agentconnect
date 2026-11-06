@@ -1093,7 +1093,13 @@
         "people": "成员",
         "schedule": "定时任务",
         "openAgent": "打开 {agent}"
-      }
+      },
+      "transcriptNav": {
+        "new": "新消息",
+        "newSince": "上次阅读之后的新消息",
+        "map": "对话中的各轮"
+      },
+      "jumpToLatest": "跳到最新"
     }
   },
   "Shell": {

@@ -1093,7 +1093,13 @@
         "people": "People",
         "schedule": "Schedule",
         "openAgent": "Open {agent}"
-      }
+      },
+      "transcriptNav": {
+        "new": "New",
+        "newSince": "New since you last read this",
+        "map": "Turns in this conversation"
+      },
+      "jumpToLatest": "Jump to latest"
     }
   },
   "Shell": {

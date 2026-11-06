@@ -464,6 +464,23 @@ a turn that predicts nothing clears the previous one rather than leaving it in
 place. Like the reply it follows, it stays on the data plane: the Control Plane
 neither receives nor stores it.
 
+## Finding your place in a long transcript
+
+The console's transcript marks what is new and lets a reader move through it:
+
+- A **NEW** line sits above the first turn that arrived after this browser last
+  read the conversation. "Read" means the page was visible, had focus, and was
+  scrolled to the end; the record is kept per browser in web storage and never
+  reaches the Control Plane. The line is placed when the page opens and again
+  when it regains focus, so coming back to a tab shows what arrived while away.
+  A first visit has no line.
+- **Jump to latest** appears above the composer while the reader is scrolled up,
+  and returns them to the end, which the transcript then follows again.
+- On desktop, a **turn map** at the right edge has one tick per turn, short for a
+  person's message and long for an agent's turn. The tick of the turn in view is
+  marked; clicking a tick scrolls to its turn. A long conversation's map is
+  sampled to forty ticks, always keeping the newest.
+
 ## Slack message attribution footer
 
 The attribution footer for an agent response must be attached to the final Slack
