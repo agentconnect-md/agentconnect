@@ -110,9 +110,9 @@ const flush = async () => {
 
 async function raise(h: ReturnType<typeof qqTurn>, req: CreateElicitationRequest) {
   const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', req)
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
-  const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.get(requestId).ts).toBe('card-1'))
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.size).toBe(1))
+  const requestId = [...h.daemon.permissions.pendingApprovals.keys()][0] as string
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.get(requestId).card.ts).toBe('card-1'))
   return { requestId, result }
 }
 
@@ -152,14 +152,14 @@ describe('a QQ turn collects an elicitation answer from a quoted reply', () => {
     expect(await h.daemon.permissions.claimElicitReply(reply('2', 'card-1', 'dm:user-openid\u001fqq:app-2'))).toBe(
       false
     )
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
   })
 
   it('keeps the card open and repeats the instruction when the quote names no option', async () => {
     const h = qqTurn()
     await raise(h, form(BRANCH, ['branch']))
     expect(await h.daemon.permissions.claimElicitReply(reply('maybe', 'card-1'))).toBe(true)
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     expect(h.follows.map((f) => f.text)).toEqual(['Reply with a number from 1 to 2.'])
   })
 

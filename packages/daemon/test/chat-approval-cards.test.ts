@@ -216,7 +216,7 @@ async function world(platform: Platform, opts: { level: 'talk' | 'approve' | 'se
     ...applied.filter((a) => a.kind === 'notice').map((a) => a.text as string),
     ...noticePosts().map((post: any) => post.text)
   ]
-  const onlyRequest = (): string => [...permissions.pendingApprovals.keys(), ...permissions.pendingElicits.keys()][0]
+  const onlyRequest = (): string => [...permissions.pendingApprovals.keys()][0]
   /** Click a permission card's option as the platform's ingress delivers it; what only the clicker was told. */
   const click = async (option: number, actor: { userId: string; name?: string; isBot?: boolean } = ADA) => {
     const requestId = onlyRequest()

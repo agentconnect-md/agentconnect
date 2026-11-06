@@ -379,8 +379,6 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
       action: 'accept'
     })
     expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
-    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
   })
 
   it('queues non-system requests for an Agent editor even when `none` hides the chat surface', async () => {
@@ -478,7 +476,6 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
         outcome: { outcome: 'cancelled' }
       }
     )
-    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
     expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
   })
 
@@ -629,7 +626,7 @@ describe('webchat renders and answers ACP elicitation cards', () => {
     const sink = installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
     expect(sink.output).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: 'conv-1', turnId: 'turn-1', index: 0 })
     )
@@ -644,7 +641,7 @@ describe('webchat renders and answers ACP elicitation cards', () => {
         { value: 'release', label: 'release' }
       ]
     })
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
@@ -659,7 +656,7 @@ describe('webchat renders and answers ACP elicitation cards', () => {
       label: 'develop',
       answers: { value: 'develop' }
     })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
   })
 
   it('declines on Dismiss and cancels on turn release, settling the card either way', async () => {
@@ -668,8 +665,8 @@ describe('webchat renders and answers ACP elicitation cards', () => {
     const sink = installWebchat(pending)
 
     const dismissed = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [firstId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [firstId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.handleElicitChoice({
       requestId: firstId,
       value: null,
@@ -679,9 +676,9 @@ describe('webchat renders and answers ACP elicitation cards', () => {
     expect(cardEvents(sink)[1]).toEqual({ kind: 'elicitation_resolved', requestId: firstId, outcome: 'dismissed' })
 
     const abandoned = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [secondId] = (daemon as any).permissions.pendingElicits.keys()
-    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [secondId] = (daemon as any).permissions.pendingApprovals.keys()
+    await (daemon as any).permissions.releaseApprovals('agent-1', 's1')
     await expect(abandoned).resolves.toEqual({ action: 'cancel' })
     expect(cardEvents(sink).at(-1)).toEqual({
       kind: 'elicitation_resolved',
@@ -690,14 +687,42 @@ describe('webchat renders and answers ACP elicitation cards', () => {
     })
   })
 
+  it('keeps a question in the one pending record without making it an approval', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+    const permissions = (daemon as any).permissions
+
+    const result = permissions.onAcpElicit('agent-1', 's1', formElicitation())
+    await vi.waitFor(() => expect(permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = permissions.pendingApprovals.keys()
+    // The reader is still awaited, but nothing waits on an approval and the console offers nothing.
+    expect(permissions.awaitingHuman('agent-1', 's1')).toBe(true)
+    expect(permissions.isAwaitingApproval('agent-1', 's1')).toBe(false)
+    expect(permissions.pendingPermissionOptions('agent-1', requestId)).toBeUndefined()
+    await expect(
+      permissions.decideEditorPermission({ agentId: 'agent-1', requestId, decision: 'allow', decidedBy: 'user:u1' })
+    ).resolves.toMatchObject({ ok: false })
+    expect(permissions.pendingApprovals.has(requestId)).toBe(true)
+
+    // Two answers race: the first settles it, the second finds nothing to settle.
+    await Promise.all([
+      permissions.handleElicitChoice({ requestId, value: 'develop', webchatConversationId: 'conv-1' }),
+      permissions.handleElicitChoice({ requestId, value: null, webchatConversationId: 'conv-1' })
+    ])
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
+    expect(cardEvents(sink).filter((e) => e.kind === 'elicitation_resolved')).toHaveLength(1)
+    expect(permissions.pendingApprovals.size).toBe(0)
+  })
+
   it('answers only cards this conversation was shown, with values the card offered', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const pending: any = installPending(daemon)
     const sink = installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     // A value the card never offered would inject an unoffered answer into the agent's content.
     await (daemon as any).permissions.handleElicitChoice({
@@ -711,7 +736,7 @@ describe('webchat renders and answers ACP elicitation cards', () => {
       value: 'main',
       webchatConversationId: 'conv-other'
     })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     expect(cardEvents(sink)).toHaveLength(1) // still live — nothing settled it
 
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main', webchatConversationId: 'conv-1' })
@@ -724,12 +749,12 @@ describe('webchat renders and answers ACP elicitation cards', () => {
     const sink = installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     // No webchatConversationId ⇒ the answer came off a Slack card, which cannot settle this one.
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main' })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     expect(cardEvents(sink)).toHaveLength(1)
 
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main', webchatConversationId: 'conv-1' })
@@ -760,7 +785,7 @@ describe('webchat renders and answers ACP elicitation cards', () => {
     // could not be shown, the way Slack's channel notice does (#1794).
     expect(cardEvents(sink)).toEqual([])
     expect(noticeTexts(sink)).toEqual([expect.stringContaining("this chat can't collect an answer for")])
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
   })
 
   it('keeps MCP approvals on the editor queue and continuations on the platform path', async () => {
@@ -816,7 +841,7 @@ describe('webchat answers a multi-select elicitation with a list', () => {
       's1',
       multiElicitation({ minItems: 1, maxItems: 2 })
     )
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
     expect(cardEvents(sink)[0]).toEqual({
       kind: 'elicitation',
       requestId: expect.any(String),
@@ -829,7 +854,7 @@ describe('webchat answers a multi-select elicitation with a list', () => {
       // `multi` is what makes this card toggles + a confirm rather than one-tap buttons.
       multi: { minItems: 1, maxItems: 2 }
     })
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
@@ -855,7 +880,7 @@ describe('webchat answers a multi-select elicitation with a list', () => {
     const pending: any = installPending(daemon)
     installWebchat(pending)
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation({ minItems: 1 }))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
     const rows = () => (daemon as any).store.upsertElicit.mock.calls.map(([r]: any[]) => r)
     const bodies = () => rows().map((r: any) => JSON.parse(r.body))
     // The row carries the reduced card — the same payload the live event streamed.
@@ -869,7 +894,7 @@ describe('webchat answers a multi-select elicitation with a list', () => {
       multi: { minItems: 1 }
     })
 
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
       value: ['lint'],
@@ -890,8 +915,8 @@ describe('webchat answers a multi-select elicitation with a list', () => {
       's1',
       multiElicitation({ minItems: 2, maxItems: 2 })
     )
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     const answer = (value: unknown, conversationId = 'conv-1') =>
       (daemon as any).permissions.handleElicitChoice({ requestId, value, webchatConversationId: conversationId })
 
@@ -901,7 +926,7 @@ describe('webchat answers a multi-select elicitation with a list', () => {
     await answer(['lint', 'rm -rf /']) // one unoffered value rejects the WHOLE answer
     await answer('lint') // a scalar cannot answer a multi-select card
     await answer(['lint', 'test'], 'conv-other') // another conversation was never shown this card
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     expect(cardEvents(sink)).toHaveLength(1) // still live — nothing settled it
     // Each refusal of an answer THIS reader gave says so, and the card is left to answer again
     // (#1794): a Confirm that silently does nothing is indistinguishable from a broken card. The
@@ -919,9 +944,9 @@ describe('webchat answers a multi-select elicitation with a list', () => {
     const sink = installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
     expect(cardEvents(sink)[0].multi).toEqual({})
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     // "None of them" is an ANSWER when the schema sets no minimum — not a refusal to answer.
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: [], webchatConversationId: 'conv-1' })
@@ -935,8 +960,8 @@ describe('webchat answers a multi-select elicitation with a list', () => {
     })
 
     const dismissed = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [secondId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [secondId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.handleElicitChoice({
       requestId: secondId,
       value: null,
@@ -951,11 +976,11 @@ describe('webchat answers a multi-select elicitation with a list', () => {
     installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation({ minItems: 1 }))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     // A browser card carries its own answer, so Slack's Confirm verb is not its wire.
     await (daemon as any).permissions.submitElicitForm({ requestId, fields: { [elicitFormBlockId(0)]: ['lint'] } })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
       value: ['lint'],
@@ -1058,7 +1083,6 @@ describe('a permission card offers every option or sends the request where they 
     // No card, and no editor stand-in either: the console record shares the same cap (#1969).
     expect(posted).toEqual([])
     expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
-    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
     // The reader just lost a decision they could otherwise have made, so the chat says so — and
     // points at no other surface, because none of them can offer the list either.
     const notice = applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
@@ -1154,7 +1178,7 @@ describe('what people can do in chat decides whether the conversation gets an ap
       return
     }
     await vi.waitFor(() => expect(posted).toHaveLength(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0) })
     await expect(approval).resolves.toMatchObject({ action: 'accept' })
   })
@@ -1202,8 +1226,8 @@ describe('a refused approval click is told only to the clicker, and an answer na
   async function approvalCard(t: ReturnType<typeof chatTurn>) {
     const decided = t.permissions.onAcpElicit('agent-1', 's1', elicitation('call-1'))
     await vi.waitFor(() => expect(t.posted).toHaveLength(1))
-    const [requestId] = t.permissions.pendingElicits.keys()
-    await vi.waitFor(() => expect(t.permissions.pendingElicits.get(requestId).ts).toBe('ts-1'))
+    const requestId = [...t.permissions.pendingApprovals.keys()].at(-1)
+    await vi.waitFor(() => expect(t.permissions.pendingApprovals.get(requestId).card.ts).toBe('ts-1'))
     return { requestId: requestId as string, decided }
   }
 
@@ -1228,7 +1252,7 @@ describe('a refused approval click is told only to the clicker, and an answer na
     expect(t.updated).toEqual([])
     expect(t.notices).toEqual([['test', 'U-BOB', expect.stringContaining('Only an Agent editor'), THREAD]])
     expect(t.notices[0]![2]).toContain('/sessions/session-out-1')
-    expect(t.permissions.pendingElicits.has(requestId)).toBe(true)
+    expect(t.permissions.pendingApprovals.has(requestId)).toBe(true)
   })
 
   it('retires every card for everyone when approving in chat is turned off, and says so', async () => {
@@ -1240,8 +1264,8 @@ describe('a refused approval click is told only to the clicker, and an answer na
     t.permissions.disableChatPermissionSurfaces('agent-1')
     await vi.waitFor(() => expect(t.updated).toHaveLength(2))
     for (const blocks of t.updated) expect(cardText(blocks)).toContain('Approving in chat was turned off.')
-    expect(t.permissions.pendingApprovals.size).toBe(1)
-    expect(t.permissions.pendingElicits.size).toBe(1)
+    // Both stay pending for an editor: the permission request and the MCP approval.
+    expect(t.permissions.pendingApprovals.size).toBe(2)
   })
 
   it('retires a card that finished posting after approving in chat was turned off', async () => {
@@ -1286,6 +1310,15 @@ describe('a refused approval click is told only to the clicker, and an answer na
     expect(cardText(t.updated[0]!)).toContain('— ada')
   })
 
+  it('records a tool-approval tap in the session audit, as every settled approval is', async () => {
+    const t = chatTurn()
+    const audit = vi.spyOn((t.daemon as any).commands, 'logSessionAction')
+    const { requestId, decided } = await approvalCard(t)
+    await t.permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0), actor: { userId: 'U-ADA' } })
+    await expect(decided).resolves.toMatchObject({ action: 'accept' })
+    expect(audit).toHaveBeenCalledWith('permission:allowed', 's1', expect.objectContaining({ userId: 'U-ADA' }))
+  })
+
   it('still decides when the name lookup fails, naming nobody', async () => {
     const t = chatTurn(async () => {
       throw new Error('users.info unavailable')
@@ -1319,8 +1352,8 @@ describe('a Slack card offers every option or none', () => {
     const { posted } = slackPending(daemon)
     const seven = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
     const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', enumElicitation(seven))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     const elements = posted[0]![1]!.elements as any[]
     expect(elements.map((e) => e.text.text)).toEqual([...seven, 'Dismiss'])
     // The seventh button carries its POSITION, and the daemon resolves it back (#1794).
@@ -1337,7 +1370,7 @@ describe('a Slack card offers every option or none', () => {
     await expect(
       (daemon as any).permissions.onAcpElicit('agent-1', 's1', enumElicitation(many))
     ).resolves.toBeUndefined()
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
     expect(posted).toHaveLength(0)
     // The same form is renderable where nothing declares a limit — webchat still shows them all.
     expect(elicitTarget(enumElicitation(many), WEBCHAT_ELICIT_SURFACE)?.options).toHaveLength(25)
@@ -1355,9 +1388,9 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
   /** The one live card's request id, once its posted `ts` is on the record — a settle before that
    *  has no message to rewrite, which is the card path's own pre-existing race (#1821), not ours. */
   const liveCard = async (daemon: any): Promise<string> => {
-    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
-    const [requestId] = daemon.permissions.pendingElicits.keys()
-    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.get(requestId).ts).toBe('ts-1'))
+    await vi.waitFor(() => expect(daemon.permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = daemon.permissions.pendingApprovals.keys()
+    await vi.waitFor(() => expect(daemon.permissions.pendingApprovals.get(requestId).card.ts).toBe('ts-1'))
     return requestId
   }
   /** The `checks` options in the order {@link multiElicitation} declares them — a Slack card
@@ -1439,7 +1472,7 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
       // A relayed value the card never offered — and it has no position either.
       fields: { [elicitFormBlockId(0)]: [elicitOptionToken(0), 'rm -rf /'] }
     })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     expect(updated).toHaveLength(0)
 
     await confirm(daemon, requestId, ['lint', 'test'])
@@ -1474,9 +1507,9 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
 
     const cancelled = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation({ minItems: 1 }))
     await liveCard(daemon)
-    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await (daemon as any).permissions.releaseApprovals('agent-1', 's1')
     await expect(cancelled).resolves.toEqual({ action: 'cancel' })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
   })
 
   it('declines a list past what a Slack select holds, rather than carding part of it', async () => {
@@ -1485,7 +1518,7 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     const many = Array.from({ length: 101 }, (_, i) => `o${i}`)
     const over = multiElicitation({ items: { type: 'string', enum: many } })
     await expect((daemon as any).permissions.onAcpElicit('agent-1', 's1', over)).resolves.toBeUndefined()
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
     expect(posted).toHaveLength(0)
     expect(elicitTarget(over, WEBCHAT_ELICIT_SURFACE)?.options).toHaveLength(101)
   })
@@ -1496,7 +1529,7 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', enumElicitation(['a', 'b']))
     const requestId = await liveCard(daemon)
     await confirm(daemon, requestId, ['a'])
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     expect(updated).toHaveLength(0)
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0) })
     await expect(answered).resolves.toEqual({ action: 'accept', content: { pick: 'a' } })
@@ -1515,13 +1548,13 @@ describe('a Slack answer is re-derived against the card that offered it', () => 
     const applied: any[] = []
     ;(daemon as any).enqueueApply = (_p: any, action: any) => void applied.push(action)
     const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', enumElicitation(['a', 'b', 'c']))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     // Neither a value the card never offered nor a position past the list it did.
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'rm -rf /' })
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(9) })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1) // still live — nothing settled it
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1) // still live — nothing settled it
     expect(updated).toHaveLength(0)
     // The refusal stands, and the thread hears it — the same words a refused Confirm gets, since
     // the reader cannot tell a rejected tap from a dead button either way (#1794).
@@ -1541,7 +1574,7 @@ describe('a Slack answer is re-derived against the card that offered it', () => 
     ;(daemon as any).agents.set('agent-1', chatAgent('settings'))
     const approval = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('call-1'))
     await vi.waitFor(() => expect(posted).toHaveLength(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     // The approval's enum reaches Slack as one button per value, each carrying that option's
     // POSITION rather than the value itself (#1794).
     const elements = posted[0]![1]!.elements as any[]
@@ -1555,7 +1588,7 @@ describe('a Slack answer is re-derived against the card that offered it', () => 
     // neither is a position past the options it offered.
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'always' })
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(9) })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     expect(updated).toHaveLength(0)
 
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(1) })
@@ -1603,7 +1636,7 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
       's1',
       textElicitation({ minLength: 3, maxLength: 50, pattern: '^[a-z-]+$', default: 'fix-login' })
     )
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
     expect(cardEvents(sink)[0]).toEqual({
       kind: 'elicitation',
       requestId: expect.any(String),
@@ -1613,7 +1646,7 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
       text: { minLength: 3, maxLength: 50, pattern: '^[a-z-]+$' },
       defaultValue: 'fix-login'
     })
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
@@ -1641,7 +1674,7 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
       's1',
       numberElicitation({ minimum: 0, maximum: 100, default: 50 })
     )
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
     expect(cardEvents(sink)[0]).toEqual({
       kind: 'elicitation',
       requestId: expect.any(String),
@@ -1650,7 +1683,7 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
       number: { minimum: 0, maximum: 100 },
       defaultValue: 50
     })
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 7, webchatConversationId: 'conv-1' })
     await expect(result).resolves.toEqual({ action: 'accept', content: { retries: 7 } })
@@ -1673,8 +1706,8 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
       's1',
       textElicitation({ minLength: 3, maxLength: 8, format: 'email' })
     )
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     const answer = (value: unknown) =>
       (daemon as any).permissions.handleElicitChoice({ requestId, value, webchatConversationId: 'conv-1' })
 
@@ -1683,7 +1716,7 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
     await answer('abcdef') // not an email at all
     await answer(7) // a number cannot answer a text card
     await answer(['a@b.co']) // nor can a list
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     expect(cardEvents(sink)).toHaveLength(1) // still live — nothing settled it
 
     await answer('a@b.co')
@@ -1707,8 +1740,8 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
         }
       })
     )
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     const answer = (value: unknown) =>
       (daemon as any).permissions.handleElicitChoice({ requestId, value, webchatConversationId: 'conv-1' })
 
@@ -1716,7 +1749,7 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
     await answer(6) // above maximum
     await answer(2.5) // not a whole number
     await answer('3') // the string is a different type than the schema asked for
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     expect(cardEvents(sink)).toHaveLength(1)
 
     await answer(3)
@@ -1733,7 +1766,7 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
     await expect(
       (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation({ pattern: '^(a+)+$' }))
     ).resolves.toBeUndefined()
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
   })
 })
 
@@ -1780,7 +1813,7 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
         }
       })
     )
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
     expect(cardEvents(sink)[0]).toEqual({
       kind: 'elicitation',
       requestId: expect.any(String),
@@ -1819,7 +1852,7 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
         }
       ]
     })
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
@@ -1847,13 +1880,13 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     const sink = installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     const answer = (value: unknown) =>
       (daemon as any).permissions.handleElicitChoice({ requestId, value, webchatConversationId: 'conv-1' })
 
     await answer({ note: 'no branch' }) // the required field is missing
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     expect(cardEvents(sink)).toHaveLength(1) // still live
 
     // The optional `note` is simply absent — legal per the schema, and the accept says only
@@ -1877,8 +1910,8 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     const sink = installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation([]))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: {}, webchatConversationId: 'conv-1' })
     await expect(result).resolves.toEqual({ action: 'accept', content: {} })
@@ -1892,8 +1925,8 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     const sink = installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation(['branch', 'note']))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     const answer = (value: unknown, conversationId = 'conv-1') =>
       (daemon as any).permissions.handleElicitChoice({ requestId, value, webchatConversationId: conversationId })
 
@@ -1905,7 +1938,7 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     await answer('main') // a scalar cannot answer a form card
     await answer(['main']) // nor can a list
     await answer({ branch: 'main', note: 'ok' }, 'conv-other') // another conversation, never shown this card
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     expect(cardEvents(sink)).toHaveLength(1) // still live — nothing settled it
 
     await answer({ branch: 'main', note: 'ok' })
@@ -1918,8 +1951,8 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     const sink = installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: null, webchatConversationId: 'conv-1' })
     await expect(result).resolves.toEqual({ action: 'decline' })
     expect(cardEvents(sink)[1]).toEqual({ kind: 'elicitation_resolved', requestId, outcome: 'dismissed' })
@@ -1941,7 +1974,7 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     pending.conn = conn
 
     void (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation(['branch', 'note']))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
     // The card carries both fields as `input` blocks and ONE Confirm — never one per question.
     await vi.waitFor(() => expect(JSON.stringify(posted[0])).toContain(ELICIT_CONFIRM_ACTION))
     expect((posted[0] as any[]).filter((b: any) => b.type === 'input')).toHaveLength(2)
@@ -1951,7 +1984,7 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     // `required` alone, and there is none here.
     expect(elicitTarget(twoFieldElicitation(['branch', 'note']), SLACK_ELICIT_SURFACE)).toBeNull()
     expect(elicitForm(twoFieldElicitation(['branch', 'note']), WEBCHAT_ELICIT_SURFACE)).toHaveLength(2)
-    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await (daemon as any).permissions.releaseApprovals('agent-1', 's1')
   })
 
   it('keeps a one-field form on the single-field card, byte for byte', async () => {
@@ -1960,7 +1993,7 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     const sink = installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
     // Exactly the payload the single-field card always carried: no `fields`, options intact.
     expect(cardEvents(sink)[0]).toEqual({
       kind: 'elicitation',
@@ -1972,14 +2005,14 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
         { value: 'release', label: 'release' }
       ]
     })
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     // And it still answers with the scalar, not a record — a form record is refused here.
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
       value: { branch: 'main' },
       webchatConversationId: 'conv-1'
     })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main', webchatConversationId: 'conv-1' })
     await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
   })
@@ -2009,7 +2042,7 @@ describe('webchat renders and settles a URL-mode consent card', () => {
     const sink = installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
     // No options and no field descriptors: a reader that does not know `url` can only Dismiss.
     expect(cardEvents(sink)[0]).toEqual({
       kind: 'elicitation',
@@ -2018,7 +2051,7 @@ describe('webchat renders and settles a URL-mode consent card', () => {
       options: [],
       url: 'https://billing.example.com/oauth/authorize?state=xyz'
     })
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
@@ -2041,8 +2074,8 @@ describe('webchat renders and settles a URL-mode consent card', () => {
     installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
 
     // A browser frame is not what makes consent valid: only the card's own URL is consent.
     await (daemon as any).permissions.handleElicitChoice({
@@ -2050,14 +2083,14 @@ describe('webchat renders and settles a URL-mode consent card', () => {
       value: 'https://billing.example.com.evil.test/oauth/authorize?state=xyz',
       webchatConversationId: 'conv-1'
     })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     // And another conversation cannot consent on this one's behalf.
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
       value: 'https://billing.example.com/oauth/authorize?state=xyz',
       webchatConversationId: 'conv-2'
     })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
 
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: null, webchatConversationId: 'conv-1' })
     await expect(result).resolves.toEqual({ action: 'decline' })
@@ -2069,8 +2102,8 @@ describe('webchat renders and settles a URL-mode consent card', () => {
     const sink = installWebchat(pending)
 
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    await (daemon as any).permissions.releaseApprovals('agent-1', 's1')
     await expect(result).resolves.toEqual({ action: 'cancel' })
     expect(cardEvents(sink).at(-1)).toEqual(expect.objectContaining({ outcome: 'cancelled' }))
   })
@@ -2081,8 +2114,8 @@ describe('webchat renders and settles a URL-mode consent card', () => {
     const sink = installWebchat(pending)
 
     void (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingApprovals.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingApprovals.keys()
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
       value: 'https://billing.example.com/oauth/authorize?state=xyz',
@@ -2115,7 +2148,7 @@ describe('webchat renders and settles a URL-mode consent card', () => {
     await expect(
       (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation({ elicitationId: '' }))
     ).resolves.toBeUndefined()
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
 
     // And a platform whose chrome declares no input cards keeps declining.
     const telegram: any = installPending(daemon)
@@ -2157,8 +2190,8 @@ const cardButtons = (blocks: any[]): any[] => blocks.find((b) => b.type === 'act
  *  card whose `chat.postMessage` has not returned, and only then can the record be rewritten. */
 async function liveSlackCard(daemon: any): Promise<string> {
   return await vi.waitFor(() => {
-    const [id, rec] = [...daemon.permissions.pendingElicits.entries()][0] ?? []
-    expect(rec?.ts).toBeTruthy()
+    const [id, rec] = [...daemon.permissions.pendingApprovals.entries()][0] ?? []
+    expect(rec?.card?.ts).toBeTruthy()
     return id as string
   })
 }
@@ -2213,7 +2246,7 @@ describe('Slack renders and settles a URL-mode consent card', () => {
 
     const abandoned = (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
     await liveSlackCard(daemon)
-    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await (daemon as any).permissions.releaseApprovals('agent-1', 's1')
     await expect(abandoned).resolves.toEqual({ action: 'cancel' })
     await vi.waitFor(() => expect(cardText(updated[1] ?? [])[0]).toContain(':hourglass: Cancelled'))
   })
@@ -2233,7 +2266,7 @@ describe('Slack renders and settles a URL-mode consent card', () => {
     expect(text).toContain('not plain ASCII')
     // Whatever it warns about, the bytes the agent asked for are still shown verbatim.
     expect(text).toContain('`http://xn--80ak6aa92e.example-login.com/authorize`')
-    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await (daemon as any).permissions.releaseApprovals('agent-1', 's1')
   })
 
   it('declines a scheme no browser tab may be handed, with no card at all', async () => {
@@ -2244,7 +2277,7 @@ describe('Slack renders and settles a URL-mode consent card', () => {
         (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation({ url }))
       ).resolves.toBeUndefined()
     expect(posted).toEqual([])
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
   })
 
   it('cannot let the agent’s own message contribute a second followable link', async () => {
@@ -2265,7 +2298,7 @@ describe('Slack renders and settles a URL-mode consent card', () => {
     expect(text).toContain('`https://evil.example/y`')
     // The consent URL stays the ONE followable thing on the card: no other button carries a url.
     expect(cardButtons(posted[0]!).filter((b: any) => b.url)).toHaveLength(1)
-    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await (daemon as any).permissions.releaseApprovals('agent-1', 's1')
   })
 
   it('refuses a consent naming a URL other than the card’s own, and a browser answering a Slack card', async () => {
@@ -2278,15 +2311,15 @@ describe('Slack renders and settles a URL-mode consent card', () => {
       requestId,
       value: 'https://billing.example.com.evil.test/oauth/authorize?state=xyz'
     })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
     // A webchat frame cannot settle a card posted to Slack, guessable `elicit-<n>` id or not.
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
       value: 'https://billing.example.com/oauth/authorize?state=xyz',
       webchatConversationId: 'conv-1'
     })
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
-    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(1)
+    await (daemon as any).permissions.releaseApprovals('agent-1', 's1')
     await expect(result).resolves.toEqual({ action: 'cancel' })
   })
 
@@ -2328,7 +2361,7 @@ describe('Slack renders and settles a URL-mode consent card', () => {
     )
     await vi.waitFor(() => expect(posted).toHaveLength(1))
     expect(JSON.stringify(posted[0])).not.toContain('sk-live-DEADBEEF')
-    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await (daemon as any).permissions.releaseApprovals('agent-1', 's1')
   })
 })
 
@@ -2367,7 +2400,6 @@ describe('memory extraction turns grant only the daemon’s own bound bridge too
       (daemon as any).permissions.onAcpPermission('agent-1', 's1', req({ title: 'mcp__agentconnect__readMemory' }))
     ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
     expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
   })
 
   it('cancels every other request during extraction without queueing a human decision', async () => {
@@ -2395,8 +2427,6 @@ describe('memory extraction turns grant only the daemon’s own bound bridge too
       action: 'cancel'
     })
     expect(permissions.pendingApprovals.size).toBe(0)
-    expect(permissions.pendingApprovals.size).toBe(0)
-    expect(permissions.pendingElicits.size).toBe(0)
   })
 
   it('scopes the grant to the live collector', async () => {

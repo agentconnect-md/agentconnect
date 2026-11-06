@@ -1013,7 +1013,6 @@ describe('memory extraction grants only the daemon’s own bound bridge tools (#
       permissionMode: 'read-only'
     })
     expect(daemon.permissions.pendingApprovals.size).toBe(0)
-    expect(daemon.permissions.pendingElicits.size).toBe(0)
     await daemon.stop()
   })
 

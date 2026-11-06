@@ -438,8 +438,9 @@ editor. It is routed over the agent's Slack integrations first, then those whose
 through the platform's facet, as on the editor path (teams-integration.md §4.4). On a synced
 Feishu/Lark integration of an agent with neither, nobody is DMed, and the request waits for an
 editor in the conversation or the console; a Feishu/Lark approval DM is not built yet. The first
-answer decides: the DM's addressee is checked as §6.3 says, anyone else as here. An approval elicitation's card gets no DM yet, since it still lives in the elicitation map
-(§11.4); editors answer it there or in the console. A conversation shared with another
+answer decides: the DM's addressee is checked as §6.3 says, anyone else as here. An approval
+elicitation's in-conversation card gets no DM beside it yet; editors answer it there or in the
+console. A conversation shared with another
 organization takes the editor path instead of the asker's DM. A task's card keeps the
 row's `notify*` handle, so the DM beside it keeps its own (`besideIntegrationId`,
 `besideChannel`, `besideTs`), as an editor's card off Slack always does, and the reconnect sweep
@@ -632,3 +633,14 @@ rather than from core.
    capability. The in-conversation card's gate is replaced: it is the
    `approvalCards` facet (integration-plugin-architecture.md §7.3), which
    other chat platforms implement too.
+
+   One record now holds every request a human answers. An elicitation asked
+   on its own card, in the conversation or on webchat, carries that card as
+   one more surface. A question to the reader is not an approval: it has no
+   `permission_requests` row, so its settlement is fenced by its record still
+   being listed, the console never decides it, and it does not mark the
+   session as waiting on approval. Each answer path only re-derives the answer
+   against the card that offered it (#1815) and authorizes the actor; `settle`
+   then resolves it once, settles the card and its transcript row, and, for a
+   consented URL card, keeps the handle that `elicitation/complete` re-labels.
+   A turn's release cancels questions and approvals in one sweep.

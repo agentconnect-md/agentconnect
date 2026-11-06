@@ -235,9 +235,9 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
 
 async function raise(h: Harness, req: CreateElicitationRequest): Promise<{ requestId: string; result: Promise<any> }> {
   const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', req)
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
-  const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.get(requestId).ts).toBe('4242'))
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.size).toBe(1))
+  const requestId = [...h.daemon.permissions.pendingApprovals.keys()][0] as string
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.get(requestId).card.ts).toBe('4242'))
   return { requestId, result }
 }
 
@@ -271,7 +271,7 @@ describe('a Telegram turn posts an elicitation card and settles it in place', ()
     const h = telegramTurn()
     const { requestId } = await raise(h, form(BRANCH, ['branch']))
     await h.daemon.permissions.handleElicitChoice({ requestId, value: elicitOptionToken(9) })
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     expect(h.edits).toEqual([])
     expect(h.notices()).toEqual(["That answer wasn't accepted — the question is still open."])
   })
@@ -356,10 +356,10 @@ describe('a Telegram turn posts an elicitation card and settles it in place', ()
   it('cancels an abandoned card and says so on the card itself', async () => {
     const h = telegramTurn()
     const { requestId, result } = await raise(h, form(BRANCH, ['branch']))
-    await h.daemon.permissions.releaseElicits('agent-1', 's1')
+    await h.daemon.permissions.releaseApprovals('agent-1', 's1')
     await expect(result).resolves.toEqual({ action: 'cancel' })
     expect(h.edits[0]!.text).toContain('⏳ Cancelled')
-    expect(h.daemon.permissions.pendingElicits.has(requestId)).toBe(false)
+    expect(h.daemon.permissions.pendingApprovals.has(requestId)).toBe(false)
   })
 })
 
@@ -384,7 +384,7 @@ describe('a Telegram multi-select is assembled on the keyboard and submitted by 
     // Each tap redraws the same message; the card is still open, nothing has been answered yet.
     expect(h.edits).toHaveLength(4)
     expect(h.edits[3]!.buttons.map((r) => r[0]!.text)).toEqual(['⬜️ lint', '☑️ test', '☑️ build', 'Confirm'])
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
 
     await tap(h, requestId, 'ok')
     // The ticks come back as the LIST the schema asked for, in the card's own option order.
@@ -402,7 +402,7 @@ describe('a Telegram multi-select is assembled on the keyboard and submitted by 
     // And a Confirm that breaks them is refused with the field's own words, card still live.
     await tap(h, requestId, elicitOptionToken(0))
     await tap(h, requestId, 'ok')
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     expect(h.notices().at(-1)).toContain('Select at least 2.')
   })
 
@@ -427,7 +427,7 @@ describe('a Telegram multi-select is assembled on the keyboard and submitted by 
     // records the card's id — the tick must still reach the boxes the reader is looking at.
     const h = telegramTurn()
     const { requestId, result } = await raise(h, form(CHECKS, ['checks']))
-    const rec = h.daemon.permissions.pendingElicits.get(requestId)
+    const rec = h.daemon.permissions.pendingApprovals.get(requestId).card
     rec.ts = undefined
     // The adoption is synchronous, so the state under test survives to the fold.
     await h.daemon.permissions.handleElicitCardTap({ requestId, token: elicitOptionToken(0), ts: '4242' })
@@ -446,11 +446,11 @@ describe('a Telegram multi-select is assembled on the keyboard and submitted by 
     h.holdPost(new Promise<void>((r) => (release = r)))
     const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', form(CHECKS, ['checks']))
     await vi.waitFor(() => expect(h.cards).toHaveLength(1))
-    const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
+    const requestId = [...h.daemon.permissions.pendingApprovals.keys()][0] as string
 
     await tap(h, requestId, elicitOptionToken(0))
     await tap(h, requestId, 'ok')
-    expect(h.daemon.permissions.pendingElicits.size).toBe(0)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(0)
     // Only now does the post report its id, and the posting path finds the card already settled.
     release()
     await expect(result).resolves.toEqual({ action: 'accept', content: { checks: ['lint'] } })
@@ -491,7 +491,7 @@ describe('a Telegram multi-select is assembled on the keyboard and submitted by 
     await tap(h, requestId, elicitOptionToken(9))
     expect(h.edits).toEqual([])
     expect(h.notices()).toEqual(["That answer wasn't accepted — the question is still open."])
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
   })
 })
 
@@ -520,7 +520,7 @@ describe('a Telegram typed answer is written into a force-reply box', () => {
     ])
     // Opening the box is not an answer: the card is exactly as open as it was.
     await tap(h, requestId, 'ed')
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     // The prompt REPLIES to the card, which is also what keeps it inside a forum topic.
     expect(h.prompts).toHaveLength(1)
     expect(h.prompts[0]!.opts.replyTo).toBe(4242)
@@ -550,7 +550,7 @@ describe('a Telegram typed answer is written into a force-reply box', () => {
     expect(await h.daemon.permissions.claimElicitReply(reply('x', '5150', '-200\u001ftelegram:bot-a'))).toBe(false)
     expect(await h.daemon.permissions.claimElicitReply(reply('x', '5150', '-100\u001ftelegram:bot-b'))).toBe(false)
     expect(await h.daemon.permissions.claimElicitReply(reply('x', '5150', '-100'))).toBe(false)
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
   })
 
   it('keeps EVERY box it opened answerable, so a second tap does not break the first', async () => {
@@ -592,7 +592,7 @@ describe('a Telegram typed answer is written into a force-reply box', () => {
     await tap(h, requestId, 'ed')
     expect(await h.daemon.permissions.claimElicitReply(reply('not a number', '5150'))).toBe(true)
     // Claimed but refused: the words were an answer to THIS card, and a bad one leaves it live.
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     expect(h.notices().at(-1)).toContain('Enter')
 
     expect(await h.daemon.permissions.claimElicitReply(reply('42', '5150'))).toBe(true)
@@ -650,7 +650,7 @@ describe('a Telegram form of several questions is filled in over one keyboard', 
     expect(rows(h)).toEqual(['Base branch: develop', 'Checks: lint', 'Confirm'])
 
     // Nothing has been answered until the card's own Confirm.
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     await tap(h, requestId, 'ok')
     await expect(result).resolves.toEqual({
       action: 'accept',
@@ -663,7 +663,7 @@ describe('a Telegram form of several questions is filled in over one keyboard', 
     const { requestId, result } = await raise(h, form(TWO, ['branch']))
     // Required field still empty: refused by name, card left live.
     await tap(h, requestId, 'ok')
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     expect(h.notices().at(-1)).toContain('Base branch')
 
     await tap(h, requestId, telegramElicitFieldToken(0))
@@ -704,7 +704,7 @@ describe('a Telegram form of several questions is filled in over one keyboard', 
     expect(
       await h.daemon.permissions.claimElicitReply({ conversation: CONV, replyTo: '5150', text: 'release/2.4' })
     ).toBe(true)
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     expect(rows(h)).toEqual(['Base branch: —', 'Base branch (Other): release/2.4', 'Confirm'])
     // The answered box is retired now, not at settlement: the card lives on.
     expect(h.deleted).toEqual(['5150'])
@@ -763,6 +763,6 @@ describe('a Telegram form of several questions is filled in over one keyboard', 
       "That answer wasn't accepted — the question is still open.",
       "That answer wasn't accepted — the question is still open."
     ])
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
   })
 })

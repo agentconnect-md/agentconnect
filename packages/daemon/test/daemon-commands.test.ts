@@ -2493,7 +2493,9 @@ describe('Slack interactive status bar', () => {
     expect(permissionResolved).toHaveBeenCalledWith({ outcome: { outcome: 'selected', optionId: 'allow_once' } })
 
     const elicitationResolved = vi.fn()
-    ;(daemon as any).permissions.pendingElicits.set('elicit-1', {
+    ;(daemon as any).permissions.pendingApprovals.set('elicit-1', {
+      kind: 'elicitation',
+      approval: false,
       agentId: 'bot-a',
       sessionId: 'acp-1',
       // The params a real entry carries: onAcpElicit only stores what built the card, and the
@@ -2503,15 +2505,16 @@ describe('Slack interactive status bar', () => {
         message: 'Pick one',
         requestedSchema: { type: 'object', properties: { language: { type: 'string', enum: ['TypeScript', 'Go'] } } }
       },
-      propName: 'language',
-      kind: 'enum',
-      approval: false,
-      // #1794 gap 6: the record names no platform — the Layer-2 facet that posted the card does.
-      surface: 'chat',
-      facet: slackElicitCards,
-      conn: { updateBlocks, workspaceId: () => 'T1' },
-      channel: 'C1',
-      ts: 'card-2',
+      card: {
+        propName: 'language',
+        kind: 'enum',
+        // #1794 gap 6: the record names no platform — the Layer-2 facet that posted the card does.
+        surface: 'chat',
+        facet: slackElicitCards,
+        conn: { updateBlocks, workspaceId: () => 'T1' },
+        channel: 'C1',
+        ts: 'card-2'
+      },
       resolve: elicitationResolved
     })
     expect(
@@ -2532,7 +2535,9 @@ describe('Slack interactive status bar', () => {
     // An input-block card's one relayed verb: Confirm, carrying the fields the tapping reader's
     // own payload held, submitted through the re-derivation a button click takes.
     const multiResolved = vi.fn()
-    ;(daemon as any).permissions.pendingElicits.set('elicit-2', {
+    ;(daemon as any).permissions.pendingApprovals.set('elicit-2', {
+      kind: 'elicitation',
+      approval: false,
       agentId: 'bot-a',
       sessionId: 'acp-1',
       params: {
@@ -2543,26 +2548,27 @@ describe('Slack interactive status bar', () => {
           properties: { checks: { type: 'array', items: { type: 'string', enum: ['lint', 'test'] }, minItems: 1 } }
         }
       },
-      propName: 'checks',
-      kind: 'multi-enum',
-      form: [
-        {
-          propName: 'checks',
-          kind: 'multi-enum',
-          options: [
-            { value: 'lint', label: 'lint' },
-            { value: 'test', label: 'test' }
-          ],
-          minItems: 1
-        }
-      ],
-      approval: false,
-      // #1794 gap 6: the record names no platform — the Layer-2 facet that posted the card does.
-      surface: 'chat',
-      facet: slackElicitCards,
-      conn: { updateBlocks, workspaceId: () => 'T1' },
-      channel: 'C1',
-      ts: 'card-3',
+      card: {
+        propName: 'checks',
+        kind: 'multi-enum',
+        form: [
+          {
+            propName: 'checks',
+            kind: 'multi-enum',
+            options: [
+              { value: 'lint', label: 'lint' },
+              { value: 'test', label: 'test' }
+            ],
+            minItems: 1
+          }
+        ],
+        // #1794 gap 6: the record names no platform — the Layer-2 facet that posted the card does.
+        surface: 'chat',
+        facet: slackElicitCards,
+        conn: { updateBlocks, workspaceId: () => 'T1' },
+        channel: 'C1',
+        ts: 'card-3'
+      },
       resolve: multiResolved
     })
     expect(

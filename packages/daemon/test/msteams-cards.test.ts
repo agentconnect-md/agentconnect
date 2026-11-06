@@ -165,7 +165,7 @@ async function world(opts: { level?: 'talk' | 'approve'; core?: Record<string, u
     workBoundary: new WorkBoundary()
   })
   const permissions = daemon.permissions
-  const onlyRequest = (): string => [...permissions.pendingApprovals.keys(), ...permissions.pendingElicits.keys()][0]
+  const onlyRequest = (): string => [...permissions.pendingApprovals.keys()][0]
   const posts = (): { target: unknown; card: any; summary?: string }[] =>
     conn.postCard.mock.calls.map((c: unknown[]) => ({ target: c[0], card: c[1], summary: c[2] }))
   const replaced = (): { id: string; card: any }[] =>
@@ -413,9 +413,9 @@ describe('the Teams question card', () => {
 describe('a Teams turn’s question card', () => {
   async function ask(w: Awaited<ReturnType<typeof world>>, req: CreateElicitationRequest) {
     const result = w.permissions.onAcpElicit(AGENT, 's1', req)
-    await vi.waitFor(() => expect(w.permissions.pendingElicits.size).toBe(1))
-    const id = w.permissions.pendingElicits.keys().next().value
-    await vi.waitFor(() => expect(w.permissions.pendingElicits.get(id).ts).toBe('17000000001'))
+    await vi.waitFor(() => expect(w.permissions.pendingApprovals.size).toBe(1))
+    const id = w.permissions.pendingApprovals.keys().next().value
+    await vi.waitFor(() => expect(w.permissions.pendingApprovals.get(id).card.ts).toBe('17000000001'))
     return { result }
   }
 
@@ -452,9 +452,9 @@ describe('a Teams turn’s question card', () => {
     const w = await world({ level: 'talk' })
     void ask(w, question(FORM, ['note']))
     await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
-    await vi.waitFor(() => expect(w.permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect(w.permissions.pendingApprovals.size).toBe(1))
     await w.answer('ok', { [elicitFormBlockId(0)]: '' })
-    expect(w.permissions.pendingElicits.size).toBe(1)
+    expect(w.permissions.pendingApprovals.size).toBe(1)
     expect(w.replaced()).toEqual([])
     await w.store.close()
   })
@@ -483,7 +483,7 @@ describe('a Teams turn’s question card', () => {
       expect(res?.action).not.toBe('accept')
     }
     expect(w.posts()).toEqual([])
-    expect(w.permissions.pendingElicits.size).toBe(0)
+    expect(w.permissions.pendingApprovals.size).toBe(0)
     await w.store.close()
   })
 })

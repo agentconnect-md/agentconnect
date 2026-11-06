@@ -152,7 +152,7 @@ async function world(opts: { level: 'talk' | 'approve' | 'settings'; core?: Core
       .map((call: unknown[]) => (call[1] as { text: { text: string } }[])[0]!.text.text)
   ]
   const permissions = daemon.permissions
-  const onlyRequest = (): string => [...permissions.pendingApprovals.keys(), ...permissions.pendingElicits.keys()][0]
+  const onlyRequest = (): string => [...permissions.pendingApprovals.keys()][0]
   return { daemon, store, conn, cp, integration, permissions, postedTo, notices, onlyRequest }
 }
 
@@ -195,8 +195,8 @@ describe('a closed conversation gets no approval card at any level', () => {
     const w = await world({ level: 'approve', core })
     void w.permissions.onAcpElicit(AGENT, 's1', mcpApproval)
     await vi.waitFor(() => expect(w.postedTo()).toEqual(['D-U-EDITOR']))
-    expect(w.permissions.pendingElicits.size).toBe(0)
-    expect(w.permissions.pendingApprovals.size).toBe(1)
+    // It waits on the editor path alone: no in-chat card was offered.
+    expect([...w.permissions.pendingApprovals.values()].map((r) => r.card)).toEqual([undefined])
     await w.store.close()
   })
 
@@ -230,7 +230,7 @@ describe('a closed conversation gets no approval card at any level', () => {
     const id = w.onlyRequest()
     w.integration.core.mutedChannels = ['C1']
     await w.permissions.handleElicitChoice({ requestId: id, value: elicitOptionToken(0), actor: { userId: 'U-ANY' } })
-    expect(w.permissions.pendingElicits.has(id)).toBe(true)
+    expect(w.permissions.pendingApprovals.has(id)).toBe(true)
     expect(decided).not.toHaveBeenCalled()
     await w.store.close()
   })
