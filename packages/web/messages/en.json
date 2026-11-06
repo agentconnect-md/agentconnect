@@ -4328,7 +4328,8 @@
       "groupPlaceholder": "edge-pool",
       "retention": {
         "label": "Clean up finished sessions",
-        "hint": "The workspace and sandbox go first; the conversation and unpushed work stay. Later the session is deleted with its transcript."
+        "hint": "The workspace and sandbox go first; the conversation and unpushed work stay. Later the session is deleted with its transcript.",
+        "clampedHint": "A workspace never outlasts its session, so the workspace, sandbox and session are all deleted after {count, plural, one {# day} other {# days}}."
       },
       "sessionRetention": {
         "label": "Session",

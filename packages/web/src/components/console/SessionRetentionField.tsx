@@ -168,6 +168,11 @@ export function SessionRetentionFields({
   disabled?: boolean
 }) {
   const t = useTranslations('Daemons.dialog')
+  // The daemon caps the workspace window at the session window, so a longer one never takes effect.
+  const sessionDays = retentionDays(session)
+  const workspaceDays = retentionDays(workspace)
+  const clampedDays =
+    sessionDays !== null && (workspaceDays === null || workspaceDays >= sessionDays) ? sessionDays : null
   return (
     <div role="group" aria-label={t('retention.label')} className="fld mt-[14px]">
       <span className="fldlbl">{t('retention.label')}</span>
@@ -176,7 +181,7 @@ export function SessionRetentionFields({
         <RetentionPicker kind="session" value={session} onChange={onSessionChange} disabled={disabled} />
       </div>
       <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-        {t('retention.hint')}
+        {clampedDays === null ? t('retention.hint') : t('retention.clampedHint', { count: clampedDays })}
       </span>
     </div>
   )
