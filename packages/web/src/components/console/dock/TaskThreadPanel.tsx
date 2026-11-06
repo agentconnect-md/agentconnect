@@ -28,7 +28,6 @@ import {
   type ThreadEntry
 } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
-import { useDockExpand } from '@/components/console/dock/SessionDock'
 import { fetchSessionDetail } from '@/lib/api'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { agentToneColor } from '@/lib/agent-tone'
@@ -54,10 +53,6 @@ export function TaskThreadPanel({
   parentSessionId,
   approvals,
   onBack,
-  variant = 'panel',
-  onExpand,
-  onShrink,
-  branch,
   taskApprovals,
   runtimeContext
 }: {
@@ -76,15 +71,8 @@ export function TaskThreadPanel({
   parentSessionId: string | null
   /** The coordinator's webchat conversation, whose grant the task writes under: its writes wait for approval here. */
   approvals?: { orgId: string; conversationId: string }
+  /** Back to the Tasks list, which is also what closing the quick look does. */
   onBack: () => void
-  /** `expanded` draws the task over its coordinator (crumb, branch, shrink); `panel` is the side panel's quick look. */
-  variant?: 'panel' | 'expanded'
-  /** The side panel's expand, which opens the task expanded. */
-  onExpand?: () => void
-  /** The expanded view's shrink and its "Coordinator" crumb, which put the task back in the side panel. */
-  onShrink?: () => void
-  /** The branch the task's own worktree is on, as its Git panel read it. */
-  branch?: string | null
   /** Who may answer this task's approvals and the conversation they are read through: the coordinator page's own rules. */
   taskApprovals?: { listSessionId: string; enabled: boolean; conversationPermissions: boolean }
   /** What the task's runtime picker reads: the agent, its daemon's catalogs, and whether this reader may change settings. */
@@ -97,7 +85,6 @@ export function TaskThreadPanel({
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
-  const td = useTranslations('Sessions.detail.sessionDock')
   const format = useFormatter()
   const { orgPath } = useOrgs()
   const {
@@ -112,7 +99,6 @@ export function TaskThreadPanel({
     pgAttach,
     pgCancel
   } = usePlayground()
-  const dock = useDockExpand()
   const id = task.sessionId
   const row = useTaskRow(agentId, id, parentSessionId)
   const { stopOf, stop } = useTaskStops(agentId, parentSessionId ?? id, () => {})
@@ -189,31 +175,20 @@ export function TaskThreadPanel({
         <button
           type="button"
           data-task-thread-back=""
-          title={variant === 'expanded' ? t('coordinatorTitle') : t('backTitle')}
-          onClick={variant === 'expanded' ? (onShrink ?? onBack) : onBack}
-          className="flex-none cursor-pointer rounded-sm border-0 bg-transparent px-[2px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:text-(--text-primary) hover:underline"
+          className={HEADER_BTN}
+          title={t('backTitle')}
+          aria-label={t('backTitle')}
+          onClick={onBack}
         >
-          {variant === 'expanded' ? t('coordinator') : t('back')}
+          <Icon name="chevron-left" size={15} />
         </button>
-        <Icon name="chevron-right" size={13} color="var(--text-tertiary)" className="flex-none" />
         {row && tone ? <StateIcon state={tone} label={tl(taskStateKey(row))} /> : null}
         <h3
           title={title}
-          className="m-0 min-w-0 flex-[0_1_auto] truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)"
+          className="m-0 min-w-0 flex-1 truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)"
         >
           {title}
         </h3>
-        {variant === 'expanded' && branch ? (
-          <span
-            data-task-thread-branch=""
-            title={branch}
-            className="inline-flex min-w-0 flex-[0_100_auto] items-center gap-1 rounded-sm bg-(--surface-sunken) px-[6px] py-[2px] font-mono text-[11px] leading-normal text-(--text-secondary)"
-          >
-            <Icon name="git-fork" size={11} className="flex-none" />
-            <span className="truncate">{branch}</span>
-          </span>
-        ) : null}
-        <span className="flex-1" />
         {stoppable && !canReply ? (
           <button
             type="button"
@@ -227,49 +202,16 @@ export function TaskThreadPanel({
             <Icon name="square" size={13} />
           </button>
         ) : null}
+        {/* Expanding a task is opening its own page; a real link, so a modified click opens it in a new tab. */}
         <Link
           href={pageHref}
+          data-task-thread-expand=""
           className={HEADER_BTN}
           title={t('openPage', { title })}
           aria-label={t('openPage', { title })}
         >
-          <Icon name="arrow-up-right" size={14} />
+          <Icon name="maximize-2" size={14} />
         </Link>
-        {variant === 'expanded' && onShrink ? (
-          <button
-            type="button"
-            data-task-thread-shrink=""
-            className={HEADER_BTN}
-            title={t('shrink')}
-            aria-label={t('shrink')}
-            onClick={onShrink}
-          >
-            <Icon name="minimize-2" size={14} />
-          </button>
-        ) : onExpand ? (
-          <button
-            type="button"
-            data-task-thread-expand=""
-            className={HEADER_BTN}
-            title={td('expandPanel')}
-            aria-label={td('expandPanel')}
-            onClick={onExpand}
-          >
-            <Icon name="maximize-2" size={14} />
-          </button>
-        ) : dock.available ? (
-          <button
-            type="button"
-            data-task-thread-expand=""
-            className={HEADER_BTN}
-            title={dock.expanded ? td('collapsePanel') : td('expandPanel')}
-            aria-label={dock.expanded ? td('collapsePanel') : td('expandPanel')}
-            aria-pressed={dock.expanded}
-            onClick={() => dock.setExpanded(!dock.expanded)}
-          >
-            <Icon name={dock.expanded ? 'minimize-2' : 'maximize-2'} size={14} />
-          </button>
-        ) : null}
         <button
           type="button"
           data-task-thread-close=""
@@ -366,7 +308,7 @@ export function TaskThreadPanel({
         canReply={canReply}
         checking={detail === undefined}
         placeholder={t('replyPlaceholder')}
-        hint={t('replyHint', { agent: agentName })}
+        hint={t('replyHint')}
         readOnly={t('readOnly')}
         sendLabel={t('send')}
         onSend={send}

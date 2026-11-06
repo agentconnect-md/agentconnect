@@ -105,7 +105,11 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
 })
 
 vi.mock('next/link', () => ({
-  default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>
+  default: ({ children, href, ...rest }: { children: React.ReactNode; href: string }) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  )
 }))
 
 // The avatar's image would fetch from the test origin; its own tests cover it.
@@ -216,29 +220,18 @@ describe('TaskThreadPanel', () => {
     expect(folds.at(-1)).toContain('Thought through 1 step')
   })
 
-  it('draws the expanded header: the coordinator crumb, the branch, Stop for a running task, and shrink', async () => {
-    const shrink = vi.fn()
-    props = { variant: 'expanded', branch: 'task/blockers-1.5', onShrink: shrink }
+  it('heads the quick look with back, the task’s state, a link to its own page and close, and no crumb or branch', async () => {
     await render()
-    const crumb = container.querySelector<HTMLButtonElement>('[data-task-thread-back]')!
-    expect(crumb.textContent).toBe('Coordinator')
-    expect(container.querySelector('[data-task-thread-branch]')?.textContent).toBe('task/blockers-1.5')
-    await act(async () => crumb.click())
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-shrink]')!.click())
-    expect(shrink).toHaveBeenCalledTimes(2)
-    expect(container.querySelector('[data-task-thread-expand]')).toBeNull()
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-send-button="stop"]')!.click())
-    expect(wire.calls).toContain('stop:ses_task')
-  })
-
-  it('offers the side panel an expand that opens the task expanded', async () => {
-    const expand = vi.fn()
-    props = { onExpand: expand }
-    await render()
-    expect(container.querySelector('[data-task-thread-back]')?.textContent).toBe('Tasks')
+    const backButton = container.querySelector<HTMLButtonElement>('[data-task-thread-back]')!
+    expect(backButton.getAttribute('aria-label')).toBe('Back to all tasks')
+    expect(backButton.textContent).toBe('')
     expect(container.querySelector('[data-task-thread-branch]')).toBeNull()
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
-    expect(expand).toHaveBeenCalledOnce()
+    // Expanding a task is opening its own page, a real link a modified click takes to a new tab.
+    const expand = container.querySelector('[data-task-thread-expand]')!
+    expect(expand.tagName).toBe('A')
+    expect(expand.getAttribute('href')).toBe('/acme/sessions/ses_task')
+    act(() => backButton.click())
+    expect(back).toHaveBeenCalledTimes(1)
   })
 
   it('draws the task’s own approval in its thread, at the turn that asked', async () => {
@@ -337,7 +330,7 @@ describe('TaskThreadPanel', () => {
     })
     act(() => root.unmount())
     root = createRoot(container)
-    props = { variant: 'expanded', onShrink: () => {} }
+    props = {}
     await render()
     expect(container.querySelector<HTMLInputElement>('[data-thread-question="q-keep"] input')!.value).toBe('v1.5.')
   })
@@ -419,28 +412,10 @@ describe('TaskThreadPanel', () => {
 
   it('tells the reader who a reply reaches', async () => {
     await render()
-    expect(container.querySelector('textarea')?.getAttribute('placeholder')).toBe('Reply in this task…')
-    expect(container.querySelector('[data-task-thread-hint]')?.textContent).toBe('Goes to deploy-bot in this task only')
-  })
-
-  it('carries no expand switch outside a dock that offers one', async () => {
-    await render()
-    expect(container.querySelector('[data-task-thread-expand]')).toBeNull()
-  })
-
-  it('flips the enclosing dock’s expand switch from its header', async () => {
-    const setExpanded = vi.fn()
-    await render({ available: true, expanded: false, setExpanded })
-    const button = container.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!
-    expect(button.getAttribute('aria-label')).toBe('Expand the panel')
-    act(() => button.click())
-    expect(setExpanded).toHaveBeenCalledWith(true)
-    await render({ available: true, expanded: true, setExpanded })
-    const pressed = container.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!
-    expect(pressed.getAttribute('aria-pressed')).toBe('true')
-    expect(pressed.getAttribute('aria-label')).toBe('Collapse the panel')
-    act(() => pressed.click())
-    expect(setExpanded).toHaveBeenLastCalledWith(false)
+    expect(container.querySelector('textarea')?.getAttribute('placeholder')).toBe(
+      'Reply in this task — only this task sees it'
+    )
+    expect(container.querySelector('[data-task-thread-hint]')?.textContent).toBe('Only this task sees it')
   })
 
   it('draws another agent’s post as that agent, without its attribution line', async () => {

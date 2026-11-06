@@ -135,11 +135,26 @@
       "noDescription": "This command has no description.",
       "runsOn": "Runs on {agent}",
       "controls": {
-        "stop": { "title": "Stop", "does": "Stop the current answer" },
-        "model": { "title": "Model", "does": "List or switch models" },
-        "effort": { "title": "Reasoning effort", "does": "List or switch the reasoning effort" },
-        "permission": { "title": "Permission mode", "does": "List or switch the permission mode" },
-        "fast": { "title": "Fast mode", "does": "Turn fast mode on or off" }
+        "stop": {
+          "title": "Stop",
+          "does": "Stop the current answer"
+        },
+        "model": {
+          "title": "Model",
+          "does": "List or switch models"
+        },
+        "effort": {
+          "title": "Reasoning effort",
+          "does": "List or switch the reasoning effort"
+        },
+        "permission": {
+          "title": "Permission mode",
+          "does": "List or switch the permission mode"
+        },
+        "fast": {
+          "title": "Fast mode",
+          "does": "Turn fast mode on or off"
+        }
       },
       "fastOn": "On",
       "fastOff": "Off"
@@ -323,27 +338,27 @@
       "lastReply": "last reply {time}",
       "open": "Open the thread of {title}",
       "openPage": "Open {title} on its own page",
-      "back": "Tasks",
       "earlier": "Earlier messages are on the task’s page",
       "loading": "Loading the thread…",
       "loadFailed": "Couldn’t load this thread. Try again.",
       "you": "You",
       "person": "Someone",
       "working": "{agent} is working…",
-      "replyPlaceholder": "Reply in this task…",
+      "replyPlaceholder": "Reply in this task — only this task sees it",
       "readOnly": "You can read this task, but not reply to it here.",
       "send": "Send reply",
       "question": "Waiting for your answer",
       "answer": "Your answer",
       "answerOnPage": "See the whole question on the task’s page",
       "answerSent": "Sent. It stays open until the task accepts the answer.",
-      "replyHint": "Goes to {agent} in this task only",
+      "replyHint": "Only this task sees it",
       "close": "Close",
       "backTitle": "Back to all tasks",
-      "coordinator": "Coordinator",
       "coordinatorTitle": "Back to the coordinator",
-      "shrink": "Shrink to the side panel",
-      "sliver": "Back to the coordinator"
+      "shrink": "Back into the side panel",
+      "closeTask": "Close the task",
+      "startedBy": "Started by the coordinator",
+      "pageHint": "The coordinator reads this task’s summary, not each reply."
     },
     "githubApp": {
       "title": "GitHub App",

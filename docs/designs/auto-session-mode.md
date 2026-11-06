@@ -637,8 +637,11 @@ not addressed to this agent. Cost grows with the number of agents.
   - The coordinator posts a link card: an agent post with a Markdown link, titled with the task's
     title, to the task's page. The post and its transcript row also carry `taskLink` (the task's
     session id, title, and whether the task was opened or handed the message). The console draws a
-    post that carries it as the task's card, which opens the task's thread beside the conversation,
-    where people read and reply. The card shows the task's `replies`: the messages its people and
+    post that carries it as the task's card, which opens the task's own page: the same page a direct
+    link lands on, with a way back to the coordinator, a shrink into the coordinator's side panel
+    (`?task=<id>` on the coordinator's page), the task's Files, Git, Tasks and Computer, and what the
+    coordinator opened it with folded at the top. The Tasks list opens a task's thread in the side
+    panel instead, where people read and reply. The card shows the task's `replies`: the messages its people and
     the task posted after the one that opened it, which the daemon counts. A coordinator on a
     platform with threads posts no link card, so its task row carries `openedForMessageId`, the
     platform id of the message it was opened for. The console draws the card under the

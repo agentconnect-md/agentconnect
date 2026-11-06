@@ -648,6 +648,8 @@ export interface SessionRelationDto {
 export interface SessionDetailDto {
   id: string
   parentSession: SessionRelationDto | null
+  /** This session is a task (its own `subsession:` thread, or a threaded task some session owns); absent from an older CP. */
+  task?: boolean
   /** Absent on a Control Plane that predates sibling navigation. */
   siblingSessions?: SessionRelationDto[]
   childSessions: SessionRelationDto[]
