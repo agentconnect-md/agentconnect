@@ -4996,7 +4996,7 @@ export default function SessionDetailView() {
           className={
             viewerOpen
               ? 'flex min-h-0 min-w-0 flex-1 flex-col desktop:pt-[10px]'
-              : 'flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:-ml-1 desktop:pt-[10px] desktop:pl-1 desktop:max-wide:pr-[30px] wide:pr-[10px]'
+              : '@container flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:-ml-1 desktop:pt-[10px] desktop:pl-1 desktop:max-wide:pr-[30px] wide:pr-[10px]'
           }
         >
           {/* One growing inner wrapper = the scroller's single child useStickToBottom watches; in
@@ -5135,7 +5135,10 @@ export default function SessionDetailView() {
                     conversationPermissions={ownerApprovals || taskOwnerApprovals}
                     turns={approvalTurns}
                   >
-                    <div className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
+                    {/* Where the pane leaves no gutter beside the 880px column, the turns make room for the turn map at its right. */}
+                    <div
+                      className={`flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px] ${mapTurns.length >= 3 ? 'desktop:@max-[970px]:pr-11' : ''}`}
+                    >
                       {turns.map((turn, ti) => (
                         // The turn's clock time is its own centred line above the message, a separator shared by both sides.
                         <div key={turn.key} data-turn-anchor={turn.key} className="flex flex-col gap-[5px]">
