@@ -231,8 +231,18 @@ function attachmentText(value: unknown): string {
 
 // A rendered surface reference collapses to its bare id, which is how Slack's fallback `text`
 // spells the same mention — so the two views of one message dedupe instead of both surviving.
+// The `text` view is mrkdwn (escaped `&<>`, `` ` `` `*` `_` `~` markers, labelled mentions) while
+// rich_text spells the same words plainly, so the key drops what is only markup.
 function canonical(value: string): string {
-  return value.replace(REFERENCE_RE, '$1').replace(/\s+/g, ' ').trim()
+  return value
+    .replace(REFERENCE_RE, '$1')
+    .replace(/<([@#!][^|>]+)\|[^>]*>/g, '<$1>')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/[`*_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 /** Join top-level text with visible blocks/attachments while removing the common
