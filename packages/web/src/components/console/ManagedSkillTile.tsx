@@ -134,7 +134,7 @@ export function ManagedSkillTile({
               title={skill.archivedAt ? t('restore') : t('archive')}
               onClick={onArchive}
             >
-              <Icon name={skill.archivedAt ? 'archive-restore' : 'archive'} size={13} />
+              <Icon name={skill.archivedAt ? 'archive-arrow-up' : 'archive'} size={13} />
             </button>
           )}
         </>

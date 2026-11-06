@@ -32,13 +32,13 @@
   "types": "dist/index.d.ts",
   "dependencies": {
     "@agentconnect.md/protocol": "workspace:*",
-    "ws": "^8.22.0"
+    "ws": "^8.22.1"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
     "@types/ws": "^8.18.2",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.0"
   },
   "keywords": [
     "agentconnect",

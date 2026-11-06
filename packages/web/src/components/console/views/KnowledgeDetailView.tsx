@@ -321,7 +321,7 @@ export default function KnowledgeDetailView() {
                   disabled={busy}
                   onClick={() => void run(() => setOrganizationKnowledgeArchived(record.id, !record.archivedAt))}
                 >
-                  <Icon name={record.archivedAt ? 'archive-restore' : 'archive'} size={14} />
+                  <Icon name={record.archivedAt ? 'archive-arrow-up' : 'archive'} size={14} />
                   {record.archivedAt ? t('detail.restore') : t('detail.archive')}
                 </Button>
               </>
