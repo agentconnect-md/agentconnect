@@ -56,6 +56,7 @@ function fixture() {
     permission: vi.fn(async () => true),
     elicit: vi.fn(async () => true),
     setRuntime: vi.fn(async () => true),
+    isTaskTarget: vi.fn(async () => false),
     onExecutionError: vi.fn()
   }
   const hooks: AhpActionHooks = {
@@ -121,6 +122,26 @@ it("runs VS Code's turn shape as plain text on a continuation, ignoring its mode
   expect(f.prepare.mock.calls[0]?.[0].post?.postId).toBe(canonicalPostId('turn'))
   expect(f.host.setRuntime).not.toHaveBeenCalled()
   expect(f.hooks.admitted).toHaveBeenCalledOnce()
+})
+it("changes a coordinator task's runtime from its own thread, and refuses any other continued session", async () => {
+  const f = fixture()
+  const config = {
+    ...start,
+    channel: scope.sessionUri,
+    action: { type: ActionType.SessionConfigChanged, config: { model: 'opus' } }
+  } as unknown as DispatchActionParams
+  const target = { ...scope, targetSessionId: 'outward', callerRole: 'editor' as const }
+  await expect(f.application.dispatch(target, config, origin, f.hooks)).rejects.toThrow(
+    'Runtime changes are unavailable on this session'
+  )
+  expect(f.host.setRuntime).not.toHaveBeenCalled()
+  vi.mocked(f.host.isTaskTarget).mockResolvedValue(true)
+  await f.application.dispatch(target, config, origin, f.hooks)
+  expect(f.host.setRuntime).toHaveBeenCalledWith(target, { key: 'model', value: 'opus' })
+  // The same role rule as the conversation's own: a participant still may not.
+  await expect(
+    f.application.dispatch({ ...target, callerRole: 'participant' }, config, origin, f.hooks)
+  ).rejects.toThrow('Runtime changes are unavailable on this session')
 })
 it('publishes a steering fallback without the client context the runtime never received', async () => {
   const f = fixture()

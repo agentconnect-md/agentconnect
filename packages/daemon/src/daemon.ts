@@ -3287,6 +3287,11 @@ export class Daemon {
             return this.commands.setFastByKey(key, change.value)
         }
       },
+      isTaskTarget: async (scope) => {
+        if (!scope.targetSessionId) return false
+        const target = await this.store.getSessionByOutwardId(scope.targetSessionId, scope.agentId)
+        return !!target && isDelegatedTaskCoordinate(target.thread)
+      },
       onExecutionError: (error) => this.log.warn(`AHP execution failed: ${formatErr(error)}`)
     })
     const dispatchEnvironment: AhpDispatchEnvironment = {
@@ -16666,6 +16671,25 @@ export class Daemon {
     }
   }
 
+  /** Applies one webchat runtime-setting op to the session under `sessionKey`. */
+  private async applyWebchatRuntimeOp(
+    msgId: string,
+    op: Extract<RdMsgWebchat['payload'], { op: 'set_model' | 'set_effort' | 'set_permission_mode' | 'set_fast' }>,
+    sessionKey: string
+  ): Promise<RdAck> {
+    const applied =
+      op.op === 'set_model'
+        ? await this.commands.setModelByKey(sessionKey, op.model)
+        : op.op === 'set_effort'
+          ? await this.commands.setEffortByKey(sessionKey, op.effort)
+          : op.op === 'set_permission_mode'
+            ? await this.commands.setPermissionModeByKey(sessionKey, op.permissionMode)
+            : await this.commands.setFastByKey(sessionKey, op.fastMode)
+    return applied
+      ? { msgId, accepted: true }
+      : { msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
+  }
+
   private async dispatchRelayOp(msg: RdMsgWebchat, chat: (event: RdChatEvent) => void): Promise<RdAck> {
     const relayId = this.relayIngressOf.get(msg)
     const sink: WebchatSink = {
@@ -16734,8 +16758,15 @@ export class Daemon {
         case 'set_model':
         case 'set_effort':
         case 'set_permission_mode':
-        case 'set_fast':
-          return { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled for a continued session' }
+        case 'set_fast': {
+          // A coordinator's task is set from its own thread as its conversation is; any other continued session takes human input only.
+          const target = await this.store.getSessionByOutwardId(msg.targetSessionId, msg.agentId)
+          if (!target || !isDelegatedTaskCoordinate(target.thread))
+            return { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled for a continued session' }
+          if (!webchatRoleChangesSettings(op.callerRole) && chatSettingsAllowed(this.agents.get(msg.agentId)))
+            return { msgId: msg.msgId, accepted: false, reason: WEBCHAT_SETTINGS_REFUSAL }
+          return this.applyWebchatRuntimeOp(msg.msgId, op, target.key)
+        }
         case 'context':
         case 'image_update':
           return { msgId: msg.msgId, accepted: true }
@@ -16831,21 +16862,10 @@ export class Daemon {
         }
       }
       case 'set_model':
-        return (await this.commands.setModelByKey(key(), op.model))
-          ? { msgId: msg.msgId, accepted: true }
-          : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
       case 'set_effort':
-        return (await this.commands.setEffortByKey(key(), op.effort))
-          ? { msgId: msg.msgId, accepted: true }
-          : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
       case 'set_permission_mode':
-        return (await this.commands.setPermissionModeByKey(key(), op.permissionMode))
-          ? { msgId: msg.msgId, accepted: true }
-          : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
       case 'set_fast':
-        return (await this.commands.setFastByKey(key(), op.fastMode))
-          ? { msgId: msg.msgId, accepted: true }
-          : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
+        return this.applyWebchatRuntimeOp(msg.msgId, op, key())
       case 'cancel':
         await this.webchatTransport.handleWebchatCancel(msg.chatId, op.agentId ?? msg.agentId)
         return { msgId: msg.msgId, accepted: true }

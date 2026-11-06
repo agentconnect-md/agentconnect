@@ -2608,7 +2608,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   /** See PlaygroundData.pgAttach. Doubles as socket warming; a live verified socket is re-probed, throttled, since it never hears a turn started elsewhere. */
   const pgAttach = useCallback(
     (id: string, agentId: string, conversationId: string): void => {
-      if (!conversationId || busyRef.current[id]) return
+      if (busyRef.current[id]) return
+      if (!conversationId) {
+        // A marked continuation target dials its own conversation, so its status (and runtime choices) arrive before any send.
+        if (sessionTargets.current.has(id) && !conns.current.get(id))
+          connect(id, agentId, undefined, false, true).ready.catch(() => {})
+        return
+      }
       const conn = conns.current.get(id)
       const live =
         conn?.probeIds &&

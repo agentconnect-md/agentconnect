@@ -1,7 +1,12 @@
 import {
+  agentPermissionDisplay,
+  displayedEffort,
   effortChoicesFor,
   effortLabel,
+  fastModeAvailableFor,
   modelCapability,
+  preferredModelFor,
+  runtimeDefaultModel,
   permissionModeChoicesFor,
   permissionModeDefault,
   permissionModeLabel,
@@ -13,6 +18,8 @@ import {
   type RuntimeModelCatalog,
   type Session
 } from '@/lib/data'
+import { agentStrategyValue, strategyModelSource } from '@/lib/execution-strategy'
+import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 
 type RuntimeDaemon = Pick<DaemonRow, 'runtimeModels'> | undefined
 type PermissionChoice = { v: string; l: string; description?: string }
@@ -116,4 +123,124 @@ export function sessionAfterModelSelection<T extends { availableEfforts?: string
   model: string
 ): T & { model: string } {
   return { ...session, model, availableEfforts: undefined }
+}
+
+/** Everything a composer's runtime picker shows for a session: the model and its choices, effort, approval mode and fast mode. */
+export function runtimePickerState({
+  session,
+  selection,
+  owner,
+  owningDaemon,
+  agentRuntime,
+  beforeFirstTurn,
+  runtimeUnresolved,
+  permissionT
+}: {
+  session: Pick<
+    Session,
+    | 'model'
+    | 'effort'
+    | 'permissionMode'
+    | 'fastMode'
+    | 'fastModeAvailable'
+    | 'availableModels'
+    | 'availableEfforts'
+    | 'availablePermissionModes'
+  >
+  /** What the reader picked here and the session has not reported back yet. */
+  selection?: { model?: string; effort?: string; permissionPreset?: string; fast?: boolean } | undefined
+  owner: Agent | undefined
+  owningDaemon: DaemonRow | undefined
+  agentRuntime: string
+  /** A playground before its first turn stages a choice instead of changing a live session. */
+  beforeFirstTurn: boolean
+  /** The runtime or model is still being decided or reported. */
+  runtimeUnresolved: boolean
+  permissionT: Parameters<typeof localizedPermissionChoices>[1]
+}) {
+  // Before a live list, models come from the catalog of the agent's strategy: the host install's for host and srt, the image's for a VM.
+  const modelSource =
+    owningDaemon &&
+    strategyModelSource(owningDaemon, owner && !owningDaemon.pool ? agentStrategyValue(owner) : undefined)
+  const runtimeProfile = modelSource?.runtimeModels.find((profile) => profile.runtime === agentRuntime)
+  const runtimeCatalog = runtimeProfile?.modelCatalog ?? undefined
+  const pgModel =
+    selection?.model ??
+    (beforeFirstTurn
+      ? session.model || owner?.model || preferredModelFor(modelSource, agentRuntime)
+      : (session.model ?? ''))
+  // A resolved runtime that reported no concrete model ran its own default; the picker names that entry.
+  const pgShownModel =
+    pgModel || (!runtimeUnresolved && runtimeDefaultModel(owningDaemon, agentRuntime) ? 'default' : '')
+  const pgModels = session.availableModels ?? runtimeProfile?.models ?? []
+  const pgModelOptions =
+    pgModels.length > 0 && pgModel && !pgModels.includes(pgModel) ? [pgModel, ...pgModels] : pgModels
+  const pickerSource = beforeFirstTurn
+    ? modelSource
+    : {
+        runtimeModels: [
+          { ...runtimeProfile, runtime: agentRuntime, version: runtimeProfile?.version ?? '', models: pgModelOptions }
+        ]
+      }
+  const selectedModelCapability = modelCapability(owningDaemon, agentRuntime, pgModel)
+  const pgEffortChoices = sessionEffortChoicesForSelection(
+    agentRuntime,
+    owningDaemon,
+    pgModel,
+    session.model,
+    session.availableEfforts
+  )
+  const pgEffort = displayedEffort(
+    selection?.effort ?? session.effort ?? owner?.reasoning ?? '',
+    pgEffortChoices,
+    selectedModelCapability?.defaultEffort
+  )
+  const pgEffortOptions =
+    pgEffort && !pgEffortChoices.some((choice) => choice.value === pgEffort)
+      ? [{ value: pgEffort, label: effortLabel(agentRuntime, pgEffort) }, ...pgEffortChoices]
+      : pgEffortChoices
+  const livePermissionModes = session.availablePermissionModes
+  const selectablePermissionModes = sessionPermissionChoices(agentRuntime, runtimeCatalog, livePermissionModes)
+  const pgPermissionPreset = sessionPermissionSelection(
+    agentRuntime,
+    runtimeCatalog,
+    livePermissionModes,
+    selection?.permissionPreset ?? session.permissionMode ?? owner?.permissionMode ?? ''
+  )
+  const pgPermissionPresets =
+    livePermissionModes === undefined &&
+    pgPermissionPreset &&
+    !selectablePermissionModes.some((choice) => choice.v === pgPermissionPreset)
+      ? [
+          { v: pgPermissionPreset, l: permissionModeLabel(agentRuntime, pgPermissionPreset) },
+          ...selectablePermissionModes
+        ]
+      : selectablePermissionModes
+  // The picker's Approval choices; a mode the live list no longer offers keeps its readable name.
+  const pgApprovalOptions = localizedPermissionChoices(
+    pgPermissionPreset && !pgPermissionPresets.some((mode) => mode.v === pgPermissionPreset)
+      ? [
+          { v: pgPermissionPreset, l: agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset) },
+          ...pgPermissionPresets
+        ]
+      : pgPermissionPresets,
+    permissionT
+  )
+  // The local pick first: an idle adopted session reports no status frame, so the switch would read stale.
+  const pgFastMode = selection?.fast ?? session.fastMode ?? owner?.fastMode ?? false
+  const pgFastModeAvailable =
+    (pgModel === session.model ? session.fastModeAvailable : undefined) ??
+    fastModeAvailableFor(agentRuntime, selectedModelCapability)
+  return {
+    modelSource,
+    pgModel,
+    pgShownModel,
+    pickerSource,
+    pgEffort,
+    pgEffortOptions,
+    pgPermissionPreset,
+    pgApprovalOptions,
+    pgFastMode,
+    pgFastModeAvailable
+  }
 }

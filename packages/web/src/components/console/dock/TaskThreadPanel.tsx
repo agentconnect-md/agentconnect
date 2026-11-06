@@ -29,7 +29,8 @@ import type { TaskLink } from '@/components/console/task-link'
 import { useDockExpand } from '@/components/console/dock/SessionDock'
 import { fetchSessionDetail } from '@/lib/api'
 import { agentToneColor } from '@/lib/agent-tone'
-import { agentLabel, type Agent } from '@/lib/data'
+import { agentLabel, type Agent, type DaemonRow } from '@/lib/data'
+import { TaskRuntimePicker } from '@/components/console/dock/TaskRuntimePicker'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib/session-trigger'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 import type { AgentIcon } from '@/lib/agent-icon'
@@ -74,7 +75,8 @@ export function TaskThreadPanel({
   onExpand,
   onShrink,
   branch,
-  taskApprovals
+  taskApprovals,
+  runtimeContext
 }: {
   /** The coordinator's agent, which runs the task. */
   agentId: string
@@ -102,6 +104,13 @@ export function TaskThreadPanel({
   branch?: string | null
   /** Who may answer this task's approvals and the conversation they are read through: the coordinator page's own rules. */
   taskApprovals?: { listSessionId: string; enabled: boolean; conversationPermissions: boolean }
+  /** What the task's runtime picker reads: the agent, its daemon's catalogs, and whether this reader may change settings. */
+  runtimeContext?: {
+    owner: Agent | undefined
+    owningDaemon: DaemonRow | undefined
+    agentRuntime: string
+    editable: boolean
+  }
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
@@ -116,7 +125,8 @@ export function TaskThreadPanel({
     pgNotice,
     setPgInput,
     reconcileLiveSteps,
-    pgAnswerElicitation
+    pgAnswerElicitation,
+    pgAttach
   } = usePlayground()
   const dock = useDockExpand()
   const id = task.sessionId
@@ -385,6 +395,24 @@ export function TaskThreadPanel({
         sendLabel={t('send')}
         onSend={send}
         setDraft={(text) => setPgInput(id, text)}
+        // Writing here opens the task's own session, which is what reports the settings its picker offers.
+        onFocus={() => {
+          if (!canReply) return
+          markSessionTarget(id)
+          pgAttach(id, agentId, '')
+        }}
+        runtime={
+          runtimeContext ? (
+            <TaskRuntimePicker
+              sessionId={id}
+              agentId={agentId}
+              owner={runtimeContext.owner}
+              owningDaemon={runtimeContext.owningDaemon}
+              agentRuntime={runtimeContext.agentRuntime}
+              editable={runtimeContext.editable}
+            />
+          ) : null
+        }
       />
     </div>
   )
@@ -623,7 +651,9 @@ function ThreadComposer({
   readOnly,
   sendLabel,
   onSend,
-  setDraft
+  setDraft,
+  onFocus,
+  runtime
 }: {
   sessionId: string
   canReply: boolean
@@ -635,6 +665,9 @@ function ThreadComposer({
   sendLabel: string
   onSend: () => void
   setDraft: (text: string) => void
+  onFocus?: () => void
+  /** The task's runtime picker, beside the send button. */
+  runtime?: ReactNode
 }) {
   const draft = usePgDraft(sessionId)
   const hasText = usePgDraftHasText(sessionId)
@@ -654,6 +687,7 @@ function ThreadComposer({
           value={draft}
           disabled={!canReply}
           onChange={(e) => setDraft(e.target.value)}
+          onFocus={onFocus}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
@@ -669,6 +703,7 @@ function ThreadComposer({
           >
             {hint}
           </span>
+          {runtime}
           <button
             type="button"
             className="sendbtn h-[26px] w-[26px] flex-none rounded-[7px]"
