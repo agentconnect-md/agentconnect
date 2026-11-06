@@ -27,7 +27,8 @@ const wire = vi.hoisted(() => ({
   live: [] as SessionStep[],
   calls: [] as string[],
   extra: [] as SessionMessageDto[],
-  operations: [] as unknown[]
+  operations: [] as unknown[],
+  permissionRequests: [] as unknown[]
 }))
 
 vi.mock(import('@/lib/api'), async (importOriginal) => ({
@@ -36,6 +37,7 @@ vi.mock(import('@/lib/api'), async (importOriginal) => ({
     Promise.resolve({ subsessions: [taskRow], truncated: false, nextCursor: null })
   ),
   fetchAssistantSubsession: vi.fn(),
+  fetchAgentPermissionRequests: vi.fn(() => Promise.resolve(wire.permissionRequests as never)),
   stopAssistantSubsession: vi.fn((_agent: string, id: string) => {
     wire.calls.push(`stop:${id}`)
     return Promise.resolve({ result: 'stopped' as const })
@@ -110,7 +112,9 @@ vi.mock(import('@/components/marks'), async (importOriginal) => ({
   AgentIconView: () => <span data-agent-avatar="" />
 }))
 
-vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/acme${path}` }) }))
+vi.mock('@/lib/org-context', () => ({
+  useOrgs: () => ({ activeOrg: { id: 'org_acme' }, orgPath: (path: string) => `/acme${path}` })
+}))
 
 import { TaskThreadPanel } from './TaskThreadPanel'
 import { DockExpandContext, type DockExpand } from './SessionDock'
@@ -131,6 +135,7 @@ beforeEach(() => {
   wire.live = []
   wire.calls = []
   wire.extra = []
+  wire.permissionRequests = []
   wire.operations = []
   props = {}
   back = vi.fn()
@@ -230,6 +235,43 @@ describe('TaskThreadPanel', () => {
     expect(container.querySelector('[data-task-thread-branch]')).toBeNull()
     await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
     expect(expand).toHaveBeenCalledOnce()
+  })
+
+  it('draws the task’s own approval in its thread, at the turn that asked', async () => {
+    wire.permissionRequests = [
+      {
+        id: 'perm-1',
+        agentId: 'agent_1',
+        sessionId: 'ses_task',
+        parentSessionId: 'ses_coordinator',
+        createdAt: '2026-11-03T09:02:30.000Z',
+        requesterId: null,
+        requesterName: null,
+        command: 'Bash: kubectl rollout restart',
+        status: 'pending',
+        resolvedAt: null,
+        options: [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }]
+      },
+      // Another task's request stays out of this thread.
+      {
+        id: 'perm-2',
+        agentId: 'agent_1',
+        sessionId: 'ses_other',
+        parentSessionId: 'ses_coordinator',
+        createdAt: '2026-11-03T09:02:30.000Z',
+        requesterId: null,
+        requesterName: null,
+        command: 'Bash: rm -rf build',
+        status: 'pending',
+        resolvedAt: null
+      }
+    ]
+    props = { taskApprovals: { listSessionId: 'ses_coordinator', enabled: true, conversationPermissions: false } }
+    await render()
+    await render()
+    const turn = container.querySelector('[data-thread-message="agent"]')!
+    expect(turn.querySelector('[data-turn-approval="perm-1"]')?.textContent).toContain('kubectl rollout restart')
+    expect(container.querySelector('[data-turn-approval="perm-2"]')).toBeNull()
   })
 
   it('sends a reply onto the task’s own session', async () => {
