@@ -3354,8 +3354,10 @@ export default function SessionDetailView() {
   const pgImage = getPgImage(session.id)
   const pgFiles = getPgFiles(session.id)
   const filesUploading = pgFiles.some((f) => f.status === 'uploading')
-  // A continued session takes text only, except a coordinator's task, whose own page is its composer.
-  const attachmentsEnabled = !isContinuable || taskOwnPage
+  // A continued chat thread takes images (mirrored there); files go where nothing mirrors, or on a task's own page.
+  const continuationAttachments = composerDetail?.continuationAttachments ?? null
+  const attachmentsEnabled = !isContinuable || taskOwnPage || continuationAttachments !== null
+  const filesEnabled = !isContinuable || taskOwnPage || continuationAttachments === 'images_and_files'
   const pgQueue = getPgQueue(session.id)
   const hasSessionWorktree =
     !!focusedAgent &&
@@ -3432,7 +3434,8 @@ export default function SessionDetailView() {
   // Returns ACCEPTANCE: callers that arm follow-up state (the PR panel's Auto-fix wait) must know a
   // synchronous refusal — image preparing, mention joining, nothing to send — from an accepted send.
   const onPgSend = (text?: string): boolean => {
-    if (imagePreparing || filesUploading || mentionJoining || (isContinuable && pgImage !== undefined)) return false
+    if (imagePreparing || filesUploading || mentionJoining || (!attachmentsEnabled && pgImage !== undefined))
+      return false
     setImageError(null)
     // The `/` pick's owner. Validation happens in pgSend against the OUTGOING draft (this parent
     // deliberately does not subscribe to it) — the pick narrows the turn only while its token
@@ -3482,6 +3485,11 @@ export default function SessionDetailView() {
     if (!attachmentsEnabled || !file) return
     if (file.type.startsWith('image/')) return void onImageFile(file)
     setAttachMenuOpen(false)
+    if (!filesEnabled) {
+      setImageError(t('continuationImagesOnly'))
+      if (imageInputRef.current) imageInputRef.current.value = ''
+      return
+    }
     stageComposerFile(
       {
         sessionId: session.id,
@@ -5734,6 +5742,7 @@ export default function SessionDetailView() {
                             ref={imageInputRef}
                             type="file"
                             hidden
+                            accept={filesEnabled ? undefined : 'image/*'}
                             onChange={(event) => onAttachFile(event.target.files?.[0])}
                           />
                         )}
@@ -5823,7 +5832,7 @@ export default function SessionDetailView() {
                                       }}
                                     >
                                       <Icon name="paperclip" size={16} color="var(--text-secondary)" />
-                                      {t('addFiles')}
+                                      {filesEnabled ? t('addFiles') : t('addImages')}
                                     </button>
                                   </div>
                                 </>

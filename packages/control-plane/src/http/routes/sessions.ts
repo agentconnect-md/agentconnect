@@ -45,7 +45,11 @@ import {
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { continuationAudience } from '../../domain/continuation-audience.js'
-import { resolveContinuationHost } from '../session-continuation.js'
+import {
+  resolveContinuationHost,
+  type ContinuationAttachments,
+  type ContinuationHostRefusal
+} from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { autoMergeSetRequest } from '../../orchestrator/autoMerge.js'
@@ -1107,7 +1111,10 @@ export function sessionRoutes(deps: HttpDeps) {
         const hook = hookMetadataForSession(hookMetadata, s)
         const display = sessionDisplayMetadata(s, hook, channelNames)
         // Continuation gate (webchat-cross-integration-continuation.md §6.5): the mint route's checks, as one flag and a bounded reason.
-        const continuationUnavailableReason = await (async () => {
+        const continuation = await (async (): Promise<{
+          reason: ContinuationHostRefusal | 'unauthorized' | 'content_purged' | 'unsupported_platform' | null
+          attachments: ContinuationAttachments
+        }> => {
           const owningAgent = orgAgents.find((agent) => agent.id === s.agentId)
           // A task is continued by whoever may continue its owning session (auto-session-mode.md §10).
           const audience = continuationAudience(s, parent)
@@ -1118,13 +1125,14 @@ export function sessionRoutes(deps: HttpDeps) {
             !audience ||
             !canContinueSession(audience, ctx, audienceAccess.identitySet, audienceAccess.externalAccess)
           ) {
-            return 'unauthorized' as const
+            return { reason: 'unauthorized', attachments: null }
           }
-          if (s.contentPurgedAt) return 'content_purged' as const
-          if (!continuableSession(s)) return 'unsupported_platform' as const
+          if (s.contentPurgedAt) return { reason: 'content_purged', attachments: null }
+          if (!continuableSession(s)) return { reason: 'unsupported_platform', attachments: null }
           const host = await resolveContinuationHost(deps, s, owningAgent)
-          return host.ok ? null : host.reason
+          return host.ok ? { reason: null, attachments: host.attachments } : { reason: host.reason, attachments: null }
         })()
+        const continuationUnavailableReason = continuation.reason
         const siblings = siblingCandidates.filter((candidate) => candidate.id !== s.id)
         const related = [...(parent ? [parent] : []), ...siblings, ...children]
         const relatedAccess = await sessionAccess.forSessions(req, related)
@@ -1210,6 +1218,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ),
           canContinue: continuationUnavailableReason === null,
           continuationUnavailableReason,
+          continuationAttachments: continuation.attachments,
           ownsConversation: s.platform === 'webchat' && ownsSession(s, access.identitySet),
           accessSyncDegraded: access.degraded || relatedAccess.degraded,
           accessIssues,

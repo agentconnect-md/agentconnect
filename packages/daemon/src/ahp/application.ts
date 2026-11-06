@@ -19,7 +19,7 @@ import type {
   PreparedChatTurn,
   ChatTurnRequest
 } from '../session/chat-application.js'
-import type { ChatSessionContinuation } from '../session/chat-continuation.js'
+import { CONTINUATION_FILES_REFUSAL, type ChatSessionContinuation } from '../session/chat-continuation.js'
 import type { ChatTurnContext, ChatDispatchOptions, ChatRuntimeSettings } from '../session/chat-turn.js'
 import { decodeChatAttachments } from '../session/chat-attachments.js'
 import { AhpProtocolError } from './connection.js'
@@ -68,6 +68,8 @@ export interface AhpApplicationHost {
   setRuntime(scope: AhpActionScope, change: AhpRuntimeChange): Promise<boolean>
   /** The continuation's target is a coordinator's task, whose settings its own thread changes as its conversation's. */
   isTaskTarget(scope: AhpActionScope): Promise<boolean>
+  /** The continuation's target takes uploaded files: nothing mirrors it, or it is a task's own thread. */
+  continuationTakesFiles(scope: AhpActionScope): Promise<boolean>
   onExecutionError(error: unknown): void
 }
 export interface AhpActionHooks {
@@ -197,12 +199,15 @@ export class AhpApplication {
       throw new AhpProtocolError(JsonRpcErrorCodes.InvalidParams, 'Invalid message attachments')
     }
     if (!action.message.text.trim() && !attachments.length) refuse('Message is empty')
-    // A coordinator's task takes images and files from its own thread, as its conversation's composer does.
+    if (scope.targetSessionId && (context.worktree || context.runtimeConfig))
+      refuse('This continuation does not support workspace changes')
+    // Every continuation takes images; files go only where nothing mirrors, or to a task's own thread.
     if (
       scope.targetSessionId &&
-      (context.worktree || context.runtimeConfig || (attachments.length && !(await this.host.isTaskTarget(scope))))
+      attachments.some((a) => a.transfer) &&
+      !(await this.host.continuationTakesFiles(scope))
     )
-      refuse('This continuation does not support attachment or workspace changes')
+      refuse(CONTINUATION_FILES_REFUSAL)
     if (steering && attachments.length) refuse('Steering does not support attachments')
     if (
       context.runtimeConfig &&

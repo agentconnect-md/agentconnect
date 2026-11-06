@@ -3642,6 +3642,8 @@ export const SessionDetailDto = z.object({
   continuationUnavailableReason: z
     .enum(['unauthorized', 'content_purged', 'unsupported_platform', 'agent_moved', 'daemon_offline', 'unavailable'])
     .nullable(),
+  /** What a continued turn may carry: images (mirrored to a chat thread) or, where nothing mirrors, files too; null ⇒ text only. */
+  continuationAttachments: z.enum(['images', 'images_and_files']).nullable(),
   /** Whether THIS caller owns this webchat conversation, whatever their role: what people can do in chat at the agent's level is theirs here. Server-computed. */
   ownsConversation: z.boolean(),
   accessSyncDegraded: z.boolean(),

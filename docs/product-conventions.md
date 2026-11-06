@@ -244,6 +244,9 @@ renders a per-message identity (Slack), and as `[<user> via console] …` elsewh
 reply keeps the session's existing output mode, and agents already participating in the
 origin thread receive the mirror under its ordinary routing rules. The session remains
 the single source of truth; console and platform are both projections of it.
+An image sent with the message is shared into the same thread before the agent answers; if
+the platform refuses it, the agent still receives it and the thread says the image could
+not be shared there. A chat thread does not take other files from the console.
 
 A **hook-origin session** — one a GitHub or GitLab event or a generic webhook started —
 is continued the same way, with one difference the user can see: there is no chat thread
@@ -251,6 +254,7 @@ on the other side, so nothing is mirrored. The console is that session's
 only human surface. Neither the typed message nor the agent's reply appears on the pull
 request, the issue, or anywhere else the trigger came from; both are ordinary session
 history, readable in the console and carried into the agent's context like any other turn.
+Because nothing is mirrored, such a session takes images and other files from the console.
 An agent that has a code-host tool can still act on the subject, as it could in any turn.
 
 A **multi-agent hook-origin conversation**, such as a pull request that several agents

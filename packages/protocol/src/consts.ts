@@ -227,6 +227,9 @@ export const WEBCHAT_SESSION_CONTINUATION_FEATURE = 'webchat_session_continuatio
  */
 export const WEBCHAT_HOOK_CONTINUATION_FEATURE = 'webchat_hook_continuation_v1'
 
+/** A continued session takes images (mirrored to a chat origin's thread) and, where nothing mirrors, files; the console offers them only toward a daemon advertising it. */
+export const WEBCHAT_CONTINUATION_ATTACHMENTS_FEATURE = 'webchat_continuation_attachments_v1'
+
 /** Daemon reads a console user's own memory layer (`personUserId` on `memory/list` and `memory/read`); the CP sends it to no other daemon. */
 export const MEMORY_PERSON_LAYER_FEATURE = 'memory-person-layer-v1'
 

@@ -57,6 +57,7 @@ function fixture() {
     elicit: vi.fn(async () => true),
     setRuntime: vi.fn(async () => true),
     isTaskTarget: vi.fn(async () => false),
+    continuationTakesFiles: vi.fn(async () => false),
     onExecutionError: vi.fn()
   }
   const hooks: AhpActionHooks = {
@@ -123,7 +124,7 @@ it("runs VS Code's turn shape as plain text on a continuation, ignoring its mode
   expect(f.host.setRuntime).not.toHaveBeenCalled()
   expect(f.hooks.admitted).toHaveBeenCalledOnce()
 })
-it("takes an image on a coordinator task's own thread, and refuses one on any other continued session", async () => {
+it('takes an image on every continued session, and a file only where the target takes files', async () => {
   const f = fixture()
   const withImage = {
     ...start,
@@ -143,14 +144,34 @@ it("takes an image on a coordinator task's own thread, and refuses one on any ot
       }
     }
   } as DispatchActionParams
-  await expect(
-    f.application.dispatch({ ...scope, targetSessionId: 'outward' }, withImage, origin, f.hooks)
-  ).rejects.toThrow('does not support attachment')
-  vi.mocked(f.host.isTaskTarget).mockResolvedValue(true)
   await f.application.dispatch({ ...scope, targetSessionId: 'outward' }, withImage, origin, f.hooks)
   const request = vi.mocked(f.host.continuation.prepare).mock.calls[0]?.[0]
   expect(request?.targetSessionId).toBe('outward')
   expect(request?.attachments).toHaveLength(1)
+  const file = {
+    uploadId: '00000000-0000-4000-8000-000000000001',
+    name: 'notes.pdf',
+    mimeType: 'application/pdf',
+    size: 3,
+    sha256: `${'A'.repeat(43)}=`
+  }
+  const withFile = {
+    ...start,
+    action: {
+      ...start.action,
+      message: {
+        origin: { kind: MessageKind.User },
+        text: 'the notes',
+        _meta: { 'agentconnect.md': { files: [file] } }
+      }
+    }
+  } as unknown as DispatchActionParams
+  await expect(
+    f.application.dispatch({ ...scope, targetSessionId: 'outward' }, withFile, origin, f.hooks)
+  ).rejects.toThrow('Files can’t be sent')
+  vi.mocked(f.host.continuationTakesFiles).mockResolvedValue(true)
+  await f.application.dispatch({ ...scope, targetSessionId: 'outward' }, withFile, origin, f.hooks)
+  expect(vi.mocked(f.host.continuation.prepare).mock.calls[1]?.[0].attachments).toMatchObject([{ name: 'notes.pdf' }])
 })
 it("changes a coordinator task's runtime from its own thread, and refuses any other continued session", async () => {
   const f = fixture()
