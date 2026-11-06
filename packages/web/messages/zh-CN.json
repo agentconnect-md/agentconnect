@@ -1066,7 +1066,19 @@
       "computer": "电脑",
       "computerPick": "电脑",
       "computerNone": "这个 agent 没有你可以查看的电脑。",
-      "computerOnDemand": "agent 在这个会话里第一次用电脑时才会分到一台。"
+      "computerOnDemand": "agent 在这个会话里第一次用电脑时才会分到一台。",
+      "taskOfOpen": "属于 {title} 的任务 — 打开",
+      "coordinatorTip": "Coordinator — 把工作交给 thread 任务，自己从不改动文件",
+      "requestsWaiting": "{count, plural, other {# 个请求等你处理}}",
+      "headerPeople": {
+        "open": "会话中的成员：{names}",
+        "dialog": "谁在这个会话中",
+        "agent": "Agent",
+        "agents": "Agents",
+        "people": "成员",
+        "schedule": "定时任务",
+        "openAgent": "打开 {agent}"
+      }
     }
   },
   "Shell": {

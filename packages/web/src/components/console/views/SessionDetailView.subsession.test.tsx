@@ -498,11 +498,15 @@ describe.each([
     expect(composer()).not.toBeNull()
   })
 
-  it('marks a coordinator’s own page in the desktop title row and the phone header alike', async () => {
+  it('marks a coordinator’s own page in the desktop header and the phone header alike', async () => {
     await open({ platform: 'slack', channel: 'C0123', thread: 'append:coordinator-1700000000000' })
 
+    // The desktop header names it with an icon; the phone header keeps the word.
+    expect(
+      container?.querySelector('[data-session-header] [data-header-coordinator]')?.getAttribute('aria-label')
+    ).toContain('Coordinator')
     const tags = [...(container?.querySelectorAll('[data-coordinator-tag]') ?? [])]
-    expect(tags.map((tag) => tag.textContent)).toEqual(['Coordinator', 'Coordinator'])
+    expect(tags.map((tag) => tag.textContent)).toEqual(['Coordinator'])
     expect(container?.querySelector('[data-task-owner]')).toBeNull()
   })
 })
