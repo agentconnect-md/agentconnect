@@ -44,7 +44,7 @@ The chart holds no secret values: it references namespace Secrets by name. Confi
 install-wide model API keys through a Secret, or add organization keys later in the console.
 
 The pool uses `runtime-sandbox` by default, with Claude Code, Codex, DeepSeek Harness,
-and OpenCode. To run additional ACP runtimes such as Qwen Code, set
+and OpenCode. To run additional ACP runtimes such as Qwen Code, Kilo, or goose, set
 `daemonPool.runtime.repository` to
 `ghcr.io/agentconnect-md/runtime-sandbox-full`. The chart keeps the selected
 release tag; `daemonPool.runtime.image` remains available for an exact image pin.

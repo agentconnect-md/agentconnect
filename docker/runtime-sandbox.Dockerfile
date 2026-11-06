@@ -105,12 +105,16 @@ ARG DEVIN_VERSION=3000.11.234
 ARG DEVIN_SHA256_AMD64=201370cddd2924294e3ca6b46fd8ece49b5763953b644a1dd823fce5490cb41a
 ARG MUSE_VERSION=1.4.13-R6996.1
 ARG MUSE_SHA256_AMD64=51e97f8de0aa175080e6576cbc055510a95dfe0ededf175c7f6b34fc8e3bf524
+ARG KILO_VERSION=7.8.27
+ARG KILO_SHA256_AMD64=4c08aa46dd87453a329f48b0f00d34d0fa7b8f0ac910fe8937814d4e8582de08
+ARG GOOSE_VERSION=1.57.0
+ARG GOOSE_SHA256_AMD64=e54036f3b7f95d3b0d7854c09465af5ef52a28c7fa03d2497d0ea68a6382282d
 ARG TARGETARCH
 RUN test "${TARGETARCH:-amd64}" = amd64 \
   && apt-get update \
-  && apt-get install --no-install-recommends -y ca-certificates curl \
+  && apt-get install --no-install-recommends -y bzip2 ca-certificates curl \
   && rm -rf /var/lib/apt/lists/* \
-  && mkdir -p /out/bin
+  && mkdir -p /out/bin /out/kilo
 RUN curl --retry 5 -fsSL -o /tmp/omp \
   "https://github.com/can1357/oh-my-pi/releases/download/v${OMP_VERSION}/omp-linux-x64" \
   && printf '%s  /tmp/omp\n' "$OMP_SHA256_AMD64" | sha256sum -c - \
@@ -127,6 +131,20 @@ RUN curl --retry 5 -fsSL -o /tmp/muse \
   && printf '%s  /tmp/muse\n' "$MUSE_SHA256_AMD64" | sha256sum -c - \
   && install -m 0555 /tmp/muse /out/bin/muse \
   && rm /tmp/muse
+# Kilo resolves its tree-sitter grammars and console assets beside its executable, so it keeps its own directory.
+RUN curl --retry 5 -fsSL -o /tmp/kilo.tar.gz \
+  "https://github.com/Kilo-Org/kilocode/releases/download/v${KILO_VERSION}/kilo-linux-x64.tar.gz" \
+  && printf '%s  /tmp/kilo.tar.gz\n' "$KILO_SHA256_AMD64" | sha256sum -c - \
+  && tar -xzf /tmp/kilo.tar.gz -C /out/kilo \
+  && test -x /out/kilo/kilo \
+  && chmod -R a-w /out/kilo \
+  && rm /tmp/kilo.tar.gz
+RUN curl --retry 5 -fsSL -o /tmp/goose.tar.bz2 \
+  "https://github.com/block/goose/releases/download/v${GOOSE_VERSION}/goose-x86_64-unknown-linux-gnu.tar.bz2" \
+  && printf '%s  /tmp/goose.tar.bz2\n' "$GOOSE_SHA256_AMD64" | sha256sum -c - \
+  && tar -xjf /tmp/goose.tar.bz2 -C /tmp ./goose \
+  && install -m 0555 /tmp/goose /out/bin/goose \
+  && rm /tmp/goose /tmp/goose.tar.bz2
 
 FROM ${RUNTIME_SANDBOX_FULL_BASE} AS runtime-sandbox-full-apps
 USER root
@@ -167,6 +185,9 @@ RUN export HOME=/root \
     "@qoder-ai/qodercli@${QODER_VERSION}" "@qodercn-ai/qoderclicn@${QODER_CN_VERSION}" \
   && npm cache clean --force
 COPY --from=full-native-runtimes --chown=0:0 /out/bin/ /usr/local/bin/
+COPY --link --from=full-native-runtimes --chown=0:0 /out/kilo/ /opt/agentconnect/runtimes/kilo/
+RUN printf '%s\n' '#!/bin/sh' 'exec /opt/agentconnect/runtimes/kilo/kilo "$@"' > /usr/local/bin/kilo \
+  && chmod 0555 /usr/local/bin/kilo
 COPY --from=muse-acp --chown=0:0 /out/bin/muse-acp /usr/local/bin/muse-acp
 COPY --from=muse-acp --chown=0:0 /out/licenses/ /usr/local/share/licenses/
 # Bake the runtime table after all applications are installed, using a disposable non-root HOME.

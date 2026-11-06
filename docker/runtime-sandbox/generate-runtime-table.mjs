@@ -33,11 +33,15 @@ export function isAuthRequired(error) {
 const PROBE_CWD = process.env.AC_PROBE_CWD ?? process.cwd()
 
 /** Drive one runtime over stdio far enough to learn what it is: initialize, then a session. */
-async function probe(bin, args = []) {
+async function probe(bin, args = [], probeEnv = {}) {
   // Ambient HOME and cwd, NOT a pinned /agent: a runtime writes state into both, so whoever runs
   // this decides where that lands. Pinning the workspace meant the build-time probe left
   // root-owned .claude/.codex state in /agent that the runtime user could not then write.
-  const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'ignore'], env: process.env, cwd: PROBE_CWD })
+  const child = spawn(bin, args, {
+    stdio: ['pipe', 'pipe', 'ignore'],
+    env: { ...process.env, ...probeEnv },
+    cwd: PROBE_CWD
+  })
   const replies = new Map()
   let failure
   child.on('error', (error) => {
@@ -122,6 +126,12 @@ function stable(value) {
   return value
 }
 
+const isStringRecord = (value) =>
+  Boolean(value) &&
+  typeof value === 'object' &&
+  !Array.isArray(value) &&
+  Object.values(value).every((item) => typeof item === 'string')
+
 export async function buildTable(provided = JSON.parse(readFileSync(INSTALLED_RUNTIMES_PATH, 'utf8'))) {
   if (!Array.isArray(provided) || provided.length === 0) throw new Error('the image declares no installed runtimes')
   const ids = new Set()
@@ -133,7 +143,8 @@ export async function buildTable(provided = JSON.parse(readFileSync(INSTALLED_RU
       typeof entry.command !== 'string' ||
       !entry.command ||
       !Array.isArray(entry.args ?? []) ||
-      !(entry.args ?? []).every((arg) => typeof arg === 'string')
+      !(entry.args ?? []).every((arg) => typeof arg === 'string') ||
+      !isStringRecord(entry.probeEnv ?? {})
     ) {
       throw new Error('invalid installed runtime entry')
     }
@@ -142,7 +153,8 @@ export async function buildTable(provided = JSON.parse(readFileSync(INSTALLED_RU
   }
   const runtimes = []
   for (const entry of provided) {
-    const { initialized, session, sessionProbe } = await probe(entry.command, entry.args ?? [])
+    // probeEnv is the credential-free setting a runtime needs to open a session at all; it never reaches the table.
+    const { initialized, session, sessionProbe } = await probe(entry.command, entry.args ?? [], entry.probeEnv ?? {})
     const version = initialized?.agentInfo?.version
     const protocolVersion = initialized?.protocolVersion
     if (!Number.isInteger(protocolVersion) || protocolVersion < 0) {

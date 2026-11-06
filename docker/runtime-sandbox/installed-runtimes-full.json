@@ -6,7 +6,14 @@
   { "id": "devin", "command": "devin", "args": ["acp"] },
   { "id": "dsh-acp", "command": "dsh-acp", "args": ["--dsh-path", "/usr/local/bin/dsh"] },
   { "id": "github-copilot-cli", "command": "copilot", "args": ["--acp"] },
+  {
+    "id": "goose",
+    "command": "goose",
+    "args": ["acp"],
+    "probeEnv": { "GOOSE_PROVIDER": "openai", "GOOSE_MODEL": "gpt-5.5", "GOOSE_DISABLE_KEYRING": "1" }
+  },
   { "id": "grok-build", "command": "grok", "args": ["agent", "stdio"] },
+  { "id": "kilo", "command": "kilo", "args": ["acp"] },
   { "id": "muse-acp", "command": "muse-acp", "args": [] },
   { "id": "omp", "command": "omp", "args": ["acp"] },
   { "id": "opencode", "command": "opencode", "args": ["acp"] },
