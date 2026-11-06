@@ -8395,14 +8395,14 @@ export class LocalStore {
     return undefined
   }
 
-  /** The thread a recorded platform message id (`ts`) was filed under; unfenced because it runs before routing and returns no content. */
+  /** The thread a recorded platform message id (`ts`, or a webchat `postId`) was filed under; unfenced because it runs before routing and returns no content. */
   async threadForPlatformMessage(channel: string, messageId: string): Promise<string | undefined> {
     const row = (await this.db
       .prepare(
-        `SELECT thread FROM transcript WHERE channel = ? AND ts = ? AND kind = 'text'
+        `SELECT thread FROM transcript WHERE channel = ? AND (ts = ? OR postId = ?) AND kind = 'text'
            AND thread IS NOT NULL ORDER BY seq DESC LIMIT 1`
       )
-      .get(channel, messageId)) as { thread: string } | undefined
+      .get(channel, messageId, messageId)) as { thread: string } | undefined
     return row?.thread
   }
 

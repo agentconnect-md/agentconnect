@@ -28,6 +28,8 @@ export interface ChatTurnRequest {
   mentions?: string[]
   attachments?: Attachment[]
   post?: { postId: string; at: number }
+  // The root postId of the thread the message replies in; absent ⇒ a root (webchat-threads.md §5.1).
+  thread?: string
   steer?: boolean
 }
 
@@ -39,7 +41,11 @@ export interface PreparedChatTurn {
 
 export type ChatPreparation =
   | { accepted: true; turn: PreparedChatTurn }
-  | { accepted: false; reason: 'no_agent' | 'start_failed' | 'paused' | 'busy' | 'draining'; detail?: string }
+  | {
+      accepted: false
+      reason: 'no_agent' | 'start_failed' | 'paused' | 'busy' | 'draining' | 'unknown_thread'
+      detail?: string
+    }
 
 // Domain state only: no protocol frames, reply streams, ACP clients, or transport replay windows.
 export interface ChatApplicationHost {
@@ -83,7 +89,7 @@ export class ChatSessionApplication {
   }
 
   async prepareTurn(request: ChatTurnRequest): Promise<ChatPreparation> {
-    const { agentId, conversationId, turnId, text, author, mentions, post, attachments } = request
+    const { agentId, conversationId, turnId, text, author, mentions, post, attachments, thread } = request
     const result = routeRules(
       { platform: 'webchat', channel: conversationId } as NormalizedMessage,
       this.host.mergedRules(),
@@ -114,17 +120,24 @@ export class ChatSessionApplication {
     await this.rememberAuthorName(author)
     // A member's coordinator conversation keys every message on its coordinator, each one addressed to the agent.
     const coordinate = await this.host.coordinatorCoordinate?.(result.agentId, conversationId, author.id)
+    // Only a coordinator conversation has threads, and a reply names a root recorded in it (webchat-threads.md §5.1).
+    if (thread !== undefined && !(coordinate && (await this.isRoot(conversationId, thread)))) {
+      this.host.info(`chat: thread ${thread} names no root of conversation ${conversationId} — rejecting turn`)
+      return { accepted: false, reason: 'unknown_thread' }
+    }
     const key = coordinate
       ? sessionKey('webchat', conversationId, coordinate, result.agentId)
       : chatSessionKey(conversationId, result.agentId)
-    // Keep the message id stable per conversation so every protocol enters the same logical session.
+    // A coordinator's post is its own message in its physical thread, as a Slack message is; any other keeps one id per conversation.
+    const physicalThread = coordinate ? (thread ?? post?.postId) : undefined
     const message: NormalizedMessage = {
-      msgId: `webchat:${conversationId}`,
+      msgId: coordinate && post ? `webchat:${conversationId}:${post.postId}` : `webchat:${conversationId}`,
       traceId: turnId,
       source: 'user',
       platform: 'webchat',
       channel: conversationId,
       ...(coordinate ? { sessionThread: coordinate } : {}),
+      ...(physicalThread ? { thread: physicalThread } : {}),
       sender: { id: author.id, isBot: false, name: author.name },
       ...(author.timeZone ? { senderTimeZone: author.timeZone } : {}),
       text,
@@ -135,6 +148,12 @@ export class ChatSessionApplication {
       trigger: coordinate || mentions?.includes(agentId) ? 'mention' : 'dm'
     }
     return { accepted: true, turn: { agentId: result.agentId, sessionKey: key, message } }
+  }
+
+  // A root is recorded in its own thread, or in the conversation's literal one before threads.
+  private async isRoot(conversationId: string, postId: string): Promise<boolean> {
+    const recorded = await this.host.store().threadForPlatformMessage(transcriptChannelKey(conversationId), postId)
+    return recorded === postId || recorded === `webchat:${conversationId}`
   }
 
   // A synchronous preflight; the existing dispatch gate still decides admission after any persistence wait.
@@ -170,7 +189,7 @@ export class ChatSessionApplication {
     const observedTs = await appendChatTextRow(
       this.host.store(),
       transcriptChannelKey(conversationId, undefined),
-      `webchat:${conversationId}`,
+      msg.thread ?? `webchat:${conversationId}`,
       String(post.at),
       {
         sender: author.id,
