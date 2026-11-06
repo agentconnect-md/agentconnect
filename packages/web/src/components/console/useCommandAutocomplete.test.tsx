@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act, useRef, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useCommandAutocomplete, type CommandMenuEntry } from './useCommandAutocomplete'
 import { CommandMenu } from './CommandMenu'
 import type { CommandCandidate } from './runtime-command-menu'
@@ -311,22 +311,28 @@ describe('CommandMenu', () => {
     expect(text).toContain('refactor-bot is unreachable')
   })
 
-  it('bottom-aligns the cards when opening upward, so the list hugs the caret', () => {
-    // Opening upward anchors the wrapper's BOTTOM edge; top-aligning there left the shorter list
-    // card floating high above the composer while only the taller pane touched it (field report).
-    for (const [openUpward, expected] of [
-      [true, 'items-end'],
-      [false, 'items-start']
-    ] as const) {
-      container = document.createElement('div')
-      document.body.appendChild(container)
-      root = createRoot(container)
+  it('lines the detail pane up with the highlighted row, inside the list’s height', () => {
+    // happy-dom has no layout: rows sit 32px apart, the list is 200px tall and the pane 40px.
+    const rowIndex = (el: HTMLElement) => [...(el.parentElement?.children ?? [])].indexOf(el)
+    const top = vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute('role') === 'option' ? 4 + rowIndex(this) * 32 : 0
+    })
+    const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (
+      this: HTMLElement
+    ) {
+      return this.getAttribute('role') === 'listbox' ? 200 : this.getAttribute('role') === 'option' ? 32 : 40
+    })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    const options = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((name) => skill(command('a', 'Alice', name)))
+    const render = (activeIndex: number) =>
       act(() =>
         root!.render(
           <CommandMenu
-            options={[skill(command('a', 'Alice', 'tdd'))]}
-            activeIndex={0}
-            coords={{ ...coords, openUpward }}
+            options={options}
+            activeIndex={activeIndex}
+            coords={{ ...coords, openUpward: true }}
             iconOf={() => undefined}
             showOwner={false}
             onHover={() => {}}
@@ -334,12 +340,14 @@ describe('CommandMenu', () => {
           />
         )
       )
-      expect(container.firstElementChild?.className).toContain(expected)
-      act(() => root!.unmount())
-      container.remove()
-      root = null
-      container = null
-    }
+    const pane = () => container!.querySelector<HTMLElement>('[role="listbox"] + div')!
+    render(2)
+    expect(pane().style.top).toBe('68px')
+    // The last row would push the pane past the list's bottom edge, so it stops there.
+    render(6)
+    expect(pane().style.top).toBe('160px')
+    top.mockRestore()
+    height.mockRestore()
   })
 
   it('renders nothing without a caret anchor, so a closed picker leaves no artifact', () => {

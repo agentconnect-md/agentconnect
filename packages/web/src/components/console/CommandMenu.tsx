@@ -5,6 +5,7 @@
 import { AgentIconView } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { useTranslations } from 'next-intl'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import type { AgentIcon } from '@/lib/agent-icon'
 import type { RuntimeCommandsGap } from '@/components/console/useRuntimeCommands'
 import { COMMAND_MENU_MAX_HEIGHT, type CommandMenuEntry } from '@/components/console/useCommandAutocomplete'
@@ -49,6 +50,23 @@ export function CommandMenu({
   const first = options[0]
   const choosing = first?.kind === 'choice' ? first.control.name : null
   const shownGaps = choosing ? [] : (gaps ?? [])
+  const listRef = useRef<HTMLDivElement>(null)
+  const detailRef = useRef<HTMLDivElement>(null)
+  const [detailTop, setDetailTop] = useState(0)
+  // Top-align the pane with the highlighted row, kept inside the list's height so it never overhangs the composer.
+  const alignDetail = useCallback(() => {
+    const row = listRef.current?.children[activeIndex] as HTMLElement | undefined
+    const list = listRef.current
+    if (!row || !list) return
+    const rowTop = row.offsetTop - list.scrollTop
+    const room = list.offsetHeight - (detailRef.current?.offsetHeight ?? 0)
+    setDetailTop(Math.max(0, Math.min(rowTop, room)))
+  }, [activeIndex])
+  useLayoutEffect(() => {
+    const row = listRef.current?.children[activeIndex] as HTMLElement | undefined
+    row?.scrollIntoView?.({ block: 'nearest' })
+    alignDetail()
+  }, [activeIndex, options, coords, alignDetail])
   // Render for gaps alone too: a roster whose every participant is a gap must say so, not vanish.
   if ((options.length === 0 && shownGaps.length === 0) || !coords) return null
   const active = options[activeIndex]
@@ -57,17 +75,15 @@ export function CommandMenu({
     : { top: coords.top + coords.height + 4 }
   // Clamp like MentionMenu: near a narrow composer's right edge `left` would otherwise push the popover past it.
   const left = Math.min(Math.max(0, coords.left - 4), Math.max(0, coords.elWidth - LIST_WIDTH))
-  // Bottom-align when opening upward so the list, not the taller pane, hugs the composer.
   return (
-    <div
-      style={{ ...position, left }}
-      className={`absolute z-50 flex gap-1 ${coords.openUpward ? 'items-end' : 'items-start'}`}
-    >
+    <div style={{ ...position, left }} className="absolute z-50">
       <div
+        ref={listRef}
         role="listbox"
         aria-label={choosing ? t(`controls.${choosing}.title`) : t('runCommand')}
         style={{ maxHeight: COMMAND_MENU_MAX_HEIGHT }}
-        className="w-[240px] flex-none overflow-y-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
+        onScroll={alignDetail}
+        className="w-[240px] overflow-y-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
       >
         {options.map((option, index) => {
           const selected = index === activeIndex
@@ -102,8 +118,9 @@ export function CommandMenu({
       </div>
       {active && active.kind !== 'choice' && (
         <div
-          style={{ maxHeight: COMMAND_MENU_MAX_HEIGHT, width: DETAIL_WIDTH }}
-          className="hidden flex-none overflow-y-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) p-3 shadow-(--shadow-lg) desktop:block"
+          ref={detailRef}
+          style={{ top: detailTop, left: LIST_WIDTH + 4, maxHeight: COMMAND_MENU_MAX_HEIGHT, width: DETAIL_WIDTH }}
+          className="absolute hidden overflow-y-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) p-3 shadow-(--shadow-lg) desktop:block"
         >
           {active.kind === 'skill' ? (
             <>
