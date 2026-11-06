@@ -9,6 +9,8 @@ export interface ScreenStreamOptions extends StreamSettings {
   ffmpeg: () => string
   // Whether frames include the pointer, read per start; false while a person drives with their browser's own.
   cursor?: () => boolean
+  // An agent desktop's display; absent: the daemon's own screen.
+  display?: string
   log: (line: string) => void
 }
 
@@ -79,7 +81,7 @@ export class ScreenStream {
   private spawn(): void {
     if (!this.running || !this.socket) return
     this.cursor = this.options.cursor?.() ?? true
-    const inputs = captureInputs(this.options.fps, this.options.dataDir, 0, this.cursor)
+    const inputs = captureInputs(this.options.fps, this.options.dataDir, 0, this.cursor, this.options.display)
     const input = inputs[Math.min(this.inputIndex, inputs.length - 1)]!
     const args = [
       '-hide_banner',
