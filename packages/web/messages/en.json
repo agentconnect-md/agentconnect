@@ -642,7 +642,9 @@
       "filterByAgent": "Filter by agent",
       "filterAgentsPlaceholder": "Filter agents…",
       "filterAgents": "Filter agents",
-      "noMatches": "No matches"
+      "noMatches": "No matches",
+      "agentCount": "{count} agents",
+      "clearAgentFilter": "Clear the agent filter"
     },
     "viewer": {
       "retry": "Retry",

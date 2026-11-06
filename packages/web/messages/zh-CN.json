@@ -642,7 +642,9 @@
       "filterByAgent": "按 Agent 筛选",
       "filterAgentsPlaceholder": "筛选 Agent…",
       "filterAgents": "筛选 Agent",
-      "noMatches": "没有匹配项"
+      "noMatches": "没有匹配项",
+      "agentCount": "{count} 个 agent",
+      "clearAgentFilter": "清除 agent 筛选"
     },
     "viewer": {
       "retry": "重试",

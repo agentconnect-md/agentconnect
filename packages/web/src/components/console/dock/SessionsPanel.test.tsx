@@ -78,8 +78,10 @@ function panelMarkup({
   filterTouched = false,
   flatView = false,
   roomLineage,
-  status
+  status,
+  agentIds = ['agent-1']
 }: {
+  agentIds?: string[]
   sessions?: Session[]
   total?: number
   family?: {
@@ -102,7 +104,7 @@ function panelMarkup({
         sessions={sessions}
         current={session('current')}
         total={total}
-        agentIds={['agent-1']}
+        agentIds={agentIds}
         filterTouched={filterTouched}
         onAgentIdsChange={() => {}}
         family={family}
@@ -119,6 +121,18 @@ const COLUMN = 'w-[var(--dock-width)]'
 const WIDE_ONLY = 'wide:block'
 
 // The panel's inputs — the filtered page, the family, the reader's filter — settle in any order, and every combination reserves the same track.
+describe('the panel header', () => {
+  it('folds a filter of several agents into one chip on the row that holds All sessions', () => {
+    const markup = panelMarkup({ sessions: [session('other')], total: 2, agentIds: ['agent-1', 'agent-2'] })
+    expect(markup.match(/data-agent-filter-chip/g)).toHaveLength(1)
+    expect(markup).toContain('2 agents')
+    expect(markup).toContain('Clear the agent filter')
+    // One row: the chip, then All sessions, before any list row.
+    expect(markup.indexOf('data-agent-filter-chip')).toBeLessThan(markup.indexOf('All sessions'))
+    expect(markup.indexOf('All sessions')).toBeLessThan(markup.indexOf('/sessions/other'))
+  })
+})
+
 describe('SessionDock column', () => {
   it('holds its column with nothing to show, so the body does not re-centre', () => {
     // The resolved "one session, no lineage" outcome, reported as the SETTLED-empty status the caller derives from it — the state that used to give the column back and slide the transcript sideways.

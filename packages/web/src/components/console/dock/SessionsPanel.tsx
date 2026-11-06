@@ -424,20 +424,23 @@ export function SessionsPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col px-[13px] pt-3 pb-[10px]">
-      {/* The tab names the panel, so the header holds the one forward action plus the escape to /sessions, carrying the filter unless that page cannot ask it. */}
-      <div className="mb-[9px] flex flex-none items-center gap-2 px-[9px]">
+      {/* One row: who the list is filtered to and the filter's "+", then the escape to /sessions and the one forward action. */}
+      <div className="mb-[10px] flex min-w-0 flex-none items-center gap-[5px] pl-[9px]">
+        <PanelAgentFilter agents={agents} selected={agentIds} onChange={onAgentIdsChange} />
+        <Link
+          className="lnk mr-2 ml-auto flex-none font-sans text-[12px] font-medium leading-normal"
+          href={allSessionsHref}
+        >
+          {t('allSessions')}
+          <Icon name="arrow-right" size={12} />
+        </Link>
         {currentAgent ? (
           <Button size="sm" onClick={onNewSession} ariaLabel={t('newSessionWith', { agent: agentLabel(currentAgent) })}>
             <Icon name="plus" size={14} />
             {t('newSession')}
           </Button>
         ) : null}
-        <Link className="lnk ml-auto font-sans text-[12px] font-medium leading-normal" href={allSessionsHref}>
-          {t('allSessions')}
-          <Icon name="arrow-right" size={12} />
-        </Link>
       </div>
-      <PanelAgentFilter agents={agents} selected={agentIds} onChange={onAgentIdsChange} />
       <div className="flex min-h-0 flex-1 flex-col gap-px overflow-auto">
         {hasFamily && (
           <>
@@ -530,36 +533,49 @@ function PanelAgentFilter({
     .filter((agent) => agentLabel(agent).toLowerCase().includes(q))
     .sort((a, b) => agentLabel(a).localeCompare(agentLabel(b)))
 
+  // One chip for the whole selection: one agent reads by name, more stack their marks so the row stays one line.
+  const label = chips.length === 1 ? chips[0]!.label : t('agentCount', { count: chips.length })
   return (
-    <div className="relative mb-[7px] flex flex-none flex-wrap items-center gap-[5px] px-[9px]">
-      {chips.length === 0 && (
+    <div className="relative flex min-w-0 items-center gap-[5px]">
+      {chips.length === 0 ? (
         <span className="py-[3px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
           {t('allAgents')}
         </span>
-      )}
-      {chips.map((chip) => (
+      ) : (
         <span
-          key={chip.id}
-          title={chip.label}
-          className="inline-flex h-[26px] min-w-0 max-w-full items-center gap-[5px] rounded-md border border-(--border-default) bg-(--surface-card) py-0 pr-[3px] pl-[6px]"
+          title={chips.map((chip) => chip.label).join(', ')}
+          data-agent-filter-chip=""
+          className="inline-flex h-[26px] min-w-0 items-center gap-[5px] rounded-md border border-(--border-default) bg-(--surface-card) py-0 pr-[3px] pl-[6px]"
         >
-          <span className="av h-[15px] w-[15px] flex-none rounded-xs">
-            <AgentIconView icon={chip.agent?.icon} runtime={chip.agent?.runtime ?? ''} size={15} />
+          <span className="flex flex-none items-center">
+            {chips.slice(0, 3).map((chip, i) => (
+              <span
+                key={chip.id}
+                className={`av h-[16px] w-[16px] flex-none rounded-[4px] shadow-[0_0_0_1.5px_var(--surface-card)] ${i > 0 ? 'ml-[-4px]' : ''}`}
+              >
+                <AgentIconView icon={chip.agent?.icon} runtime={chip.agent?.runtime ?? ''} size={16} />
+              </span>
+            ))}
+            {chips.length > 3 ? (
+              <span className="ml-[2px] rounded-[4px] bg-(--surface-active) px-[3px] font-sans text-[8.5px] font-semibold leading-[16px] text-(--text-secondary)">
+                +{chips.length - 3}
+              </span>
+            ) : null}
           </span>
           <span className="min-w-0 truncate font-sans text-[12px] font-medium leading-normal text-(--text-primary)">
-            {chip.label}
+            {label}
           </span>
           <button
             type="button"
-            onClick={() => onChange(selected.filter((id) => id !== chip.id))}
+            onClick={() => onChange([])}
             title={t('removeFromFilter')}
-            aria-label={t('removeFromAgentFilter', { agent: chip.label })}
+            aria-label={chips.length === 1 ? t('removeFromAgentFilter', { agent: label }) : t('clearAgentFilter')}
             className="flex h-[18px] w-[18px] flex-none items-center justify-center rounded-xs border-0 bg-none p-0 text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none"
           >
             <Icon name="x" size={11} />
           </button>
         </span>
-      ))}
+      )}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

@@ -105,6 +105,14 @@ panel into the dock's tab body, and let it breathe at 380–760px (the current r
 shape was tuned for 224px of usable width — at 480px a per-row timestamp and
 channel become affordable again).
 
+Its header is one row: the agent filter (one chip for the whole selection, its
+agents' marks stacked, then its `+`), All sessions, and New session. Tasks are not
+sessions here: a session's tasks live in its Tasks tab, so they are left out of
+both the list and Related. That includes a coordinator's threaded tasks, which run
+in their own platform thread rather than on a `subsession:` one. The CP counts a
+session as a task when some session owns it as one (`taskParentSessionId`), both in
+a relation's `subsession` flag and in the list's `tasks=exclude`.
+
 ### 3.2 Files — ships today, needs a narrow variant
 
 `WorkspaceFiles.tsx` + `FileBrowser.tsx` already do tree + preview + editor and

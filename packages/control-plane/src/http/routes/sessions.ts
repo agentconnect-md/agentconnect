@@ -122,7 +122,7 @@ const SessionFilterQueryDto = z.object({
     .enum(['include', 'exclude'])
     .optional()
     .describe(
-      'Whether tasks are listed: the delegated tasks, follow-ups (including getting-to-know tasks) and approved proposals that run on a `subsession:` thread of the session they belong to. `include` (the default) lists them like any other session; `exclude` leaves them out of the rows, the totals and every facet.'
+      'Whether tasks are listed: the delegated tasks, follow-ups (including getting-to-know tasks) and approved proposals that run on a `subsession:` thread of the session they belong to, and the threaded tasks a session currently owns. `include` (the default) lists them like any other session; `exclude` leaves them out of the rows, the totals and every facet.'
     )
 })
 
@@ -228,7 +228,14 @@ function agentDisplayName(agent: { name: string; displayName?: string | null }):
 }
 
 function sessionRelation(
-  s: { id: string; agentId: string; platform: string | null; thread: string | null; title: string | null },
+  s: {
+    id: string
+    agentId: string
+    platform: string | null
+    thread: string | null
+    title: string | null
+    taskParentSessionId?: string | null
+  },
   agentNames: ReadonlyMap<string, string>
 ) {
   return {
@@ -237,7 +244,8 @@ function sessionRelation(
     agentName: agentNames.get(s.agentId) ?? null,
     platform: s.platform ?? 'slack',
     title: s.title,
-    subsession: isSubsessionCoordinate(s.thread)
+    // A threaded task runs in its own platform thread, so its owner, not its thread, is what makes it a task.
+    subsession: isSubsessionCoordinate(s.thread) || !!s.taskParentSessionId
   }
 }
 
