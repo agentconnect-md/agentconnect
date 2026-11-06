@@ -96,9 +96,9 @@ const RUNTIME_MEMORY_POLICIES: RuntimeMemoryPolicy[] = [
     disabledEnv: () => ({})
   },
   {
-    // anomalyco/opencode@v1.18.32: ACP has session history and explicit rule files, but no automatic native memory store.
+    // anomalyco/opencode@v2.2.5: ACP has session history and explicit rule files, but no automatic native memory store.
     id: 'opencode',
-    sig: /(?:^|[\\/])opencode(?:-ai)?(?:\.exe)?(?:@[^\\/]*)?$/,
+    sig: /(?:^|[\\/@])opencode(?:\/cli)?(?:\.exe)?(?:@[^\\/]*)?$/,
     disabledEnv: () => ({})
   },
   {

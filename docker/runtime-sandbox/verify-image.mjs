@@ -270,6 +270,13 @@ check('provides the executables the shim must resolve', () => {
   return required.join(' ')
 })
 
+// The npm package ships a placeholder that its postinstall replaces with the native binary, so presence alone proves nothing.
+check('OpenCode is the native 2.x binary', () => {
+  const version = sh('opencode --version')
+  if (!/^opencode v2\.\d+\.\d+$/.test(version)) throw new Error(`opencode --version printed ${JSON.stringify(version)}`)
+  return version
+})
+
 // `ldd chrome` on Chrome for Testing 152, by soname: apt satisfying a package name says nothing about what resolves.
 const CHROME_SONAMES = [
   'libX11.so.6',

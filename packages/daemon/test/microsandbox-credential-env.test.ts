@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { isRecognizedCredentialEnv, prepareMicrosandboxCredentials } from '../src/microsandbox/secrets.js'
+import { fakeOpenCode, openCodeKeyEntry } from './opencode-support.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -24,13 +25,22 @@ describe('the provider credentials a runtime recognizes', () => {
   it.each([
     ['dsh-acp', {}, { DEEPSEEK_API_KEY: 'fixture-deepseek-key' }],
     ['claude-acp', { '.claude.json': { primaryApiKey: 'fixture-claude-key' } }, {}],
-    ['codex-acp', { '.codex/auth.json': { OPENAI_API_KEY: 'fixture-codex-key' } }, {}],
-    ['opencode', { '.local/share/opencode/auth.json': { opencode: { type: 'api', key: 'fixture-zen-key' } } }, {}]
+    ['codex-acp', { '.codex/auth.json': { OPENAI_API_KEY: 'fixture-codex-key' } }, {}]
   ])('covers every variable the %s preparer binds', (runtimeId, files, env) => {
     const credentials = prepareMicrosandboxCredentials(runtimeId, undefined, { HOME: home(files), ...env })
     expect(credentials?.secrets.length).toBeGreaterThan(0)
     for (const secret of credentials!.secrets)
       expect(isRecognizedCredentialEnv(runtimeId, undefined, secret.env)).toBe(true)
+  })
+
+  // The fake `opencode` is a shell script.
+  it.skipIf(process.platform === 'win32')('covers every variable the opencode preparer binds', () => {
+    const root = home({})
+    const { PATH } = fakeOpenCode(root, [openCodeKeyEntry('opencode', 'fixture-zen-key')])
+    const credentials = prepareMicrosandboxCredentials('opencode', undefined, { HOME: root, PATH })
+    expect(credentials?.secrets.length).toBeGreaterThan(0)
+    for (const secret of credentials!.secrets)
+      expect(isRecognizedCredentialEnv('opencode', undefined, secret.env)).toBe(true)
   })
 
   it("is the runtime's own key and binding, never another runtime's or an endpoint setting", () => {

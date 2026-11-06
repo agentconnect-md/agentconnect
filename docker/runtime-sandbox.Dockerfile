@@ -7,7 +7,7 @@ ARG AGENT_BROWSER_VERSION=0.41.2
 ARG CLAUDE_ACP_VERSION=0.101.0
 ARG CODEX_ACP_VERSION=2.5.0-agentconnect.1
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.40
-ARG OPENCODE_VERSION=1.19.4
+ARG OPENCODE_VERSION=2.2.5
 
 # Release builds install applications over stable system bases, then add daemon-versioned helpers.
 

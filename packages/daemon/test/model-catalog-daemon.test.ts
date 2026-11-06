@@ -365,8 +365,7 @@ describe('microsandbox runtime facts', () => {
   it.each(['srt', 'microsandbox'])('reports installation and stored login independently with %s', async (backend) => {
     const dir = root()
     const hostHome = join(dir, 'host-home')
-    for (const part of ['.grok', '.pi/agent', '.local/share/opencode'])
-      mkdirSync(join(hostHome, part), { recursive: true })
+    for (const part of ['.grok', '.pi/agent', '.local/share/amp']) mkdirSync(join(hostHome, part), { recursive: true })
     writeFileSync(
       join(hostHome, '.grok/auth.json'),
       JSON.stringify({ 'xai::api_key': { key: 'fixture-key', auth_mode: 'api_key' } })
@@ -396,23 +395,23 @@ describe('microsandbox runtime facts', () => {
       vi.stubEnv('XDG_DATA_HOME', join(hostHome, '.local/share'))
       const available = { command: process.execPath, args: [], env: [] }
       const missing = { command: join(dir, 'missing-binary'), args: [], env: [] }
-      catalog = catalogOf({ 'grok-build': available, opencode: available, 'pi-acp': missing, unknown: missing })
+      catalog = catalogOf({ 'grok-build': available, 'amp-acp': available, 'pi-acp': missing, unknown: missing })
       const d = daemon as any
       if (backend === 'microsandbox') {
         d.microsandboxTable = {
-          runtimes: ['grok-build', 'opencode'].map((id) => ({ id, command: `/image/bin/${id}`, args: ['acp'] }))
+          runtimes: ['grok-build', 'amp-acp'].map((id) => ({ id, command: `/image/bin/${id}`, args: ['acp'] }))
         }
       }
       await d.discoverRuntimes(dir, d.cfg, [])
-      expect(d.reportedRuntimeIds().sort()).toEqual(['grok-build', 'opencode', 'pi-acp'])
+      expect(d.reportedRuntimeIds().sort()).toEqual(['amp-acp', 'grok-build', 'pi-acp'])
       await d.runtimeFacts.probeAndEmit(true)
-      expect(probe.mock.calls.map(([runtimes]) => Object.keys(runtimes))).toEqual([['grok-build', 'opencode']])
+      expect(probe.mock.calls.map(([runtimes]) => Object.keys(runtimes))).toEqual([['grok-build', 'amp-acp']])
       expect(d.runtimeFacts.profileFor('grok-build')).toMatchObject({
         hostAvailable: true,
         credentialsConfigured: true
       })
       expect(d.runtimeFacts.profileFor('grok-build').authRequired).toBeUndefined()
-      expect(d.runtimeFacts.profileFor('opencode')).toMatchObject({
+      expect(d.runtimeFacts.profileFor('amp-acp')).toMatchObject({
         hostAvailable: true,
         credentialsConfigured: false,
         authRequired: true,
@@ -425,11 +424,11 @@ describe('microsandbox runtime facts', () => {
         unavailableReason: 'host-binary-missing'
       })
       writeFileSync(
-        join(hostHome, '.local/share/opencode/auth.json'),
-        JSON.stringify({ anthropic: { type: 'api', key: 'fixture-key' } })
+        join(hostHome, '.local/share/amp/secrets.json'),
+        JSON.stringify({ 'apiKey@https://ampcode.example.test/': 'fixture-key' })
       )
-      expect(d.runtimeFacts.profileFor('opencode').credentialsConfigured).toBe(true)
-      expect(d.runtimeFacts.profileFor('opencode').authRequired).toBeUndefined()
+      expect(d.runtimeFacts.profileFor('amp-acp').credentialsConfigured).toBe(true)
+      expect(d.runtimeFacts.profileFor('amp-acp').authRequired).toBeUndefined()
     } finally {
       vi.unstubAllEnvs()
       await daemon.stop()
@@ -441,7 +440,7 @@ describe('microsandbox runtime facts', () => {
     async (expiredInImage) => {
       const dir = root()
       const hostHome = join(dir, 'host-home')
-      for (const part of ['.codex', '.grok', '.pi/agent', '.local/share/opencode']) {
+      for (const part of ['.codex', '.grok', '.pi/agent', '.local/share/amp']) {
         mkdirSync(join(hostHome, part), { recursive: true })
       }
       writeFileSync(join(hostHome, '.codex', 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'fixture-key' }))
@@ -455,7 +454,7 @@ describe('microsandbox runtime facts', () => {
           anthropic: { type: 'oauth', access: 'fixture-access', refresh: 'fixture-refresh', expires: 1 }
         })
       )
-      writeFileSync(join(hostHome, '.local', 'share', 'opencode', 'auth.json'), '{}')
+      writeFileSync(join(hostHome, '.local', 'share', 'amp', 'secrets.json'), '{}')
       const clock = new FakeClock()
       clock.advance(10_000)
       let catalog = catalogOf({})
@@ -489,12 +488,12 @@ describe('microsandbox runtime facts', () => {
         vi.stubEnv('GROK_AUTH_PATH', join(hostHome, '.grok', 'auth.json'))
         vi.stubEnv('PI_CODING_AGENT_DIR', join(hostHome, '.pi', 'agent'))
         vi.stubEnv('XDG_DATA_HOME', join(hostHome, '.local', 'share'))
-        catalog = catalogOf({ 'grok-build': FAKE_RT, 'codex-acp': FAKE_RT, 'pi-acp': FAKE_RT, opencode: FAKE_RT })
+        catalog = catalogOf({ 'grok-build': FAKE_RT, 'codex-acp': FAKE_RT, 'pi-acp': FAKE_RT, 'amp-acp': FAKE_RT })
         catalog.entries['codex-acp']!.source = 'curated'
         catalog.entries['pi-acp']!.source = 'curated'
         const d = daemon as any
         d.microsandboxTable = {
-          runtimes: ['codex-acp', ...(expiredInImage ? ['pi-acp'] : []), 'opencode'].map((id) => ({
+          runtimes: ['codex-acp', ...(expiredInImage ? ['pi-acp'] : []), 'amp-acp'].map((id) => ({
             id,
             command: `/image/bin/${id}`,
             args: ['acp'],
@@ -504,8 +503,8 @@ describe('microsandbox runtime facts', () => {
           }))
         }
         await d.discoverRuntimes(dir, d.cfg, [])
-        expect(d.reportedRuntimeIds().sort()).toEqual(['codex-acp', 'grok-build', 'opencode', 'pi-acp'])
-        expect(d.microsandboxCatalog.entries.opencode).toBeDefined()
+        expect(d.reportedRuntimeIds().sort()).toEqual(['amp-acp', 'codex-acp', 'grok-build', 'pi-acp'])
+        expect(d.microsandboxCatalog.entries['amp-acp']).toBeDefined()
         await d.hydrateRuntimeCaches()
         expect(d.runtimeFacts.profileFor('codex-acp').models).toEqual([])
         expect(d.runtimeFacts.profileFor('codex-acp').hostVersion).toBe('')
@@ -516,13 +515,13 @@ describe('microsandbox runtime facts', () => {
         await d.runtimeFacts.probeAndEmit(true)
 
         expect(probe.mock.calls.map(([runtimes]) => Object.keys(runtimes))).toEqual([
-          ['grok-build', 'opencode'],
+          ['grok-build', 'amp-acp'],
           ['codex-acp', 'pi-acp']
         ])
         expect(noteProbe.mock.calls.map(([input]) => input.runtimeId).sort()).toEqual([
+          'amp-acp',
           'codex-acp',
-          'grok-build',
-          'opencode'
+          'grok-build'
         ])
         expect(d.runtimeFacts.profileFor('codex-acp')).toMatchObject({
           runtime: 'codex-acp',
@@ -539,14 +538,14 @@ describe('microsandbox runtime facts', () => {
         })
         expect(d.runtimeFacts.profileFor('grok-build').unavailableReason).toBeUndefined()
         expect(d.runtimeFacts.profileFor('pi-acp')).toMatchObject({ authRequired: true })
-        expect(d.runtimeFacts.profileFor('opencode')).toMatchObject({
+        expect(d.runtimeFacts.profileFor('amp-acp')).toMatchObject({
           authRequired: true,
           credentialsConfigured: false
         })
         expect(d.runtimeFacts.profileFor('pi-acp').unavailableReason).toBeUndefined()
         expect(d.curatedRuntimeAdmission.status('codex-acp', 'curated')).toBe('verified')
         expect(d.curatedRuntimeAdmission.status('pi-acp', 'curated')).toBe('failed')
-        expect(d.reportedRuntimeIds().sort()).toEqual(['codex-acp', 'grok-build', 'opencode', 'pi-acp'])
+        expect(d.reportedRuntimeIds().sort()).toEqual(['amp-acp', 'codex-acp', 'grok-build', 'pi-acp'])
         expect(d.localRuntimeCatalog.runtimes['codex-acp'].command).toBe('fake-agent')
         expect(d.microsandboxCatalog.runtimes['codex-acp'].command).toBe('/image/bin/codex-acp')
         await onCatalogUpdated('codex-acp')
@@ -555,7 +554,7 @@ describe('microsandbox runtime facts', () => {
             .at(-1)
             ?.map((profile) => profile.runtime)
             .sort()
-        ).toEqual(['codex-acp', 'grok-build', 'opencode', 'pi-acp'])
+        ).toEqual(['amp-acp', 'codex-acp', 'grok-build', 'pi-acp'])
         probe.mockClear()
         d.runtimeFacts.armProbeRefresh()
         clock.advance(5 * 60_000)

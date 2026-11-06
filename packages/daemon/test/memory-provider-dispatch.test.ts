@@ -69,7 +69,7 @@ describe('memoryProviderFor (spawn-time provider + env)', () => {
     ['opencode', 'custom-wrapper', ['serve-acp']],
     ['my-opencode', './opencode', ['acp']],
     ['my-opencode', 'C:\\Tools\\opencode.exe', ['acp']],
-    ['my-opencode', 'npx', ['-y', 'opencode-ai@1.18.32', 'acp']]
+    ['my-opencode', 'npx', ['-y', '@opencode/cli@2.2.5', 'acp']]
   ])('allows none memory for %s via %s without replacing provider config', (runtimeId, command, args) => {
     const runtime = { command, args, env: [] } as unknown as RuntimeDef
     const env = {

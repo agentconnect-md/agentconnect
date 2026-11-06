@@ -7,11 +7,49 @@ import { Daemon } from '../src/daemon.js'
 import { readOnlyExtractionMode } from '../src/memory/distill.js'
 import {
   applyOpenCodeReadOnlyMode,
+  isOpenCodeRuntime,
   OPENCODE_READ_ONLY_MODE,
-  OPENCODE_READ_ONLY_PERMISSION
+  OPENCODE_READ_ONLY_PERMISSION,
+  openCodeConfigWithClaudeInstructions
 } from '../src/runtime-defs/opencode-runtime.js'
+import type { RuntimeDef } from '../src/config/config-schema.js'
 
 const opencode = { runtime: 'opencode' as const }
+
+describe('isOpenCodeRuntime', () => {
+  it.each([
+    ['opencode', 'custom-wrapper', []],
+    ['my-opencode', './opencode', ['acp']],
+    ['my-opencode', 'npx', ['-y', '@opencode/cli@2.2.5', 'acp']],
+    ['my-opencode', 'npx', ['-y', '@opencode/cli', 'acp']]
+  ])('recognizes %s via %s %j', (runtimeId, command, args) => {
+    expect(isOpenCodeRuntime(runtimeId, { command, args, env: [] } as unknown as RuntimeDef)).toBe(true)
+  })
+
+  it('does not take another runtime that merely mentions it', () => {
+    expect(isOpenCodeRuntime('kilo', { command: 'npx', args: ['-y', '@kilocode/cli', 'acp'], env: [] } as never)).toBe(
+      false
+    )
+    expect(isOpenCodeRuntime(undefined, { command: 'opencode-wrapper', args: [], env: [] } as never)).toBe(false)
+  })
+})
+
+describe('openCodeConfigWithClaudeInstructions', () => {
+  it('adds CLAUDE.md beside the configuration already there', () => {
+    expect(JSON.parse(openCodeConfigWithClaudeInstructions('{"model":"deepseek/deepseek-chat"}'))).toEqual({
+      model: 'deepseek/deepseek-chat',
+      instructions: ['CLAUDE.md']
+    })
+    expect(JSON.parse(openCodeConfigWithClaudeInstructions(undefined))).toEqual({ instructions: ['CLAUDE.md'] })
+  })
+
+  it("keeps a launch's own instruction list, even an empty one", () => {
+    for (const instructions of [['./rules.md'], []])
+      expect(JSON.parse(openCodeConfigWithClaudeInstructions(JSON.stringify({ instructions }))).instructions).toEqual(
+        instructions
+      )
+  })
+})
 
 describe('applyOpenCodeReadOnlyMode', () => {
   it('authors a primary read-only agent whose ACP mode the extraction gate prefers over plan', () => {
@@ -28,7 +66,7 @@ describe('applyOpenCodeReadOnlyMode', () => {
     const keys = Object.keys(OPENCODE_READ_ONLY_PERMISSION)
     expect(keys[0]).toBe('*')
     expect(OPENCODE_READ_ONLY_PERMISSION['*']).toBe('deny')
-    expect(keys.slice(1)).toEqual(['read', 'glob', 'grep', 'list', 'agentconnect_*'])
+    expect(keys.slice(1)).toEqual(['read', 'glob', 'grep', 'agentconnect_*'])
     for (const key of keys.slice(1))
       expect(OPENCODE_READ_ONLY_PERMISSION[key as keyof typeof OPENCODE_READ_ONLY_PERMISSION]).toBe('allow')
     // Nothing native and mutating is ever re-allowed.

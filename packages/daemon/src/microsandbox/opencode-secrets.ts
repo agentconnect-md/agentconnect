@@ -1,15 +1,15 @@
-import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import stripJsonComments from 'strip-json-comments'
 import { objectFromJson } from '../runtimes/codex-config.js'
-import { home as hostHome, runtimeStateLocations } from '../runtimes/probe.js'
+import { openCodeConfigWithKeys, openCodeHostKeys } from '../runtimes/opencode-host-keys.js'
+import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES } from '../runtimes/runtime-seeded-credentials.js'
 import type { MicrosandboxCredentials, MicrosandboxSecret } from './secrets.js'
 import { replaceSecretValue } from './secret-values.js'
 
-// Native SDK defaults can omit api from OpenCode's provider catalog; common defaults also work before cache warmup.
+// A provider without a configured base URL reaches its SDK's default origin.
 const DEFAULT_ORIGINS: Record<string, string> = {
   opencode: 'https://opencode.ai',
   'opencode-go': 'https://opencode.ai',
@@ -29,24 +29,19 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 function document(text: string): Record<string, unknown> {
-  return objectFromJson(stripJsonComments(text, { trailingCommas: true }), 'OpenCode credential/configuration file')
+  return objectFromJson(stripJsonComments(text, { trailingCommas: true }), 'OpenCode configuration file')
 }
 
-function readDocument(path: string, jsonc = false, limit = MAX_SEED_FILE_BYTES): Record<string, unknown> {
+function readDocument(path: string): Record<string, unknown> {
   try {
     const stat = lstatSync(path)
     if (stat.isSymbolicLink()) return {}
-    if (!stat.isFile() || stat.size > limit) throw new Error('invalid source')
-    const text = readFileSync(path, 'utf8')
-    return jsonc ? document(text) : objectFromJson(text, 'OpenCode credential/catalog file')
+    if (!stat.isFile() || stat.size > MAX_SEED_FILE_BYTES) throw new Error('invalid source')
+    return document(readFileSync(path, 'utf8'))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
-    throw new Error('Cannot read the host OpenCode credential/configuration file')
+    throw new Error('Cannot read the host OpenCode configuration file')
   }
-}
-
-function apiKey(value: Record<string, unknown>): string | undefined {
-  return value.type === 'api' && typeof value.key === 'string' && value.key.trim() ? value.key : undefined
 }
 
 function allowedHost(endpoint: unknown, env: NodeJS.ProcessEnv): string | undefined {
@@ -61,81 +56,44 @@ function allowedHost(endpoint: unknown, env: NodeJS.ProcessEnv): string | undefi
   return undefined
 }
 
+/** A provider's endpoints across configs in either shape: its base URL, else its models' own APIs and its default origin. */
+function providerEndpoints(configs: readonly Record<string, unknown>[], provider: string): unknown[] {
+  const entries = configs.flatMap((config) => [
+    object(object(config.provider)[provider]),
+    object(object(config.providers)[provider])
+  ])
+  const baseUrl = entries
+    .map((entry) => object(entry.options).baseURL ?? object(entry.settings).baseURL)
+    .filter(Boolean)
+    .at(-1)
+  if (baseUrl) return [baseUrl]
+  const models = entries.flatMap((entry) => Object.values(object(entry.models)))
+  return [...models.map((model) => object(object(model).provider).api), DEFAULT_ORIGINS[provider]].filter(Boolean)
+}
+
 export function prepareOpenCodeSecrets(
   hostEnv: NodeJS.ProcessEnv,
   explicitEnv: Record<string, string>
 ): MicrosandboxCredentials | undefined {
-  const locations = runtimeStateLocations('opencode', hostEnv)
-  const authLocation = locations.find((location) =>
-    location.credentialFiles?.some((file) => file.format === 'opencode')
-  )!
-  const auth = readDocument(authLocation.source)
-  const api = Object.entries(auth)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .flatMap(([provider, raw]) => {
-      const key = apiKey(object(raw))
-      return key === undefined ? [] : [{ provider, key }]
-    })
-  if (!api.length) return undefined
-  const configFiles = locations
-    .filter((location) => !location.credentialFiles?.length)
-    .flatMap((location) =>
-      [
-        ...(location.destination === join('.config', 'opencode') ? ['config.json'] : []),
-        'opencode.json',
-        'opencode.jsonc'
-      ].map((file) => ({
-        source: join(location.source, file),
-        destination: join(location.destination, file)
-      }))
-    )
-  const providers: Record<string, Record<string, unknown>> = {}
+  const keys = openCodeHostKeys(hostEnv)
+  if (!keys.length) return undefined
+  const configFiles = runtimeStateLocations('opencode', hostEnv).flatMap((location) =>
+    ['opencode.json', 'opencode.jsonc'].map((file) => ({
+      source: join(location.source, file),
+      destination: join(location.destination, file)
+    }))
+  )
   const env = { ...hostEnv, ...explicitEnv }
   const configs = [
-    ...configFiles.map(({ source }) => readDocument(source, true)),
+    ...configFiles.map(({ source }) => readDocument(source)),
     objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
   ]
-  for (const config of configs) {
-    for (const [id, raw] of Object.entries(object(config.provider))) {
-      const value = object(raw)
-      const previous = providers[id]
-      providers[id] = {
-        ...previous,
-        ...value,
-        options: { ...object(previous?.options), ...object(value.options) },
-        models: { ...object(previous?.models), ...object(value.models) }
-      }
-    }
-  }
-  const catalogPath = join(hostEnv.XDG_CACHE_HOME || join(hostHome(hostEnv), '.cache'), 'opencode', 'models.json')
-  const usesCatalog = (provider: string) => !object(providers[provider]?.options).baseURL && !DEFAULT_ORIGINS[provider]
-  const needsCatalog = api.some(({ provider }) => usesCatalog(provider))
-  let catalog: Record<string, unknown> = {}
-  if (needsCatalog) {
-    try {
-      catalog = readDocument(catalogPath, false, 16 * 1024 * 1024)
-    } catch {
-      // An unusable cache cannot prevent providers with configured or default origins from starting.
-    }
-  }
   const secrets = new Map<string, MicrosandboxSecret>()
-  for (const { provider, key } of api) {
-    const config = providers[provider] ?? {}
-    const options = object(config.options)
-    const known = usesCatalog(provider) ? object(catalog[provider]) : {}
-    const endpoints = options.baseURL
-      ? [options.baseURL]
-      : [
-          ...Object.values({ ...object(known.models), ...object(config.models) })
-            .map((model) => object(object(model).provider).api)
-            .filter(Boolean),
-          known.api ?? DEFAULT_ORIGINS[provider]
-        ].filter(Boolean)
+  for (const { provider, env: name, key } of keys) {
     const hosts = [
-      ...new Set(endpoints.map((endpoint) => allowedHost(endpoint, env)).filter((host) => host !== undefined))
-    ].sort()
-    const name = `OPENCODE_API_${createHash('sha256').update(provider).digest('hex').slice(0, 16).toUpperCase()}`
-    secrets.set(provider, { env: name, placeholder: `msb-secret-${name}`, host: hosts, readValue: () => key })
+      ...new Set(providerEndpoints(configs, provider).map((endpoint) => allowedHost(endpoint, env)))
+    ].filter((host) => host !== undefined)
+    secrets.set(provider, { env: name, placeholder: `msb-secret-${name}`, host: hosts.sort(), readValue: () => key })
   }
   const sharedKeys = new Map<string, MicrosandboxSecret>()
   for (const [provider, secret] of secrets) {
@@ -145,34 +103,31 @@ export function prepareOpenCodeSecrets(
       secrets.set(provider, shared)
     } else sharedKeys.set(secret.readValue(), secret)
   }
-  const bindings = [...sharedKeys.values()]
-  const files = [{ source: authLocation.source, destination: authLocation.destination }, ...configFiles]
-  const replacements = new Map(bindings.map((secret) => [secret.readValue(), secret.placeholder]))
-  const projectedConfig = (data: unknown): string =>
-    JSON.stringify(data, (_key, value: unknown) =>
-      typeof value === 'string' ? replaceSecretValue(value, replacements) : value
-    )
+  const bindings = [...sharedKeys.values()].filter((secret) => secret.host.length > 0)
+  const bound = [...secrets].filter(([, secret]) => bindings.includes(secret))
+  const replacements = new Map([...sharedKeys.values()].map((secret) => [secret.readValue(), secret.placeholder]))
   return {
-    secrets: bindings.filter((secret) => secret.host.length > 0),
+    secrets: bindings,
     replacements,
-    sources: [...files.map(({ source }) => source), ...(needsCatalog ? [catalogPath] : [])],
-    seedExclusions: files.map(({ destination }) => destination),
+    sources: configFiles.map(({ source }) => source),
+    seedExclusions: configFiles.map(({ destination }) => destination),
     preparePrivateHome(home) {
-      for (const file of files) {
+      for (const file of configFiles) {
         projectRuntimeHomeSeedFile(home, file.destination, file.source, (text) => {
           const data = document(text)
-          if (file.source === authLocation.source) {
-            for (const [provider, raw] of Object.entries(data)) {
-              const value = object(raw)
-              if (apiKey(value) === undefined) continue
-              const secret = secrets.get(provider)
-              data[provider] = JSON.parse(projectedConfig(secret ? { ...value, key: secret.placeholder } : value))
-            }
-            return `${JSON.stringify(data)}\n`
-          }
-          return `${projectedConfig(data)}\n`
+          const projected = JSON.stringify(data, (_key, value: unknown) =>
+            typeof value === 'string' ? replaceSecretValue(value, replacements) : value
+          )
+          return `${projected}\n`
         })
       }
+    },
+    // Each bound provider reads its key from the variable that holds its placeholder, which the proxy swaps on its hosts.
+    prepareEnv(launchEnv) {
+      launchEnv.OPENCODE_CONFIG_CONTENT = openCodeConfigWithKeys(
+        launchEnv.OPENCODE_CONFIG_CONTENT,
+        bound.map(([provider, secret]) => ({ provider, env: secret.env }))
+      )
     }
   }
 }

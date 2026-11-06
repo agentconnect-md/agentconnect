@@ -126,7 +126,7 @@ export interface ModelCatalogServiceDeps {
   log?: Logger
   /** Clock seam (backoff/TTL arithmetic + observedAt stamps). */
   now?: () => number
-  /** Driver registry override — default is the built-in [codex, opencode, kilo]. */
+  /** Driver registry override — default is the built-in [codex, kilo]. */
   drivers?: ModelCatalogDriver[]
   /** The per-model ACP enumerator (daemon.ts provides the isolated-host one). */
   enumerate: EnumerateFn
@@ -444,10 +444,10 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 }
 
 // ── built-in drivers (design §3.1) ──────────────────────────────────────────
-// Codex, OpenCode and Kilo have native drivers; other runtimes use the generic enumerator.
+// Codex and Kilo have native drivers; OpenCode 2 and other runtimes use the generic enumerator.
 
 function builtInCatalogDrivers(): ModelCatalogDriver[] {
-  return [new CodexAppServerDriver(), new LocalServeCatalogDriver('opencode'), new LocalServeCatalogDriver('kilo')]
+  return [new CodexAppServerDriver(), new LocalServeCatalogDriver('kilo')]
 }
 
 function pickString(rec: Record<string, unknown>, camel: string, snake: string): string | undefined {
@@ -684,12 +684,9 @@ export function serveInvocationFor(
   return { command: bin, args: serveArgs }
 }
 
-/** opencode-lineage native catalog (opencode + its kilo fork): `<bin> serve` on a
- *  random loopback-only port, then `GET /config/providers` — the same data source
- *  the runtime builds its own model selector from (`serve --port/--hostname` and
- *  the route verified against opencode 1.18.3 / kilocode 7.4.11 sources). */
+/** Kilo (an OpenCode 1 fork) catalog: `kilo serve` on a loopback port, then `GET /config/providers`, verified against kilocode 7.4.11. */
 class LocalServeCatalogDriver implements ModelCatalogDriver {
-  constructor(private readonly bin: 'opencode' | 'kilo') {}
+  constructor(private readonly bin: 'kilo') {}
 
   supports(runtimeId: string): boolean {
     return runtimeId === this.bin

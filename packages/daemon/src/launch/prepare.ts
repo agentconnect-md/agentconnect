@@ -10,6 +10,7 @@ import { prepareMicrosandboxLaunch } from '../microsandbox/launch.js'
 import { isRecognizedCredentialEnv, type MicrosandboxSecret } from '../microsandbox/secrets.js'
 import { compactReadRoots, protectedSandboxRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
+import { applyOpenCodeHostKeys, openCodeHostKeys } from '../runtimes/opencode-host-keys.js'
 import {
   CLAUDE_STATE_SECRETS,
   CODEX_STATE_SECRETS,
@@ -406,6 +407,9 @@ export function prepareRuntimeLaunch(opts: {
     ...packageCacheEnv,
     ...credentials?.env
   }
+  // OpenCode keeps sign-ins in its own database, which a private HOME does not copy; its API keys arrive as variables instead.
+  if (opts.inheritRuntimeCredentials !== false && opts.k8s !== true && opts.runtimeId === 'opencode')
+    applyOpenCodeHostKeys(env, openCodeHostKeys(stateSourceEnv))
 
   // The shim is the boundary, with its own temp root and the tunnels that reach this daemon's sockets.
   const shimRoot = opts.runInSandbox ? opts.srtShim?.runtimeRoot : undefined

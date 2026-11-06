@@ -51,7 +51,9 @@ therefore be a daemon-side discovery and caching problem, not one protocol call.
    and use native catalog APIs.** When a lower layer exposes a stable catalog
    API, a dedicated driver collects every model and its capabilities in one
    discovery task without switching models. The first runtimes are Claude,
-   Codex, OpenCode, and Kilo. This class will **continue expanding**: whenever a
+   Codex, and Kilo. OpenCode left this class with OpenCode 2, which removed the
+   catalog route and requires a password on every server request, so it uses the
+   generic enumerator. This class will **continue expanding**: whenever a
    runtime's native interface becomes known, add a driver. The long-term goal is
    one-pass discovery for as many runtimes as possible.
 2. **Runtimes without drivers fall back to per-model discovery.** The generic
@@ -77,7 +79,7 @@ latest value persisted by the CP.**
 ```mermaid
 flowchart LR
   subgraph daemon
-    D1[catalog driver<br/>codex/opencode/kilo<br/>bulk discovery] --> M
+    D1[catalog driver<br/>codex/kilo<br/>bulk discovery] --> M
     D2[generic ACP enumerator<br/>per-model set_config_option<br/>Claude completes in one session] --> M
     M[runtime_model_catalog<br/>SQLite last-good cache] --> R[facts/daemon-runtimes<br/>modelCatalog field]
   end
@@ -135,11 +137,10 @@ interface ModelCatalogDriver {
 Initial drivers use the same lower-layer data each adapter uses to construct
 `configOptions`, ensuring that native and ACP paths have one source:
 
-| Runtime  | Interface                                                                                                                                                                                    | Returned in one task                                                                                                                                                                            |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| codex    | Spawn `codex app-server`; JSON-RPC `initialize` + `model/list`                                                                                                                               | All models × `supportedReasoningEfforts` (including descriptions) × `defaultReasoningEffort` × `additionalSpeedTiers` (fast)                                                                    |
-| opencode | Derive `serve --port <random> --hostname 127.0.0.1` from RuntimeDef → `GET /config/providers` (verified against OpenCode 1.18.3 source)                                                      | Providers × all models × `variants` (keys are effort levels); catalog ID is `provider.id/model.id`, **exactly matching** ACP model-select values because neither side includes a variant suffix |
-| kilo     | Same as OpenCode (fork retains the serve surface, source-verified in KiloCode 7.4.11; distribution is `npx -y @kilocode/cli acp`, so derive serve from RuntimeDef rather than a bare binary) | Same as above, from Kilo's backend. If the Kilo provider has auth state, the catalog GET may return 401; treat 401 as a hard failure and immediately fall back to enumeration                   |
+| Runtime | Interface                                                                                                                                                                                                                                 | Returned in one task                                                                                                                                                                                                                                                                        |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| codex   | Spawn `codex app-server`; JSON-RPC `initialize` + `model/list`                                                                                                                                                                            | All models × `supportedReasoningEfforts` (including descriptions) × `defaultReasoningEffort` × `additionalSpeedTiers` (fast)                                                                                                                                                                |
+| kilo    | Derive `serve --port <random> --hostname 127.0.0.1` from RuntimeDef → `GET /config/providers` (source-verified in KiloCode 7.4.11; distribution is `npx -y @kilocode/cli acp`, so derive serve from RuntimeDef rather than a bare binary) | Providers × all models × `variants` (keys are effort levels); catalog ID is `provider.id/model.id`, **exactly matching** ACP model-select values. If the Kilo provider has auth state, the catalog GET may return 401; treat 401 as a hard failure and immediately fall back to enumeration |
 
 **Claude's "bulk discovery" is single-session enumeration, without an SDK
 dependency (evidence-based decision).** The real adapter
@@ -166,13 +167,13 @@ Constraints:
 - **Driver children reuse probe security controls**: an allowlist equivalent to
   `curatedProbeEnvironment` for PATH, certificates, provider keys, and proxies;
   isolated HOME; and the same diagnostic redaction. Drivers that listen
-  (OpenCode/Kilo `serve`) bind only a random loopback port. The timeout matches
+  (Kilo `serve`) bind only a random loopback port. The timeout matches
   probe (30 seconds), and the driver layer kills the entire process tree on
   timeout/exit.
 - A serve driver's launch command **must be derived from RuntimeDef** by
   replacing the trailing `acp` argument with serve arguments. This supports
-  both `npx` distributions such as Kilo and archived binaries such as
-  `./opencode`; a bare PATH binary is only the final fallback. Defensively
+  both `npx` distributions such as Kilo and archived `./<binary>` commands; a
+  bare PATH binary is only the final fallback. Defensively
   remove `OPENCODE_SERVER_PASSWORD` / `KILO_SERVER_PASSWORD` from child
   environments, because password-protected serve returns 401 for every catalog
   request.

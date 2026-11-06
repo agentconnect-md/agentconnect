@@ -34,6 +34,8 @@ export interface MicrosandboxCredentials {
   shareNativeCredentials?: boolean
   tlsTrustEnv?: readonly string[]
   preparePrivateHome: (home: string) => void
+  /** Points the guest's own config at the bound variables, after they hold their placeholders. */
+  prepareEnv?: (env: Record<string, string>) => void
 }
 
 interface CredentialPreparer {
@@ -149,6 +151,7 @@ export function microsandboxCredentialStep(
       if (!protectedCredentials) return
       replaceEnvironmentSecrets(env, protectedCredentials.replacements)
       for (const secret of protectedCredentials.secrets) env[secret.env] = secret.placeholder
+      protectedCredentials.prepareEnv?.(env)
       if (!protectedCredentials.secrets.length) return
       env.NODE_EXTRA_CA_CERTS = '/.msb/tls/ca.pem'
       env.SSL_CERT_FILE = env.REQUESTS_CA_BUNDLE = env.CURL_CA_BUNDLE = '/etc/ssl/certs/ca-certificates.crt'

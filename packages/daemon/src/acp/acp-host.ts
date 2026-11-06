@@ -31,6 +31,7 @@ import {
   ULTRACODE_EFFORT
 } from '../runtime-defs/claude-runtime.js'
 import { isCodexRuntimeDef, runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
+import { isOpenCodeRuntime, openCodeConfigWithClaudeInstructions } from '../runtime-defs/opencode-runtime.js'
 import {
   codexConfigWithGuardianPolicy,
   codexConfigWithMcpStartupGrace,
@@ -775,6 +776,13 @@ export class AcpHost {
         `acp: account-app isolation disabled by daemon config for ${appIsolation.runtime}; ` +
           `signed-in account apps/connectors may be inherited${detail}`
       )
+    }
+    if (isOpenCodeRuntime(this.opts.runtimeId, this.runtime)) {
+      try {
+        env.OPENCODE_CONFIG_CONTENT = openCodeConfigWithClaudeInstructions(env.OPENCODE_CONFIG_CONTENT)
+      } catch (err) {
+        this.opts.log?.warn(`acp: leaving OpenCode without CLAUDE.md instructions — ${(err as Error).message}`)
+      }
     }
     const isCodex = this.opts.runtimeId === 'codex-acp' || isCodexRuntimeDef(this.runtime)
     // Codex offers `request_user_input` only when configured on; enable it exactly when this host services session elicitations.
