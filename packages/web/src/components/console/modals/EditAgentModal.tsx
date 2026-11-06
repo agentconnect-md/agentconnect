@@ -11,6 +11,7 @@ import {
   modelCapability,
   preferredModelFor,
   resolveEffortForModel,
+  coordinatorModelOf,
   permissionModeDefault,
   runtimeSwitchPermissionMode,
   runtimeLabel,
@@ -37,6 +38,7 @@ import { DaemonSelect, type DaemonSelectOption } from '@/components/console/Daem
 import { useModal } from '@/components/console/ModalProvider'
 import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
 import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
+import type { CoordinatorModel } from '@agentconnect.md/protocol/coordinator-model'
 import { editAgentCapabilitySource, editAgentDaemonChoices, preselectPlacementReset } from './edit-agent-daemon-choice'
 import { storedModelAfterPick } from './fallback-model'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
@@ -185,6 +187,8 @@ export default function EditAgentModal({
   const [modelSelection, setModelSelection] = useState<AgentModelSelection | null>(null)
   const initialModelSelection = useRef<AgentModelSelection | null>(null)
   const [modelSelectionValid, setModelSelectionValid] = useState(true)
+  const [coordinatorModel, setCoordinatorModel] = useState<CoordinatorModel | null>(null)
+  const initialCoordinatorModel = useRef<CoordinatorModel | null>(null)
   const [outputMode, setOutputMode] = useState<OutputMode | ''>('')
   const initialOutputMode = useRef<OutputMode | ''>('')
   const [showFooter, setShowFooter] = useState(agent.showFooter)
@@ -276,6 +280,8 @@ export default function EditAgentModal({
         initialModel.current = dto.model ?? ''
         setModelSelection(dto.modelSelection ?? null)
         initialModelSelection.current = dto.modelSelection ?? null
+        setCoordinatorModel(dto.coordinatorModel ?? null)
+        initialCoordinatorModel.current = dto.coordinatorModel ?? null
         setModelProvider(dto.modelProvider ?? null)
         initialModelProvider.current = dto.modelProvider ?? null
         setEffort(dto.reasoningEffort ?? '')
@@ -644,6 +650,9 @@ export default function EditAgentModal({
       : model !== initialModel.current
         ? { model: model || (modelSelection ? selectedModel : null) }
         : {}),
+    ...(JSON.stringify(coordinatorModel) !== JSON.stringify(initialCoordinatorModel.current)
+      ? { coordinatorModel }
+      : {}),
     ...(modelSelectionChanged ? { modelSelection, ...(modelSelection && !model ? { model: selectedModel } : {}) } : {}),
     ...(runtime.trim() !== initialRuntime.current ? { runtime: runtime.trim() } : {}),
     ...(daemonId !== POOL_PLACEMENT && modelProvider !== initialModelProvider.current ? { modelProvider } : {}),
@@ -934,6 +943,10 @@ export default function EditAgentModal({
                 readsImage={readsImage}
                 requireAvailableModel={savedCredentials}
                 aside={<ChatActionsField value={chatActions} onChange={setChatActions} />}
+                coordinator={{
+                  value: coordinatorModelOf({ runtime, model: selectedModel, coordinatorModel }, modelSource),
+                  onChange: setCoordinatorModel
+                }}
                 onFallbackChange={(target) => {
                   if (savedCredentials) setModelProvider('auto')
                   if (target.runtime !== runtime) onRuntimeChange(target.runtime)

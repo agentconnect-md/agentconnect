@@ -31,6 +31,7 @@ import {
 } from '@/lib/data'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
+import { COORDINATOR_DEFAULT_EFFORT, type CoordinatorModel } from '@agentconnect.md/protocol/coordinator-model'
 
 export type RuntimeModelSource = Pick<DaemonRow, 'runtimeModels'>
 
@@ -52,6 +53,15 @@ export interface RunSettingsControls {
   approval?: RunSettingControl
   /** Present only when the selected model offers Fast mode. */
   fast?: { value: boolean; onChange(value: boolean): void }
+}
+
+/** The coordinator's model beside the task model: a Task | Coordinator switch heads the menu (auto-session-mode.md §5.4). */
+export interface CoordinatorModelChoice {
+  /** What it runs on: the chosen model, or what Default resolves to. */
+  value: CoordinatorModel
+  onChange(value: CoordinatorModel): void
+  /** The coordinator alone, for a field of its own beside a Decision-picked task model. */
+  only?: boolean
 }
 
 /** The agent Decision a composer can defer to, with what its hover card summarizes. */
@@ -104,7 +114,8 @@ export function RuntimeModelSelect({
   allowRuntimeOnly = false,
   readsImage = false,
   readOnly = false,
-  readOnlyNote
+  readOnlyNote,
+  coordinator
 }: {
   value: DecisionRuntimeTarget
   onChange(value: DecisionRuntimeTarget): void
@@ -126,12 +137,15 @@ export function RuntimeModelSelect({
   /** Who may change it instead, when read-only says more than that changes are disabled here. */
   readOnlyNote?: string
   decision?: RuntimeDecisionChoice
+  coordinator?: CoordinatorModelChoice
 }) {
   const t = useTranslations('Agents.dialog.runtimeModel')
   const permissionT = useTranslations('Common.permissionModes')
   const registry = useAcpRegistry()
   const [provider, setProvider] = useState(value.runtime)
   const [search, setSearch] = useState('')
+  const [tab, setTab] = useState<'task' | 'coordinator'>('task')
+  const onCoordinator = !!coordinator && (coordinator.only || tab === 'coordinator')
   const hover = useHoverCard({
     interactive: !!decision?.selected && !!(decision.evaluations || decision.decisionHref)
   })
@@ -170,7 +184,11 @@ export function RuntimeModelSelect({
   const selectedWarning = profiles.find((item) => item.runtime === value.runtime)?.warning
   const warningLabel = (warning: string) =>
     t(warning === 'image-binary-missing' ? 'imageBinaryMissing' : 'loginRequired')
-  const modelName = current?.modelCatalog?.models.find((model) => model.id === value.model)?.name ?? value.model
+  const nameOf = (runtime: string, model: string) =>
+    source?.runtimeModels
+      .find((profile) => profile.runtime === runtime)
+      ?.modelCatalog?.models.find((m) => m.id === model)?.name ?? model
+  const modelName = nameOf(value.runtime, value.model)
   const matching = profiles
     .filter((item) => search || item.runtime === provider)
     .map((item) => ({
@@ -217,7 +235,60 @@ export function RuntimeModelSelect({
       : controls?.effort && controls.effort.value !== 'default'
         ? effortText
         : ''
-  const fastOn = !decision?.selected && !!controls?.fast?.value
+  const co = coordinator?.value
+  const coCapability = co ? modelCapability(source, co.runtime, co.model) : undefined
+  const coEffortChoices = co ? effortChoicesFor(co.runtime, coCapability) : []
+  const coShowEffort = co && (coCapability?.efforts ? coEffortChoices.length > 0 : supportsModes(co.runtime))
+  // The coordinator runs read-only (auto-session-mode.md §5.4), so it offers no approval.
+  const coControls: RunSettingsControls | undefined =
+    co && coordinator
+      ? {
+          effort:
+            coShowEffort && coEffortChoices.length
+              ? {
+                  value: displayedEffort(co.effort ?? '', coEffortChoices, coCapability?.defaultEffort),
+                  options: coEffortChoices,
+                  onChange: (next) => coordinator.onChange({ ...co, effort: next })
+                }
+              : undefined,
+          fast: fastModeAvailableFor(co.runtime, coCapability)
+            ? { value: !!co.fastMode, onChange: (next) => coordinator.onChange({ ...co, fastMode: next }) }
+            : undefined
+        }
+      : undefined
+  const selectCoordinator = (runtime: string, model: string) => {
+    if (!co || !coordinator) return
+    const capability = modelCapability(source, runtime, model)
+    const effort = resolveEffortForModel(
+      runtime,
+      capability,
+      runtime === co.runtime ? (co.effort ?? '') : COORDINATOR_DEFAULT_EFFORT
+    )
+    coordinator.onChange({
+      runtime,
+      model,
+      ...(effort ? { effort } : {}),
+      ...(co.fastMode && fastModeAvailableFor(runtime, capability) ? { fastMode: true } : {})
+    })
+  }
+  const footer = onCoordinator ? coControls : showSettings ? controls : undefined
+  const coOnly = !!coordinator?.only && !!co
+  const fastOn = coOnly ? !!co?.fastMode : !decision?.selected && !!controls?.fast?.value
+  const triggerName = coOnly
+    ? nameOf(co!.runtime, co!.model) || label(co!.runtime) || t('choose')
+    : decision?.selected
+      ? decision.name
+      : modelName || label(value.runtime) || t('choose')
+  const triggerSummary = coOnly
+    ? coControls?.effort && coControls.effort.value !== 'default'
+      ? choiceLabel(coControls.effort)
+      : ''
+    : summary
+  // A form's trigger names the coordinator beside the task model; the composer leaves it to the hover card.
+  const coordinatorNote =
+    co?.model && !coordinator?.only && !compact && !dense
+      ? t('plusCoordinator', { model: nameOf(co.runtime, co.model) })
+      : ''
   const selectModel = (runtime: string, model: string) => {
     if (!runSettings) return onChange({ runtime, model })
     const nextCapability = modelCapability(source, runtime, model)
@@ -252,7 +323,10 @@ export function RuntimeModelSelect({
         [t('model'), modelName],
         ...(controls?.effort ? [[t('effort'), choiceLabel(controls.effort)] as [string, string]] : []),
         ...(controls?.approval ? [[t('approval'), choiceLabel(controls.approval)] as [string, string]] : []),
-        ...(controls?.fast ? [[t('fastMode'), controls.fast.value ? t('on') : t('off')] as [string, string]] : [])
+        ...(controls?.fast ? [[t('fastMode'), controls.fast.value ? t('on') : t('off')] as [string, string]] : []),
+        ...(co && !coordinator?.only
+          ? [[t('coordinator'), `${label(co.runtime)} · ${nameOf(co.runtime, co.model)}`] as [string, string]]
+          : [])
       ]}
     />
   )
@@ -283,42 +357,49 @@ export function RuntimeModelSelect({
             {...hover.triggerProps}
             onClick={() => {
               hover.hide()
-              setProvider(ids.includes(value.runtime) ? value.runtime : (ids[0] ?? ''))
+              const runtime = coordinator?.only && co ? co.runtime : value.runtime
+              setTab('task')
+              setProvider(ids.includes(runtime) ? runtime : (ids[0] ?? ''))
               setSearch('')
               toggle()
             }}
           >
-            {decision?.selected ? (
+            {decision?.selected && !coOnly ? (
               <Icon name="split" size={13} color="var(--brand)" className="flex-none" />
             ) : (
               <MarkSlot size={14}>
-                <AgentMark model={value.runtime} fillPct={100} />
+                <AgentMark model={coOnly ? co!.runtime : value.runtime} fillPct={100} />
               </MarkSlot>
             )}
             {compact ? (
               <span className="min-w-0 flex-1 truncate text-left">
-                {decision?.selected ? decision.name : modelName || label(value.runtime) || t('choose')}
-                {summary && (
+                {triggerName}
+                {triggerSummary && (
                   <span className="font-mono text-[11px] font-normal text-(--text-tertiary) max-desktop:hidden">
                     {' '}
-                    · {summary}
+                    · {triggerSummary}
                   </span>
                 )}
               </span>
             ) : (
               // The name keeps most of the width; the run settings shrink first.
               <span className="flex min-w-0 flex-1 items-center gap-[7px] text-left">
-                <span className={`truncate ${summary ? 'max-w-[62%] flex-none' : 'min-w-0'}`}>
-                  {decision?.selected ? decision.name : modelName || label(value.runtime) || t('choose')}
+                <span className={`truncate ${triggerSummary ? 'max-w-[62%] flex-none' : 'min-w-0'}`}>
+                  {triggerName}
                 </span>
-                {summary && (
+                {triggerSummary && (
                   <span className="min-w-0 truncate font-mono text-[10.5px] font-normal text-(--text-tertiary)">
-                    {summary}
+                    {triggerSummary}
+                  </span>
+                )}
+                {coordinatorNote && (
+                  <span className="min-w-0 truncate font-mono text-[10.5px] font-normal text-(--text-tertiary)">
+                    {coordinatorNote}
                   </span>
                 )}
               </span>
             )}
-            {!decision?.selected && selectedWarning && (
+            {!decision?.selected && !coOnly && selectedWarning && (
               <span className="flex flex-none" title={warningLabel(selectedWarning)}>
                 <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
               </span>
@@ -347,7 +428,7 @@ export function RuntimeModelSelect({
           </div>
         ) : (
           <div>
-            {decision && (
+            {decision && !onCoordinator && (
               <div className="border-b border-(--border-subtle) p-1">
                 <button
                   type="button"
@@ -385,6 +466,29 @@ export function RuntimeModelSelect({
                 setSearch('')
               }}
               search={{ value: search, placeholder: t('search'), onChange: setSearch }}
+              header={
+                coordinator &&
+                !coordinator.only && (
+                  <div className="pillbar mb-1 flex w-full" role="group" aria-label={t('target')}>
+                    {(['task', 'coordinator'] as const).map((key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        className={`pill flex-1 px-0 py-1 text-[12px] ${tab === key ? 'on' : ''}`}
+                        aria-pressed={tab === key}
+                        onClick={() => {
+                          const runtime = key === 'coordinator' && co ? co.runtime : value.runtime
+                          setTab(key)
+                          setProvider(ids.includes(runtime) ? runtime : (ids[0] ?? ''))
+                          setSearch('')
+                        }}
+                      >
+                        {t(key)}
+                      </button>
+                    ))}
+                  </div>
+                )
+              }
             >
               {matching.map(
                 (item) =>
@@ -398,9 +502,12 @@ export function RuntimeModelSelect({
                           description={model.description}
                           ariaLabel={`${label(item.runtime)} · ${model.name ?? model.value}`}
                           selected={
-                            !decision?.selected && value.runtime === item.runtime && value.model === model.value
+                            onCoordinator
+                              ? co?.runtime === item.runtime && co.model === model.value
+                              : !decision?.selected && value.runtime === item.runtime && value.model === model.value
                           }
                           onClick={() => {
+                            if (onCoordinator) return selectCoordinator(item.runtime, model.value)
                             selectModel(item.runtime, model.value)
                             if (!runSettings) close(true)
                           }}
@@ -409,7 +516,7 @@ export function RuntimeModelSelect({
                     </div>
                   )
               )}
-              {runtimeOnly && (
+              {runtimeOnly && !onCoordinator && (
                 <ModelOption
                   label={label(runtimeOnly.runtime)}
                   selected={value.runtime === runtimeOnly.runtime && !value.model}
@@ -419,25 +526,25 @@ export function RuntimeModelSelect({
                   }}
                 />
               )}
-              {!runtimeOnly && matching.every((item) => !item.options.length) && (
+              {(!runtimeOnly || onCoordinator) && matching.every((item) => !item.options.length) && (
                 <div className="px-2 py-[14px] font-sans text-[12px] leading-normal text-(--text-tertiary)">
                   {t('empty')}
                 </div>
               )}
             </ProviderModelMenu>
-            {showSettings && (
+            {(footer?.effort || footer?.approval || footer?.fast) && (
               <div className="flex flex-wrap items-center gap-2 border-t border-(--border-subtle) bg-(--surface-app) px-[10px] py-[7px]">
-                {controls?.effort && <SettingSelect label={t('effort')} control={controls.effort} />}
-                {controls?.approval && <SettingSelect label={t('approval')} control={controls.approval} />}
-                {controls?.fast && (
+                {footer.effort && <SettingSelect label={t('effort')} control={footer.effort} />}
+                {footer.approval && <SettingSelect label={t('approval')} control={footer.approval} />}
+                {footer.fast && (
                   <span
                     className="ml-auto inline-flex items-center gap-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)"
                     title={t('lowerLatency')}
                   >
                     <Toggle
                       size="sm"
-                      checked={controls.fast.value}
-                      onChange={controls.fast.onChange}
+                      checked={footer.fast.value}
+                      onChange={footer.fast.onChange}
                       ariaLabel={t('fastMode')}
                     />
                     {t('fast')}

@@ -562,6 +562,8 @@ export function agentRecordToSpec(
     skills: skillEntries,
     decisionIds: a.decisionIds ?? [],
     modelSelection: a.modelSelection ?? null,
+    // Value or null, so a return to Default replicates.
+    coordinatorModel: a.coordinatorModel ?? null,
     // Always shipped, so removing the last gate replicates.
     apiGates,
     // Value or null, so clearing the evaluator replicates; the daemon digests null as the absent field.

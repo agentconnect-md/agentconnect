@@ -242,6 +242,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       managedSkills: [], // managed organization skill bindings; likewise always shipped
       decisionIds: [],
       modelSelection: null,
+      coordinatorModel: null, // always shipped value-or-null so a return to Default replicates
       modelProvider: null,
       apiGates: {}, // always shipped so removing the last chat API gate replicates
       repositorySelector: null, // always shipped value-or-null so clearing the evaluator replicates

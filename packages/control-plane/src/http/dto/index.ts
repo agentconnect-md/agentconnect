@@ -33,6 +33,7 @@ import {
   AgentComputerSetting,
   COMPUTER_APPROVAL_RESULTS,
   AgentModelSelection,
+  CoordinatorModel,
   AgentRepositorySelector,
   AgentMemoryBinding,
   ChannelDecisionBinding,
@@ -779,6 +780,7 @@ export const CreateAgentBody = z.object({
   managedSkills: ManagedSkillEnableBody.optional(),
   decisionIds: AgentDecisionIds.optional(),
   modelSelection: AgentModelSelection.optional(),
+  coordinatorModel: CoordinatorModel.optional(), // the `auto` coordinator's model; absent ⇒ Default
   repositorySelector: RepositorySelectorBody.optional(),
   // Memory backend; absent ⇒ managed default. The CP resolves `home`: `control-plane` on a member set (`daemon` refused), else the given value or `daemon`.
   memory: MemoryConfigInputBody.optional(),
@@ -843,6 +845,7 @@ export const UpdateAgentBody = z
     managedSkills: ManagedSkillEnableBody.nullable().optional(), // accepted managed-skill ids; null clears
     decisionIds: AgentDecisionIds.nullable().optional(),
     modelSelection: AgentModelSelection.nullable().optional(),
+    coordinatorModel: CoordinatorModel.nullable().optional(), // null returns it to Default
     repositorySelector: RepositorySelectorBody.nullable().optional(), // null clears
     // Memory backend; null clears to managed. `home` moves one way to `control-plane`; back only with `force`, never on a member set or in assistant mode.
     memory: MemoryConfigInputBody.nullable().optional(),
@@ -953,6 +956,7 @@ export const AgentDto = z.object({
   managedSkills: z.array(z.string().uuid()), // explicitly enabled accepted managed-skill ids
   decisionIds: AgentDecisionIds,
   modelSelection: AgentModelSelection.nullable(),
+  coordinatorModel: CoordinatorModel.nullable(), // null ⇒ Default, a small model of the runtime (auto-session-mode.md §5.4)
   repositorySelector: AgentRepositorySelector.nullable(), // the repository selector's evaluator; null ⇒ none
   // Memory backend (null ⇒ managed default). A managed binding carries its resolved `home` and, while a
   // `daemon` → `control-plane` copy is under way, the read-only `homeMigration: 'pending'`.

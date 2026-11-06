@@ -209,6 +209,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
         managedSkills: [],
         decisionIds: [decisionId],
         modelSelection,
+        coordinatorModel: null, // always shipped value-or-null so a return to Default replicates
         modelProvider: null,
         apiGates: {}, // always shipped so removing the last chat API gate replicates
         repositorySelector: null, // always shipped value-or-null so clearing the evaluator replicates
@@ -253,6 +254,37 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     expect(spy.upserts[1]!.u.spec.mcpServers).toEqual([])
     expect(spy.upserts[1]!.u.spec.decisionIds).toEqual([])
     expect(spy.upserts[1]!.u.spec.modelSelection).toBeNull()
+  })
+
+  it('PATCHed coordinator model replicates and reads back, and null returns it to Default', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const { app, spy } = withSpy()
+    const coordinatorModel = { runtime: 'codex-acp', model: 'model-small', effort: 'low' }
+    const set = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { coordinatorModel }
+    })
+    expect(set.statusCode).toBe(200)
+    expect(set.json()).toMatchObject({ coordinatorModel })
+    expect(spy.upserts.at(-1)!.u.spec.coordinatorModel).toEqual(coordinatorModel)
+    // A coordinator offers no approval: it always runs read-only (auto-session-mode.md §5.4).
+    const refused = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { coordinatorModel: { ...coordinatorModel, permissionMode: 'agent' } }
+    })
+    expect(refused.statusCode).toBe(400)
+    const clear = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { coordinatorModel: null }
+    })
+    expect(clear.statusCode).toBe(200)
+    expect(clear.json()).toMatchObject({ coordinatorModel: null })
+    expect(spy.upserts.at(-1)!.u.spec.coordinatorModel).toBeNull()
   })
 
   it('PATCHed secrets replicate on the wire spec (values from the AgentSecretStore, never the DTO)', async () => {

@@ -23,6 +23,12 @@
       "import": "./dist/assistant-permission-modes.js",
       "default": "./dist/assistant-permission-modes.js"
     },
+    "./coordinator-model": {
+      "development": "./src/coordinator-model.ts",
+      "types": "./dist/coordinator-model.d.ts",
+      "import": "./dist/coordinator-model.js",
+      "default": "./dist/coordinator-model.js"
+    },
     "./code-host": {
       "development": "./src/code-host.ts",
       "types": "./dist/code-host.d.ts",

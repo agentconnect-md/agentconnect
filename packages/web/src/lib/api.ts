@@ -24,6 +24,7 @@ import type {
   DecisionModelEvaluationRecordPage,
   SharedBotDecisionRouting
 } from '@agentconnect.md/protocol/decision'
+import type { CoordinatorModel } from '@agentconnect.md/protocol/coordinator-model'
 import type {
   ComputerAgentAccess,
   ComputerCapabilities,
@@ -412,6 +413,7 @@ export interface AgentDto {
   managedSkills?: string[] // enabled centrally accepted immutable skill ids; absent on older CPs
   decisionIds?: string[] // explicitly attached saved Decisions
   modelSelection?: AgentModelSelection | null
+  coordinatorModel?: CoordinatorModel | null // the `auto` coordinator's model; null ⇒ Default, absent on an older CP
   repositorySelector?: AgentRepositorySelector | null // the evaluator that chooses `decision` repositories; absent on an older CP
   memory: AgentMemoryConfig | null // memory backend; null ⇒ managed default
   assistantMode?: AssistantModePolicy | null // null ⇒ never configured, off; absent on an older CP
@@ -1152,6 +1154,8 @@ export interface UpdateAgentInput {
   managedSkills?: string[]
   decisionIds?: string[]
   modelSelection?: AgentModelSelection | null
+  /** The `auto` coordinator's model; null returns it to Default. */
+  coordinatorModel?: CoordinatorModel | null
   /** The repository selector's Decision provider and model; null clears. */
   repositorySelector?: AgentRepositorySelector | null
   /** Memory backend; null clears (revert to managed default). */
@@ -1380,6 +1384,7 @@ export interface CreateAgentInput {
   managedSkills?: string[]
   decisionIds?: string[]
   modelSelection?: AgentModelSelection
+  coordinatorModel?: CoordinatorModel
   /** Memory backend; absent ⇒ managed default. */
   memory?: AgentMemoryConfig
   /** The strategy sessions run in; absent ⇒ the Control Plane's default for the placement. */
@@ -2117,6 +2122,7 @@ export function agentFromDto(d: AgentDto): Agent {
     model: d.model ?? '',
     ...(d.computerUse ? { computerUse: d.computerUse } : {}),
     modelSelection: d.modelSelection ?? null,
+    coordinatorModel: d.coordinatorModel ?? null,
     repositorySelector: d.repositorySelector ?? null,
     // Blank when the runtime is deferred (an unplaced preset) — mirrors the
     // daemon '—' coalesce below; display sites render '—' for an empty runtime.
