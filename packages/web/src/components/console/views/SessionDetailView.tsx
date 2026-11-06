@@ -6120,6 +6120,9 @@ export default function SessionDetailView() {
               onBack={() => setTaskThread(null)}
               {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
               runtimeContext={taskRuntimeContext}
+              personPicture={(sender) =>
+                sender === undefined || isSelf(sender) ? viewer.picture : memberPictureByIdentity.get(sender)
+              }
             />
           ) : null}
           {/* Mounted under an open thread too, so its verdict keeps the tab's badge and the reader comes back to the same lists. */}

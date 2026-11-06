@@ -128,6 +128,8 @@ export interface ThreadEntry {
   name: string | null
   /** A person's provider-hosted picture. */
   avatarUrl?: string
+  /** A recorded person's sender, which the panel's console-photo lookup keys on. */
+  sender?: string
   text: string
   /** An agent turn's answer, one block per message it posted. */
   prose?: string[]
@@ -242,6 +244,7 @@ export function threadEntries(
       ...(peer && peer !== agentId ? { agentId: peer } : {}),
       name: m.senderName ?? null,
       ...(!peer && m.senderAvatarUrl ? { avatarUrl: m.senderAvatarUrl } : {}),
+      ...(!peer ? { sender: m.sender } : {}),
       text: peer ? withoutAttribution(m.text) : m.text,
       at: messageTime(m),
       live: false
