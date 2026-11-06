@@ -229,7 +229,7 @@ describe('CommandMenu', () => {
     expect(text).not.toContain('Runs on Bob')
   })
 
-  it('names a console command without a prefix and says it runs in the console', () => {
+  it('names a console command without a prefix and explains what it does', () => {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -255,7 +255,6 @@ describe('CommandMenu', () => {
     expect(names).toEqual(['effort', 'stop'])
     expect(text).toContain('[level]')
     expect(text).toContain('List or switch the reasoning effort')
-    expect(text).toContain('not sent to the agent')
   })
 
   it('marks the current choice and leaves the skills’ roster gaps off the second level', () => {

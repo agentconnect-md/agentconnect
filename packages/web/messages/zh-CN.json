@@ -133,7 +133,6 @@
       "unreachable": " 无法访问",
       "noDescription": "此命令没有描述。",
       "runsOn": "运行于 {agent}",
-      "consoleAction": "在控制台中执行，不会发送给 Agent。",
       "controls": {
         "stop": { "title": "停止", "does": "停止当前回答" },
         "model": { "title": "模型", "hint": "[模型]", "does": "列出或切换模型" },

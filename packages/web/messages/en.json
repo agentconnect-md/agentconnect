@@ -133,7 +133,6 @@
       "unreachable": " is unreachable",
       "noDescription": "This command has no description.",
       "runsOn": "Runs on {agent}",
-      "consoleAction": "Runs in the console; it is not sent to the agent.",
       "controls": {
         "stop": { "title": "Stop", "does": "Stop the current answer" },
         "model": { "title": "Model", "hint": "[model]", "does": "List or switch models" },

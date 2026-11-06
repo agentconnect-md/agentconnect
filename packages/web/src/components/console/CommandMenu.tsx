@@ -14,14 +14,6 @@ import type { MentionCoords } from '@/components/console/useMentionAutocomplete'
 const LIST_WIDTH = 240
 const DETAIL_WIDTH = 260
 
-const CONTROL_ICON: Readonly<Record<ControlName, string>> = {
-  stop: 'square',
-  model: 'cpu',
-  effort: 'brain',
-  permission: 'shield',
-  fast: 'zap'
-}
-
 const ROW = 'fopt min-h-8 w-full gap-2 rounded-md px-2 py-[5px] text-[12px]'
 const SUBTEXT = 'block truncate font-sans text-[11px] leading-normal font-normal text-(--text-tertiary)'
 
@@ -142,9 +134,6 @@ export function CommandMenu({
               <p className="mt-2 font-sans text-[12px] leading-[1.5] font-normal text-(--text-secondary)">
                 {t(`controls.${active.control.name}.does`)}
               </p>
-              <div className="mt-2 border-t border-(--border-subtle) pt-2 font-sans text-[11px] font-normal text-(--text-tertiary)">
-                {t('consoleAction')}
-              </div>
             </>
           )}
         </div>
@@ -181,9 +170,6 @@ function MenuRow({
     const { name } = option.control
     return (
       <>
-        <span className="flex h-[18px] w-[18px] flex-none items-center justify-center text-(--text-secondary)">
-          <Icon name={CONTROL_ICON[name]} size={13} />
-        </span>
         <span className="min-w-0 flex-1 text-left">
           <span className="mono block truncate text-[12px]">{name}</span>
           <span className={`${SUBTEXT} desktop:hidden`}>{t(`controls.${name}.does`)}</span>
