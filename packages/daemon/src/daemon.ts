@@ -7355,6 +7355,11 @@ export class Daemon {
     return runtime === undefined || target.runtime === runtime ? target : undefined
   }
 
+  /** The model a coordinator session runs on its `runtime`, or undefined for any other session. */
+  private coordinatorModelFor(agentId: string, key: string, runtime: string): string | undefined {
+    return isCoordinatorSessionKey(key) ? this.coordinatorSettings(agentId, runtime)?.model || undefined : undefined
+  }
+
   private sessionAgent(agentId: string, key?: string): LoadedAgent | undefined {
     const agent = this.agents.get(agentId)
     return agent ? agentWithRuntime(agent, key ? this.sessionRuntimes.get(key) : undefined) : undefined
@@ -9037,7 +9042,11 @@ export class Daemon {
         const session = await this.store.getSession(sessionKey)
         const agent = session?.agentId ? this.sessionAgent(session.agentId, sessionKey) : undefined
         return (
-          (await this.store.getModelOverride(sessionKey)) ?? pinnedDecisionModel(session?.decisionModel, agent?.runtime)
+          (await this.store.getModelOverride(sessionKey)) ??
+          (session?.agentId && agent
+            ? this.coordinatorModelFor(session.agentId, sessionKey, agent.runtime)
+            : undefined) ??
+          pinnedDecisionModel(session?.decisionModel, agent?.runtime)
         )
       },
       acpSessionId: async (sessionKey) => (await this.store.getSession(sessionKey))?.acpSessionId,
@@ -20422,7 +20431,9 @@ export class Daemon {
         const manualModel = chatSettingsAllowed(currentAgent)
           ? (webchat?.runtime?.model ?? (await this.store.getModelOverride(key)))
           : undefined
-        const firstTurnModel = manualModel ?? this.selectedSessionModel(run)
+        // A provider-bound host takes its credential from this model, so a coordinator's own model is named before it starts.
+        const firstTurnModel =
+          manualModel ?? this.coordinatorModelFor(agentId, key, currentAgent.runtime) ?? this.selectedSessionModel(run)
         // A cold host in the session's own pod is handed only the clones there at spawn, so the session's preparation runs first, as an ordinary start's does.
         if (
           reviewWorkspace.preparedWorkspaceCwd === undefined &&
@@ -21533,6 +21544,7 @@ export class Daemon {
     // Manual choices win over the model pinned when this session started.
     const override = settingsInChat ? await this.store.getModelOverride(key) : undefined
     // A coordinator follows the agent's coordinator model on the runtime it started in (auto-session-mode.md §5.4).
+    // Host startup named the same model (openTurnSession), so a provider-bound host already holds its credential.
     const coordinator =
       runtimeAgent && isCoordinatorSessionKey(key) ? this.coordinatorSettings(agentId, runtimeAgent.runtime) : undefined
     const automaticModel = runtimeAgent ? coordinator?.model || this.selectedSessionModel(run) : undefined
