@@ -19,17 +19,20 @@ export interface TrayState {
   canResume: boolean
   // Whether Stop can still change anything; a viewer takeover counts, since the owner outranks the viewer.
   canStop: boolean
+  // The per-agent desktops switch (computer-use.md §3.9); absent where the daemon offers none.
+  desktops?: { on: boolean; available: boolean; note?: string }
 }
 
 export interface TrayOptions {
   onStop: () => void
   onResume: () => void
   hotkeyLabel?: string
+  onToggleDesktops?: () => void
   log: (line: string) => void
   connect?: () => Promise<DBusConnection>
 }
 
-const MENU = { status: 1, separator: 2, stop: 3, resume: 4 }
+const MENU = { status: 1, separator: 2, stop: 3, resume: 4, desktopsSeparator: 5, desktops: 6 }
 const COLORS: Record<TrayTone, [number, number, number]> = {
   online: [0x2e, 0x9d, 0x57],
   busy: [0xe8, 0x8a, 0x10],
@@ -145,7 +148,8 @@ export class Tray {
       before.tone !== state.tone ||
       before.status !== state.status ||
       before.canResume !== state.canResume ||
-      before.canStop !== state.canStop
+      before.canStop !== state.canStop ||
+      JSON.stringify(before.desktops) !== JSON.stringify(state.desktops)
     ) {
       this.revision++
       this.bus.emit({
@@ -250,8 +254,30 @@ export class Tray {
           ['label', new Variant('s', 'Resume agent input')],
           ['visible', new Variant('b', this.state.canResume)]
         ]
-      ]
+      ],
+      ...this.desktopItems()
     ])
+  }
+
+  // A checkmark the owner flips; greyed out with the reason where this machine cannot run per-agent desktops.
+  private desktopItems(): [number, Props][] {
+    const desktops = this.state.desktops
+    if (!desktops) return []
+    const label = desktops.available
+      ? 'Separate desktop for each agent'
+      : `Separate desktop for each agent (unavailable: ${desktops.note ?? 'not supported here'})`
+    return [
+      [MENU.desktopsSeparator, [['type', new Variant('s', 'separator')]]],
+      [
+        MENU.desktops,
+        [
+          ['label', new Variant('s', menuLabel(label))],
+          ['toggle-type', new Variant('s', 'checkmark')],
+          ['toggle-state', new Variant('i', desktops.on && desktops.available ? 1 : 0)],
+          ['enabled', new Variant('b', desktops.available)]
+        ]
+      ]
+    ]
   }
 
   private layout(id: number, depth: number): unknown[] {
@@ -267,6 +293,7 @@ export class Tray {
     if (id === MENU.stop) this.options.onStop()
     // Agents send no input while paused, so none can reach this item (computer-use.md §6).
     if (id === MENU.resume && this.state.canResume) this.options.onResume()
+    if (id === MENU.desktops && this.state.desktops?.available) this.options.onToggleDesktops?.()
   }
 
   private properties(path: string | undefined, iface: string): Props | undefined {

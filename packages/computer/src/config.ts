@@ -59,6 +59,17 @@ export const DaemonConfig = z.object({
   webrtc: z.boolean().default(true),
   // Hold the display awake while running: a sleeping display cannot be captured or controlled.
   keepAwake: z.boolean().default(true),
+  // Linux: each agent gets its own desktop where the machine supports it (computer-use.md §3.9); off until it ships whole.
+  perAgentDesktops: z.boolean().default(false),
+  // An agent desktop's screen, and how long one with no lease or viewer keeps its browser, then itself, running.
+  desktopSize: z
+    .string()
+    .regex(/^\d{3,4}x\d{3,4}$/)
+    .default('1280x800'),
+  browserIdleMinutes: z.number().int().min(1).max(1440).default(10),
+  desktopIdleMinutes: z.number().int().min(1).max(10_080).default(30),
+  // How many agent desktops may run at once; absent: the available memory in GiB, at least one.
+  maxDesktops: z.number().int().min(1).max(64).optional(),
   ffmpegPath: z.string().optional(),
   streamFps: z.number().int().min(1).max(60).default(30),
   streamMaxWidth: z.number().int().min(320).max(3840).default(1920),

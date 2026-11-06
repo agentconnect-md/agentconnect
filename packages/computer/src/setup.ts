@@ -10,6 +10,8 @@ import { APP_ID, grantLoss, readGrantRecord, TCC_SERVICE, type Grant, type Grant
 import { appBundlePath, selfCommand } from './self.js'
 import { SERVICE_NAME, adminPromptHelperPath, serviceHost } from './service-windows.js'
 import { loadRegistration, registrationPath, type Registration } from './cp/registration.js'
+import { installPlan, planText } from './linux/desktops-install.js'
+import { desktopsCheck, probeDesktopSupport } from './linux/desktops-support.js'
 import { ffmpegAvailable, probeCapture } from './stream/ffmpeg.js'
 import { screencastTokenPath, waylandSession } from './stream/wayland-capture.js'
 import { COMPUTER_DAEMON_VERSION } from './version.js'
@@ -160,7 +162,12 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
   checks.push(displayCheck(config))
   checks.push(...ffmpegChecks(ctx, captureTimeoutMs))
   if (process.platform === 'win32') checks.push(await firewallCheck())
-  if (process.platform === 'linux') checks.push(...linuxChecks(ctx))
+  if (process.platform === 'linux') {
+    checks.push(...linuxChecks(ctx))
+    const plan = installPlan()
+    const install = plan ? planText(plan) : undefined
+    checks.push(desktopsCheck(config.perAgentDesktops, await probeDesktopSupport(), selfCommand(), install))
+  }
   checks.push(await daemonCheck(config))
   return checks
 }

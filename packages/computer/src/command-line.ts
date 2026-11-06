@@ -201,7 +201,9 @@ export class CommandLine {
   exec(
     client: string,
     args: { command: string; cwd?: string; timeoutMs?: number },
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    // The caller's desktop session (computer-use.md §3.9), so a GUI app it starts opens there.
+    env?: NodeJS.ProcessEnv
   ): Promise<ToolOutput> {
     return this.audited(client, 'computer_exec', args, async (record) => {
       const timeoutMs = Math.min(args.timeoutMs ?? COMPUTER_EXEC_TIMEOUT_DEFAULT_MS, COMPUTER_EXEC_TIMEOUT_MAX_MS)
@@ -212,7 +214,7 @@ export class CommandLine {
       const started = this.now()
       const child = spawn(this.shell, ['-c', args.command], {
         cwd,
-        env: this.env,
+        env: env ? commandEnv(env) : this.env,
         // Its own process group, so a kill reaches everything the command started.
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe']

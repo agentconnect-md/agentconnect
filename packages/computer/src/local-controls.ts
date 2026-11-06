@@ -47,6 +47,8 @@ export interface LocalControlsOptions {
     spawnHelper?: HelperTrayOptions['spawnHelper']
   }
   startHelperTray?: typeof HelperTray.start
+  // The per-agent desktops switch the Linux tray shows (computer-use.md §3.9).
+  desktops?: { state(): NonNullable<TrayState['desktops']>; toggle(): void }
 }
 
 export interface LocalControls {
@@ -59,11 +61,15 @@ export interface LocalControls {
 }
 
 /** The indicator's state from the Computer's. */
-export function trayState(computer: LocallyControlled, refusal: string | undefined): TrayState {
+export function trayState(
+  computer: LocallyControlled,
+  refusal: string | undefined,
+  desktops?: TrayState['desktops']
+): TrayState {
   const live = computer.liveStatus()
   const reason = computer.pauseReason()
   const canResume = live === 'paused' && reason !== undefined && LOCAL_STOP_REASONS.has(reason)
-  const flags = { canResume, canStop: live !== 'paused' }
+  const flags = { canResume, canStop: live !== 'paused', ...(desktops ? { desktops } : {}) }
   if (refusal) return { tone: 'unavailable', status: 'unavailable, agents cannot act', ...flags }
   if (live === 'busy') {
     return { tone: 'busy', status: `controlled by ${computer.leaseActivity()?.holder ?? 'an agent'}`, ...flags }
@@ -201,6 +207,7 @@ export async function startLocalControls(options: LocalControlsOptions): Promise
         onStop: () => stop(TRAY_STOP_REASON),
         onResume: resume,
         ...(hotkey ? { hotkeyLabel: hotkey.label } : {}),
+        ...(options.desktops ? { onToggleDesktops: () => options.desktops?.toggle() } : {}),
         log
       })
     } catch (error) {
@@ -246,7 +253,7 @@ export async function startLocalControls(options: LocalControlsOptions): Promise
       ]
     },
     update() {
-      tray?.update(trayState(computer, options.refusal()))
+      tray?.update(trayState(computer, options.refusal(), options.desktops?.state()))
     },
     close() {
       x11?.close()

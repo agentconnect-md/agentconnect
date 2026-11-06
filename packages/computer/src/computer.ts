@@ -86,10 +86,15 @@ export interface ComputerDeps {
   profile?: ComputerProfile
   // Starts an app in place of the driver's launch_app: the Windows service's SYSTEM driver would start it as SYSTEM.
   launchApp?: (app: string) => Promise<string>
+  // A desktop's browser starts through its fork-merge launcher (§3.10); undefined leaves the app to launch_app.
+  launchBrowser?: (app: string) => (() => Promise<string>) | undefined
   // Windows under the service: UAC prompts on the secure desktop, and who answers them (computer-use.md §4.2.1).
   adminPrompts?: { source: AdminPromptSource; mode: () => ComputerAdminPromptMode | undefined }
   // The owner stopped agents or the authority went away: running commands of the command-line tier are killed (§5.7).
   onHalt?: (reason: string) => void
+  // The owner paused or resumed agents, which the per-agent desktops follow (computer-use.md §3.9).
+  onOwnerPause?: (reason: string) => void
+  onOwnerResume?: () => void
 }
 
 export interface ComputerProfile {
@@ -147,8 +152,11 @@ export class Computer {
   private readonly screenshots: ScreenshotStash | undefined
   private profile: ComputerProfile | undefined
   private readonly launchApp: ((app: string) => Promise<string>) | undefined
+  private readonly launchBrowser: ComputerDeps['launchBrowser']
   private readonly adminPrompts: ComputerDeps['adminPrompts']
   private readonly onHalt: (reason: string) => void
+  private readonly onOwnerPause: (reason: string) => void
+  private readonly onOwnerResume: () => void
   // The prompt already answered by the policy, so a repeated change does not answer it twice.
   private autoAnswered: string | undefined
   // The driver's screen size at startup, reported until the first capture measures it.
@@ -182,8 +190,11 @@ export class Computer {
     this.screenshots = deps.screenshots
     this.profile = deps.profile
     this.launchApp = deps.launchApp
+    this.launchBrowser = deps.launchBrowser
     this.adminPrompts = deps.adminPrompts
     this.onHalt = deps.onHalt ?? (() => undefined)
+    this.onOwnerPause = deps.onOwnerPause ?? (() => undefined)
+    this.onOwnerResume = deps.onOwnerResume ?? (() => undefined)
   }
 
   setScreenSize(size: ScreenSize | undefined): void {
@@ -269,6 +280,7 @@ export class Computer {
   pause(reason: string): void {
     this.pauseInput(reason)
     this.onHalt(reason)
+    this.onOwnerPause(reason)
   }
 
   private pauseInput(reason: string, by?: string): void {
@@ -279,14 +291,20 @@ export class Computer {
     this.notify()
   }
 
+  private pausedMessage(): string {
+    return this.paused?.by ? 'a person took control of this desktop in the viewer' : 'the owner paused this computer'
+  }
+
   // Why the owner stopped every agent, the command line too; a viewer takeover blocks only GUI input (§5.7).
   haltReason(): string | undefined {
     return this.paused && !this.paused.by ? this.paused.reason : undefined
   }
 
   resume(): void {
+    const owner = this.paused !== undefined && !this.paused.by
     this.paused = undefined
     this.notify()
+    if (owner) this.onOwnerResume()
   }
 
   // ---- remote human takeover (web viewer): blocks agents exactly like an owner pause ----
@@ -409,7 +427,7 @@ export class Computer {
   acquire(holder: string): Lease {
     this.assertAuthorized()
     this.expireLease()
-    if (this.paused) throw new ComputerError('human_in_control', 'the owner paused this computer', this.paused)
+    if (this.paused) throw new ComputerError('human_in_control', this.pausedMessage(), this.paused)
     const granted = this.cpLease
     if (granted && computerLeaseHolderName(granted.holder) !== holder) {
       const label = granted.holder.agentName ?? granted.holder.agentId
@@ -776,6 +794,14 @@ export class Computer {
       'computer_launch',
       args,
       () => {
+        const browser = this.launchBrowser?.(args.app)
+        if (browser) {
+          return {
+            name: 'launch_app',
+            args: { name: args.app },
+            run: async () => ({ content: [{ type: 'text' as const, text: await browser() }] })
+          }
+        }
         const launchApp = this.launchApp
         if (launchApp) {
           return {
@@ -890,7 +916,7 @@ export class Computer {
   // Between the driver calls of one action: authority, a pause and the lease are rechecked so a revoke stops what is left.
   private assertStillHolds(client: string): void {
     this.assertAuthorized()
-    if (this.paused) throw new ComputerError('human_in_control', 'the owner paused this computer', this.paused)
+    if (this.paused) throw new ComputerError('human_in_control', this.pausedMessage(), this.paused)
     if (this.lease?.holder !== client) throw new ComputerError('unavailable', 'the control lease was revoked')
   }
 

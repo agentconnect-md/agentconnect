@@ -1,0 +1,141 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { Computer, ComputerError } from '../computer.js'
+import type { CuaDriver } from '../driver/client.js'
+import { FakeDriver, testConfig } from '../testing.js'
+import {
+  DesktopManager,
+  desktopBrowserPlan,
+  desktopEnv,
+  desktopProfile,
+  isBrowserName,
+  loadDesktopState
+} from './desktops.js'
+
+const dirs: string[] = []
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+describe('desktops', () => {
+  it('knows the names an agent launches a browser by', () => {
+    for (const name of ['chromium', 'Chromium', 'google-chrome', 'Google Chrome', 'chrome', 'browser', 'x-www-browser'])
+      expect(isBrowserName(name)).toBe(true)
+    for (const name of ['firefox', 'xfce4-terminal', 'libreoffice']) expect(isBrowserName(name)).toBe(false)
+  })
+
+  it("starts a desktop's browser from the master and every other desktop's profile, skipping their wrappers", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'ac-desktops-'))
+    dirs.push(dataDir)
+    mkdirSync(join(dataDir, 'desktops'))
+    const now = '2026-11-06T00:00:00.000Z'
+    writeFileSync(
+      join(dataDir, 'desktops', 'state.json'),
+      JSON.stringify({
+        version: 1,
+        next: 3,
+        mainBus: 'unix:path=/run/user/1000/bus',
+        master: '/home/u/.config/chromium',
+        desktops: {
+          'agent-a': { id: 'd1', key: 'agent-a', label: 'agent-a', createdAt: now, lastUsedAt: now },
+          'client:b': { id: 'd2', key: 'client:b', label: 'b', createdAt: now, lastUsedAt: now }
+        }
+      })
+    )
+
+    expect(desktopBrowserPlan(dataDir, 'd2')).toEqual({
+      profile: desktopProfile(dataDir, 'd2'),
+      master: '/home/u/.config/chromium',
+      sources: ['/home/u/.config/chromium', desktopProfile(dataDir, 'd1')],
+      skip: [join(dataDir, 'desktops', 'd1', 'bin'), join(dataDir, 'desktops', 'd2', 'bin')],
+      mainBus: 'unix:path=/run/user/1000/bus'
+    })
+    expect(() => desktopBrowserPlan(dataDir, 'd9')).toThrow('no desktop d9')
+  })
+
+  it("starts an agent desktop as an Xfce X11 session, without the main GNOME or Wayland session's identity", () => {
+    const env = desktopEnv({
+      PATH: '/usr/bin',
+      HOME: '/home/u',
+      HTTPS_PROXY: 'http://proxy:3128',
+      WAYLAND_DISPLAY: 'wayland-0',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      XDG_SESSION_TYPE: 'wayland',
+      XDG_CURRENT_DESKTOP: 'GNOME',
+      DESKTOP_SESSION: 'gnome',
+      GDMSESSION: 'gnome',
+      XDG_MENU_PREFIX: 'gnome-',
+      GNOME_SETUP_DISPLAY: ':1',
+      XMODIFIERS: '@im=ibus',
+      QT_IM_MODULE: 'ibus',
+      SESSION_MANAGER: 'local/x'
+    })
+    expect(env).toEqual({
+      PATH: '/usr/bin',
+      HOME: '/home/u',
+      HTTPS_PROXY: 'http://proxy:3128',
+      GDK_BACKEND: 'x11',
+      QT_QPA_PLATFORM: 'xcb',
+      XDG_SESSION_TYPE: 'x11',
+      XDG_CURRENT_DESKTOP: 'XFCE',
+      XDG_SESSION_DESKTOP: 'xfce',
+      DESKTOP_SESSION: 'xfce',
+      XDG_MENU_PREFIX: 'xfce-'
+    })
+  })
+
+  it('starts with no desktops and the default Chromium profile as the master', () => {
+    const state = loadDesktopState(join(tmpdir(), 'ac-desktops-missing'))
+    expect(state).toMatchObject({ version: 1, next: 1, desktops: {} })
+    expect(state.master).toMatch(/\.config[/\\]chromium$/)
+  })
+})
+
+// A stand-in Xvfb that reports display 99 and stays up, so a desktop starts without an X server or Xfce.
+function fakeXvfb(): string {
+  const bin = mkdtempSync(join(tmpdir(), 'ac-xvfb-'))
+  dirs.push(bin)
+  writeFileSync(join(bin, 'Xvfb'), '#!/bin/sh\necho 99 >&3\nexec sleep 60\n', { mode: 0o755 })
+  return bin
+}
+
+describe('a full machine', () => {
+  it.skipIf(process.platform === 'win32')('refuses another agent as unavailable/desktops_full, not busy', async () => {
+    const bin = fakeXvfb()
+    const dataDir = mkdtempSync(join(tmpdir(), 'ac-desktops-'))
+    dirs.push(dataDir)
+    const path = `${bin}:/usr/bin:/bin`
+    const original = process.env.PATH
+    process.env.PATH = path
+    const config = testConfig({ perAgentDesktops: true, maxDesktops: 1, actionScreenshot: false })
+    const manager = new DesktopManager({
+      dataDir,
+      config,
+      support: () => ({ supported: true, session: 'xfce', browser: '/usr/bin/chromium' }),
+      self: ['node', 'daemon.mjs'],
+      build: () => {
+        const driver = new FakeDriver()
+        return { driver: driver as unknown as CuaDriver, computer: new Computer({ driver, config }) }
+      },
+      log: () => undefined,
+      env: { PATH: path }
+    })
+    try {
+      const first = await manager.forKey('agent-a', 'Agent A')
+      first.computer.acquire('agent-a')
+      const refusal = await manager.forKey('agent-b', 'Agent B').catch((error: unknown) => error)
+      expect(refusal).toBeInstanceOf(ComputerError)
+      expect(refusal).toMatchObject({ code: 'unavailable', details: { reason: 'desktops_full' } })
+      // Once the first agent lets go, its idle desktop makes room.
+      first.computer.release('agent-a')
+      const second = await manager.forKey('agent-b', 'Agent B')
+      expect(second.record.id).not.toBe(first.record.id)
+      expect(manager.runningDesktops()).toHaveLength(1)
+    } finally {
+      process.env.PATH = original
+      await manager.stopAll('test over')
+    }
+  })
+})

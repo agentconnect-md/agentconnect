@@ -60,6 +60,8 @@ export interface CuaDriverOptions {
   wrapper?: string[]
   callTimeoutMs: number
   log?: (line: string) => void
+  // The whole environment of the child, for a driver on another display (computer-use.md §3.9); default this process's.
+  env?: NodeJS.ProcessEnv
 }
 
 const RESTART_BACKOFF_MS = 2000
@@ -90,11 +92,13 @@ export class CuaDriver implements Driver {
           '--direct'
         ],
         env: {
-          ...(process.env as Record<string, string>),
+          ...((this.options.env ?? process.env) as Record<string, string>),
           CUA_DRIVER_RS_TELEMETRY_ENABLED: '0',
           CUA_DRIVER_RS_UPDATE_CHECK: '0',
           // Cua Driver's Wayland backend (GNOME helper extension + portal/libei input) is opt-in.
-          ...(process.platform === 'linux' && process.env.WAYLAND_DISPLAY ? { CUA_DRIVER_RS_ENABLE_WAYLAND: '1' } : {})
+          ...(process.platform === 'linux' && (this.options.env ?? process.env).WAYLAND_DISPLAY
+            ? { CUA_DRIVER_RS_ENABLE_WAYLAND: '1' }
+            : {})
         },
         stderr: 'pipe'
       })

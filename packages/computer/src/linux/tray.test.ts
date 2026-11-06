@@ -159,10 +159,11 @@ async function start(options: ConstructorParameters<typeof FakeBus>[0] = {}, tim
   const bus = new FakeBus(options)
   buses.push(bus)
   await bus.listen()
-  const clicks = { stop: 0, resume: 0 }
+  const clicks = { stop: 0, resume: 0, desktops: 0 }
   const tray = await Tray.start({
     onStop: () => clicks.stop++,
     onResume: () => clicks.resume++,
+    onToggleDesktops: () => clicks.desktops++,
     hotkeyLabel: 'Ctrl+Alt+Shift+Escape',
     log: () => undefined,
     connect: () => DBusConnection.session(`unix:path=${bus.path}`, 1000, timeoutMs)
@@ -244,6 +245,28 @@ describe.skipIf(process.platform === 'win32')('Tray', () => {
     tray.update({ tone: 'paused', status: 'a console viewer is in control', canResume: false, canStop: true })
     const group = await bus.call('/MenuBar', 'com.canonical.dbusmenu', 'GetGroupProperties', 'aias', [[3], []])
     expect(prop((group.body[0] as [number, unknown][])[0]![1], 'enabled')).toBe(true)
+    tray.close()
+  })
+
+  it('shows the per-agent desktops switch as a checkmark, greyed out where the machine cannot run it', async () => {
+    const { bus, tray, clicks } = await start()
+    const online = { tone: 'online', status: 'ready', canResume: false, canStop: true } as const
+    tray.update({ ...online, desktops: { on: true, available: true } })
+    const on = await bus.call('/MenuBar', 'com.canonical.dbusmenu', 'GetGroupProperties', 'aias', [[6], []])
+    const item = (on.body[0] as [number, unknown][])[0]![1]
+    expect(prop(item, 'label')).toBe('Separate desktop for each agent')
+    expect(prop(item, 'toggle-type')).toBe('checkmark')
+    expect(prop(item, 'toggle-state')).toBe(1)
+    await bus.call('/MenuBar', 'com.canonical.dbusmenu', 'Event', 'isvu', [6, 'clicked', new Variant('i', 0), 0])
+    expect(clicks.desktops).toBe(1)
+    tray.update({ ...online, desktops: { on: true, available: false, note: 'Xvfb is not installed' } })
+    const off = await bus.call('/MenuBar', 'com.canonical.dbusmenu', 'GetGroupProperties', 'aias', [[6], []])
+    const greyed = (off.body[0] as [number, unknown][])[0]![1]
+    expect(prop(greyed, 'label')).toBe('Separate desktop for each agent (unavailable: Xvfb is not installed)')
+    expect(prop(greyed, 'enabled')).toBe(false)
+    expect(prop(greyed, 'toggle-state')).toBe(0)
+    await bus.call('/MenuBar', 'com.canonical.dbusmenu', 'Event', 'isvu', [6, 'clicked', new Variant('i', 0), 0])
+    expect(clicks.desktops).toBe(1)
     tray.close()
   })
 
