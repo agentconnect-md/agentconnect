@@ -4,7 +4,7 @@ name: Build & Publish Artifacts
 # Stable releases also move `:latest`, release candidates `:rc`.
 #
 # Release versioning and preparation share one job, followed by parallel npm, image, and chart publication;
-# npm also waits for the macOS app build, whose packages the computer package pins.
+# Preparation skips unchanged npm packages and macOS apps; npm waits for any required app builds.
 # Manual image rebuilds select an existing release tag; npm retries stay in Release for its OIDC identity.
 #
 # Per-component effective versions: most releases don't touch every component,
@@ -105,6 +105,8 @@ jobs:
       mem0Backend: ${{ steps.build-matrix.outputs.mem0Backend }}
       daemon: ${{ steps.build-matrix.outputs.daemon }}
       computer: ${{ steps.build-matrix.outputs.computer }}
+      publishNpm: ${{ steps.npm-plan.outputs.publishNpm }}
+      macosArchitectures: ${{ steps.npm-plan.outputs.macosArchitectures }}
     steps:
       - name: Mint GitHub App token
         if: inputs.create_release
@@ -181,6 +183,15 @@ jobs:
             *-*) echo "latest=false" >> "$GITHUB_OUTPUT" ;;
             *)   echo "latest=true"  >> "$GITHUB_OUTPUT" ;;
           esac
+
+      - name: Plan npm publication
+        if: inputs.create_release && steps.meta.outputs.version != ''
+        id: npm-plan
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.version }}
+          PUBLISH_COMPUTER_MACOS_APP: ${{ vars.PUBLISH_COMPUTER_MACOS_APP }}
+        run: node scripts/publish-npm.mjs "$RELEASE_TAG" --plan | tee -a "$GITHUB_OUTPUT"
 
       # Service versions follow path changes; runtime legs compare content against the previous channel tag.
       - name: Resolve per-component effective versions
@@ -321,8 +332,10 @@ jobs:
   build-macos-app:
     name: Build macOS app
     needs: prepare
-    if: inputs.create_release && needs.prepare.outputs.version != '' && vars.PUBLISH_COMPUTER_MACOS_APP == 'true'
+    if: inputs.create_release && needs.prepare.outputs.version != '' && needs.prepare.outputs.macosArchitectures != ''
     runs-on: macos-15
+    env:
+      COMPUTER_APP_ARCHS: ${{ needs.prepare.outputs.macosArchitectures }}
     permissions:
       contents: read
     steps:
@@ -376,7 +389,7 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.version }}
         run: |
           set -eu
-          for arch in arm64 x64; do
+          for arch in $COMPUTER_APP_ARCHS; do
             TARGET_ARCH="$arch" AGENTCONNECT_RELEASE_VERSION="${RELEASE_TAG#v}" node packages/computer/scripts/build-macos-app.mjs
           done
       # V8 must run JIT and WebAssembly under the hardened runtime with only the two JIT entitlements.
@@ -384,7 +397,7 @@ jobs:
         run: |
           set -eu
           probe='const m = new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])); let n = 0; for (let i = 0; i < 1e7; i++) n += i; console.log(process.version, process.arch, n, m instanceof WebAssembly.Module)'
-          for arch in arm64 x64; do
+          for arch in $COMPUTER_APP_ARCHS; do
             app="packages/computer/bundle/computer-darwin-${arch}/AgentConnect Computer.app"
             codesign --display --entitlements - --verbose=2 "$app"
             if [ "$arch" = arm64 ]; then
@@ -397,7 +410,9 @@ jobs:
           done
       # tar keeps the executable bit, which an artifact upload drops.
       - name: Pack the app packages
-        run: tar -cf "${RUNNER_TEMP}/computer-darwin.tar" -C packages/computer/bundle computer-darwin-arm64 computer-darwin-x64
+        run: |
+          cd packages/computer/bundle
+          tar -cf "${RUNNER_TEMP}/computer-darwin.tar" computer-darwin-*
       - uses: actions/upload-artifact@v7
         with:
           name: computer-darwin-apps
@@ -411,10 +426,11 @@ jobs:
     needs:
       - prepare
       - build-macos-app
-    # A skipped macOS build publishes the rest and pins only apps already on npm; a failed one stops publication.
+    # A skipped macOS build reuses published apps; a failed or cancelled build must stop publication.
     if: >-
       ${{ !cancelled() && inputs.create_release && needs.prepare.outputs.version != ''
-          && needs.build-macos-app.result != 'failure' }}
+          && needs.prepare.outputs.publishNpm == 'true'
+          && (needs.build-macos-app.result == 'success' || needs.build-macos-app.result == 'skipped') }}
     runs-on: ubuntu-latest
     # Serialize npm retries with other release runs on the same channel.
     concurrency:
@@ -834,12 +850,14 @@ jobs:
   notify-workflow:
     name: Notify workflow
     needs:
+      - prepare
       - finalize
       - publish-chart
       - publish-npm
     if: >-
       ${{ !cancelled() && needs.finalize.result == 'success' && needs.publish-chart.result == 'success'
-          && (!inputs.create_release || needs.publish-npm.result == 'success') }}
+          && (!inputs.create_release || needs.prepare.outputs.publishNpm == 'false'
+              || needs.publish-npm.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Resolve workflow repository

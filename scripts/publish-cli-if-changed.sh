@@ -13,6 +13,8 @@ restore_manifest() {
 }
 
 case "$MODE" in
+  check)
+    ;;
   prepare)
     SKIP_LABEL="version bump and build"
     ;;
@@ -22,15 +24,12 @@ case "$MODE" in
     trap restore_manifest EXIT
     ;;
   *)
-    echo "usage: $0 <last-tag> <version-or-dist-tag> [prepare|publish]" >&2
+    echo "usage: $0 <last-tag> <version-or-dist-tag> [check|prepare|publish]" >&2
     exit 2
     ;;
 esac
 
-# Everything tsdown inlines into the CLI bundle: the CLI itself, protocol,
-# connection (the login auth probe uses connection's ClientTransport), and
-# tsconfig.base.json (shapes the emitted JS). The lockfile is checked separately
-# below, scoped to the CLI's importers.
+# Bundle sources and compiler settings; resolved dependencies are checked by importer closure below.
 CLI_PATHS="packages/cli packages/protocol packages/connection tsconfig.base.json"
 CLI_IMPORTERS="packages/cli packages/protocol packages/connection"
 
@@ -39,16 +38,23 @@ if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev
   # shellcheck disable=SC2086
   CHANGED=$(git diff --name-only "$LAST_TAG" HEAD -- $CLI_PATHS)
   if [ -z "$CHANGED" ]; then
-    # Package dirs untouched — but a floating-range resolution bump can still
-    # change the bundle without touching any package dir, so ask whether the
-    # lockfile's resolved closure for the CLI's importers moved.
+    # Floating dependency resolutions can change the bundle without touching its source directories.
     # shellcheck disable=SC2086
     LOCK_VERDICT=$(node "$REPO_ROOT/scripts/lockfile-closure-changed.mjs" "$LAST_TAG" HEAD $CLI_IMPORTERS)
     if [ "$LOCK_VERDICT" = "unchanged" ]; then
+      if [ "$MODE" = check ]; then
+        echo unchanged
+        exit 0
+      fi
       echo "cli bundle inputs unchanged since ${LAST_TAG} — skipping ${SKIP_LABEL} (checked: ${CLI_PATHS} + lockfile closure of ${CLI_IMPORTERS})"
       exit 0
     fi
   fi
+fi
+
+if [ "$MODE" = check ]; then
+  echo changed
+  exit 0
 fi
 
 if [ "$MODE" = prepare ]; then

@@ -70,9 +70,13 @@ test(
       )
     const publish = (previous, version) => {
       writeFileSync(log, '')
+      const planned = run('sh', ['scripts/publish-daemon-if-changed.sh', previous, version, 'check']).trim()
+      assert.equal(readFileSync(log, 'utf8'), '')
       run('sh', ['scripts/publish-daemon-if-changed.sh', previous, version, 'prepare'])
       run('sh', ['scripts/publish-daemon-if-changed.sh', previous, 'latest', 'publish'])
-      return readFileSync(log, 'utf8')
+      const calls = readFileSync(log, 'utf8')
+      assert.equal(planned, calls ? 'changed' : 'unchanged')
+      return calls
     }
 
     write('docker/runtime-sandbox.Dockerfile', 'FROM scratch\nLABEL revision="new"\n')

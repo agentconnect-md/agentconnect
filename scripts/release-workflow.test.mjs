@@ -41,12 +41,20 @@ test('one release/prepare job starts npm, images, and chart in parallel and all 
     assert.equal(jobs[name].needs, 'prepare')
     assert.match(jobs[name].if, /needs\.prepare\.outputs\.version != ''/)
   }
-  // npm publishes after the macOS app build, which may be switched off but must not have failed.
+  assert.match(jobs['build-macos-app'].if, /needs\.prepare\.outputs\.macosArchitectures != ''/)
+  const planner = jobs.prepare.steps.find((step) => step.id === 'npm-plan')
+  assert.equal(planner.shell, 'bash')
+  assert.match(planner.run, /publish-npm\.mjs .* --plan/)
+  assert.match(planner.if, /inputs\.create_release/)
+  // npm waits for required apps and may proceed when the planner skipped their build.
   assert.deepEqual(jobs['publish-npm'].needs, ['prepare', 'build-macos-app'])
   assert.match(jobs['publish-npm'].if, /needs\.prepare\.outputs\.version != ''/)
-  assert.match(jobs['publish-npm'].if, /needs\.build-macos-app\.result != 'failure'/)
-  assert.deepEqual(jobs['notify-workflow'].needs, ['finalize', 'publish-chart', 'publish-npm'])
+  assert.match(jobs['publish-npm'].if, /needs\.prepare\.outputs\.publishNpm == 'true'/)
+  assert.match(jobs['publish-npm'].if, /needs\.build-macos-app\.result == 'success'/)
+  assert.match(jobs['publish-npm'].if, /needs\.build-macos-app\.result == 'skipped'/)
+  assert.deepEqual(jobs['notify-workflow'].needs, ['prepare', 'finalize', 'publish-chart', 'publish-npm'])
   assert.match(jobs['notify-workflow'].if, /needs\.publish-npm\.result == 'success'/)
+  assert.match(jobs['notify-workflow'].if, /needs\.prepare\.outputs\.publishNpm == 'false'/)
   assert.equal(jobs['publish-npm'].permissions['id-token'], 'write')
 })
 

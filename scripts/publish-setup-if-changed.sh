@@ -12,6 +12,8 @@ restore_manifest() {
 }
 
 case "$MODE" in
+  check)
+    ;;
   prepare)
     SKIP_LABEL="version bump and build"
     ;;
@@ -20,14 +22,12 @@ case "$MODE" in
     trap restore_manifest EXIT
     ;;
   *)
-    echo "usage: $0 <last-tag> <version-or-dist-tag> [prepare|publish]" >&2
+    echo "usage: $0 <last-tag> <version-or-dist-tag> [check|prepare|publish]" >&2
     exit 2
     ;;
 esac
 
-# Keep this identical to the Control Plane image input set in
-# component-versions.sh. The image embeds this package, so whenever those bits
-# rebuild, npm receives the same version that the image reports.
+# Match the Control Plane image inputs in component-versions.sh so its embedded Setup has the same npm version.
 COMMON="docker/Dockerfile docker-bake.hcl .dockerignore .npmrc .pnpmfile.mjs pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json scripts"
 SETUP_PATHS="packages/control-plane packages/setup packages/protocol packages/observability packages/k8s-client packages/object-store packages/connection $COMMON"
 SETUP_IMPORTERS="packages/setup packages/control-plane packages/protocol packages/observability packages/k8s-client packages/object-store packages/connection"
@@ -39,10 +39,19 @@ if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev
     # shellcheck disable=SC2086
     LOCK_VERDICT=$(node "$REPO_ROOT/scripts/lockfile-closure-changed.mjs" "$LAST_TAG" HEAD $SETUP_IMPORTERS)
     if [ "$LOCK_VERDICT" = "unchanged" ]; then
+      if [ "$MODE" = check ]; then
+        echo unchanged
+        exit 0
+      fi
       echo "setup bundle inputs unchanged since ${LAST_TAG} — skipping ${SKIP_LABEL}"
       exit 0
     fi
   fi
+fi
+
+if [ "$MODE" = check ]; then
+  echo changed
+  exit 0
 fi
 
 if [ "$MODE" = prepare ]; then
