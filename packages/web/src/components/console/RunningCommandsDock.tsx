@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
+import { StateIcon } from '@/components/console/StateIcon'
 import { ApiError, fetchAgentTasks, type AgentTaskDto } from '@/lib/api'
 import { useDockRefresh } from '@/components/console/dock/auto-refresh'
 import { formatTaskElapsed } from '@/components/console/task-list'
@@ -77,6 +78,7 @@ export function RunningCommandsDock({
   turnActive: boolean
 }) {
   const t = useTranslations('Sessions.detail.runningCommands')
+  const tState = useTranslations('Common.stateIcon')
   const commands = useRunningCommands(agentId, sessionId, turnActive)
   const [open, setOpen] = useState(true)
   const [now, setNow] = useState(() => Date.now())
@@ -114,22 +116,28 @@ export function RunningCommandsDock({
         <span className="min-w-0 truncate text-[12px] font-normal text-(--text-tertiary)">{t('outlivesTurn')}</span>
       </button>
       {open ? (
-        <ul className="m-0 flex list-none flex-col gap-[2px] border-t border-(--border-subtle) px-[14px] py-[8px]">
-          {commands.map((command) => (
-            <li key={command.id} data-running-command="" className="flex min-w-0 items-center gap-2 py-[3px]">
-              <Icon name="loader" size={13} color="var(--status-online)" className="flex-none animate-spin" />
-              <span
-                className={`min-w-0 flex-1 truncate ${command.description ? 'font-mono text-[12.5px] font-normal leading-normal text-(--text-primary)' : 'font-sans text-[12.5px] font-normal italic leading-normal text-(--text-tertiary)'}`}
-                title={command.description ?? undefined}
-              >
-                {command.description ?? t('unnamed')}
-              </span>
-              <span className="flex-none font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                {formatTaskElapsed(command.startedAt, now)}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <div className="border-t border-(--border-subtle) px-[14px] pt-[8px] pb-[10px]">
+          <div className="mb-[4px] font-mono text-[10.5px] font-semibold leading-normal tracking-[.08em] text-(--text-tertiary) uppercase">
+            {t('shell')}
+          </div>
+          <ul className="m-0 flex list-none flex-col gap-[2px] p-0">
+            {commands.map((command) => (
+              <li key={command.id} data-running-command="" className="flex min-w-0 items-center gap-2 py-[3px]">
+                <StateIcon state="running" label={tState('running')} />
+                <Icon name="square-terminal" size={15} color="var(--text-tertiary)" className="flex-none" />
+                <span
+                  className={`min-w-0 flex-1 truncate ${command.description ? 'font-mono text-[12.5px] font-normal leading-normal text-(--text-primary)' : 'font-sans text-[12.5px] font-normal italic leading-normal text-(--text-tertiary)'}`}
+                  title={command.description ?? undefined}
+                >
+                  {command.description ?? t('unnamed')}
+                </span>
+                <span className="flex-none font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                  {formatTaskElapsed(command.startedAt, now)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
     </div>
   )

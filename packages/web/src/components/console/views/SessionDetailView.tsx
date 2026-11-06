@@ -172,6 +172,8 @@ import {
 } from '@/components/console/dock/TasksPanel'
 import { TaskThreadPanel } from '@/components/console/dock/TaskThreadPanel'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
+import { StateIcon, sessionState } from '@/components/console/StateIcon'
+import { SendButton } from '@/components/console/SendButton'
 import { TaskExpandedView } from '@/components/console/dock/TaskExpandedView'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { TaskThreadCard } from '@/components/console/TaskThreadCard'
@@ -464,14 +466,13 @@ function ComposerSendButton({
   // Stop only while the composer is empty; a drafted follow-up still sends (queued or steered) mid-turn.
   const stop = busy && !hasText && !hasImage
   return (
-    <button
-      className="sendbtn ml-1 h-[26px] w-[26px] flex-none rounded-[7px]"
-      aria-label={stop ? t('stopResponse') : t('sendMessage')}
+    <SendButton
+      stop={stop}
+      className="ml-1"
+      label={stop ? t('stopResponse') : t('sendMessage')}
       onClick={() => (stop ? onStop() : onSend())}
       disabled={!stop && (imagePreparing || mentionJoining || (!hasText && !hasImage))}
-    >
-      <Icon name={stop ? 'square' : 'arrow-up'} size={stop ? 10 : 14} />
-    </button>
+    />
   )
 }
 
@@ -1672,6 +1673,7 @@ function sessionUnavailableReasons(providerName: string | undefined, profileLink
 export default function SessionDetailView() {
   const t = useTranslations('Sessions.detail')
   const permissionT = useTranslations('Common.permissionModes')
+  const tState = useTranslations('Common.stateIcon')
   const runtimeModelT = useTranslations('Agents.dialog.runtimeModel')
   const acpRegistry = useAcpRegistry()
   const { activeOrg, orgPath, myRole } = useOrgs()
@@ -2937,8 +2939,9 @@ export default function SessionDetailView() {
   const crumbStatusKey = session?.status ?? ''
   const crumbStatusLabel = session?.statusLabel || (crumbStatusKey ? status(crumbStatusKey).label : '')
   // The desktop title row renders the same pair the crumb used to badge.
-  const headerStatus = status(crumbStatusKey)
   const headerStatusLabel = crumbStatusLabel
+  // The header leads with the one state icon: running while a turn streams here or the session's raw status says so.
+  const headerState = sessionState(session?.statusLabel ?? '', sessionBusy)
   useEffect(() => {
     if (!crumbTitle) return
     registerCrumb({ id, title: crumbTitle, status: crumbStatusKey, statusLabel: crumbStatusLabel })
@@ -4435,6 +4438,11 @@ export default function SessionDetailView() {
             in the top-bar crumb; with the crumb gone the page has to name itself. The
             mobile title/status live in Shell's app bar, so this region is desktop-only. */}
             <div className="mt-[-4px] mb-2 hidden min-w-0 items-center gap-[10px] desktop:flex">
+              <StateIcon
+                state={headerState}
+                label={headerState === 'idle' && headerStatusLabel ? headerStatusLabel : tState(headerState)}
+                className="mr-[-6px]"
+              />
               <h1
                 title={session.title}
                 className="m-0 min-w-0 truncate font-sans text-[17px] font-semibold leading-normal tracking-[-.01em] text-(--text-primary)"
@@ -4442,12 +4450,6 @@ export default function SessionDetailView() {
                 {session.title}
               </h1>
               <CoordinatorTag show={session.coordinator} />
-              {headerStatusLabel && (
-                <span className="badge flex-none" style={{ background: headerStatus.bg, color: headerStatus.text }}>
-                  <span className="dot h-[6px] w-[6px]" style={{ background: headerStatus.dot }} />
-                  {headerStatusLabel}
-                </span>
-              )}
               <span className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
                 <span className="imark h-5 w-5 flex-none rounded-xs">
                   <PlatformMark platform={channelDisplay.platform} />

@@ -6,7 +6,8 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useFormatter, useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
-import { StateMark, taskStateKey, taskTone } from '@/components/console/task-list'
+import { taskStateKey, taskTone } from '@/components/console/task-list'
+import { StateIcon } from '@/components/console/StateIcon'
 import { useTaskRow } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
 import { useOrgs } from '@/lib/org-context'
@@ -50,18 +51,10 @@ export function TaskThreadCard({
   }`
   const face = (
     <>
-      {row ? <StateMark tone={taskTone(row, null)} inline /> : <StateMark tone="stopped" inline />}
+      <StateIcon state={row ? taskTone(row, null) : 'idle'} label={state ?? tl('state.idle')} />
       <span className="min-w-0 flex-1 truncate font-sans text-[13.5px] font-medium leading-normal text-(--text-primary)">
         {title}
       </span>
-      {state ? (
-        <span
-          data-task-card-state=""
-          className="flex-none font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
-        >
-          {state}
-        </span>
-      ) : null}
       <Icon name="panel-right-open" size={15} color="var(--text-tertiary)" className="flex-none" />
     </>
   )

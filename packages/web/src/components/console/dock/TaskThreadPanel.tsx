@@ -10,7 +10,9 @@ import { Button, Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
-import { taskStateKey, taskTone, useTaskStops, type MarkTone } from '@/components/console/task-list'
+import { taskStateKey, taskTone, useTaskStops } from '@/components/console/task-list'
+import { StateIcon } from '@/components/console/StateIcon'
+import { SendButton } from '@/components/console/SendButton'
 import { taskStopKey } from '@/components/console/follow-up'
 import { exchangePromptMs, turnSpan, typedInvalidReason, withPromptStart } from '@/components/console/session-work'
 import { turnWork, WorkStepList } from '@/components/console/WorkPanel'
@@ -40,26 +42,6 @@ import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/c
 
 const HEADER_BTN =
   'flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none'
-
-// The state pill's colours by tone, as the design's task badge draws them.
-const BADGE: Record<MarkTone, string> = {
-  running: 'bg-(--status-online-soft) text-(--status-online-text)',
-  waiting: 'bg-(--status-paused-soft) text-(--text-primary)',
-  paused: 'bg-(--status-paused-soft) text-(--text-primary)',
-  failed: 'bg-(--status-error-soft) text-(--status-error)',
-  open: 'bg-(--surface-active) text-(--text-tertiary)',
-  done: 'bg-(--surface-active) text-(--text-tertiary)',
-  stopped: 'bg-(--surface-active) text-(--text-tertiary)'
-}
-const BADGE_DOT: Record<MarkTone, string> = {
-  running: 'bg-(--status-online)',
-  waiting: 'bg-(--status-paused)',
-  paused: 'border-[1.5px] border-(--status-paused)',
-  failed: 'bg-(--status-error)',
-  open: 'border-[1.5px] border-(--border-strong)',
-  done: 'bg-(--border-strong)',
-  stopped: 'border-[1.5px] border-(--border-strong)'
-}
 
 export function TaskThreadPanel({
   agentId,
@@ -213,21 +195,13 @@ export function TaskThreadPanel({
           {variant === 'expanded' ? t('coordinator') : t('back')}
         </button>
         <Icon name="chevron-right" size={13} color="var(--text-tertiary)" className="flex-none" />
+        {row && tone ? <StateIcon state={tone} label={tl(taskStateKey(row))} /> : null}
         <h3
           title={title}
           className="m-0 min-w-0 flex-[0_1_auto] truncate font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)"
         >
           {title}
         </h3>
-        {row && tone ? (
-          <span
-            data-task-thread-state={tone}
-            className={`inline-flex flex-none items-center gap-[5px] rounded-full px-2 py-[2px] font-sans text-[11px] font-semibold leading-normal ${BADGE[tone]}`}
-          >
-            <span aria-hidden className={`h-[6px] w-[6px] flex-none rounded-full ${BADGE_DOT[tone]}`} />
-            {tl(taskStateKey(row))}
-          </span>
-        ) : null}
         {variant === 'expanded' && branch ? (
           <span
             data-task-thread-branch=""
@@ -239,7 +213,7 @@ export function TaskThreadPanel({
           </span>
         ) : null}
         <span className="flex-1" />
-        {stoppable ? (
+        {stoppable && !canReply ? (
           <button
             type="button"
             data-task-thread-stop=""
@@ -395,6 +369,8 @@ export function TaskThreadPanel({
         readOnly={t('readOnly')}
         sendLabel={t('send')}
         onSend={send}
+        {...(stoppable && row ? { onStop: () => void stop(row), stopping: stopState === 'busy' } : {})}
+        stopLabel={tl('stop')}
         setDraft={(text) => setPgInput(id, text)}
         // Writing here opens the task's own session, which is what reports the settings its picker offers.
         onFocus={() => {
@@ -653,6 +629,9 @@ function ThreadComposer({
   readOnly,
   sendLabel,
   onSend,
+  onStop,
+  stopping = false,
+  stopLabel,
   setDraft,
   onFocus,
   runtime,
@@ -667,6 +646,10 @@ function ThreadComposer({
   readOnly: string
   sendLabel: string
   onSend: () => void
+  /** Stops the task's current turn; offered only while it runs. */
+  onStop?: () => void
+  stopping?: boolean
+  stopLabel: string
   setDraft: (text: string) => void
   onFocus?: () => void
   /** The task's runtime picker, beside the send button. */
@@ -711,15 +694,12 @@ function ThreadComposer({
             {hint}
           </span>
           {runtime}
-          <button
-            type="button"
-            className="sendbtn h-[26px] w-[26px] flex-none rounded-[7px]"
-            aria-label={sendLabel}
-            disabled={!canReply || !hasText}
-            onClick={onSend}
-          >
-            <Icon name="arrow-up" size={14} />
-          </button>
+          {/* As the conversation's composer: stop while the task runs and nothing is drafted, send otherwise. */}
+          {onStop && !hasText ? (
+            <SendButton stop label={stopLabel} disabled={stopping} onClick={onStop} />
+          ) : (
+            <SendButton label={sendLabel} disabled={!canReply || !hasText} onClick={onSend} />
+          )}
         </div>
       </div>
     </div>

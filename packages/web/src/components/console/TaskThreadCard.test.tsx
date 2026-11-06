@@ -91,7 +91,7 @@ describe('TaskThreadCard', () => {
     await render(<TaskThreadCard agentId="agent_1" link={link} parentSessionId="ses_coordinator" onOpen={onOpen} />)
     const card = container.querySelector('[data-task-card="ses_task"]')!
     expect(card.textContent).toContain('Find what blocks api 1.5')
-    expect(card.querySelector('[data-task-card-state]')?.textContent).toBe('Running')
+    expect(card.querySelector('[data-state-icon]')?.getAttribute('aria-label')).toBe('Running')
     expect(card.querySelector('[data-task-card-replies]')?.textContent).toMatch(/3 replies\s*last reply 1m ago/)
     expect(wire.listReads).toEqual(['agent_1/ses_coordinator'])
     expect(wire.rowReads).toEqual([])
@@ -103,7 +103,7 @@ describe('TaskThreadCard', () => {
   it('reads its own row when the conversation’s list does not carry it, and says Idle between turns', async () => {
     await render(<TaskThreadCard agentId="agent_1" link={link} parentSessionId="ses_coordinator" onOpen={() => {}} />)
     expect(wire.rowReads).toEqual(['agent_1/ses_task'])
-    expect(container.querySelector('[data-task-card-state]')?.textContent).toBe('Idle')
+    expect(container.querySelector('[data-state-icon]')?.getAttribute('aria-label')).toBe('Idle')
     expect(container.querySelector('[data-task-card-replies]')?.textContent).toBe('Reply')
   })
 

@@ -1,5 +1,6 @@
 'use client'
 
+import { SendButton } from '@/components/console/SendButton'
 import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { useDecisionsPrototype } from '@/lib/decisions/provider'
@@ -836,9 +837,8 @@ export default function HomeView() {
               </span>
             )}
           </div>
-          <button
-            type="button"
-            className="sendbtn h-7 w-7 flex-none rounded-[7px]"
+          <SendButton
+            label={t('composer.send')}
             disabled={
               (!input.trim() && !image && !readyFiles.length) ||
               !canSend ||
@@ -862,9 +862,7 @@ export default function HomeView() {
                           : t('composer.authMemberSend', { agent: agentLabel(notReadyMember) })
                       : t('composer.send')
             }
-          >
-            <Icon name="arrow-up" size={15} color="#fff" />
-          </button>
+          />
         </div>
       </div>
 

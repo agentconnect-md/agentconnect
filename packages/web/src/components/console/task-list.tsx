@@ -8,6 +8,7 @@ import { useFormatter, useTranslations } from 'next-intl'
 import { PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { ConfirmStrip } from '@/components/console/ConfirmStrip'
+import { StateIcon, type StateKind } from '@/components/console/StateIcon'
 import {
   FollowUpChecks,
   followUpKindKey,
@@ -35,29 +36,8 @@ export function formatTaskElapsed(startedAt: string, now: number): string {
 
 export { useShortTime }
 
-export type MarkTone = 'running' | 'open' | 'paused' | 'waiting' | 'done' | 'failed' | 'stopped'
-
-// The session palette: green while it works, amber while it waits, red when it failed, grey at rest.
-const MARK: Record<MarkTone, string> = {
-  running: 'bg-(--status-online)',
-  open: 'border-[1.5px] border-(--border-strong)',
-  paused: 'border-[1.5px] border-(--status-paused)',
-  waiting: 'bg-(--status-paused)',
-  done: 'bg-(--border-strong)',
-  failed: 'bg-(--status-error)',
-  stopped: 'border-[1.5px] border-(--border-strong)'
-}
-
-/** `inline` drops the top offset that aligns the mark with a row's first line, for a mark centred in a one-line card. */
-export function StateMark({ tone, inline = false }: { tone: MarkTone; inline?: boolean }) {
-  return (
-    <span
-      aria-hidden
-      data-state-mark={tone}
-      className={`h-2 w-2 flex-none rounded-full ${inline ? '' : 'mt-[6px]'} ${MARK[tone]}`}
-    />
-  )
-}
+/** A row's state, drawn by the one state icon every list shares. */
+export type MarkTone = StateKind
 
 /** A group: its sentence-case name and how many rows it shows; the caller leaves out a group with none. */
 export function TaskGroup({
@@ -87,6 +67,7 @@ export function TaskGroup({
 /** One row: a state mark and its name, its actions at the right, then one meta line and an optional preview line, which run under the actions on a phone. */
 export function TaskRow({
   tone,
+  stateLabel,
   title,
   meta,
   preview,
@@ -96,6 +77,8 @@ export function TaskRow({
   attrs
 }: {
   tone: MarkTone
+  /** The state in words, for a screen reader and the icon's tip. */
+  stateLabel: string
   title: ReactNode
   meta: ReactNode
   preview?: ReactNode
@@ -110,7 +93,7 @@ export function TaskRow({
       className={`group grid flex-none grid-cols-[minmax(0,1fr)_auto] gap-x-3 py-[7px] ${dim ? 'opacity-60' : ''}`}
     >
       <div className="flex min-w-0 items-start gap-[10px] max-desktop:self-center">
-        <StateMark tone={tone} />
+        <StateIcon state={tone} label={stateLabel} className="mt-[3px]" />
         <div className="flex min-w-0 flex-1 items-center gap-2 font-sans text-[13px] font-medium leading-[1.5] text-(--text-primary)">
           {title}
         </div>
@@ -347,12 +330,14 @@ export const taskFinished = (row: AssistantSubsessionDto) => row.state !== 'open
 export function taskTone(row: AssistantSubsessionDto, followUp: AssistantFollowUpDto | null): MarkTone {
   if (followUp) {
     if (followUp.status === 'checking') return 'running'
-    if (followUp.status === 'waiting') return 'open'
-    return followUp.status
+    if (followUp.status === 'waiting') return 'waiting'
+    // A paused follow-up checks nothing until someone resumes it; an ended one is done either way.
+    return followUp.status === 'paused' ? 'idle' : 'done'
   }
   if (row.state === 'open') return 'running'
   if (row.state === 'failed') return 'failed'
-  return row.threaded ? 'open' : 'done'
+  // A threaded task lives on between its turns (auto-session-mode.md §6.5), so it rests rather than finishes.
+  return row.threaded ? 'idle' : 'done'
 }
 
 const STOP_RESULT: Record<Exclude<StopState, 'busy'>, 'stopped' | 'notRunning' | 'stopFailed' | 'stopUpgrade'> = {
@@ -502,6 +487,7 @@ export function BackgroundTaskRow({
   return (
     <TaskRow
       tone={taskTone(row, followUp)}
+      stateLabel={followUp ? tf(`status.${followUp.status}`) : t(taskStateKey(row))}
       title={title}
       meta={meta}
       preview={preview}

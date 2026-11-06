@@ -141,6 +141,8 @@
   --status-error-soft: var(--red-50);
   --status-info: var(--blue-500);
   --status-info-soft: var(--blue-50);
+  /* A session or task at rest, the one state icon's neutral fill. */
+  --status-idle: var(--gray-400);
 
   /* Type families */
   --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -260,6 +262,7 @@
   --status-error-soft: rgba(239, 107, 107, 0.16);
   --status-info: #6a97f5;
   --status-info-soft: rgba(106, 151, 245, 0.16);
+  --status-idle: #6b7684;
 
   --green-500: #2ec27e;
   --green-50: rgba(46, 194, 126, 0.16);
@@ -383,7 +386,6 @@
   .dmi,
   .selbtn,
   .fopt,
-  .sendbtn,
   .chip,
   .dsbtn,
   .sso,
@@ -1521,27 +1523,6 @@
   .pgin:focus {
     border-color: var(--brand);
     box-shadow: 0 0 0 3px rgba(198, 42, 120, 0.16);
-  }
-  .sendbtn {
-    width: 40px;
-    height: 40px;
-    border-radius: 9px;
-    border: 0;
-    background: var(--brand);
-    color: #fff;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    flex: none;
-  }
-  .sendbtn:hover {
-    background: var(--brand-hover);
-  }
-  .sendbtn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-    background: var(--brand);
   }
   .chip {
     font: 500 12px var(--font-sans);
@@ -3008,6 +2989,17 @@
   *::before,
   *::after {
     transition-duration: 1ms !important;
+  }
+}
+
+/* The running state icon's pulse; reduced motion holds it still (StateIcon.tsx). */
+@keyframes stateBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
   }
 }
 

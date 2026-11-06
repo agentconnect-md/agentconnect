@@ -223,7 +223,7 @@ describe('TaskThreadPanel', () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-shrink]')!.click())
     expect(shrink).toHaveBeenCalledTimes(2)
     expect(container.querySelector('[data-task-thread-expand]')).toBeNull()
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-stop]')!.click())
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-send-button="stop"]')!.click())
     expect(wire.calls).toContain('stop:ses_task')
   })
 
@@ -385,7 +385,9 @@ describe('TaskThreadPanel', () => {
     await render()
     const header = container.querySelector('[data-task-thread="ses_task"] h3')!
     expect(header.textContent).toBe('Find what blocks api 1.5')
-    expect(container.querySelector('[data-task-thread-state]')?.getAttribute('data-task-thread-state')).toBe('running')
+    expect(container.querySelector('[data-task-thread] [data-state-icon]')?.getAttribute('data-state-icon')).toBe(
+      'running'
+    )
     act(() => container.querySelector<HTMLButtonElement>('[data-task-thread-close]')!.click())
     expect(back).toHaveBeenCalledTimes(1)
   })

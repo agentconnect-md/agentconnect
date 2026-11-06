@@ -114,14 +114,14 @@ desktop:grid-cols-4`. The hack rules stay in globals.css (harmless — they
     interactive class; add new ones to that list rather than writing a local
     `transition:`. The hover VALUES are fixed per control kind:
 
-    | Kind                                                      | Hover                                                    |
-    | --------------------------------------------------------- | -------------------------------------------------------- |
-    | Solid button (`.dsbtn-primary`, `.sendbtn`)               | `--brand-hover` (one step darker)                        |
-    | Bordered control (`.iconbtn`, `.chip`, `.selbtn`, `.sso`) | `--surface-hover` + `--border-strong`                    |
-    | Ghost row (`.dmi`, `.fopt`, `.row.click`, menu items)     | `--surface-hover`                                        |
-    | Card that navigates (`.card.click`)                       | `--border-strong` + `--shadow-md` — a lift, never a fill |
-    | Tab / segment (`.tab`, `.pill`)                           | `--text-primary` only                                    |
-    | Rail item on plum (`.navitem`)                            | `rgba(255,255,255,0.04)` (`.on` is 0.07)                 |
+    | Kind                                                                | Hover                                                    |
+    | ------------------------------------------------------------------- | -------------------------------------------------------- |
+    | Solid button (`.dsbtn-primary`)                                     | `--brand-hover` (one step darker)                        |
+    | Bordered control (`.iconbtn`, `.chip`, `.selbtn`, `.sso`)           | `--surface-hover` + `--border-strong`                    |
+    | Ghost row (`.dmi`, `.fopt`, `.row.click`, menu items, `SendButton`) | `--surface-hover`                                        |
+    | Card that navigates (`.card.click`)                                 | `--border-strong` + `--shadow-md` — a lift, never a fill |
+    | Tab / segment (`.tab`, `.pill`)                                     | `--text-primary` only                                    |
+    | Rail item on plum (`.navitem`)                                      | `rgba(255,255,255,0.04)` (`.on` is 0.07)                 |
 
     A `prefers-reduced-motion` block at the end of globals.css collapses every
     transition to one frame; end states are unchanged, so nothing needs a

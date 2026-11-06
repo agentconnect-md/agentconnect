@@ -422,8 +422,8 @@ describe('SubsessionsPanel', () => {
     // The meta line carries the last check, and the kind is the group's, not the row's.
     expect(followUpRows()[0]?.textContent).toContain('last Oct 15, 9:00 AM')
     expect(followUpRows()[0]?.textContent).not.toContain('Follow-up')
-    expect(followUpRows()[0]?.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('open')
-    expect(followUpRows()[1]?.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('running')
+    expect(followUpRows()[0]?.querySelector('[data-state-icon]')?.getAttribute('data-state-icon')).toBe('waiting')
+    expect(followUpRows()[1]?.querySelector('[data-state-icon]')?.getAttribute('data-state-icon')).toBe('running')
     expect(followUpRows()[0]?.querySelector('a')?.getAttribute('href')).toBe('/acme/sessions/fu-waiting')
     expect(headings()).toEqual(['Tasks1', 'Follow-ups5'])
     // Weeks of waiting are not a running task for the tab's badge or the poll.
@@ -599,7 +599,7 @@ describe('SubsessionsPanel', () => {
     expect(threaded.closest('[data-task-group]')?.getAttribute('data-task-group')).toBe('threaded')
     // A threaded task lives on between its turns: idle, never behind the finished toggle.
     expect(threaded.querySelector('[data-subsession-state]')?.textContent).toBe('Idle')
-    expect(threaded.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('open')
+    expect(threaded.querySelector('[data-state-icon]')?.getAttribute('data-state-icon')).toBe('idle')
     expect(threaded.querySelector('[data-preview-line]')?.textContent).toBe(
       'Scope: webhook retries. Status: waiting on review.'
     )

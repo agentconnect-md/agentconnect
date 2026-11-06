@@ -350,6 +350,13 @@
       "continueOnGithub": "Continue on GitHub",
       "switching": "Switching…",
       "switch": "Switch"
+    },
+    "stateIcon": {
+      "running": "Running",
+      "idle": "Idle",
+      "waiting": "Waiting",
+      "done": "Finished",
+      "failed": "Failed"
     }
   },
   "Profile": {
@@ -1013,7 +1020,8 @@
       "runningCommands": {
         "count": "{count, plural, one {# shell command} other {# shell commands}}",
         "outlivesTurn": "keeps running after this turn",
-        "unnamed": "Unnamed background command"
+        "unnamed": "Unnamed background command",
+        "shell": "Shell"
       },
       "subsessionsPanel": {
         "upgradeDaemon": "Upgrade this agent’s daemon to see its tasks and follow-ups here.",

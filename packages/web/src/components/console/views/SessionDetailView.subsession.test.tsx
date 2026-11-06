@@ -664,7 +664,7 @@ describe('a channel coordinator’s task cards', () => {
     const cards = [...(container?.querySelectorAll('[data-task-card]') ?? [])]
     expect(cards.map((card) => card.getAttribute('data-task-card'))).toEqual(['child-1'])
     expect(cards[0]!.textContent).toContain('Node.js release notes')
-    expect(cards[0]!.textContent).toContain('Idle')
+    expect(cards[0]!.querySelector('[data-state-icon]')?.getAttribute('aria-label')).toBe('Idle')
     // Under the coordinator's answer to that message, before the later exchange.
     const after = (node: Node, text: string) =>
       [...(container?.querySelectorAll('div') ?? [])].some(
