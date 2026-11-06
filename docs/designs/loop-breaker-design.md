@@ -210,7 +210,10 @@ need an L3 interaction budget, not reclassification as platform user turns.
 ### 4.2 Scope Rules
 
 The breaker scope excludes `agentId`, so multiple agents matching the same
-conversation on one daemon share one incident scope.
+conversation on one daemon share one incident scope. One message admitted for
+several of those agents is counted once: the budget measures messages in the
+conversation, not how many agents each one reaches. Otherwise a channel with four
+agents would trip on the third automatic post in a minute.
 
 | Event shape                                            | Scope key                                 | Rationale                                                                           |
 | ------------------------------------------------------ | ----------------------------------------- | ----------------------------------------------------------------------------------- |
@@ -334,7 +337,9 @@ The first OPEN performs a group of terminal side effects:
 7. Use safety drain to prevent the old host backstop from killing a new turn
    created after reset.
 8. Emit a warning only on the first OPEN, so the warning itself does not become
-   another spam source.
+   another spam source. The platform gets it in the triggering message's thread.
+   Each interrupted session also gets it as a row in its own transcript, so the
+   console session view shows why the conversation stopped.
 
 After a scope is OPEN, each new message performs only an O(1) latch check; it
 does not scan the entire inbox. Startup replay performs one purge when it finds
@@ -385,6 +390,11 @@ Daemon-local SQLite stores:
 
 Counter rows that are not OPEN and whose two windows have both expired are
 pruned. An OPEN incident is never pruned automatically.
+
+`loop_guard_charge` (`scopeKey`, `messageKey`, `chargedAt`) records which
+messages a scope has already counted, keyed by the stable message id, so the
+second and later agents admitting the same message do not charge it again. A
+row is pruned once its window has passed.
 
 ### 5.2 Inbox Accounting Marker
 

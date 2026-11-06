@@ -2973,6 +2973,27 @@ describe('LocalStore recovery scope on a shared store (daemon pool)', () => {
   })
 })
 
+describe('LocalStore loop guard message charge', () => {
+  it('counts a message once across agents and charges it again after its window', async () => {
+    const s = await store()
+    const limits = { windowMs: 1_000, maxTotal: 100, maxAutomatic: 1 }
+    expect((await s.recordLoopGuardTurn('slack:C1:top-level', 'post-1', 100, true, limits)).allowed).toBe(true)
+    expect(await s.recordLoopGuardTurn('slack:C1:top-level', 'post-1', 150, true, limits)).toMatchObject({
+      allowed: true,
+      automaticCount: 1
+    })
+    expect(await s.recordLoopGuardTurn('slack:C1:top-level', 'post-1', 1_200, true, limits)).toMatchObject({
+      allowed: true,
+      automaticCount: 1
+    })
+    expect(await s.recordLoopGuardTurn('slack:C1:top-level', 'post-2', 1_300, true, limits)).toMatchObject({
+      allowed: false,
+      trippedNow: true
+    })
+    await s.close()
+  })
+})
+
 describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2/§8.6)', () => {
   const KEY = ['slack', 'scope-1', '1720000000.000100', 'agent-target'].join('\u001f')
   const ENVELOPE = JSON.stringify({ callFrom: 'agent-author', hopCount: 3 })

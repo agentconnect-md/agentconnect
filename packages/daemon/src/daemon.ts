@@ -1248,6 +1248,7 @@ import {
   isTrustedHumanTurn,
   loopGuardScope,
   usesLoopGuard,
+  LOOP_GUARD_WARNING,
   LOOP_GUARD_WINDOW_MS,
   MAX_AUTOMATIC_TURNS_PER_WINDOW,
   MAX_TOTAL_TURNS_PER_WINDOW
@@ -18729,9 +18730,11 @@ export class Daemon {
       entry.cancelledReason = 'loop protection'
       targets.set(key, { agentId: entry.agentId })
     }
+    const plans: TurnPlan[] = []
     for (const pending of this.pending.values()) {
       if (pending.plan.loopGuardScope === scope) {
         targets.set(pending.plan.sessionKey, { agentId: pending.plan.agentId, acpSessionId: pending.acpSessionId })
+        plans.push(pending.plan)
       }
     }
     for (const [key, queued] of this.serialQueue) {
@@ -18740,6 +18743,22 @@ export class Daemon {
     }
     for (const [key, target] of targets) {
       await this.interruptTurn(target.agentId, key, 'loop protection', target.acpSessionId, { dropQueued: true })
+    }
+    // The console reads the transcript, so the stop is visible there and not only in the platform thread.
+    for (const plan of plans) {
+      await this.store
+        .appendTranscript({
+          channel: plan.transcriptChannel,
+          thread: plan.statusThread,
+          admission: { agentId: plan.agentId, sessionKey: plan.sessionKey },
+          ts: monotonicTs(),
+          sender: plan.agentId,
+          kind: 'text',
+          text: LOOP_GUARD_WARNING
+        })
+        .catch((err) =>
+          this.log.warn(`loop guard: transcript notice failed for ${plan.sessionKey}: ${(err as Error).message}`)
+        )
     }
     const trippedAt = (await this.store.getLoopGuard(scope))?.trippedAt
     this.enforcedLoopScopes.set(scope, trippedAt ?? this.clock.now())
@@ -18774,11 +18793,7 @@ export class Daemon {
     if (!conn) return
     const warningThread = reason === 'malformed_platform_event' && trigger.msg.isDm ? undefined : trigger.msg.thread
     void conn
-      .postMessage(
-        trigger.msg.channel,
-        '⚠️ Loop protection stopped this conversation and discarded its queued backlog. Send `!resume` when it is safe to continue.',
-        warningThread
-      )
+      .postMessage(trigger.msg.channel, LOOP_GUARD_WARNING, warningThread)
       .catch((err) => this.log.warn(`loop guard: warning post failed for ${scope}: ${(err as Error).message}`))
   }
 
@@ -18798,15 +18813,17 @@ export class Daemon {
       maxTotal: MAX_TOTAL_TURNS_PER_WINDOW,
       maxAutomatic: MAX_AUTOMATIC_TURNS_PER_WINDOW
     }
+    const messageKey = stableMessageId(msg)
     const verdict = inboxReplayId
       ? await this.store.recordLoopGuardTurnForInbox(
           inboxReplayId,
           scope,
+          messageKey,
           this.clock.now(),
           !isTrustedHumanTurn(msg),
           limits
         )
-      : await this.store.recordLoopGuardTurn(scope, this.clock.now(), !isTrustedHumanTurn(msg), limits)
+      : await this.store.recordLoopGuardTurn(scope, messageKey, this.clock.now(), !isTrustedHumanTurn(msg), limits)
     if (verdict.allowed) return true
     if (verdict.trippedNow) {
       await this.onLoopGuardTripped(scope, verdict.reason ?? 'turn_burst', { agentId, msg, integrationId })

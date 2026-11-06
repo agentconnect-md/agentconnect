@@ -111,7 +111,7 @@ describe('LocalStore inbox', () => {
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a')
     await s.appendInbox(row('legacy-count', key, '100'))
     expect(
-      await s.recordLoopGuardTurnForInbox('legacy-count', 'slack:C1:dm', 100, true, {
+      await s.recordLoopGuardTurnForInbox('legacy-count', 'slack:C1:dm', 'm-legacy', 100, true, {
         windowMs: 60_000,
         maxTotal: 60,
         maxAutomatic: 8
@@ -745,7 +745,7 @@ describe('daemon durable inbox', () => {
     const s = await LocalStore.open(statePath(root))
     const now = Date.now()
     const limits = { windowMs: 60_000, maxTotal: 60, maxAutomatic: 8 }
-    for (let n = 0; n < 4; n++) await s.recordLoopGuardTurn('slack:C1:dm', now + n, true, limits)
+    for (let n = 0; n < 4; n++) await s.recordLoopGuardTurn('slack:C1:dm', `replay-${n}`, now + n, true, limits)
     for (let n = 1; n <= 5; n++) {
       const echo = {
         ...msg(String(n), `cross-owner echo ${n}`),
@@ -968,7 +968,7 @@ describe('daemon durable inbox', () => {
     const s = await LocalStore.open(statePath(root))
     const limits = { windowMs: 60_000, maxTotal: 60, maxAutomatic: 8 }
     const now = Date.now()
-    for (let n = 0; n < 9; n++) await s.recordLoopGuardTurn('slack:C1:dm', now + n, true, limits)
+    for (let n = 0; n < 9; n++) await s.recordLoopGuardTurn('slack:C1:dm', `trip-${n}`, now + n, true, limits)
     expect(
       await s.appendInbox({
         ...row('ordinary-loop-backlog', retained.row.sessionKey, '001', HOOK_AGENT_ID),
@@ -1032,6 +1032,11 @@ describe('daemon durable inbox', () => {
     await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     expect(await loopGuard(root)).toMatchObject({ reason: 'automatic_turn_burst' })
     expect(g.host.cancel).toHaveBeenCalledWith('acp-1')
+    // The stopped session records why, so the console shows it without the platform thread.
+    const notices = (await (daemon as any).store.db
+      .prepare("SELECT sender, text FROM transcript WHERE text LIKE '%Loop protection stopped%'")
+      .all()) as Array<{ sender: string; text: string }>
+    expect(notices).toEqual([{ sender: 'bot-a', text: expect.stringContaining('!resume') }])
 
     // An explicit resume cannot reopen the conversation while the cancelled old
     // turn is still unwinding.
@@ -1131,6 +1136,27 @@ describe('daemon durable inbox', () => {
     await vi.waitFor(() => expect(a.host.prompt).toHaveBeenCalledTimes(2), WAIT)
     a.releaseOne()
     await expect(fresh).resolves.toBe('acp-a')
+    await daemon.stop()
+  })
+
+  it('charges one bot post once however many agents in the conversation receive it', async () => {
+    const root = scaffold(['bot-a', 'bot-b', 'bot-c'])
+    const daemon = await boot(root, gatedHost().host)
+    const post = (n: number) => ({
+      ...msg(String(n), `release ${n}`),
+      isDm: false,
+      sender: { id: 'B1', isBot: true }
+    })
+    const agents = ['bot-a', 'bot-b', 'bot-c']
+
+    for (let n = 1; n <= 8; n++) {
+      for (const agentId of agents) expect(await (daemon as any).admitLoopGuardTurn(agentId, post(n))).toBe(true)
+    }
+    expect(await loopGuard(root, 'slack:C1:T1')).toMatchObject({ automaticCount: 8, trippedAt: null })
+
+    // The ninth post is what opens the guard, for every agent it reaches.
+    for (const agentId of agents) expect(await (daemon as any).admitLoopGuardTurn(agentId, post(9))).toBe(false)
+    expect(await loopGuard(root, 'slack:C1:T1')).toMatchObject({ reason: 'automatic_turn_burst' })
     await daemon.stop()
   })
 
