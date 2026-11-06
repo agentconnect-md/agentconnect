@@ -525,7 +525,7 @@ function ComposerSendButton({
   return (
     <SendButton
       stop={stop}
-      className="ml-1"
+      className="-ml-1"
       label={stop ? t('stopResponse') : t('sendMessage')}
       onClick={() => (stop ? onStop() : onSend())}
       disabled={!stop && (imagePreparing || mentionJoining || (!hasText && !hasImage))}
