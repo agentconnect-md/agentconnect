@@ -394,7 +394,8 @@ export class AhpPlaygroundStore {
         this.entries.get(id)?.session ??
         [...this.entries.values()].find((entry) => entry.session?.realSessionId === id)?.session,
       pgSessionList: [...this.entries.values()].flatMap((entry) => (entry.session ? [entry.session] : [])),
-      getLiveSteps: (id) => this.entries.get(id)?.steps ?? NO_STEPS,
+      // A step reconciliation hid is on the transcript already; it stays in the entry only as an anchor.
+      getLiveSteps: (id) => (this.entries.get(id)?.steps ?? NO_STEPS).filter((step) => !step.hidden),
       getBusyLaneAgentIds: (id) =>
         [...(this.entries.get(id)?.connection.peers ?? [])].flatMap(([agentId, peer]) =>
           peer.snapshot.chat?.activeTurn ? [agentId] : []

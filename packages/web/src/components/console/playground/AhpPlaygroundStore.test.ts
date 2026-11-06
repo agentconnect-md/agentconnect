@@ -166,6 +166,43 @@ describe('AHP UI store', () => {
     expect(store.getValue().getLiveSteps('s')).toEqual([])
   })
 
+  it('leaves out of the live tail a prompt the transcript already carries while its reply still streams', async () => {
+    mint.mockResolvedValue({
+      token: 't',
+      protocol: 'ahp',
+      conversationId: 'c',
+      ahp: { url: 'wss://relay.example.test/ahp' }
+    })
+    const ui = store.getValue()
+    ui.markSessionTarget('s')
+    ui.pgAttach('s', 'a', 'c')
+    await vi.waitFor(() => expect(store.getValue().isPgBusy('s')).toBe(false))
+    await vi.waitFor(() => expect(mint).toHaveBeenCalled())
+    expect(ui.pgSend('s', 'a', 'Next prompt')).toBe(true)
+    await vi.waitFor(() => expect(store.getValue().getLiveSteps('s')).toHaveLength(1))
+    const attachment = attachments.at(-1)!
+    const active = attachment.snapshot.chat!.activeTurn!
+    attachment.emit({
+      chat: {
+        ...attachment.snapshot.chat!,
+        activeTurn: { ...active, responseParts: [{ kind: 'markdown', id: 'r:1', content: 'Partial reply' }] }
+      } as unknown as ChatState
+    })
+    await vi.waitFor(() => expect(store.getValue().getLiveSteps('s')).toHaveLength(2))
+    // The transcript has the prompt but not yet the reply, so reconciliation hides the prompt and keeps the turn.
+    const prompt = {
+      seq: 1,
+      sender: 'me',
+      text: 'Next prompt',
+      kind: 'text',
+      ts: String(Date.parse(active.startedAt) + 1)
+    }
+    store.getValue().reconcileLiveSteps('s', [prompt], 'a')
+    const live = store.getValue().getLiveSteps('s')
+    expect(live.map((step) => step.text)).toEqual(['Partial reply'])
+    expect(live.some((step) => step.hidden)).toBe(false)
+  })
+
   it('orders a group turn by its earliest stamp and keeps the roster after removing down to one member', async () => {
     const url = 'wss://relay.example.test/ahp'
     mint.mockResolvedValue({

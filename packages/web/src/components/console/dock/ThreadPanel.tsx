@@ -177,13 +177,11 @@ export function ThreadPanel({
     [agents, platform, messages]
   )
   // The owner's turns in this thread stream on their conversation's socket; another member's on the task's.
-  const streamed = ownThread
+  const live = ownThread
     ? getLiveSteps(ownThread.sessionId).filter((step) => step.thread === ownThread.rootId)
     : holderId
       ? getLiveSteps(id)
       : EMPTY
-  // A step reconciliation hid is already on the record, and not every store leaves it out.
-  const live = streamed.filter((step) => !step.hidden)
   // Already this thread's own, so no step is left out as another thread's.
   const liveShown = unsavedLive(live, messages, agentId).map(({ thread: _thread, ...step }) => step)
   // The session page's turns: this visit's sends are the reader's own, and a person's name falls back as the page's does.
