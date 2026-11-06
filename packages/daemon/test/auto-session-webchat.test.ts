@@ -150,6 +150,30 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md Â
     await daemon.stop()
   })
 
+  it("sets its coordinator's model for itself, as a task's thread sets the task", async () => {
+    const { daemon, d, host, send, coordinator } = await boot(async (_id, _text, say) => say('ok'))
+    d.agents.get(AGENT).chatActions = 'settings'
+    const setSessionModel = vi.fn(async () => true)
+    // The live session takes the change at once; the next turn keeps it.
+    Object.assign(host, { setSessionModel, hasSession: () => true })
+    await send('hello')
+    const set: RdMsgWebchat = {
+      source: 'webchat',
+      agentId: AGENT,
+      sessionKey: CONV,
+      msgId: 'm-set',
+      chatId: CONV,
+      payload: { op: 'set_model', model: 'model-small', callerRole: 'owner' }
+    }
+    expect(await d.handleRelayMsg(set, () => {})).toMatchObject({ accepted: true })
+    const { key } = await coordinator()
+    expect(await d.store.getModelOverride(key)).toBe('model-small')
+    expect(await d.store.getSession(sessionKey('webchat', CONV, `webchat:${CONV}`, AGENT))).toBeUndefined()
+    await send('again')
+    expect(setSessionModel).toHaveBeenCalledWith(expect.any(String), 'model-small')
+    await daemon.stop()
+  })
+
   it("keeps someone else's conversation, and every conversation with the switch off, an ordinary one", async () => {
     const plain = await boot(async (_id, _text, say) => say('hi'), { autoSessionMode: false })
     await plain.send('hello')

@@ -338,6 +338,10 @@ now and the summary's first sentence states the current status.
     change of runtime reaches the next coordinator (`!new`).
   - The console sets it in the agent's model picker, under a Task | Coordinator switch above the
     providers; with the task model By decision, it is a Coordinator field of its own.
+  - A conversation changes its own coordinator's model, effort and Fast mode within its runtime, as a
+    task's thread changes the task: under `chatActions: settings`, the composer of a member's coordinator
+    conversation sets the coordinator session's overrides, which win over the agent's coordinator model.
+    It shows no approval.
 
 ## 6. Tasks
 
@@ -779,7 +783,7 @@ a reply saying a message was for another agent, so the prompt states that ignori
 
 ## 13. Not done / later
 
-- Changing the coordinator model for one conversation from its composer, with Reset.
+- Returning a conversation's coordinator to the agent's coordinator model (Reset); a task has none either.
 - A trigger filter: a decision model screening each message before the coordinator.
 - A cap on coordinator usage (§4.6).
 - Judging across bots; one coordinator shared by a shared bot's agents.

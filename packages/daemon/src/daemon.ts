@@ -16973,8 +16973,15 @@ export class Daemon {
       case 'set_model':
       case 'set_effort':
       case 'set_permission_mode':
-      case 'set_fast':
-        return this.applyWebchatRuntimeOp(msg.msgId, op, key())
+      case 'set_fast': {
+        // A member's coordinator conversation sets its coordinator for itself, as a task's thread sets the task (auto-session-mode.md §5.4).
+        const coordinator = this.cfg.features.autoSessionMode
+          ? await this.store.currentAppendCoordinate(msg.agentId, msg.chatId, null, 'coordinator')
+          : undefined
+        const settingsKey =
+          coordinator === undefined ? key() : sessionKey('webchat', msg.chatId, coordinator, msg.agentId)
+        return this.applyWebchatRuntimeOp(msg.msgId, op, settingsKey)
+      }
       case 'cancel':
         await this.webchatTransport.handleWebchatCancel(msg.chatId, op.agentId ?? msg.agentId)
         return { msgId: msg.msgId, accepted: true }
