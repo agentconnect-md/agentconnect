@@ -402,11 +402,14 @@ describe('a webchat coordinator’s main timeline (webchat-threads.md §6.1)', (
     expect(q(`[data-thread-panel="${ROOT}"]`)).not.toBeNull()
   })
 
-  it('opens the thread the address names', async () => {
+  it('opens the thread the address names, and closes it when a navigation drops it', async () => {
     conversation()
     nav.search = `thread=${ROOT}`
     await open()
     expect(q(`[data-thread-panel="${ROOT}"]`)).not.toBeNull()
+    nav.search = ''
+    await open()
+    expect(q('[data-thread-panel]')).toBeNull()
   })
 
   it('keeps what this visit said and streamed in a thread out of the main timeline', async () => {

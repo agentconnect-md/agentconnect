@@ -2632,6 +2632,8 @@ export default function SessionDetailView() {
     if (threadParam === handledThreadParam.current) return
     handledThreadParam.current = threadParam
     if (isThreadId(threadParam)) openRootThread(threadParam, { address: false })
+    // An address that no longer names a thread closes the one it named.
+    else if (!threadParam) setTaskThread((current) => (current?.rootId ? null : current))
   }, [openRootThread, threadParam])
   // A task shrunk from its own page comes back as `?task=`: open it in the side panel once, then drop the parameter.
   const shrunkTaskId = coordinatorPage ? searchParams.get('task') : null
