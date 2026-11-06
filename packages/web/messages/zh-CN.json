@@ -1065,6 +1065,8 @@
         "moreFailed": "加载失败，请重试。"
       },
       "addFiles": "添加文件",
+      "addImages": "添加图片",
+      "continuationImagesOnly": "从控制台只能向这个聊天帖子发送图片。",
       "viewOriginal": "查看原图",
       "downloadOriginal": "下载",
       "originalUploading": "正在上传原图…",

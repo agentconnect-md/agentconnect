@@ -702,6 +702,8 @@ export interface SessionDetailDto {
   ownsConversation?: boolean | null
   continuationUnavailableReason?:
     'unauthorized' | 'content_purged' | 'unsupported_platform' | 'agent_moved' | 'daemon_offline' | 'unavailable' | null
+  /** What a continued turn may carry; absent or null ⇒ text only. */
+  continuationAttachments?: 'images' | 'images_and_files' | null
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
   /** Actual source gateway for Feishu/Lark external sessions. Absent on older CPs. */

@@ -287,11 +287,17 @@ async function open(
   {
     listed = true,
     parent = null,
-    taskContinues = false
-  }: { listed?: boolean; parent?: SessionDetailDto['parentSession']; taskContinues?: boolean } = {}
+    taskContinues = false,
+    attachments = null
+  }: {
+    listed?: boolean
+    parent?: SessionDetailDto['parentSession']
+    taskContinues?: boolean
+    attachments?: SessionDetailDto['continuationAttachments']
+  } = {}
 ) {
   wire.rows = listed ? [listRow(origin)] : []
-  wire.detail = detailOf(origin, parent, taskContinues)
+  wire.detail = { ...detailOf(origin, parent, taskContinues), continuationAttachments: attachments }
   await act(async () => {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
@@ -465,6 +471,28 @@ describe.each([
 
     expect(composer()).not.toBeNull()
     expect(button('Send message')).not.toBeNull()
+  })
+
+  it('offers a channel session no attachment toward a daemon that cannot mirror one', async () => {
+    await open(SLACK)
+    expect(button('Attach a file')).toBeNull()
+  })
+
+  it('offers a channel session images only once its daemon mirrors them', async () => {
+    await open(SLACK, { attachments: 'images' })
+    const picker = container?.querySelector<HTMLInputElement>('input[type="file"]')
+    expect(picker?.getAttribute('accept')).toBe('image/*')
+    await act(async () => button('Attach a file')?.click())
+    expect(text()).toContain('Add images')
+    expect(text()).not.toContain('Add files')
+  })
+
+  it('offers files too where nothing mirrors the continued session', async () => {
+    await open(SLACK, { attachments: 'images_and_files' })
+    const picker = container?.querySelector<HTMLInputElement>('input[type="file"]')
+    expect(picker?.hasAttribute('accept')).toBe(false)
+    await act(async () => button('Attach a file')?.click())
+    expect(text()).toContain('Add files')
   })
 
   it('keeps tasks out of the Sessions rail, as All sessions does by default', async () => {

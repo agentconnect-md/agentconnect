@@ -26,6 +26,7 @@ import {
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
+  WEBCHAT_CONTINUATION_ATTACHMENTS_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   isFrame,
   type AnyFrame,
@@ -1499,7 +1500,12 @@ describe('webchat session-continuation mint + verify', () => {
       method: 'GET',
       url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/${SESSION_ID}`
     })
-    expect(detail.json()).toMatchObject({ canContinue: true, continuationUnavailableReason: null })
+    // A daemon without the attachments bit continues the session as text.
+    expect(detail.json()).toMatchObject({
+      canContinue: true,
+      continuationUnavailableReason: null,
+      continuationAttachments: null
+    })
 
     // Recorded on a private store before the agent joined the pool: no live member holds those rows.
     await prisma.sessionMeta.update({ where: { id: SESSION_ID }, data: { contentSetId: null } })
@@ -1552,6 +1558,34 @@ describe('webchat session-continuation mint + verify', () => {
       url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/${HOOK_SESSION_ID}`
     })
     expect(blocked.json()).toMatchObject({ canContinue: false, continuationUnavailableReason: 'unavailable' })
+
+    relayWs.close()
+    daemonWs.close()
+  })
+
+  it('offers images to a chat thread and files too where nothing mirrors, once the daemon carries the attachments bit', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const { ws: relayWs } = await openRelay(base, 'pod-cont-attach', 'wss://pod-cont-attach.example.test', CONTINUATION)
+    const daemonWs = await connectDaemonReady(base, [
+      ...CONTINUATION,
+      WEBCHAT_HOOK_CONTINUATION_FEATURE,
+      WEBCHAT_CONTINUATION_ATTACHMENTS_FEATURE
+    ])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedSessionMeta(prisma, SESSION_ID, AGENT, { daemonId: DAEMON, platform: 'slack', channel: 'C123' })
+    await seedSessionMeta(prisma, HOOK_SESSION_ID, AGENT, {
+      daemonId: DAEMON,
+      platform: 'hook',
+      channel: 'github:1310543401'
+    })
+    const detail = async (id: string) =>
+      (await app.http.inject({ method: 'GET', url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/${id}` })).json()
+
+    expect(await detail(SESSION_ID)).toMatchObject({ canContinue: true, continuationAttachments: 'images' })
+    expect(await detail(HOOK_SESSION_ID)).toMatchObject({
+      canContinue: true,
+      continuationAttachments: 'images_and_files'
+    })
 
     relayWs.close()
     daemonWs.close()

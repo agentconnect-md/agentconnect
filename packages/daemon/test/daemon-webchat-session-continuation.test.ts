@@ -129,6 +129,14 @@ async function boot(reply: (prompt: string) => string = () => 'done') {
 }
 
 const PICTURE = 'https://cdn.example.test/avatars/user-1.png'
+const IMAGE = { name: 'shot.png', mimeType: 'image/png' as const, data: Buffer.from('png').toString('base64') }
+const UPLOAD = {
+  uploadId: '00000000-0000-4000-8000-000000000001',
+  name: 'notes.pdf',
+  mimeType: 'application/pdf',
+  size: 3,
+  sha256: `${'A'.repeat(43)}=`
+}
 
 const turn = (text: string, over: Partial<RdMsgWebchat> = {}): RdMsgWebchat => ({
   source: 'webchat',
@@ -766,21 +774,20 @@ describe('webchat session-targeted continuation — a delegated task', () => {
     await daemon.stop()
   })
 
-  it("hands an image sent on a threaded task's thread to the task, and leaves it off any other continued session", async () => {
-    const image = { name: 'shot.png', mimeType: 'image/png' as const, data: Buffer.from('png').toString('base64') }
+  it("hands a file sent on a threaded task's thread to the task, and refuses one on any other chat thread", async () => {
     const send = (d: Awaited<ReturnType<typeof boot>>['d'], text: string) =>
       d.handleRelayMsg(
-        turn(text, { targetSessionId: TASK_ACP, payload: { op: 'turn', text, user: 'owner', attachments: [image] } }),
+        turn(text, { targetSessionId: TASK_ACP, payload: { op: 'turn', text, user: 'owner', files: [UPLOAD] } }),
         () => {}
       ) as Promise<RdAck>
-    // Not a task: the continuation stays text.
+    // Not a task: a chat thread mirrors images only, so a file is refused before anything posts.
     const plain = await boot()
     await seedTask(plain.d, '1700000000.000300')
-    expect(await send(plain.d, 'plain')).toMatchObject({ accepted: true })
-    await vi.waitFor(() => expect(plain.prompts).toHaveLength(1))
-    expect(plain.prompts[0]!.text).not.toContain('shot.png')
+    expect(await send(plain.d, 'plain')).toMatchObject({ accepted: false, reason: 'unsupported' })
+    expect(plain.postAsAuthor).not.toHaveBeenCalled()
+    expect(plain.prompts).toHaveLength(0)
     await plain.daemon.stop()
-    // A threaded task some session owns takes the image.
+    // A threaded task some session owns takes the file.
     const owned = await boot()
     const key = await seedTask(owned.d, '1700000000.000300')
     const index = (owned.d as never as { store: { assistantSubsessions: AssistantSubsessionIndexLike } }).store
@@ -795,8 +802,7 @@ describe('webchat session-targeted continuation — a delegated task', () => {
     await index.finish(AGENT, key, 'done')
     expect(await send(owned.d, 'owned')).toMatchObject({ accepted: true })
     await vi.waitFor(() => expect(owned.prompts).toHaveLength(1))
-    // This runtime takes no image input, so the turn names the attachment rather than embedding it.
-    expect(owned.prompts[0]!.text).toContain('[attached: shot.png (image/png)]')
+    expect(owned.prompts[0]!.text).toContain('notes.pdf')
     await owned.daemon.stop()
   })
 
@@ -816,3 +822,123 @@ interface AssistantSubsessionIndexLike {
   finish(agentId: string, key: string, state: 'done' | 'failed'): Promise<boolean>
   get(agentId: string, key: string): Promise<{ state: string; endReport?: string } | undefined>
 }
+
+describe('webchat session-targeted continuation — attachments', () => {
+  const withImage = (text: string, over: Partial<RdMsgWebchat> = {}) =>
+    turn(text, { payload: { op: 'turn', text, user: 'owner', attachments: [IMAGE] }, ...over })
+
+  it('mirrors an image into the origin thread after the text and before the turn runs, which receives it', async () => {
+    const order: string[] = []
+    const { daemon, d, prompts, postMessage, postAsAuthor } = await boot(() => {
+      order.push('prompt')
+      return 'nice screenshot'
+    })
+    postAsAuthor.mockImplementation(async (_c, _t, body) => {
+      order.push('text')
+      return { ts: '100.200000', text: body.text }
+    })
+    const uploadFile = vi.fn(async () => {
+      order.push('image')
+      return { ok: true as const }
+    })
+    d.connByIntegration.set('int-a', { postMessage, postAsAuthor, uploadFile, workspaceId: () => 'T1' })
+
+    expect(await d.handleRelayMsg(withImage('see this'), () => {})).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+    expect(order).toEqual(['text', 'image', 'prompt'])
+    // Slack renders the console author on the share, so it carries no caption.
+    expect(uploadFile).toHaveBeenCalledWith(
+      'C1',
+      { bytes: Buffer.from('png'), name: 'shot.png', mimeType: 'image/png' },
+      undefined,
+      { thread: '100.1' },
+      { username: 'owner', agentAuthorId: AGENT }
+    )
+    // This runtime takes no image input, so the turn names the attachment rather than embedding it.
+    expect(prompts[0]!.text).toContain('[attached: shot.png (image/png)]')
+    await daemon.stop()
+  })
+
+  it('names the image in the mirrored line when the message is only an image', async () => {
+    const { daemon, d, prompts, postMessage, postAsAuthor } = await boot()
+    d.connByIntegration.set('int-a', {
+      postMessage,
+      postAsAuthor,
+      uploadFile: vi.fn(async () => ({ ok: true as const })),
+      workspaceId: () => 'T1'
+    })
+    expect(await d.handleRelayMsg(withImage(''), () => {})).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+    expect(postAsAuthor.mock.calls[0]![2]).toEqual({ text: 'shot.png', attributedText: '[owner via console] shot.png' })
+    await daemon.stop()
+  })
+
+  it('still runs the turn when the image share fails, and says so in the thread', async () => {
+    const { daemon, d, prompts, postMessage, postAsAuthor } = await boot()
+    const uploadFile = vi.fn(async () => ({ ok: false as const, reason: 'missing_scope' as const }))
+    d.connByIntegration.set('int-a', { postMessage, postAsAuthor, uploadFile, workspaceId: () => 'T1' })
+    expect(await d.handleRelayMsg(withImage('see this'), () => {})).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+    expect(postMessage).toHaveBeenCalledWith('C1', '[owner via console] shot.png could not be shared here.', '100.1')
+    expect(prompts[0]!.text).toContain('shot.png')
+    await daemon.stop()
+  })
+
+  it('posts no failure note for a share that may still land', async () => {
+    const { daemon, d, prompts, postMessage, postAsAuthor } = await boot()
+    const uploadFile = vi.fn(async () => ({ ok: false as const, reason: 'indeterminate' as const }))
+    d.connByIntegration.set('int-a', { postMessage, postAsAuthor, uploadFile, workspaceId: () => 'T1' })
+    expect(await d.handleRelayMsg(withImage('see this'), () => {})).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+    expect(postMessage).not.toHaveBeenCalledWith('C1', expect.stringContaining('could not be shared'), '100.1')
+    await daemon.stop()
+  })
+
+  it('refuses a file on a chat thread before anything posts', async () => {
+    const { daemon, d, prompts, postAsAuthor } = await boot()
+    const ack = await d.handleRelayMsg(
+      turn('the notes', { payload: { op: 'turn', text: 'the notes', user: 'owner', files: [UPLOAD] } }),
+      () => {}
+    )
+    expect(ack).toMatchObject({ accepted: false, reason: 'unsupported' })
+    expect(postAsAuthor).not.toHaveBeenCalled()
+    expect(prompts).toHaveLength(0)
+    await daemon.stop()
+  })
+
+  it('hands a hook session a file and an image, mirroring neither', async () => {
+    const { daemon, d, prompts, postMessage } = await boot()
+    await d.store.upsertSession({
+      key: HOOK_KEY,
+      agentId: AGENT,
+      platform: 'hook',
+      channel: 'github:42',
+      thread: '1552',
+      acpSessionId: HOOK_ACP,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await d.store.setSessionClassification(HOOK_KEY, {
+      sourceBindingKind: 'external',
+      externalProvider: 'github',
+      externalRealmKey: 'github.com',
+      externalResourceKind: 'repository',
+      externalResourceKey: '42'
+    })
+    const text = 'compare these'
+    const ack = await d.handleRelayMsg(
+      turn(text, {
+        targetSessionId: HOOK_ACP,
+        payload: { op: 'turn', text, user: 'owner', attachments: [IMAGE], files: [UPLOAD] }
+      }),
+      () => {}
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+    expect(prompts[0]!.text).toContain('shot.png')
+    expect(prompts[0]!.text).toContain('notes.pdf')
+    expect(postMessage).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+})

@@ -11,7 +11,12 @@ import { dispatchAhpAction, type AhpDispatchEnvironment } from './ahp/dispatch.j
 import { LocalAhpCheckpoints } from './ahp/checkpoint-store.js'
 import { readAhpHistory } from './ahp/history.js'
 import { ChatSessionApplication, chatSessionKey, type ChatApplicationHost } from './session/chat-application.js'
-import { ChatSessionContinuation, continuedByTarget } from './session/chat-continuation.js'
+import {
+  CONTINUATION_FILES_REFUSAL,
+  ChatSessionContinuation,
+  continuedByTarget,
+  mirrorsToOrigin
+} from './session/chat-continuation.js'
 import { observeChatTurn } from './session/chat-observer.js'
 import { memorySourceTurnId } from './memory/source-turn.js'
 import { codeHostExternalSource } from './codehost/session-audience.js'
@@ -55,6 +60,7 @@ import {
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
+  WEBCHAT_CONTINUATION_ATTACHMENTS_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
@@ -3303,6 +3309,8 @@ export class Daemon {
         const target = await this.store.getSessionByOutwardId(scope.targetSessionId, scope.agentId)
         return !!target && (await this.isOwnedTask(scope.agentId, target))
       },
+      continuationTakesFiles: async (scope) =>
+        !!scope.targetSessionId && (await this.continuationTakesFiles(scope.agentId, scope.targetSessionId)),
       onExecutionError: (error) => this.log.warn(`AHP execution failed: ${formatErr(error)}`)
     })
     const dispatchEnvironment: AhpDispatchEnvironment = {
@@ -8997,6 +9005,8 @@ export class Daemon {
       WEBCHAT_SESSION_CONTINUATION_FEATURE,
       // Its hook-origin twin: a GitHub / GitLab / webhook session is continued console-only — no platform connection, no mirror. Static.
       WEBCHAT_HOOK_CONTINUATION_FEATURE,
+      // A continued turn takes images (mirrored to a chat thread) and, where nothing mirrors, files. Static.
+      WEBCHAT_CONTINUATION_ATTACHMENTS_FEATURE,
       // This bit attests to daemon-side grant + ACP descriptor delivery, not to
       // a runtime artifact, capability probe, or sandbox policy. The CP remains
       // authoritative for deciding whether a conversation belongs to the
@@ -16822,6 +16832,12 @@ export class Daemon {
     return !!task && task.mode !== 'watch' && task.closedAt === undefined
   }
 
+  /** Images reach every continued session (mirrored to a chat thread); files only one nothing mirrors, or a task's own thread. */
+  private async continuationTakesFiles(agentId: string, targetSessionId: string): Promise<boolean> {
+    const target = await this.store.getSessionByOutwardId(targetSessionId, agentId)
+    return !!target && (!mirrorsToOrigin(target) || (await this.isOwnedTask(agentId, target)))
+  }
+
   private async applyWebchatRuntimeOp(
     msgId: string,
     op: Extract<RdMsgWebchat['payload'], { op: 'set_model' | 'set_effort' | 'set_permission_mode' | 'set_fast' }>,
@@ -16887,12 +16903,9 @@ export class Daemon {
     if (msg.targetSessionId !== undefined) {
       switch (op.op) {
         case 'turn': {
-          // Only a coordinator's task takes images and files from its thread; another continued session stays text.
-          const withAttachments =
-            (op.attachments?.length || op.files?.length) &&
-            (await this.store
-              .getSessionByOutwardId(msg.targetSessionId, msg.agentId)
-              .then((target) => (target ? this.isOwnedTask(msg.agentId, target) : false)))
+          if (op.files?.length && !(await this.continuationTakesFiles(msg.agentId, msg.targetSessionId))) {
+            return { msgId: msg.msgId, accepted: false, reason: 'unsupported', detail: CONTINUATION_FILES_REFUSAL }
+          }
           return this.webchatTransport
             .dispatchWebchatContinuationTurn(
               msg.agentId,
@@ -16903,8 +16916,8 @@ export class Daemon {
               sink,
               op.turnId,
               op.post,
-              withAttachments ? op.attachments : undefined,
-              withAttachments ? op.files : undefined
+              op.attachments,
+              op.files
             )
             .then((ack) => ({
               msgId: msg.msgId,

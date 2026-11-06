@@ -217,9 +217,15 @@ offer runtime-setting operations, with one exception. `set_model`, `set_effort`,
 changes the task's settings under the rule its conversation's composer follows
 (`chatActions` is `settings` and the caller may change settings there). A task is
 a delegated `subsession:` session, or a threaded task in its own platform thread
-while the task index holds it open. A task's own thread is also the one continuation that
-takes images and files with a turn (relay `attachments`/`files`, AHP message
-attachments); any other continued session stays text, and AHP refuses its attachments. `cancel` is accepted only for a `turnId`
+while the task index holds it open. Every continued session takes an image with a turn
+(relay `attachments`, AHP message attachments); on a chat origin it is mirrored into the
+thread (§5.2). Uploaded files (relay `files`, AHP `files` metadata) go only where nothing
+mirrors — a hook-origin, headless cron or delegated-task session — or to a task's own
+thread; a chat thread refuses them before anything posts, because v1 does not mirror a
+file. The daemon advertises `webchat_continuation_attachments_v1`, and the detail read's
+`continuationAttachments` (`images`, `images_and_files`, or null for text only) is what
+the console composer offers: files for a hook-origin or delegated-task session (a task's
+own thread already offers them), images elsewhere, including a headless cron session. `cancel` is accepted only for a `turnId`
 owned by that same targeted conversation's live webchat stream; it is not a
 session-global stop capability.
 
@@ -247,6 +253,15 @@ the existing output rules.**
   lands, its provider message id becomes the message's own, as channel ingress
   names a message: the transcript row carries it, and a coordinator that opens a
   task for the message opens it in that post's thread.
+- An **image** sent with the turn is shared into the same thread right after the
+  text mirror lands and before the turn is released, through the integration's
+  file upload, so the reply never reads above it. Slack shares it under the console
+  author's name and avatar; elsewhere its caption is `[<user> via console]`. A
+  message that is only an image mirrors a line naming it, which anchors the turn.
+  The text mirror alone is the delivery proof: a failed share never refuses the
+  turn, which already holds the image, and instead posts
+  `[<user> via console] <name> could not be shared here.` — except an
+  `indeterminate` share, which may still land and must not be contradicted.
 - The **reply's working chrome** addresses the author on the platform when they
   linked an account there. The session-targeted mint stamps the author's identity
   keys on the session's platform (`<platform>:<tenant>:<memberId>`, from the same
@@ -327,6 +342,10 @@ re-resolves live placement, `registry/webchatVerification.ts:37`).
   `WEBCHAT_SESSION_CONTINUATION_FEATURE = 'webchat_session_continuation_v1'`,
   advertised in the daemon hello capabilities like
   `WEBCHAT_MULTI_AGENT_FEATURE` (`consts.ts:92`).
+- `WEBCHAT_CONTINUATION_ATTACHMENTS_FEATURE = 'webchat_continuation_attachments_v1'`:
+  the daemon takes images on every continued session and files where §5.1 allows
+  them. Without it the CP reports `continuationAttachments: null`, so a console never
+  offers an attachment an older daemon would drop.
 - `RcRegister` (`frames/relay-cp.ts`) gains
   `features: z.array(z.string()).default([])` and relays advertise the same
   feature when they preserve the session target end to end. The default keeps

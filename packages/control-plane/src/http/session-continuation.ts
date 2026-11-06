@@ -2,6 +2,7 @@ import {
   isDelegatedTaskCoordinate,
   originKindOf,
   TASK_PAGE_MESSAGES_FEATURE,
+  WEBCHAT_CONTINUATION_ATTACHMENTS_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE
 } from '@agentconnect.md/protocol'
@@ -13,7 +14,11 @@ import type { SessionContentStore } from '../persistence/ports.js'
 /** Why no daemon can host a session continuation right now — the detail view's reason vocabulary. */
 export type ContinuationHostRefusal = 'agent_moved' | 'daemon_offline' | 'unavailable'
 
-export type ContinuationHost = { ok: true; daemonId: string } | { ok: false; reason: ContinuationHostRefusal }
+/** What a continued turn may carry: images mirror into a chat thread, files go only where nothing mirrors; null ⇒ text. */
+export type ContinuationAttachments = 'images' | 'images_and_files' | null
+
+export type ContinuationHost =
+  { ok: true; daemonId: string; attachments: ContinuationAttachments } | { ok: false; reason: ContinuationHostRefusal }
 
 /** The ONE answer to "which daemon continues this session" — the detail projection (`canContinue`) and the session-target mint both read it, so they cannot disagree. The daemon a turn reaches (`dispatchDaemon`) must be the recorder or a holder of the shared store the rows went to (`domain/session-content.ts`); keying on `session.daemonId` alone read as "agent moved" for every pooled agent once its recorder pod rolled. */
 export async function resolveContinuationHost(
@@ -50,5 +55,10 @@ export async function resolveContinuationHost(
   if (alive.length === 0 || alive.some((r) => !r.features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE))) {
     return { ok: false, reason: 'unavailable' }
   }
-  return { ok: true, daemonId }
+  const attachments = !daemon.capabilities.features.includes(WEBCHAT_CONTINUATION_ATTACHMENTS_FEATURE)
+    ? null
+    : originKindOf(session.platform ?? '') === 'hook' || isDelegatedTaskCoordinate(session.thread)
+      ? 'images_and_files'
+      : 'images'
+  return { ok: true, daemonId, attachments }
 }

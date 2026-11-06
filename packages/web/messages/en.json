@@ -1065,6 +1065,8 @@
         "moreFailed": "Couldn’t load more. Try again."
       },
       "addFiles": "Add files",
+      "addImages": "Add images",
+      "continuationImagesOnly": "Only images can be sent to this chat thread from the console.",
       "viewOriginal": "View original",
       "downloadOriginal": "Download",
       "originalUploading": "Uploading original…",

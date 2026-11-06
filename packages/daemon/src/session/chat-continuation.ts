@@ -8,6 +8,7 @@ import { LifecycleCleanupBlockedError } from '../daemon/turn-types.js'
 import { formatErr } from '../daemon/text.js'
 import { isHeadlessCronSession } from '../scheduler/scheduler.js'
 import { sessionThreadOf, wakeThreadFields, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
+import type { UploadOutcome } from '../mcp/ops/context.js'
 import type { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
@@ -81,6 +82,18 @@ export function continuedByTarget(local: { platform: string; thread?: string | n
   return local.platform !== 'webchat' || isSubsessionCoordinate(local.thread)
 }
 
+/** Why a continued chat thread refuses an uploaded file: only images are mirrored into it. */
+export const CONTINUATION_FILES_REFUSAL = 'Files can’t be sent to a chat thread from the console yet; images can.'
+
+/** Whether a continued turn is mirrored to the session's platform thread: hook, headless cron and delegated-task sessions run console-only. */
+export function mirrorsToOrigin(local: SessionRecord): boolean {
+  return !(
+    originKindOf(local.platform) === 'hook' ||
+    isHeadlessCronSession(local) ||
+    isDelegatedTaskCoordinate(local.thread)
+  )
+}
+
 /** The author's member id in the session's own platform tenant, when one of their linked identities is there. */
 export function memberIdOn(
   author: Pick<ChatAuthor, 'identities'>,
@@ -130,8 +143,7 @@ export class ChatSessionContinuation {
     const synthetic = isHeadlessCronSession(local)
     // A delegated task's coordinate is no platform thread, so its page runs console-only (auto-session-mode.md §10).
     const task = isDelegatedTaskCoordinate(local.thread)
-    const integration =
-      originKindOf(local.platform) === 'hook' || synthetic || task ? null : this.integration(agentId, local)
+    const integration = mirrorsToOrigin(local) ? this.integration(agentId, local) : null
     if (integration === undefined) return { accepted: false, reason: 'integration_offline' }
     await this.application.rememberAuthorName(author)
     const shared = integration === null ? post : undefined
@@ -250,7 +262,10 @@ export class ChatSessionContinuation {
       return { accepted: true }
     }
     // Reserve a queue slot first, then prove that the attributed human message reached its origin.
-    const attributedText = `[${author.name} via console] ${text}`
+    const images = (message.attachments ?? []).filter((a) => a.inlineData && a.mimeType.startsWith('image/'))
+    // A message that is only attachments still mirrors a line naming them, which anchors the turn.
+    const body = text.trim() ? text : (message.attachments ?? []).map((a) => a.name).join(', ')
+    const attributedText = `[${author.name} via console] ${body}`
     let authorMirror: { conn: SlackConnection; ts: string; text: string } | undefined
     try {
       let mirrorId: string | undefined
@@ -259,7 +274,7 @@ export class ChatSessionContinuation {
         const landed = await conn.postAsAuthor(
           local.channel,
           message.thread,
-          { text, attributedText },
+          { text: body, attributedText },
           { name: author.name, ...(author.pictureUrl ? { iconUrl: author.pictureUrl } : {}) },
           { agentAuthorId: agentId }
         )
@@ -271,13 +286,15 @@ export class ChatSessionContinuation {
       if (!mirrorId) throw new Error('provider returned no message id')
       // The copy in the conversation is the message, as channel ingress names it: its transcript row, and a coordinator's task thread.
       message.transcriptTs = mirrorId
-      settleMirror(true)
     } catch (error) {
       this.host.warn(`chat continuation: mirror post failed for ${local.key}: ${formatErr(error)}`)
       onRefused()
       settleMirror(false)
       return { accepted: false, reason: 'integration_delivery_failed' }
     }
+    // Images land in the thread before the turn runs, so its reply never reads above them.
+    if (images.length) await this.mirrorImages(integration, local, message.thread, images, author, agentId)
+    settleMirror(true)
     await committed
     // Once delivery is proven, a failed routing finalization leaves transcript-only peers.
     if (authorMirror && typeof authorMirror.conn.finalizeResponse === 'function') {
@@ -295,5 +312,45 @@ export class ChatSessionContinuation {
       `chat continuation: ${author.name} → session ${local.key} (conversation ${conversationId}, turn ${turnId})`
     )
     return { accepted: true }
+  }
+
+  // Best effort once the text landed: the agent still receives every image, and the thread says which one it could not show.
+  private async mirrorImages(
+    integration: Integration,
+    local: SessionRecord,
+    thread: string | undefined,
+    images: Attachment[],
+    author: ChatAuthor,
+    agentId: string
+  ): Promise<void> {
+    const conn = integration.conn
+    // Where the platform renders no per-message author, the caption names who sent the image.
+    const caption = 'postAsAuthor' in conn ? undefined : `[${author.name} via console]`
+    const identity = {
+      username: author.name,
+      ...(author.pictureUrl ? { icon_url: author.pictureUrl } : {}),
+      agentAuthorId: agentId
+    }
+    for (const image of images) {
+      let outcome: UploadOutcome
+      try {
+        outcome = await conn.uploadFile(
+          local.channel,
+          { bytes: image.inlineData!, name: image.name, mimeType: image.mimeType },
+          caption,
+          thread !== undefined ? { thread } : undefined,
+          identity
+        )
+      } catch (error) {
+        outcome = { ok: false, reason: 'platform_error', detail: formatErr(error) }
+      }
+      if (outcome.ok) continue
+      this.host.warn(`chat continuation: image mirror failed for ${local.key} (${outcome.reason}): ${image.name}`)
+      // A share that may still land must not be contradicted by a note saying it failed.
+      if (outcome.reason === 'indeterminate') continue
+      await conn
+        .postMessage(local.channel, `[${author.name} via console] ${image.name} could not be shared here.`, thread)
+        .catch((error: unknown) => this.host.warn(`chat continuation: image mirror note failed: ${formatErr(error)}`))
+    }
   }
 }
