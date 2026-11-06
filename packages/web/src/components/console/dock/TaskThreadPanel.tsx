@@ -36,7 +36,7 @@ import { agentToneColor } from '@/lib/agent-tone'
 import { agentLabel, MOCK_MODE, type Agent, type DaemonRow } from '@/lib/data'
 import { TaskRuntimePicker } from '@/components/console/dock/TaskRuntimePicker'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib/session-trigger'
-import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
+import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { useOrgs } from '@/lib/org-context'
 import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
@@ -116,7 +116,11 @@ export function TaskThreadPanel({
   const busy = isPgBusy(id)
   const { page, error, reload } = useTaskThread(id, row, { busy })
   // The server decides who may continue a task, by its parent's audience; absent or false keeps it read-only.
-  const { data: detail } = useSWR(['session-detail', id], ([, sid]) => fetchSessionDetail(sid), CONSOLE_SWR_CONFIG)
+  const { data: detail } = useSWR(
+    ['session-detail', id],
+    ([, sid]) => readOnceRegistered(() => fetchSessionDetail(sid)),
+    CONSOLE_SWR_CONFIG
+  )
   const canReply = detail?.canContinue === true
   const messages = threadMessages(page)
   // The session page's own reading of a bot post: its sender is an agent, or its trusted attribution names one.

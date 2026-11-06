@@ -11,7 +11,7 @@ import {
   type SessionHistoryDto,
   type SessionMessageDto
 } from '@/lib/api'
-import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
+import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
 import type { SessionStep } from '@/lib/data'
 import type { TaskLink } from '@/components/console/task-link'
 import { elicitCard, WORK_LANES } from '@/components/console/session-work'
@@ -71,7 +71,7 @@ export function useTaskRow(
   const fromList = listed?.get(sessionId)
   const { data } = useSWR(
     listed !== null && !fromList ? ['task-row', agentId, sessionId] : null,
-    ([, agent, id]) => fetchAssistantSubsession(agent, id),
+    ([, agent, id]) => readOnceRegistered(() => fetchAssistantSubsession(agent, id)),
     {
       ...CONSOLE_SWR_CONFIG,
       refreshInterval: (row) => (running(row) ? RUNNING_POLL_MS : IDLE_POLL_MS)
@@ -109,7 +109,7 @@ export function useTaskThread(
   const version = `${row?.state ?? ''}:${row?.summaryUpdatedAt ?? ''}`
   const { data, error, mutate } = useSWR(
     ['task-thread', sessionId, version],
-    ([, id]) => fetchSessionMessages(id, { limit: THREAD_PAGE }),
+    ([, id]) => readOnceRegistered(() => fetchSessionMessages(id, { limit: THREAD_PAGE })),
     {
       ...CONSOLE_SWR_CONFIG,
       keepPreviousData: true,
