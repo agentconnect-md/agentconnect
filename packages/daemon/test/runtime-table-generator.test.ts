@@ -70,6 +70,28 @@ describe('runtime table probe classification', () => {
     ])
   })
 
+  it('probes with the entry’s probeEnv and keeps it out of the published table', async () => {
+    const script = `
+      require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {
+        const { id, method } = JSON.parse(line)
+        const response = method === 'initialize'
+          ? { result: { protocolVersion: 1, agentCapabilities: {} } }
+          : process.env.FIXTURE_MODEL
+            ? { result: { sessionId: 's' } }
+            : { error: { code: -32603, message: 'no model configured' } }
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, ...response }) + '\\n')
+      })
+    `
+    const entry = { id: 'fixture', command: process.execPath, args: ['--eval', script] }
+    await expect(buildTable([entry])).rejects.toThrow(/no model configured/)
+    const table = await buildTable([{ ...entry, probeEnv: { FIXTURE_MODEL: 'fixture-model' } }])
+    expect(table.runtimes[0]).not.toHaveProperty('probeEnv')
+    expect(table.runtimes[0]?.acp?.sessionProbe).toBe('ok')
+    await expect(buildTable([{ ...entry, probeEnv: { FIXTURE_MODEL: 1 } as never }])).rejects.toThrow(
+      /invalid installed runtime/
+    )
+  })
+
   it('reports a missing executable without waiting for the ACP timeout', async () => {
     await expect(
       buildTable([{ id: 'missing', command: join(tmpdir(), `missing-runtime-${randomUUID()}`) }])

@@ -904,7 +904,7 @@ image. The pool continues to use the separate `runtime-sandbox` image. Both targ
 share the same helper payload over their respective application layers. Additional
 self-hosted runtimes belong in the full application stage. The pool provides Claude Code,
 Codex, DeepSeek Harness, and OpenCode. The full image additionally installs Antigravity,
-Cline, Devin, GitHub Copilot, Grok Build, Oh My Pi, pi, Qwen Code,
+Cline, Devin, GitHub Copilot, goose, Grok Build, Kilo, Oh My Pi, pi, Qwen Code,
 Qoder CLI, and Qoder CN CLI. The `qoder` compatibility ID resolves to `qoder-cli`
 before host discovery and image projection. Both IDs share one native launch
 definition and one probe state; reported `aliasOf` metadata lets the Console show
@@ -914,7 +914,9 @@ CLI. Packages are version-pinned; standalone downloads also pin their SHA-256.
 
 Each application stage bakes an explicit runtime roster and generates its own runtime table
 after installation by probing the executables as the ordinary runtime user, without
-provider credentials. Missing executables fail the build instead of silently
+provider credentials. A roster entry may name a `probeEnv` for the probe alone: goose opens no
+session until a provider and model are named, so its entry names them with no key or endpoint,
+and the generated table never carries the setting. Missing executables fail the build instead of silently
 reducing the roster. Installed runtimes remain discoverable without a saved login;
 saved logins also keep runtimes visible when their executable is missing.
 General development toolchain expansion can follow independently.
