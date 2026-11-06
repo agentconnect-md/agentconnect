@@ -50,7 +50,12 @@ function fakeFetch(opts: { statuses?: number[]; bodies?: string[]; body?: string
 
 function broker(
   fetchImpl: typeof fetch,
-  opts: { access?: BrokerCapability; tokens?: string[]; invalidate?: (token: string) => void } = {}
+  opts: {
+    access?: BrokerCapability
+    tokens?: string[]
+    invalidate?: (token: string) => void
+    delays?: number[]
+  } = {}
 ) {
   const tokens = opts.tokens ?? ['glpat-effect']
   let minted = 0
@@ -58,7 +63,10 @@ function broker(
     lease: async () => ({ token: tokens[Math.min(minted++, tokens.length - 1)]!, access: opts.access ?? 'write' }),
     invalidateLease: (_target, token) => opts.invalidate?.(token),
     apiBaseUrl: () => BASE,
-    fetchImpl
+    fetchImpl,
+    delay: async (ms) => {
+      opts.delays?.push(ms)
+    }
   })
   return { instance, minted: () => minted }
 }
@@ -78,7 +86,9 @@ describe('the allowlist is the whole surface', () => {
   it('declares only bounded methods and templated paths', () => {
     for (const [id, endpoint] of Object.entries(GITLAB_BROKER_ENDPOINTS)) {
       expect(['GET', 'POST', 'PUT'], id).toContain(endpoint.method)
-      expect(endpoint.path.startsWith('/projects/:project'), id).toBe(true)
+      // The username lookup is the one instance-wide read; everything else is scoped to the trusted project.
+      if (id === 'user.lookup') expect(endpoint.path).toBe('/users')
+      else expect(endpoint.path.startsWith('/projects/:project'), id).toBe(true)
       expect(endpoint.path, id).not.toContain('?')
     }
   })
@@ -92,16 +102,23 @@ describe('the allowlist is the whole surface', () => {
     expect(byCapability('read')).toEqual([
       'discussion.get',
       'discussion.list',
+      'issue.get',
       'job.get',
+      'mergeRequest.get',
       'pipeline.get',
       'pipeline.jobs',
-      'pipeline.list'
+      'pipeline.list',
+      'user.lookup'
     ])
     expect(byCapability('comment')).toEqual(['comment.create', 'comment.update', 'discussion.reply'])
     expect(byCapability('write')).toEqual([
+      'issue.create',
+      'issue.update',
       'job.cancel',
       'job.retry',
       'mergeRequest.create',
+      'mergeRequest.merge',
+      'mergeRequest.rebase',
       'mergeRequest.update',
       'pipeline.cancel',
       'pipeline.retry'
@@ -233,6 +250,346 @@ describe('each operation calls exactly one allowlisted endpoint', () => {
   })
 })
 
+const ALICE = '[{"id":101,"username":"alice"}]'
+const BOB = '[{"id":102,"username":"bob"}]'
+
+describe('people and labels resolve before the one write', () => {
+  it('creates a merge request with labels, assignees, and reviewers by user id', async () => {
+    const { calls } = await run(
+      {
+        kind: 'createMergeRequest',
+        sourceBranch: 'feature/x',
+        targetBranch: 'main',
+        title: 'Add x',
+        labels: ['bug', 'needs review'],
+        assignees: ['alice'],
+        reviewers: ['bob']
+      },
+      {},
+      { bodies: [ALICE, BOB] }
+    )
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${BASE}/users?username=alice`,
+      `GET ${BASE}/users?username=bob`,
+      `POST ${BASE}/projects/4455667/merge_requests`
+    ])
+    expect(calls[0]?.body).toBeUndefined()
+    expect(calls[2]?.body).toEqual({
+      source_branch: 'feature/x',
+      target_branch: 'main',
+      title: 'Add x',
+      labels: 'bug,needs review',
+      assignee_ids: [101],
+      reviewer_ids: [102]
+    })
+  })
+
+  it('looks a name up once when it is both assignee and reviewer', async () => {
+    const { calls } = await run(
+      {
+        kind: 'createMergeRequest',
+        sourceBranch: 'feature/x',
+        targetBranch: 'main',
+        title: 'Add x',
+        assignees: ['alice'],
+        reviewers: ['alice']
+      },
+      {},
+      { bodies: [ALICE] }
+    )
+    expect(calls).toHaveLength(2)
+    expect(calls[1]?.body).toMatchObject({ assignee_ids: [101], reviewer_ids: [101] })
+  })
+
+  it('takes only the exact username from the lookup answer', async () => {
+    const { calls } = await run(
+      { kind: 'createIssue', title: 'Bug', assignees: ['alice'] },
+      {},
+      { bodies: ['[{"id":7,"username":"alice2"},{"id":101,"username":"Alice"}]'] }
+    )
+    expect(calls[1]?.body).toEqual({ title: 'Bug', assignee_ids: [101] })
+  })
+
+  it('refuses an unknown username before the write', async () => {
+    const { fetchImpl, calls } = fakeFetch({ bodies: [ALICE, '[]'] })
+    const { instance } = broker(fetchImpl)
+    await expect(
+      instance.execute(TARGET, { kind: 'createIssue', title: 'Bug', assignees: ['alice', 'nobody'] })
+    ).rejects.toThrow('GitLab has no user named nobody')
+    expect(calls.map((call) => call.method)).toEqual(['GET', 'GET'])
+  })
+
+  it('refuses a malformed username or label before any request', async () => {
+    const { fetchImpl, calls } = fakeFetch()
+    const { instance } = broker(fetchImpl)
+    await expect(
+      instance.execute(TARGET, { kind: 'createIssue', title: 'Bug', assignees: ['../users/1'] })
+    ).rejects.toThrow('assignees must hold usernames')
+    await expect(instance.execute(TARGET, { kind: 'createIssue', title: 'Bug', labels: ['a,b'] })).rejects.toThrow(
+      'labels must be non-empty label names without commas'
+    )
+    expect(calls).toEqual([])
+  })
+
+  it('adds and removes labels and assignees, and adds reviewers, on a merge-request update', async () => {
+    const current = JSON.stringify({
+      iid: 77,
+      assignees: [
+        { id: 103, username: 'carol' },
+        { id: 104, username: 'dave' }
+      ],
+      reviewers: [
+        { id: 102, username: 'bob' },
+        { id: 103, username: 'carol' }
+      ]
+    })
+    const { calls } = await run(
+      {
+        kind: 'updateMergeRequest',
+        iid: 77,
+        addLabels: ['bug', 'ready'],
+        removeLabels: ['wip'],
+        addAssignees: ['alice'],
+        removeAssignees: ['Dave'],
+        reviewers: ['bob', 'alice']
+      },
+      {},
+      { bodies: [ALICE, BOB, current] }
+    )
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${BASE}/users?username=alice`,
+      `GET ${BASE}/users?username=bob`,
+      `GET ${BASE}/projects/4455667/merge_requests/77`,
+      `PUT ${BASE}/projects/4455667/merge_requests/77`
+    ])
+    expect(calls[3]?.body).toEqual({
+      add_labels: 'bug,ready',
+      remove_labels: 'wip',
+      assignee_ids: [103, 101],
+      reviewer_ids: [102, 103, 101]
+    })
+  })
+
+  it('removes an assignee by the current username without a lookup', async () => {
+    const { calls } = await run(
+      { kind: 'updateMergeRequest', iid: 77, removeAssignees: ['carol'] },
+      {},
+      { bodies: ['{"iid":77,"assignees":[{"id":103,"username":"carol"}]}'] }
+    )
+    expect(calls.map((call) => call.method)).toEqual(['GET', 'PUT'])
+    expect(calls[1]?.body).toEqual({ assignee_ids: [] })
+  })
+
+  it('does not read the merge request when neither assignees nor reviewers change', async () => {
+    const { calls } = await run({ kind: 'updateMergeRequest', iid: 77, addLabels: ['bug'], reviewers: [] })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ method: 'PUT', body: { add_labels: 'bug' } })
+  })
+
+  it('refuses a name both added and removed before any request', async () => {
+    const { fetchImpl, calls } = fakeFetch()
+    const { instance } = broker(fetchImpl)
+    await expect(
+      instance.execute(TARGET, { kind: 'updateIssue', iid: 12, addLabels: ['bug'], removeLabels: ['bug'] })
+    ).rejects.toThrow('cannot both add and remove "bug"')
+    expect(calls).toEqual([])
+  })
+})
+
+const NO_PIPELINE = '{"iid":77,"state":"opened"}'
+const RUNNING = '{"iid":77,"state":"opened","head_pipeline":{"id":31,"status":"running"}}'
+
+describe('merging, state, and issues', () => {
+  it('merges now, with an optional squash flag and head sha, when there is no pipeline', async () => {
+    const sha = 'a'.repeat(40)
+    const squash = await run(
+      { kind: 'mergeMergeRequest', iid: 77, method: 'squash', sha },
+      {},
+      { bodies: [NO_PIPELINE, '{"iid":77,"state":"merged"}'] }
+    )
+    expect(squash.calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${BASE}/projects/4455667/merge_requests/77`,
+      `PUT ${BASE}/projects/4455667/merge_requests/77/merge`
+    ])
+    expect(squash.calls[1]?.body).toEqual({ squash: true, sha })
+    expect(squash.result).toEqual({ mergeRequest: { iid: 77, state: 'merged' }, outcome: 'merged' })
+
+    const plain = await run({ kind: 'mergeMergeRequest', iid: 77, method: 'merge' }, {}, { bodies: [NO_PIPELINE, ''] })
+    expect(plain.calls[1]?.body).toEqual({})
+    expect(plain.result).toEqual({ mergeRequest: {} })
+  })
+
+  it('sets the merge to happen when a running pipeline passes', async () => {
+    const { calls, result } = await run(
+      { kind: 'mergeMergeRequest', iid: 77 },
+      {},
+      { bodies: [RUNNING, '{"iid":77,"state":"opened","merge_when_pipeline_succeeds":true}'] }
+    )
+    expect(calls[1]?.body).toEqual({ auto_merge: true })
+    expect(result).toEqual({
+      mergeRequest: { iid: 77, state: 'opened' },
+      outcome: 'merges_when_pipeline_succeeds'
+    })
+  })
+
+  it.each(['failed', 'canceled'])('refuses to merge behind a %s pipeline', async (status) => {
+    const { fetchImpl, calls } = fakeFetch({ bodies: [`{"iid":77,"pipeline":{"status":"${status}"}}`] })
+    const { instance } = broker(fetchImpl)
+    await expect(instance.execute(TARGET, { kind: 'mergeMergeRequest', iid: 77 })).rejects.toThrow(
+      `the merge request's pipeline is ${status}`
+    )
+    expect(calls).toHaveLength(1)
+  })
+
+  it('rebases, waits for the rebase, retries the early 406, then auto-merges behind the new pipeline', async () => {
+    const delays: number[] = []
+    const { fetchImpl, calls } = fakeFetch({
+      statuses: [200, 202, 200, 200, 406, 200],
+      bodies: [
+        NO_PIPELINE,
+        '{"rebase_in_progress":true}',
+        '{"iid":77,"rebase_in_progress":true}',
+        '{"iid":77,"rebase_in_progress":false,"head_pipeline":{"status":"pending"}}',
+        '',
+        '{"iid":77,"state":"opened","auto_merge":true}'
+      ]
+    })
+    const { instance } = broker(fetchImpl, { delays })
+    const result = await instance.execute(TARGET, { kind: 'mergeMergeRequest', iid: 77, method: 'rebase' })
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${BASE}/projects/4455667/merge_requests/77`,
+      `PUT ${BASE}/projects/4455667/merge_requests/77/rebase`,
+      `GET ${BASE}/projects/4455667/merge_requests/77?include_rebase_in_progress=true`,
+      `GET ${BASE}/projects/4455667/merge_requests/77?include_rebase_in_progress=true`,
+      `PUT ${BASE}/projects/4455667/merge_requests/77/merge`,
+      `PUT ${BASE}/projects/4455667/merge_requests/77/merge`
+    ])
+    expect(calls[5]?.body).toEqual({ auto_merge: true })
+    expect(delays).toEqual([1000, 6000])
+    expect(result).toMatchObject({ outcome: 'merges_when_pipeline_succeeds' })
+  })
+
+  it('gives up on the 406 after three merge attempts', async () => {
+    const delays: number[] = []
+    const { fetchImpl, calls } = fakeFetch({
+      statuses: [200, 202, 200, 406, 406, 406],
+      bodies: [NO_PIPELINE, '{}', '{"rebase_in_progress":false}']
+    })
+    const { instance } = broker(fetchImpl, { delays })
+    await expect(instance.execute(TARGET, { kind: 'mergeMergeRequest', iid: 77, method: 'rebase' })).rejects.toThrow(
+      /GitLab PUT failed with 406/
+    )
+    expect(calls).toHaveLength(6)
+    expect(delays).toEqual([6000, 6000])
+  })
+
+  it('does not retry a 406 when there was no rebase', async () => {
+    const { fetchImpl, calls } = fakeFetch({ statuses: [200, 406], bodies: [NO_PIPELINE] })
+    const { instance } = broker(fetchImpl)
+    await expect(instance.execute(TARGET, { kind: 'mergeMergeRequest', iid: 77 })).rejects.toThrow(/failed with 406/)
+    expect(calls).toHaveLength(2)
+  })
+
+  it('refuses the merge when the rebase reports a merge error', async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      bodies: [NO_PIPELINE, '{}', '{"rebase_in_progress":false,"merge_error":"Rebase failed: conflicts"}']
+    })
+    const { instance } = broker(fetchImpl)
+    await expect(instance.execute(TARGET, { kind: 'mergeMergeRequest', iid: 77, method: 'rebase' })).rejects.toThrow(
+      'GitLab could not rebase the merge request: Rebase failed: conflicts'
+    )
+    expect(calls.map((call) => call.method)).toEqual(['GET', 'PUT', 'GET'])
+  })
+
+  it('polls a rebase a bounded number of times', async () => {
+    const delays: number[] = []
+    const { fetchImpl, calls } = fakeFetch({ bodies: [NO_PIPELINE, '{}'], body: '{"rebase_in_progress":true}' })
+    const { instance } = broker(fetchImpl, { delays })
+    await expect(instance.execute(TARGET, { kind: 'mergeMergeRequest', iid: 77, method: 'rebase' })).rejects.toThrow(
+      'GitLab is still rebasing the merge request'
+    )
+    expect(calls).toHaveLength(2 + 30)
+    expect(delays).toHaveLength(29)
+  })
+
+  it('refuses a malformed sha, and a sha with rebase, before any request', async () => {
+    const { fetchImpl, calls } = fakeFetch()
+    const { instance } = broker(fetchImpl)
+    await expect(instance.execute(TARGET, { kind: 'mergeMergeRequest', iid: 77, sha: 'main' })).rejects.toThrow(
+      'sha must be a full commit id'
+    )
+    await expect(
+      instance.execute(TARGET, { kind: 'mergeMergeRequest', iid: 77, method: 'rebase', sha: 'b'.repeat(40) })
+    ).rejects.toThrow('sha cannot be combined with rebase')
+    expect(calls).toEqual([])
+  })
+
+  it('closes and reopens issues and merge requests by state event', async () => {
+    const issue = await run({ kind: 'setState', subject: 'issue', iid: 12, state: 'closed' })
+    expect(issue.calls[0]).toMatchObject({
+      method: 'PUT',
+      url: `${BASE}/projects/4455667/issues/12`,
+      body: { state_event: 'close' }
+    })
+    const mr = await run({ kind: 'setState', subject: 'merge_request', iid: 77, state: 'open' })
+    expect(mr.calls[0]).toMatchObject({
+      method: 'PUT',
+      url: `${BASE}/projects/4455667/merge_requests/77`,
+      body: { state_event: 'reopen' }
+    })
+  })
+
+  it('creates an issue and reports it bounded', async () => {
+    const labels = Array.from({ length: 30 }, (_, index) => `label-${index}`)
+    const { calls, result } = await run(
+      { kind: 'createIssue', title: 'Bug', description: 'steps', labels: ['bug'] },
+      {},
+      {
+        body: JSON.stringify({
+          id: 5,
+          iid: 12,
+          title: 'Bug',
+          state: 'opened',
+          labels,
+          web_url: 'https://gitlab.example.test/example-group/example-project/-/issues/12',
+          created_at: '2026-01-02T03:04:05Z',
+          author: { username: 'dropped' }
+        })
+      }
+    )
+    expect(calls[0]).toMatchObject({
+      method: 'POST',
+      url: `${BASE}/projects/4455667/issues`,
+      body: { title: 'Bug', description: 'steps', labels: 'bug' }
+    })
+    expect(result).toEqual({
+      issue: {
+        id: '5',
+        iid: 12,
+        title: 'Bug',
+        state: 'opened',
+        labels: labels.slice(0, 20),
+        webUrl: 'https://gitlab.example.test/example-group/example-project/-/issues/12',
+        createdAt: '2026-01-02T03:04:05Z'
+      }
+    })
+  })
+
+  it('updates only the issue fields given, reading the issue for its assignees', async () => {
+    const { calls } = await run(
+      { kind: 'updateIssue', iid: 12, title: 'Bug, again', addAssignees: ['bob'], removeLabels: ['triage'] },
+      {},
+      { bodies: [BOB, '{"iid":12,"assignees":[{"id":101,"username":"alice"}]}'] }
+    )
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET ${BASE}/users?username=bob`,
+      `GET ${BASE}/projects/4455667/issues/12`,
+      `PUT ${BASE}/projects/4455667/issues/12`
+    ])
+    expect(calls[2]?.body).toEqual({ title: 'Bug, again', remove_labels: 'triage', assignee_ids: [101, 102] })
+  })
+})
+
 describe('draft markers normalize in both directions', () => {
   // GitLab carries draft state in the title, and recognizes each of these prefixes.
   const MARKED = [
@@ -311,6 +668,24 @@ describe('capability classes are enforced against the clamped grant', () => {
     await expect(run(read, { access: 'write' })).resolves.toBeDefined()
     await expect(run(comment, { access: 'write' })).resolves.toBeDefined()
     await expect(run(write, { access: 'write' })).resolves.toBeDefined()
+  })
+
+  it('checks the final write before spending a lookup', async () => {
+    const issue: GitlabBrokerOperation = { kind: 'createIssue', title: 'Bug', assignees: ['alice'] }
+    const merge: GitlabBrokerOperation = { kind: 'mergeMergeRequest', iid: 77, method: 'rebase' }
+    const state: GitlabBrokerOperation = { kind: 'setState', subject: 'issue', iid: 12, state: 'closed' }
+    for (const [op, access] of [
+      [issue, 'comment'],
+      [merge, 'comment'],
+      [state, 'read']
+    ] as const) {
+      const { fetchImpl, calls } = fakeFetch({ body: ALICE })
+      const { instance } = broker(fetchImpl, { access })
+      await expect(instance.execute(TARGET, op)).rejects.toThrow(
+        `needs write authority on the GitLab project, but the current authorization grants ${access}`
+      )
+      expect(calls).toEqual([])
+    }
   })
 
   it('refuses before reaching GitLab at all', async () => {
@@ -616,8 +991,8 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     const codeHostEffect = vi.fn(async () => ({ note: { id: '1' } }))
     await executeTool(
       ctx,
-      'createGitlabComment',
-      { subject: 'merge_request', iid: 77, body: 'hi' },
+      'gitlabComment',
+      { action: 'create', subject: 'merge_request', iid: 77, body: 'hi' },
       deps(codeHostEffect)
     )
     expect(codeHostEffect).toHaveBeenCalledWith({
@@ -634,8 +1009,15 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     const codeHostEffect = vi.fn<NonNullable<OpsDeps['codeHostEffect']>>(async () => ({}))
     await executeTool(
       ctx,
-      'createGitlabComment',
-      { subject: 'issue', iid: 12, body: 'hi', projectId: '1', project: 'example-group/example-project' },
+      'gitlabComment',
+      {
+        action: 'create',
+        subject: 'issue',
+        iid: 12,
+        body: 'hi',
+        projectId: '1',
+        project: 'example-group/example-project'
+      },
       deps(codeHostEffect)
     )
     expect(codeHostEffect.mock.calls[0]?.[0].operation).toEqual({
@@ -650,46 +1032,46 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     await expect(
       executeTool(
         ctx,
-        'createGitlabComment',
-        { subject: 'snippet', iid: 1, body: 'hi' },
+        'gitlabComment',
+        { action: 'create', subject: 'snippet', iid: 1, body: 'hi' },
         deps(async () => ({}))
       )
     ).rejects.toThrow('argument subject must be one of: issue, merge_request')
     await expect(
       executeTool(
         ctx,
-        'createGitlabComment',
-        { subject: 'issue', iid: 0, body: 'hi' },
+        'gitlabComment',
+        { action: 'create', subject: 'issue', iid: 0, body: 'hi' },
         deps(async () => ({}))
       )
     ).rejects.toThrow('argument iid must be a positive integer')
   })
 
-  it('rejects a note id that is not a positive decimal string', async () => {
+  it('rejects a comment id that is not a positive decimal string', async () => {
     await expect(
       executeTool(
         ctx,
-        'updateGitlabComment',
-        { subject: 'issue', iid: 12, noteId: '../9001', body: 'x' },
+        'gitlabComment',
+        { action: 'update', subject: 'issue', iid: 12, commentId: '../9001', body: 'x' },
         deps(async () => ({}))
       )
-    ).rejects.toThrow('argument noteId must be a positive decimal string')
+    ).rejects.toThrow('argument commentId must be a positive decimal string')
   })
 
   it('requires a field to change on a merge-request update, and a title to move draft state', async () => {
     await expect(
       executeTool(
         ctx,
-        'updateGitlabMergeRequest',
-        { iid: 77 },
+        'gitlabMergeRequest',
+        { action: 'update', iid: 77 },
         deps(async () => ({}))
       )
-    ).rejects.toThrow('supply at least one of title, description, or targetBranch')
+    ).rejects.toThrow('action update needs at least one of title, description, targetBranch')
     await expect(
       executeTool(
         ctx,
-        'updateGitlabMergeRequest',
-        { iid: 77, description: 'x', draft: true },
+        'gitlabMergeRequest',
+        { action: 'update', iid: 77, description: 'x', draft: true },
         deps(async () => ({}))
       )
     ).rejects.toThrow('argument draft also requires title')
@@ -699,7 +1081,7 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     await expect(
       executeTool(
         ctx,
-        'controlGitlabPipeline',
+        'gitlabPipeline',
         { action: 'delete_pipeline' },
         deps(async () => ({}))
       )

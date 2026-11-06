@@ -65,7 +65,8 @@ deployment that installs both. This document stops at the header.
 `openai` / `deepseek` / `typesafe`) and selects which key comes back. A dialect
 is listed here once an issuer can mint for it. `typesafe` is consumed by the
 daemon Decision evaluator (§2.2); `modelProviderTarget` does not map an ACP runtime
-to that dialect. There is
+to that dialect. A `deepseek` key is DeepSeek's, but at a configured base it speaks
+the Messages API, the DeepSeek Harness's dialect (§4). There is
 deliberately **no `model` parameter**: per-model usage attribution belongs to
 whatever observes actual requests (a gateway data path, or the runtime's own usage
 reports), and a spawn-time hint would invite implementations to treat it as truth
@@ -215,9 +216,14 @@ The deployment supplies each provider's gateway base as an HTTP(S) URL. Claude C
 appends `/v1/messages`, while the Anthropic SDK in OpenCode and Kilo appends `/messages`;
 reusing the Claude pair therefore adds `/v1` to their base, without duplicating an existing
 `/v1` suffix. Qwen Code, Copilot and goose append `/v1/messages` like Claude Code, so they take
-the Claude base unchanged. OpenAI and DeepSeek bases pass through unchanged: OpenAI clients
-append `/chat/completions` or `/responses` to a base that already ends in `/v1`. Each pair is translated
-at runtime launch:
+the Claude base unchanged. The DeepSeek pair is the DeepSeek Harness's base, and the Harness
+speaks the Messages API too (`/v1/messages`, DeepSeek's Anthropic-compatible endpoint by
+default). OpenCode therefore reaches a DeepSeek base through its Anthropic SDK
+(`npm: "@ai-sdk/anthropic"`, unless the launch config names its own package), with the
+same `/v1` rule. A DeepSeek key without a base keeps OpenCode's built-in DeepSeek
+provider. OpenAI bases pass through unchanged: OpenAI clients append `/chat/completions` or
+`/responses` to a base that already ends in `/v1`. Each pair is translated at runtime
+launch:
 
 | Runtime  | Token                                                                                                                              | Base URL                                                                                                                             |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |

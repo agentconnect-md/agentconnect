@@ -168,19 +168,41 @@ describe('applyModelCredential', () => {
     }
     applyModelCredential({ provider: 'deepseek', runtime: 'opencode', opencodeProvider: 'deepseek' }, env, {
       key: 'issued',
-      baseUrl: 'https://gateway.example/openai/v1'
+      baseUrl: 'https://gateway.example/deepseek/anthropic'
     })
     expect(env.DEEPSEEK_API_KEY).toBe('issued')
     expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toEqual({
       provider: {
         deepseek: {
+          npm: '@ai-sdk/anthropic',
           options: {
             timeout: 30_000,
             apiKey: '{env:DEEPSEEK_API_KEY}',
-            baseURL: 'https://gateway.example/openai/v1'
+            baseURL: 'https://gateway.example/deepseek/anthropic/v1'
           }
         }
       }
+    })
+  })
+
+  it("speaks the DeepSeek Harness's Messages dialect only to a deepseek base it was given", () => {
+    const keyOnly: Record<string, string> = {}
+    applyModelCredential({ provider: 'deepseek', runtime: 'opencode', opencodeProvider: 'deepseek' }, keyOnly, {
+      key: 'direct'
+    })
+    expect(JSON.parse(keyOnly.OPENCODE_CONFIG_CONTENT!).provider.deepseek).toEqual({
+      options: { apiKey: '{env:DEEPSEEK_API_KEY}' }
+    })
+    const operatorPackage: Record<string, string> = {
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { deepseek: { npm: '@ai-sdk/openai-compatible' } } })
+    }
+    applyModelCredential({ provider: 'deepseek', runtime: 'opencode', opencodeProvider: 'deepseek' }, operatorPackage, {
+      key: 'issued',
+      baseUrl: 'https://gateway.example/deepseek/v1/'
+    })
+    expect(JSON.parse(operatorPackage.OPENCODE_CONFIG_CONTENT!).provider.deepseek).toEqual({
+      npm: '@ai-sdk/openai-compatible',
+      options: { apiKey: '{env:DEEPSEEK_API_KEY}', baseURL: 'https://gateway.example/deepseek/v1' }
     })
   })
 
@@ -213,7 +235,10 @@ describe('applyModelCredential', () => {
       options: { timeout: 30_000, apiKey: '{env:ANTHROPIC_API_KEY}', baseURL: 'https://gw.example/anthropic/v1' }
     })
     expect(config.provider.openai.options.apiKey).toBe('{env:OPENAI_API_KEY}')
-    expect(config.provider.deepseek.options.apiKey).toBe('{env:DEEPSEEK_API_KEY}')
+    expect(config.provider.deepseek).toEqual({
+      npm: '@ai-sdk/anthropic',
+      options: { apiKey: '{env:DEEPSEEK_API_KEY}', baseURL: 'https://gw.example/deepseek/v1' }
+    })
     applyStaticModelConfig({ runtime: 'opencode', provider: 'anthropic', opencodeProvider: 'anthropic' }, env, {
       key: '',
       baseUrl: 'https://gw.example/anthropic/v1/'

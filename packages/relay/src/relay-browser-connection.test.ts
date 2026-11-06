@@ -746,19 +746,33 @@ describe('RelayBrowserConnection', () => {
   })
 
   it('answers an error frame when the agent daemon is offline (no rd/msg attempted)', async () => {
-    const { transport, sendMsg } = build({ daemon: undefined })
+    const warnings: string[] = []
+    const log: Logger = { ...silentLog, warn: (m) => warnings.push(m) }
+    const { transport, sendMsg } = build({ daemon: undefined, log })
     transport.feed({ text: 'hi' })
     await tick()
     expect(sendMsg).not.toHaveBeenCalled() // daemonConn() → undefined ⇒ never bridged
     expect(transport.last('error')).toEqual({ type: 'error', message: 'agent daemon offline' })
+    expect(warnings).toEqual([
+      `webchat: turn for ${AGENT} in ${CHAT} has no live daemon to reach (verdict named ${DAEMON})`
+    ])
   })
 
-  it('answers an error frame on an unparseable or unrecognized envelope', async () => {
-    const { transport } = build()
+  it('answers an error frame on an unparseable or unrecognized envelope, logging its shape but no values', async () => {
+    const warnings: string[] = []
+    const log: Logger = { ...silentLog, warn: (m) => warnings.push(m) }
+    const { transport } = build({ log })
     transport.feed('}{ not json')
     expect(transport.last('error')).toEqual({ type: 'error', message: 'invalid frame' })
-    transport.feed({ type: 'wat' })
+    transport.feed({ type: 'wat', 'secret value': 'do-not-log' })
     expect(transport.last('error')).toEqual({ type: 'error', message: 'unrecognized frame' })
+    transport.feed([1])
+    expect(warnings).toEqual([
+      `webchat: non-JSON frame in ${CHAT}`,
+      `webchat: unrecognized frame in ${CHAT} (type wat; fields type,?)`,
+      `webchat: unrecognized frame in ${CHAT} (not an object)`
+    ])
+    expect(warnings.join('\n')).not.toContain('do-not-log')
   })
 
   it('answers an error frame when rd/msg delivery rejects', async () => {

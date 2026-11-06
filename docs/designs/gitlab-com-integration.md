@@ -1238,18 +1238,24 @@ integration surface:
 
 - create or update an issue/MR comment;
 - read and reply to a discussion;
-- create or update a merge request where the repository grant permits it;
+- create, update, merge, close or reopen a merge request, and create, update,
+  close or reopen an issue, where the repository grant permits it;
 - inspect pipelines and jobs; and
 - retry or cancel a pipeline/job when `write` authority permits it.
 
 Each operation has an allowlisted endpoint and method. The broker does not
 expose an arbitrary path, GraphQL query, request body, or bearer token.
 
-Each host names the operations it implements in its own words, and offers no
-tool for one it does not: GitLab's are `createGitlabComment`,
-`updateGitlabComment`, `readGitlabDiscussions`, `replyGitlabDiscussion`,
-`createGitlabMergeRequest`, `updateGitlabMergeRequest`,
-`inspectGitlabPipelines` and `controlGitlabPipeline`. A tool's name fixes its
+Each host names its tools in its own words and groups its writes by object,
+each tool taking an `action`. GitLab's are `gitlabMergeRequest` (create,
+update, merge, close, reopen), `gitlabIssue` (create, update, close, reopen),
+`gitlabComment` (create, update, reply) and `gitlabPipeline` (retry or cancel
+a pipeline or job). Its reads, `readGitlabDiscussions` and
+`inspectGitlabPipelines`, stay separate so a follow-up check, which only
+reads, never holds a write action. As `glab mr merge` does, a merge with a
+pipeline waits for it (`auto_merge`) and is refused once it has failed or
+been canceled, and `rebase` rebases through the API before merging. A tool's
+name fixes its
 host: the daemon resolves the target only among that host's repositories (the
 hook turn's, then the workspace's) and refuses the call when the session has
 none, rather than acting on another host's repository.
@@ -1279,6 +1285,7 @@ equivalents are the capability-clamped CLI token plus exactly two structured
 tools (`submitGithubReview` and `replyGithubReviewThreads`). GitLab builds the
 provider-neutral surface first. GitHub joins it with its pull-request
 operations ([github-app-git-credentials.md](github-app-git-credentials.md#daemon-mediated-agent-access)).
+It uses the same grouped tools.
 
 ## 15. Formal Merge-Request Reviews
 

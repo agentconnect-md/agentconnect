@@ -265,7 +265,7 @@ function capOutput(s: string): string {
  * runtime writes about its call, never the call's payload.
  *
  * A nested `arguments` object is deliberately NOT read: those keys belong to the tool, and a
- * tool is free to mean something else entirely by them. `createGitlabMergeRequest` takes a
+ * tool is free to mean something else entirely by them. `gitlabMergeRequest` takes a
  * whole merge-request body as `arguments.description`, which is a document, not a step label.
  */
 function rawInputField(update: { rawInput?: unknown }, key: 'command' | 'description'): string {

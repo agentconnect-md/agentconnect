@@ -392,7 +392,7 @@ export class GitCredentialCache {
       agentId,
       reason: 'helper',
       // The CP reports a grant's access from its contents level, so contents rides along to carry the repository's tier.
-      capabilities: ['contents', 'pull_requests'],
+      capabilities: ['contents', 'issues', 'pull_requests'],
       repoFullName: repo,
       ...this.githubProvider(),
       ...(forceRefresh ? { forceRefresh: true } : {})

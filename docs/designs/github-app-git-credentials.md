@@ -430,31 +430,50 @@ context steers the agent to them, but nothing enforces it: the agent's `gh`
 token can still write a review or a comment. This design closes both gaps in
 two steps:
 
-1. Phase 1 adds the missing tool: opening a pull request through the daemon,
-   which adds the footer at creation time.
-2. Phase 2 would enforce all three tools and remove the token from the
-   execution environment.
+1. Phase 1 adds tools for the everyday writes: pull requests, issues and
+   comments, through the daemon, which adds the footer at creation time.
+2. Phase 2 would remove the token from the execution environment and make
+   GraphQL read-only, so those writes go through the tools.
 
-### Phase 1: Opening Pull Requests Through the Daemon
+### Phase 1: Writes Through the Daemon
 
 **Tools.** GitHub joins the code-host effect surface
-(gitlab-com-integration.md §14.2) with two tools in its own words:
+(gitlab-com-integration.md §14.2) with three tools, grouped by object rather
+than one per command. Each takes an `action` and flat optional fields that the
+daemon validates per action: a field the action does not take, or a missing
+required one, is refused before any request. A discriminated union is avoided
+because some runtimes reject a top-level `oneOf`.
 
-- `createGithubPullRequest` opens a pull request through
-  `POST /repos/{owner}/{repo}/pulls`, draft included.
-- `updateGithubPullRequest` edits the title, body or base through
-  `PATCH /repos/{owner}/{repo}/pulls/{number}`. The REST update cannot change
-  draft state, so a draft change runs `convertPullRequestToDraft` or
-  `markPullRequestReadyForReview` on the pull request's node id. It does
-  nothing when the state already matches.
+| Tool                | Actions                                     |
+| ------------------- | ------------------------------------------- |
+| `githubPullRequest` | create, update, merge, close, reopen        |
+| `githubIssue`       | create, update, close, reopen               |
+| `githubComment`     | create, update, on an issue or pull request |
 
-The broker implements no other operation; `gh` remains the path for those.
+- `update` changes only the fields given: title, body, base, draft, labels,
+  assignees and reviewers on a pull request; title, body, labels and
+  assignees on an issue. `create` sets the initial labels and assignees, and
+  `update` adds or removes them, as the hosts' CLIs do, so an update never
+  clobbers ones it did not read. Reviewers are added to the requests.
+- The REST update cannot change draft state, so a draft change runs
+  `convertPullRequestToDraft` or `markPullRequestReadyForReview` on the pull
+  request's node id. It does nothing when the state already matches.
+- `merge` takes a method (merge, squash or rebase) and an optional head sha
+  the merge must still match.
+- A comment `update` rewrites only a comment this session posted with the
+  tool, as on GitLab and Gitea.
+
+GitLab and Gitea have the same three tools in their own words
+(gitlab-com-integration.md §14.2), plus their read tools, which stay separate
+so a follow-up check, which only reads, never holds a write action.
+
+Any other write stays on `gh`.
 By default the target is the turn's trusted repository: the hook's, else the
 workspace's. The spec carries no numeric identity for a GitHub workspace, so
 the workspace is addressed by its `owner/repo` path. A cross-fork head stays
 on `gh`.
 
-**Other repositories.** Like every code-host effect tool, both take an
+**Other repositories.** Like every code-host effect tool, each takes an
 optional `repository` (`owner/repo`) naming another repository the agent is
 authorized for (gitlab-com-integration.md §14.2). On GitHub that is an
 explicit repository grant, or any repository of an account an installation
@@ -462,17 +481,21 @@ grant covers, addressed by its path. The lease below re-checks the named
 repository at its own tier, so naming one never raises authority.
 
 **Lease.** The broker's token is the agent's own grant on the target
-repository, with the `contents` and `pull_requests` capabilities, at the tier
+repository, with the `contents`, `issues` and `pull_requests` capabilities, at the tier
 the workspace or an explicit grant earns. `contents` rides along because a
 grant reports its access from its contents level; without it every lease
 would read as `read`. It needs no new gitcred purpose, because that grant is
 already what the agent's `gh` receives. The token stays in its own cache
-keyspace and never reaches the runtime. Opening or editing requires write.
+keyspace and never reaches the runtime. A comment needs the comment tier;
+every other action needs write. A GitHub grant cannot echo `comment`, so a
+comment-tier grant reads `read`; the broker therefore lets a comment through
+on a `read` echo and leaves the decision to the token's own issue and
+pull-request scopes, which the Control Plane minted from the tier.
 
 **Footer at creation.** When the agent's footer is on, the daemon appends the
-attribution footer (agent, runtime, model, session link) to the description,
-below a hidden marker. It does this before any host's broker runs, so GitLab
-merge requests and Gitea pull requests get the same footer.
+attribution footer (agent, runtime, model, session link) to the description
+of a pull request or issue it creates, below a hidden marker. It does this
+before any host's broker runs, so GitLab and Gitea get the same footer.
 
 - A rewrite replaces only the text above the marker and re-appends the footer,
   so an agent that edits its description keeps it.
@@ -483,15 +506,15 @@ merge requests and Gitea pull requests get the same footer.
 A pull request opened this way is also recorded on its task
 (assistant-mode.md §5.18), as merge requests already are.
 
-**Guidance.** A session offered a host's change-request tools also gets one
-line of guidance naming them: "On GitHub, open and edit pull requests with
-`createGithubPullRequest` and `updateGithubPullRequest`", and likewise for
-GitLab and Gitea. The line rides the tool context, so a session that is not
+**Guidance.** A session offered a host's tools also gets one line of guidance
+naming them: "On GitHub, open, edit and merge pull requests, file issues, and
+comment with `githubPullRequest`, `githubIssue` and `githubComment`", and
+likewise for GitLab and Gitea. The line rides the tool context, so a session that is not
 offered the tools, such as a follow-up check, does not get it.
 
-**What stays the same.** `gh pr create` keeps working, but a pull request
-opened that way has no footer. Adoption of the tool is measured before
-Phase 2 enforces it.
+**What stays the same.** `gh` keeps working for every write, but a pull
+request or issue opened that way has no footer. Adoption of the tools is
+measured before Phase 2 makes GraphQL read-only.
 
 ### Phase 2: The Daemon Credential Proxy
 
@@ -503,12 +526,14 @@ For each request the proxy would:
 
 1. resolve the session from the placeholder;
 2. select the installation and repository;
-3. apply the agent's existing tier and the routed-write list below;
+3. apply the agent's existing tier, GraphQL's read-only rule, and the
+   routed-write list below;
 4. mint or refresh the real token; and
 5. forward the request.
 
-What an agent may do within its authorization would not change. Only where
-the token lives would change.
+What an agent may do within its authorization would not shrink. Where the
+token lives would change, and a write that GraphQL carried today would go
+through a tool or REST instead.
 
 **One proxy, one transport per strategy.** Credential logic would exist once,
 in the daemon, for every execution strategy. Only how a request reaches the
@@ -532,29 +557,47 @@ Only the proxy address differs:
 - every other client sees the same variables.
 
 **Token selection.** The proxy would take the repository from the request
-path: a smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST. A
-GraphQL request names no repository in its URL, so it would get one token for
-the installation, covering the repositories the agent is authorized for
-there. That token would carry the lowest tier among them, because GitHub
-applies a token's permissions to every repository the token lists. An agent
-with a single repository, or only write grants, would see no change.
+path: a smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST, and
+mint that repository's token at its tier.
 
-**Routed writes.** The proxy would refuse a short list of writes and name the
-tool that owns each one:
+**GraphQL is read-only.** A GraphQL request names no repository in its URL,
+and GitHub applies a token's permissions to every repository the token lists,
+so no single token could carry each repository's own tier. The proxy would
+therefore parse the document's operation type and forward only queries, with
+a read-tier token covering the repositories the agent is authorized for in
+one installation. It would refuse every mutation, and a document it cannot
+parse, with an error naming the tool for that write; `gh` prints the error,
+so the agent sees it. The installation is the agent's only one, or the one
+owning the `owner` in the query's variables; a query that names neither is
+refused.
+
+This keeps one rule on every host: GitLab's CLI is already read-only and its
+writes already go through the daemon. Features that exist only in GraphQL,
+such as Projects and Discussions, become unavailable until a tool covers them.
+
+**Writes through tools.** `gh` sends most pull-request and issue writes over
+GraphQL (`pr edit`, `pr merge`, `pr ready`, `issue create`, `pr comment`).
+Phase 1's tools carry those writes, so the refusal names the tool, and the
+agent retries there. An agent's first attempt with `gh` costs that one round.
+
+**REST stays tiered.** A REST write names its repository, so the proxy would
+forward it with that repository's token. `gh api` thereby covers any write no
+tool has yet, so a missing action never strands an agent.
+
+**Routed writes.** On REST, the proxy would refuse a short list of writes and
+name the tool that owns each one:
 
 | Write                              | Owner                                                |
 | ---------------------------------- | ---------------------------------------------------- |
 | formal reviews                     | `submitCodeReview`                                   |
-| opening a pull request             | `createGithubPullRequest`                            |
+| opening a pull request             | `githubPullRequest`                                  |
 | comments and review-thread replies | the daemon's final reply, `replyGithubReviewThreads` |
 
-The third row would apply only while a delivery turn is active. Each row
-covers both the REST endpoint and the GraphQL mutation. For GraphQL, the proxy
-would parse the document's operation type and top-level fields, and refuse a
-mutation it cannot parse.
+The third row would apply only while a delivery turn is active. GraphQL needs
+no rows, since it carries no writes.
 
-The list is not a security control: authority comes from the tier. A write the
-list misses produces the wrong product behavior, never excess access.
+The list is not a security control: authority comes from the tier. A write
+the list misses produces the wrong product behavior, never excess access.
 
 **What it would retire.** The `gh` wrapper and its argv target resolution
 (`gh-target.ts`), and the agent-facing helper channel with its per-agent
@@ -566,12 +609,17 @@ their own handling (session-executors.md §8), including the VM's
 hostname-scoped placeholders. Cluster access is expected through an MCP
 server running outside the execution environment, not through this proxy.
 
+**A later phase: provider API keys.** The proxy's transport is independent of
+where a credential comes from, so provider API keys, whether exported from the
+host's sign-in or issued by the key server, could later use it too. That would
+take the real key out of the `srt` and host environments, where a command the
+agent runs can read it today, and would replace the VM's hostname-scoped
+placeholders. Subscription sign-ins (OAuth) stay out: the daemon does not hold
+or refresh a person's subscription login on others' behalf.
+
 ### Open Questions
 
-1. **The GraphQL tier rule.** Under Phase 2's lowest-tier rule, an agent with
-   mixed tiers would lose GraphQL writes. Is that acceptable, or should the
-   proxy resolve the repository from mutation inputs?
-2. **Transparent capture.** The proxy would rely on clients honoring
+1. **Transparent capture.** The proxy would rely on clients honoring
    `HTTPS_PROXY`. Does `srt`'s network namespace allow transparent capture
    instead, and which runtimes and common CLIs ignore the variable?
 

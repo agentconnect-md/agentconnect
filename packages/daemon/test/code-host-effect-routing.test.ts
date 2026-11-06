@@ -259,51 +259,159 @@ describe("each host's tools", () => {
   const deps = (codeHostEffect: NonNullable<OpsDeps['codeHostEffect']>) =>
     ({ codeHostEffect, gatewayFor: () => undefined }) as unknown as OpsDeps
 
-  it('offers Gitea only the operations its broker implements', () => {
-    expect(codeHostEffectToolsFor('gitea').map((t) => t.name)).toEqual([
-      'createGiteaComment',
-      'updateGiteaComment',
-      'readGiteaComments',
-      'createGiteaPullRequest',
-      'updateGiteaPullRequest',
-      'inspectGiteaStatuses'
-    ])
+  it('groups every host’s writes by object and keeps its reads apart, so a check takes only the reads', () => {
     expect(codeHostEffectToolsFor('github').map((t) => t.name)).toEqual([
-      'createGithubPullRequest',
-      'updateGithubPullRequest'
+      'githubPullRequest',
+      'githubIssue',
+      'githubComment'
+    ])
+    expect(codeHostEffectToolsFor('gitlab').map((t) => t.name)).toEqual([
+      'gitlabMergeRequest',
+      'gitlabIssue',
+      'gitlabComment',
+      'readGitlabDiscussions',
+      'inspectGitlabPipelines',
+      'gitlabPipeline'
+    ])
+    expect(codeHostEffectToolsFor('gitea').map((t) => t.name)).toEqual([
+      'giteaPullRequest',
+      'giteaIssue',
+      'giteaComment',
+      'readGiteaComments',
+      'inspectGiteaStatuses'
     ])
   })
 
-  it('gives one line of guidance per host whose change-request tools the session is offered', () => {
+  it('keeps every grouped description within the runtimes’ limit', () => {
+    for (const provider of ['github', 'gitlab', 'gitea'] as const) {
+      for (const tool of codeHostEffectToolsFor(provider)) {
+        expect(tool.description.length).toBeLessThanOrEqual(1024)
+        const props = (tool.inputSchema as unknown as { properties: Record<string, { description?: string }> })
+          .properties
+        for (const prop of Object.values(props)) expect(prop.description?.length ?? 0).toBeLessThanOrEqual(1024)
+      }
+    }
+  })
+
+  it('gives one line of guidance per host whose change-request tool the session is offered', () => {
     expect(codeHostEffectGuidance(codeHostEffectToolsFor('github'))).toBe(
-      'On GitHub, open and edit pull requests with `createGithubPullRequest` and `updateGithubPullRequest`.'
+      'On GitHub, open, edit and merge pull requests, file issues, and comment with `githubPullRequest`, `githubIssue` and `githubComment`.'
     )
-    expect(codeHostEffectGuidance(codeHostEffectToolsFor('gitlab'))).toContain('`createGitlabMergeRequest`')
-    expect(codeHostEffectGuidance(codeHostEffectToolsFor('gitea'))).toContain('`createGiteaPullRequest`')
+    expect(codeHostEffectGuidance(codeHostEffectToolsFor('gitlab'))).toContain('`gitlabMergeRequest`')
+    expect(codeHostEffectGuidance(codeHostEffectToolsFor('gitea'))).toContain('`giteaPullRequest`')
     // A check keeps only the reads, so it gets no guidance about opening anything.
     const reads = codeHostEffectToolsFor('gitlab').filter((t) => t.name.startsWith('read'))
     expect(codeHostEffectGuidance(reads)).toBeUndefined()
   })
 
-  it('lets a GitHub draft change stand alone, since GitHub keeps it apart from the title', async () => {
+  it('maps each action onto its broker operation', async () => {
     const codeHostEffect = vi.fn(async (_req: CodeHostEffectReq): Promise<unknown> => ({}))
     const github = { ...ctx, tools: codeHostEffectToolsFor('github') } as unknown as SessionContext
-    await executeTool(github, 'updateGithubPullRequest', { iid: 4, draft: false }, deps(codeHostEffect))
-    expect(codeHostEffect.mock.calls[0]?.[0]).toMatchObject({
-      provider: 'github',
-      operation: { kind: 'updateMergeRequest', iid: 4, draft: false }
-    })
-    await expect(executeTool(github, 'updateGithubPullRequest', { iid: 4 }, deps(codeHostEffect))).rejects.toThrow(
-      'supply at least one of title, description, targetBranch, or draft'
+    const calls: [string, Record<string, unknown>][] = [
+      [
+        'githubPullRequest',
+        {
+          action: 'create',
+          sourceBranch: 'feat',
+          targetBranch: 'main',
+          title: 'T',
+          labels: ['bug'],
+          reviewers: ['ann']
+        }
+      ],
+      ['githubPullRequest', { action: 'update', iid: 4, draft: false }],
+      ['githubPullRequest', { action: 'merge', iid: 4, mergeMethod: 'squash', sha: 'abc1234' }],
+      ['githubPullRequest', { action: 'close', iid: 4 }],
+      ['githubIssue', { action: 'create', title: 'Bug', assignees: ['ann'] }],
+      ['githubIssue', { action: 'update', iid: 9, addLabels: ['bug'], removeAssignees: ['ann'] }],
+      ['githubIssue', { action: 'reopen', iid: 9 }],
+      ['githubComment', { action: 'create', subject: 'pull_request', iid: 4, body: 'hi' }],
+      ['githubComment', { action: 'update', subject: 'issue', iid: 9, body: 'edit', commentId: '77' }]
+    ]
+    for (const [name, args] of calls) await executeTool(github, name, args, deps(codeHostEffect))
+    expect(codeHostEffect.mock.calls.map(([req]) => req.operation)).toEqual([
+      {
+        kind: 'createMergeRequest',
+        sourceBranch: 'feat',
+        targetBranch: 'main',
+        title: 'T',
+        labels: ['bug'],
+        reviewers: ['ann']
+      },
+      { kind: 'updateMergeRequest', iid: 4, draft: false },
+      { kind: 'mergeMergeRequest', iid: 4, method: 'squash', sha: 'abc1234' },
+      { kind: 'setState', subject: 'merge_request', iid: 4, state: 'closed' },
+      { kind: 'createIssue', title: 'Bug', assignees: ['ann'] },
+      { kind: 'updateIssue', iid: 9, addLabels: ['bug'], removeAssignees: ['ann'] },
+      { kind: 'setState', subject: 'issue', iid: 9, state: 'open' },
+      { kind: 'createComment', subject: 'merge_request', iid: 4, body: 'hi' },
+      { kind: 'updateComment', subject: 'issue', iid: 9, body: 'edit', noteId: '77' }
+    ])
+  })
+
+  it('refuses a field the action does not take, a missing required one, and an empty update', async () => {
+    const codeHostEffect = vi.fn(async (_req: CodeHostEffectReq): Promise<unknown> => ({}))
+    const github = { ...ctx, tools: codeHostEffectToolsFor('github') } as unknown as SessionContext
+    const run = (name: string, args: Record<string, unknown>) => executeTool(github, name, args, deps(codeHostEffect))
+    await expect(run('githubPullRequest', { action: 'merge', iid: 4, title: 'x' })).rejects.toThrow(
+      'action merge does not take title'
     )
+    await expect(run('githubPullRequest', { action: 'create', title: 'x' })).rejects.toThrow(
+      'action create requires sourceBranch, targetBranch'
+    )
+    await expect(run('githubPullRequest', { action: 'update', iid: 4 })).rejects.toThrow(
+      'action update needs at least one of'
+    )
+    await expect(run('githubIssue', { action: 'close' })).rejects.toThrow('action close requires iid')
+    // An update adds or removes, as the CLIs do; the whole-set fields belong to create alone.
+    await expect(run('githubIssue', { action: 'update', iid: 9, labels: ['bug'] })).rejects.toThrow(
+      'action update does not take labels'
+    )
+    await expect(run('githubIssue', { action: 'create', title: 't', addLabels: ['bug'] })).rejects.toThrow(
+      'action create does not take addLabels'
+    )
+    await expect(run('githubComment', { action: 'update', subject: 'issue', iid: 1, body: 'x' })).rejects.toThrow(
+      'action update requires commentId'
+    )
+    expect(codeHostEffect).not.toHaveBeenCalled()
+  })
+
+  it('keeps a title-carried draft tied to the title, and tells how a GitLab merge lands', async () => {
+    const codeHostEffect = vi.fn(async (_req: CodeHostEffectReq): Promise<unknown> => ({}))
+    const gitlab = { ...ctx, tools: codeHostEffectToolsFor('gitlab') } as unknown as SessionContext
+    await expect(
+      executeTool(gitlab, 'gitlabMergeRequest', { action: 'update', iid: 4, draft: true }, deps(codeHostEffect))
+    ).rejects.toThrow('argument draft also requires title')
+    await expect(
+      executeTool(gitlab, 'gitlabMergeRequest', { action: 'merge', iid: 4, mergeMethod: 'fast' }, deps(codeHostEffect))
+    ).rejects.toThrow('argument mergeMethod must be one of: merge, squash, rebase')
+    const merge = (
+      codeHostEffectToolsFor('gitlab')[0]!.inputSchema as unknown as {
+        properties: Record<string, { description: string }>
+      }
+    ).properties.mergeMethod!.description
+    expect(merge).toContain('merges once the pipeline passes')
+    await executeTool(
+      gitlab,
+      'gitlabComment',
+      { action: 'reply', subject: 'merge_request', iid: 4, body: 'ok', discussionId: 'abc123' },
+      deps(codeHostEffect)
+    )
+    expect(codeHostEffect.mock.calls[0]?.[0].operation).toEqual({
+      kind: 'replyDiscussion',
+      subject: 'merge_request',
+      iid: 4,
+      body: 'ok',
+      discussionId: 'abc123'
+    })
   })
 
   it('carries a named repository beside the operation and describes it in the host’s own form', async () => {
     const codeHostEffect = vi.fn(async (_req: CodeHostEffectReq): Promise<unknown> => ({}))
     await executeTool(
       ctx,
-      'createGiteaComment',
-      { subject: 'issue', iid: 3, body: 'hi', repository: 'example-org/other' },
+      'giteaComment',
+      { action: 'create', subject: 'issue', iid: 3, body: 'hi', repository: 'example-org/other' },
       deps(codeHostEffect)
     )
     expect(codeHostEffect.mock.calls[0]?.[0]).toMatchObject({
@@ -330,7 +438,12 @@ describe("each host's tools", () => {
 
   it("maps Gitea's words onto the broker's operations and names the host", async () => {
     const codeHostEffect = vi.fn(async (_req: CodeHostEffectReq): Promise<unknown> => ({}))
-    await executeTool(ctx, 'createGiteaComment', { subject: 'pull_request', iid: 3, body: 'hi' }, deps(codeHostEffect))
+    await executeTool(
+      ctx,
+      'giteaComment',
+      { action: 'create', subject: 'pull_request', iid: 3, body: 'hi' },
+      deps(codeHostEffect)
+    )
     await executeTool(ctx, 'readGiteaComments', { subject: 'issue', iid: 3, commentId: '9' }, deps(codeHostEffect))
     await executeTool(ctx, 'inspectGiteaStatuses', { ref: 'main' }, deps(codeHostEffect))
     expect(codeHostEffect.mock.calls.map(([req]) => [req.provider, req.operation])).toEqual([
@@ -339,7 +452,12 @@ describe("each host's tools", () => {
       ['gitea', { kind: 'inspectPipelines', scope: 'pipelines', ref: 'main' }]
     ])
     await expect(
-      executeTool(ctx, 'createGiteaComment', { subject: 'merge_request', iid: 3, body: 'hi' }, deps(codeHostEffect))
+      executeTool(
+        ctx,
+        'giteaComment',
+        { action: 'create', subject: 'merge_request', iid: 3, body: 'hi' },
+        deps(codeHostEffect)
+      )
     ).rejects.toThrow('argument subject must be one of: issue, pull_request')
   })
 })
