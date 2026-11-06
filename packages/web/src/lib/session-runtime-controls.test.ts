@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  catalogModelFor,
   chatApprovalsAllowed,
   chatSettingsAllowed,
+  runtimePickerState,
   sessionAfterModelSelection,
   sessionEffortAfterModelChange,
   sessionEffortChoices,
@@ -130,5 +132,71 @@ describe('session runtime controls', () => {
     expect(sessionEffortChoicesForSelection('codex', daemon, 'terra', 'sol', ['high', 'max'])).toEqual([
       { value: 'high', label: 'High' }
     ])
+  })
+})
+
+describe('catalogModelFor', () => {
+  const aliases: RuntimeModelCatalog = {
+    models: [
+      { id: 'default', name: 'Default (recommended)' },
+      { id: 'opus', name: 'Opus 5.5' },
+      { id: 'claude-fable-5-1[1m]', name: 'Fable 5.1' },
+      { id: 'haiku', name: 'Haiku 5.5' }
+    ],
+    source: 'acp',
+    observedAt: '2026-11-06T00:00:00.000Z'
+  }
+  const offered = aliases.models.map((model) => model.id)
+
+  it('names the entry a reported concrete id resolves to', () => {
+    expect(catalogModelFor('claude-haiku-5-5', aliases, offered)).toBe('haiku')
+    expect(catalogModelFor('claude-opus-5-5', aliases, offered)).toBe('opus')
+    expect(catalogModelFor('claude-fable-5-1', aliases, offered)).toBe('claude-fable-5-1[1m]')
+  })
+
+  it('keeps an offered id and an id no entry names', () => {
+    expect(catalogModelFor('haiku', aliases, offered)).toBe('haiku')
+    expect(catalogModelFor('claude-sonnet-5-5', aliases, offered)).toBe('claude-sonnet-5-5')
+    expect(catalogModelFor('claude-opus-5', aliases, offered)).toBe('claude-opus-5')
+  })
+
+  it('names only an entry the session offers', () => {
+    expect(catalogModelFor('claude-haiku-5-5', aliases, ['default', 'opus'])).toBe('claude-haiku-5-5')
+  })
+})
+
+describe('runtimePickerState', () => {
+  it('selects the catalog entry a session reported by its concrete id, with no extra row', () => {
+    const models = ['default', 'opus', 'haiku']
+    const owningDaemon = {
+      runtimeModels: [
+        {
+          runtime: 'claude-acp',
+          version: '1.0.0',
+          models,
+          modelCatalog: {
+            models: [
+              { id: 'default', name: 'Default (recommended)' },
+              { id: 'opus', name: 'Opus 5.5' },
+              { id: 'haiku', name: 'Haiku 5.5' }
+            ],
+            source: 'acp',
+            observedAt: '2026-11-06T00:00:00.000Z'
+          }
+        }
+      ]
+    } as unknown as DaemonRow
+    const state = runtimePickerState({
+      session: { model: 'claude-haiku-5-5' },
+      owner: undefined,
+      owningDaemon,
+      agentRuntime: 'claude-acp',
+      beforeFirstTurn: false,
+      runtimeUnresolved: false,
+      permissionT: (key: string) => key
+    })
+
+    expect(state.pgModel).toBe('haiku')
+    expect(state.pgModelOptions).toEqual(models)
   })
 })
