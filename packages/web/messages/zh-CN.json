@@ -135,10 +135,10 @@
       "runsOn": "运行于 {agent}",
       "controls": {
         "stop": { "title": "停止", "does": "停止当前回答" },
-        "model": { "title": "模型", "hint": "[模型]", "does": "列出或切换模型" },
-        "effort": { "title": "推理强度", "hint": "[级别]", "does": "列出或切换推理强度" },
-        "permission": { "title": "权限模式", "hint": "[模式]", "does": "列出或切换权限模式" },
-        "fast": { "title": "快速模式", "hint": "on|off", "does": "开启或关闭快速模式" }
+        "model": { "title": "模型", "does": "列出或切换模型" },
+        "effort": { "title": "推理强度", "does": "列出或切换推理强度" },
+        "permission": { "title": "权限模式", "does": "列出或切换权限模式" },
+        "fast": { "title": "快速模式", "does": "开启或关闭快速模式" }
       },
       "fastOn": "开启",
       "fastOff": "关闭"

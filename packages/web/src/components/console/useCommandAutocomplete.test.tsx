@@ -250,11 +250,11 @@ describe('CommandMenu', () => {
         />
       )
     )
-    const text = container.textContent ?? ''
     const names = [...container.querySelectorAll('[role="option"] .mono')].map((el) => el.textContent)
     expect(names).toEqual(['effort', 'stop'])
-    expect(text).toContain('[level]')
-    expect(text).toContain('List or switch the reasoning effort')
+    // The pane says only what the highlighted command does: no name heading, no argument hint.
+    const pane = container.querySelector('[role="listbox"]')!.nextElementSibling!
+    expect(pane.textContent).toBe('List or switch the reasoning effort')
   })
 
   it('marks the current choice and leaves the skills’ roster gaps off the second level', () => {

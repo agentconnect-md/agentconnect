@@ -6,7 +6,6 @@ import { AgentIconView } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { useTranslations } from 'next-intl'
 import type { AgentIcon } from '@/lib/agent-icon'
-import type { ControlName } from '@/components/console/composer-control-commands'
 import type { RuntimeCommandsGap } from '@/components/console/useRuntimeCommands'
 import { COMMAND_MENU_MAX_HEIGHT, type CommandMenuEntry } from '@/components/console/useCommandAutocomplete'
 import type { MentionCoords } from '@/components/console/useMentionAutocomplete'
@@ -124,17 +123,9 @@ export function CommandMenu({
               )}
             </>
           ) : (
-            <>
-              <div className="mono text-[12px] break-all text-(--text-primary)">{active.control.name}</div>
-              {active.control.choices && (
-                <div className="mono mt-[3px] text-[11px] break-all text-(--text-tertiary)">
-                  {t(`controls.${active.control.name as Exclude<ControlName, 'stop'>}.hint`)}
-                </div>
-              )}
-              <p className="mt-2 font-sans text-[12px] leading-[1.5] font-normal text-(--text-secondary)">
-                {t(`controls.${active.control.name}.does`)}
-              </p>
-            </>
+            <p className="font-sans text-[12px] leading-[1.5] font-normal text-(--text-secondary)">
+              {t(`controls.${active.control.name}.does`)}
+            </p>
           )}
         </div>
       )}
