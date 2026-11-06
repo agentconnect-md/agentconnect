@@ -449,10 +449,17 @@ two steps:
   nothing when the state already matches.
 
 The broker implements no other operation; `gh` remains the path for those.
-The target is the turn's trusted repository: the hook's, else the workspace's.
-The spec carries no numeric identity for a GitHub workspace, so the
-workspace is addressed by its `owner/repo` path. A cross-fork head stays on
-`gh`.
+By default the target is the turn's trusted repository: the hook's, else the
+workspace's. The spec carries no numeric identity for a GitHub workspace, so
+the workspace is addressed by its `owner/repo` path. A cross-fork head stays
+on `gh`.
+
+**Other repositories.** Like every code-host effect tool, both take an
+optional `repository` (`owner/repo`) naming another repository the agent is
+authorized for (gitlab-com-integration.md §14.2). On GitHub that is an
+explicit repository grant, or any repository of an account an installation
+grant covers, addressed by its path. The lease below re-checks the named
+repository at its own tier, so naming one never raises authority.
 
 **Lease.** The broker's token is the agent's own grant on the target
 repository, with the `contents` and `pull_requests` capabilities, at the tier
@@ -561,16 +568,10 @@ server running outside the execution environment, not through this proxy.
 
 ### Open Questions
 
-1. **Multiple repositories.** The broker acts on one trusted repository per
-   turn, so an agent opening a pull request elsewhere falls back to `gh`,
-   without a footer. Should the broker accept a repository argument
-   restricted to workspace ∪ `AgentRepoAuthorization`? The CP already
-   enforces that set at minting time (agent-multi-repo-authorization.md
-   decision 2).
-2. **The GraphQL tier rule.** Under Phase 2's lowest-tier rule, an agent with
+1. **The GraphQL tier rule.** Under Phase 2's lowest-tier rule, an agent with
    mixed tiers would lose GraphQL writes. Is that acceptable, or should the
    proxy resolve the repository from mutation inputs?
-3. **Transparent capture.** The proxy would rely on clients honoring
+2. **Transparent capture.** The proxy would rely on clients honoring
    `HTTPS_PROXY`. Does `srt`'s network namespace allow transparent capture
    instead, and which runtimes and common CLIs ignore the variable?
 

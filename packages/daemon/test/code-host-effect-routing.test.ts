@@ -39,7 +39,7 @@ function daemonWith(workspace: { provider: string; repoId: string }, hook?: { pr
 describe('code-host effect routing', () => {
   it('refuses a tool whose host has no repository in the session instead of acting on another host', async () => {
     const { run, gitlab, gitea } = daemonWith({ provider: 'gitlab', repoId: '10' })
-    await expect(run('gitea')).rejects.toThrow('this session has no gitea repository to act on')
+    await expect(run('gitea')).rejects.toThrow('this session has no gitea repository of its own')
     expect(gitlab.execute).not.toHaveBeenCalled()
     expect(gitea.execute).not.toHaveBeenCalled()
   })
@@ -59,6 +59,117 @@ describe('code-host effect routing', () => {
       { provider: 'gitea', repoId: '20', agentId: AGENT_ID, sessionKey: key },
       expect.anything()
     )
+  })
+})
+
+describe('a repository the model names', () => {
+  function namedDaemon() {
+    const daemon = new Daemon({ sandboxMechanism: null } as never)
+    const inner = daemon as never as {
+      agents: Map<string, unknown>
+      codeHostBrokers: Map<string, { execute: ReturnType<typeof vi.fn> }>
+      activeTurnCodeHost: Map<string, unknown>
+      managedWorkspaceRepo: (agentId: string) => unknown
+      holdsEffectRepository: (agent: unknown, provider: string) => boolean
+      runCodeHostEffect: (req: CodeHostEffectReq) => Promise<unknown>
+    }
+    const agent = {
+      id: AGENT_ID,
+      output: { showFooter: false },
+      workspace: {
+        mode: 'git-repo',
+        additionalRepos: [{ provider: 'gitlab', repoId: '30', repoFullName: 'example-group/other-project' }],
+        additionalInstallations: [{ provider: 'github', accountLogin: 'Example-Org', access: 'write' }]
+      }
+    }
+    inner.agents.set(AGENT_ID, agent)
+    const brokers = {
+      github: { execute: vi.fn(async () => ({})) },
+      gitlab: { execute: vi.fn(async () => ({})) },
+      gitea: { execute: vi.fn(async () => ({})) }
+    }
+    for (const [provider, broker] of Object.entries(brokers)) inner.codeHostBrokers.set(provider, broker)
+    vi.spyOn(inner, 'managedWorkspaceRepo').mockReturnValue({
+      provider: 'gitlab',
+      repoId: '10',
+      repoPath: 'example-group/workspace'
+    })
+    const key = sessionKey('hook', CHANNEL, THREAD, AGENT_ID)
+    inner.activeTurnCodeHost.set(key, {
+      agentId: AGENT_ID,
+      provider: 'gitlab',
+      repoId: '20',
+      repoPath: 'example-group/hooked',
+      hookId: 'hook-9'
+    })
+    const run = (provider: 'github' | 'gitlab' | 'gitea', repository?: string) =>
+      inner.runCodeHostEffect({
+        provider,
+        agentId: AGENT_ID,
+        platform: 'hook',
+        channel: CHANNEL,
+        thread: THREAD,
+        ...(repository !== undefined ? { repository } : {}),
+        operation: { kind: 'createComment', subject: 'issue', iid: 7, body: 'hi' }
+      })
+    const targetOf = (broker: { execute: ReturnType<typeof vi.fn> }) =>
+      (broker.execute.mock.calls.at(-1) as unknown[])[0]
+    return { inner, agent, brokers, run, key, targetOf }
+  }
+
+  it('keeps the hook turn first when nothing is named', async () => {
+    const { brokers, run, key, targetOf } = namedDaemon()
+    await run('gitlab')
+    expect(targetOf(brokers.gitlab)).toEqual({
+      provider: 'gitlab',
+      repoId: '20',
+      repoPath: 'example-group/hooked',
+      hookId: 'hook-9',
+      agentId: AGENT_ID,
+      sessionKey: key
+    })
+  })
+
+  it('acts on the workspace, the hook repository, or an additional repository by name, ignoring case', async () => {
+    const { brokers, run, targetOf } = namedDaemon()
+    await run('gitlab', 'example-group/workspace')
+    expect(targetOf(brokers.gitlab)).toMatchObject({ repoId: '10', repoPath: 'example-group/workspace' })
+    expect(targetOf(brokers.gitlab)).not.toHaveProperty('hookId')
+    await run('gitlab', 'example-group/hooked')
+    expect(targetOf(brokers.gitlab)).toMatchObject({ repoId: '20', hookId: 'hook-9' })
+    await run('gitlab', 'Example-Group/Other-Project')
+    expect(targetOf(brokers.gitlab)).toMatchObject({ repoId: '30', repoPath: 'example-group/other-project' })
+    expect(targetOf(brokers.gitlab)).not.toHaveProperty('hookId')
+  })
+
+  it('addresses a repository an installation grant covers by its path, on a host that resolves by name', async () => {
+    const { brokers, run, targetOf } = namedDaemon()
+    await run('github', 'example-org/another-repo')
+    expect(targetOf(brokers.github)).toMatchObject({
+      provider: 'github',
+      repoId: 'example-org/another-repo',
+      repoPath: 'example-org/another-repo'
+    })
+  })
+
+  it('refuses a repository the agent holds no authorization for, or one on another host, before any broker call', async () => {
+    const { brokers, run } = namedDaemon()
+    await expect(run('gitlab', 'example-group/unknown')).rejects.toThrow(
+      'example-group/unknown is not a gitlab repository this agent is authorized for'
+    )
+    await expect(run('gitea', 'example-group/other-project')).rejects.toThrow(
+      'example-group/other-project is not a gitea repository this agent is authorized for'
+    )
+    await expect(run('github', 'other-org/repo')).rejects.toThrow('is not a github repository')
+    await expect(run('github', 'example-org/repo/extra')).rejects.toThrow('is not a github repository')
+    for (const broker of Object.values(brokers)) expect(broker.execute).not.toHaveBeenCalled()
+  })
+
+  it("offers a host's tools for any repository the agent holds there, not only its workspace", () => {
+    const { inner, agent } = namedDaemon()
+    expect(inner.holdsEffectRepository(agent, 'gitlab')).toBe(true)
+    expect(inner.holdsEffectRepository(agent, 'github')).toBe(true)
+    expect(inner.holdsEffectRepository(agent, 'gitea')).toBe(false)
   })
 })
 
@@ -185,6 +296,36 @@ describe("each host's tools", () => {
     await expect(executeTool(github, 'updateGithubPullRequest', { iid: 4 }, deps(codeHostEffect))).rejects.toThrow(
       'supply at least one of title, description, targetBranch, or draft'
     )
+  })
+
+  it('carries a named repository beside the operation and describes it in the host’s own form', async () => {
+    const codeHostEffect = vi.fn(async (_req: CodeHostEffectReq): Promise<unknown> => ({}))
+    await executeTool(
+      ctx,
+      'createGiteaComment',
+      { subject: 'issue', iid: 3, body: 'hi', repository: 'example-org/other' },
+      deps(codeHostEffect)
+    )
+    expect(codeHostEffect.mock.calls[0]?.[0]).toMatchObject({
+      provider: 'gitea',
+      repository: 'example-org/other',
+      operation: { kind: 'createComment', subject: 'issue', iid: 3, body: 'hi' }
+    })
+    expect(codeHostEffect.mock.calls[0]?.[0].operation).not.toHaveProperty('repository')
+    for (const provider of ['github', 'gitlab', 'gitea'] as const) {
+      for (const tool of codeHostEffectToolsFor(provider)) {
+        const schema = tool.inputSchema as unknown as {
+          properties: Record<string, { description: string }>
+          required: string[]
+        }
+        expect(schema.properties.repository?.description).toContain('Omit it to act on this session’s repository')
+        expect(schema.required).not.toContain('repository')
+      }
+    }
+    const gitlab = codeHostEffectToolsFor('gitlab')[0]!.inputSchema as unknown as {
+      properties: Record<string, { description: string }>
+    }
+    expect(gitlab.properties.repository!.description).toContain('`group/subgroup/project`')
   })
 
   it("maps Gitea's words onto the broker's operations and names the host", async () => {

@@ -43,9 +43,9 @@ export const GITEA_EFFECT_TOOLS: readonly CodeHostEffectTool[] = [
     descriptor: {
       name: 'createGiteaComment',
       description:
-        'Post one comment on a Gitea issue or pull request in the repository this session is bound to. The ' +
-        'repository is fixed by trusted session state and cannot be selected here. Requires comment authority. ' +
-        'Returns the created comment id, which is the only id `updateGiteaComment` will accept later in this session.',
+        'Post one comment on a Gitea issue or pull request in this session’s repository. Requires comment ' +
+        'authority. Returns the created comment id, which is the only id `updateGiteaComment` will accept later ' +
+        'in this session.',
       inputSchema: obj(
         {
           subject: { ...subject, description: 'Which subject family to comment on.' },

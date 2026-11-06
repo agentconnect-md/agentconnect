@@ -1,7 +1,7 @@
 // The code-host effect tools (gitlab-com-integration.md §14.2, gitea-integration.md §10.2): each host names its own tools, and a call carries that host to its broker.
 import { z, type ZodType } from 'zod'
 import type { CodeHostProvider } from '@agentconnect.md/protocol'
-import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
+import type { ObjectToolSchema, ToolDescriptor } from '../../tool-schema/descriptor.js'
 import type { SessionContext } from './context.js'
 import {
   optionalBoolean,
@@ -127,8 +127,29 @@ export interface CodeHostEffectTool {
   guidance?: string
 }
 
-/** Declare a host's tool with its argument schema and the operation its parsed arguments make. */
-export function codeHostEffectTool<S extends ZodType>(spec: {
+// How each host spells a repository the model may name beside the session's own.
+const REPOSITORY_FORM: Record<CodeHostProvider, string> = {
+  github: '`owner/repo`',
+  gitlab: 'its full project path (`group/subgroup/project`)',
+  gitea: '`owner/repo`'
+}
+
+/** Every tool's optional `repository`: another repository the agent is authorized for, or the session's own when omitted. */
+function withRepositoryProperty(descriptor: ToolDescriptor, provider: CodeHostProvider): ToolDescriptor {
+  if ('oneOf' in descriptor.inputSchema) return descriptor
+  const schema = descriptor.inputSchema as ObjectToolSchema
+  const repository = {
+    type: 'string',
+    minLength: 1,
+    description:
+      `Another repository to act on, as ${REPOSITORY_FORM[provider]}, that this agent is authorized for. ` +
+      'Omit it to act on this session’s repository.'
+  }
+  return { ...descriptor, inputSchema: { ...schema, properties: { ...schema.properties, repository } } }
+}
+
+/** Declare a host's tool with its argument schema and the operation its parsed arguments make; every tool also takes `repository`. */
+export function codeHostEffectTool<S extends z.ZodObject>(spec: {
   provider: CodeHostProvider
   readOnly: boolean
   descriptor: ToolDescriptor
@@ -136,7 +157,15 @@ export function codeHostEffectTool<S extends ZodType>(spec: {
   operation: (args: z.infer<S>) => CodeHostBrokerOperation
   guidance?: string
 }): CodeHostEffectTool {
-  return spec as unknown as CodeHostEffectTool
+  return {
+    ...spec,
+    descriptor: withRepositoryProperty(spec.descriptor, spec.provider),
+    args: spec.args.extend({ repository: optionalString('repository') }),
+    operation: (parsed) => {
+      const { repository: _repository, ...args } = parsed
+      return spec.operation(args as z.infer<S>)
+    }
+  }
 }
 
 /** One brokered effect with its caller identity filled from the trusted MCP SessionContext. */
@@ -148,6 +177,8 @@ export interface CodeHostEffectReq {
   channel: string
   thread: string
   transportScope?: string
+  /** The repository the model named; absent means the session's own. Resolved only against the agent's authorizations. */
+  repository?: string
   operation: CodeHostBrokerOperation
 }
 
@@ -164,8 +195,10 @@ export function runCodeHostEffectTool(
   args: Record<string, unknown>,
   deps: CodeHostEffectDeps
 ): Promise<unknown> {
-  const operation = tool.operation(parseArgs(tool.args, args) as Record<string, unknown>)
+  const parsed = parseArgs(tool.args, args) as Record<string, unknown>
+  const operation = tool.operation(parsed)
   if (!deps.codeHostEffect) throw new Error('code-host effects are unavailable on this daemon')
+  const repository = typeof parsed.repository === 'string' ? parsed.repository : undefined
   return deps.codeHostEffect({
     provider: tool.provider,
     agentId: ctx.agentId,
@@ -173,6 +206,7 @@ export function runCodeHostEffectTool(
     channel: ctx.channel,
     thread: ctx.thread,
     ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
+    ...(repository !== undefined ? { repository } : {}),
     operation
   })
 }
