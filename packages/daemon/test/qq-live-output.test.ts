@@ -7,11 +7,11 @@ import { normalizeQQMessage } from '@agentconnect.md/message'
 import { Daemon } from '../src/daemon.js'
 import { QQConnection } from '../src/platforms/qq/connection.js'
 import { sessionKey } from '../src/store/local-store.js'
+import { WAIT } from './wait-support.js'
 
 let daemon: Daemon | undefined
 let root: string | undefined
 const releases: Array<() => void> = []
-const WAIT = { timeout: 5000 }
 
 afterEach(async () => {
   for (const release of releases.splice(0)) release()
