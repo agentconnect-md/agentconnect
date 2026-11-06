@@ -358,7 +358,14 @@
       "shrink": "Back into the side panel",
       "closeTask": "Close the task",
       "startedBy": "Started by the coordinator",
-      "pageHint": "The coordinator reads this task’s summary, not each reply."
+      "pageHint": "The coordinator reads this task’s summary, not each reply.",
+      "thread": "Thread",
+      "openThread": "Open the thread",
+      "hiddenTask": "A task you can’t open",
+      "footerWorking": "working…",
+      "showEarlier": "Show earlier messages",
+      "unreadable": "Only people who can open the task that holds this thread can read it.",
+      "missing": "This thread isn’t in this conversation."
     },
     "githubApp": {
       "title": "GitHub App",

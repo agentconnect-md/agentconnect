@@ -343,6 +343,28 @@ As implemented (PR 6):
 - On a phone the panel is the dock's existing bottom sheet; the timeline and the thread share one
   responsive tree.
 
+As implemented (PR 10):
+
+- **`ThreadPanel`** (`dock/ThreadPanel.tsx`, formerly `TaskThreadPanel`) reads a thread's record
+  through the conversation's session when given `record: {sessionId, rootId}`
+  (`useThreadRecord`, `task-thread.ts`), and a task's own session when given only `task`, as every
+  caller does until PR 11. The holding task comes from `task` or the record's footer; it gives the
+  header, Stop, the page link, approvals and the composer, which still continues the task's session.
+  An unowned thread gets a plain header and no composer until PR 11. A footer that is not
+  `readable` gets a notice and no content, a root the session never received a notice, and a long
+  thread a "Show earlier messages" control that pages back with `cursor`.
+- **409 `DAEMON_FEATURE_MISSING`** from the thread read falls back to the task's session when the
+  panel knows the task; an unowned thread then shows a load failure.
+- **`ThreadFooter`** (`ThreadFooter.tsx`, formerly `TaskThreadCard`) draws a `ThreadFooterView`: the
+  holding task's card (state and title), then the replies line with up to five repliers, the count,
+  the last reply's time, the preview and "working…" while `running`. `footerOfSummary` builds it from
+  a `SessionThreadSummaryDto`. A held thread rests between turns, as a threaded task does. An
+  unreadable footer names "a task you can't open", shows no preview and opens nothing.
+  `TaskThreadFooter` builds the same footer from a task's row, which is how today's link and
+  `openedForMessageId` cards are drawn, so they look as before.
+- **Bindings** (`lib/api.ts`): `fetchSessionMessages(id, {view: 'roots'})` returns `threads`, and
+  `fetchSessionThreadMessages(id, rootId, {cursor | after, limit})` reads one thread.
+
 ### 6.3 Writing in a thread
 
 - **The owner** writes in any thread from the thread composer, which sends a `turn` with `thread` on

@@ -773,6 +773,30 @@ export interface SessionMessageDto {
   body?: string // JSON.stringify(ToolBody) on a tool row, PlanBody on a plan row, ElicitBody on an elicit row, UserTurnBody on a text row; may be a truncated-but-VALID-JSON preview
   bodyTruncated?: boolean // preview was shrunk for the frame; full body via fetchToolBody
   bodyBytes?: number // full (untruncated) body byte length
+  /** The roots view alone: the root id of the thread this row is a reply in (webchat-threads.md §8). */
+  thread?: string
+}
+
+/** Who wrote in a thread, as its footer names them. */
+export interface SessionThreadAuthorDto {
+  sender: string
+  senderName?: string
+}
+
+/** One thread's footer (webchat-threads.md §5.3); `readable` false leaves out its excerpts and task title (§7.1). */
+export interface SessionThreadSummaryDto {
+  rootId: string
+  rootExcerpt?: string
+  replies: number
+  lastReplyAt?: string
+  lastReply?: SessionThreadAuthorDto & { excerpt?: string }
+  /** Repliers, newest first, at most five. */
+  participants: SessionThreadAuthorDto[]
+  /** The task that holds the thread; `sessionId` is absent while it starts. */
+  task?: { sessionId?: string; title?: string; state: 'open' | 'done' | 'failed' }
+  /** A turn runs in the thread now. */
+  running?: boolean
+  readable: boolean
 }
 
 export interface SessionHistoryDto {
@@ -781,6 +805,19 @@ export interface SessionHistoryDto {
   nextCursor: string | null
   liveCursor: string | null
   liveMore: boolean
+  /** The roots view alone: the footers of the threads its rows start or reply in. */
+  threads?: SessionThreadSummaryDto[]
+}
+
+/** One page of a thread's record, the root first, with its footer; no messages when the footer is not `readable`. */
+export interface SessionThreadMessagesDto {
+  sessionId: string
+  rootId: string
+  messages: SessionMessageDto[]
+  nextCursor: string | null
+  liveCursor: string | null
+  liveMore: boolean
+  summary: SessionThreadSummaryDto
 }
 
 // A scheduled trigger (`/crons`): every `schedule` tick the owning agent is
@@ -2802,13 +2839,29 @@ export function putSessionExternalAccess(
 // SessionMeta. Content ownership stays pinned there when the agent moves.
 export async function fetchSessionMessages(
   sessionId: string,
-  options: { cursor?: string; after?: string; limit?: number; signal?: AbortSignal } = {}
+  options: { cursor?: string; after?: string; limit?: number; view?: 'roots'; signal?: AbortSignal } = {}
 ): Promise<SessionHistoryDto> {
   const q = new URLSearchParams({ limit: String(options.limit ?? 50) })
   if (options.cursor) q.set('cursor', options.cursor)
   if (options.after) q.set('after', options.after)
+  if (options.view) q.set('view', options.view)
   return apiGet<SessionHistoryDto>(
     `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`,
+    options.signal ? { signal: options.signal } : undefined
+  )
+}
+
+// One page of a thread's record read through the session that received its root; 404 for a root it never received, 409 `DAEMON_FEATURE_MISSING` from a daemon without thread reads.
+export async function fetchSessionThreadMessages(
+  sessionId: string,
+  rootId: string,
+  options: { cursor?: string; after?: string; limit?: number; signal?: AbortSignal } = {}
+): Promise<SessionThreadMessagesDto> {
+  const q = new URLSearchParams({ limit: String(options.limit ?? 50) })
+  if (options.cursor) q.set('cursor', options.cursor)
+  if (options.after) q.set('after', options.after)
+  return apiGet<SessionThreadMessagesDto>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/threads/${encodeURIComponent(rootId)}/messages?${q.toString()}`,
     options.signal ? { signal: options.signal } : undefined
   )
 }
