@@ -1,7 +1,13 @@
 import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import type { LocalStore } from '../../store/local-store.js'
 import type { Attachment, NormalizedMessage } from '../../messages/normalized.js'
-import { attachmentMention, hydrateTranscriptImages, transcriptImageAttachments } from '../attachment-block.js'
+import {
+  attachmentMention,
+  fitTranscriptImage,
+  hydrateTranscriptImages,
+  transcriptImageAttachments,
+  type TranscriptImageFit
+} from '../attachment-block.js'
 
 /** The two transcript seams the ingest owns — the slot probe and the row append. */
 type IngestStore = Pick<LocalStore, 'transcriptTextAt' | 'appendTranscript'>
@@ -65,6 +71,8 @@ export interface TranscriptIngestInput {
   download: (att: Attachment) => Promise<Buffer | null>
   /** Inline cap (bytes) for attachments; files over it stay un-hydrated. */
   attachmentMaxBytes?: number
+  /** Re-encodes an image over its transcript share; defaults to the bounded preview pool. */
+  fitImage?: TranscriptImageFit
 }
 
 export interface TranscriptIngestResult {
@@ -85,6 +93,7 @@ export async function ingestInboundTranscript(input: TranscriptIngestInput): Pro
   const { store, agentId, msg, transcriptChannel } = input
   await hydrateTranscriptImages(msg.attachments, {
     download: input.download,
+    fit: input.fitImage ?? fitTranscriptImage,
     ...(input.attachmentMaxBytes !== undefined ? { maxBytes: input.attachmentMaxBytes } : {})
   })
   const mention = attachmentMention(msg.attachments)

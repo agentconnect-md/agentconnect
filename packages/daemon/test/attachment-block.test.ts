@@ -1,12 +1,16 @@
+import { PNG } from 'pngjs'
 import { describe, it, expect, vi } from 'vitest'
 import { TRANSCRIPT_IMAGE_MAX_COUNT, WEBCHAT_IMAGE_MAX_BYTES } from '@agentconnect.md/protocol'
 import {
   attachmentToBlock,
   buildAttachmentBlocks,
   attachmentMention,
+  fitTranscriptImage,
   hydrateTranscriptImages,
+  sniffImageMimeType,
   transcriptImageAttachments
 } from '../src/session/attachment-block.js'
+import { resetPreviewPool } from '../src/images/index.js'
 import { feishuEventToMessageLike, normalizeFeishuMessage } from '../src/feishu/normalize.js'
 import type { Attachment } from '../src/messages/normalized.js'
 
@@ -318,6 +322,63 @@ describe('hydrateTranscriptImages', () => {
     expect(kept.map((image) => image.name)).toEqual(['a.png', 'b.png'])
     const total = kept.reduce((sum, image) => sum + Buffer.from(image.data, 'base64').byteLength, 0)
     expect(total).toBeLessThanOrEqual(WEBCHAT_IMAGE_MAX_BYTES)
+  })
+
+  it('re-encodes an image whose thumbnail is still over its share, so every image of a Slack post fits', async () => {
+    // Slack keeps a PNG screenshot's thumb_360 as PNG, often ~150 KB: over the 80 KiB share of a two-image row.
+    const header = Buffer.from('89504e470d0a1a0a', 'hex')
+    const full = Buffer.concat([header, Buffer.alloc(400 * 1024)])
+    const thumb = Buffer.concat([header, Buffer.alloc(146 * 1024)])
+    const fitted = (id: string) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from(id)])
+    const download = vi.fn(async (a: Attachment) => (a.sourceUrl?.startsWith('https://files/thumb') ? thumb : full))
+    const fit = vi.fn(async (bytes: Buffer, name: string, maxBytes: number) => {
+      expect(bytes).toBe(full) // the full-resolution source, not the thumbnail
+      expect(maxBytes).toBe(Math.floor(WEBCHAT_IMAGE_MAX_BYTES / 2))
+      return { data: fitted(name), mimeType: 'image/jpeg' as const }
+    })
+    const attachments = [
+      att({ id: 'F1', name: 'image.png', thumbnailUrl: 'https://files/thumb-1' }),
+      att({ id: 'F2', name: 'image.png', thumbnailUrl: 'https://files/thumb-2' })
+    ]
+    await hydrateTranscriptImages(attachments, { download, fit })
+    expect(fit).toHaveBeenCalledTimes(2)
+    expect(transcriptImageAttachments(attachments)).toEqual([
+      { name: 'image.png', mimeType: 'image/jpeg', data: fitted('image.png').toString('base64') },
+      { name: 'image.png', mimeType: 'image/jpeg', data: fitted('image.png').toString('base64') }
+    ])
+    // The prompt still gets the original bytes.
+    const blocks = await buildAttachmentBlocks(attachments, { download, supports: supportsAll })
+    expect(blocks[0]).toMatchObject({ type: 'image', data: full.toString('base64') })
+  })
+
+  it('leaves an image that already fits its share alone, and keeps the label when re-encoding fails', async () => {
+    const header = Buffer.from('89504e470d0a1a0a', 'hex')
+    const small = Buffer.concat([header, Buffer.from('small')])
+    const big = Buffer.concat([header, Buffer.alloc(WEBCHAT_IMAGE_MAX_BYTES)])
+    const fit = vi.fn(async () => null)
+    const attachments = [att({ id: 'F1', inlineData: small }), att({ id: 'F2', name: 'b.png', inlineData: big })]
+    await hydrateTranscriptImages(attachments, { download: vi.fn(), fit })
+    expect(fit).toHaveBeenCalledExactlyOnceWith(big, 'b.png', Math.floor(WEBCHAT_IMAGE_MAX_BYTES / 2))
+    expect(transcriptImageAttachments(attachments).map((image) => image.name)).toEqual(['a.png'])
+  })
+
+  it('fitTranscriptImage shrinks a real screenshot-sized PNG under the share', async () => {
+    const width = 900
+    const height = 700
+    const img = new PNG({ width, height })
+    let seed = 7
+    for (let i = 0; i < width * height * 4; i++) {
+      seed = (seed * 1103515245 + 12345) >>> 0
+      img.data[i] = i % 4 === 3 ? 255 : seed & 0xff
+    }
+    const bytes = PNG.sync.write(img)
+    const share = Math.floor(WEBCHAT_IMAGE_MAX_BYTES / 2)
+    expect(bytes.byteLength).toBeGreaterThan(share)
+    const fitted = await fitTranscriptImage(bytes, 'image.png', share)
+    expect(fitted).not.toBeNull()
+    expect(fitted!.data.byteLength).toBeLessThanOrEqual(share)
+    expect(sniffImageMimeType(fitted!.data)).toBe(fitted!.mimeType)
+    await resetPreviewPool()
   })
 
   it('keeps at most TRANSCRIPT_IMAGE_MAX_COUNT images', async () => {

@@ -6,6 +6,7 @@ import {
   WEBCHAT_IMAGE_MAX_BYTES
 } from '@agentconnect.md/protocol'
 import type { Attachment } from '../messages/normalized.js'
+import { prepareSharedImagePreview } from '../images/index.js'
 
 export { attachmentMention } from '@agentconnect.md/message'
 
@@ -136,10 +137,31 @@ function imageCandidate(att: Attachment): boolean {
   return !att.transfer && (att.mimeType.startsWith('image/') || att.mimeType === 'application/octet-stream')
 }
 
-// Reuse full-resolution prompt bytes, and fetch a bounded thumbnail for console replay where they exceed an equal share of the row budget.
+/** Re-encodes image bytes to at most `maxBytes` for console replay; null when it cannot. */
+export type TranscriptImageFit = (
+  bytes: Buffer,
+  name: string,
+  maxBytes: number
+) => Promise<{ data: Buffer; mimeType: SessionImageAttachment['mimeType'] } | null>
+
+/** Shrink an image through the bounded shared-image preview pool, keeping only a format the transcript accepts. */
+export const fitTranscriptImage: TranscriptImageFit = async (bytes, name, maxBytes) => {
+  const prepared = await prepareSharedImagePreview({ bytes, name, maxPreviewBytes: maxBytes })
+  if (!prepared.ok || prepared.preview.data.byteLength > maxBytes) return null
+  const { mimeType, data } = prepared.preview
+  return mimeType === 'image/png' || mimeType === 'image/jpeg' || mimeType === 'image/webp' ? { data, mimeType } : null
+}
+
+/** Whether an image already has a transcript rendition within `share` bytes. */
+function fitsShare(image: Attachment, share: number): boolean {
+  if (image.transcriptThumbnail && image.transcriptThumbnail.data.byteLength <= share) return true
+  return !!image.inlineData && image.inlineData.byteLength <= share && !!sniffImageMimeType(image.inlineData)
+}
+
+// Reuse full-resolution prompt bytes; for console replay use the platform thumbnail, else re-encode, where they exceed an equal share of the row budget.
 export async function hydrateTranscriptImages(
   attachments: Attachment[] | undefined,
-  deps: Pick<AttachmentDeps, 'download' | 'maxBytes'>
+  deps: Pick<AttachmentDeps, 'download' | 'maxBytes'> & { fit?: TranscriptImageFit }
 ): Promise<void> {
   const images = (attachments ?? []).filter(imageCandidate).slice(0, TRANSCRIPT_IMAGE_MAX_COUNT)
   if (!images.length) return
@@ -163,6 +185,12 @@ export async function hydrateTranscriptImages(
           image.transcriptThumbnail = { data: thumbBytes, mimeType: sniffed }
         }
       }
+      // A Slack PNG thumbnail can still be ~150 KB, so several images only all fit once re-encoded.
+      if (!deps.fit || fitsShare(image, share)) return
+      const source = image.inlineData ?? image.transcriptThumbnail?.data
+      if (!source) return
+      const fitted = await deps.fit(source, image.name, share).catch(() => null)
+      if (fitted && fitted.data.byteLength <= share) image.transcriptThumbnail = fitted
     })
   )
 }

@@ -236,7 +236,10 @@ transcript retains, so transcript growth and the console history DTO stay bounde
 message with several images (a Slack post of pasted screenshots) keeps up to
 `TRANSCRIPT_IMAGE_MAX_COUNT` (4) of them within that same 160 KB: each image is allowed an
 equal share of what is left, an image over its share falls back to the platform thumbnail,
-and an image that still does not fit keeps its `[attached: …]` label. The CP asks for them
+and one whose thumbnail is still too large (Slack keeps a PNG screenshot's thumbnail as a
+PNG of ~150 KB) is re-encoded to its share through the bounded shared-image preview pool
+(webchat-generated-images.md §5). Only an image that cannot be decoded or re-encoded keeps
+its `[attached: …]` label. The CP asks for them
 with `imagesPerMessage` on `session/history`; a daemon answering an older CP, which names
 no bound, returns only the first, because that CP's response schema admits one. The
 console renders a file chip (name, type, size) beside the message; there is nothing to
