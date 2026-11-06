@@ -783,7 +783,7 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     const agent = (daemon as any).agents.get('bot-a')
     const review = join((daemon as any).workspaces.sessionDir(agent, KEY('T1')), 'repos', 'acme', 'web')
     mkdirSync(review, { recursive: true })
-    const binding = { route: 'this turn' }
+    const binding = { agentId: 'bot-a', route: 'this turn' }
     ;(daemon as any).sessionDeliveryBindings.set(KEY('T1'), binding)
     const request = { sessionKey: KEY('T1'), isolation: 'session' }
     const hostFor = (cwd: string) => (daemon as any).sessions.deps.hostFor('bot-a', request, cwd)
