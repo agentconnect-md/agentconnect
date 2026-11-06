@@ -8,7 +8,8 @@ import type {
   WebBotCardCopy,
   WebChannelListSemantics,
   WebPlatformModule,
-  WebPlatformRegistry
+  WebPlatformRegistry,
+  WebThreadShape
 } from './contract'
 import { discordModule } from './discord'
 import { feishuModule } from './feishu'
@@ -207,6 +208,11 @@ export function platformTurnFacts(platformId?: string): ComponentType<{ body: Us
  */
 export function platformMessageIdentity(platformId: string, row: SessionMessageDto): string | null {
   return platformRegistry.get(platformId)?.messageIdentity?.(row) ?? null
+}
+
+/** This platform's thread shape, or undefined where it declares none. See {@link WebPlatformModule.threadShape}. */
+export function platformThreadShape(platformId?: string): WebThreadShape | undefined {
+  return platformId ? platformRegistry.get(platformId)?.threadShape : undefined
 }
 
 /** This platform's transcript page ordering, defaulted to the conservative

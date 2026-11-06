@@ -373,7 +373,9 @@
       "inThread": "在会话串中：{root}",
       "inThreadBare": "在会话串中",
       "answeredInThread": "已在会话串中回答",
-      "messageActions": "消息操作"
+      "messageActions": "消息操作",
+      "openOnPlatform": "在 {platform} 中打开",
+      "threadHintMirrored": "以你的名义发到 {platform} 会话串里，持有它的任务会在那里回答"
     },
     "githubApp": {
       "title": "GitHub App",

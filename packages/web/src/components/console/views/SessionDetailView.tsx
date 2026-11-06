@@ -201,10 +201,11 @@ import { footerOfSummary, TaskThreadFooter, ThreadFooter } from '@/components/co
 import { ReplyInThreadButton, ThreadRootPress } from '@/components/console/ThreadRootActions'
 import {
   firstWords,
-  isThreadId,
   liveReplyThreads,
+  namesThread,
   replyToMessageThread,
   threadAutoOpen,
+  threadShapeOf,
   threadToAutoOpen,
   WEBCHAT_THREADS_FEATURE,
   type ThreadAutoOpen
@@ -2257,6 +2258,8 @@ export default function SessionDetailView() {
   const sessionBusy = session ? isPgBusy(session.id) : false
   const sessionBusyRef = useRef(sessionBusy)
   sessionBusyRef.current = sessionBusy
+  // A coordinator's thread shape: webchat's own, or what its platform module declares (webchat-threads.md §7).
+  const threadShape = session?.coordinator === true ? threadShapeOf(session.platform) : undefined
   // The transcript fetch machine (history + live tail + cross-source "load earlier") lives in its
   // own hook; the view decides WHEN to refresh the tail and renders the merged result.
   const {
@@ -2291,8 +2294,8 @@ export default function SessionDetailView() {
     conversationRosterPlatform: conversationRoster?.platform ?? undefined,
     sessionBusyRef,
     promptSessionIds,
-    // A webchat coordinator's page is roots with their threads' footers (webchat-threads.md §6.1).
-    rootsView: !MOCK_MODE && session?.coordinator === true && session.platform === 'webchat',
+    // A coordinator's page is roots with their threads' footers where its platform threads (webchat-threads.md §6.1, §7).
+    rootsView: !MOCK_MODE && threadShape !== undefined,
     reconcileLiveSteps
   })
 
@@ -2667,10 +2670,10 @@ export default function SessionDetailView() {
     seenThreadParam.current = threadParam
     if (threadParam === handledThreadParam.current) return
     handledThreadParam.current = threadParam
-    if (isThreadId(threadParam)) openRootThread(threadParam, { address: false })
+    if (namesThread(threadShape, threadParam)) openRootThread(threadParam, { address: false })
     // An address that no longer names a thread closes the one it named.
     else if (!threadParam) setTaskThread((current) => (current?.rootId ? null : current))
-  }, [openRootThread, threadParam])
+  }, [openRootThread, threadParam, threadShape])
   // A task shrunk from its own page comes back as `?task=`: open it in the side panel once, then drop the parameter.
   const shrunkTaskId = coordinatorPage ? searchParams.get('task') : null
   useEffect(() => {
@@ -2703,11 +2706,15 @@ export default function SessionDetailView() {
   useEffect(() => {
     if (!threadsLoaded || !session || isMobile) return
     if (autoOpen.current?.scope !== session.id) autoOpen.current = { scope: session.id, state: threadAutoOpen() }
-    const rows = (msgs ?? []).flatMap((m) =>
-      !m.thread && m.postId && (m.kind || 'text').toLowerCase() === 'text' && m.sender !== session.agentId
-        ? [{ rootId: m.postId, replies: threadSummaries.get(m.postId)?.replies ?? 0 }]
+    const rows = (msgs ?? []).flatMap((m) => {
+      const rootId = m.postId ?? m.ts
+      return !m.thread &&
+        namesThread(threadShape, rootId) &&
+        (m.kind || 'text').toLowerCase() === 'text' &&
+        m.sender !== session.agentId
+        ? [{ rootId, replies: threadSummaries.get(rootId)?.replies ?? 0 }]
         : []
-    )
+    })
     const footers = [...threadSummaries.values()].map(({ rootId, replies }) => ({ rootId, replies }))
     const next = threadToAutoOpen(
       autoOpen.current.state,
@@ -2715,7 +2722,7 @@ export default function SessionDetailView() {
       liveReplyThreads(coordinatorLive ?? [])
     )
     if (next) openRootThread(next)
-  }, [coordinatorLive, isMobile, msgs, openRootThread, session, threadSummaries, threadsLoaded])
+  }, [coordinatorLive, isMobile, msgs, openRootThread, session, threadShape, threadSummaries, threadsLoaded])
   // The Files tab's `refresh-cw` action: re-reads the tree and the git status without remounting the panel, so the reader's filter and expanded folders survive it.
   const [filesRefreshTick, setFilesRefreshTick] = useState(0)
   // Reported by the panel, like the Sessions verdict: only it knows whether its first root listing has answered.
@@ -3477,7 +3484,7 @@ export default function SessionDetailView() {
   const resumeState = isPg ? 'available' : sessionResumeState(persistedResumeMembers, placementByAgent)
   const resumeDisabled = (isWebchat && resumeState !== 'available') || continuationBlocked
   // The owner writes in their coordinator's threads where its daemon answers in them and the relay forwards `thread` (webchat-threads.md §10).
-  const relayFeatures = threadsView ? getPgRelayFeatures(session.id) : undefined
+  const relayFeatures = threadsView && isWebchat ? getPgRelayFeatures(session.id) : undefined
   const threadsWritable =
     threadsView &&
     isWebchat &&
@@ -3495,6 +3502,15 @@ export default function SessionDetailView() {
   const openRootTask: TaskLink | undefined =
     openRootSummary?.readable && openRootSummary.task?.sessionId
       ? { sessionId: openRootSummary.task.sessionId, title: openRootSummary.task.title ?? '', how: 'opened' }
+      : undefined
+  // The open root's thread on its platform, from the conversation's channel and workspace, which the panel links.
+  const openRootUrl =
+    openRoot && currentSessionDetail?.channel
+      ? threadShape?.threadUrl?.({
+          channelId: currentSessionDetail.channel,
+          workspaceId: currentSessionDetail.tenantScope ?? null,
+          rootId: openRoot
+        })
       : undefined
   // Composer state is per-session in the provider — bind it to THIS session's id so a
   // different live conversation streaming in the background can't disable or clear it.
@@ -3799,11 +3815,10 @@ export default function SessionDetailView() {
   const taskOwnerHref = taskOwner
     ? orgPath(`/sessions/${encodeURIComponent(taskOwner.id)}${flatView ? '?view=flat' : ''}`)
     : null
-  // A webchat coordinator's task shrinks to its first thread, a legacy page task to itself (webchat-threads.md §6.2).
-  const taskFirstThread =
-    currentSessionDetail?.platform === 'webchat' && isThreadId(currentSessionDetail.thread)
-      ? currentSessionDetail.thread
-      : null
+  // A threaded task shrinks to its first thread, a legacy page task to itself (webchat-threads.md §6.2, §7).
+  const taskFirstThread = namesThread(threadShapeOf(currentSessionDetail?.platform), currentSessionDetail?.thread)
+    ? currentSessionDetail.thread
+    : null
   const taskShrinkHref = taskOwner
     ? orgPath(
         `/sessions/${encodeURIComponent(taskOwner.id)}?${new URLSearchParams({
@@ -4011,7 +4026,7 @@ export default function SessionDetailView() {
           if (sourceTurnKey) botTurnByKey.set(sourceTurnKey, last)
         }
         answeringThread = undefined
-        const answeredIn = threadsView ? replyToMessageThread(m) : undefined
+        const answeredIn = threadsView && threadShape ? replyToMessageThread(m, threadShape) : undefined
         const step = { ...msgStep(m, toolSessionId, rowPlatform), ...(answeredIn ? { answeredIn } : {}) }
         last.steps.push(step)
         if (last.wake) last.wake = false
@@ -4303,9 +4318,9 @@ export default function SessionDetailView() {
     }
   }
 
-  // A root's thread in the roots view, named by its postId (webchat-threads.md §6.1).
+  // A root's thread in the roots view, named by its postId or platform ts as its shape says (webchat-threads.md §6.1, §7).
   const rootOf = (turn: Turn): string | undefined =>
-    threadsView && turn.kind === 'user' && isThreadId(turn.messageId) ? turn.messageId : undefined
+    threadsView && turn.kind === 'user' && namesThread(threadShape, turn.messageId) ? turn.messageId : undefined
   // A root the owner may reply under.
   const replyRootOf = (turn: Turn): string | undefined => (threadsWritable ? rootOf(turn) : undefined)
   const replyInThread = (rootId: string) => openRootThread(rootId, { focus: true })
@@ -6422,6 +6437,7 @@ export default function SessionDetailView() {
               {...(openRoot ? { record: { sessionId: session.realSessionId ?? session.id, rootId: openRoot } } : {})}
               {...(openRoot && threadWriter ? { writer: threadWriter } : {})}
               {...(openRoot ? { onSummary: putThread, focusComposer: taskThread?.focus === true } : {})}
+              {...(openRootUrl ? { threadUrl: openRootUrl } : {})}
               parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
               {...(activeOrg && session.coordinator && webchatConversationId
                 ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }

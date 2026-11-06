@@ -4,8 +4,10 @@ import {
   firstWords,
   isThreadId,
   liveReplyThreads,
+  namesThread,
   replyToMessageThread,
   threadAutoOpen,
+  threadShapeOf,
   threadToAutoOpen
 } from './coordinator-threads'
 
@@ -33,6 +35,42 @@ describe('replyToMessageThread', () => {
     expect(replyToMessageThread({ kind: 'text', body: '{}', thread: ROOT })).toBeUndefined()
     expect(replyToMessageThread({ kind: 'tool', body: '{"rawInput":' })).toBeUndefined()
     expect(replyToMessageThread(call({ action: 'replyToMessage', messageId: 'msg-1784098843.000100' }))).toBeUndefined()
+  })
+})
+
+describe('a platform’s thread shape (webchat-threads.md §7)', () => {
+  const TS = '1784098843.000100'
+
+  it('is webchat’s own for webchat, the module’s declaration for Slack, and none for a platform without one', () => {
+    const webchat = threadShapeOf('webchat')
+    expect(namesThread(webchat, ROOT)).toBe(true)
+    expect(namesThread(webchat, TS)).toBe(false)
+    expect(webchat?.continuesInThread).toBe(true)
+    const slack = threadShapeOf('slack')
+    expect(namesThread(slack, TS)).toBe(true)
+    expect(namesThread(slack, ROOT)).toBe(false)
+    expect(namesThread(slack, 'C0EXAMPLE')).toBe(false)
+    expect(slack?.continuesInThread).toBeUndefined()
+    expect(threadShapeOf('telegram')).toBeUndefined()
+    expect(threadShapeOf(null)).toBeUndefined()
+    expect(namesThread(undefined, TS)).toBe(false)
+  })
+
+  it('links a Slack thread in its workspace’s web client, and nothing without the workspace', () => {
+    const slack = threadShapeOf('slack')!
+    expect(slack.threadUrl?.({ channelId: 'C0EXAMPLE', workspaceId: 'T0EXAMPLE', rootId: TS })).toBe(
+      `https://app.slack.com/client/T0EXAMPLE/C0EXAMPLE/thread/C0EXAMPLE-${TS}`
+    )
+    expect(slack.threadUrl?.({ channelId: 'C0EXAMPLE', workspaceId: null, rootId: TS })).toBeUndefined()
+  })
+
+  it('reads a Slack replyToMessage call’s thread off its message id by Slack’s shape', () => {
+    const call = {
+      kind: 'tool',
+      body: JSON.stringify({ rawInput: { action: 'replyToMessage', messageId: `msg-${TS}` } })
+    }
+    expect(replyToMessageThread(call, threadShapeOf('slack'))).toBe(TS)
+    expect(replyToMessageThread(call)).toBeUndefined()
   })
 })
 

@@ -36,7 +36,8 @@ import { prepareWebchatImage } from '@/lib/webchat-image'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { agentToneColor } from '@/lib/agent-tone'
-import { agentLabel, MOCK_MODE, type Agent, type DaemonRow } from '@/lib/data'
+import { agentLabel, MOCK_MODE, platName, type Agent, type DaemonRow } from '@/lib/data'
+import { threadShapeOf } from '@/components/console/coordinator-threads'
 import { TaskRuntimePicker } from '@/components/console/dock/TaskRuntimePicker'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib/session-trigger'
 import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
@@ -67,7 +68,8 @@ export function ThreadPanel({
   fileTransfer = false,
   writer,
   focusComposer = false,
-  onSummary
+  onSummary,
+  threadUrl
 }: {
   /** The coordinator's agent, which runs the task. */
   agentId: string
@@ -108,6 +110,8 @@ export function ThreadPanel({
   focusComposer?: boolean
   /** Told each footer the record's reads return, so the timeline's footer keeps up with an open thread. */
   onSummary?: (summary: SessionThreadSummaryDto) => void
+  /** The thread's page on its platform, which the header links. */
+  threadUrl?: string
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
@@ -142,6 +146,10 @@ export function ThreadPanel({
   // The owner writes in any thread of their conversation, held or not, and routing takes it to the task or the coordinator.
   const ownThread =
     writer && record && fromRecord && !unreadable && !thread.missing ? { ...writer, rootId: record.rootId } : null
+  // A webchat task takes the thread a message is written in; a platform's task its own, mirrored into the platform thread.
+  const shape = threadShapeOf(platform)
+  const inThread = !!record && fromRecord && shape?.continuesInThread === true
+  const mirrored = fromRecord && !!shape && !shape.continuesInThread
   const row = useTaskRow(agentId, holderId, parentSessionId)
   const { stopOf, stop } = useTaskStops(agentId, parentSessionId ?? id, () => {})
   const stopState = row ? stopOf(row) : undefined
@@ -227,7 +235,7 @@ export function ThreadPanel({
     if (!canReply || !holderId) return
     markSessionTarget(holderId)
     // Read from the record, the message is written in this thread of the task, which may hold several.
-    if (record && fromRecord) {
+    if (record && inThread) {
       if (pgSendThread(holderId, agentId, getPgInput(holderId), record.rootId)) setPgInput(holderId, '')
       return
     }
@@ -291,6 +299,19 @@ export function ThreadPanel({
           >
             <Icon name="square" size={13} />
           </button>
+        ) : null}
+        {threadUrl ? (
+          <a
+            href={threadUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-thread-platform-link=""
+            className={HEADER_BTN}
+            title={t('openOnPlatform', { platform: platName(platform) })}
+            aria-label={t('openOnPlatform', { platform: platName(platform) })}
+          >
+            <Icon name="external-link" size={14} />
+          </a>
         ) : null}
         {/* Expanding a task is opening its own page; a real link, so a modified click opens it in a new tab. */}
         {pageHref ? (
@@ -429,9 +450,13 @@ export function ThreadPanel({
           sessionId={draftId}
           canReply={ownThread ? true : canReply}
           checking={ownThread ? false : detail === undefined}
-          placeholder={ownThread ? t('threadPlaceholder') : t('replyPlaceholder')}
-          // Who answers a message in the conversation's own thread; a task's reply box has its attach button there instead.
-          {...(ownThread ? { hint: holderId ? t('threadHintTask') : t('threadHintCoordinator') } : {})}
+          placeholder={ownThread || mirrored ? t('threadPlaceholder') : t('replyPlaceholder')}
+          // Who answers a message in a thread; a task's reply box has its attach button there instead.
+          {...(ownThread
+            ? { hint: holderId ? t('threadHintTask') : t('threadHintCoordinator') }
+            : mirrored
+              ? { hint: t('threadHintMirrored', { platform: platName(platform) }) }
+              : {})}
           readOnly={t('readOnly')}
           // A thread send carries text alone, so only a reply onto the task's own session offers attachments.
           {...(MOCK_MODE || ownThread || (record && fromRecord) ? {} : { attach: { agentId, transfer: fileTransfer } })}

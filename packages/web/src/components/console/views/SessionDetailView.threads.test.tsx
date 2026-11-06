@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// A webchat coordinator's page with threads (webchat-threads.md §6): roots with their footers, thread messages kept to their threads, the turns that answer them labelled, Reply in thread, `?thread=`, and the thread that opens on its own.
+// A coordinator's page with threads (webchat-threads.md §6, §7): roots with their footers, thread messages kept to their threads, the turns that answer them labelled, Reply in thread, `?thread=`, the thread that opens on its own, and Slack's shape.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -301,9 +301,9 @@ async function settle() {
   }
 }
 
-async function open() {
-  wire.rows = [listRow]
-  wire.detail = detail
+async function open(list: Session = listRow, read: SessionDetailDto = detail) {
+  wire.rows = [list]
+  wire.detail = read
   await act(async () => {
     root?.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
@@ -506,5 +506,105 @@ describe('a thread whose first reply starts while the reader watches (webchat-th
     wire.live = [answer]
     await open()
     expect(q('[data-thread-panel]')).toBeNull()
+  })
+})
+
+describe('a Slack coordinator’s page in Slack’s shape (webchat-threads.md §7)', () => {
+  const at = (seq: number) => `${1_754_123_456 + seq}.000100`
+  const ROOT_TS = at(1)
+  const slack = (platform: string) => ({
+    list: sessionFromDto({
+      sessionId: 'session-1',
+      sessionKey: { platform, channel: 'C0EXAMPLE', thread: COORDINATE },
+      agentId: 'agent-1',
+      agentName: 'Ops bot',
+      title: 'Coordinator',
+      status: 'idle',
+      lastActivityAt: '2026-10-01T00:00:00.000Z',
+      usage: null,
+      triggeredBy: 'U0SAM',
+      channelName: 'deploys',
+      triggeredByName: 'Sam',
+      threadUrl: null
+    } as unknown as SessionDto),
+    detail: {
+      ...detail,
+      platform,
+      channel: 'C0EXAMPLE',
+      channelName: 'deploys',
+      tenantScope: 'T0EXAMPLE'
+    } as unknown as SessionDetailDto
+  })
+  const slackRow = (seq: number, sender: string, body: string, over: Partial<SessionMessageDto> = {}) =>
+    row(seq, sender, body, { ts: at(seq), ...over })
+
+  function channel() {
+    wire.messages = [
+      slackRow(1, 'U0SAM', 'Why is the deploy slow?'),
+      slackRow(2, 'agent-1', 'Looking into it.', { thread: ROOT_TS }),
+      slackRow(3, 'U0LEE', 'and the cache?', { thread: ROOT_TS }),
+      slackRow(4, 'agent-1', 'sendMessage', {
+        kind: 'tool',
+        thread: ROOT_TS,
+        toolCallId: 'call-1',
+        body: JSON.stringify({
+          toolCallId: 'call-1',
+          rawInput: { action: 'replyToMessage', messageId: `msg-${at(3)}`, message: 'Use a warm cache.' }
+        })
+      }),
+      slackRow(5, 'agent-1', 'Answered in its thread.', { thread: ROOT_TS })
+    ]
+    wire.threads = [
+      {
+        rootId: ROOT_TS,
+        rootExcerpt: 'Why is the deploy slow?',
+        replies: 3,
+        lastReplyAt: '2026-10-01T00:00:00.000Z',
+        lastReply: { sender: 'agent-1', excerpt: 'Use a warm cache.' },
+        participants: [{ sender: 'U0LEE', senderName: 'Lee' }],
+        readable: true
+      }
+    ]
+  }
+
+  it('draws roots by their ts with footers, keeps replies in their threads, and labels the turns answering them', async () => {
+    channel()
+    const { list, detail: read } = slack('slack')
+    await open(list, read)
+    expect(wire.historyCalls[0]).toMatchObject({ view: 'roots' })
+    expect(q(`[data-thread-footer="${ROOT_TS}"]`)?.textContent).toContain('3 replies')
+    expect(text()).toContain('Why is the deploy slow?')
+    expect(text()).not.toContain('and the cache?')
+    expect([...(container?.querySelectorAll('[data-turn-in-thread]') ?? [])].map((el) => el.textContent)).toEqual([
+      'In thread: Why is the deploy slow?'
+    ])
+    expect(q(`[data-turn-answered-in="${ROOT_TS}"]`)).not.toBeNull()
+    // Replying from the console in an unowned Slack thread is not offered here.
+    expect(q('[data-reply-in-thread]')).toBeNull()
+  })
+
+  it('opens a thread’s record from its footer at ?thread=, linked to the thread in Slack', async () => {
+    channel()
+    const { list, detail: read } = slack('slack')
+    await open(list, read)
+    await click(`[data-thread-footer="${ROOT_TS}"] [data-task-card-replies]`)
+    expect(wire.threadReads).toContain(`session-1/${ROOT_TS}`)
+    expect(nav.replaced.at(-1)).toBe(`/acme/sessions/session-1?thread=${ROOT_TS}`)
+    expect(q(`[data-thread-panel="${ROOT_TS}"] [data-thread-platform-link]`)?.getAttribute('href')).toBe(
+      `https://app.slack.com/client/T0EXAMPLE/C0EXAMPLE/thread/C0EXAMPLE-${ROOT_TS}`
+    )
+    await click('[data-task-thread-close]')
+    nav.search = `thread=${ROOT_TS}`
+    await open(list, read)
+    expect(q(`[data-thread-panel="${ROOT_TS}"]`)).not.toBeNull()
+  })
+
+  it('keeps the flat transcript for a coordinator whose platform declares no thread shape', async () => {
+    channel()
+    const { list, detail: read } = slack('telegram')
+    await open(list, read)
+    expect(wire.historyCalls[0]).not.toMatchObject({ view: 'roots' })
+    expect(q('[data-thread-footer]')).toBeNull()
+    expect(text()).toContain('and the cache?')
   })
 })

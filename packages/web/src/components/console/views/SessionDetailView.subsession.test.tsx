@@ -669,6 +669,7 @@ describe.each([
 })
 
 // auto-session-mode.md §10: a channel coordinator posts no link card, so its task's card stands under the turn that answered the message the task was opened for.
+// A platform whose module declares no thread shape; Slack's footers carry the task instead (webchat-threads.md §7).
 describe('a channel coordinator’s task cards', () => {
   it('draws a task’s card under the coordinator’s answer to the message it was opened for', async () => {
     daemonFeatures.push('activity-every-agent-v1')
@@ -691,7 +692,7 @@ describe('a channel coordinator’s task cards', () => {
         openedForMessageId: '1700000001.000100'
       }
     ]
-    await open({ platform: 'slack', channel: 'C0123', thread: 'append:coordinator-1700000000000' })
+    await open({ platform: 'discord', channel: '1234567890', thread: 'append:coordinator-1700000000000' })
 
     const cards = [...(container?.querySelectorAll('[data-task-card]') ?? [])]
     expect(cards.map((card) => card.getAttribute('data-task-card'))).toEqual(['child-1'])
@@ -730,7 +731,7 @@ describe('a channel coordinator’s task cards', () => {
       task('child-1', 'Find what blocks 1.5', '1700000001.000100'),
       task('child-2', 'Draft the notes', '1700000002.000100')
     ]
-    await open({ platform: 'slack', channel: 'C0123', thread: 'append:coordinator-1700000000000' })
+    await open({ platform: 'discord', channel: '1234567890', thread: 'append:coordinator-1700000000000' })
 
     const cards = [...(container?.querySelectorAll('[data-task-card]') ?? [])]
     expect(cards.map((card) => card.getAttribute('data-task-card'))).toEqual(['child-1', 'child-2'])
