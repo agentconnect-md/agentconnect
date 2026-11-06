@@ -89,11 +89,13 @@ export function LineRow({
         >
           {title}
         </div>
-        <span className="flex flex-none items-center gap-[10px]">
+        <span className="relative flex flex-none items-center gap-[10px]">
           <span
             title={timeTip}
             className={`font-sans text-[12px] font-normal leading-normal whitespace-nowrap text-(--text-tertiary) tabular-nums ${
-              stop ? 'group-hover/line:hidden group-has-[button:focus-visible]/line:hidden' : ''
+              stop
+                ? 'pointer-fine:group-hover/line:invisible pointer-fine:group-has-[button:focus-visible]/line:invisible'
+                : ''
             }`}
           >
             {time}
@@ -105,7 +107,8 @@ export function LineRow({
               title={stop.label}
               disabled={stop.disabled}
               onClick={stop.onClick}
-              className="my-[-1px] hidden h-[26px] w-[26px] cursor-pointer items-center justify-center rounded-[7px] border-0 bg-(--surface-active) p-0 text-(--text-secondary) group-hover/line:inline-flex hover:bg-(--border-default) hover:text-(--text-primary) focus-visible:inline-flex disabled:cursor-not-allowed"
+              // Over the time and shown on hover or focus for a mouse; always shown, beside it, on a touch screen.
+              className="my-[-1px] inline-flex h-[26px] w-[26px] cursor-pointer items-center justify-center rounded-[7px] border-0 bg-(--surface-active) p-0 text-(--text-secondary) hover:bg-(--border-default) hover:text-(--text-primary) pointer-fine:focus-visible:opacity-100 disabled:cursor-not-allowed pointer-fine:absolute pointer-fine:right-0 pointer-fine:opacity-0 pointer-fine:group-hover/line:opacity-100"
             >
               <Icon name="square" size={12} />
             </button>
