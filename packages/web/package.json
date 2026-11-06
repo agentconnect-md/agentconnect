@@ -36,7 +36,7 @@
     "@opentelemetry/instrumentation-fetch": "^0.223.0",
     "@opentelemetry/resources": "^2.12.0",
     "@opentelemetry/sdk-trace-web": "^2.12.0",
-    "@opentelemetry/semantic-conventions": "^1.43.0",
+    "@opentelemetry/semantic-conventions": "^1.44.0",
     "croner": "^11.0.0",
     "cronstrue": "^3.37.0",
     "highlight.js": "^11.11.1",
