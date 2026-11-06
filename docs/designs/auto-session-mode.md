@@ -541,9 +541,11 @@ place; a channel is a workspace the task earns.
 - **The tools in the channel.** The Slack tools that default to "this conversation"
   (`setSlackCodeView`, `manageSlackCodeChannel`, `presentSlackReport`) and `getCurrentChannel` act in
   the channel of the turn, and the code channel's native session controls follow the turn there.
-  The automatic Code diff is published from a turn delivered in the channel, against the starting
-  point the task kept on its first turn, in its origin thread, so work done before the channel was
-  made is part of it; a task whose repository already had changes then keeps none, as anywhere.
+  The automatic Code diff is published from a turn delivered in the channel, against the base branch
+  each repository was cut from ([slack-code-channels.md](slack-code-channels.md#automatic-task-diffs)),
+  so a task that takes a channel days after it opened shows its branch's work and not what landed on
+  the base branch since. A repository without a base branch falls back to the starting point the task
+  kept on its first turn, in its origin thread; one that already had changes then keeps none, as anywhere.
   The channel's Tasks tab shows the session of the task that holds it, with that session's tasks,
   background work and console link: no session is keyed on the channel, so the read takes the
   session the task index names as the channel's holder. The code channel's standing context is not
@@ -643,6 +645,13 @@ not addressed to this agent. Cost grows with the number of agents.
     coordinator's turn that answered that message, on any platform, once per task.
   - `messageTask` with a `messageId` moves the message into the task's conversation, which answers on
     its page, and attaches its id as one more thread; the coordinator posts a link card.
+  - A link card arriving while the person watches opens its task's thread in the dock, the latest
+    one when several arrive; cards already in the conversation when the page opened do not.
+- **Administration.** The conversation's AgentConnect admin MCP entitlement
+  ([webchat-preset-agentconnect-mcp.md](webchat-preset-agentconnect-mcp.md) §5.4) installs nothing on
+  the coordinator, which only routes, and installs its own grant on each page task it opens, so a
+  request to change the configuration is delegated and done by the task. A write the task asks for
+  waits for approval on the task's thread, and the decision is a notice to the task.
 - Existing ordinary webchat conversations stay as they are.
 
 ## 11. Console

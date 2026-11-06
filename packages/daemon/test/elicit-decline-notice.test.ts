@@ -166,7 +166,7 @@ describe('an elicitation declined for want of a surface says so in the channel',
   it('posts the notice and still declines when a Slack card cannot express the form', async () => {
     const { daemon, notices } = slackTurn()
     await expect(daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())).resolves.toBeUndefined()
-    expect(daemon.permissions.pendingElicits.size).toBe(0)
+    expect(daemon.permissions.pendingApprovals.size).toBe(0)
     expect(notices()).toHaveLength(1)
     expect(notices()[0]).toContain("this chat can't collect an answer for")
     expect(notices()[0]).toContain('Which checks should I run?')
@@ -219,9 +219,9 @@ describe('an elicitation declined for want of a surface says so in the channel',
   it('says nothing when the card WAS rendered', async () => {
     const { daemon, notices } = slackTurn()
     void daemon.permissions.onAcpElicit('agent-1', 's1', formElicitation())
-    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect(daemon.permissions.pendingApprovals.size).toBe(1))
     expect(notices()).toEqual([])
-    await daemon.permissions.releaseElicits('agent-1', 's1')
+    await daemon.permissions.releaseApprovals('agent-1', 's1')
   })
 
   it('says nothing on a webchat turn, which renders a whole form Slack cannot', async () => {
@@ -237,25 +237,25 @@ describe('an elicitation declined for want of a surface says so in the channel',
       messageEmitted: false
     }
     void daemon.permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation())
-    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect(daemon.permissions.pendingApprovals.size).toBe(1))
     expect(notices()).toEqual([])
-    await daemon.permissions.releaseElicits('agent-1', 's1')
+    await daemon.permissions.releaseApprovals('agent-1', 's1')
   })
 
   it('says nothing for a multi-select Slack now renders as a select plus Confirm', async () => {
     const { daemon, notices } = slackTurn()
     void daemon.permissions.onAcpElicit('agent-1', 's1', multiElicitation())
-    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect(daemon.permissions.pendingApprovals.size).toBe(1))
     expect(notices()).toEqual([])
-    await daemon.permissions.releaseElicits('agent-1', 's1')
+    await daemon.permissions.releaseApprovals('agent-1', 's1')
   })
 
   it('says nothing for a text field Slack now answers by a thread reply', async () => {
     const { daemon, notices } = slackTurn()
     void daemon.permissions.onAcpElicit('agent-1', 's1', textElicitation())
-    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect(daemon.permissions.pendingApprovals.size).toBe(1))
     expect(notices()).toEqual([])
-    await daemon.permissions.releaseElicits('agent-1', 's1')
+    await daemon.permissions.releaseApprovals('agent-1', 's1')
   })
 
   it('says nothing for a URL-mode ask Slack now renders as a consent card', async () => {
@@ -267,9 +267,9 @@ describe('an elicitation declined for want of a surface says so in the channel',
       url: 'https://billing.example.com/oauth/authorize',
       message: 'Sign in to continue'
     } as CreateElicitationRequest)
-    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect(daemon.permissions.pendingApprovals.size).toBe(1))
     expect(notices()).toEqual([])
-    await daemon.permissions.releaseElicits('agent-1', 's1')
+    await daemon.permissions.releaseApprovals('agent-1', 's1')
 
     // A URL no card may offer is still an ask Slack cannot render, so that one keeps its notice.
     await expect(
@@ -353,7 +353,7 @@ describe('webchat says a declined elicitation out loud too', () => {
   it('streams a standing notice, and still declines', async () => {
     const { daemon, events } = webchatTurn()
     await expect(daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())).resolves.toBeUndefined()
-    expect(daemon.permissions.pendingElicits.size).toBe(0)
+    expect(daemon.permissions.pendingApprovals.size).toBe(0)
     expect(events()).toEqual([
       {
         kind: 'notice',
@@ -408,7 +408,7 @@ describe('webchat says a declined elicitation out loud too', () => {
       throw new Error('socket closed')
     })
     await expect(daemon.permissions.onAcpElicit('agent-1', 's1', formElicitation())).resolves.toBeUndefined()
-    expect(daemon.permissions.pendingElicits.size).toBe(0)
+    expect(daemon.permissions.pendingApprovals.size).toBe(0)
     // One attempt, the card's own: a notice would ride the same broken call, and a webchat turn
     // has no second surface to fall back to.
     expect(sink.output).toHaveBeenCalledTimes(1)
@@ -417,8 +417,8 @@ describe('webchat says a declined elicitation out loud too', () => {
   it('says nothing for the shapes webchat renders', async () => {
     const { daemon, notices } = webchatTurn()
     void daemon.permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation())
-    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
+    await vi.waitFor(() => expect(daemon.permissions.pendingApprovals.size).toBe(1))
     expect(notices()).toEqual([])
-    await daemon.permissions.releaseElicits('agent-1', 's1')
+    await daemon.permissions.releaseApprovals('agent-1', 's1')
   })
 })

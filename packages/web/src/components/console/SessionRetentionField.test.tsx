@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { SessionRetentionField, parseCustomDays } from './SessionRetentionField'
+import { SessionRetentionFields, parseCustomDays } from './SessionRetentionField'
 
 describe('parseCustomDays', () => {
   it('accepts only a complete integer day count', () => {
@@ -27,38 +27,47 @@ describe('parseCustomDays', () => {
   })
 })
 
-describe('SessionRetentionField', () => {
-  it('renders presets and marks the 90d default', () => {
-    const html = renderToStaticMarkup(<SessionRetentionField value="90d" onChange={() => undefined} />)
-    expect(html).toContain('After 90 days')
-    expect(html).toContain('· default')
-    expect(html).toContain('Custom…')
-    // Preset value ⇒ the custom day input stays hidden.
-    expect(html).not.toContain('aria-label="Expire sessions after (days)"')
+const noop = () => undefined
+const render = (session: string, workspace: string) =>
+  renderToStaticMarkup(
+    <SessionRetentionFields
+      session={session as '90d'}
+      workspace={workspace as '7d'}
+      onSessionChange={noop}
+      onWorkspaceChange={noop}
+    />
+  )
+
+describe('SessionRetentionFields', () => {
+  it('renders one group, workspace before session, with a single shared hint', () => {
+    const html = render('90d', '7d')
+    expect(html).toContain('aria-label="Clean up finished sessions"')
+    expect(html.indexOf('aria-label="Clean up workspaces after"')).toBeLessThan(
+      html.indexOf('aria-label="Delete finished sessions after"')
+    )
+    expect(html.match(/The workspace and sandbox go first/g)).toHaveLength(1)
   })
 
-  it('shows the bounded day input for a custom value', () => {
-    const html = renderToStaticMarkup(<SessionRetentionField value="45d" onChange={() => undefined} />)
+  it('marks both defaults and offers each preset list', () => {
+    const html = render('90d', '7d')
+    expect(html).toContain('After 90 days')
+    expect(html).toContain('After 7 days')
+    expect(html.match(/· default/g)).toHaveLength(2)
+    expect(html).toContain('After 3 days') // workspace-only preset
+    expect(html).toContain('With the session') // workspace 'never'
+    expect(html).toContain('Never') // session 'never'
+    // Preset values ⇒ no custom day inputs.
+    expect(html).not.toContain('type="number"')
+  })
+
+  it('shows the bounded day input only under the custom column', () => {
+    const html = render('45d', '7d')
     expect(html).toContain('After 45 days')
-    const input = html.match(/<input[^>]*aria-label="Expire sessions after \(days\)"[^>]*>/)?.[0] ?? ''
+    const input = html.match(/<input[^>]*aria-label="Delete finished sessions after \(days\)"[^>]*>/)?.[0] ?? ''
     expect(input).toContain('type="number"')
     expect(input).toContain('min="1"')
     expect(input).toContain('max="9999"') // client-side mirror of the protocol cap
     expect(input).toContain('value="45"')
-  })
-
-  it('renders the workspace window with its own label, default and never', () => {
-    const html = renderToStaticMarkup(<SessionRetentionField kind="workspace" value="7d" onChange={() => undefined} />)
-    expect(html).toContain('Clean up workspaces')
-    expect(html).toContain('After 7 days')
-    expect(html).toContain('· default')
-    expect(html).toContain('After 3 days')
-    expect(html).toContain('With the session')
-  })
-
-  it("renders 'Never' without the day input", () => {
-    const html = renderToStaticMarkup(<SessionRetentionField value="never" onChange={() => undefined} />)
-    expect(html).toContain('Never')
-    expect(html).not.toContain('aria-label="Expire sessions after (days)"')
+    expect(html).not.toContain('aria-label="Clean up workspaces after (days)"')
   })
 })

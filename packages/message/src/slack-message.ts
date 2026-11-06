@@ -33,7 +33,7 @@ export interface SlackMessageLike {
   user?: string
   bot_id?: string
   app_id?: string
-  bot_profile?: { app_id?: string; icons?: { image_72?: string } }
+  bot_profile?: { app_id?: string; name?: string; icons?: { image_72?: string } }
   user_profile?: { image_72?: string }
   hidden?: boolean
   message?: unknown
@@ -177,6 +177,7 @@ export function normalizeSlackMessage(
     .filter((attachment): attachment is PlatformAttachment => attachment !== null)
   const appId = message.app_id ?? message.bot_profile?.app_id
   const avatarUrl = message.user_profile?.image_72 ?? message.bot_profile?.icons?.image_72
+  const botName = isSlackBotPost(message) ? message.bot_profile?.name?.trim() : undefined
   const msgId = `slack:${message.channel}:${message.ts}`
   const agentAuthorship = readAgentAuthorshipClaim(message)
 
@@ -191,6 +192,7 @@ export function normalizeSlackMessage(
     sender: {
       id: message.user ?? message.bot_id ?? 'unknown',
       isBot: isSlackBotPost(message),
+      ...(botName ? { name: botName } : {}),
       ...(appId ? { appId } : {}),
       ...(avatarUrl ? { avatarUrl } : {})
     },

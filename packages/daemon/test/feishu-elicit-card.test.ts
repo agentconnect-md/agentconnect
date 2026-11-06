@@ -223,9 +223,9 @@ function feishuTurn(turn: { thread?: string } = {}): Harness {
 
 async function raise(h: Harness, req: CreateElicitationRequest): Promise<{ requestId: string; result: Promise<any> }> {
   const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', req)
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
-  const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.get(requestId).ts).toBe('om_4242'))
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.size).toBe(1))
+  const requestId = [...h.daemon.permissions.pendingApprovals.keys()][0] as string
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.get(requestId).card.ts).toBe('om_4242'))
   return { requestId, result }
 }
 
@@ -296,7 +296,7 @@ describe('a Feishu turn posts an elicitation card and settles it in place', () =
     const h = feishuTurn()
     const { requestId } = await raise(h, form({ ...CHECKS, note: { type: 'string' } }, ['checks']))
     await h.daemon.permissions.submitElicitEditor({ requestId, values: { [elicitFormBlockId(1)]: 'ship' } })
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     expect(h.notices().at(-1)).toContain('Checks')
   })
 
@@ -307,7 +307,7 @@ describe('a Feishu turn posts an elicitation card and settles it in place', () =
       requestId,
       values: { [elicitFormBlockId(0)]: [elicitOptionToken(9)] }
     })
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     expect(h.notices().at(-1)).toContain("wasn't accepted")
   })
 
@@ -343,7 +343,7 @@ describe('a Feishu turn posts an elicitation card and settles it in place', () =
   it('cancels an abandoned card and says so on the card itself', async () => {
     const h = feishuTurn()
     const { result } = await raise(h, form(CHECKS, ['checks']))
-    await h.daemon.permissions.releaseElicits('agent-1', 's1')
+    await h.daemon.permissions.releaseApprovals('agent-1', 's1')
     await expect(result).resolves.toEqual({ action: 'cancel' })
     expect(elements(h.edits.at(-1)!.card)[0].text.content).toContain('Cancelled')
   })

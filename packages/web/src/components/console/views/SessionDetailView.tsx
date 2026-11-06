@@ -19,23 +19,16 @@ import {
   agentDaemonLabel,
   agentCapabilitySource,
   agentLabel,
-  agentPermissionDisplay,
   agentPlacementIcon,
-  displayedEffort,
-  effortLabel,
-  fastModeAvailableFor,
   isSelfSender,
   isSetPlacementKind,
-  modelCapability,
   modelLabel,
   MOCK_MODE,
   MOCK_PREFIX,
-  permissionModeLabel,
   isGitWorkspace,
   pgPrompts,
   POOL_PLACEMENT,
   platName,
-  preferredModelFor,
   runtimeSwitchPermissionMode,
   rosterParticipantName,
   runtimeDefaultModel,
@@ -115,7 +108,6 @@ import { splitFilesMarker, type MarkedFile } from '@/lib/webchat-file'
 import { ComposerFileChips, MessageFileCards, stageComposerFile } from '@/components/console/ComposerFiles'
 import { transferCapable, sessionFileDownload } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
-import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
 import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
@@ -181,6 +173,8 @@ import {
   type TasksPanelVerdict
 } from '@/components/console/dock/TasksPanel'
 import { TaskThreadPanel } from '@/components/console/dock/TaskThreadPanel'
+import { TaskExpandedView } from '@/components/console/dock/TaskExpandedView'
+import { useIsMobile } from '@/lib/use-is-mobile'
 import { TaskThreadCard } from '@/components/console/TaskThreadCard'
 import { type TaskLink } from '@/components/console/task-link'
 import { useTasksByMessage } from '@/components/console/task-thread'
@@ -201,9 +195,9 @@ import {
 } from '@/lib/session-rail-filter'
 import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
-import { approvalNotice, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
+import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
-import { agentStrategyValue, HOST_STRATEGY, strategyModelSource, strategyUsesImage } from '@/lib/execution-strategy'
+import { HOST_STRATEGY, strategyUsesImage } from '@/lib/execution-strategy'
 import {
   CodeHostDecisionResult,
   DecisionResultMarker,
@@ -213,10 +207,9 @@ import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source
 import { DecisionEvaluationsDrawer } from '@/components/console/decisions/DecisionEvaluationsDrawer'
 import {
   sessionEffortAfterModelChange,
-  sessionEffortChoicesForSelection,
-  sessionPermissionChoices,
-  sessionPermissionSelection,
-  sessionRuntimeChangesEnabled
+  sessionRuntimeChangesEnabled,
+  runtimePickerState,
+  chatSettingsAllowed
 } from '@/lib/session-runtime-controls'
 import {
   msgStep,
@@ -332,7 +325,9 @@ function ComposerTextarea({
   controls?: readonly ControlCommand[]
 }) {
   const draft = usePgDraft(sessionId)
-  const { setPgInput } = usePlayground()
+  const { setPgInput, getPgSuggestion } = usePlayground()
+  // A phone has no Tab to take the runtime's predicted prompt, so it keeps the plain placeholder.
+  const suggestion = useIsMobile() ? undefined : getPgSuggestion(sessionId)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const recall = useComposerHistory({
     history,
@@ -380,7 +375,7 @@ function ComposerTextarea({
       <textarea
         ref={textareaRef}
         className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
-        placeholder={placeholder}
+        placeholder={suggestion ?? placeholder}
         value={draft}
         onChange={(e) => {
           setPgInput(sessionId, e.target.value)
@@ -406,6 +401,11 @@ function ComposerTextarea({
         onKeyDown={(e) => {
           // History first: a recalled `/cmd` or `@name` must not hand Up/Down to a picker mid-walk.
           if (recall.handleKeyDown(e)) return
+          if (e.key === 'Tab' && !e.shiftKey && !draft && suggestion) {
+            e.preventDefault()
+            setPgInput(sessionId, suggestion)
+            return
+          }
           if (command.handleKeyDown(e)) return
           if (mention.handleKeyDown(e)) return
           // Enter sends — but NOT while an IME is composing (that Enter
@@ -1412,9 +1412,12 @@ function ParticipantAvatar({
   platformMark,
   sp,
   isCron,
+  href,
   className = ''
 }: {
   agent: Agent | null
+  /** The agent's page; an agent's mark opens it. */
+  href?: string
   avatarUrl?: string | null
   avatarInitials?: string
   platformMark?: string
@@ -1423,13 +1426,17 @@ function ParticipantAvatar({
   /** Caller-side box tweaks — today only the transcript's vertical nudge. */
   className?: string
 }) {
+  const boxClass = `av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
+    !agent && !isCron ? 'bg-transparent' : ''
+  } ${className}`
+  if (agent && href)
+    return (
+      <Link href={href} className={boxClass} title={sp.name} aria-label={sp.name}>
+        <AgentIconView icon={agent.icon} runtime={agent.runtime} size={26} />
+      </Link>
+    )
   return (
-    <span
-      className={`av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
-        !agent && !isCron ? 'bg-transparent' : ''
-      } ${className}`}
-      title={sp.name}
-    >
+    <span className={boxClass} title={sp.name}>
       {agent ? (
         <AgentIconView icon={agent.icon} runtime={agent.runtime} size={26} />
       ) : isCron ? (
@@ -1603,6 +1610,11 @@ function MobileSessionFamilyLinks({
     </div>
   )
 }
+
+/** How an open coordinator task is drawn: over the coordinator with its own tools, or as the side panel's quick look. */
+type TaskViewMode = 'panel' | 'expanded'
+/** The side panel is at least this wide while it shows a task's thread. */
+const TASK_PANEL_MIN_WIDTH = 420
 
 /** The dock's tabs. PR / Tasks are each one more entry (§9), not a stub; Sessions' §1 `plus` action awaits a new-session flow. */
 const DOCK_TABS: DockTab[] = [
@@ -2462,24 +2474,62 @@ export default function SessionDetailView() {
   const [dockTab, setDockTab] = useState(DOCK_TABS[0]!.key)
   // A closed drawer leaves its panels mounted, so the Computer viewer must hear that it is off screen and hand control back.
   const [dockVisible, setDockVisible] = useState(true)
-  // The coordinator task whose thread the Tasks tab shows in place of its lists, held for the session it was opened in.
-  const [taskThread, setTaskThread] = useState<{ scope: string; link: TaskLink } | null>(null)
-  const openThread = taskThread?.scope === id ? taskThread.link : null
+  // The coordinator task open on this page, held for the session it was opened in: expanded over the coordinator, or in the side panel.
+  const [taskThread, setTaskThread] = useState<{ scope: string; link: TaskLink; mode: TaskViewMode } | null>(null)
+  const isMobile = useIsMobile()
+  const taskMode: TaskViewMode | null = taskThread?.scope === id ? (isMobile ? 'panel' : taskThread.mode) : null
+  // The side panel's thread; an expanded task draws over the page instead, leaving the panel on its lists.
+  const openThread = taskThread?.scope === id && taskMode === 'panel' ? taskThread.link : null
+  const expandedTask = taskThread?.scope === id && taskMode === 'expanded' ? taskThread.link : null
+  const coordinatorPage = session?.coordinator === true
+  // Whether this page has a task list to show: its agent and a real (not yet-to-be-created playground) session.
+  const taskListAvailable = !MOCK_MODE && filesAgentId !== null && tasksSessionId !== null
+  // The header's Tasks entry on a coordinator's page: the side panel's task list, any open task closed.
+  const showTaskList = () => {
+    setTaskThread(null)
+    setDockTab('tasks')
+    setDockReveal((n) => n + 1)
+  }
+  // Bumped when a task opens in the side panel, so a collapsed dock comes on screen to show it.
+  const [dockReveal, setDockReveal] = useState(0)
+  const setTaskMode = useCallback((mode: TaskViewMode) => {
+    setTaskThread((current) => (current ? { ...current, mode } : current))
+    // A task shrunk to the side panel lands there, so a collapsed band opens its drawer to show it.
+    if (mode === 'panel') setDockReveal((n) => n + 1)
+  }, [])
   // A coordinator's tasks by the message each was opened for, read only on a coordinator's own page.
   const tasksByMessage = useTasksByMessage(
     filesAgentId ?? '',
     session?.coordinator && filesAgentId === session.agentId ? subsessionsSessionId : null
   )
-  // Bumped when a card opens a thread, so a collapsed dock comes on screen to show it.
-  const [dockReveal, setDockReveal] = useState(0)
+  // A card opens its task expanded, the Tasks list in the side panel; a task the coordinator opens on its own keeps the current view.
   const openTaskThread = useCallback(
-    (link: TaskLink) => {
-      setTaskThread({ scope: id, link })
+    (link: TaskLink, mode?: TaskViewMode) => {
+      const next = mode ?? (taskThread?.scope === id ? taskThread.mode : 'panel')
+      setTaskThread({ scope: id, link, mode: next })
       setDockTab('tasks')
-      setDockReveal((n) => n + 1)
+      // Only a task opened in the side panel brings that panel on screen; an expanded one covers the page.
+      if (next === 'panel' || isMobile) setDockReveal((n) => n + 1)
     },
-    [id]
+    [id, isMobile, taskThread]
   )
+  // A task the coordinator opens or hands a message to while the reader watches comes on screen in the dock.
+  const followedTaskPosts = useRef<{ scope: string; seen: Set<string> } | null>(null)
+  const coordinatorLive = session?.coordinator ? getLiveSteps(session.id) : null
+  useEffect(() => {
+    if (!coordinatorLive || !session) return
+    const posts = coordinatorLive.flatMap((step) => (step.taskLink && step.postId ? [step] : []))
+    // Links already on screen when the page opened were read before; only one arriving now moves the dock.
+    if (followedTaskPosts.current?.scope !== session.id) {
+      followedTaskPosts.current = { scope: session.id, seen: new Set(posts.map((step) => step.postId!)) }
+      return
+    }
+    const { seen } = followedTaskPosts.current
+    const fresh = posts.filter((step) => !seen.has(step.postId!))
+    for (const step of fresh) seen.add(step.postId!)
+    const latest = fresh[fresh.length - 1]?.taskLink
+    if (latest) openTaskThread(latest)
+  }, [coordinatorLive, openTaskThread, session])
   // The Files tab's `refresh-cw` action: re-reads the tree and the git status without remounting the panel, so the reader's filter and expanded folders survive it.
   const [filesRefreshTick, setFilesRefreshTick] = useState(0)
   // Reported by the panel, like the Sessions verdict: only it knows whether its first root listing has answered.
@@ -2575,6 +2625,8 @@ export default function SessionDetailView() {
   const dockTabs = useMemo<DockTab[]>(
     () =>
       localizedDockTabs
+        // A coordinator never touches files, git or a computer, so its panel keeps Sessions and Tasks only.
+        .filter((tab) => !coordinatorPage || tab.key === 'sessions' || tab.key === 'tasks')
         .filter((tab) =>
           tab.key === 'files' || tab.key === 'git'
             ? filesAgentId !== null && !MOCK_MODE
@@ -2583,7 +2635,8 @@ export default function SessionDetailView() {
               : tab.key === 'tasks'
                 ? // Against its OWN scope (an agent and a canonical session), and dropped once settled with nothing in either group; an open thread keeps it.
                   (openThread !== null && !MOCK_MODE) ||
-                  (filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE && tasksTabShown(tasksVerdict))
+                  // A coordinator's header offers Tasks, so its tab stays wherever a list exists, showing the panel's empty state.
+                  (taskListAvailable && (coordinatorPage || tasksTabShown(tasksVerdict)))
                 : // PR keeps its tab without one: a 404 only means no pull-request run owns this session, and the panel then draws that branch's state and the action that opens one. That state is drawn only off a git read of THIS session's worktree (`prBranchScoped`) — the focused participant's checkout must not put session A's action on screen — and only when that read found a checkout (`changed !== null` is exactly "the settled read found one"). A linked PR keeps its tab whatever the git scope is: its identity comes from the run, not from a checkout.
                   tab.key !== 'pr' ||
                   (prSessionId !== null &&
@@ -2622,6 +2675,7 @@ export default function SessionDetailView() {
     [
       computerIds.length,
       computerManaged,
+      coordinatorPage,
       filesAgentId,
       filesStatus,
       gitStatus,
@@ -2635,6 +2689,7 @@ export default function SessionDetailView() {
       sessionsStatus,
       localizedDockTabs,
       openThread,
+      taskListAvailable,
       tasksSessionId,
       tasksStatus,
       tasksVerdict
@@ -4110,82 +4165,28 @@ export default function SessionDetailView() {
   const runtimeUnresolved = byDecision || session.runtimePending === true
   const runtimePending = runtimeUnresolved && !beforeFirstTurn
   const runtimeDecision = decisionCatalog?.decisions.find((item) => item.id === owner?.modelSelection?.decisionId)
-  // Before a live list, models come from the catalog of the agent's strategy: the host install's for host and srt, the image's for a VM.
-  const modelSource =
-    owningDaemon &&
-    strategyModelSource(owningDaemon, owner && !owningDaemon.pool ? agentStrategyValue(owner) : undefined)
-  const runtimeProfile = modelSource?.runtimeModels.find((profile) => profile.runtime === agentRuntime)
-  const runtimeCatalog = runtimeProfile?.modelCatalog ?? undefined
-  const pgModel =
-    runtimeSelection?.model ??
-    (beforeFirstTurn
-      ? session.model || owner?.model || preferredModelFor(modelSource, agentRuntime)
-      : (session.model ?? ''))
-  // A resolved runtime that reported no concrete model ran its own default; the picker names that entry.
-  const pgShownModel =
-    pgModel || (!runtimeUnresolved && runtimeDefaultModel(owningDaemon, agentRuntime) ? 'default' : '')
-  const pgModels = session.availableModels ?? runtimeProfile?.models ?? []
-  const pgModelOptions =
-    pgModels.length > 0 && pgModel && !pgModels.includes(pgModel) ? [pgModel, ...pgModels] : pgModels
-  const pickerSource = beforeFirstTurn
-    ? modelSource
-    : {
-        runtimeModels: [
-          { ...runtimeProfile, runtime: agentRuntime, version: runtimeProfile?.version ?? '', models: pgModelOptions }
-        ]
-      }
-  const selectedModelCapability = modelCapability(owningDaemon, agentRuntime, pgModel)
-  const pgEffortChoices = sessionEffortChoicesForSelection(
-    agentRuntime,
-    owningDaemon,
+  const {
+    modelSource,
     pgModel,
-    session.model,
-    session.availableEfforts
-  )
-  const pgEffort = displayedEffort(
-    runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? '',
-    pgEffortChoices,
-    selectedModelCapability?.defaultEffort
-  )
-  const pgEffortOptions =
-    pgEffort && !pgEffortChoices.some((choice) => choice.value === pgEffort)
-      ? [{ value: pgEffort, label: effortLabel(agentRuntime, pgEffort) }, ...pgEffortChoices]
-      : pgEffortChoices
-  const livePermissionModes = session.availablePermissionModes
-  const selectablePermissionModes = sessionPermissionChoices(agentRuntime, runtimeCatalog, livePermissionModes)
-  const pgPermissionPreset = sessionPermissionSelection(
+    pgShownModel,
+    pgModelOptions,
+    pickerSource,
+    pgEffort,
+    pgEffortOptions,
+    pgPermissionPreset,
+    pgApprovalOptions,
+    pgFastMode,
+    pgFastModeAvailable
+  } = runtimePickerState({
+    session,
+    selection: runtimeSelection,
+    owner: owner ?? undefined,
+    owningDaemon: owningDaemon ?? undefined,
     agentRuntime,
-    runtimeCatalog,
-    livePermissionModes,
-    runtimeSelection?.permissionPreset ?? session.permissionMode ?? owner?.permissionMode ?? ''
-  )
-  const pgPermissionPresets =
-    livePermissionModes === undefined &&
-    pgPermissionPreset &&
-    !selectablePermissionModes.some((choice) => choice.v === pgPermissionPreset)
-      ? [
-          { v: pgPermissionPreset, l: permissionModeLabel(agentRuntime, pgPermissionPreset) },
-          ...selectablePermissionModes
-        ]
-      : selectablePermissionModes
-  // The picker's Approval choices; a mode the live list no longer offers keeps its readable name.
-  const pgApprovalOptions = localizedPermissionChoices(
-    pgPermissionPreset && !pgPermissionPresets.some((mode) => mode.v === pgPermissionPreset)
-      ? [
-          { v: pgPermissionPreset, l: agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset) },
-          ...pgPermissionPresets
-        ]
-      : pgPermissionPresets,
+    beforeFirstTurn,
+    runtimeUnresolved,
     permissionT
-  )
-  // Stage the fast selection locally like model/effort/permission: an adopted
-  // (persisted webchat) session has no synthetic provider entry for pgSetFast to
-  // mutate, and an idle daemon session emits no status frame — without this the
-  // switch would render stale and every click would re-send the same value.
-  const pgFastMode = runtimeSelection?.fast ?? session.fastMode ?? owner?.fastMode ?? false
-  const pgFastModeAvailable =
-    (pgModel === session.model ? session.fastModeAvailable : undefined) ??
-    fastModeAvailableFor(agentRuntime, selectedModelCapability)
+  })
   // The runtime setters, shared by the toolbar's model picker and the composer's console commands.
   const changeEffort = (effort: string) => {
     setRuntimeSelection({ effort })
@@ -4361,6 +4362,24 @@ export default function SessionDetailView() {
         ]
       : []
   )
+  // A task's own thread changes its settings by the conversation's rule: settings allowed from chat, for the agent's editors.
+  const taskRuntimeContext = {
+    owner: owner ?? undefined,
+    owningDaemon: owningDaemon ?? undefined,
+    agentRuntime,
+    editable: chatSettingsAllowed(owner ?? undefined) && owner?.canEdit === true
+  }
+  // The task whose thread is actually on screen: expanded, or in a visible side panel on its Tasks tab.
+  const taskThreadOnScreen = expandedTask ?? (openThread && dockVisible && dockTabKey === 'tasks' ? openThread : null)
+  // A task's approvals are answered in its own thread, read through this conversation under the strip's rules.
+  const taskApprovalScope =
+    (canReviewApprovals || ownerApprovals) && session.agentId
+      ? {
+          listSessionId: session.realSessionId ?? session.id,
+          enabled: true,
+          conversationPermissions: ownerApprovals
+        }
+      : undefined
   const approvalCard = (className: string) =>
     (canReviewApprovals || ownerApprovals || conversationProposals) && session.agentId ? (
       <ApprovalRequestsCard
@@ -4372,6 +4391,7 @@ export default function SessionDetailView() {
         conversationPermissions={ownerApprovals}
         proposals={conversationProposals}
         transcriptTurns={approvalTurns}
+        openTaskSessionId={taskThreadOnScreen?.sessionId ?? null}
         className={className}
       />
     ) : null
@@ -4396,7 +4416,39 @@ export default function SessionDetailView() {
     // Height-locked to the `.content` scroller (`h-full`, not `min-h-full`): the row no longer
     // grows with the transcript, so the page itself never scrolls. The transcript column and the
     // dock are each their own overflow region and scroll independently.
-    <div className="flex h-full min-h-0 items-stretch">
+    <div className="relative flex h-full min-h-0 items-stretch">
+      {expandedTask && session.agentId ? (
+        <TaskExpandedView
+          key={expandedTask.sessionId}
+          agentId={session.agentId}
+          taskSessionId={expandedTask.sessionId}
+          computerIds={computerIds}
+          computerManaged={computerManaged !== undefined}
+          canWrite={canWriteWorkspace}
+          onShrink={() => setTaskMode('panel')}
+          thread={(branch) => (
+            <TaskThreadPanel
+              variant="expanded"
+              agentId={session.agentId!}
+              agentName={session.agentName ?? ''}
+              agentIcon={owner?.icon}
+              agentRuntime={agentRuntime || undefined}
+              agentById={agentById}
+              platform={session.platform ?? ''}
+              task={expandedTask}
+              parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
+              {...(activeOrg && session.coordinator && webchatConversationId
+                ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }
+                : {})}
+              branch={branch}
+              onShrink={() => setTaskMode('panel')}
+              onBack={() => setTaskThread(null)}
+              {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
+              runtimeContext={taskRuntimeContext}
+            />
+          )}
+        />
+      ) : null}
       {/* The viewer is full-width in every band (§7) — a file wants the columns a transcript does not. The 880px cap is the only geometry that changes: the dock's reserved TRACK keeps its column either way, which is the one thing §7 forbids trading. */}
       {/* The SCROLLER is full-width so its vertical scrollbar rides the far-right edge of the
           transcript area, not the centre of a capped box. `overflow-x-hidden` is load-bearing: a
@@ -4506,7 +4558,24 @@ export default function SessionDetailView() {
               ) : humanParticipants.length > 0 ? (
                 <SessionHumanFaces participants={humanParticipants} />
               ) : null}
-              {workspaceHref ? (
+              {coordinatorPage ? (
+                taskListAvailable ? (
+                  <button
+                    type="button"
+                    data-header-tasks=""
+                    className="lnk flex-none border-0 bg-transparent p-0 text-[12.5px] text-(--text-secondary)"
+                    onClick={showTaskList}
+                  >
+                    <Icon name="list-checks" size={13} />
+                    {t('tasks')}
+                    {tasksVerdict.running ? (
+                      <span className="rounded-full bg-(--brand-soft) px-[6px] font-sans text-[11px] font-semibold leading-normal text-(--brand-soft-text)">
+                        {tasksVerdict.running}
+                      </span>
+                    ) : null}
+                  </button>
+                ) : null
+              ) : workspaceHref ? (
                 <Link
                   className="lnk flex-none text-[12.5px] text-(--text-secondary)"
                   href={orgPath(workspaceHref)}
@@ -4638,9 +4707,21 @@ export default function SessionDetailView() {
               />
             </span>
             <CoordinatorTag show={session.coordinator} />
-            {workspaceHref ? (
-              // Borderless on purpose (no `iconbtn`): a boxed button in this strip of
-              // plain text triggers reads as the odd one out and eats width.
+            {coordinatorPage ? (
+              taskListAvailable ? (
+                <button
+                  type="button"
+                  data-header-tasks=""
+                  onClick={showTaskList}
+                  className="flex h-[26px] w-[22px] flex-none items-center justify-center rounded-md border-0 bg-transparent p-0 text-(--text-secondary) active:bg-(--surface-active)"
+                  title={t('tasks')}
+                  aria-label={t('tasks')}
+                >
+                  <Icon name="list-checks" size={14} />
+                </button>
+              ) : null
+            ) : workspaceHref ? (
+              // Borderless on purpose (no `iconbtn`): a boxed button in this strip of plain text reads as the odd one out.
               <Link
                 href={orgPath(workspaceHref)}
                 className="flex h-[26px] w-[22px] flex-none items-center justify-center rounded-md text-(--text-secondary) no-underline active:bg-(--surface-active)"
@@ -4929,6 +5010,9 @@ export default function SessionDetailView() {
                               </div>
                               <ParticipantAvatar
                                 agent={turn.agent}
+                                {...(turn.agent
+                                  ? { href: orgPath(`/agents/${encodeURIComponent(turn.agent.id)}`) }
+                                  : {})}
                                 avatarUrl={turn.avatarUrl}
                                 avatarInitials={turn.avatarInitials}
                                 platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
@@ -4979,16 +5063,32 @@ export default function SessionDetailView() {
                                   key={`${session.id}:${ti}`}
                                   className="group/turn flex items-start gap-2 desktop:gap-[10px]"
                                 >
-                                  <span className="av h-[26px] w-[26px] flex-none rounded-md">
-                                    <AgentIconView
-                                      icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
-                                      runtime={
-                                        (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
-                                        (agentRuntime || turn.model)
-                                      }
-                                      size={26}
-                                    />
-                                  </span>
+                                  {(() => {
+                                    const turnAgent = turn.agentId ? agentById.get(turn.agentId) : owner
+                                    const mark = (
+                                      <AgentIconView
+                                        icon={(turnAgent ?? owner)?.icon}
+                                        runtime={
+                                          (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
+                                          (agentRuntime || turn.model)
+                                        }
+                                        size={26}
+                                      />
+                                    )
+                                    // Only a turn whose agent is known links, never the owner fallback the icon may borrow.
+                                    return turnAgent ? (
+                                      <Link
+                                        href={orgPath(`/agents/${encodeURIComponent(turnAgent.id)}`)}
+                                        className="av h-[26px] w-[26px] flex-none rounded-md"
+                                        title={turn.agentName}
+                                        aria-label={turn.agentName}
+                                      >
+                                        {mark}
+                                      </Link>
+                                    ) : (
+                                      <span className="av h-[26px] w-[26px] flex-none rounded-md">{mark}</span>
+                                    )
+                                  })()}
                                   <div
                                     className="min-w-0 flex-1"
                                     style={{ '--agent-accent': turnTone } as CSSProperties}
@@ -5074,9 +5174,11 @@ export default function SessionDetailView() {
                                               parentSessionId={
                                                 turn.agentId === filesAgentId ? subsessionsSessionId : null
                                               }
-                                              selected={openThread?.sessionId === taskLinks[si].sessionId}
+                                              selected={
+                                                (openThread ?? expandedTask)?.sessionId === taskLinks[si].sessionId
+                                              }
                                               {...(turn.agentId === session.agentId
-                                                ? { onOpen: () => openTaskThread(taskLinks[si]!) }
+                                                ? { onOpen: () => openTaskThread(taskLinks[si]!, 'expanded') }
                                                 : {})}
                                             />
                                           </div>
@@ -5136,8 +5238,8 @@ export default function SessionDetailView() {
                                               agentId={session.agentId!}
                                               link={link}
                                               parentSessionId={subsessionsSessionId}
-                                              selected={openThread?.sessionId === link.sessionId}
-                                              onOpen={() => openTaskThread(link)}
+                                              selected={(openThread ?? expandedTask)?.sessionId === link.sessionId}
+                                              onOpen={() => openTaskThread(link, 'expanded')}
                                             />
                                           </div>
                                         ))}
@@ -5311,6 +5413,8 @@ export default function SessionDetailView() {
                           agentId={session.agentId}
                           conversationId={webchatConversationId}
                           className="mb-2"
+                          // A coordinator's tasks write under its conversation's grant, and each answers its own on its thread.
+                          {...(session.coordinator ? { raisedHere: raisedIn(visibleMsgs) } : {})}
                           // A delegated write never executes in the agent's own request: it
                           // answered with an operationId and the turn ended, so the decision is
                           // news the conversation has to deliver, or a flow that writes stops
@@ -5690,6 +5794,8 @@ export default function SessionDetailView() {
         label={t('panels')}
         onVisibleChange={setDockVisible}
         stripHidden={dockTabKey === 'tasks' && openThread !== null}
+        suppressed={expandedTask !== null}
+        widthFloor={openThread ? TASK_PANEL_MIN_WIDTH : 0}
       >
         {/* Both panels stay mounted; only the active one draws. Sessions owns the verdict that sets its own tab status, and Files owns the tree, the filter and the scroll position a tab switch must not spend. */}
         <DockPanel active={dockTabKey === 'sessions'}>
@@ -5805,7 +5911,13 @@ export default function SessionDetailView() {
               platform={session.platform ?? ''}
               task={openThread}
               parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
+              {...(activeOrg && session.coordinator && webchatConversationId
+                ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }
+                : {})}
               onBack={() => setTaskThread(null)}
+              {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
+              runtimeContext={taskRuntimeContext}
+              {...(isMobile ? {} : { onExpand: () => setTaskMode('expanded') })}
             />
           ) : null}
           {/* Mounted under an open thread too, so its verdict keeps the tab's badge and the reader comes back to the same lists. */}
@@ -5819,7 +5931,7 @@ export default function SessionDetailView() {
                 turnActive={focusBusy}
                 refreshTick={tasksRefreshTick}
                 onVerdictChange={setTasksVerdict}
-                {...(session.agentId ? { onOpenThread: openTaskThread } : {})}
+                {...(session.agentId ? { onOpenThread: (link: TaskLink) => openTaskThread(link, 'panel') } : {})}
               />
             ) : null}
           </div>

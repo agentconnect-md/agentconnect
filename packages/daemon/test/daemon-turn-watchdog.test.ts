@@ -190,7 +190,7 @@ describe('turn stall watchdog', () => {
       const map = (daemon as any).pending as Map<string, object>
       const pendingKey = [...map.keys()][0]!
       const successor = { ...(pending as object) }
-      vi.spyOn((daemon as any).permissions, 'releaseElicits').mockImplementationOnce(async () => {
+      vi.spyOn((daemon as any).permissions, 'releaseApprovals').mockImplementationOnce(async () => {
         map.set(pendingKey, successor)
       })
       await (daemon as any).interruptTurn(AGENT_ID, key, 'stalled', 'acp-1', { only: pending })

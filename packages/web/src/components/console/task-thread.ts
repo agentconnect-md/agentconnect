@@ -23,6 +23,8 @@ const RUNNING_POLL_MS = 5_000
 const IDLE_POLL_MS = 30_000
 /** Rows one thread read takes, work included: the newest page; earlier ones are on the task's own page. */
 const THREAD_PAGE = 100
+/** Browser and daemon clocks differ, so a saved prompt may be stamped a little before this visit sent it. */
+const PROMPT_CLOCK_SLACK_MS = 60_000
 
 const running = (row: AssistantSubsessionDto | undefined) => row?.state === 'open'
 
@@ -195,6 +197,14 @@ export function threadEntries(
     const at = Date.parse(messageTime(m) ?? '')
     return kind === 'reasoning' && liveSince !== undefined && Number.isFinite(at) && at >= liveSince
   }
+  // A prompt this visit sent is on the record once a person's row says the same since it was sent; the poll reads it while the reply still runs.
+  const savedPrompt = (step: SessionStep): boolean =>
+    messages.some((m) => {
+      if ((m.kind || 'text').toLowerCase() !== 'text' || m.sender === agentId || m.text.trim() !== step.text.trim())
+        return false
+      const at = Date.parse(messageTime(m) ?? '')
+      return step.observedAtMs === undefined || !Number.isFinite(at) || at >= step.observedAtMs - PROMPT_CLOCK_SLACK_MS
+    })
   for (const m of messages) {
     const kind = (m.kind || 'text').toLowerCase()
     const question = kind === 'elicit' ? openQuestion(elicitCard(m.body)) : null
@@ -251,7 +261,7 @@ export function threadEntries(
     if (step.hidden) return
     if (step.kind === 'msg') {
       turn = null
-      if (step.text.trim())
+      if (step.text.trim() && !savedPrompt(step))
         entries.push({ key: `l:${i}`, who: 'person', name: null, text: step.text, at: null, live: true })
       return
     }

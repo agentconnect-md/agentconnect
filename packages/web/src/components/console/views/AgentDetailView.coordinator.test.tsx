@@ -134,7 +134,8 @@ describe("an agent's Playground", () => {
     const [button] = await openPlaygroundButtons()
     await act(async () => button!.click())
     expect(mocks.openPlayground).toHaveBeenCalledWith(expect.objectContaining({ id: 'agent-1' }), undefined, {
-      conversationId: 'conv-co'
+      conversationId: 'conv-co',
+      coordinator: true
     })
     expect(mocks.push).toHaveBeenCalledWith('/sessions/pg_1')
   })

@@ -17,7 +17,7 @@ vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-1'
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ refresh: mocks.refresh }) }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
-  fetchBuiltinGithubAppSlug: vi.fn(async () => 'example-connect'),
+  fetchBuiltinGithubApp: vi.fn(async () => ({ slug: 'example-connect', appId: 1000 })),
   fetchGithubApps: vi.fn(async () => [
     {
       id: 'app-free',

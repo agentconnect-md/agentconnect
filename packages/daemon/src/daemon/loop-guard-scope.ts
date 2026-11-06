@@ -8,6 +8,8 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 export const LOOP_GUARD_WINDOW_MS = 60_000
 export const MAX_AUTOMATIC_TURNS_PER_WINDOW = 8
 export const MAX_TOTAL_TURNS_PER_WINDOW = 60
+export const LOOP_GUARD_WARNING =
+  '⚠️ Loop protection stopped this conversation and discarded its queued backlog. Send `!resume` when it is safe to continue.'
 
 /** One durable loop-guard scope shared by every agent on one physical bot.
  *  DMs are keyed at channel level because malformed platform wrappers may lose

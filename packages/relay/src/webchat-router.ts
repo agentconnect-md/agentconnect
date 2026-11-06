@@ -5,6 +5,7 @@ import {
   type RdChat,
   type RdMsg,
   type RdWebchatImageUpdate,
+  type RdWebchatPromptSuggestion,
   type RdWebchatPost
 } from '@agentconnect.md/protocol'
 
@@ -16,6 +17,8 @@ export interface ChatSink {
   onPost?(post: RdWebchatPost): void
   /** A published image's original changed state; optional like `onPost`. */
   onImageUpdate?(update: RdWebchatImageUpdate): void
+  /** A participant's predicted next prompt; optional like `onPost`. */
+  onPromptSuggestion?(suggestion: RdWebchatPromptSuggestion): void
   /** A daemon's relay link (re)became READY; optional like `onPost`. */
   onDaemonReady?(daemonId: string): void
 }
@@ -128,6 +131,11 @@ export class WebchatRouter {
     for (const sink of this.byChatId.get(update.conversationId) ?? []) sink.onImageUpdate?.(update)
   }
 
+  /** Deliver a predicted next prompt to every browser on the conversation; peers never receive it. */
+  deliverPromptSuggestion(suggestion: RdWebchatPromptSuggestion): void {
+    for (const sink of this.byChatId.get(suggestion.conversationId) ?? []) sink.onPromptSuggestion?.(suggestion)
+  }
+
   /** Tell every browser a daemon relinked, so one whose stream it served can resume what the gap dropped. */
   deliverDaemonReady(daemonId: string): void {
     for (const sinks of this.byChatId.values()) for (const sink of sinks) sink.onDaemonReady?.(daemonId)
@@ -138,9 +146,9 @@ export class WebchatRouter {
   }
 }
 
-/** Accept an image update only from the daemon the CP-verified roster places its agent on; an unknown roster fails closed. */
+/** Accept an image update or prompt suggestion only from the daemon the CP-verified roster places its agent on; an unknown roster fails closed. */
 export function imageUpdateBound(
-  update: RdWebchatImageUpdate,
+  update: Pick<RdWebchatImageUpdate, 'agentId'>,
   fromDaemonId: string,
   roster: CachedParticipant[]
 ): boolean {

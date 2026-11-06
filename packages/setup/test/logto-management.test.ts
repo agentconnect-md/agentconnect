@@ -490,7 +490,7 @@ describe('Logto setup reconciliation', () => {
   })
 })
 
-describe('Logto enterprise SSO connector', () => {
+describe('Logto SSO connector', () => {
   function fakeLogto(options: { rejectConfig?: string } = {}) {
     const ssoConnectors: Record<string, unknown>[] = []
     let minted = 0

@@ -96,6 +96,33 @@ describe('AHP conversation engine', () => {
       vi.useRealTimers()
     }
   })
+  it('keeps one connection notice across failing retries and clears it when the browser comes back online', async () => {
+    vi.useFakeTimers()
+    const window = new EventTarget()
+    vi.stubGlobal('addEventListener', window.addEventListener.bind(window))
+    vi.stubGlobal('removeEventListener', window.removeEventListener.bind(window))
+    try {
+      const entry = open()
+      await entry.connect()
+      const peer = attachments[0]!
+      const attach = vi.spyOn(peer, 'attach').mockImplementation(async () => {
+        peer.emit({ connected: false, error: 'Connection interrupted.' })
+        throw new Error('Cannot reach the chat server.')
+      })
+      peer.emit({ connected: false, error: 'Connection interrupted.' })
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(attach).toHaveBeenCalledTimes(6)
+      expect(entry.notices.map((notice) => notice.text)).toEqual(['Cannot reach the chat server.'])
+      attach.mockImplementation(async () => peer.emit({ connected: true, error: undefined }))
+      window.dispatchEvent(new Event('online'))
+      await vi.advanceTimersByTimeAsync(500)
+      await vi.waitFor(() => expect(entry.notices).toEqual([]))
+      await entry.close()
+    } finally {
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
+  })
   it('uses negotiated steering but queues a continuation', async () => {
     const entry = open()
     await entry.connect()

@@ -51,6 +51,9 @@ const wire = vi.hoisted(() => ({
   modelEvaluations: [] as unknown[],
   /** Overrides the session's steps: a playground session renders these instead of fetching a transcript. */
   steps: undefined as unknown[] | undefined,
+  /** What this visit's live connection streamed, which a coordinator's new task link follows into the dock. */
+  live: [] as unknown[],
+  coordinator: false,
   /** Every draft the composer wrote through `setPgInput`, newest last; the mocked `usePgDraft` reads the newest. */
   drafts: [] as string[],
   /** The agent is in assistant mode; the Tasks tab's Delegated group reads for one, or for any agent whose daemon serves every agent's. */
@@ -243,6 +246,7 @@ vi.mock('@/lib/data-context', () => ({
         ...(wire.agentless ? { agentId: '', agentName: '' } : {}),
         ...(wire.playground ? { platform: 'playground' } : {}),
         ...(wire.steps ? { steps: wire.steps } : {}),
+        ...(wire.coordinator ? { coordinator: true } : {}),
         ...wire.runtimeSession
       }
     ],
@@ -309,8 +313,9 @@ vi.mock('@/components/console/Shell', () => ({
 
 vi.mock('@/components/console/PlaygroundProvider', () => ({
   usePlayground: () => ({
+    getPgSuggestion: () => undefined,
     getPgSession: () => undefined,
-    getLiveSteps: () => [],
+    getLiveSteps: () => wire.live,
     getBusyLaneAgentIds: () => [],
     reconcileLiveSteps: () => {},
     getPgImage: () => null,
@@ -412,6 +417,8 @@ beforeEach(() => {
   wire.chatActions = 'talk'
   wire.byDecision = false
   wire.steps = undefined
+  wire.live = []
+  wire.coordinator = false
   wire.drafts = []
   wire.rail = []
   wire.tasks = { sessionId: 'session-1', tracked: true, tasks: [], truncated: false }
@@ -1546,6 +1553,41 @@ describe('a coordinator’s task cards', () => {
     ]
   }
 
+  it('gives a coordinator Sessions and Tasks only, with Tasks in the header where Workspace was', async () => {
+    coordinatorTurn()
+    wire.coordinator = true
+    // A created conversation, not a playground still waiting for its session: it has a task list to show.
+    wire.runtimeSession = { realSessionId: 'session-1' }
+    // Settled with nothing to list: no delegated tasks, and a runtime that reports none.
+    wire.tasks = { sessionId: 'session-1', tracked: false, tasks: [], truncated: false }
+    wire.subsessions = []
+    await render()
+    await render()
+    const tabs = [...(container?.querySelectorAll('[data-dock-tab]') ?? [])].map((el) =>
+      el.getAttribute('data-dock-tab')
+    )
+    expect(tabs.every((key) => key === 'sessions' || key === 'tasks')).toBe(true)
+    expect(tabs).not.toContain('files')
+    const tasks = container?.querySelector<HTMLButtonElement>('[data-header-tasks]')
+    expect(tasks?.textContent).toContain('Tasks')
+    expect(container?.textContent).not.toContain('Workspace')
+    // The header's Tasks lands on the Tasks tab even when the panel has nothing to list.
+    await act(async () => {
+      tasks?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(container?.querySelector('[data-dock-tab="tasks"]')?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('offers no Tasks entry on a coordinator playground that has no session for a task list yet', async () => {
+    coordinatorTurn()
+    wire.coordinator = true
+    await render()
+    expect(container?.querySelector('[data-header-tasks]')).toBeNull()
+    expect(container?.textContent).not.toContain('Workspace')
+  })
+
   it('draws the coordinator’s link to a task as a card, not as a link in a bubble', async () => {
     coordinatorTurn()
     await render()
@@ -1557,7 +1599,7 @@ describe('a coordinator’s task cards', () => {
     expect(container?.querySelector('[data-task-thread]')).toBeNull()
   })
 
-  it('opens the task’s thread in the Tasks tab, and goes back to the lists', async () => {
+  it('opens a task card expanded over the coordinator, shrinks it to the side panel, and goes back to the lists', async () => {
     coordinatorTurn()
     await render()
     await act(async () => {
@@ -1565,15 +1607,30 @@ describe('a coordinator’s task cards', () => {
       await Promise.resolve()
     })
     await render()
-    // The thread's own header stands in for the tab strip while it is open.
-    expect(container?.querySelector('[data-dock-tab]')).toBeNull()
-    const thread = container?.querySelector('[data-task-thread="child-1"]')
+    // Expanded: the task covers the coordinator, which stays as a strip to go back by, with its own tools beside the thread.
+    const expanded = container?.querySelector('[data-task-expanded="child-1"]')
+    expect(expanded).not.toBeNull()
+    expect(expanded?.querySelector('[data-task-expanded-sliver]')).not.toBeNull()
+    expect(expanded?.querySelector('[data-task-expanded-tab="files"]')?.getAttribute('aria-pressed')).toBe('true')
+    const thread = expanded?.querySelector('[data-task-thread="child-1"]')
     expect(thread?.textContent).toContain('Find what blocks api 1.5')
-    expect(thread?.querySelector('textarea[aria-label="Reply in this task…"]')).not.toBeNull()
+    expect(thread?.querySelector('[data-task-thread-back]')?.textContent).toBe('Coordinator')
     expect(container?.querySelector('[data-task-card="child-1"] button')?.getAttribute('aria-expanded')).toBe('true')
 
+    // Shrunk: the same task's thread in the side panel, whose expand goes back.
     await act(async () => {
-      Array.from(thread?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      thread?.querySelector<HTMLButtonElement>('[data-task-thread-shrink]')?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(container?.querySelector('[data-task-expanded]')).toBeNull()
+    const panel = container?.querySelector('[data-task-thread="child-1"]')
+    expect(panel?.querySelector('textarea[aria-label="Reply in this task…"]')).not.toBeNull()
+    expect(container?.querySelector('[data-dock-tab]')).toBeNull()
+    expect(panel?.querySelector('[data-task-thread-expand]')).not.toBeNull()
+
+    await act(async () => {
+      Array.from(panel?.querySelectorAll<HTMLButtonElement>('button') ?? [])
         .find((button) => button.textContent === 'Tasks')
         ?.click()
       await Promise.resolve()
@@ -1581,5 +1638,26 @@ describe('a coordinator’s task cards', () => {
     expect(container?.querySelector('[data-task-thread]')).toBeNull()
     await render()
     expect(container?.querySelector('[role="tablist"]')).not.toBeNull()
+  })
+
+  it('follows a task the coordinator opens while the reader watches into the dock, but not one already there', async () => {
+    coordinatorTurn()
+    wire.coordinator = true
+    const link = (postId: string, sessionId: string) => ({
+      kind: 'done',
+      agentId: 'agent-1',
+      text: linkCard,
+      turnId: postId,
+      postId,
+      taskLink: { sessionId, title: 'Find what blocks api 1.5', how: 'opened' }
+    })
+    wire.live = [link('post-old', 'child-old')]
+    await render()
+    expect(container?.querySelector('[data-task-thread]')).toBeNull()
+
+    wire.live = [link('post-old', 'child-old'), link('post-new', 'child-1')]
+    await render()
+    await render()
+    expect(container?.querySelector('[data-task-thread="child-1"]')).not.toBeNull()
   })
 })

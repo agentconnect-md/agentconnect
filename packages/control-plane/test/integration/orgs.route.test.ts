@@ -14,6 +14,7 @@ import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
 import { seedDutyGroup } from '../fixtures/seed.js'
+import { DaemonId, OrgId } from '../../src/domain/ids.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { Prisma } from '../../src/generated/prisma/client.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
@@ -71,6 +72,7 @@ interface OrgBody {
   name: string | null
   slug: string
   defaultAgentVisibility: 'all' | 'selected'
+  defaultDaemonAutoUpgrade: boolean
   role: string
   memberCount: number
   createdAt: string
@@ -320,6 +322,37 @@ describe('PATCH /orgs/:id', () => {
         url: `${ORG}/agents/${(before.json() as { id: string }).id}`
       })
       expect(unchanged.json()).toMatchObject({ callPolicy: 'all', outboundPolicy: 'all' })
+    } finally {
+      await close()
+    }
+  })
+
+  it('seeds new daemons with the org auto-upgrade default without changing existing ones', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    const repo = new PgDaemonRepo(prisma)
+    const autoUpgradeOf = async (id: string) =>
+      (await prisma.daemon.findUniqueOrThrow({ where: { id }, select: { autoUpgrade: true } })).autoUpgrade
+    try {
+      const fresh = (await (await app.inject({ method: 'GET', url: ORG })).json()) as OrgBody
+      expect(fresh.defaultDaemonAutoUpgrade).toBe(false)
+      const before = randomUUID()
+      await repo.provision(DaemonId(before), OrgId(DEFAULT_ORG_ID))
+
+      const updated = await app.inject({ method: 'PATCH', url: ORG, payload: { defaultDaemonAutoUpgrade: true } })
+      expect(updated.statusCode).toBe(200)
+      expect((updated.json() as OrgBody).defaultDaemonAutoUpgrade).toBe(true)
+
+      const provisioned = randomUUID()
+      await repo.provision(DaemonId(provisioned), OrgId(DEFAULT_ORG_ID))
+      const authed = randomUUID()
+      await repo.upsertOnAuth({ daemonId: DaemonId(authed), orgId: OrgId(DEFAULT_ORG_ID), agentVersion: '2.11.0' })
+      const pooled = randomUUID()
+      await repo.upsertOnAuth({ daemonId: DaemonId(pooled), orgId: null, agentVersion: '2.11.0' })
+
+      expect(await autoUpgradeOf(before)).toBe(false)
+      expect(await autoUpgradeOf(provisioned)).toBe(true)
+      expect(await autoUpgradeOf(authed)).toBe(true)
+      expect(await autoUpgradeOf(pooled)).toBe(false)
     } finally {
       await close()
     }

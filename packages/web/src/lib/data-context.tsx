@@ -286,7 +286,7 @@ interface ConsoleData {
   deleteCron: (id: string) => Promise<void>
   provisionDaemon: () => Promise<DaemonConnectDto>
   renameDaemon: (daemonId: string, name: string) => Promise<void>
-  /** Set the daemon's finished-session retention window ("Expire sessions"), then re-pull. */
+  /** Set the daemon's finished-session retention window (the cleanup row's "Session" picker), then re-pull. */
   setDaemonSessionRetention: (daemonId: string, retention: DaemonSessionRetention) => Promise<void>
   setDaemonWorkspaceRetention: (daemonId: string, retention: DaemonSessionRetention) => Promise<void>
   /** Turn a daemon's auto-upgrade on or off, then re-pull. */
@@ -1679,7 +1679,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateDaemons]
   )
 
-  // Set the finished-session retention window ("Expire sessions"), then re-pull.
+  // Set the finished-session retention window (the cleanup row's "Session" picker), then re-pull.
   const setDaemonSessionRetention = useCallback(
     async (daemonId: string, retention: DaemonSessionRetention) => {
       await apiUpdateDaemonSessionRetention(daemonId, retention)
@@ -1688,7 +1688,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateDaemons]
   )
 
-  // Set how long a finished session's workspace stays ("Clean up workspaces"), then re-pull.
+  // Set how long a finished session's workspace stays (the cleanup row's "Workspace" picker), then re-pull.
   const setDaemonWorkspaceRetention = useCallback(
     async (daemonId: string, retention: DaemonSessionRetention) => {
       await apiUpdateDaemonWorkspaceRetention(daemonId, retention)

@@ -26,7 +26,9 @@ const wire = vi.hoisted(() => ({
   drafts: {} as Record<string, string>,
   live: [] as SessionStep[],
   calls: [] as string[],
-  extra: [] as SessionMessageDto[]
+  extra: [] as SessionMessageDto[],
+  operations: [] as unknown[],
+  permissionRequests: [] as unknown[]
 }))
 
 vi.mock(import('@/lib/api'), async (importOriginal) => ({
@@ -35,6 +37,18 @@ vi.mock(import('@/lib/api'), async (importOriginal) => ({
     Promise.resolve({ subsessions: [taskRow], truncated: false, nextCursor: null })
   ),
   fetchAssistantSubsession: vi.fn(),
+  fetchAgentPermissionRequests: vi.fn(() => Promise.resolve(wire.permissionRequests as never)),
+  stopAssistantSubsession: vi.fn((_agent: string, id: string) => {
+    wire.calls.push(`stop:${id}`)
+    return Promise.resolve({ result: 'stopped' as const })
+  }),
+  listWebchatMcpOperations: vi.fn(() => Promise.resolve(wire.operations as never)),
+  decideWebchatMcpOperation: vi.fn((_org: string, _agent: string, _conv: string, operationId: string) =>
+    Promise.resolve({
+      ...(wire.operations as { operationId: string }[]).find((op) => op.operationId === operationId),
+      status: 'completed'
+    } as never)
+  ),
   fetchSessionDetail: vi.fn(() => Promise.resolve({ id: 'ses_task', canContinue: wire.canContinue } as never)),
   fetchSessionMessages: vi.fn(() =>
     Promise.resolve({
@@ -68,6 +82,10 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
     markSessionTarget: (id: string) => wire.calls.push(`target:${id}`),
     pgAnswerElicitation: (id: string, agentId: string, requestId: string, value: unknown) =>
       wire.calls.push(`answer:${id}:${agentId}:${requestId}:${String(value)}`),
+    pgNotice: (id: string, agentId: string, text: string) => {
+      wire.calls.push(`notice:${id}:${agentId}:${text}`)
+      return true
+    },
     pgSend: (id: string, agentId: string) => {
       wire.calls.push(`send:${id}:${agentId}:${wire.drafts[id] ?? ''}`)
       return true
@@ -94,7 +112,9 @@ vi.mock(import('@/components/marks'), async (importOriginal) => ({
   AgentIconView: () => <span data-agent-avatar="" />
 }))
 
-vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => `/acme${path}` }) }))
+vi.mock('@/lib/org-context', () => ({
+  useOrgs: () => ({ activeOrg: { id: 'org_acme' }, orgPath: (path: string) => `/acme${path}` })
+}))
 
 import { TaskThreadPanel } from './TaskThreadPanel'
 import { DockExpandContext, type DockExpand } from './SessionDock'
@@ -115,6 +135,8 @@ beforeEach(() => {
   wire.live = []
   wire.calls = []
   wire.extra = []
+  wire.permissionRequests = []
+  wire.operations = []
   props = {}
   back = vi.fn()
   container = document.createElement('div')
@@ -190,6 +212,68 @@ describe('TaskThreadPanel', () => {
     expect(folds.at(-1)).toContain('Thought through 1 step')
   })
 
+  it('draws the expanded header: the coordinator crumb, the branch, Stop for a running task, and shrink', async () => {
+    const shrink = vi.fn()
+    props = { variant: 'expanded', branch: 'task/blockers-1.5', onShrink: shrink }
+    await render()
+    const crumb = container.querySelector<HTMLButtonElement>('[data-task-thread-back]')!
+    expect(crumb.textContent).toBe('Coordinator')
+    expect(container.querySelector('[data-task-thread-branch]')?.textContent).toBe('task/blockers-1.5')
+    await act(async () => crumb.click())
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-shrink]')!.click())
+    expect(shrink).toHaveBeenCalledTimes(2)
+    expect(container.querySelector('[data-task-thread-expand]')).toBeNull()
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-stop]')!.click())
+    expect(wire.calls).toContain('stop:ses_task')
+  })
+
+  it('offers the side panel an expand that opens the task expanded', async () => {
+    const expand = vi.fn()
+    props = { onExpand: expand }
+    await render()
+    expect(container.querySelector('[data-task-thread-back]')?.textContent).toBe('Tasks')
+    expect(container.querySelector('[data-task-thread-branch]')).toBeNull()
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-task-thread-expand]')!.click())
+    expect(expand).toHaveBeenCalledOnce()
+  })
+
+  it('draws the task’s own approval in its thread, at the turn that asked', async () => {
+    wire.permissionRequests = [
+      {
+        id: 'perm-1',
+        agentId: 'agent_1',
+        sessionId: 'ses_task',
+        parentSessionId: 'ses_coordinator',
+        createdAt: '2026-11-03T09:02:30.000Z',
+        requesterId: null,
+        requesterName: null,
+        command: 'Bash: kubectl rollout restart',
+        status: 'pending',
+        resolvedAt: null,
+        options: [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }]
+      },
+      // Another task's request stays out of this thread.
+      {
+        id: 'perm-2',
+        agentId: 'agent_1',
+        sessionId: 'ses_other',
+        parentSessionId: 'ses_coordinator',
+        createdAt: '2026-11-03T09:02:30.000Z',
+        requesterId: null,
+        requesterName: null,
+        command: 'Bash: rm -rf build',
+        status: 'pending',
+        resolvedAt: null
+      }
+    ]
+    props = { taskApprovals: { listSessionId: 'ses_coordinator', enabled: true, conversationPermissions: false } }
+    await render()
+    await render()
+    const turn = container.querySelector('[data-thread-message="agent"]')!
+    expect(turn.querySelector('[data-turn-approval="perm-1"]')?.textContent).toContain('kubectl rollout restart')
+    expect(container.querySelector('[data-turn-approval="perm-2"]')).toBeNull()
+  })
+
   it('sends a reply onto the task’s own session', async () => {
     wire.drafts.ses_task = 'does 1.5 include the orders migration?'
     await render()
@@ -225,6 +309,23 @@ describe('TaskThreadPanel', () => {
         .click()
     )
     expect(wire.calls).toEqual(['target:ses_task', 'answer:ses_task:agent_1:q-1:yes'])
+  })
+
+  it('keeps an unfinished answer when the thread remounts, as switching the task view does', async () => {
+    wire.live = [
+      { kind: 'elicit', turnId: 't1', text: 'Which tag?', elicit: { requestId: 'q-keep', options: [], text: {} } }
+    ]
+    await render()
+    const input = container.querySelector<HTMLInputElement>('[data-thread-question="q-keep"] input')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'v1.5.')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => root.unmount())
+    root = createRoot(container)
+    props = { variant: 'expanded', onShrink: () => {} }
+    await render()
+    expect(container.querySelector<HTMLInputElement>('[data-thread-question="q-keep"] input')!.value).toBe('v1.5.')
   })
 
   it('checks a typed answer against its constraints, and keeps it editable after sending', async () => {
@@ -369,6 +470,45 @@ describe('TaskThreadPanel', () => {
     await render()
     const avatars = Array.from(container.querySelectorAll<HTMLImageElement>('[data-thread-avatar]'))
     expect(avatars.map((img) => img.getAttribute('src'))).toEqual(['https://avatars.example/sam.png'])
+  })
+
+  it('asks for approval of only the writes this task raised, and tells the task the outcome', async () => {
+    const pending = (operationId: string, toolName: string) => ({
+      operationId,
+      toolName,
+      arguments: {},
+      status: 'awaiting_confirmation',
+      createdAt: '2026-11-03T09:03:00.000Z',
+      confirmationExpiresAt: '2026-11-03T09:13:00.000Z',
+      completedAt: null
+    })
+    const mine = '6f1d3c55-0a3e-4b8e-9d55-6a4c1b7e2f10'
+    wire.operations = [pending(mine, 'updateAgent'), pending('0b6c9d2e-5f8a-4c1b-8e3d-7a9f2c4e6b11', 'deleteCron')]
+    wire.extra = [
+      {
+        seq: 4,
+        sender: 'agent_1',
+        ts: '2026-11-03T09:03:00.000Z',
+        kind: 'tool',
+        text: 'updateAgent',
+        body: JSON.stringify({ output: JSON.stringify({ status: 'awaiting_confirmation', operationId: mine }) })
+      }
+    ]
+    props = { approvals: { orgId: 'org1', conversationId: 'conv_coordinator' } }
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    const approve = [...container.querySelectorAll('button')].filter((b) => b.textContent?.includes('Approve'))
+    expect(approve).toHaveLength(1)
+    expect(container.textContent).toContain('updateAgent')
+    expect(container.textContent).not.toContain('deleteCron')
+    await act(async () => approve[0]!.click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(wire.calls).toContain('target:ses_task')
+    expect(wire.calls.find((call) => call.startsWith('notice:ses_task:agent_1:'))).toContain(mine)
   })
 
   it('goes back to the task lists', async () => {

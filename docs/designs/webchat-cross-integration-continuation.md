@@ -211,9 +211,11 @@ owners. Provider membership can tighten this action later without changing the
 route; it is not required or inferred in v1.
 
 The grant covers sending a human turn. A targeted conversation does **not**
-offer runtime-setting operations in v1. `set_model`, `set_effort`,
+offer runtime-setting operations, with one exception. `set_model`, `set_effort`,
 `set_permission_mode`, and `set_fast` are rejected even when
-`chatActions` is `settings`. `cancel` is accepted only for a `turnId`
+`chatActions` is `settings`, except on a coordinator's task: its own thread
+changes the task's settings under the rule its conversation's composer follows
+(`chatActions` is `settings` and the caller may change settings there). `cancel` is accepted only for a `turnId`
 owned by that same targeted conversation's live webchat stream; it is not a
 session-global stop capability.
 
@@ -233,7 +235,14 @@ the existing output rules.**
   the Slack send boundary swaps in the attributed body atomically (on the very
   post that proves the scope missing, not only once latched) and reports which
   body landed so the routing re-stamp re-supplies it. This uses the same
-  integration client the session's replies use.
+  integration client the session's replies use. A session keyed on a whole
+  conversation (an `append` or channel-coordinator coordinate,
+  [channel-session-mode.md](channel-session-mode.md) §3) has no platform thread, so
+  its mirror and replies post at the conversation's top level; the coordinate stays
+  the session's key and is never sent to the platform as a thread. Once the mirror
+  lands, its provider message id becomes the message's own, as channel ingress
+  names a message: the transcript row carries it, and a coordinator that opens a
+  task for the message opens it in that post's thread.
 - The mirror is an ordinary authenticated platform message, and delivery must
   be PROVEN: only a returned provider message id counts — an undefined result
   (a provider that swallows send failures) takes the same refusal path as an
@@ -466,7 +475,8 @@ the op handlers keyed off `chatId` (`daemon.ts:9986-10057`):
   (`daemon.ts:6798`). `cancel` reaches the target key only after the stream map
   proves the requested turn belongs to this targeted conversation;
   `set_model`/`set_effort`/`set_permission_mode`/`set_fast` are refused for a
-  targeted conversation in v1.
+  targeted conversation unless its target is a coordinator's task, which they
+  change under the ordinary settings gate (relay ops and AHP `session/configChanged` alike).
 - **Store:** no schema change. The continuation turn is ordinary session
   history on existing coordinates.
 
@@ -498,8 +508,9 @@ true`; structural client checks are display-only and cannot widen the server
 - The read-only `threadUrl` deep link stays — "continue here" and "open in
   Slack" are complementary.
 - Runtime pills follow the existing `chatActions` gating (`settings`)
-  for ordinary webchat only. A continuation hides them in v1; this ingress may
-  add human input but does not gain session-global runtime administration.
+  for ordinary webchat and a coordinator task's thread. Any other continuation
+  hides them; this ingress may add human input but does not gain session-global
+  runtime administration.
 
 ### 6.6 Documentation
 

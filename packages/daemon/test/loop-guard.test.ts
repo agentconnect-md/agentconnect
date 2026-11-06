@@ -65,25 +65,25 @@ describe('LocalStore loop guard', () => {
     const s = await LocalStore.open(dbPath())
     const limits = { windowMs: 1_000, maxTotal: 100, maxAutomatic: 2 }
 
-    expect(await s.recordLoopGuardTurn('slack:C1:dm', 100, true, limits)).toMatchObject({
+    expect(await s.recordLoopGuardTurn('slack:C1:dm', 'm1', 100, true, limits)).toMatchObject({
       allowed: true,
       totalCount: 1,
       automaticCount: 1
     })
-    expect(await s.recordLoopGuardTurn('slack:C1:dm', 200, true, limits)).toMatchObject({
+    expect(await s.recordLoopGuardTurn('slack:C1:dm', 'm2', 200, true, limits)).toMatchObject({
       allowed: true,
       totalCount: 2,
       automaticCount: 2
     })
-    expect(await s.recordLoopGuardTurn('slack:C1:dm', 300, false, limits)).toMatchObject({
+    expect(await s.recordLoopGuardTurn('slack:C1:dm', 'm3', 300, false, limits)).toMatchObject({
       allowed: true,
       totalCount: 3,
       automaticCount: 0
     })
 
-    expect((await s.recordLoopGuardTurn('slack:C1:dm', 400, true, limits)).allowed).toBe(true)
-    expect((await s.recordLoopGuardTurn('slack:C1:dm', 500, true, limits)).allowed).toBe(true)
-    expect(await s.recordLoopGuardTurn('slack:C1:dm', 600, true, limits)).toMatchObject({
+    expect((await s.recordLoopGuardTurn('slack:C1:dm', 'm4', 400, true, limits)).allowed).toBe(true)
+    expect((await s.recordLoopGuardTurn('slack:C1:dm', 'm5', 500, true, limits)).allowed).toBe(true)
+    expect(await s.recordLoopGuardTurn('slack:C1:dm', 'm6', 600, true, limits)).toMatchObject({
       allowed: false,
       trippedNow: true,
       automaticCount: 3,
@@ -93,13 +93,57 @@ describe('LocalStore loop guard', () => {
     await s.close()
   })
 
+  it('charges one message once however many agents admit it', async () => {
+    const s = await LocalStore.open(dbPath())
+    const limits = { windowMs: 1_000, maxTotal: 100, maxAutomatic: 2 }
+
+    for (const at of [100, 101, 102]) {
+      expect(await s.recordLoopGuardTurn('slack:C1:top-level', 'post-1', at, true, limits)).toMatchObject({
+        allowed: true,
+        totalCount: 1,
+        automaticCount: 1
+      })
+    }
+    // The key is per scope: the same id in another conversation is its own charge.
+    expect(await s.recordLoopGuardTurn('slack:C2:top-level', 'post-1', 103, true, limits)).toMatchObject({
+      automaticCount: 1
+    })
+    expect((await s.recordLoopGuardTurn('slack:C1:top-level', 'post-2', 200, true, limits)).allowed).toBe(true)
+    expect(await s.recordLoopGuardTurn('slack:C1:top-level', 'post-3', 300, true, limits)).toMatchObject({
+      allowed: false,
+      trippedNow: true,
+      reason: 'automatic_turn_burst'
+    })
+    // The other agents admitting the tripping message are refused without a second trip.
+    expect(await s.recordLoopGuardTurn('slack:C1:top-level', 'post-3', 301, true, limits)).toMatchObject({
+      allowed: false,
+      trippedNow: false,
+      automaticCount: 3
+    })
+    // So is an agent still admitting a message counted before the trip.
+    expect((await s.recordLoopGuardTurn('slack:C1:top-level', 'post-1', 302, true, limits)).allowed).toBe(false)
+    await s.close()
+  })
+
+  it('charges a message again once its window has passed', async () => {
+    const s = await LocalStore.open(dbPath())
+    const limits = { windowMs: 1_000, maxTotal: 100, maxAutomatic: 100 }
+    await s.recordLoopGuardTurn('slack:C1:T1', 'post-1', 100, true, limits)
+    expect(await s.recordLoopGuardTurn('slack:C1:T1', 'post-1', 1_100, true, limits)).toMatchObject({
+      totalCount: 1,
+      automaticCount: 1
+    })
+    expect(await s.getLoopGuard('slack:C1:T1')).toMatchObject({ windowStartedAt: 1_100 })
+    await s.close()
+  })
+
   it('uses the total-rate backstop even when every turn is classified as human', async () => {
     const s = await LocalStore.open(dbPath())
     const limits = { windowMs: 1_000, maxTotal: 2, maxAutomatic: 100 }
 
-    expect((await s.recordLoopGuardTurn('slack:C1:dm', 100, false, limits)).allowed).toBe(true)
-    expect((await s.recordLoopGuardTurn('slack:C1:dm', 200, false, limits)).allowed).toBe(true)
-    expect(await s.recordLoopGuardTurn('slack:C1:dm', 300, false, limits)).toMatchObject({
+    expect((await s.recordLoopGuardTurn('slack:C1:dm', 'm7', 100, false, limits)).allowed).toBe(true)
+    expect((await s.recordLoopGuardTurn('slack:C1:dm', 'm8', 200, false, limits)).allowed).toBe(true)
+    expect(await s.recordLoopGuardTurn('slack:C1:dm', 'm9', 300, false, limits)).toMatchObject({
       allowed: false,
       trippedNow: true,
       totalCount: 3,
@@ -138,15 +182,15 @@ describe('LocalStore loop guard', () => {
   it('prunes only inactive counters while retaining latched incidents', async () => {
     const s = await LocalStore.open(dbPath())
     const limits = { windowMs: 1_000, maxTotal: 100, maxAutomatic: 100 }
-    await s.recordLoopGuardTurn('recent-boundary', 0, true, limits)
-    await s.recordLoopGuardTurn('recent-boundary', 900, false, limits) // automatic window refreshed
+    await s.recordLoopGuardTurn('recent-boundary', 'm10', 0, true, limits)
+    await s.recordLoopGuardTurn('recent-boundary', 'm11', 900, false, limits) // automatic window refreshed
     await s.tripLoopGuard('latched', 0, 'incident')
 
-    await s.recordLoopGuardTurn('other', 1_001, false, limits)
+    await s.recordLoopGuardTurn('other', 'm12', 1_001, false, limits)
     expect(await s.getLoopGuard('recent-boundary')).toBeDefined()
     expect(await s.getLoopGuard('latched')).toBeDefined()
 
-    await s.recordLoopGuardTurn('new-window', 2_001, false, limits)
+    await s.recordLoopGuardTurn('new-window', 'm13', 2_001, false, limits)
     expect(await s.getLoopGuard('recent-boundary')).toBeUndefined()
     expect(await s.getLoopGuard('latched')).toMatchObject({ reason: 'incident' })
     await s.close()
@@ -160,31 +204,42 @@ describe('LocalStore loop guard on a shared pool store (#1038)', () => {
     const { a, b, close } = await pool()
     // A charges while B charges: an absolute upsert derived from a prior read drops B's turn.
     interleaveLoopGuardWrite(a, async () => {
-      await b.recordLoopGuardTurn('slack:C1:T1', 100, true, limits)
+      await b.recordLoopGuardTurn('slack:C1:T1', 'm14', 100, true, limits)
     })
-    expect(await a.recordLoopGuardTurn('slack:C1:T1', 100, true, limits)).toMatchObject({
+    expect(await a.recordLoopGuardTurn('slack:C1:T1', 'm15', 100, true, limits)).toMatchObject({
       allowed: true,
       totalCount: 2,
       automaticCount: 2
     })
-    for (let i = 0; i < 8; i++) await (i % 2 === 0 ? a : b).recordLoopGuardTurn('slack:C1:T1', 200 + i, true, limits)
+    for (let i = 0; i < 8; i++)
+      await (i % 2 === 0 ? a : b).recordLoopGuardTurn('slack:C1:T1', `burst-${i}`, 200 + i, true, limits)
     expect(await a.getLoopGuard('slack:C1:T1')).toMatchObject({ totalCount: 10, automaticCount: 10 })
+    await close()
+  })
+
+  it('counts a message once when two members admit it for different agents', async () => {
+    const { a, b, close } = await pool()
+    interleaveLoopGuardWrite(a, async () => {
+      await b.recordLoopGuardTurn('slack:C1:T1', 'post-1', 100, true, limits)
+    })
+    await a.recordLoopGuardTurn('slack:C1:T1', 'post-1', 100, true, limits)
+    expect(await a.getLoopGuard('slack:C1:T1')).toMatchObject({ totalCount: 1, automaticCount: 1 })
     await close()
   })
 
   it('elects exactly one member to own the trip’s side effects', async () => {
     const { a, b, close } = await pool()
     const burst = { windowMs: 10_000, maxTotal: 1, maxAutomatic: 100 }
-    await a.recordLoopGuardTurn('slack:C1:T1', 100, false, burst)
+    await a.recordLoopGuardTurn('slack:C1:T1', 'm17', 100, false, burst)
     // Both members exceed the budget in the same window; only the winner runs the trip.
     interleaveLoopGuardWrite(a, async () => {
-      expect(await b.recordLoopGuardTurn('slack:C1:T1', 100, false, burst)).toMatchObject({
+      expect(await b.recordLoopGuardTurn('slack:C1:T1', 'm18', 100, false, burst)).toMatchObject({
         allowed: false,
         trippedNow: true,
         reason: 'turn_rate_burst'
       })
     })
-    expect(await a.recordLoopGuardTurn('slack:C1:T1', 100, false, burst)).toMatchObject({
+    expect(await a.recordLoopGuardTurn('slack:C1:T1', 'm19', 100, false, burst)).toMatchObject({
       allowed: false,
       trippedNow: false,
       reason: 'turn_rate_burst'
@@ -202,9 +257,9 @@ describe('LocalStore loop guard on a shared pool store (#1038)', () => {
 
   it('never recharges a latched scope, whichever member reads it', async () => {
     const { a, b, close } = await pool()
-    await a.recordLoopGuardTurn('slack:C1:T1', 100, true, limits)
+    await a.recordLoopGuardTurn('slack:C1:T1', 'm20', 100, true, limits)
     await a.tripLoopGuard('slack:C1:T1', 150, 'incident')
-    expect(await b.recordLoopGuardTurn('slack:C1:T1', 200, true, limits)).toMatchObject({
+    expect(await b.recordLoopGuardTurn('slack:C1:T1', 'm21', 200, true, limits)).toMatchObject({
       allowed: false,
       trippedNow: false,
       totalCount: 1,

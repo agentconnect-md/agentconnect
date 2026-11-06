@@ -183,6 +183,16 @@ describe('SessionDock applied width', () => {
     expect(1366 - DOCK_INLINE_CHROME - rendered()).toBe(DOCK_BODY_FLOOR)
   })
 
+  it('draws at least its floor while a task thread needs the room, keeping the stored preference', () => {
+    writeDockWidth('org-1', 380)
+    window.innerWidth = 1920
+    render(dock({ widthFloor: 420 }))
+    expect(rendered()).toBe(420)
+    expect(readDockWidth('org-1')).toBe(380)
+    render(dock())
+    expect(rendered()).toBe(380)
+  })
+
   it('leaves the stored preference alone while it bends', () => {
     writeDockWidth('org-1', 700)
     window.innerWidth = 1366
@@ -705,6 +715,17 @@ describe('SessionDock collapsed bands', () => {
     expect(track().className).toContain('contents')
     expect(track().className).not.toContain('hidden')
     expect(trigger().getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('closes and drops its trigger while something covers the page, as an expanded task does', () => {
+    render(dock())
+    click(trigger())
+    expect(trigger().getAttribute('aria-expanded')).toBe('true')
+    render(dock({ suppressed: true }))
+    expect(container.querySelector('[data-dock-trigger]')).toBeNull()
+    expect(container.querySelector('[data-dock-scrim]')).toBeNull()
+    render(dock())
+    expect(trigger().getAttribute('aria-expanded')).toBe('false')
   })
 
   // The panel node never moves between containers, which is what a two-container shell got wrong.

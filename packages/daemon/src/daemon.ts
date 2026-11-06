@@ -173,6 +173,8 @@ import {
   COMPUTER_COMMAND_LINE_FEATURE,
   COMPUTER_LEASE_FEATURE,
   MAX_WORKSPACE_DOWNLOAD_BYTES,
+  isDelegatedTaskCoordinate,
+  WebchatPromptSuggestion,
   type TaskLinkFacts,
   type UserTurnBody
 } from '@agentconnect.md/protocol'
@@ -518,6 +520,7 @@ import {
 import {
   isControlCommandText,
   parseInboundCommand,
+  CONTINUATION_COMMANDS,
   requiresTrustedActor,
   type AgentCommand
 } from './commands/commands.js'
@@ -906,6 +909,7 @@ import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { z } from 'zod'
 import { OUTSIDE_HUMAN_SCOPE_REMINDER, isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
+import { promptSuggestionOf } from './session/prompt-suggestion.js'
 import { codeHostReplySnapshot, sessionReplyRoute, sessionWakeFields } from './session/reply-route.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
@@ -1233,7 +1237,8 @@ import type {
   CodeHostProvider,
   McpAppOutcome,
   RuntimeStrategyEntries,
-  ChannelSessionMode
+  ChannelSessionMode,
+  WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { HostPasses } from './daemon/host-passes.js'
@@ -1244,6 +1249,7 @@ import {
   isTrustedHumanTurn,
   loopGuardScope,
   usesLoopGuard,
+  LOOP_GUARD_WARNING,
   LOOP_GUARD_WINDOW_MS,
   MAX_AUTOMATIC_TURNS_PER_WINDOW,
   MAX_TOTAL_TURNS_PER_WINDOW
@@ -1807,6 +1813,9 @@ export class Daemon {
     return registry
   })()
 
+  // The last Code diff notice posted per session and channel.
+  private readonly codeDiffNotices = new Map<string, string>()
+
   private readonly turnSurfaces: TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage> =
     (() => {
       const registry = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
@@ -1858,6 +1867,14 @@ export class Daemon {
             notice: async (text) => {
               this.enqueueApply(p, { kind: 'post', text, attributed: false })
               await p.signals.applyChain
+            },
+            lastNotice: {
+              get: () => this.codeDiffNotices.get(`${p.plan.sessionKey}\0${p.plan.channel}`),
+              set: (text) => {
+                const key = `${p.plan.sessionKey}\0${p.plan.channel}`
+                if (text === undefined) this.codeDiffNotices.delete(key)
+                else this.codeDiffNotices.set(key, text)
+              }
             },
             debug: (message) => this.log.debug(message)
           }),
@@ -3270,6 +3287,11 @@ export class Daemon {
             return this.commands.setFastByKey(key, change.value)
         }
       },
+      isTaskTarget: async (scope) => {
+        if (!scope.targetSessionId) return false
+        const target = await this.store.getSessionByOutwardId(scope.targetSessionId, scope.agentId)
+        return !!target && isDelegatedTaskCoordinate(target.thread)
+      },
       onExecutionError: (error) => this.log.warn(`AHP execution failed: ${formatErr(error)}`)
     })
     const dispatchEnvironment: AhpDispatchEnvironment = {
@@ -3508,8 +3530,29 @@ export class Daemon {
       sendWebchatPost: (post) => this.relays?.sendWebchatPost(post),
       collabAdmits: (fromAgentId, toAgentId) => this.cpCollab.admits(fromAgentId, toAgentId),
       coordinatorCoordinate: (agentId, conversationId, authorId) =>
-        this.webchatCoordinator(agentId, conversationId, authorId)
+        this.webchatCoordinator(agentId, conversationId, authorId),
+      continuationCommand: (agentId, msg, integrationId, reply) =>
+        this.continuationCommand(agentId, msg, integrationId, reply)
     }
+  }
+
+  /** A console message into a platform session runs the reply-only commands that conversation's own users can send. */
+  private async continuationCommand(
+    agentId: string,
+    msg: NormalizedMessage,
+    integrationId: string,
+    reply: (text: string) => void
+  ): Promise<boolean> {
+    const command = this.inboundCommand(msg, [integrationId])
+    if (!command || !CONTINUATION_COMMANDS.has(command.kind)) return false
+    if (requiresTrustedActor(command.kind) && !isTrustedHumanTurn(msg)) return false
+    const target = this.commands.resolveExplicitCommandTarget(agentId, integrationId, msg)
+    if (!target) return false
+    await this.commands.handleCommand(command, msg, target, [integrationId], {
+      reply,
+      sessionThread: sessionThreadOf(msg)
+    })
+    return true
   }
 
   /** auto-session-mode.md §10: the coordinator a member's private conversation with an agent keys on, minted by its first message; undefined for any other conversation. */
@@ -13418,6 +13461,11 @@ export class Daemon {
     return this.isManagedAgentBotIdentity(msg.platform, msg.channel, msg.sender.id, msg.sender.appId)
   }
 
+  /** Live ingress marks another AgentConnect bot's post as backfill does, so the console can name its agent. */
+  private isTrustedAgentBotPost(msg: NormalizedMessage): boolean {
+    return msg.sender.isBot && this.isAgentBotMessage(msg)
+  }
+
   /**
    * Promote an inbound message's UNTRUSTED authorship claim to a verified author, or
    * return null (send-message-routing-rework.md §4).
@@ -14097,6 +14145,31 @@ export class Daemon {
       if (await this.store.retireCoordinator(agentId, channel, transportScope, coordinate)) retired += 1
     if (released.length > 0 || retired > 0)
       this.log.info(`move: ${agentId} left ${retired} coordinator(s) and closed ${released.length} task(s) here`)
+  }
+
+  /** The webchat entitlement a turn installs admin MCP under: its own conversation's, or for a page task of a member's webchat coordinator that conversation's newest (webchat-preset-agentconnect-mcp.md §5.2). */
+  private async adminMcpEntitlement(
+    agentId: string,
+    key: string,
+    msg: NormalizedMessage,
+    webchat: ChatTurnContext | undefined
+  ): Promise<{ conversationId: string; entitlement: WebchatRemoteMcpEntitlement; sessionKey?: string } | undefined> {
+    const grants = this.remoteWebchatGrants
+    if (!grants) return undefined
+    const thread = sessionThreadOf(msg)
+    if (webchat?.remoteMcp) {
+      if (!isCoordinatorCoordinate(thread))
+        return { conversationId: webchat.conversationId, entitlement: webchat.remoteMcp }
+      // The coordinator only routes (auto-session-mode.md §5.4): it installs nothing, and the tasks it opens inherit.
+      grants.noteEntitlement(webchat.conversationId, agentId, webchat.remoteMcp)
+      return undefined
+    }
+    if (!isDelegatedTaskCoordinate(thread)) return undefined
+    const task = await this.store.assistantSubsessions.get(agentId, key)
+    const parent = task ? await this.store.getSession(task.parentSessionKey) : undefined
+    if (!parent || parent.platform !== 'webchat' || !isCoordinatorCoordinate(parent.thread)) return undefined
+    const entitlement = grants.inheritedEntitlement(parent.channel, agentId, this.clock.now())
+    return entitlement ? { conversationId: parent.channel, entitlement, sessionKey: key } : undefined
   }
 
   /** Whether a task's coordinator still runs in its conversation, read from its session; undefined when the owner is no coordinator session recorded here. */
@@ -15107,6 +15180,14 @@ export class Daemon {
     const conn = this.connByIntegration.get(msg.integrationId)
     if (conn) this.nameResolver?.noteMessage(conn, normalized)
     await conn?.prepareInboundMessage?.(normalized)
+    // Before routing, as direct ingress does: a bot post is recorded but never dispatched, and dispatch is the other writer.
+    if (normalized.sender.avatarUrl && normalized.transportScope)
+      await this.store.setProfileAvatar(
+        normalized.transportScope,
+        normalized.sender.id,
+        normalized.sender.avatarUrl,
+        Date.now()
+      )
     // The relay saw the provider event, so it forwarded the ephemeral search credential
     // beside the payload. Hand it to the adapter and keep no copy — it is never persisted,
     // logged, or reported onward, and `normalized` (which IS persisted) never carries it.
@@ -16590,6 +16671,25 @@ export class Daemon {
     }
   }
 
+  /** Applies one webchat runtime-setting op to the session under `sessionKey`. */
+  private async applyWebchatRuntimeOp(
+    msgId: string,
+    op: Extract<RdMsgWebchat['payload'], { op: 'set_model' | 'set_effort' | 'set_permission_mode' | 'set_fast' }>,
+    sessionKey: string
+  ): Promise<RdAck> {
+    const applied =
+      op.op === 'set_model'
+        ? await this.commands.setModelByKey(sessionKey, op.model)
+        : op.op === 'set_effort'
+          ? await this.commands.setEffortByKey(sessionKey, op.effort)
+          : op.op === 'set_permission_mode'
+            ? await this.commands.setPermissionModeByKey(sessionKey, op.permissionMode)
+            : await this.commands.setFastByKey(sessionKey, op.fastMode)
+    return applied
+      ? { msgId, accepted: true }
+      : { msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
+  }
+
   private async dispatchRelayOp(msg: RdMsgWebchat, chat: (event: RdChatEvent) => void): Promise<RdAck> {
     const relayId = this.relayIngressOf.get(msg)
     const sink: WebchatSink = {
@@ -16658,8 +16758,15 @@ export class Daemon {
         case 'set_model':
         case 'set_effort':
         case 'set_permission_mode':
-        case 'set_fast':
-          return { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled for a continued session' }
+        case 'set_fast': {
+          // A coordinator's task is set from its own thread as its conversation is; any other continued session takes human input only.
+          const target = await this.store.getSessionByOutwardId(msg.targetSessionId, msg.agentId)
+          if (!target || !isDelegatedTaskCoordinate(target.thread))
+            return { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled for a continued session' }
+          if (!webchatRoleChangesSettings(op.callerRole) && chatSettingsAllowed(this.agents.get(msg.agentId)))
+            return { msgId: msg.msgId, accepted: false, reason: WEBCHAT_SETTINGS_REFUSAL }
+          return this.applyWebchatRuntimeOp(msg.msgId, op, target.key)
+        }
         case 'context':
         case 'image_update':
           return { msgId: msg.msgId, accepted: true }
@@ -16755,21 +16862,10 @@ export class Daemon {
         }
       }
       case 'set_model':
-        return (await this.commands.setModelByKey(key(), op.model))
-          ? { msgId: msg.msgId, accepted: true }
-          : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
       case 'set_effort':
-        return (await this.commands.setEffortByKey(key(), op.effort))
-          ? { msgId: msg.msgId, accepted: true }
-          : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
       case 'set_permission_mode':
-        return (await this.commands.setPermissionModeByKey(key(), op.permissionMode))
-          ? { msgId: msg.msgId, accepted: true }
-          : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
       case 'set_fast':
-        return (await this.commands.setFastByKey(key(), op.fastMode))
-          ? { msgId: msg.msgId, accepted: true }
-          : { msgId: msg.msgId, accepted: false, reason: 'runtime changes are disabled in chat' }
+        return this.applyWebchatRuntimeOp(msg.msgId, op, key())
       case 'cancel':
         await this.webchatTransport.handleWebchatCancel(msg.chatId, op.agentId ?? msg.agentId)
         return { msgId: msg.msgId, accepted: true }
@@ -16897,7 +16993,8 @@ export class Daemon {
         text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
         // Deliberately BODYLESS: the body is first-wins, and the authoritative ingest — which runs
         // after the review batch and workspace finish rewriting the prompt — is the writer that persists it.
-        ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
+        ...(msg.quoted?.text ? { quoted: msg.quoted } : {}),
+        ...(this.isTrustedAgentBotPost(msg) ? { trustedAgentBot: true } : {})
       })
       this.log.debug(`transcript: recorded inbound msg ch=${msg.channel} thread=${thread} ts=${ts}`)
       // A lookup, not the insert's id: a redelivery inserts nothing yet names the same row.
@@ -16996,7 +17093,8 @@ export class Daemon {
       kind: 'text',
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
       // Bodyless for the same reason as step 1: the authoritative ingest persists the prompt.
-      ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
+      ...(msg.quoted?.text ? { quoted: msg.quoted } : {}),
+      ...(this.isTrustedAgentBotPost(msg) ? { trustedAgentBot: true } : {})
     })
     this.log.debug(`transcript: admitted inbound msg ch=${msg.channel} thread=${thread} ts=${ts} agent=${agentId}`)
   }
@@ -18674,9 +18772,11 @@ export class Daemon {
       entry.cancelledReason = 'loop protection'
       targets.set(key, { agentId: entry.agentId })
     }
+    const plans: TurnPlan[] = []
     for (const pending of this.pending.values()) {
       if (pending.plan.loopGuardScope === scope) {
         targets.set(pending.plan.sessionKey, { agentId: pending.plan.agentId, acpSessionId: pending.acpSessionId })
+        plans.push(pending.plan)
       }
     }
     for (const [key, queued] of this.serialQueue) {
@@ -18685,6 +18785,22 @@ export class Daemon {
     }
     for (const [key, target] of targets) {
       await this.interruptTurn(target.agentId, key, 'loop protection', target.acpSessionId, { dropQueued: true })
+    }
+    // The console reads the transcript, so the stop is visible there and not only in the platform thread.
+    for (const plan of plans) {
+      await this.store
+        .appendTranscript({
+          channel: plan.transcriptChannel,
+          thread: plan.statusThread,
+          admission: { agentId: plan.agentId, sessionKey: plan.sessionKey },
+          ts: monotonicTs(),
+          sender: plan.agentId,
+          kind: 'text',
+          text: LOOP_GUARD_WARNING
+        })
+        .catch((err) =>
+          this.log.warn(`loop guard: transcript notice failed for ${plan.sessionKey}: ${(err as Error).message}`)
+        )
     }
     const trippedAt = (await this.store.getLoopGuard(scope))?.trippedAt
     this.enforcedLoopScopes.set(scope, trippedAt ?? this.clock.now())
@@ -18719,11 +18835,7 @@ export class Daemon {
     if (!conn) return
     const warningThread = reason === 'malformed_platform_event' && trigger.msg.isDm ? undefined : trigger.msg.thread
     void conn
-      .postMessage(
-        trigger.msg.channel,
-        '⚠️ Loop protection stopped this conversation and discarded its queued backlog. Send `!resume` when it is safe to continue.',
-        warningThread
-      )
+      .postMessage(trigger.msg.channel, LOOP_GUARD_WARNING, warningThread)
       .catch((err) => this.log.warn(`loop guard: warning post failed for ${scope}: ${(err as Error).message}`))
   }
 
@@ -18743,15 +18855,17 @@ export class Daemon {
       maxTotal: MAX_TOTAL_TURNS_PER_WINDOW,
       maxAutomatic: MAX_AUTOMATIC_TURNS_PER_WINDOW
     }
+    const messageKey = stableMessageId(msg)
     const verdict = inboxReplayId
       ? await this.store.recordLoopGuardTurnForInbox(
           inboxReplayId,
           scope,
+          messageKey,
           this.clock.now(),
           !isTrustedHumanTurn(msg),
           limits
         )
-      : await this.store.recordLoopGuardTurn(scope, this.clock.now(), !isTrustedHumanTurn(msg), limits)
+      : await this.store.recordLoopGuardTurn(scope, messageKey, this.clock.now(), !isTrustedHumanTurn(msg), limits)
     if (verdict.allowed) return true
     if (verdict.trippedNow) {
       await this.onLoopGuardTripped(scope, verdict.reason ?? 'turn_burst', { agentId, msg, integrationId })
@@ -20210,15 +20324,16 @@ export class Daemon {
       // A prior provider post-turn operation is serialized. Managed needs this
       // barrier before reading its index; external recordTurn only durably enqueues.
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
-      // The runtime calls admin MCP directly over HTTP under the conversation grant.
-      // Webchat is the entitlement — every agent gets the catalog there, no agent gets it elsewhere.
-      if (webchat?.remoteMcp && this.remoteWebchatGrants) {
+      // The runtime calls admin MCP directly over HTTP under its own grant of the owner's webchat entitlement.
+      const adminMcp = await this.adminMcpEntitlement(agentId, key, msg, webchat)
+      if (adminMcp && this.remoteWebchatGrants) {
         try {
           const provisioned = await this.remoteWebchatGrants.provision(
-            webchat.conversationId,
-            webchat.remoteMcp,
+            adminMcp.conversationId,
+            adminMcp.entitlement,
             this.clock.now(),
-            agentId
+            agentId,
+            adminMcp.sessionKey
           )
           remoteMcpServer = provisioned.server
           if (provisioned.changed) {
@@ -20861,23 +20976,29 @@ export class Daemon {
       sessionOf: (id, outwardId) => this.store.getSessionByOutwardId(outwardId, id),
       runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
     })
-    const roots: Array<{ path: string; name: string }> = []
+    const roots: Array<{ path: string; name: string; title?: string; branch: string }> = []
     if (agent.workspace.mode === 'git-repo') {
       const primary = await scope.location(agent.id, p.outwardSessionId)
-      if (primary) roots.push({ path: primary.root, name: 'workspace' })
+      if (primary)
+        roots.push({
+          path: primary.root,
+          name: 'workspace',
+          title: 'the working directory',
+          branch: agent.workspace.gitBranch
+        })
     }
     for (const root of await this.workspaces.sessionAdditionalRoots(agent, {
       sessionKey: session.key,
       isolation: 'session'
     })) {
       if (!roots.some((existing) => existing.path === root.path))
-        roots.push({ path: root.path, name: root.repoFullName })
+        roots.push({ path: root.path, name: root.repoFullName, branch: root.branch })
     }
     return openTaskDiff(
-      roots.map((root) => {
-        const git = this.workspaces.consoleWorkspaceGitRunner(agent.id, root.path, undefined, session.key)
+      roots.map(({ path, ...root }) => {
+        const git = this.workspaces.consoleWorkspaceGitRunner(agent.id, path, undefined, session.key)
         if (!git) throw new TaskDiffUnavailable('The task workspace is unavailable.')
-        return { git, name: root.name }
+        return { git, ...root }
       }),
       session.key,
       created && session.lastTurnOutcome == null
@@ -22322,7 +22443,6 @@ export class Daemon {
     this.clearFeishuStream(p)
     this.clearSlackStream(p)
     // Backstop: settle any permission / elicitation card still awaiting a tap.
-    await this.permissions.releaseElicits(p.hostKey, sessionId)
     await this.permissions.releaseApprovals(p.hostKey, sessionId)
     // §6.7: this turn's active call context ends with the turn (a nested messageAgent can
     // only inherit while the turn is in flight). Only clear if THIS turn owns the entry —
@@ -22646,8 +22766,6 @@ export class Daemon {
     // the agent's prompt unwind (it's blocked awaiting our promise) so the finally runs.
     // Everything from here is keyed by session id, which a successor turn reuses: recheck after every await.
     if (!exact()) return
-    await this.permissions.releaseElicits(live.hostKey, liveSessionId)
-    if (!exact()) return
     await this.permissions.releaseApprovals(live.hostKey, liveSessionId)
     if (!exact()) return
     // §7.3 idle→cancelling: send session/cancel, then arm a force backstop. The turn's
@@ -22866,6 +22984,8 @@ export class Daemon {
         this.log.error(`reconcile: host teardown failed for "${agentId}" (${owner}): ${formatErr(err)}`)
       }
       await this.webchatMcpRevocations.revokeRemoteWebchatConversations(conversations, 'agent_detached')
+      // A task's grant is its conversation's to revoke; its successor process installs a fresh one instead.
+      this.remoteWebchatGrants?.forgetSessions(agentId, (key) => this.sessionOwnerKey(agentId, key) === owner)
     }
     const record: HostRetirement = {
       entries: new Set([...turns.values()].map((turn) => turn.entry)),
@@ -24634,6 +24754,42 @@ export class Daemon {
     }
   }
 
+  /** Deliver a predicted next prompt (`null` clears) to the surfaces that show one; never persisted or sent to the CP. */
+  private async publishPromptSuggestion(
+    owner: HostKey,
+    sessionId: string,
+    p: Pending | undefined,
+    text: string | null
+  ): Promise<void> {
+    const agentId = hostKeyAgentId(owner)
+    const rec = p ? await this.store.getSession(p.plan.sessionKey) : await this.sessionForAcp(owner, sessionId)
+    if (!rec || rec.agentId !== agentId || rec.acpSessionId !== sessionId) return
+    if (rec.platform === 'webchat') {
+      const suggestion = WebchatPromptSuggestion.safeParse({ conversationId: rec.channel, agentId, text })
+      if (suggestion.success) this.relays?.sendWebchatPromptSuggestion(suggestion.data)
+      return
+    }
+    const binding = this.sessionDeliveryBindings.get(rec.key)
+    if (
+      rec.platform !== 'slack' ||
+      !binding?.isDm ||
+      binding.platform !== 'slack' ||
+      binding.agentId !== rec.agentId ||
+      !binding.integrationId
+    )
+      return
+    const conn = this.connByIntegration.get(binding.integrationId)
+    if (typeof conn?.setDmSuggestedPrompt !== 'function') return
+    const release = this.holdReplyConnection(conn)
+    try {
+      await conn.setDmSuggestedPrompt(rec.channel, text)
+    } catch (err) {
+      this.log.debug(`prompt suggestion: Slack update failed (${formatErr(err)})`)
+    } finally {
+      release()
+    }
+  }
+
   /** One ACP session's updates stay in arrival order: the async store would otherwise let
    *  a later update whose handler does less I/O emit ahead of an earlier one. */
   private enqueueAcpUpdate(owner: HostKey, sessionId: string, update: unknown): Promise<void> {
@@ -24753,6 +24909,13 @@ export class Daemon {
       data: { update }
     })
     if (p?.outputSuppressed) return
+    // The runtime's predicted next prompt lands after the turn's result, usually once `pending` is gone.
+    const suggestion = promptSuggestionOf(update)
+    if (suggestion !== undefined) {
+      if (!this.internalPassSessions.has(extractionKey))
+        await this.publishPromptSuggestion(owner, sessionId, p, suggestion)
+      if (update.title === undefined) return
+    }
     // codex-acp >= 1.1.3 auto-titles an untitled session from its raw prompt text
     // (all first-prompt text blocks joined, unbounded). Whatever that prompt led with, the
     // "title" is an echo of what we just sent — internal agent/memory context on a session
@@ -26648,8 +26811,10 @@ export class Daemon {
     this.webchatGrantRenewTimer = this.clock.setTimeout(async () => {
       this.webchatGrantRenewTimer = undefined
       const failed = await this.remoteWebchatGrants
-        ?.renewExpiring(this.clock.now(), async (conversationId, agentId) => {
-          const session = await this.store.getSession(this.webchatTransport.webchatSessionKey(conversationId, agentId))
+        ?.renewExpiring(this.clock.now(), async (conversationId, agentId, sessionKey) => {
+          const session = await this.store.getSession(
+            sessionKey ?? this.webchatTransport.webchatSessionKey(conversationId, agentId)
+          )
           return session !== undefined && session.state !== 'closed'
         })
         .catch((err) => {
@@ -29134,7 +29299,6 @@ export class Daemon {
         p.outputSuppressed ??= 'shutdown'
         this.clearIdle(p)
         this.turnSurfaces.exact(p.plan.platform)?.onSuppress?.(p)
-        await this.permissions.releaseElicits(p.hostKey, p.acpSessionId)
         await this.permissions.releaseApprovals(p.hostKey, p.acpSessionId)
         void (p.selectedHost?.host ?? this.hostForOwner(p.hostKey))?.cancel(p.acpSessionId).catch(() => {})
         // Its durable row survives the drain, so the next holder replays the message.

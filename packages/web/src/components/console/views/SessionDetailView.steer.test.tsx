@@ -117,6 +117,7 @@ vi.mock('@/components/console/Shell', () => ({
 // Frozen, like the elicitation suite: the transcript effect keys on `reconcileLiveSteps` by identity.
 vi.mock('@/components/console/PlaygroundProvider', () => {
   const playground = {
+    getPgSuggestion: () => undefined,
     getPgSession: () => undefined,
     getLiveSteps: () => live.steps,
     getBusyLaneAgentIds: () => [],

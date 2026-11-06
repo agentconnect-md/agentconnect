@@ -35,7 +35,8 @@ import type {
   McpAppRpc,
   McpAppRpcResult,
   TaskLinkFacts,
-  WebchatFileAttachment
+  WebchatFileAttachment,
+  WebchatPromptSuggestion
 } from '@agentconnect.md/protocol'
 import { useConsoleData } from '@/lib/data-context'
 import {
@@ -1350,6 +1351,17 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const unstreamedRef = useRef<Map<string, Set<string>>>(new Map())
   const unstreamedTimers = useRef<Map<string, number>>(new Map())
   const [unstreamedBy, setUnstreamedBy] = useState<Record<string, boolean>>({})
+  // The runtime's predicted next prompt per session; sending anything retires it.
+  const [suggestionBy, setSuggestionBy] = useState<Record<string, string>>({})
+  const setSuggestion = useCallback((id: string, text?: string): void => {
+    setSuggestionBy((cur) => {
+      if (cur[id] === text) return cur
+      const next = { ...cur }
+      if (text) next[id] = text
+      else delete next[id]
+      return next
+    })
+  }, [])
   const markUnstreamed = useCallback((id: string, agentId: string | undefined, live: boolean): void => {
     const agents = unstreamedRef.current.get(id) ?? new Set<string>()
     if (agentId === undefined) agents.clear()
@@ -1577,6 +1589,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 agentIds?: string[]
                 initiator?: string
                 update?: WebchatImageUpdate
+                suggestion?: WebchatPromptSuggestion
                 refused?: { op?: string; agentId?: string; reason?: string }
               }
               try {
@@ -1720,6 +1733,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   ...(update.download ? { download: update.download } : {})
                 })
                 mutateSteps(id, (steps) => applyImageUpdateToSteps(steps, update))
+              } else if (m.type === 'prompt_suggestion' && m.suggestion) {
+                setSuggestion(id, m.suggestion.text ?? undefined)
               } else if (m.type === 'ack' && m.ack?.turnId && steerTurns.current.get(id)?.has(m.ack.turnId)) {
                 settleSteerAck(id, m.ack.turnId, m.ack)
               } else if (m.type === 'ack' && m.ack?.accepted !== false) {
@@ -1850,7 +1865,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
 
   const openPlayground = useCallback(
-    (da: Agent, members?: Agent[], options?: { worktree?: boolean; conversationId?: string }): string => {
+    (
+      da: Agent,
+      members?: Agent[],
+      options?: { worktree?: boolean; conversationId?: string; coordinator?: boolean }
+    ): string => {
       const id = newPlaygroundSessionId(da.id)
       if (options?.conversationId) conversationIds.current.set(id, options.conversationId)
       if (da.workspace && isGitWorkspace(da.workspace)) {
@@ -1897,7 +1916,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             cost: '—',
             toolCount: '0',
             statusLabel: 'Live',
-            steps: []
+            steps: [],
+            ...(options?.coordinator ? { coordinator: true as const } : {})
           }
         }
       })
@@ -2347,9 +2367,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       setPgInput(id, '')
       setPgImage(id)
       setPgFiles(id, () => NO_FILES)
+      setSuggestion(id)
       return submitTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick, files)
     },
-    [pgImageBy, pgFilesBy, setPgFiles, setPgImage, setPgInput, submitTurn]
+    [pgImageBy, pgFilesBy, setPgFiles, setPgImage, setPgInput, setSuggestion, submitTurn]
   )
 
   /** A line the CONVERSATION speaks, not the person: an approval decision the agent
@@ -2550,6 +2571,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const getPgImage = useCallback((id: string) => pgImageBy[id], [pgImageBy])
   const isPgBusy = useCallback((id: string) => !!pgBusyBy[id], [pgBusyBy])
   const isPgTurnUnstreamed = useCallback((id: string) => !!unstreamedBy[id], [unstreamedBy])
+  const getPgSuggestion = useCallback((id: string) => suggestionBy[id], [suggestionBy])
   const getLiveSteps = useCallback((id: string) => (wcSteps[id] ?? NO_STEPS).filter((step) => !step.hidden), [wcSteps])
   const reconcileLiveSteps = useCallback(
     (id: string, persisted: SessionMessageDto[], agentId: string, promptRows?: SessionMessageDto[]): void => {
@@ -2586,7 +2608,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   /** See PlaygroundData.pgAttach. Doubles as socket warming; a live verified socket is re-probed, throttled, since it never hears a turn started elsewhere. */
   const pgAttach = useCallback(
     (id: string, agentId: string, conversationId: string): void => {
-      if (!conversationId || busyRef.current[id]) return
+      if (busyRef.current[id]) return
+      if (!conversationId) {
+        // A marked continuation target dials its own conversation, so its status (and runtime choices) arrive before any send.
+        if (sessionTargets.current.has(id) && !conns.current.get(id))
+          connect(id, agentId, undefined, false, true).ready.catch(() => {})
+        return
+      }
       const conn = conns.current.get(id)
       const live =
         conn?.probeIds &&
@@ -2643,6 +2671,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgCloseApp,
       pgCancel,
       getPgSession,
+      getPgSuggestion,
       pgSessionList,
       getLiveSteps,
       getBusyLaneAgentIds,
@@ -2680,6 +2709,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgCloseApp,
       pgCancel,
       getPgSession,
+      getPgSuggestion,
       pgSessionList,
       getLiveSteps,
       getBusyLaneAgentIds,

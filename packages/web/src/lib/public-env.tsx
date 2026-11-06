@@ -22,7 +22,7 @@ const KEYS = [
   // connector targets; unset/`*` ⇒ all). The console is the only side that reads
   // it — see lib/social-login-providers.
   'SOCIAL_PROVIDERS',
-  // The enterprise SSO connector the sign-in page offers, and the name on its button.
+  // The SSO connector the sign-in page offers, and the name on its button.
   'SSO_CONNECTOR_ID',
   'SSO_NAME',
   'CP_URL',

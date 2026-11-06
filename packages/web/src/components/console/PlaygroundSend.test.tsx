@@ -72,6 +72,7 @@ let pgAttach: ReturnType<typeof usePlayground>['pgAttach']
 let pgAnswerElicitation: ReturnType<typeof usePlayground>['pgAnswerElicitation']
 let pgAppRpc: ReturnType<typeof usePlayground>['pgAppRpc']
 let getPgSession: ReturnType<typeof usePlayground>['getPgSession']
+let getPgSuggestion: ReturnType<typeof usePlayground>['getPgSuggestion']
 let pgStageRuntime: ReturnType<typeof usePlayground>['pgStageRuntime']
 let pgSetModel: ReturnType<typeof usePlayground>['pgSetModel']
 let pgSetEffort: ReturnType<typeof usePlayground>['pgSetEffort']
@@ -99,6 +100,7 @@ function Probe() {
   pgAnswerElicitation = pg.pgAnswerElicitation
   pgAppRpc = pg.pgAppRpc
   getPgSession = pg.getPgSession
+  getPgSuggestion = pg.getPgSuggestion
   pgStageRuntime = pg.pgStageRuntime
   pgSetModel = pg.pgSetModel
   pgSetEffort = pg.pgSetEffort
@@ -1318,6 +1320,22 @@ describe('cold-attach retirement anchor', () => {
     return socket
   }
 
+  it('dials a marked continuation target with no conversation yet, and nothing for an unmarked one', async () => {
+    AttachSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', AttachSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgAttach('s-unmarked', 'agent-1', '')
+    })
+    expect(AttachSocket.instances).toHaveLength(0)
+    await act(async () => {
+      markSessionTarget('s-task')
+      pgAttach('s-task', 'agent-1', '')
+    })
+    expect(AttachSocket.instances).toHaveLength(1)
+  })
+
   it('probes on ready and stamps the reply postId on the replayed steps', async () => {
     const socket = await coldAttach()
     expect(socket.send.mock.calls.map((c) => JSON.parse(String(c[0])))).toContainEqual({
@@ -1823,6 +1841,21 @@ describe('shared image cards', () => {
     const cards = getLiveSteps('s1').filter((s) => s.sharedImage)
     expect(cards).toHaveLength(1)
     expect(cards[0]!.sharedImage).toMatchObject({ revision: 2, original: { status: 'ready' } })
+  })
+
+  it('holds the predicted next prompt until a clear or the next send', async () => {
+    const { socket } = await openStream()
+    const suggest = (text: string | null) =>
+      frame(socket, { type: 'prompt_suggestion', suggestion: { conversationId: POST, agentId: 'agent-1', text } })
+    suggest('Run the tests')
+    expect(getPgSuggestion('s1')).toBe('Run the tests')
+    suggest(null)
+    expect(getPgSuggestion('s1')).toBeUndefined()
+    suggest('Open a pull request')
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'something else', 'c1')
+    })
+    expect(getPgSuggestion('s1')).toBeUndefined()
   })
 })
 

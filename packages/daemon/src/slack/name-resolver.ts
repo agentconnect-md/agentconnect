@@ -49,12 +49,13 @@ export class SlackNameResolver {
    *  via users.info even for a bot's user id), unlike a bot SENDER's `B…` id. */
   noteMessage(
     conn: SlackConnection,
-    msg: { channel: string; sender: { id: string; isBot: boolean }; text?: string }
+    msg: { channel: string; sender: { id: string; isBot: boolean; name?: string }; text?: string }
   ): void {
     void this.resolveChannel(conn, msg.channel)
-    // Bot senders carry a "B…" bot id that users.info can't resolve; agents' own
-    // frames are labeled by agentId upstream — only resolve human user ids.
-    if (!msg.sender.isBot && /^[UW]/.test(msg.sender.id)) void this.resolveUser(conn, msg.sender.id)
+    // users.info can't resolve a bot's "B…" id, so a bot sender keeps the name its post's bot profile carried.
+    if (msg.sender.isBot) {
+      if (msg.sender.name && this.claim(msg.sender.id)) this.persist(this.save(msg.sender.id, msg.sender.name))
+    } else if (/^[UW]/.test(msg.sender.id)) void this.resolveUser(conn, msg.sender.id)
     for (const id of mentionedUserIds(msg.text)) void this.resolveUser(conn, id)
   }
 

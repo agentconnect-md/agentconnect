@@ -8,6 +8,7 @@ import { optionDecision, usePermissionDecision, usePermissionRequests } from '@/
 import {
   approvalAnswerPlace,
   approvalCommandText,
+  isTranscriptApproval,
   placeTranscriptApprovals,
   type ApprovalTurnAnchor
 } from '@/components/console/approval-placement'
@@ -16,6 +17,8 @@ type Decide = ReturnType<typeof usePermissionDecision>
 
 interface TranscriptApprovalsValue extends Decide {
   byTurn: Map<string, AgentPermissionRequestDto[]>
+  /** Waiting requests of this session no turn can hold yet; drawn at the end so none is lost. */
+  unplaced: AgentPermissionRequestDto[]
 }
 
 const TranscriptApprovalsContext = createContext<TranscriptApprovalsValue | null>(null)
@@ -24,13 +27,17 @@ const TranscriptApprovalsContext = createContext<TranscriptApprovalsValue | null
 export function TranscriptApprovalsProvider({
   agentId,
   sessionId,
+  listSessionId,
   enabled,
   conversationPermissions,
   turns,
   children
 }: {
   agentId: string
+  /** The session whose requests are placed here. */
   sessionId: string
+  /** The conversation the requests are read through when that is another one (a task's coordinator); defaults to `sessionId`. */
+  listSessionId?: string
   /** The viewer may read and answer the conversation's requests: the strip's own permission rules. */
   enabled: boolean
   conversationPermissions: boolean
@@ -39,13 +46,38 @@ export function TranscriptApprovalsProvider({
 }) {
   const { data, mutate, conversation } = usePermissionRequests({
     agentId,
-    sessionId,
+    sessionId: listSessionId ?? sessionId,
     permissions: enabled,
     conversationPermissions
   })
   const decision = usePermissionDecision(agentId, conversation, mutate)
-  const value = enabled && data ? { byTurn: placeTranscriptApprovals(turns, data, sessionId), ...decision } : null
+  const byTurn = enabled && data ? placeTranscriptApprovals(turns, data, sessionId) : null
+  const placed = new Set([...(byTurn?.values() ?? [])].flat().map((request) => request.id))
+  const unplaced =
+    data?.filter(
+      (request) => isTranscriptApproval(request, sessionId) && request.status === 'pending' && !placed.has(request.id)
+    ) ?? []
+  const value = byTurn ? { byTurn, unplaced, ...decision } : null
   return <TranscriptApprovalsContext.Provider value={value}>{children}</TranscriptApprovalsContext.Provider>
+}
+
+/** Waiting requests no turn on screen holds yet, answered at the end of the stream rather than lost. */
+export function UnplacedApprovals() {
+  const ctx = useContext(TranscriptApprovalsContext)
+  if (!ctx || ctx.unplaced.length === 0) return null
+  return (
+    <div data-unplaced-approvals="" className="flex min-w-0 flex-col gap-2">
+      {ctx.unplaced.map((request) => (
+        <PendingApproval
+          key={request.id}
+          request={request}
+          busy={ctx.busy}
+          error={ctx.decisionError?.requestId === request.id ? ctx.decisionError.message : null}
+          onDecide={(decision, optionId) => void ctx.decide(request, decision, optionId)}
+        />
+      ))}
+    </div>
+  )
 }
 
 /** The tool-call approvals one agent turn asked: a waiting one as a card to answer, a settled one as a quiet line. */

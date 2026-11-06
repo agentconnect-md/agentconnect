@@ -245,3 +245,79 @@ describe('admin MCP through the webchat dispatch path', () => {
     expect(host.prompt).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('which turn installs admin MCP in a webchat coordinator conversation', () => {
+  const entitlement = { authorityId: AUTHORITY, authorityGeneration: 1, expiresAt: '2030-01-01T00:00:00.000Z' }
+  const coordinatorKey = `webchat:${CONV}:append:coordinator-1:${AGENT_ID}`
+  const taskThread = 'subsession:2'
+  const taskKey = `webchat:a2a:${taskThread}:${AGENT_ID}`
+
+  function routing(parent: { platform: string; channel: string; thread: string } | undefined) {
+    const daemon = Object.create(Daemon.prototype) as any
+    daemon.remoteWebchatGrants = new RemoteWebchatGrantManager(fakeGrantClient() as never)
+    daemon.clock = { now: () => Date.parse('2029-01-01T00:00:00.000Z') }
+    daemon.store = {
+      assistantSubsessions: { get: vi.fn(async () => ({ parentSessionKey: coordinatorKey })) },
+      getSession: vi.fn(async () => parent)
+    }
+    return daemon
+  }
+  const coordinatorParent = { platform: 'webchat', channel: CONV, thread: 'append:coordinator-1' }
+
+  it('the coordinator installs none; the page task it opened inherits its own grant of the entitlement', async () => {
+    const daemon = routing(coordinatorParent)
+    const coordinatorMsg = { channel: CONV, sessionThread: 'append:coordinator-1' }
+    expect(
+      await daemon.adminMcpEntitlement(AGENT_ID, coordinatorKey, coordinatorMsg, {
+        conversationId: CONV,
+        remoteMcp: entitlement
+      })
+    ).toBeUndefined()
+
+    const taskMsg = { channel: 'a2a', sessionThread: taskThread }
+    expect(await daemon.adminMcpEntitlement(AGENT_ID, taskKey, taskMsg, undefined)).toEqual({
+      conversationId: CONV,
+      entitlement,
+      sessionKey: taskKey
+    })
+  })
+
+  it('an ordinary webchat session installs its own conversation entitlement', async () => {
+    const daemon = routing(undefined)
+    expect(
+      await daemon.adminMcpEntitlement(
+        AGENT_ID,
+        `webchat:${CONV}:${CONV}:${AGENT_ID}`,
+        { channel: CONV, thread: CONV },
+        {
+          conversationId: CONV,
+          remoteMcp: entitlement
+        }
+      )
+    ).toEqual({ conversationId: CONV, entitlement })
+  })
+
+  it('a task gets nothing before its coordinator carried an entitlement, or under a parent that is no webchat coordinator', async () => {
+    const taskMsg = { channel: 'a2a', sessionThread: taskThread }
+    expect(await routing(coordinatorParent).adminMcpEntitlement(AGENT_ID, taskKey, taskMsg, undefined)).toBeUndefined()
+
+    const nested = routing({ platform: 'webchat', channel: 'a2a', thread: 'subsession:1' })
+    nested.remoteWebchatGrants.noteEntitlement('a2a', AGENT_ID, entitlement)
+    expect(await nested.adminMcpEntitlement(AGENT_ID, taskKey, taskMsg, undefined)).toBeUndefined()
+
+    const slack = routing({ platform: 'slack', channel: 'C1', thread: 'append:coordinator-1' })
+    slack.remoteWebchatGrants.noteEntitlement('C1', AGENT_ID, entitlement)
+    expect(await slack.adminMcpEntitlement(AGENT_ID, taskKey, taskMsg, undefined)).toBeUndefined()
+
+    const check = routing(coordinatorParent)
+    check.remoteWebchatGrants.noteEntitlement(CONV, AGENT_ID, entitlement)
+    expect(
+      await check.adminMcpEntitlement(
+        AGENT_ID,
+        taskKey,
+        { channel: 'a2a', sessionThread: 'subsession:check-1' },
+        undefined
+      )
+    ).toBeUndefined()
+  })
+})

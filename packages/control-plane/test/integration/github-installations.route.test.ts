@@ -90,6 +90,15 @@ async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
   return userId
 }
 
+describe('GET /orgs/:orgId/github/app', () => {
+  it("names the built-in App by slug and GitHub-side id, so the console can show the App's own logo", async () => {
+    const h = appAs()
+    const res = await h.app.app.inject({ method: 'GET', url: `${ORG}/github/app` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ enabled: true, slug: 'example-deployment', appId: 1 })
+  })
+})
+
 describe('GET /orgs/:orgId/github/installations/:id/repositories', () => {
   it('returns public repositories while explicitly marking private repositories hidden', async () => {
     const row = await seedInstallation()

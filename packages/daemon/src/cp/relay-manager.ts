@@ -18,7 +18,8 @@ import type {
   RdRouteReport,
   RdRouteReportAck,
   RdWebchatPost,
-  WebchatImageUpdate
+  WebchatImageUpdate,
+  WebchatPromptSuggestion
 } from '@agentconnect.md/protocol'
 import { RelayClient, type RelayClientDeps } from './relay-client.js'
 
@@ -140,6 +141,13 @@ export class RelayManager {
   sendWebchatImageUpdate(update: WebchatImageUpdate): void {
     for (const client of this.clients.values()) {
       if (client.supportsWebchatImages()) client.sendWebchatImageUpdate(update)
+    }
+  }
+
+  /** Fan a predicted next prompt to every capable relay; whichever holds the conversation's browsers delivers it. */
+  sendWebchatPromptSuggestion(suggestion: WebchatPromptSuggestion): void {
+    for (const client of this.clients.values()) {
+      if (client.supportsWebchatPromptSuggestion()) client.sendWebchatPromptSuggestion(suggestion)
     }
   }
 }

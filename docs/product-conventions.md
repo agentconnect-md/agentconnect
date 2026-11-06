@@ -91,9 +91,10 @@ Who counts as "people" depends on whether the product can tell who someone is:
 - **Webchat** always knows who someone is: the agent's editors, and at the second and third
   levels also the conversation's owner, even one whose role only lets them view. The owner
   answers the conversation's approvals in the conversation, each at the agent turn that asked
-  it, and its tasks' among its pending requests above the composer. Anyone else who tries to
-  change a setting there is told, on their own screen only, who may. A conversation started
-  through the agent's chat API belongs to the API key's owner.
+  it, and a task's in that task's own thread, or among the pending requests above the composer
+  while its thread is not open. Anyone else who tries to change a setting there is told, on
+  their own screen only, who may. A conversation started through the agent's chat API belongs
+  to the API key's owner.
 
 Every level keeps these rules:
 
@@ -443,6 +444,25 @@ the turn exactly as before. A console message with uploaded files is never steer
 or folded into the running turn: it waits and runs as its own turn, so the agent
 receives the files and not just their names. `!cancel` remains the way to abandon the work in
 progress rather than redirect it.
+
+## A predicted next prompt is offered, never sent
+
+When the runtime predicts what the person will most likely ask next (Claude does
+after most turns), the prediction is offered where the person writes, and nothing
+is sent until they choose to send it:
+
+- In the console, it is the placeholder of the conversation's empty composer on
+  desktop; Tab puts it into the composer as an editable draft. Phones keep the
+  ordinary placeholder, because they have no key to take it.
+- In a Slack direct message, it is the one suggested prompt at the top of the
+  Messages tab, replacing whatever was there; clicking it sends it as the person.
+  Channels and group DMs never show one: a prediction is for the one person the
+  agent is talking to.
+
+A prediction belongs to the turn that just ended. Sending anything retires it, and
+a turn that predicts nothing clears the previous one rather than leaving it in
+place. Like the reply it follows, it stays on the data plane: the Control Plane
+neither receives nor stores it.
 
 ## Slack message attribution footer
 
@@ -1353,13 +1373,15 @@ that has not been reported is identified as unavailable. Task controls and addit
 remain available through the console; the view does not offer unsupported runtime cancellation.
 
 In a Code channel, the platform keeps the task's assigned, isolated repositories visible
-as a diff while work runs and when it finishes. The comparison starts from the clean
-repository state before the task, so committing changes does not hide them. The agent
+as a diff while work runs and when it finishes. Each repository is compared with the
+point where the task's branch left its base branch, as a pull request would be, so
+committing, rebasing or merging the base branch neither hides the task's work nor adds
+work that landed elsewhere. The agent is told which repositories the diff covers, and
 still explains the work and publishes useful HTML previews and PR links. If enabled
-diff updates fail, the conversation says why. Existing tasks
-without a saved starting point, shared checkouts and unrelated directories are not
-silently published or given repeated eligibility warnings; the same conversation-write
-authorization applies to automatic output.
+diff updates fail, the conversation says why, once until the diff publishes again.
+Existing tasks without a base branch or a saved starting point, shared checkouts and
+unrelated directories are not silently published or given repeated eligibility
+warnings; the same conversation-write authorization applies to automatic output.
 
 Otherwise every agent, in assistant mode or not, hands long work, such as "fix this bug and open a PR", to a
 delegated task of its own: `sendMessage` with action `delegateTask` and only a `message`. Where the
@@ -2621,10 +2643,10 @@ model when the runtime offers one, so the agent follows the runtime's own recomm
 ## Agent model credentials
 
 Provider keys are organization-scoped, encrypted and write-only. On desktop,
-Runs on and Credentials appear side by side in the same row. A self-hosted agent
-has two credential choices:
-Daemon credentials (the default) and Use saved credential (Beta). Only the saved
-credential choice is Beta. With saved credentials, model pickers offer only models
+Runs on and Model sign-in appear side by side in the same row. A self-hosted agent
+has two Model sign-in choices:
+Daemon's login (the default) and Provider key (Beta). Only the Provider key
+choice is Beta. With saved credentials, model pickers offer only models
 whose Anthropic or OpenAI key is configured, including Decision rules and their
 fallback. The daemon matches the key to each session's selected runtime and model.
 While saved credentials load, the form preserves the selected model and blocks saving

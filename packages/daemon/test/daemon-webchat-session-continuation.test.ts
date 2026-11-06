@@ -237,7 +237,7 @@ describe('webchat session-targeted continuation', () => {
       turn('', { payload: { op: 'set_model', model: 'opus' } }),
       () => {}
     )) as RdAck
-    expect(setModel).toMatchObject({ accepted: false })
+    expect(setModel).toMatchObject({ accepted: false, reason: 'runtime changes are disabled for a continued session' })
 
     const context = (await d.handleRelayMsg(
       turn('', {
@@ -281,6 +281,53 @@ describe('webchat session-targeted continuation', () => {
     await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
     await daemon.stop()
   })
+
+  it("continues a channel coordinator at the channel's top level, never under its coordinate as a thread", async () => {
+    const { daemon, d, prompts, postMessage, postAsAuthor } = await boot(() => 'coordinator reply')
+    const coordinate = 'append:coordinator-1700000000000'
+    const coordKey = `slack:C1:${coordinate}:${AGENT}`
+    await d.store.upsertSession({
+      key: coordKey,
+      agentId: AGENT,
+      platform: 'slack',
+      channel: 'C1',
+      thread: coordinate,
+      acpSessionId: 'acp-coordinator',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await d.store.setSessionClassification(coordKey, {
+      sourceBindingKind: 'external',
+      externalProvider: 'slack',
+      externalRealmKey: 'T1',
+      externalResourceKind: 'conversation',
+      externalResourceKey: 'C1',
+      externalIntegrationId: 'int-a'
+    })
+    const events: RdChatEvent[] = []
+
+    const ack = await d.handleRelayMsg(turn('from console', { targetSessionId: 'acp-coordinator' }), (e) =>
+      events.push(e)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    expect(postAsAuthor).toHaveBeenCalledWith(
+      'C1',
+      undefined,
+      { text: 'from console', attributedText: '[owner via console] from console' },
+      { name: 'owner' },
+      { agentAuthorId: AGENT }
+    )
+    expect(prompts).toHaveLength(1)
+    // The turn ran as the conversation's coordinator, keyed on its coordinate.
+    expect(prompts[0]!.text).toContain(`Thread: ${coordinate}`)
+    expect(prompts[0]!.text).toContain('You are the coordinator')
+    for (const call of postMessage.mock.calls as unknown[][]) expect(call[2]).not.toBe(coordinate)
+    // The message is the copy in the channel, as channel ingress records it, so a task opened for it takes that thread.
+    expect(prompts[0]!.text).toContain('msg-100.200000')
+    await daemon.stop()
+  })
 })
 
 // ── mirror routing claim (§5.2) ──────────────────────────────────────────────
@@ -291,6 +338,50 @@ describe('webchat session-targeted continuation', () => {
 // activation from a verified final is pinned by
 // daemon-agent-mention-routing.test.ts; the target author is excluded there
 // and gets the targeted dispatch instead.
+
+describe('webchat session-targeted continuation — control commands', () => {
+  it('runs !resume as the command: the open loop guard resets and no turn runs', async () => {
+    const { daemon, d, prompts, postMessage, postAsAuthor } = await boot()
+    const store = (daemon as never as { store: Record<string, (...args: unknown[]) => Promise<unknown>> }).store
+    await store.tripLoopGuard!('slack:C1:top-level', Date.now(), 'automatic_turn_burst')
+    const events: RdChatEvent[] = []
+
+    const ack = await d.handleRelayMsg(turn('!resume'), (e) => events.push(e))
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    expect(await store.isLoopGuardOpen!('slack:C1:top-level')).toBe(false)
+    // The reply reaches the console; the platform sees neither the command nor a model turn.
+    expect(JSON.stringify(events.filter((e) => e.kind === 'output'))).toContain('Resumed')
+    expect(prompts).toHaveLength(0)
+    expect(postAsAuthor).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('acts on the session the console names, not the one the channel holds now', async () => {
+    const { daemon, d } = await boot()
+    // The channel has moved on to another session since this page was opened.
+    const host = (daemon as never as { commands: { host: Record<string, unknown> } }).commands.host
+    host.sessionCoordinateFor = async () => 'append:coordinator-rotated'
+    const events: RdChatEvent[] = []
+
+    await d.handleRelayMsg(turn('!stop'), (e) => events.push(e))
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    expect(JSON.stringify(events.filter((e) => e.kind === 'output'))).toContain('Muted in this thread')
+    await daemon.stop()
+  })
+
+  it('keeps !new and the card-posting commands ordinary turns', async () => {
+    for (const text of ['!new', '!status']) {
+      const { daemon, d, prompts } = await boot()
+      const events: RdChatEvent[] = []
+      await d.handleRelayMsg(turn(text), (e) => events.push(e))
+      await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+      expect(prompts).toHaveLength(1)
+      await daemon.stop()
+    }
+  })
+})
 
 describe('webchat session-targeted continuation — mirror identity', () => {
   it("hands Slack the bare body plus the console author's name and avatar, with the attributed fallback", async () => {
@@ -602,6 +693,25 @@ describe('webchat session-targeted continuation — a delegated task', () => {
     const page = await d.store.transcriptPage(parentConv, TASK_THREAD, null, 50, AGENT)
     expect(page.rows.map((r) => r.text)).toEqual(expect.arrayContaining(['one more case', 'on it']))
     expect(await d.store.getSession(`webchat:${parentConv}:webchat:${parentConv}:${AGENT}`)).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it("lets a task's own thread change its runtime settings, which another continued session may not", async () => {
+    const { daemon, d } = await boot()
+    const key = await seedTask(d)
+    const applied: Array<[string, string]> = []
+    ;(
+      d as never as { commands: { setModelByKey: (k: string, m: string) => Promise<boolean> } }
+    ).commands.setModelByKey = async (k, m) => {
+      applied.push([k, m])
+      return true
+    }
+    const ack = (await d.handleRelayMsg(
+      turn('', { targetSessionId: TASK_ACP, payload: { op: 'set_model', model: 'opus', callerRole: 'editor' } }),
+      () => {}
+    )) as RdAck
+    expect(ack).toMatchObject({ accepted: true })
+    expect(applied).toEqual([[key, 'opus']])
     await daemon.stop()
   })
 

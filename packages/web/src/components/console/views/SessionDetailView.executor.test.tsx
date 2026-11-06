@@ -130,6 +130,7 @@ vi.mock('@/components/console/Shell', () => ({
 // `reconcileLiveSteps` by identity, so a new closure each render spins forever.
 vi.mock('@/components/console/PlaygroundProvider', () => {
   const playground = {
+    getPgSuggestion: () => undefined,
     getPgSession: () => undefined,
     getLiveSteps: () => [],
     getBusyLaneAgentIds: () => [],

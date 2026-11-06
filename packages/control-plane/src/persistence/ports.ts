@@ -6816,6 +6816,8 @@ export interface OrgRecord {
   icon: AgentIcon | null
   /** Default applied to both directional policies of newly created agents. */
   defaultAgentVisibility: AgentCallPolicy
+  /** Seeds the auto-upgrade switch of daemons created in this org from now on. */
+  defaultDaemonAutoUpgrade: boolean
   /** Console onboarding wizard done (finish OR skip) — owners of a false org get the wizard. */
   onboardingCompleted: boolean
   /** Getting-started tutorial position: checklist steps passed (completed or skipped). */
@@ -7010,6 +7012,7 @@ export interface OrgRepo {
       slug?: string
       icon?: AgentIcon | null
       defaultAgentVisibility?: AgentCallPolicy
+      defaultDaemonAutoUpgrade?: boolean
       onboardingCompleted?: boolean
       gettingStartedStep?: number
     }

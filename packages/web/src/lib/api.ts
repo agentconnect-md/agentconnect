@@ -1299,9 +1299,9 @@ export interface DaemonViewDto {
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
   lastModifiedAt: string // ISO-8601
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
-  /** How long a finished session's row and transcript stay on the daemon ("Expire sessions"). */
+  /** How long a finished session's row and transcript stay on the daemon (the cleanup row's "Session" picker). */
   sessionRetention: DaemonSessionRetention
-  /** How long a finished session's workspace and sandbox stay, never past its row ("Clean up workspaces"). */
+  /** How long a finished session's workspace and sandbox stay, never past its row (the cleanup row's "Workspace" picker). */
   workspaceRetention: DaemonSessionRetention
   visibility: ResourceVisibility
   sharedWith: string[]
@@ -1326,8 +1326,7 @@ export interface DaemonAutoUpgradeResultDto {
   settledAt: string | null
 }
 
-/** The console-settable "Expire sessions" window (PATCH /daemons/:id):
- *  'never' disables the sweep, otherwise an integer day count as '<n>d'. */
+/** The console-settable cleanup window (PATCH /daemons/:id): 'never' disables the sweep, else '<n>d'. */
 export type DaemonSessionRetention = 'never' | `${number}d`
 
 /** A CP-commanded daemon restart/upgrade (cli-daemon-split.md §7). Returned by the
@@ -1469,6 +1468,8 @@ export interface OrgDto {
   iconUrl: string | null
   /** Default applied to both directional policies of newly created agents. */
   defaultAgentVisibility?: AgentCallPolicy
+  /** Auto-upgrade switch that daemons created in this org from now on start with. */
+  defaultDaemonAutoUpgrade?: boolean
   /** Whether the object store is configured — the console shows Upload only when true. */
   iconUploadEnabled: boolean
   /** The signed-in user's role in this org. */
@@ -4748,7 +4749,7 @@ export async function updateDaemonSessionRetention(
   )
 }
 
-// Set how long a finished session's workspace and sandbox stay ("Clean up workspaces"); the CP hot-pushes it.
+// Set how long a finished session's workspace and sandbox stay (the cleanup row's "Workspace" picker); the CP hot-pushes it.
 export async function updateDaemonWorkspaceRetention(
   daemonId: string,
   workspaceRetention: DaemonSessionRetention
@@ -5921,6 +5922,7 @@ export async function updateOrg(
     slug?: string
     icon?: AgentIcon | null
     defaultAgentVisibility?: AgentCallPolicy
+    defaultDaemonAutoUpgrade?: boolean
     /** One-way — the onboarding wizard sets it on finish or skip. */
     onboardingCompleted?: true
     /** Getting-started tutorial position — advanced by the console drawer. */
@@ -6601,10 +6603,11 @@ export async function fetchGithubInstallUrl(): Promise<string | null> {
   }
 }
 
-/** The built-in App's slug; null when GitHub is not configured. */
-export async function fetchBuiltinGithubAppSlug(orgId?: string): Promise<string | null> {
+/** The built-in App's slug and GitHub-side id; null when GitHub is not configured. */
+export async function fetchBuiltinGithubApp(orgId?: string): Promise<{ slug: string; appId: number | null } | null> {
   try {
-    return (await apiGet<{ slug: string | null }>(`${orgBase(orgId)}/github/app`)).slug
+    const { slug, appId } = await apiGet<{ slug: string | null; appId: number | null }>(`${orgBase(orgId)}/github/app`)
+    return slug ? { slug, appId } : null
   } catch (e) {
     if (e instanceof ApiError && (e.status === 404 || e.status === 403)) return null
     throw e
@@ -6677,6 +6680,11 @@ export async function startGithubAppManifest(
   agentId: string
 ): Promise<{ action: string; manifest: Record<string, unknown> }> {
   return apiPost(`${orgBase()}/agents/${encodeURIComponent(agentId)}/github-app/manifest`, {})
+}
+
+/** A GitHub App's own logo (GitHub's generated pattern when none is uploaded), sized for a `px` box at 2x. */
+export function githubAppLogoUrl(appId: number, px: number): string {
+  return `https://avatars.githubusercontent.com/in/${appId}?s=${px * 2}`
 }
 
 /** An organization GitHub App's public page on GitHub. */

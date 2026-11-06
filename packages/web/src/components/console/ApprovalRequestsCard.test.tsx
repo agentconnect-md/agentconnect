@@ -86,14 +86,19 @@ const request = (extra: Record<string, unknown> = {}) => ({
   ...extra
 })
 
-async function render(sessionId?: string) {
+async function render(sessionId?: string, openTaskSessionId?: string) {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
   await act(async () => {
     root!.render(
       <SWRConfig value={swrConfig}>
-        <ApprovalRequestsCard agentId="example-agent" bare {...(sessionId ? { sessionId } : {})} />
+        <ApprovalRequestsCard
+          agentId="example-agent"
+          bare
+          {...(sessionId ? { sessionId } : {})}
+          {...(openTaskSessionId ? { openTaskSessionId } : {})}
+        />
       </SWRConfig>
     )
   })
@@ -152,6 +157,16 @@ describe('console approval requests', () => {
     expect(host!.textContent).toContain('Write src/app.ts')
     expect(host!.textContent).not.toContain('Bash: ls')
     expect(host!.querySelectorAll('a')).toHaveLength(0)
+  })
+
+  it('leaves out the requests of the task whose thread is open, which answers them itself', async () => {
+    mocks.rows = [
+      request({ id: 'own', sessionId: 'sid-parent', command: 'Bash: ls' }),
+      request({ id: 'child', sessionId: 'sid-sub', parentSessionId: 'sid-parent', command: 'Write src/app.ts' })
+    ]
+    await render('sid-parent', 'sid-sub')
+    expect(host!.textContent).toContain('Bash: ls')
+    expect(host!.textContent).not.toContain('Write src/app.ts')
   })
 })
 

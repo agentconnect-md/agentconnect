@@ -64,7 +64,8 @@ export class AhpAttachment {
   }
   async attach(sessionUri = this.sessionUri): Promise<void> {
     this.stopped = false
-    this.setView({ connected: false })
+    // A new attempt supersedes the last failure, so listeners never replay a stale error.
+    this.setView({ connected: false, error: undefined })
     const generation = ++this.generation
     this.losePending()
     const previous = this.client

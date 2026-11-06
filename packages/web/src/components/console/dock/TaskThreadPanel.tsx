@@ -10,9 +10,12 @@ import { Button, Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
-import { taskStateKey, taskTone, type MarkTone } from '@/components/console/task-list'
+import { taskStateKey, taskTone, useTaskStops, type MarkTone } from '@/components/console/task-list'
+import { taskStopKey } from '@/components/console/follow-up'
 import { exchangePromptMs, turnSpan, typedInvalidReason, withPromptStart } from '@/components/console/session-work'
 import { turnWork, WorkStepList } from '@/components/console/WorkPanel'
+import { TranscriptApprovalsProvider, TurnApprovals, UnplacedApprovals } from '@/components/console/TurnApprovals'
+import { approvalTurnStart, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
 import {
@@ -26,11 +29,13 @@ import type { TaskLink } from '@/components/console/task-link'
 import { useDockExpand } from '@/components/console/dock/SessionDock'
 import { fetchSessionDetail } from '@/lib/api'
 import { agentToneColor } from '@/lib/agent-tone'
-import { agentLabel, type Agent } from '@/lib/data'
+import { agentLabel, type Agent, type DaemonRow } from '@/lib/data'
+import { TaskRuntimePicker } from '@/components/console/dock/TaskRuntimePicker'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib/session-trigger'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { useOrgs } from '@/lib/org-context'
+import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 
 const HEADER_BTN =
   'flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none'
@@ -64,7 +69,14 @@ export function TaskThreadPanel({
   platform = '',
   task,
   parentSessionId,
-  onBack
+  approvals,
+  onBack,
+  variant = 'panel',
+  onExpand,
+  onShrink,
+  branch,
+  taskApprovals,
+  runtimeContext
 }: {
   /** The coordinator's agent, which runs the task. */
   agentId: string
@@ -79,18 +91,49 @@ export function TaskThreadPanel({
   task: TaskLink
   /** The conversation whose task list carries this one's state; null reads the task alone. */
   parentSessionId: string | null
+  /** The coordinator's webchat conversation, whose grant the task writes under: its writes wait for approval here. */
+  approvals?: { orgId: string; conversationId: string }
   onBack: () => void
+  /** `expanded` draws the task over its coordinator (crumb, branch, shrink); `panel` is the side panel's quick look. */
+  variant?: 'panel' | 'expanded'
+  /** The side panel's expand, which opens the task expanded. */
+  onExpand?: () => void
+  /** The expanded view's shrink and its "Coordinator" crumb, which put the task back in the side panel. */
+  onShrink?: () => void
+  /** The branch the task's own worktree is on, as its Git panel read it. */
+  branch?: string | null
+  /** Who may answer this task's approvals and the conversation they are read through: the coordinator page's own rules. */
+  taskApprovals?: { listSessionId: string; enabled: boolean; conversationPermissions: boolean }
+  /** What the task's runtime picker reads: the agent, its daemon's catalogs, and whether this reader may change settings. */
+  runtimeContext?: {
+    owner: Agent | undefined
+    owningDaemon: DaemonRow | undefined
+    agentRuntime: string
+    editable: boolean
+  }
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
   const td = useTranslations('Sessions.detail.sessionDock')
   const format = useFormatter()
   const { orgPath } = useOrgs()
-  const { getLiveSteps, isPgBusy, markSessionTarget, pgSend, setPgInput, reconcileLiveSteps, pgAnswerElicitation } =
-    usePlayground()
+  const {
+    getLiveSteps,
+    isPgBusy,
+    markSessionTarget,
+    pgSend,
+    pgNotice,
+    setPgInput,
+    reconcileLiveSteps,
+    pgAnswerElicitation,
+    pgAttach
+  } = usePlayground()
   const dock = useDockExpand()
   const id = task.sessionId
   const row = useTaskRow(agentId, id, parentSessionId)
+  const { stopOf, stop } = useTaskStops(agentId, parentSessionId ?? id, () => {})
+  const stopState = row ? stopOf(row) : undefined
+  const stoppable = !!row && row.state === 'open' && taskStopKey(row) !== null && stopState !== 'stopped'
   const listRef = useRef<HTMLDivElement | null>(null)
   const busy = isPgBusy(id)
   const { page, error, reload } = useTaskThread(id, row, { busy })
@@ -162,11 +205,11 @@ export function TaskThreadPanel({
         <button
           type="button"
           data-task-thread-back=""
-          title={t('backTitle')}
-          onClick={onBack}
+          title={variant === 'expanded' ? t('coordinatorTitle') : t('backTitle')}
+          onClick={variant === 'expanded' ? (onShrink ?? onBack) : onBack}
           className="flex-none cursor-pointer rounded-sm border-0 bg-transparent px-[2px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:text-(--text-primary) hover:underline"
         >
-          {t('back')}
+          {variant === 'expanded' ? t('coordinator') : t('back')}
         </button>
         <Icon name="chevron-right" size={13} color="var(--text-tertiary)" className="flex-none" />
         <h3
@@ -184,7 +227,30 @@ export function TaskThreadPanel({
             {tl(taskStateKey(row))}
           </span>
         ) : null}
+        {variant === 'expanded' && branch ? (
+          <span
+            data-task-thread-branch=""
+            title={branch}
+            className="inline-flex min-w-0 flex-[0_100_auto] items-center gap-1 rounded-sm bg-(--surface-sunken) px-[6px] py-[2px] font-mono text-[11px] leading-normal text-(--text-secondary)"
+          >
+            <Icon name="git-fork" size={11} className="flex-none" />
+            <span className="truncate">{branch}</span>
+          </span>
+        ) : null}
         <span className="flex-1" />
+        {stoppable ? (
+          <button
+            type="button"
+            data-task-thread-stop=""
+            disabled={stopState === 'busy'}
+            className={HEADER_BTN}
+            title={tl('stop')}
+            aria-label={tl('stop')}
+            onClick={() => void stop(row)}
+          >
+            <Icon name="square" size={13} />
+          </button>
+        ) : null}
         <Link
           href={pageHref}
           className={HEADER_BTN}
@@ -193,7 +259,29 @@ export function TaskThreadPanel({
         >
           <Icon name="arrow-up-right" size={14} />
         </Link>
-        {dock.available ? (
+        {variant === 'expanded' && onShrink ? (
+          <button
+            type="button"
+            data-task-thread-shrink=""
+            className={HEADER_BTN}
+            title={t('shrink')}
+            aria-label={t('shrink')}
+            onClick={onShrink}
+          >
+            <Icon name="minimize-2" size={14} />
+          </button>
+        ) : onExpand ? (
+          <button
+            type="button"
+            data-task-thread-expand=""
+            className={HEADER_BTN}
+            title={td('expandPanel')}
+            aria-label={td('expandPanel')}
+            onClick={onExpand}
+          >
+            <Icon name="maximize-2" size={14} />
+          </button>
+        ) : dock.available ? (
           <button
             type="button"
             data-task-thread-expand=""
@@ -244,30 +332,35 @@ export function TaskThreadPanel({
             {t('loadFailed')}
           </span>
         ) : null}
-        {entries.map((entry, i) => (
-          <ThreadMessage
-            key={entry.key}
-            entry={entry}
-            sessionId={id}
-            streaming={busy && i === entries.length - 1}
-            promptMs={exchangePromptMs(promptTurns, i)}
-            speaker={speakerOf(entry)}
-            you={t('you')}
-            person={t('person')}
-            time={entry.at ? format.dateTime(new Date(entry.at), { hour: 'numeric', minute: '2-digit' }) : null}
-          >
-            {entry.question ? (
-              <ThreadQuestion
-                question={entry.question}
-                pageHref={pageHref}
-                onAnswer={(requestId, value) => {
-                  markSessionTarget(id)
-                  pgAnswerElicitation(id, agentId, requestId, value)
-                }}
-              />
-            ) : null}
-          </ThreadMessage>
-        ))}
+        <ApprovalsScope taskSessionId={id} agentId={agentId} scope={taskApprovals} entries={entries}>
+          {entries.map((entry, i) => (
+            <ThreadMessage
+              key={entry.key}
+              entry={entry}
+              sessionId={id}
+              streaming={busy && i === entries.length - 1}
+              promptMs={exchangePromptMs(promptTurns, i)}
+              speaker={speakerOf(entry)}
+              you={t('you')}
+              person={t('person')}
+              time={entry.at ? format.dateTime(new Date(entry.at), { hour: 'numeric', minute: '2-digit' }) : null}
+            >
+              {entry.question ? (
+                <ThreadQuestion
+                  question={entry.question}
+                  pageHref={pageHref}
+                  onAnswer={(requestId, value) => {
+                    markSessionTarget(id)
+                    pgAnswerElicitation(id, agentId, requestId, value)
+                  }}
+                />
+              ) : null}
+              {/* The task's own tool-call approvals, at the turn that asked, as the session page draws a conversation's. */}
+              {entry.who === 'agent' && !entry.question ? <TurnApprovals turnKey={entry.key} /> : null}
+            </ThreadMessage>
+          ))}
+          <UnplacedApprovals />
+        </ApprovalsScope>
         {/* Until the agent's turn shows, which then says it is working in its header, as the session page does. */}
         {busy && !(last?.who === 'agent' && last.live && !last.agentId) ? (
           <div className="flex items-center gap-[9px]" style={own.accent}>
@@ -278,6 +371,20 @@ export function TaskThreadPanel({
           </div>
         ) : null}
       </div>
+      {approvals ? (
+        <WebchatMcpApprovalCard
+          orgId={approvals.orgId}
+          agentId={agentId}
+          conversationId={approvals.conversationId}
+          className="mx-3 mt-2"
+          raisedHere={raisedIn(page?.messages)}
+          // The task asked and ended its turn, so the decision is news only a notice to it delivers.
+          onDecided={(operation, decision, outcome) => {
+            markSessionTarget(id)
+            pgNotice(id, agentId, approvalNotice(operation, decision, outcome))
+          }}
+        />
+      ) : null}
       <ThreadComposer
         sessionId={id}
         canReply={canReply}
@@ -288,6 +395,24 @@ export function TaskThreadPanel({
         sendLabel={t('send')}
         onSend={send}
         setDraft={(text) => setPgInput(id, text)}
+        // Writing here opens the task's own session, which is what reports the settings its picker offers.
+        onFocus={() => {
+          if (!canReply) return
+          markSessionTarget(id)
+          pgAttach(id, agentId, '')
+        }}
+        runtime={
+          runtimeContext ? (
+            <TaskRuntimePicker
+              sessionId={id}
+              agentId={agentId}
+              owner={runtimeContext.owner}
+              owningDaemon={runtimeContext.owningDaemon}
+              agentRuntime={runtimeContext.agentRuntime}
+              editable={runtimeContext.editable}
+            />
+          ) : null
+        }
       />
     </div>
   )
@@ -416,6 +541,20 @@ function ThreadMessage({
   )
 }
 
+/** A question's typed answer and what was last sent, kept by request so expanding, shrinking or reading a file keeps them. */
+const questionAnswers = new Map<string, { draft: string; sent: string | null }>()
+
+function useQuestionAnswer(
+  requestId: string
+): [{ draft: string; sent: string | null }, (next: { draft: string; sent: string | null }) => void] {
+  const [answer, setAnswer] = useState(() => questionAnswers.get(requestId) ?? { draft: '', sent: null })
+  const update = (next: { draft: string; sent: string | null }) => {
+    questionAnswers.set(requestId, next)
+    setAnswer(next)
+  }
+  return [answer, update]
+}
+
 /** The agent's open question: a plain choice or a line of text answers here; any other form is shown on the task's page. */
 function ThreadQuestion({
   question,
@@ -428,8 +567,9 @@ function ThreadQuestion({
 }) {
   const t = useTranslations('Common.taskThread')
   // What was last sent: the control stays live, so an answer the daemon refuses can be corrected, until it settles the question and the thread drops it.
-  const [sent, setSent] = useState<string | null>(null)
-  const [draft, setDraft] = useState('')
+  const [{ draft, sent }, setAnswer] = useQuestionAnswer(question.requestId)
+  const setDraft = (value: string) => setAnswer({ draft: value, sent })
+  const setSent = (value: string) => setAnswer({ draft, sent: value })
   const invalid = question.text ? typedInvalidReason({ text: question.text }, draft) : undefined
   return (
     <div
@@ -511,7 +651,9 @@ function ThreadComposer({
   readOnly,
   sendLabel,
   onSend,
-  setDraft
+  setDraft,
+  onFocus,
+  runtime
 }: {
   sessionId: string
   canReply: boolean
@@ -523,6 +665,9 @@ function ThreadComposer({
   sendLabel: string
   onSend: () => void
   setDraft: (text: string) => void
+  onFocus?: () => void
+  /** The task's runtime picker, beside the send button. */
+  runtime?: ReactNode
 }) {
   const draft = usePgDraft(sessionId)
   const hasText = usePgDraftHasText(sessionId)
@@ -542,6 +687,7 @@ function ThreadComposer({
           value={draft}
           disabled={!canReply}
           onChange={(e) => setDraft(e.target.value)}
+          onFocus={onFocus}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
@@ -557,6 +703,7 @@ function ThreadComposer({
           >
             {hint}
           </span>
+          {runtime}
           <button
             type="button"
             className="sendbtn h-[26px] w-[26px] flex-none rounded-[7px]"
@@ -569,5 +716,47 @@ function ThreadComposer({
         </div>
       </div>
     </div>
+  )
+}
+
+/** Places the task's approvals at the thread's agent turns when the reader may answer them; otherwise draws the thread alone. */
+function ApprovalsScope({
+  taskSessionId,
+  agentId,
+  scope,
+  entries,
+  children
+}: {
+  taskSessionId: string
+  agentId: string
+  scope: { listSessionId: string; enabled: boolean; conversationPermissions: boolean } | undefined
+  entries: readonly ThreadEntry[]
+  children: ReactNode
+}) {
+  if (!scope) return <>{children}</>
+  // A turn followed by a person's message answered an earlier exchange, so a waiting request is the latest one's.
+  const turns: ApprovalTurnAnchor[] = entries.flatMap((entry, i) =>
+    entry.who === 'agent' && !entry.question
+      ? [
+          {
+            key: entry.key,
+            ...(entry.agentId ? { agentId: entry.agentId } : {}),
+            startMs: approvalTurnStart(entry.times ?? []),
+            closed: entries.slice(i + 1).some((later) => later.who === 'person')
+          }
+        ]
+      : []
+  )
+  return (
+    <TranscriptApprovalsProvider
+      agentId={agentId}
+      sessionId={taskSessionId}
+      listSessionId={scope.listSessionId}
+      enabled={scope.enabled}
+      conversationPermissions={scope.conversationPermissions}
+      turns={turns}
+    >
+      {children}
+    </TranscriptApprovalsProvider>
   )
 }

@@ -38,7 +38,8 @@ where the administrative APIs and their authorization already live.
 ### 2.1 Goals
 
 - Give access to `agentconnect-admin` only from a user-owned webchat conversation,
-  and to no other launch surface. Session visibility does not gate it (§7).
+  and to no other launch surface. Session visibility does not gate it (§7). A task the
+  member's coordinator conversation opens is part of that conversation (§5.4).
 - Derive the acting user from the durable `WebchatConversation` owner binding, never
   from model-supplied arguments.
 - Re-run membership, RBAC, resource visibility, catalog, and confirmation checks at
@@ -62,7 +63,8 @@ where the administrative APIs and their authorization already live.
   memory inspection, or unrestricted same-UID debugging.
 - Treating a system prompt as a credential store.
 - Giving arbitrary agents, IM sessions, automations, hooks, cron sessions, or
-  agent-to-agent sessions access to the administrative catalog.
+  agent-to-agent sessions access to the administrative catalog. The one task session
+  that has it is §5.4's, which works under its webchat conversation's own grant.
 - Moving browser message bodies, attachment bytes, or ACP `session/update` streams
   through the Control Plane.
 - Replacing the existing curated MCP catalog or its REST authorization.
@@ -230,10 +232,12 @@ The daemon never reinstalls previously delivered raw material into a rebuilt ACP
 session: every descriptor installation or reinstallation uses a freshly issued
 grant, so one grant identifies at most one installation into one runtime process.
 
-Each durable webchat `conversationId` maps to one ACP session and therefore exactly
-one `agentconnect-admin` descriptor. That descriptor has one daemon-generated,
-stable `descriptorInstanceId`, persisted as non-secret session metadata so it
-survives a daemon restart. Concurrent browser tabs resume the same conversation,
+Each ACP session that holds the catalog has exactly one `agentconnect-admin`
+descriptor. An ordinary webchat `conversationId` maps to one ACP session; a
+coordinator conversation's sessions are its tasks (§5.4), each with a descriptor of
+its own. A descriptor has one daemon-generated, stable `descriptorInstanceId`,
+derived from the conversation and, for a task, its session key, so it survives a
+daemon restart. Concurrent browser tabs resume the same conversation,
 ACP session, descriptor instance, and active grant; they do not create competing
 runtime descriptors.
 
@@ -265,9 +269,9 @@ grantRevision, token, expiresAt }`. Creating a newer pending revision atomically
    again against the persisted full fence. A retry of any frame is idempotent; a
    mismatched, older-generation, or superseded tuple fails closed.
 
-`pending` credentials are rejected by the MCP endpoint. The sole descriptor instance
-has at most one active and one pending grant, so only one usable grant exists for the
-conversation. Creating a newer pending revision revokes the older pending row;
+`pending` credentials are rejected by the MCP endpoint. Each descriptor instance
+has at most one active and one pending grant, so only one usable grant exists per
+runtime session. Creating a newer pending revision revokes the older pending row;
 activating it revokes the prior active row. Lost delivery leaves an unusable pending
 row that expires after two minutes and leaves the prior active grant unchanged.
 Logical conversation close, ownership change, incompatible placement change, or
@@ -319,6 +323,40 @@ The grant is revoked on:
 
 Live authorization still fails even if a revocation event is delayed.
 
+### 5.4 Tasks of a coordinator conversation
+
+A member's private webchat coordinator conversation
+([auto-session-mode.md](auto-session-mode.md) §10) only routes: the coordinator
+reads and hands out work and runs no administration itself. The conversation's
+entitlement therefore installs no descriptor on the coordinator. A page task the
+coordinator opens there does the work, so it installs one instead:
+
+- **Who.** A delegated task (`delegateTask`, never a check, research or an approved
+  proposal) whose recorded parent is a webchat coordinator session. A task such a task
+  opens, a coordinator task on any other platform, and every other subsession get
+  nothing.
+- **Which entitlement.** The newest one a turn of the parent conversation carried,
+  which the daemon remembers in memory. A task never keeps one of its own: each of its
+  turns reads the conversation's current entitlement, so an authority that rotated or
+  expired is replaced at the coordinator's next turn rather than reused. A task turn
+  with no unexpired entitlement runs without the catalog.
+- **Its own grant.** The task issues a grant of its own under that authority, for its
+  own descriptor instance, so no bearer is shared between runtime sessions and its
+  transport receipts never collide with another session's JSON-RPC ids. The Control
+  Plane already scopes issuance, activation and renewal to the descriptor instance,
+  and revoking the authority revokes every descriptor under it.
+- **Lifetime.** The sweep renews a task's grant while the task's own session is open.
+  A task's grant is never revoked on its own: the conversation's close, rotation or
+  revocation ends it, and a closed task's grant lapses within its sliding lifetime.
+- **Approval.** A write is an operation of the conversation, as any is. The console
+  shows it where it was raised: a task's on the task's thread, which the dock opens
+  when the coordinator opens the task, a coordinator's on the conversation. The
+  operation id a pending write returns, recorded in that session's tool result, tells
+  the two apart. The decision is a notice to that session.
+
+The owner, and whoever the parent's audience admits to continue a task's page, acts
+through the owner's authority, as §10.2 accepts for a continued session.
+
 ## 6. Runtime delivery
 
 The daemon adds a remote MCP server only to the entitled ACP session:
@@ -347,7 +385,7 @@ Requirements:
 - The daemon must redact `headers` from diagnostics, errors, traces, and session
   dumps.
 - `session/new` and `session/load` attach the descriptor only to the exact entitled
-  webchat session.
+  webchat session, or to a coordinator conversation's task (§5.4).
 - Runtimes are expected to keep MCP descriptors and credentials session-scoped. A
   runtime that applies them agent-wide is incompatible and must be fixed, but the
   daemon does not claim it can prove that property from identity, version, or probes.
@@ -674,6 +712,7 @@ organization, and global feature revocation without requiring daemon isolation.
 | Failure                                           | Behavior                                                                                             |
 | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | Non-webchat session                               | No `agentconnect-admin` descriptor.                                                                  |
+| Coordinator session                               | No descriptor; the tasks it opens in webchat install their own (§5.4).                               |
 | Runtime ignores or rejects HTTPS MCP descriptors  | Daemon still attempts attachment; surface tools as unavailable and keep ordinary chat when possible. |
 | Grant missing, forged, expired, revoked, or stale | MCP returns authorization expired/invalid; no fallback identity.                                     |
 | CP unavailable                                    | Admin tool returns a retryable error; ordinary chat and local tools continue.                        |

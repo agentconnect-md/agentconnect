@@ -6,6 +6,7 @@ import {
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_DECISION_ROUTE_V1,
   RD_WEBCHAT_IMAGES_V1,
+  RD_WEBCHAT_PROMPT_SUGGESTION_V1,
   type RelayDaemonFrame,
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
@@ -40,7 +41,13 @@ class FakeServerTransport implements ServerTransport {
     this.closeCb?.(code, reason)
   }
   feed(
-    type: 'rd/hello' | 'rd/ack' | 'rd/route' | 'rd/route/report' | 'rd/webchat-image-update',
+    type:
+      | 'rd/hello'
+      | 'rd/ack'
+      | 'rd/route'
+      | 'rd/route/report'
+      | 'rd/webchat-image-update'
+      | 'rd/webchat-prompt-suggestion',
     payload: unknown
   ): void {
     this.msgCb?.(JSON.stringify(buildRelayDaemonFrame(type, payload as never)))
@@ -61,6 +68,7 @@ function build(
     onRoute?: RelayDaemonConnDeps['onRoute']
     onRouteReport?: RelayDaemonConnDeps['onRouteReport']
     onWebchatImageUpdate?: RelayDaemonConnDeps['onWebchatImageUpdate']
+    onWebchatPromptSuggestion?: RelayDaemonConnDeps['onWebchatPromptSuggestion']
     bufferedAmount?: () => number
   } = {}
 ) {
@@ -76,6 +84,7 @@ function build(
     onChat: () => {},
     onWebchatPost: () => {},
     ...(opts.onWebchatImageUpdate ? { onWebchatImageUpdate: opts.onWebchatImageUpdate } : {}),
+    ...(opts.onWebchatPromptSuggestion ? { onWebchatPromptSuggestion: opts.onWebchatPromptSuggestion } : {}),
     onAgentMsg: async () => ({ deliveryId: 'unused', delivered: false }),
     onRoute: opts.onRoute ?? (async (_from, msg) => ({ deliveryId: msg.deliveryId, disposition: 'admitted' as const })),
     onRouteReport: opts.onRouteReport ?? (() => ({ accepted: true })),
@@ -97,7 +106,12 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     expect(verify).toHaveBeenCalledWith('daemon-key', 'the-key', DAEMON_ID)
     expect(transport.lastRep('rd/hello/ok')!.payload).toEqual({
       relayId: RELAY_ID,
-      capabilities: [RD_CODEHOST_REPLY_TARGET_V1, RD_DECISION_ROUTE_V1, RD_WEBCHAT_IMAGES_V1]
+      capabilities: [
+        RD_CODEHOST_REPLY_TARGET_V1,
+        RD_DECISION_ROUTE_V1,
+        RD_WEBCHAT_IMAGES_V1,
+        RD_WEBCHAT_PROMPT_SUGGESTION_V1
+      ]
     })
     expect(conn.state).toBe('READY')
     expect(conn.daemonId).toBe(DAEMON_ID)
@@ -120,6 +134,22 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     transport.feed('rd/webchat-image-update', update)
     await Promise.resolve()
     expect(onWebchatImageUpdate).toHaveBeenCalledWith(DAEMON_ID, update)
+  })
+
+  it('hands an rd/webchat-prompt-suggestion to its handler bound to the authenticated daemon', async () => {
+    const onWebchatPromptSuggestion = vi.fn()
+    const { transport } = build({ onWebchatPromptSuggestion })
+    transport.feed('rd/hello', { apiKey: 'the-key', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    const suggestion = { conversationId: RELAY_ID, agentId: OTHER_DAEMON, text: 'Run the tests' }
+    transport.feed('rd/webchat-prompt-suggestion', suggestion)
+    transport.feed('rd/webchat-prompt-suggestion', { ...suggestion, text: null })
+    await Promise.resolve()
+    expect(onWebchatPromptSuggestion.mock.calls).toEqual([
+      [DAEMON_ID, suggestion],
+      [DAEMON_ID, { ...suggestion, text: null }]
+    ])
   })
 
   it('honours a per-request ack budget on rd/msg: one send, rejected only after its own timeout', async () => {

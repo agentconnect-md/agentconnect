@@ -423,7 +423,7 @@ export default function HomeView() {
     const entry = await openCoordinatorConversation(orgId, target.id).catch(() => undefined)
     const id =
       entry?.sessionId ??
-      openPlayground(target, undefined, entry ? { conversationId: entry.conversationId } : undefined)
+      openPlayground(target, undefined, entry ? { conversationId: entry.conversationId, coordinator: true } : undefined)
     pgSend(id, target.id, text, entry?.conversationId, undefined, attached, undefined, uploaded)
     router.push(orgPath(`/sessions/${id}`))
   }

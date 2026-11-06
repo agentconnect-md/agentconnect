@@ -222,6 +222,7 @@ type NamedAgentRepoAuthorization = Omit<ResolvedAgentRepoAuthorization, 'repoId'
 }
 
 export class GithubService {
+  readonly appId: number
   readonly slug: string
   readonly tokens: InstallationTokenService
   private gitCommitIdentityPromise?: Promise<GitCommitIdentity | undefined>
@@ -237,6 +238,7 @@ export class GithubService {
   private readonly repoRosterGeneration = new Map<string, number>()
 
   constructor(private readonly deps: GithubServiceDeps) {
+    this.appId = deps.cfg.appId
     this.slug = deps.cfg.slug
     this.tokens = new InstallationTokenService(
       deps.cfg,

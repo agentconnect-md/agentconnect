@@ -122,6 +122,7 @@ vi.mock('@/components/console/Shell', () => ({
 // turns the real transcript off.)
 vi.mock('@/components/console/PlaygroundProvider', () => {
   const playground = {
+    getPgSuggestion: () => undefined,
     getPgSession: () => undefined,
     getLiveSteps: () => [],
     getBusyLaneAgentIds: () => [],
@@ -243,6 +244,12 @@ describe('a finished agent turn', () => {
     const panelStep = container!.querySelector('[data-step-status]')!
     const answer = container!.querySelector('[data-agent-prose]')!
     expect(panelStep.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('links its agent mark to the agent’s page', async () => {
+    await render()
+    const turnRow = container!.querySelector('[data-agent-prose]')!.closest('[class*="group/turn"]')!
+    expect(turnRow.querySelector('a[href="/acme/agents/agent-1"]')).not.toBeNull()
   })
 
   it('omits the duration when no step carries a timestamp', async () => {

@@ -129,4 +129,28 @@ describe('threadEntries', () => {
       ['agent', ['PLAN', 'TOOL'], true]
     ])
   })
+
+  it('draws a prompt this visit sent once, when the poll already reads it back while the reply runs', () => {
+    const sent = Date.UTC(2026, 10, 3, 9, 5)
+    const saved = [
+      row(1, 'user_dana', 'how much memory?'),
+      { ...row(6, 'user_draco', 'which computer?'), ts: new Date(sent + 2000).toISOString() }
+    ]
+    const live: SessionStep[] = [
+      { kind: 'msg', turnId: 't2', text: 'which computer?', observedAtMs: sent },
+      {
+        kind: 'tool',
+        turnId: 't2',
+        text: 'computer_list',
+        toolCallId: 'c9',
+        toolStatus: 'in_progress',
+        observedAtMs: sent + 3000
+      }
+    ]
+    const entries = threadEntries(threadMessages(page(saved)), live, 'agent_1')
+    expect(entries.filter((e) => e.text === 'which computer?')).toHaveLength(1)
+    // An earlier message with the same words is not this visit's prompt.
+    const older = threadEntries(threadMessages(page([row(1, 'user_dana', 'which computer?')])), live, 'agent_1')
+    expect(older.filter((e) => e.text === 'which computer?')).toHaveLength(2)
+  })
 })

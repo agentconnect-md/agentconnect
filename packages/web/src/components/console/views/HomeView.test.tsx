@@ -730,7 +730,8 @@ describe('HomeView coordinator entry', () => {
     await render()
     await sendText('hello')
     expect(mocks.openPlayground).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }), undefined, {
-      conversationId: 'conv-co'
+      conversationId: 'conv-co',
+      coordinator: true
     })
     expect(mocks.pgSend).toHaveBeenCalledWith('pg_1', 'a1', 'hello', 'conv-co', undefined, undefined, undefined, [])
     expect(mocks.push).toHaveBeenCalledWith('/acme/sessions/pg_1')

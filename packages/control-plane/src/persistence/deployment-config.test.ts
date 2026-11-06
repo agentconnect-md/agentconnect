@@ -111,9 +111,13 @@ describe('DeploymentConfigValuesV1Schema', () => {
     })
     const withSso = (ssoConnector: object) =>
       DeploymentConfigValuesV1Schema.safeParse({ ...base, logto: { ...base.logto, ssoConnector } }).success
-    const saml = { connectorId: 'sso-1', protocol: 'saml', name: 'Example SSO' }
+    const saml = { connectorId: 'sso-1', protocol: 'saml', name: 'Example SSO', domains: ['example.test'] }
+    const metadataUrl = 'https://idp.example.test/metadata'
     expect(withSso({ ...saml, oidc })).toBe(false)
-    expect(withSso({ ...saml, saml: { metadataUrl: 'https://idp.example.test/metadata' } })).toBe(true)
+    expect(withSso({ ...saml, saml: { metadataUrl } })).toBe(true)
+    // Logto offers no sign-in through a connector without a domain, so the IdP needs one with it.
+    expect(withSso({ ...saml, domains: [], saml: { metadataUrl } })).toBe(false)
+    expect(withSso({ ...saml, domains: [] })).toBe(true)
     expect(withSso({ ...saml, saml: {} })).toBe(false)
     expect(withSso({ ...saml, saml: { metadataUrl: 'https://idp.example.test/m', metadata: '<xml/>' } })).toBe(false)
     expect(withSso({ ...saml, domains: ['not a domain'] })).toBe(false)
@@ -127,7 +131,13 @@ describe('deploymentSecretsRequiringRefresh', () => {
         ...base,
         logto: {
           ...base.logto,
-          ssoConnector: { connectorId: 'sso-1', protocol: 'oidc', name: 'Example SSO', oidc: { issuer, clientId } }
+          ssoConnector: {
+            connectorId: 'sso-1',
+            protocol: 'oidc',
+            name: 'Example SSO',
+            domains: ['example.test'],
+            oidc: { issuer, clientId }
+          }
         }
       })
     const first = withOidc('https://idp.example.test', 'client')

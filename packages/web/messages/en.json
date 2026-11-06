@@ -1,5 +1,6 @@
 {
   "Common": {
+    "organizationLoadError": "Couldn’t load your organizations. Check your connection and try again.",
     "metadata": {
       "description": "Multi-agent platform bridging IM platforms to AI coding agents"
     },
@@ -14,9 +15,9 @@
       "dismiss": "Dismiss"
     },
     "modelProvider": {
-      "label": "Credentials",
-      "daemon": "Daemon credentials",
-      "saved": "Use saved credential (Beta)"
+      "label": "Model sign-in",
+      "daemon": "Daemon's login",
+      "saved": "Provider key (Beta)"
     },
     "chatActions": {
       "label": "What people can do in chat",
@@ -330,7 +331,11 @@
       "answerSent": "Sent. It stays open until the task accepts the answer.",
       "replyHint": "Goes to {agent} in this task only",
       "close": "Close",
-      "backTitle": "Back to all tasks"
+      "backTitle": "Back to all tasks",
+      "coordinator": "Coordinator",
+      "coordinatorTitle": "Back to the coordinator",
+      "shrink": "Shrink to the side panel",
+      "sliver": "Back to the coordinator"
     },
     "githubApp": {
       "title": "GitHub App",
@@ -2864,8 +2869,8 @@
         "invalidRules": "Check the conditions: assign each answer once and keep score intervals separate. At least one rule is required.",
         "missingModel": "Choose an available model for every rule and the fallback.",
         "savedModelUnavailable": "Choose a model with a key configured in Providers.",
-        "savedCredentialsLoading": "Loading saved credentials…",
-        "savedCredentialsLoadError": "Could not load saved credentials.",
+        "savedCredentialsLoading": "Loading provider keys…",
+        "savedCredentialsLoadError": "Could not load provider keys.",
         "retry": "Retry",
         "fallback": "No rule matches, or the evaluation is unavailable.",
         "providerModel": "Model",
@@ -4242,23 +4247,27 @@
       "daemonPlaceholder": "edge-1",
       "saveChanges": "Save changes",
       "groupPlaceholder": "edge-pool",
+      "retention": {
+        "label": "Clean up finished sessions",
+        "hint": "The workspace and sandbox go first; the conversation and unpushed work stay. Later the session is deleted with its transcript."
+      },
       "sessionRetention": {
-        "label": "Expire sessions",
+        "label": "Session",
         "afterDays": "After {count, plural, one {# day} other {# days}}",
         "never": "Never",
         "default": "default",
         "custom": "Custom…",
         "days": "Days",
         "daysSuffix": "days",
-        "daysAriaLabel": "Expire sessions after (days)",
+        "daysAriaLabel": "Delete finished sessions after (days)",
         "invalidDays": "Enter a whole number of days (1–9999).",
-        "hint": "Finished sessions older than this are deleted from the daemon, with their transcripts."
+        "ariaLabel": "Delete finished sessions after"
       },
       "workspaceRetention": {
-        "label": "Clean up workspaces",
+        "label": "Workspace",
         "never": "With the session",
         "daysAriaLabel": "Clean up workspaces after (days)",
-        "hint": "Finished sessions idle this long lose their workspace and sandbox but keep the conversation. Work not yet pushed is kept."
+        "ariaLabel": "Clean up workspaces after"
       }
     },
     "lifecycleDialog": {
@@ -5094,6 +5103,13 @@
           "description": "New agents can't call or be called by other agents until you pick which ones."
         }
       }
+    },
+    "daemonAutoUpgrade": {
+      "title": "Default daemon auto-upgrade",
+      "newDaemonsOnly": "Applies to new daemons only",
+      "label": "New daemons upgrade automatically",
+      "help": "Installs new releases automatically and restarts only when the daemon is idle.",
+      "ownerOnly": "Only organization owners can change this setting"
     },
     "inviteLinks": {
       "title": "Invite links",

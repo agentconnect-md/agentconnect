@@ -26,6 +26,7 @@ import {
   type RdChat,
   type RdWebchatPost,
   type RdWebchatImageUpdate,
+  type RdWebchatPromptSuggestion,
   WEBCHAT_IMAGES_FEATURE,
   WebchatTimeZone,
   type WebchatPost,
@@ -317,6 +318,12 @@ export class RelayBrowserConnection implements ChatSink {
   onImageUpdate(update: RdWebchatImageUpdate): void {
     if (update.conversationId !== this.deps.chatId) return
     this.send({ type: 'image_update', update })
+  }
+
+  /** A participant's predicted next prompt: forward to this browser only. */
+  onPromptSuggestion(suggestion: RdWebchatPromptSuggestion): void {
+    if (suggestion.conversationId !== this.deps.chatId) return
+    this.send({ type: 'prompt_suggestion', suggestion })
   }
 
   /** A participant's daemon relinked: `rd/chat` it streamed while unlinked is gone, so ask the browser to resume. */

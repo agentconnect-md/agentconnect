@@ -142,6 +142,7 @@ vi.mock('@/components/console/Shell', () => ({
 
 vi.mock('@/components/console/PlaygroundProvider', () => {
   const playground = {
+    getPgSuggestion: () => undefined,
     getPgSession: () => wire.pg,
     getLiveSteps: () => [],
     getBusyLaneAgentIds: () => [],
