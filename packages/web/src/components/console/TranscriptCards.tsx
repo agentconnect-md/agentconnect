@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { usePendingAction } from '@/components/console/PendingActions'
 import { type ElicitAnswerValue, type ElicitFieldSpec, type SessionImage } from '@/lib/data'
@@ -346,16 +346,49 @@ function ElicitOption({
 const ELICIT_HINT = 'font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)'
 const ELICIT_ACTIONS = 'flex flex-wrap items-center gap-[8px] border-t border-(--border-subtle) pt-[11px]'
 
+/** Answers in progress by request, so a card that remounts (a dock view switch, leaving the page) keeps what was typed and picked until it settles. */
+const keptAnswers = new Map<string, Record<string, unknown>>()
+
+/** Forgets every kept answer, for tests that reuse a request id. */
+export function forgetKeptAnswers(): void {
+  keptAnswers.clear()
+}
+
+/** One part of a card's answer in progress, kept by request across remounts. */
+function useKeptAnswer<T>(
+  requestId: string | undefined,
+  part: string,
+  initial: () => T
+): [T, (next: T | ((prev: T) => T)) => void] {
+  const [value, setValue] = useState<T>(() => {
+    const kept = requestId ? keptAnswers.get(requestId) : undefined
+    return kept && part in kept ? (kept[part] as T) : initial()
+  })
+  const set = (next: T | ((prev: T) => T)) =>
+    setValue((prev) => {
+      const value = typeof next === 'function' ? (next as (prev: T) => T)(prev) : next
+      if (requestId) keptAnswers.set(requestId, { ...keptAnswers.get(requestId), [part]: value })
+      return value
+    })
+  return [value, set]
+}
+
 /** The agent's in-band question (choice, multi-select, typed field or form), live or settled; inert without `onAnswer`. */
 export function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value: ElicitAnswerValue) => void }) {
   const t = useTranslations('Sessions.detail')
   // A custom-answer box the daemon could not bind is folded into its question here, off the pair's names.
   const fields = step.elicit?.fields?.length ? foldCustomAnswers(step.elicit.fields) : undefined
-  const [picked, setPicked] = useState<string[]>(() => pickedDefaults(step.elicit))
-  const [draft, setDraft] = useState<string>(() => typedDraft(step.elicit))
-  const [drafts, setDrafts] = useState<Record<string, string>>(() => formDrafts(fields))
-  const [picks, setPicks] = useState<Record<string, string[]>>(() => formPicks(fields))
-  const [others, setOthers] = useState<Record<string, boolean>>(() => formOthers(fields))
+  const requestId = step.elicit?.requestId
+  const [picked, setPicked] = useKeptAnswer<string[]>(requestId, 'picked', () => pickedDefaults(step.elicit))
+  const [draft, setDraft] = useKeptAnswer<string>(requestId, 'draft', () => typedDraft(step.elicit))
+  const [drafts, setDrafts] = useKeptAnswer<Record<string, string>>(requestId, 'drafts', () => formDrafts(fields))
+  const [picks, setPicks] = useKeptAnswer<Record<string, string[]>>(requestId, 'picks', () => formPicks(fields))
+  const [others, setOthers] = useKeptAnswer<Record<string, boolean>>(requestId, 'others', () => formOthers(fields))
+  // A settled question has nothing left to keep.
+  const settledOutcome = step.elicit?.outcome
+  useEffect(() => {
+    if (requestId && settledOutcome) keptAnswers.delete(requestId)
+  }, [requestId, settledOutcome])
   // Minimizing is a UI fold, never an answer: the ask stays live and open, just out of the way.
   const [minimized, setMinimized] = useState(false)
   // An unanswered question raises the pending banner, only where this reader can answer it.
