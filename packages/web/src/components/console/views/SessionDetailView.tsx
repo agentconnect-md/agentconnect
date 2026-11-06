@@ -4587,7 +4587,8 @@ export default function SessionDetailView() {
           mobile gutter (`p-3`) already keeps the ring clear there. */}
       {/* Column: fixed header chrome ABOVE the scrolling transcript pane. The header lives OUTSIDE
       the scroller (no `sticky`), so it never scrolls away and the pane below can be virtualized. */}
-      <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col">
+      {/* On desktop the header's divider runs from the nav's edge (and to the page's where the dock is a drawer), continuing the nav's own line at 52px. */}
+      <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col desktop:before:pointer-events-none desktop:before:absolute desktop:before:top-[17px] desktop:before:right-0 desktop:before:-left-[30px] desktop:before:h-px desktop:before:bg-(--border-subtle) desktop:max-wide:before:-right-[30px]">
         {/* Only a transcript on screen is read: the file viewer hides it, so nothing is recorded meanwhile. */}
         {!viewerOpen ? <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} /> : null}
         {!viewerOpen ? <TranscriptMap turns={mapTurns} /> : null}
@@ -4631,7 +4632,7 @@ export default function SessionDetailView() {
             {/* Where the dock is a drawer, its fixed Panels toggle sits over the row's right end, so the row leaves it room. */}
             <div
               data-session-header=""
-              className="hidden min-w-0 items-center gap-2 border-b border-(--border-subtle) desktop:flex desktop:h-[52px] desktop:max-wide:pr-11"
+              className="hidden min-w-0 items-center gap-2 desktop:flex desktop:h-[52px] desktop:max-wide:pr-11"
             >
               {taskOwnerHref ? (
                 <Link
