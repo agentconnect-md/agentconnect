@@ -65,9 +65,13 @@ test(
 
     const publish = (previous, version, channel = 'latest', pins) => {
       writeFileSync(log, '')
+      const planned = run('sh', ['scripts/publish-computer-if-changed.sh', previous, version, 'check']).trim()
+      assert.equal(readFileSync(log, 'utf8'), '')
       run('sh', ['scripts/publish-computer-if-changed.sh', previous, version, 'prepare', ...(pins ? [pins] : [])])
       run('sh', ['scripts/publish-computer-if-changed.sh', previous, channel, 'publish'])
-      return readFileSync(log, 'utf8')
+      const calls = readFileSync(log, 'utf8')
+      assert.equal(planned, calls ? 'changed' : 'unchanged')
+      return calls
     }
 
     // No baseline (never published): build with the release version, scan dist, strip dependencies, pin the apps, publish.

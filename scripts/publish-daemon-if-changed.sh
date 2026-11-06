@@ -13,6 +13,8 @@ restore_manifest() {
 }
 
 case "$MODE" in
+  check)
+    ;;
   prepare)
     SKIP_LABEL="version bump and build"
     ;;
@@ -22,7 +24,7 @@ case "$MODE" in
     trap restore_manifest EXIT
     ;;
   *)
-    echo "usage: $0 <last-tag> <version-or-dist-tag> [prepare|publish]" >&2
+    echo "usage: $0 <last-tag> <version-or-dist-tag> [check|prepare|publish]" >&2
     exit 2
     ;;
 esac
@@ -36,9 +38,18 @@ if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev
   # shellcheck disable=SC2086
   CHANGED=$(git diff --name-only "$LAST_TAG" HEAD -- $DAEMON_PATHS)
   if [ -z "$CHANGED" ]; then
+    if [ "$MODE" = check ]; then
+      echo unchanged
+      exit 0
+    fi
     echo "daemon bundle and runtime image inputs unchanged since ${LAST_TAG} — skipping ${SKIP_LABEL} (checked: ${DAEMON_PATHS})"
     exit 0
   fi
+fi
+
+if [ "$MODE" = check ]; then
+  echo changed
+  exit 0
 fi
 
 if [ "$MODE" = prepare ]; then

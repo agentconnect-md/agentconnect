@@ -53,54 +53,70 @@ const APP_INPUTS = ['packages/computer/scripts/build-macos-app.mjs', 'packages/c
 const appBuilt = (arch) =>
   existsSync(new URL(`../packages/computer/bundle/computer-darwin-${arch}/package.json`, import.meta.url))
 
-// Returns the app version this release's computer package pins for arch, publishing it first when its recipe changed.
-async function publishApp(arch, version, channel, { readVersion, execute, changed, built }) {
+// Resolve the pinned app before building anything; publication repeats this check against the live registry.
+async function planApp(arch, version, channel, { readVersion, changed, buildApps }) {
   const name = `@agentconnect.md/computer-darwin-${arch}`
   const [current, existing] = await Promise.all([readVersion(name, channel), readVersion(name, version)])
-  if (existing) return version
-  if (current && (semver.gte(current, version) || !changed(`v${current}`, APP_INPUTS))) return current
-  if (!built(arch)) {
-    console.log(`${name}@${version}: not built in this run; pinning ${current ?? 'no app'}`)
-    return current
+  if (existing) return { pin: version, publish: false }
+  if (current && (semver.gte(current, version) || !changed(`v${current}`, APP_INPUTS))) {
+    return { pin: current, publish: false }
   }
-  execute('scripts/publish-computer-app.sh', [arch, version, 'prepare'])
-  execute('scripts/publish-computer-app.sh', [arch, channel, 'publish'])
-  return version
+  return buildApps(arch) ? { pin: version, publish: true } : { pin: current, publish: false }
 }
 
-export async function publishPackages(
+function packageChanged(component, previousTag, version) {
+  const result = execFileSync('sh', [`scripts/publish-${component}-if-changed.sh`, previousTag, version, 'check'], {
+    cwd: root,
+    encoding: 'utf8'
+  }).trim()
+  if (result !== 'changed' && result !== 'unchanged') throw new Error(`Invalid publication check for ${component}`)
+  return result === 'changed'
+}
+
+export async function planPackages(
   tag,
   {
     readVersion = readPublishedVersion,
     readPins = readPublishedPins,
-    execute = run,
     changed = changedSince,
-    built = appBuilt
+    check = packageChanged,
+    buildApps = () => true
   } = {}
 ) {
   const version = tag?.startsWith('v') && semver.valid(tag.slice(1))
   if (!version) throw new Error('Expected a release tag such as v1.2.3 or v1.2.3-rc.1')
   const channel = semver.prerelease(version) ? 'rc' : 'latest'
 
-  // The computer package pins each app exactly, so the apps publish first.
   const pins = {}
+  const apps = []
   for (const arch of ['arm64', 'x64']) {
-    const pin = await publishApp(arch, version, channel, { readVersion, execute, changed, built })
+    const { pin, publish } = await planApp(arch, version, channel, { readVersion, changed, buildApps })
     if (pin) pins[`@agentconnect.md/computer-darwin-${arch}`] = pin
+    if (publish) apps.push(arch)
   }
 
+  const packages = []
   for (const component of ['daemon', 'cli', 'setup', 'computer']) {
     const { name } = JSON.parse(readFileSync(new URL(`../packages/${component}/package.json`, import.meta.url)))
     const [current, existing] = await Promise.all([readVersion(name, channel), readVersion(name, version)])
-    if (existing || (current && semver.gte(current, version))) {
-      console.log(`${name}@${version}: already published or superseded on ${channel}; skipping`)
-      continue
-    }
+    if (existing || (current && semver.gte(current, version))) continue
 
     // Compare with the last successful npm publication, so a failed earlier release cannot hide changed inputs.
-    // A computer whose app pins moved must republish even when its bundle inputs did not change.
     const repin = component === 'computer' && current && !samePins(await readPins(name, current), pins)
     const previousTag = current && !repin ? `v${current}` : ''
+    if (check(component, previousTag, version)) packages.push({ component, previousTag })
+  }
+  return { version, channel, apps, packages, pins }
+}
+
+export async function publishPackages(tag, { execute = run, built = appBuilt, ...options } = {}) {
+  const { version, channel, apps, packages, pins } = await planPackages(tag, { ...options, buildApps: built })
+  // The computer package pins each app exactly, so the apps publish first.
+  for (const arch of apps) {
+    execute('scripts/publish-computer-app.sh', [arch, version, 'prepare'])
+    execute('scripts/publish-computer-app.sh', [arch, channel, 'publish'])
+  }
+  for (const { component, previousTag } of packages) {
     const script = `scripts/publish-${component}-if-changed.sh`
     execute(script, [previousTag, version, 'prepare', ...(component === 'computer' ? [JSON.stringify(pins)] : [])])
     execute(script, [previousTag, channel, 'publish'])
@@ -113,5 +129,13 @@ if (import.meta.main) {
   if (git('rev-parse', 'HEAD') !== git('rev-parse', '--verify', `${tag}^{commit}`)) {
     throw new Error('The checkout must match the release tag being published')
   }
-  await publishPackages(tag)
+  if (process.argv[3] === '--plan') {
+    const { apps, packages } = await planPackages(tag, {
+      buildApps: () => process.env.PUBLISH_COMPUTER_MACOS_APP === 'true'
+    })
+    console.log(`publishNpm=${apps.length > 0 || packages.length > 0}`)
+    console.log(`macosArchitectures=${apps.join(' ')}`)
+  } else {
+    await publishPackages(tag)
+  }
 }

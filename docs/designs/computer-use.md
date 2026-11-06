@@ -1833,10 +1833,11 @@ agents sharing a `manual` computer take turns through the lease queue; without d
 prompts; no new grants after an update; `doctor` recognizes "Accessibility listed but off" and gives the fix.
 
 **Progress**: the app as a stable runtime, its install, upgrade and removal through the CLI, the LaunchAgent on the
-version store, and `doctor`'s grant diagnosis are implemented (§3.2.1). The release builds both app packages on a macOS
-runner, runs each signed runtime once under the hardened runtime, and publishes an arch's app only when its recipe
-(`build-macos-app.mjs`, which pins the Node version) changed since the app on npm. The app's version is part of its
-signature, so an unchanged recipe keeps the published app and its grants. The computer package then pins each app as an
+version store, and `doctor`'s grant diagnosis are implemented (§3.2.1). Release preparation checks each architecture
+against its last published app on npm and schedules a macOS build only when the app is missing or its build script
+(`build-macos-app.mjs`, which pins the Node version) or menu bar helper changed. Required apps are smoke-tested under
+the hardened runtime before publication; when no npm packages need publication, that job also skips. The app's version
+is part of its signature, so an unchanged recipe keeps the published app and its grants. The computer package pins each app as an
 exact `optionalDependencies` entry. The macOS job stays off until the repository variable `PUBLISH_COMPUTER_MACOS_APP`
 is `true`, because npm trusted publishing needs both packages to exist first. Signing switches to Developer ID with the
 `MACOS_DEVELOPER_ID_P12` secrets and adds notarization with the `MACOS_NOTARY_API_*` secrets. Still open: those

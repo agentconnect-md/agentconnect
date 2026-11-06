@@ -1,7 +1,75 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { publishPackages, readPublishedVersion } from './publish-npm.mjs'
+import { planPackages, publishPackages, readPublishedVersion } from './publish-npm.mjs'
+
+test('publication planning skips unchanged inputs and includes only required packages and app architectures', async () => {
+  const pins = {
+    '@agentconnect.md/computer-darwin-arm64': '2.6.0',
+    '@agentconnect.md/computer-darwin-x64': '2.6.0'
+  }
+  const options = {
+    readVersion: async (_name, selector) => (selector === 'latest' ? '2.6.0' : undefined),
+    readPins: async () => pins,
+    changed: () => false,
+    check: () => false
+  }
+  const unchanged = await planPackages('v2.7.0', options)
+  assert.deepEqual(unchanged, { version: '2.7.0', channel: 'latest', apps: [], packages: [], pins })
+  await publishPackages('v2.7.0', {
+    ...options,
+    built: () => true,
+    execute: () => assert.fail('Unchanged packages must not build or publish')
+  })
+
+  const codeOnly = await planPackages('v2.7.0', { ...options, check: (component) => component === 'computer' })
+  assert.deepEqual(codeOnly.apps, [])
+  assert.deepEqual(codeOnly.packages, [{ component: 'computer', previousTag: 'v2.6.0' }])
+  assert.deepEqual(codeOnly.pins, pins)
+
+  const appChange = {
+    ...options,
+    changed: () => true,
+    check: (_component, previousTag) => previousTag === ''
+  }
+  const changed = await planPackages('v2.7.0', appChange)
+  assert.deepEqual(changed.apps, ['arm64', 'x64'])
+  assert.deepEqual(changed.packages, [{ component: 'computer', previousTag: '' }])
+  assert.deepEqual(Object.values(changed.pins), ['2.7.0', '2.7.0'])
+  assert.deepEqual(await planPackages('v2.7.0', { ...appChange, buildApps: () => false }), unchanged)
+
+  const first = await planPackages('v2.7.0', { ...appChange, readVersion: async () => undefined })
+  assert.deepEqual(first.apps, ['arm64', 'x64'])
+  assert.deepEqual(
+    first.packages.map(({ component }) => component),
+    ['daemon', 'cli', 'setup', 'computer']
+  )
+  assert.ok(first.packages.every(({ previousTag }) => previousTag === ''))
+})
+
+test('planning a partial retry uses each package last published on its channel and rebuilds only the missing app', async () => {
+  const baselines = []
+  const plan = await planPackages('v2.7.0-rc.7', {
+    readVersion: async (name, selector) => {
+      const current = name.endsWith('arm64') || name.endsWith('/daemon') ? '2.7.0-rc.7' : '2.7.0-rc.3'
+      return selector === 'rc' || selector === current ? current : undefined
+    },
+    readPins: async () => ({}),
+    changed: () => true,
+    check: (component, previousTag) => {
+      baselines.push([component, previousTag])
+      return true
+    }
+  })
+  assert.equal(plan.channel, 'rc')
+  assert.deepEqual(plan.apps, ['x64'])
+  assert.deepEqual(baselines, [
+    ['cli', 'v2.7.0-rc.3'],
+    ['setup', 'v2.7.0-rc.3'],
+    ['computer', '']
+  ])
+  assert.deepEqual(Object.values(plan.pins), ['2.7.0-rc.7', '2.7.0-rc.7'])
+})
 
 test('a partial npm retry skips completed packages and compares against each package last published on npm', async () => {
   const current = new Map([
@@ -13,6 +81,7 @@ test('a partial npm retry skips completed packages and compares against each pac
   const calls = []
   let failSetup = true
   const options = {
+    check: () => true,
     built: () => false,
     readPins: async () => ({}),
     readVersion: async (name, selector) => {
@@ -54,6 +123,7 @@ test('retrying an older release cannot move the npm channel backwards', async ()
     ['v1.0.9', 'latest', '1.0.10']
   ]) {
     await publishPackages(tag, {
+      check: () => true,
       readVersion: async (_name, selector) => (selector === channel ? current : undefined),
       execute: () => assert.fail('An older retry must not publish')
     })
@@ -70,6 +140,7 @@ test('registry errors fail publication instead of treating an unknown version as
 test('a package with no release on a channel publishes with no baseline, so its first release always builds', async () => {
   const calls = []
   await publishPackages('v2.6.0', {
+    check: () => true,
     readVersion: async (name, selector) =>
       name.endsWith('/computer') || name.includes('darwin') || selector !== 'latest' ? undefined : '2.5.0',
     execute: (script, args) => calls.push([/publish-(.+)-if-changed/.exec(script)[1], ...args]),
@@ -88,6 +159,7 @@ test('the computer package pins each macOS app, rebuilt only when its recipe cha
   const run = async ({ published, changed, built = () => true }) => {
     const calls = []
     await publishPackages('v2.7.0', {
+      check: () => true,
       readVersion: async (name, selector) => {
         const version = name.includes('darwin') ? published[name.split('-').pop()] : '2.6.0'
         return selector === 'latest' || selector === version ? version : undefined
@@ -142,6 +214,7 @@ test('a computer whose app pins moved republishes even when its bundle inputs di
   const run = async (publishedPins) => {
     const calls = []
     await publishPackages('v2.7.0-rc.7', {
+      check: () => true,
       readVersion: async (name, selector) => {
         if (name.includes('darwin')) return selector === 'rc' ? '2.7.0-rc.7' : undefined
         return selector === 'rc' ? '2.7.0-rc.3' : undefined
