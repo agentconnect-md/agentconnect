@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { createHmac } from 'node:crypto'
 import { SignJWT, decodeJwt, jwtVerify } from 'jose'
-import { WebchatTokenService, type WebchatTokenClaims } from './webchatToken.js'
+import { platformIdentities, WebchatTokenService, type WebchatTokenClaims } from './webchatToken.js'
 
 const PEPPER = 'webchat-token-test-pepper-0123456789abcdef'
 const CLAIMS: WebchatTokenClaims = {
@@ -37,6 +37,24 @@ describe('WebchatTokenService', () => {
   it("round-trips the author's avatar URL when the profile has one", async () => {
     const svc = new WebchatTokenService(PEPPER)
     const claims = { ...CLAIMS, userPicture: 'https://cdn.example.test/avatars/user-1.png' }
+    expect(await svc.verify((await svc.mint(claims)).token)).toEqual(claims)
+  })
+
+  it("keeps only the viewer's identities on the session's platform", () => {
+    const keys = new Set(['user:user-1', 'slack:T1:U1', 'feishu:lark:on_1', 'slack:T2:U2'])
+    expect(platformIdentities('slack', keys)).toEqual(['slack:T1:U1', 'slack:T2:U2'])
+    expect(platformIdentities(null, keys)).toEqual([])
+    expect(
+      platformIdentities(
+        'slack',
+        Array.from({ length: 12 }, (_, i) => `slack:T${i}:U${i}`)
+      )
+    ).toHaveLength(8)
+  })
+
+  it("round-trips the author's linked chat identities", async () => {
+    const svc = new WebchatTokenService(PEPPER)
+    const claims = { ...CLAIMS, userIdentities: ['slack:T1:U1'] }
     expect(await svc.verify((await svc.mint(claims)).token)).toEqual(claims)
   })
 

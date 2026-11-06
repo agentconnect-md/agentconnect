@@ -2371,7 +2371,10 @@ export class SlackConnection implements PlatformConnection {
       this.deps.log?.info(`slack: streaming unavailable (${code}) — using the legacy chrome, re-probing in 5m`)
       return
     }
-    this.deps.log?.debug(`slack: ${method} failed (ch=${channel}): ${(err as Error).message}`)
+    // A failed open drops the whole turn to the legacy chrome, so it is worth seeing; a refused append loses one card.
+    const message = `slack: ${method} failed (ch=${channel}): ${(err as Error).message}`
+    if (method === 'chat.startStream') this.deps.log?.warn(message)
+    else this.deps.log?.debug(message)
   }
 
   /** Turn-start acknowledgement (`reactions.add`) on the message that fired the turn.

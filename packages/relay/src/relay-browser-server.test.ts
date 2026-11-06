@@ -340,6 +340,7 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
       user: 'Ada Lovelace',
       userId: 'user-1',
       userPicture: 'https://cdn.example.test/avatars/user-1.png',
+      userIdentities: ['slack:T1:U1'],
       conversationId: RESUME
     }
     const { base, sent } = await start({ verify: async () => verified })
@@ -347,7 +348,13 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
     await nextFrame(ws, 'ready')
 
     ws.send(
-      JSON.stringify({ text: 'hi', userId: 'spoofed', user: 'spoofed', userPicture: 'https://evil.example.test/x' })
+      JSON.stringify({
+        text: 'hi',
+        userId: 'spoofed',
+        user: 'spoofed',
+        userPicture: 'https://evil.example.test/x',
+        userIdentities: ['slack:T9:U9']
+      })
     )
     await nextFrame(ws, 'ack')
 
@@ -355,7 +362,8 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
       op: 'turn',
       user: 'Ada Lovelace',
       userId: 'user-1',
-      userPicture: 'https://cdn.example.test/avatars/user-1.png'
+      userPicture: 'https://cdn.example.test/avatars/user-1.png',
+      userIdentities: ['slack:T1:U1']
     })
     ws.close()
   })

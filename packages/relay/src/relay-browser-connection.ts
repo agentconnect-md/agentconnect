@@ -64,6 +64,8 @@ export interface RelayBrowserConnDeps {
   userId?: string
   /** The author's public avatar URL (from the same verdict); a Slack mirror posts under it. */
   userPicture?: string
+  /** The author's linked chat identities (from the same verdict); a continuation addresses them on its own platform. */
+  userIdentities?: string[]
   /** Session-targeted continuation: the CP-verified target ACP session id from
    *  the verdict, stamped verbatim onto every rd/msg. Never browser input. */
   targetSessionId?: string
@@ -103,7 +105,8 @@ export function parseBrowserFrame(
   msg: unknown,
   user: string,
   userId?: string,
-  userPicture?: string
+  userPicture?: string,
+  userIdentities?: string[]
 ): ParsedBrowserOp | null {
   if (typeof msg !== 'object' || msg === null) return null
   const m = msg as Record<string, unknown>
@@ -119,6 +122,7 @@ export function parseBrowserFrame(
       user,
       ...(userId ? { userId } : {}),
       ...(userPicture ? { userPicture } : {}),
+      ...(userIdentities?.length ? { userIdentities } : {}),
       ...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
       ...(mentions ? { mentions } : {}),
       ...(m.attachments !== undefined ? { attachments: m.attachments } : {}),
@@ -340,7 +344,13 @@ export class RelayBrowserConnection implements ChatSink {
       this.send({ type: 'error', message: 'invalid frame' })
       return
     }
-    const op = parseBrowserFrame(parsed, this.deps.user, this.deps.userId, this.deps.userPicture)
+    const op = parseBrowserFrame(
+      parsed,
+      this.deps.user,
+      this.deps.userId,
+      this.deps.userPicture,
+      this.deps.userIdentities
+    )
     if (!op) {
       this.send({ type: 'error', message: 'unrecognized frame' })
       return

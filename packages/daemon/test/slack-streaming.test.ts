@@ -964,6 +964,12 @@ describe('slackStreamRecipient', () => {
     expect(slackStreamRecipient({ source: 'user', headless: true, sender: sender() })).toBeUndefined()
     expect(slackStreamRecipient({ source: 'user', sender: sender({ isBot: true }) })).toBeUndefined()
   })
+
+  it("names a console continuation's linked Slack member, never its console principal", () => {
+    const continued = { source: 'user', adoptedSession: true, sender: sender({ id: 'console-user-1' }) }
+    expect(slackStreamRecipient({ ...continued, senderMemberId: 'U7' })).toBe('U7')
+    expect(slackStreamRecipient(continued)).toBeUndefined()
+  })
 })
 
 describe('applySlackAction — chrome stream actions', () => {

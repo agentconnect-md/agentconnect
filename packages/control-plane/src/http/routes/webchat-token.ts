@@ -22,7 +22,7 @@ import {
   WEBCHAT_MULTI_AGENT_FEATURE
 } from '@agentconnect.md/protocol'
 import type { AgentRecord, SessionMetaRecord } from '../../persistence/ports.js'
-import { MAX_CONVERSATION_PEERS, type ConversationPeerClaim } from '../../registry/webchatToken.js'
+import { MAX_CONVERSATION_PEERS, platformIdentities, type ConversationPeerClaim } from '../../registry/webchatToken.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, SessionId, type OrgId } from '../../domain/ids.js'
@@ -387,6 +387,8 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           s.id
         )
         const conversationPeers = await hookConversationPeers(req, s)
+        // The author's own accounts on the session's platform, so the daemon can address them there (the access check resolved them).
+        const userIdentities = platformIdentities(s.platform, access.identitySet)
         const ahpSelected = (req.body?.protocol ?? deps.config.WEBCHAT_PROTOCOL ?? 'legacy') === 'ahp'
         const peerSessions = ahpSelected
           ? await Promise.all(
@@ -412,7 +414,8 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           ...(audience.visibility === 'private' && audience.ownerIdentity
             ? { privateSessionOwnerIdentity: audience.ownerIdentity }
             : {}),
-          ...(conversationPeers.length > 0 ? { conversationPeers } : {})
+          ...(conversationPeers.length > 0 ? { conversationPeers } : {}),
+          ...(userIdentities.length > 0 ? { userIdentities } : {})
         })
         return reply.send({ token, relayUrl, conversationId, expiresAt: expiresAt.toISOString(), ...attachment })
       }

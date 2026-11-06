@@ -122,6 +122,8 @@ export interface NormalizedMessage extends Omit<
    * webhook delivery's trusted metadata, so the row keeps the binding it already carries.
    */
   adoptedSession?: boolean
+  /** A continuation author's own member id on this session's platform and tenant, from their CP-verified linked identity; set only by the continuation construction site. */
+  senderMemberId?: string
   /** The sender's time zone as their own client reported it (a console browser), read for every agent's local time; never identity. */
   senderTimeZone?: string
   /** A scheduled run's own configured zone, which its local time reads before any place's (product-conventions.md "Local time"). */

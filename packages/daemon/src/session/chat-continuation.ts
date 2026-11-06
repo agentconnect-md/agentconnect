@@ -79,6 +79,17 @@ export function continuedByTarget(local: { platform: string; thread?: string | n
   return local.platform !== 'webchat' || isSubsessionCoordinate(local.thread)
 }
 
+/** The author's member id in the session's own platform tenant, when one of their linked identities is there. */
+export function memberIdOn(
+  author: Pick<ChatAuthor, 'identities'>,
+  local: Pick<SessionRecord, 'platform' | 'transportScope'>
+): string | undefined {
+  if (!local.transportScope) return undefined
+  const prefix = `${local.platform}:${local.transportScope}:`
+  const key = author.identities?.find((k) => k.startsWith(prefix) && !k.slice(prefix.length).includes(':'))
+  return key?.slice(prefix.length) || undefined
+}
+
 // Continue the existing outward session and preserve its origin mirror before admitting execution.
 export class ChatSessionContinuation {
   constructor(
@@ -122,6 +133,7 @@ export class ChatSessionContinuation {
     if (integration === undefined) return { accepted: false, reason: 'integration_offline' }
     await this.application.rememberAuthorName(author)
     const shared = integration === null ? post : undefined
+    const senderMemberId = integration ? memberIdOn(author, local) : undefined
     const message: NormalizedMessage = {
       msgId: `webchat-cont:${conversationId}:${turnId}`,
       traceId: turnId,
@@ -140,6 +152,7 @@ export class ChatSessionContinuation {
       isDm: local.conversationKind === 'dm',
       trigger: local.conversationKind === 'dm' ? 'dm' : 'mention',
       adoptedSession: true,
+      ...(senderMemberId ? { senderMemberId } : {}),
       ...(synthetic ? { headless: true, syntheticChannel: true } : task ? { headless: true } : {})
     }
     const key = sessionKey(message.platform, message.channel, sessionThreadOf(message), agentId, message.transportScope)

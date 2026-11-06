@@ -137,7 +137,11 @@ contradict the published documentation, and two of them changed the design.
 9. **Recipient.** Channel only; a DM passes none. A human-initiated turn names the initiating
    human's Slack user id plus the team id. A turn with no human initiator — agent-to-agent,
    cron, hook, dream — names the bot's OWN user id and its team id, which Slack accepts. There
-   is no structural carve-out for non-human turns.
+   is no structural carve-out for non-human turns. A console continuation's sender is a console
+   principal, never a Slack user id: it names the author's linked Slack member in the session's
+   own workspace ([webchat-cross-integration-continuation.md](webchat-cross-integration-continuation.md)
+   §5.2), or the bot when the author has none there. A recipient Slack refuses fails the open, and
+   the whole turn falls back to the legacy progress message, so a failed open is logged at warn.
 
 Four more from the 2026-08-29 pass, which is where the card BODY was settled:
 

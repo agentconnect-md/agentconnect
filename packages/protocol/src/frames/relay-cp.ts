@@ -257,6 +257,8 @@ export const RcVerifyResult = z.object({
   user: z.string().optional(), // display handle for the transcript author line
   // The author's public avatar URL, for a platform mirror that renders a per-message identity.
   userPicture: z.string().url().max(2_048).optional(),
+  // A session continuation's author on the target session's platform (`<platform>:<tenant>:<memberId>`), from their linked accounts.
+  userIdentities: z.array(z.string().min(1).max(512)).max(8).optional(),
   agentId: z.string().uuid().optional(),
   conversationId: z.string().uuid().optional(),
   // The conversation's full roster (multi-agent webchat). Singular agentId/daemonId
