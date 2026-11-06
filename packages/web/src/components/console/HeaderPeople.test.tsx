@@ -97,6 +97,42 @@ it('closes on Escape and on a click outside', () => {
   expect(dialog()).toBeNull()
 })
 
+const hover = (type: 'pointerover' | 'pointerout', pointerType = 'mouse') =>
+  act(() => {
+    trigger().dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        pointerType,
+        relatedTarget: type === 'pointerout' ? document.body : null
+      })
+    )
+  })
+
+it('opens on hover and closes when the mouse leaves, without a native tooltip', () => {
+  draw()
+  expect(trigger().hasAttribute('title')).toBe(false)
+  hover('pointerover')
+  expect(dialog()?.textContent).toContain('deploy-bot')
+  hover('pointerout')
+  expect(dialog()).toBeNull()
+})
+
+it('keeps a clicked popover open after the mouse leaves, and a second click closes it', () => {
+  draw()
+  hover('pointerover')
+  act(() => trigger().click())
+  hover('pointerout')
+  expect(dialog()).not.toBeNull()
+  act(() => trigger().click())
+  expect(dialog()).toBeNull()
+})
+
+it('ignores a touch pointer entering, so a tap alone decides', () => {
+  draw()
+  hover('pointerover', 'touch')
+  expect(dialog()).toBeNull()
+})
+
 it('names a person by handle and platform, and by platform alone when the handle is a raw member id', () => {
   expect(personSub('@dana', 'Slack')).toBe('@dana · Slack')
   expect(personSub('U0123ABCD', 'Slack')).toBe('Slack')

@@ -65,7 +65,7 @@ export interface DockTab {
 }
 
 const TAB_BASE =
-  'relative flex flex-none items-center gap-[6px] border-0 bg-transparent px-3 py-[10px] font-sans text-[12.5px] font-medium leading-normal whitespace-nowrap transition-colors focus-visible:shadow-(--focus-ring) focus-visible:outline-none'
+  'relative flex flex-none cursor-pointer items-center gap-[6px] border-0 bg-transparent px-3 py-[10px] font-sans text-[12.5px] font-medium leading-normal whitespace-nowrap transition-colors focus-visible:shadow-(--focus-ring) focus-visible:outline-none'
 const TAB_ON = `${TAB_BASE} text-(--brand)`
 const TAB_OFF = `${TAB_BASE} text-(--text-secondary) hover:text-(--text-primary)`
 
@@ -74,7 +74,7 @@ const BADGE_ON = `${BADGE_BASE} bg-(--brand-soft) text-(--brand)`
 const BADGE_OFF = `${BADGE_BASE} border border-(--border-subtle) bg-(--surface-active) text-(--text-secondary)`
 
 const ACTION_BTN =
-  'flex h-6 w-6 flex-none items-center justify-center rounded-sm border-0 bg-transparent text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-(--focus-ring) focus-visible:outline-none'
+  'flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-(--focus-ring) focus-visible:outline-none'
 
 // `touch-none` so a touch drag moves the edge instead of scrolling the transcript.
 const HANDLE_BASE =
@@ -119,7 +119,7 @@ export function useDockExpand(): DockExpand {
 }
 
 const TRIGGER_BASE =
-  'flex h-9 w-9 items-center justify-center rounded-full border bg-(--surface-card) shadow-(--shadow-sm) hover:text-(--text-primary) focus-visible:shadow-(--focus-ring) focus-visible:outline-none'
+  'flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border bg-(--surface-card) shadow-(--shadow-sm) hover:text-(--text-primary) focus-visible:shadow-(--focus-ring) focus-visible:outline-none'
 const TRIGGER_ON = `${TRIGGER_BASE} border-(--brand) text-(--brand)`
 const TRIGGER_OFF = `${TRIGGER_BASE} border-(--border-default) text-(--text-secondary)`
 
