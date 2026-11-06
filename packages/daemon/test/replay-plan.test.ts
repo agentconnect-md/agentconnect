@@ -192,6 +192,21 @@ describe('planReplay — batch and skip', () => {
   })
 })
 
+// webchat-threads.md §4: a task opening on a thread reads what the agent's coordinator said there, under the usual heading.
+describe('planReplay — a task opening on a thread', () => {
+  it('replays the agent own rows as context without a restart heading or a say in the shape', () => {
+    const gap = [entry(at(1), 'u1', 'is it flaky?'), entry(at(3), 'bot', 'It failed twice.'), entry(at(10), 'u1')]
+    const p = plan({ gap, ownRowsAsContext: true })
+    expect(p.shape).toBe('inorder')
+    expect(p.context.map((e) => e.text)).toEqual(['is it flaky?', 'It failed twice.'])
+    expect(p.head).toBe('(thread context you may have missed)')
+    expect(renderReplayContext(p.context)).toBe('[u1] is it flaky?\n[bot] It failed twice.')
+    expect(
+      plan({ gap: [entry(at(5), 'bot')], triggerTs: at(3), markerBefore: at(4), ownRowsAsContext: true }).shape
+    ).toBe('skip')
+  })
+})
+
 describe('planReplay — runtime session recreated without its history', () => {
   const LOST_HEAD =
     '(your runtime session restarted and could not restore its history — the conversation so far, oldest to newest, with your own replies as [you])'

@@ -117,6 +117,7 @@ import {
   CONVERSATION_PERMISSION_REQUESTS_FEATURE,
   ACTIVITY_EVERY_AGENT_V1_FEATURE,
   SESSION_MODE_AUTO_V1_FEATURE,
+  WEBCHAT_THREADS_FEATURE,
   coordinatorConversationId,
   TASK_PAGE_MESSAGES_FEATURE,
   AUTO_MERGE_FEATURE,
@@ -1085,7 +1086,6 @@ import {
   inThread,
   reportAboutOf,
   reportJoinsBatch,
-  threadless,
   wholeRoomThread,
   type DeliveredMessage
 } from './auto-session/coordinator-turns.js'
@@ -2057,7 +2057,9 @@ export class Daemon {
       // Its own inbox row beside the coordinator's, which the coordinator's turn still holds.
       const taskKey = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
       const deliveryId = `${stableMessageId(msg)}\u001f${taskKey}`
-      void this.dispatch(agentId, msg, integrationId, undefined, undefined, { deliveryId }).catch((err) =>
+      // A webchat task has no browser turn: it posts its answer in its thread (webchat-threads.md §4).
+      const webchat = this.webchatTransport.webchatThreadContext(msg)
+      void this.dispatch(agentId, msg, integrationId, webchat, undefined, { deliveryId }).catch((err) =>
         this.log.warn(`coordinator: handing ${msg.msgId} to its task failed: ${formatErr(err)}`)
       )
     },
@@ -3543,6 +3545,7 @@ export class Daemon {
       collabAdmits: (fromAgentId, toAgentId) => this.cpCollab.admits(fromAgentId, toAgentId),
       coordinatorCoordinate: (agentId, conversationId, authorId) =>
         this.webchatCoordinator(agentId, conversationId, authorId),
+      keyCoordinatorMessage: async (agentId, msg) => await this.keyWebchatCoordinatorMessage(agentId, msg),
       continuationCommand: (agentId, msg, integrationId, reply) =>
         this.continuationCommand(agentId, msg, integrationId, reply)
     }
@@ -8947,6 +8950,8 @@ export class Daemon {
       ...(this.cfg.features.autoSessionMode ? [SESSION_MODE_AUTO_V1_FEATURE] : []),
       // Continues a delegated task from its console page (auto-session-mode.md §10); Auto's switch keeps the composer hidden until it ships.
       ...(this.cfg.features.autoSessionMode ? [TASK_PAGE_MESSAGES_FEATURE] : []),
+      // Answers a webchat coordinator's messages in their threads (webchat-threads.md §8); it rides the same switch.
+      ...(this.cfg.features.autoSessionMode ? [WEBCHAT_THREADS_FEATURE] : []),
       // Keeps follow-ups in place of items: Activity carries them as tasks and answers no items; static.
       FOLLOW_UP_TASKS_V1_FEATURE,
       // Ends a follow-up by its id before its first check, and reads one task by its session; static.
@@ -14016,17 +14021,37 @@ export class Daemon {
     const coordinator = mint
       ? await this.resolveCoordinator(agentId, at)
       : await this.store.currentAppendCoordinate(agentId, msg.channel, msg.transportScope, 'coordinator')
-    if (msg.thread !== undefined && msg.msgId !== undefined && inThread({ ...msg, msgId: msg.msgId })) {
-      const index = this.store.assistantSubsessions
-      const task = await index.taskOfThread(agentId, { ...at, thread: msg.thread })
-      if (task !== undefined) {
-        // The task's session stays where it opened; every thread it holds reaches it (§6.4).
-        const coordinate =
-          (await this.store.getSession(task))?.thread ?? (await index.threadsOf(agentId, task))[0]?.thread
-        return coordinate === msg.thread ? undefined : coordinate
-      }
-    }
+    const held = await this.threadTaskSession(agentId, at, msg)
+    if (held) return held.thread === msg.thread ? undefined : held.thread
     return coordinator
+  }
+
+  /** The session of the task holding the thread a reply sits in, which stays where it opened; every thread it holds reaches it (§6.4). */
+  private async threadTaskSession(
+    agentId: string,
+    at: { platform: string; channel: string; transportScope: string | null },
+    msg: Partial<Pick<NormalizedMessage, 'thread' | 'msgId' | 'transcriptTs' | 'transcriptPostId'>>
+  ): Promise<{ channel: string; thread: string } | undefined> {
+    if (msg.thread === undefined || msg.msgId === undefined || !inThread({ ...msg, msgId: msg.msgId })) return undefined
+    const index = this.store.assistantSubsessions
+    const task = await index.taskOfThread(agentId, { ...at, thread: msg.thread })
+    if (task === undefined) return undefined
+    const session = await this.store.getSession(task)
+    return session ? { channel: session.channel, thread: session.thread } : (await index.threadsOf(agentId, task))[0]
+  }
+
+  /** A webchat coordinator routes as autoCoordinateFor does: a reply in a thread a task holds keys on the task, any other message stays on the coordinator (webchat-threads.md §4). */
+  private async keyWebchatCoordinatorMessage(agentId: string, msg: NormalizedMessage): Promise<void> {
+    const held = await this.threadTaskSession(
+      agentId,
+      { platform: msg.platform, channel: msg.channel, transportScope: null },
+      msg
+    )
+    if (!held) return
+    // A legacy page task's session sits off the conversation's channel (auto-session-mode.md §10).
+    if (held.channel !== msg.channel) msg.sessionChannel = held.channel
+    if (held.thread !== msg.thread) msg.sessionThread = held.thread
+    else delete msg.sessionThread
   }
 
   /** The conversation's coordinator, minted when it has none; a new one adopts the thread sessions from before `auto` before anyone else reads it (auto-session-mode.md §3.5). */
@@ -14430,7 +14455,7 @@ export class Daemon {
     text: string,
     taskLink?: TaskLinkFacts
   ): Promise<void> {
-    if (threadless(msg)) return await this.postWebchatAgentMessage(agentId, msg, text, taskLink)
+    if (msg.platform === 'webchat') return await this.postWebchatAgentMessage(agentId, msg, text, taskLink)
     const gateway: MessageGateway | undefined =
       integrationId === undefined ? undefined : this.gatewayForIntegration(integrationId)
     if (!gateway) throw new Error('the conversation is not connected right now; nothing was posted')
@@ -14443,7 +14468,7 @@ export class Daemon {
     })
   }
 
-  /** The coordinator's own post in a webchat conversation, recorded in its session and shown live (auto-session-mode.md §10). */
+  /** The coordinator's own post in a webchat conversation, in the message's thread where it has one, recorded in its session and shown live (webchat-threads.md §4). */
   private async postWebchatAgentMessage(
     agentId: string,
     msg: NormalizedMessage,
@@ -14454,10 +14479,13 @@ export class Daemon {
     if (!UUID_RE.test(conversationId))
       throw new Error('the conversation is no webchat conversation; nothing was posted')
     const postId = randomUUID()
+    // Only a root's postId names a thread; a report's coordinate of any other shape answers at the root.
+    const answered = answerThreadOf(msg)
+    const thread = answered !== undefined && UUID_RE.test(answered) ? answered : undefined
     const at = await chatTurnOutput.appendChatTextRow(
       this.store,
       transcriptChannelKey(conversationId, undefined),
-      `webchat:${conversationId}`,
+      thread ?? `webchat:${conversationId}`,
       monotonicTs(),
       {
         postId,
@@ -14479,7 +14507,8 @@ export class Daemon {
         author: { kind: 'agent', agentId },
         text,
         at: Number(at),
-        ...(taskLink ? { taskLink } : {})
+        ...(taskLink ? { taskLink } : {}),
+        ...(thread ? { thread } : {})
       },
       initiator: 'agent'
     })
@@ -22246,7 +22275,8 @@ export class Daemon {
           ...(scope ? { addressedAgentIds: scope } : {})
         },
         text: segment.text,
-        at: Number(replyTs)
+        at: Number(replyTs),
+        ...(p.webchat.thread ? { thread: p.webchat.thread } : {})
       },
       ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
     })
@@ -29744,13 +29774,7 @@ export class Daemon {
           : codeHostReply
             ? 'not_started'
             : undefined
-      // Re-admit through the same gate. The turn's own dispatch() promise is unobserved here
-      // (the original caller is gone across the restart); errors are swallowed so a single bad
-      // replay can't reject the startup path. dispatch re-adopts the same id (preserving
-      // its payload/FIFO slot) and sets entry.inboxId, so a terminal path removes it.
-      // Admissions stay one-at-a-time and in FIFO order: a burst that trips the loop guard
-      // must be seen by the next row before it is admitted, which the async store no longer
-      // gives for free. Only the admission is awaited — never the turn.
+      // Re-admit one row at a time in FIFO order, awaiting only admission, so the loop guard sees each burst and a bad replay cannot fail startup.
       let settleReplayAdmission!: () => void
       const replayAdmitted = new Promise<void>((resolve) => (settleReplayAdmission = resolve))
       void this.dispatch(
@@ -29759,7 +29783,7 @@ export class Daemon {
         row.integrationId ?? undefined,
         msg.source === 'agent' || msg.source === 'system'
           ? this.webchatTransport.webchatWakeContext(msg.platform, msg.channel)
-          : undefined,
+          : this.webchatTransport.webchatThreadContext(msg),
         callMeta,
         {
           ...(row.isQueueCmd ? { isQueueCmd: true } : {}),

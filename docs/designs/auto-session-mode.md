@@ -617,15 +617,17 @@ not addressed to this agent. Cost grows with the number of agents.
     conversation's (channel-session-mode.md §9).
   - Its owner may also change any of its tasks on its own, wider or narrower than the coordinator.
     That task is then independent: later changes to the coordinator skip it and everything below it.
-  - Every message in it goes to the conversation's coordinator coordinate and counts as addressed to
-    the agent, so a message left without an outcome opens a task (§4.5). A message's id is its
-    webchat post id.
+  - It has threads, as a Slack channel does ([webchat-threads.md](webchat-threads.md)). A message at
+    the root, or in a thread no task holds, goes to the conversation's coordinator coordinate; a
+    message in a thread a task holds goes to that task (§7). Every message counts as addressed to
+    the agent, so one left without an outcome opens a task (§4.5). A message's id is its webchat
+    post id, and its thread its root's post id.
   - Each message runs as a turn of its own, never batched (§4.3's one-message form): its text streams
-    to the browser and is its reply. `replyToMessage` and the link cards below are the coordinator's
-    own posts in the conversation.
-  - The coordinator's prompt names the place a private conversation with one person, with no
-    threads: a task answers on its own page, and the text the coordinator writes is shown as it
-    writes it, so it writes nothing but its calls and replies with `replyToMessage`.
+    to the browser and stays in the main conversation. `replyToMessage` is the coordinator's own post
+    in the message's thread.
+  - The coordinator's prompt names the place a private conversation with one person, with threads: a
+    task answers in the message's thread, and the text the coordinator writes is shown as it writes
+    it, so it writes nothing but its calls and replies with `replyToMessage`.
   - It runs over the legacy webchat protocol; an AHP conversation stays an ordinary one for now.
 - New session opens an **ordinary webchat session** without the coordinator, as today.
 - Every task's page accepts messages (today it is read-only), for whoever may continue the parent,
@@ -640,9 +642,16 @@ not addressed to this agent. Cost grows with the number of agents.
     steered into a round whose output goes to the parent. A round still open reports to the parent as
     usual; a settled task's parent hears nothing, since the person read the answer on the page.
   - The task's standing context says people may write to it from its page.
-- Webchat has no threads, so a task the coordinator opens for a webchat message continues on its own
-  page, which is its conversation. This replaces an earlier plan in which each task had its own
-  webchat conversation (decided 2026-10-30).
+- A task the coordinator opens for a webchat message is a threaded task on the message's thread,
+  keyed `webchat:<conv>:<rootPostId>:<agent>` (webchat-threads.md §5.2): it opens with the thread so
+  far, the coordinator's answers included, answers in the thread with posts of its own, and a reply
+  in the thread reaches it directly. The coordinator posts no link card for it; the console draws
+  its card from `openedForMessageId` as below.
+- Before webchat had threads, a task the coordinator opened for a webchat message continued on its own
+  page, which is its conversation. Such a page task keeps running as described here until it closes,
+  and a message without a post (such as an MCP app's) still opens one; webchat-threads.md §10
+  retires the rest. This replaced an earlier plan in which each task had its own webchat
+  conversation (decided 2026-10-30).
   - `delegateTask` with a `messageId` opens the task on a background coordinate of its own
     (`subsession:<id>`, off the conversation's channel, as a background task of a webchat session
     is) and attaches the message's id as a thread from the first round. The task therefore follows
@@ -663,12 +672,13 @@ not addressed to this agent. Cost grows with the number of agents.
     platform id of the message it was opened for. The console draws the card under the
     coordinator's turn that answered that message, on any platform, once per task.
   - `messageTask` with a `messageId` moves the message into the task's conversation, which answers on
-    its page, and attaches its id as one more thread; the coordinator posts a link card.
+    its page, and attaches its thread as one more; the coordinator posts a link card in the message's
+    thread.
   - A link card arriving while the person watches opens its task's thread in the dock, the latest
     one when several arrive; cards already in the conversation when the page opened do not.
 - **Administration.** The conversation's AgentConnect admin MCP entitlement
   ([webchat-preset-agentconnect-mcp.md](webchat-preset-agentconnect-mcp.md) §5.4) installs nothing on
-  the coordinator, which only routes, and installs its own grant on each page task it opens, so a
+  the coordinator, which only routes, and installs its own grant on each task it opens, so a
   request to change the configuration is delegated and done by the task. A write the task asks for
   waits for approval on the task's thread, and the decision is a notice to the task.
 - Existing ordinary webchat conversations stay as they are.
@@ -696,8 +706,11 @@ batches, a follow-up's report (§3.4), a batch of one message and two reports, o
 and one with nothing new, a request for work another channel's task already has open, a question
 about another channel's task that only its latest words answer, a run report from a task holding
 its code channel (§6.8), and
-in a webchat conversation (§10) new work, a status question, a message for an open task and a status
-question about another channel's task.
+in a webchat conversation (§10) new work, a status question, a message for an open task, a status
+question about another channel's task and a follow-up asking for work in a thread no task holds
+(`webchat-thread-follow-up`, [webchat-threads.md](webchat-threads.md) §11). That scenario and the
+threaded webchat prompt have not been measured on a runtime yet; they are watched on the test
+environment.
 
 ```bash
 AC_RUNTIME_MATRIX_ONLY=coordinator AC_RUNTIME_MATRIX_TARGETS=claude-acp,codex-acp \

@@ -23,7 +23,8 @@ import { monotonicTs } from '../store/monotonic-ts.js'
 import { webchatContinuationDecision } from '../router/routing-table.js'
 import { continuationScope } from './narrowed-scope.js'
 import type { RoutingRule } from '../router/routing-rule.js'
-import type { NormalizedMessage } from '../messages/normalized.js'
+import { sessionThreadOf, type NormalizedMessage } from '../messages/normalized.js'
+import { isCoordinatorCoordinate } from '../session/append-coordinate.js'
 import { knownTimeZone } from '../messages/time-zone.js'
 import { activationKey, ACTIVATION_PAIRING_TTL_MS } from '../daemon/helpers.js'
 import { MAX_QUEUED_PER_SESSION } from '../daemon/constants.js'
@@ -134,6 +135,8 @@ export interface WebchatHost {
   collabAdmits(fromAgentId: string, toAgentId: string): boolean
   /** A member's private coordinator conversation, which keys its turns on the coordinator (auto-session-mode.md §10). */
   coordinatorCoordinate?(agentId: string, conversationId: string, authorId: string): Promise<string | undefined>
+  /** Key a coordinator conversation's message on the task holding its thread (webchat-threads.md §4). */
+  keyCoordinatorMessage?(agentId: string, msg: NormalizedMessage): Promise<void>
   /** Run a control command sent from the console into a platform session; true when the message was one. */
   continuationCommand?(
     agentId: string,
@@ -231,7 +234,7 @@ export class WebchatTransport {
       return { accepted: false, turnId, reason: 'busy' }
     }
     // A coordinator follows the agent's own settings and has no workspace (auto-session-mode.md §5.4).
-    const coordinated = msg.sessionThread !== undefined
+    const coordinated = result.turn.coordinated === true
     const initialRuntime =
       !coordinated && this.application.canChangeRuntime(targetAgentId) ? requestedRuntime : undefined
     const stream = this.createWebchatTurnStream(
@@ -245,6 +248,7 @@ export class WebchatTransport {
     )
     // Broadcast the reconciliation post daemon-wide so a cold attach through another relay receives it.
     stream.postSink = (p) => this.host.sendWebchatPost(p)
+    if (result.turn.answersIn !== undefined) stream.thread = result.turn.answersIn
     if (apiProtocol !== undefined) stream.apiProtocol = apiProtocol
     const recorded = this.application.recordAdmission(result.turn, request)
     if (recorded) await recorded
@@ -444,14 +448,22 @@ export class WebchatTransport {
     }
   }
 
-  /** The inbound half of an agent-initiated webchat wake: post the SENDER's message live
-   *  at admission (#807 posted only the woken reply, so this message reached the browser
-   *  only via a page refresh). Shares `msg.transcriptPostId` with the transcript row the
-   *  turn writes, so the browser drops the live step once the canonical row lands. */
+  /** A post-only context for a turn answering in a webchat thread without a browser turn, as a coordinator's task does (webchat-threads.md §4). */
+  webchatThreadContext(
+    msg: Pick<NormalizedMessage, 'platform' | 'channel' | 'thread' | 'sessionThread' | 'msgId'>
+  ): WebchatTurnContext | undefined {
+    if (!UUID_RE.test(msg.thread ?? '') || isCoordinatorCoordinate(sessionThreadOf(msg))) return undefined
+    const context = this.webchatWakeContext(msg.platform, msg.channel)
+    return context && { ...context, thread: msg.thread }
+  }
+
+  /** Post an agent wake's inbound message live at admission (#807), under the postId its transcript row shares. */
   postAgentWakeInbound(webchat: WebchatTurnContext | undefined, msg: NormalizedMessage): void {
     if (webchat?.initiator !== 'agent' || !webchat.postSink) return
     // #966: a child's report resumes its parent session only — never a room-visible post.
     if (msg.parentReport === true) return
+    // A person's message is already a post of the conversation, as one a coordinator hands its task is.
+    if (msg.source === 'user') return
     if (!msg.transcriptPostId || !UUID_RE.test(msg.sender.id)) return
     msg.transcriptTs ??= monotonicTs() // every wake site sets it; keep row ts == post.at regardless
     webchat.postSink({
@@ -472,13 +484,15 @@ export class WebchatTransport {
    * write is lost. The terminal frame carries the final output index for browser
    * gap detection. */
   publishWebchatStreamEvent(stream: WebchatTurnStream, event: RdChatEvent): void {
-    // Every frame is attributed to the streaming participant here — the one
-    // choke point all turn events flow through — so a multi-agent conversation
-    // renders one lane per (turnId, agentId) without touching each emit site.
+    // The one choke point that attributes every frame to its participant and the thread it answers in.
+    const thread = stream.thread !== undefined ? { thread: stream.thread } : {}
     const normalized: RdChatEvent =
       event.kind === 'output'
-        ? { kind: 'output', output: { ...event.output, agentId: stream.agentId } }
-        : { kind: 'done', done: { ...event.done, agentId: stream.agentId, lastIndex: stream.lastOutputIndex } }
+        ? { kind: 'output', output: { ...event.output, agentId: stream.agentId, ...thread } }
+        : {
+            kind: 'done',
+            done: { ...event.done, agentId: stream.agentId, lastIndex: stream.lastOutputIndex, ...thread }
+          }
     if (normalized.kind === 'output') {
       stream.lastOutputIndex = Math.max(stream.lastOutputIndex, normalized.output.index)
     }

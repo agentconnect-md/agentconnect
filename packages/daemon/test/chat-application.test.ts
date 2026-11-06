@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentSchema } from '../src/agents/agent-schema.js'
 import { ChatSessionApplication } from '../src/session/chat-application.js'
 import { ChatSessionContinuation } from '../src/session/chat-continuation.js'
+import { coordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../src/store/local-store.js'
 import { WebchatTransport, type WebchatHost, type WebchatReplyConnection } from '../src/webchat/transport.js'
 import { memoryStoreDatabase, openTestStore } from './store-support.js'
@@ -256,6 +257,93 @@ describe('webchat threads at turn preparation', () => {
     await expect(prepare(reply, 200, root)).resolves.toEqual({ accepted: false, reason: 'unknown_thread' })
   })
 })
+
+// webchat-threads.md §4: a reply in a thread a task holds keys on the task, which answers in that thread.
+describe('webchat threads a task holds', () => {
+  const coordinate = coordinatorCoordinate(1)
+  const root = '11111111-1111-4111-8111-111111111111'
+  const reply = '22222222-2222-4222-8222-222222222222'
+
+  it('keys a held reply on the task and streams its answer in the thread, while a root stays on the coordinator', async () => {
+    const f = await fixture()
+    const host: WebchatHost = {
+      ...f.host,
+      coordinatorCoordinate: async () => coordinate,
+      // A task holds the root's thread, so the reply keys on it; the root itself is no reply.
+      keyCoordinatorMessage: async (_agentId, msg) => {
+        if (msg.transcriptPostId !== msg.thread) delete msg.sessionThread
+      }
+    }
+    const transport = new WebchatTransport(host)
+    const send = (postId: string, at: number, thread?: string) =>
+      transport.dispatchWebchatTurn(
+        agentId,
+        conversationId,
+        'hello',
+        author,
+        f.sink,
+        postId,
+        undefined,
+        { model: 'requested' },
+        undefined,
+        [agentId],
+        { postId, at },
+        true,
+        undefined,
+        undefined,
+        undefined,
+        thread
+      )
+    await expect(send(root, 100)).resolves.toMatchObject({ accepted: true })
+    await expect(send(reply, 200, root)).resolves.toMatchObject({ accepted: true })
+    const [first, second] = vi.mocked(f.host.dispatch).mock.calls
+    expect(first![1]).toMatchObject({ thread: root, sessionThread: coordinate })
+    expect(second![1]).toMatchObject({ thread: root })
+    expect(second![1].sessionThread).toBeUndefined()
+    // Neither takes the browser's runtime or workspace: both are turns of the coordinator's conversation.
+    expect(first![3]).not.toHaveProperty('runtime')
+    expect(second![3]).not.toHaveProperty('worktree')
+    const [onCoordinator, onTask] = [first![3]!, second![3]!]
+    onCoordinator.sink.output({ conversationId, turnId: root, index: 0 })
+    onTask.sink.output({ conversationId, turnId: reply, index: 0 })
+    onTask.sink.done({ conversationId, turnId: reply, outcome: 'complete' })
+    expect(f.sink.output.mock.calls.map(([output]) => output.thread)).toEqual([undefined, root])
+    expect(f.sink.done.mock.calls.at(-1)![0]).toMatchObject({ thread: root })
+    expect(onTask.thread).toBe(root)
+    expect(onCoordinator.thread).toBeUndefined()
+  })
+
+  it("gives a task's turn without a browser a post-only context in its thread, and never re-posts a person's message", () => {
+    const { transport, host } = fixtureSync()
+    const task = {
+      platform: 'webchat',
+      channel: conversationId,
+      thread: root,
+      msgId: `webchat:${conversationId}:${reply}`
+    }
+    const context = transport.webchatThreadContext(task)
+    expect(context).toMatchObject({ conversationId, initiator: 'agent', thread: root })
+    expect(transport.webchatThreadContext({ ...task, sessionThread: coordinate })).toBeUndefined()
+    expect(transport.webchatThreadContext({ ...task, thread: undefined })).toBeUndefined()
+    expect(transport.webchatThreadContext({ ...task, channel: 'a2a:bot-a' })).toBeUndefined()
+    transport.postAgentWakeInbound(context, {
+      ...task,
+      traceId: 't',
+      source: 'user',
+      sender: { id: '77777777-7777-4777-8777-777777777777', isBot: false },
+      text: 'hello',
+      mentionedBots: [],
+      transcriptPostId: reply,
+      isDm: true
+    })
+    expect(host.sendWebchatPost).not.toHaveBeenCalled()
+  })
+})
+
+function fixtureSync() {
+  const host = { sendWebchatPost: vi.fn(), now: () => 100 } as unknown as WebchatHost
+  return { host, transport: new WebchatTransport(host, {} as ChatSessionApplication) }
+}
 
 async function continuationFixture(platform = 'slack') {
   const f = await fixture()

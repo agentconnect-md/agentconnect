@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
-import { SESSION_MODE_AUTO_V1_FEATURE } from '@agentconnect.md/protocol'
+import { SESSION_MODE_AUTO_V1_FEATURE, WEBCHAT_THREADS_FEATURE } from '@agentconnect.md/protocol'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -269,8 +269,11 @@ describe('auto mode with the coordinator switched off', () => {
       await daemon.stop()
       return advertised
     }
-    expect(await featuresOf()).toContain(SESSION_MODE_AUTO_V1_FEATURE)
-    expect(await featuresOf({ autoSessionMode: false })).not.toContain(SESSION_MODE_AUTO_V1_FEATURE)
+    // A webchat coordinator answers in threads under the same switch (webchat-threads.md §8).
+    expect(await featuresOf()).toEqual(expect.arrayContaining([SESSION_MODE_AUTO_V1_FEATURE, WEBCHAT_THREADS_FEATURE]))
+    const off = await featuresOf({ autoSessionMode: false })
+    expect(off).not.toContain(SESSION_MODE_AUTO_V1_FEATURE)
+    expect(off).not.toContain(WEBCHAT_THREADS_FEATURE)
   })
 })
 

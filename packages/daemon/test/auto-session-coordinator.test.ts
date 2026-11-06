@@ -80,8 +80,8 @@ describe('the coordinator prompt and batch', () => {
     expect(prompt).toContain('Never write a plan or ask for approval')
   })
 
-  // auto-session-mode.md §10: a webchat coordinator reads of one person's conversation, task pages and text that is shown.
-  it('names a webchat conversation and its task pages, never a channel or a thread', () => {
+  // webchat-threads.md §4.2: a webchat coordinator reads of one person's conversation with threads, and text that is shown.
+  it('names a webchat conversation with threads where tasks and replies answer, never a channel or a page', () => {
     const prompt = coordinatorPrompt({
       agentName: 'bot-a',
       platform: 'webchat',
@@ -90,16 +90,18 @@ describe('the coordinator prompt and batch', () => {
       webchat: true
     })
     expect(prompt).toContain('in a private webchat conversation (conv-1) with one person')
-    expect(prompt).toContain('The task answers on its own page, which the conversation links to.')
+    expect(prompt).toContain('at the conversation root or in a thread under a root message, which the message names')
+    expect(prompt).toContain("The task answers in the message's thread.")
+    expect(prompt).toContain("which posts a visible reply in the message's thread")
     expect(prompt).toContain('- No other agent is in this conversation.')
     expect(prompt).toContain('The person reads your text as you write it, so write nothing but your calls.')
-    expect(prompt).not.toMatch(/channel|thread/i)
-    expect(
-      renderCoordinatorBatch([{ id: 'msg-p1', from: 'user-1', mentionsYou: true, text: 'hi' }], {
-        channelId: 'conv-1',
-        webchat: true
-      })
-    ).toContain('[One new message in this conversation (conv-1)]')
+    expect(prompt).not.toMatch(/channel|own page/i)
+    const batch = renderCoordinatorBatch(
+      [{ id: 'msg-p2', from: 'user-1', mentionsYou: true, text: 'and 429?', thread: 'msg-p1' }],
+      { channelId: 'conv-1', webchat: true }
+    )
+    expect(batch).toContain('[One new message in this conversation (conv-1)]')
+    expect(batch).toContain('<message id="msg-p2" from="user-1" mentions-you="yes" thread="msg-p1">')
   })
 
   it('offers its decision tools and the memory and place tools, nothing else', () => {
