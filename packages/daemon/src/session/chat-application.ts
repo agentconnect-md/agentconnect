@@ -1,8 +1,9 @@
 import type { LoadedAgent } from '../agents/load-agents.js'
 import { chatSettingsAllowed } from '../agents/chat-actions.js'
-import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
+import { sessionChannelOf, sessionThreadOf, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
 import { routeRules } from '../router/routing-table.js'
 import type { RoutingRule } from '../router/routing-rule.js'
+import { isCoordinatorCoordinate } from './append-coordinate.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../store/local-store.js'
 import { formatErr } from '../daemon/text.js'
 import { attachmentMention, transcriptImageAttachments } from './attachment-block.js'
@@ -37,6 +38,10 @@ export interface PreparedChatTurn {
   agentId: string
   sessionKey: string
   message: NormalizedMessage
+  /** A coordinator conversation's turn, which follows the agent's own settings rather than the browser's (auto-session-mode.md §5.4). */
+  coordinated?: true
+  /** The thread the turn answers in: set when a task holding the message's thread takes it (webchat-threads.md §4). */
+  answersIn?: string
 }
 
 export type ChatPreparation =
@@ -65,6 +70,8 @@ export interface ChatApplicationHost {
   holdContextForOwnTurn(sessionKey: string, ts: string): void
   /** The coordinate of a member's private coordinator conversation with the agent, undefined for any other conversation (auto-session-mode.md §10). */
   coordinatorCoordinate?(agentId: string, conversationId: string, authorId: string): Promise<string | undefined>
+  /** Key a coordinator conversation's message on the task holding its thread; any other stays on the coordinator (webchat-threads.md §4). */
+  keyCoordinatorMessage?(agentId: string, msg: NormalizedMessage): Promise<void>
 }
 
 // Public protocol choice does not change the durable conversation's existing coordinates.
@@ -125,9 +132,6 @@ export class ChatSessionApplication {
       this.host.info(`chat: thread ${thread} names no root of conversation ${conversationId} — rejecting turn`)
       return { accepted: false, reason: 'unknown_thread' }
     }
-    const key = coordinate
-      ? sessionKey('webchat', conversationId, coordinate, result.agentId)
-      : chatSessionKey(conversationId, result.agentId)
     // A coordinator's post is its own message in its physical thread, as a Slack message is; any other keeps one id per conversation.
     const physicalThread = coordinate ? (thread ?? post?.postId) : undefined
     const message: NormalizedMessage = {
@@ -147,7 +151,25 @@ export class ChatSessionApplication {
       isDm: true,
       trigger: coordinate || mentions?.includes(agentId) ? 'mention' : 'dm'
     }
-    return { accepted: true, turn: { agentId: result.agentId, sessionKey: key, message } }
+    if (!coordinate)
+      return {
+        accepted: true,
+        turn: { agentId: result.agentId, sessionKey: chatSessionKey(conversationId, result.agentId), message }
+      }
+    await this.host.keyCoordinatorMessage?.(result.agentId, message)
+    const key = sessionKey('webchat', sessionChannelOf(message), sessionThreadOf(message), result.agentId)
+    // Off the coordinator, a task holding the thread answers in it (webchat-threads.md §4).
+    const answersIn = isCoordinatorCoordinate(message.sessionThread) ? undefined : message.thread
+    return {
+      accepted: true,
+      turn: {
+        agentId: result.agentId,
+        sessionKey: key,
+        message,
+        coordinated: true,
+        ...(answersIn ? { answersIn } : {})
+      }
+    }
   }
 
   // A root is recorded in its own thread, or in the conversation's literal one before threads.

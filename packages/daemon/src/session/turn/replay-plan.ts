@@ -27,6 +27,8 @@ export type ReplayPlanInput = {
   retryAdmittedTurn?: boolean
   /** The runtime session was recreated after a failed resume, so it holds none of its own replies. */
   historyLost?: boolean
+  /** A task opening on a thread reads what the agent's other sessions said there too (webchat-threads.md §4). */
+  ownRowsAsContext?: boolean
   /** Replay cap override, for tests. */
   maxReplayEntries?: number
 }
@@ -76,7 +78,8 @@ export function planReplay(input: ReplayPlanInput): ReplayPlan {
     ? participantGap.find((e) => e.sender === agentId && e.ts === thread)
     : undefined
   // A recreated runtime session replays its own replies too; they are context only and never decide the shape or cursor.
-  const replayGap = input.historyLost ? gap.filter((e) => !isControlCommandText(e.text)) : participantGap
+  const replayGap =
+    input.historyLost || input.ownRowsAsContext ? gap.filter((e) => !isControlCommandText(e.text)) : participantGap
   const boundedReplay = (entries: readonly TranscriptEntry[]) => {
     const includesInitializedRoot = initializedRoot !== undefined && entries.some((e) => e.ts === initializedRoot.ts)
     const remainder = includesInitializedRoot ? entries.filter((e) => e.ts !== initializedRoot.ts) : entries

@@ -143,6 +143,39 @@ that allows a second participant. Slack's own thread participation rules are unc
   to it in its thread, it answers there, and it reports nothing to the coordinator. The page wording
   (`PAGE_TASK_APPEND`) stays for legacy page tasks.
 
+### 4.3 As implemented (PR 5)
+
+- **Keying.** `prepareTurn` still recognizes a coordinator conversation by `coordinatorCoordinate`, then
+  asks the daemon's `keyWebchatCoordinatorMessage` where the message goes. It shares
+  `threadTaskSession` with `autoCoordinateFor`, so a reply in a thread a task holds keys on the task's
+  session and anything else stays on the coordinator. Webchat has no integration from which `keySession`
+  could read a mode, so the call is made at turn preparation instead.
+- **A held thread's reply** runs as the browser's own turn on the task. `PreparedChatTurn.answersIn`
+  names the thread, and the turn's `output`, `done` and committed posts carry it as `thread`. The
+  coordinator's turns carry no `thread`: they stay in the main timeline (§6.1). No turn in a
+  coordinator conversation takes the browser's per-turn runtime or worktree (`coordinated`).
+- **A task the coordinator opens or hands a message to** has no browser turn. It runs with a post-only
+  context (`WebchatTransport.webchatThreadContext`) and posts each answer with `initiator: 'agent'`
+  and the thread, as an agent wake does. Its inbox row replays with the same context.
+  `postAgentWakeInbound` never re-posts a person's message.
+- **Opened with the thread.** A new task's session reads the rows on its thread as any session does.
+  On a webchat task's first round, the replay also keeps the agent's own rows (`ownRowsAsContext`),
+  so the coordinator's earlier answers are context too, under the agent's name. A Slack task's
+  opening is unchanged.
+- **`replyToMessage`** posts in `answerThreadOf(msg)` and records the row there. A report whose
+  thread is not a root's postId is still answered at the root.
+- **`threadless`** is now `platform === 'webchat'` without a `thread`. Only a message without a
+  post, such as an MCP app's `ui/message`, still opens a page task.
+- **Legacy page tasks** (§10). A message handed to one moves to its page, and the link card is posted
+  in the message's thread. A reply in a thread such a task holds keys on its session, off the
+  conversation's channel (`sessionChannel`).
+- **Prompt.** The webchat form describes a conversation with threads; the threadless form is gone,
+  so PR 14 removes only the page-task branch and link cards. `webchat-thread-follow-up` joins the
+  coordinator probe (auto-session-mode.md §12).
+- **Feature.** The daemon advertises `webchat-threads-v1` with `session-mode-auto-v1`.
+- **Until PR 11**, the console ignores `thread` on posts and draws a task's answers in the main
+  timeline. It draws the task's card from `openedForMessageId` under the coordinator turn.
+
 ## 5. Recording
 
 ### 5.1 Webchat posts join the channel record with a thread
@@ -415,7 +448,7 @@ CONTRIBUTING.md. Rows 5, 9, 11, 12 and 13 change what users see and update
 | 11  | `feat`     | Webchat coordinator page: footers under roots, Reply in thread, thread composer, `?thread=`, auto-open, phones, the §6.1 labels                                    | web              | L    | 5, 10 |
 | 12  | `feat`     | Slack coordinator page in Slack's shape; the platform module's thread-shape declaration                                                                            | web              | M    | 10    |
 | 13  | `feat`     | Reply from the console in an unowned Slack thread                                                                                                                  | daemon, web      | M    | 12    |
-| 14  | `chore`    | Remove the page-task branch, link cards and the threadless prompt after the 90-day retention                                                                       | daemon, web      | M    | later |
+| 14  | `chore`    | Remove the page-task branch and link cards after the 90-day retention (PR 5 already replaced the threadless prompt)                                                | daemon, web      | M    | later |
 
 PR 3 and PRs 7, 8 and 10 can run beside PR 5. PR 5 carries the most risk: the coordinator's prompt
 and where it answers change, so it adds the coordinator scenario "a follow-up in an unowned thread"

@@ -1,4 +1,4 @@
-// auto-session-mode.md §10: a member's private coordinator conversation in webchat, and the tasks it opens on their own pages.
+// auto-session-mode.md §10, webchat-threads.md §4: a member's private coordinator conversation in webchat, and the tasks it opens on its threads.
 import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -8,7 +8,7 @@ import { Daemon } from '../src/daemon.js'
 import { sessionHostKey } from '../src/acp/host-key.js'
 import { coordinatorSessionTools } from '../src/auto-session/coordinator-prompt.js'
 import { isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
-import { isSubsessionCoordinate } from '../src/session/subsession-coordinate.js'
+import { subsessionCoordinate } from '../src/session/subsession-coordinate.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
 import { WAIT } from './wait-support.js'
@@ -77,15 +77,17 @@ async function boot(
   await daemon.start()
   const d = daemon as any
   d.orgForAgent = () => ORG
-  const posts: { text: string; initiator?: string; taskLink?: unknown }[] = []
+  const posts: { text: string; initiator?: string; taskLink?: unknown; thread?: string }[] = []
   d.relays = {
     stop: vi.fn(async () => {}),
-    sendWebchatPost: vi.fn((post: { post: { text: string; taskLink?: unknown }; initiator?: string }) =>
-      posts.push({
-        text: post.post.text,
-        ...(post.initiator ? { initiator: post.initiator } : {}),
-        ...(post.post.taskLink ? { taskLink: post.post.taskLink } : {})
-      })
+    sendWebchatPost: vi.fn(
+      (post: { post: { text: string; taskLink?: unknown; thread?: string }; initiator?: string }) =>
+        posts.push({
+          text: post.post.text,
+          ...(post.initiator ? { initiator: post.initiator } : {}),
+          ...(post.post.taskLink ? { taskLink: post.post.taskLink } : {}),
+          ...(post.post.thread ? { thread: post.post.thread } : {})
+        })
     )
   }
   let turns = 0
@@ -126,7 +128,7 @@ async function boot(
         event.kind === 'output' && event.output.event?.kind === 'message' ? [event.output.event.text] : []
       )
       .join('')
-    return { messageId: `msg-${postId}`, postId, streamed }
+    return { messageId: `msg-${postId}`, postId, streamed, events }
   }
   const coordinator = async (): Promise<{ key: string; ctx: SessionContext }> => {
     const coordinate = await d.store.currentAppendCoordinate(AGENT, CONV, null, 'coordinator')
@@ -255,14 +257,15 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md �
     await other.daemon.stop()
   })
 
-  it('opens a task on its own page, links it, moves a later message to it, and falls back for a message left undecided', async () => {
+  // webchat-threads.md §4: a task opens on the message's thread and answers there, as a Slack coordinator's does.
+  it("opens a task on the message's thread, which answers there, takes the thread's replies, and is handed and fallen back to", async () => {
     const live: { d?: any } = {}
     const coordinatorPrompts: string[] = []
     const taskPrompts: string[] = []
     let taskId = ''
     // What the coordinator does with each message, by its text.
     const script: Record<string, (messageId: string) => Record<string, unknown> | undefined> = {
-      'fix the retry': (messageId) => ({ action: 'delegateTask', messageId, title: 'Fix the [retry]' }),
+      'fix the retry': (messageId) => ({ action: 'delegateTask', messageId, title: 'Fix the retry' }),
       'also handle 429': (messageId) => ({ action: 'messageTask', messageId, taskId }),
       'how is it going?': (messageId) => ({ action: 'replyToMessage', messageId, message: 'Still on it.' }),
       'what next?': () => undefined
@@ -275,105 +278,190 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md �
         return
       }
       coordinatorPrompts.push(text)
-      const body = /mentions-you="yes">\n([^\n]*)\n/.exec(text)?.[1] ?? ''
+      const body = /mentions-you="yes"(?: thread="[^"]+")?>\n([^\n]*)\n/.exec(text)?.[1] ?? ''
       const call = script[body]?.(id)
       if (call) {
         const { ctx } = await booted.coordinator()
-        const receipt = (await live.d.coordinators.decide(ctx, call)) as { taskId?: string }
+        const receipt = (await live.d.coordinators.decide(ctx, call)) as { taskId?: string; posted?: unknown }
         if (receipt.taskId) taskId = receipt.taskId
+        if (receipt.posted) replies.push(receipt.posted)
       }
       say('AC_NO_RESPONSE')
     })
+    const replies: unknown[] = []
     const { d, posts, send } = booted
     live.d = d
     const index = d.store.assistantSubsessions
+    const channel = transcriptChannelKey(CONV)
 
     const first = await send('fix the retry')
     await vi.waitFor(() => expect(taskPrompts).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(posts).toHaveLength(1), WAIT)
     await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
     const { key: coordinatorKey } = await booted.coordinator()
-    // The task is a background coordinate off the conversation, whose thread is the message's own id.
-    expect(taskId.startsWith(`webchat:a2a:${AGENT}:subsession:`)).toBe(true)
-    expect(isSubsessionCoordinate(taskId.slice(`webchat:a2a:${AGENT}:`.length))).toBe(true)
+    // The task is keyed on the root's thread in the conversation, as a Slack threaded task is (§5.2).
+    expect(taskId).toBe(sessionKey('webchat', CONV, first.postId, AGENT))
     expect(await index.get(AGENT, taskId)).toMatchObject({
       parentSessionKey: coordinatorKey,
-      title: 'Fix the [retry]',
+      title: 'Fix the retry',
       state: 'done'
     })
     expect(await index.threadsOf(AGENT, taskId)).toMatchObject([{ channel: CONV, thread: first.postId }])
     expect(taskPrompts[0]).toContain('fix the retry')
-    expect(taskPrompts[0]).toContain("The coordinator of a person's console conversation opened you")
-    expect(taskPrompts[0]).not.toContain('Reporting back to the session that started this task')
-    const task = await d.store.getSession(taskId)
-    expect(task?.originSessionId).toBe(await d.store.ensureOutwardSessionId(coordinatorKey, AGENT))
+    expect(taskPrompts[0]).toContain('The coordinator of this channel opened you for a message in this thread')
+    expect(taskPrompts[0]).not.toContain('console conversation opened you')
+    expect((await d.store.getSession(taskId))?.originSessionId).toBe(
+      await d.store.ensureOutwardSessionId(coordinatorKey, AGENT)
+    )
     expect(first.streamed).toBe('')
-    // The link is the coordinator's one post; the task's answer is on its page, never in this conversation.
-    // It names its task, which the console draws as the task's card rather than reading the link's words.
-    const opened = { sessionId: task.sessionId, title: 'Fix the [retry]', how: 'opened' }
-    expect(posts).toEqual([
-      {
-        text: `Started a task: [Fix the \\[retry\\]](${d.sessionLink(task.sessionId)})`,
-        initiator: 'agent',
-        taskLink: opened
-      }
-    ])
-    const recorded = await d.store.transcriptPage(transcriptChannelKey(CONV), `webchat:${CONV}`, null, 50, AGENT)
-    const linkRow = recorded.rows.find((row: { text: string }) => row.text.startsWith('Started a task:'))
-    expect(JSON.parse(linkRow?.body ?? '{}')).toEqual({ taskLink: opened })
-    // The task answered on its page; nothing reached the coordinator, which is not woken by its end.
+    // No link card: the task's answer is its post in the root's thread, recorded there.
+    expect(posts).toEqual([{ text: 'task answer 1', initiator: 'agent', thread: first.postId }])
+    const inRoot = await d.store.transcriptPage(channel, first.postId, null, 50, AGENT)
+    expect(inRoot.rows.map((row: { text: string }) => row.text).sort()).toEqual(['fix the retry', 'task answer 1'])
     expect(coordinatorPrompts).toHaveLength(1)
-    // The coordinator reads of a conversation, never a channel (auto-session-mode.md §10).
-    expect(coordinatorPrompts[0]).toContain(`[One new message in this conversation (${CONV})]`)
-    expect(coordinatorPrompts[0]).toContain('in a private webchat conversation')
+    expect(coordinatorPrompts[0]).toContain("The task answers in the message's thread.")
 
+    // A reply in the thread the task holds goes to the task, never the coordinator, and streams in that thread.
+    const reply = await send('use jitter too', OWNER, CONV, undefined, first.postId)
+    expect(reply.streamed).toBe('task answer 2')
+    expect(taskPrompts[1]).toContain('use jitter too')
+    expect(coordinatorPrompts).toHaveLength(1)
+    const frames = reply.events.map((event) => (event.kind === 'output' ? event.output.thread : event.done.thread))
+    expect(frames.length).toBeGreaterThan(1)
+    expect(frames.every((thread) => thread === first.postId)).toBe(true)
+    expect(posts.at(-1)).toEqual({ text: 'task answer 2', thread: first.postId })
+
+    // A root handed to the task attaches its thread, where the task answers; no link card is posted.
     const second = await send('also handle 429')
-    await vi.waitFor(() => expect(taskPrompts).toHaveLength(2), WAIT)
-    await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
-    expect(taskPrompts[1]).toContain('also handle 429')
+    await vi.waitFor(() => expect(taskPrompts).toHaveLength(3), WAIT)
+    await vi.waitFor(() => expect(posts.at(-1)?.text).toBe('task answer 3'), WAIT)
+    expect(taskPrompts[2]).toContain('also handle 429')
     expect((await index.threadsOf(AGENT, taskId)).map((one: { thread: string }) => one.thread)).toEqual([
       first.postId,
       second.postId
     ])
-    expect(posts.at(-1)).toEqual({
-      text: `Passed to [Fix the \\[retry\\]](${d.sessionLink(task.sessionId)})`,
-      initiator: 'agent',
-      taskLink: { ...opened, how: 'handed' }
-    })
-    expect(await index.get(AGENT, taskId)).toMatchObject({ state: 'done', round: 2 })
-    expect((await index.get(AGENT, taskId))?.endReport).toBeUndefined()
+    expect(posts.at(-1)).toEqual({ text: 'task answer 3', initiator: 'agent', thread: second.postId })
+    expect(posts.some((post) => post.taskLink !== undefined)).toBe(false)
 
-    // A reply by call is the coordinator's own post in the conversation, shown live.
-    await send('how is it going?')
-    expect(posts.at(-1)).toEqual({ text: 'Still on it.', initiator: 'agent' })
+    // A reply by call is the coordinator's own post in the message's thread.
+    const asked = await send('how is it going?')
+    expect(posts.at(-1)).toEqual({ text: 'Still on it.', initiator: 'agent', thread: asked.postId })
+    expect(replies.at(-1)).toEqual({ channel: CONV, thread: asked.messageId })
+    const answered = await d.store.transcriptPage(channel, asked.postId, null, 50, AGENT)
+    expect(answered.rows.map((row: { text: string }) => row.text)).toContain('Still on it.')
 
-    // The task's page is its conversation: a person's message there runs on the task, which still reports nothing.
-    const page = await send('one more case', OWNER, '99999999-9999-4999-8999-999999999999', task.sessionId)
-    await vi.waitFor(() => expect(taskPrompts).toHaveLength(3), WAIT)
-    expect(taskPrompts[2]).toContain('one more case')
-    expect(page.streamed).toBe('task answer 3')
-    expect(await index.get(AGENT, taskId)).toMatchObject({ state: 'done', round: 3 })
-    expect((await index.get(AGENT, taskId))?.endReport).toBeUndefined()
-
-    // The minute sweep leaves a member's coordinator conversation and its tasks alone.
-    await d.leaveAutoConversations()
-    expect(await d.store.currentAppendCoordinate(AGENT, CONV, null, 'coordinator')).toBe(
-      (await booted.coordinator()).ctx.thread
-    )
-    expect(await index.threadsOf(AGENT, taskId)).toHaveLength(2)
-
-    // Every message is addressed to the agent, so one left undecided opens a task of its own.
+    // Every message is addressed to the agent, so one left undecided opens a task on its own thread.
+    await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
     const third = await send('what next?')
     await vi.waitFor(() => expect(taskPrompts).toHaveLength(4), WAIT)
-    const fallback = await index.taskOfThread(AGENT, {
+    const fallback = sessionKey('webchat', CONV, third.postId, AGENT)
+    expect(await index.get(AGENT, fallback)).toMatchObject({ title: 'what next?', parentSessionKey: coordinatorKey })
+    await vi.waitFor(
+      () => expect(posts.at(-1)).toEqual({ text: 'task answer 4', initiator: 'agent', thread: third.postId }),
+      WAIT
+    )
+    expect(coordinatorPrompts).toHaveLength(4)
+    await booted.daemon.stop()
+  })
+
+  // webchat-threads.md §4: a task opened on a thread reads what was said there before it.
+  it('opens a task on a thread with the thread so far, the coordinator’s answers included', async () => {
+    const live: { d?: any } = {}
+    const taskPrompts: string[] = []
+    const booted = await boot(async (_id, text, say) => {
+      const id = /<message id="(msg-[^"]+)"/.exec(text)?.[1]
+      if (id === undefined) {
+        taskPrompts.push(text)
+        say('on it')
+        return
+      }
+      const body = /mentions-you="yes"(?: thread="[^"]+")?>\n([^\n]*)\n/.exec(text)?.[1] ?? ''
+      const call =
+        body === 'is the retry flaky?'
+          ? { action: 'replyToMessage', messageId: id, message: 'It failed twice this week.' }
+          : { action: 'delegateTask', messageId: id, title: 'Fix the retry' }
+      const { ctx } = await booted.coordinator()
+      await live.d.coordinators.decide(ctx, call)
+      say('AC_NO_RESPONSE')
+    })
+    const { d, send } = booted
+    live.d = d
+    const root = await send('is the retry flaky?')
+    await send('then fix it please', OWNER, CONV, undefined, root.postId)
+    await vi.waitFor(() => expect(taskPrompts).toHaveLength(1), WAIT)
+    const index = d.store.assistantSubsessions
+    expect(
+      await index.taskOfThread(AGENT, { platform: 'webchat', channel: CONV, transportScope: '', thread: root.postId })
+    ).toBe(sessionKey('webchat', CONV, root.postId, AGENT))
+    expect(taskPrompts[0]).toContain('is the retry flaky?')
+    expect(taskPrompts[0]).toContain('It failed twice this week.')
+    expect(taskPrompts[0]).toContain('then fix it please')
+    await booted.daemon.stop()
+  })
+
+  // webchat-threads.md §10: a page task opened before threads keeps its page and link cards until it closes.
+  it('moves a message handed to a legacy page task onto its page and links it in the message’s thread', async () => {
+    const live: { d?: any } = {}
+    const taskPrompts: string[] = []
+    let pageTask = ''
+    const booted = await boot(async (_id, text, say) => {
+      const id = /<message id="(msg-[^"]+)"/.exec(text)?.[1]
+      if (id === undefined) {
+        taskPrompts.push(text)
+        say('page answer')
+        return
+      }
+      const body = /mentions-you="yes"(?: thread="[^"]+")?>\n([^\n]*)\n/.exec(text)?.[1] ?? ''
+      const { ctx } = await booted.coordinator()
+      await live.d.coordinators.decide(
+        ctx,
+        body === 'also handle 429'
+          ? { action: 'messageTask', messageId: id, taskId: pageTask }
+          : { action: 'replyToMessage', messageId: id, message: 'Hi.' }
+      )
+      say('AC_NO_RESPONSE')
+    })
+    const { d, posts, send } = booted
+    live.d = d
+    await send('hello')
+    const { key: coordinatorKey } = await booted.coordinator()
+    const index = d.store.assistantSubsessions
+    const now = Date.now()
+    pageTask = sessionKey('webchat', `a2a:${AGENT}`, subsessionCoordinate('1700000000000001'), AGENT)
+    await index.open({
+      agentId: AGENT,
+      childSessionKey: pageTask,
+      parentSessionId: await d.store.ensureOutwardSessionId(coordinatorKey, AGENT, now),
+      parentSessionKey: coordinatorKey,
+      title: 'Fix the retry',
+      background: 'fix the retry',
+      openedFor: { place: `webchat:${CONV}`, messageId: 'msg-legacy' },
+      now
+    })
+    await index.attachThread({
+      agentId: AGENT,
+      childSessionKey: pageTask,
       platform: 'webchat',
       channel: CONV,
       transportScope: '',
-      thread: third.postId
+      thread: '44444444-4444-4444-8444-444444444444',
+      sinceRound: 1,
+      now
     })
-    expect(fallback).not.toBe(taskId)
-    expect(await index.get(AGENT, fallback)).toMatchObject({ title: 'what next?', parentSessionKey: coordinatorKey })
-    expect(posts.at(-1)?.text).toMatch(/^Started a task: \[what next\?\]\(/)
-    expect(coordinatorPrompts).toHaveLength(4)
+    const handed = await send('also handle 429')
+    await vi.waitFor(() => expect(taskPrompts).toHaveLength(1), WAIT)
+    expect(taskPrompts[0]).toContain('also handle 429')
+    expect(taskPrompts[0]).toContain("The coordinator of a person's console conversation opened you")
+    const sessionId = await d.store.ensureOutwardSessionId(pageTask, AGENT)
+    expect(posts.at(-1)).toEqual({
+      text: `Passed to [Fix the retry](${d.sessionLink(sessionId)})`,
+      initiator: 'agent',
+      taskLink: { sessionId, title: 'Fix the retry', how: 'handed' },
+      thread: handed.postId
+    })
+    await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
+    // Its answer stays on its page: nothing of it is posted in the conversation.
+    expect(posts.some((post) => post.text === 'page answer')).toBe(false)
     await booted.daemon.stop()
   })
 })
