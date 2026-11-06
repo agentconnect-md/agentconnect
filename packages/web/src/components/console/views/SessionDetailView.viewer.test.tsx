@@ -1550,7 +1550,7 @@ describe('a coordinator’s task cards', () => {
     ]
   }
 
-  it('gives a coordinator Sessions and Tasks only, with Tasks in the header where Workspace was', async () => {
+  it('gives a coordinator Tasks then Sessions, opens on Tasks, and keeps neither Tasks nor Workspace in its header', async () => {
     coordinatorTurn()
     wire.coordinator = true
     // A created conversation, not a playground still waiting for its session: it has a task list to show.
@@ -1563,18 +1563,12 @@ describe('a coordinator’s task cards', () => {
     const tabs = [...(container?.querySelectorAll('[data-dock-tab]') ?? [])].map((el) =>
       el.getAttribute('data-dock-tab')
     )
-    expect(tabs.every((key) => key === 'sessions' || key === 'tasks')).toBe(true)
-    expect(tabs).not.toContain('files')
-    const tasks = container?.querySelector<HTMLButtonElement>('[data-header-tasks]')
-    expect(tasks?.textContent).toContain('Tasks')
-    expect(container?.textContent).not.toContain('Workspace')
-    // The header's Tasks lands on the Tasks tab even when the panel has nothing to list.
-    await act(async () => {
-      tasks?.click()
-      await Promise.resolve()
-    })
-    await render()
+    expect(tabs).toEqual(['tasks', 'sessions'])
     expect(container?.querySelector('[data-dock-tab="tasks"]')?.getAttribute('aria-selected')).toBe('true')
+    // The dock's first tab is Tasks, so the one-line header does not repeat it, and a coordinator has no workspace.
+    expect(container?.querySelector('[data-header-tasks]')).toBeNull()
+    expect(container?.textContent).not.toContain('Workspace')
+    expect(container?.querySelector('[data-session-header] [data-header-coordinator]')).not.toBeNull()
   })
 
   it('offers no Tasks entry on a coordinator playground that has no session for a task list yet', async () => {

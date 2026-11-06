@@ -60,9 +60,13 @@ Beside the dock, the left pane is now **two mutually exclusive modes**:
   both. Opened from a Files tree row (File mode) or a Git panel row (Diff mode),
   closed by an `x` labelled "Back to conversation".
 
-The session header above them (agent focus chip, human faces, Workspace link,
-Details popover, Requests popover, copy-link) is **already what ships** and stays
-put in both modes. No work is planned there.
+The session header above them is **one line** on desktop and stays put in both
+modes. On the left are the state icon, the name, a coordinator mark, the link to
+a task's owning session, and the place chip. On the right are the people stack,
+whose popover holds the agent focus, the people and the visibility control, then
+a Requests pill counting what waits, the Details icon, and copy-link. It has no
+Workspace or Tasks entry, because Files and Tasks live in the dock. The phone keeps
+its own header row.
 
 ## 2. Invariants this must not break
 

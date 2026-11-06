@@ -71,6 +71,7 @@ import { FollowUpTaskSummary } from '@/components/console/follow-up'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { SessionModelSelectionResult } from '@/components/console/decisions/SessionModelSelectionResult'
 import { CoordinatorTag } from '@/components/console/CoordinatorTag'
+import { HeaderPeople } from '@/components/console/HeaderPeople'
 import { agentToneColor } from '@/lib/agent-tone'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
@@ -147,7 +148,7 @@ import {
   workPanelOpen
 } from '@/components/console/session-work'
 import { CapabilityRequestCard } from '@/components/console/CapabilityRequestCard'
-import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
+import { ApprovalRequestsCard, usePendingRequestCount } from '@/components/console/ApprovalRequestsCard'
 import { activityScope, ASSISTANT_TASK_HANDLE_FEATURE } from '@/lib/agent-activity'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import { SessionAgentFocusMenu, type SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
@@ -1608,6 +1609,12 @@ function MobileSessionFamilyLinks({
   )
 }
 
+/** The one-line header's quiet icon buttons and its place chip. */
+const HEADER_ICON_BTN =
+  'flex h-[26px] w-[26px] flex-none items-center justify-center rounded-[6px] text-(--text-tertiary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary)'
+const HEADER_CHIP =
+  'inline-flex h-6 min-w-0 flex-[0_1_auto] items-center gap-1 rounded-[6px] px-[7px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) no-underline transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary)'
+
 /** How an open coordinator task is drawn: over the coordinator with its own tools, or as the side panel's quick look. */
 type TaskViewMode = 'panel' | 'expanded'
 /** The side panel is at least this wide while it shows a task's thread. */
@@ -2482,12 +2489,6 @@ export default function SessionDetailView() {
   const coordinatorPage = session?.coordinator === true
   // Whether this page has a task list to show: its agent and a real (not yet-to-be-created playground) session.
   const taskListAvailable = !MOCK_MODE && filesAgentId !== null && tasksSessionId !== null
-  // The header's Tasks entry on a coordinator's page: the side panel's task list, any open task closed.
-  const showTaskList = () => {
-    setTaskThread(null)
-    setDockTab('tasks')
-    setDockReveal((n) => n + 1)
-  }
   // Bumped when a task opens in the side panel, so a collapsed dock comes on screen to show it.
   const [dockReveal, setDockReveal] = useState(0)
   const setTaskMode = useCallback((mode: TaskViewMode) => {
@@ -2986,6 +2987,13 @@ export default function SessionDetailView() {
     setPgImage(continuableSessionId)
     setPgFiles(continuableSessionId, () => [])
   }, [continuableSessionId, setPgImage, setPgFiles])
+
+  // The header's Requests pill counts what waits for this reader, from the list its popover shows; editors only, as that popover is.
+  const pendingRequestCount = usePendingRequestCount({
+    agentId: session?.agentId ?? '',
+    sessionId: session ? (session.realSessionId ?? session.id) : undefined,
+    enabled: Boolean(owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session?.agentId)
+  })
 
   // A multi-participant conversation is surfaced ONLY at /conversations/:key
   // (merged-conversation-view.md §5.3): a session deep link into one redirects,
@@ -4415,7 +4423,7 @@ export default function SessionDetailView() {
             {taskPage && currentSessionDetail ? (
               <div
                 data-task-owner=""
-                className="flex min-w-0 items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) max-desktop:border-b max-desktop:border-(--border-subtle) max-desktop:bg-(--surface-card) max-desktop:px-4 max-desktop:py-2 desktop:mb-[6px]"
+                className="flex min-w-0 items-center gap-[6px] border-b border-(--border-subtle) bg-(--surface-card) px-4 py-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) desktop:hidden"
               >
                 <Icon name="corner-up-left" size={13} className="flex-none" />
                 <span className="min-w-0 truncate">
@@ -4441,14 +4449,14 @@ export default function SessionDetailView() {
               </div>
             ) : null}
             {followUpPageAgentId ? <FollowUpTaskSummary agentId={followUpPageAgentId} sessionId={session.id} /> : null}
-            {/* DESKTOP TITLE ROW — the session name + its status badge. These used to live
-            in the top-bar crumb; with the crumb gone the page has to name itself. The
-            mobile title/status live in Shell's app bar, so this region is desktop-only. */}
-            <div className="mt-[-4px] mb-2 hidden min-w-0 items-center gap-[10px] desktop:flex">
+            {/* DESKTOP HEADER — one line: the session's state, name and place on the left, who and what as icons on the right. Mobile has its own row below. */}
+            <div
+              data-session-header=""
+              className="hidden min-w-0 items-center gap-2 border-b border-(--border-subtle) pb-[10px] desktop:flex"
+            >
               <StateIcon
                 state={headerState}
                 label={headerState === 'idle' && headerStatusLabel ? headerStatusLabel : tState(headerState)}
-                className="mr-[-6px]"
               />
               <h1
                 title={session.title}
@@ -4456,119 +4464,104 @@ export default function SessionDetailView() {
               >
                 {session.title}
               </h1>
-              <CoordinatorTag show={session.coordinator} />
-              <span className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                <span className="imark h-5 w-5 flex-none rounded-xs">
-                  <PlatformMark platform={channelDisplay.platform} />
-                </span>
-                {session.threadUrl ? (
-                  <a
-                    className="lnk truncate font-mono text-[12px] font-medium leading-normal text-(--text-link)"
-                    href={session.threadUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={`Open the ${platName(sessionIntegration)} thread`}
+              {taskPage && currentSessionDetail ? (
+                currentSessionDetail.parentSession ? (
+                  <Link
+                    data-header-task-owner=""
+                    className={HEADER_ICON_BTN}
+                    href={orgPath(
+                      `/sessions/${encodeURIComponent(currentSessionDetail.parentSession.id)}${flatView ? '?view=flat' : ''}`
+                    )}
+                    title={t('taskOfOpen', {
+                      title:
+                        currentSessionDetail.parentSession.title?.trim() ||
+                        `Session ${currentSessionDetail.parentSession.id.slice(0, 8)}`
+                    })}
+                    aria-label={t('taskOfOpen', {
+                      title:
+                        currentSessionDetail.parentSession.title?.trim() ||
+                        `Session ${currentSessionDetail.parentSession.id.slice(0, 8)}`
+                    })}
                   >
-                    {channelDisplay.label}
-                  </a>
+                    <Icon name="corner-down-right" size={15} />
+                  </Link>
                 ) : (
-                  <span className="mono truncate text-[12px]">{channelDisplay.label}</span>
-                )}
-              </span>
-            </div>
-            {/* DESKTOP META ROW — focused agent · people · workspace · visibility · Details
-          popover · copy-link. The old stat/usage cards moved into the Details popover. */}
-            <div className="hidden items-center gap-2 border-b border-(--border-subtle) pb-[7px] desktop:flex">
-              <SessionAgentFocusMenu
-                options={headerFocusOptions}
-                value={headerFocusAgentId}
-                onChange={(agentId) => changeHeaderFocus(agentId)}
+                  <span data-header-task-owner="" className={HEADER_ICON_BTN} title={t('taskOwnerHidden')}>
+                    <Icon name="corner-down-right" size={15} />
+                  </span>
+                )
+              ) : null}
+              {session.coordinator ? (
+                <span
+                  data-header-coordinator=""
+                  role="img"
+                  className={HEADER_ICON_BTN}
+                  title={t('coordinatorTip')}
+                  aria-label={t('coordinatorTip')}
+                >
+                  <Icon name="network" size={15} />
+                </span>
+              ) : null}
+              {session.threadUrl ? (
+                <a
+                  data-header-place=""
+                  className={HEADER_CHIP}
+                  href={session.threadUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`Open the ${platName(sessionIntegration)} thread`}
+                >
+                  <span className="imark h-[14px] w-[14px] flex-none rounded-xs">
+                    <PlatformMark platform={channelDisplay.platform} />
+                  </span>
+                  <span className="truncate">{channelDisplay.label}</span>
+                </a>
+              ) : (
+                <span data-header-place="" className={HEADER_CHIP}>
+                  <span className="imark h-[14px] w-[14px] flex-none rounded-xs">
+                    <PlatformMark platform={channelDisplay.platform} />
+                  </span>
+                  <span className="truncate">{channelDisplay.label}</span>
+                </span>
+              )}
+              <span className="flex-1" />
+              <HeaderPeople
+                agents={headerFocusOptions}
+                focusAgentId={headerFocusAgentId}
+                onFocusChange={(agentId) => changeHeaderFocus(agentId)}
+                agentSub={[focusedSessionDetail?.model ?? focusedSession?.model, focusedDaemonName]
+                  .filter(Boolean)
+                  .join(' · ')}
+                {...(headerCron
+                  ? { cron: { href: orgPath(`/crons/${headerCron.id}`), name: headerCron.name || 'Schedule' } }
+                  : {})}
+                people={humanParticipants.map((participant) => ({
+                  id: participant.id,
+                  name: participant.sp.name,
+                  ...(participant.sp.handle && participant.sp.handle !== '@you'
+                    ? { sub: `${participant.sp.handle} · ${platName(sessionIntegration)}` }
+                    : {}),
+                  face: (
+                    <Avatar
+                      src={participant.avatarUrl}
+                      initials={participant.avatarInitials || participant.sp.initials || '?'}
+                      size={22}
+                      bg={participant.sp.avBg}
+                      fg={participant.sp.avText}
+                      fontSize={9}
+                    />
+                  )
+                }))}
+                footer={visibilityControl}
               />
-              {headerCron ? (
-                <Link
-                  className="lnk min-w-0 flex-[0_1_auto] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)"
-                  href={orgPath(`/crons/${headerCron.id}`)}
-                >
-                  <Icon name="calendar-clock" size={13} className="flex-none" />
-                  <span className="truncate">{headerCron.name || 'Schedule'}</span>
-                </Link>
-              ) : humanParticipants.length > 0 ? (
-                <SessionHumanFaces participants={humanParticipants} />
-              ) : null}
-              {coordinatorPage ? (
-                taskListAvailable ? (
-                  <button
-                    type="button"
-                    data-header-tasks=""
-                    className="lnk flex-none border-0 bg-transparent p-0 text-[12.5px] text-(--text-secondary)"
-                    onClick={showTaskList}
-                  >
-                    <Icon name="list-checks" size={13} />
-                    {t('tasks')}
-                    {tasksVerdict.running ? (
-                      <span className="rounded-full bg-(--brand-soft) px-[6px] font-sans text-[11px] font-semibold leading-normal text-(--brand-soft-text)">
-                        {tasksVerdict.running}
-                      </span>
-                    ) : null}
-                  </button>
-                ) : null
-              ) : workspaceHref ? (
-                <Link
-                  className="lnk flex-none text-[12.5px] text-(--text-secondary)"
-                  href={orgPath(workspaceHref)}
-                  title={workspaceTitle}
-                >
-                  <Icon name={workspaceIcon} size={13} />
-                  {t('workspace')}
-                </Link>
-              ) : null}
-              {visibilityControl}
-              {/* `flex` on the wrapper: an inline-flex button in a block div sits on a text
-            baseline, and the descender gap under it pushed the button off the row's
-            centre line. The transparent top padding bridges the trigger/panel gap so
-            the hover target remains continuous. */}
-              <div
-                className="relative ml-[-3px] flex flex-none items-center"
-                onMouseEnter={() => updateDetailPresence('hovered', true)}
-                onMouseLeave={() => updateDetailPresence('hovered', false)}
-                onFocus={() => updateDetailPresence('focused', true)}
-                // Focus moving BETWEEN descendants (trigger → panel) must not drop
-                // presence, or keyboard users can never reach the panel's contents.
-                onBlur={(event) => {
-                  if (event.currentTarget.contains(event.relatedTarget)) return
-                  updateDetailPresence('focused', false)
-                }}
-              >
-                <button
-                  type="button"
-                  className="inline-flex h-[22px] items-center gap-1 rounded-md border-0 bg-transparent px-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
-                  aria-describedby={detailTooltipId}
-                >
-                  <Icon name="info" size={14} />
-                  {t('details')}
-                </button>
-                <div
-                  id={detailTooltipId}
-                  role="tooltip"
-                  className={`absolute top-full left-0 z-50 w-max pt-[5px] transition-[opacity,visibility] ${
-                    detailOpen ? 'pointer-events-auto visible opacity-100' : 'pointer-events-none invisible opacity-0'
-                  }`}
-                >
-                  <div className="max-h-[340px] min-w-[216px] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) px-0 py-[5px] shadow-(--shadow-lg)">
-                    {detailPanel}
-                  </div>
-                </div>
-              </div>
               {requestsPanel && (
-                // Same hover-or-tap affordance as Details: the approval history
-                // (answered requests included) reachable without scrolling the page.
+                // The pill says how many wait for this reader; the popover keeps the answered history too.
                 <div
-                  className="relative ml-[-3px] flex flex-none items-center"
+                  className="relative flex flex-none items-center"
                   onMouseEnter={() => requestsPopover.setPresence('hovered', true)}
                   onMouseLeave={() => requestsPopover.setPresence('hovered', false)}
                   onFocus={() => requestsPopover.setPresence('focused', true)}
-                  // Same as Details: ignore focus transitions that stay inside the
-                  // wrapper, so tabbing from the trigger into Allow/Deny works.
+                  // Ignore focus moving inside the wrapper, so tabbing from the trigger into Allow/Deny works.
                   onBlur={(event) => {
                     if (event.currentTarget.contains(event.relatedTarget)) return
                     requestsPopover.setPresence('focused', false)
@@ -4576,13 +4569,24 @@ export default function SessionDetailView() {
                 >
                   <button
                     type="button"
-                    className="inline-flex h-[22px] items-center gap-1 rounded-md border-0 bg-transparent px-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+                    data-header-requests={pendingRequestCount > 0 ? 'pending' : 'history'}
+                    className={
+                      pendingRequestCount > 0
+                        ? 'inline-flex h-6 flex-none cursor-pointer items-center gap-1 rounded-full border-0 bg-(--status-paused-soft) px-[7px] font-sans text-[12px] font-semibold leading-normal text-[#9a6500] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)'
+                        : `${HEADER_ICON_BTN} cursor-pointer border-0 bg-transparent`
+                    }
+                    title={
+                      pendingRequestCount > 0 ? t('requestsWaiting', { count: pendingRequestCount }) : t('requests')
+                    }
+                    aria-label={
+                      pendingRequestCount > 0 ? t('requestsWaiting', { count: pendingRequestCount }) : t('requests')
+                    }
                     aria-haspopup="dialog"
                     aria-expanded={requestsPopover.open}
                     aria-controls={requestsTooltipId}
                   >
-                    <Icon name="shield-check" size={14} />
-                    {t('requests')}
+                    <Icon name={pendingRequestCount > 0 ? 'shield-alert' : 'shield-check'} size={15} />
+                    {pendingRequestCount > 0 ? <span>{pendingRequestCount}</span> : null}
                   </button>
                   {/* dialog, not tooltip: Allow/Deny live inside, and a tooltip role
                 misrepresents interactive content to assistive tech. */}
@@ -4590,7 +4594,7 @@ export default function SessionDetailView() {
                     id={requestsTooltipId}
                     role="dialog"
                     aria-label={t('approvalRequests')}
-                    className={`absolute top-full left-0 z-50 pt-[5px] transition-[opacity,visibility] ${
+                    className={`absolute top-full right-0 z-50 pt-[5px] transition-[opacity,visibility] ${
                       requestsPopover.open
                         ? 'pointer-events-auto visible opacity-100'
                         : 'pointer-events-none invisible opacity-0'
@@ -4602,13 +4606,47 @@ export default function SessionDetailView() {
                   </div>
                 </div>
               )}
+              {/* `flex` on the wrapper keeps the button on the row's centre line; the transparent padding bridges trigger and panel for the hover. */}
+              <div
+                className="relative flex flex-none items-center"
+                onMouseEnter={() => updateDetailPresence('hovered', true)}
+                onMouseLeave={() => updateDetailPresence('hovered', false)}
+                onFocus={() => updateDetailPresence('focused', true)}
+                // Focus moving between descendants (trigger to panel) must not drop presence.
+                onBlur={(event) => {
+                  if (event.currentTarget.contains(event.relatedTarget)) return
+                  updateDetailPresence('focused', false)
+                }}
+              >
+                <button
+                  type="button"
+                  data-header-details=""
+                  className={`${HEADER_ICON_BTN} cursor-pointer border-0 bg-transparent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)`}
+                  aria-label={t('details')}
+                  title={t('details')}
+                  aria-describedby={detailTooltipId}
+                >
+                  <Icon name="info" size={15} />
+                </button>
+                <div
+                  id={detailTooltipId}
+                  role="tooltip"
+                  className={`absolute top-full right-0 z-50 w-max pt-[5px] transition-[opacity,visibility] ${
+                    detailOpen ? 'pointer-events-auto visible opacity-100' : 'pointer-events-none invisible opacity-0'
+                  }`}
+                >
+                  <div className="max-h-[340px] min-w-[216px] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) px-0 py-[5px] shadow-(--shadow-lg)">
+                    {detailPanel}
+                  </div>
+                </div>
+              </div>
               <button
-                className="ml-auto flex h-[19px] w-[19px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+                className={`${HEADER_ICON_BTN} cursor-pointer border-0 bg-transparent`}
                 onClick={onCopyLink}
                 title={copied ? t('copied') : t('copyLink')}
                 aria-label={t('copyLink')}
               >
-                <Icon name={copied ? 'check' : 'link'} size={12} />
+                <Icon name={copied ? 'check' : 'link'} size={14} />
               </button>
             </div>
           </div>
@@ -4644,20 +4682,7 @@ export default function SessionDetailView() {
               />
             </span>
             <CoordinatorTag show={session.coordinator} />
-            {coordinatorPage ? (
-              taskListAvailable ? (
-                <button
-                  type="button"
-                  data-header-tasks=""
-                  onClick={showTaskList}
-                  className="flex h-[26px] w-[22px] flex-none items-center justify-center rounded-md border-0 bg-transparent p-0 text-(--text-secondary) active:bg-(--surface-active)"
-                  title={t('tasks')}
-                  aria-label={t('tasks')}
-                >
-                  <Icon name="list-checks" size={14} />
-                </button>
-              ) : null
-            ) : workspaceHref ? (
+            {!coordinatorPage && workspaceHref ? (
               // Borderless on purpose (no `iconbtn`): a boxed button in this strip of plain text reads as the odd one out.
               <Link
                 href={orgPath(workspaceHref)}

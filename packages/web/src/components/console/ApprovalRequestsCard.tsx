@@ -381,6 +381,25 @@ export function usePermissionRequests({
   return { data: swr.data, error: swr.error, isLoading: swr.isLoading, mutate: swr.mutate, conversation }
 }
 
+/** How many of a session's permission requests wait for an answer, read from the same list the Requests popover shows. */
+export function usePendingRequestCount({
+  agentId,
+  sessionId,
+  enabled
+}: {
+  agentId: string
+  sessionId: string | undefined
+  enabled: boolean
+}): number {
+  const { data } = usePermissionRequests({ agentId, sessionId, permissions: enabled, conversationPermissions: false })
+  if (!enabled || !data) return 0
+  return data.filter(
+    (request) =>
+      request.status === 'pending' &&
+      (!sessionId || request.sessionId === sessionId || request.parentSessionId === sessionId)
+  ).length
+}
+
 /** Answers a permission request with one of its options, through the conversation when one is given. */
 export function usePermissionDecision(
   agentId: string,
