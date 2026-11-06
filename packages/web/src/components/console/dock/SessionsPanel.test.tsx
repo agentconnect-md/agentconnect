@@ -198,6 +198,13 @@ describe('SessionDock column', () => {
     expect(markup).toContain('href="/sessions/a?view=flat"')
     expect(markup).toContain('href="/sessions?view=flat&amp;agent=agent-1"')
   })
+
+  it('marks a coordinator row and only that row', () => {
+    const markup = panelMarkup({ sessions: [session('a', { coordinator: true }), session('b')], total: 2 })
+
+    expect(markup.match(/data-coordinator-mark=""/g)).toHaveLength(1)
+    expect(markup.indexOf('data-coordinator-mark')).toBeLessThan(markup.indexOf('href="/sessions/b"'))
+  })
 })
 
 // The verdict a caller widens a collapsed SEED on (railSeedShouldWiden) — a unit, because re-deriving it from the fetched page misses lineage and off-page pins, and gets both wrong in the direction that widens a serviceable list and throws its seeded chips away.

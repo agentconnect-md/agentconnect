@@ -164,6 +164,7 @@ export function SessionsPanel({
   onWouldHideChange?: (wouldHide: boolean) => void
 }) {
   const t = useTranslations('Sessions.panel')
+  const tCoordinator = useTranslations('Sessions.coordinator')
   const { orgPath, activeOrg } = useOrgs()
   const flatSearch = flatView ? '?view=flat' : ''
   // Schedule-triggered rows show the schedule's name; `agents` backs the chips.
@@ -393,6 +394,18 @@ export function SessionsPanel({
               {item.title}
             </span>
           )}
+          {/* The same mark the session header gives a coordinator, so it reads as one before it is opened. */}
+          {item.session?.coordinator ? (
+            <span
+              data-coordinator-mark=""
+              role="img"
+              title={tCoordinator('hint')}
+              aria-label={tCoordinator('label')}
+              className="flex flex-none text-(--text-tertiary)"
+            >
+              <Icon name="network" size={12} />
+            </span>
+          ) : null}
           {/* Mono, tertiary and last: the dock's width makes it affordable, but you read it after finding the row, not while scanning. */}
           {item.time && (
             <span className="flex-none font-mono text-[10.5px] font-normal leading-normal text-(--text-tertiary)">
