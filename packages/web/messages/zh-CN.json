@@ -6936,6 +6936,8 @@
       "all": "所有 Agent",
       "allDescription": "组织内的每个 Agent 都能使用。",
       "allNoIsolation": "这包括其他成员的 Agent，你的桌面与它们的操作之间没有任何隔离。",
+      "ownDesktopsShared": "每个智能体在这台电脑上使用自己的桌面，而不是主屏幕；它的浏览器启动时会复制这台电脑的浏览器登录状态。",
+      "ownDesktopsSeparate": "每个智能体在这台电脑上使用自己的桌面，而不是主屏幕，并使用各自独立的浏览器配置。",
       "unknownAgent": "你不可见的 Agent",
       "noIsolation": "不是你的 Agent",
       "noIsolationHint": "这个 Agent 属于其他成员。你的桌面与它的操作之间没有任何隔离。",
@@ -6998,6 +7000,8 @@
       "driverToolsHint": "同时向 Agent 提供驱动自带的窗口级工具。默认关闭。",
       "peerToPeer": "点对点观看",
       "peerToPeerHint": "允许观看画面跨网络直接在浏览器和桌面之间传输。这会向观看者暴露桌面的公网 IP 地址。默认仅对只有所有者可以观看的自托管 Computer 开启。",
+      "shareLogins": "共享浏览器登录",
+      "shareLoginsHint": "在 Linux 上每个智能体都有自己的桌面；它的浏览器启动时会复制这台电脑的 Chromium 登录状态以及其他桌面的登录状态。关闭后，每个智能体桌面使用各自独立的浏览器配置。",
       "advancedTitle": "高级",
       "problem": {
         "idleRange": "空闲释放必须是 10 到 3600 之间的整数。",

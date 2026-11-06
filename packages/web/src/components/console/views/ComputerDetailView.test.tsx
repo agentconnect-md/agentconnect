@@ -210,6 +210,19 @@ describe('ComputerDetailView', () => {
     expect(fixed.textContent).toContain('Used only by the agent it was made for')
   })
 
+  it('tells who grants agents that each works on a desktop of its own, with or without the browser logins (§3.9)', () => {
+    const shared = render(computer({ agentAccess: { mode: 'all', agents: [] }, desktops: [] }))
+    expect(shared.querySelector('[data-desktops-notice]')!.textContent).toContain(
+      "copy of this computer's browser logins"
+    )
+    const own = computer({ agentAccess: { mode: 'all', agents: [] }, desktops: [] })
+    const separate = render({ ...own, policy: { ...own.policy, shareBrowserLogins: false } })
+    expect(separate.querySelector('[data-desktops-notice]')!.textContent).toContain('a browser profile of its own')
+    expect(
+      render(computer({ agentAccess: { mode: 'all', agents: [] } })).querySelector('[data-desktops-notice]')
+    ).toBeNull()
+  })
+
   it('changes who sees the computer from its details', async () => {
     mocks.setComputerSharing.mockImplementation(async (_id: string, sharing: object) => computer(sharing as never))
     const el = render(computer())

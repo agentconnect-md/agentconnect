@@ -281,7 +281,9 @@ export const ComputerAuthOk = z.object({
   // The retention in effect for this Computer's screenshots (§9); 0 or absent means none are stored.
   screenshotRetentionDays: z.number().int().min(0).max(COMPUTER_SCREENSHOT_RETENTION_MAX_DAYS).optional(),
   // A managed desktop's egress (§15.4); absent means direct unless `computer-egress-v1` is advertised. Secret, never logged.
-  egress: ComputerEgress.optional()
+  egress: ComputerEgress.optional(),
+  // A managed desktop's arrangement (§3.9): per-agent desktops for a `manual` one agents share, else one; absent, the owner's switch decides.
+  desktops: z.enum(['per-agent', 'shared']).optional()
 })
 export type ComputerAuthOk = z.infer<typeof ComputerAuthOk>
 

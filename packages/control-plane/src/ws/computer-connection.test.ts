@@ -60,6 +60,7 @@ function setup(
     stoppedAt?: () => Date | null
     keyDeliveryMs?: number
     kind?: 'managed' | 'self-hosted'
+    allocation?: 'manual' | 'per-agent' | 'ephemeral'
     egress?: ComputerConnDeps['egress']
     policies?: ComputerConnDeps['policies']
   } = {}
@@ -75,6 +76,7 @@ function setup(
           name: 'desk',
           ownerUserId: 'u1',
           kind: over.kind ?? 'self-hosted',
+          allocation: over.allocation ?? null,
           status: over.status ?? 'online',
           stoppedAt: over.stoppedAt ? over.stoppedAt() : null,
           policy: ComputerPolicySchema.parse({ screenshotRetentionDays: 7 })
@@ -667,5 +669,21 @@ describe('ComputerConnection control lease', () => {
     transport.deliver(beat({ status: 'online' }))
     await settle()
     expect(leases.arrangementChanged).toHaveBeenLastCalledWith('org_1', CID, false)
+  })
+
+  it('tells a managed desktop to run per-agent desktops only when agents share it (§3.9)', async () => {
+    const said = async (over: Parameters<typeof setup>[0]) => {
+      const { transport } = setup({ leases: leaseService(), ...over })
+      transport.deliver(auth())
+      await settle()
+      return (transport.ofType('computer/auth/ok')[0]!.payload as { desktops?: string }).desktops
+    }
+    expect(
+      await said({ kind: 'managed', allocation: 'manual', egress: vi.fn(async () => ({ mode: 'direct' as const })) })
+    ).toBe('per-agent')
+    expect(
+      await said({ kind: 'managed', allocation: 'per-agent', egress: vi.fn(async () => ({ mode: 'direct' as const })) })
+    ).toBe('shared')
+    expect(await said({ kind: 'self-hosted' })).toBeUndefined()
   })
 })

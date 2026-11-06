@@ -6936,6 +6936,8 @@
       "all": "All agents",
       "allDescription": "Every agent in the organization can use it.",
       "allNoIsolation": "This includes other members' agents, and your desktop has no isolation from what they do.",
+      "ownDesktopsShared": "Each agent works on a desktop of its own on this computer, not on its main screen, and its browser starts with a copy of this computer's browser logins.",
+      "ownDesktopsSeparate": "Each agent works on a desktop of its own on this computer, not on its main screen, with a browser profile of its own.",
       "unknownAgent": "Agent not visible to you",
       "noIsolation": "Not your agent",
       "noIsolationHint": "This agent belongs to another member. Your desktop has no isolation from what it does.",
@@ -6998,6 +7000,8 @@
       "driverToolsHint": "Also offer agents the driver's own window-level tools. Off by default.",
       "peerToPeer": "Peer-to-peer viewing",
       "peerToPeerHint": "Let the viewer’s video go straight between browser and desktop across networks. This shows viewers the desktop’s public IP address. On by default only for a self-hosted Computer that just its owner may watch.",
+      "shareLogins": "Share browser logins",
+      "shareLoginsHint": "On Linux each agent gets a desktop of its own; its browser starts with a copy of this computer's Chromium logins and of the other desktops'. Off, each agent desktop keeps a browser profile of its own.",
       "advancedTitle": "Advanced",
       "problem": {
         "idleRange": "Idle release must be a whole number from 10 to 3600.",

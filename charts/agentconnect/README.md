@@ -471,7 +471,7 @@ is required.
 | `computerPool.warmReplicas`           | `1`                   | Prewarmed desktops, so an `ephemeral` computer starts at once |
 | `computerPool.home.size`              | `5Gi`                 | A desktop's home volume, kept while it sleeps                 |
 | `computerPool.home.storageClass`      | `standard`            | Storage class of the home volume                              |
-| `computerPool.resources`              | 500m, 1Gi / 3Gi       | One desktop's requests and memory limit                       |
+| `computerPool.resources`              | 500m, 1Gi / 3Gi       | Requests, memory limit; `manual`: one agent desktop per GiB   |
 | `computerPool.ephemeralIdleSeconds`   | `600`                 | Idle time before an `ephemeral` desktop is deleted            |
 | `computerPool.sleepIdleSeconds`       | `1800`                | Idle time before a `per-agent` or `manual` desktop sleeps     |
 | `computerPool.image` / `repository`   | `<registry>/computer` | The desktop image, tagged like the release by default         |

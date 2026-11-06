@@ -112,15 +112,25 @@ function writeLaunchers(dataDir: string, id: string, self: string[], systemDataD
   }
 }
 
-/** The available memory in whole GiB, from /proc/meminfo; at least one. */
-export function memoryGiB(): number {
+/** Memory free for one more desktop, in whole GiB: the lesser of the machine's and a container limit's headroom. */
+export function memoryGiB(read: (path: string) => string = (path) => readFileSync(path, 'utf8')): number {
+  const GiB = 1024 * 1024 * 1024
+  const free: number[] = []
   try {
-    const match = /^MemAvailable:\s+(\d+) kB/m.exec(readFileSync('/proc/meminfo', 'utf8'))
-    if (match) return Math.max(1, Math.floor(Number(match[1]) / (1024 * 1024)))
+    const match = /^MemAvailable:\s+(\d+) kB/m.exec(read('/proc/meminfo'))
+    if (match) free.push(Number(match[1]) * 1024)
   } catch {
     // Not Linux, or no procfs.
   }
-  return 1
+  // A pod's /proc/meminfo shows the node; its cgroup (v2) shows the limit the pod is held to.
+  try {
+    const limit = read('/sys/fs/cgroup/memory.max').trim()
+    if (limit !== 'max') free.push(Number(limit) - Number(read('/sys/fs/cgroup/memory.current').trim()))
+  } catch {
+    // No cgroup v2 limit.
+  }
+  const least = free.filter((bytes) => Number.isFinite(bytes)).reduce((a, b) => Math.min(a, b), Infinity)
+  return least === Infinity ? 1 : Math.max(0, Math.floor(least / GiB))
 }
 
 export interface RunningDesktop {
@@ -199,7 +209,8 @@ export class DesktopManager {
   }
 
   max(): number {
-    return this.deps.config.maxDesktops ?? memoryGiB()
+    // Without a set limit, one more desktop starts while a GiB is free beside the running ones (at least one runs).
+    return this.deps.config.maxDesktops ?? Math.max(1, this.running.size + memoryGiB())
   }
 
   /** A desktop by id for a person in the viewer, started if it is not running; undefined for an unknown id. */

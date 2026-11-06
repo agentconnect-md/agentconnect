@@ -435,6 +435,7 @@ computerPool:
   home:
     size: 5Gi
     storageClass: standard
+  # A `manual` desktop starts an agent desktop (about 0.9 GB) while a GiB of this limit is free (computer-use.md §3.9).
   resources:
     requests:
       cpu: 500m
