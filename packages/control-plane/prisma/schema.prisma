@@ -966,6 +966,8 @@ model Agent {
   outboundPolicy        AgentCallPolicy    @default(all) // 'all' = this agent may discover/call any otherwise-callable org peer
   allowedTargetAgentIds String[]           @default([]) // agent.id set used when outboundPolicy='selected'
   introduceOnJoin       Boolean            @default(false) // #536: self-introduce to peers on a genuine channel join
+  // What a new room or group DM of its installs starts at; null ⇒ the platform default (Auto where the daemon reads it, else Mention).
+  newConversationMode   NewConversationMode?
   // The strategy slug sessions run in (session-executors.md §5).
   execution             String             @default("host")
   // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); both set or both null.
@@ -2762,8 +2764,6 @@ model Bot {
   // it would kill (the case where the relay already holds the newer assignment).
   credentialRevision    Int            @default(1)
   credentialInstalledAt DateTime?      @db.Timestamptz(6)
-  // What a new room or group DM starts at; null ⇒ the platform default (Auto where the daemon reads it, else Mention).
-  newConversationMode   NewConversationMode?
   // Bot scopes Slack REPORTED as granted for the current credential — the
   // `x-oauth-scopes` header observed when an install/refresh verified the token.
   // Empty means "never observed" (Slack omits the header at times), NEVER
@@ -2954,7 +2954,7 @@ enum ChannelSessionMode {
   auto
 }
 
-// A bot's default for its new rooms and group DMs: Auto, Mention on Per thread, or Off. DMs keep their own default.
+// An agent's default for its new rooms and group DMs: Auto, Mention on Per thread, or Off. DMs keep their own default.
 enum NewConversationMode {
   auto
   mention

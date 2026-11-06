@@ -2,7 +2,7 @@ import { manifestFor, type PlaceExternalReason } from '@agentconnect.md/protocol
 import type { ChannelSessionMode, ConversationKind, NewConversationMode, SeedTrigger } from '../persistence/ports.js'
 import { autoSessionModeSupported } from './decision-trigger-features.js'
 
-/** What a new conversation of an ungated install starts at: Off where the platform marks it external (resource-visibility.md §14.9), else On for a 1:1 DM and, for a room or group DM, Off where its bot starts new rooms Off, else Mention. */
+/** What a new conversation of an ungated install starts at: Off where the platform marks it external (resource-visibility.md §14.9), else On for a 1:1 DM and, for a room or group DM, Off where its agent starts new rooms Off, else Mention. */
 export function openConversationTrigger(
   c: {
     kind?: ConversationKind
@@ -15,7 +15,7 @@ export function openConversationTrigger(
   return mode === 'off' ? 'off' : 'mention'
 }
 
-/** The kinds a new conversation starts on Auto in (auto-session-mode.md §3.2): rooms and group DMs its platform keys one session for, once the bot's daemon reads Auto, unless its bot starts new rooms on Mention or Off. */
+/** The kinds a new conversation starts on Auto in (auto-session-mode.md §3.2): rooms and group DMs its platform keys one session for, once the bot's daemon reads Auto, unless its agent starts new rooms on Mention or Off. */
 export function autoConversationKinds(
   platform: string,
   features: readonly string[] | undefined,

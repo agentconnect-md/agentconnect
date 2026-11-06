@@ -71,11 +71,12 @@ Approved proposals stay a kind of their own.
   group-DM rows a room's modes (`groupDmSessionModes`). Assistant mode therefore runs a Slack group
   DM through its coordinator too (§3.4).
 - The daemon's `features.autoSessionMode` switch is on by default.
-- A bot can set what its new rooms and group DMs start at (`newConversationMode`, on the bot's row
-  in the console and `PATCH /bots/:id`): `auto` or unset is the default above; `mention` starts them
-  on @-mentions, Per thread, even where the daemon reads Auto; `off` starts them Off. It applies to
-  rows created after it is set; 1:1 DMs keep their own default, and a restricted agent's or an
-  external place's Off still wins.
+- An agent can set what its new rooms and group DMs start at (`newConversationMode`, in the agent's
+  settings and `PATCH /agents/:id`), since the coordinator turn runs on its runtime and model:
+  `auto` or unset is the default above; `mention` starts them on @-mentions, Per thread, even where
+  the daemon reads Auto; `off` starts them Off. It applies to rows created after it is set; 1:1 DMs
+  keep their own default, and a restricted agent's or an external place's Off still wins. On a shared
+  bot the install that seeds a room decides, as for the restricted Off.
 
 ### 3.3 Trigger
 

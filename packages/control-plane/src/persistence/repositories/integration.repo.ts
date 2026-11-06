@@ -128,7 +128,6 @@ function toBotRecord(b: BotJoined): BotRecord {
     feishuRegion: (asText(cfg.feishuRegion) as FeishuRegion | null) ?? null,
     shareable: b.shareable,
     transport: b.transport as BotRecord['transport'],
-    newConversationMode: b.newConversationMode ?? null,
     createdBy: b.createdBy
       ? { userId: b.createdBy.id, displayName: b.createdBy.displayName, email: b.createdBy.email }
       : null,
@@ -348,10 +347,7 @@ export class PgBotRepo implements BotRepo {
       }
       await tx.bot.update({
         where: { id, orgId },
-        data: {
-          ...(patch.shareable !== undefined ? { shareable: patch.shareable } : {}),
-          ...(patch.newConversationMode !== undefined ? { newConversationMode: patch.newConversationMode } : {})
-        }
+        data: patch.shareable !== undefined ? { shareable: patch.shareable } : {}
       })
     })
   }
@@ -1037,7 +1033,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       const converts = (c.kind === 'im' || c.kind === 'mpim') && row.kind !== c.kind
       return converts && row.sessionMode !== mode
     })
-    // A new row the bot's mode seeded Off is muted only once the daemon's spec lists it, so it has to reach the daemon too.
+    // A new row the agent's mode seeded Off is muted only once the daemon's spec lists it, so it has to reach the daemon too.
     const offSeeded =
       opts?.newConversationMode === 'off' &&
       channels.some(

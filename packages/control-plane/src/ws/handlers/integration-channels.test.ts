@@ -38,7 +38,11 @@ function fakeDeps(
     slackSessionAccess: { dropPublicAudiences },
     agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
     agent: {
-      get: vi.fn(async () => ({ id: AGENT, visibility: 'org' })),
+      get: vi.fn(async () => ({
+        id: AGENT,
+        visibility: 'org',
+        newConversationMode: reporter.newConversationMode ?? null
+      })),
       listForDaemon: vi.fn(async () => [{ id: AGENT }]),
       listByIds: vi.fn(async () => [])
     },
@@ -51,9 +55,6 @@ function fakeDeps(
       }))
     },
     integrationConverge,
-    ...(reporter.newConversationMode !== undefined
-      ? { bot: { get: vi.fn(async () => ({ id: BOT, newConversationMode: reporter.newConversationMode })) } }
-      : {}),
     collabRoutes: { broadcast: vi.fn(async () => {}) },
     connReg: {
       get: () => (reporter.features ? { state: 'READY', capabilities: { features: reporter.features } } : undefined)
@@ -184,11 +185,11 @@ describe('handleIntegrationChannels — new conversations on Auto', () => {
   })
 })
 
-// A bot's new-conversation mode decides what its new rooms start at, ahead of the daemon's Auto default.
-describe("handleIntegrationChannels — the bot's new-conversation mode", () => {
+// An agent's new-conversation mode decides what its new rooms start at, ahead of the daemon's Auto default.
+describe("handleIntegrationChannels — the agent's new-conversation mode", () => {
   const reads = [SESSION_MODE_AUTO_V1_FEATURE]
 
-  it('starts new rooms on Mention, Per thread, for a bot set to Mention, where the daemon reads Auto', async () => {
+  it('starts new rooms on Mention, Per thread, for an agent set to Mention, where the daemon reads Auto', async () => {
     const { deps, replaceSnapshot } = fakeDeps('slack', true, false, {
       features: reads,
       newConversationMode: 'mention'
@@ -197,7 +198,7 @@ describe("handleIntegrationChannels — the bot's new-conversation mode", () => 
     expect(replaceSnapshot.mock.calls[0]![2]).toEqual({ newConversationMode: 'mention' })
   })
 
-  it('seeds new rooms Off for a bot set to Off, and pushes the spec that mutes them', async () => {
+  it('seeds new rooms Off for an agent set to Off, and pushes the spec that mutes them', async () => {
     const { deps, replaceSnapshot, integrationConverge } = fakeDeps('slack', true, false, {
       features: reads,
       newConversationMode: 'off',
@@ -217,7 +218,7 @@ describe("handleIntegrationChannels — the bot's new-conversation mode", () => 
     expect(integrationConverge).not.toHaveBeenCalled()
   })
 
-  it('keeps the Auto default for a bot set to Auto or not set', async () => {
+  it('keeps the Auto default for an agent set to Auto or not set', async () => {
     for (const newConversationMode of ['auto', null] as const) {
       const { deps, replaceSnapshot } = fakeDeps('slack', true, false, { features: reads, newConversationMode })
       await handleIntegrationChannels(frame([{ id: 'C1' }]), conn, deps)

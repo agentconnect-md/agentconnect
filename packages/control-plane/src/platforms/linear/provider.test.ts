@@ -130,7 +130,6 @@ function bot(over: Partial<BotRecord> = {}): BotRecord {
     feishuAppId: null,
     feishuRegion: null,
     shareable: true,
-    newConversationMode: null,
     transport: 'http',
     createdBy: null,
     lastUsedAt: null,

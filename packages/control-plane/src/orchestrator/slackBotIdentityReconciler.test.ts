@@ -34,7 +34,6 @@ function bot(): BotRecord {
     feishuAppId: null,
     feishuRegion: null,
     shareable: false,
-    newConversationMode: null,
     transport: 'http',
     createdBy: null,
     lastUsedAt: null,

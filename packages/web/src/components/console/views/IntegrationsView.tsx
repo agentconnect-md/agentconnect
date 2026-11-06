@@ -29,8 +29,7 @@ import { useChannelGates } from '@/components/console/decisions/channel-gates'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
-import { creatorLabel, type BotDto, type MeDto, type NewConversationMode } from '@/lib/api'
-import { FieldSelect } from '@/components/console/FieldSelect'
+import { creatorLabel, type BotDto, type MeDto } from '@/lib/api'
 import {
   agentLabel,
   conversationGate,
@@ -286,7 +285,6 @@ function BotsCard({
     integrations,
     getAgent,
     setBotShareable,
-    setBotNewConversationMode,
     setChannelAgent,
     refresh,
     loading: dataLoading
@@ -375,25 +373,6 @@ function BotsCard({
       setBotBusyId(null)
     }
   }
-
-  const pickNewConversationMode = async (b: BotDto, next: NewConversationMode) => {
-    if (botBusyId || next === (b.newConversationMode ?? 'auto')) return
-    setBotBusyId(b.id)
-    setBotErr(null)
-    try {
-      await setBotNewConversationMode(b.id, next)
-    } catch (e) {
-      setBotErr({ id: b.id, msg: e instanceof Error ? e.message : String(e) })
-    } finally {
-      setBotBusyId(null)
-    }
-  }
-  // An unset mode is the platform default, which starts new rooms on Auto wherever the daemon reads it.
-  const newConversationOptions = (['auto', 'mention', 'off'] as const).map((value) => ({
-    value,
-    label: t(`newConversations.${value}`),
-    title: t(`newConversations.${value}Hint`)
-  }))
 
   // The active platform's Settings fragments (§10 `settingsFragments`): row
   // badges, provider deep links, and the lifecycle machinery that owns its own
@@ -652,23 +631,6 @@ function BotsCard({
               {open && (
                 <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 pb-[14px] pl-10 pt-3">
                   {RowSettings && <RowSettings bot={b} canWrite={canWrite} />}
-                  <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <span className="font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-                      {t('newConversations.label')}
-                    </span>
-                    <div className="w-[220px]">
-                      <FieldSelect
-                        value={b.newConversationMode ?? 'auto'}
-                        options={newConversationOptions}
-                        ariaLabel={t('newConversations.label')}
-                        disabled={!canWrite || botBusyId === b.id}
-                        onChange={(next) => void pickNewConversationMode(b, next)}
-                      />
-                    </div>
-                    <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                      {t('newConversations.hint')}
-                    </span>
-                  </div>
                   {channels.length > 0 ? (
                     <>
                       <div

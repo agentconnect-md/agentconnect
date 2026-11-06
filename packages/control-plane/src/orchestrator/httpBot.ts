@@ -835,30 +835,27 @@ export class HttpBotOrchestrator {
       // editor must enable them in the console before the compiler emits a route.
       const owner = await this.agents.getUnscoped(integration.agentId)
       const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
-      const autoKinds = owner ? await this.autoConversationKinds(owner, bot) : []
-      await this.channels.replaceSnapshot(integration.id, channels, this.seedOptions(defaultTrigger, autoKinds, bot))
+      const autoKinds = owner ? await this.autoConversationKinds(owner, bot.platform) : []
+      await this.channels.replaceSnapshot(integration.id, channels, this.seedOptions(defaultTrigger, autoKinds, owner))
     }
     await this.syncRoutes(botId)
   }
 
   /** The kinds an install's new conversation starts on Auto in: the daemon the relay addresses its agent on must read it (auto-session-mode.md §3.2). */
-  private async autoConversationKinds(
-    agent: AgentRecord,
-    bot: Pick<BotRecord, 'platform' | 'newConversationMode'>
-  ): Promise<readonly ConversationKind[]> {
+  private async autoConversationKinds(agent: AgentRecord, platform: string): Promise<readonly ConversationKind[]> {
     const daemonId = await this.placement.dispatchDaemon(agent)
     return autoConversationKinds(
-      bot.platform,
+      platform,
       daemonId ? this.control.daemonFeatures?.(daemonId) : undefined,
-      bot.newConversationMode
+      agent.newConversationMode
     )
   }
 
-  /** The seed a new conversation row of this install takes: a gated install's Off, the Auto kinds, and the bot's default for new rooms. */
+  /** The seed a new conversation row of this install takes: a gated install's Off, the Auto kinds, and the agent's default for new rooms. */
   private seedOptions(
     defaultTrigger: SeedTrigger | undefined,
     autoKinds: readonly ConversationKind[],
-    bot: Pick<BotRecord, 'newConversationMode'>
+    agent: Pick<AgentRecord, 'newConversationMode'> | null
   ):
     | {
         defaultTrigger?: SeedTrigger
@@ -866,11 +863,12 @@ export class HttpBotOrchestrator {
         newConversationMode?: NewConversationMode
       }
     | undefined {
-    if (!defaultTrigger && !autoKinds.length && !bot.newConversationMode) return undefined
+    const newConversationMode = agent?.newConversationMode
+    if (!defaultTrigger && !autoKinds.length && !newConversationMode) return undefined
     return {
       ...(defaultTrigger ? { defaultTrigger } : {}),
       ...(autoKinds.length ? { autoKinds } : {}),
-      ...(bot.newConversationMode ? { newConversationMode: bot.newConversationMode } : {})
+      ...(newConversationMode ? { newConversationMode } : {})
     }
   }
 
@@ -932,8 +930,8 @@ export class HttpBotOrchestrator {
       const reported = { ...conversation, kind }
       // Per install, since installs have different audiences; an ungated one takes the repository's open default (§14.9).
       const defaultTrigger = isGatedAgent(agent) ? await this.gatedConversationTrigger(agent, bot, reported) : undefined
-      const autoKinds = await this.autoConversationKinds(agent, bot)
-      await this.channels.upsertConversation(install.id, reported, this.seedOptions(defaultTrigger, autoKinds, bot))
+      const autoKinds = await this.autoConversationKinds(agent, bot.platform)
+      await this.channels.upsertConversation(install.id, reported, this.seedOptions(defaultTrigger, autoKinds, agent))
     }
     await this.syncRoutes(botId)
   }

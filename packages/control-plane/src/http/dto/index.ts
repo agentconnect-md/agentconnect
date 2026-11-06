@@ -752,6 +752,9 @@ export const AgentIconDto = z.discriminatedUnion('kind', [
 // The repository selector's evaluator (multi-repository-workspaces.md decision 15); the routes check it answers Choice.
 const RepositorySelectorBody = AgentRepositorySelector.strict()
 
+/** What an agent's new rooms and group DMs start at: Auto, Mention on Per thread, or Off. */
+export const NewConversationMode = z.enum(['auto', 'mention', 'off'])
+
 export const CreateAgentBody = z.object({
   name: AgentSlug,
   displayName: z.string().min(1).optional(),
@@ -769,6 +772,7 @@ export const CreateAgentBody = z.object({
   chatActions: ChatActions.optional(), // what people can do in chat; absent ⇒ 'approve'
   pause: z.boolean().optional(), // operational message-processing toggle (#288)
   introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
+  newConversationMode: NewConversationMode.optional(), // what its new rooms and group DMs start at; absent ⇒ the platform default
   computerUse: AgentComputerSetting.optional(), // the managed computer mode (computer-use.md §4.1); access is set on each Computer
   // The strategy sessions run in (session-executors.md §5), checked against the placement's table; absent ⇒ host where it runs, else the first available sandbox.
   execution: ExecutorStrategyName.optional(),
@@ -829,6 +833,7 @@ export const UpdateAgentBody = z
     chatActions: ChatActions.optional(),
     pause: z.boolean().nullable().optional(), // operational toggle (#288); null clears
     introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
+    newConversationMode: NewConversationMode.nullable().optional(), // what new rooms start at; null restores the platform default
     computerUse: AgentComputerSetting.nullable().optional(), // the managed computer mode (computer-use.md §4.1); null clears
     execution: ExecutorStrategyName.optional(), // the strategy sessions run in, checked against the placement's table
     // Same-repository capability widening only. Workspace identity/conversion
@@ -998,6 +1003,8 @@ export const AgentDto = z.object({
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
   allowedTargetAgentIds: z.array(z.string()), // agent.id set, meaningful when outboundPolicy='selected'
   introduceOnJoin: z.boolean(), // #536: self-introduce to peers on a genuine channel join
+  /** What a new room or group DM of its installs starts at; null ⇒ the platform default (Auto where the daemon reads it, else Mention). Existing conversations and DMs keep theirs. */
+  newConversationMode: NewConversationMode.nullable(),
   githubAppId: z.string().nullable(), // the agent's dedicated GitHub App; null ⇒ the deployment App
   computerUse: AgentComputerUse.nullable(), // derived (computer-use.md §4.1): the Computers granting it and its managed mode; null ⇒ none
   // The strategy sessions run in (session-executors.md §5).
@@ -2092,15 +2099,8 @@ export const LeaveIntegrationConversationBody = z.object({
   ])
 })
 
-/** What a bot's new rooms and group DMs start at: Auto, Mention on Per thread, or Off. */
-export const NewConversationMode = z.enum(['auto', 'mention', 'off'])
-
-/** `PATCH /bots/:id` — flip the shared-bot opt-in (shared-bot-relay.md §4.1) and/or set what new rooms start at (null ⇒ the platform default); an unknown field is dropped. */
-export const UpdateBotBody = z
-  .object({ shareable: z.boolean().optional(), newConversationMode: NewConversationMode.nullable().optional() })
-  .refine((body) => body.shareable !== undefined || body.newConversationMode !== undefined, {
-    message: 'nothing to update'
-  })
+/** `PATCH /bots/:id` — flip the shared-bot opt-in (shared-bot-relay.md §4.1); an unknown field is dropped. */
+export const UpdateBotBody = z.object({ shareable: z.boolean() })
 
 /** Console view of a bot identity — metadata only, NEVER the tokens. */
 export const BotDto = z.object({
@@ -2123,8 +2123,6 @@ export const BotDto = z.object({
   /** Slack inbound transport (slack-http-mode): 'http' ⇒ relay-pool Events API
    *  ingress; 'socket' ⇒ classic daemon Socket Mode. Immutable post-create. */
   transport: z.enum(['socket', 'http']),
-  /** What a new room or group DM starts at; null ⇒ the platform default (Auto where the daemon reads it, else Mention). Existing conversations and DMs keep theirs. */
-  newConversationMode: NewConversationMode.nullable(),
   /** Classic-bot occupancy: the single agent holding it, or null (free). ALWAYS
    *  null for a shareable bot — sharing lifts the 1-install cap. */
   inUseByAgentId: z.string().nullable(),

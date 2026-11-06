@@ -124,7 +124,6 @@ describe('PUT /bots/:id/googlechat/key', () => {
       feishuAppId: null,
       feishuRegion: null,
       shareable: false,
-      newConversationMode: null,
       transport: 'http',
       createdBy: null,
       lastUsedAt: null,

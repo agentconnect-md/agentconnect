@@ -80,11 +80,10 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     // §14.8: a gated DM whose counterpart is already in the agent's audience seeds to
     // the ordinary DM default instead. Only the gated arm asks — a public install has
     // no Off to override — and a resolver that answers nothing leaves §14.2 intact.
-    const bot = deps.bot ? await deps.bot.get(OrgId(integration.orgId), integration.botId) : null
-    seeded =
-      defaultTrigger && owner && bot && deps.gatedDmSeeds ? await deps.gatedDmSeeds(p.channels, owner, bot) : undefined
-    // A new room or group DM starts on Auto where the reporting daemon reads it (auto-session-mode.md §3.2), unless its bot starts new rooms on Mention or Off.
-    const newConversationMode = bot?.newConversationMode ?? null
+    const bot = defaultTrigger && deps.bot ? await deps.bot.get(OrgId(integration.orgId), integration.botId) : null
+    seeded = owner && bot && deps.gatedDmSeeds ? await deps.gatedDmSeeds(p.channels, owner, bot) : undefined
+    // A new room or group DM starts on Auto where the reporting daemon reads it (auto-session-mode.md §3.2), unless its agent starts new rooms on Mention or Off.
+    const newConversationMode = owner?.newConversationMode ?? null
     const autoKinds = autoConversationKinds(
       integration.platform,
       deps.connReg.get(conn.daemonId)?.capabilities?.features,
@@ -118,7 +117,7 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     release()
   }
 
-  // The reporting daemon's spec predates this write, so push what it changed there: a §14.8 opened DM, the external set (assistant-mode.md §5.3), a migrated trigger, a session mode it does not list, a room its bot's mode started Off; best-effort.
+  // The reporting daemon's spec predates this write, so push what it changed there: a §14.8 opened DM, the external set (assistant-mode.md §5.3), a migrated trigger, a session mode it does not list, a room its agent's mode started Off; best-effort.
   if (
     (seeded?.size || externalChanged || migrated || sessionModeChanged || offSeeded) &&
     owner &&

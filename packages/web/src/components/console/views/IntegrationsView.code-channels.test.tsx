@@ -98,9 +98,7 @@ describe('an expanded bot row', () => {
     await act(async () => root.render(<IntegrationsView />))
     await act(async () => host.querySelector<HTMLElement>('#integration-bot-bot-1')!.click())
 
-    const toggle = [...host.querySelectorAll<HTMLButtonElement>('button[aria-expanded]')].find((b) =>
-      b.textContent?.includes('Code channels')
-    )!
+    const toggle = host.querySelector<HTMLButtonElement>('button[aria-expanded]')!
     expect(toggle.textContent).toContain('Code channels')
     expect(toggle.textContent).toContain('2')
     expect(toggle.getAttribute('aria-expanded')).toBe('false')

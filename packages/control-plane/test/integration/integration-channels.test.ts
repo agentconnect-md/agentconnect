@@ -2225,18 +2225,18 @@ describe('PATCH /integrations/:id/channels/:channelId — session mode', () => {
     expect(pushes).toHaveLength(2)
   })
 
-  // A bot's new-conversation mode (PATCH /bots/:id) decides what its new rooms start at, ahead of the daemon's Auto default; DMs and known rows never change.
-  it("starts new rooms at the bot's new-conversation mode, set through PATCH /bots/:id", async () => {
+  // An agent's new-conversation mode (PATCH /agents/:id) decides what its new rooms start at, ahead of the daemon's Auto default; DMs and known rows never change.
+  it("starts new rooms at the agent's new-conversation mode, set through PATCH /agents/:id", async () => {
     await seedDaemon(prisma, DAEMON)
     const http = buildHttpApp(prisma)
     running = http
     const id = await install(http)
     await report(DAEMON, id, [{ id: 'C0', name: 'before' }])
-    const { botId } = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    const { agentId } = await prisma.integration.findUniqueOrThrow({ where: { id } })
     const setMode = async (newConversationMode: string | null) => {
       const res = await http.app.inject({
         method: 'PATCH',
-        url: `${ORG}/bots/${botId}`,
+        url: `${ORG}/agents/${agentId}`,
         payload: { newConversationMode }
       })
       expect(res.statusCode).toBe(200)
