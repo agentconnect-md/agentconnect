@@ -710,6 +710,14 @@ const TERMINAL_VERDICT_SQL = sqlStates(DECISION_VERDICT_TERMINAL_STATES)
 /** §8 rule 2's third clause: only the candidate row needs pinning, since its history is frozen into inputJson. */
 export const RETAINED_BY_PENDING_VERDICT_SQL = `SELECT 1 FROM decision_verdict v WHERE v.seq = transcript.seq AND v.state IN ${PENDING_VERDICT_SQL}`
 
+/** The threads of one conversation that keep their observations (webchat-threads.md §5.5): named by a root row and holding an admitted row. Binds (orgId, channel) twice. */
+const THREADS_AGENTS_TOOK_PART_IN_SQL = `SELECT t.thread FROM transcript t
+      JOIN transcript_recipient tr ON tr.seq = t.seq
+     WHERE t.orgId = ? AND t.channel = ?
+    INTERSECT
+    SELECT r.thread FROM transcript r
+     WHERE r.orgId = ? AND r.channel = ? AND r.kind = 'text' AND (r.ts = r.thread OR r.postId = r.thread)`
+
 /** Verdict bodies outlive their terminal transition this long, or until 20 newer terminal verdicts exist. */
 export const DECISION_BODY_RETENTION_MS = 24 * 3_600_000
 export const DECISION_BODY_RETAINED_VERDICTS = 20
@@ -7302,10 +7310,7 @@ export class LocalStore {
     this.toolWriteTimer = undefined
   }
 
-  /** §8 rule 2: reclaim every unadmitted row in one conversation that fell under the newest
-   *  {@link OBSERVATION_FLOOR_TEXT_ROWS} CONVERSATIONAL rows, so a tool-heavy turn cannot push a
-   *  short conversation's observations out. Under the floor the subquery yields the oldest text
-   *  row's seq, with none it yields NULL, and both make this a no-op in either dialect. */
+  /** §8 rule 2: reclaim unadmitted rows under the newest {@link OBSERVATION_FLOOR_TEXT_ROWS} text rows, outside the threads agents took part in (a NULL floor is a no-op). */
   async sweepObservations(orgId: string, channel: string): Promise<number> {
     // Drain OUTSIDE the mutex: the flush takes it too, and it is not reentrant.
     await this.drainToolCallWrites()
@@ -7323,8 +7328,9 @@ export class LocalStore {
           AND seq < (SELECT MIN(floor.seq) FROM (
                 SELECT seq FROM transcript
                  WHERE orgId = ? AND channel = ? AND kind = 'text'
-                 ORDER BY seq DESC LIMIT ?) floor)`,
-      [orgId, channel, orgId, channel, OBSERVATION_FLOOR_TEXT_ROWS]
+                 ORDER BY seq DESC LIMIT ?) floor)
+          AND (thread IS NULL OR thread NOT IN (${THREADS_AGENTS_TOOK_PART_IN_SQL}))`,
+      [orgId, channel, orgId, channel, OBSERVATION_FLOOR_TEXT_ROWS, orgId, channel, orgId, channel]
     )
     return Number(result.changes)
   }

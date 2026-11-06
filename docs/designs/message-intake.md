@@ -394,14 +394,16 @@ Two rules, in this order.
    `text` rows because those are what §9 reads; a tool-heavy turn's internal rows carry an admission
    while their session lives and do not count toward the floor, and any that rule 1 did not remove
    are reclaimed here once they fall under it. The cap counts rows, not
-   messages-per-agent, because there is one row per message.
+   messages-per-agent, because there is one row per message. A thread an agent took part in, one
+   named by a recorded root that still holds an admitted row, keeps its unadmitted rows past the
+   floor ([webchat-threads.md](webchat-threads.md) §5.5).
 
 So a conversation with a long-lived `append` session keeps that session's rows for as long as the
-session exists, plus a floor of the newest 100 rows of everything else. When the session is
-reclaimed by ordinary retention GC, its rows become plain observations and fall to the floor on the
-next sweep. This is the growth profile the daemon has today — rows accumulate only where agents are
-actually working — with a bounded observation layer under it, and it resolves channel-session-mode.md
-§12.2. Verdict bodies follow their own, shorter retention (§4.3).
+session exists, and the other rows of the threads it took part in, plus a floor of the newest 100
+rows of everything else. When the session is reclaimed by ordinary retention GC, its rows become
+plain observations and fall to the floor on the next sweep. This is the growth profile the daemon
+has today — rows accumulate only where agents are actually working — with a bounded observation
+layer under it, and it resolves channel-session-mode.md §12.2. Verdict bodies follow their own, shorter retention (§4.3).
 
 ## 9. The state a Decision sees
 
