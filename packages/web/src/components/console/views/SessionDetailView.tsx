@@ -13,7 +13,7 @@ import {
 } from 'react'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
-import { PendingActionsBanner, usePendingAction } from '@/components/console/PendingActions'
+import { PendingActionsBanner } from '@/components/console/PendingActions'
 import {
   pickConversationRepresentative,
   representativeFirst,
@@ -44,13 +44,10 @@ import {
   runtimeLabel,
   sessionChannelDisplay,
   sessionPlatform,
-  speaker,
   status,
   type Agent,
   type ElicitAnswerValue,
-  type ElicitFieldSpec,
   type Session,
-  type SessionImage,
   type SessionStep
 } from '@/lib/data'
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
@@ -82,18 +79,11 @@ import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSele
 import { SessionModelSelectionResult } from '@/components/console/decisions/SessionModelSelectionResult'
 import { CoordinatorTag } from '@/components/console/CoordinatorTag'
 import { HeaderPeople, personSub } from '@/components/console/HeaderPeople'
-import { agentToneColor } from '@/lib/agent-tone'
-import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
-import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
-import { TranscriptApprovalsProvider, TurnApprovals, UnplacedApprovals } from '@/components/console/TurnApprovals'
-import { approvalTurnStart, askedApprovalIds, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
+import { TranscriptApprovalsProvider, UnplacedApprovals } from '@/components/console/TurnApprovals'
+import { approvalTurnStart, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
-import { MessageText } from '@/components/console/MessageText'
-import { SharedFileChip } from '@/components/console/SharedFileChip'
-import { SharedImageCard } from '@/components/console/SharedImageCard'
-import { SessionMessageCaption, UserTurnDetails } from '../UserTurnDetails'
 import type { McpAppRpc } from '@agentconnect.md/protocol'
 import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Button, Icon } from '@/components/ui'
@@ -115,7 +105,7 @@ import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
-import { ComposerFileChips, MessageFileCards, stageComposerFile } from '@/components/console/ComposerFiles'
+import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
 import { transferCapable, sessionFileDownload } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
@@ -137,24 +127,12 @@ import { useCommandAutocomplete } from '@/components/console/useCommandAutocompl
 import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
-  CAPABILITY_LANE,
-  APP_LANE,
-  ELICIT_LANE,
-  foldCustomAnswers,
-  NOTICE_LANE,
-  PLAN_LANE,
-  WORK_LANES,
-  planLabel,
   sessionTurnInFlight,
   toggleWorkPanel,
-  turnSpan,
-  withPromptStart,
   exchangePromptMs,
   agentTurnStreaming,
-  typedInvalidReason,
   workPanelOpen
 } from '@/components/console/session-work'
-import { CapabilityRequestCard } from '@/components/console/CapabilityRequestCard'
 import { ApprovalRequestsCard, usePendingRequestCount } from '@/components/console/ApprovalRequestsCard'
 import { activityScope, ASSISTANT_TASK_HANDLE_FEATURE } from '@/lib/agent-activity'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
@@ -186,7 +164,6 @@ import { SendButton } from '@/components/console/SendButton'
 import { SessionShareDialog, type ShareVisibility } from '@/components/console/SessionShareDialog'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { footerOfSummary, TaskThreadFooter, ThreadFooter } from '@/components/console/ThreadFooter'
-import { ReplyInThreadButton, ThreadRootPress } from '@/components/console/ThreadRootActions'
 import {
   firstWords,
   liveReplyThreads,
@@ -233,8 +210,8 @@ import {
   chatSettingsAllowed
 } from '@/lib/session-runtime-controls'
 import type { FmtStep } from '@/components/console/transcript-steps'
-import { CopyTurnButton, StepExtras, McpAppRow, turnWork, WorkStepList } from '@/components/console/WorkPanel'
 import { buildTurns, type SessionParticipant, type Turn } from '@/components/console/session-turns'
+import { BotTurnView, UserTurnView } from '@/components/console/TurnViews'
 type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 
 // Session composer chips (mirrors HomeView); effort and approval live in the model picker.
@@ -527,822 +504,6 @@ function ComposerSendButton({
   )
 }
 
-// How one plan entry reads: ACP's three statuses, and an unknown one treated as
-// not-yet-started rather than dropped.
-const PLAN_PENDING = { icon: 'circle', color: 'var(--text-disabled)', text: 'text-(--text-secondary)' }
-const PLAN_MARK: Record<string, typeof PLAN_PENDING> = {
-  completed: { icon: 'circle-check', color: 'var(--green-500)', text: 'text-(--text-tertiary)' },
-  in_progress: { icon: 'circle-dot', color: 'var(--blue-500)', text: 'text-(--text-primary) font-medium' },
-  pending: PLAN_PENDING
-}
-
-// A sent message's inline images: one at full bubble width, several as an uncropped two-column grid.
-function MessageImages({ images, spaced }: { images: readonly SessionImage[]; spaced: boolean }) {
-  if (images.length === 1) {
-    const [image] = images
-    return (
-      <img
-        src={`data:${image!.mimeType};base64,${image!.data}`}
-        alt={image!.name}
-        className={`max-h-[360px] max-w-full rounded-md object-contain ${spaced ? 'mb-[10px]' : ''}`}
-      />
-    )
-  }
-  return (
-    <div
-      className={`grid w-[360px] max-w-full grid-cols-2 gap-[6px] ${spaced ? 'mb-[10px]' : ''}`}
-      data-message-images=""
-    >
-      {images.map((image, i) => (
-        <img
-          key={`${i}:${image.name}`}
-          src={`data:${image.mimeType};base64,${image.data}`}
-          alt={image.name}
-          className="aspect-square w-full rounded-md bg-(--surface-sunken) object-contain"
-        />
-      ))}
-    </div>
-  )
-}
-
-/**
- * The turn's task list, rendered as its own block above the answer — deliberately not
- * inside the collapsed work panel: the plan is what the agent set out to do, and burying
- * it under "Thought through N steps" is what the console did by not recording it at all.
- * A row whose body did not survive the trip shows just its `Plan · n/m` summary.
- */
-function PlanBlock({ step }: { step: FmtStep }) {
-  const entries = step.plan ?? []
-  if (entries.length === 0) {
-    // No entries survived the trip: show whatever label the row carried, and nothing if it
-    // carried none (a live block always has entries — it is only created by an update).
-    return step.text ? (
-      <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">{step.text}</span>
-    ) : null
-  }
-  return (
-    <div className="overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
-      <div className="flex items-center gap-[6px] px-[14px] py-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-        <Icon name="list-checks" size={13} color="var(--text-tertiary)" />
-        {planLabel(entries)}
-      </div>
-      <div className="flex flex-col gap-[7px] border-t border-(--border-subtle) px-[14px] py-[10px]">
-        {entries.map((entry, ei) => {
-          const mark = PLAN_MARK[entry.status] ?? PLAN_PENDING
-          return (
-            <div key={ei} className="flex min-w-0 items-start gap-[8px]">
-              <span className="mt-[2px] flex-none">
-                <Icon name={mark.icon} size={13} color={mark.color} />
-              </span>
-              <span className={`min-w-0 font-sans text-[13px] leading-[1.5] ${mark.text}`}>{entry.content}</span>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-// How a settled elicitation card reads once its buttons are gone, and the accent edge it wears.
-const ELICIT_OUTCOME: Record<
-  string,
-  { icon: string; color: string; edge: string; label: (answer?: string) => string }
-> = {
-  accepted: {
-    icon: 'check',
-    color: 'var(--green-500)',
-    edge: 'border-l-(--green-500)',
-    label: (answer) => answer ?? 'Answered'
-  },
-  dismissed: { icon: 'x', color: 'var(--text-tertiary)', edge: 'border-l-(--border-strong)', label: () => 'Dismissed' },
-  cancelled: {
-    icon: 'clock',
-    color: 'var(--text-tertiary)',
-    edge: 'border-l-(--border-strong)',
-    label: () => 'Cancelled'
-  },
-  // URL mode's second settlement: the agent reported the flow behind an opened link finished.
-  completed: { icon: 'check', color: 'var(--green-500)', edge: 'border-l-(--green-500)', label: () => 'Completed' },
-  // Persisted cards only: the ask no surface here had a control for, so nothing was ever offered.
-  unrenderable: {
-    icon: 'x',
-    color: 'var(--text-tertiary)',
-    edge: 'border-l-(--border-strong)',
-    label: () => "Couldn't be answered here"
-  }
-}
-
-/** How a consent card reads its URL: the three display parts, so the HOST can be emphasized
- *  against the rest, plus what to warn about. Both checks are on the host alone — a lookalike
- *  hides there, not in the path — and both are advisory: the card still shows the full URL and
- *  still opens only on an explicit click. Punycode (`xn--`) is the minimum ask, since it is how
- *  a homograph host spells itself on the wire. Null ⇒ not something to hand a browser tab at
- *  all; the daemon already refuses those, and the card refuses them again rather than trust the
- *  wire. Pure — it parses the URL and never touches the network. */
-function readConsentUrl(url: string): { scheme: string; host: string; rest: string; warnings: string[] } | null {
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return null
-  }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null
-  // Split the ORIGINAL string, never the re-serialized one: the reader has to examine the same
-  // bytes the agent asked for, down to a trailing dot or a stray case the URL parser would fix.
-  // Split by POSITION, not by searching for `parsed.host` — the parser lowercases an uppercase
-  // host and punycodes a Unicode one, so neither occurs in the original and the search would
-  // find nothing, leaving a card with no URL and no way to consent.
-  const afterScheme = url.indexOf('//') + 2
-  const authorityEnd = url.slice(afterScheme).search(/[/?#]/)
-  const hostEnd = authorityEnd < 0 ? url.length : afterScheme + authorityEnd
-  const warnings: string[] = []
-  if (parsed.protocol !== 'https:')
-    warnings.push('Not encrypted (http) — anything you type on that page can be read in transit.')
-  // Both spellings of the same risk: the parser punycodes a Unicode host, so check the ORIGINAL
-  // too — the reader is looking at that, and a homograph is only a lookalike on screen.
-  const shownHost = url.slice(afterScheme, hostEnd)
-  // Userinfo makes the emphasized authority attacker-chosen text: `login.example.com@evil.test`
-  // reads as the host it is not. Name the real destination rather than trusting what shows.
-  if (shownHost.includes('@'))
-    warnings.push(`This link goes to ${parsed.hostname} — the text before the @ is not the destination.`)
-  if (/(^|\.)xn--/i.test(parsed.hostname) || /[^\x00-\x7F]/.test(shownHost))
-    warnings.push(
-      `This host is not plain ASCII (it resolves to ${parsed.hostname}), which can disguise a lookalike domain.`
-    )
-  return {
-    scheme: url.slice(0, afterScheme),
-    host: url.slice(afterScheme, hostEnd),
-    rest: url.slice(hostEnd),
-    warnings
-  }
-}
-
-/** What a multi-select card asks of the reader, from the schema's bounds. */
-function selectionHint(min: number, max?: number): string {
-  if (min > 0 && max !== undefined) return min === max ? `Select exactly ${min}` : `Select ${min}–${max}`
-  if (min > 0) return `Select at least ${min}`
-  return max !== undefined ? `Select up to ${max}` : 'Select any that apply'
-}
-
-/** What a typed card's control starts out holding: the schema's `default`, or nothing. */
-function typedDraft(elicit: Pick<ElicitFieldSpec, 'defaultValue'> | undefined): string {
-  const value = elicit?.defaultValue
-  return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
-}
-
-/** The options a card starts out holding — a multi-select's default list, or the single default
- *  pick, which stays marked so the reader sees what the agent suggested before tapping. */
-function pickedDefaults(elicit: Pick<ElicitFieldSpec, 'defaultValue'> | undefined): string[] {
-  const value = elicit?.defaultValue
-  if (Array.isArray(value)) return value
-  return typeof value === 'string' || typeof value === 'boolean' ? [String(value)] : []
-}
-
-/** What each field of a form card starts out holding — its own schema default, per kind. */
-function formDrafts(fields: ElicitFieldSpec[] | undefined): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const f of fields ?? []) if (f.kind === 'text' || f.kind === 'number') out[f.propName] = typedDraft(f)
-  return out
-}
-
-/** Which questions open with their own "Other" box already showing — only those whose box the
- *  schema handed a default, so a blank form shows options and nothing else. */
-function formOthers(fields: ElicitFieldSpec[] | undefined): Record<string, boolean> {
-  const out: Record<string, boolean> = {}
-  for (const f of fields ?? []) if (f.customAnswerFor && typedDraft(f).trim()) out[f.customAnswerFor] = true
-  return out
-}
-
-function formPicks(fields: ElicitFieldSpec[] | undefined): Record<string, string[]> {
-  const out: Record<string, string[]> = {}
-  for (const f of fields ?? []) if (f.kind !== 'text' && f.kind !== 'number') out[f.propName] = pickedDefaults(f)
-  return out
-}
-
-/** Why one form field is not yet answerable, or undefined once it is — the same per-kind rules
- *  the daemon re-checks. A field the schema does not require may be left untouched: the answer
- *  then leaves it out, which is legal and is why the whole form can be answered at all. */
-function fieldInvalidReason(
-  f: ElicitFieldSpec,
-  drafts: Record<string, string>,
-  picks: Record<string, string[]>
-): string | undefined {
-  if (f.kind === 'text' || f.kind === 'number') {
-    const draft = drafts[f.propName] ?? ''
-    if (!draft.trim() && !f.required) return undefined
-    return typedInvalidReason(f, draft)
-  }
-  const picked = picks[f.propName] ?? []
-  if (f.kind === 'multi-enum') {
-    const min = f.multi?.minItems ?? 0
-    const max = f.multi?.maxItems
-    if (!picked.length && !f.required) return undefined
-    return picked.length < min || (max !== undefined && picked.length > max) ? selectionHint(min, max) : undefined
-  }
-  return picked.length === 1 || (!picked.length && !f.required) ? undefined : 'Choose one'
-}
-
-/** The record a form card answers with: every answered field under its property name, in the
- *  schema's own type. An untouched OPTIONAL field is left out entirely rather than sent empty —
- *  the daemon accepts that, and it keeps the agent's content to what the reader actually said. */
-function formAnswer(
-  fields: ElicitFieldSpec[],
-  drafts: Record<string, string>,
-  picks: Record<string, string[]>
-): Record<string, string | number | string[]> {
-  const out: Record<string, string | number | string[]> = {}
-  for (const f of fields) {
-    if (f.kind === 'text' || f.kind === 'number') {
-      const draft = drafts[f.propName] ?? ''
-      if (draft.trim()) out[f.propName] = f.kind === 'number' ? Number(draft) : draft
-      continue
-    }
-    const picked = picks[f.propName] ?? []
-    // A required multi-select carries even the empty set: "none of them" is its answer.
-    if (f.kind === 'multi-enum') {
-      if (f.required || picked.length) out[f.propName] = picked
-    } else if (picked.length === 1) out[f.propName] = picked[0]!
-  }
-  return out
-}
-
-/** Whether a form field currently holds an answer — what the card's progress counter counts. */
-function fieldAnswered(f: ElicitFieldSpec, drafts: Record<string, string>, picks: Record<string, string[]>): boolean {
-  if (f.kind === 'text' || f.kind === 'number') return !!(drafts[f.propName] ?? '').trim()
-  return (picks[f.propName] ?? []).length > 0
-}
-
-/** The free-text box a question carries instead of an option, if the form gave it one. */
-function companionOf(fields: ElicitFieldSpec[], f: ElicitFieldSpec): ElicitFieldSpec | undefined {
-  return fields.find((c) => c.customAnswerFor === f.propName)
-}
-
-/** Whether what the reader typed into a question's box answers that question BY ITSELF. It
- *  does — the agent reads a typed answer in place of the selection — unless the schema requires
- *  the question's own property, which the daemon enforces by refusing an answer that leaves it
- *  out. Enabling Submit there would post an answer the daemon drops, leaving the card pending
- *  with nothing said. */
-function customAnswerStandsAlone(
-  f: ElicitFieldSpec,
-  companion: ElicitFieldSpec | undefined,
-  drafts: Record<string, string>
-): boolean {
-  return !!companion && !f.required && !!(drafts[companion.propName] ?? '').trim()
-}
-
-/** Whether a question is answered — by its own control, or by a box that answers for it, which
- *  is what the counter has to count for it and the Submit gate to agree. */
-function rowAnswered(
-  f: ElicitFieldSpec,
-  companion: ElicitFieldSpec | undefined,
-  drafts: Record<string, string>,
-  picks: Record<string, string[]>
-): boolean {
-  return fieldAnswered(f, drafts, picks) || customAnswerStandsAlone(f, companion, drafts)
-}
-
-/** Why a question is not yet answerable. What was typed into its box is always checked — the
- *  daemon re-checks it either way — and it stops the question's own control being asked for
- *  only where it answers on its own. */
-function rowInvalidReason(
-  f: ElicitFieldSpec,
-  companion: ElicitFieldSpec | undefined,
-  drafts: Record<string, string>,
-  picks: Record<string, string[]>
-): string | undefined {
-  const draft = companion ? (drafts[companion.propName] ?? '') : ''
-  if (companion && draft.trim()) {
-    const typed = typedInvalidReason(companion, draft)
-    if (typed || customAnswerStandsAlone(f, companion, drafts)) return typed
-  }
-  return fieldInvalidReason(f, drafts, picks)
-}
-
-// One elicitation control, styled alike wherever a card places it.
-const ELICIT_CHIP = 'chip max-w-full truncate rounded-sm disabled:cursor-default disabled:opacity-55'
-const ELICIT_CHIP_ON =
-  'chip max-w-full truncate rounded-sm border-(--brand) bg-(--brand) text-white disabled:cursor-default disabled:opacity-55'
-// The "Other" affordance is an option the agent did not offer, so it wears the soft accent
-// rather than the solid one a real pick gets.
-const ELICIT_CHIP_SOFT = 'chip max-w-full truncate rounded-sm text-(--text-tertiary) disabled:opacity-55'
-const ELICIT_CHIP_SOFT_ON =
-  'chip max-w-full truncate rounded-sm border-(--brand-soft-border) bg-(--brand-soft) text-(--brand-soft-text) disabled:opacity-55'
-const ELICIT_ROW_BASE =
-  'flex w-full min-w-0 cursor-pointer items-start gap-[9px] rounded-sm border px-[11px] py-[8px] text-left font-sans text-[13px] font-medium leading-[1.45] disabled:cursor-default disabled:opacity-55'
-const ELICIT_ROW = `${ELICIT_ROW_BASE} border-(--border-default) bg-(--surface-card) text-(--text-secondary) hover:border-(--border-strong) hover:bg-(--surface-hover)`
-const ELICIT_ROW_ON = `${ELICIT_ROW_BASE} border-(--border-strong) bg-(--surface-hover) text-(--text-primary)`
-const ELICIT_ROW_SOFT = `${ELICIT_ROW_BASE} border-(--border-default) bg-(--surface-card) text-(--text-tertiary) hover:border-(--border-strong) hover:bg-(--surface-hover)`
-const ELICIT_ROW_SOFT_ON = `${ELICIT_ROW_BASE} border-(--border-strong) bg-(--surface-hover) text-(--text-primary)`
-const ELICIT_INPUT = 'inp w-full min-w-0 bg-(--surface-app) disabled:cursor-default disabled:opacity-55'
-// An option long enough to be a sentence cannot be a chip: a row of them would either
-// truncate the answer away or wrap into a ragged block. One such option turns the whole
-// question into a list — the options stay comparable only if they are all shaped alike.
-const LONG_OPTION = 22
-const asList = (options: { label: string }[]) => options.some((o) => o.label.length > LONG_OPTION)
-
-/** One offered option, as a chip or — where the question went long — as a full-width row.
- *  `staged` marks the selection the card is holding until Submit; a card that answers on the
- *  tap itself shows no indicator, because there is no held state for one to report. */
-function ElicitOption({
-  label,
-  on,
-  list,
-  soft,
-  mono,
-  staged,
-  multi,
-  disabled,
-  onPick
-}: {
-  label: string
-  on: boolean
-  list: boolean
-  soft?: boolean
-  mono?: boolean
-  staged?: boolean
-  multi?: boolean
-  disabled: boolean
-  onPick: () => void
-}) {
-  const cls = list
-    ? soft
-      ? on
-        ? ELICIT_ROW_SOFT_ON
-        : ELICIT_ROW_SOFT
-      : on
-        ? ELICIT_ROW_ON
-        : ELICIT_ROW
-    : soft
-      ? on
-        ? ELICIT_CHIP_SOFT_ON
-        : ELICIT_CHIP_SOFT
-      : on
-        ? ELICIT_CHIP_ON
-        : ELICIT_CHIP
-  return (
-    <button
-      type="button"
-      {...(staged || multi ? { 'aria-pressed': on } : {})}
-      className={cls + (mono ? ' font-mono' : '')}
-      disabled={disabled}
-      title={label}
-      onClick={onPick}
-    >
-      {list && staged ? (
-        <span
-          className={`mt-[2px] grid size-[14px] flex-none place-items-center border ${multi ? 'rounded-[4px]' : 'rounded-full'} ${on ? 'border-(--brand) bg-(--brand)' : 'border-(--border-strong) bg-(--surface-card)'}`}
-        >
-          {on ? <span className={`size-[6px] bg-white ${multi ? 'rounded-[1px]' : 'rounded-full'}`} /> : null}
-        </span>
-      ) : null}
-      <span className="min-w-0">{label}</span>
-    </button>
-  )
-}
-const ELICIT_HINT = 'font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)'
-const ELICIT_ACTIONS = 'flex flex-wrap items-center gap-[8px] border-t border-(--border-subtle) pt-[11px]'
-
-/** The agent's in-band question: its options while it is live, its outcome once settled.
- *  A multi-select (`elicit.multi`) toggles its options and answers with the list on Confirm —
- *  one tap can't express a set — while a single-choice card still answers on the tap itself.
- *  A typed field (`elicit.text` / `elicit.number`) has no options at all: it submits what the
- *  reader wrote, once the schema's own constraints are met. A multi-field form (`elicit.fields`)
- *  stacks one numbered, labelled control per field behind a single Submit that stays disabled
- *  until every one of them is answerable, and sends a value per field.
- *  Without `onAnswer` — a reader with no live socket to answer over — the same card renders
- *  as a plain record of the ask, controls inert rather than missing. */
-function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value: ElicitAnswerValue) => void }) {
-  const t = useTranslations('Sessions.detail')
-  // A custom-answer box the daemon could not bind — a bridge that marks the pair with no
-  // `_meta`, or an older daemon that read no marker — is folded into its question HERE, off
-  // the pair's names, so the box is never asked as a question of its own titled "Other".
-  const fields = step.elicit?.fields?.length ? foldCustomAnswers(step.elicit.fields) : undefined
-  const [picked, setPicked] = useState<string[]>(() => pickedDefaults(step.elicit))
-  const [draft, setDraft] = useState<string>(() => typedDraft(step.elicit))
-  const [drafts, setDrafts] = useState<Record<string, string>>(() => formDrafts(fields))
-  const [picks, setPicks] = useState<Record<string, string[]>>(() => formPicks(fields))
-  const [others, setOthers] = useState<Record<string, boolean>>(() => formOthers(fields))
-  // Minimizing is a UI fold, never an answer: the ask stays live and open, just out of the way.
-  const [minimized, setMinimized] = useState(false)
-  // An unanswered question stops the agent exactly as an unopened configuration card does, so the
-  // banner treats the two alike. `onAnswer` absent ⇒ this reader cannot answer it here, and a
-  // pointer to a card they cannot act on would be a nag with no action behind it. Read off `step`
-  // and placed above every early return below — the narrowed locals come after one.
-  const holdRef = usePendingAction(
-    `elicit:${step.elicit?.requestId ?? ''}`,
-    (step.text.split('\n', 1)[0] ?? step.text).slice(0, 80) || 'A question',
-    !!step.elicit && !step.elicit.outcome && !!onAnswer
-  )
-  const elicit = step.elicit
-  const multi = elicit?.multi
-  const consentUrl = elicit?.url
-  const consent = consentUrl ? readConsentUrl(consentUrl) : null
-  // The card's QUESTIONS: a select question's free-text companion is part of the question it
-  // names, not one of its own, so it is never numbered, counted, or asked twice.
-  const rows = fields?.filter((f) => !f.customAnswerFor)
-  const typed = !fields && elicit && (elicit.text || elicit.number) ? elicit : undefined
-  // A question's box is disclosed by its own chip rather than standing open: the options are
-  // what the agent offered, so the box only takes room once the reader asks for it. Closing it
-  // drops what was typed — a hidden draft must never be part of the answer.
-  const toggleOther = (f: ElicitFieldSpec, companion: ElicitFieldSpec) => {
-    const on = !others[f.propName]
-    setOthers((prev) => ({ ...prev, [f.propName]: on }))
-    if (!on) setDrafts((prev) => ({ ...prev, [companion.propName]: '' }))
-  }
-  const min = multi?.minItems ?? 0
-  const max = multi?.maxItems
-  // The same bounds the daemon re-checks: a browser frame is not what makes an answer valid.
-  const complete = picked.length >= min && (max === undefined || picked.length <= max)
-  const invalid = typed ? typedInvalidReason(typed, draft) : undefined
-  if (!elicit) return null
-  const settled = elicit.outcome ? ELICIT_OUTCOME[elicit.outcome] : undefined
-  // The head reads the card's phase before the reader reaches a control: accent edge, icon, and
-  // — for a form long enough to scroll past its own question — how much of it is still open.
-  const edge = settled ? settled.edge : 'border-l-(--brand)'
-  const headIcon = settled ? settled.icon : consent ? 'external-link' : 'message-square-dot'
-  const headColor = settled ? settled.color : 'var(--brand)'
-  // The head names the ask in one line; anything the agent wrote past that first line reads as
-  // the preamble it is, above the questions rather than as a paragraph-long title.
-  const headLine = step.text.split('\n', 1)[0] ?? step.text
-  const preamble = step.text.slice(headLine.length).trim()
-  // A body that is nothing but answers reads a Dismiss beside them as one more answer, so an options card refuses from its head; other shapes have an action row where a refusal beside Submit reads right.
-  const cornerDismiss = !settled && !fields && !typed && !consentUrl
-  const canMinimize = !settled
-  const counter =
-    rows && !settled
-      ? `${rows.filter((f) => rowAnswered(f, companionOf(fields!, f), drafts, picks)).length}/${rows.length} answered`
-      : undefined
-  return (
-    <div
-      ref={holdRef}
-      className={`overflow-hidden rounded-md border border-l-2 border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs) ${edge}`}
-    >
-      <div className="flex min-w-0 items-start gap-[9px] px-[14px] py-[11px]">
-        <span className="mt-[2px] flex-none">
-          <Icon name={headIcon} size={14} color={headColor} />
-        </span>
-        <span className="min-w-0 whitespace-pre-wrap font-sans text-[13.5px] font-medium leading-[1.5] text-(--text-primary)">
-          {headLine}
-        </span>
-        {counter && (
-          <span className="mt-[3px] flex-none font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            {counter}
-          </span>
-        )}
-        {step.time && (
-          <span className="mt-[3px] ml-auto flex-none font-mono text-[11.5px] font-normal leading-normal text-(--text-disabled)">
-            {step.time}
-          </span>
-        )}
-        {(canMinimize || cornerDismiss) && (
-          <span className={`-my-[2px] -mr-[4px] flex flex-none items-center gap-[2px] ${step.time ? '' : 'ml-auto'}`}>
-            {canMinimize && (
-              <button
-                type="button"
-                className="iconbtn h-[22px] w-[22px]"
-                aria-expanded={!minimized}
-                aria-label={minimized ? t('expandQuestion') : t('minimizeQuestion')}
-                title={minimized ? t('expandQuestion') : t('minimizeQuestion')}
-                onClick={() => setMinimized((v) => !v)}
-              >
-                <Icon name={minimized ? 'chevron-right' : 'chevron-down'} size={12} color="var(--text-tertiary)" />
-              </button>
-            )}
-            {cornerDismiss && (
-              <button
-                type="button"
-                className="iconbtn h-[22px] w-[22px]"
-                disabled={!onAnswer}
-                aria-label={t('declineWithoutAnswer')}
-                title={t('declineWithoutAnswer')}
-                onClick={() => onAnswer?.(null)}
-              >
-                <Icon name="x" size={12} color="var(--text-tertiary)" />
-              </button>
-            )}
-          </span>
-        )}
-      </div>
-      {/* Minimized folds the card to its head line alone — the ask is untouched, only hidden. */}
-      {/* A card that settles while folded unfolds itself: the outcome is the one row left to read. */}
-      {(!minimized || settled) && (
-        <div className="min-w-0 border-t border-(--border-subtle) px-[14px] py-[11px]">
-          {preamble && !settled ? (
-            <span className="mb-[11px] block min-w-0 whitespace-pre-wrap font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-              {preamble}
-            </span>
-          ) : null}
-          {settled ? (
-            <span className="inline-flex min-w-0 items-center gap-[7px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-              <Icon name={settled.icon} size={13} color={settled.color} />
-              <span className="min-w-0 truncate">{settled.label(elicit.answerLabel)}</span>
-            </span>
-          ) : consent && consentUrl ? (
-            // URL mode. The full URL is shown for examination and NOTHING here touches it: no
-            // favicon, no preview, no title lookup, no prefetch hint. Opening is the reader's own
-            // click on a plain anchor into a new tab — never an iframe or an in-app webview — so
-            // neither the console nor the model can observe the page or what is typed there.
-            // That click is also the consent the ACP request resolves on.
-            <div className="flex w-full min-w-0 flex-col gap-[11px]">
-              <div className="min-w-0 rounded-sm border border-(--border-subtle) bg-(--surface-app) px-[11px] py-[9px] font-mono text-[12.5px] leading-[1.5] break-all">
-                <span className="text-(--text-tertiary)">{consent.scheme}</span>
-                <span className="font-medium text-(--text-primary)">{consent.host}</span>
-                <span className="text-(--text-tertiary)">{consent.rest}</span>
-              </div>
-              {consent.warnings.map((w) => (
-                <span
-                  key={w}
-                  className="inline-flex min-w-0 items-start gap-[6px] rounded-sm border border-(--border-subtle) bg-(--amber-50) px-[10px] py-[7px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-primary)"
-                >
-                  <span className="mt-[2px] flex-none">
-                    <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
-                  </span>
-                  <span className="min-w-0">{w}</span>
-                </span>
-              ))}
-              <div className={ELICIT_ACTIONS}>
-                {onAnswer ? (
-                  <a
-                    className="dsbtn dsbtn-primary xs no-underline"
-                    href={consentUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => onAnswer(consentUrl)}
-                  >
-                    {t('openLink')}
-                  </a>
-                ) : (
-                  <span className="dsbtn dsbtn-primary xs cursor-default opacity-55">{t('openLink')}</span>
-                )}
-                <button
-                  type="button"
-                  className={ELICIT_CHIP}
-                  disabled={!onAnswer}
-                  onClick={() => onAnswer?.(null)}
-                  title={t('refuseWithoutOpening')}
-                >
-                  {t('decline')}
-                </button>
-                <span className={`ml-auto ${ELICIT_HINT}`}>{t('opensNewTab')}</span>
-              </div>
-            </div>
-          ) : fields && rows ? (
-            <div className="flex w-full min-w-0 flex-col">
-              {rows.map((f, fi) => {
-                const companion = companionOf(fields, f)
-                const reason = rowInvalidReason(f, companion, drafts, picks)
-                const hint =
-                  f.kind === 'multi-enum' ? selectionHint(f.multi?.minItems ?? 0, f.multi?.maxItems) : undefined
-                const list = asList(f.options)
-                return (
-                  <div
-                    key={f.propName}
-                    className={
-                      fi > 0
-                        ? 'grid min-w-0 grid-cols-[22px_minmax(0,1fr)] gap-x-[10px] gap-y-[7px] border-t border-(--border-subtle) py-[11px]'
-                        : 'grid min-w-0 grid-cols-[22px_minmax(0,1fr)] gap-x-[10px] gap-y-[7px] pb-[11px]'
-                    }
-                  >
-                    <span className="mt-[1px] font-mono text-[11.5px] font-normal leading-normal text-(--text-disabled)">
-                      {String(fi + 1).padStart(2, '0')}
-                    </span>
-                    <div className="flex min-w-0 flex-col gap-[7px]">
-                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-[8px] gap-y-[2px]">
-                        <span className="min-w-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                          {f.label}
-                        </span>
-                        {f.description ? (
-                          <span className="min-w-0 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-                            {f.description}
-                          </span>
-                        ) : null}
-                        <span
-                          className={
-                            f.required
-                              ? 'ml-auto flex-none font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)'
-                              : 'ml-auto flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-disabled)'
-                          }
-                        >
-                          {f.required ? 'required' : 'optional'}
-                        </span>
-                      </div>
-                      {f.kind === 'text' || f.kind === 'number' ? (
-                        <input
-                          className={`${ELICIT_INPUT} desktop:max-w-[320px]`}
-                          type={f.kind === 'number' ? 'number' : 'text'}
-                          value={drafts[f.propName] ?? ''}
-                          disabled={!onAnswer}
-                          aria-label={f.label}
-                          {...(f.number?.minimum !== undefined ? { min: f.number.minimum } : {})}
-                          {...(f.number?.maximum !== undefined ? { max: f.number.maximum } : {})}
-                          {...(f.number?.integer ? { step: 1 } : {})}
-                          {...(f.text?.maxLength !== undefined ? { maxLength: f.text.maxLength } : {})}
-                          onChange={(e) => setDrafts((prev) => ({ ...prev, [f.propName]: e.target.value }))}
-                        />
-                      ) : (
-                        <div
-                          className={
-                            list
-                              ? 'flex min-w-0 flex-col gap-[6px] desktop:max-w-[520px]'
-                              : 'flex min-w-0 flex-wrap items-center gap-[6px]'
-                          }
-                        >
-                          {f.options.map((option) => {
-                            const held = picks[f.propName] ?? []
-                            const on = held.includes(option.value)
-                            // At the cap, an unpicked option stops taking a tap — an answer the
-                            // card would have to refuse must not look available.
-                            const cap = f.kind === 'multi-enum' ? f.multi?.maxItems : undefined
-                            const capped = !on && cap !== undefined && held.length >= cap
-                            return (
-                              <ElicitOption
-                                key={option.value}
-                                label={option.label}
-                                on={on}
-                                list={list}
-                                mono={option.label === option.value}
-                                staged
-                                multi={f.kind === 'multi-enum'}
-                                disabled={!onAnswer || capped}
-                                onPick={() =>
-                                  setPicks((prev) => {
-                                    const was = prev[f.propName] ?? []
-                                    if (was.includes(option.value))
-                                      return { ...prev, [f.propName]: was.filter((v) => v !== option.value) }
-                                    // One choice replaces the last for a single-pick field; a
-                                    // multi-select adds to the set.
-                                    return {
-                                      ...prev,
-                                      [f.propName]: f.kind === 'multi-enum' ? [...was, option.value] : [option.value]
-                                    }
-                                  })
-                                }
-                              />
-                            )
-                          })}
-                          {companion ? (
-                            <ElicitOption
-                              label={t('other')}
-                              on={!!others[f.propName]}
-                              list={list}
-                              soft
-                              staged={list}
-                              disabled={!onAnswer}
-                              onPick={() => toggleOther(f, companion)}
-                            />
-                          ) : null}
-                        </div>
-                      )}
-                      {companion && (f.kind === 'text' || f.kind === 'number' || others[f.propName]) ? (
-                        <input
-                          className={`${ELICIT_INPUT} ${list ? 'desktop:max-w-[340px]' : 'font-mono desktop:max-w-[260px]'}`}
-                          type="text"
-                          autoFocus={!!others[f.propName]}
-                          value={drafts[companion.propName] ?? ''}
-                          disabled={!onAnswer}
-                          aria-label={`${f.label} — ${companion.label}`}
-                          placeholder={companion.label}
-                          {...(companion.text?.maxLength !== undefined ? { maxLength: companion.text.maxLength } : {})}
-                          onChange={(e) => setDrafts((prev) => ({ ...prev, [companion.propName]: e.target.value }))}
-                        />
-                      ) : null}
-                      {reason ? (
-                        <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
-                          <span className="mt-[2px] flex-none">
-                            <Icon name="triangle-alert" size={12} color="var(--brand)" />
-                          </span>
-                          <span className="min-w-0">{reason}</span>
-                        </span>
-                      ) : hint ? (
-                        <span className={ELICIT_HINT}>{hint}</span>
-                      ) : null}
-                    </div>
-                  </div>
-                )
-              })}
-              <div className={ELICIT_ACTIONS}>
-                <button
-                  type="button"
-                  className="dsbtn dsbtn-primary xs"
-                  disabled={!onAnswer || rows.some((f) => !!rowInvalidReason(f, companionOf(fields, f), drafts, picks))}
-                  onClick={() => onAnswer?.(formAnswer(fields, drafts, picks))}
-                >
-                  {t('submitAnswers')}
-                </button>
-                <button
-                  type="button"
-                  className={ELICIT_CHIP}
-                  disabled={!onAnswer}
-                  onClick={() => onAnswer?.(null)}
-                  title={t('dismissWithoutAnswer')}
-                >
-                  {t('dismiss')}
-                </button>
-                <span className={`ml-auto ${ELICIT_HINT}`}>{t('optionalAnswers')}</span>
-              </div>
-            </div>
-          ) : typed ? (
-            <div className="flex w-full min-w-0 flex-col gap-[9px]">
-              <input
-                className={`${ELICIT_INPUT} desktop:max-w-[380px]`}
-                type={elicit.number ? 'number' : 'text'}
-                value={draft}
-                disabled={!onAnswer}
-                aria-label={t('yourAnswer')}
-                {...(elicit.number?.minimum !== undefined ? { min: elicit.number.minimum } : {})}
-                {...(elicit.number?.maximum !== undefined ? { max: elicit.number.maximum } : {})}
-                {...(elicit.number?.integer ? { step: 1 } : {})}
-                {...(elicit.text?.maxLength !== undefined ? { maxLength: elicit.text.maxLength } : {})}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && onAnswer && !invalid) onAnswer(elicit.number ? Number(draft) : draft)
-                }}
-              />
-              {invalid && (
-                <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
-                  <span className="mt-[2px] flex-none">
-                    <Icon name="triangle-alert" size={12} color="var(--brand)" />
-                  </span>
-                  <span className="min-w-0">{invalid}</span>
-                </span>
-              )}
-              <div className={ELICIT_ACTIONS}>
-                <button
-                  type="button"
-                  className="dsbtn dsbtn-primary xs"
-                  disabled={!onAnswer || !!invalid}
-                  onClick={() => onAnswer?.(elicit.number ? Number(draft) : draft)}
-                >
-                  {t('submit')}
-                </button>
-                <button
-                  type="button"
-                  className={ELICIT_CHIP}
-                  disabled={!onAnswer}
-                  onClick={() => onAnswer?.(null)}
-                  title={t('dismissWithoutAnswer')}
-                >
-                  {t('dismiss')}
-                </button>
-                <span className={`ml-auto ${ELICIT_HINT}`}>{t('enterSubmits')}</span>
-              </div>
-            </div>
-          ) : (
-            <div className="flex w-full min-w-0 flex-col gap-[10px]">
-              <div
-                className={
-                  asList(elicit.options)
-                    ? 'flex min-w-0 flex-col gap-[6px] desktop:max-w-[520px]'
-                    : 'flex min-w-0 flex-wrap items-center gap-[6px]'
-                }
-              >
-                {elicit.options.map((option) => {
-                  const on = picked.includes(option.value)
-                  // At the cap, the options still unpicked stop taking a tap — an answer the card
-                  // would have to refuse should not look available in the first place.
-                  const capped = !!multi && !on && max !== undefined && picked.length >= max
-                  return (
-                    <ElicitOption
-                      key={option.value}
-                      label={option.label}
-                      on={on}
-                      list={asList(elicit.options)}
-                      mono={option.label === option.value}
-                      // A single-choice card answers on the tap, so it holds nothing an
-                      // indicator could report; a multi-select does.
-                      {...(multi ? { staged: true, multi: true } : {})}
-                      disabled={!onAnswer || capped}
-                      onPick={() =>
-                        multi
-                          ? setPicked((prev) => (on ? prev.filter((v) => v !== option.value) : [...prev, option.value]))
-                          : onAnswer?.(option.value)
-                      }
-                    />
-                  )
-                })}
-              </div>
-              {multi && <span className={ELICIT_HINT}>{selectionHint(min, max)}</span>}
-              {/* Only a multi-select has anything to submit — a single-choice card answers on the tap. */}
-              {multi && (
-                <div className={ELICIT_ACTIONS}>
-                  <button
-                    type="button"
-                    className="dsbtn dsbtn-primary xs"
-                    disabled={!onAnswer || !complete}
-                    onClick={() => onAnswer?.(picked)}
-                  >
-                    {t('confirm')}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function fmtTranscriptDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'
   const totalSeconds = Math.round(ms / 1000)
@@ -1414,70 +575,6 @@ function minTime(...values: Array<number | null | undefined>): number | null {
 function maxTime(...values: Array<number | null | undefined>): number | null {
   const finite = values.filter((v): v is number => v != null && Number.isFinite(v))
   return finite.length > 0 ? Math.max(...finite) : null
-}
-
-/** Whether a user turn prints a sender line above its bubble — it does only when the
- *  sender is not you (a platform user or a schedule). Shared with the avatar's
- *  alignment, which follows the label when there is one and the bubble when not. */
-function showsSenderLabel(turn: { isCron: boolean; sp: { handle: string } }): boolean {
-  return turn.isCron || turn.sp.handle !== '@you'
-}
-
-function ParticipantAvatar({
-  agent,
-  avatarUrl,
-  avatarInitials,
-  platformMark,
-  sp,
-  isCron,
-  href,
-  className = ''
-}: {
-  agent: Agent | null
-  /** The agent's page; an agent's mark opens it. */
-  href?: string
-  avatarUrl?: string | null
-  avatarInitials?: string
-  platformMark?: string
-  sp: ReturnType<typeof speaker>
-  isCron: boolean
-  /** Caller-side box tweaks — today only the transcript's vertical nudge. */
-  className?: string
-}) {
-  const boxClass = `av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
-    !agent && !isCron ? 'bg-transparent' : ''
-  } ${className}`
-  if (agent && href)
-    return (
-      <Link href={href} className={boxClass} title={sp.name} aria-label={sp.name}>
-        <AgentIconView icon={agent.icon} runtime={agent.runtime} size={26} />
-      </Link>
-    )
-  return (
-    <span className={boxClass} title={sp.name}>
-      {agent ? (
-        <AgentIconView icon={agent.icon} runtime={agent.runtime} size={26} />
-      ) : isCron ? (
-        <Icon name="calendar-clock" size={14} color="var(--text-secondary)" />
-      ) : platformMark && !avatarUrl && !avatarInitials ? (
-        <span
-          className="flex h-full w-full items-center justify-center rounded-[inherit]"
-          style={{ background: sp.avBg, color: sp.avText }}
-        >
-          <PlatformMark platform={platformMark} />
-        </span>
-      ) : (
-        <Avatar
-          src={avatarUrl}
-          initials={avatarInitials || sp.initials || '?'}
-          size={26}
-          bg={sp.avBg}
-          fg={sp.avText}
-          fontSize={9.5}
-        />
-      )}
-    </span>
-  )
 }
 
 function SessionHumanFaces({ participants }: { participants: SessionParticipant[] }) {
@@ -4959,89 +4056,18 @@ export default function SessionDetailView() {
                             </div>
                           )}
                           {turn.kind === 'user' ? (
-                            // User turns are right-aligned bubbles; a sender label shows only when it isn't you.
-                            <div className="group/turn flex items-start justify-end gap-[9px]">
-                              <ThreadRootPress
-                                enabled={isMobile && replyRootOf(turn) !== undefined}
-                                onReply={() => replyInThread(replyRootOf(turn)!)}
-                                className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]"
-                              >
-                                {showsSenderLabel(turn) && (
-                                  <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-                                    {turn.isCron && turn.cronId ? (
-                                      <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
-                                        {turn.sp.name}
-                                      </Link>
-                                    ) : (
-                                      <span>{turn.sp.name}</span>
-                                    )}
-                                  </span>
-                                )}
-                                {turn.steer && (
-                                  // A glyph and one word; the full meaning sits in the tooltip.
-                                  <span
-                                    className="flex items-center gap-1 pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)"
-                                    title={
-                                      turn.steered
-                                        ? 'Steered into the running reply'
-                                        : 'Steering into the running reply…'
-                                    }
-                                  >
-                                    {turn.steered ? <Icon name="corner-down-right" size={11} /> : <Spinner size={10} />}
-                                    {turn.steered ? 'Steered' : 'Steering…'}
-                                  </span>
-                                )}
-                                {turn.files && <MessageFileCards files={turn.files} />}
-                                {(turn.text || turn.images || turn.body) && (
-                                  <div className={SELF_BUBBLE}>
-                                    {turn.body?.sessionMessage && (
-                                      <SessionMessageCaption facts={turn.body.sessionMessage} />
-                                    )}
-                                    {turn.images && <MessageImages images={turn.images} spaced={!!turn.text} />}
-                                    {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
-                                    {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
-                                  </div>
-                                )}
-                                {rootFooter(turn)}
-                                {/* A sent bubble's hover actions sit in the inter-turn gap, so revealing them never shifts the row. */}
-                                {(turn.text || replyRootOf(turn)) && (
-                                  <span className="absolute right-0 top-full flex items-center gap-1">
-                                    {replyRootOf(turn) ? (
-                                      <ReplyInThreadButton onReply={() => replyInThread(replyRootOf(turn)!)} />
-                                    ) : null}
-                                    {turn.text ? <CopyTurnButton text={turn.text} /> : null}
-                                  </span>
-                                )}
-                              </ThreadRootPress>
-                              <ParticipantAvatar
-                                agent={turn.agent}
-                                {...(turn.agent
-                                  ? { href: orgPath(`/agents/${encodeURIComponent(turn.agent.id)}`) }
-                                  : {})}
-                                avatarUrl={turn.avatarUrl}
-                                avatarInitials={turn.avatarInitials}
-                                platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
-                                sp={turn.sp}
-                                isCron={turn.isCron}
-                                // Centre the 26px mark on the bubble's first line; a labelled row keeps it level with the label.
-                                className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
-                              />
-                            </div>
+                            <UserTurnView
+                              turn={turn}
+                              platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
+                              footer={rootFooter(turn)}
+                              onReply={(() => {
+                                const root = replyRootOf(turn)
+                                return root ? () => replyInThread(root) : undefined
+                              })()}
+                              pressToReply={isMobile}
+                            />
                           ) : (
                             (() => {
-                              // The answer reads as prose, work folds under the header line, and a daemon notice stands on its own line.
-                              const noticeSteps = turn.steps.filter((s) => s.lane === NOTICE_LANE)
-                              // The turn's plan is its own block, neither spoken answer nor folded work.
-                              const planSteps = turn.steps.filter((s) => s.lane === PLAN_LANE)
-                              // What the turn SAID, in order: prose blocks and question cards stay where the agent put them.
-                              const saidSteps = turn.steps.filter(
-                                (s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE && s.lane !== PLAN_LANE
-                              )
-                              // A coordinator's link to a task it opened or passed a message to is a card that opens the task's thread.
-                              const taskLinks = saidSteps.map((s) => s.taskLink ?? null)
-                              const textSteps = saidSteps.filter(
-                                (s) => s.lane !== ELICIT_LANE && s.lane !== APP_LANE && s.lane !== CAPABILITY_LANE
-                              )
                               const turnInFlight = sessionTurnInFlight(mainBusy, session.statusLabel)
                               const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
                               // The lane names the busy agent only, so only that agent's last turn streams.
@@ -5055,207 +4081,37 @@ export default function SessionDetailView() {
                                 agentLastIndex: turn.agentId ? lastBotTurnIndexByAgent.get(turn.agentId) : undefined
                               })
                               const openWork = workPanelOpen(workOverride.get(turn.key ?? ''))
-                              const { workSteps, summary, failed } = turnWork(turn.steps)
-                              // Keyed by agent id so the colour survives a rename; an id-less row falls back to its name.
-                              const turnTone = agentToneColor(turn.agentId || turn.agentName)
-                              // What the turn's copy button copies: the spoken answer.
-                              const answerText = textSteps
-                                .map((st) => st.text)
-                                .filter(Boolean)
-                                .join('\n\n')
                               return (
-                                <div
+                                <BotTurnView
                                   key={`${session.id}:${ti}`}
-                                  className="group/turn flex items-start gap-2 desktop:gap-[10px]"
-                                >
-                                  {(() => {
-                                    const turnAgent = turn.agentId ? agentById.get(turn.agentId) : owner
-                                    const mark = (
-                                      <AgentIconView
-                                        icon={(turnAgent ?? owner)?.icon}
-                                        runtime={
-                                          (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
-                                          (agentRuntime || turn.model)
-                                        }
-                                        size={26}
-                                      />
-                                    )
-                                    // Only a turn whose agent is known links, never the owner fallback the icon may borrow.
-                                    return turnAgent ? (
-                                      <Link
-                                        href={orgPath(`/agents/${encodeURIComponent(turnAgent.id)}`)}
-                                        className="av h-[26px] w-[26px] flex-none rounded-md"
-                                        title={turn.agentName}
-                                        aria-label={turn.agentName}
-                                      >
-                                        {mark}
-                                      </Link>
-                                    ) : (
-                                      <span className="av h-[26px] w-[26px] flex-none rounded-md">{mark}</span>
-                                    )
-                                  })()}
-                                  <div
-                                    className="relative min-w-0 flex-1"
-                                    style={{ '--agent-accent': turnTone } as CSSProperties}
-                                  >
-                                    <AgentTurnHeader
-                                      name={turn.agentName}
-                                      {...(workSteps.length > 0
-                                        ? {
-                                            work: {
-                                              summary,
-                                              failed,
-                                              open: openWork,
-                                              onToggle: () => toggleWork(turn.key ?? '', openWork),
-                                              running: streaming,
-                                              span: withPromptStart(
-                                                turnSpan(turn.steps.map((st) => st.timeMs)),
-                                                exchangePromptMs(turns, ti)
-                                              )
-                                            }
-                                          }
-                                        : {})}
+                                  turn={turn}
+                                  agentById={agentById}
+                                  owner={owner}
+                                  ownerRuntime={agentRuntime}
+                                  sessionId={toolSid}
+                                  streaming={streaming}
+                                  workOpen={openWork}
+                                  onToggleWork={() => toggleWork(turn.key ?? '', openWork)}
+                                  promptMs={exchangePromptMs(turns, ti)}
+                                  lead={turn.inThread ? threadLabel(turn.inThread) : null}
+                                  trail={answeredLines(turn.steps)}
+                                  openedTasks={openedTaskCards.get(turn.key) ?? []}
+                                  taskFooter={(link, opened) => (
+                                    <TaskThreadFooter
+                                      agentId={opened ? session.agentId! : turn.agentId!}
+                                      link={link}
+                                      parentSessionId={
+                                        opened || turn.agentId === filesAgentId ? subsessionsSessionId : null
+                                      }
+                                      selected={openThread?.sessionId === link.sessionId}
+                                      onOpen={() => openTaskThread(link)}
                                     />
-                                    <div className="flex min-w-0 flex-col gap-[10px]">
-                                      {turn.inThread ? threadLabel(turn.inThread) : null}
-                                      {/* Work happens before the answer, so the open panel sits right under the header. */}
-                                      {workSteps.length > 0 && openWork && (
-                                        <WorkStepList steps={workSteps} sessionId={toolSid} live={streaming} />
-                                      )}
-                                      {noticeSteps.length > 0 && (
-                                        <div className="flex min-w-0 flex-col gap-[3px]">
-                                          {noticeSteps.map((st, si) => (
-                                            <span
-                                              key={`n:${si}`}
-                                              className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
-                                            >
-                                              {st.text}
-                                            </span>
-                                          ))}
-                                        </div>
-                                      )}
-                                      {planSteps.map((st, si) => (
-                                        <PlanBlock key={`p:${si}`} step={st} />
-                                      ))}
-                                      {/* One prose block per text step: a turn that answers in two chunks delivered two messages, so they stay apart. */}
-                                      {saidSteps.map((st, si) =>
-                                        st.lane === APP_LANE ? (
-                                          <div key={`a:${st.app?.appId ?? si}`}>
-                                            <McpAppRow
-                                              step={st}
-                                              sessionId={st.toolSessionId ?? toolSid}
-                                              {...(appRpc
-                                                ? { onRpc: (appId, rpc) => appRpc(turn.agentId, appId, rpc) }
-                                                : {})}
-                                              {...(appReport
-                                                ? { onReport: (text: string) => appReport(turn.agentId, text) }
-                                                : {})}
-                                              {...(closeApp
-                                                ? { onClose: (appId) => closeApp(turn.agentId, appId) }
-                                                : {})}
-                                            />
-                                          </div>
-                                        ) : st.lane === CAPABILITY_LANE && st.capability ? (
-                                          <div key={`c:${st.capability.requestId}`}>
-                                            <CapabilityRequestCard body={st.capability} />
-                                          </div>
-                                        ) : st.lane === ELICIT_LANE ? (
-                                          <div key={`e:${st.elicit?.requestId ?? si}`}>
-                                            <ElicitationCard
-                                              step={st}
-                                              {...(answerElicitation
-                                                ? {
-                                                    onAnswer: (value: ElicitAnswerValue) =>
-                                                      answerElicitation(turn.agentId, st.elicit?.requestId, value)
-                                                  }
-                                                : {})}
-                                            />
-                                          </div>
-                                        ) : taskLinks[si] && turn.agentId ? (
-                                          <div key={`t:${si}`}>
-                                            <TaskThreadFooter
-                                              agentId={turn.agentId}
-                                              link={taskLinks[si]}
-                                              parentSessionId={
-                                                turn.agentId === filesAgentId ? subsessionsSessionId : null
-                                              }
-                                              selected={openThread?.sessionId === taskLinks[si].sessionId}
-                                              onOpen={() => openTaskThread(taskLinks[si]!)}
-                                            />
-                                          </div>
-                                        ) : (
-                                          <div key={si} className={AGENT_PROSE} data-agent-prose="">
-                                            {st.sharedImage ? (
-                                              <SharedImageCard
-                                                {...(st.postId ? { postId: st.postId } : {})}
-                                                image={st.sharedImage}
-                                                {...(st.text ? { caption: st.text } : {})}
-                                                {...(st.file ? { file: st.file } : {})}
-                                                {...(turn.agentId ? { agentId: turn.agentId } : {})}
-                                                {...(st.peerCopy ? {} : { sessionId: st.toolSessionId ?? toolSid })}
-                                              />
-                                            ) : (
-                                              <>
-                                                {st.sessionMessage && (
-                                                  <SessionMessageCaption facts={st.sessionMessage} />
-                                                )}
-                                                {st.image && (
-                                                  <img
-                                                    src={`data:${st.image.mimeType};base64,${st.image.data}`}
-                                                    alt={st.image.name}
-                                                    className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
-                                                  />
-                                                )}
-                                                {st.text && (
-                                                  <div className="whitespace-pre-wrap">
-                                                    <MessageText text={st.text} platform={st.platform} />
-                                                  </div>
-                                                )}
-                                                {st.file && (
-                                                  <div className={st.text ? 'mt-2' : ''}>
-                                                    <SharedFileChip
-                                                      file={st.file}
-                                                      agentId={turn.agentId}
-                                                      sessionId={st.toolSessionId ?? toolSid}
-                                                    />
-                                                  </div>
-                                                )}
-                                                {st.sessionMessage && (
-                                                  <UserTurnDetails body={{ sessionMessage: st.sessionMessage }} />
-                                                )}
-                                              </>
-                                            )}
-                                            <StepExtras step={st} sessionId={toolSid} />
-                                          </div>
-                                        )
-                                      )}
-                                      {answeredLines(turn.steps)}
-                                      {(openedTaskCards.get(turn.key) ?? [])
-                                        .filter(
-                                          (link) => !taskLinks.some((shown) => shown?.sessionId === link.sessionId)
-                                        )
-                                        .map((link) => (
-                                          <div key={`o:${link.sessionId}`}>
-                                            <TaskThreadFooter
-                                              agentId={session.agentId!}
-                                              link={link}
-                                              parentSessionId={subsessionsSessionId}
-                                              selected={openThread?.sessionId === link.sessionId}
-                                              onOpen={() => openTaskThread(link)}
-                                            />
-                                          </div>
-                                        ))}
-                                      {/* A tool call's approval closes the turn that asked it, after what the agent said before asking. */}
-                                      <TurnApprovals turnKey={turn.key} asked={askedApprovalIds(turn.steps)} />
-                                      {/* A finished turn's hover copy button sits in the inter-turn gap, so it takes no line of its own. */}
-                                      {!streaming && answerText && (
-                                        <span className="absolute left-0 top-full">
-                                          <CopyTurnButton text={answerText} />
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
+                                  )}
+                                  answerElicitation={answerElicitation}
+                                  appRpc={appRpc}
+                                  appReport={appReport}
+                                  closeApp={closeApp}
+                                />
                               )
                             })()
                           )}
