@@ -81,7 +81,7 @@ import { FollowUpTaskSummary } from '@/components/console/follow-up'
 import { modelEvaluationsTarget } from '@/components/console/decisions/ModelSelectionEvaluations'
 import { SessionModelSelectionResult } from '@/components/console/decisions/SessionModelSelectionResult'
 import { CoordinatorTag } from '@/components/console/CoordinatorTag'
-import { HeaderPeople } from '@/components/console/HeaderPeople'
+import { HeaderPeople, personSub } from '@/components/console/HeaderPeople'
 import { agentToneColor } from '@/lib/agent-tone'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
@@ -4678,9 +4678,7 @@ export default function SessionDetailView() {
                 people={humanParticipants.map((participant) => ({
                   id: participant.id,
                   name: participant.sp.name,
-                  ...(participant.sp.handle && participant.sp.handle !== '@you'
-                    ? { sub: `${participant.sp.handle} · ${platName(sessionIntegration)}` }
-                    : {}),
+                  sub: personSub(participant.sp.handle, platName(sessionIntegration)),
                   face: (
                     <Avatar
                       src={participant.avatarUrl}

@@ -17,6 +17,11 @@ export interface HeaderPerson {
   face: ReactNode
 }
 
+/** A person's line under their name: their handle and platform, or the platform alone when the handle is a raw member id. */
+export function personSub(handle: string, platform: string): string {
+  return handle.startsWith('@') && handle !== '@you' ? `${handle} · ${platform}` : platform
+}
+
 const ROW =
   'flex w-full min-w-0 items-center gap-[10px] rounded-[7px] px-2 py-[6px] text-left font-sans text-[13px] font-medium leading-normal text-(--text-primary)'
 const LABEL =

@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { NextIntlClientProvider } from 'next-intl'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import messages from '../../../messages/en.json'
-import { HeaderPeople } from './HeaderPeople'
+import { HeaderPeople, personSub } from './HeaderPeople'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 vi.mock('next/link', () => ({
@@ -95,4 +95,10 @@ it('closes on Escape and on a click outside', () => {
     document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
   })
   expect(dialog()).toBeNull()
+})
+
+it('names a person by handle and platform, and by platform alone when the handle is a raw member id', () => {
+  expect(personSub('@dana', 'Slack')).toBe('@dana · Slack')
+  expect(personSub('U0123ABCD', 'Slack')).toBe('Slack')
+  expect(personSub('@you', 'Slack')).toBe('Slack')
 })
