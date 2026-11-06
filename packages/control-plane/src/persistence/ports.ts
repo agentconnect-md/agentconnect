@@ -6415,7 +6415,13 @@ export interface IntegrationChannelRepo {
       /** The bot's default for a NEW room or group DM; `off` seeds Off where no other seed applies. */
       newConversationMode?: NewConversationMode | null
     }
-  ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean }>
+  ): Promise<{
+    externalChanged: boolean
+    migrated?: boolean
+    sessionModeChanged?: boolean
+    /** A NEW row was seeded Off by the bot's `off` mode, which the daemon mutes only once its spec lists it. */
+    offSeeded?: boolean
+  }>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */

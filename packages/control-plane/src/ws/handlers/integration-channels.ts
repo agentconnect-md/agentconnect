@@ -60,6 +60,7 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   let externalChanged = false
   let migrated = false
   let sessionModeChanged = false
+  let offSeeded = false
   try {
     // Ownership may have changed while the first repository read was in flight.
     // Re-check under the shared mutation lease before accepting this daemon's
@@ -112,12 +113,17 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     externalChanged = written?.externalChanged === true
     migrated = written?.migrated === true
     sessionModeChanged = written?.sessionModeChanged === true
+    offSeeded = written?.offSeeded === true
   } finally {
     release()
   }
 
-  // The reporting daemon's spec predates this write, so push what it changed there: a §14.8 opened DM, the external set (assistant-mode.md §5.3), a migrated trigger, a session mode it does not list; best-effort.
-  if ((seeded?.size || externalChanged || migrated || sessionModeChanged) && owner && deps.integrationConverge) {
+  // The reporting daemon's spec predates this write, so push what it changed there: a §14.8 opened DM, the external set (assistant-mode.md §5.3), a migrated trigger, a session mode it does not list, a room its bot's mode started Off; best-effort.
+  if (
+    (seeded?.size || externalChanged || migrated || sessionModeChanged || offSeeded) &&
+    owner &&
+    deps.integrationConverge
+  ) {
     try {
       await deps.integrationConverge(owner)
     } catch {

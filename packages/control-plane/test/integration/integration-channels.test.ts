@@ -2228,12 +2228,13 @@ describe('PATCH /integrations/:id/channels/:channelId — session mode', () => {
   // A bot's new-conversation mode (PATCH /bots/:id) decides what its new rooms start at, ahead of the daemon's Auto default; DMs and known rows never change.
   it("starts new rooms at the bot's new-conversation mode, set through PATCH /bots/:id", async () => {
     await seedDaemon(prisma, DAEMON)
-    running = buildHttpApp(prisma)
-    const id = await install(running)
+    const http = buildHttpApp(prisma)
+    running = http
+    const id = await install(http)
     await report(DAEMON, id, [{ id: 'C0', name: 'before' }])
     const { botId } = await prisma.integration.findUniqueOrThrow({ where: { id } })
     const setMode = async (newConversationMode: string | null) => {
-      const res = await running.app.inject({
+      const res = await http.app.inject({
         method: 'PATCH',
         url: `${ORG}/bots/${botId}`,
         payload: { newConversationMode }
@@ -2249,21 +2250,23 @@ describe('PATCH /integrations/:id/channels/:channelId — session mode', () => {
         ])
       )
     const seen = (ids: string[]) => ids.map((channelId) => ({ id: channelId, name: channelId }))
+    // The daemon mutes an Off room only once its spec lists it, so a report that seeds one pushes the spec.
+    let pushes = 0
+    const reportPushing = (channels: IntegrationChannel[]) =>
+      report(DAEMON, id, channels, undefined, undefined, false, undefined, undefined, async () => void pushes++)
     reporterFeatures = [SESSION_MODE_AUTO_V1_FEATURE]
 
     await setMode('off')
-    await report(
-      DAEMON,
-      id,
-      [...seen(['C0', 'C1']), { id: 'D1', name: '@alice', kind: 'im' }],
-      undefined,
-      undefined,
-      false
-    )
+    await reportPushing([...seen(['C0', 'C1']), { id: 'D1', name: '@alice', kind: 'im' }])
+    expect(pushes).toBe(1)
+    await reportPushing(seen(['C1']))
+    expect(pushes).toBe(1)
     await setMode('mention')
-    await report(DAEMON, id, seen(['C2']), undefined, undefined, false)
+    await reportPushing(seen(['C2']))
+    expect(pushes).toBe(1)
     await setMode(null)
-    await report(DAEMON, id, seen(['C3']), undefined, undefined, false)
+    await reportPushing(seen(['C3']))
+    expect(pushes).toBe(2)
 
     expect(await rows()).toEqual({
       C0: 'mention/createNew',

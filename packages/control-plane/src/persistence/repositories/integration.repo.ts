@@ -1003,7 +1003,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       autoKinds?: readonly ConversationKind[]
       newConversationMode?: NewConversationMode | null
     }
-  ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean }> {
+  ): Promise<{ externalChanged: boolean; migrated?: boolean; sessionModeChanged?: boolean; offSeeded?: boolean }> {
     // Read first only to decide whether the spec needs a push; the register snapshot backs up a missed one.
     const known = new Map(
       (
@@ -1037,6 +1037,16 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       const converts = (c.kind === 'im' || c.kind === 'mpim') && row.kind !== c.kind
       return converts && row.sessionMode !== mode
     })
+    // A new row the bot's mode seeded Off is muted only once the daemon's spec lists it, so it has to reach the daemon too.
+    const offSeeded =
+      opts?.newConversationMode === 'off' &&
+      channels.some(
+        (c) =>
+          !removed.has(c.id) &&
+          !known.has(c.id) &&
+          (opts.defaultTriggerByChannel?.get(c.id) ?? opts.defaultTrigger ?? openConversationTrigger(c, 'off')) ===
+            'off'
+      )
     for (const c of channels) {
       if (removed.has(c.id)) continue
       // Which columns a re-report is allowed to overwrite. An absent name/isPrivate is
@@ -1160,7 +1170,12 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         where: { integrationId, channelId: { in: [...removed] } }
       })
     }
-    return { externalChanged, ...(migrated ? { migrated } : {}), ...(sessionModeChanged ? { sessionModeChanged } : {}) }
+    return {
+      externalChanged,
+      ...(migrated ? { migrated } : {}),
+      ...(sessionModeChanged ? { sessionModeChanged } : {}),
+      ...(offSeeded ? { offSeeded } : {})
+    }
   }
 
   // Move one conversation's operator-owned settings to its new platform id and drop the old row; false when there was nothing to move.
