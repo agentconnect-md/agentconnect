@@ -298,6 +298,41 @@ describe('the skills a placed session installs', () => {
   })
 })
 
+describe("a placed session's Git", () => {
+  const CWD = `/var/lib/agentconnect/sessions/${LEAF}/workspace`
+
+  async function placed() {
+    const { executor } = plane([ready(4)])
+    await executor.prepareAt(AGENT, KEY, [HOST])
+    const request = vi.fn(async () => ({ code: 0, stdout: 'abc\n', stderr: '' }))
+    const session = { isAttached: () => true, hasCapability: () => true, request }
+    ;(executor as unknown as { binder: { sessionFor: () => unknown } }).binder.sessionFor = () => session
+    return { executor, request }
+  }
+
+  // An env replaces the shim's own, so the helper it configures would dial this daemon's socket, absent in the environment.
+  it("points a caller's env at the session's own credential tunnel", async () => {
+    const { executor, request } = await placed()
+    await executor
+      .gitRunnerFor(AGENT, CWD, undefined, KEY)!
+      .withEnv({ HOME: '/home/holder', AC_GITCRED_SOCKET: '/home/holder/.agentconnect/run/gitcred.sock' })
+      .raw(['rev-parse', 'HEAD'])
+    expect(request).toHaveBeenCalledWith(
+      'exec',
+      expect.objectContaining({
+        env: { HOME: '/home/holder', AC_GITCRED_SOCKET: '/var/lib/agentconnect/hs/ab12cd/gitcred.sock' }
+      }),
+      expect.anything()
+    )
+  })
+
+  it("leaves a request without an env to the shim's own", async () => {
+    const { executor, request } = await placed()
+    await executor.gitRunnerFor(AGENT, CWD, undefined, KEY)!.raw(['rev-parse', 'HEAD'])
+    expect((request.mock.calls[0] as unknown as [string, { env?: unknown }])[1].env).toBeUndefined()
+  })
+})
+
 describe('the adapter a placed session starts', () => {
   // What this machine's own store would launch: its node and a tree only it has.
   const own = { command: '/opt/holder/node', args: ['/srv/holder/runtimes/adapter@1.0.0/bin.js', '--acp'], env: [] }
