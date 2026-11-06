@@ -8,6 +8,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import type { ComputerAdminPromptMode, ComputerPolicy } from '@agentconnect.md/protocol/computer'
 import { AdminPromptHelper } from './admin-prompts.js'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
+import { browserCloseCommand, browserCommand } from './browser/command.js'
 import { CommandLine, commandLineSupported, narrowedCommandLine } from './command-line.js'
 import { AuditReporter } from './cp/audit-report.js'
 import { ScreenshotStore } from './cp/screenshot-store.js'
@@ -140,6 +141,10 @@ Commands:
                                                the permissions), Linux systemd user unit (graphical session),
                                                Windows service running the daemon as SYSTEM in the signed-in
                                                session, which can reach UAC prompts (asks for approval)
+  browser --profile DIR [--master DIR] [--source DIR]... [--browser PATH] [-- ARGS]
+                                               start a desktop's Chromium on its own profile, first merging the
+                                               logins of the other profiles into it (or hand ARGS to the running one)
+  browser-close --profile DIR [--display :N]   close that browser the way a person would, so it saves its cookies
 
 Data dir: ${dataDir()}`
 
@@ -172,6 +177,12 @@ async function main(): Promise<void> {
       'cp-url': { type: 'string' },
       name: { type: 'string' },
       purge: { type: 'boolean' },
+      profile: { type: 'string' },
+      master: { type: 'string' },
+      source: { type: 'string', multiple: true },
+      browser: { type: 'string' },
+      display: { type: 'string' },
+      'skip-path': { type: 'string', multiple: true },
       help: { type: 'boolean', short: 'h' }
     }
   })
@@ -309,6 +320,10 @@ async function main(): Promise<void> {
       else throw new Error('usage: autostart enable | disable | start')
       return void console.log(`autostart ${action}: ok`)
     }
+    case 'browser':
+      return browserCommand(values, rest, log)
+    case 'browser-close':
+      return browserCloseCommand(values, log)
     default:
       throw new Error(`unknown command "${command}"\n\n${help()}`)
   }
