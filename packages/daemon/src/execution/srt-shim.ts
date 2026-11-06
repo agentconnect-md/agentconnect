@@ -97,6 +97,8 @@ export function srtShimBoundary(input: {
   log?: Pick<Logger, 'warn'>
   /** The code-host domains SRT routes to the daemon's credential proxy, when it runs. */
   mitmProxy?: { socketPath: string; domains: string[] }
+  /** The proxy's trust variables, which the shim and the Git it runs inherit wherever SRT intercepts. */
+  trustEnv?: Record<string, string>
 }): HostShimBoundary {
   return {
     wrap: (shim, layout) => {
@@ -138,7 +140,7 @@ export function srtShimBoundary(input: {
         cwd,
         provider: { cmd: process.execPath, args: [...layout.entry.execArgv, layout.entry.path] }
       })
-      return { ...launch, env: { [SANDBOX_TEMP_DIR_ENV]: tempDir } }
+      return { ...launch, env: { ...(input.mitmProxy ? input.trustEnv : undefined), [SANDBOX_TEMP_DIR_ENV]: tempDir } }
     }
   }
 }

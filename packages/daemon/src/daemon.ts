@@ -3875,7 +3875,11 @@ export class Daemon {
         this.credentialProxy &&
         !environment.hosted &&
         this.credentialProxyIntercepts(environment.id.split('/')[0] ?? '')
-          ? { socketPath: this.credentialProxy.socketPath, domains: [...GITHUB_PROXY_HOSTS] }
+          ? {
+              socketPath: this.credentialProxy.socketPath,
+              domains: [...GITHUB_PROXY_HOSTS],
+              trustEnv: proxyTrustEnv(this.credentialProxy.ca)
+            }
           : undefined,
       now: () => this.clock.now()
     })
@@ -7215,6 +7219,9 @@ export class Daemon {
     // This host's HOME, temp root and credential socket are hidden inside; the session's HOME and the shim's own stand in.
     const owned: Record<string, string> = { HOME: sessionHomeIn(session.environment.workspaceRoot) }
     shimEnvironment(owned, session.runtimeRoot)
+    // The daemon's own clone and fetch cross the credential proxy where SRT intercepts, so they trust its CA too, over any env they send.
+    if (this.credentialProxy && !session.environment.hosted && this.credentialProxyIntercepts(agentId))
+      Object.assign(owned, proxyTrustEnv(this.credentialProxy.ca))
     return localShimGitRunner({
       run: (work) => this.localSrtExecutor!.withEnvironment(session.environment, work),
       cwd: cwd!,

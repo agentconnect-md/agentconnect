@@ -234,6 +234,44 @@ describe('the srt boundary around a shim', () => {
     }
   )
 
+  // github-app-git-credentials.md, Phase 2: where SRT hands the code host to the proxy, the shim and the Git it runs trust the proxy's CA.
+  it.skipIf(process.platform === 'win32')(
+    'routes the code host to the credential proxy and hands the shim its trust',
+    async () => {
+      root = await mkdtemp('/tmp/srtp-')
+      const layout = {
+        entry: { path: join(root, 'shim.js'), execArgv: [] },
+        runtimeRoot: join(root, 'hs', 'abc'),
+        workspaceRoot: join(root, 'sessions', 's'),
+        home: join(root, 'sessions', 's', 'home'),
+        helperRoot: join(root, 'helper'),
+        privateDir: join(root, 'hs', 'abc.p')
+      }
+      for (const dir of [layout.runtimeRoot, layout.home, layout.helperRoot, layout.privateDir])
+        await mkdir(dir, { recursive: true })
+      const mitmProxy = {
+        socketPath: join(root, 'run', 'codehost-proxy.sock'),
+        domains: ['github.com', 'api.github.com']
+      }
+      const trustEnv = { SSL_CERT_FILE: join(root, 'credential-proxy', 'trust', 'trust.pem') }
+      const boundary = (proxied: boolean) =>
+        srtShimBoundary({
+          daemonRoot: root!,
+          mounts: [{ source: layout.workspaceRoot, target: layout.workspaceRoot, mode: 'writable' }],
+          readRoots: [],
+          ...(proxied ? { mitmProxy, trustEnv } : {})
+        }).wrap({ cmd: process.execPath, args: [] }, layout)
+      const wrapped = boundary(true)
+      expect(wrapped.env).toMatchObject(trustEnv)
+      const settings = JSON.parse(await readFile(join(layout.privateDir, 'settings.json'), 'utf8')) as {
+        network: Record<string, unknown>
+      }
+      expect(settings.network.mitmProxy).toEqual(mitmProxy)
+      await rm(join(layout.runtimeRoot, 't'), { recursive: true, force: true })
+      expect(boundary(false).env).not.toHaveProperty('SSL_CERT_FILE')
+    }
+  )
+
   // An agent's shared host is rooted at the agent's directory, which holds its agent.json: only what it mounts is reopened.
   it.skipIf(process.platform !== 'linux')(
     'keeps an agent-scoped root hidden, writing only its HOME, the shim roots and what it mounts',
