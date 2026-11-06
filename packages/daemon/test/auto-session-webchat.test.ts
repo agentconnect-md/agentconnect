@@ -262,6 +262,33 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md Â
     await daemon.stop()
   })
 
+  it('refuses whatever its runtime would ask, without asking anyone', async () => {
+    let release: () => void = () => {}
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const { daemon, d, send } = await boot(async (_id, _text, say) => {
+      await held
+      say('ok')
+    })
+    const turn = send('hello')
+    await vi.waitFor(
+      () => expect([...d.pending.values()].some((p: any) => isCoordinatorCoordinate(p.plan.sessionThread))).toBe(true),
+      WAIT
+    )
+    const p = [...d.pending.values()].find((turn: any) => isCoordinatorCoordinate(turn.plan.sessionThread)) as any
+    const answer = await d.permissions.onAcpPermission(p.hostKey, p.acpSessionId, {
+      sessionId: p.acpSessionId,
+      toolCall: { toolCallId: 'tc-1', title: 'touch probe.txt', kind: 'execute' },
+      options: [
+        { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+        { optionId: 'reject', name: 'Reject', kind: 'reject_once' }
+      ]
+    })
+    expect(answer).toEqual({ outcome: { outcome: 'selected', optionId: 'reject' } })
+    release()
+    await turn
+    await daemon.stop()
+  })
+
   it("keeps someone else's conversation, and every conversation with the switch off, an ordinary one", async () => {
     const plain = await boot(async (_id, _text, say) => say('hi'), { autoSessionMode: false })
     await plain.send('hello')

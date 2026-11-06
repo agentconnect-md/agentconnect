@@ -33,10 +33,12 @@ describe('coordinatorTarget', () => {
 })
 
 describe('coordinatorPermissionMode', () => {
-  it('runs read-only, else in the runtime auto mode, never full access', () => {
-    expect(coordinatorPermissionMode('claude-acp', ['default', 'plan', 'auto'])).toBe('plan')
-    expect(coordinatorPermissionMode('codex-acp', ['read-only', 'agent'])).toBe('read-only')
-    expect(coordinatorPermissionMode('claude-acp', ['default', 'auto', 'bypassPermissions'])).toBe('auto')
+  it('asks every write where the read-only mode changes the model, else runs read-only, else auto, never full access', () => {
+    // Claude Code's plan mode runs Haiku as Sonnet, so its coordinator asks in `default` and every ask is refused.
+    expect(coordinatorPermissionMode('claude-acp', ['default', 'plan', 'auto'])).toBe('default')
+    expect(coordinatorPermissionMode('claude-acp', ['plan', 'auto'])).toBe('plan')
+    expect(coordinatorPermissionMode('codex-acp', ['read-only', 'workspace-write', 'agent'])).toBe('read-only')
+    expect(coordinatorPermissionMode('codebuddy-code', ['default', 'auto', 'bypassPermissions'])).toBe('auto')
     expect(coordinatorPermissionMode('antigravity-acp', ['default', 'yolo'])).toBeUndefined()
   })
 })

@@ -120,6 +120,7 @@ import {
 } from '../daemon/tool-classification.js'
 import { pendingTurnKey, turnState, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
 import { isCheckCoordinate, isSubsessionCoordinate } from '../session/subsession-coordinate.js'
+import { isCoordinatorCoordinate } from '../session/append-coordinate.js'
 import { inConversation, requestConversation } from './request-conversation.js'
 import {
   subsessionLabel,
@@ -658,6 +659,11 @@ interface CallerApproval {
 
 /** An API turn whose caller is handed the agent's questions: the webchat context a protocol that carries them set up. */
 type CallerTurn = Pending & { webchat: NonNullable<Pending['webchat']> }
+
+/** A session no one answers for: whatever its runtime would ask is refused (assistant-mode.md §5.12, auto-session-mode.md §5.4). */
+function refusesEveryAsk(thread: string | null | undefined): boolean {
+  return isCheckCoordinate(thread) || isCoordinatorCoordinate(thread)
+}
 
 export class PermissionCoordinator {
   // ── Permission requests (ACP session/request_permission) ─────────────────────
@@ -2947,9 +2953,11 @@ export class PermissionCoordinator {
     }
     // codex-acp asks to approve an MCP call by id and kind alone; every card names it by what the call said (#3289).
     params = this.host.maskAgentSecrets(agentId, titledPermissionRequest(params, p.knownToolCalls))
-    // assistant-mode.md §5.12: a check is read-only, so whatever would need approval is refused, never asked.
-    if (isCheckCoordinate(p.plan.sessionThread)) {
-      this.permissionEvaluationDetails.set(evaluationParams, { reason: 'assistant_check' })
+    // A check (assistant-mode.md §5.12) and a coordinator (auto-session-mode.md §5.4) are read-only: whatever would need approval is refused, never asked.
+    if (refusesEveryAsk(p.plan.sessionThread)) {
+      this.permissionEvaluationDetails.set(evaluationParams, {
+        reason: isCheckCoordinate(p.plan.sessionThread) ? 'assistant_check' : 'coordinator'
+      })
       const reject = params.options.find((o) => o.kind === 'reject_once' || o.kind === 'reject_always')
       return reject
         ? { outcome: { outcome: 'selected', optionId: reject.optionId } }
@@ -3077,8 +3085,8 @@ export class PermissionCoordinator {
     // advertised. Correlate its opaque id with a preceding trusted tool event;
     // never infer trust from the human-facing elicitation message.
     if (isBuiltinSystemToolElicitation(params, p.builtinSystemToolCallIds)) return { action: 'accept' }
-    // A check asks no one (assistant-mode.md §5.12).
-    if (isCheckCoordinate(p.plan.sessionThread)) return { action: 'decline' }
+    // A check and a coordinator ask no one.
+    if (refusesEveryAsk(p.plan.sessionThread)) return { action: 'decline' }
     const isApproval = isMcpToolApprovalElicitation(params)
     if (isApproval && this.callerAnswers(p)) {
       return await this.askCaller<CreateElicitationResponse>(p, sessionId, this.elicitationParts(agentId, params, p), {

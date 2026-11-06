@@ -13,7 +13,10 @@ import {
 import { CoordinatorSessions, deliveredMessage, messageForTask } from '../src/auto-session/coordinator-sessions.js'
 import { batchCut, CoordinatorTurns, reportAboutOf, reportJoinsBatch } from '../src/auto-session/coordinator-turns.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
-import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../src/runtime-defs/claude-runtime.js'
+import {
+  CLAUDE_COORDINATOR_DISALLOWED_TOOLS,
+  CLAUDE_HEADLESS_DISALLOWED_TOOLS
+} from '../src/runtime-defs/claude-runtime.js'
 import { executeTool } from '../src/mcp/ops.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
@@ -933,8 +936,11 @@ describe('auto conversations route to the coordinator', () => {
     expect(prompts[1]).not.toContain('[U1] second')
     expect(host.prompt).toHaveBeenCalledTimes(2)
     expect((host.newSession.mock.calls[0] as unknown[])[0]).toBe(join(root, 'coordinators', 'bot-a'))
-    // Its plan mode can end a turn only through tools that need an approver, so the coordinator never gets them.
-    expect((host.newSession.mock.calls[0] as unknown[])[6]).toEqual(CLAUDE_HEADLESS_DISALLOWED_TOOLS)
+    // It runs in `default`, where sandboxed Bash runs unasked, so it gets no shell, file-writing or sub-agent tool.
+    expect((host.newSession.mock.calls[0] as unknown[])[6]).toEqual(CLAUDE_COORDINATOR_DISALLOWED_TOOLS)
+    expect(CLAUDE_COORDINATOR_DISALLOWED_TOOLS).toEqual(
+      expect.arrayContaining([...CLAUDE_HEADLESS_DISALLOWED_TOOLS, 'Bash', 'Write', 'Edit'])
+    )
     await daemon.stop()
   })
 
