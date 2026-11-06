@@ -1,7 +1,7 @@
 import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import type { LocalStore } from '../../store/local-store.js'
 import type { Attachment, NormalizedMessage } from '../../messages/normalized.js'
-import { attachmentMention, hydrateTranscriptImage, transcriptImageAttachments } from '../attachment-block.js'
+import { attachmentMention, hydrateTranscriptImages, transcriptImageAttachments } from '../attachment-block.js'
 
 /** The two transcript seams the ingest owns — the slot probe and the row append. */
 type IngestStore = Pick<LocalStore, 'transcriptTextAt' | 'appendTranscript'>
@@ -83,7 +83,7 @@ export interface TranscriptIngestResult {
  */
 export async function ingestInboundTranscript(input: TranscriptIngestInput): Promise<TranscriptIngestResult> {
   const { store, agentId, msg, transcriptChannel } = input
-  await hydrateTranscriptImage(msg.attachments, {
+  await hydrateTranscriptImages(msg.attachments, {
     download: input.download,
     ...(input.attachmentMaxBytes !== undefined ? { maxBytes: input.attachmentMaxBytes } : {})
   })

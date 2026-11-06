@@ -36,6 +36,7 @@ import {
   isSessionIdentityPlatform,
   isSubsessionCoordinate,
   SANDBOX_KEEP_ALIVE_FEATURE,
+  TRANSCRIPT_IMAGE_MAX_COUNT,
   WEBCHAT_IMAGES_FEATURE,
   continuableSession,
   type SharedImageResolveOk,
@@ -1269,7 +1270,8 @@ export function sessionRoutes(deps: HttpDeps) {
             sessionId: session.id,
             ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
             ...(req.query.after !== undefined ? { after: req.query.after } : {}),
-            limit: req.query.limit ?? 50
+            limit: req.query.limit ?? 50,
+            imagesPerMessage: TRANSCRIPT_IMAGE_MAX_COUNT
           })
         )
         if (!read.ok) return reply.code(503).send(contentUnavailable(read.reason))
