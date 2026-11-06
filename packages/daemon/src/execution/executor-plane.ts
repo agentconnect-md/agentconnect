@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { Socket } from 'node:net'
 import { ClientTransport, systemClock, type Clock } from '@agentconnect.md/connection'
 import type { ExecutorPrepareResult, ExecutorReleaseResult } from '@agentconnect.md/protocol'
+import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 import type { PrivateRuntimeState } from '../runtimes/private-runtime-state.js'
 import { sessionKeyDirName } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -13,10 +14,10 @@ import { sandboxSubjectSessionLeaf, sessionSandboxSubject, type SandboxSubject }
 import { RemoteShimDriver } from '../remote/shim-driver.js'
 import { TunnelBinder } from '../remote/tunnel-binder.js'
 import { spawnSubject } from '../shim/binding.js'
-import { ShimFileSink } from '../shim/channels.js'
+import { ShimFileSink, type ShimRequester } from '../shim/channels.js'
 import type { ShimTransport } from '../shim/client.js'
 import { ShimDialer } from '../shim/dialer.js'
-import { ShimGitRunner } from '../shim/git-exec.js'
+import { ShimGitRunner, type GitExecPayload } from '../shim/git-exec.js'
 import { ClusterSkillClient, cwdSkillRequester } from '../shim/skill-client.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import { shimPaths } from '../shim/sandbox-paths.js'
@@ -395,12 +396,29 @@ export class ExecutorPlane implements ExecutionPlane {
   }
 
   gitRunnerFor(agentId: string, cwd?: string, abort?: AbortSignal, sessionKey?: string): GitRunner | undefined {
-    const session = this.sessionForScope({
+    const placed = this.placedFor({
       agentId,
       ...(cwd === undefined ? {} : { path: cwd }),
       ...(sessionKey === undefined ? {} : { sessionKey })
     })
-    return session ? new ShimGitRunner(session, cwd, undefined, abort) : undefined
+    const session = placed && this.boundSession(placed.subject)
+    if (!placed || !session) return undefined
+    // A caller's env replaces the shim's, and the credential helper it names dials this daemon's socket unless told
+    // otherwise; inside the environment that path does not exist, so it is pointed at the session's own tunnel (§5).
+    const roots = this.rootsFor(placed.sessionKey)
+    if (!roots) return new ShimGitRunner(session, cwd, undefined, abort)
+    const socket = shimPaths(roots.runtimeRoot).tunnels.gitcred
+    const requester: ShimRequester = {
+      request: (capability, payload, options) => {
+        const { env } = payload as GitExecPayload
+        const mapped =
+          env === undefined
+            ? payload
+            : { ...(payload as GitExecPayload), env: { ...env, [GITCRED_SOCKET_ENV]: socket } }
+        return session.request(capability, mapped, options)
+      }
+    }
+    return new ShimGitRunner(requester, cwd, undefined, abort)
   }
 
   workspaceFsFor(agentId: string, scope?: Omit<PlaneScope, 'agentId'>): WorkspacePlacement | undefined {
