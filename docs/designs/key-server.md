@@ -65,7 +65,8 @@ deployment that installs both. This document stops at the header.
 `openai` / `deepseek` / `typesafe`) and selects which key comes back. A dialect
 is listed here once an issuer can mint for it. `typesafe` is consumed by the
 daemon Decision evaluator (§2.2); `modelProviderTarget` does not map an ACP runtime
-to that dialect. There is
+to that dialect. A `deepseek` key is DeepSeek's, but at a configured base it speaks
+the Messages API, the DeepSeek Harness's dialect (§4). There is
 deliberately **no `model` parameter**: per-model usage attribution belongs to
 whatever observes actual requests (a gateway data path, or the runtime's own usage
 reports), and a spawn-time hint would invite implementations to treat it as truth
