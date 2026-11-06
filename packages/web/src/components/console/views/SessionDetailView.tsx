@@ -111,6 +111,8 @@ import {
   sessionTranscriptAgentIds
 } from '@/lib/session-trigger'
 import { useStickToBottom } from '@/lib/stick-to-bottom'
+import { newDividerIndex, useSeenMarker } from '@/lib/transcript-seen'
+import { NewDivider, SeenRecorder, TranscriptMap, type MapTurn } from '@/components/console/TranscriptNav'
 import { useSessionTranscript } from '@/lib/use-session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
@@ -2992,6 +2994,8 @@ export default function SessionDetailView() {
   // live session's newest output landed below the fold. Follow it — but only for
   // a reader who is already at the bottom (see lib/stick-to-bottom).
   const { pin: stickToBottom, awayFromBottom } = useStickToBottom(conversationKey ?? sid ?? null)
+  // What this browser last read here, for the NEW line; it advances only while the reader looks at the end.
+  const seen = useSeenMarker(MOCK_MODE ? null : (conversationKey ?? sid ?? null), !awayFromBottom)
 
   useEffect(() => {
     if (!session || (session.platform !== 'playground' && session.platform !== 'webchat') || !sessionBusy) return
@@ -4472,6 +4476,32 @@ export default function SessionDetailView() {
   turns.forEach((turn, i) => {
     if (turn.kind === 'user' && !turn.steer) lastExchangeAt = i
   })
+  // When each turn began, for the NEW line: a message when it was sent, an agent turn at its first timed step.
+  const turnStartsMs = turns.map((turn) =>
+    turn.kind === 'user'
+      ? turn.timeMs
+      : turn.steps.reduce<number | undefined>(
+          (min, st) => (st.timeMs !== undefined && (min === undefined || st.timeMs < min) ? st.timeMs : min),
+          undefined
+        )
+  )
+  const newestTurnMs = turns.reduce<number | null>((max, turn) => {
+    const at =
+      turn.kind === 'user'
+        ? turn.timeMs
+        : turn.steps.reduce<number | undefined>(
+            (m, st) => (st.timeMs !== undefined && (m === undefined || st.timeMs > m) ? st.timeMs : m),
+            undefined
+          )
+    return at !== undefined && (max === null || at > max) ? at : max
+  }, null)
+  const newDividerAt = newDividerIndex(turnStartsMs, seen.marker)
+  // The turn map's ticks: a person's message short, an agent's turn long, each named in its tip.
+  const mapTurns: MapTurn[] = turns.map((turn) =>
+    turn.kind === 'user'
+      ? { key: turn.key, human: true, tip: `${turn.sp.name}: ${turn.text.replace(/\s+/g, ' ').slice(0, 60)}` }
+      : { key: turn.key, human: false, tip: [turn.agentName, turn.time].filter(Boolean).join(' · ') }
+  )
   const approvalTurns: ApprovalTurnAnchor[] = turns.flatMap((turn, i) =>
     turn.kind === 'bot'
       ? [
@@ -4557,7 +4587,9 @@ export default function SessionDetailView() {
           mobile gutter (`p-3`) already keeps the ring clear there. */}
       {/* Column: fixed header chrome ABOVE the scrolling transcript pane. The header lives OUTSIDE
       the scroller (no `sticky`), so it never scrolls away and the pane below can be virtualized. */}
-      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+      <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col">
+        <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} />
+        {!viewerOpen ? <TranscriptMap turns={mapTurns} /> : null}
         {/* HEADER CHROME — title + action bar (+ any notices). Centred to line up with the 880px
         transcript below. `flex-none`; no `sticky`, no bottom `margin` — the meta row's border-b is
         the flush divider with the transcript, with no blank gap under the line. */}
@@ -5092,7 +5124,8 @@ export default function SessionDetailView() {
                     <div className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
                       {turns.map((turn, ti) => (
                         // The turn's clock time is its own centred line above the message, a separator shared by both sides.
-                        <div key={turn.key} className="flex flex-col gap-[5px]">
+                        <div key={turn.key} data-turn-anchor={turn.key} className="flex flex-col gap-[5px]">
+                          {ti === newDividerAt ? <NewDivider /> : null}
                           {turn.time && (
                             <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
                               {turn.time}
@@ -5534,12 +5567,13 @@ export default function SessionDetailView() {
                       {awayFromBottom && (
                         <button
                           type="button"
+                          data-jump-latest=""
                           onClick={() => stickToBottom()}
-                          aria-label={t('scrollLatest')}
                           title={t('scrollLatest')}
-                          className="absolute -top-3 left-1/2 z-10 flex h-8 w-8 -translate-x-1/2 -translate-y-full cursor-pointer items-center justify-center rounded-full border border-(--border-default) bg-(--surface-card) text-(--text-secondary) shadow-(--shadow-md) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+                          className="absolute -top-3 left-1/2 z-10 inline-flex h-9 -translate-x-1/2 -translate-y-full cursor-pointer items-center gap-[7px] rounded-full border border-(--border-default) bg-(--surface-card) px-4 font-sans text-[13px] font-medium leading-normal whitespace-nowrap text-(--text-primary) shadow-(--shadow-md) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover)"
                         >
-                          <Icon name="chevron-down" size={16} />
+                          <Icon name="arrow-down" size={15} />
+                          {t('jumpToLatest')}
                         </button>
                       )}
                       {approvalCard('mb-2 max-desktop:rounded-lg')}
