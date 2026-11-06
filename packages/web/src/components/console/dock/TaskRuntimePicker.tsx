@@ -3,12 +3,15 @@
 // A coordinator task's model, effort, approval mode and fast mode, changed from its own thread as the conversation's are from its composer.
 
 import { useState } from 'react'
+import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import { RuntimeModelSelect } from '@/components/console/RuntimeModelSelect'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { sessionEffortAfterModelChange, runtimePickerState } from '@/lib/session-runtime-controls'
 import { strategyUsesImage } from '@/lib/execution-strategy'
-import type { Agent, DaemonRow } from '@/lib/data'
+import type { Agent, DaemonRow, Session } from '@/lib/data'
+import { fetchSessionDetail, type SessionDetailDto } from '@/lib/api'
+import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
 
 type Selection = { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }
 
@@ -31,11 +34,16 @@ export function TaskRuntimePicker({
 }) {
   const t = useTranslations('Sessions.detail')
   const permissionT = useTranslations('Common.permissionModes')
-  const { getPgSession, pgSetModel, pgSetEffort, pgSetPermissionPreset, pgSetFast } = usePlayground()
+  const { getPgSession, markSessionTarget, pgSetModel, pgSetEffort, pgSetPermissionPreset, pgSetFast } = usePlayground()
   const [selection, setSelection] = useState<Selection>({})
-  const session = getPgSession(sessionId)
-  // Shown once the task's session has reported what it can change to; until then there is nothing honest to offer.
-  if (!session?.availableModels) return null
+  // The same read the thread makes: the task's recorded runtime, until its live session reports its own.
+  const { data: detail } = useSWR(
+    ['session-detail', sessionId],
+    ([, sid]) => fetchSessionDetail(sid),
+    CONSOLE_SWR_CONFIG
+  )
+  const session = getPgSession(sessionId) ?? (detail ? recordedRuntime(detail) : undefined)
+  if (!session) return null
   const runtime = session.runtime ?? agentRuntime
   const state = runtimePickerState({
     session,
@@ -47,7 +55,11 @@ export function TaskRuntimePicker({
     runtimeUnresolved: session.runtimePending === true,
     permissionT
   })
-  const choose = (patch: Selection) => setSelection((current) => ({ ...current, ...patch }))
+  // A change goes to the task's own session, so the target is marked before any is sent.
+  const choose = (patch: Selection) => {
+    markSessionTarget(sessionId)
+    setSelection((current) => ({ ...current, ...patch }))
+  }
   return (
     <span data-task-runtime="" className="flex min-w-0 flex-none">
       <RuntimeModelSelect
@@ -99,4 +111,15 @@ export function TaskRuntimePicker({
       />
     </span>
   )
+}
+
+/** What the task's record says it runs, in the shape the picker reads; the choices come from the agent's catalogs. */
+function recordedRuntime(detail: SessionDetailDto): Partial<Session> {
+  return {
+    ...(detail.runtime ? { runtime: detail.runtime } : {}),
+    ...(detail.model ? { model: detail.model } : {}),
+    ...(detail.effort ? { effort: detail.effort } : {}),
+    ...(detail.permissionMode ? { permissionMode: detail.permissionMode } : {}),
+    ...(detail.fastMode !== null ? { fastMode: detail.fastMode } : {})
+  }
 }

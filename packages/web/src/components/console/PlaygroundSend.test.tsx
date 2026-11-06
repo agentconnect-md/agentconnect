@@ -1320,6 +1320,22 @@ describe('cold-attach retirement anchor', () => {
     return socket
   }
 
+  it('dials a marked continuation target with no conversation yet, and nothing for an unmarked one', async () => {
+    AttachSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', AttachSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgAttach('s-unmarked', 'agent-1', '')
+    })
+    expect(AttachSocket.instances).toHaveLength(0)
+    await act(async () => {
+      markSessionTarget('s-task')
+      pgAttach('s-task', 'agent-1', '')
+    })
+    expect(AttachSocket.instances).toHaveLength(1)
+  })
+
   it('probes on ready and stamps the reply postId on the replayed steps', async () => {
     const socket = await coldAttach()
     expect(socket.send.mock.calls.map((c) => JSON.parse(String(c[0])))).toContainEqual({
