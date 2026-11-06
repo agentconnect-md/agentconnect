@@ -298,6 +298,9 @@ describe('SubsessionsPanel', () => {
     ]
     await render()
     expect(actions('Stop')).toHaveLength(1)
+    // Never display:none: a keyboard reaches it by focus and a touch screen always shows it.
+    expect(actions('Stop')[0]!.className).not.toMatch(/(^|\s)hidden(\s|$)/)
+    expect(actions('Stop')[0]!.className).toContain('pointer-fine:focus-visible:opacity-100')
     const reads = wire.calls.length
     await click(actions('Stop')[0])
     expect(wire.stops).toEqual([{ agentId: 'agent-a', sessionId: 'child-1' }])
