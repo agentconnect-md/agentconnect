@@ -508,6 +508,7 @@ import {
 import { DREAM_TOPIC_RE } from './dream/dreamer.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
 import { coordinatorPermissionMode, coordinatorTarget } from './auto-session/coordinator-model.js'
+import { webchatCoordinatorTask } from './auto-session/webchat-task.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from './runtime-defs/claude-runtime.js'
 import { applyOpenCodeReadOnlyMode } from './runtime-defs/opencode-runtime.js'
 import {
@@ -14235,7 +14236,7 @@ export class Daemon {
       this.log.info(`move: ${agentId} left ${retired} coordinator(s) and closed ${released.length} task(s) here`)
   }
 
-  /** The webchat entitlement a turn installs admin MCP under: its own conversation's, or for a page task of a member's webchat coordinator that conversation's newest (webchat-preset-agentconnect-mcp.md §5.2). */
+  /** The webchat entitlement a turn installs admin MCP under: its own conversation's, or for a task of a member's webchat coordinator that conversation's newest (webchat-preset-agentconnect-mcp.md §5.2). */
   private async adminMcpEntitlement(
     agentId: string,
     key: string,
@@ -14252,8 +14253,8 @@ export class Daemon {
       grants.noteEntitlement(webchat.conversationId, agentId, webchat.remoteMcp)
       return undefined
     }
-    if (!isDelegatedTaskCoordinate(thread)) return undefined
-    const task = await this.store.assistantSubsessions.get(agentId, key)
+    // By the task index, not the coordinate, so a task keyed on its webchat thread gets its own grant as a page task does (webchat-threads.md §5.4).
+    const task = await webchatCoordinatorTask(this.store, agentId, key, thread)
     const parent = task ? await this.store.getSession(task.parentSessionKey) : undefined
     if (!parent || parent.platform !== 'webchat' || !isCoordinatorCoordinate(parent.thread)) return undefined
     const entitlement = grants.inheritedEntitlement(parent.channel, agentId, this.clock.now())

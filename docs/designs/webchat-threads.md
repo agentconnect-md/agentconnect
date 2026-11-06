@@ -202,7 +202,16 @@ sit on `a2a:<agent>`, so they never reach it. Without it, the first task opened 
 coordinator would take the conversation's current-session pointer, which `webchat-token.ts` resumes
 on and checks content reach against, and the owner's resume would bind to a task. The rule is a pure
 function of the reported row's thread, so it does not depend on `taskParentSessionId` arriving
-first.
+first; a row that reported no thread keeps today's behaviour.
+
+On the daemon a webchat coordinator's task is a live work row of the task index holding a webchat
+thread (`webchatCoordinatorTask`, `packages/daemon/src/auto-session/webchat-task.ts`), which only a
+coordinator opens; a follow-up's checks, approved proposals and research never are. Its `page` flag
+tells a legacy page task, which keeps `PAGE_TASK_APPEND`, from a thread-keyed one, which gets the
+threaded wording through `isThreadedTask`. On the Control Plane it is a webchat session with
+`taskParentSessionId` set (`continuation-audience.ts`). A Slack threaded task also holds a thread
+and reports `taskParentSessionId`, but matches neither test, so its parent, audience, grant and
+request listing do not change.
 
 This change has no visible effect by itself and lands before the coordinator moves (§11, PR 3).
 

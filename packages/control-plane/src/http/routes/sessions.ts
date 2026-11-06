@@ -45,7 +45,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { makeSessionAccessResolver } from '../session-access.js'
-import { continuationAudience } from '../../domain/continuation-audience.js'
+import { continuationAudience, continuationParentId } from '../../domain/continuation-audience.js'
 import {
   resolveContinuationHost,
   type ContinuationAttachments,
@@ -1118,7 +1118,13 @@ export function sessionRoutes(deps: HttpDeps) {
         }> => {
           const owningAgent = orgAgents.find((agent) => agent.id === s.agentId)
           // A task is continued by whoever may continue its owning session (auto-session-mode.md §10).
-          const audience = continuationAudience(s, parent)
+          const continuationParent = continuationParentId(s)
+          const audience = continuationAudience(
+            s,
+            continuationParent === null || continuationParent === parent?.id
+              ? parent
+              : await deps.repos.session.get(orgOf(req), SessionId(continuationParent))
+          )
           const audienceAccess = audience === s || !audience ? access : await sessionAccess.forSessions(req, [audience])
           if (
             !owningAgent ||
