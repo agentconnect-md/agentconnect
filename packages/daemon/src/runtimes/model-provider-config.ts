@@ -90,8 +90,10 @@ function applyOpenCodeCredential(
   const keyEnv = OPENCODE_PROVIDERS[providerId]?.keyEnv ?? 'MODEL_TOKEN'
   if (credential.key) env[keyEnv] = credential.key
   let baseURL = credential.baseUrl
-  // Claude Code appends /v1/messages; OpenCode's Anthropic SDK appends only /messages.
-  if (baseURL && providerId === 'anthropic') {
+  // The deepseek pair is the DeepSeek Harness's Messages base, so OpenCode reaches it through its Anthropic SDK.
+  const messagesBase = !!baseURL && (providerId === 'anthropic' || providerId === 'deepseek')
+  // Claude Code and the DeepSeek Harness append /v1/messages; OpenCode's Anthropic SDK appends only /messages.
+  if (baseURL && messagesBase) {
     const url = new URL(baseURL)
     url.pathname = `${url.pathname.replace(/\/+$/, '').replace(/\/v1$/, '')}/v1`
     baseURL = url.toString()
@@ -101,6 +103,7 @@ function applyOpenCodeCredential(
     provider: {
       ...providers,
       [providerId]: {
+        ...(messagesBase && providerId === 'deepseek' ? { npm: '@ai-sdk/anthropic' } : {}),
         ...provider,
         options: {
           ...options,
