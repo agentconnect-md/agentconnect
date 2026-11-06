@@ -66,6 +66,8 @@ export interface AhpApplicationHost {
   ): Promise<boolean>
   elicit(scope: AhpActionScope, action: ChatInputCompletedAction): Promise<boolean>
   setRuntime(scope: AhpActionScope, change: AhpRuntimeChange): Promise<boolean>
+  /** The continuation's target is a coordinator's task, whose settings its own thread changes as its conversation's. */
+  isTaskTarget(scope: AhpActionScope): Promise<boolean>
   onExecutionError(error: unknown): void
 }
 export interface AhpActionHooks {
@@ -161,7 +163,7 @@ export class AhpApplication {
       case ActionType.SessionConfigChanged: {
         const action = parse(configAction, params.action)
         if (
-          scope.targetSessionId ||
+          (scope.targetSessionId && !(await this.host.isTaskTarget(scope))) ||
           scope.callerRole === 'participant' ||
           !this.host.application.canChangeRuntime(scope.agentId)
         )

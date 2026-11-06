@@ -237,7 +237,7 @@ describe('webchat session-targeted continuation', () => {
       turn('', { payload: { op: 'set_model', model: 'opus' } }),
       () => {}
     )) as RdAck
-    expect(setModel).toMatchObject({ accepted: false })
+    expect(setModel).toMatchObject({ accepted: false, reason: 'runtime changes are disabled for a continued session' })
 
     const context = (await d.handleRelayMsg(
       turn('', {
@@ -693,6 +693,25 @@ describe('webchat session-targeted continuation — a delegated task', () => {
     const page = await d.store.transcriptPage(parentConv, TASK_THREAD, null, 50, AGENT)
     expect(page.rows.map((r) => r.text)).toEqual(expect.arrayContaining(['one more case', 'on it']))
     expect(await d.store.getSession(`webchat:${parentConv}:webchat:${parentConv}:${AGENT}`)).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it("lets a task's own thread change its runtime settings, which another continued session may not", async () => {
+    const { daemon, d } = await boot()
+    const key = await seedTask(d)
+    const applied: Array<[string, string]> = []
+    ;(
+      d as never as { commands: { setModelByKey: (k: string, m: string) => Promise<boolean> } }
+    ).commands.setModelByKey = async (k, m) => {
+      applied.push([k, m])
+      return true
+    }
+    const ack = (await d.handleRelayMsg(
+      turn('', { targetSessionId: TASK_ACP, payload: { op: 'set_model', model: 'opus', callerRole: 'editor' } }),
+      () => {}
+    )) as RdAck
+    expect(ack).toMatchObject({ accepted: true })
+    expect(applied).toEqual([[key, 'opus']])
     await daemon.stop()
   })
 

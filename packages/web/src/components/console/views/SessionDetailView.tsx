@@ -19,23 +19,16 @@ import {
   agentDaemonLabel,
   agentCapabilitySource,
   agentLabel,
-  agentPermissionDisplay,
   agentPlacementIcon,
-  displayedEffort,
-  effortLabel,
-  fastModeAvailableFor,
   isSelfSender,
   isSetPlacementKind,
-  modelCapability,
   modelLabel,
   MOCK_MODE,
   MOCK_PREFIX,
-  permissionModeLabel,
   isGitWorkspace,
   pgPrompts,
   POOL_PLACEMENT,
   platName,
-  preferredModelFor,
   runtimeSwitchPermissionMode,
   rosterParticipantName,
   runtimeDefaultModel,
@@ -115,7 +108,6 @@ import { splitFilesMarker, type MarkedFile } from '@/lib/webchat-file'
 import { ComposerFileChips, MessageFileCards, stageComposerFile } from '@/components/console/ComposerFiles'
 import { transferCapable, sessionFileDownload } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
-import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
 import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
@@ -203,7 +195,7 @@ import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
 import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
-import { agentStrategyValue, HOST_STRATEGY, strategyModelSource, strategyUsesImage } from '@/lib/execution-strategy'
+import { HOST_STRATEGY, strategyUsesImage } from '@/lib/execution-strategy'
 import {
   CodeHostDecisionResult,
   DecisionResultMarker,
@@ -213,10 +205,9 @@ import type { DecisionEvaluationSource } from '@/lib/decisions/evaluation-source
 import { DecisionEvaluationsDrawer } from '@/components/console/decisions/DecisionEvaluationsDrawer'
 import {
   sessionEffortAfterModelChange,
-  sessionEffortChoicesForSelection,
-  sessionPermissionChoices,
-  sessionPermissionSelection,
-  sessionRuntimeChangesEnabled
+  sessionRuntimeChangesEnabled,
+  runtimePickerState,
+  chatSettingsAllowed
 } from '@/lib/session-runtime-controls'
 import {
   msgStep,
@@ -4168,82 +4159,27 @@ export default function SessionDetailView() {
   const runtimeUnresolved = byDecision || session.runtimePending === true
   const runtimePending = runtimeUnresolved && !beforeFirstTurn
   const runtimeDecision = decisionCatalog?.decisions.find((item) => item.id === owner?.modelSelection?.decisionId)
-  // Before a live list, models come from the catalog of the agent's strategy: the host install's for host and srt, the image's for a VM.
-  const modelSource =
-    owningDaemon &&
-    strategyModelSource(owningDaemon, owner && !owningDaemon.pool ? agentStrategyValue(owner) : undefined)
-  const runtimeProfile = modelSource?.runtimeModels.find((profile) => profile.runtime === agentRuntime)
-  const runtimeCatalog = runtimeProfile?.modelCatalog ?? undefined
-  const pgModel =
-    runtimeSelection?.model ??
-    (beforeFirstTurn
-      ? session.model || owner?.model || preferredModelFor(modelSource, agentRuntime)
-      : (session.model ?? ''))
-  // A resolved runtime that reported no concrete model ran its own default; the picker names that entry.
-  const pgShownModel =
-    pgModel || (!runtimeUnresolved && runtimeDefaultModel(owningDaemon, agentRuntime) ? 'default' : '')
-  const pgModels = session.availableModels ?? runtimeProfile?.models ?? []
-  const pgModelOptions =
-    pgModels.length > 0 && pgModel && !pgModels.includes(pgModel) ? [pgModel, ...pgModels] : pgModels
-  const pickerSource = beforeFirstTurn
-    ? modelSource
-    : {
-        runtimeModels: [
-          { ...runtimeProfile, runtime: agentRuntime, version: runtimeProfile?.version ?? '', models: pgModelOptions }
-        ]
-      }
-  const selectedModelCapability = modelCapability(owningDaemon, agentRuntime, pgModel)
-  const pgEffortChoices = sessionEffortChoicesForSelection(
-    agentRuntime,
-    owningDaemon,
+  const {
+    modelSource,
     pgModel,
-    session.model,
-    session.availableEfforts
-  )
-  const pgEffort = displayedEffort(
-    runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? '',
-    pgEffortChoices,
-    selectedModelCapability?.defaultEffort
-  )
-  const pgEffortOptions =
-    pgEffort && !pgEffortChoices.some((choice) => choice.value === pgEffort)
-      ? [{ value: pgEffort, label: effortLabel(agentRuntime, pgEffort) }, ...pgEffortChoices]
-      : pgEffortChoices
-  const livePermissionModes = session.availablePermissionModes
-  const selectablePermissionModes = sessionPermissionChoices(agentRuntime, runtimeCatalog, livePermissionModes)
-  const pgPermissionPreset = sessionPermissionSelection(
+    pgShownModel,
+    pickerSource,
+    pgEffort,
+    pgEffortOptions,
+    pgPermissionPreset,
+    pgApprovalOptions,
+    pgFastMode,
+    pgFastModeAvailable
+  } = runtimePickerState({
+    session,
+    selection: runtimeSelection,
+    owner: owner ?? undefined,
+    owningDaemon: owningDaemon ?? undefined,
     agentRuntime,
-    runtimeCatalog,
-    livePermissionModes,
-    runtimeSelection?.permissionPreset ?? session.permissionMode ?? owner?.permissionMode ?? ''
-  )
-  const pgPermissionPresets =
-    livePermissionModes === undefined &&
-    pgPermissionPreset &&
-    !selectablePermissionModes.some((choice) => choice.v === pgPermissionPreset)
-      ? [
-          { v: pgPermissionPreset, l: permissionModeLabel(agentRuntime, pgPermissionPreset) },
-          ...selectablePermissionModes
-        ]
-      : selectablePermissionModes
-  // The picker's Approval choices; a mode the live list no longer offers keeps its readable name.
-  const pgApprovalOptions = localizedPermissionChoices(
-    pgPermissionPreset && !pgPermissionPresets.some((mode) => mode.v === pgPermissionPreset)
-      ? [
-          { v: pgPermissionPreset, l: agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset) },
-          ...pgPermissionPresets
-        ]
-      : pgPermissionPresets,
+    beforeFirstTurn,
+    runtimeUnresolved,
     permissionT
-  )
-  // Stage the fast selection locally like model/effort/permission: an adopted
-  // (persisted webchat) session has no synthetic provider entry for pgSetFast to
-  // mutate, and an idle daemon session emits no status frame — without this the
-  // switch would render stale and every click would re-send the same value.
-  const pgFastMode = runtimeSelection?.fast ?? session.fastMode ?? owner?.fastMode ?? false
-  const pgFastModeAvailable =
-    (pgModel === session.model ? session.fastModeAvailable : undefined) ??
-    fastModeAvailableFor(agentRuntime, selectedModelCapability)
+  })
   // Run facts for the header's "Details" popover — the stats that used to live in
   // the header cards (duration, usage) plus the run's identity rows. Status is not
   // here: it rides the top-bar crumb as a pill next to the session name. Both form
@@ -4353,6 +4289,13 @@ export default function SessionDetailView() {
         ]
       : []
   )
+  // A task's own thread changes its settings by the conversation's rule: settings allowed from chat, for the agent's editors.
+  const taskRuntimeContext = {
+    owner: owner ?? undefined,
+    owningDaemon: owningDaemon ?? undefined,
+    agentRuntime,
+    editable: chatSettingsAllowed(owner ?? undefined) && owner?.canEdit === true
+  }
   // The task whose thread is actually on screen: expanded, or in a visible side panel on its Tasks tab.
   const taskThreadOnScreen = expandedTask ?? (openThread && dockVisible && dockTabKey === 'tasks' ? openThread : null)
   // A task's approvals are answered in its own thread, read through this conversation under the strip's rules.
@@ -4428,6 +4371,7 @@ export default function SessionDetailView() {
               onShrink={() => setTaskMode('panel')}
               onBack={() => setTaskThread(null)}
               {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
+              runtimeContext={taskRuntimeContext}
             />
           )}
         />
@@ -5951,6 +5895,7 @@ export default function SessionDetailView() {
                 : {})}
               onBack={() => setTaskThread(null)}
               {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
+              runtimeContext={taskRuntimeContext}
               {...(isMobile ? {} : { onExpand: () => setTaskMode('expanded') })}
             />
           ) : null}

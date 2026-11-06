@@ -211,9 +211,11 @@ owners. Provider membership can tighten this action later without changing the
 route; it is not required or inferred in v1.
 
 The grant covers sending a human turn. A targeted conversation does **not**
-offer runtime-setting operations in v1. `set_model`, `set_effort`,
+offer runtime-setting operations, with one exception. `set_model`, `set_effort`,
 `set_permission_mode`, and `set_fast` are rejected even when
-`chatActions` is `settings`. `cancel` is accepted only for a `turnId`
+`chatActions` is `settings`, except on a coordinator's task: its own thread
+changes the task's settings under the rule its conversation's composer follows
+(`chatActions` is `settings` and the caller may change settings there). `cancel` is accepted only for a `turnId`
 owned by that same targeted conversation's live webchat stream; it is not a
 session-global stop capability.
 
@@ -473,7 +475,8 @@ the op handlers keyed off `chatId` (`daemon.ts:9986-10057`):
   (`daemon.ts:6798`). `cancel` reaches the target key only after the stream map
   proves the requested turn belongs to this targeted conversation;
   `set_model`/`set_effort`/`set_permission_mode`/`set_fast` are refused for a
-  targeted conversation in v1.
+  targeted conversation unless its target is a coordinator's task, which they
+  change under the ordinary settings gate (relay ops and AHP `session/configChanged` alike).
 - **Store:** no schema change. The continuation turn is ordinary session
   history on existing coordinates.
 
@@ -505,8 +508,9 @@ true`; structural client checks are display-only and cannot widen the server
 - The read-only `threadUrl` deep link stays — "continue here" and "open in
   Slack" are complementary.
 - Runtime pills follow the existing `chatActions` gating (`settings`)
-  for ordinary webchat only. A continuation hides them in v1; this ingress may
-  add human input but does not gain session-global runtime administration.
+  for ordinary webchat and a coordinator task's thread. Any other continuation
+  hides them; this ingress may add human input but does not gain session-global
+  runtime administration.
 
 ### 6.6 Documentation
 
