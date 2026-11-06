@@ -391,7 +391,8 @@ import {
   type AppRow,
   type LiveApp
 } from './mcp/apps/cards.js'
-import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
+import { toolsForIntegrations, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
+import { codeHostEffectToolsFor } from './codehost/effect-tools.js'
 import {
   askerIdentity,
   assistantModeOn,
@@ -10591,7 +10592,8 @@ export class Daemon {
     ]
     // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
     const managedRepo = this.managedWorkspaceRepo(agent.id)
-    if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
+    if (managedRepo && this.codeHostBrokers.has(managedRepo.provider))
+      tools = [...tools, ...codeHostEffectToolsFor(managedRepo.provider)]
     // The provider's stable core tools replace the legacy managed descriptors; an external plugin's raw tools never enter.
     tools = tools.filter((t) => !MEMORY_TOOL_NAMES.has(t.name))
     if (this.evaluationProfile.memory === 'configured') {
@@ -16421,13 +16423,14 @@ export class Daemon {
     return !this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agentId)
   }
 
-  /** §14.2: resolve this turn's trusted repository, then run exactly one allowlisted operation on its host's broker. */
+  /** §14.2: resolve this turn's trusted repository on the tool's own host, then run exactly one allowlisted operation on its broker. */
   private async runCodeHostEffect(req: CodeHostEffectReq): Promise<unknown> {
     const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
+    const watched = isCheckCoordinate(req.thread) ? await this.watchedEffectTarget(req.agentId, key) : undefined
     const target =
-      (isCheckCoordinate(req.thread) ? await this.watchedEffectTarget(req.agentId, key) : undefined) ??
-      this.codeHostEffectTarget(req.agentId, key)
-    if (!target) throw new Error('this session has no code-host repository to act on')
+      (watched?.provider === req.provider ? watched : undefined) ??
+      this.codeHostEffectTarget(req.agentId, key, req.provider)
+    if (!target) throw new Error(`this session has no ${req.provider} repository to act on`)
     const broker = this.codeHostBrokers.get(target.provider)
     if (!broker) throw new Error(`code-host effects are unavailable for ${target.provider} on this daemon`)
     const result = await broker.execute({ ...target, agentId: req.agentId, sessionKey: key }, req.operation)
@@ -16469,18 +16472,19 @@ export class Daemon {
     return { provider: 'gitlab', repoId: watch.repoId }
   }
 
-  /** The hook-dispatched turn's trusted repository first (§13.1), else the agent's managed workspace repository. */
+  /** On `provider` only: the hook-dispatched turn's trusted repository first (§13.1), else the agent's managed workspace repository. */
   private codeHostEffectTarget(
     agentId: string,
-    key: string
+    key: string,
+    provider: CodeHostProvider
   ): Omit<CodeHostEffectTarget, 'agentId' | 'sessionKey'> | undefined {
     const hook = this.activeTurnCodeHost.get(key)
-    if (hook && hook.agentId === agentId) {
+    if (hook && hook.agentId === agentId && hook.provider === provider) {
       const { agentId: _owner, ...target } = hook
       return target
     }
     const workspace = this.managedWorkspaceRepo(agentId)
-    return workspace === undefined ? undefined : workspace
+    return workspace?.provider === provider ? workspace : undefined
   }
 
   /** The instance every GitLab client on this turn addresses (§24.4). Resolved per turn off the

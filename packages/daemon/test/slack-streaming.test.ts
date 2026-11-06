@@ -503,16 +503,16 @@ describe('OutputConverger streaming axis', () => {
   })
 
   it('never titles a card from a tool payload — a nested `description` is the TOOL’s field', () => {
-    // createCodeHostMergeRequest takes a whole merge-request body as `arguments.description`.
+    // createGitlabMergeRequest takes a whole merge-request body as `arguments.description`.
     const converger = streaming('medium')
     converger.onUpdate({
       sessionUpdate: 'tool_call',
       toolCallId: 't1',
-      title: 'createCodeHostMergeRequest',
+      title: 'createGitlabMergeRequest',
       status: 'pending',
       rawInput: {
         server: 'agentconnect',
-        tool: 'createCodeHostMergeRequest',
+        tool: 'createGitlabMergeRequest',
         arguments: { title: 'Fix the thing', description: '## Summary\n\nA whole merge-request body.' }
       }
     } as never)
@@ -521,7 +521,7 @@ describe('OutputConverger streaming axis', () => {
         type: 'task_update',
         icon: { type: 'icon', name: 'gear' },
         id: 't1',
-        title: 'createCodeHostMergeRequest',
+        title: 'createGitlabMergeRequest',
         status: 'in_progress'
       }
     ])

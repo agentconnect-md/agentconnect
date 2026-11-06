@@ -78,8 +78,8 @@ describe('what research may call', () => {
         'addReaction',
         'readSlackFile',
         'recall',
-        'readCodeHostDiscussions',
-        'createCodeHostComment'
+        'readGitlabDiscussions',
+        'createGitlabComment'
       ].map(tool)
     ).map((t) => t.name)
     expect(names).toEqual([

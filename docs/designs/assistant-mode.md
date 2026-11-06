@@ -1056,7 +1056,7 @@ a schedule fires / a watched object's event (§5.14) / a follow-up's nextCheck i
   the residual class [memory-dreaming.md](memory-dreaming.md) records for dreams; it is accepted
   and the settings page marks checks _complete_ or _degraded_ per runtime.
 - **A check's read surface** (in the standing prompt): the bridge's code-host read tools
-  (`readCodeHostDiscussions`, `inspectCodeHostPipelines`, using the daemon's credentials),
+  (the read tools of the workspace repository's host, using the daemon's credentials),
   channel history, its follow-up's summary and observations, memory under §5.5. `gh`, `curl` and user MCP servers are
   **unavailable**.
 - **Completion**: each check records an observation with `recordCheck`; a check that records
@@ -1911,8 +1911,9 @@ pull-request feedback lane as its second consumer, beside the session that opene
   Control Plane write for each feedback signal, whether or not a session owns the pull request. Per
   matching rule: a token from the per-hook rate limit (a burst of 10, then one a second; a limited
   fire is skipped), a durable inbox write and one model turn on the daemon, and one `HookRun` row.
-- **What a check can read.** A check is offered `readCodeHostDiscussions` and
-  `inspectCodeHostPipelines`, whose target is never an argument: outside a hook turn it is the
+- **What a check can read.** A check is offered its host's read tools (`readGitlabDiscussions`
+  and `inspectGitlabPipelines`, or `readGiteaComments` and `inspectGiteaStatuses`), whose target
+  is never an argument: outside a hook turn it is the
   agent's workspace repository, and only GitLab and Gitea register a broker for them. A GitHub object
   is read through the runtime's native shell and the `gh` wrapper, which mints a token for any
   repository the agent is authorized for, where the runtime's read-only mode runs the command without
@@ -3776,7 +3777,7 @@ Choices the text above leaves open:
   thread; the agent's own words name no task. `listTasks` entries, `here` and `elsewhere`, carry
   `openedFor` (place and message id) and `opened`.
 - **What a task opened** is recorded where the daemon already sees it: a merge request (GitLab) or
-  pull request (Gitea) a task creates with `createCodeHostMergeRequest`, and the pull request the
+  pull request (Gitea) a task creates with `createGitlabMergeRequest` or `createGiteaPullRequest`, and the pull request the
   Control Plane names as a session's own when it delivers feedback for it
   ([codehost-pr-feedback.md](codehost-pr-feedback.md)), at most 20 per task. The Control Plane
   associates a GitHub pull request with its session from the worktree's branch and tells the daemon

@@ -114,25 +114,8 @@ import {
   SUBMIT_CODE_REVIEW_ARGS,
   type GithubReviewDeps
 } from './ops/github.js'
-import {
-  controlCodeHostPipeline,
-  CONTROL_CODE_HOST_PIPELINE_ARGS,
-  createCodeHostComment,
-  CREATE_CODE_HOST_COMMENT_ARGS,
-  createCodeHostMergeRequest,
-  CREATE_CODE_HOST_MERGE_REQUEST_ARGS,
-  inspectCodeHostPipelines,
-  INSPECT_CODE_HOST_PIPELINES_ARGS,
-  readCodeHostDiscussions,
-  READ_CODE_HOST_DISCUSSIONS_ARGS,
-  replyCodeHostDiscussion,
-  REPLY_CODE_HOST_DISCUSSION_ARGS,
-  updateCodeHostComment,
-  UPDATE_CODE_HOST_COMMENT_ARGS,
-  updateCodeHostMergeRequest,
-  UPDATE_CODE_HOST_MERGE_REQUEST_ARGS,
-  type CodeHostEffectDeps
-} from './ops/code-host.js'
+import { runCodeHostEffectTool, type CodeHostEffectDeps } from './ops/code-host.js'
+import { CODE_HOST_EFFECT_TOOLS } from '../codehost/effect-tools.js'
 import {
   listCodeHostRepositories,
   LIST_CODE_HOST_REPOSITORIES_ARGS,
@@ -319,14 +302,10 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   // A working alias so sessions already warm with the pre-promotion tool set keep resolving.
   ['submitGithubReview', submitCodeReview],
   ['replyGithubReviewThreads', replyGithubReviewThreads],
-  ['createCodeHostComment', createCodeHostComment],
-  ['updateCodeHostComment', updateCodeHostComment],
-  ['readCodeHostDiscussions', readCodeHostDiscussions],
-  ['replyCodeHostDiscussion', replyCodeHostDiscussion],
-  ['createCodeHostMergeRequest', createCodeHostMergeRequest],
-  ['updateCodeHostMergeRequest', updateCodeHostMergeRequest],
-  ['inspectCodeHostPipelines', inspectCodeHostPipelines],
-  ['controlCodeHostPipeline', controlCodeHostPipeline],
+  ...CODE_HOST_EFFECT_TOOLS.map((tool): [string, ToolHandler<OpsDeps>] => [
+    tool.descriptor.name,
+    (ctx, args, deps) => runCodeHostEffectTool(tool, ctx, args, deps)
+  ]),
   ['listCodeHostRepositories', listCodeHostRepositories],
   ['readCodeHostRepository', readCodeHostRepository],
   ['listKnownUsers', listKnownUsers],
@@ -393,14 +372,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['submitCodeReview', SUBMIT_CODE_REVIEW_ARGS],
   ['submitGithubReview', SUBMIT_CODE_REVIEW_ARGS],
   ['replyGithubReviewThreads', REPLY_GITHUB_REVIEW_THREADS_ARGS],
-  ['createCodeHostComment', CREATE_CODE_HOST_COMMENT_ARGS],
-  ['updateCodeHostComment', UPDATE_CODE_HOST_COMMENT_ARGS],
-  ['readCodeHostDiscussions', READ_CODE_HOST_DISCUSSIONS_ARGS],
-  ['replyCodeHostDiscussion', REPLY_CODE_HOST_DISCUSSION_ARGS],
-  ['createCodeHostMergeRequest', CREATE_CODE_HOST_MERGE_REQUEST_ARGS],
-  ['updateCodeHostMergeRequest', UPDATE_CODE_HOST_MERGE_REQUEST_ARGS],
-  ['inspectCodeHostPipelines', INSPECT_CODE_HOST_PIPELINES_ARGS],
-  ['controlCodeHostPipeline', CONTROL_CODE_HOST_PIPELINE_ARGS],
+  ...CODE_HOST_EFFECT_TOOLS.map((tool): [string, ZodType] => [tool.descriptor.name, tool.args]),
   ['listCodeHostRepositories', LIST_CODE_HOST_REPOSITORIES_ARGS],
   ['readCodeHostRepository', READ_CODE_HOST_REPOSITORY_ARGS],
   ['listKnownUsers', LIST_KNOWN_USERS_ARGS],

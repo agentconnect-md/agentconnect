@@ -231,7 +231,7 @@ already shows it whole.
 
 **Only the TOP LEVEL of `rawInput` is read, and only when it looks like a label.** A nested
 `arguments` object holds the TOOL's own fields, where the same key means whatever that tool
-says it means: `createCodeHostMergeRequest` takes a whole merge-request body as
+says it means: `createGitlabMergeRequest` takes a whole merge-request body as
 `arguments.description`, and titling a step with a document is worse than titling it with a
 command. Even a top-level description is a string the daemon did not author, so it stands as a
 title only if it reads as one — a single line, short enough that clamping it would not be

@@ -113,7 +113,7 @@ describe('what a getting-to-know task may read', () => {
         'listChannels',
         'searchPublicMessages',
         'findKnowledge',
-        'readCodeHostDiscussions',
+        'readGitlabDiscussions',
         'sendMessage',
         'addReaction',
         'propose',

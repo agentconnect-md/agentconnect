@@ -1,8 +1,7 @@
-// The provider-neutral code-host effect tools (gitlab-com-integration.md §14.2, gitea-integration.md
-// §10.2), routed by the active turn's provider to the broker registered for it. Every handler validates
-// bounded arguments and hands the daemon a discriminated operation; the target repository and the
-// effect token stay daemon-private.
-import { z } from 'zod'
+// The code-host effect tools (gitlab-com-integration.md §14.2, gitea-integration.md §10.2): each host names its own tools, and a call carries that host to its broker.
+import { z, type ZodType } from 'zod'
+import type { CodeHostProvider } from '@agentconnect.md/protocol'
+import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 import type { SessionContext } from './context.js'
 import {
   optionalBoolean,
@@ -14,50 +13,64 @@ import {
   requiredPositiveInt,
   requiredString
 } from './args.js'
-import { BROKER_PIPELINE_STATUSES, type CodeHostBrokerOperation } from '../../codehost/broker.js'
+import { BROKER_PIPELINE_STATUSES, type BrokerSubject, type CodeHostBrokerOperation } from '../../codehost/broker.js'
 
-const SUBJECTS = ['issue', 'merge_request'] as const
 const INSPECT_SCOPES = ['pipelines', 'pipeline', 'pipeline_jobs', 'job'] as const
 const PIPELINE_ACTIONS = ['retry_pipeline', 'cancel_pipeline', 'retry_job', 'cancel_job'] as const
 
 /** A decimal external id (note, pipeline, job) — the only shape an allowlisted path accepts. */
-function requiredDecimalId(key: string) {
+export function requiredDecimalId(key: string) {
   return requiredString(key).regex(/^[1-9]\d*$/, `argument ${key} must be a positive decimal string`)
 }
 
-function optionalDecimalId(key: string) {
+export function optionalDecimalId(key: string) {
   return requiredDecimalId(key)
     .nullish()
     .transform((value) => value ?? undefined)
 }
 
-const subject = requiredEnum('subject', SUBJECTS)
+/** The subject values one host's tools accept: `issue` plus that host's word for a change request. */
+export type SubjectValues = readonly ['issue', 'merge_request'] | readonly ['issue', 'pull_request']
+
+/** A host's change-request word mapped onto the broker's one subject vocabulary. */
+export function brokerSubject(value: string): BrokerSubject {
+  return value === 'issue' ? 'issue' : 'merge_request'
+}
+
 const iid = requiredPositiveInt('iid')
 
-export const CREATE_CODE_HOST_COMMENT_ARGS = z.object({ subject, iid, body: requiredString('body') })
+export function commentArgs(subjects: SubjectValues) {
+  return z.object({ subject: requiredEnum('subject', subjects), iid, body: requiredString('body') })
+}
 
-export const UPDATE_CODE_HOST_COMMENT_ARGS = z.object({
-  subject,
-  iid,
-  noteId: requiredDecimalId('noteId'),
-  body: requiredString('body')
-})
+export function updateCommentArgs(subjects: SubjectValues) {
+  return z.object({
+    subject: requiredEnum('subject', subjects),
+    iid,
+    noteId: requiredDecimalId('noteId'),
+    body: requiredString('body')
+  })
+}
 
-export const READ_CODE_HOST_DISCUSSIONS_ARGS = z.object({
-  subject,
-  iid,
-  discussionId: optionalString('discussionId'),
-  limit: optionalBoundedInt('limit', 1, 20)
-})
+export function readDiscussionsArgs(subjects: SubjectValues) {
+  return z.object({
+    subject: requiredEnum('subject', subjects),
+    iid,
+    discussionId: optionalString('discussionId'),
+    limit: optionalBoundedInt('limit', 1, 20)
+  })
+}
 
-export const REPLY_CODE_HOST_DISCUSSION_ARGS = z.object({
-  subject,
-  iid,
-  discussionId: requiredString('discussionId'),
-  body: requiredString('body')
-})
+export function replyDiscussionArgs(subjects: SubjectValues) {
+  return z.object({
+    subject: requiredEnum('subject', subjects),
+    iid,
+    discussionId: requiredString('discussionId'),
+    body: requiredString('body')
+  })
+}
 
-export const CREATE_CODE_HOST_MERGE_REQUEST_ARGS = z.object({
+export const CREATE_CHANGE_REQUEST_ARGS = z.object({
   sourceBranch: requiredString('sourceBranch'),
   targetBranch: requiredString('targetBranch'),
   title: requiredString('title'),
@@ -65,7 +78,7 @@ export const CREATE_CODE_HOST_MERGE_REQUEST_ARGS = z.object({
   draft: optionalBoolean('draft')
 })
 
-export const UPDATE_CODE_HOST_MERGE_REQUEST_ARGS = z.object({
+export const UPDATE_CHANGE_REQUEST_ARGS = z.object({
   iid,
   title: optionalString('title'),
   description: optionalString('description'),
@@ -73,7 +86,21 @@ export const UPDATE_CODE_HOST_MERGE_REQUEST_ARGS = z.object({
   draft: optionalBoolean('draft')
 })
 
-export const INSPECT_CODE_HOST_PIPELINES_ARGS = z.object({
+/** An update naming at least one field; `noun` is the host's word, since draft state rides on the title. */
+export function updateChangeRequestOperation(
+  parsed: z.infer<typeof UPDATE_CHANGE_REQUEST_ARGS>,
+  noun: string
+): CodeHostBrokerOperation {
+  if (parsed.draft !== undefined && parsed.title === undefined) {
+    throw new Error(`argument draft also requires title, because draft state is carried by the ${noun} title`)
+  }
+  if (parsed.title === undefined && parsed.description === undefined && parsed.targetBranch === undefined) {
+    throw new Error('supply at least one of title, description, or targetBranch')
+  }
+  return { kind: 'updateMergeRequest', ...parsed }
+}
+
+export const INSPECT_PIPELINES_ARGS = z.object({
   scope: requiredEnum('scope', INSPECT_SCOPES),
   pipelineId: optionalDecimalId('pipelineId'),
   jobId: optionalDecimalId('jobId'),
@@ -82,14 +109,37 @@ export const INSPECT_CODE_HOST_PIPELINES_ARGS = z.object({
   limit: optionalBoundedInt('limit', 1, 20)
 })
 
-export const CONTROL_CODE_HOST_PIPELINE_ARGS = z.object({
+export const CONTROL_PIPELINE_ARGS = z.object({
   action: requiredEnum('action', PIPELINE_ACTIONS),
   pipelineId: optionalDecimalId('pipelineId'),
   jobId: optionalDecimalId('jobId')
 })
 
+/** One host's model-facing tool for one broker operation. */
+export interface CodeHostEffectTool {
+  provider: CodeHostProvider
+  /** Reads only, so a follow-up check keeps it (assistant-mode.md §5.12). */
+  readOnly: boolean
+  descriptor: ToolDescriptor
+  args: ZodType
+  operation: (args: Record<string, unknown>) => CodeHostBrokerOperation
+}
+
+/** Declare a host's tool with its argument schema and the operation its parsed arguments make. */
+export function codeHostEffectTool<S extends ZodType>(spec: {
+  provider: CodeHostProvider
+  readOnly: boolean
+  descriptor: ToolDescriptor
+  args: S
+  operation: (args: z.infer<S>) => CodeHostBrokerOperation
+}): CodeHostEffectTool {
+  return spec as unknown as CodeHostEffectTool
+}
+
 /** One brokered effect with its caller identity filled from the trusted MCP SessionContext. */
 export interface CodeHostEffectReq {
+  /** The host the tool names; the daemon acts only on a repository of this host. */
+  provider: CodeHostProvider
   agentId: string
   platform: string
   channel: string
@@ -100,13 +150,21 @@ export interface CodeHostEffectReq {
 
 /** The broker seam. Optional: an ordinary daemon carries the descriptors but fails closed. */
 export interface CodeHostEffectDeps {
-  /** Resolve the trusted project, mint the action-time effect lease, and run one allowlisted call. */
+  /** Resolve the trusted repository, mint the action-time effect lease, and run one allowlisted call. */
   codeHostEffect?: (req: CodeHostEffectReq) => Promise<unknown>
 }
 
-function run(ctx: SessionContext, deps: CodeHostEffectDeps, operation: CodeHostBrokerOperation): Promise<unknown> {
+/** Run one host's tool: parse its arguments, then hand the daemon its operation and its host. */
+export function runCodeHostEffectTool(
+  tool: CodeHostEffectTool,
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: CodeHostEffectDeps
+): Promise<unknown> {
+  const operation = tool.operation(parseArgs(tool.args, args) as Record<string, unknown>)
   if (!deps.codeHostEffect) throw new Error('code-host effects are unavailable on this daemon')
   return deps.codeHostEffect({
+    provider: tool.provider,
     agentId: ctx.agentId,
     platform: ctx.platform,
     channel: ctx.channel,
@@ -114,76 +172,4 @@ function run(ctx: SessionContext, deps: CodeHostEffectDeps, operation: CodeHostB
     ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
     operation
   })
-}
-
-export function createCodeHostComment(
-  ctx: SessionContext,
-  args: Record<string, unknown>,
-  deps: CodeHostEffectDeps
-): Promise<unknown> {
-  return run(ctx, deps, { kind: 'createComment', ...parseArgs(CREATE_CODE_HOST_COMMENT_ARGS, args) })
-}
-
-export function updateCodeHostComment(
-  ctx: SessionContext,
-  args: Record<string, unknown>,
-  deps: CodeHostEffectDeps
-): Promise<unknown> {
-  return run(ctx, deps, { kind: 'updateComment', ...parseArgs(UPDATE_CODE_HOST_COMMENT_ARGS, args) })
-}
-
-export function readCodeHostDiscussions(
-  ctx: SessionContext,
-  args: Record<string, unknown>,
-  deps: CodeHostEffectDeps
-): Promise<unknown> {
-  return run(ctx, deps, { kind: 'readDiscussions', ...parseArgs(READ_CODE_HOST_DISCUSSIONS_ARGS, args) })
-}
-
-export function replyCodeHostDiscussion(
-  ctx: SessionContext,
-  args: Record<string, unknown>,
-  deps: CodeHostEffectDeps
-): Promise<unknown> {
-  return run(ctx, deps, { kind: 'replyDiscussion', ...parseArgs(REPLY_CODE_HOST_DISCUSSION_ARGS, args) })
-}
-
-export function createCodeHostMergeRequest(
-  ctx: SessionContext,
-  args: Record<string, unknown>,
-  deps: CodeHostEffectDeps
-): Promise<unknown> {
-  return run(ctx, deps, { kind: 'createMergeRequest', ...parseArgs(CREATE_CODE_HOST_MERGE_REQUEST_ARGS, args) })
-}
-
-export function updateCodeHostMergeRequest(
-  ctx: SessionContext,
-  args: Record<string, unknown>,
-  deps: CodeHostEffectDeps
-): Promise<unknown> {
-  const parsed = parseArgs(UPDATE_CODE_HOST_MERGE_REQUEST_ARGS, args)
-  // Draft state is carried by the title on GitLab, so it can only move together with one.
-  if (parsed.draft !== undefined && parsed.title === undefined) {
-    throw new Error('argument draft also requires title, because draft state is carried by the merge-request title')
-  }
-  if (parsed.title === undefined && parsed.description === undefined && parsed.targetBranch === undefined) {
-    throw new Error('supply at least one of title, description, or targetBranch')
-  }
-  return run(ctx, deps, { kind: 'updateMergeRequest', ...parsed })
-}
-
-export function inspectCodeHostPipelines(
-  ctx: SessionContext,
-  args: Record<string, unknown>,
-  deps: CodeHostEffectDeps
-): Promise<unknown> {
-  return run(ctx, deps, { kind: 'inspectPipelines', ...parseArgs(INSPECT_CODE_HOST_PIPELINES_ARGS, args) })
-}
-
-export function controlCodeHostPipeline(
-  ctx: SessionContext,
-  args: Record<string, unknown>,
-  deps: CodeHostEffectDeps
-): Promise<unknown> {
-  return run(ctx, deps, { kind: 'controlPipeline', ...parseArgs(CONTROL_CODE_HOST_PIPELINE_ARGS, args) })
 }

@@ -239,7 +239,7 @@ export class GiteaBroker implements CodeHostEffectBroker {
         }
       }
       case 'replyDiscussion':
-        throw new Error('Gitea comments are not threaded: post a new comment with createCodeHostComment instead')
+        throw new Error('Gitea comments are not threaded: post a new comment with createGiteaComment instead')
       case 'createMergeRequest':
         return {
           calls: [
