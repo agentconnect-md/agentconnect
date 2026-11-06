@@ -1,6 +1,6 @@
 'use client'
 
-// One thread in the dock (webchat-threads.md §6.2): its record or its task's session, the holding task's header, and a composer that continues the task console-only.
+// One thread in the dock (webchat-threads.md §6.2): its record or its task's session, the holding task's header, and a composer that writes in the thread (§6.3).
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
@@ -30,7 +30,7 @@ import {
   type ThreadRecordRef
 } from '@/components/console/task-thread'
 import type { TaskLink } from '@/components/console/task-link'
-import { fetchSessionDetail } from '@/lib/api'
+import { fetchSessionDetail, type SessionThreadSummaryDto } from '@/lib/api'
 import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
 import { prepareWebchatImage } from '@/lib/webchat-image'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
@@ -64,7 +64,10 @@ export function ThreadPanel({
   taskApprovals,
   runtimeContext,
   personPicture,
-  fileTransfer = false
+  fileTransfer = false,
+  writer,
+  focusComposer = false,
+  onSummary
 }: {
   /** The coordinator's agent, which runs the task. */
   agentId: string
@@ -99,6 +102,12 @@ export function ThreadPanel({
   }
   /** A person's console photo by sender, as the session page draws it; undefined asks for this visit's own sends. */
   personPicture?: (sender: string | undefined) => string | undefined
+  /** The reader's own coordinator conversation, whose socket a message in this record's thread goes out on; absent for another member, who writes through the holding task. */
+  writer?: { sessionId: string; conversationId?: string }
+  /** Focus the composer when it first shows, as Reply in thread asks. */
+  focusComposer?: boolean
+  /** Told each footer the record's reads return, so the timeline's footer keeps up with an open thread. */
+  onSummary?: (summary: SessionThreadSummaryDto) => void
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
@@ -106,9 +115,12 @@ export function ThreadPanel({
   const { orgPath } = useOrgs()
   const {
     getLiveSteps,
+    getPgInput,
+    getPgTurnThread,
     isPgBusy,
     markSessionTarget,
     pgSend,
+    pgSendThread,
     pgNotice,
     setPgInput,
     reconcileLiveSteps,
@@ -116,20 +128,26 @@ export function ThreadPanel({
     pgAttach,
     pgCancel
   } = usePlayground()
+  // A turn the reader sent in this thread on their conversation's socket.
+  const writing =
+    !!writer && !!record && isPgBusy(writer.sessionId) && getPgTurnThread(writer.sessionId) === record.rootId
   // The record is read first; its footer names the holding task when the caller did not.
-  const thread = useThreadRecord(record ?? null, isPgBusy)
+  const thread = useThreadRecord(record ?? null, (sid) => writing || isPgBusy(sid))
   const summary = thread.summary
   // A daemon without thread reads leaves a task's thread to its session; anything else reads the record.
   const fromRecord = !!record && !(thread.unsupported && task)
   const unreadable = fromRecord && summary?.readable === false
   const holderId = task?.sessionId ?? (unreadable ? null : (summary?.task?.sessionId ?? null))
   const id = holderId ?? ''
+  // The owner writes in any thread of their conversation, held or not, and routing takes it to the task or the coordinator.
+  const ownThread =
+    writer && record && fromRecord && !unreadable && !thread.missing ? { ...writer, rootId: record.rootId } : null
   const row = useTaskRow(agentId, holderId, parentSessionId)
   const { stopOf, stop } = useTaskStops(agentId, parentSessionId ?? id, () => {})
   const stopState = row ? stopOf(row) : undefined
   const stoppable = !!row && row.state === 'open' && taskStopKey(row) !== null && stopState !== 'stopped'
   const listRef = useRef<HTMLDivElement | null>(null)
-  const busy = holderId !== null && isPgBusy(id)
+  const busy = ownThread ? writing : holderId !== null && isPgBusy(id)
   const session = useTaskThread(fromRecord ? null : holderId, row, { busy })
   const recordPage = useMemo(() => (thread.messages ? { messages: thread.messages } : undefined), [thread.messages])
   const page = fromRecord ? recordPage : session.page
@@ -150,12 +168,29 @@ export function ThreadPanel({
     return (m: (typeof messages)[number]) =>
       agentById.has(m.sender) ? m.sender : (sessionAttributionAgentId(platform, m, agentById) ?? authors.get(m.sender))
   }, [agentById, platform, messages])
-  const entries = threadEntries(messages, holderId ? getLiveSteps(id) : EMPTY, agentId, peerAgent)
+  // The owner's turns in this thread stream on their conversation's socket; another member's on the task's.
+  const live = ownThread
+    ? getLiveSteps(ownThread.sessionId).filter((step) => step.thread === ownThread.rootId)
+    : holderId
+      ? getLiveSteps(id)
+      : EMPTY
+  const entries = threadEntries(messages, live, agentId, peerAgent)
 
   // A read that lands after the turn ends retires the live copy of what it now carries.
+  const ownSessionId = ownThread?.sessionId
+  const ownRootId = ownThread?.rootId
   useEffect(() => {
-    if (holderId && page && !busy) reconcileLiveSteps(holderId, page.messages, agentId)
-  }, [agentId, busy, holderId, page, reconcileLiveSteps])
+    if (!page || busy) return
+    if (ownSessionId && ownRootId) reconcileLiveSteps(ownSessionId, page.messages, agentId, undefined, ownRootId)
+    else if (holderId) reconcileLiveSteps(holderId, page.messages, agentId)
+  }, [agentId, busy, holderId, ownRootId, ownSessionId, page, reconcileLiveSteps])
+
+  // The timeline's footer follows what this panel reads.
+  const onSummaryRef = useRef(onSummary)
+  onSummaryRef.current = onSummary
+  useEffect(() => {
+    if (summary) onSummaryRef.current?.(summary)
+  }, [summary])
 
   // A turn's end is when its answer lands on the record.
   const wasBusy = useRef(busy)
@@ -181,9 +216,21 @@ export function ThreadPanel({
     if (list) list.scrollTop = list.scrollHeight
   }, [tail])
 
+  // The composer's draft: the owner's is this thread's own, another member's the holding task's.
+  const draftId = ownThread ? `${ownThread.sessionId}#${ownThread.rootId}` : id
   const send = (): void => {
+    if (ownThread) {
+      if (pgSendThread(ownThread.sessionId, agentId, getPgInput(draftId), ownThread.rootId, ownThread.conversationId))
+        setPgInput(draftId, '')
+      return
+    }
     if (!canReply || !holderId) return
     markSessionTarget(holderId)
+    // Read from the record, the message is written in this thread of the task, which may hold several.
+    if (record && fromRecord) {
+      if (pgSendThread(holderId, agentId, getPgInput(holderId), record.rootId)) setPgInput(holderId, '')
+      return
+    }
     pgSend(holderId, agentId)
   }
 
@@ -376,33 +423,37 @@ export function ThreadPanel({
           }}
         />
       ) : null}
-      {/* Only a held thread takes a reply here, which continues its task; an unowned one has none yet. */}
-      {holderId ? (
+      {/* The owner writes in any thread; another member only in a held one, which continues its task. */}
+      {ownThread || holderId ? (
         <ThreadComposer
-          sessionId={id}
-          canReply={canReply}
-          checking={detail === undefined}
-          placeholder={t('replyPlaceholder')}
+          sessionId={draftId}
+          canReply={ownThread ? true : canReply}
+          checking={ownThread ? false : detail === undefined}
+          placeholder={ownThread ? t('threadPlaceholder') : t('replyPlaceholder')}
+          // Who answers a message in the conversation's own thread; a task's reply box has its attach button there instead.
+          {...(ownThread ? { hint: holderId ? t('threadHintTask') : t('threadHintCoordinator') } : {})}
           readOnly={t('readOnly')}
-          {...(MOCK_MODE ? {} : { attach: { agentId, transfer: fileTransfer } })}
+          // A thread send carries text alone, so only a reply onto the task's own session offers attachments.
+          {...(MOCK_MODE || ownThread || (record && fromRecord) ? {} : { attach: { agentId, transfer: fileTransfer } })}
           sendLabel={t('send')}
           onSend={send}
+          autoFocus={focusComposer}
           // Stop shows as soon as a turn runs here, before the task list catches up; the console's stop route is used once the list says it runs.
           {...(stoppable && row
             ? { onStop: () => void stop(row), stopping: stopState === 'busy' }
-            : busy
+            : busy && !ownThread
               ? { onStop: () => pgCancel(id, agentId) }
               : {})}
           stopLabel={tl('stop')}
-          setDraft={(text) => setPgInput(id, text)}
+          setDraft={(text) => setPgInput(draftId, text)}
           // Writing here opens the task's own session, which is what reports the settings its picker offers.
           onFocus={() => {
-            if (!canReply) return
+            if (ownThread || !canReply) return
             markSessionTarget(id)
             pgAttach(id, agentId, '')
           }}
           runtime={
-            runtimeContext ? (
+            runtimeContext && holderId ? (
               <TaskRuntimePicker
                 sessionId={id}
                 agentId={agentId}
@@ -413,8 +464,14 @@ export function ThreadPanel({
               />
             ) : null
           }
-          context={<ContextWindowIndicator used={detail?.usage?.contextUsed} size={detail?.usage?.contextSize} />}
-          dock={MOCK_MODE ? null : <RunningCommandsDock agentId={agentId} sessionId={id} turnActive={busy} />}
+          context={
+            holderId ? (
+              <ContextWindowIndicator used={detail?.usage?.contextUsed} size={detail?.usage?.contextSize} />
+            ) : null
+          }
+          dock={
+            MOCK_MODE || !holderId ? null : <RunningCommandsDock agentId={agentId} sessionId={id} turnActive={busy} />
+          }
         />
       ) : null}
     </div>
@@ -673,11 +730,14 @@ function ThreadComposer({
   stopLabel,
   setDraft,
   onFocus,
+  autoFocus = false,
+  hint,
   runtime,
   context,
   attach,
   dock
 }: {
+  /** Whose draft the box edits. */
   sessionId: string
   canReply: boolean
   checking: boolean
@@ -691,6 +751,10 @@ function ThreadComposer({
   stopLabel: string
   setDraft: (text: string) => void
   onFocus?: () => void
+  /** Take the caret once the box can be written in. */
+  autoFocus?: boolean
+  /** Who a message reaches, where no attach button takes its place. */
+  hint?: string
   /** The task's runtime picker, beside the attach button. */
   runtime?: ReactNode
   /** The task's context-window ring, beside send as on the conversation's composer. */
@@ -711,6 +775,13 @@ function ThreadComposer({
   const files = getPgFiles(sessionId)
   const hasAttachment = !!image || files.length > 0
   const uploading = files.some((file) => file.status === 'uploading')
+  const boxRef = useRef<HTMLTextAreaElement | null>(null)
+  // After the dock's own reveal, which focuses an overlay panel as it opens.
+  useEffect(() => {
+    if (!autoFocus || !canReply) return
+    const timer = window.setTimeout(() => boxRef.current?.focus(), 0)
+    return () => window.clearTimeout(timer)
+  }, [autoFocus, canReply])
   if (!canReply && !checking)
     return (
       <div className="flex-none border-t border-(--border-subtle) px-4 py-3 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -778,6 +849,8 @@ function ThreadComposer({
           </div>
         ) : null}
         <textarea
+          ref={boxRef}
+          data-thread-composer=""
           aria-label={placeholder}
           placeholder={placeholder}
           rows={2}
@@ -818,6 +891,13 @@ function ThreadComposer({
                 <Icon name="paperclip" size={16} />
               </button>
             </>
+          ) : hint ? (
+            <span
+              data-task-thread-hint=""
+              className="min-w-0 truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
+            >
+              {hint}
+            </span>
           ) : null}
           {runtime}
           <span className="flex-1" />

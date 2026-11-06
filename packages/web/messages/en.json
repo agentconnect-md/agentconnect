@@ -365,7 +365,15 @@
       "footerWorking": "working…",
       "showEarlier": "Show earlier messages",
       "unreadable": "Only people who can open the task that holds this thread can read it.",
-      "missing": "This thread isn’t in this conversation."
+      "missing": "This thread isn’t in this conversation.",
+      "threadPlaceholder": "Reply in the thread",
+      "threadHintTask": "The task holding this thread answers here",
+      "threadHintCoordinator": "The coordinator answers in this thread",
+      "replyInThread": "Reply in thread",
+      "inThread": "In thread: {root}",
+      "inThreadBare": "In thread",
+      "answeredInThread": "Answered in the thread",
+      "messageActions": "Message actions"
     },
     "githubApp": {
       "title": "GitHub App",

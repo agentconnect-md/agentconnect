@@ -173,8 +173,8 @@ that allows a second participant. Slack's own thread participation rules are unc
   so PR 14 removes only the page-task branch and link cards. `webchat-thread-follow-up` joins the
   coordinator probe (auto-session-mode.md §12).
 - **Feature.** The daemon advertises `webchat-threads-v1` with `session-mode-auto-v1`.
-- **Until PR 11**, the console ignores `thread` on posts and draws a task's answers in the main
-  timeline. It draws the task's card from `openedForMessageId` under the coordinator turn.
+- **Until PR 11**, the console ignored `thread` on posts and drew a task's answers in the main
+  timeline, with the task's card from `openedForMessageId` under the coordinator turn (§6.1).
 
 ## 5. Recording
 
@@ -326,6 +326,26 @@ As implemented (PR 6):
 - Hovering a root offers **Reply in thread** beside Copy; on a phone, a tap on the footer or a
   long-press menu does.
 
+As implemented (PR 11):
+
+- **The roots view.** A webchat coordinator's page reads `session/history` with `view: 'roots'`
+  (`useSessionTranscript`'s `rootsView`) and keeps each page's `threads` by root, the newest read
+  winning; an open thread panel's own read updates its footer too. A 409 `DAEMON_FEATURE_MISSING`
+  falls back to the flat view for the rest of the visit.
+- **A person's row with `thread`** is drawn as no bubble: it ends the turn before it, and the
+  coordinator turn after it is labelled "In thread: <first words>" from the footer's `rootExcerpt`,
+  else the root's own text. A root (a person's row whose `postId` is a UUID and that has no
+  `thread`) gets `ThreadFooter` under its bubble once a summary names it. The coordinator's turn rows
+  carry `thread` too, but stay in the main timeline.
+- **`replyToMessage`** is read off the coordinator's tool row (`rawInput.action`), and its line opens
+  the row's `thread`, else the thread of the message id it names.
+- **Live steps** carry `thread` (`SessionStep.thread`): the owner's message sent in a thread, and
+  every frame and post the daemon stamps with one. The main timeline leaves them out; a coordinator
+  turn answering such a message streams there unstamped and takes the label. The typing indicator
+  stays off for a thread turn until an unstamped step shows the coordinator is answering it.
+- **No `openedForMessageId` cards** in the roots view: the root's footer carries the task. A legacy
+  link card is a post in its thread, so it shows there.
+
 ### 6.2 The thread panel
 
 - The thread opens in the side panel, replacing `TaskThreadPanel` with a general `ThreadPanel`: the
@@ -365,6 +385,20 @@ As implemented (PR 10):
 - **Bindings** (`lib/api.ts`): `fetchSessionMessages(id, {view: 'roots'})` returns `threads`, and
   `fetchSessionThreadMessages(id, rootId, {cursor | after, limit})` reads one thread.
 
+As implemented (PR 11):
+
+- **Opening.** A footer, an "In thread" label, an "Answered in the thread" line or Reply in thread
+  opens `ThreadPanel` with `record: {sessionId: <coordinator>, rootId}`, and with `task` from a
+  readable footer, so a daemon without thread reads falls back to the task's session. The page's
+  address follows the open thread (`?thread=<rootId>`, written with `router.replace`), and an
+  address it did not write opens the thread it names. `?task=<id>` still opens a legacy page task.
+  A webchat task's page shrinks to `?thread=<its session's thread>`; a page task keeps `?task=`.
+- **Auto-open** (desktop only, `threadToAutoOpen`) opens the latest thread whose first reply arrives
+  while the page is open: a root that had no replies when the page first saw it and now has some, or
+  a thread an agent starts speaking in live. Each opens once.
+- **Phones** reach Reply in thread through a long press on the root, which opens a one-item menu;
+  the footer opens the thread in the dock's bottom sheet, and nothing opens by itself.
+
 ### 6.3 Writing in a thread
 
 - **The owner** writes in any thread from the thread composer, which sends a `turn` with `thread` on
@@ -398,6 +432,24 @@ As implemented (PR 9):
   posted into the owner's conversation; the owner reads both in the thread.
 - **AHP** is out of scope (§12): an AHP grant still refuses a thread-keyed task, as a continued webchat
   session that is not its conversation's current one.
+
+As implemented (PR 11):
+
+- **The owner** writes from `ThreadPanel`'s composer in any readable thread, held or not, through
+  `pgSendThread(conversationSessionId, agentId, text, rootId, conversationId)`: a `turn` with
+  `thread` on the conversation's own socket, with a draft of the thread's own, so the conversation's
+  composer, its image and its files are untouched. The panel draws the live steps stamped with its
+  thread and is busy only for a turn sent in it (`getPgTurnThread`).
+- **A thread message never steers**: one sent while a turn runs, or any message while a thread turn
+  runs, queues and goes out in turn; the conversation's composer does not list a queued thread message.
+- **Reconciling** is scoped (`liveThreadScope`): a thread's record retires its own turns, and the
+  roots view retires the root's turns and a thread message the coordinator answered.
+- **Another member** writes in a held thread through the task's session-targeted continuation, now
+  with `thread` set to the panel's root, so it lands in that thread among the task's; its steps are
+  not stamped, since the frames that answer it carry no thread.
+- **Who sees the composer**: Reply in thread and the owner's composer show only where the page's
+  reader owns the conversation, it can resume, its agent's daemon advertises `webchat-threads-v1`,
+  and the relay's `ready` frame, once read, lists it (`getPgRelayFeatures`).
 
 ## 7. A Slack coordinator's page has Slack's shape
 
