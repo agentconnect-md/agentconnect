@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { join, resolve } from 'node:path'
 import { codexPermissionProfileConfig } from '../src/acp/codex-permission-profiles.js'
 
 // Pod coordinates are POSIX by construction — the sandbox pod is always Linux.
@@ -284,5 +285,19 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
     )!
     expect(fullAccess).toContain('"/.git" = "write"')
     expect(fullAccess).not.toContain('deny')
+  })
+})
+
+// Runs on Windows too: Codex accepts a write subtree only as a literal `/**` suffix, whatever the host's separator.
+describe('Codex permission profile on the host platform', () => {
+  it('ends the worktrees write subtree with a literal /**', () => {
+    const root = resolve('/agent/workspace/.git')
+    const config = codexPermissionProfileConfig({ protectedRoots: [], writableGitMetadataRoots: [root] })!
+
+    const agent = config.configOverrides.find((value) =>
+      value.startsWith('permissions.agentconnect-protected-workspace.filesystem=')
+    )!
+    expect(agent).toContain(`${JSON.stringify(`${join(root, 'worktrees')}/**`)} = "write"`)
+    expect(agent).not.toContain('\\\\**')
   })
 })

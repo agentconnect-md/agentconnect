@@ -112,7 +112,8 @@ export function codexPermissionProfileConfig(
   const agentFilesystemEntries: Array<[string, string]> = [
     ...writableGitMetadataRoots.map((root): [string, string] => [root, 'write']),
     ...writableGitMetadataRoots.flatMap((root): Array<[string, string]> => [
-      [join(root, 'worktrees', '**'), 'write'],
+      // Codex strips only a literal `/**` suffix, so Windows' `\**` from join reads as a write glob and aborts its start.
+      [`${join(root, 'worktrees')}/**`, 'write'],
       [join(root, 'hooks'), 'read'],
       [join(root, 'config'), 'read']
     ]),
