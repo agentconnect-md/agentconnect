@@ -128,6 +128,7 @@ describe('GithubAppsService', () => {
     const nonces = new Set<string>()
     const invalidate = vi.fn()
     const appsChanged = vi.fn()
+    const agentAppChanged = vi.fn()
     const switches: Array<{ from: string | null; to: string | null }> = []
     const clock = new FakeClock(1_800_000_000_000)
     const fetchImpl = async (url: string): Promise<Response> => {
@@ -189,9 +190,10 @@ describe('GithubAppsService', () => {
       publicRelayUrl: 'https://relay.example.test',
       webAppUrl: 'https://console.example.test',
       onAppsChanged: appsChanged,
+      onAgentAppChanged: agentAppChanged,
       fetchImpl
     })
-    return { svc, rows, secrets, invalidate, appsChanged, switches }
+    return { svc, rows, secrets, invalidate, appsChanged, agentAppChanged, switches }
   }
 
   it("starts a manifest owned by the account the agent's repositories live on, with the built-in App's webhook URL", async () => {
@@ -269,6 +271,8 @@ describe('GithubAppsService', () => {
     await expect(h.svc.switch(AGENT, 'app-1')).resolves.toEqual({ ok: true })
     expect(h.switches).toEqual([{ from: null, to: 'app-1' }])
     expect(h.appsChanged).toHaveBeenCalledWith(ORG)
+    // The agent's commit identity rides its spec, so the switch re-sends it.
+    expect(h.agentAppChanged).toHaveBeenCalledExactlyOnceWith(ORG, 'agent-1')
 
     const uncovered = harness({ installations: [] })
     uncovered.rows.push(app({ id: 'app-1', agentId: null }))
@@ -278,6 +282,7 @@ describe('GithubAppsService', () => {
       coverage: [{ target: 'acme/tools', kind: 'workspace', covered: false }]
     })
     expect(uncovered.switches).toEqual([])
+    expect(uncovered.agentAppChanged).not.toHaveBeenCalled()
   })
 
   it("re-compiles the org after re-pulling an App's installations, so a reinstall reaches the relay", async () => {

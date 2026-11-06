@@ -167,6 +167,21 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     writeAgentSpec(dir, 'bot-a', baseSpec({ computerUse: null }), deps)
     expect(readJson(file)).not.toHaveProperty('computerUse')
   })
+  it("stores the agent's own commit identity, and clears it when the spec omits it (back on the built-in App)", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-commit-identity-'))
+    const gitCommitIdentity = {
+      name: 'ops-agent-example[bot]',
+      email: '5150+ops-agent-example[bot]@users.noreply.github.com'
+    }
+    const file = seedAgent(dir, 'bot-a', { id: 'bot-a', name: 'bot-a', runtime: 'claude' })
+    writeAgentSpec(dir, 'bot-a', baseSpec({ gitCommitIdentity }), deps)
+    expect(
+      AgentSchema.parse({ ...readJson(file), workspace: { mode: 'from-scratch', path: dir } }).gitCommitIdentity
+    ).toEqual(gitCommitIdentity)
+    writeAgentSpec(dir, 'bot-a', baseSpec(), deps)
+    expect(readJson(file)).not.toHaveProperty('gitCommitIdentity')
+  })
+
   it('merges displayName from the CP spec', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {

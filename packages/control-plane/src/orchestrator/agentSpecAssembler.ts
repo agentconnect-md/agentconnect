@@ -30,6 +30,7 @@ import {
   type HookRoutingProjection,
   type ManagedSkillEntry,
   type AgentSpec,
+  type GitCommitIdentity,
   agentComputerUseOf
 } from '@agentconnect.md/protocol'
 import type {
@@ -41,6 +42,7 @@ import type {
   CodeHostDecisionRoutingRepo,
   ComputerRepo,
   DecisionRepo,
+  GithubAppRepo,
   HookRepo,
   OrganizationEnvironmentResolver,
   OrganizationKnowledgeRepo,
@@ -51,6 +53,7 @@ import { AgentId, OrgId } from '../domain/ids.js'
 import { gitlabManagedProjectPath } from '../domain/git-host.js'
 import { derivedComputerIds } from '../domain/computer.js'
 import { codeHostProviders } from '../codehost/registry.js'
+import { githubAppBotIdentity } from '../github/config.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
 import { hookRoutingProjection, routingMembers } from '../hooks/hook-routing.js'
 import { resolveAgentSkillEntries, type InvalidSkillSourceProjection } from './skillSource.js'
@@ -115,8 +118,17 @@ export class AgentSpecAssembler {
     // The Decisions an API gate names, shipped with it so admission never reads the CP; absent ⇒ no gates.
     private readonly decisions?: Pick<DecisionRepo, 'getForAgent'>,
     // The Computers whose agent access grants an agent (computer-use.md §4.1); absent ⇒ none.
-    private readonly computerGrants?: Pick<ComputerRepo, 'listAgentGrants'>
+    private readonly computerGrants?: Pick<ComputerRepo, 'listAgentGrants'>,
+    // The organization GitHub Apps, for an agent's own commit identity; absent ⇒ every agent commits as the built-in App.
+    private readonly githubApps?: Pick<GithubAppRepo, 'get'>
   ) {}
+
+  /** The bot of the agent's organization GitHub App; absent on the built-in App or an App whose bot id is unknown. */
+  async gitCommitIdentityOf(a: Pick<AgentRecord, 'orgId' | 'githubAppId'>): Promise<GitCommitIdentity | undefined> {
+    if (!this.githubApps || !a.githubAppId) return undefined
+    const app = await this.githubApps.get(OrgId(a.orgId), a.githubAppId)
+    return app?.botUserId != null ? githubAppBotIdentity(app.slug, Number(app.botUserId)) : undefined
+  }
 
   /** The Computers an agent may use, derived from each Computer's agent access; pinned by the move bundle like grants. */
   async computersOf(a: Pick<AgentRecord, 'id' | 'orgId'>): Promise<string[]> {
@@ -156,7 +168,8 @@ export class AgentSpecAssembler {
       hookRoutings,
       additionalInstallations,
       apiGates,
-      computers
+      computers,
+      gitCommitIdentity
     ] = await Promise.all([
       this.secrets.get(a.orgId, a.id),
       this.secrets.live(a.orgId, a.id),
@@ -169,7 +182,8 @@ export class AgentSpecAssembler {
       this.hookRoutingsOf(a),
       this.additionalInstallationsOf(a),
       this.apiGatesOf(a),
-      this.computersOf(a)
+      this.computersOf(a),
+      this.gitCommitIdentityOf(a)
     ])
     // Live secrets ride beside the environment, never in it (capability-requests.md §4.9.2); always a full list, `[]` included, so a removal replicates.
     return {
@@ -185,7 +199,8 @@ export class AgentSpecAssembler {
         hookRoutings,
         additionalInstallations,
         apiGates,
-        computers
+        computers,
+        gitCommitIdentity
       ),
       liveSecrets
     }
@@ -357,7 +372,8 @@ export class AgentSpecAssembler {
     hookRoutings?: HookRoutingProjection[],
     additionalInstallations: AgentAdditionalInstallation[] = [],
     apiGates: AgentApiGateProjections = {},
-    computers: readonly string[] = []
+    computers: readonly string[] = [],
+    gitCommitIdentity?: GitCommitIdentity
   ): AssembledAgentSpec {
     // Resolve by key across both sources BEFORE splitting into the two wire maps
     // (organization-secrets-and-variables.md §3.2), so the winner of a collision
@@ -377,7 +393,8 @@ export class AgentSpecAssembler {
       hookRoutings,
       additionalInstallations,
       apiGates,
-      computers
+      computers,
+      gitCommitIdentity
     )
   }
 }
@@ -460,7 +477,9 @@ export function agentRecordToSpec(
   // The chat API gates with their Decisions, already resolved by {@link AgentSpecAssembler.apiGatesOf}.
   apiGates: AgentApiGateProjections = {},
   // The Computers whose agent access grants the agent, already derived by {@link AgentSpecAssembler.computersOf}.
-  computers: readonly string[] = []
+  computers: readonly string[] = [],
+  // The agent's own App bot, already resolved by {@link AgentSpecAssembler.gitCommitIdentityOf}.
+  gitCommitIdentity?: GitCommitIdentity
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
   // The assembled spec always carries the host-neutral `git` arm; the per-peer
@@ -602,6 +621,8 @@ export function agentRecordToSpec(
     // with none stays byte-identical to what a pre-§24 control plane projected.
     ...(host !== undefined ? { gitlabHost: host } : {}),
     ...(giteaInstance !== undefined ? { giteaHost: giteaInstance } : {}),
+    // Present only on an organization App, so a built-in agent's spec stays byte-identical; absent clears it daemon-side.
+    ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
     workspace
   }
 }

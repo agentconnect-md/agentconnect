@@ -74,6 +74,8 @@ export function agentSpecDigest(spec: AgentSpec): string {
   if (content.assistantMode === null) delete content.assistantMode
   // The onboarding record is write-once and lands with a new revision, so a daemon upgraded past it does not conflict.
   delete content.assistantOnboarding
+  // The commit identity changes only with an App switch, which bumps the revision, so a CP that starts shipping it does not conflict.
+  delete content.gitCommitIdentity
   // A GitHub credential beside `private` restates it, so a CP that starts shipping `credential` does not conflict either.
   if (content.skills?.some(restatesPrivate)) {
     content.skills = content.skills.map((entry) => {

@@ -860,7 +860,9 @@ export function buildContainer(
     // The Decisions each chat API gate names, shipped with it.
     repos.decision,
     // The Computers whose agent access grants each agent (computer-use.md §4.1).
-    repos.computer
+    repos.computer,
+    // Each agent's organization GitHub App, whose bot its commits are attributed to.
+    repos.githubApp
   )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
@@ -1524,6 +1526,16 @@ export function buildContainer(
             await wakeGithubReviewProjections(installationId, orgId)
           },
           onAppsChanged: (orgId) => hookService.rebroadcastGithubForOrg(orgId),
+          onAgentAppChanged: async (orgId, agentId) => {
+            // Re-read: the switch advanced this agent's configRevision in its own transaction.
+            const agent = await repos.agent.get(orgId, AgentId(agentId))
+            if (!agent) return
+            await agentDelivery.upsert(agent, (err, daemonId) => {
+              if (err instanceof NoConnection)
+                http.log.debug({ agentId, daemonId }, 'agent/upsert skipped: daemon offline')
+              else http.log.warn({ err, agentId, daemonId }, 'github app switch: agent spec reconcile failed')
+            })
+          },
           log: { warn: (obj, msg) => http.log.warn(obj, msg) },
           ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
         })

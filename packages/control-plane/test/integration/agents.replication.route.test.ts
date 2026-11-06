@@ -448,6 +448,34 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     })
   })
 
+  it("replicates an organization App agent's own commit identity, and none on the built-in App", async () => {
+    await seedDaemon(prisma, DAEMON)
+    const onApp = randomUUID()
+    const builtIn = randomUUID()
+    await seedAgent(prisma, onApp, { daemonId: DAEMON, name: 'on-app' })
+    await seedAgent(prisma, builtIn, { daemonId: DAEMON, name: 'built-in' })
+    const appRow = await prisma.githubApp.create({
+      data: { orgId: DEFAULT_ORG_ID, appId: 4100n, slug: 'ops-agent-example', botUserId: 5150n }
+    })
+    await prisma.agent.update({ where: { id: onApp }, data: { githubAppId: appRow.id } })
+    const { app, spy } = withSpy()
+
+    for (const agentId of [onApp, builtIn]) {
+      const update = await app.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/agents/${agentId}`,
+        payload: { description: 'Ships fixes.' }
+      })
+      expect(update.statusCode).toBe(200)
+    }
+    const specOf = (agentId: string) => spy.upserts.filter((p) => p.u.agentId === agentId).at(-1)?.u.spec
+    expect(specOf(onApp)?.gitCommitIdentity).toEqual({
+      name: 'ops-agent-example[bot]',
+      email: '5150+ops-agent-example[bot]@users.noreply.github.com'
+    })
+    expect(specOf(builtIn)).not.toHaveProperty('gitCommitIdentity')
+  })
+
   it('DELETE on a PLACED agent removes it from C6 and pushes agent/remove to its daemon', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = randomUUID()

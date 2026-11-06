@@ -91,7 +91,8 @@ export class PgGithubAppRepo implements GithubAppRepo {
         // Compare-and-set on the agent row; the unique index refuses an App another agent already works through.
         const moved = await tx.agent.updateMany({
           where: { id: agentId, orgId, githubAppId: from },
-          data: { githubAppId: to }
+          // The App's commit identity rides the agent spec, so this joins the daemon's revision fence.
+          data: { githubAppId: to, configRevision: { increment: 1 } }
         })
         if (moved.count === 0) throw new SwitchRefused({ kind: 'agent_changed' })
 

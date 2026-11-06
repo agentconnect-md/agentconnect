@@ -879,7 +879,8 @@ Known M2 follow-ups, none of which change what the code does today:
   version. M5 and M6 need a substitute before they use it.
 
 **M3 — Git write + AI commit message.** Stage / unstage / commit / push frames
-and routes, daemon handlers using the registered `gitCommitIdentity`, the
+and routes, daemon handlers using the agent's commit identity (its own GitHub
+App's bot, else the registered `gitCommitIdentity`), the
 `workspace/gitmessage` utility call, per-row toggles, Stage all / Unstage all,
 the commit box with the wand button, and the viewer's Stage file / Unstage file
 action. _Exit:_ an operator can stage, commit and push an agent's work from the

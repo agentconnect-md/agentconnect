@@ -199,7 +199,7 @@ export interface CpClientSeamHost {
   wakeMemoryOutbox(): void
   /** Re-run every pending memory home migration from the start — its copy and completion report ride this connection. */
   wakeMemoryHomeMigrations(): void
-  gitCommitIdentity(): GitCommitIdentity | undefined
+  gitCommitIdentity(agentId: string): GitCommitIdentity | undefined
   sessionThreadUrl(session: SessionRecord): string | undefined
   childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
   dispatchPullRequestFeedback(req: SessionPullRequestFeedback): Promise<SessionPullRequestFeedbackResult>
@@ -259,9 +259,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // helper the primary does not. The helper itself is URL-routed, so it only answers for that root.
     (id, repo) => (workspaceScope.usesGithubApp(id, repo) ? id : undefined),
     workspaceScope.target,
-    // Registered on `register/ok` only, and reset by every reconnect — a console commit is
-    // refused as data whenever it is absent (workspace-git.ts explains why).
-    () => host.gitCommitIdentity(),
+    // The agent's own App bot, else the one registered on `register/ok`; absent ⇒ refused as data (workspace-git.ts).
+    (id) => host.gitCommitIdentity(id),
     // The model pass runs HERE, on the agent's own runtime: the CP is never on the inference path.
     (id, systemPrompt, prompt, signal) => host.runCommitMessagePass(id, systemPrompt, prompt, signal)
   )

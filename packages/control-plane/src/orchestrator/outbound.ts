@@ -1414,13 +1414,7 @@ export class ControlSender {
     return c.conn.request<WorkspaceGitStatus>('workspace/gitunstage', req, { epoch: c.sessionEpoch })
   }
 
-  /**
-   * Commit the staged changes of an agent's checkout on the owning daemon (REQ →
-   * `workspace/gitcommit/result`), attributed to the daemon's registered
-   * `gitCommitIdentity`. Nothing staged, a blank message, no registered identity and
-   * a git refusal all come back as `ok:false` + `reason` (DATA), not an error frame.
-   * The CP forwards the message and stores none of it.
-   */
+  /** Commit an agent's staged changes on its daemon as its commit identity; refusals are `ok:false` + `reason` data, and the CP stores no message. */
   async workspaceGitCommit(daemonId: string, req: WorkspaceGitCommitReq): Promise<WorkspaceGitCommitResult> {
     const c = this.must(daemonId)
     return c.conn.request<WorkspaceGitCommitResult>('workspace/gitcommit', req, { epoch: c.sessionEpoch })

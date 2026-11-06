@@ -30,6 +30,7 @@ import {
   type HookRoutingProjection,
   type ManagedSkillEntry,
   type CronUpsert,
+  type GitCommitIdentity,
   type IntegrationSpec
 } from '@agentconnect.md/protocol'
 import type {
@@ -184,6 +185,8 @@ interface MoveBundle {
   apiGates: AgentApiGateProjections
   /** The Computers whose agent access grants the agent, pinned so activation never clears its computer use. */
   computers: string[]
+  /** The agent's own GitHub App bot, pinned so activation ships what a later upsert at this revision would. */
+  gitCommitIdentity?: GitCommitIdentity
 }
 
 interface ActivationSnapshot {
@@ -931,7 +934,8 @@ export class AgentMoveService {
       gitlabHook,
       hookRoutings,
       apiGates,
-      computers
+      computers,
+      gitCommitIdentity
     ] = await Promise.all([
       this.deps.integrations.listForAgent(agent.id),
       this.deps.crons.listForAgent(agent.id),
@@ -944,7 +948,8 @@ export class AgentMoveService {
       this.deps.specs.gitlabHookOf(agent),
       this.deps.specs.hookRoutingsOf(agent),
       this.deps.specs.apiGatesOf(agent),
-      this.deps.specs.computersOf(agent)
+      this.deps.specs.computersOf(agent),
+      this.deps.specs.gitCommitIdentityOf(agent)
     ])
     const specs = await Promise.all(
       integrations.map(async (integration) => {
@@ -1002,7 +1007,8 @@ export class AgentMoveService {
       gitlabHook,
       ...(hookRoutings !== undefined ? { hookRoutings } : {}),
       apiGates,
-      computers
+      computers,
+      ...(gitCommitIdentity ? { gitCommitIdentity } : {})
     }
   }
 
@@ -1025,7 +1031,8 @@ export class AgentMoveService {
           bundle.hookRoutings,
           bundle.additionalInstallations,
           bundle.apiGates,
-          bundle.computers
+          bundle.computers,
+          bundle.gitCommitIdentity
         ),
         liveSecrets: bundle.liveSecrets
       },

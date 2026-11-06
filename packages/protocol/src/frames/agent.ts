@@ -8,6 +8,7 @@ import { AssistantModePolicy, AssistantOnboarding } from './assistant-mode.js'
 import { IntegrationSpec } from './integration.js'
 import { CronUpsert } from './cron.js'
 import { ExecutorStrategyName } from './executor.js'
+import { GitCommitIdentity } from './gitcred.js'
 import { AgentComputerUse } from '../agent-computer-use.js'
 import { CoordinatorModel } from '../coordinator-model.js'
 import { isGitHubSkillSource, normalizeSkillSource } from '../git-url.js'
@@ -459,6 +460,8 @@ export const AgentSpec = z.object({
   // assembled spec has ANY Gitea consumer, absent meaning gitea.com. Per-provider rather than a
   // table of hosts on purpose (§13) — both are one-axis values with a default.
   giteaHost: z.string().optional(),
+  // The bot of the agent's own organization GitHub App, for its commits; absent ⇒ the daemon's registered identity.
+  gitCommitIdentity: GitCommitIdentity.optional(),
   env: z.record(z.string(), z.string()).optional(), // extra env injected into the runtime
   // Write-only secret env vars: same injection as `env` (merged into the spawned
   // child's environment, secrets winning on a key collision), but their VALUES never

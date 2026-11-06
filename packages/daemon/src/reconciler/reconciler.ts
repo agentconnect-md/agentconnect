@@ -47,6 +47,8 @@ function hostSpawnSig(a: Agent): string {
     // materialized as config files (config-file-env.ts) — a value edit that
     // doesn't evict the host would leave the child running on the stale value.
     secrets: a.runtimeOverrides?.secrets,
+    // The commit identity is baked into the child's GIT_AUTHOR_*/GIT_COMMITTER_* env at spawn.
+    gitCommitIdentity: a.gitCommitIdentity,
     // Workspace skills are reconciled before host startup. Evict a live host
     // before changing them so the runtime never observes the remove/reinstall
     // transaction halfway through and always discovers the final set.

@@ -45,9 +45,7 @@ const MAX_BODY_LINES = 20
  *  message that `workspace/gitcommit` then refuses to carry. */
 const MAX_MESSAGE_CHARS = MAX_WORKSPACE_COMMIT_MESSAGE
 
-/** Attribution trailers a model adds by habit. The console commit is attributed to the daemon's
- *  registered `gitCommitIdentity`, so a generated `Co-authored-by` names someone who did not write
- *  this code and a generated `Signed-off-by` certifies a DCO on their behalf. Both are dropped. */
+/** Attribution trailers a model adds by habit, dropped because the console commit's bot identity never wrote or signed off the code. */
 const INVENTED_TRAILER_RE = /^(?:co-authored-by|signed-off-by|generated with|🤖)/i
 
 const LABEL_RE = /^(?:subject|commit message|message|commit)\s*:\s*/i

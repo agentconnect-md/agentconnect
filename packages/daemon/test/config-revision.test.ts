@@ -84,6 +84,11 @@ describe('agentSpecDigest', () => {
     ).not.toBe(agentSpecDigest(spec({ skills: [gitlab] })))
   })
 
+  it('leaves the commit identity out, so a CP that starts shipping it does not conflict at an equal revision', () => {
+    const identity = { name: 'ops-agent-example[bot]', email: '5150+ops-agent-example[bot]@users.noreply.github.com' }
+    expect(agentSpecDigest(spec({ gitCommitIdentity: identity }))).toBe(agentSpecDigest(spec({})))
+  })
+
   it('digests a cleared assistant mode as the absent field, and a policy as content', () => {
     expect(agentSpecDigest(spec({ assistantMode: null }))).toBe(agentSpecDigest(spec({})))
     const enabled = spec({ assistantMode: { enabled: true } })

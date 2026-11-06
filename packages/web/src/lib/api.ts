@@ -4066,8 +4066,7 @@ export async function unstageWorkspacePaths(
   )
 }
 
-// Commit whatever is staged, attributed to the identity the daemon registered at handshake —
-// never to the console user. A refusal is `ok:false` + `reason`, not an HTTP error.
+// Commit whatever is staged as the agent's commit identity, never the console user; a refusal is `ok:false` + `reason`, not an HTTP error.
 export async function commitWorkspace(
   agentId: string,
   opts: { message: string; sessionId?: string }

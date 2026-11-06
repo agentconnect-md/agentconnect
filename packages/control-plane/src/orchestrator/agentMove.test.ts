@@ -179,6 +179,8 @@ const cron = {
   lastModifiedBy: null
 } satisfies CronRecord
 
+const GITHUB_APP_ROW = 'github-app-row'
+
 function make(
   opts: {
     failTargetActivate?: boolean
@@ -210,6 +212,8 @@ function make(
     redundantGrant?: { repoFullName: string; repoId: bigint }
     /** An installation grant that commits inside the detach → workspace-CAS window. */
     installationGrantDuringWorkspaceCas?: { accountLogin: string }
+    /** The organization GitHub App the agent works through. */
+    githubApp?: { slug: string; botUserId: bigint }
     /** Sessions a coordinator holds as tasks, and the members sharing each content store. */
     taskLocks?: {
       sessions: Array<{
@@ -227,6 +231,7 @@ function make(
     ...(opts.workspace
       ? { workspace: opts.workspace, workspaceRepoId: opts.workspaceRepoId ?? WORKSPACE_REPO_ID }
       : {}),
+    ...(opts.githubApp ? { githubAppId: GITHUB_APP_ROW } : {}),
     ...(opts.placement ?? {})
   }
   let grants: Array<{ repoFullName: string; repoId: bigint }> = opts.redundantGrant ? [opts.redundantGrant] : []
@@ -302,7 +307,8 @@ function make(
     },
     movePlacement: async (_id: string, expected: PlacementTarget, target: PlacementTarget) => {
       if (opts.casMiss || !samePlacement(placementTargetOf(current), expected)) return null
-      current = { ...agent(null), ...placementColumns(target) } as AgentRecord
+      // Like the real CAS, only the placement columns change; the agent's GitHub App stays.
+      current = { ...agent(null), githubAppId: current.githubAppId, ...placementColumns(target) } as AgentRecord
       return current
     }
   } as unknown as AgentRepo
@@ -408,7 +414,14 @@ function make(
             access: 'read',
             materialize: 'on-demand'
           }))
-      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[12]
+      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[12],
+      undefined,
+      undefined,
+      // The agent's organization GitHub App, when it has one.
+      {
+        get: async (_orgId: string, id: string) =>
+          opts.githubApp && id === GITHUB_APP_ROW ? { id, ...opts.githubApp } : null
+      } as unknown as ConstructorParameters<typeof AgentSpecAssembler>[15]
     ),
     crons: { listForAgent: async () => cronRows } as unknown as ConstructorParameters<
       typeof AgentMoveService
@@ -482,6 +495,15 @@ describe('AgentMoveService', () => {
     await expect(t.service.ensureActive(t.current())).resolves.toMatchObject({ daemonId: SOURCE })
     expect(t.activations).toHaveLength(1)
     expect(t.activations[0]?.reconcileWorkspace).toBe(true)
+  })
+
+  it("activates the target with the agent's own GitHub App commit identity", async () => {
+    const t = make({ githubApp: { slug: 'mover-app', botUserId: 31337n } })
+    await t.service.move(t.current(), onDaemon(TARGET))
+    expect(t.activations[0]?.spec.gitCommitIdentity).toEqual({
+      name: 'mover-app[bot]',
+      email: '31337+mover-app[bot]@users.noreply.github.com'
+    })
   })
 
   it('scopes every move frame to the agent org, so an install-wide member accepts it', async () => {

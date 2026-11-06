@@ -737,11 +737,7 @@ export function sessionGitConfig(
   // The credential proxy carries GitHub's token: git presents the environment's placeholder instead of asking the helper.
   proxied = false
 ): { path: string; content: string; env: Record<string, string> } {
-  // Keyed by what the file CONTAINS, not by the host that asked for it. A dream host is stripped of
-  // tool credentials and coexists with the warm host (sharing its pod on the pool), so writing the
-  // credentialed name with policy-only content would cut the live host's helper until it rebuilds.
-  // Content is a pure function of (agent, class) — scope and identity are agent- and daemon-global —
-  // so every writer of a path writes identical bytes, and an agent can never own more than these two.
+  // Keyed by content, a pure function of (agent, class, proxy) with identity in env, so a dream host never cuts the warm host's helper.
   const file = join(target.configDir, `${agentId}${scope ? (proxied ? '.proxied' : '') : '.policy'}.gitconfig`)
   const bases = scope ? sessionCredentialBases(scope) : []
   const lines = [

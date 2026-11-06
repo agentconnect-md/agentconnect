@@ -1679,6 +1679,11 @@ export class Daemon {
   private noteProjector!: CodeHostNoteProjector
   /** Public commit attribution selected by the CP deployment's GitHub App. */
   private gitCommitIdentity?: GitCommitIdentity
+
+  /** The agent's own organization App bot, else the identity the CP registered (the built-in App's). */
+  private commitIdentityOf(agent: Pick<LoadedAgent, 'gitCommitIdentity'> | undefined): GitCommitIdentity | undefined {
+    return agent?.gitCommitIdentity ?? this.gitCommitIdentity
+  }
   /** The CP's transfer cache from the last register; where a shared image's large original goes. */
   private fileTransfer?: { maxBytes: number }
   private gitCredServer?: GitCredServer
@@ -7032,7 +7037,7 @@ export class Daemon {
       managedCredentials || agent.workspace.mode === 'git-repo'
         ? sessionGitEnv(
             agent.id,
-            managedCredentials ? this.gitCommitIdentity : undefined,
+            managedCredentials ? this.commitIdentityOf(agent) : undefined,
             managedCredentials ? scope : null
           )
         : undefined
@@ -8633,7 +8638,7 @@ export class Daemon {
     // The daemon-local write (sessionGitEnv) would land the file on this daemon's disk instead.
     // A git-repo workspace with no managed credential still gets the file, for its policy alone.
     const sessionGitScope = managedCredentials ? managedScope : null
-    const sessionGitIdentity = managedCredentials ? this.gitCommitIdentity : undefined
+    const sessionGitIdentity = managedCredentials ? this.commitIdentityOf(agent) : undefined
     const needsSessionGit = managedCredentials || agent.workspace.mode === 'git-repo'
     // A session on an executor reads the same file in that machine's environment, at the roots its `prepare` named (§5).
     const sandboxGitTarget = remoteRoots
@@ -30233,7 +30238,7 @@ export class Daemon {
       memoryHomePortsFor: (agentId) => this.memoryHomePortsFor(agentId),
       wakeMemoryOutbox: () => this.memoryOutbox?.wake(),
       wakeMemoryHomeMigrations: () => this.memoryHomeMigrations.wake(),
-      gitCommitIdentity: () => this.gitCommitIdentity,
+      gitCommitIdentity: (agentId) => this.commitIdentityOf(this.agents.get(agentId)),
       sessionThreadUrl: (session) => this.sessionThreadUrl(session),
       childSessionStatusProbe: (probe) => this.collab.childSessionStatusProbe(probe),
       resolveSharedImage: (req) => this.resolveSharedImage(req),
