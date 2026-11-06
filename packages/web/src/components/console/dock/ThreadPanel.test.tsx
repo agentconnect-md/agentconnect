@@ -391,6 +391,22 @@ describe('ThreadPanel', () => {
     expect(wire.calls).toEqual(['target:ses_task', 'answer:ses_task:agent_1:q-3:v1.5.0'])
   })
 
+  it('keeps an unfinished answer when the thread remounts, as switching the task view does', async () => {
+    wire.live = [
+      { kind: 'elicit', turnId: 't1', text: 'Which tag?', elicit: { requestId: 'q-keep', options: [], text: {} } }
+    ]
+    await render()
+    const input = () => container.querySelector<HTMLInputElement>('input[aria-label="Your answer"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input(), 'v1.5.')
+      input().dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => root.unmount())
+    root = createRoot(container)
+    await render()
+    expect(input().value).toBe('v1.5.')
+  })
+
   it('keeps a settled question in the thread with its outcome, and offers nothing to answer', async () => {
     wire.extra = [
       {

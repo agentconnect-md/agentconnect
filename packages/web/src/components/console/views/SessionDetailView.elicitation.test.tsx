@@ -155,6 +155,7 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
 })
 
 import SessionDetailView from './SessionDetailView'
+import { forgetKeptAnswers } from '@/components/console/TranscriptCards'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -199,6 +200,8 @@ const expandButton = () =>
 const declineButton = () => declineButtons()[0] as HTMLButtonElement | undefined
 
 beforeEach(() => {
+  // Every test asks the same request id, whose answer in progress the card would otherwise keep.
+  forgetKeptAnswers()
   wire.messages = []
   live.steps = [CARD]
   live.answered = []
