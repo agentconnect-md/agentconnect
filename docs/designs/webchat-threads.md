@@ -271,9 +271,22 @@ This change has no visible effect by itself and lands before the coordinator mov
 
 A thread record includes observations, rows no session admitted, and message-intake.md §8 sweeps
 those once the channel has 100 newer text rows, which would leave gaps in a thread panel. A thread
-in which any row was admitted into a session is exempt: its observations are kept until its newest
-admitted row is itself deleted. Threads no agent took part in are swept as today, so the growth is
-bounded by the threads agents worked in.
+in which any row was admitted into a session is exempt: its observations are kept while any of its
+rows is still admitted, and once the last admission goes with its session (message-intake.md §8
+rule 1) the thread is swept as today. Threads no agent took part in are swept as today, so the
+growth is bounded by the threads agents worked in.
+
+As implemented (PR 6):
+
+- `LocalStore.sweepObservations` skips a row whose thread is one an agent took part in: a thread
+  that a `text` row names as its own (its `ts` or webchat `postId` equals its recorded thread, as a
+  Slack or webchat root does) and that holds at least one admitted row. Both sets are computed once
+  per sweep over the conversation, so the sweep stays one pass per conversation.
+- A thread no recorded root names is swept as today. This covers a whole-room thread (a DM keyed on
+  its channel, or a constant thread such as QQ's), the literal `webchat:<conv>` of an ordinary
+  conversation or of rows written before threads, rows with no thread, and a thread whose root the
+  daemon never recorded. So the exemption never covers a whole conversation.
+- Nothing new is stored: the exemption is computed from the channel record and its admissions.
 
 ## 6. The webchat conversation page
 

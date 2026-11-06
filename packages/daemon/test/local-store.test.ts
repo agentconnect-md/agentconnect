@@ -11,6 +11,7 @@ import {
   sessionKey,
   type SessionRecord,
   type StoreDatabase,
+  type TranscriptEntry,
   OBSERVATION_SWEEP_INSERTS,
   SCHEMA_VERSION,
   transcriptPromptText
@@ -4040,6 +4041,97 @@ describe('the observation floor (message-intake.md §8 rule 2)', () => {
     await s.appendTranscript({ channel: 'CG', thread: 'TG', ts: '1', sender: 'bot-a', kind: 'reasoning', text: 'x' })
     expect(await s.sweepObservations('', 'CG')).toBe(0)
     expect((await s.threadTranscript('CG', 'TG')).length).toBe(1)
+    await s.close()
+  })
+})
+
+// webchat-threads.md §5.5: a thread an agent took part in keeps its observations past the floor.
+describe('the observations of threads agents took part in', () => {
+  const row = (ts: string, thread: string, extra: Partial<TranscriptEntry> = {}): TranscriptEntry => ({
+    channel: 'CT',
+    thread,
+    ts,
+    sender: 'U1',
+    kind: 'text',
+    text: `m${ts}`,
+    ...extra
+  })
+  const admission = { agentId: 'bot-a', sessionKey: 'slack:CT:1:bot-a' }
+  // 120 newer Slack-style roots nobody admitted push everything older under the floor.
+  const newerRoots = async (s: LocalStore) => {
+    for (let i = 100; i < 220; i++) await s.appendTranscript(row(String(i), String(i)))
+  }
+  const texts = async (s: LocalStore, thread: string) => (await s.threadTranscript('CT', thread)).map((r) => r.text)
+
+  it('keeps every observation of a thread holding an admitted row, and sweeps a thread nobody admitted', async () => {
+    const s = await store()
+    await s.appendTranscript(row('1', '1'))
+    await s.appendTranscript(row('2', '1'))
+    await s.appendTranscript(row('3', '1', { admission, sender: 'bot-a' }))
+    await s.appendTranscript(row('4', '1'))
+    await s.appendTranscript(row('5', '5'))
+    await s.appendTranscript(row('6', '5'))
+    await newerRoots(s)
+    expect(await s.sweepObservations('', 'CT')).toBe(22)
+    expect(await texts(s, '1')).toEqual(['m1', 'm2', 'm3', 'm4'])
+    expect(await texts(s, '5')).toEqual([])
+    expect(await texts(s, '100')).toEqual([])
+    expect(await texts(s, '120')).toEqual(['m120'])
+    await s.close()
+  })
+
+  it('names a webchat thread by its root post, and does not shield the conversation-wide literal thread', async () => {
+    const s = await store()
+    const root = '0f9c2b1e-5d4a-4c3b-9a8f-7e6d5c4b3a21'
+    await s.appendTranscript(row('1', root, { postId: root }))
+    await s.appendTranscript(row('2', root, { postId: '6b1d7e2f-3a4c-4d5e-8f90-a1b2c3d4e5f6', admission }))
+    await s.appendTranscript(row('3', root, { postId: '9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b' }))
+    await s.appendTranscript(row('4', 'webchat:CT', { postId: 'c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f', admission }))
+    await s.appendTranscript(row('5', 'webchat:CT', { postId: 'd2e3f4a5-b6c7-4d8e-9f0a-1b2c3d4e5f60' }))
+    await newerRoots(s)
+    await s.sweepObservations('', 'CT')
+    expect(await texts(s, root)).toEqual(['m1', 'm2', 'm3'])
+    expect(await texts(s, 'webchat:CT')).toEqual(['m4'])
+    await s.close()
+  })
+
+  it('keeps nothing extra for a thread no root names, such as a whole room or a missing root', async () => {
+    const s = await store()
+    await s.appendTranscript(row('1', 'CT', { admission }))
+    await s.appendTranscript(row('2', 'CT'))
+    await s.appendTranscript(row('3', 'gone', { admission }))
+    await s.appendTranscript(row('4', 'gone'))
+    await s.appendTranscript({ channel: 'CT', ts: '5', sender: 'U1', kind: 'text', text: 'm5' })
+    await newerRoots(s)
+    await s.sweepObservations('', 'CT')
+    expect(await texts(s, 'CT')).toEqual(['m1'])
+    expect(await texts(s, 'gone')).toEqual(['m3'])
+    expect(await s.transcriptTextAt('CT', '5', { sender: 'U1' })).toBeUndefined()
+    await s.close()
+  })
+
+  it('sweeps the thread as before once its last admission goes with its session', async () => {
+    const s = await store()
+    await s.upsertSession({
+      key: admission.sessionKey,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'CT',
+      thread: '1',
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    } as never)
+    await s.appendTranscript(row('1', '1'))
+    await s.appendTranscript(row('2', '1', { admission }))
+    await s.appendTranscript(row('3', '1'))
+    await newerRoots(s)
+    await s.sweepObservations('', 'CT')
+    expect(await texts(s, '1')).toEqual(['m1', 'm2', 'm3'])
+    expect(await s.deleteSession(admission.sessionKey)).toBe(true)
+    expect(await s.sweepObservations('', 'CT')).toBe(3)
+    expect(await texts(s, '1')).toEqual([])
     await s.close()
   })
 })
