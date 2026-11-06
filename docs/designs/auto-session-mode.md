@@ -332,6 +332,9 @@ now and the summary's first sentence states the current status.
     `packages/protocol/src/coordinator-model.ts` is the one rule the daemon and the console both read.
   - It has no approval setting: it runs in the runtime's read-only mode, else its auto mode, else the
     runtime's own. Read-only restricts native tools only, so memory and the AgentConnect tools still work.
+  - Claude Code's plan mode runs Haiku as Sonnet, so a Claude Code coordinator runs in `default`
+    instead, where every write asks, and the daemon refuses each ask as it does for a check; its own
+    AgentConnect tools are granted before that. The other runtimes keep their read-only mode.
   - A Decision that picks the task model never picks the coordinator's.
   - Each turn runs the coordinator on its setting's runtime and applies its model, effort and Fast
     mode, so a change reaches a running coordinator at its next turn. Its runtime is never pinned on

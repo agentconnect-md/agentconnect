@@ -32,8 +32,13 @@ export function coordinatorTarget(
   return { runtime: agent.runtime, model, effort, fastMode: false }
 }
 
-/** The runtime's read-only mode, else its auto mode, among the modes the session offers; undefined leaves the runtime's own. */
+// Claude Code's plan mode runs Haiku as Sonnet, so a Claude coordinator asks for every write in `default`, and the daemon refuses each ask.
+const ASKS_EVERY_WRITE: Readonly<Record<string, string>> = Object.freeze({ 'claude-acp': 'default', claude: 'default' })
+
+/** The mode whose every write is asked and refused, else the runtime's read-only mode, else its auto mode; undefined leaves the runtime's own. */
 export function coordinatorPermissionMode(runtime: string, offered: readonly string[]): string | undefined {
+  const asking = Object.prototype.hasOwnProperty.call(ASKS_EVERY_WRITE, runtime) ? ASKS_EVERY_WRITE[runtime] : undefined
+  if (asking && offered.includes(asking)) return asking
   const readOnly = readOnlyExtractionMode([...offered])
   if (readOnly) return readOnly
   const kinds = Object.prototype.hasOwnProperty.call(ASSISTANT_MODE_PERMISSION_MODES, runtime)
