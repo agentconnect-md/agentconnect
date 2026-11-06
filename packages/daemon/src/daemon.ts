@@ -20545,7 +20545,8 @@ export class Daemon {
         }
       )
       const target = this.sessionRuntimes.get(key)
-      if (target) await this.store.pinDecisionModel(key, target)
+      // A coordinator's runtime is read from its setting each turn, never pinned.
+      if (target && !isCoordinatorSessionKey(key)) await this.store.pinDecisionModel(key, target)
       if (target && run.modelEvaluation) await this.saveSessionModelEvaluation(run, target)
       const selectedRepos = this.sessionRepoSelections.get(key)
       if (selectedRepos) {
@@ -20694,6 +20695,15 @@ export class Daemon {
     const { entry, key, plan } = run
     const agent = this.agents.get(entry.agentId)
     if (!agent) return
+    if (isCoordinatorSessionKey(key)) {
+      // A coordinator runs on its setting's runtime each turn, so a changed runtime moves it at its next turn (auto-session-mode.md §5.4).
+      this.sessionRuntimes.delete(key)
+      const target = this.coordinatorSettings(agent.id)
+      if (plan.initializeOnly || !target || target.runtime === agent.runtime) return
+      if (this.sessionRuntimeSupported(agent, key, target, await candidates())) this.sessionRuntimes.set(key, target)
+      else this.log.warn(`coordinator ${key}: ${target.runtime} is unavailable here; it runs on the agent's runtime`)
+      return
+    }
     const saved = pinnedDecisionTarget(persisted?.decisionModel)
     if (saved) {
       if (
@@ -20713,14 +20723,6 @@ export class Daemon {
         entry.webchat.runtime.runtime !== agent.runtime
       )
         throw new Error('Choose a runtime before starting a new session.')
-      return
-    }
-    if (isCoordinatorSessionKey(key)) {
-      // A new coordinator starts on its own model's runtime; on the agent's runtime each turn applies the model (auto-session-mode.md §5.4).
-      const target = this.coordinatorSettings(agent.id)
-      if (plan.initializeOnly || !target || target.runtime === agent.runtime) return
-      if (this.sessionRuntimeSupported(agent, key, target, await candidates())) this.sessionRuntimes.set(key, target)
-      else this.log.warn(`coordinator ${key}: ${target.runtime} is unavailable here; it runs on the agent's runtime`)
       return
     }
     const manual = chatSettingsAllowed(agent) ? entry.webchat?.runtime : undefined

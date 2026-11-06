@@ -26,7 +26,7 @@ function scaffold(features: Record<string, unknown>): string {
       version: 1,
       controlPlane: { enabled: false },
       features,
-      runtimes: { claude: { command: 'node', args: ['unused'] } }
+      runtimes: { claude: { command: 'node', args: ['unused'] }, codex: { command: 'node', args: ['unused'] } }
     })
   )
   const adir = join(root, 'agents', AGENT)
@@ -67,9 +67,12 @@ async function boot(
     cancel: vi.fn(async () => {}),
     stop: vi.fn()
   }
+  // The runtime of each host the daemon starts, in order.
+  const hostRuntimes: string[] = []
   const daemon = new Daemon({
     root: scaffold(features),
-    hostFactory: (_agent, update) => {
+    hostFactory: (agent, update) => {
+      hostRuntimes.push((agent as { runtime: string }).runtime)
       onUpdate = update
       return host as never
     }
@@ -129,7 +132,7 @@ async function boot(
       } as SessionContext
     }
   }
-  return { daemon, d, host, posts, send, coordinator }
+  return { daemon, d, host, posts, send, coordinator, hostRuntimes }
 }
 
 describe("a member's coordinator conversation in webchat (auto-session-mode.md ยง10)", () => {
@@ -189,6 +192,25 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md ย
     await send('hello')
     const { key } = await coordinator()
     expect(ensure).toHaveBeenCalledWith(expect.anything(), key, 'model-small')
+    await daemon.stop()
+  })
+
+  it('moves a running coordinator to the runtime its setting names at its next turn, and back', async () => {
+    const { daemon, d, host, send, coordinator, hostRuntimes } = await boot(async (_id, _text, say) => say('ok'))
+    Object.assign(host, { setSessionModel: vi.fn(async () => true) })
+    await send('hello')
+    expect(hostRuntimes).toEqual(['claude'])
+    d.agents.get(AGENT).coordinatorModel = { runtime: 'codex', model: 'model-small' }
+    await send('again')
+    expect(hostRuntimes.at(-1)).toBe('codex')
+    const { key } = await coordinator()
+    // Never pinned, so a setting back on the agent's runtime moves it back too.
+    expect((await d.store.getSession(key))?.decisionModel ?? null).toBeNull()
+    d.agents.get(AGENT).coordinatorModel = { runtime: 'claude', model: 'model-small' }
+    const before = hostRuntimes.length
+    await send('and back')
+    expect(d.hostKeyFor(AGENT, key)).toBe(d.hostKeyFor(AGENT))
+    expect(hostRuntimes.length).toBe(before)
     await daemon.stop()
   })
 
