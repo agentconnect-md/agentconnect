@@ -4370,7 +4370,8 @@
       "sending": "Sending…",
       "upgrade": "Upgrade",
       "restart": "Restart",
-      "downgradeDisablesAutoUpgrade": "Upgrading to an older version turns auto-upgrade off."
+      "downgradeDisablesAutoUpgrade": "Upgrading to an older version turns auto-upgrade off.",
+      "autoUpgradeNotSaved": "The upgrade started, but auto-upgrade could not be changed: {error}"
     },
     "runtimeLogin": {
       "title": "Log in to {label}",
