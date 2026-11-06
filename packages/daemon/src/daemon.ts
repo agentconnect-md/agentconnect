@@ -16559,10 +16559,12 @@ export class Daemon {
   /** Whether the agent holds any repository on `provider` a broker could act on: its workspace, an additional repository, or an installation grant. */
   private holdsEffectRepository(agent: Pick<LoadedAgent, 'id' | 'workspace'>, provider: CodeHostProvider): boolean {
     if (this.workspaceEffectTarget(agent.id)?.provider === provider) return true
-    if ((agent.workspace.additionalRepos ?? []).some((row) => row.provider === provider)) return true
+    // A spec-less agent (a bare local one) holds no repository, so its tool list stays as before.
+    const workspace = agent.workspace as Partial<LoadedAgent['workspace']> | undefined
+    if ((workspace?.additionalRepos ?? []).some((row) => row.provider === provider)) return true
     return (
       codeHostCredentials(provider)?.resolvesByName === true &&
-      (agent.workspace.additionalInstallations ?? []).some((grant) => grant.provider === provider)
+      (workspace?.additionalInstallations ?? []).some((grant) => grant.provider === provider)
     )
   }
 
