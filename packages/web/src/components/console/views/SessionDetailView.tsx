@@ -85,7 +85,7 @@ import { HeaderPeople, personSub } from '@/components/console/HeaderPeople'
 import { agentToneColor } from '@/lib/agent-tone'
 import { AGENT_PROSE, SELF_BUBBLE } from '@/components/console/transcript-bubbles'
 import { AgentTurnHeader } from '@/components/console/AgentTurnHeader'
-import { TranscriptApprovalsProvider, TurnApprovals } from '@/components/console/TurnApprovals'
+import { TranscriptApprovalsProvider, TurnApprovals, UnplacedApprovals } from '@/components/console/TurnApprovals'
 import { approvalTurnStart, askedApprovalIds, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
@@ -2414,6 +2414,12 @@ export default function SessionDetailView() {
     consoleKeys.sessionDetail(activeOrg?.id, extraHeaderDetailId),
     ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string)
   )
+  // A task's owning conversation, whose owner answers the task's requests through it as they would in the side panel.
+  const taskOwnerSessionId = sessionDetail?.task ? (sessionDetail.parentSession?.id ?? null) : null
+  const { data: taskOwnerDetail } = useSWR<SessionDetailDto>(
+    consoleKeys.sessionDetail(activeOrg?.id, taskOwnerSessionId),
+    ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string)
+  )
   const focusedSessionDetail =
     headerFocusSessionId === currentSessionDetail?.id
       ? currentSessionDetail
@@ -4443,6 +4449,16 @@ export default function SessionDetailView() {
     owner &&
     !owner.name.startsWith(MOCK_PREFIX)
   )
+  // On a task's own page that owner answers the task's requests through the owning conversation, since the task's own coordinate is refused there.
+  const taskOwnerApprovals = Boolean(
+    !canReviewApprovals &&
+    taskOwnPage &&
+    taskOwnerSessionId &&
+    taskOwnerDetail?.platform === 'webchat' &&
+    taskOwnerDetail.ownsConversation === true &&
+    owner &&
+    !owner.name.startsWith(MOCK_PREFIX)
+  )
   // A webchat conversation's proposals, the live Playground's included (assistant-mode.md §5.10): whoever may continue it and editors decide them here; the CP refuses anyone else.
   const conversationProposals = Boolean(
     (isWebchat || (isPg && session.realSessionId)) &&
@@ -5068,8 +5084,9 @@ export default function SessionDetailView() {
                   <TranscriptApprovalsProvider
                     agentId={session.agentId ?? ''}
                     sessionId={session.realSessionId ?? session.id}
-                    enabled={(canReviewApprovals || ownerApprovals) && Boolean(session.agentId)}
-                    conversationPermissions={ownerApprovals}
+                    {...(taskOwnerApprovals && taskOwnerSessionId ? { listSessionId: taskOwnerSessionId } : {})}
+                    enabled={(canReviewApprovals || ownerApprovals || taskOwnerApprovals) && Boolean(session.agentId)}
+                    conversationPermissions={ownerApprovals || taskOwnerApprovals}
                     turns={approvalTurns}
                   >
                     <div className="flex flex-col gap-4 max-desktop:pb-3 desktop:gap-[15px]">
@@ -5396,6 +5413,8 @@ export default function SessionDetailView() {
                         </div>
                       ))}
                     </div>
+                    {/* No strip reads a task's requests through its owner, so a waiting one no turn holds is answered here. */}
+                    {taskOwnerApprovals ? <UnplacedApprovals /> : null}
                   </TranscriptApprovalsProvider>
                 )}
                 {openDecisionSeq !== null && decisionResults.lane && (

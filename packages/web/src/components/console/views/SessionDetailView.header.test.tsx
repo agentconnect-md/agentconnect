@@ -11,6 +11,7 @@ import type { AgentPermissionRequestDto, SessionDetailDto } from '@/lib/api'
 
 const wire = vi.hoisted(() => ({
   detail: null as unknown,
+  ownerDetail: null as unknown,
   chatActions: 'approve' as 'talk' | 'approve' | 'settings',
   canEdit: true,
   requests: [] as AgentPermissionRequestDto[],
@@ -47,7 +48,9 @@ vi.mock('@/lib/api', async (importOriginal) => {
   return {
     ...actual,
     fetchSessionMessages: vi.fn(() => Promise.resolve({ messages: wire.messages, nextCursor: null })),
-    fetchSessionDetail: vi.fn(() => Promise.resolve(wire.detail)),
+    fetchSessionDetail: vi.fn((id: string) =>
+      Promise.resolve(id === 'owner-1' && wire.ownerDetail ? wire.ownerDetail : wire.detail)
+    ),
     fetchMySessionIdentity: vi.fn(() => Promise.reject(new Error('no identity'))),
     fetchConversationByKey: vi.fn(() => Promise.reject(new Error('no conversation'))),
     fetchAgentTasks: vi.fn(() =>
@@ -260,6 +263,7 @@ const picker = () => container?.querySelector<HTMLButtonElement>('button[aria-la
 
 beforeEach(() => {
   wire.detail = detail(true)
+  wire.ownerDetail = null
   wire.chatActions = 'approve'
   wire.canEdit = true
   wire.requests = [request]
@@ -352,6 +356,33 @@ describe('the one-line session header', () => {
     await render()
     Object.assign(listRow, { subsession: undefined })
     expect(header()?.querySelector('h1 + a')?.getAttribute('href')).toBe('/acme/sessions/owner-1')
+  })
+
+  it('lets the owner of a webchat coordinator answer its task’s request on the task’s page, read through the coordinator', async () => {
+    wire.canEdit = false
+    const owner = {
+      id: 'owner-1',
+      agentId: 'agent-1',
+      agentName: 'Ops bot',
+      platform: 'webchat',
+      title: 'Ship api 1.5',
+      subsession: false
+    }
+    wire.detail = { ...detail(false), task: true, platform: 'slack', parentSession: owner }
+    wire.ownerDetail = { ...detail(true), id: 'owner-1', platform: 'webchat' }
+    wire.messages = [
+      { seq: 1, sender: 'sam', kind: 'text', text: 'check the release', ts: '2026-09-26T00:00:00.000Z' },
+      { seq: 2, sender: 'agent-1', kind: 'text', text: 'running the tests', ts: '2026-09-26T00:00:01.000Z' }
+    ]
+    await render()
+    for (let i = 0; i < 5; i++)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+    // The task's own coordinate is refused by the conversation route, so the read goes through its owner.
+    expect(wire.conversationReads).toContain('owner-1')
+    expect(wire.conversationReads).not.toContain('session-1')
+    expect(container?.textContent).toContain('npm test')
   })
 
   it('makes a threaded task’s page its expanded view: back, shrink into the side panel and close lead to its owner, and its dock opens on Files', async () => {
