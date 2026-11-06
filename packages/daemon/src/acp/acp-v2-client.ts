@@ -33,7 +33,9 @@ export function createV2Client(stream: V2.Stream, handlers: AcpClientHandlers): 
         const turn = pending.get(sessionId)
         if (!turn) return
         if (update.state === 'running' || update.state === 'requires_action') turn.started = true
-        if (V2.StateUpdate.isIdle(update) && update.stopReason && turn.started) {
+        if (V2.StateUpdate.isIdle(update) && turn.started) {
+          turn.started = false
+          const stopReason = update.stopReason ?? 'end_turn'
           for (const normalized of sessions.get(sessionId)?.finish() ?? []) handlers.update(sessionId, normalized)
           const failure = sessionFailureFromMeta(update._meta)
           if (failure) turn.reject(failure)
@@ -42,11 +44,9 @@ export function createV2Client(stream: V2.Stream, handlers: AcpClientHandlers): 
             turn.reject(
               new V2.RequestError(error?.code ?? -32603, error?.message ?? 'Runtime turn failed', error?.data)
             )
-          } else if (
-            ['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'].includes(update.stopReason)
-          ) {
-            turn.resolve({ stopReason: update.stopReason as V1.StopReason, usage: update.usage, _meta: update._meta })
-          } else turn.reject(new Error(`Unsupported ACP stop reason: ${update.stopReason}`))
+          } else if (['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'].includes(stopReason)) {
+            turn.resolve({ stopReason: stopReason as V1.StopReason, usage: update.usage, _meta: update._meta })
+          } else turn.reject(new Error(`Unsupported ACP stop reason: ${stopReason}`))
         }
         return
       }
@@ -143,7 +143,7 @@ export function createV2Client(stream: V2.Stream, handlers: AcpClientHandlers): 
       sessions.delete(sessionId)
       const res = await conn.agent.request('session/resume', {
         // Codex resumes retain the host's existing inline standing-context refresh.
-        ...startParams({ ...params, instructions: undefined }),
+        ...startParams(params),
         sessionId,
         replayFrom: { type: 'start' }
       })

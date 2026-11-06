@@ -53,6 +53,15 @@ export function permissionFromV2(params: V2.RequestPermissionRequest): V1.Reques
   }
 }
 
+const TOOL_STATUSES = new Map<string, V1.ToolCallStatus>([
+  ['pending', 'pending'],
+  ['in_progress', 'in_progress'],
+  ['completed', 'completed'],
+  ['failed', 'failed'],
+  ['cancelled', 'failed'],
+  ['paused', 'in_progress']
+])
+
 function toolFromV2(tool: V2.ToolCallUpdate): V1.ToolCallUpdate {
   const kind =
     tool.kind &&
@@ -61,10 +70,7 @@ function toolFromV2(tool: V2.ToolCallUpdate): V1.ToolCallUpdate {
     )
       ? (tool.kind as V1.ToolKind)
       : undefined
-  const status =
-    tool.status && ['pending', 'in_progress', 'completed', 'failed'].includes(tool.status)
-      ? (tool.status as V1.ToolCallStatus)
-      : undefined
+  const status = tool.status ? TOOL_STATUSES.get(tool.status) : undefined
   return { ...tool, kind, status, content: tool.content?.flatMap(contentFromV2) }
 }
 

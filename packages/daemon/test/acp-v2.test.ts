@@ -133,7 +133,7 @@ describe('ACP v2 client', () => {
     expect(f.requests.at(-1)!.params).toMatchObject({ type: 'boolean', value: true })
     await f.client.setConfig({ sessionId: 's1', configId: 'model', value: 'test' })
     expect(f.requests.at(-1)!.params).toMatchObject({ type: 'id', value: 'test' })
-    await f.client.loadSession({ sessionId: 's1', cwd: '/workspace', mcpServers: [], instructions: 'Updated policy.' })
+    await f.client.loadSession({ sessionId: 's1', cwd: '/workspace', mcpServers: [] })
     expect(f.requests.at(-1)).toMatchObject({
       method: 'session/resume',
       params: { replayFrom: { type: 'start' } }
@@ -190,6 +190,14 @@ describe('ACP v2 client', () => {
     f.update({ sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' })
     f.send({ jsonrpc: '2.0', id: f.requests.at(-1)!.id, error: { code: -32002, message: 'Session not found' } })
     await check
+  })
+
+  it('completes started work when idle omits its optional stop reason', async () => {
+    const f = await fixture()
+    const prompt = f.client.prompt({ sessionId: 's1', prompt: [] })
+    f.update({ sessionUpdate: 'state_update', state: 'running' })
+    f.update({ sessionUpdate: 'state_update', state: 'idle', usage })
+    await expect(prompt).resolves.toMatchObject({ stopReason: 'end_turn', usage })
   })
 
   it.each(['disconnect', 'release', 'failure', 'air'] as const)(
@@ -338,6 +346,12 @@ describe('ACP v2 updates', () => {
       _meta: { keep: true }
     })
     expect(state.update({ sessionUpdate: 'tool_call_update', toolCallId: 't', _meta: null })[0]?._meta).toBeNull()
+    expect(state.update({ sessionUpdate: 'tool_call_update', toolCallId: 't', status: 'paused' })[0]).toMatchObject({
+      status: 'in_progress'
+    })
+    expect(state.update({ sessionUpdate: 'tool_call_update', toolCallId: 't', status: 'cancelled' })[0]).toMatchObject({
+      status: 'failed'
+    })
   })
 
   it('converts real patch hunks, plans and content chunks without losing prior tool content', () => {

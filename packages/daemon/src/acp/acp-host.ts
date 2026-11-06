@@ -1290,7 +1290,6 @@ export class AcpHost {
       const res = await this.conn!.loadSession({
         sessionId,
         cwd,
-        instructions: systemAppend ?? this.opts.configPrefs?.systemPrompt,
         ...(activeAdditionalDirectories.length > 0 ? { additionalDirectories: activeAdditionalDirectories } : {}),
         mcpServers: this.clampSessionMcpServers(mcpServers),
         ...(_meta ? { _meta } : {})

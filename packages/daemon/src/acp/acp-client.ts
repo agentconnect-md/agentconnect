@@ -11,7 +11,7 @@ export interface AcpClientHandlers {
 }
 
 export type SessionStart = V1.NewSessionRequest & { instructions?: string }
-export type SessionResume = SessionStart & { sessionId: string }
+export type SessionResume = Omit<SessionStart, 'instructions'> & { sessionId: string }
 
 export interface AcpClient {
   readonly nativeSystemPrompt: boolean
@@ -46,7 +46,7 @@ export function createV1Client(stream: Stream, handlers: AcpClientHandlers): Acp
     nativeSystemPrompt: false,
     initialize: (params) => conn.agent.request('initialize', params),
     newSession: ({ instructions: _, ...params }) => conn.agent.request('session/new', params),
-    loadSession: ({ instructions: _, ...params }) => conn.agent.request('session/load', params),
+    loadSession: (params) => conn.agent.request('session/load', params),
     setConfig: (params) => conn.agent.request('session/set_config_option', params),
     authenticate: (methodId) => conn.agent.request('authenticate', { methodId }),
     prompt: (params) => conn.agent.request('session/prompt', params),
