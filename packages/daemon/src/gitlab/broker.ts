@@ -71,7 +71,7 @@ export interface GitlabBrokerTarget {
   projectId: string
   /** Present when a hook-dispatched turn authorizes the lease (§13.1). */
   hookId?: string
-  /** Logical session key — the single-writer ledger for `updateComment` is scoped to it. */
+  /** Logical session key — with the project, it scopes the single-writer ledger for `updateComment`. */
   sessionKey: string
 }
 
@@ -204,7 +204,8 @@ export class GitlabBroker {
     const lease = await this.deps.lease(target)
     this.enforce(lease, endpoint)
     const parsed = await this.call(target, plan, endpoint, lease)
-    if (plan.recordsNote) this.authored.remember(target.sessionKey, idOf(record(parsed).id))
+    if (plan.recordsNote)
+      this.authored.remember({ sessionKey: target.sessionKey, repo: target.projectId }, idOf(record(parsed).id))
     return plan.shape(parsed)
   }
 
@@ -225,7 +226,7 @@ export class GitlabBroker {
         }
       case 'updateComment': {
         const noteId = requireDecimal(op.noteId, 'noteId')
-        if (!this.authored.has(target.sessionKey, noteId)) {
+        if (!this.authored.has({ sessionKey: target.sessionKey, repo: target.projectId }, noteId)) {
           throw new Error('only a comment this session created through the broker can be updated')
         }
         return {

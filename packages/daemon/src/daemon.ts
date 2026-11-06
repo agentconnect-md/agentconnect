@@ -10611,10 +10611,10 @@ export class Daemon {
         thread
       })
     ]
-    // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
-    const workspaceRepo = this.workspaceEffectTarget(agent.id)
-    if (workspaceRepo && this.codeHostBrokers.has(workspaceRepo.provider))
-      tools = [...tools, ...codeHostEffectToolsFor(workspaceRepo.provider)]
+    // §14.2 brokers: a host's tools ride with any repository the agent holds there, and the clamped lease still authorizes each call.
+    for (const provider of this.codeHostBrokers.keys()) {
+      if (this.holdsEffectRepository(agent, provider)) tools = [...tools, ...codeHostEffectToolsFor(provider)]
+    }
     // The provider's stable core tools replace the legacy managed descriptors; an external plugin's raw tools never enter.
     tools = tools.filter((t) => !MEMORY_TOOL_NAMES.has(t.name))
     if (this.evaluationProfile.memory === 'configured') {
@@ -16444,14 +16444,19 @@ export class Daemon {
     return !this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agentId)
   }
 
-  /** §14.2: resolve this turn's trusted repository on the tool's own host, then run exactly one allowlisted operation on its broker. */
+  /** §14.2: resolve the named or this turn's trusted repository on the tool's own host, then run exactly one allowlisted operation on its broker. */
   private async runCodeHostEffect(req: CodeHostEffectReq): Promise<unknown> {
     const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
-    const watched = isCheckCoordinate(req.thread) ? await this.watchedEffectTarget(req.agentId, key) : undefined
-    const target =
-      (watched?.provider === req.provider ? watched : undefined) ??
-      this.codeHostEffectTarget(req.agentId, key, req.provider)
-    if (!target) throw new Error(`this session has no ${req.provider} repository to act on`)
+    let target: Omit<CodeHostEffectTarget, 'agentId' | 'sessionKey'> | undefined
+    if (req.repository !== undefined) {
+      target = this.namedEffectTarget(req.agentId, key, req.provider, req.repository)
+    } else {
+      const watched = isCheckCoordinate(req.thread) ? await this.watchedEffectTarget(req.agentId, key) : undefined
+      target =
+        (watched?.provider === req.provider ? watched : undefined) ??
+        this.codeHostEffectTarget(req.agentId, key, req.provider)
+    }
+    if (!target) throw new Error(`this session has no ${req.provider} repository of its own; name one with repository`)
     const broker = this.codeHostBrokers.get(target.provider)
     if (!broker) throw new Error(`code-host effects are unavailable for ${target.provider} on this daemon`)
     const operation = withOperationFooter(req.operation, await this.descriptionFooter(req, key, target.provider))
@@ -16518,6 +16523,47 @@ export class Daemon {
     }
     const workspace = this.workspaceEffectTarget(agentId)
     return workspace?.provider === provider ? workspace : undefined
+  }
+
+  /** A repository the model named, on `provider` only: the hook's, the workspace, an additional repository, or one an installation grant covers; the lease re-checks it. */
+  private namedEffectTarget(
+    agentId: string,
+    key: string,
+    provider: CodeHostProvider,
+    repository: string
+  ): Omit<CodeHostEffectTarget, 'agentId' | 'sessionKey'> {
+    const wanted = repository.toLowerCase()
+    const names = (path: string | undefined) => path?.toLowerCase() === wanted
+    const hook = this.activeTurnCodeHost.get(key)
+    if (hook && hook.agentId === agentId && hook.provider === provider && names(hook.repoPath)) {
+      const { agentId: _owner, ...target } = hook
+      return target
+    }
+    const workspace = this.workspaceEffectTarget(agentId)
+    if (workspace?.provider === provider && names(workspace.repoPath)) return workspace
+    const agent = this.agents.get(agentId)
+    const row = agent?.workspace.additionalRepos?.find((r) => r.provider === provider && names(r.repoFullName))
+    if (row) return { provider, repoId: row.repoId, repoPath: row.repoFullName }
+    const [owner, name, ...rest] = wanted.split('/')
+    const covered =
+      codeHostCredentials(provider)?.resolvesByName === true &&
+      Boolean(owner && name) &&
+      rest.length === 0 &&
+      (agent?.workspace.additionalInstallations ?? []).some(
+        (grant) => grant.provider === provider && grant.accountLogin.toLowerCase() === owner
+      )
+    if (covered) return { provider, repoId: repository, repoPath: repository }
+    throw new Error(`${repository} is not a ${provider} repository this agent is authorized for`)
+  }
+
+  /** Whether the agent holds any repository on `provider` a broker could act on: its workspace, an additional repository, or an installation grant. */
+  private holdsEffectRepository(agent: Pick<LoadedAgent, 'id' | 'workspace'>, provider: CodeHostProvider): boolean {
+    if (this.workspaceEffectTarget(agent.id)?.provider === provider) return true
+    if ((agent.workspace.additionalRepos ?? []).some((row) => row.provider === provider)) return true
+    return (
+      codeHostCredentials(provider)?.resolvesByName === true &&
+      (agent.workspace.additionalInstallations ?? []).some((grant) => grant.provider === provider)
+    )
   }
 
   /** The managed workspace repository as a broker target; a host that resolves by name is addressed by its path. */

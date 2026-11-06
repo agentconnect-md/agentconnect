@@ -3,8 +3,8 @@
  * gitea-integration.md §10.2): the operation vocabulary the structured tools speak, the trusted target
  * a call is scoped to, the capability clamp, the allowlisted call with its one auth retry, the
  * authored-comment ledger behind the single-writer rule, and the bounded shaping helpers. Each host
- * contributes its own allowlist and plans; the effect token never enters the agent environment and
- * the repository is never model input.
+ * contributes its own allowlist and plans; the effect token never enters the agent environment, and a
+ * repository the model names is resolved only against the agent's own authorizations.
  */
 import type { CodeHostProvider, GitCredGrant } from '@agentconnect.md/protocol'
 import { parseCodeHostJson } from './json.js'
@@ -87,7 +87,7 @@ export interface CodeHostEffectTarget {
   repoPath?: string
   /** Present when a hook-dispatched turn authorizes the lease (§13.1). */
   hookId?: string
-  /** Logical session key — the single-writer ledger for `updateComment` is scoped to it. */
+  /** Logical session key — with the repository, it scopes the single-writer ledger for `updateComment`. */
   sessionKey: string
 }
 
@@ -195,24 +195,35 @@ export function enforceCapability(lease: BrokerLease, endpoint: BrokerEndpoint, 
   )
 }
 
-/** Comment ids one broker authored, by session key — `updateComment` may touch nothing else. */
+/** The session and repository (its numeric id) a brokered comment was authored in. */
+interface LedgerScope {
+  sessionKey: string
+  repo: string
+}
+
+function ledgerKey(scope: LedgerScope): string {
+  return `${scope.sessionKey}\u0000${scope.repo}`
+}
+
+/** Comment ids one broker authored, by session and repository — `updateComment` may touch nothing else. */
 export class AuthoredCommentLedger {
   private readonly authored = new Map<string, Set<string>>()
 
-  has(sessionKey: string, id: string): boolean {
-    return this.authored.get(sessionKey)?.has(id) === true
+  has(scope: LedgerScope, id: string): boolean {
+    return this.authored.get(ledgerKey(scope))?.has(id) === true
   }
 
-  remember(sessionKey: string, id: string | undefined): void {
+  remember(scope: LedgerScope, id: string | undefined): void {
     if (!id) return
-    let ids = this.authored.get(sessionKey)
+    const key = ledgerKey(scope)
+    let ids = this.authored.get(key)
     if (!ids) {
       if (this.authored.size >= MAX_LEDGER_SESSIONS) {
         const oldest = this.authored.keys().next().value
         if (oldest !== undefined) this.authored.delete(oldest)
       }
       ids = new Set<string>()
-      this.authored.set(sessionKey, ids)
+      this.authored.set(key, ids)
     }
     if (ids.size >= MAX_LEDGER_NOTES) {
       const oldest = ids.values().next().value

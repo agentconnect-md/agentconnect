@@ -444,6 +444,16 @@ describe('single-writer discipline for comment updates', () => {
       'only a comment this session created through the broker can be updated'
     )
   })
+
+  it('does not carry authorship to another project the same session names', async () => {
+    const { fetchImpl, calls } = fakeFetch()
+    const { instance } = broker(fetchImpl)
+    await instance.execute(TARGET, create)
+    await expect(instance.execute({ ...TARGET, projectId: '7788990' }, update)).rejects.toThrow(
+      'only a comment this session created through the broker can be updated'
+    )
+    expect(calls).toHaveLength(1)
+  })
 })
 
 describe('trusted path parameters', () => {

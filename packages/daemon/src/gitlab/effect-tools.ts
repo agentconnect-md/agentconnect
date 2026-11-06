@@ -29,9 +29,9 @@ export const GITLAB_EFFECT_TOOLS: readonly CodeHostEffectTool[] = [
     descriptor: {
       name: 'createGitlabComment',
       description:
-        'Post one comment on a GitLab issue or merge request in the project this session is bound to. The project ' +
-        'is fixed by trusted session state and cannot be selected here. Requires comment authority. Returns the ' +
-        'created comment id, which is the only id `updateGitlabComment` will accept later in this session.',
+        'Post one comment on a GitLab issue or merge request in this session’s project. Requires comment ' +
+        'authority. Returns the created comment id, which is the only id `updateGitlabComment` will accept later ' +
+        'in this session.',
       inputSchema: obj(
         {
           subject: { ...subject, description: 'Which subject family to comment on.' },

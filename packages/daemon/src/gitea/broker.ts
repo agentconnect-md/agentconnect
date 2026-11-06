@@ -176,7 +176,8 @@ export class GiteaBroker implements CodeHostEffectBroker {
     for (const call of plan.calls) this.enforce(lease, GITEA_BROKER_ENDPOINTS[call.endpoint])
     const results: unknown[] = []
     for (const call of plan.calls) results.push(await this.call(target, call, lease))
-    if (plan.recordsComment) this.authored.remember(target.sessionKey, idOf(record(results[0]).id))
+    if (plan.recordsComment)
+      this.authored.remember({ sessionKey: target.sessionKey, repo: target.repoId }, idOf(record(results[0]).id))
     return plan.shape(results)
   }
 
@@ -196,7 +197,7 @@ export class GiteaBroker implements CodeHostEffectBroker {
         }
       case 'updateComment': {
         const commentId = requireDecimal(op.noteId, 'noteId')
-        if (!this.authored.has(target.sessionKey, commentId)) {
+        if (!this.authored.has({ sessionKey: target.sessionKey, repo: target.repoId }, commentId)) {
           throw new Error('only a comment this session created through the broker can be updated')
         }
         return {

@@ -1184,11 +1184,12 @@ It refuses an unbound or unauthorized project.
 Mutating CLI commands do not receive the effect token and fail at GitLab.
 This is deliberately stricter than the GitHub precedent, whose CLI wrapper
 serves a capability-clamped write-capable token so `gh issue comment` works.
-Supported mutations use structured broker tools so the target and authorization
-cannot be changed by prompt content. A user-supplied GitLab token wins over the
-managed wrapper and is outside the managed credential guarantee, matching the
-existing `GH_TOKEN` pass-through, which is silent today; a warning would be new
-behavior and should land on both providers together.
+Supported mutations use structured broker tools, so prompt content can pick a
+target only among the agent's own authorizations and cannot change them. A
+user-supplied GitLab token wins over the managed wrapper and is outside the
+managed credential guarantee, matching the existing `GH_TOKEN` pass-through,
+which is silent today; a warning would be new behavior and should land on both
+providers together.
 
 ## 14. Output Ownership
 
@@ -1252,6 +1253,17 @@ tool for one it does not: GitLab's are `createGitlabComment`,
 host: the daemon resolves the target only among that host's repositories (the
 hook turn's, then the workspace's) and refuses the call when the session has
 none, rather than acting on another host's repository.
+
+Every tool also takes an optional `repository`, the path of another repository
+on its host. The daemon resolves it only among the agent's own repositories
+there: the hook turn's, the workspace, an additional repository, or, on a host
+that resolves repositories by name, one an installation grant covers. A name
+outside that set is refused before any call, and the lease below re-checks the
+one it resolves, so naming a repository never raises authority. A session is
+offered a host's tools whenever the agent holds any repository there, not only
+when its workspace is on that host. The ledger behind the single-writer rule
+for comment updates is kept per session and repository, so a comment id never
+carries authority to another repository.
 
 The `gitlab_effect` lease carries the clamp the broker enforces per entry. The
 workspace project earns `write` from a write workspace and `comment` from a
