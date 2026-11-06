@@ -183,6 +183,16 @@ describe('SessionDock applied width', () => {
     expect(1366 - DOCK_INLINE_CHROME - rendered()).toBe(DOCK_BODY_FLOOR)
   })
 
+  it('draws at least its floor while a task thread needs the room, keeping the stored preference', () => {
+    writeDockWidth('org-1', 380)
+    window.innerWidth = 1920
+    render(dock({ widthFloor: 420 }))
+    expect(rendered()).toBe(420)
+    expect(readDockWidth('org-1')).toBe(380)
+    render(dock())
+    expect(rendered()).toBe(380)
+  })
+
   it('leaves the stored preference alone while it bends', () => {
     writeDockWidth('org-1', 700)
     window.innerWidth = 1366

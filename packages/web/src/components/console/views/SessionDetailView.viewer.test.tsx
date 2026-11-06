@@ -1553,6 +1553,20 @@ describe('a coordinator’s task cards', () => {
     ]
   }
 
+  it('gives a coordinator Sessions and Tasks only, with Tasks in the header where Workspace was', async () => {
+    coordinatorTurn()
+    wire.coordinator = true
+    await render()
+    const tabs = [...(container?.querySelectorAll('[data-dock-tab]') ?? [])].map((el) =>
+      el.getAttribute('data-dock-tab')
+    )
+    expect(tabs.every((key) => key === 'sessions' || key === 'tasks')).toBe(true)
+    expect(tabs).not.toContain('files')
+    const tasks = container?.querySelector<HTMLButtonElement>('[data-header-tasks]')
+    expect(tasks?.textContent).toContain('Tasks')
+    expect(container?.textContent).not.toContain('Workspace')
+  })
+
   it('draws the coordinator’s link to a task as a card, not as a link in a bubble', async () => {
     coordinatorTurn()
     await render()
