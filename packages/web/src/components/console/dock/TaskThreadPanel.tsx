@@ -32,6 +32,7 @@ import { fetchSessionDetail } from '@/lib/api'
 import { ComposerFileChips, stageComposerFile } from '@/components/console/ComposerFiles'
 import { prepareWebchatImage } from '@/lib/webchat-image'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
+import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { agentToneColor } from '@/lib/agent-tone'
 import { agentLabel, MOCK_MODE, type Agent, type DaemonRow } from '@/lib/data'
 import { TaskRuntimePicker } from '@/components/console/dock/TaskRuntimePicker'
@@ -116,7 +117,11 @@ export function TaskThreadPanel({
   const busy = isPgBusy(id)
   const { page, error, reload } = useTaskThread(id, row, { busy })
   // The server decides who may continue a task, by its parent's audience; absent or false keeps it read-only.
-  const { data: detail } = useSWR(['session-detail', id], ([, sid]) => fetchSessionDetail(sid), CONSOLE_SWR_CONFIG)
+  const { data: detail, mutate: reloadDetail } = useSWR(
+    ['session-detail', id],
+    ([, sid]) => fetchSessionDetail(sid),
+    CONSOLE_SWR_CONFIG
+  )
   const canReply = detail?.canContinue === true
   const messages = threadMessages(page)
   // The session page's own reading of a bot post: its sender is an agent, or its trusted attribution names one.
@@ -136,9 +141,13 @@ export function TaskThreadPanel({
   // A turn's end is when its answer lands on the record.
   const wasBusy = useRef(busy)
   useEffect(() => {
-    if (wasBusy.current && !busy) void reload()
+    if (wasBusy.current && !busy) {
+      void reload()
+      // The turn's usage report lands with it, so the context ring re-reads the task's detail.
+      void reloadDetail()
+    }
     wasBusy.current = busy
-  }, [busy, reload])
+  }, [busy, reload, reloadDetail])
 
   // Each entry as the prompt lookup reads it, so a turn its own rows cannot measure dates from the message it answers.
   const promptTurns = entries.map((entry) => ({
@@ -350,6 +359,7 @@ export function TaskThreadPanel({
             />
           ) : null
         }
+        context={<ContextWindowIndicator used={detail?.usage?.contextUsed} size={detail?.usage?.contextSize} />}
         dock={MOCK_MODE ? null : <RunningCommandsDock agentId={agentId} sessionId={id} turnActive={busy} />}
       />
     </div>
@@ -609,6 +619,7 @@ function ThreadComposer({
   setDraft,
   onFocus,
   runtime,
+  context,
   attach,
   dock
 }: {
@@ -627,6 +638,8 @@ function ThreadComposer({
   onFocus?: () => void
   /** The task's runtime picker, beside the attach button. */
   runtime?: ReactNode
+  /** The task's context-window ring, beside send as on the conversation's composer. */
+  context?: ReactNode
   /** Images and files go with a reply, staged as the conversation's composer stages them. */
   attach?: { agentId: string; transfer: boolean }
   /** What the task runs in the background, docked over the box. */
@@ -680,7 +693,8 @@ function ThreadComposer({
   }
   const canSend = canReply && (hasText || hasAttachment) && !uploading && !preparing
   return (
-    <div className="flex-none border-t border-(--border-subtle) px-3 pt-[10px] pb-3">
+    // On desktop the bottom inset is the conversation composer's (`.content`'s 26px + its footer's 4px), so the two boxes line up.
+    <div className="flex-none px-3 pt-[10px] pb-3 desktop:pb-[30px]">
       {dock}
       <div className="flex flex-col rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]">
         {attach ? (
@@ -752,6 +766,7 @@ function ThreadComposer({
           ) : null}
           {runtime}
           <span className="flex-1" />
+          {context}
           {/* As the conversation's composer: stop while the task runs and nothing is drafted, send otherwise. */}
           {onStop && !hasText && !hasAttachment ? (
             <SendButton stop label={stopLabel} disabled={stopping} onClick={onStop} />
