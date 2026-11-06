@@ -345,7 +345,8 @@ now and the summary's first sentence states the current status.
   - A conversation changes its own coordinator's model, effort and Fast mode within its runtime, as a
     task's thread changes the task: under `chatActions: settings`, the composer of a member's coordinator
     conversation sets the coordinator session's overrides, which win over the agent's coordinator model.
-    It shows no approval.
+    It shows no approval. Changing the agent's coordinator model clears every coordinator's overrides,
+    so the new setting reaches each conversation at its next turn.
 
 ## 6. Tasks
 

@@ -1,6 +1,6 @@
 // auto-session-mode.md §10: a member's private coordinator conversation in webchat, and the tasks it opens on their own pages.
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { coordinatorConversationId, type RdChatEvent, type RdMsgWebchat } from '@agentconnect.md/protocol'
@@ -71,10 +71,11 @@ async function boot(
     cancel: vi.fn(async () => {}),
     stop: vi.fn()
   }
+  const root = scaffold(features)
   // The runtime of each host the daemon starts, in order.
   const hostRuntimes: string[] = []
   const daemon = new Daemon({
-    root: scaffold(features),
+    root,
     hostFactory: (agent, update) => {
       hostRuntimes.push((agent as { runtime: string }).runtime)
       onUpdate = update
@@ -136,7 +137,13 @@ async function boot(
       } as SessionContext
     }
   }
-  return { daemon, d, host, posts, send, coordinator, hostRuntimes }
+  /** Write `patch` into the agent's agent.json and converge, as a spec from the Control Plane does. */
+  const updateAgent = async (patch: Record<string, unknown>) => {
+    const path = join(root, 'agents', AGENT, 'agent.json')
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), ...patch }))
+    await daemon.reconcile()
+  }
+  return { daemon, d, host, posts, send, coordinator, hostRuntimes, updateAgent }
 }
 
 describe("a member's coordinator conversation in webchat (auto-session-mode.md §10)", () => {
@@ -230,6 +237,28 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md �
     await send('again')
     expect(d.hostKeyFor(AGENT, key)).toBe(own)
     expect(hostRuntimes.at(-1)).toBe('gemini')
+    await daemon.stop()
+  })
+
+  it("drops what a coordinator chat set for itself when the agent's coordinator setting changes, and only then", async () => {
+    const { daemon, d, host, send, coordinator, updateAgent } = await boot(async (_id, _text, say) => say('ok'))
+    Object.assign(host, { setSessionModel: vi.fn(async () => true), hasSession: () => true })
+    await updateAgent({ chatActions: 'settings' })
+    await send('hello')
+    const set: RdMsgWebchat = {
+      source: 'webchat',
+      agentId: AGENT,
+      sessionKey: CONV,
+      msgId: 'm-set',
+      chatId: CONV,
+      payload: { op: 'set_model', model: 'model-small', callerRole: 'owner' }
+    }
+    expect(await d.handleRelayMsg(set, () => {})).toMatchObject({ accepted: true })
+    const { key } = await coordinator()
+    await updateAgent({ description: 'be terse' })
+    expect(await d.store.getModelOverride(key)).toBe('model-small')
+    await updateAgent({ coordinatorModel: { runtime: 'claude', model: 'model-large' } })
+    expect(await d.store.getModelOverride(key)).toBeUndefined()
     await daemon.stop()
   })
 
