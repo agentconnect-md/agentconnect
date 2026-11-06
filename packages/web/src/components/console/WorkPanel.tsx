@@ -9,6 +9,7 @@ import { MessageText } from '@/components/console/MessageText'
 import { McpAppCard, type McpAppCardProps } from '@/components/console/McpAppCard'
 import { ComputerScreenshots } from '@/components/console/ComputerScreenshots'
 import { screenshotRefsIn } from '@/lib/computer-screenshots'
+import { StateIcon } from '@/components/console/StateIcon'
 import { Icon } from '@/components/ui'
 import {
   mcpAppCard,
@@ -125,15 +126,7 @@ export function WorkStepRow({
         }`}
       >
         {mark ? (
-          <span aria-hidden className="flex h-[13px] w-[13px] flex-none items-center justify-center">
-            {mark === 'running' ? (
-              <Icon name="loader" size={13} color="var(--status-paused)" className="animate-spin" />
-            ) : mark === 'done' ? (
-              <Icon name="circle-check" size={13} color="var(--status-online)" />
-            ) : (
-              <Icon name="circle-x" size={13} color="var(--status-error)" />
-            )}
-          </span>
+          <StateIcon state={mark} label={markLabel} />
         ) : (
           <span
             className="dot h-[7px] w-[7px] flex-none"

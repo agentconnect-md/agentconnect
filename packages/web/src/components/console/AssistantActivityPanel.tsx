@@ -281,6 +281,7 @@ function PermissionRequestRow({
 }) {
   const t = useTranslations('Agents.detail.activity')
   const tl = useTranslations('Common.taskList')
+  const ts = useTranslations('Common.stateIcon')
   const shortTime = useShortTime()
   const { orgPath } = useOrgs()
   const [busy, setBusy] = useState(false)
@@ -315,6 +316,7 @@ function PermissionRequestRow({
   return (
     <TaskRow
       tone="waiting"
+      stateLabel={ts('waiting')}
       attrs={{ 'data-assistant-permission': request.requestId }}
       title={
         subsession ? (
@@ -393,6 +395,7 @@ function DraftRow({
 }) {
   const t = useTranslations('Agents.detail.activity')
   const tl = useTranslations('Common.taskList')
+  const ts = useTranslations('Common.stateIcon')
   const shortTime = useShortTime()
   const { members } = useConsoleData()
   const placeLabel = usePlaceLabel(agentId)
@@ -464,6 +467,7 @@ function DraftRow({
   return (
     <TaskRow
       tone="waiting"
+      stateLabel={ts('waiting')}
       attrs={{ 'data-assistant-draft': draft.id }}
       title={
         proposal ? (

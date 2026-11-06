@@ -350,6 +350,13 @@
       "continueOnGithub": "在 GitHub 上继续",
       "switching": "正在切换…",
       "switch": "切换"
+    },
+    "stateIcon": {
+      "running": "运行中",
+      "idle": "空闲",
+      "waiting": "等待中",
+      "done": "已完成",
+      "failed": "失败"
     }
   },
   "Profile": {
@@ -1013,7 +1020,8 @@
       "runningCommands": {
         "count": "{count, plural, other {# 个 shell 命令}}",
         "outlivesTurn": "本轮结束后仍会继续运行",
-        "unnamed": "未命名的后台命令"
+        "unnamed": "未命名的后台命令",
+        "shell": "Shell"
       },
       "subsessionsPanel": {
         "upgradeDaemon": "升级此 Agent 的 Daemon 后，才能在这里查看任务和跟进。",

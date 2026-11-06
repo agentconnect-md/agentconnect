@@ -322,7 +322,7 @@ describe('the Activity view for anyone who can view the agent', () => {
     const task = taskRow(host, 'sid-child')
     // The platform's mark leads the place, and nothing reads "From".
     expect(meta(task)).toBe('#support · Running · started 4m ago')
-    expect(task.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('running')
+    expect(task.querySelector('[data-state-icon]')?.getAttribute('data-state-icon')).toBe('running')
     const links = [...task.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
     expect(links).toEqual([
       ['Fix the flaky test', '/example/sessions/sid-child'],
@@ -386,7 +386,7 @@ describe('follow-ups in Activity', () => {
     const host = await mount(false)
     const row = taskRow(host, 'sid-follow')
     expect(row.dataset.followUp).toBe('waiting')
-    expect(row.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('open')
+    expect(row.querySelector('[data-state-icon]')?.getAttribute('data-state-icon')).toBe('waiting')
     expect(meta(row)).toBe('#support · Next check Oct 16, 9:00 AM · last Oct 15, 9:00 AM')
     const line = row.querySelector('[data-preview-line]')!
     // The sentence alone, quieter than a message's preview.
@@ -401,7 +401,7 @@ describe('follow-ups in Activity', () => {
     expect(checks.querySelector('[data-follow-up-check="reported"]')?.textContent).toContain('Still a draft.')
 
     const hidden = group(host, 'follow-ups')!.querySelectorAll<HTMLElement>('[data-subsession-row]')[1]!
-    expect(hidden.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('paused')
+    expect(hidden.querySelector('[data-state-icon]')?.getAttribute('data-state-icon')).toBe('idle')
     expect(hidden.textContent).toContain('Not visible to you')
     expect(hidden.querySelector('[data-preview-line]')).toBeNull()
     expect(actions(hidden)).toEqual([])
@@ -573,7 +573,7 @@ describe('Waiting for you', () => {
       'request-1'
     ])
     for (const row of rows)
-      expect(row.querySelector('[data-state-mark]')?.getAttribute('data-state-mark')).toBe('waiting')
+      expect(row.querySelector('[data-state-icon]')?.getAttribute('data-state-icon')).toBe('waiting')
   })
 
   it('names a draft’s target in its title alone, with its approver and expiry in the meta line', async () => {

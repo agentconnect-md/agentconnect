@@ -329,6 +329,7 @@ function RuntimeTaskRow({ task, now }: { task: AgentTaskDto; now: number }) {
   return (
     <TaskRow
       tone={TONE[task.state]}
+      stateLabel={tl(`runtimeState.${task.state}`)}
       dim={!running}
       attrs={{ 'data-task-row': task.state }}
       title={
