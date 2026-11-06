@@ -3543,7 +3543,10 @@ export class Daemon {
     if (requiresTrustedActor(command.kind) && !isTrustedHumanTurn(msg)) return false
     const target = this.commands.resolveExplicitCommandTarget(agentId, integrationId, msg)
     if (!target) return false
-    await this.commands.handleCommand(command, msg, target, [integrationId], { reply })
+    await this.commands.handleCommand(command, msg, target, [integrationId], {
+      reply,
+      sessionThread: sessionThreadOf(msg)
+    })
     return true
   }
 

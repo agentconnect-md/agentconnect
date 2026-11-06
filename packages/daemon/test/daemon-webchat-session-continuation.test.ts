@@ -358,13 +358,28 @@ describe('webchat session-targeted continuation — control commands', () => {
     await daemon.stop()
   })
 
-  it('keeps a card-posting command an ordinary turn', async () => {
-    const { daemon, d, prompts } = await boot()
+  it('acts on the session the console names, not the one the channel holds now', async () => {
+    const { daemon, d } = await boot()
+    // The channel has moved on to another session since this page was opened.
+    const host = (daemon as never as { commands: { host: Record<string, unknown> } }).commands.host
+    host.sessionCoordinateFor = async () => 'append:coordinator-rotated'
     const events: RdChatEvent[] = []
-    await d.handleRelayMsg(turn('!status'), (e) => events.push(e))
+
+    await d.handleRelayMsg(turn('!stop'), (e) => events.push(e))
     await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
-    expect(prompts).toHaveLength(1)
+    expect(JSON.stringify(events.filter((e) => e.kind === 'output'))).toContain('Muted in this thread')
     await daemon.stop()
+  })
+
+  it('keeps !new and the card-posting commands ordinary turns', async () => {
+    for (const text of ['!new', '!status']) {
+      const { daemon, d, prompts } = await boot()
+      const events: RdChatEvent[] = []
+      await d.handleRelayMsg(turn(text), (e) => events.push(e))
+      await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+      expect(prompts).toHaveLength(1)
+      await daemon.stop()
+    }
   })
 })
 

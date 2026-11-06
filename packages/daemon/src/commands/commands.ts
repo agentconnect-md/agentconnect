@@ -34,8 +34,8 @@ export function requiresTrustedActor(kind: AgentCommand['kind']): boolean {
   return kind === 'resume' || kind === 'new'
 }
 
-/** Commands the console can send into a platform session: the ones that only reply. The rest post platform cards the console has its own controls for. */
-export const CONTINUATION_COMMANDS: ReadonlySet<AgentCommand['kind']> = new Set(['resume', 'new', 'stop', 'cancel'])
+/** Commands the console can send into a platform session; `!new` needs a platform timestamp as its clear boundary, which a console message has none of. */
+export const CONTINUATION_COMMANDS: ReadonlySet<AgentCommand['kind']> = new Set(['resume', 'stop', 'cancel'])
 
 /** The prompt text of a recorded `!queue <text>` row: the row keeps the command as typed (that is
  *  what the channel shows), so the strip happens at prompt assembly (message-intake.md §5 step 2).

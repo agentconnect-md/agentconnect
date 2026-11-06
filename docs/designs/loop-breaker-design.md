@@ -373,11 +373,14 @@ target resolved by the relay for the final conversation-admission check. A bot
 or unknown sender cannot resume the scope.
 
 A console message that continues a platform session is the same trusted human
-acting on the same conversation, so it parses `!resume`, `!new`, `!stop` and
-`!cancel` before dispatch too, with the session's integration as the target.
-The command is not mirrored into the platform and starts no turn. Its reply goes
-back to the console. The other commands answer with platform cards that the
-console replaces with its own controls, so they stay ordinary messages there.
+acting on the same conversation, so it parses `!resume`, `!stop` and `!cancel`
+before dispatch too. The target is the session's integration, and the command
+acts on the session the console page names, not on whichever session the channel
+holds now. The command is not mirrored into the platform and starts no turn. Its
+reply goes back to the console. `!new` stays out because its clear boundary is a
+platform timestamp, which a console message does not have. The remaining commands
+answer with platform cards that the console replaces with its own controls, so
+they stay ordinary messages there.
 
 ---
 

@@ -604,7 +604,7 @@ export class CommandHandlers {
     msg: NormalizedMessage,
     explicitTarget?: { agentId: string; integrationId: string; via: RouteVia },
     srcIntegrationIds?: readonly string[],
-    opts: { queueAdmission?: QueueAdmission; reply?: (text: string) => void } = {}
+    opts: { queueAdmission?: QueueAdmission; reply?: (text: string) => void; sessionThread?: string } = {}
   ): Promise<CommandEffect | false> {
     let target: { agentId: string; integrationId: string; via: RouteVia } | null | undefined = explicitTarget
     if (!target) {
@@ -648,7 +648,9 @@ export class CommandHandlers {
     // conversation it is asking about. Both then take the same append/`createNew` path.
     const mints = command.kind === 'queue'
     const held = await this.host.heldRoomSession?.(target.agentId, msg)
+    // A caller that already verified the session (the console page) names it; the channel's current one may be another.
     const appendCoordinate =
+      opts.sessionThread ??
       held?.thread ??
       (await this.host.sessionCoordinateFor(target.agentId, target.integrationId, msg, {
         mint: mints
