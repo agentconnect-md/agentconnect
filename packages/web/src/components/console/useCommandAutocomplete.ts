@@ -131,7 +131,8 @@ export function useCommandAutocomplete(params: {
       // Second level: write `/name ` and list its choices, narrowed by whatever is typed next.
       const head = value.slice(0, anchor.start)
       const inserted = `${anchor.prefix}${entry.control.name} `
-      setValue(head + inserted + value.slice(tokenSpanEnd(value, anchor.start)).trimStart())
+      // Trim spaces only: a newline must survive, or picking a choice consumes the message below the command.
+      setValue(head + inserted + value.slice(tokenSpanEnd(value, anchor.start)).replace(/^[ \t]+/, ''))
       setAnchor({ start: anchor.start, prefix: anchor.prefix, query: entry.control.name, arg: '' })
       setActiveIndex(0)
       moveCaret(head.length + inserted.length)

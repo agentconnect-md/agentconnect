@@ -170,6 +170,21 @@ describe('useCommandAutocomplete', () => {
     expect(h.getValue()).toBe('')
   })
 
+  it('keeps the message below a command typed above it when a choice is picked', () => {
+    const runs: Array<[string, string | null]> = []
+    const h = mountHarness(ROSTER, undefined, controlsInto(runs))
+    const draft = '/eff\nExplain this bug'
+    act(() => {
+      h.setDraft(draft)
+      h.api().sync(draft, 4)
+    })
+    act(() => h.api().pick(h.api().matches[0]!))
+    expect(h.getValue()).toBe('/effort \nExplain this bug')
+    act(() => h.api().pick(h.api().matches[1]!))
+    expect(runs).toEqual([['effort', 'high']])
+    expect(h.getValue()).toBe('Explain this bug')
+  })
+
   it('keeps a skill’s argument free text: only a console command’s argument opens choices', () => {
     const h = mountHarness(ROSTER, undefined, controlsInto([]))
     type(h, '/tdd write tests')
