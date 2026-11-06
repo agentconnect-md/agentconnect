@@ -35,7 +35,8 @@ import type {
   McpAppRpc,
   McpAppRpcResult,
   TaskLinkFacts,
-  WebchatFileAttachment
+  WebchatFileAttachment,
+  WebchatPromptSuggestion
 } from '@agentconnect.md/protocol'
 import { useConsoleData } from '@/lib/data-context'
 import {
@@ -1350,6 +1351,17 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const unstreamedRef = useRef<Map<string, Set<string>>>(new Map())
   const unstreamedTimers = useRef<Map<string, number>>(new Map())
   const [unstreamedBy, setUnstreamedBy] = useState<Record<string, boolean>>({})
+  // The runtime's predicted next prompt per session; sending anything retires it.
+  const [suggestionBy, setSuggestionBy] = useState<Record<string, string>>({})
+  const setSuggestion = useCallback((id: string, text?: string): void => {
+    setSuggestionBy((cur) => {
+      if (cur[id] === text) return cur
+      const next = { ...cur }
+      if (text) next[id] = text
+      else delete next[id]
+      return next
+    })
+  }, [])
   const markUnstreamed = useCallback((id: string, agentId: string | undefined, live: boolean): void => {
     const agents = unstreamedRef.current.get(id) ?? new Set<string>()
     if (agentId === undefined) agents.clear()
@@ -1577,6 +1589,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 agentIds?: string[]
                 initiator?: string
                 update?: WebchatImageUpdate
+                suggestion?: WebchatPromptSuggestion
                 refused?: { op?: string; agentId?: string; reason?: string }
               }
               try {
@@ -1720,6 +1733,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   ...(update.download ? { download: update.download } : {})
                 })
                 mutateSteps(id, (steps) => applyImageUpdateToSteps(steps, update))
+              } else if (m.type === 'prompt_suggestion' && m.suggestion) {
+                setSuggestion(id, m.suggestion.text ?? undefined)
               } else if (m.type === 'ack' && m.ack?.turnId && steerTurns.current.get(id)?.has(m.ack.turnId)) {
                 settleSteerAck(id, m.ack.turnId, m.ack)
               } else if (m.type === 'ack' && m.ack?.accepted !== false) {
@@ -2352,9 +2367,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       setPgInput(id, '')
       setPgImage(id)
       setPgFiles(id, () => NO_FILES)
+      setSuggestion(id)
       return submitTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick, files)
     },
-    [pgImageBy, pgFilesBy, setPgFiles, setPgImage, setPgInput, submitTurn]
+    [pgImageBy, pgFilesBy, setPgFiles, setPgImage, setPgInput, setSuggestion, submitTurn]
   )
 
   /** A line the CONVERSATION speaks, not the person: an approval decision the agent
@@ -2555,6 +2571,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const getPgImage = useCallback((id: string) => pgImageBy[id], [pgImageBy])
   const isPgBusy = useCallback((id: string) => !!pgBusyBy[id], [pgBusyBy])
   const isPgTurnUnstreamed = useCallback((id: string) => !!unstreamedBy[id], [unstreamedBy])
+  const getPgSuggestion = useCallback((id: string) => suggestionBy[id], [suggestionBy])
   const getLiveSteps = useCallback((id: string) => (wcSteps[id] ?? NO_STEPS).filter((step) => !step.hidden), [wcSteps])
   const reconcileLiveSteps = useCallback(
     (id: string, persisted: SessionMessageDto[], agentId: string, promptRows?: SessionMessageDto[]): void => {
@@ -2648,6 +2665,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgCloseApp,
       pgCancel,
       getPgSession,
+      getPgSuggestion,
       pgSessionList,
       getLiveSteps,
       getBusyLaneAgentIds,
@@ -2685,6 +2703,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgCloseApp,
       pgCancel,
       getPgSession,
+      getPgSuggestion,
       pgSessionList,
       getLiveSteps,
       getBusyLaneAgentIds,

@@ -18,7 +18,9 @@ import {
   WebchatOutput,
   WebchatPost,
   WEBCHAT_IMAGES_FEATURE,
-  WebchatImageUpdate
+  WebchatImageUpdate,
+  WEBCHAT_PROMPT_SUGGESTION_FEATURE,
+  WebchatPromptSuggestion
 } from './webchat.js'
 import {
   GiteaHookMetadata,
@@ -150,6 +152,9 @@ export const RD_IM_ADMISSION_V1 = 'im-admission-v1'
 
 /** `webchat-images-v1`: the peer carries `image` events, post images and `rd/webchat-image-update`; the relay advertises it for its own console. */
 export const RD_WEBCHAT_IMAGES_V1 = WEBCHAT_IMAGES_FEATURE
+
+/** `webchat-prompt-suggestion-v1`: the relay delivers `rd/webchat-prompt-suggestion` to its console's browsers. */
+export const RD_WEBCHAT_PROMPT_SUGGESTION_V1 = WEBCHAT_PROMPT_SUGGESTION_FEATURE
 
 // D→R REQ → rd/hello/ok. The daemon presents the same credential it uses on the CP
 // socket — an API key, or an in-cluster daemon's projected ServiceAccount token. The
@@ -1351,6 +1356,10 @@ export type RdWebchatPost = z.infer<typeof RdWebchatPost>
 export const RdWebchatImageUpdate = WebchatImageUpdate
 export type RdWebchatImageUpdate = z.infer<typeof RdWebchatImageUpdate>
 
+// D→R EVT — a webchat conversation's predicted next prompt; browsers only, never peer daemons or the CP.
+export const RdWebchatPromptSuggestion = WebchatPromptSuggestion
+export type RdWebchatPromptSuggestion = z.infer<typeof RdWebchatPromptSuggestion>
+
 // ── the wire union ───────────────────────────────────────────────────────────
 
 /** `type` string → payload schema for the relay↔daemon wire. */
@@ -1375,6 +1384,7 @@ export const RELAY_DAEMON_SCHEMAS = {
   'rd/chat': RdChat,
   'rd/webchat-post': RdWebchatPost,
   'rd/webchat-image-update': RdWebchatImageUpdate,
+  'rd/webchat-prompt-suggestion': RdWebchatPromptSuggestion,
   error: ErrorFrame
 } as const
 
@@ -1407,6 +1417,7 @@ export const RelayDaemonFrame = z.discriminatedUnion('type', [
   frameSchema('rd/chat', RELAY_DAEMON_SCHEMAS['rd/chat']),
   frameSchema('rd/webchat-post', RELAY_DAEMON_SCHEMAS['rd/webchat-post']),
   frameSchema('rd/webchat-image-update', RELAY_DAEMON_SCHEMAS['rd/webchat-image-update']),
+  frameSchema('rd/webchat-prompt-suggestion', RELAY_DAEMON_SCHEMAS['rd/webchat-prompt-suggestion']),
   frameSchema('error', RELAY_DAEMON_SCHEMAS['error'])
 ])
 export type RelayDaemonFrame = z.infer<typeof RelayDaemonFrame>

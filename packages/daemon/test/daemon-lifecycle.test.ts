@@ -1981,6 +1981,91 @@ describe('Daemon session lifecycle (#118)', () => {
   })
 })
 
+describe('Daemon predicted next prompt', () => {
+  const suggest = (text?: string) => ({
+    sessionUpdate: 'session_info_update',
+    _meta: { promptSuggestions: { suggestions: text === undefined ? [] : [{ text }] } }
+  })
+
+  it('shows a prediction that lands after the turn in the Slack DM it came from, and clears it', async () => {
+    const host = quietHost()
+    let onUpdate!: (sessionId: string, update: unknown) => Promise<void>
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: (_agent, update) => {
+        onUpdate = update as typeof onUpdate
+        return host as any
+      }
+    })
+    await daemon.start()
+    const conn = Object.assign(makeRoutable(daemon), { setDmSuggestedPrompt: vi.fn(async () => {}) })
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    expect((daemon as any).pending.size).toBe(0)
+    await onUpdate('acp-1', suggest('Run the tests next'))
+    await onUpdate('acp-1', suggest())
+    expect(conn.setDmSuggestedPrompt.mock.calls).toEqual([
+      ['C1', 'Run the tests next'],
+      ['C1', null]
+    ])
+    // A prediction is never a title.
+    expect((await (daemon as any).store.getSession(KEY))?.title).toBe('hello')
+    expect(conn.setTitle).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('hands a webchat conversation’s prediction to the relays, never to Slack', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
+    await daemon.start()
+    const conn = Object.assign(makeRoutable(daemon), { setDmSuggestedPrompt: vi.fn(async () => {}) })
+    const relays = { sendWebchatPromptSuggestion: vi.fn(), stop: vi.fn(async () => {}) }
+    ;(daemon as any).relays = relays
+    const conversationId = '11111111-1111-4111-8111-111111111111'
+    const agentId = '22222222-2222-4222-8222-222222222222'
+    ;(daemon as any).sessionForAcp = async () => ({
+      key: 'k',
+      agentId,
+      acpSessionId: 'acp-9',
+      platform: 'webchat',
+      channel: conversationId
+    })
+    await (daemon as any).publishPromptSuggestion(agentId, 'acp-9', undefined, 'Run the tests next')
+    await (daemon as any).publishPromptSuggestion(agentId, 'acp-9', undefined, null)
+    expect(relays.sendWebchatPromptSuggestion.mock.calls).toEqual([
+      [{ conversationId, agentId, text: 'Run the tests next' }],
+      [{ conversationId, agentId, text: null }]
+    ])
+    expect(conn.setDmSuggestedPrompt).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('leaves a channel conversation alone', async () => {
+    const host = quietHost()
+    let onUpdate!: (sessionId: string, update: unknown) => Promise<void>
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: (_agent, update) => {
+        onUpdate = update as typeof onUpdate
+        return host as any
+      }
+    })
+    await daemon.start()
+    const conn = Object.assign(makeRoutable(daemon), { setDmSuggestedPrompt: vi.fn(async () => {}) })
+    ;(daemon as any).agents.get('bot-a').integrations[0].core.bindRules = [{ match: { kind: 'channel' } }]
+
+    await (daemon as any).dispatch('bot-a', { ...dm('100', 'hello'), isDm: false, trigger: 'mention' }, 'int-a')
+    await onUpdate('acp-1', suggest('Run the tests next'))
+    expect(conn.setDmSuggestedPrompt).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+})
+
 describe('Daemon idle sweep (#111/#118)', () => {
   it('reaps an idle host back to provisioned and TTL-closes its session', async () => {
     const clock = new FakeClock()

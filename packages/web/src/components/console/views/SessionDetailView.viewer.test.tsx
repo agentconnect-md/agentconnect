@@ -313,6 +313,7 @@ vi.mock('@/components/console/Shell', () => ({
 
 vi.mock('@/components/console/PlaygroundProvider', () => ({
   usePlayground: () => ({
+    getPgSuggestion: () => undefined,
     getPgSession: () => undefined,
     getLiveSteps: () => wire.live,
     getBusyLaneAgentIds: () => [],

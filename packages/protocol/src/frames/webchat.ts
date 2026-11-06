@@ -117,6 +117,17 @@ export const WebchatImageUpdate = z.object({
 })
 export type WebchatImageUpdate = z.infer<typeof WebchatImageUpdate>
 
+/** Daemon and relay carry `rd/webchat-prompt-suggestion`; the relay hands it to the console as `prompt_suggestion`. */
+export const WEBCHAT_PROMPT_SUGGESTION_FEATURE = 'webchat-prompt-suggestion-v1'
+
+/** The runtime's predicted next prompt for the composer, delivered outside any turn stream; `text: null` clears it. */
+export const WebchatPromptSuggestion = z.object({
+  conversationId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  text: z.string().min(1).max(500).nullable()
+})
+export type WebchatPromptSuggestion = z.infer<typeof WebchatPromptSuggestion>
+
 // The webchat turn verdict — `dispatchWebchatTurn` returns this and the relay path folds
 // it into `rd/ack` (accepted + the turnId that correlates the reply stream; `reason`
 // explains a rejection). Not a wire frame of its own anymore.

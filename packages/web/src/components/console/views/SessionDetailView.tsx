@@ -328,7 +328,9 @@ function ComposerTextarea({
   }
 }) {
   const draft = usePgDraft(sessionId)
-  const { setPgInput } = usePlayground()
+  const { setPgInput, getPgSuggestion } = usePlayground()
+  // A phone has no Tab to take the runtime's predicted prompt, so it keeps the plain placeholder.
+  const suggestion = useIsMobile() ? undefined : getPgSuggestion(sessionId)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const recall = useComposerHistory({
     history,
@@ -377,7 +379,7 @@ function ComposerTextarea({
       <textarea
         ref={textareaRef}
         className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
-        placeholder={placeholder}
+        placeholder={suggestion ?? placeholder}
         value={draft}
         onChange={(e) => {
           setPgInput(sessionId, e.target.value)
@@ -403,6 +405,11 @@ function ComposerTextarea({
         onKeyDown={(e) => {
           // History first: a recalled `/cmd` or `@name` must not hand Up/Down to a picker mid-walk.
           if (recall.handleKeyDown(e)) return
+          if (e.key === 'Tab' && !e.shiftKey && !draft && suggestion) {
+            e.preventDefault()
+            setPgInput(sessionId, suggestion)
+            return
+          }
           if (command.handleKeyDown(e)) return
           if (mention.handleKeyDown(e)) return
           // Enter sends — but NOT while an IME is composing (that Enter

@@ -358,6 +358,15 @@ describe('RelayBrowserConnection', () => {
     expect(transport.last('image_update')).toEqual({ type: 'image_update', update })
   })
 
+  it('forwards a prompt suggestion for its own conversation only', () => {
+    const { conn, transport } = build()
+    const suggestion = { conversationId: CHAT, agentId: AGENT, text: 'Run the tests' }
+    conn.onPromptSuggestion(suggestion)
+    expect(transport.last('prompt_suggestion')).toEqual({ type: 'prompt_suggestion', suggestion })
+    conn.onPromptSuggestion({ ...suggestion, conversationId: AGENT, text: 'Elsewhere' })
+    expect(transport.last('prompt_suggestion')).toEqual({ type: 'prompt_suggestion', suggestion })
+  })
+
   it('stamps the verified role on each participant’s turns and runtime changes, never one the browser sent', async () => {
     const PEER = '22222222-2222-4222-8222-222222222222'
     const { transport, sent } = build({

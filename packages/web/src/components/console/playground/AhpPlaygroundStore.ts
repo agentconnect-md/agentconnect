@@ -256,6 +256,7 @@ export class AhpPlaygroundStore {
       isPgBusy: (id) => this.entries.get(id)?.connection.busy ?? false,
       // The chat snapshot names every live turn, so a subscribed view never sees one it cannot follow.
       isPgTurnUnstreamed: () => false,
+      getPgSuggestion: () => undefined,
       openPlayground: (agent, members, options) => this.open(agent, members, options),
       pgSend: (id, agentId, text, conversationId, participants, image, commandPick, files) => {
         const staged = this.files.get(id) ?? []

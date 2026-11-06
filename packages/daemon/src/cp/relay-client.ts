@@ -46,7 +46,9 @@ import {
   RD_DECISION_ROUTE_V1,
   RD_IM_ADMISSION_V1,
   RD_WEBCHAT_IMAGES_V1,
+  RD_WEBCHAT_PROMPT_SUGGESTION_V1,
   type WebchatImageUpdate,
+  type WebchatPromptSuggestion,
   type RdRoute,
   type RdRouteAck,
   type RdRouteReport,
@@ -214,6 +216,16 @@ export class RelayClient {
   /** Send one shared image's original-state change; the relay hands it to the conversation's browsers only. */
   sendWebchatImageUpdate(update: WebchatImageUpdate): void {
     this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/webchat-image-update', update)))
+  }
+
+  /** Can this connection carry a conversation's predicted next prompt now? */
+  supportsWebchatPromptSuggestion(): boolean {
+    return this.isReady() && this.relayCapabilities?.has(RD_WEBCHAT_PROMPT_SUGGESTION_V1) === true
+  }
+
+  /** Send a conversation's predicted next prompt; the relay hands it to that conversation's browsers only. */
+  sendWebchatPromptSuggestion(suggestion: WebchatPromptSuggestion): void {
+    this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/webchat-prompt-suggestion', suggestion)))
   }
 
   /** Did this relay advertise the routed-forward leg (`rd/route`, `rd/route/report`)? */

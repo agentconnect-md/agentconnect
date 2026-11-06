@@ -464,6 +464,15 @@ async function main(): Promise<void> {
         (m) => log.warn(m)
       )
     },
+    onWebchatPromptSuggestion: (fromDaemonId, suggestion) => {
+      if (!imageUpdateBound(suggestion, fromDaemonId, router.rosterOf(suggestion.conversationId))) {
+        log.warn(
+          `relay: prompt suggestion for agent ${suggestion.agentId} not bound to daemon ${fromDaemonId} — dropped`
+        )
+        return
+      }
+      router.deliverPromptSuggestion(suggestion)
+    },
     onAgentMsg: (fromDaemonId, msg) => routeAgentMsg(fromDaemonId, msg),
     onRoute: (fromDaemonId, msg) => relayIngress.handleRoute(fromDaemonId, msg),
     onRouteReport: (fromDaemonId, msg) => relayIngress.applyRouteReport(fromDaemonId, msg),

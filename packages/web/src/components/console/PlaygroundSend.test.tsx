@@ -72,6 +72,7 @@ let pgAttach: ReturnType<typeof usePlayground>['pgAttach']
 let pgAnswerElicitation: ReturnType<typeof usePlayground>['pgAnswerElicitation']
 let pgAppRpc: ReturnType<typeof usePlayground>['pgAppRpc']
 let getPgSession: ReturnType<typeof usePlayground>['getPgSession']
+let getPgSuggestion: ReturnType<typeof usePlayground>['getPgSuggestion']
 let pgStageRuntime: ReturnType<typeof usePlayground>['pgStageRuntime']
 let pgSetModel: ReturnType<typeof usePlayground>['pgSetModel']
 let pgSetEffort: ReturnType<typeof usePlayground>['pgSetEffort']
@@ -99,6 +100,7 @@ function Probe() {
   pgAnswerElicitation = pg.pgAnswerElicitation
   pgAppRpc = pg.pgAppRpc
   getPgSession = pg.getPgSession
+  getPgSuggestion = pg.getPgSuggestion
   pgStageRuntime = pg.pgStageRuntime
   pgSetModel = pg.pgSetModel
   pgSetEffort = pg.pgSetEffort
@@ -1823,6 +1825,21 @@ describe('shared image cards', () => {
     const cards = getLiveSteps('s1').filter((s) => s.sharedImage)
     expect(cards).toHaveLength(1)
     expect(cards[0]!.sharedImage).toMatchObject({ revision: 2, original: { status: 'ready' } })
+  })
+
+  it('holds the predicted next prompt until a clear or the next send', async () => {
+    const { socket } = await openStream()
+    const suggest = (text: string | null) =>
+      frame(socket, { type: 'prompt_suggestion', suggestion: { conversationId: POST, agentId: 'agent-1', text } })
+    suggest('Run the tests')
+    expect(getPgSuggestion('s1')).toBe('Run the tests')
+    suggest(null)
+    expect(getPgSuggestion('s1')).toBeUndefined()
+    suggest('Open a pull request')
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'something else', 'c1')
+    })
+    expect(getPgSuggestion('s1')).toBeUndefined()
   })
 })
 
