@@ -334,7 +334,7 @@ export default function AddCronModal({
                   }}
                   className={`h-[30px] cursor-pointer rounded-sm border px-[7px] py-0 font-sans text-[12.5px] font-medium leading-normal desktop:px-[13px] ${
                     on
-                      ? 'border-(--brand) bg-(--brand-soft) text-(--brand)'
+                      ? 'border-(--border-strong) bg-(--surface-hover) text-(--text-primary)'
                       : 'border-(--border-default) bg-(--surface-card) text-(--text-secondary)'
                   }`}
                 >

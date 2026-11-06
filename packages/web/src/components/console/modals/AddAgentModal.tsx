@@ -1033,7 +1033,7 @@ export default function AddAgentModal({
               <div className="fld desktop:col-span-2">
                 <span className="fldlbl">{t('description')}</span>
                 <textarea
-                  className="inp resize-y px-3 py-[8px] leading-[1.5] focus:border-(--brand) focus:outline-none"
+                  className="inp resize-y px-3 py-[8px] leading-[1.5]"
                   rows={2}
                   placeholder={t('descriptionPlaceholder')}
                   value={description}

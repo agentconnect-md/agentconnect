@@ -182,7 +182,7 @@ export function RuntimeSelectionSample({
               type="button"
               aria-pressed={sample === index}
               onClick={() => setSample(index)}
-              className={`grid grid-cols-[44px_minmax(0,1fr)] items-center gap-2 rounded-sm border px-[9px] py-[7px] text-left transition-colors ${sample === index ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) hover:border-(--border-strong)'}`}
+              className={`grid grid-cols-[44px_minmax(0,1fr)] items-center gap-2 rounded-sm border px-[9px] py-[7px] text-left transition-colors ${sample === index ? 'border-(--border-strong) bg-(--surface-hover)' : 'border-(--border-subtle) hover:border-(--border-strong)'}`}
             >
               <span className="font-mono text-[10.5px] font-medium uppercase leading-normal tracking-[0.04em] text-(--text-tertiary)">
                 {index === 4 ? 'ERROR' : index === 1 || index === 3 ? 'PR/MR' : 'CHAT'}
@@ -240,7 +240,7 @@ export function RuntimeSelectionSample({
             <div
               key={index}
               aria-current={step.active ? 'step' : undefined}
-              className={`grid grid-cols-[20px_minmax(0,1fr)] items-center gap-[9px] rounded-sm border px-[10px] py-[7px] ${step.active ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle)'}`}
+              className={`grid grid-cols-[20px_minmax(0,1fr)] items-center gap-[9px] rounded-sm border px-[10px] py-[7px] ${step.active ? 'border-(--border-strong) bg-(--surface-hover)' : 'border-(--border-subtle)'}`}
             >
               <span
                 className={`flex h-5 w-5 items-center justify-center rounded-[5px] font-mono text-[10.5px] font-semibold leading-normal ${step.active ? 'bg-(--brand) text-white' : 'bg-(--surface-sunken) text-(--text-tertiary)'}`}

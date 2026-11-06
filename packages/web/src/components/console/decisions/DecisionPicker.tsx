@@ -78,7 +78,7 @@ export function DecisionPicker<T extends DecisionPickerEntry>({
               hover.hide()
               toggle()
             }}
-            className={`inp h-8 min-h-0 w-full cursor-pointer gap-[7px] px-[10px] py-0 text-left text-[12.5px] font-medium hover:border-(--border-strong) disabled:cursor-default disabled:opacity-60 ${open ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)' : ''}`}
+            className={`inp h-8 min-h-0 w-full cursor-pointer gap-[7px] px-[10px] py-0 text-left text-[12.5px] font-medium hover:border-(--border-strong) disabled:cursor-default disabled:opacity-60 ${open ? 'border-(--border-strong) shadow-(--focus-shadow)' : ''}`}
           >
             <Icon name="split" size={13} className="flex-none text-(--text-tertiary)" />
             <span className="min-w-0 flex-1 truncate">

@@ -124,7 +124,7 @@ export function CodeHostReviewSettings({
                 }}
                 className={
                   active
-                    ? 'h-10 rounded-md border border-(--brand) bg-(--brand-soft) font-sans text-[12.5px] font-semibold leading-normal text-(--brand-soft-text)'
+                    ? 'h-10 rounded-md border border-(--border-strong) bg-(--surface-hover) font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)'
                     : 'h-10 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)'
                 }
               >
@@ -164,7 +164,7 @@ export function CodeHostReviewSettings({
                   onClick={() => applyValue(withStatusMode(option.value, statusMode))}
                   className={
                     active
-                      ? 'h-10 rounded-md border border-(--brand) bg-(--brand-soft) font-sans text-[12.5px] font-semibold leading-normal text-(--brand-soft-text)'
+                      ? 'h-10 rounded-md border border-(--border-strong) bg-(--surface-hover) font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)'
                       : 'h-10 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)'
                   }
                 >

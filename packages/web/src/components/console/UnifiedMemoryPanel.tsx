@@ -93,7 +93,7 @@ function EntryRow({
     <button
       type="button"
       className={`file-browser-item flex w-full items-start gap-[6px] border-0 border-r-2 py-[6px] pl-2 pr-[10px] text-left [font:inherit] disabled:cursor-default disabled:opacity-60 ${
-        selected ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'
+        selected ? 'border-r-(--brand) bg-(--surface-hover)' : 'border-r-transparent bg-transparent'
       }`}
       aria-current={selected ? 'page' : undefined}
       title={entry.description ?? (named ? entry.label : undefined)}
@@ -464,7 +464,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
         <button
           type="button"
           className={`file-browser-item flex w-full items-start gap-[6px] border-0 border-r-2 py-[6px] pl-2 pr-[10px] text-left [font:inherit] disabled:cursor-default disabled:opacity-60 ${
-            overviewOpen ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'
+            overviewOpen ? 'border-r-(--brand) bg-(--surface-hover)' : 'border-r-transparent bg-transparent'
           }`}
           aria-current={overviewOpen ? 'page' : undefined}
           title={t('overviewTitle')}
@@ -683,7 +683,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
             value={draft}
             disabled={saving}
             onChange={(e) => setDraft(e.target.value)}
-            className="inp mono min-h-[300px] flex-1 resize-y px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
+            className="inp mono min-h-[300px] flex-1 resize-y px-3 py-[10px] leading-[1.6]"
             spellCheck={false}
             autoFocus={mode === 'update'}
           />

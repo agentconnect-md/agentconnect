@@ -92,7 +92,7 @@ export function SessionAgentFocusMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        className="inline-flex h-[26px] min-w-0 cursor-pointer items-center gap-[7px] rounded-md border-0 bg-transparent px-1 font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+        className="inline-flex h-[26px] min-w-0 cursor-pointer items-center gap-[7px] rounded-md border-0 bg-transparent px-1 font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:outline-none focus-visible:shadow-(--focus-ring)"
         onClick={() => setOpen((current) => !current)}
         onKeyDown={(event) => {
           if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
@@ -128,7 +128,7 @@ export function SessionAgentFocusMenu({
                   role="none"
                   className={`flex items-center rounded-md ${
                     active
-                      ? 'bg-(--brand-soft) text-(--brand-soft-text)'
+                      ? 'bg-(--surface-hover) text-(--text-primary)'
                       : 'text-(--text-primary) hover:bg-(--surface-hover)'
                   }`}
                 >

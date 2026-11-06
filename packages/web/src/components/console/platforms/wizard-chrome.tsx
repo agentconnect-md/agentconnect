@@ -173,7 +173,7 @@ function WalkthroughPanel({ steps }: { steps: WalkthroughStep[] }) {
             onFocus={() => pin(i)}
             onBlur={() => setPinned(null)}
             onClick={() => pin(i)}
-            className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1 font-sans text-[10px] font-semibold leading-normal transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) ${
+            className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1 font-sans text-[10px] font-semibold leading-normal transition-colors focus-visible:outline-none focus-visible:shadow-(--focus-ring) ${
               i === shown
                 ? 'bg-(--surface-inverse) text-white'
                 : 'bg-(--surface-app) text-(--text-tertiary) hover:text-(--text-secondary)'

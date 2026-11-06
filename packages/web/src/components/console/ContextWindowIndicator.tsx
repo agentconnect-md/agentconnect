@@ -16,7 +16,7 @@ export function ContextWindowIndicator({ used, size }: { used?: number; size?: n
         type="button"
         aria-label={t('label')}
         aria-describedby={tooltipId}
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full focus-visible:outline-none focus-visible:shadow-(--focus-ring)"
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             event.preventDefault()

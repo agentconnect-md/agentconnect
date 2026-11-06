@@ -92,7 +92,7 @@ export default function GroupModal({ group, onClose }: { group?: MemberSetRow; o
         <div className="fld">
           <span className="fldlbl">{t('name')}</span>
           <input
-            className="inp focus:border-(--brand) focus:outline-none"
+            className="inp"
             placeholder={t('groupPlaceholder')}
             value={name}
             maxLength={64}

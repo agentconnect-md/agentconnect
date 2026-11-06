@@ -87,7 +87,7 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
               type="button"
               onClick={() => pictureInput.current?.click()}
               title={t('editProfileForm.changePhoto')}
-              className="group relative flex-none rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-(--brand)"
+              className="group relative flex-none rounded-full focus-visible:outline-none focus-visible:shadow-(--focus-ring)"
             >
               <Avatar
                 src={picturePreview ?? (removePicture ? null : user.picture)}

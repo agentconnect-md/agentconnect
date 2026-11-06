@@ -55,7 +55,7 @@ export default function SocialLoginButtons({
           <button
             type="button"
             aria-label={t('continueWith', { provider: selectedRegionalProvider.name })}
-            className="absolute inset-0 flex cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-inherit [font:inherit] focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-(--brand)"
+            className="absolute inset-0 flex cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-inherit [font:inherit] focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-(--border-focus)"
             onClick={() => onContinue(selectedRegionalProvider.target)}
           />
           <span className="pointer-events-none relative z-[1] flex w-[220px] items-center text-left">

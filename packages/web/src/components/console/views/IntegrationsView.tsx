@@ -583,7 +583,7 @@ function BotsCard({
                           href={orgPath(`/agents/${encodeURIComponent(id)}?tab=config`)}
                           aria-label={`Open ${name} configuration`}
                           title={revoked ? t('revokedAgent', { agent: name }) : name}
-                          className={`av h-[22px] w-[22px] rounded-[6px] no-underline focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) ${
+                          className={`av h-[22px] w-[22px] rounded-[6px] no-underline focus-visible:z-10 focus-visible:outline-none focus-visible:shadow-(--focus-ring) ${
                             idx > 0 ? '-ml-[6px] shadow-[-1px_0_0_0_var(--surface-card)]' : ''
                           }`}
                           onClick={(e) => e.stopPropagation()}

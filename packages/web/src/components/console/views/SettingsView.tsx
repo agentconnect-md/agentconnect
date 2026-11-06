@@ -230,7 +230,7 @@ function SessionAccessRow({
           <span className="font-sans text-[13px] font-medium leading-normal">{copy.label}</span>
           <button
             type="button"
-            className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+            className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-none focus-visible:shadow-(--focus-ring)"
             aria-label={t('providerHelp', { label: copy.label })}
             title={copy.details}
           >
@@ -313,7 +313,7 @@ export function SessionAccessCard({ orgId, isOwner }: { orgId?: string; isOwner:
           {t('followPlatformAccess')}
           <button
             type="button"
-            className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+            className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-none focus-visible:shadow-(--focus-ring)"
             aria-label={t('help')}
             title={t('hint')}
           >

@@ -688,7 +688,7 @@ function DreamReview({
               onClick={() => setSelected(file.name)}
               className={
                 file.name === selected
-                  ? 'cursor-pointer rounded-sm border border-(--brand) bg-(--surface-card) px-2 py-1 font-mono text-[11.5px] leading-normal text-(--text-primary)'
+                  ? 'cursor-pointer rounded-sm border border-(--border-strong) bg-(--surface-hover) px-2 py-1 font-mono text-[11.5px] leading-normal text-(--text-primary)'
                   : 'cursor-pointer rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-mono text-[11.5px] leading-normal text-(--text-secondary)'
               }
             >

@@ -19,7 +19,7 @@ export function CompactFieldLabel({
         type="button"
         aria-label={`About ${label}`}
         aria-describedby={detailId}
-        className="inline-flex h-4 w-4 items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-none focus-visible:shadow-(--focus-ring)"
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             event.preventDefault()

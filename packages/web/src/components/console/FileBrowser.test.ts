@@ -27,7 +27,7 @@ describe('shared file browser', () => {
     expect(html).toContain('<button')
     expect(html).toContain('aria-current="page"')
     expect(html).toContain('border-r-(--brand)')
-    expect(html).toContain('bg-(--brand-soft)')
+    expect(html).toMatch(/(?:^|\s)bg-\(--surface-hover\)/)
   })
 
   it('uses the Workspace-width desktop frame for every browser', () => {

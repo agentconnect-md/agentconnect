@@ -194,7 +194,7 @@ export function SessionVisibilityControl({
           aria-haspopup="menu"
           aria-expanded={open}
           aria-controls={open ? menuId : undefined}
-          className="inline-flex h-[26px] cursor-pointer items-center gap-[6px] rounded-sm border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:text-(--brand) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-default disabled:opacity-60"
+          className="inline-flex h-[26px] cursor-pointer items-center gap-[6px] rounded-sm border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:text-(--brand) focus-visible:outline-none focus-visible:shadow-(--focus-ring) disabled:cursor-default disabled:opacity-60"
           onClick={() => setOpen((value) => !value)}
           onKeyDown={(event) => {
             if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
@@ -232,7 +232,7 @@ export function SessionVisibilityControl({
                   autoFocus={selected}
                   className={`flex w-full cursor-pointer items-start gap-[10px] rounded-md border-0 px-3 py-[9px] text-left ${
                     selected
-                      ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
+                      ? 'bg-(--surface-hover) text-(--text-primary)'
                       : 'bg-transparent text-(--text-primary) hover:bg-(--surface-hover)'
                   }`}
                   onClick={() => pick(choice.value)}

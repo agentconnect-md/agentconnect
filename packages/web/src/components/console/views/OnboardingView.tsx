@@ -387,13 +387,13 @@ function WhereCard({
       onClick={onSelect}
       aria-pressed={selected}
       className={`flex cursor-pointer flex-col gap-[11px] rounded-[10px] border-[1.5px] p-4 text-left ${
-        selected ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
+        selected ? 'border-(--border-strong) bg-(--surface-hover)' : 'border-(--border-default) bg-(--surface-card)'
       }`}
     >
       <div className="flex items-center gap-[10px]">
         <span
           className={`flex h-[34px] w-[34px] flex-none items-center justify-center rounded-md ${
-            selected ? 'border border-(--magenta-200) bg-(--surface-card)' : 'bg-(--surface-sunken)'
+            selected ? 'border border-(--border-default) bg-(--surface-card)' : 'bg-(--surface-sunken)'
           }`}
         >
           {mark ? (

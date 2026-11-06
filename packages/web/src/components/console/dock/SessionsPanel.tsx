@@ -376,7 +376,7 @@ export function SessionsPanel({
             }
             if (item.session) onSelect(item.session)
           }}
-          className="flex w-full min-w-0 items-center gap-2 rounded-sm py-[6px] pr-[34px] pl-[9px] focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none"
+          className="flex w-full min-w-0 items-center gap-2 rounded-sm py-[6px] pr-[34px] pl-[9px] focus-visible:shadow-(--focus-ring) focus-visible:outline-none"
         >
           <span className="imark h-[18px] w-[18px] flex-none rounded-xs">
             <PlatformMark platform={item.platform} fillPct={100} />
@@ -418,7 +418,7 @@ export function SessionsPanel({
           onClick={() => togglePin(item.pinId)}
           aria-pressed={pinnedRow}
           title={pinnedRow ? t('unpinSession') : t('pinSession')}
-          className={`absolute top-1/2 right-[7px] z-10 flex h-[19px] w-[19px] -translate-y-1/2 items-center justify-center rounded-[5px] border-0 bg-none p-0 hover:bg-(--surface-active) hover:text-(--brand) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
+          className={`absolute top-1/2 right-[7px] z-10 flex h-[19px] w-[19px] -translate-y-1/2 items-center justify-center rounded-[5px] border-0 bg-none p-0 hover:bg-(--surface-active) hover:text-(--brand) focus-visible:shadow-(--focus-ring) focus-visible:outline-none ${
             pinnedRow
               ? 'text-(--brand)'
               : 'pointer-events-none opacity-0 text-(--text-tertiary) group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100'
@@ -583,7 +583,7 @@ function PanelAgentFilter({
             onClick={() => onChange([])}
             title={t('removeFromFilter')}
             aria-label={chips.length === 1 ? t('removeFromAgentFilter', { agent: label }) : t('clearAgentFilter')}
-            className="flex h-[18px] w-[18px] flex-none items-center justify-center rounded-xs border-0 bg-none p-0 text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none"
+            className="flex h-[18px] w-[18px] flex-none items-center justify-center rounded-xs border-0 bg-none p-0 text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:shadow-(--focus-ring) focus-visible:outline-none"
           >
             <Icon name="x" size={11} />
           </button>
@@ -595,7 +595,7 @@ function PanelAgentFilter({
         title={t('filterByAgent')}
         aria-label={t('filterByAgent')}
         aria-expanded={open}
-        className={`flex h-[22px] w-[22px] flex-none items-center justify-center rounded-sm border p-0 focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none ${
+        className={`flex h-[22px] w-[22px] flex-none items-center justify-center rounded-sm border p-0 focus-visible:shadow-(--focus-ring) focus-visible:outline-none ${
           open
             ? 'border-(--brand) bg-(--surface-card) text-(--brand)'
             : 'border-(--border-default) bg-(--surface-card) text-(--text-tertiary) hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary)'

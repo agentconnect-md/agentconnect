@@ -48,7 +48,7 @@ import { Scrim } from '@/components/console/Scrim'
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 const FIELD =
-  'w-full min-w-0 rounded-md border border-(--border-default) bg-(--surface-card) px-[9px] font-mono text-[12px] font-medium text-(--text-primary) outline-none focus:border-(--border-focus) focus:ring-[3px] focus:ring-(--brand-ring)'
+  'w-full min-w-0 rounded-md border border-(--border-default) bg-(--surface-card) px-[9px] font-mono text-[12px] font-medium text-(--text-primary) outline-none focus:border-(--border-strong) focus:shadow-(--focus-shadow)'
 const INPUT = `h-8 ${FIELD}`
 // Values may be multi-line (a PEM block, a kubeconfig, a JSON blob), and a
 // single-line input collapses pasted newlines.
@@ -420,7 +420,7 @@ function EntrySheet({
                   onClick={() => setKind(option)}
                   className={`flex flex-col items-start gap-[1px] rounded-md border px-[11px] py-[8px] text-left ${
                     kind === option
-                      ? 'border-(--brand) bg-(--surface-active)'
+                      ? 'border-(--border-strong) bg-(--surface-hover)'
                       : 'border-(--border-default) bg-(--surface-app)'
                   } ${editing !== null ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
                 >
@@ -486,7 +486,7 @@ function EntrySheet({
                   onClick={() => setAudience(option)}
                   className={`flex cursor-pointer flex-col items-start gap-[1px] rounded-md border px-[11px] py-[8px] text-left ${
                     audience === option
-                      ? 'border-(--brand) bg-(--surface-active)'
+                      ? 'border-(--border-strong) bg-(--surface-hover)'
                       : 'border-(--border-default) bg-(--surface-app)'
                   }`}
                 >

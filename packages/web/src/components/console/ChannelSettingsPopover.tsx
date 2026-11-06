@@ -82,7 +82,7 @@ export function ChannelSettingsPopover({
             setError(null)
             toggle()
           }}
-          className={`flex min-h-11 w-full items-center gap-2 whitespace-nowrap rounded-md border px-3 text-left font-sans text-[13px] font-medium leading-normal text-(--text-primary) transition-colors focus-visible:border-(--border-focus) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none desktop:inline-flex desktop:h-7 desktop:min-h-0 desktop:w-auto desktop:gap-[6px] desktop:rounded-sm desktop:pl-[10px] desktop:pr-[7px] desktop:text-[11.5px] ${
+          className={`flex min-h-11 w-full items-center gap-2 whitespace-nowrap rounded-md border px-3 text-left font-sans text-[13px] font-medium leading-normal text-(--text-primary) transition-colors focus-visible:shadow-(--focus-ring) focus-visible:outline-none desktop:inline-flex desktop:h-7 desktop:min-h-0 desktop:w-auto desktop:gap-[6px] desktop:rounded-sm desktop:pl-[10px] desktop:pr-[7px] desktop:text-[11.5px] ${
             disabled
               ? 'cursor-default border-(--border-default) bg-(--surface-card) opacity-60'
               : open
@@ -142,7 +142,7 @@ export function ChannelSettingsPopover({
                       onMouseLeave={() => setPeek(null)}
                       onFocus={() => setPeek({ group: g.id, value: o.value })}
                       onBlur={() => setPeek(null)}
-                      className={`${on ? 'fopt on' : 'fopt'} ${g.locked ? 'cursor-default font-normal text-(--text-tertiary) hover:bg-transparent' : ''} min-h-12 px-3 py-[11px] text-[13.5px] tracking-[-0.006em] focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none desktop:min-h-8 desktop:px-[10px] desktop:py-[7px] desktop:text-[12.5px]`}
+                      className={`${on ? 'fopt on' : 'fopt'} ${g.locked ? 'cursor-default font-normal text-(--text-tertiary) hover:bg-transparent' : ''} min-h-12 px-3 py-[11px] text-[13.5px] tracking-[-0.006em] focus-visible:shadow-(--focus-ring) focus-visible:outline-none desktop:min-h-8 desktop:px-[10px] desktop:py-[7px] desktop:text-[12.5px]`}
                     >
                       <span className="inline-flex w-4 flex-none desktop:w-[15px]">
                         {on && (

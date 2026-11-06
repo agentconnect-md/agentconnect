@@ -623,7 +623,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                 // Cancel the input's border+padding (1.5+1 per side = 5px total)
                 // so it occupies the same vertical space as the plain name span
                 // — otherwise the taller input grows the card on rename.
-                className="-my-[2.5px] hidden w-[150px] rounded-[5px] border-[1.5px] border-(--brand) bg-(--surface-card) px-[6px] py-[1px] font-sans text-[14px] font-semibold leading-normal text-(--text-primary) shadow-[0_0_0_3px_var(--brand-ring)] outline-none desktop:block"
+                className="-my-[2.5px] hidden w-[150px] rounded-[5px] border-[1.5px] border-(--border-focus) bg-(--surface-card) px-[6px] py-[1px] font-sans text-[14px] font-semibold leading-normal text-(--text-primary) shadow-(--focus-shadow) outline-none desktop:block"
               />
             ) : (
               <span

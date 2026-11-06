@@ -21,7 +21,7 @@ import { OrganizationRowBadge } from '@/components/console/OrganizationEnvironme
 // the detail-page read-only cards.
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/
 const KV_FIELD =
-  'w-full min-w-0 rounded-md border border-(--border-default) bg-(--surface-card) px-[9px] font-mono text-[12px] font-medium text-(--text-primary) outline-none focus:border-(--border-focus) focus:ring-[3px] focus:ring-(--brand-ring)'
+  'w-full min-w-0 rounded-md border border-(--border-default) bg-(--surface-card) px-[9px] font-mono text-[12px] font-medium text-(--text-primary) outline-none focus:border-(--border-strong) focus:shadow-(--focus-shadow)'
 const KV_INPUT = `h-7 ${KV_FIELD}`
 // Values may be multi-line (a PEM block, a kubeconfig, a JSON blob) — a single-line
 // <input> collapses pasted newlines, so the value editor is a textarea.

@@ -925,7 +925,7 @@ export function MemoryLayerBrowser({
         value={draft}
         disabled={saving}
         onChange={(e) => setDraft(e.target.value)}
-        className="inp mono min-h-[300px] flex-1 resize-y px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
+        className="inp mono min-h-[300px] flex-1 resize-y px-3 py-[10px] leading-[1.6]"
         spellCheck={false}
         autoFocus
       />

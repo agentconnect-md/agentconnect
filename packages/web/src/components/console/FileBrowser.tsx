@@ -316,7 +316,7 @@ export function FileBrowserEditor({
             </div>
           ) : null}
           <textarea
-            className="inp mono min-h-[390px] flex-1 resize-y items-start justify-start px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
+            className="inp mono min-h-[390px] flex-1 resize-y items-start justify-start px-3 py-[10px] leading-[1.6]"
             value={draft.content}
             onChange={(event) => onContentChange(event.target.value)}
             aria-label={creating ? t('newFileContent') : t('editFile', { path: draft.target })}
@@ -416,7 +416,7 @@ export function FileBrowserRow({
   selected?: boolean
   onClick?: () => void
 }) {
-  const edge = selected ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'
+  const edge = selected ? 'border-r-(--brand) bg-(--surface-hover)' : 'border-r-transparent bg-transparent'
   const className = `${
     onClick ? 'file-browser-item cursor-pointer' : 'cursor-default'
   } flex w-full items-center gap-[6px] border-0 border-r-2 py-[6px] pr-[10px] text-left [font:inherit] ${edge}`

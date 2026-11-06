@@ -321,7 +321,7 @@ export function GitPanel({
       <div
         key={busyKey}
         // The Files tree's own row affordance, so a path hovers and marks itself the same way in both tabs.
-        className={`file-browser-item group flex w-full items-center border-0 border-r-2 pr-[6px] ${selected ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'}`}
+        className={`file-browser-item group flex w-full items-center border-0 border-r-2 pr-[6px] ${selected ? 'border-r-(--brand) bg-(--surface-hover)' : 'border-r-transparent bg-transparent'}`}
       >
         <button
           type="button"

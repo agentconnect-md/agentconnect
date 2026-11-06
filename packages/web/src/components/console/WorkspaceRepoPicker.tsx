@@ -55,8 +55,8 @@ export function workspaceRepoParamRewrite(
 }
 
 const CHOICE =
-  'flex w-full cursor-pointer items-center gap-[9px] rounded-[6px] border-0 bg-transparent px-[9px] py-[6px] text-left outline-none hover:bg-(--surface-hover) focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--brand)'
-const CHOICE_ON = `${CHOICE} bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)`
+  'flex w-full cursor-pointer items-center gap-[9px] rounded-[6px] border-0 bg-transparent px-[9px] py-[6px] text-left outline-none hover:bg-(--surface-hover) focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--border-focus)'
+const CHOICE_ON = `${CHOICE} bg-(--surface-hover) text-(--text-primary)`
 
 export function WorkspaceRepoPicker({
   primaryLabel,
@@ -87,7 +87,7 @@ export function WorkspaceRepoPicker({
       trigger={({ open, menuId, toggle }) => (
         <button
           type="button"
-          className="flex h-7 max-w-[220px] min-w-0 cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-1 text-left outline-none hover:bg-(--surface-hover) focus-visible:ring-2 focus-visible:ring-(--brand)"
+          className="flex h-7 max-w-[220px] min-w-0 cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-1 text-left outline-none hover:bg-(--surface-hover) focus-visible:shadow-(--focus-ring)"
           aria-label={`Repository: ${selected}`}
           aria-haspopup="menu"
           aria-expanded={open}

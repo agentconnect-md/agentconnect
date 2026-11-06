@@ -425,7 +425,7 @@ describe('FilesPanel tree', () => {
     await render({ openFilePath: 'README.md' })
 
     expect(row('README.md')?.getAttribute('aria-current')).toBe('page')
-    expect(row('README.md')?.className).toContain('bg-(--brand-soft)')
+    expect(row('README.md')?.className).toMatch(/(?:^|\s)bg-\(--surface-hover\)/)
   })
 
   it('does not offer to open a row that is not a file', async () => {

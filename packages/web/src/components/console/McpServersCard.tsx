@@ -562,7 +562,9 @@ export function CreateMcpProviderModal({
               ).map(([value, label]) => (
                 <button
                   key={value}
-                  className={auth === value ? 'chip border-(--brand) bg-(--brand-soft) text-(--brand)' : 'chip'}
+                  className={
+                    auth === value ? 'chip border-(--border-strong) bg-(--surface-hover) text-(--text-primary)' : 'chip'
+                  }
                   onClick={() => setAuth(value)}
                   type="button"
                 >

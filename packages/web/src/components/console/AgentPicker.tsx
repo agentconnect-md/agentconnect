@@ -71,8 +71,8 @@ export function AgentPicker({
         disabled={disabled || agents.length === 0}
         className={`inp relative w-full cursor-pointer text-left outline-none transition-[background-color,border-color,box-shadow] ${
           open
-            ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)'
-            : 'hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:border-(--border-focus) focus-visible:ring-[3px] focus-visible:ring-(--brand-ring)'
+            ? 'border-(--border-strong) shadow-(--focus-shadow)'
+            : 'hover:border-(--border-strong) hover:bg-(--surface-hover)'
         }`}
         aria-label={t('agent')}
         aria-haspopup="listbox"
@@ -127,7 +127,7 @@ export function AgentPicker({
                   aria-selected={isSelected}
                   className={`fopt min-h-10 gap-[9px] rounded-md px-2 py-[6px] ${
                     isSelected
-                      ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
+                      ? 'bg-(--surface-hover) text-(--text-primary)'
                       : index === activeIndex
                         ? 'bg-(--surface-hover)'
                         : ''

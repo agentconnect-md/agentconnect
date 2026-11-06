@@ -305,7 +305,7 @@ function FamilyCards<F extends string, M extends string>({
             <div
               key={row.fam}
               className={`overflow-hidden rounded-[9px] border ${
-                on ? 'border-(--brand)' : 'border-(--border-default)'
+                on ? 'border-(--border-strong) bg-(--surface-hover)' : 'border-(--border-default)'
               }`}
             >
               <div
@@ -314,7 +314,7 @@ function FamilyCards<F extends string, M extends string>({
                 title={taken ? 'Already watched — change its trigger on the agent page' : undefined}
                 className={`flex min-w-0 items-center gap-[9px] px-3 py-[10px] ${
                   taken ? 'cursor-default opacity-55' : 'cursor-pointer'
-                } ${on ? 'bg-(--brand-soft)' : 'bg-(--surface-card)'}`}
+                } ${on ? 'bg-(--surface-hover)' : 'bg-(--surface-card)'}`}
                 onClick={() => {
                   if (!taken) onToggle(row.fam)
                 }}
@@ -342,7 +342,7 @@ function FamilyCards<F extends string, M extends string>({
                 </span>
               </div>
               {on && (
-                <div className="flex flex-col gap-3 border-t border-(--brand) bg-(--surface-card) px-3 py-3">
+                <div className="flex flex-col gap-3 border-t border-(--border-strong) bg-(--surface-card) px-3 py-3">
                   <div>
                     <div className="fldlbl mb-2">{t('triggerWhen')}</div>
                     <div
@@ -368,14 +368,14 @@ function FamilyCards<F extends string, M extends string>({
                             title={titleOf(tile.mode, row.fam)}
                             className={`flex min-w-0 cursor-pointer items-start gap-[9px] rounded-[9px] border px-3 py-[10px] text-left ${
                               picked
-                                ? 'border-(--brand) bg-(--brand-soft)'
+                                ? 'border-(--border-strong) bg-(--surface-hover)'
                                 : 'border-(--border-default) bg-(--surface-card)'
                             }`}
                             onClick={() => onPick(row.fam, tile.mode)}
                           >
                             <span
                               className={`mt-[1px] flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] bg-(--surface-card) ${
-                                picked ? 'border-(--brand)' : 'border-(--border-default)'
+                                picked ? 'border-(--border-strong) bg-(--surface-hover)' : 'border-(--border-default)'
                               }`}
                             >
                               {picked && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
@@ -1739,7 +1739,7 @@ export default function AddIntegrationModal({
                           <span>{'  -d \'{"message":"'}</span>
                           <textarea
                             ref={hookMessageRef}
-                            className="mx-[2px] min-h-[20px] min-w-[18ch] flex-1 resize-none overflow-hidden rounded-xs border border-(--gray-800) bg-(--gray-900) px-[3px] py-0 font-mono text-[12px] leading-[1.65] text-[#cdd6e0] outline-none focus:border-(--brand)"
+                            className="mx-[2px] min-h-[20px] min-w-[18ch] flex-1 resize-none overflow-hidden rounded-xs border border-(--gray-800) bg-(--gray-900) px-[3px] py-0 font-mono text-[12px] leading-[1.65] text-[#cdd6e0] outline-none focus:border-(--gray-600)"
                             rows={1}
                             spellCheck={false}
                             aria-label={t('webhookTestMessage')}
@@ -1786,7 +1786,9 @@ export default function AddIntegrationModal({
                     tabIndex={selectable ? 0 : -1}
                     onClick={selectable ? () => setApiPick(p.id as AgentApiProtocol) : undefined}
                     className={`flex items-start gap-[11px] rounded-md border px-[13px] py-[11px] ${
-                      on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
+                      on
+                        ? 'border-(--border-strong) bg-(--surface-hover)'
+                        : 'border-(--border-default) bg-(--surface-card)'
                     } ${selectable ? 'cursor-pointer' : 'cursor-default opacity-55'}`}
                   >
                     <span
@@ -2606,7 +2608,7 @@ export default function AddIntegrationModal({
                 >
                   <span
                     className={`flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border bg-(--surface-card) ${
-                      on ? 'border-(--brand)' : 'border-(--border-default)'
+                      on ? 'border-(--border-strong) bg-(--surface-hover)' : 'border-(--border-default)'
                     }`}
                   >
                     <Icon name={t.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
@@ -2641,7 +2643,7 @@ export default function AddIntegrationModal({
                   key={b.id}
                   onClick={() => setBotPick(b.id)}
                   className={`flex cursor-pointer items-center gap-[10px] border-b border-(--border-subtle) px-[13px] py-[11px] ${
-                    on ? 'bg-(--brand-soft)' : 'bg-(--surface-card)'
+                    on ? 'bg-(--surface-hover)' : 'bg-(--surface-card)'
                   }`}
                 >
                   <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">

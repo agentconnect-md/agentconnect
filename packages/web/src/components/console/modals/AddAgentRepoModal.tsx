@@ -637,7 +637,9 @@ export default function AddAgentRepoModal({
                 <div
                   key={tier.v}
                   className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
-                    on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) bg-(--surface-card)'
+                    on
+                      ? 'border-(--border-strong) bg-(--surface-hover)'
+                      : 'border-(--border-subtle) bg-(--surface-card)'
                   }`}
                   onClick={() => setAccess(tier.v)}
                 >
@@ -842,7 +844,9 @@ export default function AddAgentRepoModal({
                 <div
                   key={t.v}
                   className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
-                    on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) bg-(--surface-card)'
+                    on
+                      ? 'border-(--border-strong) bg-(--surface-hover)'
+                      : 'border-(--border-subtle) bg-(--surface-card)'
                   }`}
                   onClick={() => setAccess(t.v)}
                 >
@@ -957,7 +961,9 @@ export default function AddAgentRepoModal({
                 <div
                   key={tier.v}
                   className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
-                    on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) bg-(--surface-card)'
+                    on
+                      ? 'border-(--border-strong) bg-(--surface-hover)'
+                      : 'border-(--border-subtle) bg-(--surface-card)'
                   }`}
                   onClick={() => setAccess(tier.v)}
                 >
