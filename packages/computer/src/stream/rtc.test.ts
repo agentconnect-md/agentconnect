@@ -1,6 +1,39 @@
 import { describe, expect, it } from 'vitest'
 import type { RTCPeerConnection } from 'werift'
-import { continuous, iceReport, onlyCandidatesFor, withoutReflexive } from './rtc.js'
+import { continuous, iceReport, onlyCandidatesFor, RtcSessions, withoutReflexive } from './rtc.js'
+import type { ScreenStream } from './screen-stream.js'
+
+describe('peerConfig', () => {
+  const rtc = (advertiseAddress?: string) =>
+    new RtcSessions({
+      stream: {} as ScreenStream,
+      onMessage: async () => null,
+      log: () => undefined,
+      ...(advertiseAddress ? { advertiseAddress } : {})
+    })
+  const principal = { client: 'viewer', control: true }
+
+  it('binds a direct session to the address the browser reached, so DTLS answers from the pair it chose', () => {
+    // A VM with two addresses on one interface never finished DTLS with Chrome until the socket was bound.
+    const sessions = rtc()
+    expect(sessions.peerConfig(principal, { hostAddress: '::ffff:10.211.55.25' })).toMatchObject({
+      iceLite: true,
+      iceAdditionalHostAddresses: ['10.211.55.25'],
+      iceInterfaceAddresses: { udp4: '10.211.55.25' }
+    })
+    sessions.stop()
+  })
+
+  it('binds nothing for an advertised NAT address, or an unknown or IPv6 one', () => {
+    const behindNat = rtc('203.0.113.9')
+    expect(behindNat.peerConfig(principal, { hostAddress: '172.17.0.2' })).not.toHaveProperty('iceInterfaceAddresses')
+    behindNat.stop()
+    const plain = rtc()
+    expect(plain.peerConfig(principal, {})).not.toHaveProperty('iceInterfaceAddresses')
+    expect(plain.peerConfig(principal, { hostAddress: 'fe80::1' })).not.toHaveProperty('iceInterfaceAddresses')
+    plain.stop()
+  })
+})
 
 describe('onlyCandidatesFor', () => {
   it('keeps only the advertised host candidate', () => {
