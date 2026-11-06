@@ -96,7 +96,8 @@ import type {
   ComputerPolicy,
   ComputerAgentAccess,
   ComputerSession,
-  ComputerStatus
+  ComputerStatus,
+  StoredDesktop
 } from '../domain/computer.js'
 import type { ControlLease, LeaseComputer, LeaseStep } from '../domain/computerLease.js'
 import type { LeaseWaiter } from '../domain/computerLeaseQueue.js'
@@ -638,6 +639,8 @@ export interface ComputerRecord extends Shareable {
   poolError: string | null
   /** Desktop time is metered up to here (computer-use.md §15.5); absent outside the store. */
   poolMeteredAt?: Date | null
+  /** The agent desktops its last heartbeat reported (§3.9); null or absent while agents share one desktop. */
+  desktops?: StoredDesktop[] | null
   createdAt: Date
   updatedAt: Date
 }
@@ -739,6 +742,8 @@ export interface ComputerLiveReport {
   driverVersion?: string
   capabilities?: ComputerCapabilities
   doctor?: ComputerDoctorReport
+  /** Behind `computer-desktops-v1`: the agent desktops it runs, or null when agents share one desktop; absent leaves them. */
+  desktops?: StoredDesktop[] | null
 }
 
 export interface ComputerRepo {
@@ -820,6 +825,8 @@ export interface ComputerAuditRecord {
   textLength: number | null
   ms: number
   screenshotRef: string | null
+  /** The agent desktop that served it (§3.9); null or absent for the main desktop. */
+  desktop?: string | null
 }
 
 export interface ComputerAuditQuery {
@@ -958,13 +965,23 @@ export interface ComputerScreenshotRepo {
 }
 
 /** A Computer's control lease row (computer-use.md §4.4); the decisions live in `domain/computerLease.ts`. */
+/** Which desktop's lease a step is for: an agent's (its own desktop when the Computer runs per-agent desktops) or a named one. */
+export type LeaseTarget = { agentId: string } | { desktop: string }
+
 export interface ComputerLeaseRepo {
-  get(computerId: ComputerId): Promise<ControlLease | null>
-  /** Lock the Computer row, read it, its lease and its wait queue, and apply `decide`'s changes in the same transaction. */
+  /** The desktops of this Computer that have a lease row ('' is the main desktop). */
+  desktops(computerId: ComputerId): Promise<string[]>
+  /** Lock the Computer row, read it and one desktop's lease and wait queue, and apply `decide`'s changes in the same transaction. */
   step<R>(
     orgId: OrgId,
     computerId: ComputerId,
-    decide: (computer: LeaseComputer | null, lease: ControlLease | null, queue: LeaseWaiter[]) => LeaseStep<R>
+    target: LeaseTarget,
+    decide: (
+      computer: LeaseComputer | null,
+      lease: ControlLease | null,
+      queue: LeaseWaiter[],
+      desktop: string
+    ) => LeaseStep<R>
   ): Promise<R>
   /** The leases one session holds, at most one per Computer. */
   listBySession(sessionId: string): Promise<ControlLease[]>

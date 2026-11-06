@@ -20,6 +20,8 @@ export interface LeaseWaiter {
   turnAt: number
   /** CP clock: its turn ended while it waited; the row stays so a late ask of that wait cannot rejoin the line. */
   droppedAt: number | null
+  /** The desktop whose line it waits in (§3.9), set by the repo; absent or '' is the main desktop. */
+  desktop?: string
 }
 
 export interface WaiterRequest {

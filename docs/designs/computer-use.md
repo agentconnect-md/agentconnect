@@ -643,7 +643,10 @@ quotas and metering (§15.5) stay per Computer, so a managed pod running several
   keys the lease and its queue by Computer and desktop: an
   agent desktop's key is its agent id, the main desktop's is empty. The desktop daemon reports `desktops: 'per-agent'`
   and each desktop's status and local lease in its heartbeat, behind `computer-desktops-v1`; a Control Plane without
-  the feature keeps one lease per Computer, and the daemon then serves every agent on the main desktop. Owner pause and
+  the feature keeps one lease per Computer, and the daemon then serves every agent on the main desktop. The heartbeat's
+  `desktops` list (present, even empty, while the switch is on) is what the Control Plane keys by, so switching between
+  one shared desktop and per-agent desktops ends the other arrangement's leases (reason `reset`), and `computer/lease`
+  pushes every agent desktop's lease beside the main one's. Owner pause and
   the console Stop act on every desktop; a viewer takeover pauses only the desktop it took. The Computer's own `status`
   (§2.2) is the main desktop's, and each agent desktop's status travels in the heartbeat's list, so §4.4 pre-emption
   ("a heartbeat reporting `paused` or `human_in_control` ends the lease") ends only that desktop's lease, except an
@@ -656,7 +659,9 @@ quotas and metering (§15.5) stay per Computer, so a managed pod running several
   Opening a stopped desktop starts it, a viewer keeps its desktop from the idle sweep, and a stopped desktop's viewer
   and capture close. A takeover pauses only that desktop: its agent gets `human_in_control` ("a person took control
   of this desktop in the viewer") while the others keep working. The daemon's own `/view` page has a desktop picker;
-  the console's picker and a `dsk` claim in its viewer token come with the Control Plane work. The prototype validated
+  the Control Plane's viewer grant takes `?desktop=<id>` for a desktop the Computer reports and signs it as the token's
+  `dsk` claim, and every viewer accepts a console token only for its own desktop (`main` without the claim); the
+  console's picker comes with step 7. The prototype validated
   it from a Mac's Chrome 156 against the VM: each agent desktop streams its own display over WebRTC at 1280×800, and a takeover's input over
   the DataChannel started a browser through the fork-merge launcher. Orca's embedded browser gathers no ICE candidates
   at all, so it cannot test WebRTC.

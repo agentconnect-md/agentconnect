@@ -8,6 +8,7 @@ import {
   ComputerStunUrl
 } from './computer-viewer.js'
 import { COMPUTER_FILES_MODES, COMPUTER_SHELL_MODES } from './computer-command-line.js'
+import { ComputerDesktopId } from './frames/computer-lease.js'
 
 /** The token's version prefix; a token without it is never a channel token. */
 export const COMPUTER_CHANNEL_TOKEN_PREFIX = 'actk1'
@@ -42,7 +43,9 @@ export const ComputerChannelTokenClaims = z
     // `view` only: the member watching, the TURN servers the desktop may relay media through, and the STUN servers it may punch with.
     usr: z.string().min(1).max(128).optional(),
     ice: z.array(ComputerIceServer).max(COMPUTER_ICE_SERVERS_MAX).optional(),
-    stun: z.array(ComputerStunUrl).max(COMPUTER_STUN_URLS_MAX).optional()
+    stun: z.array(ComputerStunUrl).max(COMPUTER_STUN_URLS_MAX).optional(),
+    // `view` only, behind `computer-desktops-v1`: the one desktop it may watch (§3.9); absent, the main desktop.
+    dsk: ComputerDesktopId.optional()
   })
   // Unknown claims are stripped, not refused, so a later additive claim does not lock out older desktops.
   .strip()

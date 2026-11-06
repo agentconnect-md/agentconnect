@@ -10,7 +10,8 @@ import {
   decodeCpEnvelope,
   type AnyFrame,
   type FrameType,
-  type ComputerControlLease
+  type ComputerControlLease,
+  type ComputerDesktopReport
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
@@ -93,6 +94,8 @@ async function registerComputer(app: App, agents: string[]): Promise<{ computerI
 // The desktop daemon's end of the Computer channel.
 class Desktop {
   readonly leases: Array<ComputerControlLease | null> = []
+  // Every agent desktop lease each push listed (§3.9); undefined for a push without the list.
+  readonly desktopLeases: Array<ComputerControlLease[] | undefined> = []
   readonly unreadable: string[] = []
   private waiters: Array<() => void> = []
 
@@ -101,7 +104,10 @@ class Desktop {
       // Decode as the desktop does, so a frame it could not read fails the test.
       const decoded = decodeComputerCpFrameTolerant(data.toString())
       if (!decoded.ok) this.unreadable.push(data.toString())
-      else if (decoded.frame.type === 'computer/lease') this.leases.push(decoded.frame.payload.lease)
+      else if (decoded.frame.type === 'computer/lease') {
+        this.leases.push(decoded.frame.payload.lease)
+        this.desktopLeases.push(decoded.frame.payload.desktops)
+      }
       for (const wake of this.waiters.splice(0)) wake()
     })
   }
@@ -118,8 +124,10 @@ class Desktop {
     return desktop
   }
 
-  beat(status: 'online' | 'busy' | 'paused' = 'online'): void {
-    this.ws.send(JSON.stringify(buildComputerCpFrame('computer/heartbeat', { status })))
+  beat(status: 'online' | 'busy' | 'paused' = 'online', desktops?: ComputerDesktopReport[]): void {
+    this.ws.send(
+      JSON.stringify(buildComputerCpFrame('computer/heartbeat', { status, ...(desktops ? { desktops } : {}) }))
+    )
   }
 
   async told(count: number): Promise<ComputerControlLease | null> {
@@ -425,6 +433,48 @@ describe('Computer control lease', () => {
     await holder.release(computerId, SESSION)
     await new Promise((resolve) => setTimeout(resolve, 1_200))
     expect(await prisma.computerLease.count({ where: { computerId } })).toBe(0)
+    desktop.ws.close()
+  })
+
+  it('gives two agents their own desktops at once on a Computer with per-agent desktops (§3.9)', async () => {
+    await seed()
+    const { app, base } = await start()
+    const { computerId, apiKey } = await registerComputer(app, [AGENT, OTHER_AGENT])
+    const desktop = await Desktop.connect(base, apiKey)
+    expect(await desktop.told(1)).toBeNull()
+    desktop.beat('online', [{ id: 'd1', agentId: AGENT, status: 'online' }])
+    await expect
+      .poll(async () => (await prisma.computer.findUnique({ where: { id: computerId } }))?.desktops)
+      .toEqual([{ id: 'd1', agentId: AGENT, status: 'online' }])
+
+    const daemon = agentDaemon()
+    const first = await daemon.acquire(computerId, SESSION)
+    const second = await daemon.acquire(computerId, OTHER_SESSION, OTHER_AGENT)
+    expect(first.payload).toMatchObject({ granted: true, lease: { desktop: AGENT } })
+    expect(second.payload).toMatchObject({ granted: true, lease: { desktop: OTHER_AGENT } })
+    // Another session of the same agent shares that agent's desktop, so it still waits its turn.
+    expect((await daemon.acquire(computerId, 'session-three')).payload).toMatchObject({ code: 'computer_busy' })
+
+    // The desktop learns both agent desktops' leases with its next heartbeat.
+    desktop.beat('online', [{ id: 'd1', agentId: AGENT, status: 'busy' }])
+    await desktop.told(2)
+    expect(
+      desktop.desktopLeases
+        .at(-1)
+        ?.map((l) => l.desktop)
+        .sort()
+    ).toEqual([AGENT, OTHER_AGENT].sort())
+
+    // A person takes over agent A's desktop: only that lease ends.
+    desktop.beat('online', [{ id: 'd1', agentId: AGENT, status: 'human_in_control' }])
+    await expect
+      .poll(() => prisma.computerLease.findMany({ where: { computerId }, select: { desktop: true } }))
+      .toEqual([{ desktop: OTHER_AGENT }])
+    // Switched back to one shared desktop: the per-agent leases end and the stored desktops clear.
+    desktop.beat('online')
+    await expect.poll(() => prisma.computerLease.count({ where: { computerId } })).toBe(0)
+    expect((await prisma.computer.findUnique({ where: { id: computerId } }))?.desktops).toBeNull()
+    expect(desktop.unreadable).toEqual([])
     desktop.ws.close()
   })
 })

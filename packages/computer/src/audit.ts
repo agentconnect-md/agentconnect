@@ -27,6 +27,8 @@ export interface AuditRecord extends CallContext {
   ms: number
   // The stored screenshot this call returned (computer-use.md §9).
   screenshotRef?: string
+  // The agent desktop that served it (computer-use.md §3.9); absent for the main desktop.
+  desktop?: string
 }
 
 export type AuditSink = (record: AuditRecord) => void

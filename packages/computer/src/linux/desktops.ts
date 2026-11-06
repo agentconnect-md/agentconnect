@@ -41,6 +41,8 @@ export interface DesktopState {
   mainBus?: string
   // The master browser profile every desktop's profile is copied from and merges with.
   master: string
+  // The registrant's `shareBrowserLogins` (§3.9); false: each profile is its own, never copied or merged. Absent: on.
+  shareBrowserLogins?: boolean
   desktops: Record<string, DesktopRecord>
 }
 
@@ -64,18 +66,21 @@ function saveDesktopState(dataDir: string, state: DesktopState): void {
   writeFileSync(join(desktopsDir(dataDir), STATE_FILE), JSON.stringify(state, null, 2), { mode: 0o600 })
 }
 
-/** What `browser --desktop <id>` launches with: that desktop's profile, the master, and every other profile as a source. */
+/** What `browser --desktop <id>` launches with: that desktop's profile, and unless logins are not shared, the master and every other profile as a source. */
 export function desktopBrowserPlan(
   dataDir: string,
   id: string
-): { profile: string; master: string; sources: string[]; skip: string[]; mainBus?: string } {
+): { profile: string; master?: string; sources: string[]; skip: string[]; mainBus?: string } {
   const state = loadDesktopState(dataDir)
   const ids = Object.values(state.desktops).map((record) => record.id)
   if (!ids.includes(id)) throw new Error(`no desktop ${id}`)
+  const share = state.shareBrowserLogins !== false
   return {
     profile: desktopProfile(dataDir, id),
-    master: state.master,
-    sources: [state.master, ...ids.filter((other) => other !== id).map((other) => desktopProfile(dataDir, other))],
+    ...(share ? { master: state.master } : {}),
+    sources: share
+      ? [state.master, ...ids.filter((other) => other !== id).map((other) => desktopProfile(dataDir, other))]
+      : [],
     skip: ids.map((other) => wrapperDir(dataDir, other)),
     ...(state.mainBus ? { mainBus: state.mainBus } : {})
   }
@@ -142,6 +147,8 @@ export interface DesktopManagerDeps {
   self: string[]
   build: (desktop: {
     id: string
+    // The agent id it serves, or `client:<name>` for a local client token.
+    key: string
     label: string
     env: NodeJS.ProcessEnv
     launchBrowser: (app: string) => (() => Promise<string>) | undefined
@@ -176,6 +183,14 @@ export class DesktopManager {
     saveDesktopState(deps.dataDir, this.state)
     this.sweeper = setInterval(() => void this.sweep(), SWEEP_MS)
     this.sweeper.unref()
+  }
+
+  /** The registrant's `shareBrowserLogins` (§3.9), kept with the state the browser wrappers read. */
+  setShareBrowserLogins(on: boolean): void {
+    if ((this.state.shareBrowserLogins !== false) === on) return
+    this.state.shareBrowserLogins = on
+    saveDesktopState(this.deps.dataDir, this.state)
+    this.deps.log(`per-agent desktops: browser logins ${on ? 'shared between desktops' : 'kept apart per desktop'}`)
   }
 
   /** On when the owner's switch is on and the machine supports it. */
@@ -323,6 +338,7 @@ export class DesktopManager {
       XFCE_SHELL.forEach(run)
       const { driver, computer } = this.deps.build({
         id: record.id,
+        key: record.key,
         label: record.label,
         env,
         launchBrowser: (app) =>

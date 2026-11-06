@@ -41,6 +41,8 @@ export interface ControlLease {
   turnAt: number
   /** When it reached `leaseMaxSeconds`: a spent row holds nothing and only bars its session until its turn ends. */
   spentAt: number | null
+  /** The agent desktop it covers (§3.9), set by the repo from the step's desktop; absent or '' is the main desktop. */
+  desktop?: string
 }
 
 /** The slice of the Computer row a decision reads. */

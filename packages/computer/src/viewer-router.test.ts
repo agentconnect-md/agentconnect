@@ -42,7 +42,13 @@ function setup() {
       created.push(running.record.id)
       return fakeViewer(running.record.id, seen, closed)
     },
-    authenticate: (authorization) => (authorization === 'Bearer ok' ? { client: 'person', control: true } : undefined),
+    // `Bearer d2` is a console token for desktop d2 only (§3.9).
+    authenticate: (authorization) =>
+      authorization === 'Bearer ok'
+        ? { client: 'person', control: true }
+        : authorization === 'Bearer d2'
+          ? { client: 'console:u', control: true, desktop: 'd2' }
+          : undefined,
     mainInfo: () => ({ name: 'box', status: 'online', lease: null })
   })
   const call = (path: string, authorization = 'Bearer ok', method = 'GET') =>
@@ -93,5 +99,11 @@ describe('viewer router', () => {
     expect(closed).toEqual(['d1'])
     await call('/view/api/d/d1/status')
     expect(created).toEqual(['d1', 'd1'])
+  })
+
+  it('opens, and so starts, no desktop but the one a console token names', async () => {
+    const { call, started } = setup()
+    expect((await call('/view/api/d/d1/status', 'Bearer d2')).status).toBe(401)
+    expect(started).toEqual([])
   })
 })

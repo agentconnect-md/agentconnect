@@ -7,9 +7,11 @@ import type { ComputerAuditRecord, ComputerRecord } from '../../persistence/port
 import { ComputerId } from '../../domain/ids.js'
 import { poolActions } from '../../domain/computerPool.js'
 import type { LeaseOccupancy } from '../../domain/computerLease.js'
+import type { DesktopsOccupancy } from '../../registry/computerLeaseService.js'
 import {
   ComputerPolicySchema,
   agentAccessIsFixed,
+  desktopStatus,
   TooManyComputerAgents,
   withOwnerMember,
   type ComputerAgentAccess,
@@ -31,6 +33,7 @@ import { COMPUTER_WS_PUBLIC_PATH } from '@agentconnect.md/protocol'
 import {
   ComputerAuditPageDto,
   ComputerAuditQuery,
+  ComputerViewerQuery,
   ComputerDto,
   ComputerListDto,
   ComputerRegistrationDto,
@@ -97,8 +100,20 @@ const auditDto = (e: ComputerAuditRecord) => ({
   args: e.args,
   textLength: e.textLength,
   ms: e.ms,
-  screenshotRef: e.screenshotRef
+  screenshotRef: e.screenshotRef,
+  desktop: e.desktop ?? null
 })
+
+// Each reported agent desktop with its own status, holder and line; null while agents share one desktop (§3.9).
+const desktopsDto = (c: ComputerRecord, status: ComputerRecord['status'], occ?: DesktopsOccupancy) =>
+  c.desktops
+    ? c.desktops.map((d) => ({
+        id: d.id,
+        agentId: d.agentId,
+        status: desktopStatus(status, c.desktops ?? null, d.agentId),
+        ...occupancyDto(occ?.desktops.find((o) => o.desktop === d.agentId))
+      }))
+    : null
 
 const occupancyDto = (occ: LeaseOccupancy | undefined) => ({
   lease: occ?.holder
@@ -121,7 +136,7 @@ function toDto(
   ctx: ViewCtx,
   status: ComputerRecord['status'],
   retentionDays: (policy: ComputerRecord['policy']) => number,
-  occ?: LeaseOccupancy
+  occ?: DesktopsOccupancy
 ): ComputerDtoT {
   const actions = poolActions({
     allocation: c.allocation,
@@ -168,7 +183,8 @@ function toDto(
       sleep: editable && actions.sleep,
       reset: editable && actions.reset
     },
-    ...occupancyDto(occ)
+    ...occupancyDto(occ),
+    desktops: desktopsDto(c, status, occ)
   }
 }
 
@@ -194,8 +210,8 @@ export function computerRoutes(deps: HttpDeps) {
     // Who holds each lease and who waits (§4.4); a display read, so a failure leaves the fields empty.
     const occupancy = async (rows: ComputerRecord[]) =>
       deps.computerLeases && rows.length > 0
-        ? await deps.computerLeases.occupancy(rows).catch(() => new Map<string, LeaseOccupancy>())
-        : new Map<string, LeaseOccupancy>()
+        ? await deps.computerLeases.occupancy(rows).catch(() => new Map<string, DesktopsOccupancy>())
+        : new Map<string, DesktopsOccupancy>()
     const presentAll = async (req: FastifyRequest, rows: ComputerRecord[]): Promise<ComputerDtoT[]> => {
       const occ = await occupancy(rows)
       return rows.map((c) => toDto(c, ctxOf(req), deps.computers.presentedStatus(c), retentionDays, occ.get(c.id)))
@@ -574,9 +590,10 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Open a computer viewer',
           description:
-            'Mints a short-lived viewer token for the console’s embedded viewer, the relays to reach the desktop through, the relays’ STUN addresses when the Computer’s policy allows peer-to-peer media, and TURN credentials when the deployment configures TURN. Signaling and screenshots go browser → relay → desktop and media goes directly, hole-punched peer to peer, or through TURN; nothing passes through the Control Plane. Only the policy’s allowed members (always including the owner) may watch; an organization viewer gets `view` mode, anyone else `control`, which may take over input. Call again before `expiresAt` to renew. 409 when the Computer is revoked or offline; 429 at a viewer quota (concurrent viewers, or this month’s relayed media); 503 when no relay is configured.',
+            'Mints a short-lived viewer token for the console’s embedded viewer, the relays to reach the desktop through, the relays’ STUN addresses when the Computer’s policy allows peer-to-peer media, and TURN credentials when the deployment configures TURN. Signaling and screenshots go browser → relay → desktop and media goes directly, hole-punched peer to peer, or through TURN; nothing passes through the Control Plane. Only the policy’s allowed members (always including the owner) may watch; an organization viewer gets `view` mode, anyone else `control`, which may take over input. With `desktop`, the token watches that agent desktop of a Computer with per-agent desktops (computer-use.md §3.9) instead of the main one. Call again before `expiresAt` to renew. 409 when the Computer is revoked or offline; 429 at a viewer quota (concurrent viewers, or this month’s relayed media); 503 when no relay is configured.',
           operationId: 'createComputerViewer',
           params: IdParam,
+          querystring: ComputerViewerQuery,
           response: {
             200: ComputerViewerGrantDto,
             403: ErrorDto,
@@ -598,7 +615,12 @@ export function computerRoutes(deps: HttpDeps) {
         }
         if (c.status === 'revoked') return reply.code(409).send(revokedConflict)
         const mode = can(ctx, { action: AuthorizationAction.OrganizationWrite }) ? 'control' : 'view'
-        const grant = await deps.computerViewer.grantViewer(orgOf(req), c.id, { userId: ctx.userId, mode })
+        const desktop = req.query.desktop
+        const grant = await deps.computerViewer.grantViewer(orgOf(req), c.id, {
+          userId: ctx.userId,
+          mode,
+          ...(desktop ? { desktop } : {})
+        })
         if (!grant.granted) {
           if (grant.code === 'quota_exceeded') return reply.code(429).send(quotaExceeded(grant.message))
           const status = grant.code === 'no_relay' ? 503 : 409

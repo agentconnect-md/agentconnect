@@ -3,7 +3,7 @@ import { frameSchema } from '../envelope.js'
 import { tolerantSchemas } from '../tolerant.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { ErrorFrame } from './error.js'
-import { COMPUTER_LEASE_WAIT_MAX_SECONDS, ComputerControlLease } from './computer-lease.js'
+import { COMPUTER_LEASE_WAIT_MAX_SECONDS, ComputerControlLease, ComputerDesktopId } from './computer-lease.js'
 import {
   COMPUTER_ADMIN_PROMPT_MODES,
   COMPUTER_RELAYS_MAX,
@@ -143,7 +143,9 @@ export const ComputerPolicySchema = z
     shell: z.enum(COMPUTER_SHELL_MODES).optional(),
     files: z.enum(COMPUTER_FILES_MODES).optional(),
     // Prefixes the file tools may touch; absent means the user's home directory.
-    fileRoots: z.array(ComputerFileRoot).max(COMPUTER_FILE_ROOTS_MAX).optional()
+    fileRoots: z.array(ComputerFileRoot).max(COMPUTER_FILE_ROOTS_MAX).optional(),
+    // Per-agent desktops fork and merge the registrant's browser logins (§3.9); absent means on.
+    shareBrowserLogins: z.boolean().optional()
   })
   .refine((p) => p.leaseIdleSeconds <= p.leaseMaxSeconds, {
     message: 'leaseIdleSeconds must not exceed leaseMaxSeconds',
@@ -283,6 +285,30 @@ export const ComputerAuthOk = z.object({
 })
 export type ComputerAuthOk = z.infer<typeof ComputerAuthOk>
 
+/** Leases, the queue, status and audit per desktop on a Computer with per-agent desktops (computer-use.md §3.9). */
+export const COMPUTER_DESKTOPS_FEATURE = 'computer-desktops-v1'
+
+/** The longest list of agent desktops one heartbeat reports. */
+export const COMPUTER_DESKTOPS_MAX = 64
+
+/** One running agent desktop in a heartbeat: its daemon id, the agent it serves, and its own status and local lease. */
+export const ComputerDesktopReport = z
+  .object({
+    id: ComputerDesktopId,
+    agentId: z.string().uuid(),
+    status: z.enum(COMPUTER_LIVE_STATUSES),
+    lease: z
+      .object({
+        holder: z.string().min(1).max(512),
+        idleMs: z.number().int().min(0),
+        heldMs: z.number().int().min(0).optional()
+      })
+      .strict()
+      .optional()
+  })
+  .strict()
+export type ComputerDesktopReport = z.infer<typeof ComputerDesktopReport>
+
 // D→C EVT every heartbeatSec; the profile, capabilities and doctor ride along when they change and after every auth.
 export const ComputerHeartbeat = z
   .object({
@@ -301,7 +327,9 @@ export const ComputerHeartbeat = z
         heldMs: z.number().int().min(0).optional()
       })
       .strict()
-      .optional()
+      .optional(),
+    // Behind `computer-desktops-v1`: present (even empty) while each agent gets a desktop of its own; `status` is the main one's.
+    desktops: z.array(ComputerDesktopReport).max(COMPUTER_DESKTOPS_MAX).optional()
   })
   .strict()
 export type ComputerHeartbeat = z.infer<typeof ComputerHeartbeat>
@@ -325,7 +353,11 @@ export const ComputerRevoke = z.object({
 export type ComputerRevoke = z.infer<typeof ComputerRevoke>
 
 // C→D EVT: the control lease the CP granted, or null when none is held; only its holder may send input.
-export const ComputerLeasePush = z.object({ lease: ComputerControlLease.nullable() })
+// Behind `computer-desktops-v1`, `desktops` lists every agent desktop's lease, each naming its desktop.
+export const ComputerLeasePush = z.object({
+  lease: ComputerControlLease.nullable(),
+  desktops: z.array(ComputerControlLease).max(COMPUTER_DESKTOPS_MAX).optional()
+})
 export type ComputerLeasePush = z.infer<typeof ComputerLeasePush>
 
 // C→D EVT after auth and whenever the roster changes: the relays to dial out to for the data plane (§3.7).

@@ -52,6 +52,8 @@ export interface ViewerPrincipal {
   stunUrls?: string[]
   // Re-checks a short-lived token; false once it lapsed or its key is gone, which closes the viewer.
   valid?: () => boolean
+  // A console token's one desktop (§3.9): `main` or an agent desktop's id; absent (a local client) may watch any.
+  desktop?: string
 }
 
 export type ViewerVia = 'local' | 'relay'

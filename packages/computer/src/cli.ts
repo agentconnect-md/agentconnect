@@ -5,7 +5,13 @@ import { basename, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { parseArgs } from 'node:util'
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
-import type { ComputerAdminPromptMode, ComputerPolicy } from '@agentconnect.md/protocol/computer'
+import {
+  COMPUTER_DESKTOPS_MAX,
+  type ComputerAdminPromptMode,
+  type ComputerControlLease,
+  type ComputerDesktopReport,
+  type ComputerPolicy
+} from '@agentconnect.md/protocol/computer'
 import { AdminPromptHelper } from './admin-prompts.js'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
 import { browserCloseCommand, browserCommand } from './browser/command.js'
@@ -60,6 +66,7 @@ import {
   channelPrincipal,
   createRelayedMcpHandler,
   viewerAuthenticator,
+  mayWatch,
   viewerPrincipal,
   type McpPrincipal
 } from './mcp-access.js'
@@ -471,6 +478,26 @@ async function registerComputer(
 const DOCTOR_INTERVAL_MS = 30 * 60_000
 
 // Connects a registered daemon to the Control Plane; returns how to stop it, or undefined when not registered.
+// The running agent desktops a heartbeat reports, each by the agent it serves; undefined while agents share this desktop.
+function desktopReports(manager: DesktopManager | undefined): ComputerDesktopReport[] | undefined {
+  if (!manager?.enabled()) return undefined
+  return manager
+    .runningDesktops()
+    .filter((desktop) => UUID.test(desktop.record.key))
+    .slice(0, COMPUTER_DESKTOPS_MAX)
+    .map((desktop) => {
+      const lease = desktop.computer.leaseActivity()
+      return {
+        id: desktop.record.id,
+        agentId: desktop.record.key,
+        status: desktop.computer.liveStatus(),
+        ...(lease ? { lease } : {})
+      }
+    })
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 function startCpChannel(options: {
   dir: string
   config: DaemonConfig
@@ -486,6 +513,9 @@ function startCpChannel(options: {
   // The command-line tier runs here (§5.7).
   commandLine?: boolean
   onPolicy?: (policy: ComputerPolicy) => void
+  // Linux: the per-agent desktops, whose status the heartbeat reports and whose leases the CP pushes (§3.9).
+  desktops?: () => DesktopManager | undefined
+  onDesktopLeases?: (leases: ComputerControlLease[]) => void
 }): { client: ComputerCpClient; relays: RelayLinks; refreshDoctor(): void; stop(): void } | undefined {
   const { dir, config, registration, authority, computer, driver, screenSize } = options
   const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
@@ -524,9 +554,11 @@ function startCpChannel(options: {
       const display = computer.info().display as { screenWidth: number; screenHeight: number; scale: number } | null
       const lease = computer.leaseActivity()
       const local = options.local()
+      const desktops = desktopReports(options.desktops?.())
       return {
         status: computer.liveStatus(),
         ...(lease ? { lease } : {}),
+        ...(desktops ? { desktops } : {}),
         facts: {
           ...profile,
           driverVersion: driver.version ?? CUA_DRIVER_VERSION,
@@ -552,7 +584,10 @@ function startCpChannel(options: {
       config.leaseMaxSeconds = policy.leaseMaxSeconds
       options.onPolicy?.(policy)
     },
-    onLease: (lease) => computer.applyControlLease(lease),
+    onLease: (lease, desktops) => {
+      computer.applyControlLease(lease)
+      options.onDesktopLeases?.(desktops ?? [])
+    },
     onReady: (ok) => computer.rename(ok.name),
     onRelays: (relays) => relayLinks.converge(relays),
     onStop: (stop) => applyConsoleStop(stop),
@@ -603,8 +638,9 @@ function buildViewer(
   consoleViewer?: (authorization: string | undefined) => ViewerPrincipal | undefined,
   advertiseAddress?: string,
   onFfmpegInstalled?: () => void,
-  // An agent desktop's display (computer-use.md §3.9); its viewer leaves fetching ffmpeg to the main one.
-  display?: string
+  // An agent desktop's display and id (computer-use.md §3.9); its viewer leaves fetching ffmpeg to the main one.
+  display?: string,
+  desktopId = 'main'
 ): Viewer & { statusChanged(): void } {
   const ffmpeg = (): string => resolveFfmpegPath(dir, config.ffmpegPath)
   let ffmpegState: 'ok' | 'missing' | 'downloading' = 'missing'
@@ -640,7 +676,10 @@ function buildViewer(
         stream,
         log,
         onMessage: (principal, message) => viewer.channelMessage(principal, message),
-        reauthorize: (token) => consoleViewer?.(`Bearer ${token}`),
+        reauthorize: (token) => {
+          const principal = consoleViewer?.(`Bearer ${token}`)
+          return principal && mayWatch(principal, desktopId) ? principal : undefined
+        },
         ...(advertiseAddress ? { advertiseAddress } : {}),
         ...(config.rtcPortRange ? { portRange: config.rtcPortRange } : {})
       })
@@ -649,7 +688,8 @@ function buildViewer(
     computer,
     authenticate: viewerAuthenticator(
       (header) => consoleViewer?.(header),
-      (header) => authenticate(config, header)
+      (header) => authenticate(config, header),
+      desktopId
     ),
     log,
     ...(rtc ? { rtc } : {}),
@@ -744,6 +784,8 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     computer?: Computer
     // Linux: the per-agent desktops (computer-use.md §3.9).
     desktops?: DesktopManager
+    // The Control Plane's lease of each agent desktop, by agent id, applied as a desktop starts too.
+    desktopLeases?: Map<string, ComputerControlLease>
     // The policy the Control Plane last sent, which narrows a channel token's command-line tier at once (§5.7).
     policy?: ComputerPolicy
   } = {}
@@ -846,7 +888,11 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
       config,
       support: () => desktopSupport.current,
       self: [process.execPath, resolve(process.argv[1]!)],
-      build: ({ id, label, env, launchBrowser }) => {
+      build: ({ id, key, label, env, launchBrowser }) => {
+        const desktopAudit = auditSinks(
+          fileAuditSink(join(dir, 'audit.log')),
+          ...(auditReport ? [auditReport.sink] : [])
+        )
         const prefixed = (line: string): void => log(`desktop ${id}: ${line}`)
         const desktopDriver = new CuaDriver({
           command: resolveDriverPath(dir, config.driverPath),
@@ -857,7 +903,8 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
         const desktop = new Computer({
           driver: desktopDriver,
           config,
-          audit: auditSinks(fileAuditSink(join(dir, 'audit.log')), ...(auditReport ? [auditReport.sink] : [])),
+          // Each entry names the desktop that served it (§3.9).
+          audit: (record) => desktopAudit({ ...record, desktop: id }),
           log: prefixed,
           onStatus: () => live.local?.update(),
           refusal: () => authority.refusal(),
@@ -870,6 +917,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
             isolation: isolationKind()
           }
         })
+        desktop.applyControlLease(live.desktopLeases?.get(key) ?? null)
         return { driver: desktopDriver, computer: desktop }
       },
       log,
@@ -938,11 +986,13 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
             consoleViewer,
             advertiseAddress,
             undefined,
-            desktop.display
+            desktop.display,
+            desktop.record.id
           ),
         authenticate: viewerAuthenticator(
           (header) => consoleViewer?.(header),
-          (header) => authenticate(config, header)
+          (header) => authenticate(config, header),
+          null
         ),
         mainInfo: () => ({
           name: String(computer.info().name),
@@ -1153,6 +1203,13 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     onPolicy: (policy) => {
       live.policy = policy
       keepAdminPrompts(policy.approvals.adminPrompts)
+      live.desktops?.setShareBrowserLogins(policy.shareBrowserLogins !== false)
+    },
+    desktops: () => live.desktops,
+    onDesktopLeases: (leases) => {
+      live.desktopLeases = new Map(leases.flatMap((lease) => (lease.desktop ? [[lease.desktop, lease]] : [])))
+      for (const desktop of live.desktops?.runningDesktops() ?? [])
+        desktop.computer.applyControlLease(live.desktopLeases.get(desktop.record.key) ?? null)
     }
   })
   // Behind NAT the local addresses mean nothing to a client, so only the public one is printed.

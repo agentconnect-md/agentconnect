@@ -570,6 +570,17 @@ describe('ComputerConnection', () => {
   })
 })
 
+// The lease service a connection uses; per-agent desktop calls answer nothing unless a test says otherwise.
+function leaseService(over: Partial<NonNullable<Parameters<typeof setup>[0]>['leases']> = {}) {
+  return {
+    current: vi.fn(async () => null),
+    observe: vi.fn(async () => null),
+    currentDesktops: vi.fn(async () => []),
+    arrangementChanged: vi.fn(async () => 0),
+    ...over
+  }
+}
+
 describe('ComputerConnection control lease', () => {
   const lease = {
     leaseId: '11111111-1111-4111-8111-111111111111',
@@ -582,7 +593,7 @@ describe('ComputerConnection control lease', () => {
   it('tells the desktop the standing lease after auth and each change after a heartbeat, once', async () => {
     let held: typeof lease | null = lease
     const observe = vi.fn(async () => held)
-    const { transport } = setup({ leases: { current: vi.fn(async () => held), observe } })
+    const { transport } = setup({ leases: leaseService({ current: vi.fn(async () => held), observe }) })
     transport.deliver(auth())
     await settle()
     expect(transport.ofType('computer/lease').map((f) => f.payload)).toEqual([{ lease }])
@@ -599,10 +610,10 @@ describe('ComputerConnection control lease', () => {
   it('re-reads a lease the service changed while the channel is live, and keeps the channel when a read fails', async () => {
     let held: typeof lease | null = null
     const { transport, registry } = setup({
-      leases: {
+      leases: leaseService({
         current: vi.fn(async () => held),
         observe: vi.fn(async () => Promise.reject(new Error('db down')))
-      }
+      })
     })
     transport.deliver(auth())
     await settle()
@@ -619,7 +630,7 @@ describe('ComputerConnection control lease', () => {
     let finishObserve: (v: null) => void = () => {}
     // The heartbeat reads no lease; an acquire then commits before the heartbeat pushes its stale read.
     const observe = vi.fn(() => new Promise<null>((resolve) => (finishObserve = resolve)))
-    const { transport, registry } = setup({ leases: { current: vi.fn(async () => held), observe } })
+    const { transport, registry } = setup({ leases: leaseService({ current: vi.fn(async () => held), observe }) })
     transport.deliver(auth())
     await settle()
     transport.deliver(beat())
@@ -629,5 +640,32 @@ describe('ComputerConnection control lease', () => {
     finishObserve(null)
     await settle()
     expect(transport.ofType('computer/lease').map((f) => f.payload)).toEqual([{ lease: null }, { lease }])
+  })
+
+  it("observes each agent desktop's lease from its own report and pushes every desktop's lease (§3.9)", async () => {
+    const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const desktopLease = { ...lease, desktop: AGENT }
+    const leases = leaseService({ currentDesktops: vi.fn(async () => [desktopLease]) })
+    const { transport } = setup({ leases })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/auth/ok')[0]).toMatchObject({
+      payload: { features: expect.arrayContaining(['computer-desktops-v1']) }
+    })
+    const desktops = [
+      { id: 'd1', agentId: AGENT, status: 'busy' as const, lease: { holder: `${AGENT}/s1`, idleMs: 10 } }
+    ]
+    transport.deliver(beat({ status: 'online', desktops }))
+    await settle()
+    expect(leases.arrangementChanged).toHaveBeenCalledWith('org_1', CID, true)
+    expect(leases.observe).toHaveBeenCalledWith('org_1', CID, { status: 'busy', lease: desktops[0]!.lease }, AGENT)
+    expect(transport.ofType('computer/lease').map((f) => f.payload)).toEqual([
+      { lease: null },
+      { lease: null, desktops: [desktopLease] }
+    ])
+    // Switched back to one shared desktop: the per-agent leases end and the push carries the main lease alone.
+    transport.deliver(beat({ status: 'online' }))
+    await settle()
+    expect(leases.arrangementChanged).toHaveBeenLastCalledWith('org_1', CID, false)
   })
 })

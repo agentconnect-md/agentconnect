@@ -1,6 +1,7 @@
 // The viewer for a Computer with per-agent desktops: the main desktop, or the one under /view/api/d/<id> (computer-use.md §3.9).
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DesktopManager, RunningDesktop } from './linux/desktops.js'
+import { mayWatch } from './mcp-access.js'
 import type { Viewer, ViewerPrincipal, ViewerRequest, ViewerResponse, ViewerVia } from './viewer.js'
 
 type LiveViewer = Viewer & { statusChanged(): void }
@@ -64,11 +65,12 @@ export function createViewerRouter(options: ViewerRouterOptions): LiveViewer & {
     if (!match || match[1] === 'main') {
       return options.main.api(match ? { ...request, path: `/view/api${match[2]}` } : request)
     }
-    // Only an authenticated viewer may start a desktop by opening it.
-    if (!options.authenticate(request.authorization, request.via)) return json(401, { error: 'unauthorized' })
+    // Only a viewer allowed this desktop may start it by opening it (§3.9).
+    const id = match[1]!
+    const principal = options.authenticate(request.authorization, request.via)
+    if (!principal || !mayWatch(principal, id)) return json(401, { error: 'unauthorized' })
     const manager = options.desktops()
     if (!manager?.enabled()) return json(404, { error: 'not_found', message: 'per-agent desktops are off' })
-    const id = match[1]!
     let desktop: RunningDesktop | undefined
     try {
       desktop = await manager.byId(id)

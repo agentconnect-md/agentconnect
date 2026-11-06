@@ -1,5 +1,5 @@
 // PgComputerRepo — registered desktops, their one-time registration tokens and key binding (computer-use.md §2.2, §3.6).
-import type { Computer, ComputerRegistration, Prisma } from '../../generated/prisma/client.js'
+import { Prisma, type Computer, type ComputerRegistration } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   ComputerAgentGrant,
@@ -21,6 +21,7 @@ import { ComputerId, OrgId } from '../../domain/ids.js'
 import {
   defaultComputerPolicy,
   readComputerCapabilities,
+  readComputerDesktops,
   readComputerDoctor,
   readComputerPolicy,
   readAgentAccess,
@@ -78,6 +79,7 @@ function toRecord(c: Computer): ComputerRecord {
     poolActiveAt: c.poolActiveAt,
     poolError: c.poolError,
     poolMeteredAt: c.poolMeteredAt,
+    desktops: readComputerDesktops(c.desktops),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt
   }
@@ -456,7 +458,12 @@ export class PgComputerRepo implements ComputerRepo {
         ...(report.desktopDaemonVersion ? { desktopDaemonVersion: report.desktopDaemonVersion } : {}),
         ...(report.driverVersion ? { driverVersion: report.driverVersion } : {}),
         ...(report.capabilities ? { capabilities: report.capabilities as unknown as Prisma.InputJsonValue } : {}),
-        ...(report.doctor ? { doctor: report.doctor as unknown as Prisma.InputJsonValue } : {})
+        ...(report.doctor ? { doctor: report.doctor as unknown as Prisma.InputJsonValue } : {}),
+        ...(report.desktops !== undefined
+          ? {
+              desktops: report.desktops === null ? Prisma.DbNull : (report.desktops as unknown as Prisma.InputJsonValue)
+            }
+          : {})
       }
     })
     return written.count === 1

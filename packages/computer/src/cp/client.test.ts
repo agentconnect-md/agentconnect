@@ -50,6 +50,7 @@ function harness() {
   const policies: ComputerPolicy[] = []
   const revoked: string[] = []
   const leases: unknown[] = []
+  const desktopLeases: unknown[] = []
   const stops: unknown[] = []
   const egresses: ComputerEgress[] = []
   const names: string[] = []
@@ -67,7 +68,10 @@ function harness() {
     authority,
     report: () => report,
     onPolicy: (policy) => policies.push(policy),
-    onLease: (lease) => leases.push(lease),
+    onLease: (lease, desktops) => {
+      leases.push(lease)
+      if (desktops) desktopLeases.push(desktops)
+    },
     onStop: (stop) => stops.push(stop),
     onEgress: (egress) => egresses.push(egress),
     onReady: (ok) => names.push(ok.name),
@@ -119,6 +123,7 @@ function harness() {
     policies,
     revoked,
     leases,
+    desktopLeases,
     stops,
     names,
     egresses,
@@ -273,6 +278,54 @@ describe('ComputerCpClient', () => {
       })
     )
     expect(h.client.screenshotRetentionDays()).toBe(0)
+  })
+
+  it('reports agent desktops, sends their audit ids and takes their leases only with a CP that keys them (§3.9)', async () => {
+    const AGENT = '00000000-0000-4000-8000-0000000000bb'
+    const desktops = [{ id: 'd1', agentId: AGENT, status: 'busy' as const, lease: { holder: `${AGENT}/s`, idleMs: 5 } }]
+    const entry = {
+      id: '00000000-0000-4000-8000-0000000000dd',
+      at: new Date(0).toISOString(),
+      tool: 'computer_click',
+      client: 'local',
+      outcome: 'ok' as const,
+      ms: 1,
+      desktop: 'd1'
+    }
+    for (const features of [['computer-audit-v1'], ['computer-audit-v1', 'computer-desktops-v1']]) {
+      const h = harness()
+      h.client.start()
+      await settle()
+      const transport = h.transports[0]!
+      h.authOk(transport, features)
+      await settle()
+      const keyed = features.includes('computer-desktops-v1')
+      expect(h.client.desktopsSupported()).toBe(keyed)
+      h.setReport({ status: 'online', desktops })
+      h.client.beat()
+      expect(transport.ofType('computer/heartbeat').at(-1)!.payload).toEqual({
+        status: 'online',
+        ...(keyed ? { desktops } : {})
+      })
+      void h.client.reportAudit([entry])
+      const { desktop: _desktop, ...plain } = entry
+      expect(transport.ofType('computer/audit')[0]!.payload).toEqual({ entries: [keyed ? entry : plain] })
+    }
+    const h = harness()
+    h.client.start()
+    await settle()
+    h.authOk(h.transports[0]!, ['computer-desktops-v1'])
+    await settle()
+    const lease = {
+      leaseId: '00000000-0000-4000-8000-0000000000aa',
+      computerId: '00000000-0000-4000-8000-000000000001',
+      holder: { sessionId: 's', agentId: AGENT },
+      acquiredAt: new Date(h.clock.now()).toISOString(),
+      expiresAt: new Date(h.clock.now() + 1_800_000).toISOString(),
+      desktop: AGENT
+    }
+    h.transports[0]!.deliver(buildComputerCpFrame('computer/lease', { lease: null, desktops: [lease] }))
+    expect(h.desktopLeases).toEqual([[lease]])
   })
 
   it('hands the told control lease on and reports its local lease in every heartbeat', async () => {

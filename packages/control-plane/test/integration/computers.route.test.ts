@@ -455,6 +455,26 @@ describe('console viewer', () => {
   const live = (computerId: string) =>
     prisma.computer.update({ where: { id: computerId }, data: { status: 'online', lastSeenAt: new Date() } })
 
+  it('names an agent desktop the Computer runs in the token, and refuses one it does not (§3.9)', async () => {
+    const app = appAs(DEFAULT_OWNER_ID, true)
+    const { computerId } = await register(app)
+    await live(computerId)
+    const url = `${ORG}/computers/${computerId}/viewer`
+    expect((await app.app.inject({ method: 'POST', url: `${url}?desktop=d1` })).statusCode).toBe(409)
+    await prisma.computer.update({
+      where: { id: computerId },
+      data: { desktops: [{ id: 'd1', agentId: '11111111-1111-4111-8111-111111111111', status: 'online' }] }
+    })
+    const agentDesktop = (await app.app.inject({ method: 'POST', url: `${url}?desktop=d1` })).json() as {
+      token: string
+    }
+    expect(readComputerChannelToken(agentDesktop.token)?.dsk).toBe('d1')
+    const main = (await app.app.inject({ method: 'POST', url: `${url}?desktop=main` })).json() as { token: string }
+    expect(readComputerChannelToken(main.token)?.dsk).toBeUndefined()
+    const listed = (await app.app.inject({ method: 'GET', url: `${ORG}/computers/${computerId}` })).json()
+    expect(listed).toMatchObject({ desktops: [{ id: 'd1', status: 'online', lease: null, waiting: [] }] })
+  })
+
   it('names the TURN servers relays register, with credentials for the viewer and the desktop', async () => {
     const app = appAs(DEFAULT_OWNER_ID, 'relay-turn')
     const { computerId } = await register(app)

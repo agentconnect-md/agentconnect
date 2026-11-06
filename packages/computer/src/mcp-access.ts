@@ -80,18 +80,26 @@ export function viewerPrincipal(
     control: claims.mode === 'control',
     iceServers: claims.ice ?? [],
     stunUrls: claims.stun ?? [],
+    desktop: claims.dsk ?? 'main',
     valid: () => authority.verify(token, 'view', id) !== undefined
   }
 }
 
-/** Viewer auth: a console view token on either path, a local client token only on the local port, never through a relay. */
+/** Whether a viewer principal may watch this desktop (null: any); a local client may watch every one. */
+export const mayWatch = (principal: ViewerPrincipal, desktop: string | null): boolean =>
+  desktop === null || principal.desktop === undefined || principal.desktop === desktop
+
+/** Viewer auth: a console view token (for this desktop) on either path, a local client token only on the local port, never through a relay. */
 export function viewerAuthenticator(
   member: (authorization: string | undefined) => ViewerPrincipal | undefined,
-  localClient: (authorization: string | undefined) => string | undefined
+  localClient: (authorization: string | undefined) => string | undefined,
+  // The desktop this viewer serves; null accepts a token for any desktop (the desktop list).
+  desktop: string | null = 'main'
 ): (authorization: string | undefined, via: ViewerVia) => ViewerPrincipal | undefined {
   return (authorization, via) => {
     const principal = member(authorization)
-    if (principal) return principal
+    // A token names one desktop (§3.9), so it opens no other one's viewer.
+    if (principal) return mayWatch(principal, desktop) ? principal : undefined
     if (via !== 'local') return undefined
     const client = localClient(authorization)
     return client ? { client, control: true } : undefined

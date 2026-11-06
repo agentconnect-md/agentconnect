@@ -142,7 +142,7 @@ export class ComputerChannelGrants {
   async grantViewer(
     orgId: OrgId,
     computerId: string,
-    who: { userId: string; mode: ComputerAgentMode }
+    who: { userId: string; mode: ComputerAgentMode; desktop?: string }
   ): Promise<ViewerGrantResult> {
     const refuse = (code: 'unavailable' | 'no_relay' | 'quota_exceeded', message: string): ViewerGrantResult => ({
       granted: false,
@@ -155,6 +155,10 @@ export class ComputerChannelGrants {
     const status = presentComputerStatus(computer, now, this.opts.staleAfterMs)
     if (!isComputerReachable(status))
       return refuse('unavailable', status === 'sleeping' ? 'this computer is asleep' : 'this computer is offline')
+    // An agent desktop is one the Computer reports running (§3.9); `main` is the person's own.
+    const desktop = who.desktop === 'main' ? undefined : who.desktop
+    if (desktop && !computer.desktops?.some((d) => d.id === desktop))
+      return refuse('unavailable', `this computer runs no desktop ${desktop}`)
     const apiKeyId = await this.repo.liveKeyId(ComputerId(computerId), new Date(now))
     if (!apiKeyId) return refuse('unavailable', 'this computer was revoked or removed')
     const relays = [...new Set(await (this.opts.viewerRelays?.() ?? Promise.resolve([])))].slice(0, COMPUTER_RELAYS_MAX)
@@ -187,6 +191,7 @@ export class ComputerChannelGrants {
         exp,
         usr: who.userId,
         mode: who.mode,
+        ...(desktop ? { dsk: desktop } : {}),
         ...(desktopIce.length > 0 ? { ice: desktopIce } : {}),
         ...(stun.length > 0 ? { stun } : {})
       },

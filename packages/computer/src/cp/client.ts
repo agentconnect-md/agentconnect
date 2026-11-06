@@ -12,6 +12,7 @@ import {
 import {
   COMPUTER_ADMIN_PROMPTS_FEATURE,
   COMPUTER_AUDIT_FEATURE,
+  COMPUTER_DESKTOPS_FEATURE,
   COMPUTER_CP_SUBPROTOCOL,
   COMPUTER_EGRESS_FEATURE,
   COMPUTER_SCREENSHOT_FEATURE,
@@ -41,7 +42,9 @@ export interface HeartbeatReport {
   status: ComputerHeartbeat['status']
   // The local lease's holder and idle time, sent with every heartbeat so the CP's idle clock follows real use.
   lease?: ComputerHeartbeat['lease']
-  facts?: Omit<ComputerHeartbeat, 'status' | 'lease'>
+  // The running agent desktops (computer-use.md §3.9), or undefined while agents share this one; sent only behind `computer-desktops-v1`.
+  desktops?: ComputerHeartbeat['desktops']
+  facts?: Omit<ComputerHeartbeat, 'status' | 'lease' | 'desktops'>
 }
 
 export interface ComputerCpClientDeps {
@@ -52,7 +55,7 @@ export interface ComputerCpClientDeps {
   report: () => HeartbeatReport
   onPolicy?: (policy: ComputerPolicy) => void
   // The CP granted, moved or ended the control lease (computer-use.md §4.4).
-  onLease?: (lease: ComputerControlLease | null) => void
+  onLease?: (lease: ComputerControlLease | null, desktops?: ComputerControlLease[]) => void
   // The relays to dial out to for the data plane (computer-use.md §3.7).
   onRelays?: (relays: ComputerRelayEntry[]) => void
   // The console stopped this Computer, or lifted its Stop with null (computer-use.md §6).
@@ -122,6 +125,7 @@ export class ComputerCpClient {
     const payload: ComputerHeartbeat = {
       status: report.status,
       ...(report.lease ? { lease: report.lease } : {}),
+      ...(report.desktops && this.features.has(COMPUTER_DESKTOPS_FEATURE) ? { desktops: report.desktops } : {}),
       ...(fresh ? report.facts : {})
     }
     try {
@@ -136,15 +140,25 @@ export class ComputerCpClient {
   async reportAudit(entries: ComputerAuditEntry[]): Promise<AuditSendResult> {
     const transport = this.transport
     if (this.state !== 'READY' || !transport || !this.features.has(COMPUTER_AUDIT_FEATURE)) return 'retry'
+    // An older CP refuses the unknown field, so the desktop id goes only where it is understood.
+    const sent = this.features.has(COMPUTER_DESKTOPS_FEATURE)
+      ? entries
+      : entries.map(({ desktop: _desktop, ...entry }) => entry)
     try {
-      const reply = await this.correlator.request(buildComputerCpFrame('computer/audit', { entries }), (encoded) =>
-        transport.send(encoded)
+      const reply = await this.correlator.request(
+        buildComputerCpFrame('computer/audit', { entries: sent }),
+        (encoded) => transport.send(encoded)
       )
       return reply.type === 'computer/audit/ok' ? 'stored' : 'retry'
     } catch (error) {
       this.deps.log(`computer channel: audit report failed: ${(error as Error).message}`)
       return error instanceof WireError && !error.retryable ? 'rejected' : 'retry'
     }
+  }
+
+  /** Whether the CP keys leases, status and audit per agent desktop (computer-use.md §3.9). */
+  desktopsSupported(): boolean {
+    return this.state === 'READY' && this.features.has(COMPUTER_DESKTOPS_FEATURE)
   }
 
   /** Whether the CP stores the administrator-prompt mode the menu sets (computer-use.md §4.2.1). */
@@ -282,7 +296,7 @@ export class ComputerCpClient {
         this.deps.onPolicy?.(frame.payload.policy)
         return
       case 'computer/lease':
-        this.deps.onLease?.(frame.payload.lease)
+        this.deps.onLease?.(frame.payload.lease, frame.payload.desktops)
         return
       case 'computer/relays':
         this.deps.onRelays?.(frame.payload.relays)
