@@ -1244,6 +1244,15 @@ integration surface:
 Each operation has an allowlisted endpoint and method. The broker does not
 expose an arbitrary path, GraphQL query, request body, or bearer token.
 
+Each host names the operations it implements in its own words, and offers no
+tool for one it does not: GitLab's are `createGitlabComment`,
+`updateGitlabComment`, `readGitlabDiscussions`, `replyGitlabDiscussion`,
+`createGitlabMergeRequest`, `updateGitlabMergeRequest`,
+`inspectGitlabPipelines` and `controlGitlabPipeline`. A tool's name fixes its
+host: the daemon resolves the target only among that host's repositories (the
+hook turn's, then the workspace's) and refuses the call when the session has
+none, rather than acting on another host's repository.
+
 The `gitlab_effect` lease carries the clamp the broker enforces per entry. The
 workspace project earns `write` from a write workspace and `comment` from a
 read one. Another project earns the tier of the agent's explicit additional

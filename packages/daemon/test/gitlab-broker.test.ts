@@ -606,11 +606,12 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     const codeHostEffect = vi.fn(async () => ({ note: { id: '1' } }))
     await executeTool(
       ctx,
-      'createCodeHostComment',
+      'createGitlabComment',
       { subject: 'merge_request', iid: 77, body: 'hi' },
       deps(codeHostEffect)
     )
     expect(codeHostEffect).toHaveBeenCalledWith({
+      provider: 'gitlab',
       agentId: 'agent-1',
       platform: 'gitlab',
       channel: 'hook-1',
@@ -623,7 +624,7 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     const codeHostEffect = vi.fn<NonNullable<OpsDeps['codeHostEffect']>>(async () => ({}))
     await executeTool(
       ctx,
-      'createCodeHostComment',
+      'createGitlabComment',
       { subject: 'issue', iid: 12, body: 'hi', projectId: '1', project: 'example-group/example-project' },
       deps(codeHostEffect)
     )
@@ -639,7 +640,7 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     await expect(
       executeTool(
         ctx,
-        'createCodeHostComment',
+        'createGitlabComment',
         { subject: 'snippet', iid: 1, body: 'hi' },
         deps(async () => ({}))
       )
@@ -647,7 +648,7 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     await expect(
       executeTool(
         ctx,
-        'createCodeHostComment',
+        'createGitlabComment',
         { subject: 'issue', iid: 0, body: 'hi' },
         deps(async () => ({}))
       )
@@ -658,7 +659,7 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     await expect(
       executeTool(
         ctx,
-        'updateCodeHostComment',
+        'updateGitlabComment',
         { subject: 'issue', iid: 12, noteId: '../9001', body: 'x' },
         deps(async () => ({}))
       )
@@ -669,7 +670,7 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     await expect(
       executeTool(
         ctx,
-        'updateCodeHostMergeRequest',
+        'updateGitlabMergeRequest',
         { iid: 77 },
         deps(async () => ({}))
       )
@@ -677,7 +678,7 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     await expect(
       executeTool(
         ctx,
-        'updateCodeHostMergeRequest',
+        'updateGitlabMergeRequest',
         { iid: 77, description: 'x', draft: true },
         deps(async () => ({}))
       )
@@ -688,7 +689,7 @@ describe('the MCP surface validates arguments before the broker sees them', () =
     await expect(
       executeTool(
         ctx,
-        'controlCodeHostPipeline',
+        'controlGitlabPipeline',
         { action: 'delete_pipeline' },
         deps(async () => ({}))
       )
@@ -696,7 +697,7 @@ describe('the MCP surface validates arguments before the broker sees them', () =
   })
 
   it('fails closed on a daemon with no broker wired', async () => {
-    await expect(executeTool(ctx, 'inspectCodeHostPipelines', { scope: 'pipelines' }, deps())).rejects.toThrow(
+    await expect(executeTool(ctx, 'inspectGitlabPipelines', { scope: 'pipelines' }, deps())).rejects.toThrow(
       'code-host effects are unavailable on this daemon'
     )
   })

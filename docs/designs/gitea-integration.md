@@ -582,7 +582,11 @@ comment needs no second endpoint.
 The broker allowlist mirrors §14.2: create or edit a comment, read an issue or
 pull request and its comments and reviews, create or edit a pull request where
 the grant permits, read commit statuses. Each entry is an exact method and
-path template; no arbitrary path or body passes through.
+path template; no arbitrary path or body passes through. The tools are
+`createGiteaComment`, `updateGiteaComment`, `readGiteaComments`,
+`createGiteaPullRequest`, `updateGiteaPullRequest` and `inspectGiteaStatuses`;
+Gitea has no threaded replies and no retry or cancel of a commit status, so
+it offers no tool for either.
 
 The `gitea_effect` lease carries the clamp the broker enforces per entry. The
 workspace repository earns `write` from a write workspace and `comment` from a

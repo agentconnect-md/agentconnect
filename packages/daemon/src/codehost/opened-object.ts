@@ -9,7 +9,7 @@ const record = (value: unknown): Record<string, unknown> =>
 
 const GITEA_PULL = /^\/(.+)\/pulls\/([1-9]\d{0,9})\/?$/
 
-/** The object `createCodeHostMergeRequest` made, from its broker's result: a GitLab merge request or a Gitea pull request. */
+/** The object `createGitlabMergeRequest` or `createGiteaPullRequest` made, from its broker's result. */
 export function createdObjectOf(result: unknown): Opened | undefined {
   const mergeRequest = record(record(result).mergeRequest)
   if (typeof mergeRequest.webUrl === 'string') {

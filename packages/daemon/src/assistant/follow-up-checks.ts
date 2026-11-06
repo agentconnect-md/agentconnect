@@ -16,6 +16,7 @@ import {
   type ProposeInput
 } from '../mcp/ops/assistant-items.js'
 import { isAttachmentReadTool } from '../platforms/read-ports.js'
+import { CODE_HOST_EFFECT_READ_TOOL_NAMES } from '../codehost/effect-tools.js'
 import { gettingToKnowCoordinate } from '../session/subsession-coordinate.js'
 import type { AssistantGettingToKnowTrigger, AssistantItemLedger, AssistantPlace } from '../store/assistant-items.js'
 import type { AssistantWatchTasks } from '../store/assistant-watch-tasks.js'
@@ -88,8 +89,7 @@ const CHECK_READ_TOOLS = new Set([
   'findKnowledge',
   'listKnowledge',
   'listOrgSkills',
-  'readCodeHostDiscussions',
-  'inspectCodeHostPipelines'
+  ...CODE_HOST_EFFECT_READ_TOOL_NAMES
 ])
 
 /** A check's tool set: the reads of what the session would get, `recordCheck`, `propose`, and `updateTask` for its watch task's title (§5.18); with `watch` toward a Control Plane that takes it (§5.14). */
