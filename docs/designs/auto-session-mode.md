@@ -333,9 +333,13 @@ now and the summary's first sentence states the current status.
   - It has no approval setting: it runs in the runtime's read-only mode, else its auto mode, else the
     runtime's own. Read-only restricts native tools only, so memory and the AgentConnect tools still work.
   - A Decision that picks the task model never picks the coordinator's.
-  - A new coordinator starts on its model's runtime. Each turn applies its model, effort and Fast mode
-    where it runs on that runtime, so a change reaches a running coordinator at its next turn; a
-    change of runtime reaches the next coordinator (`!new`).
+  - Each turn runs the coordinator on its setting's runtime and applies its model, effort and Fast
+    mode, so a change reaches a running coordinator at its next turn. Its runtime is never pinned on
+    the session: a chosen runtime holds when the agent's runtime changes, and Default follows the
+    agent's.
+  - A changed runtime opens a runtime session there, which replays the conversation's latest
+    messages (at most 50, with its own replies) because the runtime cannot load the old one; changing
+    an agent's runtime does the same to its sessions.
   - The console sets it in the agent's model picker, under a Task | Coordinator switch above the
     providers; with the task model By decision, it is a Coordinator field of its own.
   - A conversation changes its own coordinator's model, effort and Fast mode within its runtime, as a

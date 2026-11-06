@@ -248,9 +248,14 @@ describe('A → B1 ← C: replies addressed to the message they answer (send-mes
       expect((await run.call(C, { targetSessionId: b1.key, needsReply: true })).delivered).toBe(true)
       expect((await run.call(A, { targetSessionId: b1.key, needsReply: true })).delivered).toBe(true)
       await vi.waitFor(async () => expect(await run.received(b1.key)).toHaveLength(3), WAIT)
-      await settle()
+      // Wait for each turn's inferred answer to settle its own message, so none lands after the reopen below.
+      await vi.waitFor(
+        async () =>
+          expect((await run.received(b1.key)).map((m) => m.replyState)).toEqual(['replied', 'replied', 'replied']),
+        WAIT
+      )
       const rec = await run.session(b1.key)
-      // The inferred answers already settled each turn's own message; reopen them to test explicit replies alone.
+      // Reopen the inferred answers to test explicit replies alone.
       for (const message of await run.received(b1.key))
         await run.d.store.db.query("UPDATE session_message SET replyState = 'open' WHERE messageId = ?", [
           message.messageId

@@ -3003,6 +3003,17 @@ export default function SessionDetailView() {
   const { pin: stickToBottom, awayFromBottom } = useStickToBottom(conversationKey ?? sid ?? null)
   // What this browser last read here, for the NEW line; it advances only while the reader looks at the end.
   const seen = useSeenMarker(MOCK_MODE ? null : (conversationKey ?? sid ?? null), !awayFromBottom)
+  // The transcript scroller's scrollbar width, which the composer below it insets by to stay in line with the column.
+  const [transcriptScroller, setTranscriptScroller] = useState<HTMLDivElement | null>(null)
+  const [transcriptGutter, setTranscriptGutter] = useState(0)
+  useEffect(() => {
+    if (!transcriptScroller) return
+    const measure = () => setTranscriptGutter(transcriptScroller.offsetWidth - transcriptScroller.clientWidth)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(transcriptScroller)
+    return () => observer.disconnect()
+  }, [transcriptScroller])
 
   useEffect(() => {
     if (!session || (session.platform !== 'playground' && session.platform !== 'webchat') || !sessionBusy) return
@@ -5050,6 +5061,7 @@ export default function SessionDetailView() {
         so it is ready to host a virtualized turn list. useStickToBottom pins this element. */}
         <div
           data-transcript-scroll=""
+          ref={setTranscriptScroller}
           className={
             viewerOpen
               ? 'flex min-h-0 min-w-0 flex-1 flex-col desktop:pt-[10px]'
@@ -5620,425 +5632,418 @@ export default function SessionDetailView() {
                         {imageError}
                       </div>
                     )}
-                    {/* Flexible spacer (design): pushes the composer to the bottom of the page
-                when the transcript is short; collapses once content overflows. -mt-4
-                cancels the mobile gutter's gap so a collapsed spacer adds no height. */}
+                    {/* Gap under the last turn; `flex-1` fills out a short transcript, and `-mt-4` cancels the mobile gutter so a collapsed spacer adds nothing. */}
                     <div aria-hidden="true" className="-mt-4 flex-1 desktop:mt-0 desktop:min-h-[18px]" />
-                    {/* Sticky footer: `bottom-0` pins the composer to the bottom of the transcript
-                column's OWN scroller (no longer the page), so it stays reachable while the
-                transcript scrolls behind its opaque background. The old negative-bottom bleed is
-                gone — the column's overflow would clip it — so the composer rests on the scroller's
-                bottom edge and the `.content` inset below reads as a clean margin. A top gradient
-                softens the seam where the transcript slides underneath. */}
-                    {/* `pb-1` lifts the composer 4px off the scroller's clip edge so its shadow and
-                3px focus ring draw complete instead of being cut flat at the bottom. */}
-                    <div className="sticky bottom-0 z-10 bg-(--surface-app) pt-2 pb-1 desktop:pt-3">
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
-                      />
-                      {/* Jump-to-bottom: floats just above the composer while the reader is
-                  scrolled up out of a transcript long enough to scroll. Click re-arms
-                  the bottom-follow (same path a send takes) and snaps to the newest turn. */}
-                      {awayFromBottom && (
-                        <button
-                          type="button"
-                          data-jump-latest=""
-                          onClick={() => stickToBottom()}
-                          title={t('scrollLatest')}
-                          className="absolute -top-3 left-1/2 z-10 inline-flex h-9 -translate-x-1/2 -translate-y-full cursor-pointer items-center gap-[7px] rounded-full border border-(--border-default) bg-(--surface-card) px-4 font-sans text-[13px] font-medium leading-normal whitespace-nowrap text-(--text-primary) shadow-(--shadow-md) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover)"
-                        >
-                          <Icon name="arrow-down" size={15} />
-                          {t('jumpToLatest')}
-                        </button>
-                      )}
-                      {approvalCard('mb-2 max-desktop:rounded-lg')}
-                      {/* Webchat MCP write approvals ride the same sticky footer as permission
-                  requests: always above the input, never scrolled away. */}
-                      {activeOrg && session.agentId && webchatConversationId && (
-                        <WebchatMcpApprovalCard
-                          key={webchatConversationId}
-                          orgId={activeOrg.id}
-                          agentId={session.agentId}
-                          conversationId={webchatConversationId}
-                          className="mb-2"
-                          // A coordinator's tasks write under its conversation's grant, and each answers its own on its thread.
-                          {...(session.coordinator ? { raisedHere: raisedIn(visibleMsgs) } : {})}
-                          // A delegated write never executes in the agent's own request: it
-                          // answered with an operationId and the turn ended, so the decision is
-                          // news the conversation has to deliver, or a flow that writes stops
-                          // dead at its first write. The CP stays off the message path.
-                          onDecided={(operation, decision, outcome) => {
-                            // pgNotice, not the composer's send: an unsent draft and a
-                            // staged image belong to the owner, and deciding is not a send.
-                            if (isContinuable) markSessionTarget(session.id)
-                            pgNotice(
-                              session.id,
-                              session.agentId ?? '',
-                              approvalNotice(operation, decision, outcome),
-                              isWebchat ? session.channelId : undefined,
-                              isWebchat ? liveRoster : undefined
-                            )
-                          }}
-                        />
-                      )}
-                      {/* Queued messages (Claude Code-style): sends accepted while a turn was
-                  still streaming wait here, dispatch in order as turns finish, and can
-                  be cancelled individually before they go out. */}
-                      {pgQueue.length > 0 && (
-                        <div className="mb-2 flex flex-col items-end gap-1">
-                          {pgQueue.map((q) => (
-                            <div
-                              key={q.queueId}
-                              className="group flex max-w-full items-center gap-2 rounded-[9px] border border-dashed border-(--border-default) bg-(--surface-card) py-[5px] pr-[5px] pl-3"
-                            >
-                              <Icon name="clock" size={13} color="var(--text-tertiary)" />
-                              <span
-                                className="min-w-0 truncate font-sans text-[13px] leading-normal text-(--text-tertiary)"
-                                title={q.text}
-                              >
-                                {q.text || q.image?.name || 'Image'}
-                              </span>
-                              <button
-                                type="button"
-                                className="flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:bg-(--surface-hover) hover:text-(--text-secondary)"
-                                aria-label={t('cancelQueued')}
-                                title={t('cancelQueued')}
-                                onClick={() => pgCancelQueued(session.id, q.queueId)}
-                              >
-                                <Icon name="x" size={13} />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {taskListAvailable && filesAgentId && tasksSessionId ? (
-                        <RunningCommandsDock agentId={filesAgentId} sessionId={tasksSessionId} turnActive={focusBusy} />
-                      ) : null}
-                      {/* Composer card (design "achero"): textarea on top, a toolbar row below
-                  the divider — attach · model pill (fast toggle in its menu) · effort ·
-                  permission · context ring · send. Tokens/cost live in the header's
-                  Details popover, not here. */}
-                      <div
-                        className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]"
-                        inert={resumeDisabled}
-                        aria-disabled={resumeDisabled}
-                        onKeyDown={(event) => {
-                          if (event.key !== 'Escape') return
-                          setAttachMenuOpen(false)
-                          setComposerMenuOpen(null)
-                        }}
-                      >
-                        {resumeDisabled && (
-                          <textarea
-                            className="absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[10px] border-0 bg-(--surface-sunken) px-[15px] py-[13px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed"
-                            aria-label={t('conversationUnavailableLabel')}
-                            placeholder={resumePlaceholder}
-                            disabled
-                          />
-                        )}
-                        {attachmentsEnabled && (
-                          <input
-                            ref={imageInputRef}
-                            type="file"
-                            hidden
-                            accept={filesEnabled ? undefined : 'image/*'}
-                            onChange={(event) => onAttachFile(event.target.files?.[0])}
-                          />
-                        )}
-                        {attachmentsEnabled && (
-                          <ComposerFileChips
-                            files={pgFiles}
-                            onRemove={(key) => setPgFiles(session.id, (files) => files.filter((f) => f.key !== key))}
-                          />
-                        )}
-                        {attachmentsEnabled && pgImage && (
-                          <div className="relative mx-[15px] mt-3 w-fit">
-                            <img
-                              src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
-                              alt={pgImage.name}
-                              title={pgImage.name}
-                              className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
-                            />
-                            <button
-                              type="button"
-                              className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-                              title={t('removeImage')}
-                              aria-label={t('removeImage')}
-                              onClick={() => setPgImage(session.id)}
-                            >
-                              <Icon name="x" size={14} />
-                            </button>
-                          </div>
-                        )}
-                        <ComposerTextarea
-                          sessionId={session.id}
-                          placeholder={
-                            (session.participants?.length ?? 0) > 1 && !pickRecipient
-                              ? 'Message everyone…'
-                              : `Message ${pickRecipient ? composerAgentName : session.agentName}…`
-                          }
-                          onSend={() => onPgSend()}
-                          onImageFile={attachmentsEnabled ? (file) => void onImageFile(file) : undefined}
-                          mentionCandidates={mentionCandidates}
-                          onPickMention={onPickMention}
-                          onMentionJoiningChange={setMentionJoining}
-                          onCommandPick={(target) => {
-                            commandPickRef.current = target
-                          }}
-                          commands={commandParticipants}
-                          controls={composerControls}
-                          history={composerHistory}
-                          hasEarlier={visibleHasEarlier}
-                          loadEarlier={loadEarlierConversation}
-                          loadedRows={visibleMsgs?.length ?? 0}
-                        />
-                        <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
-                          {attachmentsEnabled && (
-                            <div className="relative flex-none">
-                              <button
-                                type="button"
-                                className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
-                                aria-label={t('attachFile')}
-                                aria-haspopup="menu"
-                                aria-expanded={attachMenuOpen}
-                                title={t('attachFile')}
-                                disabled={imagePreparing}
-                                onClick={() => {
-                                  setComposerMenuOpen(null)
-                                  setAttachMenuOpen((open) => !open)
-                                }}
-                              >
-                                {imagePreparing ? <Spinner size={14} /> : <Icon name="paperclip" size={15} />}
-                              </button>
-                              {attachMenuOpen && (
-                                <>
-                                  <div
-                                    aria-hidden="true"
-                                    className="fixed inset-0 z-40"
-                                    onClick={() => setAttachMenuOpen(false)}
-                                  ></div>
-                                  <div
-                                    role="menu"
-                                    className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
-                                  >
-                                    <button
-                                      type="button"
-                                      role="menuitem"
-                                      className="fopt"
-                                      onClick={() => {
-                                        setAttachMenuOpen(false)
-                                        imageInputRef.current?.click()
-                                      }}
-                                    >
-                                      <Icon name="paperclip" size={16} color="var(--text-secondary)" />
-                                      {filesEnabled ? t('addFiles') : t('addImages')}
-                                    </button>
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          )}
-                          {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
-                      instead of wrapping into a second toolbar line. Except with a
-                      multi-agent roster: those chips are unbounded in count, so no
-                      amount of truncation bounds one line — let that case wrap. */}
-                          <div
-                            className={
-                              multiLive
-                                ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
-                                : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
-                            }
-                          >
-                            {multiLive &&
-                              liveRoster.map((p) => {
-                                const rosterAgent = agents.find((a) => a.id === p.agentId)
-                                const chip = (
-                                  <>
-                                    {rosterAgent && (
-                                      <span className="av h-[14px] w-[14px] flex-none rounded-xs">
-                                        <AgentIconView
-                                          icon={rosterAgent.icon}
-                                          runtime={rosterAgent.runtime}
-                                          size={14}
-                                        />
-                                      </span>
-                                    )}
-                                    <span className="truncate">{p.name}</span>
-                                  </>
-                                )
-                                if (!pickRecipient) {
-                                  const removable = isPg && !p.primary && p.agentId !== session.agentId
-                                  return (
-                                    <span key={p.agentId} className={COMPOSER_PILL_STATIC} title={t('participant')}>
-                                      {chip}
-                                      {removable && (
-                                        <button
-                                          type="button"
-                                          className="-mr-1 inline-flex h-4 w-4 flex-none cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-50"
-                                          title={t('removeParticipant', { agent: p.name })}
-                                          aria-label={t('removeParticipant', { agent: p.name })}
-                                          disabled={pgBusy || pgQueue.length > 0}
-                                          onClick={() => void pgRemoveAgent(session.id, p.agentId)}
-                                        >
-                                          <Icon name="x" size={12} />
-                                        </button>
-                                      )}
-                                    </span>
-                                  )
-                                }
-                                const member = conversationMembers?.find((m) => m.agentId === p.agentId)
-                                const selectable =
-                                  p.agentId === session.agentId || (!!member && memberContinuable(member.sessionId))
-                                const on = p.agentId === composerAgentId
-                                return (
-                                  <button
-                                    key={p.agentId}
-                                    type="button"
-                                    aria-pressed={on}
-                                    className={on ? COMPOSER_RECIPIENT_ON : COMPOSER_RECIPIENT_OFF}
-                                    // The socket follows the pick, so it holds still while a turn or queue is in flight.
-                                    disabled={!selectable || pgBusy || pgQueue.length > 0}
-                                    onClick={() =>
-                                      setComposerPick({ scope: conversationKey ?? '', agentId: p.agentId })
-                                    }
-                                  >
-                                    {chip}
-                                  </button>
-                                )
-                              })}
-                            {/* h-7 w-7 like every other control on this row (and the Home composer's
-                        twin), so the dashed circle shares their 28px box instead of floating
-                        inside it. A lucide glyph, not a text "+": a text plus centres on its
-                        line box, which left it a hair low. */}
-                            {isPg && addAgentOptions.length > 0 && (
-                              <ComposerMenu
-                                title={t('addAgents')}
-                                value=""
-                                options={addAgentOptions}
-                                searchable
-                                searchPlaceholder={t('searchAgents')}
-                                iconOnly
-                                open={composerMenuOpen === 'addAgent'}
-                                align="left"
-                                triggerClassName="inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
-                                tooltips={false}
-                                leading={<Icon name="plus" size={14} />}
-                                onOpenChange={(open) => {
-                                  setAttachMenuOpen(false)
-                                  setComposerMenuOpen(open ? 'addAgent' : null)
-                                }}
-                                onChange={(v) => {
-                                  const picked = agents.find((a) => a.id === v)
-                                  if (picked) void pgAddAgent(session.id, picked)
-                                }}
-                              />
-                            )}
-                            {!multiLive && (agentRuntime || pgModel || byDecision || runtimePending) && (
-                              <RuntimeModelSelect
-                                compact
-                                pending={runtimePending}
-                                ariaLabel={t('model')}
-                                value={{ runtime: agentRuntime, model: pgShownModel }}
-                                source={pickerSource}
-                                runtimes={beforeFirstTurn ? undefined : [agentRuntime]}
-                                readsImage={!!owner && strategyUsesImage(owner.execution)}
-                                readOnly={!runtimeChangesEnabled}
-                                {...(runtimeOwnersOnly ? { readOnlyNote: runtimeModelT('readOnlyOwner') } : {})}
-                                decision={
-                                  beforeFirstTurn && owner?.modelSelection
-                                    ? {
-                                        name: runtimeDecision?.name ?? runtimeModelT('byDecision'),
-                                        selected: byDecision,
-                                        selection: owner.modelSelection,
-                                        question: runtimeDecision?.question,
-                                        fallback: { runtime: agentRuntime, model: pgModel },
-                                        decisionHref:
-                                          runtimeDecision &&
-                                          orgPath(`/decisions/${encodeURIComponent(runtimeDecision.id)}`),
-                                        evaluations: modelEvaluationsTarget(owner),
-                                        onSelect: () => {
-                                          setRuntimeSelections((current) => ({
-                                            ...current,
-                                            [session.id]: { fast: current[session.id]?.fast }
-                                          }))
-                                          pgStageRuntime(session.id, {
-                                            runtime: undefined,
-                                            model: undefined,
-                                            effort: undefined,
-                                            permissionMode: undefined
-                                          })
-                                        }
-                                      }
-                                    : undefined
-                                }
-                                settings={
-                                  byDecision
-                                    ? undefined
-                                    : {
-                                        effort: pgEffort
-                                          ? { value: pgEffort, options: pgEffortOptions, onChange: changeEffort }
-                                          : undefined,
-                                        // A coordinator always runs read-only (auto-session-mode.md §5.4).
-                                        approval:
-                                          pgPermissionPreset && !coordinatorPage
-                                            ? {
-                                                value: pgPermissionPreset,
-                                                options: pgApprovalOptions,
-                                                onChange: changePermission
-                                              }
-                                            : undefined,
-                                        fast: pgFastModeAvailable
-                                          ? { value: pgFastMode, onChange: changeFast }
-                                          : undefined
-                                      }
-                                }
-                                onChange={changeRuntimeModel}
-                              />
-                            )}
-                            {canChooseWorktree && (
-                              <label className={`${COMPOSER_CHIP} min-w-0 cursor-pointer`}>
-                                <input
-                                  type="checkbox"
-                                  checked={pgWorktree}
-                                  onChange={(event) => {
-                                    const worktree = event.target.checked
-                                    setWorktreeSelections((current) => ({ ...current, [session.id]: worktree }))
-                                    pgSetWorktree(session.id, worktree)
-                                  }}
-                                  className="h-4 w-4 flex-none accent-(--brand)"
-                                />
-                                <span className="truncate">{isolationLabel.mode}</span>
-                              </label>
-                            )}
-                          </div>
-                          <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
-                          <ComposerSendButton
-                            sessionId={session.id}
-                            busy={pgBusy || isPgTurnUnstreamed(session.id)}
-                            imagePreparing={imagePreparing || filesUploading}
-                            hasImage={!!pgImage || pgFiles.some((f) => f.status === 'ready')}
-                            mentionJoining={mentionJoining}
-                            onSend={() => onPgSend()}
-                            onStop={() => pgCancel(session.id, composerAgentId, webchatConversationId)}
-                          />
-                        </div>
-                      </div>
-                      {taskOwnPage && isContinuable ? (
-                        <div
-                          data-task-page-hint=""
-                          className="px-[2px] pt-[6px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
-                        >
-                          {tt('pageHint')}
-                        </div>
-                      ) : null}
-                    </div>
                   </>
                 )}
               </div>
             </div>
           </div>
         </div>
+        {isLive ? (
+          // Below the scroller, so its scrollbar ends at the composer; the right inset is the scroller's padding plus its scrollbar, so the 880px columns line up.
+          <div
+            className={
+              viewerOpen
+                ? 'hidden'
+                : 'relative z-10 flex-none pt-2 pb-1 max-desktop:pr-[calc(12px+var(--transcript-gutter))] max-desktop:pl-3 desktop:max-wide:pr-(--transcript-gutter) desktop:pt-3 wide:pr-[calc(10px+var(--transcript-gutter))]'
+            }
+            style={{ '--transcript-gutter': `${transcriptGutter}px` } as CSSProperties}
+          >
+            <div className="relative mx-auto w-full min-w-0 max-w-[880px]">
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
+              />
+              {/* Jump-to-bottom: floats just above the composer while the reader is
+                  scrolled up out of a transcript long enough to scroll. Click re-arms
+                  the bottom-follow (same path a send takes) and snaps to the newest turn. */}
+              {awayFromBottom && (
+                <button
+                  type="button"
+                  data-jump-latest=""
+                  onClick={() => stickToBottom()}
+                  title={t('scrollLatest')}
+                  className="absolute -top-3 left-1/2 z-10 inline-flex h-9 -translate-x-1/2 -translate-y-full cursor-pointer items-center gap-[7px] rounded-full border border-(--border-default) bg-(--surface-card) px-4 font-sans text-[13px] font-medium leading-normal whitespace-nowrap text-(--text-primary) shadow-(--shadow-md) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover)"
+                >
+                  <Icon name="arrow-down" size={15} />
+                  {t('jumpToLatest')}
+                </button>
+              )}
+              {approvalCard('mb-2 max-desktop:rounded-lg')}
+              {/* Webchat MCP write approvals ride the same sticky footer as permission
+                  requests: always above the input, never scrolled away. */}
+              {activeOrg && session.agentId && webchatConversationId && (
+                <WebchatMcpApprovalCard
+                  key={webchatConversationId}
+                  orgId={activeOrg.id}
+                  agentId={session.agentId}
+                  conversationId={webchatConversationId}
+                  className="mb-2"
+                  // A coordinator's tasks write under its conversation's grant, and each answers its own on its thread.
+                  {...(session.coordinator ? { raisedHere: raisedIn(visibleMsgs) } : {})}
+                  // A delegated write never executes in the agent's own request: it
+                  // answered with an operationId and the turn ended, so the decision is
+                  // news the conversation has to deliver, or a flow that writes stops
+                  // dead at its first write. The CP stays off the message path.
+                  onDecided={(operation, decision, outcome) => {
+                    // pgNotice, not the composer's send: an unsent draft and a
+                    // staged image belong to the owner, and deciding is not a send.
+                    if (isContinuable) markSessionTarget(session.id)
+                    pgNotice(
+                      session.id,
+                      session.agentId ?? '',
+                      approvalNotice(operation, decision, outcome),
+                      isWebchat ? session.channelId : undefined,
+                      isWebchat ? liveRoster : undefined
+                    )
+                  }}
+                />
+              )}
+              {/* Queued messages (Claude Code-style): sends accepted while a turn was
+                  still streaming wait here, dispatch in order as turns finish, and can
+                  be cancelled individually before they go out. */}
+              {pgQueue.length > 0 && (
+                <div className="mb-2 flex flex-col items-end gap-1">
+                  {pgQueue.map((q) => (
+                    <div
+                      key={q.queueId}
+                      className="group flex max-w-full items-center gap-2 rounded-[9px] border border-dashed border-(--border-default) bg-(--surface-card) py-[5px] pr-[5px] pl-3"
+                    >
+                      <Icon name="clock" size={13} color="var(--text-tertiary)" />
+                      <span
+                        className="min-w-0 truncate font-sans text-[13px] leading-normal text-(--text-tertiary)"
+                        title={q.text}
+                      >
+                        {q.text || q.image?.name || 'Image'}
+                      </span>
+                      <button
+                        type="button"
+                        className="flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                        aria-label={t('cancelQueued')}
+                        title={t('cancelQueued')}
+                        onClick={() => pgCancelQueued(session.id, q.queueId)}
+                      >
+                        <Icon name="x" size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {taskListAvailable && filesAgentId && tasksSessionId ? (
+                <RunningCommandsDock agentId={filesAgentId} sessionId={tasksSessionId} turnActive={focusBusy} />
+              ) : null}
+              {/* Composer card (design "achero"): textarea on top, a toolbar row below
+                  the divider — attach · model pill (fast toggle in its menu) · effort ·
+                  permission · context ring · send. Tokens/cost live in the header's
+                  Details popover, not here. */}
+              <div
+                className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]"
+                inert={resumeDisabled}
+                aria-disabled={resumeDisabled}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Escape') return
+                  setAttachMenuOpen(false)
+                  setComposerMenuOpen(null)
+                }}
+              >
+                {resumeDisabled && (
+                  <textarea
+                    className="absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[10px] border-0 bg-(--surface-sunken) px-[15px] py-[13px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed"
+                    aria-label={t('conversationUnavailableLabel')}
+                    placeholder={resumePlaceholder}
+                    disabled
+                  />
+                )}
+                {attachmentsEnabled && (
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    hidden
+                    accept={filesEnabled ? undefined : 'image/*'}
+                    onChange={(event) => onAttachFile(event.target.files?.[0])}
+                  />
+                )}
+                {attachmentsEnabled && (
+                  <ComposerFileChips
+                    files={pgFiles}
+                    onRemove={(key) => setPgFiles(session.id, (files) => files.filter((f) => f.key !== key))}
+                  />
+                )}
+                {attachmentsEnabled && pgImage && (
+                  <div className="relative mx-[15px] mt-3 w-fit">
+                    <img
+                      src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
+                      alt={pgImage.name}
+                      title={pgImage.name}
+                      className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
+                    />
+                    <button
+                      type="button"
+                      className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
+                      title={t('removeImage')}
+                      aria-label={t('removeImage')}
+                      onClick={() => setPgImage(session.id)}
+                    >
+                      <Icon name="x" size={14} />
+                    </button>
+                  </div>
+                )}
+                <ComposerTextarea
+                  sessionId={session.id}
+                  placeholder={
+                    (session.participants?.length ?? 0) > 1 && !pickRecipient
+                      ? 'Message everyone…'
+                      : `Message ${pickRecipient ? composerAgentName : session.agentName}…`
+                  }
+                  onSend={() => onPgSend()}
+                  onImageFile={attachmentsEnabled ? (file) => void onImageFile(file) : undefined}
+                  mentionCandidates={mentionCandidates}
+                  onPickMention={onPickMention}
+                  onMentionJoiningChange={setMentionJoining}
+                  onCommandPick={(target) => {
+                    commandPickRef.current = target
+                  }}
+                  commands={commandParticipants}
+                  controls={composerControls}
+                  history={composerHistory}
+                  hasEarlier={visibleHasEarlier}
+                  loadEarlier={loadEarlierConversation}
+                  loadedRows={visibleMsgs?.length ?? 0}
+                />
+                <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
+                  {attachmentsEnabled && (
+                    <div className="relative flex-none">
+                      <button
+                        type="button"
+                        className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                        aria-label={t('attachFile')}
+                        aria-haspopup="menu"
+                        aria-expanded={attachMenuOpen}
+                        title={t('attachFile')}
+                        disabled={imagePreparing}
+                        onClick={() => {
+                          setComposerMenuOpen(null)
+                          setAttachMenuOpen((open) => !open)
+                        }}
+                      >
+                        {imagePreparing ? <Spinner size={14} /> : <Icon name="paperclip" size={15} />}
+                      </button>
+                      {attachMenuOpen && (
+                        <>
+                          <div
+                            aria-hidden="true"
+                            className="fixed inset-0 z-40"
+                            onClick={() => setAttachMenuOpen(false)}
+                          ></div>
+                          <div
+                            role="menu"
+                            className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
+                          >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="fopt"
+                              onClick={() => {
+                                setAttachMenuOpen(false)
+                                imageInputRef.current?.click()
+                              }}
+                            >
+                              <Icon name="paperclip" size={16} color="var(--text-secondary)" />
+                              {filesEnabled ? t('addFiles') : t('addImages')}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
+                      instead of wrapping into a second toolbar line. Except with a
+                      multi-agent roster: those chips are unbounded in count, so no
+                      amount of truncation bounds one line — let that case wrap. */}
+                  <div
+                    className={
+                      multiLive
+                        ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
+                        : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
+                    }
+                  >
+                    {multiLive &&
+                      liveRoster.map((p) => {
+                        const rosterAgent = agents.find((a) => a.id === p.agentId)
+                        const chip = (
+                          <>
+                            {rosterAgent && (
+                              <span className="av h-[14px] w-[14px] flex-none rounded-xs">
+                                <AgentIconView icon={rosterAgent.icon} runtime={rosterAgent.runtime} size={14} />
+                              </span>
+                            )}
+                            <span className="truncate">{p.name}</span>
+                          </>
+                        )
+                        if (!pickRecipient) {
+                          const removable = isPg && !p.primary && p.agentId !== session.agentId
+                          return (
+                            <span key={p.agentId} className={COMPOSER_PILL_STATIC} title={t('participant')}>
+                              {chip}
+                              {removable && (
+                                <button
+                                  type="button"
+                                  className="-mr-1 inline-flex h-4 w-4 flex-none cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-50"
+                                  title={t('removeParticipant', { agent: p.name })}
+                                  aria-label={t('removeParticipant', { agent: p.name })}
+                                  disabled={pgBusy || pgQueue.length > 0}
+                                  onClick={() => void pgRemoveAgent(session.id, p.agentId)}
+                                >
+                                  <Icon name="x" size={12} />
+                                </button>
+                              )}
+                            </span>
+                          )
+                        }
+                        const member = conversationMembers?.find((m) => m.agentId === p.agentId)
+                        const selectable =
+                          p.agentId === session.agentId || (!!member && memberContinuable(member.sessionId))
+                        const on = p.agentId === composerAgentId
+                        return (
+                          <button
+                            key={p.agentId}
+                            type="button"
+                            aria-pressed={on}
+                            className={on ? COMPOSER_RECIPIENT_ON : COMPOSER_RECIPIENT_OFF}
+                            // The socket follows the pick, so it holds still while a turn or queue is in flight.
+                            disabled={!selectable || pgBusy || pgQueue.length > 0}
+                            onClick={() => setComposerPick({ scope: conversationKey ?? '', agentId: p.agentId })}
+                          >
+                            {chip}
+                          </button>
+                        )
+                      })}
+                    {/* h-7 w-7 like every other control on this row (and the Home composer's
+                        twin), so the dashed circle shares their 28px box instead of floating
+                        inside it. A lucide glyph, not a text "+": a text plus centres on its
+                        line box, which left it a hair low. */}
+                    {isPg && addAgentOptions.length > 0 && (
+                      <ComposerMenu
+                        title={t('addAgents')}
+                        value=""
+                        options={addAgentOptions}
+                        searchable
+                        searchPlaceholder={t('searchAgents')}
+                        iconOnly
+                        open={composerMenuOpen === 'addAgent'}
+                        align="left"
+                        triggerClassName="inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+                        tooltips={false}
+                        leading={<Icon name="plus" size={14} />}
+                        onOpenChange={(open) => {
+                          setAttachMenuOpen(false)
+                          setComposerMenuOpen(open ? 'addAgent' : null)
+                        }}
+                        onChange={(v) => {
+                          const picked = agents.find((a) => a.id === v)
+                          if (picked) void pgAddAgent(session.id, picked)
+                        }}
+                      />
+                    )}
+                    {!multiLive && (agentRuntime || pgModel || byDecision || runtimePending) && (
+                      <RuntimeModelSelect
+                        compact
+                        pending={runtimePending}
+                        ariaLabel={t('model')}
+                        value={{ runtime: agentRuntime, model: pgShownModel }}
+                        source={pickerSource}
+                        runtimes={beforeFirstTurn ? undefined : [agentRuntime]}
+                        readsImage={!!owner && strategyUsesImage(owner.execution)}
+                        readOnly={!runtimeChangesEnabled}
+                        {...(runtimeOwnersOnly ? { readOnlyNote: runtimeModelT('readOnlyOwner') } : {})}
+                        decision={
+                          beforeFirstTurn && owner?.modelSelection
+                            ? {
+                                name: runtimeDecision?.name ?? runtimeModelT('byDecision'),
+                                selected: byDecision,
+                                selection: owner.modelSelection,
+                                question: runtimeDecision?.question,
+                                fallback: { runtime: agentRuntime, model: pgModel },
+                                decisionHref:
+                                  runtimeDecision && orgPath(`/decisions/${encodeURIComponent(runtimeDecision.id)}`),
+                                evaluations: modelEvaluationsTarget(owner),
+                                onSelect: () => {
+                                  setRuntimeSelections((current) => ({
+                                    ...current,
+                                    [session.id]: { fast: current[session.id]?.fast }
+                                  }))
+                                  pgStageRuntime(session.id, {
+                                    runtime: undefined,
+                                    model: undefined,
+                                    effort: undefined,
+                                    permissionMode: undefined
+                                  })
+                                }
+                              }
+                            : undefined
+                        }
+                        settings={
+                          byDecision
+                            ? undefined
+                            : {
+                                effort: pgEffort
+                                  ? { value: pgEffort, options: pgEffortOptions, onChange: changeEffort }
+                                  : undefined,
+                                // A coordinator always runs read-only (auto-session-mode.md §5.4).
+                                approval:
+                                  pgPermissionPreset && !coordinatorPage
+                                    ? {
+                                        value: pgPermissionPreset,
+                                        options: pgApprovalOptions,
+                                        onChange: changePermission
+                                      }
+                                    : undefined,
+                                fast: pgFastModeAvailable ? { value: pgFastMode, onChange: changeFast } : undefined
+                              }
+                        }
+                        onChange={changeRuntimeModel}
+                      />
+                    )}
+                    {canChooseWorktree && (
+                      <label className={`${COMPOSER_CHIP} min-w-0 cursor-pointer`}>
+                        <input
+                          type="checkbox"
+                          checked={pgWorktree}
+                          onChange={(event) => {
+                            const worktree = event.target.checked
+                            setWorktreeSelections((current) => ({ ...current, [session.id]: worktree }))
+                            pgSetWorktree(session.id, worktree)
+                          }}
+                          className="h-4 w-4 flex-none accent-(--brand)"
+                        />
+                        <span className="truncate">{isolationLabel.mode}</span>
+                      </label>
+                    )}
+                  </div>
+                  <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
+                  <ComposerSendButton
+                    sessionId={session.id}
+                    busy={pgBusy || isPgTurnUnstreamed(session.id)}
+                    imagePreparing={imagePreparing || filesUploading}
+                    hasImage={!!pgImage || pgFiles.some((f) => f.status === 'ready')}
+                    mentionJoining={mentionJoining}
+                    onSend={() => onPgSend()}
+                    onStop={() => pgCancel(session.id, composerAgentId, webchatConversationId)}
+                  />
+                </div>
+              </div>
+              {taskOwnPage && isContinuable ? (
+                <div
+                  data-task-page-hint=""
+                  className="px-[2px] pt-[6px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
+                >
+                  {tt('pageHint')}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
       </div>
       {/* Opening a file also closes the collapsed-band overlay: below `wide:` the dock is a drawer over the very pane the file lands in, and on a phone the viewer IS the screen (§8). The dock's own latch resets on this key. */}
       <SessionDock

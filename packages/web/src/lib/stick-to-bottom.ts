@@ -130,10 +130,17 @@ export function useStickToBottom(resetKey: string | null): {
     const attach = () => {
       const found = page.querySelector<HTMLElement>('[data-transcript-scroll]')
       if (found !== scroller) {
-        if (scroller) scroller.removeEventListener('scroll', onScroll)
+        if (scroller) {
+          scroller.removeEventListener('scroll', onScroll)
+          observer.unobserve(scroller)
+        }
         scroller = found
         pinnedTop = null
-        if (scroller) scroller.addEventListener('scroll', onScroll, { passive: true })
+        // The scroller itself too: a composer growing below it shortens the viewport, which must keep the newest row in view.
+        if (scroller) {
+          scroller.addEventListener('scroll', onScroll, { passive: true })
+          observer.observe(scroller)
+        }
       }
       if (!scroller) return
       const child = scroller.firstElementChild
