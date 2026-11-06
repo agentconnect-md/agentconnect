@@ -35,7 +35,11 @@ vi.mock('next/navigation', () => ({
 }))
 
 vi.mock('next/link', () => ({
-  default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>
+  default: ({ children, href, ...rest }: { children: React.ReactNode; href: string }) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  )
 }))
 
 vi.mock('@/lib/api', async (importOriginal) => {
@@ -347,7 +351,44 @@ describe('the one-line session header', () => {
     Object.assign(listRow, { subsession: true })
     await render()
     Object.assign(listRow, { subsession: undefined })
-    // The link mock keeps only `href`, so the icon is found by where it goes, right after the name.
     expect(header()?.querySelector('h1 + a')?.getAttribute('href')).toBe('/acme/sessions/owner-1')
+  })
+
+  it('makes a threaded task’s page its expanded view: back, shrink into the side panel and close lead to its owner, and its dock opens on Files', async () => {
+    // A threaded task runs in its own platform thread; the CP's `task` says some session owns it.
+    wire.detail = {
+      ...detail(true),
+      task: true,
+      parentSession: {
+        id: 'owner-1',
+        agentId: 'agent-1',
+        agentName: 'Ops bot',
+        platform: 'slack',
+        title: 'Ship api 1.5',
+        subsession: false
+      }
+    }
+    await render()
+    const row = header()!
+    expect(row.querySelector('[data-task-page-back]')?.getAttribute('href')).toBe('/acme/sessions/owner-1')
+    expect(row.querySelector('[data-task-page-shrink]')?.getAttribute('href')).toBe(
+      '/acme/sessions/owner-1?task=session-1'
+    )
+    expect(row.querySelector('[data-task-page-close]')?.getAttribute('href')).toBe('/acme/sessions/owner-1')
+    const tabs = [...(container?.querySelectorAll('[data-dock-tab]') ?? [])].map((el) =>
+      el.getAttribute('data-dock-tab')
+    )
+    expect(tabs).not.toContain('sessions')
+    expect(tabs).toContain('files')
+    expect(container?.querySelector('[data-dock-tab="files"]')?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('gives an ordinary session no way back to a coordinator, and keeps its Sessions tab', async () => {
+    await render()
+    const row = header()!
+    expect(row.querySelector('[data-task-page-back]')).toBeNull()
+    expect(row.querySelector('[data-task-page-shrink]')).toBeNull()
+    expect(row.querySelector('[data-task-page-close]')).toBeNull()
+    expect(container?.querySelector('[data-dock-tab="sessions"]')).not.toBeNull()
   })
 })

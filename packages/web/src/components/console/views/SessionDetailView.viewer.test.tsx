@@ -91,7 +91,11 @@ vi.mock('next/navigation', () => ({
 }))
 
 vi.mock('next/link', () => ({
-  default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>
+  default: ({ children, href, ...rest }: { children: React.ReactNode; href: string }) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  )
 }))
 
 vi.mock('@/lib/api', async (importOriginal) => {
@@ -1590,45 +1594,32 @@ describe('a coordinator’s task cards', () => {
     expect(container?.querySelector('[data-task-thread]')).toBeNull()
   })
 
-  it('opens a task card expanded over the coordinator, shrinks it to the side panel, and goes back to the lists', async () => {
+  it('opens a task card on the task’s own page, a real link a modified click takes to a new tab', async () => {
     coordinatorTurn()
     await render()
-    await act(async () => {
-      container?.querySelector<HTMLButtonElement>('[data-task-card="child-1"] button')?.click()
-      await Promise.resolve()
-    })
-    await render()
-    // Expanded: the task covers the coordinator, which stays as a strip to go back by, with its own tools beside the thread.
-    const expanded = container?.querySelector('[data-task-expanded="child-1"]')
-    expect(expanded).not.toBeNull()
-    expect(expanded?.querySelector('[data-task-expanded-sliver]')).not.toBeNull()
-    expect(expanded?.querySelector('[data-task-expanded-tab="files"]')?.getAttribute('aria-pressed')).toBe('true')
-    const thread = expanded?.querySelector('[data-task-thread="child-1"]')
-    expect(thread?.textContent).toContain('Find what blocks api 1.5')
-    expect(thread?.querySelector('[data-task-thread-back]')?.textContent).toBe('Coordinator')
-    expect(container?.querySelector('[data-task-card="child-1"] button')?.getAttribute('aria-expanded')).toBe('true')
-
-    // Shrunk: the same task's thread in the side panel, whose expand goes back.
-    await act(async () => {
-      thread?.querySelector<HTMLButtonElement>('[data-task-thread-shrink]')?.click()
-      await Promise.resolve()
-    })
-    await render()
+    const card = container?.querySelector('[data-task-card="child-1"] a')
+    expect(card?.getAttribute('href')).toBe('/acme/sessions/child-1')
+    // Nothing draws over the coordinator: expanding a task is leaving for its page.
     expect(container?.querySelector('[data-task-expanded]')).toBeNull()
-    const panel = container?.querySelector('[data-task-thread="child-1"]')
-    expect(panel?.querySelector('textarea[aria-label="Reply in this task…"]')).not.toBeNull()
-    expect(container?.querySelector('[data-dock-tab]')).toBeNull()
-    expect(panel?.querySelector('[data-task-thread-expand]')).not.toBeNull()
+    expect(container?.querySelector('[data-task-thread]')).toBeNull()
+  })
 
+  it('opens a task shrunk from its own page in the side panel once, then drops ?task= from the address', async () => {
+    coordinatorTurn()
+    wire.coordinator = true
+    nav.search = 'task=child-1'
+    await render()
+    await render()
+    const panel = container?.querySelector('[data-task-thread="child-1"]')
+    expect(panel).not.toBeNull()
+    expect(panel?.querySelector('[data-task-thread-expand]')?.getAttribute('href')).toBe('/acme/sessions/child-1')
+    expect(nav.replaced.at(-1)).toBe('/acme/sessions/session-1')
+    // Back from the quick look returns to the lists.
     await act(async () => {
-      Array.from(panel?.querySelectorAll<HTMLButtonElement>('button') ?? [])
-        .find((button) => button.textContent === 'Tasks')
-        ?.click()
+      panel?.querySelector<HTMLButtonElement>('[data-task-thread-back]')?.click()
       await Promise.resolve()
     })
     expect(container?.querySelector('[data-task-thread]')).toBeNull()
-    await render()
-    expect(container?.querySelector('[role="tablist"]')).not.toBeNull()
   })
 
   it('follows a task the coordinator opens while the reader watches into the dock, but not one already there', async () => {

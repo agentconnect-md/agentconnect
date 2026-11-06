@@ -1154,6 +1154,8 @@ export function sessionRoutes(deps: HttpDeps) {
         return {
           id: s.id,
           parentSession: parentVisible ? sessionRelation(parent, agentNames) : null,
+          // A task's page is its owner's expanded view; a threaded task is one by its owner, not its thread.
+          task: isSubsessionCoordinate(s.thread) || !!s.taskParentSessionId,
           siblingSessions: visibleSiblings.map((session) => sessionRelation(session, agentNames)),
           childSessions: visibleChildren.map((session) => sessionRelation(session, agentNames)),
           agentId: s.agentId,

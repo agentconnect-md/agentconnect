@@ -3266,23 +3266,3 @@
     color: inherit;
   }
 }
-
-/* An expanded task (TaskExpandedView) slides in over its coordinator from the right. */
-.task-slide {
-  animation: taskSlide var(--duration-slow, 320ms) var(--ease-out, cubic-bezier(0.2, 0.8, 0.3, 1)) both;
-}
-@keyframes taskSlide {
-  from {
-    opacity: 0.6;
-    transform: translateX(48px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .task-slide {
-    animation-duration: 0.01ms;
-  }
-}

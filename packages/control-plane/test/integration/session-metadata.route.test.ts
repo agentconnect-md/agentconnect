@@ -407,6 +407,13 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       { id: called, subsession: false },
       { id: threaded, subsession: true }
     ])
+    // A session's own detail says whether it is a task: by its thread, or by an owner when it runs in a platform thread.
+    const isTask = async (id: string) =>
+      ((await running!.app.inject({ method: 'GET', url: `${ORG}/sessions/${id}` })).json() as { task?: boolean }).task
+    expect(await isTask(threaded)).toBe(true)
+    expect(await isTask(task)).toBe(true)
+    expect(await isTask(called)).toBe(false)
+    expect(await isTask(conversation)).toBe(false)
 
     const list = async (query: string) =>
       (await running!.app.inject({ method: 'GET', url: `${ORG}/sessions?${query}` })).json() as {
