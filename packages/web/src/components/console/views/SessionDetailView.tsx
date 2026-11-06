@@ -3354,7 +3354,8 @@ export default function SessionDetailView() {
   const pgImage = getPgImage(session.id)
   const pgFiles = getPgFiles(session.id)
   const filesUploading = pgFiles.some((f) => f.status === 'uploading')
-  const attachmentsEnabled = !isContinuable
+  // A continued session takes text only, except a coordinator's task, whose own page is its composer.
+  const attachmentsEnabled = !isContinuable || taskOwnPage
   const pgQueue = getPgQueue(session.id)
   const hasSessionWorktree =
     !!focusedAgent &&
@@ -6173,6 +6174,7 @@ export default function SessionDetailView() {
               personPicture={(sender) =>
                 sender === undefined || isSelf(sender) ? viewer.picture : memberPictureByIdentity.get(sender)
               }
+              fileTransfer={composerTransfer}
             />
           ) : null}
           {/* Mounted under an open thread too, so its verdict keeps the tab's badge and the reader comes back to the same lists. */}

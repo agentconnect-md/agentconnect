@@ -1099,7 +1099,8 @@
         "newSince": "上次阅读之后的新消息",
         "map": "对话中的各轮"
       },
-      "jumpToLatest": "跳到最新"
+      "jumpToLatest": "跳到最新",
+      "attachFailed": "无法处理这张图片。"
     },
     "share": {
       "share": "分享",

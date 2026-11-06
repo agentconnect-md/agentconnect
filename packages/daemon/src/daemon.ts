@@ -16882,7 +16882,13 @@ export class Daemon {
     // agentId), cancel by the conversation's own webchat-attached turns.
     if (msg.targetSessionId !== undefined) {
       switch (op.op) {
-        case 'turn':
+        case 'turn': {
+          // Only a coordinator's task takes images and files from its thread; another continued session stays text.
+          const withAttachments =
+            (op.attachments?.length || op.files?.length) &&
+            (await this.store
+              .getSessionByOutwardId(msg.targetSessionId, msg.agentId)
+              .then((target) => (target ? this.isOwnedTask(msg.agentId, target) : false)))
           return this.webchatTransport
             .dispatchWebchatContinuationTurn(
               msg.agentId,
@@ -16892,7 +16898,9 @@ export class Daemon {
               webchatAuthorOf(op),
               sink,
               op.turnId,
-              op.post
+              op.post,
+              withAttachments ? op.attachments : undefined,
+              withAttachments ? op.files : undefined
             )
             .then((ack) => ({
               msgId: msg.msgId,
@@ -16901,6 +16909,7 @@ export class Daemon {
               ...(ack.reason ? { reason: ack.reason } : {}),
               ...(ack.detail ? { detail: ack.detail } : {})
             }))
+        }
         case 'set_model':
         case 'set_effort':
         case 'set_permission_mode':

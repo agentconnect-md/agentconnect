@@ -79,6 +79,10 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
   const playground = {
     getLiveSteps: () => wire.live,
     isPgBusy: () => wire.busy,
+    getPgImage: () => undefined,
+    setPgImage: () => {},
+    getPgFiles: () => [],
+    setPgFiles: () => {},
     pgCancel: (id: string, agentId: string) => wire.calls.push(`cancel:${id}:${agentId}`),
     reconcileLiveSteps: () => {},
     markSessionTarget: (id: string) => wire.calls.push(`target:${id}`),
@@ -410,12 +414,15 @@ describe('TaskThreadPanel', () => {
     expect(messages[1]!.querySelector('[data-agent-prose]')?.textContent).toContain('Three of five are clear.')
   })
 
-  it('tells the reader who a reply reaches', async () => {
+  it('says who a reply reaches in its placeholder, and offers to attach a file where the hint was', async () => {
     await render()
     expect(container.querySelector('textarea')?.getAttribute('placeholder')).toBe(
       'Reply in this task — only this task sees it'
     )
-    expect(container.querySelector('[data-task-thread-hint]')?.textContent).toBe('Only this task sees it')
+    expect(container.querySelector('[data-task-thread-hint]')).toBeNull()
+    const attach = container.querySelector<HTMLButtonElement>('[data-task-thread-attach]')
+    expect(attach?.getAttribute('aria-label')).toBe('Attach a file')
+    expect(container.querySelector('input[type="file"]')).not.toBeNull()
   })
 
   it('draws another agent’s post as that agent, without its attribution line', async () => {

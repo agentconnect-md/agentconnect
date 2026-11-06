@@ -49,16 +49,16 @@ function scaffold(): string {
 }
 
 function scriptedHost(reply: (prompt: string) => string) {
-  const prompts: Array<{ agentId: string; sid: string; text: string }> = []
+  const prompts: Array<{ agentId: string; sid: string; text: string; types: string[] }> = []
   let sessionSeq = 0
   const factory = (agent: { id: string }, onUpdate: (sid: string, u: unknown) => void) =>
     ({
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => `acp-fresh-${++sessionSeq}`),
       hasSession: vi.fn(() => true),
-      prompt: vi.fn(async (sid: string, blocks: { text?: string }[]) => {
+      prompt: vi.fn(async (sid: string, blocks: { type?: string; text?: string }[]) => {
         const text = blocks.map((b) => b.text ?? '').join('\n')
-        prompts.push({ agentId: agent.id, sid, text })
+        prompts.push({ agentId: agent.id, sid, text, types: blocks.map((b) => b.type ?? '') })
         onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: reply(text) } })
         return { stopReason: 'end_turn' }
       }),
@@ -764,6 +764,40 @@ describe('webchat session-targeted continuation — a delegated task', () => {
     expect(await setModel()).toMatchObject({ accepted: true })
     expect(applied).toEqual([[key, 'opus']])
     await daemon.stop()
+  })
+
+  it("hands an image sent on a threaded task's thread to the task, and leaves it off any other continued session", async () => {
+    const image = { name: 'shot.png', mimeType: 'image/png', data: Buffer.from('png').toString('base64') }
+    const send = (d: Awaited<ReturnType<typeof boot>>['d'], text: string) =>
+      d.handleRelayMsg(
+        turn(text, { targetSessionId: TASK_ACP, payload: { op: 'turn', text, user: 'owner', attachments: [image] } }),
+        () => {}
+      ) as Promise<RdAck>
+    // Not a task: the continuation stays text.
+    const plain = await boot()
+    await seedTask(plain.d, '1700000000.000300')
+    expect(await send(plain.d, 'plain')).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(plain.prompts).toHaveLength(1))
+    expect(plain.prompts[0]!.text).not.toContain('shot.png')
+    await plain.daemon.stop()
+    // A threaded task some session owns takes the image.
+    const owned = await boot()
+    const key = await seedTask(owned.d, '1700000000.000300')
+    const index = (owned.d as never as { store: { assistantSubsessions: AssistantSubsessionIndexLike } }).store
+      .assistantSubsessions
+    await index.open({
+      agentId: AGENT,
+      childSessionKey: key,
+      parentSessionId: TARGET_ACP,
+      parentSessionKey: PARENT_KEY,
+      title: 'Notes'
+    })
+    await index.finish(AGENT, key, 'done')
+    expect(await send(owned.d, 'owned')).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(owned.prompts).toHaveLength(1))
+    // This runtime takes no image input, so the turn names the attachment rather than embedding it.
+    expect(owned.prompts[0]!.text).toContain('[attached: shot.png (image/png)]')
+    await owned.daemon.stop()
   })
 
   it("refuses a follow-up's check, which stays read-only", async () => {
