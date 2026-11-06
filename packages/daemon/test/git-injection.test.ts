@@ -1014,6 +1014,9 @@ describe('git in a proxied session', () => {
     const proxied = sessionGitConfig('agent-proxied', undefined, target, undefined, true)
     expect(proxied.path).not.toBe(direct.path)
     expect(proxied.content).not.toContain(target.helper)
+    // Basic up front, as the proxy's loopback listener requires; git's default waits for a challenge and aborts.
+    expect(proxied.content).toContain('[http]\n\tproxyAuthMethod = basic')
+    expect(direct.content).not.toContain('proxyAuthMethod')
     const config = join(dir, 'session.gitconfig')
     writeFileSync(config, proxied.content)
     const answer = execFileSync('git', ['credential', 'fill'], {
