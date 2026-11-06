@@ -189,14 +189,14 @@ import {
   tasksTabStatus,
   type TasksPanelVerdict
 } from '@/components/console/dock/TasksPanel'
-import { TaskThreadPanel } from '@/components/console/dock/TaskThreadPanel'
+import { ThreadPanel } from '@/components/console/dock/ThreadPanel'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { StateIcon, sessionState } from '@/components/console/StateIcon'
 import { TaskBrief } from '@/components/console/TaskBrief'
 import { SendButton } from '@/components/console/SendButton'
 import { SessionShareDialog, type ShareVisibility } from '@/components/console/SessionShareDialog'
 import { useIsMobile } from '@/lib/use-is-mobile'
-import { TaskThreadCard } from '@/components/console/TaskThreadCard'
+import { TaskThreadFooter } from '@/components/console/ThreadFooter'
 import { type TaskLink } from '@/components/console/task-link'
 import { useTasksByMessage } from '@/components/console/task-thread'
 import {
@@ -5452,7 +5452,7 @@ export default function SessionDetailView() {
                                           </div>
                                         ) : taskLinks[si] && turn.agentId ? (
                                           <div key={`t:${si}`}>
-                                            <TaskThreadCard
+                                            <TaskThreadFooter
                                               agentId={turn.agentId}
                                               link={taskLinks[si]}
                                               parentSessionId={
@@ -5514,7 +5514,7 @@ export default function SessionDetailView() {
                                         )
                                         .map((link) => (
                                           <div key={`o:${link.sessionId}`}>
-                                            <TaskThreadCard
+                                            <TaskThreadFooter
                                               agentId={session.agentId!}
                                               link={link}
                                               parentSessionId={subsessionsSessionId}
@@ -6191,7 +6191,7 @@ export default function SessionDetailView() {
         </DockPanel>
         <DockPanel active={dockTabKey === 'tasks'}>
           {openThread && session.agentId ? (
-            <TaskThreadPanel
+            <ThreadPanel
               key={openThread.sessionId}
               agentId={session.agentId}
               agentName={session.agentName ?? ''}

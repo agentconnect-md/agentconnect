@@ -1,15 +1,20 @@
 'use client'
 
-// A coordinator's tasks as webchat threads (auto-session-mode.md §10): the rows its cards and dock thread read, and the thread's own messages.
+// A coordinator's threads (auto-session-mode.md §10, webchat-threads.md §6.2): the task rows its footers and panel read, and a thread's messages from its record or its task's session.
 
+import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 import {
+  ApiError,
   fetchAssistantSubsession,
   fetchAssistantSubsessions,
   fetchSessionMessages,
+  fetchSessionThreadMessages,
   type AssistantSubsessionDto,
   type SessionHistoryDto,
-  type SessionMessageDto
+  type SessionMessageDto,
+  type SessionThreadMessagesDto,
+  type SessionThreadSummaryDto
 } from '@/lib/api'
 import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
 import type { SessionStep } from '@/lib/data'
@@ -63,14 +68,15 @@ export function useTasksByMessage(agentId: string, parentSessionId: string | nul
 /** One task's row: its conversation's list when that carries it, else the task's own read. */
 export function useTaskRow(
   agentId: string,
-  sessionId: string,
+  /** The task's session; null, for a thread no task holds, reads nothing. */
+  sessionId: string | null,
   /** The conversation whose list to read it from; null reads the task alone. */
   parentSessionId: string | null
 ): AssistantSubsessionDto | undefined {
-  const listed = useConversationTasks(agentId, parentSessionId)
-  const fromList = listed?.get(sessionId)
+  const listed = useConversationTasks(agentId, sessionId ? parentSessionId : null)
+  const fromList = sessionId ? listed?.get(sessionId) : undefined
   const { data } = useSWR(
-    listed !== null && !fromList ? ['task-row', agentId, sessionId] : null,
+    sessionId && listed !== null && !fromList ? ['task-row', agentId, sessionId] : null,
     ([, agent, id]) => readOnceRegistered(() => fetchAssistantSubsession(agent, id)),
     {
       ...CONSOLE_SWR_CONFIG,
@@ -88,7 +94,7 @@ export function messageTime(m: Pick<SessionMessageDto, 'ts' | 'eventTimeUs'>): s
 }
 
 /** The thread's messages, the agent's work and its open questions, oldest first. */
-export function threadMessages(page: SessionHistoryDto | undefined): SessionMessageDto[] {
+export function threadMessages(page: Pick<SessionHistoryDto, 'messages'> | undefined): SessionMessageDto[] {
   return [...(page?.messages ?? [])]
     .filter((m) => {
       const kind = (m.kind || 'text').toLowerCase()
@@ -99,16 +105,17 @@ export function threadMessages(page: SessionHistoryDto | undefined): SessionMess
     .sort((a, b) => a.seq - b.seq)
 }
 
-/** The thread's newest page; re-read while the task runs, and whenever its row says something changed. */
+/** The task's newest page; re-read while the task runs, and whenever its row says something changed. */
 export function useTaskThread(
-  sessionId: string,
+  /** The task's session; null reads nothing. */
+  sessionId: string | null,
   row: AssistantSubsessionDto | undefined,
   options: { busy?: boolean } = {}
 ): { page: SessionHistoryDto | undefined; error: unknown; reload: () => Promise<unknown> } {
   // The row's summary time and state move when the task speaks, so they key a fresh read for an idle thread too.
   const version = `${row?.state ?? ''}:${row?.summaryUpdatedAt ?? ''}`
   const { data, error, mutate } = useSWR(
-    ['task-thread', sessionId, version],
+    sessionId ? ['task-thread', sessionId, version] : null,
     ([, id]) => readOnceRegistered(() => fetchSessionMessages(id, { limit: THREAD_PAGE })),
     {
       ...CONSOLE_SWR_CONFIG,
@@ -117,6 +124,107 @@ export function useTaskThread(
     }
   )
   return { page: data, error, reload: () => mutate() }
+}
+
+/** A thread read through the conversation's session that received its root (webchat-threads.md §8). */
+export interface ThreadRecordRef {
+  sessionId: string
+  rootId: string
+}
+
+/** What one thread's record read gives: its newest page with what was paged in before it, its footer, and why it may be unread. */
+export interface ThreadRecord {
+  /** Earlier pages and the newest, oldest first, each row once. */
+  messages: SessionMessageDto[] | undefined
+  summary: SessionThreadSummaryDto | undefined
+  error: unknown
+  /** The daemon cannot serve thread reads, so a task's thread is read from its session instead. */
+  unsupported: boolean
+  /** The session never received this root, or it names a reply. */
+  missing: boolean
+  /** An earlier page is there to read. */
+  hasEarlier: boolean
+  loadingEarlier: boolean
+  loadEarlier: () => Promise<void>
+  reload: () => Promise<unknown>
+}
+
+const NO_ROWS: SessionMessageDto[] = []
+
+/** Rows of overlapping pages, each once; a later list's copy of a row wins. */
+const mergeRows = (...lists: readonly SessionMessageDto[][]): SessionMessageDto[] => [
+  ...new Map(lists.flat().map((m) => [m.seq, m])).values()
+]
+
+/** One thread's record: its newest page, polled faster while a turn runs in it or this visit is answered there. */
+export function useThreadRecord(
+  ref: ThreadRecordRef | null,
+  /** Whether this visit is waiting on a turn of the holding task's session. */
+  busy: (sessionId: string) => boolean = () => false
+): ThreadRecord {
+  // No previous data across keys: another thread's footer would name its task as this panel's reply target.
+  const {
+    data: read,
+    error,
+    mutate
+  } = useSWR(
+    ref ? ['thread-record', ref.sessionId, ref.rootId] : null,
+    ([, sessionId, rootId]) => fetchSessionThreadMessages(sessionId, rootId, { limit: THREAD_PAGE }),
+    {
+      ...CONSOLE_SWR_CONFIG,
+      // People and the coordinator write in a thread whether or not a task runs in it, so an idle thread is still polled.
+      refreshInterval: (page) => {
+        const holder = page?.summary.task?.sessionId
+        return page?.summary.running || (holder && busy(holder)) ? RUNNING_POLL_MS : IDLE_POLL_MS
+      }
+    }
+  )
+  const data = read && ref && read.sessionId === ref.sessionId && read.rootId === ref.rootId ? read : undefined
+  const key = ref ? `${ref.sessionId}\n${ref.rootId}` : ''
+  const [older, setOlder] = useState<{ key: string; messages: SessionMessageDto[]; nextCursor: string | null } | null>(
+    null
+  )
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
+  const earlier = older?.key === key ? older : null
+  const nextCursor = earlier ? earlier.nextCursor : (data?.nextCursor ?? null)
+  // Every row a read returned stays, so a poll whose newest page has moved past a row leaves no gap.
+  const [seen, setSeen] = useState<{
+    key: string
+    page: SessionThreadMessagesDto | undefined
+    rows: SessionMessageDto[]
+  }>({ key: '', page: undefined, rows: [] })
+  if (data && (seen.key !== key || seen.page !== data))
+    setSeen({ key, page: data, rows: mergeRows(seen.key === key ? seen.rows : [], data.messages) })
+  const kept = seen.key === key ? seen.rows : NO_ROWS
+  const messages = useMemo(
+    () => (data ? mergeRows(earlier?.messages ?? [], kept, data.messages) : undefined),
+    [data, earlier, kept]
+  )
+  const loadEarlier = async () => {
+    if (!ref || !nextCursor || loadingEarlier) return
+    setLoadingEarlier(true)
+    try {
+      const page = await fetchSessionThreadMessages(ref.sessionId, ref.rootId, {
+        cursor: nextCursor,
+        limit: THREAD_PAGE
+      })
+      setOlder({ key, messages: [...page.messages, ...(earlier?.messages ?? [])], nextCursor: page.nextCursor })
+    } finally {
+      setLoadingEarlier(false)
+    }
+  }
+  const featureMissing = error instanceof ApiError && error.status === 409 && error.code === 'DAEMON_FEATURE_MISSING'
+  return {
+    messages,
+    summary: data?.summary,
+    error,
+    unsupported: featureMissing,
+    missing: error instanceof ApiError && error.status === 404,
+    hasEarlier: nextCursor !== null,
+    loadingEarlier,
+    loadEarlier,
+    reload: () => mutate()
+  }
 }
 
 /** One message as the thread draws it. */
