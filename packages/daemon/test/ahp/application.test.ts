@@ -130,7 +130,7 @@ it("takes an image on a coordinator task's own thread, and refuses one on any ot
     action: {
       ...start.action,
       message: {
-        ...start.action.message,
+        origin: { kind: MessageKind.User },
         text: 'here is the screenshot',
         attachments: [
           {

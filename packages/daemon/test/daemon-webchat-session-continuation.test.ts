@@ -767,7 +767,7 @@ describe('webchat session-targeted continuation — a delegated task', () => {
   })
 
   it("hands an image sent on a threaded task's thread to the task, and leaves it off any other continued session", async () => {
-    const image = { name: 'shot.png', mimeType: 'image/png', data: Buffer.from('png').toString('base64') }
+    const image = { name: 'shot.png', mimeType: 'image/png' as const, data: Buffer.from('png').toString('base64') }
     const send = (d: Awaited<ReturnType<typeof boot>>['d'], text: string) =>
       d.handleRelayMsg(
         turn(text, { targetSessionId: TASK_ACP, payload: { op: 'turn', text, user: 'owner', attachments: [image] } }),
