@@ -211,8 +211,13 @@ word "token" it is unrelated to `ANTHROPIC_AUTH_TOKEN`, and Claude's injection s
 The deployment supplies each provider's gateway base as an HTTP(S) URL. Claude Code
 appends `/v1/messages`, while OpenCode's Anthropic SDK appends `/messages`; reusing the
 Claude pair therefore adds `/v1` to OpenCode's base, without duplicating an existing
-`/v1` suffix. OpenAI and DeepSeek bases pass through unchanged. Each pair is translated
-at runtime launch:
+`/v1` suffix. The DeepSeek pair is the DeepSeek Harness's base, and the Harness speaks
+the Messages API too (`/v1/messages`, DeepSeek's Anthropic-compatible endpoint by
+default). OpenCode therefore reaches a DeepSeek base through its Anthropic SDK
+(`npm: "@ai-sdk/anthropic"`, unless the launch config names its own package), with the
+same `/v1` rule. A DeepSeek key without a base keeps OpenCode's built-in DeepSeek
+provider. OpenAI bases pass through unchanged. Each pair is translated at runtime
+launch:
 
 | Runtime  | Token                                                                                                                              | Base URL                                                                                                                             |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
