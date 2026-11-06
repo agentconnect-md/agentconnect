@@ -177,8 +177,13 @@ describe('a full machine', () => {
       const refusal = await manager.forKey('agent-b', 'Agent B').catch((error: unknown) => error)
       expect(refusal).toBeInstanceOf(ComputerError)
       expect(refusal).toMatchObject({ code: 'unavailable', details: { reason: 'desktops_full' } })
-      // Once the first agent lets go, its idle desktop makes room.
+      // A person's takeover in the viewer holds the desktop as firmly as an agent's lease.
       first.computer.release('agent-a')
+      first.computer.takeOver('viewer')
+      const whileWatched = await manager.forKey('agent-b', 'Agent B').catch((error: unknown) => error)
+      expect(whileWatched).toMatchObject({ code: 'unavailable', details: { reason: 'desktops_full' } })
+      first.computer.handBack('viewer')
+      // Once the first agent and the person let go, its idle desktop makes room.
       const second = await manager.forKey('agent-b', 'Agent B')
       expect(second.record.id).not.toBe(first.record.id)
       expect(manager.runningDesktops()).toHaveLength(1)

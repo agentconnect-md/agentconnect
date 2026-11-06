@@ -140,8 +140,24 @@ export interface CaptureInput {
 
 // Capture inputs to try in order; the first that keeps running wins (ddagrab needs a GPU path that RDP sessions may lack).
 // `cursor` false leaves the pointer out, for a viewer whose browser draws its own.
-export function captureInputs(fps: number, dataDir: string, frames = 0, cursor = true): CaptureInput[] {
+export function captureInputs(
+  fps: number,
+  dataDir: string,
+  frames = 0,
+  cursor = true,
+  // An agent desktop's Xvfb display (computer-use.md §3.9): always x11grab, whatever the main session is.
+  display?: string
+): CaptureInput[] {
   const mouse = cursor ? '1' : '0'
+  if (display) {
+    return [
+      {
+        name: 'x11grab',
+        args: ['-f', 'x11grab', '-draw_mouse', mouse, '-framerate', String(fps), '-i', display],
+        filters: []
+      }
+    ]
+  }
   const override = process.env.AGENTCONNECT_COMPUTER_CAPTURE
   if (override) return [{ name: 'override', args: override.split(' ').filter(Boolean), filters: [] }]
   if (process.platform === 'win32') {

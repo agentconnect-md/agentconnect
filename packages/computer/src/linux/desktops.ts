@@ -370,7 +370,7 @@ export class DesktopManager {
   private async makeRoom(): Promise<void> {
     if (this.running.size < this.max()) return
     const idle = [...this.running.values()]
-      .filter((desktop) => !desktop.computer.leaseActivity())
+      .filter((desktop) => !inUse(desktop))
       .sort((a, b) => a.lastActivity - b.lastActivity)[0]
     if (!idle) {
       throw new ComputerError('unavailable', `all ${this.max()} desktops of this computer are in use`, {
@@ -414,7 +414,7 @@ export class DesktopManager {
     const now = this.now()
     for (const desktop of [...this.running.values()]) {
       if (desktop.stopping) continue
-      if (desktop.computer.leaseActivity()) desktop.lastActivity = now
+      if (inUse(desktop)) desktop.lastActivity = now
       const idle = now - desktop.lastActivity
       if (idle > this.deps.config.desktopIdleMinutes * 60_000) {
         await this.stop(desktop.record.id, `idle for ${this.deps.config.desktopIdleMinutes} min`)
@@ -428,6 +428,10 @@ export class DesktopManager {
     }
   }
 }
+
+// An agent's lease or a person's takeover in the viewer: neither the idle sweep nor making room may stop it.
+const inUse = (desktop: RunningDesktop): boolean =>
+  desktop.computer.leaseActivity() !== undefined || desktop.computer.liveStatus() === 'human_in_control'
 
 // What names the main session (GNOME, KDE, Wayland) or reaches its services; an agent desktop is its own Xfce session.
 const MAIN_SESSION_VARS =

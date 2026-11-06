@@ -39,6 +39,7 @@ import { ScreenStream } from './stream/screen-stream.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { createComputerMcpServer, exposedDriverTools, type CommandLineAccess } from './tools.js'
 import { createViewer, type Viewer, type ViewerPrincipal } from './viewer.js'
+import { createViewerRouter } from './viewer-router.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
 import { recordGrants } from './macos-grants.js'
 import { appBundlePath, managedEntry, menuBarHelperPath, runSelf, selfCommand, serviceEntry } from './self.js'
@@ -601,13 +602,15 @@ function buildViewer(
   // A console member's CP-issued view token; local client tokens work only on the local port, never through a relay.
   consoleViewer?: (authorization: string | undefined) => ViewerPrincipal | undefined,
   advertiseAddress?: string,
-  onFfmpegInstalled?: () => void
+  onFfmpegInstalled?: () => void,
+  // An agent desktop's display (computer-use.md §3.9); its viewer leaves fetching ffmpeg to the main one.
+  display?: string
 ): Viewer & { statusChanged(): void } {
   const ffmpeg = (): string => resolveFfmpegPath(dir, config.ffmpegPath)
   let ffmpegState: 'ok' | 'missing' | 'downloading' = 'missing'
   if (config.webrtc) {
     ffmpegState = ffmpegAvailable(ffmpeg()) ? 'ok' : 'missing'
-    if (ffmpegState === 'missing' && canInstallFfmpeg() && !config.ffmpegPath) {
+    if (ffmpegState === 'missing' && canInstallFfmpeg() && !config.ffmpegPath && !display) {
       ffmpegState = 'downloading'
       installFfmpeg(dir, log)
         .then(() => {
@@ -629,6 +632,7 @@ function buildViewer(
     bitrateKbps: config.streamBitrateKbps,
     // A person driving sees their browser's pointer at once, so the delayed one in the frames would be a second cursor.
     cursor: () => computer.liveStatus() !== 'human_in_control',
+    ...(display ? { display } : {}),
     log
   })
   const rtc = config.webrtc
@@ -733,6 +737,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
   // Filled once built; the authority and status callbacks below fire only after that.
   const live: {
     viewer?: ReturnType<typeof buildViewer>
+    viewerRouter?: ReturnType<typeof createViewerRouter>
     channel?: ReturnType<typeof startCpChannel>
     local?: LocalControls
     accessibility?: AccessibilityWatch
@@ -868,7 +873,8 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
         return { driver: desktopDriver, computer: desktop }
       },
       log,
-      onChange: () => live.local?.update()
+      onChange: () => live.local?.update(),
+      onStopped: (id) => live.viewerRouter?.dropDesktop(id)
     })
   }
   // The tray's switch applies at once and saves itself so the next start agrees.
@@ -904,16 +910,48 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
   }
   const releaseDisplay = config.keepAwake ? keepDisplayAwake(log) : () => undefined
   const driverTools = await loadDriverTools(driver, config)
-  const viewer = buildViewer(
+  const consoleViewer = registration
+    ? (header: string | undefined) => viewerPrincipal(header, authority, () => registration.computerId)
+    : undefined
+  const advertiseAddress = config.webrtc ? await rtcAdvertiseAddress(config, undefined, log) : undefined
+  const mainViewer = buildViewer(
     dir,
     config,
     computer,
     () => authority.refusal(),
-    registration ? (header) => viewerPrincipal(header, authority, () => registration.computerId) : undefined,
-    config.webrtc ? await rtcAdvertiseAddress(config, undefined, log) : undefined,
+    consoleViewer,
+    advertiseAddress,
     // A first start downloads ffmpeg, so report the viewer then instead of at the next 30-minute doctor run.
     () => live.channel?.refreshDoctor()
   )
+  // With per-agent desktops the viewer also serves each desktop under /view/api/d/<id> (computer-use.md §3.9).
+  live.viewerRouter = live.desktops
+    ? createViewerRouter({
+        main: mainViewer,
+        desktops: () => live.desktops,
+        forDesktop: (desktop) =>
+          buildViewer(
+            dir,
+            config,
+            desktop.computer,
+            () => authority.refusal(),
+            consoleViewer,
+            advertiseAddress,
+            undefined,
+            desktop.display
+          ),
+        authenticate: viewerAuthenticator(
+          (header) => consoleViewer?.(header),
+          (header) => authenticate(config, header)
+        ),
+        mainInfo: () => ({
+          name: String(computer.info().name),
+          status: computer.liveStatus(),
+          lease: computer.leaseActivity() ?? null
+        })
+      })
+    : undefined
+  const viewer = live.viewerRouter ?? mainViewer
   live.viewer = viewer
   // A registered desktop changes the mode through its Control Plane, which keeps the console and this menu in step.
   const adminPromptsLocked = (): string | undefined =>

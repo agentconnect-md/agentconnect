@@ -10,7 +10,7 @@ export const VIEWER_PAGE = `<!doctype html>
   body { margin: 0; background: #111; color: #ddd; display: flex; flex-direction: column; height: 100vh; }
   header { display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: #1c1c1c; border-bottom: 1px solid #333; flex-wrap: wrap; }
   header .grow { flex: 1; }
-  button, input { font: inherit; color: inherit; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; padding: 4px 10px; }
+  button, input, select { font: inherit; color: inherit; background: #2a2a2a; border: 1px solid #444; border-radius: 4px; padding: 4px 10px; }
   button:hover { background: #333; }
   button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
   button.danger { background: #b91c1c; border-color: #b91c1c; color: #fff; }
@@ -30,6 +30,7 @@ export const VIEWER_PAGE = `<!doctype html>
 </head>
 <body>
 <header>
+  <select id="desktop" title="Which desktop to watch" hidden></select>
   <span id="state">connecting…</span>
   <span id="meta"></span>
   <span id="error"></span>
@@ -51,7 +52,11 @@ export const VIEWER_PAGE = `<!doctype html>
 (() => {
   const $ = (id) => document.getElementById(id)
   const video = $('video'), image = $('image'), surface = $('surface'), screenBox = $('screen')
-  let token = new URLSearchParams(location.hash.slice(1)).get('token') || localStorage.getItem('acd-viewer-token') || ''
+  const hash = new URLSearchParams(location.hash.slice(1))
+  let token = hash.get('token') || localStorage.getItem('acd-viewer-token') || ''
+  // Per-agent desktops (computer-use.md §3.9): the main one, or an agent's under /view/api/d/<id>.
+  const desktop = hash.get('desktop') || sessionStorage.getItem('acd-viewer-desktop') || 'main'
+  const base = desktop === 'main' ? '/view/api' : '/view/api/d/' + encodeURIComponent(desktop)
   if (location.hash) history.replaceState(null, '', location.pathname)
   let status = null, channel = null, mode = 'none', seq = 0
   const pending = new Map()
@@ -68,7 +73,7 @@ export const VIEWER_PAGE = `<!doctype html>
 
   async function refresh() {
     try {
-      const res = await api('GET', '/view/api/status')
+      const res = await api('GET', base + '/status')
       status = await res.json()
       const ctl = status.inControl
       $('state').textContent = ctl ? 'You are in control — agents are blocked' : status.paused ? 'Paused: ' + status.paused.reason : status.lease ? 'Agent ' + status.lease.holder + ' is working' : 'Watching (agents allowed)'
@@ -88,7 +93,7 @@ export const VIEWER_PAGE = `<!doctype html>
   let lastRtcTry = 0
 
   async function control(action) {
-    const res = await api('POST', '/view/api/control', { action })
+    const res = await api('POST', base + '/control', { action })
     const body = await res.json()
     showError(res.ok ? '' : body.message)
     await refresh()
@@ -99,7 +104,7 @@ export const VIEWER_PAGE = `<!doctype html>
 
   // ---- video: WebRTC first, screenshot polling if it cannot start ----
   async function startWebRtc() {
-    const offerRes = await api('POST', '/view/api/rtc/offer')
+    const offerRes = await api('POST', base + '/rtc/offer')
     if (!offerRes.ok) throw new Error((await offerRes.json()).message || 'webrtc unavailable')
     const offer = await offerRes.json()
     const pc = new RTCPeerConnection()
@@ -118,7 +123,7 @@ export const VIEWER_PAGE = `<!doctype html>
     pc.onconnectionstatechange = () => { if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) { pc.close(); fallback('WebRTC ' + pc.connectionState) } }
     await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp })
     await pc.setLocalDescription(await pc.createAnswer())
-    await api('POST', '/view/api/rtc/answer', { id: offer.id, sdp: pc.localDescription.sdp })
+    await api('POST', base + '/rtc/answer', { id: offer.id, sdp: pc.localDescription.sdp })
     try {
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('no video within 10s')), 10000)
@@ -141,7 +146,7 @@ export const VIEWER_PAGE = `<!doctype html>
         if (document.hidden) { await sleep(500); continue }
         const started = performance.now()
         try {
-          const res = await api('GET', '/view/api/frame')
+          const res = await api('GET', base + '/frame')
           if (res.ok) {
             const url = URL.createObjectURL(await res.blob())
             const old = image.src
@@ -170,7 +175,7 @@ export const VIEWER_PAGE = `<!doctype html>
       if (!reply.ok) { showError(reply.error); if (/take control/.test(reply.error)) refresh() } else showError('')
       return
     }
-    const res = await api('POST', '/view/api/input', input)
+    const res = await api('POST', base + '/input', input)
     if (!res.ok) showError((await res.json()).message); else showError('')
   }
 
@@ -254,8 +259,28 @@ export const VIEWER_PAGE = `<!doctype html>
   $('send').onclick = sendText
   $('text').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); sendText() } })
 
+  async function desktops() {
+    try {
+      const res = await api('GET', '/view/api/desktops')
+      if (!res.ok) return
+      const list = await res.json()
+      const select = $('desktop')
+      select.hidden = !list.perAgent && list.desktops.length < 2
+      select.replaceChildren(...list.desktops.map((d) => {
+        const option = document.createElement('option')
+        option.value = d.id
+        option.textContent = (d.id === 'main' ? d.label : d.label + ' (' + d.id + ')') + ' · ' + (d.holder ? 'working' : d.status)
+        option.selected = d.id === desktop
+        return option
+      }))
+    } catch (error) { /* an older daemon has no desktops */ }
+  }
+  $('desktop').onchange = (event) => { sessionStorage.setItem('acd-viewer-desktop', event.target.value); location.reload() }
+
   async function start() {
     if (!token) return showLogin()
+    await desktops()
+    setInterval(desktops, 5000)
     await refresh()
     if (!status) return
     setInterval(refresh, 2000)

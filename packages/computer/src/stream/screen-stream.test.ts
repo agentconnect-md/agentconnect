@@ -24,6 +24,14 @@ describe('captureInputs', () => {
     for (const input of captureInputs(10, dir, 0, false)) expect(input.args.join(' ')).toMatch(POINTER_OFF)
     for (const input of captureInputs(10, dir)) expect(input.args.join(' ')).toMatch(POINTER_ON)
   })
+
+  it("grabs an agent desktop's own X display, even when the main session is Wayland", () => {
+    vi.stubEnv('WAYLAND_DISPLAY', 'wayland-0')
+    vi.stubEnv('AGENTCONNECT_COMPUTER_CAPTURE', '-f lavfi -i testsrc')
+    expect(captureInputs(10, dir, 0, true, ':7')).toEqual([
+      { name: 'x11grab', args: ['-f', 'x11grab', '-draw_mouse', '1', '-framerate', '10', '-i', ':7'], filters: [] }
+    ])
+  })
 })
 
 describe('ScreenStream', () => {
