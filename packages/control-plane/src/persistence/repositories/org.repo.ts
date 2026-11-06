@@ -63,6 +63,7 @@ export class PgOrgRepo implements OrgRepo {
       slug: m.org.slug,
       icon: parseAgentIcon(m.org.icon),
       defaultAgentVisibility: m.org.defaultAgentVisibility as AgentCallPolicy,
+      defaultDaemonAutoUpgrade: m.org.defaultDaemonAutoUpgrade,
       onboardingCompleted: m.org.onboardingCompleted,
       gettingStartedStep: m.org.gettingStartedStep,
       role: m.role as OrgMemberRole,
@@ -122,6 +123,7 @@ export class PgOrgRepo implements OrgRepo {
       slug: org.slug,
       icon: parseAgentIcon(org.icon),
       defaultAgentVisibility: org.defaultAgentVisibility as AgentCallPolicy,
+      defaultDaemonAutoUpgrade: org.defaultDaemonAutoUpgrade,
       onboardingCompleted: org.onboardingCompleted,
       gettingStartedStep: org.gettingStartedStep,
       role: 'owner',
@@ -139,6 +141,7 @@ export class PgOrgRepo implements OrgRepo {
       slug?: string
       icon?: AgentIcon | null
       defaultAgentVisibility?: AgentCallPolicy
+      defaultDaemonAutoUpgrade?: boolean
       onboardingCompleted?: boolean
       gettingStartedStep?: number
     }
@@ -159,6 +162,9 @@ export class PgOrgRepo implements OrgRepo {
         ? { icon: patch.icon === null ? Prisma.JsonNull : (patch.icon as Prisma.InputJsonValue) }
         : {}),
       ...(patch.defaultAgentVisibility !== undefined ? { defaultAgentVisibility: patch.defaultAgentVisibility } : {}),
+      ...(patch.defaultDaemonAutoUpgrade !== undefined
+        ? { defaultDaemonAutoUpgrade: patch.defaultDaemonAutoUpgrade }
+        : {}),
       ...(patch.onboardingCompleted !== undefined ? { onboardingCompleted: patch.onboardingCompleted } : {})
     }
     const org =

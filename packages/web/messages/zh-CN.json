@@ -5095,6 +5095,13 @@
         }
       }
     },
+    "daemonAutoUpgrade": {
+      "title": "默认 Daemon 自动升级",
+      "newDaemonsOnly": "仅适用于新加入的 Daemon",
+      "label": "新 Daemon 自动升级",
+      "help": "自动安装新版本，并且仅在 Daemon 空闲时重启。",
+      "ownerOnly": "只有组织所有者可以更改此设置"
+    },
     "inviteLinks": {
       "title": "邀请链接",
       "generating": "正在生成…",

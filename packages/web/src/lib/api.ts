@@ -1468,6 +1468,8 @@ export interface OrgDto {
   iconUrl: string | null
   /** Default applied to both directional policies of newly created agents. */
   defaultAgentVisibility?: AgentCallPolicy
+  /** Auto-upgrade switch that daemons created in this org from now on start with. */
+  defaultDaemonAutoUpgrade?: boolean
   /** Whether the object store is configured — the console shows Upload only when true. */
   iconUploadEnabled: boolean
   /** The signed-in user's role in this org. */
@@ -5920,6 +5922,7 @@ export async function updateOrg(
     slug?: string
     icon?: AgentIcon | null
     defaultAgentVisibility?: AgentCallPolicy
+    defaultDaemonAutoUpgrade?: boolean
     /** One-way — the onboarding wizard sets it on finish or skip. */
     onboardingCompleted?: true
     /** Getting-started tutorial position — advanced by the console drawer. */

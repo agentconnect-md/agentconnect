@@ -90,6 +90,12 @@ function retiredPoolMemberWhere(cutoff: Date) {
   }
 }
 
+/** The org's switch for daemons created from now on (daemon-auto-upgrade.md §3.1). */
+async function orgDefaultAutoUpgrade(tx: PrismaLike, orgId: string): Promise<boolean> {
+  const org = await tx.org.findUnique({ where: { id: orgId }, select: { defaultDaemonAutoUpgrade: true } })
+  return org?.defaultDaemonAutoUpgrade ?? false
+}
+
 export class PgDaemonRepo implements DaemonRepo {
   constructor(private readonly db: PrismaLike) {}
 
@@ -105,6 +111,7 @@ export class PgDaemonRepo implements DaemonRepo {
           id: daemonId,
           orgId,
           status: 'provisioned', // sessionEpoch defaults to 0 (§4.1)
+          autoUpgrade: await orgDefaultAutoUpgrade(tx, orgId),
           // Console-provisioned: the provisioning principal is both creator and
           // first last-modifier (lastModifiedAt defaults to now = createdAt).
           ...(createdByUserId ? { createdByUserId, lastModifiedByUserId: createdByUserId } : {})
@@ -141,6 +148,7 @@ export class PgDaemonRepo implements DaemonRepo {
         create: {
           id: input.daemonId,
           orgId: input.orgId,
+          autoUpgrade: input.orgId === null ? false : await orgDefaultAutoUpgrade(tx, input.orgId),
           agentVersion: input.agentVersion,
           machineId: input.machineId,
           tokenFp: input.tokenFp,

@@ -5095,6 +5095,13 @@
         }
       }
     },
+    "daemonAutoUpgrade": {
+      "title": "Default daemon auto-upgrade",
+      "newDaemonsOnly": "Applies to new daemons only",
+      "label": "New daemons upgrade automatically",
+      "help": "Installs new releases automatically and restarts only when the daemon is idle.",
+      "ownerOnly": "Only organization owners can change this setting"
+    },
     "inviteLinks": {
       "title": "Invite links",
       "generating": "Generating…",

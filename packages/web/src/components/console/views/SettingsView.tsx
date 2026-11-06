@@ -428,6 +428,72 @@ function AgentVisibilityCard({
   )
 }
 
+// The org's starting auto-upgrade switch for daemons added from now on; existing daemons keep their own.
+function DaemonAutoUpgradeDefaultCard({
+  orgId,
+  enabled,
+  isOwner,
+  onChange
+}: {
+  orgId?: string
+  enabled: boolean
+  isOwner: boolean
+  onChange: (enabled: boolean) => Promise<void>
+}) {
+  const t = useTranslations('Settings.daemonAutoUpgrade')
+  const [optimistic, setOptimistic] = useState<boolean | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const busy = optimistic !== null
+
+  const change = async (next: boolean) => {
+    if (!orgId || !isOwner || busy) return
+    setOptimistic(next)
+    setError(null)
+    try {
+      await onChange(next)
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : String(nextError))
+    } finally {
+      setOptimistic(null)
+    }
+  }
+
+  return (
+    <div className="card mt-[18px]" id="daemon-auto-upgrade">
+      <div className="cardhead justify-between">
+        <span className="cardtitle">{t('title')}</span>
+        <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+          {t('newDaemonsOnly')}
+        </span>
+      </div>
+      <div className="flex items-center gap-4 px-4 py-[15px]">
+        <div className="min-w-0 flex-1">
+          <div className="font-sans text-[13px] font-medium leading-normal">{t('label')}</div>
+          <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+            {t('help')}
+          </div>
+        </div>
+        <span className="flex-none" title={isOwner ? undefined : t('ownerOnly')}>
+          <Toggle
+            checked={optimistic ?? enabled}
+            disabled={!orgId || !isOwner || busy}
+            ariaLabel={t('label')}
+            onChange={(next) => void change(next)}
+          />
+        </span>
+      </div>
+      {error && (
+        <div
+          role="alert"
+          className="border-t border-(--border-subtle) px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)"
+        >
+          {error}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // One rendered member row, precomputed from the wire DTO.
 interface MemberRowView {
   userId: string
@@ -744,6 +810,16 @@ export default function SettingsView() {
       />
 
       <SessionAccessCard orgId={activeOrg?.id} isOwner={isOwner} />
+
+      <DaemonAutoUpgradeDefaultCard
+        orgId={activeOrg?.id}
+        enabled={activeOrg?.defaultDaemonAutoUpgrade ?? false}
+        isOwner={isOwner}
+        onChange={async (enabled) => {
+          if (!activeOrg) return
+          await updateOrgSettings(activeOrg.id, { defaultDaemonAutoUpgrade: enabled })
+        }}
+      />
 
       {/* Sits with the other organization-wide agent policies. Owner-only, so the
           card renders nothing at all for collaborators and viewers (§8.1). */}
