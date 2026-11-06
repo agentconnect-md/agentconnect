@@ -3870,8 +3870,11 @@ export class Daemon {
     this.localSrt = srtLauncher(root, {
       ...(cfg.agentsDir ? { agentsRoot: cfg.agentsDir } : {}),
       readRoots: () => this.srtShimReadRoots(),
-      mitmProxy: () =>
-        this.credentialProxy
+      // Only an environment whose sessions receive the proxy's trust: its agent's own, never one hosted for another member.
+      mitmProxy: (environment) =>
+        this.credentialProxy &&
+        !environment.hosted &&
+        this.credentialProxyIntercepts(environment.id.split('/')[0] ?? '')
           ? { socketPath: this.credentialProxy.socketPath, domains: [...GITHUB_PROXY_HOSTS] }
           : undefined,
       now: () => this.clock.now()
@@ -6888,6 +6891,12 @@ export class Daemon {
     }
   }
 
+  /** Whether the proxy intercepts this agent's srt environments: an agent whose workspace credentials are GitHub's. */
+  private credentialProxyIntercepts(agentId: string): boolean {
+    const workspace = this.agents.get(agentId)?.workspace
+    return workspace !== undefined && credentialProviderOf(workspace.gitCredential) === 'github'
+  }
+
   /** What a proxied session's environment carries: the placeholder for gh and git, the trust bundle, and on the host the proxy itself. */
   private credentialProxyEnv(
     proxy: { proxy: CredentialProxy; ca: ProxyCa },
@@ -6936,7 +6945,7 @@ export class Daemon {
       }
     }
     // The credential proxy's trust bundle, which a proxied session's clients verify the code host with.
-    if (this.credentialProxy) roots.add(dirname(this.credentialProxy.ca.bundlePath))
+    if (this.credentialProxy) roots.add(this.credentialProxy.ca.trustDir)
     // This daemon's own helpers, which Git run through the shim needs before any runtime is launched: code, never state.
     try {
       const executables = ['gh', 'glab'].flatMap((name) => resolveCommandPath(name, process.env) ?? [])
@@ -8714,6 +8723,9 @@ export class Daemon {
         env,
         this.credentialProxyEnv(this.credentialProxy, agent.id, srtShim === undefined, env, runtimeEnv)
       )
+    // Every session in an srt environment the proxy intercepts trusts its CA, a placeholder or not, or its GitHub requests would fail verification.
+    else if (srtShim && this.credentialProxy && this.credentialProxyIntercepts(agent.id))
+      Object.assign(env, proxyTrustEnv(this.credentialProxy.ca))
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
     // A runtime on another filesystem reads its config files there, so they travel with its launch as the gitconfig does (§8): the pod's image root, or the one an executor reported.
     const launchFilesRoot = remoteRoots

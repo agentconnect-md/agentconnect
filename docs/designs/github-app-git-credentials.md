@@ -580,7 +580,11 @@ reaches the proxy is therefore a matter of usability, never of exposure:
 daemon CA. `SSL_CERT_FILE` replaces the system roots, so it names a bundle of
 the system roots plus that CA. Python's `requests` reads its own bundle and
 needs `REQUESTS_CA_BUNDLE` as well, and git reads `GIT_SSL_CAINFO`. Node adds
-the bundle through `NODE_EXTRA_CA_CERTS`.
+the bundle through `NODE_EXTRA_CA_CERTS`. A sandbox may read only the
+directory holding the certificate and the bundle; the CA key and the
+placeholder key stay outside it. `srt` intercepts only the environments of an
+agent whose workspace credentials are GitHub's, and every session there gets
+the trust variables, a placeholder or not.
 
 **Token selection.** The proxy takes the repository from the request path: a
 smart-HTTP path for git, and `/repos/{owner}/{repo}/…` for REST, and mints

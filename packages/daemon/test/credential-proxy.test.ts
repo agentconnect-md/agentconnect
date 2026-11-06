@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
 import type { AddressInfo, LookupFunction } from 'node:net'
@@ -46,6 +46,19 @@ describe('the placeholder', () => {
     expect(openPlaceholder(key, `acph1_${forged}.${tag}`)).toBeUndefined()
     expect(openPlaceholder(key, `${prefixAndBody}.${tag}x`)).toBeUndefined()
     expect(openPlaceholder(key, 'ghp_example')).toBeUndefined()
+  })
+})
+
+describe('the proxy CA', () => {
+  it('keeps every key out of the trust directory a sandbox may read', () => {
+    const dir = join(scratch(), 'credential-proxy')
+    const ca = loadProxyCa(dir)
+    loadPlaceholderKey(join(dir, 'placeholder.key'))
+    expect(readdirSync(ca.trustDir).sort()).toEqual(['ca.crt', 'trust.pem'])
+    expect(ca.bundlePath.startsWith(ca.trustDir)).toBe(true)
+    expect(ca.keyPath.startsWith(ca.trustDir)).toBe(false)
+    expect(statSync(dir).mode & 0o777).toBe(0o700)
+    expect(statSync(ca.keyPath).mode & 0o777).toBe(0o600)
   })
 })
 

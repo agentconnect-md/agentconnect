@@ -6,6 +6,8 @@ import { dirname, join } from 'node:path'
 import { generateCa } from '@anthropic-ai/sandbox-runtime'
 
 export interface ProxyCa {
+  /** The public half, the only directory a sandbox may read: the CA certificate and the bundle, never a key. */
+  trustDir: string
   certPem: string
   keyPem: string
   certPath: string
@@ -21,11 +23,13 @@ function writeAtomically(file: string, content: string, mode: number): void {
   renameSync(temporary, file)
 }
 
-/** Load the CA under `dir`, creating it once; the key stays 0600 and the bundle is rewritten each start so new system roots reach it. */
+/** Load the CA under `dir`, creating it once: the key stays in `dir` (0700), the certificate and bundle in its `trust` child, and the bundle is rewritten each start so new system roots reach it. */
 export function loadProxyCa(dir: string): ProxyCa {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
-  chmodSync(dir, 0o755)
-  const certPath = join(dir, 'ca.crt')
+  chmodSync(dir, 0o700)
+  const trustDir = join(dir, 'trust')
+  mkdirSync(trustDir, { recursive: true, mode: 0o755 })
+  const certPath = join(trustDir, 'ca.crt')
   const keyPath = join(dir, 'ca.key')
   if (!existsSync(certPath) || !existsSync(keyPath)) {
     const ca = generateCa({ cn: 'AgentConnect credential proxy CA', validityDays: 3650 })
@@ -35,9 +39,9 @@ export function loadProxyCa(dir: string): ProxyCa {
   const certPem = readFileSync(certPath, 'utf8')
   const keyPem = readFileSync(keyPath, 'utf8')
   const roots = new Set([...getCACertificates('default'), ...getCACertificates('system')])
-  const bundlePath = join(dir, 'trust.pem')
+  const bundlePath = join(trustDir, 'trust.pem')
   writeAtomically(bundlePath, `${[...roots, certPem.trim()].join('\n')}\n`, 0o644)
-  return { certPem, keyPem, certPath, keyPath, bundlePath }
+  return { trustDir, certPem, keyPem, certPath, keyPath, bundlePath }
 }
 
 /** The variables that point a runtime's clients at the bundle: OpenSSL and Go, curl, git, Python's requests, and Node. */
