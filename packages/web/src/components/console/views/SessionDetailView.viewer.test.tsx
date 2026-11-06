@@ -1556,6 +1556,12 @@ describe('a coordinator’s task cards', () => {
   it('gives a coordinator Sessions and Tasks only, with Tasks in the header where Workspace was', async () => {
     coordinatorTurn()
     wire.coordinator = true
+    // A created conversation, not a playground still waiting for its session: it has a task list to show.
+    wire.runtimeSession = { realSessionId: 'session-1' }
+    // Settled with nothing to list: no delegated tasks, and a runtime that reports none.
+    wire.tasks = { sessionId: 'session-1', tracked: false, tasks: [], truncated: false }
+    wire.subsessions = []
+    await render()
     await render()
     const tabs = [...(container?.querySelectorAll('[data-dock-tab]') ?? [])].map((el) =>
       el.getAttribute('data-dock-tab')
@@ -1564,6 +1570,21 @@ describe('a coordinator’s task cards', () => {
     expect(tabs).not.toContain('files')
     const tasks = container?.querySelector<HTMLButtonElement>('[data-header-tasks]')
     expect(tasks?.textContent).toContain('Tasks')
+    expect(container?.textContent).not.toContain('Workspace')
+    // The header's Tasks lands on the Tasks tab even when the panel has nothing to list.
+    await act(async () => {
+      tasks?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(container?.querySelector('[data-dock-tab="tasks"]')?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('offers no Tasks entry on a coordinator playground that has no session for a task list yet', async () => {
+    coordinatorTurn()
+    wire.coordinator = true
+    await render()
+    expect(container?.querySelector('[data-header-tasks]')).toBeNull()
     expect(container?.textContent).not.toContain('Workspace')
   })
 
