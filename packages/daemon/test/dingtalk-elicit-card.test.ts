@@ -235,10 +235,10 @@ const flush = async () => {
 
 async function raise(h: ReturnType<typeof dingTalkTurn>, req: CreateElicitationRequest) {
   const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', req)
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
-  const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.size).toBe(1))
+  const requestId = [...h.daemon.permissions.pendingApprovals.keys()][0] as string
   // The card's handle is its send's process query key, the key a quote of it brings back.
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.get(requestId).ts).toBe('pqk-1'))
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.get(requestId).card.ts).toBe('pqk-1'))
   return { requestId, result }
 }
 
@@ -271,14 +271,14 @@ describe('a DingTalk turn collects an elicitation answer from a quote', () => {
     expect(await h.daemon.permissions.claimElicitReply(reply('2', 'pqk-1', `${CHANNEL}\u001fdingtalk:app-2`))).toBe(
       false
     )
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
   })
 
   it('keeps the card open and repeats the instruction when the quote names no option', async () => {
     const h = dingTalkTurn()
     await raise(h, form(BRANCH, ['branch']))
     expect(await h.daemon.permissions.claimElicitReply(reply('maybe', 'pqk-1'))).toBe(true)
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
     await vi.waitFor(() => expect(h.sent.at(-1)!.text).toBe('Reply to the question with a number from 1 to 2.'))
   })
 
@@ -292,10 +292,10 @@ describe('a DingTalk turn collects an elicitation answer from a quote', () => {
 
 async function raiseCard(h: ReturnType<typeof dingTalkTurn>, req: CreateElicitationRequest) {
   const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', req)
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
-  const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.get(requestId).ts).toBeDefined())
-  return { requestId, result, ts: h.daemon.permissions.pendingElicits.get(requestId).ts as string }
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.size).toBe(1))
+  const requestId = [...h.daemon.permissions.pendingApprovals.keys()][0] as string
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.get(requestId).card.ts).toBeDefined())
+  return { requestId, result, ts: h.daemon.permissions.pendingApprovals.get(requestId).card.ts as string }
 }
 
 // A tap as the connection hands it to core.

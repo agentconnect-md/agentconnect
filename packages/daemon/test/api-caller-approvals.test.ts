@@ -541,7 +541,7 @@ describe('passive platform permission and input observation', () => {
     const outcome = w.coordinator.onAcpElicit(OWNER, ACP_SESSION, ask)
     await vi.waitFor(() => expect(w.observed.some((e) => e.kind === 'elicitation')).toBe(true))
     const requestId = w.observed.find((e) => e.kind === 'elicitation')!.requestId
-    await w.coordinator.releaseElicits(OWNER, ACP_SESSION)
+    await w.coordinator.releaseApprovals(OWNER, ACP_SESSION)
     await expect(outcome).resolves.toEqual({ action: 'cancel' })
     expect(w.observed.at(-1)).toMatchObject({ kind: 'elicitation_resolved', outcome: 'cancelled' })
     expect(

@@ -22384,7 +22384,6 @@ export class Daemon {
     this.clearFeishuStream(p)
     this.clearSlackStream(p)
     // Backstop: settle any permission / elicitation card still awaiting a tap.
-    await this.permissions.releaseElicits(p.hostKey, sessionId)
     await this.permissions.releaseApprovals(p.hostKey, sessionId)
     // §6.7: this turn's active call context ends with the turn (a nested messageAgent can
     // only inherit while the turn is in flight). Only clear if THIS turn owns the entry —
@@ -22707,8 +22706,6 @@ export class Daemon {
     // elicitation requests to resolve cancelled when a turn is cancelled, and this lets
     // the agent's prompt unwind (it's blocked awaiting our promise) so the finally runs.
     // Everything from here is keyed by session id, which a successor turn reuses: recheck after every await.
-    if (!exact()) return
-    await this.permissions.releaseElicits(live.hostKey, liveSessionId)
     if (!exact()) return
     await this.permissions.releaseApprovals(live.hostKey, liveSessionId)
     if (!exact()) return
@@ -29243,7 +29240,6 @@ export class Daemon {
         p.outputSuppressed ??= 'shutdown'
         this.clearIdle(p)
         this.turnSurfaces.exact(p.plan.platform)?.onSuppress?.(p)
-        await this.permissions.releaseElicits(p.hostKey, p.acpSessionId)
         await this.permissions.releaseApprovals(p.hostKey, p.acpSessionId)
         void (p.selectedHost?.host ?? this.hostForOwner(p.hostKey))?.cancel(p.acpSessionId).catch(() => {})
         // Its durable row survives the drain, so the next holder replays the message.

@@ -106,9 +106,11 @@ function googleChatTurn() {
 
 async function raise(h: ReturnType<typeof googleChatTurn>, req: CreateElicitationRequest) {
   const result = h.daemon.permissions.onAcpElicit(AGENT, 's1', req)
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
-  const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
-  await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.get(requestId).ts).toBe(`${SPACE}/messages/card-1`))
+  await vi.waitFor(() => expect(h.daemon.permissions.pendingApprovals.size).toBe(1))
+  const requestId = [...h.daemon.permissions.pendingApprovals.keys()][0] as string
+  await vi.waitFor(() =>
+    expect(h.daemon.permissions.pendingApprovals.get(requestId).card.ts).toBe(`${SPACE}/messages/card-1`)
+  )
   return { requestId, result }
 }
 
@@ -194,7 +196,7 @@ describe('a Google Chat turn collects an elicitation answer from a card click', 
     const h = googleChatTurn()
     const { requestId } = await raise(h, form({ note: { type: 'string', title: 'Note' } }, ['note']))
     await h.click(elicitClick(requestId, 'ok'))
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
   })
 
   it('declines on Dismiss', async () => {
@@ -214,7 +216,7 @@ describe('a Google Chat turn collects an elicitation answer from a card click', 
       reason: 'not_found'
     })
     await expect(h.click({ nope: true })).resolves.toMatchObject({ accepted: false, reason: 'unsupported_action' })
-    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.daemon.permissions.pendingApprovals.size).toBe(1)
   })
 })
 
