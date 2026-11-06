@@ -121,6 +121,13 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   getting-to-know task and no join introduction (`heldByTask`, `gettingToKnowPlaceRefusal`
   `task-workspace`). Routing, commands, steering and the run report must not let a message in the
   channel reach another session, another task, or a turn answering in the origin thread.
+- **Thread reads** (`webchat-threads.md` §7.1): `GET /sessions/:id/messages?view=roots` and
+  `GET /sessions/:id/threads/:rootId/messages` show a coordinator conversation's threads, including
+  observations, messages people wrote in the channel without addressing an agent, to whoever may view
+  the coordinator session. A thread a task holds shows its messages, excerpts and title only to
+  whoever may view that task's session (`domain/thread-read.ts`); anyone else gets its count, authors
+  and state. While a platform's session access sync is off, every member sees a Slack conversation's
+  sessions, and with them a private channel's observations: an accepted consequence, not a finding.
 
 ## AHP boundaries to audit before public rollout
 

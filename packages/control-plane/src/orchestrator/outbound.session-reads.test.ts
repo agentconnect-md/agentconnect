@@ -31,6 +31,12 @@ describe('ControlSender session content reads', () => {
     expect(calls).toEqual([{ type: 'session/history', orgId: 'org-7' }])
   })
 
+  it('scopes session/thread the same way', async () => {
+    const { calls, sender } = senderWithSpyConn()
+    await sender.sessionThread('pool-member', 'org-7', { agentId: 'a1', sessionId: 's1', rootId: 'r1', limit: 50 })
+    expect(calls).toEqual([{ type: 'session/thread', orgId: 'org-7' }])
+  })
+
   it('scopes session/tool-body the same way', async () => {
     const { calls, sender } = senderWithSpyConn()
     await sender.sessionToolBody('pool-member', 'org-7', {
