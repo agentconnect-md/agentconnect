@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { coordinatorConversationId, type RdChatEvent, type RdMsgWebchat } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { sessionHostKey } from '../src/acp/host-key.js'
 import { coordinatorSessionTools } from '../src/auto-session/coordinator-prompt.js'
 import { isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { isSubsessionCoordinate } from '../src/session/subsession-coordinate.js'
@@ -147,6 +148,47 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md Â
     expect(isCoordinatorCoordinate(coordinate)).toBe(true)
     expect(await d.store.getSession(sessionKey('webchat', CONV, coordinate, AGENT))).toBeDefined()
     expect(await d.store.getSession(sessionKey('webchat', CONV, `webchat:${CONV}`, AGENT))).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it("sets its coordinator's model for itself, as a task's thread sets the task", async () => {
+    const { daemon, d, host, send, coordinator } = await boot(async (_id, _text, say) => say('ok'))
+    d.agents.get(AGENT).chatActions = 'settings'
+    const setSessionModel = vi.fn(async () => true)
+    // The live session takes the change at once; the next turn keeps it.
+    Object.assign(host, { setSessionModel, hasSession: () => true })
+    await send('hello')
+    const set: RdMsgWebchat = {
+      source: 'webchat',
+      agentId: AGENT,
+      sessionKey: CONV,
+      msgId: 'm-set',
+      chatId: CONV,
+      payload: { op: 'set_model', model: 'model-small', callerRole: 'owner' }
+    }
+    expect(await d.handleRelayMsg(set, () => {})).toMatchObject({ accepted: true })
+    const { key } = await coordinator()
+    expect(await d.store.getModelOverride(key)).toBe('model-small')
+    expect(await d.store.getSession(sessionKey('webchat', CONV, `webchat:${CONV}`, AGENT))).toBeUndefined()
+    await send('again')
+    expect(setSessionModel).toHaveBeenCalledWith(expect.any(String), 'model-small')
+    await daemon.stop()
+  })
+
+  it('starts a provider-bound host on the coordinator model, whose credential its provider decides', async () => {
+    const { daemon, d, host, send, coordinator } = await boot(async (_id, _text, say) => say('ok'))
+    d.agents.get(AGENT).coordinatorModel = { runtime: 'claude', model: 'model-small' }
+    Object.assign(host, { setSessionModel: vi.fn(async () => true) })
+    vi.spyOn(d.modelSessions, 'enabled', 'get').mockReturnValue(true)
+    const ensure = vi.spyOn(d.modelSessions, 'ensure').mockImplementation(async (_agent: unknown, key: unknown) => ({
+      host,
+      hostKey: sessionHostKey(AGENT, key as string),
+      stop: async () => {},
+      waitForCleanup: async () => {}
+    }))
+    await send('hello')
+    const { key } = await coordinator()
+    expect(ensure).toHaveBeenCalledWith(expect.anything(), key, 'model-small')
     await daemon.stop()
   })
 

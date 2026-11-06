@@ -2909,6 +2909,8 @@
         "repairAgent": "修复 Agent"
       },
       "modelSelection": {
+        "coordinator": "协调会话",
+        "coordinatorHelp": "阅读每条消息，决定开哪些任务",
         "title": "Runtime",
         "fixed": "固定",
         "byDecision": "由 Decision 选择",
@@ -3031,7 +3033,11 @@
         "decision": "Decision",
         "fallback": "兜底",
         "on": "开",
-        "off": "关"
+        "off": "关",
+        "target": "设置哪个模型",
+        "task": "任务",
+        "coordinator": "协调会话",
+        "plusCoordinator": "+ 协调会话 {model}"
       }
     },
     "detail": {
@@ -3107,7 +3113,8 @@
         "safeMoveUnavailable": "无法安全迁移",
         "safeMoveBody": "请先让 {daemon} 上线，再安全迁移此 Agent。",
         "openRecovery": "打开恢复选项",
-        "runtimeAndModel": "Runtime 和模型"
+        "runtimeAndModel": "Runtime 和模型",
+        "coordinator": "协调会话"
       },
       "runtime": {
         "title": "Runtime",

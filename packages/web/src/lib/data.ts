@@ -9,6 +9,11 @@ import type {
   ChannelDecisionBinding
 } from '@agentconnect.md/protocol/decision'
 import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import {
+  COORDINATOR_DEFAULT_EFFORT,
+  defaultCoordinatorModel,
+  type CoordinatorModel
+} from '@agentconnect.md/protocol/coordinator-model'
 import type { TaskLinkFacts } from '@agentconnect.md/protocol/user-turn-body'
 import { autoOrFullAccessPermissionMode } from '@agentconnect.md/protocol/assistant-permission-modes'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
@@ -569,6 +574,8 @@ export interface Agent {
   icon?: AgentIcon | null
   model: string
   modelSelection?: AgentModelSelection | null
+  /** The model an `auto` coordinator runs on; null ⇒ Default, a small model of its runtime. */
+  coordinatorModel?: CoordinatorModel | null
   /** The evaluator that chooses which `decision` repositories a new session checks out. */
   repositorySelector?: AgentRepositorySelector | null
   /** Authoritative runtime id (e.g. 'claude' | 'codex' | 'opencode' | 'claude-acp').
@@ -932,6 +939,26 @@ export function modelOptionsFor(
       ...(capability?.description ? { description: capability.description } : {})
     }
   })
+}
+
+/** The coordinator model an agent runs, with Default resolved as the daemon resolves it (auto-session-mode.md §5.4). */
+export function coordinatorModelOf(
+  agent: { runtime: string; model: string; coordinatorModel?: CoordinatorModel | null },
+  daemon: Pick<DaemonRow, 'runtimeModels'> | undefined
+): CoordinatorModel {
+  if (agent.coordinatorModel) return agent.coordinatorModel
+  const models = daemon?.runtimeModels.find((profile) => profile.runtime === agent.runtime)?.models ?? []
+  const model =
+    defaultCoordinatorModel(
+      agent.runtime,
+      models.map((id) => ({ id }))
+    ) ?? agent.model
+  const effort = resolveEffortForModel(
+    agent.runtime,
+    modelCapability(daemon, agent.runtime, model),
+    COORDINATOR_DEFAULT_EFFORT
+  )
+  return { runtime: agent.runtime, model, ...(effort ? { effort } : {}) }
 }
 
 /** The model the picker preselects when no explicit choice is stored: the

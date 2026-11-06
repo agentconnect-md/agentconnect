@@ -20,9 +20,12 @@ export function ProviderModelMenu({
   active,
   onPick,
   search,
+  header,
   children
 }: {
   title: string
+  /** Shown above the provider column's title, for what the whole menu edits. */
+  header?: ReactNode
   providers: readonly ProviderColumnItem[]
   /** The highlighted provider; null while a search spans every provider. */
   active: string | null
@@ -33,6 +36,7 @@ export function ProviderModelMenu({
   return (
     <div className="flex">
       <div className="max-h-[320px] w-[168px] flex-none overflow-y-auto border-r border-(--border-subtle) bg-(--surface-app) p-1">
+        {header}
         <div className="fhdr">{title}</div>
         {providers.map((item) => (
           <button

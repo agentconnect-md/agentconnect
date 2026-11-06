@@ -14,6 +14,7 @@ import {
   modelSelectionDecisionIds,
   type AgentApiGates,
   type AgentModelSelection,
+  type CoordinatorModel,
   type AgentModelProvider,
   type AgentRepositorySelector,
   type ChatActions,
@@ -217,6 +218,8 @@ type RuntimeOverrides = {
   skills?: string[]
   decisionIds?: string[]
   modelSelection?: AgentModelSelection
+  // The model an `auto` coordinator runs on (auto-session-mode.md §5.4); absent means Default.
+  coordinatorModel?: CoordinatorModel
   // The Decision gate on each chat API the agent added (shared-bot-relay.md §10.4).
   apiGates?: AgentApiGates
   // Which memory backend the agent uses (managed | native | external). Stored in
@@ -369,6 +372,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     skills: ov.skills ?? [],
     decisionIds: ov.decisionIds ?? [],
     ...(ov.modelSelection ? { modelSelection: ov.modelSelection } : {}),
+    ...(ov.coordinatorModel ? { coordinatorModel: ov.coordinatorModel } : {}),
     apiGates: ov.apiGates ?? {},
     ...repositorySelectorOf(a),
     managedSkills: a.managedSkills,
@@ -505,6 +509,7 @@ export class PgAgentRepo implements AgentRepo {
             ...(input.skills ? { skills: input.skills } : {}),
             ...(input.decisionIds ? { decisionIds: input.decisionIds } : {}),
             ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+            ...(input.coordinatorModel ? { coordinatorModel: input.coordinatorModel } : {}),
             ...(input.memory ? { memory: input.memory } : {}),
             ...(input.computerUse ? { computerUse: input.computerUse } : {})
           },
@@ -642,6 +647,7 @@ export class PgAgentRepo implements AgentRepo {
       patch.skills !== undefined ||
       patch.decisionIds !== undefined ||
       patch.modelSelection !== undefined ||
+      patch.coordinatorModel !== undefined ||
       patch.apiGates !== undefined ||
       patch.memory !== undefined ||
       patch.computerUse !== undefined ||
@@ -741,6 +747,10 @@ export class PgAgentRepo implements AgentRepo {
       if (patch.modelSelection !== undefined) {
         if (patch.modelSelection === null) delete next.modelSelection
         else next.modelSelection = patch.modelSelection
+      }
+      if (patch.coordinatorModel !== undefined) {
+        if (patch.coordinatorModel === null) delete next.coordinatorModel
+        else next.coordinatorModel = patch.coordinatorModel
       }
       if (patch.apiGates !== undefined) {
         if (patch.apiGates === null || Object.keys(patch.apiGates).length === 0) delete next.apiGates

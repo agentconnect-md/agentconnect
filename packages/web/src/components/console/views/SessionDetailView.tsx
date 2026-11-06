@@ -5903,13 +5903,15 @@ export default function SessionDetailView() {
                                         effort: pgEffort
                                           ? { value: pgEffort, options: pgEffortOptions, onChange: changeEffort }
                                           : undefined,
-                                        approval: pgPermissionPreset
-                                          ? {
-                                              value: pgPermissionPreset,
-                                              options: pgApprovalOptions,
-                                              onChange: changePermission
-                                            }
-                                          : undefined,
+                                        // A coordinator always runs read-only (auto-session-mode.md §5.4).
+                                        approval:
+                                          pgPermissionPreset && !coordinatorPage
+                                            ? {
+                                                value: pgPermissionPreset,
+                                                options: pgApprovalOptions,
+                                                onChange: changePermission
+                                              }
+                                            : undefined,
                                         fast: pgFastModeAvailable
                                           ? { value: pgFastMode, onChange: changeFast }
                                           : undefined

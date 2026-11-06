@@ -40,6 +40,7 @@ import type {
   AssistantOnboarding,
   AssistantOnboardingHints,
   AgentModelSelection,
+  CoordinatorModel,
   AgentRepositorySelector,
   DecimalAmount,
   CodeHostNoteState,
@@ -1218,6 +1219,7 @@ export interface CreateAgentInput {
   mcpServers?: string[] // daemon-configured MCP server names to attach at session/new (AgentSpec.mcpServers)
   decisionIds?: string[] // explicitly enabled saved Decisions
   modelSelection?: AgentModelSelection
+  coordinatorModel?: CoordinatorModel
   repositorySelector?: AgentRepositorySelector // the repository selector's evaluator (multi-repository-workspaces.md decision 15)
   skills?: string[] // enabled skills, "<sourceName>/<skillName>" or "<sourceName>/*" (shared-skills.md)
   managedSkills?: string[] // accepted managed_skill ids, explicitly enabled
@@ -1277,6 +1279,7 @@ export interface UpdateAgentInput {
   mcpServers?: string[] | null // replaced wholesale when provided; null clears
   decisionIds?: string[] | null // replaced wholesale; null clears
   modelSelection?: AgentModelSelection | null
+  coordinatorModel?: CoordinatorModel | null // null returns it to Default
   apiGates?: AgentApiGates | null // replaced wholesale; null or {} clears
   repositorySelector?: AgentRepositorySelector | null // null clears
   skills?: string[] | null // enabled skills; replaced wholesale when provided; null clears
@@ -1326,6 +1329,7 @@ export interface AgentRecord {
   mcpServers: string[] // from runtimeOverrides.mcpServers ([] when unset ⇒ none attached)
   decisionIds?: string[] // from runtimeOverrides.decisionIds; absent means none
   modelSelection?: AgentModelSelection
+  coordinatorModel?: CoordinatorModel // from runtimeOverrides.coordinatorModel; absent means Default
   apiGates?: AgentApiGates // from runtimeOverrides.apiGates: the Decision gate on each chat API the agent added
   repositorySelector?: AgentRepositorySelector // from the repositorySelector* columns; absent means none
   skills: string[] // from runtimeOverrides.skills — enabled "<source>/<skill>" / "<source>/*" ([] ⇒ none)

@@ -9,6 +9,7 @@ import { IntegrationSpec } from './integration.js'
 import { CronUpsert } from './cron.js'
 import { ExecutorStrategyName } from './executor.js'
 import { AgentComputerUse } from '../agent-computer-use.js'
+import { CoordinatorModel } from '../coordinator-model.js'
 import { isGitHubSkillSource, normalizeSkillSource } from '../git-url.js'
 
 /**
@@ -506,6 +507,8 @@ export const AgentSpec = z.object({
   skills: z.array(CompatibleAgentSkillEntry).default([]),
   decisionIds: AgentDecisionIds.optional(),
   modelSelection: AgentModelSelection.nullable().optional(),
+  // The model an `auto` coordinator runs on (auto-session-mode.md §5.4); null is Default, absent leaves it unchanged.
+  coordinatorModel: CoordinatorModel.nullable().optional(),
   // The Decision gate on each chat API the agent added, with its Decisions (shared-bot-relay.md §10.4); a current CP ships it, {} when none.
   apiGates: AgentApiGateProjections.optional(),
   // The evaluator the per-session repository selector asks (multi-repository-workspaces.md decision 15); a current CP ships value or null.

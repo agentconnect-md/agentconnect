@@ -778,6 +778,8 @@ export function applySpecFields(
   if (spec.hookRoutings !== undefined) raw.hookRoutings = spec.hookRoutings
   if (spec.modelSelection === null) delete raw.modelSelection
   else if (spec.modelSelection !== undefined) raw.modelSelection = spec.modelSelection
+  if (spec.coordinatorModel === null) delete raw.coordinatorModel
+  else if (spec.coordinatorModel !== undefined) raw.coordinatorModel = spec.coordinatorModel
   // Always shipped by a current CP, so {} clears the last gate.
   if (spec.apiGates !== undefined) {
     if (Object.keys(spec.apiGates).length === 0) delete raw.apiGates

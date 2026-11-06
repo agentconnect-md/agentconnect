@@ -325,8 +325,23 @@ now and the summary's first sentence states the current status.
     `<agent dir>/coordinator`, inside the directory a sandbox boundary admits. On the pool it opens in `.agentconnect/coordinator` on the
     agent's pod volume, made through the pod's files once the pod is bound. Where none of these can be
     made, it opens in the agent's directory with no workspace roots.
-- An ACP session on the agent's own runtime with the coordinator's own prompt. In the first version
-  every runtime setting, the model included, follows the agent.
+- An ACP session with the coordinator's own prompt, on the agent's coordinator model
+  (`coordinatorModel`: runtime, model, effort and Fast mode), apart from the task model.
+  - Unset is Default: the agent's runtime at low effort, on the newest small model that runtime offers
+    (Claude Code's Haiku, Codex's terra tier), else the task model. `defaultCoordinatorModel` in
+    `packages/protocol/src/coordinator-model.ts` is the one rule the daemon and the console both read.
+  - It has no approval setting: it runs in the runtime's read-only mode, else its auto mode, else the
+    runtime's own. Read-only restricts native tools only, so memory and the AgentConnect tools still work.
+  - A Decision that picks the task model never picks the coordinator's.
+  - A new coordinator starts on its model's runtime. Each turn applies its model, effort and Fast mode
+    where it runs on that runtime, so a change reaches a running coordinator at its next turn; a
+    change of runtime reaches the next coordinator (`!new`).
+  - The console sets it in the agent's model picker, under a Task | Coordinator switch above the
+    providers; with the task model By decision, it is a Coordinator field of its own.
+  - A conversation changes its own coordinator's model, effort and Fast mode within its runtime, as a
+    task's thread changes the task: under `chatActions: settings`, the composer of a member's coordinator
+    conversation sets the coordinator session's overrides, which win over the agent's coordinator model.
+    It shows no approval.
 
 ## 6. Tasks
 
@@ -768,7 +783,8 @@ a reply saying a message was for another agent, so the prompt states that ignori
 
 ## 13. Not done / later
 
-- A coordinator model setting of its own (the first version follows the agent).
+- Returning a conversation's coordinator to the agent's coordinator model (Reset); a task has none either.
+- A trigger filter: a decision model screening each message before the coordinator.
 - A cap on coordinator usage (§4.6).
 - Judging across bots; one coordinator shared by a shared bot's agents.
 - Carrying an assistant-mode `append` session's context into the coordinator.

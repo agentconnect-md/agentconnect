@@ -352,3 +352,72 @@ it('shows the composer pill details on hover, including By decision rules, but n
     vi.useRealTimers()
   }
 })
+
+it('switches the menu to the coordinator, which offers no approval and keeps the menu open on a pick', async () => {
+  const onChange = vi.fn()
+  const onCoordinator = vi.fn()
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await act(async () =>
+    root.render(
+      <RuntimeModelSelect
+        runSettings
+        value={{ runtime: 'claude', model: 'model-standard', effort: 'medium' }}
+        onChange={onChange}
+        source={{
+          runtimeModels: [
+            { runtime: 'claude', version: '', models: ['model-standard', 'model-small'] },
+            { runtime: 'codex', version: '', models: ['model-capable'] }
+          ]
+        }}
+        coordinator={{
+          value: { runtime: 'claude', model: 'model-small', effort: 'low' },
+          onChange: onCoordinator
+        }}
+      />
+    )
+  )
+  const trigger = container.querySelector('button')!
+  expect(trigger.textContent).toContain('+ coordinator model-small')
+  await act(async () => trigger.click())
+  const dialog = document.querySelector('[role="dialog"]')!
+  expect(dialog.querySelector('select[aria-label="Approval"]')).not.toBeNull()
+  const tab = (name: string) =>
+    [...dialog.querySelectorAll<HTMLButtonElement>('[role="group"] button')].find((b) => b.textContent === name)!
+  await act(async () => tab('Coordinator').click())
+  expect(dialog.querySelector('select[aria-label="Approval"]')).toBeNull()
+  expect(dialog.querySelector('button[aria-label$="· model-small"]')!.getAttribute('aria-pressed')).toBe('true')
+  await act(async () =>
+    [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.startsWith('Codex'))!.click()
+  )
+  await act(async () => dialog.querySelector<HTMLButtonElement>('button[aria-label="Codex · model-capable"]')!.click())
+  expect(onCoordinator).toHaveBeenLastCalledWith(expect.objectContaining({ runtime: 'codex', model: 'model-capable' }))
+  expect(onChange).not.toHaveBeenCalled()
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+})
+
+it('shows the coordinator alone on its own field', async () => {
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await act(async () =>
+    root.render(
+      <RuntimeModelSelect
+        value={{ runtime: 'claude', model: 'model-standard' }}
+        onChange={vi.fn()}
+        source={{ runtimeModels: [{ runtime: 'claude', version: '', models: ['model-standard', 'model-small'] }] }}
+        coordinator={{
+          value: { runtime: 'claude', model: 'model-small', effort: 'low' },
+          onChange: vi.fn(),
+          only: true
+        }}
+      />
+    )
+  )
+  const trigger = container.querySelector('button')!
+  expect(trigger.textContent).toContain('model-small')
+  expect(trigger.textContent).not.toContain('model-standard')
+  await act(async () => trigger.click())
+  expect(document.querySelector('[role="dialog"] [role="group"]')).toBeNull()
+})

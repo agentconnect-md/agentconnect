@@ -18,7 +18,11 @@ import {
 import { fetchAgentDecisions } from '@/lib/api'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useOrgs } from '@/lib/org-context'
-import { RuntimeModelSelect, type RuntimeModelSource } from '@/components/console/RuntimeModelSelect'
+import {
+  RuntimeModelSelect,
+  type CoordinatorModelChoice,
+  type RuntimeModelSource
+} from '@/components/console/RuntimeModelSelect'
 import { RuntimeSelectionSample } from './RuntimeSelectionSample'
 import { DecisionPicker } from './DecisionPicker'
 import { Button, Icon } from '@/components/ui'
@@ -96,7 +100,8 @@ export function ModelSelectionField({
   runtimes,
   readsImage,
   requireAvailableModel = false,
-  aside
+  aside,
+  coordinator
 }: {
   agentId?: string
   value: AgentModelSelection | null
@@ -113,6 +118,8 @@ export function ModelSelectionField({
   requireAvailableModel?: boolean
   /** A field shown beside the fixed picker, or under the Decision chain. */
   aside?: ReactNode
+  /** The `auto` coordinator's model: in the fixed picker's menu, or a field of its own beside a Decision. */
+  coordinator?: CoordinatorModelChoice
 }) {
   const t = useTranslations('Agents.dialog.modelSelection')
   const tDecisions = useTranslations('Decisions')
@@ -172,6 +179,7 @@ export function ModelSelectionField({
       runtimes={runtimes}
       readsImage={readsImage}
       readOnly={sourceStatus !== 'ready'}
+      {...(!dense && coordinator ? { coordinator } : {})}
     />
   )
   const fallbackPanel = (
@@ -720,7 +728,27 @@ export function ModelSelectionField({
             </div>
           )}
           <p className="m-0 text-[12px] text-(--text-tertiary)">{t('help')}</p>
-          {aside}
+          {coordinator ? (
+            <div className="grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
+              <div className="fld min-w-0">
+                <span className="fldlbl" title={t('coordinatorHelp')}>
+                  {t('coordinator')}
+                </span>
+                <RuntimeModelSelect
+                  value={fallback}
+                  onChange={() => {}}
+                  source={source}
+                  runtimes={runtimes}
+                  readsImage={readsImage}
+                  readOnly={sourceStatus !== 'ready'}
+                  coordinator={{ ...coordinator, only: true }}
+                />
+              </div>
+              {aside}
+            </div>
+          ) : (
+            aside
+          )}
         </>
       )}
       {error && (

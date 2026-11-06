@@ -27,6 +27,7 @@ import {
   newAgentModelFor,
   resolvedPermissionMode,
   resolveEffortForModel,
+  coordinatorModelOf,
   permissionModeChoicesFor,
   preselectedPermissionMode,
   type AgentCallPolicy,
@@ -64,6 +65,7 @@ import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { ModelSelectionField } from '@/components/console/decisions/ModelSelectionField'
 import type { AgentModelSelection } from '@agentconnect.md/protocol/decision'
+import type { CoordinatorModel } from '@agentconnect.md/protocol/coordinator-model'
 import { randomGlyphIcon, type AgentIcon } from '@/lib/agent-icon'
 import { DEFAULT_AGENT_OUTPUT_MODE, type OutputMode } from '@/lib/output-mode'
 import { Button, Icon } from '@/components/ui'
@@ -174,6 +176,7 @@ export default function AddAgentModal({
   const [modelProvider, setModelProvider] = useState<AgentModelProvider | null>(null)
   const [modelSelection, setModelSelection] = useState<AgentModelSelection | null>(null)
   const [modelSelectionValid, setModelSelectionValid] = useState(true)
+  const [coordinatorModel, setCoordinatorModel] = useState<CoordinatorModel | null>(null)
   const [effort, setEffort] = useState(seed.effort)
   const [fastMode, setFastMode] = useState(seed.fastMode)
   const [outputMode, setOutputMode] = useState<OutputMode>(seed.outputMode ?? DEFAULT_AGENT_OUTPUT_MODE)
@@ -853,6 +856,7 @@ export default function AddAgentModal({
         runtime: effectiveRuntime,
         ...(selectedModel ? { model: selectedModel } : {}),
         ...(modelSelection ? { modelSelection } : {}),
+        ...(coordinatorModel ? { coordinatorModel } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(placement?.kind === 'pool'
           ? { placementKind: 'pool' as const }
@@ -1068,6 +1072,13 @@ export default function AddAgentModal({
               readsImage={readsImage}
               requireAvailableModel={savedCredentials}
               aside={<ChatActionsField value={chatActions} onChange={setChatActions} />}
+              coordinator={{
+                value: coordinatorModelOf(
+                  { runtime: effectiveRuntime, model: selectedModel, coordinatorModel },
+                  modelSource
+                ),
+                onChange: setCoordinatorModel
+              }}
               onFallbackChange={(target) => {
                 const switched = target.runtime !== effectiveRuntime
                 setRuntime(target.runtime)

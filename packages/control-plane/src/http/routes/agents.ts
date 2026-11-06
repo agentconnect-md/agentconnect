@@ -431,6 +431,7 @@ function toDto(
     skills: a.skills,
     decisionIds: a.decisionIds ?? [],
     modelSelection: a.modelSelection ?? null,
+    coordinatorModel: a.coordinatorModel ?? null,
     repositorySelector: a.repositorySelector ?? null,
     managedSkills: a.managedSkills,
     memory: a.memory,
@@ -2239,6 +2240,7 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
                   ...(req.body.decisionIds !== undefined ? { decisionIds: req.body.decisionIds } : {}),
                   ...(req.body.modelSelection !== undefined ? { modelSelection: req.body.modelSelection } : {}),
+                  ...(req.body.coordinatorModel !== undefined ? { coordinatorModel: req.body.coordinatorModel } : {}),
                   ...(req.body.repositorySelector !== undefined
                     ? { repositorySelector: req.body.repositorySelector }
                     : {}),

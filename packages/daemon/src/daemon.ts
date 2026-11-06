@@ -501,6 +501,7 @@ import {
 } from './memory/tools.js'
 import { DREAM_TOPIC_RE } from './dream/dreamer.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
+import { coordinatorPermissionMode, coordinatorTarget } from './auto-session/coordinator-model.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from './runtime-defs/claude-runtime.js'
 import { applyOpenCodeReadOnlyMode } from './runtime-defs/opencode-runtime.js'
 import {
@@ -7346,6 +7347,19 @@ export class Daemon {
     { configuration: string; expiresAt: number; reply: RepoCandidatesReply }
   >()
 
+  /** The agent's coordinator model, only where it runs on `runtime` when one is named. */
+  private coordinatorSettings(agentId: string, runtime?: string): DecisionRuntimeTarget | undefined {
+    const agent = this.agents.get(agentId)
+    if (!agent) return undefined
+    const target = coordinatorTarget(agent, (id) => this.runtimeFacts.modelCatalog(id))
+    return runtime === undefined || target.runtime === runtime ? target : undefined
+  }
+
+  /** The model a coordinator session runs on its `runtime`, or undefined for any other session. */
+  private coordinatorModelFor(agentId: string, key: string, runtime: string): string | undefined {
+    return isCoordinatorSessionKey(key) ? this.coordinatorSettings(agentId, runtime)?.model || undefined : undefined
+  }
+
   private sessionAgent(agentId: string, key?: string): LoadedAgent | undefined {
     const agent = this.agents.get(agentId)
     return agent ? agentWithRuntime(agent, key ? this.sessionRuntimes.get(key) : undefined) : undefined
@@ -9028,7 +9042,11 @@ export class Daemon {
         const session = await this.store.getSession(sessionKey)
         const agent = session?.agentId ? this.sessionAgent(session.agentId, sessionKey) : undefined
         return (
-          (await this.store.getModelOverride(sessionKey)) ?? pinnedDecisionModel(session?.decisionModel, agent?.runtime)
+          (await this.store.getModelOverride(sessionKey)) ??
+          (session?.agentId && agent
+            ? this.coordinatorModelFor(session.agentId, sessionKey, agent.runtime)
+            : undefined) ??
+          pinnedDecisionModel(session?.decisionModel, agent?.runtime)
         )
       },
       acpSessionId: async (sessionKey) => (await this.store.getSession(sessionKey))?.acpSessionId,
@@ -14885,8 +14903,8 @@ export class Daemon {
     for (const session of await this.store.listSessions(agent.id)) {
       const host = this.hostForOwner(this.sessionOwnerKey(agent.id, session.key))
       if (!session.acpSessionId || host?.hasSession?.(session.acpSessionId) !== true) continue
-      // A check keeps its read-only mode (assistant-mode.md §5.12).
-      if (isCheckCoordinate(session.thread)) continue
+      // A check keeps its read-only mode (assistant-mode.md §5.12); so does a coordinator, whose next turn applies its model.
+      if (isCheckCoordinate(session.thread) || isCoordinatorCoordinate(session.thread)) continue
       const sessionId = session.acpSessionId
       const target = pinnedDecisionTarget(session.decisionModel)
       void this.applyConfiguredRuntimeSettings(agentWithRuntime(agent, target), host, sessionId, target?.model)
@@ -16964,8 +16982,15 @@ export class Daemon {
       case 'set_model':
       case 'set_effort':
       case 'set_permission_mode':
-      case 'set_fast':
-        return this.applyWebchatRuntimeOp(msg.msgId, op, key())
+      case 'set_fast': {
+        // A member's coordinator conversation sets its coordinator for itself, as a task's thread sets the task (auto-session-mode.md §5.4).
+        const coordinator = this.cfg.features.autoSessionMode
+          ? await this.store.currentAppendCoordinate(msg.agentId, msg.chatId, null, 'coordinator')
+          : undefined
+        const settingsKey =
+          coordinator === undefined ? key() : sessionKey('webchat', msg.chatId, coordinator, msg.agentId)
+        return this.applyWebchatRuntimeOp(msg.msgId, op, settingsKey)
+      }
       case 'cancel':
         await this.webchatTransport.handleWebchatCancel(msg.chatId, op.agentId ?? msg.agentId)
         return { msgId: msg.msgId, accepted: true }
@@ -20406,7 +20431,9 @@ export class Daemon {
         const manualModel = chatSettingsAllowed(currentAgent)
           ? (webchat?.runtime?.model ?? (await this.store.getModelOverride(key)))
           : undefined
-        const firstTurnModel = manualModel ?? this.selectedSessionModel(run)
+        // A provider-bound host takes its credential from this model, so a coordinator's own model is named before it starts.
+        const firstTurnModel =
+          manualModel ?? this.coordinatorModelFor(agentId, key, currentAgent.runtime) ?? this.selectedSessionModel(run)
         // A cold host in the session's own pod is handed only the clones there at spawn, so the session's preparation runs first, as an ordinary start's does.
         if (
           reviewWorkspace.preparedWorkspaceCwd === undefined &&
@@ -20658,6 +20685,14 @@ export class Daemon {
         entry.webchat.runtime.runtime !== agent.runtime
       )
         throw new Error('Choose a runtime before starting a new session.')
+      return
+    }
+    if (isCoordinatorSessionKey(key)) {
+      // A new coordinator starts on its own model's runtime; on the agent's runtime each turn applies the model (auto-session-mode.md §5.4).
+      const target = this.coordinatorSettings(agent.id)
+      if (plan.initializeOnly || !target || target.runtime === agent.runtime) return
+      if (this.sessionRuntimeSupported(agent, key, target, await candidates())) this.sessionRuntimes.set(key, target)
+      else this.log.warn(`coordinator ${key}: ${target.runtime} is unavailable here; it runs on the agent's runtime`)
       return
     }
     const manual = chatSettingsAllowed(agent) ? entry.webchat?.runtime : undefined
@@ -21508,7 +21543,11 @@ export class Daemon {
     const settingsInChat = chatSettingsAllowed(runtimeAgent)
     // Manual choices win over the model pinned when this session started.
     const override = settingsInChat ? await this.store.getModelOverride(key) : undefined
-    const automaticModel = runtimeAgent ? this.selectedSessionModel(run) : undefined
+    // A coordinator follows the agent's coordinator model on the runtime it started in (auto-session-mode.md §5.4).
+    // Host startup named the same model (openTurnSession), so a provider-bound host already holds its credential.
+    const coordinator =
+      runtimeAgent && isCoordinatorSessionKey(key) ? this.coordinatorSettings(agentId, runtimeAgent.runtime) : undefined
+    const automaticModel = runtimeAgent ? coordinator?.model || this.selectedSessionModel(run) : undefined
     const selectedModel = override ?? automaticModel
     if (selectedModel && this.modelSessions.crossesHostProvider(key, agentId, selectedModel)) {
       // A live host can only use the provider credentials it started with.
@@ -21519,16 +21558,22 @@ export class Daemon {
     // Apply effort after the model, which determines the offered levels.
     const effortOverride =
       (settingsInChat ? await this.store.getEffortOverride(key) : undefined) ??
-      (automaticModel ? runtimeAgent?.reasoningEffort : undefined)
-    if (effortOverride) {
+      (coordinator ? coordinator.effort || undefined : automaticModel ? runtimeAgent?.reasoningEffort : undefined)
+    if (effortOverride && host.setSessionEffort) {
       await host
         .setSessionEffort(sessionId, effortOverride)
         .catch((err) => this.log.debug(`effort override "${effortOverride}" not applied: ${(err as Error).message}`))
     }
     const permissionModeOverride = settingsInChat ? await this.store.getPermissionModeOverride(key) : undefined
-    // assistant-mode.md §5.12: a check runs in the runtime's own read-only mode, never the agent's; so does a coordinator (auto-session-mode.md §5.4).
-    const check = isCheckCoordinate(p.plan.sessionThread) || isCoordinatorCoordinate(p.plan.sessionThread)
-    const checkMode = check ? readOnlyExtractionMode(host.permissionModeOptions?.(sessionId)?.modes ?? []) : undefined
+    // assistant-mode.md §5.12: a check runs in the runtime's own read-only mode, never the agent's; so does a coordinator, else in its auto mode (auto-session-mode.md §5.4).
+    const coordinatorThread = isCoordinatorCoordinate(p.plan.sessionThread)
+    const check = isCheckCoordinate(p.plan.sessionThread) || coordinatorThread
+    const offeredModes = host.permissionModeOptions?.(sessionId)?.modes ?? []
+    const checkMode = coordinatorThread
+      ? coordinatorPermissionMode(runtimeAgent?.runtime ?? agent.runtime, offeredModes)
+      : check
+        ? readOnlyExtractionMode(offeredModes)
+        : undefined
     if (check && !checkMode) this.log.warn(`session ${key}: the runtime offers no read-only mode; it runs in its own`)
     const effectivePermissionMode = check
       ? checkMode
@@ -21544,8 +21589,8 @@ export class Daemon {
     }
     const fastOverride =
       (settingsInChat ? await this.store.getFastModeOverride(key) : undefined) ??
-      (automaticModel ? runtimeAgent?.fastMode : undefined)
-    if (fastOverride !== undefined) {
+      (coordinator ? coordinator.fastMode : automaticModel ? runtimeAgent?.fastMode : undefined)
+    if (fastOverride !== undefined && host.setSessionFastMode) {
       await host
         .setSessionFastMode(sessionId, fastOverride)
         .catch((err) => this.log.debug(`fast-mode override ${fastOverride} not applied: ${(err as Error).message}`))

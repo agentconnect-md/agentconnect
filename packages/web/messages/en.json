@@ -2909,6 +2909,8 @@
         "repairAgent": "Repair agent"
       },
       "modelSelection": {
+        "coordinator": "Coordinator",
+        "coordinatorHelp": "Reads each message and decides which tasks to start",
         "title": "Runtime",
         "fixed": "Fixed",
         "byDecision": "By decision",
@@ -3031,7 +3033,11 @@
         "decision": "Decision",
         "fallback": "Fallback",
         "on": "On",
-        "off": "Off"
+        "off": "Off",
+        "target": "Which model to set",
+        "task": "Task",
+        "coordinator": "Coordinator",
+        "plusCoordinator": "+ coordinator {model}"
       }
     },
     "detail": {
@@ -3107,7 +3113,8 @@
         "safeMoveUnavailable": "Safe move unavailable",
         "safeMoveBody": "Bring {daemon} online before moving this agent safely.",
         "openRecovery": "Open recovery options",
-        "runtimeAndModel": "Runtime and model"
+        "runtimeAndModel": "Runtime and model",
+        "coordinator": "Coordinator"
       },
       "runtime": {
         "title": "Runtime",

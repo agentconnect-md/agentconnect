@@ -68,6 +68,8 @@ export function agentSpecDigest(spec: AgentSpec): string {
   if (content.hookRoutings?.length === 0) delete content.hookRoutings
   // A cleared repository selector is the absent field too, for the same reason.
   if (content.repositorySelector === null) delete content.repositorySelector
+  // A Default coordinator model is the absent field too.
+  if (content.coordinatorModel === null) delete content.coordinatorModel
   // So is a cleared assistant mode.
   if (content.assistantMode === null) delete content.assistantMode
   // The onboarding record is write-once and lands with a new revision, so a daemon upgraded past it does not conflict.

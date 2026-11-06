@@ -12,6 +12,7 @@ import {
   agentEffortDisplay,
   agentLabel,
   agentModelDisplay,
+  coordinatorModelOf,
   agentPermissionDisplay,
   agentPlacementIcon,
   effectiveAgentStatus,
@@ -997,6 +998,7 @@ function AgentDetail() {
   // does (else a blank model reads "Default" here but its resolved default in the
   // editor). Falls back to the static labels when the daemon reports no catalog.
   const defaultModelText = agentModelDisplay(capabilitySource, da.runtime, da.model)
+  const coordinatorModel = coordinatorModelOf(da, capabilitySource)
   const selectedDecision = decisions.find((item) => item.id === da.modelSelection?.decisionId)
   const decisionModel = da.modelSelection ? (
     <DecisionModelLabel
@@ -1489,6 +1491,25 @@ function AgentDetail() {
                     </div>
                   </>
                 )}
+                <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
+                  <span className="text-[14px] text-(--text-tertiary) desktop:text-[13px]">
+                    {t('basics.coordinator')}
+                  </span>
+                  <span className="inline-flex min-w-0 items-center gap-[7px] font-sans text-[12.5px] font-medium leading-normal">
+                    <span className="imark h-4 w-4 flex-none">
+                      <AgentMark model={coordinatorModel.runtime} />
+                    </span>
+                    <span className="truncate">
+                      {agentModelDisplay(capabilitySource, coordinatorModel.runtime, coordinatorModel.model)}
+                      {coordinatorModel.model && coordinatorModel.effort && (
+                        <span className="font-mono text-[11.5px] font-normal text-(--text-tertiary)">
+                          {' '}
+                          · {coordinatorModel.effort}
+                        </span>
+                      )}
+                    </span>
+                  </span>
+                </div>
                 <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
                   <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary) desktop:text-[13px]">
                     {t('basics.created')}
