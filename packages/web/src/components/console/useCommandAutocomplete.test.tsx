@@ -312,7 +312,8 @@ describe('CommandMenu', () => {
   })
 
   it('lines the detail pane up with the highlighted row, inside the list’s height', () => {
-    // happy-dom has no layout: rows sit 32px apart, the list is 200px tall and the pane 40px.
+    // happy-dom has no layout: rows sit 32px apart, the list is `listHeight` tall and the pane 40px.
+    let listHeight = 200
     const rowIndex = (el: HTMLElement) => [...(el.parentElement?.children ?? [])].indexOf(el)
     const top = vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) {
       return this.getAttribute('role') === 'option' ? 4 + rowIndex(this) * 32 : 0
@@ -320,19 +321,19 @@ describe('CommandMenu', () => {
     const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (
       this: HTMLElement
     ) {
-      return this.getAttribute('role') === 'listbox' ? 200 : this.getAttribute('role') === 'option' ? 32 : 40
+      return this.getAttribute('role') === 'listbox' ? listHeight : this.getAttribute('role') === 'option' ? 32 : 40
     })
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
     const options = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((name) => skill(command('a', 'Alice', name)))
-    const render = (activeIndex: number) =>
+    const render = (activeIndex: number, shown = options, openUpward = true) =>
       act(() =>
         root!.render(
           <CommandMenu
-            options={options}
+            options={shown}
             activeIndex={activeIndex}
-            coords={{ ...coords, openUpward: true }}
+            coords={{ ...coords, openUpward }}
             iconOf={() => undefined}
             showOwner={false}
             onHover={() => {}}
@@ -346,6 +347,12 @@ describe('CommandMenu', () => {
     // The last row would push the pane past the list's bottom edge, so it stops there.
     render(6)
     expect(pane().style.top).toBe('160px')
+    // A pane taller than a filtered list grows upward when opening upward, so it never covers the composer.
+    listHeight = 20
+    render(0, options.slice(0, 1))
+    expect(pane().style.top).toBe('-20px')
+    render(0, options.slice(0, 1), false)
+    expect(pane().style.top).toBe('0px')
     top.mockRestore()
     height.mockRestore()
   })

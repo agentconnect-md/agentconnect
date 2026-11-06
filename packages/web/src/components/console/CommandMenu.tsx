@@ -53,15 +53,17 @@ export function CommandMenu({
   const listRef = useRef<HTMLDivElement>(null)
   const detailRef = useRef<HTMLDivElement>(null)
   const [detailTop, setDetailTop] = useState(0)
-  // Top-align the pane with the highlighted row, kept inside the list's height so it never overhangs the composer.
+  const openUpward = coords?.openUpward ?? false
+  // Top-align the pane with the highlighted row; opening upward, a pane taller than the list grows up, never over the composer.
   const alignDetail = useCallback(() => {
     const row = listRef.current?.children[activeIndex] as HTMLElement | undefined
     const list = listRef.current
     if (!row || !list) return
     const rowTop = row.offsetTop - list.scrollTop
     const room = list.offsetHeight - (detailRef.current?.offsetHeight ?? 0)
-    setDetailTop(Math.max(0, Math.min(rowTop, room)))
-  }, [activeIndex])
+    const top = Math.min(rowTop, room)
+    setDetailTop(openUpward ? top : Math.max(0, top))
+  }, [activeIndex, openUpward])
   useLayoutEffect(() => {
     const row = listRef.current?.children[activeIndex] as HTMLElement | undefined
     row?.scrollIntoView?.({ block: 'nearest' })
