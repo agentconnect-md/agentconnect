@@ -3359,6 +3359,13 @@ export class LocalStore {
         trippedAt INTEGER,
         reason TEXT
       );
+      -- Messages already charged to a loop_guard window, so a fan-out to several agents counts once.
+      CREATE TABLE IF NOT EXISTS loop_guard_charge (
+        scopeKey TEXT NOT NULL,
+        messageKey TEXT NOT NULL,
+        chargedAt INTEGER NOT NULL,
+        PRIMARY KEY (scopeKey, messageKey)
+      );
       -- Self-introduce-on-join (issue #536). channel_intro is the durable set of
       -- channels an agent has already introduced itself into (or adopted as the
       -- silent baseline), so an intro fires at most once per (agent, platform,
@@ -9771,17 +9778,18 @@ export class LocalStore {
     }))
   }
 
-  /** Record one turn admission against a conversation-wide fixed window. A trusted
+  /** Record one message's admission against a conversation-wide fixed window. A trusted
    *  human boundary resets only the consecutive automatic counter; the total-rate
    *  backstop deliberately keeps counting so a platform bug that misclassifies its
    *  own events as human still eventually opens the circuit. */
   async recordLoopGuardTurn(
     scopeKey: string,
+    messageKey: string,
     now: number,
     automatic: boolean,
     limits: { windowMs: number; maxTotal: number; maxAutomatic: number }
   ): Promise<LoopGuardVerdict> {
-    return await this.chargeLoopGuardTurn(this.db, scopeKey, now, automatic, limits)
+    return await this.chargeLoopGuardTurn(this.db, scopeKey, messageKey, now, automatic, limits)
   }
 
   /** The charge itself, on whichever statement runner the caller owns — the inbox variant runs
@@ -9789,18 +9797,41 @@ export class LocalStore {
   private async chargeLoopGuardTurn(
     db: StoreAccess,
     scopeKey: string,
+    messageKey: string,
     now: number,
     automatic: boolean,
     limits: { windowMs: number; maxTotal: number; maxAutomatic: number }
   ): Promise<LoopGuardVerdict> {
     // Keep only active-window counters plus intentionally-latched incidents. Without
     // this bounded cleanup, every one-off channel thread would leave a row forever.
+    const cutoff = now - limits.windowMs
     await db
       .prepare(
         `DELETE FROM loop_guard
          WHERE trippedAt IS NULL AND windowStartedAt <= @cutoff AND automaticWindowStartedAt <= @cutoff`
       )
-      .run({ cutoff: now - limits.windowMs })
+      .run({ cutoff })
+    await db.prepare('DELETE FROM loop_guard_charge WHERE chargedAt <= @cutoff').run({ cutoff })
+    // One message delivered to several agents is one turn signal, not one per agent.
+    const firstCharge =
+      (
+        await db
+          .prepare(
+            'INSERT OR IGNORE INTO loop_guard_charge (scopeKey, messageKey, chargedAt) VALUES (@scopeKey, @messageKey, @now)'
+          )
+          .run({ scopeKey, messageKey, now })
+      ).changes === 1
+    if (!firstCharge) {
+      const current = await this.loopGuardRow(db, scopeKey)
+      if (current?.trippedAt !== null && current?.trippedAt !== undefined)
+        return await this.latchedLoopGuardVerdict(db, scopeKey)
+      return {
+        allowed: true,
+        trippedNow: false,
+        totalCount: Number(current?.totalCount ?? 0),
+        automaticCount: Number(current?.automaticCount ?? 0)
+      }
+    }
     // The charge is one relative, window-aware statement, never a JS read-modify-write:
     // pool members sharing this store charge the same conversation concurrently, and an
     // absolute upsert would let the faster loop lose exactly the increments that matter.
@@ -9871,13 +9902,14 @@ export class LocalStore {
   async recordLoopGuardTurnForInbox(
     inboxId: string,
     scopeKey: string,
+    messageKey: string,
     now: number,
     automatic: boolean,
     limits: { windowMs: number; maxTotal: number; maxAutomatic: number }
   ): Promise<LoopGuardVerdict> {
     return await this.transaction(async (raw) => {
       const tx = accessOf(raw)
-      const verdict = await this.chargeLoopGuardTurn(tx, scopeKey, now, automatic, limits)
+      const verdict = await this.chargeLoopGuardTurn(tx, scopeKey, messageKey, now, automatic, limits)
       if (verdict.allowed) {
         const marked = await tx.prepare('UPDATE inbox SET loopGuardCounted = 1 WHERE id = ?').run(inboxId)
         if (marked.changes !== 1) throw new Error(`inbox delivery disappeared while charging loop guard: ${inboxId}`)

@@ -339,6 +339,50 @@ describe('webchat session-targeted continuation', () => {
 // daemon-agent-mention-routing.test.ts; the target author is excluded there
 // and gets the targeted dispatch instead.
 
+describe('webchat session-targeted continuation — control commands', () => {
+  it('runs !resume as the command: the open loop guard resets and no turn runs', async () => {
+    const { daemon, d, prompts, postMessage, postAsAuthor } = await boot()
+    const store = (daemon as never as { store: Record<string, (...args: unknown[]) => Promise<unknown>> }).store
+    await store.tripLoopGuard!('slack:C1:top-level', Date.now(), 'automatic_turn_burst')
+    const events: RdChatEvent[] = []
+
+    const ack = await d.handleRelayMsg(turn('!resume'), (e) => events.push(e))
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    expect(await store.isLoopGuardOpen!('slack:C1:top-level')).toBe(false)
+    // The reply reaches the console; the platform sees neither the command nor a model turn.
+    expect(JSON.stringify(events.filter((e) => e.kind === 'output'))).toContain('Resumed')
+    expect(prompts).toHaveLength(0)
+    expect(postAsAuthor).not.toHaveBeenCalled()
+    expect(postMessage).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('acts on the session the console names, not the one the channel holds now', async () => {
+    const { daemon, d } = await boot()
+    // The channel has moved on to another session since this page was opened.
+    const host = (daemon as never as { commands: { host: Record<string, unknown> } }).commands.host
+    host.sessionCoordinateFor = async () => 'append:coordinator-rotated'
+    const events: RdChatEvent[] = []
+
+    await d.handleRelayMsg(turn('!stop'), (e) => events.push(e))
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    expect(JSON.stringify(events.filter((e) => e.kind === 'output'))).toContain('Muted in this thread')
+    await daemon.stop()
+  })
+
+  it('keeps !new and the card-posting commands ordinary turns', async () => {
+    for (const text of ['!new', '!status']) {
+      const { daemon, d, prompts } = await boot()
+      const events: RdChatEvent[] = []
+      await d.handleRelayMsg(turn(text), (e) => events.push(e))
+      await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+      expect(prompts).toHaveLength(1)
+      await daemon.stop()
+    }
+  })
+})
+
 describe('webchat session-targeted continuation — mirror identity', () => {
   it("hands Slack the bare body plus the console author's name and avatar, with the attributed fallback", async () => {
     const { daemon, d, postAsAuthor } = await boot()
