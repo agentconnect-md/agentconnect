@@ -1,7 +1,6 @@
 # Webchat Threads, and One Thread Shape for Every Coordinator
 
-> **Status:** Proposal, decisions recorded 2026-11-06 (§12), one question left for PR 8 (§13);
-> implementation tracked as the PRs of §11.
+> **Status:** Proposal, decisions recorded 2026-11-06 (§12); implementation tracked as the PRs of §11.
 > **Builds on:** [auto-session-mode.md](auto-session-mode.md) (§6–§8, §10 webchat),
 > [channel-session-mode.md](channel-session-mode.md) (§3.1 session vs delivery coordinate),
 > [message-intake.md](message-intake.md) (the channel record),
@@ -305,9 +304,9 @@ may view that task's session; a task its sender made private before it became a 
 The audience is unchanged, but one case widens what it reads: while a platform's session access
 sync is off, every member sees a Slack conversation's sessions (product-conventions.md "Session
 visibility"), so the observations of a private channel, said by people who never addressed the
-agent, would be shown to every member. Whether to accept that or to show a private channel's
-observations only while sync is on is decided with PR 8 (§13), which also adds the console's read
-of observations to `.oss-scanner/threat_model.md`. This answers message-intake.md §13 question 1 for
+agent, are shown to every member. This is accepted (decided 2026-11-06): the thread panel shows the
+same audience the whole thread, sync on or off. PR 8 adds the console's read of observations to
+`.oss-scanner/threat_model.md`. This answers message-intake.md §13 question 1 for
 coordinator pages.
 
 ## 8. Wire and reads
@@ -377,7 +376,7 @@ CONTRIBUTING.md. Rows 5, 9, 11, 12 and 13 change what users see and update
 | 5   | `feat`     | Webchat coordinator through `keySession` / `autoCoordinateFor`; tasks on thread coordinates opened with the thread; `replyToMessage` in the thread; prompts (§4.2) | daemon           | L    | 3, 4  |
 | 6   | `chore`    | Keep the observations of threads agents took part in (§5.5)                                                                                                        | daemon           | S    | 4     |
 | 7   | `chore`    | Thread summaries, the `roots` view and `session/thread`                                                                                                            | protocol, daemon | M    | 4     |
-| 8   | `chore`    | BFF read routes, OpenAPI, thread read authorization and threat model (§7.1, §13)                                                                                   | CP               | S    | 7     |
+| 8   | `chore`    | BFF read routes, OpenAPI, thread read authorization and threat model (§7.1)                                                                                        | CP               | S    | 7     |
 | 9   | `feat`     | Other members of a published coordinator write in a task's thread (§6.3)                                                                                           | CP, daemon       | M    | 3, 5  |
 | 10  | `refactor` | `ThreadPanel` and the thread footer, generalized from `TaskThreadPanel` and `TaskThreadCard`, reading the thread record                                            | web              | M    | 8     |
 | 11  | `feat`     | Webchat coordinator page: footers under roots, Reply in thread, thread composer, `?thread=`, auto-open, phones, the §6.1 labels                                    | web              | L    | 5, 10 |
@@ -413,8 +412,5 @@ to the webchat scenarios of auto-session-mode.md §12 and is watched on the test
     only (§6.3).
 13. **A task's permission requests list on the coordinator and in the task's thread** (§5.4).
 14. **A thread opens in the panel when its first reply starts**, on a desktop only (§6.2).
-
-## 13. Open questions
-
-1. **Observations of a private channel while session access sync is off** (§7.1): show them to every
-   member who sees the conversation, or only while sync is on. Decided with PR 8.
+15. **A private channel's observations show while session access sync is off too**, to everyone who
+    sees the conversation (§7.1).
