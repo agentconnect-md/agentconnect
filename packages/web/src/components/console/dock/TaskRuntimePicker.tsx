@@ -11,7 +11,7 @@ import { sessionEffortAfterModelChange, runtimePickerState } from '@/lib/session
 import { strategyUsesImage } from '@/lib/execution-strategy'
 import type { Agent, DaemonRow, Session } from '@/lib/data'
 import { fetchSessionDetail, type SessionDetailDto } from '@/lib/api'
-import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
+import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
 
 type Selection = { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }
 
@@ -39,7 +39,7 @@ export function TaskRuntimePicker({
   // The same read the thread makes: the task's recorded runtime, until its live session reports its own.
   const { data: detail } = useSWR(
     ['session-detail', sessionId],
-    ([, sid]) => fetchSessionDetail(sid),
+    ([, sid]) => readOnceRegistered(() => fetchSessionDetail(sid)),
     CONSOLE_SWR_CONFIG
   )
   const session = getPgSession(sessionId) ?? (detail ? recordedRuntime(detail) : undefined)

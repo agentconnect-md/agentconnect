@@ -37,7 +37,7 @@ import { agentToneColor } from '@/lib/agent-tone'
 import { agentLabel, MOCK_MODE, type Agent, type DaemonRow } from '@/lib/data'
 import { TaskRuntimePicker } from '@/components/console/dock/TaskRuntimePicker'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib/session-trigger'
-import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
+import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { useOrgs } from '@/lib/org-context'
 import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
@@ -119,7 +119,7 @@ export function TaskThreadPanel({
   // The server decides who may continue a task, by its parent's audience; absent or false keeps it read-only.
   const { data: detail, mutate: reloadDetail } = useSWR(
     ['session-detail', id],
-    ([, sid]) => fetchSessionDetail(sid),
+    ([, sid]) => readOnceRegistered(() => fetchSessionDetail(sid)),
     CONSOLE_SWR_CONFIG
   )
   const canReply = detail?.canContinue === true
