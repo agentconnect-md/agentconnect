@@ -214,6 +214,16 @@ const DREAM_UPDATE_SET = `status = @status, triggerKind = @triggerKind, sessionI
   skills = @skills, organizationSuggestions = @organizationSuggestions, usage = @usage, error = @error,
   createdAt = @createdAt, endedAt = @endedAt, ownerId = @ownerId`
 
+/** The `roots` view's narrowing of a session page (webchat-threads.md §6.1): a coordinator's posts in threads stay in their threads. */
+function rootsViewSql(view: 'roots' | undefined): string {
+  return view === 'roots' ? `\n               AND NOT ${THREAD_POST_SQL}` : ''
+}
+
+/** {@link THREAD_RECORD_SQL}'s binds for one session reading one thread. */
+function threadRecordBinds(scope: TranscriptSessionScope, rootId: string): string[] {
+  return [rootId, scope.coordinate, scope.agentId, scope.sessionKey, scope.agentId, rootId, rootId]
+}
+
 function idScope(column: string, values: readonly string[] | undefined): { sql: string; params: SqlParams } {
   if (values === undefined) return { sql: '', params: {} }
   if (values.length === 0) return { sql: ' AND 0 = 1', params: {} }
@@ -717,6 +727,36 @@ const THREADS_AGENTS_TOOK_PART_IN_SQL = `SELECT t.thread FROM transcript t
     INTERSECT
     SELECT r.thread FROM transcript r
      WHERE r.orgId = ? AND r.channel = ? AND r.kind = 'text' AND (r.ts = r.thread OR r.postId = r.thread)`
+
+// A coordinator's own post in a thread (`UserTurnBody.threadPost`): a message of the thread, not output of its turn (webchat-threads.md §6).
+const THREAD_POST_SQL = `(transcript.kind = 'text' AND COALESCE(transcript.body, '') LIKE '%"threadPost":true%')`
+
+// A row of the reading session's own turns in a thread other than its coordinate, which its page shows instead (§6.1). Binds (coordinate, agentId, sessionKey).
+const OWN_TURN_IN_THREAD_SQL = `(transcript.thread <> ? AND transcript.sender = ?
+        AND EXISTS (SELECT 1 FROM transcript_recipient tr_o WHERE tr_o.seq = transcript.seq AND tr_o.sessionKey = ?)
+        AND NOT ${THREAD_POST_SQL})`
+
+// One thread's record as a session reads it (§8): its root, and its rows but the session's own turns and peers' work rows. Binds (root, coordinate, agentId, sessionKey, agentId, root, root).
+const THREAD_RECORD_SQL = `((transcript.thread = ? AND NOT ${OWN_TURN_IN_THREAD_SQL} AND (transcript.kind = 'text' OR transcript.sender = ?))
+        OR (transcript.kind = 'text' AND (transcript.ts = ? OR transcript.postId = ?)))`
+
+/** A recorded root row as the thread reads see it: the ids it may be named by and its own thread. */
+export interface ThreadRootRow {
+  seq: number
+  ts: string | null
+  postId: string | null
+  thread: string | null
+  sender: string
+  text: string
+}
+
+/** One thread's reply aggregate for its summary (webchat-threads.md §5.3); senders newest first. */
+export interface ThreadReplyStats {
+  replies: number
+  lastEventTimeUs: number | null
+  latest?: { sender: string; text: string }
+  participants: string[]
+}
 
 /** Verdict bodies outlive their terminal transition this long, or until 20 newer terminal verdicts exist. */
 export const DECISION_BODY_RETENTION_MS = 24 * 3_600_000
@@ -4286,19 +4326,21 @@ export class LocalStore {
   async transcriptPageForAgent(
     scope: TranscriptSessionScope,
     beforeSeq: number | null,
-    limit: number
+    limit: number,
+    view?: 'roots'
   ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
     const partition = this.orgForRead(scope.agentId, scope.orgId)
     const session = [scope.coordinate, scope.sessionKey]
     const agent = [scope.agentId, scope.agentId]
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
+    const roots = rootsViewSql(view)
     const rows = (beforeSeq !== null
       ? await this.db
           .prepare(
             `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND seq < ?
                AND ${SESSION_ROW_SCOPE_SQL}
                AND ${AGENT_DELIVERY_SCOPE_SQL}
-               AND NOT (kind = 'tool' AND text IN (?, ?))
+               AND NOT (kind = 'tool' AND text IN (?, ?))${roots}
              ORDER BY seq DESC LIMIT ?`
           )
           .all(partition, scope.transcriptChannel, beforeSeq, ...session, ...agent, ...hiddenToolTitles, limit + 1)
@@ -4307,7 +4349,7 @@ export class LocalStore {
             `SELECT * FROM transcript WHERE orgId = ? AND channel = ?
                AND ${SESSION_ROW_SCOPE_SQL}
                AND ${AGENT_DELIVERY_SCOPE_SQL}
-               AND NOT (kind = 'tool' AND text IN (?, ?))
+               AND NOT (kind = 'tool' AND text IN (?, ?))${roots}
              ORDER BY seq DESC LIMIT ?`
           )
           .all(
@@ -4335,12 +4377,14 @@ export class LocalStore {
   async transcriptPageForAgentByEventTime(
     scope: TranscriptSessionScope,
     before: TranscriptEventCursor | null,
-    limit: number
+    limit: number,
+    view?: 'roots'
   ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
     const partition = this.orgForRead(scope.agentId, scope.orgId)
     const session = [scope.coordinate, scope.sessionKey]
     const agent = [scope.agentId, scope.agentId]
     const hiddenToolTitles = [...SESSION_TITLE_TOOL_TITLES]
+    const roots = rootsViewSql(view)
     const rows = (before !== null
       ? await this.db
           .prepare(
@@ -4348,7 +4392,7 @@ export class LocalStore {
                AND (eventTimeUs < ? OR (eventTimeUs = ? AND seq < ?))
                AND ${SESSION_ROW_SCOPE_SQL}
                AND ${AGENT_DELIVERY_SCOPE_SQL}
-               AND NOT (kind = 'tool' AND text IN (?, ?))
+               AND NOT (kind = 'tool' AND text IN (?, ?))${roots}
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
@@ -4367,7 +4411,7 @@ export class LocalStore {
             `SELECT * FROM transcript WHERE orgId = ? AND channel = ?
                AND ${SESSION_ROW_SCOPE_SQL}
                AND ${AGENT_DELIVERY_SCOPE_SQL}
-               AND NOT (kind = 'tool' AND text IN (?, ?))
+               AND NOT (kind = 'tool' AND text IN (?, ?))${roots}
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
@@ -4390,7 +4434,8 @@ export class LocalStore {
   async transcriptTailForAgent(
     scope: TranscriptSessionScope,
     afterRevision: number,
-    limit: number
+    limit: number,
+    view?: 'roots'
   ): Promise<{ rows: TranscriptRow[]; hasMore: boolean; cursor: number }> {
     const rows = (await this.db
       .prepare(
@@ -4398,7 +4443,7 @@ export class LocalStore {
          WHERE orgId = ? AND channel = ? AND revision > ?
            AND ${SESSION_ROW_SCOPE_SQL}
            AND ${AGENT_DELIVERY_SCOPE_SQL}
-           AND NOT (kind = 'tool' AND text IN (?, ?))
+           AND NOT (kind = 'tool' AND text IN (?, ?))${rootsViewSql(view)}
          ORDER BY revision ASC LIMIT ?`
       )
       .all(
@@ -4409,6 +4454,209 @@ export class LocalStore {
         scope.sessionKey,
         scope.agentId,
         scope.agentId,
+        ...SESSION_TITLE_TOOL_TITLES,
+        limit + 1
+      )) as unknown as TranscriptRow[]
+    const hasMore = rows.length > limit
+    const kept = hasMore ? rows.slice(0, limit) : rows
+    return {
+      rows: kept,
+      hasMore,
+      cursor: hasMore
+        ? kept[kept.length - 1]!.revision
+        : await this.currentTranscriptRevision(scope.agentId, scope.orgId)
+    }
+  }
+
+  /** The text rows of one conversation recorded under any of `ids` as their ts or webchat postId: the roots those ids may name (webchat-threads.md §8). */
+  async threadRootRows(
+    scope: Pick<TranscriptSessionScope, 'transcriptChannel' | 'agentId' | 'orgId'>,
+    ids: readonly string[]
+  ): Promise<ThreadRootRow[]> {
+    if (ids.length === 0) return []
+    const marks = ids.map(() => '?').join(', ')
+    return (await this.db
+      .prepare(
+        `SELECT seq, ts, postId, thread, sender, text FROM transcript
+          WHERE orgId = ? AND channel = ? AND kind = 'text' AND (ts IN (${marks}) OR postId IN (${marks}))
+          ORDER BY seq`
+      )
+      .all(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        ...ids,
+        ...ids
+      )) as unknown as ThreadRootRow[]
+  }
+
+  /** The root row named `rootId`, when the session received it: it sits on the session's coordinate or was admitted into it, and its agent may see it. */
+  async threadRootInSession(scope: TranscriptSessionScope, rootId: string): Promise<ThreadRootRow | undefined> {
+    return (await this.db
+      .prepare(
+        `SELECT seq, ts, postId, thread, sender, text FROM transcript
+          WHERE orgId = ? AND channel = ? AND kind = 'text' AND (ts = ? OR postId = ?)
+            AND ${SESSION_ROW_SCOPE_SQL}
+            AND ${AGENT_DELIVERY_SCOPE_SQL}
+          ORDER BY seq LIMIT 1`
+      )
+      .get(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        rootId,
+        rootId,
+        scope.coordinate,
+        scope.sessionKey,
+        scope.agentId,
+        scope.agentId
+      )) as ThreadRootRow | undefined
+  }
+
+  /** Each thread's replies as its summary counts them (webchat-threads.md §3, §5.3): chat messages but the root and the reading session's own turns. */
+  async threadReplyStats(
+    scope: TranscriptSessionScope,
+    rootIds: readonly string[],
+    participantsMax: number
+  ): Promise<Map<string, ThreadReplyStats>> {
+    const stats = new Map<string, ThreadReplyStats>()
+    if (rootIds.length === 0) return stats
+    const partition = this.orgForRead(scope.agentId, scope.orgId)
+    const replies = `orgId = ? AND channel = ? AND kind = 'text'
+            AND NOT (COALESCE(ts, '') = transcript.thread OR COALESCE(postId, '') = transcript.thread)
+            AND NOT ${OWN_TURN_IN_THREAD_SQL}`
+    const own = [scope.coordinate, scope.agentId, scope.sessionKey]
+    const marks = rootIds.map(() => '?').join(', ')
+    const counts = (await this.db
+      .prepare(
+        `SELECT thread, COUNT(*) AS n, MAX(eventTimeUs) AS last FROM transcript
+          WHERE thread IN (${marks}) AND ${replies}
+          GROUP BY thread`
+      )
+      .all(...rootIds, partition, scope.transcriptChannel, ...own)) as {
+      thread: string
+      n: number | string
+      last: number | string | null
+    }[]
+    for (const row of counts) {
+      const n = Number(row.n)
+      if (n < 1) continue
+      const latest = (await this.db
+        .prepare(
+          `SELECT sender, text FROM transcript WHERE thread = ? AND ${replies}
+            ORDER BY COALESCE(eventTimeUs, 0) DESC, seq DESC LIMIT 1`
+        )
+        .get(row.thread, partition, scope.transcriptChannel, ...own)) as { sender: string; text: string } | undefined
+      const senders = (await this.db
+        .prepare(
+          `SELECT sender FROM transcript WHERE thread = ? AND ${replies}
+            GROUP BY sender ORDER BY COALESCE(MAX(eventTimeUs), 0) DESC, MAX(seq) DESC LIMIT ?`
+        )
+        .all(row.thread, partition, scope.transcriptChannel, ...own, participantsMax)) as { sender: string }[]
+      stats.set(row.thread, {
+        replies: n,
+        lastEventTimeUs: row.last == null ? null : Number(row.last),
+        ...(latest ? { latest: { sender: latest.sender, text: latest.text } } : {}),
+        participants: senders.map((r) => r.sender)
+      })
+    }
+    return stats
+  }
+
+  /** The threads of one conversation whose rows changed in `(afterRevision, uptoRevision]`, for a forward `roots` page (webchat-threads.md §8). */
+  async threadsChangedBetween(
+    scope: Pick<TranscriptSessionScope, 'transcriptChannel' | 'agentId' | 'orgId'>,
+    afterRevision: number,
+    uptoRevision: number,
+    limit: number
+  ): Promise<string[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT DISTINCT thread FROM transcript
+          WHERE orgId = ? AND channel = ? AND revision > ? AND revision <= ? AND thread IS NOT NULL
+          ORDER BY thread LIMIT ?`
+      )
+      .all(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        afterRevision,
+        uptoRevision,
+        limit
+      )) as { thread: string }[]
+    return rows.map((r) => r.thread)
+  }
+
+  /** One newest-first page of a thread's record as a session reads it (webchat-threads.md §8), in insertion order. */
+  async threadPageForAgent(
+    scope: TranscriptSessionScope,
+    rootId: string,
+    beforeSeq: number | null,
+    limit: number
+  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT * FROM transcript WHERE orgId = ? AND channel = ?${beforeSeq !== null ? ' AND seq < ?' : ''}
+           AND ${THREAD_RECORD_SQL}
+           AND NOT (kind = 'tool' AND text IN (?, ?))
+         ORDER BY seq DESC LIMIT ?`
+      )
+      .all(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        ...(beforeSeq !== null ? [beforeSeq] : []),
+        ...threadRecordBinds(scope, rootId),
+        ...SESSION_TITLE_TOOL_TITLES,
+        limit + 1
+      )) as unknown as TranscriptRow[]
+    const hasMore = rows.length > limit
+    return { rows: hasMore ? rows.slice(0, limit) : rows, hasMore }
+  }
+
+  /** {@link threadPageForAgent} in event-time order, for a platform whose ids order natively. */
+  async threadPageForAgentByEventTime(
+    scope: TranscriptSessionScope,
+    rootId: string,
+    before: TranscriptEventCursor | null,
+    limit: number
+  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean }> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT * FROM transcript WHERE orgId = ? AND channel = ?${
+          before !== null ? ' AND (eventTimeUs < ? OR (eventTimeUs = ? AND seq < ?))' : ''
+        }
+           AND ${THREAD_RECORD_SQL}
+           AND NOT (kind = 'tool' AND text IN (?, ?))
+         ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
+      )
+      .all(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        ...(before !== null ? [before.eventTimeUs, before.eventTimeUs, before.seq] : []),
+        ...threadRecordBinds(scope, rootId),
+        ...SESSION_TITLE_TOOL_TITLES,
+        limit + 1
+      )) as unknown as TranscriptRow[]
+    const hasMore = rows.length > limit
+    return { rows: hasMore ? rows.slice(0, limit) : rows, hasMore }
+  }
+
+  /** The forward mutation page of a thread's record, revision-ordered like {@link transcriptTailForAgent}. */
+  async threadTailForAgent(
+    scope: TranscriptSessionScope,
+    rootId: string,
+    afterRevision: number,
+    limit: number
+  ): Promise<{ rows: TranscriptRow[]; hasMore: boolean; cursor: number }> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND revision > ?
+           AND ${THREAD_RECORD_SQL}
+           AND NOT (kind = 'tool' AND text IN (?, ?))
+         ORDER BY revision ASC LIMIT ?`
+      )
+      .all(
+        this.orgForRead(scope.agentId, scope.orgId),
+        scope.transcriptChannel,
+        afterRevision,
+        ...threadRecordBinds(scope, rootId),
         ...SESSION_TITLE_TOOL_TITLES,
         limit + 1
       )) as unknown as TranscriptRow[]

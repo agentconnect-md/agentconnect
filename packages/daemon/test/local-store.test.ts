@@ -4136,6 +4136,118 @@ describe('the observations of threads agents took part in', () => {
   })
 })
 
+describe('thread reads (webchat-threads.md §8)', () => {
+  const R1 = '0f9c2b1e-5d4a-4c3b-9a8f-7e6d5c4b3a21'
+  const R2 = '6b1d7e2f-3a4c-4d5e-8f90-a1b2c3d4e5f6'
+  const R3 = '9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b'
+  const coordinator = { agentId: 'bot-a', sessionKey: 'webchat:CV:append:c:bot-a' }
+  const task = { agentId: 'bot-a', sessionKey: `webchat:CV:${R1}:bot-a` }
+  const scope = readScope('CV', 'append:c', 'bot-a', coordinator.sessionKey)
+  const row = (ts: string, thread: string, extra: Partial<TranscriptEntry> = {}): TranscriptEntry => ({
+    channel: 'CV',
+    thread,
+    ts,
+    sender: 'U1',
+    kind: 'text',
+    text: `m${ts}`,
+    ...extra
+  })
+  // A coordinator conversation: a root, the coordinator's turn on it, a reply, its post in the thread, then a task's turn.
+  const seed = async (s: LocalStore) => {
+    await s.appendTranscript(row('1', R1, { postId: R1, admission: coordinator }))
+    await s.appendTranscript(row('2', R1, { sender: 'bot-a', postId: randomUUID(), admission: coordinator }))
+    await s.appendTranscript(row('3', R1, { kind: 'reasoning', sender: 'bot-a', admission: coordinator }))
+    await s.appendTranscript(row('4', R1, { sender: 'U2', postId: randomUUID(), admission: coordinator }))
+    await s.appendTranscript(
+      row('5', R1, { sender: 'bot-a', postId: randomUUID(), admission: coordinator, body: '{"threadPost":true}' })
+    )
+    await s.appendTranscript(row('6', R1, { sender: 'bot-a', postId: randomUUID(), admission: task }))
+    await s.appendTranscript(row('7', R1, { kind: 'reasoning', sender: 'bot-a', admission: task }))
+    await s.appendTranscript(
+      row('8', R1, { kind: 'reasoning', sender: 'bot-b', admission: { agentId: 'bot-b', sessionKey: 'peer' } })
+    )
+    await s.appendTranscript(row('9', R1, { sender: 'U3', postId: randomUUID() }))
+    await s.appendTranscript(row('10', R2, { postId: R2, admission: coordinator }))
+    await s.appendTranscript(row('11', R3, { postId: R3 }))
+  }
+
+  it('reads a thread as its record: people, posts in it, a task and observations, never the reader’s own turns', async () => {
+    const s = await store()
+    await seed(s)
+    const page = await s.threadPageForAgent(scope, R1, null, 50)
+    expect(page.rows.map((r) => r.ts).reverse()).toEqual(['1', '4', '5', '6', '7', '9'])
+    expect(page.hasMore).toBe(false)
+    const older = await s.threadPageForAgentByEventTime(scope, R1, { eventTimeUs: 6_000_000, seq: 0 }, 2)
+    expect(older.rows.map((r) => r.ts)).toEqual(['5', '4'])
+    expect(older.hasMore).toBe(true)
+    const tail = await s.threadTailForAgent(scope, R1, 0, 50)
+    expect(tail.rows.map((r) => r.ts)).toEqual(['1', '4', '5', '6', '7', '9'])
+    // Read through the task, whose coordinate is the thread, its own rows are the thread's.
+    const own = readScope('CV', R1, 'bot-a', task.sessionKey)
+    expect((await s.threadPageForAgent(own, R1, null, 50)).rows.map((r) => r.ts).reverse()).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+      '7',
+      '9'
+    ])
+    await s.close()
+  })
+
+  it('counts a thread’s replies, newest first, without its root or the reader’s own turns', async () => {
+    const s = await store()
+    await seed(s)
+    const stats = await s.threadReplyStats(scope, [R1, R2, R3], 2)
+    expect(stats.get(R1)).toEqual({
+      replies: 4,
+      lastEventTimeUs: 9_000_000,
+      latest: { sender: 'U3', text: 'm9' },
+      participants: ['U3', 'bot-a']
+    })
+    expect(stats.has(R2)).toBe(false)
+    expect(stats.has(R3)).toBe(false)
+    await s.close()
+  })
+
+  it('finds a root the session received, by its postId or ts, and the threads changed since a revision', async () => {
+    const s = await store()
+    await seed(s)
+    expect((await s.threadRootInSession(scope, R1))?.ts).toBe('1')
+    expect(await s.threadRootInSession(scope, R3)).toBeUndefined()
+    expect((await s.threadRootRows(scope, [R3, '4'])).map((r) => r.ts)).toEqual(['4', '11'])
+    const before = await s.currentTranscriptRevision()
+    await s.appendTranscript(row('12', R2, { sender: 'U2', postId: randomUUID() }))
+    expect(await s.threadsChangedBetween(scope, before, await s.currentTranscriptRevision(), 20)).toEqual([R2])
+    await s.close()
+  })
+
+  it('keeps a coordinator’s posts in threads out of its roots view, and in its session history', async () => {
+    const s = await store()
+    await seed(s)
+    const texts = (rows: { ts: string | null }[]) => rows.map((r) => r.ts).reverse()
+    expect(texts((await s.transcriptPageForAgent(scope, null, 50)).rows)).toEqual(['1', '2', '3', '4', '5', '10'])
+    expect(texts((await s.transcriptPageForAgent(scope, null, 50, 'roots')).rows)).toEqual(['1', '2', '3', '4', '10'])
+    expect(texts((await s.transcriptPageForAgentByEventTime(scope, null, 50, 'roots')).rows)).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '10'
+    ])
+    expect((await s.transcriptTailForAgent(scope, 0, 50, 'roots')).rows.map((r) => r.ts)).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '10'
+    ])
+    await s.close()
+  })
+})
+
 // message-intake.md §4.3: v26 adds the verdict and release tables, created by the CREATE block on both paths.
 describe.skipIf(pg)('decision table migrations', () => {
   const userVersion = (path: string): number => {
