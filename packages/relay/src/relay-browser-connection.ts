@@ -5,7 +5,7 @@
  * different daemons.
  *
  * It speaks the browser-facing, type-tagged webchat envelope. The browser sends
- * `{text, turnId, mentions?, targets?, attachments?, runtime?, timeZone?}` (a turn) or
+ * `{text, turnId, thread?, mentions?, targets?, attachments?, runtime?, timeZone?}` (a turn) or
  * `{type:'resume'|'attach'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
  * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'attached'|'post'|'resync'|'error'}`.
  * A turn fans out as one pre-addressed `rd/msg(webchat)` per targeted agent's
@@ -28,6 +28,7 @@ import {
   type RdWebchatImageUpdate,
   type RdWebchatPromptSuggestion,
   WEBCHAT_IMAGES_FEATURE,
+  WEBCHAT_THREADS_FEATURE,
   WebchatTimeZone,
   type WebchatPost,
   type WebchatRemoteMcpEntitlement
@@ -134,6 +135,8 @@ export function parseBrowserFrame(
       ...(userPicture ? { userPicture } : {}),
       ...(userIdentities?.length ? { userIdentities } : {}),
       ...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
+      // Shape only: a malformed thread refuses the turn rather than posting the reply at the root.
+      ...(m.thread !== undefined ? { thread: typeof m.thread === 'string' ? m.thread.toLowerCase() : m.thread } : {}),
       ...(mentions ? { mentions } : {}),
       ...(m.attachments !== undefined ? { attachments: m.attachments } : {}),
       // Uploaded-file references only; the bytes went browser → bucket and never cross this socket.
@@ -300,7 +303,7 @@ export class RelayBrowserConnection implements ChatSink {
       type: 'ready',
       conversationId: this.deps.chatId,
       agentId: this.deps.agentId,
-      features: [WEBCHAT_IMAGES_FEATURE],
+      features: [WEBCHAT_IMAGES_FEATURE, WEBCHAT_THREADS_FEATURE],
       participants: this.deps.participants.map((p) => ({
         agentId: p.agentId,
         ...(p.primary ? { primary: true } : {})
@@ -420,6 +423,7 @@ export class RelayBrowserConnection implements ChatSink {
       author: { kind: 'user', user: this.deps.user, ...(this.deps.userId ? { userId: this.deps.userId } : {}) },
       text: fileMarker ? `${op.text}\n${fileMarker}`.trim() : op.text,
       at: post.at,
+      ...(op.thread ? { thread: op.thread } : {}),
       ...(op.attachments?.length ? { attachments: op.attachments } : {})
     }
     for (const p of this.byAgentId.values()) {

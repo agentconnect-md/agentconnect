@@ -134,6 +134,8 @@ export interface ChatPost {
     attachments?: SessionImageAttachment[]
     image?: SharedImage
     taskLink?: TaskLinkFacts
+    // The root postId of the thread this post replies in; absent ⇒ a root.
+    thread?: string
   }
 }
 

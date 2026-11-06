@@ -20,7 +20,8 @@ import {
   WEBCHAT_IMAGES_FEATURE,
   WebchatImageUpdate,
   WEBCHAT_PROMPT_SUGGESTION_FEATURE,
-  WebchatPromptSuggestion
+  WebchatPromptSuggestion,
+  WebchatThreadId
 } from './webchat.js'
 import {
   GiteaHookMetadata,
@@ -237,6 +238,8 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     // and shared by every per-target copy — see WebchatPost. Absent on frames
     // from an older relay; the daemon then mints locally (single-agent shape).
     post: z.object({ postId: z.string().uuid(), at: z.number().int() }).optional(),
+    // The root `postId` of the thread this turn replies in; absent ⇒ a root. An older daemon ignores it.
+    thread: WebchatThreadId.optional(),
     attachments: z.array(WebchatImageAttachment).max(1).optional(),
     // Files the browser already PUT to the Source Cache bucket; the daemon hands the agent presigned GETs.
     files: z.array(WebchatFileAttachment).max(WEBCHAT_FILES_MAX).optional(),

@@ -315,10 +315,10 @@ coordinator pages.
 | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | Browser → relay `turn`                    | `thread?: string`                                                                                                 |
 | `RelayWebchatOp.turn`, `WebchatPost`      | `thread?: string`                                                                                                 |
-| Daemon → relay posts and streams          | The thread they answer in                                                                                         |
+| Daemon → relay posts and streams          | `thread?: string` on `WebchatPost`, `WebchatOutput` and `WebchatDone`: the thread they answer in                  |
 | Turn ack reasons                          | `unknown_thread`                                                                                                  |
 | Daemon feature                            | `webchat-threads-v1`, advertised with `session-mode-auto-v1` under `features.autoSessionMode`                     |
-| Relay → browser hello                     | Whether the relay forwards `thread`                                                                               |
+| Relay → browser hello                     | `webchat-threads-v1` in the `ready` frame's `features` once the relay forwards `thread`                           |
 | `session/history` (daemon control RPC)    | A `roots` view: roots and coordinator turns with the §5.3 summaries, paged like today                             |
 | `session/thread` (new daemon control RPC) | One thread record by `(sessionId, rootId)`, paged; authorized by §7.1                                             |
 | BFF                                       | `GET /orgs/:org/sessions/:id/messages?view=roots` and `GET /orgs/:org/sessions/:id/threads/:rootId/messages` (C2) |
@@ -328,6 +328,11 @@ conversation codec (merged-conversation-view.md §5.1) would group it as a conve
 Session lists leave tasks out by default and list them under "Show tasks" through
 `taskParentSessionId` (product-conventions.md "Tasks"), so a task thread appears only there, as its
 own entry linked to its coordinator, never folded into the coordinator's entry.
+
+A `thread` is a root's `postId`, so the wire admits only a UUID (`WebchatThreadId`); the relay
+refuses a turn whose `thread` is malformed rather than post it at the root. The protocol names the
+feature `WEBCHAT_THREADS_FEATURE`; the daemon advertises it from PR 5, once its coordinator answers in
+threads, so the console never offers threads to a daemon that only records them.
 
 The BFF routes proxy bounded transcript reads to the owning daemon and persist nothing, as the
 session history route does. Each route gets its OpenAPI `tags`, `summary`, `description` and
