@@ -194,6 +194,7 @@ import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { StateIcon, sessionState } from '@/components/console/StateIcon'
 import { TaskBrief } from '@/components/console/TaskBrief'
 import { SendButton } from '@/components/console/SendButton'
+import { SessionShareDialog, type ShareVisibility } from '@/components/console/SessionShareDialog'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { TaskThreadCard } from '@/components/console/TaskThreadCard'
 import { type TaskLink } from '@/components/console/task-link'
@@ -1735,6 +1736,7 @@ export default function SessionDetailView() {
   const t = useTranslations('Sessions.detail')
   const permissionT = useTranslations('Common.permissionModes')
   const tState = useTranslations('Common.stateIcon')
+  const tShare = useTranslations('Sessions.share')
   const tt = useTranslations('Common.taskThread')
   const runtimeModelT = useTranslations('Agents.dialog.runtimeModel')
   const commandMenuT = useTranslations('Common.commandMenu')
@@ -1945,6 +1947,8 @@ export default function SessionDetailView() {
   } = usePlayground()
   const { user: viewer, me } = useProfile()
   const [copied, setCopied] = useState(false)
+  // The header's Share dialog: who can see the session, and its link.
+  const [shareOpen, setShareOpen] = useState(false)
   const detailTooltipId = useId()
   const requestsTooltipId = useId()
   const {
@@ -3204,6 +3208,33 @@ export default function SessionDetailView() {
   // contract, so hold that stable placeholder while its persisted detail row
   // catches up instead of inserting the whole control later.
   const visibilityLoading = focusedSession?.platform === 'playground' && !focusedSessionDetail
+  // What the Share dialog says about who can see the focused session, from the same rows the visibility control reads.
+  const shareVisibility: ShareVisibility | null =
+    headerFocusSessionId && (focusedSessionDetail || focusedSession?.visibility || visibilityLoading)
+      ? {
+          sessionId: headerFocusSessionId,
+          visibility:
+            focusedSessionDetail?.visibility ??
+            focusedSession?.visibility ??
+            (visibilityLoading ? 'private' : undefined),
+          state: focusedSessionDetail?.visibilityState ?? null,
+          canChange: focusedSessionDetail?.canChangeVisibility === true,
+          loading: visibilityLoading,
+          externalProvider: focusedSessionDetail?.externalProvider ?? null,
+          externalResolution: focusedSessionDetail?.externalResolution ?? null,
+          feishuRegion: focusedSessionDetail?.feishuRegion ?? null,
+          nativeMemory: focusedAgent?.memoryProvider === 'native',
+          onChanged: ({ visibility, state }) => {
+            const mutateFocusedDetail =
+              headerFocusSessionId === currentSessionDetail?.id ? mutateSessionDetail : mutateExtraHeaderDetail
+            void mutateFocusedDetail(
+              (current) => (current ? { ...current, visibility, visibilityState: state } : current),
+              { revalidate: true }
+            )
+            void revalidateSessionLists()
+          }
+        }
+      : null
   const visibilityControl =
     headerFocusSessionId && (focusedSessionDetail || focusedSession?.visibility || visibilityLoading) ? (
       <SessionVisibilityControl
@@ -4741,7 +4772,6 @@ export default function SessionDetailView() {
                     />
                   )
                 }))}
-                footer={visibilityControl}
               />
               {requestsPanel && (
                 // The pill says how many wait for this reader; the popover keeps the answered history too.
@@ -4841,14 +4871,28 @@ export default function SessionDetailView() {
                   </div>
                 </div>
               </div>
+              {/* Share: who can see the session, and its link. */}
               <button
+                type="button"
+                data-header-share=""
                 className={`${HEADER_ICON_BTN} cursor-pointer border-0 bg-transparent`}
-                onClick={onCopyLink}
-                title={copied ? t('copied') : t('copyLink')}
-                aria-label={t('copyLink')}
+                onClick={() => setShareOpen(true)}
+                aria-label={tShare('share')}
+                aria-haspopup="dialog"
               >
-                <Icon name={copied ? 'check' : 'link'} size={14} />
+                <Icon name="share" size={15} />
               </button>
+              {shareOpen ? (
+                <SessionShareDialog
+                  title={session.title}
+                  place={channelDisplay.label || null}
+                  platform={channelDisplay.platform}
+                  copied={copied}
+                  onCopyLink={onCopyLink}
+                  visibility={shareVisibility}
+                  onClose={() => setShareOpen(false)}
+                />
+              ) : null}
               {/* A task's own page is its expanded view: shrink puts it back in its coordinator's side panel, close returns to the coordinator. */}
               {taskOwnerHref && taskShrinkHref ? (
                 <>

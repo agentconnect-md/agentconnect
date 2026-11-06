@@ -1100,6 +1100,16 @@
         "map": "Turns in this conversation"
       },
       "jumpToLatest": "Jump to latest"
+    },
+    "share": {
+      "share": "Share",
+      "title": "Share “{title}”",
+      "close": "Close",
+      "whoCanSee": "Who can see it",
+      "placeMembers": "{place} members in {provider}",
+      "copyLink": "Copy link",
+      "copied": "Copied",
+      "done": "Done"
     }
   },
   "Shell": {

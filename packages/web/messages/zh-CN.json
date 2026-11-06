@@ -1100,6 +1100,16 @@
         "map": "对话中的各轮"
       },
       "jumpToLatest": "跳到最新"
+    },
+    "share": {
+      "share": "分享",
+      "title": "分享“{title}”",
+      "close": "关闭",
+      "whoCanSee": "谁可以看到",
+      "placeMembers": "{provider} 中 {place} 的成员",
+      "copyLink": "复制链接",
+      "copied": "已复制",
+      "done": "完成"
     }
   },
   "Shell": {
