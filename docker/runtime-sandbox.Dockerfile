@@ -63,8 +63,8 @@ COPY --from=runtime-payload-digest /payload-digest /
 
 # Antigravity is the first, independently cached application layer in the full image.
 FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS antigravity
-ARG ANTIGRAVITY_VERSION=1.4.3
-ARG ANTIGRAVITY_SHA256_AMD64=0634ce5306ba92c932945455e7a83fda78e2d99c33fa8aa6ee0566206a382714
+ARG ANTIGRAVITY_VERSION=1.4.5
+ARG ANTIGRAVITY_SHA256_AMD64=923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b
 ARG TARGETARCH
 RUN test "${TARGETARCH:-amd64}" = amd64 \
   && apt-get update \
@@ -82,8 +82,8 @@ RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
 
 # Build Muse's adapter against Bookworm: upstream Linux binaries require glibc 2.39.
 FROM rust:1.99.0-slim-bookworm@sha256:2c3a22f0a5533ea2dd5a16627bc841228151faa2d4de2644ac9987e4a2f1f2fa AS muse-acp
-ARG MUSE_ACP_VERSION=0.17.0
-ARG MUSE_ACP_SOURCE_SHA256=310e54d0b08104f36ac86a4908a1c6a5b63f3eb845b45c76606c1ae8e76d26a8
+ARG MUSE_ACP_VERSION=0.21.0
+ARG MUSE_ACP_SOURCE_SHA256=36e984ff3808783cbaacfd76b24fe1b68e8ea6e6bad16c5888a11a10dc5b841c
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
@@ -99,10 +99,10 @@ RUN curl --retry 5 -fsSL -o /tmp/muse-acp.tar.gz \
 
 # Other native harness downloads are independent of Antigravity and agent-browser.
 FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS full-native-runtimes
-ARG OMP_VERSION=18.13.1
-ARG OMP_SHA256_AMD64=ee2961c7da02e514a2475ee958c2fd85dbabf4d0907949ba5022edb2951f84b5
-ARG DEVIN_VERSION=3000.11.228
-ARG DEVIN_SHA256_AMD64=c00eb43d6e3f8c07f8d2ee435cddf62c7879319b73393a891c610da73c558509
+ARG OMP_VERSION=18.17.0
+ARG OMP_SHA256_AMD64=a4ce6001ab1012ca835f4184d675437531bd1ac477a7ba8424ed0b5476e9e4cb
+ARG DEVIN_VERSION=3000.11.234
+ARG DEVIN_SHA256_AMD64=201370cddd2924294e3ca6b46fd8ece49b5763953b644a1dd823fce5490cb41a
 ARG MUSE_VERSION=1.4.13-R6996.1
 ARG MUSE_SHA256_AMD64=51e97f8de0aa175080e6576cbc055510a95dfe0ededf175c7f6b34fc8e3bf524
 ARG TARGETARCH
@@ -150,12 +150,12 @@ RUN --mount=type=bind,source=docker/runtime-sandbox/install-core-harnesses.sh,ta
 
 ARG CLINE_VERSION=3.0.74
 ARG PI_ACP_VERSION=0.0.34
-ARG PI_VERSION=1.4.0
-ARG QWEN_CODE_VERSION=0.26.1
-ARG COPILOT_VERSION=1.0.104
-ARG GROK_VERSION=1.0.70
-ARG QODER_VERSION=1.1.80
-ARG QODER_CN_VERSION=1.1.80
+ARG PI_VERSION=1.5.0
+ARG QWEN_CODE_VERSION=0.26.8
+ARG COPILOT_VERSION=1.0.106
+ARG GROK_VERSION=1.0.77
+ARG QODER_VERSION=1.1.84
+ARG QODER_CN_VERSION=1.1.84
 # pi-acp delegates to the separately installed pi CLI; all launches use local executables.
 RUN export HOME=/root \
   && npm install --global --no-fund --no-audit \

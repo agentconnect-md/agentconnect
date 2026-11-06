@@ -8,8 +8,10 @@ import type { ModelSessionHost, SelectedTurnHost } from '../daemon/turn-types.js
 import type { Logger } from '../log.js'
 import { shareStartup, awaitStartup } from '../session/startup-progress.js'
 import {
+  isOpenCodeShaped,
   modelCredentialRuntime,
   modelProviderTarget,
+  requiresSelectedModel,
   type ModelCredential,
   type ModelProviderTarget,
   type StaticModelCredentials
@@ -240,8 +242,8 @@ export class ModelSessionHostPool {
       this.host.defaultModel(agent.runtime)
     const target = modelProviderTarget(agent, runtime, model)
     if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
-    if (target.runtime === 'opencode' && !model) {
-      throw new Error('OpenCode model list is not ready; select a model or retry after it loads')
+    if (requiresSelectedModel(target) && !model) {
+      throw new Error(`${agent.runtime} model list is not ready; select a model or retry after it loads`)
     }
     const now = this.opts.now()
     let entry = this.entries.get(sessionKey)
@@ -352,8 +354,8 @@ export class ModelSessionHostPool {
     if (
       (this.opts.k8s || !agent?.modelProvider) &&
       !this.keyServer &&
-      target?.runtime === 'opencode' &&
-      this.staticCredential(target)?.key
+      isOpenCodeShaped(target) &&
+      this.staticCredential(target!)?.key
     )
       return false
     return !target || JSON.stringify(target) !== JSON.stringify(bound)
