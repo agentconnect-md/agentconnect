@@ -35,7 +35,8 @@ describe('the placeholder', () => {
   it('opens only what this key sealed, and keeps its agent and hosts', () => {
     const dir = scratch()
     const key = loadPlaceholderKey(join(dir, 'k', 'proxy.key'))
-    expect(statSync(join(dir, 'k', 'proxy.key')).mode & 0o777).toBe(0o600)
+    // POSIX modes only: Windows reports every file as 0666.
+    if (process.platform !== 'win32') expect(statSync(join(dir, 'k', 'proxy.key')).mode & 0o777).toBe(0o600)
     expect(loadPlaceholderKey(join(dir, 'k', 'proxy.key')).equals(key)).toBe(true)
     const sealed = sealPlaceholder(key, { agentId: AGENT, hosts: ['api.github.com'] })
     expect(looksLikePlaceholder(sealed)).toBe(true)
@@ -57,8 +58,10 @@ describe('the proxy CA', () => {
     expect(readdirSync(ca.trustDir).sort()).toEqual(['ca.crt', 'trust.pem'])
     expect(ca.bundlePath.startsWith(ca.trustDir)).toBe(true)
     expect(ca.keyPath.startsWith(ca.trustDir)).toBe(false)
-    expect(statSync(dir).mode & 0o777).toBe(0o700)
-    expect(statSync(ca.keyPath).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') {
+      expect(statSync(dir).mode & 0o777).toBe(0o700)
+      expect(statSync(ca.keyPath).mode & 0o777).toBe(0o600)
+    }
   })
 })
 
@@ -269,48 +272,52 @@ describe('the proxy end to end', () => {
     await new Promise<void>((resolve) => upstream.close(() => resolve()))
   })
 
-  it('terminates a CONNECT to the code host and forwards the minted token, over loopback and the Unix socket', async () => {
-    const dir = scratch()
-    const toLoopback: LookupFunction = (_host, options, callback) => {
-      if (options.all)
-        (callback as (e: null, a: { address: string; family: number }[]) => void)(null, [
-          { address: '127.0.0.1', family: 4 }
-        ])
-      else callback(null, '127.0.0.1', 4)
+  // The Unix socket is srt's route, which Windows never runs.
+  it.skipIf(process.platform === 'win32')(
+    'terminates a CONNECT to the code host and forwards the minted token, over loopback and the Unix socket',
+    async () => {
+      const dir = scratch()
+      const toLoopback: LookupFunction = (_host, options, callback) => {
+        if (options.all)
+          (callback as (e: null, a: { address: string; family: number }[]) => void)(null, [
+            { address: '127.0.0.1', family: 4 }
+          ])
+        else callback(null, '127.0.0.1', 4)
+      }
+      const ca = loadProxyCa(join(dir, 'ca'))
+      const proxy = new CredentialProxy({
+        key: loadPlaceholderKey(join(dir, 'proxy.key')),
+        ca,
+        mint: async () => 'ghs_minted',
+        workspaceRepo: () => undefined,
+        knownAgent: () => true,
+        log: { info: () => {}, warn: () => {} },
+        upstream: { lookupFor: () => toLoopback, trustedCa: upstreamCaPem }
+      })
+      const socketPath = join(dir, 'run', 'p.sock')
+      await proxy.start(socketPath)
+      try {
+        const placeholder = proxy.placeholderFor(AGENT)
+        const url = new URL(proxy.loopbackUrl()!)
+        const proxyAuth = `Basic ${Buffer.from(`${url.username}:${url.password}`).toString('base64')}`
+        const viaLoopback = await getThrough(
+          { host: url.hostname, port: Number(url.port), proxyAuth },
+          upstreamPort,
+          placeholder,
+          ca.certPem
+        )
+        const viaSocket = await getThrough({ socketPath }, upstreamPort, placeholder, ca.certPem)
+        expect(viaLoopback).toBe(200)
+        expect(viaSocket).toBe(200)
+        expect(seen).toEqual(['token ghs_minted', 'token ghs_minted'])
+        expect(proxyTrustEnv(ca).SSL_CERT_FILE).toBe(ca.bundlePath)
+        // The loopback listener is no open proxy: a CONNECT without its credential is refused.
+        expect(await connectStatus({ host: url.hostname, port: Number(url.port) }, upstreamPort)).toBe(407)
+      } finally {
+        await proxy.stop()
+      }
     }
-    const ca = loadProxyCa(join(dir, 'ca'))
-    const proxy = new CredentialProxy({
-      key: loadPlaceholderKey(join(dir, 'proxy.key')),
-      ca,
-      mint: async () => 'ghs_minted',
-      workspaceRepo: () => undefined,
-      knownAgent: () => true,
-      log: { info: () => {}, warn: () => {} },
-      upstream: { lookupFor: () => toLoopback, trustedCa: upstreamCaPem }
-    })
-    const socketPath = join(dir, 'run', 'p.sock')
-    await proxy.start(socketPath)
-    try {
-      const placeholder = proxy.placeholderFor(AGENT)
-      const url = new URL(proxy.loopbackUrl()!)
-      const proxyAuth = `Basic ${Buffer.from(`${url.username}:${url.password}`).toString('base64')}`
-      const viaLoopback = await getThrough(
-        { host: url.hostname, port: Number(url.port), proxyAuth },
-        upstreamPort,
-        placeholder,
-        ca.certPem
-      )
-      const viaSocket = await getThrough({ socketPath }, upstreamPort, placeholder, ca.certPem)
-      expect(viaLoopback).toBe(200)
-      expect(viaSocket).toBe(200)
-      expect(seen).toEqual(['token ghs_minted', 'token ghs_minted'])
-      expect(proxyTrustEnv(ca).SSL_CERT_FILE).toBe(ca.bundlePath)
-      // The loopback listener is no open proxy: a CONNECT without its credential is refused.
-      expect(await connectStatus({ host: url.hostname, port: Number(url.port) }, upstreamPort)).toBe(407)
-    } finally {
-      await proxy.stop()
-    }
-  })
+  )
 })
 
 type Dial = { host: string; port: number; proxyAuth?: string } | { socketPath: string }
