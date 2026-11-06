@@ -36,8 +36,12 @@ import {
   isSessionIdentityPlatform,
   isSubsessionCoordinate,
   SANDBOX_KEEP_ALIVE_FEATURE,
+  SESSION_THREAD_READS_FEATURE,
   WEBCHAT_IMAGES_FEATURE,
   continuableSession,
+  type SessionHistoryPage,
+  type SessionThreadPage,
+  type SessionThreadSummary,
   type SharedImageResolveOk,
   type CodeHostProvider,
   type HookKind
@@ -45,6 +49,7 @@ import {
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { continuationAudience, continuationParentId } from '../../domain/continuation-audience.js'
+import { threadSummaryFor, threadTaskSessionIds } from '../../domain/thread-read.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
@@ -64,6 +69,7 @@ import {
   SessionFacetsDto,
   SessionDetailDto,
   SessionHistoryDto,
+  SessionThreadMessagesDto,
   SharedImageOriginalDto,
   SessionToolBodyQueryDto,
   SessionToolBodyChunkDto,
@@ -84,8 +90,8 @@ import {
 
 const SharedImageParams = z.object({ id: z.string(), attachmentId: z.string().uuid() })
 
-/** The daemon holding the session predates shared images, so it cannot answer the resolve. */
-class SharedImagesUnsupported extends Error {}
+/** The daemon holding the session predates the read, so the frame is never sent; the message is the 409's. */
+class DaemonFeatureMissing extends Error {}
 
 const SESSION_PLATFORM_IDS = [
   'slack',
@@ -529,19 +535,27 @@ function feishuRegionForSession(
   return region === 'feishu' || region === 'lark' ? region : null
 }
 
-const SessionHistoryQueryDto = z
-  .object({
-    cursor: z.string().optional(),
-    after: z
-      .string()
-      .regex(/^\d+$/)
-      .refine((value) => Number.isSafeInteger(Number(value)))
-      .optional(),
-    limit: z.coerce.number().int().positive().max(200).optional()
-  })
-  .refine(({ cursor, after }) => cursor === undefined || after === undefined, {
-    message: 'cursor and after are mutually exclusive'
-  })
+const TranscriptPageQuery = z.object({
+  cursor: z.string().optional(),
+  after: z
+    .string()
+    .regex(/^\d+$/)
+    .refine((value) => Number.isSafeInteger(Number(value)))
+    .optional(),
+  limit: z.coerce.number().int().positive().max(200).optional()
+})
+const cursorOrAfter = ({ cursor, after }: { cursor?: string; after?: string }) =>
+  cursor === undefined || after === undefined
+
+const SessionHistoryQueryDto = TranscriptPageQuery.extend({
+  // webchat-threads.md §8: a coordinator page's main timeline, with its thread footers.
+  view: z.enum(['roots']).optional()
+}).refine(cursorOrAfter, { message: 'cursor and after are mutually exclusive' })
+
+const SessionThreadQueryDto = TranscriptPageQuery.refine(cursorOrAfter, {
+  message: 'cursor and after are mutually exclusive'
+})
+const SessionThreadParams = z.object({ id: z.string(), rootId: z.string().min(1).max(200) })
 
 // HookRun.reviewEvent -> the panel's review vocabulary. An unrecognized event maps to nothing rather than to a guess.
 function agentReviewOf(event: string | null): 'approved' | 'changes_requested' | 'commented' | null {
@@ -719,6 +733,38 @@ export function sessionRoutes(deps: HttpDeps) {
       statusCode: 503 as const,
       message: reason === 'unplaced' ? 'session has no recorded daemon' : 'owning daemon is offline'
     })
+
+    // Version skew: an older daemon drops an unknown REQ, or ignores a field it predates, so the frame is never sent to it.
+    const requireDaemonFeature = async (req: FastifyRequest, daemonId: string, feature: string, message: string) => {
+      const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(daemonId))
+      if (!daemon?.capabilities.features.includes(feature)) throw new DaemonFeatureMissing(message)
+    }
+    const featureMissing = (err: DaemonFeatureMissing) => ({
+      error: 'Conflict',
+      statusCode: 409 as const,
+      message: err.message,
+      code: 'DAEMON_FEATURE_MISSING'
+    })
+    const threadReadsMissing = "this agent's daemon does not serve thread reads"
+
+    // webchat-threads.md §7.1: the held tasks of these threads whose sessions the caller may view, of the session's own agent only.
+    const viewableThreadTasks = async (
+      req: FastifyRequest,
+      agentId: string,
+      summaries: readonly SessionThreadSummary[]
+    ): Promise<Set<string>> => {
+      const ids = threadTaskSessionIds(summaries)
+      if (ids.length === 0) return new Set()
+      const rows = (await Promise.all(ids.map((id) => deps.repos.session.get(orgOf(req), SessionId(id))))).filter(
+        (row): row is SessionMetaRecord => row !== null && row.agentId === agentId
+      )
+      const access = await sessionAccess.forSessions(req, rows)
+      return new Set(
+        rows
+          .filter((row) => canViewSession(row, ctxOf(req), access.identitySet, access.externalAccess))
+          .map((row) => String(row.id))
+      )
+    }
 
     const accessProviders = {
       slack: 'Slack',
@@ -1227,10 +1273,7 @@ export function sessionRoutes(deps: HttpDeps) {
       }
     )
 
-    // Replay view: proxy a page of the session's chat history live from a daemon that can
-    // serve it. CP stores list/detail metadata only, not transcript bodies. The recorded daemon
-    // is tried first; only a session written to a shared store has other daemons holding the
-    // same rows, and an agent move never changes which store that was.
+    // Replay view: a page of the session's history, proxied live from a daemon holding it (recorded daemon first); the CP stores no bodies.
     r.get(
       '/sessions/:id/messages',
       {
@@ -1238,11 +1281,11 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Get session messages',
           description:
-            "Proxies a page of the session's chat history live from a daemon holding it — the recording daemon, or a member of the shared store it was written to; 503 when none is reachable.",
+            "Proxies a page of the session's chat history live from a daemon holding it — the recording daemon, or a member of the shared store it was written to; 503 when none is reachable. With `view=roots` it reads a coordinator page's main timeline: the session's rows without the coordinator's posts in threads, each reply in a thread marked with its root's id in `thread`, and `threads`, the footers of the threads those rows start or reply in (and, on a page after `after`, those that changed). A footer of a thread a task holds keeps its excerpts and the task's title only where the caller may view that task's session, and says so in `readable`. 409 `DAEMON_FEATURE_MISSING` when `view=roots` reaches a daemon that cannot serve it. Nothing is stored by this call.",
           operationId: 'getSessionMessages',
           params: IdParam,
           querystring: SessionHistoryQueryDto,
-          response: { 200: SessionHistoryDto, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: SessionHistoryDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -1251,37 +1294,121 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
         const { session } = owned
-        // Retention GC (#485): the daemon deleted this session's local content, so
-        // there is provably nothing to proxy. Answer the empty page directly rather
-        // than round-tripping to a daemon that would return the same thing — and
-        // rather than 503-ing when its daemon happens to be offline, which would
-        // read as "try again later" for a transcript that is never coming back. The
-        // console keys its explanation off `contentPurgedAt`, not off this page.
+        // Retention GC (#485): nothing is left to proxy, so answer the empty page rather than a misleading 503.
+        const roots = req.query.view === 'roots'
         if (session.contentPurgedAt) {
-          return { sessionId: session.id, messages: [], nextCursor: null, liveCursor: null, liveMore: false }
-        }
-        const read = await readSessionContent(req, session, (daemonId) =>
-          deps.control.sessionHistory(daemonId, session.orgId, {
-            agentId: session.agentId,
+          return {
             sessionId: session.id,
-            ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
-            ...(req.query.after !== undefined ? { after: req.query.after } : {}),
-            limit: req.query.limit ?? 50
+            messages: [],
+            nextCursor: null,
+            liveCursor: null,
+            liveMore: false,
+            ...(roots ? { threads: [] } : {})
+          }
+        }
+        let read: Awaited<ReturnType<typeof readSessionContent<SessionHistoryPage>>>
+        try {
+          read = await readSessionContent(req, session, async (daemonId) => {
+            if (roots) await requireDaemonFeature(req, daemonId, SESSION_THREAD_READS_FEATURE, threadReadsMissing)
+            return await deps.control.sessionHistory(daemonId, session.orgId, {
+              agentId: session.agentId,
+              sessionId: session.id,
+              ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
+              ...(req.query.after !== undefined ? { after: req.query.after } : {}),
+              limit: req.query.limit ?? 50,
+              ...(roots ? { view: 'roots' as const } : {})
+            })
           })
-        )
+        } catch (err) {
+          if (err instanceof DaemonFeatureMissing) return reply.code(409).send(featureMissing(err))
+          throw err
+        }
         if (!read.ok) return reply.code(503).send(contentUnavailable(read.reason))
-        // Provider membership and identity can be revoked while the daemon is
-        // answering. Re-run the complete predicate before any body leaves CP.
+        // Access can be revoked while the daemon answers, so re-run the predicate before any body leaves the CP.
         if (!(await getOrgViewableSession(req, req.params.id))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
         const page = read.value
+        const threads = roots ? (page.threads ?? []) : undefined
+        const readableTasks = threads ? await viewableThreadTasks(req, session.agentId, threads) : new Set<string>()
         return {
           sessionId: page.sessionId,
           messages: page.messages,
           nextCursor: page.nextCursor ?? null,
           liveCursor: page.liveCursor ?? null,
-          liveMore: page.liveMore ?? false
+          liveMore: page.liveMore ?? false,
+          ...(threads ? { threads: threads.map((t) => threadSummaryFor(t, readableTasks)) } : {})
+        }
+      }
+    )
+
+    // One thread's record (webchat-threads.md §8), read through the session that received its root and authorized by §7.1.
+    r.get(
+      '/sessions/:id/threads/:rootId/messages',
+      {
+        schema: {
+          tags: [Tag.Sessions],
+          summary: "Get a thread's messages",
+          description:
+            "Proxies a page of one thread's record live from a daemon holding the session that received its root, `rootId` (a Slack `ts` or a webchat `postId`): the root, then the thread's messages oldest first, from people and agents, the holding task's turns, and observations nobody addressed to an agent; the reading session's own turns stay in its main timeline. Paged like `getSessionMessages` (`cursor` back, `after` forward), and `summary` is the thread's footer. Whoever may view the session may read an unowned thread; a thread a task holds is read only by who may view that task's session, and anyone else gets its footer without excerpts or title (`readable: false`) and no messages. 404 when the session never received that root, or the id names a reply. 409 `DAEMON_FEATURE_MISSING` when its daemon cannot serve thread reads; 503 when none is reachable. Nothing is stored by this call.",
+          operationId: 'getSessionThreadMessages',
+          params: SessionThreadParams,
+          querystring: SessionThreadQueryDto,
+          response: { 200: SessionThreadMessagesDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const notFound = { error: 'Not Found', statusCode: 404, message: 'thread not found' }
+        const owned = await getOrgViewableSession(req, req.params.id)
+        if (!owned) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        }
+        const { session } = owned
+        if (session.contentPurgedAt) return reply.code(404).send(notFound)
+        let read: Awaited<ReturnType<typeof readSessionContent<SessionThreadPage>>>
+        try {
+          read = await readSessionContent(req, session, async (daemonId) => {
+            await requireDaemonFeature(req, daemonId, SESSION_THREAD_READS_FEATURE, threadReadsMissing)
+            return await deps.control.sessionThread(daemonId, session.orgId, {
+              agentId: session.agentId,
+              sessionId: session.id,
+              rootId: req.params.rootId,
+              ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
+              ...(req.query.after !== undefined ? { after: req.query.after } : {}),
+              limit: req.query.limit ?? 50
+            })
+          })
+        } catch (err) {
+          if (err instanceof DaemonFeatureMissing) return reply.code(409).send(featureMissing(err))
+          throw err
+        }
+        if (!read.ok) return reply.code(503).send(contentUnavailable(read.reason))
+        // Re-run the session's predicate, then the held task's, before any body leaves the CP.
+        if (!(await getOrgViewableSession(req, req.params.id))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        }
+        const page = read.value
+        if (!page.summary) return reply.code(404).send(notFound)
+        const summary = threadSummaryFor(page.summary, await viewableThreadTasks(req, session.agentId, [page.summary]))
+        if (!summary.readable) {
+          return {
+            sessionId: page.sessionId,
+            rootId: page.rootId,
+            messages: [],
+            nextCursor: null,
+            liveCursor: null,
+            liveMore: false,
+            summary
+          }
+        }
+        return {
+          sessionId: page.sessionId,
+          rootId: page.rootId,
+          messages: page.messages,
+          nextCursor: page.nextCursor ?? null,
+          liveCursor: page.liveCursor ?? null,
+          liveMore: page.liveMore ?? false,
+          summary
         }
       }
     )
@@ -1310,9 +1437,12 @@ export function sessionRoutes(deps: HttpDeps) {
         let read: Awaited<ReturnType<typeof readSessionContent<SharedImageResolveOk>>>
         try {
           read = await readSessionContent(req, session, async (daemonId) => {
-            // Version skew: an older daemon drops the unknown REQ and would read as offline after its retries.
-            const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(daemonId))
-            if (!daemon?.capabilities.features.includes(WEBCHAT_IMAGES_FEATURE)) throw new SharedImagesUnsupported()
+            await requireDaemonFeature(
+              req,
+              daemonId,
+              WEBCHAT_IMAGES_FEATURE,
+              "this agent's daemon does not support shared-image originals"
+            )
             return await sharedImages.resolve({
               orgId: session.orgId,
               daemonId,
@@ -1322,14 +1452,7 @@ export function sessionRoutes(deps: HttpDeps) {
             })
           })
         } catch (err) {
-          if (err instanceof SharedImagesUnsupported) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: "this agent's daemon does not support shared-image originals",
-              code: 'DAEMON_FEATURE_MISSING'
-            })
-          }
+          if (err instanceof DaemonFeatureMissing) return reply.code(409).send(featureMissing(err))
           if (err instanceof ProtocolError && err.code === 'NO_SESSION') {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'shared image not found' })
           }

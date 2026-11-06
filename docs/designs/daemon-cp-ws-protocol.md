@@ -673,7 +673,11 @@ reads ([webchat-threads.md](webchat-threads.md) §8): `session/history` with
 `view: 'roots'` returns the main timeline with each thread reply marked by its
 `thread` and the page's `threads` summaries, and `session/thread` /
 `session/thread/page` page one thread's record by `(sessionId, rootId)` with its
-summary. The CP sends neither to a daemon without the feature.
+summary. The CP sends neither to a daemon without the feature. The console reads
+them through `GET /sessions/:id/messages?view=roots` and
+`GET /sessions/:id/threads/:rootId/messages`, which answer 409
+`DAEMON_FEATURE_MISSING` instead, and filter a held thread's content by its task's
+audience (webchat-threads.md §7.1).
 
 **List** (`GET /sessions`): a **CP database read** of the
 `event/session`-synced metadata — cursor-paginated, ordered by last activity,

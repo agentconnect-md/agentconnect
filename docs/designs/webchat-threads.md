@@ -403,6 +403,21 @@ same audience the whole thread, sync on or off. PR 8 adds the console's read of 
 `.oss-scanner/threat_model.md`. This answers message-intake.md §13 question 1 for
 coordinator pages.
 
+As implemented (PR 8):
+
+- **The conversation's audience** is the session read's: both routes first require that the caller
+  may view the session they read through, and re-check it after the daemon answers, as the session
+  history route does.
+- **A held thread** is a summary with `task`. Its content is shown only when the caller may view
+  `task.sessionId`, a session of the same agent (`threadReadable`, `domain/thread-read.ts`). A task
+  whose session does not exist yet, or that the CP has no row for, is read by nobody, so the check
+  fails closed while a task is starting.
+- **Without that view** a footer keeps the reply count, authors, last reply time, the task's state
+  and `running`, and loses `rootExcerpt`, the latest reply's excerpt and the task's title; it says
+  `readable: false`. The thread read answers that footer with no messages and no cursors.
+- **The row marks of the roots view are not filtered.** Every row the view returns was admitted into
+  the session being read, so the caller may already read it in the flat view.
+
 ## 8. Wire and reads
 
 | Surface                                   | Change                                                                                                            |
@@ -448,6 +463,19 @@ As implemented (PR 7):
 The BFF routes proxy bounded transcript reads to the owning daemon and persist nothing, as the
 session history route does. Each route gets its OpenAPI `tags`, `summary`, `description` and
 `operationId`.
+
+As implemented (PR 8):
+
+- **`GET /orgs/:org/sessions/:id/messages?view=roots`** (`getSessionMessages`) passes `view: 'roots'`
+  to the daemon and returns each row's `thread` and the page's `threads`, each footer filtered by
+  §7.1 and marked `readable`. Without `view` the route is unchanged and never carries `threads`.
+- **`GET /orgs/:org/sessions/:id/threads/:rootId/messages`** (`getSessionThreadMessages`) takes
+  `cursor` or `after` and `limit` as the history route does, and returns the page with `summary`.
+  A root the session never received, or a reply's id, answers 404; so does a purged session.
+- **Feature gate.** Each read checks that the daemon about to answer advertises
+  `session-thread-reads-v1` before the frame is sent. A daemon without it is skipped for the next
+  holder of the store, and a read no holder can serve answers 409 `DAEMON_FEATURE_MISSING`, the
+  answer the shared-image read already gives.
 
 ## 9. Effect on existing agents
 

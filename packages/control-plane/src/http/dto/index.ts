@@ -3729,17 +3729,51 @@ export const SessionMessageDto = z.object({
   toolKind: z.string().optional(),
   body: z.string().optional(), // JSON.stringify(ToolBody / PlanBody / ElicitBody); may be a truncated-but-valid-JSON preview
   bodyTruncated: z.boolean().optional(), // preview shrunk for the frame; full body via /sessions/:id/tool-body
-  bodyBytes: z.number().optional() // full (untruncated) body byte length
+  bodyBytes: z.number().optional(), // full (untruncated) body byte length
+  thread: z.string().optional() // `view=roots` alone: the root id of the thread this row is a reply in
 })
 /** `POST /sessions/:id/shared-images/:attachmentId/original` — the original's state and, when ready, a temporary GET. */
 export const SharedImageOriginalDto = SharedImageResolveOk
+
+const SessionThreadAuthorDto = z.object({ sender: z.string(), senderName: z.string().optional() })
+
+/** One thread footer (webchat-threads.md §5.3); `readable` false ⇒ a task the caller may not view holds it, so its excerpts and task title are left out (§7.1). */
+export const SessionThreadSummaryDto = z.object({
+  rootId: z.string(),
+  rootExcerpt: z.string().optional(),
+  replies: z.number().int().nonnegative(),
+  lastReplyAt: z.string().optional(),
+  lastReply: SessionThreadAuthorDto.extend({ excerpt: z.string().optional() }).optional(),
+  participants: z.array(SessionThreadAuthorDto),
+  task: z
+    .object({
+      sessionId: z.string().optional(),
+      title: z.string().optional(),
+      state: z.enum(['open', 'done', 'failed'])
+    })
+    .optional(),
+  running: z.boolean().optional(),
+  readable: z.boolean()
+})
 
 export const SessionHistoryDto = z.object({
   sessionId: z.string(),
   messages: z.array(SessionMessageDto),
   nextCursor: z.string().nullable(),
   liveCursor: z.string().nullable(),
-  liveMore: z.boolean()
+  liveMore: z.boolean(),
+  threads: z.array(SessionThreadSummaryDto).optional() // `view=roots` alone
+})
+
+/** `GET /sessions/:id/threads/:rootId/messages`: one page of a thread's record and its footer; no messages when the footer is not `readable`. */
+export const SessionThreadMessagesDto = z.object({
+  sessionId: z.string(),
+  rootId: z.string(),
+  messages: z.array(SessionMessageDto),
+  nextCursor: z.string().nullable(),
+  liveCursor: z.string().nullable(),
+  liveMore: z.boolean(),
+  summary: SessionThreadSummaryDto
 })
 
 /** `GET /sessions/:id/tool-body` query — one byte slice of a tool call's full ToolBody JSON. */
