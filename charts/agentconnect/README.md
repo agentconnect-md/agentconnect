@@ -48,11 +48,14 @@ and OpenCode. To run additional ACP runtimes such as Qwen Code, set
 `daemonPool.runtime.repository` to
 `ghcr.io/agentconnect-md/runtime-sandbox-full`. The chart keeps the selected
 release tag; `daemonPool.runtime.image` remains available for an exact image pin.
-OpenCode reuses the Anthropic, OpenAI, and DeepSeek pairs from
-`daemonPool.modelCredentials` or `modelEgress.clients`, so existing provider configuration
-needs no separate OpenCode mapping. For Qwen Code, other providers, or additional settings,
-map the runtime's environment variables from a Secret with
-`daemonPool.runtimeEnvironment.runtimes`. The mapping reaches both
+OpenCode and Kilo reuse the Anthropic, OpenAI, and DeepSeek pairs from
+`daemonPool.modelCredentials` or `modelEgress.clients`, and Qwen Code, GitHub Copilot CLI and
+goose reuse the Anthropic or OpenAI pair, so existing provider configuration needs no separate
+mapping for them. Qwen Code, Copilot and goose run one model named at launch: name the default
+in the runtime's own variable (`OPENAI_MODEL` or `ANTHROPIC_MODEL`, `COPILOT_MODEL`,
+`GOOSE_MODEL`) with `daemonPool.runtimeEnvironment.runtimes`. For other runtimes, other
+providers, or additional settings, map the runtime's environment variables from a Secret
+the same way. The mapping reaches both
 the pool's model probe and agent sessions. See the
 [Kubernetes runtime authentication guide](https://www.agentconnect.md/docs/self-hosting/kubernetes/runtime-authentication).
 

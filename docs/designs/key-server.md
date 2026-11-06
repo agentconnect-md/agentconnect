@@ -202,16 +202,20 @@ normal choice for a loopback or in-pod gateway.
 The cloud daemon's static pair is `MODEL_TOKEN` plus optional `MODEL_BASE_URL`, with a
 per-runtime pair that replaces it whole: `ANTHROPIC_MODEL_TOKEN`/`ANTHROPIC_MODEL_BASE_URL`
 for Claude, `OPENAI_MODEL_*` for Codex, `DEEPSEEK_MODEL_*` for the DeepSeek Harness.
-OpenCode reuses these provider pairs: `anthropic` uses `ANTHROPIC_MODEL_*`, `openai`
+OpenCode and Kilo reuse these provider pairs: `anthropic` uses `ANTHROPIC_MODEL_*`, `openai`
 uses `OPENAI_MODEL_*`, and `deepseek` uses `DEEPSEEK_MODEL_*`, with the same shared fallback.
+Qwen Code, GitHub Copilot CLI and goose reuse the `anthropic` or `openai` pair of the dialect
+their launch speaks (below).
 `*_MODEL_TOKEN` names an opaque deployment credential, not a header choice: despite the
 word "token" it is unrelated to `ANTHROPIC_AUTH_TOKEN`, and Claude's injection slot is
 `ANTHROPIC_API_KEY` (see the table below).
 
 The deployment supplies each provider's gateway base as an HTTP(S) URL. Claude Code
-appends `/v1/messages`, while OpenCode's Anthropic SDK appends `/messages`; reusing the
-Claude pair therefore adds `/v1` to OpenCode's base, without duplicating an existing
-`/v1` suffix. OpenAI and DeepSeek bases pass through unchanged. Each pair is translated
+appends `/v1/messages`, while the Anthropic SDK in OpenCode and Kilo appends `/messages`;
+reusing the Claude pair therefore adds `/v1` to their base, without duplicating an existing
+`/v1` suffix. Qwen Code, Copilot and goose append `/v1/messages` like Claude Code, so they take
+the Claude base unchanged. OpenAI and DeepSeek bases pass through unchanged: OpenAI clients
+append `/chat/completions` or `/responses` to a base that already ends in `/v1`. Each pair is translated
 at runtime launch:
 
 | Runtime  | Token                                                                                                                              | Base URL                                                                                                                             |
@@ -220,6 +224,29 @@ at runtime launch:
 | Codex    | `OPENAI_API_KEY`                                                                                                                   | `CODEX_CONFIG` → `model_provider = "openai"` and `model_providers.openai.base_url`; `OPENAI_BASE_URL` is also set for older adapters |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` → provider `options.apiKey` referencing its `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `DEEPSEEK_API_KEY` | provider `options.baseURL`                                                                                                           |
 | DeepSeek | `DEEPSEEK_API_KEY`                                                                                                                 | `DEEPSEEK_BASE_URL`                                                                                                                  |
+| Kilo     | `KILO_CONFIG_CONTENT`, the same document shape as OpenCode's                                                                       | provider `options.baseURL`                                                                                                           |
+| Qwen     | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, with `OPENAI_MODEL` or `ANTHROPIC_MODEL`                                                  | `OPENAI_BASE_URL` or `ANTHROPIC_BASE_URL`                                                                                            |
+| Copilot  | `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_TYPE` (`openai` or `anthropic`), `COPILOT_MODEL`, `COPILOT_OFFLINE=true`             | `COPILOT_PROVIDER_BASE_URL`                                                                                                          |
+| goose    | `GOOSE_PROVIDER` (`openai` or `anthropic`), `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, `GOOSE_MODEL`, `GOOSE_DISABLE_KEYRING=1`      | `OPENAI_BASE_URL` or `ANTHROPIC_HOST`                                                                                                |
+
+Kilo falls back to its own sign-in provider when its configuration enables no other, so a
+configured Kilo launch always lists its configured providers in `enabled_providers` and names
+the launch model, which a managed launch never holds a sign-in for. Qwen Code, Copilot and goose
+each run the one model their environment names and refuse to start without it, so their target
+carries the model with its dialect. A model id beginning `claude` speaks Anthropic Messages and any
+other speaks OpenAI; an `anthropic/` or `openai/` prefix, or the
+`$runtime|<authType>|<model>(<authType>)` id Qwen Code advertises, states the dialect outright.
+With no session model, the model the deployment named in the runtime's own variable
+(`OPENAI_MODEL`, `ANTHROPIC_MODEL`, `COPILOT_MODEL` or `GOOSE_MODEL`, from
+`daemonPool.runtimeEnvironment`) chooses the dialect, and the probe reports that model as the
+runtime's default. A switch to another model on these three starts a new host under a key
+server, and a static-credential host refuses it. Qwen Code takes whichever variable triple is complete, the OpenAI one
+first, so an Anthropic launch empties `OPENAI_MODEL` and `QWEN_MODEL`; its Anthropic route sends
+the key as `Authorization: Bearer`, not `x-api-key`. The launch also sets
+`QWEN_USAGE_STATISTICS_ENABLED=false` unless the deployment set it. None of the three takes a
+`deepseek` pair, whose dialect differs between deployments; Kilo's `deepseek/` models use it as
+OpenCode's do. Organization provider keys that carry request headers are refused for Qwen Code,
+Copilot and goose, which have no way to send them.
 
 Dynamic grants use the same translation for their key, and take their base URL from
 these same variables — a key server changes where the token comes from, never where the

@@ -812,10 +812,12 @@ import {
   applyModelCredential,
   applyOrganizationModelCredential,
   applyConfiguredModelProviders,
+  applyKiloLaunchModel,
   configuredClaudeModelAliases,
   configuredCodexSessionFloor,
   configuredModelCredentials,
   modelProviderTarget,
+  requiresSelectedModel,
   organizationModelProvider,
   type ModelCredential,
   type ModelProviderTarget
@@ -8688,6 +8690,7 @@ export class Daemon {
             if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
             if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
             if (this.claudeModelAliases) applyClaudeModelAliases(target, launchEnv, this.claudeModelAliases)
+            applyKiloLaunchModel(target, launchEnv, agent.runtimeOverrides?.model)
           }
         },
         runtimeReadRoots:
@@ -12862,8 +12865,8 @@ export class Daemon {
       const model = agent.runtimeOverrides?.model ?? this.runtimeFacts.modelCatalog(agent.runtime)?.defaultModel
       const target = runtime ? modelProviderTarget(agent, runtime, model) : undefined
       if (!target) throw new Error(`runtime "${agent.runtime}" does not support MODEL_TOKEN translation`)
-      if (target.runtime === 'opencode' && !model) {
-        throw new Error('OpenCode model list is not ready; select a model or retry after it loads')
+      if (requiresSelectedModel(target) && !model) {
+        throw new Error(`${agent.runtime} model list is not ready; select a model or retry after it loads`)
       }
       issued = {
         target,

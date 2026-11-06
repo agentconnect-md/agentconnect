@@ -5,12 +5,15 @@ import {
   applyCodexSessionFloor,
   applyOrganizationModelCredential,
   applyConfiguredModelProviders,
+  applyKiloLaunchModel,
   applyModelCredential,
   applyStaticModelConfig,
   applyClaudeModelAliases,
   configuredClaudeModelAliases,
   configuredCodexSessionFloor,
   configuredModelCredentials,
+  launchModelChoice,
+  modelCredentialRuntime,
   modelProviderTarget
 } from '../src/runtimes/model-provider-config.js'
 
@@ -406,5 +409,186 @@ describe('claude model aliases', () => {
       ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5-1'
     })
     expect(env).toEqual({})
+  })
+})
+
+describe('Kilo, Qwen Code, Copilot and goose', () => {
+  const anthropicPair = { key: 'issued', baseUrl: 'https://gw.example/anthropic' }
+  const openaiPair = { key: 'issued', baseUrl: 'https://gw.example/openai/v1' }
+
+  it('recognises each runtime by registry id or launch and takes the dialect from the model', () => {
+    expect(modelProviderTarget(agent('kilo', 'anthropic/claude-sonnet-5-5'), runtime('./kilo', ['acp']))).toEqual({
+      provider: 'anthropic',
+      runtime: 'kilo',
+      opencodeProvider: 'anthropic'
+    })
+    expect(modelProviderTarget(agent('custom'), runtime('npx', ['-y', '@kilocode/cli@7.8.27', 'acp']))).toMatchObject({
+      runtime: 'kilo',
+      opencodeProvider: 'openai'
+    })
+    expect(
+      modelProviderTarget(agent('qwen-code', '$runtime|anthropic|claude-sonnet-5-5(anthropic)'), runtime('qwen'))
+    ).toEqual({ provider: 'anthropic', runtime: 'qwen', model: 'claude-sonnet-5-5' })
+    expect(modelProviderTarget(agent('custom', 'gpt-5.5'), runtime('npx', ['@qwen-code/qwen-code@0.26.8']))).toEqual({
+      provider: 'openai',
+      runtime: 'qwen',
+      model: 'gpt-5.5'
+    })
+    expect(
+      modelProviderTarget(agent('custom', 'claude-opus-5-5'), runtime('npx', ['@github/copilot@1.0.106']))
+    ).toEqual({ provider: 'anthropic', runtime: 'copilot', model: 'claude-opus-5-5' })
+    expect(modelProviderTarget(agent('goose'), runtime('./goose', ['acp']))).toEqual({
+      provider: 'openai',
+      runtime: 'goose'
+    })
+    expect(modelProviderTarget(agent('gemini'), runtime('gemini', ['--acp']))).toBeUndefined()
+  })
+
+  it('reads explicit, Qwen-advertised and bare model ids', () => {
+    expect(launchModelChoice('openai/claude-like')).toEqual({ provider: 'openai', model: 'claude-like' })
+    expect(launchModelChoice('$runtime|openai|gpt-5.5(openai)')).toEqual({ provider: 'openai', model: 'gpt-5.5' })
+    expect(launchModelChoice('Claude-Haiku-5-5')).toEqual({ provider: 'anthropic', model: 'Claude-Haiku-5-5' })
+    expect(launchModelChoice('auto')).toEqual({ provider: 'openai' })
+    expect(launchModelChoice(undefined)).toEqual({ provider: 'openai' })
+  })
+
+  it('reuses the Claude and Codex pairs for the dialect each launch speaks', () => {
+    expect(modelCredentialRuntime({ provider: 'anthropic', runtime: 'goose', model: 'claude-x' })).toBe('claude')
+    expect(modelCredentialRuntime({ provider: 'openai', runtime: 'copilot', model: 'gpt-5.5' })).toBe('codex')
+    expect(modelCredentialRuntime({ provider: 'deepseek', runtime: 'kilo', opencodeProvider: 'deepseek' })).toBe(
+      'deepseek'
+    )
+  })
+
+  it('writes Kilo through KILO_CONFIG_CONTENT and limits it to the configured providers', () => {
+    const env: Record<string, string> = { KILO_CONFIG_CONTENT: JSON.stringify({ share: 'disabled' }) }
+    const pairs = { anthropic: anthropicPair, openai: openaiPair }
+    applyConfiguredModelProviders(
+      { provider: 'anthropic', runtime: 'kilo', opencodeProvider: 'anthropic' },
+      env,
+      (target) => pairs[target.opencodeProvider as keyof typeof pairs]
+    )
+    expect(env.OPENCODE_CONFIG_CONTENT).toBeUndefined()
+    expect(env).toMatchObject({ ANTHROPIC_API_KEY: 'issued', OPENAI_API_KEY: 'issued' })
+    expect(JSON.parse(env.KILO_CONFIG_CONTENT!)).toEqual({
+      share: 'disabled',
+      provider: {
+        anthropic: { options: { apiKey: '{env:ANTHROPIC_API_KEY}', baseURL: 'https://gw.example/anthropic/v1' } },
+        openai: { options: { apiKey: '{env:OPENAI_API_KEY}', baseURL: 'https://gw.example/openai/v1' } }
+      },
+      enabled_providers: ['anthropic', 'openai']
+    })
+  })
+
+  it('pins Kilo to the launch model, never over one the deployment chose', () => {
+    const target = { provider: 'openai', runtime: 'kilo', opencodeProvider: 'openai' } as const
+    const env: Record<string, string> = {}
+    applyKiloLaunchModel(target, env, 'openai/gpt-5.5')
+    expect(JSON.parse(env.KILO_CONFIG_CONTENT!).model).toBe('openai/gpt-5.5')
+    applyKiloLaunchModel(target, env, 'anthropic/claude-x')
+    expect(JSON.parse(env.KILO_CONFIG_CONTENT!).model).toBe('openai/gpt-5.5')
+    const opencode: Record<string, string> = {}
+    applyKiloLaunchModel({ ...target, runtime: 'opencode' }, opencode, 'openai/gpt-5.5')
+    expect(opencode).toEqual({})
+  })
+
+  it('gives Qwen Code one complete variable triple for the selected dialect', () => {
+    const openai: Record<string, string> = {}
+    applyModelCredential({ provider: 'openai', runtime: 'qwen', model: 'gpt-5.5' }, openai, openaiPair)
+    expect(openai).toEqual({
+      OPENAI_API_KEY: 'issued',
+      OPENAI_BASE_URL: 'https://gw.example/openai/v1',
+      OPENAI_MODEL: 'gpt-5.5',
+      QWEN_USAGE_STATISTICS_ENABLED: 'false'
+    })
+    // Qwen checks the OpenAI triple first, so an Anthropic launch empties its model variables.
+    const anthropic: Record<string, string> = { OPENAI_MODEL: 'stale', QWEN_USAGE_STATISTICS_ENABLED: 'true' }
+    applyModelCredential({ provider: 'anthropic', runtime: 'qwen', model: 'claude-x' }, anthropic, anthropicPair)
+    expect(anthropic).toEqual({
+      ANTHROPIC_API_KEY: 'issued',
+      ANTHROPIC_BASE_URL: 'https://gw.example/anthropic',
+      ANTHROPIC_MODEL: 'claude-x',
+      OPENAI_MODEL: '',
+      QWEN_MODEL: '',
+      QWEN_USAGE_STATISTICS_ENABLED: 'true'
+    })
+  })
+
+  it('sets Copilot to its provider mode with the model it requires', () => {
+    const env: Record<string, string> = {}
+    applyModelCredential({ provider: 'anthropic', runtime: 'copilot', model: 'claude-x' }, env, anthropicPair)
+    expect(env).toEqual({
+      COPILOT_PROVIDER_TYPE: 'anthropic',
+      COPILOT_PROVIDER_API_KEY: 'issued',
+      COPILOT_PROVIDER_BASE_URL: 'https://gw.example/anthropic',
+      COPILOT_MODEL: 'claude-x',
+      COPILOT_OFFLINE: 'true'
+    })
+  })
+
+  it('sets goose to the provider, host and model of the selected dialect', () => {
+    const anthropic: Record<string, string> = {}
+    applyModelCredential({ provider: 'anthropic', runtime: 'goose', model: 'claude-x' }, anthropic, anthropicPair)
+    expect(anthropic).toEqual({
+      GOOSE_PROVIDER: 'anthropic',
+      ANTHROPIC_API_KEY: 'issued',
+      ANTHROPIC_HOST: 'https://gw.example/anthropic',
+      GOOSE_MODEL: 'claude-x',
+      GOOSE_DISABLE_KEYRING: '1'
+    })
+    const openai: Record<string, string> = {}
+    applyModelCredential({ provider: 'openai', runtime: 'goose', model: 'gpt-5.5' }, openai, openaiPair)
+    expect(openai).toMatchObject({ GOOSE_PROVIDER: 'openai', OPENAI_BASE_URL: 'https://gw.example/openai/v1' })
+  })
+
+  it('takes the dialect from the model the deployment named when no session model is known', () => {
+    const env: Record<string, string> = { COPILOT_MODEL: 'claude-x' }
+    const asked: string[] = []
+    applyConfiguredModelProviders({ provider: 'openai', runtime: 'copilot' }, env, (target) => {
+      asked.push(target.provider)
+      return target.provider === 'anthropic' ? anthropicPair : openaiPair
+    })
+    expect(asked).toEqual(['anthropic'])
+    expect(env).toMatchObject({
+      COPILOT_PROVIDER_TYPE: 'anthropic',
+      COPILOT_PROVIDER_BASE_URL: 'https://gw.example/anthropic'
+    })
+    const qwen: Record<string, string> = { ANTHROPIC_MODEL: 'claude-x' }
+    applyConfiguredModelProviders({ provider: 'openai', runtime: 'qwen' }, qwen, (target) =>
+      target.provider === 'anthropic' ? anthropicPair : undefined
+    )
+    expect(qwen).toMatchObject({ ANTHROPIC_BASE_URL: 'https://gw.example/anthropic', ANTHROPIC_MODEL: 'claude-x' })
+  })
+
+  it('keeps the runtime key under a URL-only static pair', () => {
+    const env: Record<string, string> = { OPENAI_API_KEY: 'runtime-key' }
+    applyStaticModelConfig({ provider: 'openai', runtime: 'goose', model: 'gpt-5.5' }, env, {
+      key: '',
+      baseUrl: 'https://gw.example/openai/v1'
+    })
+    expect(env).toMatchObject({ OPENAI_API_KEY: 'runtime-key', OPENAI_BASE_URL: 'https://gw.example/openai/v1' })
+  })
+
+  it('refuses organization credentials whose headers the runtime cannot send', () => {
+    expect(() =>
+      applyOrganizationModelCredential(
+        'anthropic',
+        { provider: 'anthropic', runtime: 'goose', model: 'claude-x' },
+        {},
+        { apiKey: 'k', endpoint: null, headers: { 'anthropic-workspace-id': 'example-workspace' } }
+      )
+    ).toThrow(/cannot send/)
+    const env: Record<string, string> = {}
+    applyOrganizationModelCredential(
+      'auto',
+      { provider: 'anthropic', runtime: 'kilo', opencodeProvider: 'anthropic' },
+      env,
+      {
+        apiKey: 'k',
+        endpoint: null,
+        headers: {}
+      }
+    )
+    expect(JSON.parse(env.KILO_CONFIG_CONTENT!).enabled_providers).toEqual(['anthropic'])
   })
 })

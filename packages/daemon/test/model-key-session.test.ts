@@ -84,6 +84,24 @@ describe('daemon model-key session lifecycle', () => {
     expect(h.daemon.modelSessions.staticBaseUrl(entry.target)).toEqual({ baseUrl: 'https://gw.example/deepseek/v1' })
     await h.daemon.modelSessions.release('session-a')
   })
+
+  it('issues a launch-model runtime its probed default’s dialect and pins that model', async () => {
+    const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
+    const configured = { id: 'agent-a', runtime: 'github-copilot-cli' }
+    h.daemon.runtimes = { 'github-copilot-cli': { command: 'copilot', args: ['--acp'], env: [] } }
+    await expect(h.daemon.modelSessions.ensure(configured, 'session-a')).rejects.toThrow(/model list is not ready/)
+    expect(h.issue).not.toHaveBeenCalled()
+    vi.spyOn(h.daemon.runtimeFacts, 'modelCatalog').mockReturnValue({ defaultModel: 'claude-sonnet-5-5' })
+    await h.daemon.modelSessions.ensure(configured, 'session-a')
+    expect(h.issue).toHaveBeenCalledWith(expect.objectContaining({ provider: 'anthropic' }))
+    expect(h.starts.mock.calls[0]![1].target).toEqual({
+      provider: 'anthropic',
+      runtime: 'copilot',
+      model: 'claude-sonnet-5-5'
+    })
+    await h.daemon.modelSessions.release('session-a')
+  })
+
   it('refuses a key server outside cloud mode, and never demands a token path', () => {
     // A minted key is only usable with the `*_MODEL_BASE_URL` pair that aims it at this install's
     // gateway, and that pair is cloud-mode configuration — so a non-cloud key server is refused.

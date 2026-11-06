@@ -24,12 +24,33 @@ export interface ModelCredential {
 }
 
 /** Which runtime's own provider-configuration surface a credential must be written onto. */
-export type ModelRuntimeKind = 'claude' | 'codex' | 'opencode' | 'deepseek'
+export type ModelRuntimeKind = 'claude' | 'codex' | 'opencode' | 'deepseek' | 'kilo' | LaunchModelRuntimeKind
+
+/** Runtimes whose launch environment names the one model they run, so the target carries it. */
+export type LaunchModelRuntimeKind = 'qwen' | 'copilot' | 'goose'
 
 export interface ModelProviderTarget {
   provider: KeyProvider
   runtime: ModelRuntimeKind
   opencodeProvider?: string
+  model?: string
+}
+
+/** The two runtimes that read an OpenCode configuration document, and the variable that carries it. */
+const OPENCODE_CONFIG_ENV = { opencode: 'OPENCODE_CONFIG_CONTENT', kilo: 'KILO_CONFIG_CONTENT' } as const
+type OpenCodeShapedKind = keyof typeof OPENCODE_CONFIG_ENV
+
+export function isOpenCodeShaped(target: Pick<ModelProviderTarget, 'runtime'> | undefined): boolean {
+  return !!target && target.runtime in OPENCODE_CONFIG_ENV
+}
+
+function isLaunchModelRuntime(runtime: ModelRuntimeKind): runtime is LaunchModelRuntimeKind {
+  return runtime === 'qwen' || runtime === 'copilot' || runtime === 'goose'
+}
+
+/** Whether a launch for this target needs a selected or catalogued model before a key is issued. */
+export function requiresSelectedModel(target: ModelProviderTarget): boolean {
+  return isOpenCodeShaped(target) || isLaunchModelRuntime(target.runtime)
 }
 
 const OPENCODE_PROVIDERS: Record<string, { runtime: ModelRuntimeKind; keyEnv: string }> = {
@@ -39,9 +60,10 @@ const OPENCODE_PROVIDERS: Record<string, { runtime: ModelRuntimeKind; keyEnv: st
 }
 
 export function modelCredentialRuntime(target: ModelProviderTarget): ModelRuntimeKind {
-  return target.runtime === 'opencode'
-    ? (OPENCODE_PROVIDERS[target.opencodeProvider ?? 'openai']?.runtime ?? 'opencode')
-    : target.runtime
+  if (isOpenCodeShaped(target)) return OPENCODE_PROVIDERS[target.opencodeProvider ?? 'openai']?.runtime ?? 'opencode'
+  // A launch-model runtime reuses the pair of the dialect it speaks.
+  if (isLaunchModelRuntime(target.runtime)) return target.provider === 'anthropic' ? 'claude' : 'codex'
+  return target.runtime
 }
 
 // The bin, not the package: `dsh-acp` is the single bin of @openma/deepseek-harness-acp.
@@ -51,6 +73,53 @@ export function isDeepSeekRuntime(runtimeId: string, runtime?: RuntimeDef): bool
     !!runtime &&
     [runtime.command, ...runtime.args].some((part) => /(?:^|[\/@])dsh-acp(?:@[^\/]*)?$/.test(part.toLowerCase()))
   )
+}
+
+// A runtime is recognised by its registry id or by the bin or package its launch names.
+const LAUNCH_RUNTIMES: ReadonlyArray<{ kind: 'kilo' | LaunchModelRuntimeKind; ids: string[]; launch: RegExp }> = [
+  { kind: 'kilo', ids: ['kilo'], launch: /(?:^|\/)(?:kilo|@kilocode\/cli(?:@[^\/]*)?)$/ },
+  { kind: 'qwen', ids: ['qwen-code'], launch: /(?:^|\/)(?:qwen|@qwen-code\/qwen-code(?:@[^\/]*)?)$/ },
+  { kind: 'copilot', ids: ['github-copilot-cli'], launch: /(?:^|\/)(?:copilot|@github\/copilot(?:@[^\/]*)?)$/ },
+  { kind: 'goose', ids: ['goose'], launch: /(?:^|\/)goose$/ }
+]
+
+function launchRuntimeKind(runtimeId: string, runtime: RuntimeDef): 'kilo' | LaunchModelRuntimeKind | undefined {
+  return LAUNCH_RUNTIMES.find(
+    (entry) =>
+      entry.ids.includes(runtimeId) ||
+      [runtime.command, ...runtime.args].some((part) => entry.launch.test(part.toLowerCase()))
+  )?.kind
+}
+
+/** The dialect a bare model id needs and the id its runtime's model variable takes. */
+export function launchModelChoice(model: string | undefined): { provider: 'anthropic' | 'openai'; model?: string } {
+  const trimmed = model?.trim()
+  if (!trimmed) return { provider: 'openai' }
+  // Qwen Code advertises `$runtime|<authType>|<model>(<authType>)` for a model its environment names.
+  const qwen = /^\$runtime\|([^|]+)\|(.+)\(\1\)$/.exec(trimmed)
+  if (qwen) return { provider: qwen[1] === 'anthropic' ? 'anthropic' : 'openai', model: qwen[2] }
+  const prefixed = /^(anthropic|openai)\/(.+)$/.exec(trimmed)
+  if (prefixed) return { provider: prefixed[1] as 'anthropic' | 'openai', model: prefixed[2] }
+  // Copilot's `auto` routes through its own service, which a BYOK launch never reaches.
+  if (trimmed === 'auto') return { provider: 'openai' }
+  return { provider: /^claude(?:$|[-.@])/i.test(trimmed) ? 'anthropic' : 'openai', model: trimmed }
+}
+
+function launchModelTarget(runtime: LaunchModelRuntimeKind, model: string | undefined): ModelProviderTarget {
+  const choice = launchModelChoice(model)
+  return { provider: choice.provider, runtime, ...(choice.model ? { model: choice.model } : {}) }
+}
+
+// The model a deployment named in the runtime's own variables, used when no session model is known.
+function environmentLaunchModel(target: ModelProviderTarget, env: Record<string, string>): string | undefined {
+  if (target.runtime === 'qwen') {
+    const openai = env.OPENAI_MODEL || env.QWEN_MODEL
+    if (openai) return `openai/${openai}`
+    return env.ANTHROPIC_MODEL ? `anthropic/${env.ANTHROPIC_MODEL}` : undefined
+  }
+  if (target.runtime === 'copilot') return env.COPILOT_MODEL || undefined
+  if (target.runtime === 'goose') return env.GOOSE_MODEL || undefined
+  return undefined
 }
 
 function applyCodexBaseUrl(env: Record<string, string>, baseUrl: string): void {
@@ -66,13 +135,15 @@ export function modelProviderTarget(
   if (isClaudeRuntimeDef(runtime)) return { provider: 'anthropic', runtime: 'claude' }
   if (sharedCredentialProfile(agent.runtime, runtime) === 'codex') return { provider: 'openai', runtime: 'codex' }
   if (isDeepSeekRuntime(agent.runtime, runtime)) return { provider: 'deepseek', runtime: 'deepseek' }
-  if (!isOpenCodeRuntime(agent.runtime, runtime)) return undefined
+  const launchKind = isOpenCodeRuntime(agent.runtime, runtime) ? 'opencode' : launchRuntimeKind(agent.runtime, runtime)
+  if (!launchKind) return undefined
+  if (isLaunchModelRuntime(launchKind)) return launchModelTarget(launchKind, effectiveModel)
 
   const configuredProvider = effectiveModel?.includes('/') ? effectiveModel.split('/', 1)[0]?.trim() : undefined
   const opencodeProvider = configuredProvider || 'openai'
   return {
     provider: opencodeProvider === 'anthropic' || opencodeProvider === 'deepseek' ? opencodeProvider : 'openai',
-    runtime: 'opencode',
+    runtime: launchKind,
     opencodeProvider
   }
 }
@@ -83,10 +154,11 @@ function applyOpenCodeCredential(
   credential: ModelCredential
 ): void {
   const providerId = target.opencodeProvider ?? 'openai'
-  const config = objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
-  const providers = record(config.provider, 'OPENCODE_CONFIG_CONTENT.provider')
-  const provider = record(providers[providerId], `OPENCODE_CONFIG_CONTENT.provider.${providerId}`)
-  const options = record(provider.options, `OPENCODE_CONFIG_CONTENT.provider.${providerId}.options`)
+  const configEnv = OPENCODE_CONFIG_ENV[target.runtime as OpenCodeShapedKind]
+  const config = objectFromJson(env[configEnv], configEnv)
+  const providers = record(config.provider, `${configEnv}.provider`)
+  const provider = record(providers[providerId], `${configEnv}.provider.${providerId}`)
+  const options = record(provider.options, `${configEnv}.provider.${providerId}.options`)
   const keyEnv = OPENCODE_PROVIDERS[providerId]?.keyEnv ?? 'MODEL_TOKEN'
   if (credential.key) env[keyEnv] = credential.key
   let baseURL = credential.baseUrl
@@ -96,7 +168,7 @@ function applyOpenCodeCredential(
     url.pathname = `${url.pathname.replace(/\/+$/, '').replace(/\/v1$/, '')}/v1`
     baseURL = url.toString()
   }
-  env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+  env[configEnv] = JSON.stringify({
     ...config,
     provider: {
       ...providers,
@@ -110,6 +182,42 @@ function applyOpenCodeCredential(
       }
     }
   })
+}
+
+// An Anthropic base is the Claude pair's (each client appends /v1/messages); an OpenAI base ends in /v1.
+function applyLaunchModelCredential(
+  target: ModelProviderTarget & { runtime: LaunchModelRuntimeKind },
+  env: Record<string, string>,
+  credential: ModelCredential
+): void {
+  const anthropic = target.provider === 'anthropic'
+  const { key, baseUrl } = credential
+  if (target.runtime === 'qwen') {
+    // Qwen Code picks its auth type from whichever variable triple is complete, OpenAI first.
+    const prefix = anthropic ? 'ANTHROPIC_' : 'OPENAI_'
+    if (key) env[`${prefix}API_KEY`] = key
+    if (baseUrl) env[`${prefix}BASE_URL`] = baseUrl
+    if (target.model) env[`${prefix}MODEL`] = target.model
+    if (anthropic) env.OPENAI_MODEL = env.QWEN_MODEL = ''
+    // Also stops its models.dev catalog refresh; a deployment can still turn it back on.
+    env.QWEN_USAGE_STATISTICS_ENABLED ??= 'false'
+    return
+  }
+  if (target.runtime === 'copilot') {
+    env.COPILOT_PROVIDER_TYPE = target.provider
+    if (key) env.COPILOT_PROVIDER_API_KEY = key
+    if (baseUrl) env.COPILOT_PROVIDER_BASE_URL = baseUrl
+    if (target.model) env.COPILOT_MODEL = target.model
+    // No GitHub sign-in, telemetry or model service: the provider is the only endpoint.
+    env.COPILOT_OFFLINE = 'true'
+    return
+  }
+  env.GOOSE_PROVIDER = target.provider
+  if (key) env[anthropic ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'] = key
+  if (baseUrl) env[anthropic ? 'ANTHROPIC_HOST' : 'OPENAI_BASE_URL'] = baseUrl
+  if (target.model) env.GOOSE_MODEL = target.model
+  // goose otherwise stores and reads provider keys through the OS keyring.
+  env.GOOSE_DISABLE_KEYRING = '1'
 }
 
 // Translate the daemon-neutral model pair into the runtime's supported configuration surface.
@@ -147,6 +255,11 @@ export function applyModelCredential(
     // Kept beside the gateway method: an older codex-acp ignores an unknown methodId, and resumed
     // threads pinned to the built-in provider still route by CODEX_CONFIG's openai_base_url.
     applyCodexBaseUrl(env, credential.baseUrl)
+    return
+  }
+
+  if (isLaunchModelRuntime(target.runtime)) {
+    applyLaunchModelCredential(target as ModelProviderTarget & { runtime: LaunchModelRuntimeKind }, env, credential)
     return
   }
 
@@ -188,6 +301,18 @@ export function configuredClaudeModelAliases(env: NodeJS.ProcessEnv): Record<str
     if (value) declared[name] = value
   }
   return Object.keys(declared).length > 0 ? declared : undefined
+}
+
+// Kilo starts on its own default model, which can be a provider this launch holds no key for.
+export function applyKiloLaunchModel(
+  target: ModelProviderTarget,
+  env: Record<string, string>,
+  model: string | undefined
+): void {
+  if (target.runtime !== 'kilo' || !model?.includes('/')) return
+  const config = objectFromJson(env.KILO_CONFIG_CONTENT, 'KILO_CONFIG_CONTENT')
+  config.model ??= model
+  env.KILO_CONFIG_CONTENT = JSON.stringify(config)
 }
 
 // Applied by the DAEMON at spawn and at probe, so the picker a console shows and the models a
@@ -251,8 +376,12 @@ export function applyStaticModelConfig(
   env: Record<string, string>,
   configured: ModelCredential
 ): void {
-  if (target.runtime === 'opencode') {
+  if (isOpenCodeShaped(target)) {
     applyOpenCodeCredential(target, env, configured)
+    return
+  }
+  if (isLaunchModelRuntime(target.runtime)) {
+    applyLaunchModelCredential(target as ModelProviderTarget & { runtime: LaunchModelRuntimeKind }, env, configured)
     return
   }
   if (configured.key) {
@@ -271,14 +400,17 @@ export function applyConfiguredModelProviders(
   env: Record<string, string>,
   credentialFor: (target: ModelProviderTarget) => ModelCredential | undefined
 ): void {
-  const targets: ModelProviderTarget[] =
-    target.runtime === 'opencode'
-      ? [...new Set([...Object.keys(OPENCODE_PROVIDERS), target.opencodeProvider ?? 'openai'])].map((provider) => ({
-          runtime: 'opencode',
-          opencodeProvider: provider,
-          provider: provider === 'anthropic' || provider === 'deepseek' ? provider : 'openai'
-        }))
-      : [target]
+  // With no session model, the model the deployment named in the runtime's own variables picks the dialect.
+  const launchModel =
+    isLaunchModelRuntime(target.runtime) && !target.model ? environmentLaunchModel(target, env) : undefined
+  const resolved = launchModel ? launchModelTarget(target.runtime as LaunchModelRuntimeKind, launchModel) : target
+  const targets: ModelProviderTarget[] = isOpenCodeShaped(target)
+    ? [...new Set([...Object.keys(OPENCODE_PROVIDERS), target.opencodeProvider ?? 'openai'])].map((provider) => ({
+        runtime: target.runtime,
+        opencodeProvider: provider,
+        provider: provider === 'anthropic' || provider === 'deepseek' ? provider : 'openai'
+      }))
+    : [resolved]
   let configured = false
   for (const providerTarget of targets) {
     const credential = credentialFor(providerTarget)
@@ -286,10 +418,12 @@ export function applyConfiguredModelProviders(
     applyStaticModelConfig(providerTarget, env, credential)
     configured = true
   }
-  if (target.runtime !== 'opencode' || !configured) return
-  const config = objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
-  config.enabled_providers ??= Object.keys(record(config.provider, 'OPENCODE_CONFIG_CONTENT.provider'))
-  env.OPENCODE_CONFIG_CONTENT = JSON.stringify(config)
+  if (!isOpenCodeShaped(target) || !configured) return
+  // Without an explicit list Kilo falls back to its own sign-in provider, which a managed launch never has.
+  const configEnv = OPENCODE_CONFIG_ENV[target.runtime as OpenCodeShapedKind]
+  const config = objectFromJson(env[configEnv], configEnv)
+  config.enabled_providers ??= Object.keys(record(config.provider, `${configEnv}.provider`))
+  env[configEnv] = JSON.stringify(config)
 }
 
 export function organizationModelProvider(
@@ -300,7 +434,7 @@ export function organizationModelProvider(
     !target ||
     (target.provider !== 'anthropic' && target.provider !== 'openai') ||
     (provider !== 'auto' && target.provider !== provider) ||
-    (target.runtime === 'opencode' && target.opencodeProvider !== target.provider)
+    (isOpenCodeShaped(target) && target.opencodeProvider !== target.provider)
   )
     throw new Error(`Selected ${provider} credentials do not match this runtime and model`)
   return target.provider
@@ -314,6 +448,9 @@ export function applyOrganizationModelCredential(
   credential: ProviderCredential
 ): void {
   const provider = organizationModelProvider(selection, target)
+  // These runtimes have no variable for extra request headers, and dropping one could change billing.
+  if (isLaunchModelRuntime(target!.runtime) && Object.keys(credential.headers).length > 0)
+    throw new Error(`Selected ${provider} credentials carry request headers this runtime cannot send`)
   const baseUrl = credential.endpoint ?? PROVIDER_KEY_PROFILES[provider].defaultEndpoint!
   applyModelCredential(target!, env, { key: credential.apiKey, baseUrl })
   if (target?.runtime === 'claude') {
@@ -333,12 +470,13 @@ export function applyOrganizationModelCredential(
       .join('\n')
   } else if (target?.runtime === 'codex') {
     env.DEFAULT_AUTH_REQUEST = codexGatewayAuthRequest(baseUrl, credential.apiKey, credential.headers)
-  } else if (target?.runtime === 'opencode') {
-    const config = objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
-    const providers = record(config.provider, 'OPENCODE_CONFIG_CONTENT.provider')
-    const entry = record(providers[provider], 'OPENCODE_CONFIG_CONTENT.provider')
-    const options = record(entry.options, 'OPENCODE_CONFIG_CONTENT.provider.options')
-    env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+  } else if (isOpenCodeShaped(target)) {
+    const configEnv = OPENCODE_CONFIG_ENV[target!.runtime as OpenCodeShapedKind]
+    const config = objectFromJson(env[configEnv], configEnv)
+    const providers = record(config.provider, `${configEnv}.provider`)
+    const entry = record(providers[provider], `${configEnv}.provider`)
+    const options = record(entry.options, `${configEnv}.provider.options`)
+    env[configEnv] = JSON.stringify({
       ...config,
       enabled_providers: [provider],
       provider: { [provider]: { ...entry, options: { ...options, headers: credential.headers } } }
