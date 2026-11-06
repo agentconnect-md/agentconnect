@@ -46,9 +46,9 @@ export function platformMessageIdOf(msg: MessageIdentity): string {
   return msg.transcriptPostId ?? msg.transcriptTs ?? msg.msgId.split(':').at(-1) ?? msg.msgId
 }
 
-/** Whether a message's conversation has no threads, so a task opened for it continues on its own console page (auto-session-mode.md §10). */
-export function threadless(msg: Pick<NormalizedMessage, 'platform'>): boolean {
-  return msg.platform === 'webchat'
+/** Whether a webchat message has no thread, as only a post-less console message has, so its task continues on its own page (webchat-threads.md §5.1). */
+export function threadless(msg: Pick<NormalizedMessage, 'platform' | 'thread'>): boolean {
+  return msg.platform === 'webchat' && msg.thread === undefined
 }
 
 /** Whether a room is one thread named after it, as a platform keys a room of its own (a task's place, auto-session-mode.md §6.8): it has no root to coordinate. */

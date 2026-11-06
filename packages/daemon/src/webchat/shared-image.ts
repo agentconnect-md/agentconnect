@@ -297,7 +297,8 @@ export async function publishWebchatSharedImage(
         author: { kind: 'agent', agentId: turn.agentId },
         text,
         at,
-        image
+        image,
+        ...(wc.thread ? { thread: wc.thread } : {})
       }
       wc.postSink?.({
         conversationId: wc.conversationId,
@@ -390,7 +391,14 @@ export async function publishWebchatSharedFile(
         conversationId: wc.conversationId,
         agentId: turn.agentId,
         // No hopCount: a shared file is transcript-only for peers and never wakes another agent.
-        post: { postId, conversationId: wc.conversationId, author: { kind: 'agent', agentId: turn.agentId }, text, at },
+        post: {
+          postId,
+          conversationId: wc.conversationId,
+          author: { kind: 'agent', agentId: turn.agentId },
+          text,
+          at,
+          ...(wc.thread ? { thread: wc.thread } : {})
+        },
         ...(wc.initiator ? { initiator: wc.initiator } : {})
       })
     }

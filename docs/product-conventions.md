@@ -1387,6 +1387,16 @@ threads; at the end of each run there the coordinator hears what the task did an
 thread that requested that channel, even when the task originally opened in another thread.
 Archiving the channel closes the task.
 
+A member's console conversation with an agent, the one the home page opens, has the same shape
+where the agent's daemon has Auto on. Each message the person sends at the conversation's root
+goes to the coordinator, and its answer goes in that message's thread: a task the coordinator
+opens works there, and the coordinator's own short reply is posted there. The coordinator's turn
+itself stays in the main conversation. A reply in a thread a task holds goes to that task and is
+answered there, without the coordinator; a reply in any other thread reaches the coordinator,
+which is told which thread it sits in. A task opened on a thread reads everything said there
+before it, the coordinator's answers included. A task the coordinator opened before threads
+existed keeps its own page and its link cards until it closes.
+
 A Code channel's Tasks tab reads the same task and runtime background-work sources as
 the console's Tasks panel. Open work stays visible, finished work is grouped and collapsed,
 and updates continue after the main reply ends while background work remains. Runtime work

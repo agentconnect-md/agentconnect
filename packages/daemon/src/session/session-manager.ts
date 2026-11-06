@@ -981,7 +981,9 @@ export class SessionManager {
         ordering,
         firstPromptAfterOwnRootInitialization,
         retryAdmittedTurn: options.retryAdmittedTurn,
-        historyLost: opened.historyLost
+        historyLost: opened.historyLost,
+        // A webchat task's first round reads its whole thread, the coordinator's answers included (webchat-threads.md §4).
+        ...(markerBefore === null && webchatTask !== undefined && !webchatTask.page ? { ownRowsAsContext: true } : {})
       })
       const renderContext = (entries: readonly TranscriptEntry[]): string =>
         renderReplayContext(

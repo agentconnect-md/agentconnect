@@ -55,6 +55,8 @@ export interface ChannelMessage {
   task?: string
   kind?: string
   title?: string
+  /** The root a thread reply sits under, by its message id (webchat-threads.md §4). */
+  thread?: string
 }
 
 /** An open task as `listTasks` reports it. */
@@ -498,6 +500,7 @@ export type CoScenarioId =
   | 'webchat-status'
   | 'webchat-route'
   | 'webchat-elsewhere-status'
+  | 'webchat-thread-follow-up'
 
 export interface CoordinatorScenario {
   id: CoScenarioId
@@ -797,6 +800,22 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
     elsewhere: [WEBHOOK_TASK],
     messages: [webMsg('msg-9c4a5f6e-3d2b-4fa0-9e8d-4b5c6d7e8f90', 'did the webhook retry land?')],
     expect: { 'msg-9c4a5f6e-3d2b-4fa0-9e8d-4b5c6d7e8f90': { kind: 'reply', mentions: '412' } }
+  },
+  {
+    // webchat-threads.md §4: a follow-up under the coordinator's own answer, in a thread no task holds, asks for work.
+    id: 'webchat-thread-follow-up',
+    webchat: true,
+    tasks: [],
+    messages: [
+      {
+        ...webMsg(
+          'msg-0d5b6a7f-4e3c-4ab1-8f9e-5c6d7e8f9a01',
+          'thanks. then please add retry with backoff to the webhook sender in services/notify'
+        ),
+        thread: 'msg-1e6c7b8a-5f4d-4bc2-9a0f-6d7e8f9a0b12'
+      }
+    ],
+    expect: { 'msg-0d5b6a7f-4e3c-4ab1-8f9e-5c6d7e8f9a01': { kind: 'delegate' } }
   }
 ]
 

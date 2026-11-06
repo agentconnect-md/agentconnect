@@ -136,13 +136,13 @@ export function messageForRoomTask(
   }
 }
 
-/** The message a task on its own page receives (§10): the original, moved to the task's coordinate and out of its conversation's posts. */
+/** The message a task on its own page receives (§10): the original, moved to the task's coordinate and out of its conversation's posts and threads. */
 export function messageForPageTask(
   msg: NormalizedMessage,
   at: { channel: string; sessionThread: string },
   opts: { title?: string; background?: string }
 ): NormalizedMessage {
-  const { transcriptPostId: _post, ...moved } = messageForTask(msg, opts)
+  const { transcriptPostId: _post, thread: _thread, ...moved } = messageForTask(msg, opts)
   return { ...moved, channel: at.channel, sessionThread: at.sessionThread }
 }
 
@@ -545,15 +545,16 @@ export class CoordinatorSessions {
     background?: string
   ): Promise<void> {
     const store = this.host.store()
-    if (threadless(message.msg)) {
-      // A page task's message moves into its conversation, which the coordinator links to (§10).
-      const sessionThread = pageTaskCoordinate(taskKey, message.msg.platform, agentId)
-      if (sessionThread === undefined) throw new Error(`sendMessage: ${taskKey} has no page this message can move to`)
+    // A legacy page task's message moves into its conversation, which the coordinator links to, threaded or not (§10).
+    const page = pageTaskCoordinate(taskKey, message.msg.platform, agentId)
+    if (page === undefined && threadless(message.msg))
+      throw new Error(`sendMessage: ${taskKey} has no page this message can move to`)
+    if (page !== undefined) {
       this.host.dispatch(
         agentId,
         messageForPageTask(
           message.msg,
-          { channel: a2aCoordChannel(agentId), sessionThread },
+          { channel: a2aCoordChannel(agentId), sessionThread: page },
           background ? { background } : {}
         ),
         message.integrationId
