@@ -146,6 +146,25 @@ describe('openapi plane', () => {
     }
   })
 
+  it('names, tags and describes the thread reads (webchat-threads.md §8)', async () => {
+    const app = await buildReady()
+    try {
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      const base = '/api/v1/orgs/{orgId}/sessions/{id}'
+      const roots = doc.paths?.[`${base}/messages`]?.get
+      const thread = doc.paths?.[`${base}/threads/{rootId}/messages`]?.get
+      expect(roots?.operationId).toBe('getSessionMessages')
+      expect((roots?.parameters ?? []).find((p: any) => p.name === 'view')?.schema?.enum).toEqual(['roots'])
+      expect(thread).toMatchObject({ operationId: 'getSessionThreadMessages', tags: ['Sessions'] })
+      expect(thread?.summary).toBeTruthy()
+      expect(thread?.description).toMatch(/may view that task's session/)
+      for (const op of [roots, thread])
+        expect(Object.keys(op?.responses ?? {})).toEqual(expect.arrayContaining(['200', '404', '409', '503']))
+    } finally {
+      await app.close()
+    }
+  })
+
   it('names, tags and describes every assistant Activity route, and documents the editor-only ones as refusable', async () => {
     const app = await buildReady()
     try {
