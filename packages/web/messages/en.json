@@ -4248,7 +4248,6 @@
     },
     "delete": "Delete",
     "doubleClickRename": "Double-click to rename",
-    "autoUpgradeOn": "Auto-upgrade on",
     "restrictedHint": "Selected — only shared members can see this daemon",
     "empty": {
       "title": "No daemons connected",

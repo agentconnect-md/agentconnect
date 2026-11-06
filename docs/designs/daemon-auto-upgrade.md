@@ -324,8 +324,9 @@ On the daemon detail view's header, right after the version:
   unavailable, and each note's full text, so touch screens reach them too.
 
 The switch sits next to the version so whether a daemon moves on its own is read where its
-version is. The fleet list shows a small auto-upgrade indicator next to the version. The
-desktop and mobile branches of `DaemonDetailView` both get the switch.
+version is. The fleet list shows no auto-upgrade mark: a switched-on daemon needs nothing, and
+one that fell behind already carries the update badge. The desktop and mobile branches of
+`DaemonDetailView` both get the switch.
 
 ## 9. Changes by package
 
