@@ -5365,6 +5365,7 @@ export default function SessionDetailView() {
                                                 turn.agentId === filesAgentId ? subsessionsSessionId : null
                                               }
                                               selected={openThread?.sessionId === taskLinks[si].sessionId}
+                                              onOpen={() => openTaskThread(taskLinks[si]!)}
                                             />
                                           </div>
                                         ) : (
@@ -5424,6 +5425,7 @@ export default function SessionDetailView() {
                                               link={link}
                                               parentSessionId={subsessionsSessionId}
                                               selected={openThread?.sessionId === link.sessionId}
+                                              onOpen={() => openTaskThread(link)}
                                             />
                                           </div>
                                         ))}

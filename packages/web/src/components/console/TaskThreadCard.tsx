@@ -2,7 +2,7 @@
 
 // A coordinator's task in its conversation (auto-session-mode.md §10): a card that opens the task's thread beside the chat, and its replies line.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type MouseEvent } from 'react'
 import Link from 'next/link'
 import { useFormatter, useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
@@ -29,7 +29,7 @@ export function TaskThreadCard({
   parentSessionId: string | null
   /** Its thread is the one open beside the chat. */
   selected?: boolean
-  /** Opens the thread beside the chat; without it the card goes to the task's own page. */
+  /** Opens the thread beside the chat on a plain click; a modified click, or none given, goes to the task's own page. */
   onOpen?: () => void
 }) {
   const t = useTranslations('Common.taskThread')
@@ -73,44 +73,34 @@ export function TaskThreadCard({
       <span className="font-semibold text-(--brand)">{t('reply')}</span>
     )
 
+  // A plain click opens the thread beside the chat; a modified or middle click keeps the link's own new-tab behaviour.
+  const openBeside = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (!onOpen || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    event.preventDefault()
+    onOpen()
+  }
+
   return (
     <div data-task-card={link.sessionId} className="flex min-w-0 flex-col gap-[6px]">
-      {onOpen ? (
-        <button
-          type="button"
-          className={cardClass}
-          aria-expanded={selected}
-          aria-label={t('open', { title })}
-          title={t('open', { title })}
-          onClick={onOpen}
-        >
-          {face}
-        </button>
-      ) : (
-        <Link className={cardClass} href={href} aria-label={t('openPage', { title })}>
-          {face}
-        </Link>
-      )}
-      {onOpen ? (
-        <button
-          type="button"
-          data-task-card-replies=""
-          className="flex w-fit cursor-pointer items-center gap-[6px] border-0 bg-transparent px-[2px] py-0 font-sans text-[12.5px] font-normal leading-normal hover:underline"
-          onClick={onOpen}
-        >
-          <Icon name="reply" size={13} color="var(--brand)" className="flex-none" />
-          {repliesLine}
-        </button>
-      ) : (
-        <Link
-          data-task-card-replies=""
-          href={href}
-          className="flex w-fit items-center gap-[6px] px-[2px] font-sans text-[12.5px] font-normal leading-normal no-underline hover:underline"
-        >
-          <Icon name="reply" size={13} color="var(--brand)" className="flex-none" />
-          {repliesLine}
-        </Link>
-      )}
+      <Link
+        className={cardClass}
+        href={href}
+        onClick={openBeside}
+        {...(onOpen ? { 'aria-expanded': selected === true } : {})}
+        aria-label={onOpen ? t('open', { title }) : t('openPage', { title })}
+        title={onOpen ? t('open', { title }) : undefined}
+      >
+        {face}
+      </Link>
+      <Link
+        data-task-card-replies=""
+        href={href}
+        onClick={openBeside}
+        className="flex w-fit items-center gap-[6px] px-[2px] font-sans text-[12.5px] font-normal leading-normal no-underline hover:underline"
+      >
+        <Icon name="reply" size={13} color="var(--brand)" className="flex-none" />
+        {repliesLine}
+      </Link>
     </div>
   )
 }
