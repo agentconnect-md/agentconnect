@@ -353,12 +353,14 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
   })
 
   it('marks a task among the links and leaves tasks out of the list, its total and its facets on request', async () => {
+    // A threaded task runs in its own platform thread; the session that owns it now is what makes it a task.
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     running = buildHttpApp(prisma)
 
     const conversation = 'acp-conversation'
     const task = 'acp-task'
+    const threaded = 'acp-threaded-task'
     const called = 'acp-called'
     const base = { agentId: AGENT, phase: 'start', platform: 'slack' }
     await reportSession({
@@ -387,13 +389,23 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       title: 'Ask the release channel',
       ts: '2026-07-05T00:02:00.000Z'
     })
+    await reportSession({
+      ...base,
+      sessionId: threaded,
+      taskParentSessionId: conversation,
+      channel: 'C1',
+      thread: '1700000000.000300',
+      title: 'Draft the release notes',
+      ts: '2026-07-05T00:03:00.000Z'
+    })
 
     const detail = (await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${conversation}` })).json() as {
       childSessions: Array<{ id: string; subsession: boolean }>
     }
     expect(detail.childSessions.map(({ id, subsession }) => ({ id, subsession }))).toEqual([
       { id: task, subsession: true },
-      { id: called, subsession: false }
+      { id: called, subsession: false },
+      { id: threaded, subsession: true }
     ])
 
     const list = async (query: string) =>
@@ -403,8 +415,8 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         total: number
       }
     const flatAll = await list('view=flat')
-    expect(flatAll.sessions?.map((row) => row.sessionId).sort()).toEqual([called, conversation, task].sort())
-    expect(flatAll.total).toBe(3)
+    expect(flatAll.sessions?.map((row) => row.sessionId).sort()).toEqual([called, conversation, task, threaded].sort())
+    expect(flatAll.total).toBe(4)
     const flatReal = await list('view=flat&tasks=exclude')
     expect(flatReal.sessions?.map((row) => row.sessionId).sort()).toEqual([called, conversation].sort())
     expect(flatReal.total).toBe(2)
@@ -413,7 +425,7 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       [called, conversation].sort()
     )
     expect(grouped.total).toBe(2)
-    expect((await list('tasks=include&view=flat')).total).toBe(3)
+    expect((await list('tasks=include&view=flat')).total).toBe(4)
 
     const facets = async (query: string) =>
       (await running!.app.inject({ method: 'GET', url: `${ORG}/sessions/facets?${query}` })).json() as {

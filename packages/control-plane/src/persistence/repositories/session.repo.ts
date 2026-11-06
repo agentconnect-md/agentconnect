@@ -352,7 +352,10 @@ function pageWhereSql(
   if (q.triggeredBy?.length) filters.push(Prisma.sql`${a}."triggeredBy" IN (${Prisma.join(q.triggeredBy)})`)
   if (q.activityState) filters.push(Prisma.sql`${a}."activityState" = ${q.activityState}::"ActivityState"`)
   if (q.excludeSubsessions) {
-    filters.push(Prisma.sql`(${a}."thread" IS NULL OR ${a}."thread" NOT LIKE ${`${SUBSESSION_COORDINATE_PREFIX}%`})`)
+    // A threaded task runs on its platform thread rather than a `subsession:` one; the session that owns it marks it a task.
+    filters.push(
+      Prisma.sql`((${a}."thread" IS NULL OR ${a}."thread" NOT LIKE ${`${SUBSESSION_COORDINATE_PREFIX}%`}) AND ${a}."taskParentSessionId" IS NULL)`
+    )
   }
   if (q.hookTriggerIds) {
     const repository = hookTriggerSql(q.hookTriggerIds, a)

@@ -3556,7 +3556,7 @@ export const SessionRelationDto = z.object({
   subsession: z
     .boolean()
     .describe(
-      'True when the linked session is a task (a delegated task, a follow-up (including a getting-to-know task) or an approved proposal) running on a `subsession:` thread rather than a conversation of its own.'
+      'True when the linked session is a task (a delegated task, a follow-up (including a getting-to-know task) or an approved proposal) rather than a conversation of its own: one running on a `subsession:` thread, or a threaded task some session currently owns.'
     )
 })
 
