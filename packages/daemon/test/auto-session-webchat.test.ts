@@ -98,7 +98,8 @@ async function boot(
   }
   let turns = 0
   /** One browser turn by `user`, onto a session the Control Plane verified when `targetSessionId` is set; resolves once its stream is done. */
-  const send = async (text: string, user = OWNER, chatId = CONV, targetSessionId?: string) => {
+  /** One browser turn's frame and its ack, in the thread under `thread` when one is named. */
+  const turn = async (text: string, user = OWNER, chatId = CONV, targetSessionId?: string, thread?: string) => {
     const n = ++turns
     const turnId = `7777777${n}-7777-4777-8777-777777777777`
     const postId = `5555555${n}-5555-4555-8555-555555555555`
@@ -110,9 +111,21 @@ async function boot(
       msgId: `m-${n}`,
       chatId,
       ...(targetSessionId ? { targetSessionId } : {}),
-      payload: { op: 'turn', text, user, userId: user, turnId, post: { postId, at: 1_000 + n } }
+      payload: {
+        op: 'turn',
+        text,
+        user,
+        userId: user,
+        turnId,
+        post: { postId, at: 1_000 + n },
+        ...(thread ? { thread } : {})
+      }
     }
     const ack = await d.handleRelayMsg(msg, (event: RdChatEvent) => events.push(event))
+    return { ack, events, postId }
+  }
+  const send = async (text: string, user = OWNER, chatId = CONV, targetSessionId?: string, thread?: string) => {
+    const { ack, events, postId } = await turn(text, user, chatId, targetSessionId, thread)
     expect(ack).toMatchObject({ accepted: true })
     await vi.waitFor(() => expect(events.some((event) => event.kind === 'done')).toBe(true), WAIT)
     await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
@@ -143,7 +156,7 @@ async function boot(
     writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), ...patch }))
     await daemon.reconcile()
   }
-  return { daemon, d, host, posts, send, coordinator, hostRuntimes, updateAgent }
+  return { daemon, d, host, posts, turn, send, coordinator, hostRuntimes, updateAgent }
 }
 
 describe("a member's coordinator conversation in webchat (auto-session-mode.md §10)", () => {
@@ -286,6 +299,44 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md �
     expect(answer).toEqual({ outcome: { outcome: 'selected', optionId: 'reject' } })
     release()
     await turn
+    await daemon.stop()
+  })
+
+  // webchat-threads.md §5.1: each post is recorded in its physical thread, and a thread must name a root of the conversation.
+  it('records a root in its own thread and a reply in its root’s, and refuses a thread that names no root', async () => {
+    const prompts: string[] = []
+    const { daemon, d, turn, send } = await boot(async (_id, text, say) => {
+      prompts.push(text)
+      say('ok')
+    })
+    const channel = transcriptChannelKey(CONV)
+    const root = await send('first')
+    expect(await d.store.threadForPlatformMessage(channel, root.postId)).toBe(root.postId)
+    const reply = await send('second', OWNER, CONV, undefined, root.postId)
+    expect(await d.store.threadForPlatformMessage(channel, reply.postId)).toBe(root.postId)
+    // The coordinator is told where the reply sits.
+    expect(prompts[1]).toContain(`thread="msg-${root.postId}"`)
+    expect(prompts[0]).not.toContain('thread="')
+    for (const thread of [reply.postId, '66666666-6666-4666-8666-666666666666']) {
+      const refused = await turn('third', OWNER, CONV, undefined, thread)
+      expect(refused.ack).toMatchObject({ accepted: false, reason: 'unknown_thread' })
+      expect(await d.store.threadForPlatformMessage(channel, refused.postId)).toBeUndefined()
+    }
+    expect(prompts).toHaveLength(2)
+    await daemon.stop()
+  })
+
+  it('refuses a thread in an ordinary conversation and on a continued session', async () => {
+    const { daemon, d, turn, send } = await boot(async (_id, _text, say) => say('ok'))
+    const root = await send('hello', 'user-2')
+    expect(await d.store.threadForPlatformMessage(transcriptChannelKey(CONV), root.postId)).toBe(`webchat:${CONV}`)
+    expect((await turn('again', 'user-2', CONV, undefined, root.postId)).ack).toMatchObject({
+      accepted: false,
+      reason: 'unknown_thread'
+    })
+    const session = await d.store.getSession(sessionKey('webchat', CONV, `webchat:${CONV}`, AGENT))
+    const continued = await turn('more', OWNER, '99999999-9999-4999-8999-999999999999', session.sessionId, root.postId)
+    expect(continued.ack).toMatchObject({ accepted: false, reason: 'unknown_thread' })
     await daemon.stop()
   })
 

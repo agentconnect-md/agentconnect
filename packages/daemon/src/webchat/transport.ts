@@ -177,12 +177,7 @@ export class WebchatTransport {
     for (const [streamKey, stream] of this.webchatStreams) this.removeWebchatStream(streamKey, stream)
   }
 
-  /**
-   * Dispatch one webchat turn onto the named agent and return the ack — transport-neutral:
-   * the reply stream flows to `sink`. A webchat turn is a REAL session (recorded to the
-   * transcript, visible in session/list); only its transport differs. The op names its
-   * target agent explicitly (no trigger matching). Fed by the relay path (`rd/msg`).
-   */
+  /** Dispatch one relay (`rd/msg`) webchat turn onto its named agent as a real session, streaming the reply to `sink`. */
   async dispatchWebchatTurn(
     agentId: string,
     chatId: string,
@@ -198,7 +193,8 @@ export class WebchatTransport {
     requestedWorktree?: boolean,
     steer?: boolean,
     apiProtocol?: string,
-    uploadedFiles?: WebchatFileAttachment[]
+    uploadedFiles?: WebchatFileAttachment[],
+    thread?: string
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
     const request: ChatTurnRequest = {
@@ -209,6 +205,7 @@ export class WebchatTransport {
       author,
       mentions,
       post,
+      ...(thread !== undefined ? { thread } : {}),
       steer,
       attachments: decodeChatAttachments(turnId, { images: inlineImages, files: uploadedFiles })
     }

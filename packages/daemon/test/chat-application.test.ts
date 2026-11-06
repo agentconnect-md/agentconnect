@@ -165,6 +165,98 @@ describe('shared chat application with the legacy adapter', () => {
   })
 })
 
+// webchat-threads.md §5.1: a coordinator conversation's posts carry their physical thread; any other conversation has none.
+describe('webchat threads at turn preparation', () => {
+  const coordinate = 'coordinator:1'
+  const root = '11111111-1111-4111-8111-111111111111'
+  const reply = '22222222-2222-4222-8222-222222222222'
+  async function threaded(coordinated = true) {
+    const f = await fixture()
+    const application = new ChatSessionApplication({
+      ...f.host,
+      queueFull: () => false,
+      coordinatorCoordinate: async () => (coordinated ? coordinate : undefined)
+    })
+    const prepare = (postId: string, at: number, thread?: string) =>
+      application.prepareTurn({
+        agentId,
+        conversationId,
+        turnId: postId,
+        text: 'hello',
+        author,
+        post: { postId, at },
+        ...(thread ? { thread } : {})
+      })
+    const admit = async (postId: string, at: number, thread?: string) => {
+      const prepared = await prepare(postId, at, thread)
+      if (!prepared.accepted) throw new Error(`refused: ${prepared.reason}`)
+      await application.recordAdmission(prepared.turn, {
+        agentId,
+        conversationId,
+        turnId: postId,
+        text: 'hello',
+        author,
+        post: { postId, at },
+        ...(thread ? { thread } : {})
+      })
+      return prepared.turn.message
+    }
+    return { ...f, prepare, admit }
+  }
+
+  it("records a root in its own thread and a reply in its root's, each under its own message id", async () => {
+    const { admit, store } = await threaded()
+    expect(await admit(root, 100)).toMatchObject({
+      msgId: `webchat:${conversationId}:${root}`,
+      thread: root,
+      sessionThread: coordinate
+    })
+    expect(await admit(reply, 200, root)).toMatchObject({
+      msgId: `webchat:${conversationId}:${reply}`,
+      thread: root,
+      sessionThread: coordinate
+    })
+    expect(await store.threadForPlatformMessage(transcriptChannelKey(conversationId), root)).toBe(root)
+    expect(await store.threadForPlatformMessage(transcriptChannelKey(conversationId), reply)).toBe(root)
+  })
+
+  it('refuses a thread that names a reply or nothing recorded, and takes a root recorded before threads', async () => {
+    const { admit, prepare, store } = await threaded()
+    await admit(root, 100)
+    await admit(reply, 200, root)
+    await expect(prepare('33333333-3333-4333-8333-333333333333', 300, reply)).resolves.toEqual({
+      accepted: false,
+      reason: 'unknown_thread'
+    })
+    await expect(
+      prepare('33333333-3333-4333-8333-333333333333', 300, '66666666-6666-4666-8666-666666666666')
+    ).resolves.toEqual({
+      accepted: false,
+      reason: 'unknown_thread'
+    })
+    const legacy = '44444444-4444-4444-8444-444444444444'
+    await store.appendTranscript({
+      channel: transcriptChannelKey(conversationId),
+      thread: `webchat:${conversationId}`,
+      ts: '50',
+      sender: author.id,
+      orgAgentId: agentId,
+      kind: 'text',
+      text: 'before threads',
+      postId: legacy
+    })
+    expect(await admit('55555555-5555-4555-8555-555555555555', 400, legacy)).toMatchObject({ thread: legacy })
+  })
+
+  it('keeps an ordinary conversation threadless, and refuses a thread there', async () => {
+    const { admit, prepare } = await threaded(false)
+    const message = await admit(root, 100)
+    expect(message.msgId).toBe(`webchat:${conversationId}`)
+    expect(message.thread).toBeUndefined()
+    await expect(prepare(reply, 200, root)).resolves.toEqual({ accepted: false, reason: 'unknown_thread' })
+  })
+})
+
 async function continuationFixture(platform = 'slack') {
   const f = await fixture()
   const key = sessionKey(platform, 'channel', 'thread', agentId, 'account')

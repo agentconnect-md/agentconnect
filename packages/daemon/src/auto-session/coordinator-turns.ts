@@ -71,11 +71,12 @@ export function replyThreadOf(msg: Pick<NormalizedMessage, 'thread'> & MessageId
   return msg.thread ?? platformMessageIdOf(msg)
 }
 
-/** Where an answer to a delivered entry goes: a channel message's thread, else a report's reply thread or the conversation root. */
+/** Where an answer to a delivered entry goes: a channel message's thread, the root for a threadless one, else a report's reply thread. */
 export function answerThreadOf(
   msg: Pick<NormalizedMessage, 'source' | 'thread' | 'platform'> & MessageIdentity
 ): string | undefined {
-  return msg.source === 'user' && !threadless(msg) ? replyThreadOf(msg) : msg.thread
+  if (msg.source !== 'user') return msg.thread
+  return threadless(msg) ? undefined : replyThreadOf(msg)
 }
 
 /** The message as the coordinator's batch shows it. */

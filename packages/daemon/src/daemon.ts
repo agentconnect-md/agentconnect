@@ -16916,6 +16916,9 @@ export class Daemon {
     if (msg.targetSessionId !== undefined) {
       switch (op.op) {
         case 'turn': {
+          // A continued session writes in no thread of its conversation yet (webchat-threads.md §6.3).
+          if (op.thread !== undefined)
+            return { msgId: msg.msgId, accepted: false, turnId: op.turnId, reason: 'unknown_thread' }
           if (op.files?.length && !(await this.continuationTakesFiles(msg.agentId, msg.targetSessionId))) {
             return { msgId: msg.msgId, accepted: false, reason: 'unsupported', detail: CONTINUATION_FILES_REFUSAL }
           }
@@ -16985,7 +16988,8 @@ export class Daemon {
           op.worktree,
           op.steer,
           op.origin,
-          op.files
+          op.files,
+          op.thread
         )
         return {
           msgId: msg.msgId,
