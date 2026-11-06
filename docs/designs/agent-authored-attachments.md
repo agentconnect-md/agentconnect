@@ -108,8 +108,13 @@ Three refusal classes, and only the first is port-probeable — the doc'd earlie
    gateway, so the probe _passes_; the tell is the synthetic `a2a:<caller>` channel. Gate
    on the coordinate, before the file is read.
 3. **Posting forbidden** — a headless turn has a real channel and a live gateway and must
-   post nothing; that is its point. `SessionContext` carries no headless flag today, so
-   adding one is a phase-1 checkpoint, and the gate again runs before the read.
+   post nothing to the platform; that is its point. The gate runs before the read.
+   Headless says only where a turn posts, never whether anyone reads it or who sent its
+   message: a delegated task's turn is headless because its coordinate is no platform
+   thread, yet its page shows it. So a delegated task's coordinate is checked first and
+   shares onto the task's page as a console card or chip, whether or not a browser turn
+   carries the round; a turn with no live browser writes the row and the page reads it
+   from history.
 
 ### 3.3 Identity, caption, and the result
 

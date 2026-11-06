@@ -638,6 +638,10 @@ not addressed to this agent. Cost grows with the number of agents.
   - A threaded task's page is its thread's session, which the console already continues. A background
     task's coordinate is no platform thread, so its page continues it console-only: nothing is mirrored
     to the platform, and the answer streams to the page.
+  - The page is where every round of such a task shows, whoever started the round: a file the task
+    shares lands on the page as a card or chip, and a message a person types there is that person's,
+    for memory and for the read rule alike
+    ([agent-authored-attachments.md](agent-authored-attachments.md) §3.2).
   - The Control Plane judges the composer, the token and every dial by the parent session's audience.
     A task without a recorded parent of its own agent stays read-only, and so do a follow-up's checks,
     an approved proposal and research.

@@ -886,7 +886,6 @@ describe('turns no person is behind, and sub-sessions', () => {
     ['a scheduled run', { ...fromP, source: 'cron' }],
     ['a wake from another agent', { ...fromP, source: 'agent', sender: { id: 'peer', isBot: true }, isDm: false }],
     ['a background-task wake', { ...fromP, source: 'agent', sender: { id: 'background-task:1', isBot: true } }],
-    ['a headless turn', { ...fromP, headless: true }],
     ['no live turn', undefined],
     [
       'a check',
@@ -910,6 +909,13 @@ describe('turns no person is behind, and sub-sessions', () => {
       expect(await excerptsOf(ctx, 'slack:C_DEPLOY', judged)).toContain('Noted: payments deploy Friday')
     }
     expect(gw.listMemberIds).not.toHaveBeenCalled()
+  })
+
+  it("reads a person's message as theirs though its turn posts nothing to the platform, as a task's page does", async () => {
+    const { deps, asks } = perAsker()
+    asks({ ...fromP, headless: true })
+    expect(await excerptsOf(inOwnDm, 'slack:C_PRIV', deps)).toEqual(['secret merger talk'])
+    await expect(executeTool(inOwnDm, 'getChannelHistory', { channel: 'D_Q' }, deps)).rejects.toThrow(NOT_SHARED)
   })
 
   it('reads a sub-session as the person whose turn opened it', async () => {

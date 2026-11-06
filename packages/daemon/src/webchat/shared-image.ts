@@ -104,7 +104,8 @@ export interface WebchatShareTurn {
   transcriptChannel: string
   thread?: string
   admission: TranscriptAdmission
-  wc: WebchatTurnOutput
+  /** The browser turn streaming live; absent for a task's page round, whose page reads the row from history. */
+  wc?: WebchatTurnOutput
   resolveFileLink?: WorkspaceFileLinkResolver
   signal?: AbortSignal
   /** Persist the reply text streamed before the card, so history keeps it above the image. */
@@ -254,7 +255,7 @@ export async function publishWebchatSharedImage(
   let ts: string
   try {
     // The preceding text is a finished message: it keeps its place above the card, and later text starts a new one.
-    closeWebchatSegmentForImage(wc, turn.resolveFileLink)
+    if (wc) closeWebchatSegmentForImage(wc, turn.resolveFileLink)
     await turn.commitPrecedingText?.()
     ts = await appendWebchatTextRow(
       deps.store as LocalStore,
@@ -279,14 +280,16 @@ export async function publishWebchatSharedImage(
 
   // Committed: from here a delivery problem is a notice, never a failure that invites a duplicate share.
   try {
-    wc.sink.output({
-      conversationId: wc.conversationId,
-      turnId: wc.turnId,
-      index: wc.index++,
-      event: { kind: 'image', postId, at, text, ...image }
-    })
-    wc.messageEmitted = true
-    if (!wc.continuation) {
+    if (wc) {
+      wc.sink.output({
+        conversationId: wc.conversationId,
+        turnId: wc.turnId,
+        index: wc.index++,
+        event: { kind: 'image', postId, at, text, ...image }
+      })
+      wc.messageEmitted = true
+    }
+    if (wc && !wc.continuation) {
       const post: WebchatPost = {
         postId,
         conversationId: wc.conversationId,
@@ -350,7 +353,7 @@ export async function publishWebchatSharedFile(
   const postId = randomUUID()
   let ts: string
   try {
-    closeWebchatSegmentForImage(wc, turn.resolveFileLink)
+    if (wc) closeWebchatSegmentForImage(wc, turn.resolveFileLink)
     await turn.commitPrecedingText?.()
     ts = await appendWebchatTextRow(
       deps.store as LocalStore,
@@ -373,14 +376,16 @@ export async function publishWebchatSharedFile(
   let notice: string | undefined
   try {
     // Its own closed segment: the browser keys a bubble by `segmentId`, so text after it starts a new one.
-    wc.sink.output({
-      conversationId: wc.conversationId,
-      turnId: wc.turnId,
-      index: wc.index++,
-      event: { kind: 'message', text, segmentId: postId, ...(wc.continuation ? {} : { postId }) }
-    })
-    wc.messageEmitted = true
-    if (!wc.continuation) {
+    if (wc) {
+      wc.sink.output({
+        conversationId: wc.conversationId,
+        turnId: wc.turnId,
+        index: wc.index++,
+        event: { kind: 'message', text, segmentId: postId, ...(wc.continuation ? {} : { postId }) }
+      })
+      wc.messageEmitted = true
+    }
+    if (wc && !wc.continuation) {
       wc.postSink?.({
         conversationId: wc.conversationId,
         agentId: turn.agentId,
@@ -494,7 +499,7 @@ async function deliverOriginal(
     await settleOriginal(
       deps,
       turn.transcriptChannel,
-      turn.wc.conversationId,
+      turn.wc?.conversationId,
       turn.agentId,
       job.postId,
       status,
@@ -509,7 +514,7 @@ async function deliverOriginal(
 export async function settleOriginal(
   deps: Pick<SharedImagePublisherDeps, 'store' | 'sendUpdate' | 'log'>,
   transcriptChannel: string,
-  conversationId: string,
+  conversationId: string | undefined,
   agentId: string,
   postId: string,
   status: 'ready' | 'upload_failed' | 'expired',
@@ -525,8 +530,8 @@ export async function settleOriginal(
       deps.log.warn(`shareFile: recording the original's ${status} state failed (${(err as Error).message})`)
       return undefined
     })
-  if (stored && stored.original.kind === 'cache' && stored.original.status === status) {
-    // The state is already durable; a lost live notice is recovered from history.
+  // The state is already durable; a lost live notice, or a task page with no browser turn, recovers it from history.
+  if (conversationId && stored && stored.original.kind === 'cache' && stored.original.status === status) {
     try {
       deps.sendUpdate({
         conversationId,
