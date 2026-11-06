@@ -26,10 +26,8 @@ vi.mock('@/lib/api', () => ({
 }))
 
 vi.mock('next/link', () => ({
-  default: ({ children, href, className }: { children: React.ReactNode; href: string; className?: string }) => (
-    <a href={href} className={className}>
-      {children}
-    </a>
+  default: ({ children, ...rest }: { children: React.ReactNode } & React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a {...rest}>{children}</a>
   )
 }))
 
@@ -96,8 +94,19 @@ describe('TaskThreadCard', () => {
     expect(wire.listReads).toEqual(['agent_1/ses_coordinator'])
     expect(wire.rowReads).toEqual([])
 
-    act(() => card.querySelector<HTMLButtonElement>('button')!.click())
-    expect(onOpen).toHaveBeenCalledTimes(1)
+    // A plain click opens the thread beside the chat, from the card or its replies line alike.
+    const face = card.querySelector<HTMLAnchorElement>('a:not([data-task-card-replies])')!
+    expect(face.getAttribute('href')).toBe('/acme/sessions/ses_task')
+    act(() => face.click())
+    act(() => card.querySelector<HTMLAnchorElement>('[data-task-card-replies]')!.click())
+    expect(onOpen).toHaveBeenCalledTimes(2)
+    // A modified click keeps the link's own behaviour: the task's page, in a new tab.
+    const modified = new MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true })
+    act(() => {
+      face.dispatchEvent(modified)
+    })
+    expect(onOpen).toHaveBeenCalledTimes(2)
+    expect(modified.defaultPrevented).toBe(false)
   })
 
   it('reads its own row when the conversation’s list does not carry it, and says Idle between turns', async () => {
