@@ -25,7 +25,7 @@
     "@agentconnect.md/protocol": "workspace:*",
     "@iconify-icons/logos": "^2.0.5",
     "@iconify-icons/ph": "^2.0.0",
-    "@iconify/react": "^6.0.3",
+    "@iconify/react": "^6.0.4",
     "@logto/browser": "^3.1.2",
     "@microsoft/agent-host-protocol": "1.0.0",
     "@opentelemetry/api": "^1.10.0",
@@ -40,11 +40,11 @@
     "croner": "^11.0.0",
     "cronstrue": "^3.37.0",
     "highlight.js": "^11.11.1",
-    "lucide-react": "^1.62.0",
-    "next": "^16.4.3",
+    "lucide-react": "^1.67.0",
+    "next": "^16.4.4",
     "next-intl": "^4.14.9",
     "node-emoji": "^2.2.0",
-    "posthog-js": "^1.439.0",
+    "posthog-js": "^1.445.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-icons": "^5.7.0",
@@ -57,7 +57,7 @@
     "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.3",
+    "@tailwindcss/postcss": "^4.3.4",
     "@types/hast": "^3.0.4",
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
@@ -65,9 +65,9 @@
     "happy-dom": "^21.0.4",
     "mdast-util-to-hast": "^13.2.1",
     "postcss": "^8.5.32",
-    "tailwindcss": "^4.3.3",
+    "tailwindcss": "^4.3.4",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.0"
   },
   "keywords": [
     "agentconnect",

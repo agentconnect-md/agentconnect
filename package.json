@@ -37,7 +37,7 @@
     "@formatjs/icu-messageformat-parser": "^3.5.22",
     "@types/node": "^26.6.6",
     "@typescript-eslint/parser": "^8.72.1",
-    "eslint": "^10.13.0",
+    "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-import-resolver-typescript": "^4.4.5",
     "eslint-plugin-import-x": "^4.17.1",
@@ -47,10 +47,10 @@
     "prettier-package-json": "^2.8.0",
     "prettier-plugin-sh": "^0.20.2",
     "promptfoo": "0.125.1",
-    "semver": "^7.8.5",
+    "semver": "^7.8.6",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.1",
-    "vitest": "^5.0.5",
+    "vitest": "^5.1.0",
     "yaml": "^2.9.1"
   },
   "engines": {
