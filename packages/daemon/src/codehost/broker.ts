@@ -16,7 +16,7 @@ const CAPABILITY_RANK: Record<BrokerCapability, number> = { read: 0, comment: 1,
 
 /** One allowlisted endpoint: an exact method, an exact path template, and the capability it costs. */
 export interface BrokerEndpoint {
-  method: 'GET' | 'POST' | 'PUT' | 'PATCH'
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   capability: BrokerCapability
   path: string
 }
@@ -39,28 +39,60 @@ export const BROKER_PIPELINE_STATUSES = [
   'scheduled'
 ] as const
 
+/** How a merge lands; a host refuses a method it cannot select. */
+export const BROKER_MERGE_METHODS = ['merge', 'squash', 'rebase'] as const
+export type BrokerMergeMethod = (typeof BROKER_MERGE_METHODS)[number]
+
+/** What a create sets: the initial labels, and the initial assignees by username. */
+interface BrokerInitial {
+  labels?: string[]
+  assignees?: string[]
+}
+
+/** What an update changes, as the hosts' CLIs do: labels and assignees added or removed, never the whole set replaced. */
+export interface BrokerChanges {
+  addLabels?: string[]
+  removeLabels?: string[]
+  addAssignees?: string[]
+  removeAssignees?: string[]
+}
+
+/** Reviewers to request on a change request, by username; requesting adds. */
+interface BrokerReviewers {
+  reviewers?: string[]
+}
+
+/** The most labels, assignees, or reviewers one call may name. */
+export const MAX_NAMED = 20
+
 /** The §14.2 operation set, exactly; every host resolves each member to its own allowlisted endpoint or refuses it. */
 export type CodeHostBrokerOperation =
   | { kind: 'createComment'; subject: BrokerSubject; iid: number; body: string }
   | { kind: 'updateComment'; subject: BrokerSubject; iid: number; noteId: string; body: string }
   | { kind: 'readDiscussions'; subject: BrokerSubject; iid: number; discussionId?: string; limit?: number }
   | { kind: 'replyDiscussion'; subject: BrokerSubject; iid: number; discussionId: string; body: string }
-  | {
+  | ({
       kind: 'createMergeRequest'
       sourceBranch: string
       targetBranch: string
       title: string
       description?: string
       draft?: boolean
-    }
-  | {
+    } & BrokerInitial &
+      BrokerReviewers)
+  | ({
       kind: 'updateMergeRequest'
       iid: number
       title?: string
       description?: string
       targetBranch?: string
       draft?: boolean
-    }
+    } & BrokerChanges &
+      BrokerReviewers)
+  | { kind: 'mergeMergeRequest'; iid: number; method?: BrokerMergeMethod; sha?: string }
+  | { kind: 'setState'; subject: BrokerSubject; iid: number; state: 'open' | 'closed' }
+  | ({ kind: 'createIssue'; title: string; description?: string } & BrokerInitial)
+  | ({ kind: 'updateIssue'; iid: number; title?: string; description?: string } & BrokerChanges)
   | {
       kind: 'inspectPipelines'
       scope: 'pipelines' | 'pipeline' | 'pipeline_jobs' | 'job'
@@ -156,6 +188,37 @@ export function branch(value: string, label: string): string {
   return value
 }
 
+/** A bounded list of usernames: a login shape, never a path or a query. */
+export function usernames(values: readonly string[], label: string): string[] {
+  if (values.length > MAX_NAMED) throw new Error(`${label} names at most ${MAX_NAMED} users`)
+  for (const value of values) {
+    if (!/^[\w.-]{1,100}$/.test(value)) throw new Error(`${label} must hold usernames, not ${JSON.stringify(value)}`)
+  }
+  return [...values]
+}
+
+/** A bounded list of label names. */
+export function labelNames(values: readonly string[]): string[] {
+  if (values.length > MAX_NAMED) throw new Error(`labels names at most ${MAX_NAMED} labels`)
+  if (values.some((value) => value.length === 0 || value.length > 255 || value.includes(',')))
+    throw new Error('labels must be non-empty label names without commas')
+  return [...values]
+}
+
+/** Labels or assignees an update adds or removes; a name both added and removed is refused as ambiguous. */
+export function changeLists(op: BrokerChanges): Required<BrokerChanges> {
+  const lists = {
+    addLabels: labelNames(op.addLabels ?? []),
+    removeLabels: labelNames(op.removeLabels ?? []),
+    addAssignees: usernames(op.addAssignees ?? [], 'addAssignees'),
+    removeAssignees: usernames(op.removeAssignees ?? [], 'removeAssignees')
+  }
+  const both = (add: string[], remove: string[]) => add.filter((name) => remove.includes(name))
+  const clash = [...both(lists.addLabels, lists.removeLabels), ...both(lists.addAssignees, lists.removeAssignees)]
+  if (clash.length > 0) throw new Error(`cannot both add and remove ${clash.map((n) => JSON.stringify(n)).join(', ')}`)
+  return lists
+}
+
 export function requireArg(value: string | undefined, label: string, scope: string): string {
   if (value === undefined) throw new Error(`${label} is required for ${scope}`)
   return requireDecimal(value, label)
@@ -169,6 +232,8 @@ export function renderPath(template: string, params: Record<string, string>): st
       if (!segment.startsWith(':')) return segment
       const value = params[segment.slice(1)]
       if (value === undefined) throw new Error(`broker path parameter ${segment.slice(1)} is missing`)
+      // A dot segment survives encoding and would climb out of the template, so no value may be one.
+      if (value === '.' || value === '..') throw new Error(`broker path parameter ${segment.slice(1)} is a dot segment`)
       return encodeURIComponent(value)
     })
     .join('/')
@@ -238,6 +303,19 @@ export interface BrokerRequest {
   method: BrokerEndpoint['method']
   url: string
   body?: Record<string, unknown>
+  /** A 404 answers null instead of failing, for a lookup whose subject may not exist. */
+  missingOk?: boolean
+}
+
+/** A host's non-2xx answer, carrying its status so a caller can tell one refusal from another. */
+export class BrokerHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string
+  ) {
+    super(message)
+    this.name = 'BrokerHttpError'
+  }
 }
 
 export interface BrokerCallDeps<L extends BrokerLease> {
@@ -272,16 +350,19 @@ export async function brokerCall<L extends BrokerLease>(
     })
     if (res.ok) {
       const raw = await res.text()
+      // Some hosts answer a merge with an empty body.
+      if (!raw.trim()) return null
       try {
         return parseCodeHostJson(raw)
       } catch {
         throw new Error(`${deps.host} returned an unreadable ${request.method} response`)
       }
     }
+    if (res.status === 404 && request.missingOk) return null
     const authRejected = res.status === 401 || res.status === 403
     const detail = await failureDetail(res)
     if (attempt === 1 || !authRejected || !deps.invalidateLease) {
-      throw new Error(`${deps.host} ${request.method} failed with ${res.status}${detail}`)
+      throw new BrokerHttpError(res.status, `${deps.host} ${request.method} failed with ${res.status}${detail}`)
     }
     deps.invalidateLease(current.token)
     current = await deps.lease()

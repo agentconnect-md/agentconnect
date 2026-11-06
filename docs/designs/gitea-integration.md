@@ -579,14 +579,16 @@ comment needs no second endpoint.
 
 ### 10.2 Controlled Effects
 
-The broker allowlist mirrors §14.2: create or edit a comment, read an issue or
-pull request and its comments and reviews, create or edit a pull request where
-the grant permits, read commit statuses. Each entry is an exact method and
-path template; no arbitrary path or body passes through. The tools are
-`createGiteaComment`, `updateGiteaComment`, `readGiteaComments`,
-`createGiteaPullRequest`, `updateGiteaPullRequest` and `inspectGiteaStatuses`;
-Gitea has no threaded replies and no retry or cancel of a commit status, so
-it offers no tool for either. Each takes the same optional `repository`
+The broker allowlist mirrors §14.2: create or edit a comment; read an issue or
+pull request and its comments and reviews; create, edit, merge, close or
+reopen a pull request and create, edit, close or reopen an issue where the
+grant permits; read commit statuses. Each entry is an exact method and path
+template; no arbitrary path or body passes through. The writes are grouped by
+object, each tool taking an `action`: `giteaPullRequest`, `giteaIssue` and
+`giteaComment`. The reads, `readGiteaComments` and `inspectGiteaStatuses`,
+stay separate. Gitea writes labels by id, so a label name resolves through the
+repository's label list, then its organization's. Gitea has no threaded replies and no retry or cancel of a commit status,
+so it offers no action for either. Each takes the same optional `repository`
 (`owner/repo`) as §14.2's tools, resolved the same way.
 
 The `gitea_effect` lease carries the clamp the broker enforces per entry. The

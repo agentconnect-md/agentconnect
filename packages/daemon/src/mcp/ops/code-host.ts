@@ -1,19 +1,26 @@
 // The code-host effect tools (gitlab-com-integration.md §14.2, gitea-integration.md §10.2): each host names its own tools, and a call carries that host to its broker.
 import { z, type ZodType } from 'zod'
 import type { CodeHostProvider } from '@agentconnect.md/protocol'
-import type { ObjectToolSchema, ToolDescriptor } from '../../tool-schema/descriptor.js'
+import { obj, type ObjectToolSchema, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import type { SessionContext } from './context.js'
 import {
   optionalBoolean,
   optionalBoundedInt,
   optionalEnum,
+  optionalPositiveInt,
   optionalString,
   parseArgs,
   requiredEnum,
   requiredPositiveInt,
   requiredString
 } from './args.js'
-import { BROKER_PIPELINE_STATUSES, type BrokerSubject, type CodeHostBrokerOperation } from '../../codehost/broker.js'
+import {
+  BROKER_PIPELINE_STATUSES,
+  MAX_NAMED,
+  type BrokerMergeMethod,
+  type BrokerSubject,
+  type CodeHostBrokerOperation
+} from '../../codehost/broker.js'
 
 const INSPECT_SCOPES = ['pipelines', 'pipeline', 'pipeline_jobs', 'job'] as const
 const PIPELINE_ACTIONS = ['retry_pipeline', 'cancel_pipeline', 'retry_job', 'cancel_job'] as const
@@ -39,19 +46,6 @@ export function brokerSubject(value: string): BrokerSubject {
 
 const iid = requiredPositiveInt('iid')
 
-export function commentArgs(subjects: SubjectValues) {
-  return z.object({ subject: requiredEnum('subject', subjects), iid, body: requiredString('body') })
-}
-
-export function updateCommentArgs(subjects: SubjectValues) {
-  return z.object({
-    subject: requiredEnum('subject', subjects),
-    iid,
-    noteId: requiredDecimalId('noteId'),
-    body: requiredString('body')
-  })
-}
-
 export function readDiscussionsArgs(subjects: SubjectValues) {
   return z.object({
     subject: requiredEnum('subject', subjects),
@@ -59,45 +53,6 @@ export function readDiscussionsArgs(subjects: SubjectValues) {
     discussionId: optionalString('discussionId'),
     limit: optionalBoundedInt('limit', 1, 20)
   })
-}
-
-export function replyDiscussionArgs(subjects: SubjectValues) {
-  return z.object({
-    subject: requiredEnum('subject', subjects),
-    iid,
-    discussionId: requiredString('discussionId'),
-    body: requiredString('body')
-  })
-}
-
-export const CREATE_CHANGE_REQUEST_ARGS = z.object({
-  sourceBranch: requiredString('sourceBranch'),
-  targetBranch: requiredString('targetBranch'),
-  title: requiredString('title'),
-  description: optionalString('description'),
-  draft: optionalBoolean('draft')
-})
-
-export const UPDATE_CHANGE_REQUEST_ARGS = z.object({
-  iid,
-  title: optionalString('title'),
-  description: optionalString('description'),
-  targetBranch: optionalString('targetBranch'),
-  draft: optionalBoolean('draft')
-})
-
-/** An update naming at least one field; `noun` is the host's word, since draft state rides on the title. */
-export function updateChangeRequestOperation(
-  parsed: z.infer<typeof UPDATE_CHANGE_REQUEST_ARGS>,
-  noun: string
-): CodeHostBrokerOperation {
-  if (parsed.draft !== undefined && parsed.title === undefined) {
-    throw new Error(`argument draft also requires title, because draft state is carried by the ${noun} title`)
-  }
-  if (parsed.title === undefined && parsed.description === undefined && parsed.targetBranch === undefined) {
-    throw new Error('supply at least one of title, description, or targetBranch')
-  }
-  return { kind: 'updateMergeRequest', ...parsed }
 }
 
 export const INSPECT_PIPELINES_ARGS = z.object({
@@ -208,5 +163,309 @@ export function runCodeHostEffectTool(
     ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
     ...(repository !== undefined ? { repository } : {}),
     operation
+  })
+}
+
+/** How one host words its grouped tools; the shape and the rules are shared. */
+export interface HostWords {
+  provider: CodeHostProvider
+  /** The tool-name prefix, which selects the host: `github`, `gitlab`, `gitea`. */
+  prefix: string
+  host: string
+  /** `pull request` or `merge request`, and its subject value. */
+  changeRequest: string
+  changeSubject: 'pull_request' | 'merge_request'
+  /** What the host calls a repository: `repository` or `project`. */
+  repo: string
+  /** Draft state is carried by the title, so a draft change also needs `title`. */
+  draftInTitle: boolean
+  mergeMethods: readonly [BrokerMergeMethod, ...BrokerMergeMethod[]]
+  /** Comments thread, so the comment tool also replies in a discussion. */
+  threads: boolean
+  /** How this host's merge lands, when that differs from merging at once. */
+  mergeNote?: string
+}
+
+function optionalNames(key: string) {
+  const message = `argument ${key} must be an array of at most ${MAX_NAMED} strings`
+  return z
+    .array(z.string(message).min(1, message), message)
+    .max(MAX_NAMED, message)
+    .nullish()
+    .transform((value) => value ?? undefined)
+}
+
+function pascal(words: string): string {
+  return words.replace(/(?:^|\s)(\w)/g, (_, c: string) => c.toUpperCase())
+}
+
+/** Refuse a field the action does not take and a required one it lacks, so a mistaken call never half-applies. */
+function checkFields(
+  action: string,
+  args: Record<string, unknown>,
+  takes: readonly string[],
+  needs: readonly string[]
+) {
+  const stray = Object.keys(args).filter((key) => key !== 'action' && args[key] !== undefined && !takes.includes(key))
+  if (stray.length > 0) throw new Error(`action ${action} does not take ${stray.join(', ')}`)
+  const missing = needs.filter((key) => args[key] === undefined)
+  if (missing.length > 0) throw new Error(`action ${action} requires ${missing.join(', ')}`)
+}
+
+/** The given fields only, so an operation never carries a key the call left out. */
+function defined<T extends Record<string, unknown>>(fields: T): { [K in keyof T]?: Exclude<T[K], undefined> } {
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) as {
+    [K in keyof T]?: Exclude<T[K], undefined>
+  }
+}
+
+function needsOneOf(action: string, args: Record<string, unknown>, keys: readonly string[]) {
+  if (keys.every((key) => args[key] === undefined))
+    throw new Error(`action ${action} needs at least one of ${keys.join(', ')}`)
+}
+
+const CHANGE_REQUEST_ACTIONS = ['create', 'update', 'merge', 'close', 'reopen'] as const
+const ISSUE_ACTIONS = ['create', 'update', 'close', 'reopen'] as const
+
+const PEOPLE = {
+  labels: { type: 'array', items: { type: 'string' }, description: 'create: the labels to set.' },
+  assignees: { type: 'array', items: { type: 'string' }, description: 'create: the assignees, by username.' }
+}
+
+// An update adds or removes labels and assignees, as the hosts' CLIs do, so it never clobbers ones it did not read.
+const CHANGES = ['addLabels', 'removeLabels', 'addAssignees', 'removeAssignees'] as const
+const CHANGE_ARGS = {
+  addLabels: optionalNames('addLabels'),
+  removeLabels: optionalNames('removeLabels'),
+  addAssignees: optionalNames('addAssignees'),
+  removeAssignees: optionalNames('removeAssignees')
+}
+const names = (description: string) => ({ type: 'array', items: { type: 'string' }, description })
+const CHANGE_PROPS = {
+  addLabels: names('update: labels to add.'),
+  removeLabels: names('update: labels to remove.'),
+  addAssignees: names('update: assignees to add, by username.'),
+  removeAssignees: names('update: assignees to remove, by username.')
+}
+
+/** The change-request tool: open, edit, merge, close, or reopen one pull or merge request. */
+export function changeRequestTool(words: HostWords): CodeHostEffectTool {
+  const noun = words.changeRequest
+  const args = z.object({
+    action: requiredEnum('action', CHANGE_REQUEST_ACTIONS),
+    iid: optionalPositiveInt('iid'),
+    sourceBranch: optionalString('sourceBranch'),
+    targetBranch: optionalString('targetBranch'),
+    title: optionalString('title'),
+    description: optionalString('description'),
+    draft: optionalBoolean('draft'),
+    labels: optionalNames('labels'),
+    assignees: optionalNames('assignees'),
+    ...CHANGE_ARGS,
+    reviewers: optionalNames('reviewers'),
+    mergeMethod: optionalEnum('mergeMethod', words.mergeMethods),
+    sha: optionalString('sha')
+  })
+  const name = `${words.prefix}${pascal(noun)}`
+  const editable = ['title', 'description', 'targetBranch', 'draft', ...CHANGES, 'reviewers']
+  return codeHostEffectTool({
+    provider: words.provider,
+    readOnly: false,
+    args,
+    guidance: `On ${words.host}, open, edit and merge ${noun}s, file issues, and comment with \`${name}\`, \`${words.prefix}Issue\` and \`${words.prefix}Comment\`.`,
+    operation: (parsed): CodeHostBrokerOperation => {
+      const { action, ...fields } = parsed
+      const all = parsed as Record<string, unknown>
+      switch (action) {
+        case 'create':
+          checkFields(
+            action,
+            all,
+            ['sourceBranch', 'targetBranch', 'title', 'description', 'draft', 'labels', 'assignees', 'reviewers'],
+            ['sourceBranch', 'targetBranch', 'title']
+          )
+          return {
+            kind: 'createMergeRequest',
+            ...defined(fields),
+            sourceBranch: fields.sourceBranch!,
+            targetBranch: fields.targetBranch!,
+            title: fields.title!
+          }
+        case 'update':
+          checkFields(action, all, ['iid', ...editable], ['iid'])
+          needsOneOf(action, all, editable)
+          if (words.draftInTitle && fields.draft !== undefined && fields.title === undefined)
+            throw new Error(`argument draft also requires title, because draft state is carried by the ${noun} title`)
+          return { kind: 'updateMergeRequest', ...defined(fields), iid: fields.iid! }
+        case 'merge':
+          checkFields(action, all, ['iid', 'mergeMethod', 'sha'], ['iid'])
+          return {
+            kind: 'mergeMergeRequest',
+            iid: fields.iid!,
+            ...(fields.mergeMethod !== undefined ? { method: fields.mergeMethod } : {}),
+            ...(fields.sha !== undefined ? { sha: fields.sha } : {})
+          }
+        case 'close':
+        case 'reopen':
+          checkFields(action, all, ['iid'], ['iid'])
+          return {
+            kind: 'setState',
+            subject: 'merge_request',
+            iid: fields.iid!,
+            state: action === 'close' ? 'closed' : 'open'
+          }
+      }
+    },
+    descriptor: {
+      name,
+      description:
+        `Open, edit, merge, close, or reopen a ${words.host} ${noun} in this session’s ${words.repo}. ` +
+        `\`create\` opens one from an already-pushed branch; \`update\` changes only the fields given. ` +
+        'Each action takes only its own fields. Requires write authority.',
+      inputSchema: obj(
+        {
+          action: { type: 'string', enum: [...CHANGE_REQUEST_ACTIONS] },
+          iid: { type: 'integer', minimum: 1, description: `Every action but create: the ${noun} number.` },
+          sourceBranch: { type: 'string', minLength: 1, description: 'create: the branch holding the changes.' },
+          targetBranch: { type: 'string', minLength: 1, description: 'create/update: the branch to merge into.' },
+          title: { type: 'string', minLength: 1, description: 'create/update: the title.' },
+          description: { type: 'string', description: 'create/update: the body in Markdown.' },
+          draft: {
+            type: 'boolean',
+            description: words.draftInTitle
+              ? 'create/update: draft state, carried by the title (an update also needs `title`).'
+              : 'create/update: open as a draft, or convert to (true) or from (false) one.'
+          },
+          ...PEOPLE,
+          ...CHANGE_PROPS,
+          reviewers: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'create/update: usernames to request a review from.'
+          },
+          mergeMethod: {
+            type: 'string',
+            enum: [...words.mergeMethods],
+            description: `merge: how it lands.${words.mergeNote ? ` ${words.mergeNote}` : ''}`
+          },
+          sha: { type: 'string', description: 'merge: refuse unless the head is still this commit.' }
+        },
+        ['action']
+      )
+    }
+  })
+}
+
+/** The issue tool: file, edit, close, or reopen one issue. */
+export function issueTool(words: HostWords): CodeHostEffectTool {
+  const args = z.object({
+    action: requiredEnum('action', ISSUE_ACTIONS),
+    iid: optionalPositiveInt('iid'),
+    title: optionalString('title'),
+    description: optionalString('description'),
+    labels: optionalNames('labels'),
+    assignees: optionalNames('assignees'),
+    ...CHANGE_ARGS
+  })
+  const editable = ['title', 'description', ...CHANGES]
+  return codeHostEffectTool({
+    provider: words.provider,
+    readOnly: false,
+    args,
+    operation: (parsed): CodeHostBrokerOperation => {
+      const { action, ...fields } = parsed
+      const all = parsed as Record<string, unknown>
+      switch (action) {
+        case 'create':
+          checkFields(action, all, ['title', 'description', 'labels', 'assignees'], ['title'])
+          return { kind: 'createIssue', ...defined(fields), title: fields.title! }
+        case 'update':
+          checkFields(action, all, ['iid', ...editable], ['iid'])
+          needsOneOf(action, all, editable)
+          return { kind: 'updateIssue', ...defined(fields), iid: fields.iid! }
+        case 'close':
+        case 'reopen':
+          checkFields(action, all, ['iid'], ['iid'])
+          return { kind: 'setState', subject: 'issue', iid: fields.iid!, state: action === 'close' ? 'closed' : 'open' }
+      }
+    },
+    descriptor: {
+      name: `${words.prefix}Issue`,
+      description:
+        `File, edit, close, or reopen a ${words.host} issue in this session’s ${words.repo}. \`update\` changes only ` +
+        'the fields given. Each action takes only its own fields. Requires write authority.',
+      inputSchema: obj(
+        {
+          action: { type: 'string', enum: [...ISSUE_ACTIONS] },
+          iid: { type: 'integer', minimum: 1, description: 'Every action but create: the issue number.' },
+          title: { type: 'string', minLength: 1, description: 'create/update: the title.' },
+          description: { type: 'string', description: 'create/update: the body in Markdown.' },
+          ...PEOPLE,
+          ...CHANGE_PROPS
+        },
+        ['action']
+      )
+    }
+  })
+}
+
+/** The comment tool: post or rewrite a comment, and reply in a discussion where the host threads. */
+export function commentTool(words: HostWords): CodeHostEffectTool {
+  const subjects = ['issue', words.changeSubject] as const
+  const actions = words.threads ? (['create', 'update', 'reply'] as const) : (['create', 'update'] as const)
+  // Only a threading host's schema carries discussionId, so the validator matches the advertised fields.
+  const args = z.object({
+    action: requiredEnum('action', actions),
+    subject: requiredEnum('subject', subjects),
+    iid,
+    body: requiredString('body'),
+    commentId: optionalDecimalId('commentId'),
+    ...(words.threads ? { discussionId: optionalString('discussionId') } : {})
+  })
+  const name = `${words.prefix}Comment`
+  return codeHostEffectTool({
+    provider: words.provider,
+    readOnly: false,
+    args,
+    operation: (parsed): CodeHostBrokerOperation => {
+      const all = parsed as Record<string, unknown>
+      const { action, subject, commentId, discussionId, ...rest } = parsed as typeof parsed & { discussionId?: string }
+      const base = { subject: brokerSubject(subject), ...rest }
+      switch (action) {
+        case 'create':
+          checkFields(action, all, ['subject', 'iid', 'body'], [])
+          return { kind: 'createComment', ...base }
+        case 'update':
+          checkFields(action, all, ['subject', 'iid', 'body', 'commentId'], ['commentId'])
+          return { kind: 'updateComment', ...base, noteId: commentId! }
+        case 'reply':
+          checkFields(action, all, ['subject', 'iid', 'body', 'discussionId'], ['discussionId'])
+          return { kind: 'replyDiscussion', ...base, discussionId: discussionId! }
+      }
+    },
+    descriptor: {
+      name,
+      description:
+        `Comment on a ${words.host} issue or ${words.changeRequest} in this session’s ${words.repo}` +
+        (words.threads ? ', or reply in a discussion thread. ' : '. ') +
+        '`update` rewrites only a comment this session posted with this tool. Requires comment authority.',
+      inputSchema: obj(
+        {
+          action: { type: 'string', enum: [...actions] },
+          subject: { type: 'string', enum: [...subjects] },
+          iid: { type: 'integer', minimum: 1, description: `The issue or ${words.changeRequest} number.` },
+          body: { type: 'string', minLength: 1, description: 'The complete Markdown body.' },
+          commentId: {
+            type: 'string',
+            pattern: '^[1-9][0-9]*$',
+            description: `update: the comment id an earlier ${name} call returned.`
+          },
+          ...(words.threads
+            ? { discussionId: { type: 'string', description: 'reply: the thread id to answer in.' } }
+            : {})
+        },
+        ['action', 'subject', 'iid', 'body']
+      )
+    }
   })
 }

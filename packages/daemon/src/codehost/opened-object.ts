@@ -10,7 +10,7 @@ const record = (value: unknown): Record<string, unknown> =>
 // Gitea's pull path is `/pulls/<n>`, GitHub's `/pull/<n>`; both label the object `owner/repo#<n>`.
 const PULL_PATH = /^\/(.+)\/pulls?\/([1-9]\d{0,9})\/?$/
 
-/** The object `createGitlabMergeRequest`, `createGiteaPullRequest` or `createGithubPullRequest` made, from its broker's result. */
+/** The change request a `create` of `gitlabMergeRequest`, `giteaPullRequest` or `githubPullRequest` made, from its broker's result. */
 export function createdObjectOf(result: unknown): Opened | undefined {
   const mergeRequest = record(record(result).mergeRequest)
   if (typeof mergeRequest.webUrl === 'string') {
