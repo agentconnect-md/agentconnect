@@ -1,9 +1,10 @@
+import { context, propagation, trace } from '@opentelemetry/api'
 import { CompositePropagator, W3CBaggagePropagator, W3CTraceContextPropagator } from '@opentelemetry/core'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { registerInstrumentations } from '@opentelemetry/instrumentation'
-import { FetchInstrumentation } from '@opentelemetry/instrumentation-fetch'
+import { FetchInstrumentation, type FetchInstrumentationConfig } from '@opentelemetry/instrumentation-fetch'
 import { resourceFromAttributes } from '@opentelemetry/resources'
-import { BatchSpanProcessor, WebTracerProvider, type PropagateTraceHeaderCorsUrls } from '@opentelemetry/sdk-trace-web'
+import { BatchSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace'
 import {
   ATTR_DEPLOYMENT_ENVIRONMENT_NAME,
   ATTR_SERVICE_NAME,
@@ -18,6 +19,8 @@ declare global {
   }
 }
 
+type PropagateTraceHeaderCorsUrls = NonNullable<FetchInstrumentationConfig['propagateTraceHeaderCorsUrls']>
+
 interface BrowserOtelConfig {
   tracesEndpoint: string
   resourceAttributes: Record<string, string>
@@ -25,7 +28,7 @@ interface BrowserOtelConfig {
 }
 
 let started = false
-let provider: WebTracerProvider | undefined
+let provider: TracerProvider | undefined
 
 export function startBrowserOpenTelemetry(): void {
   if (started || typeof window === 'undefined') return
@@ -37,21 +40,23 @@ export function startBrowserOpenTelemetry(): void {
 
   try {
     const exporter = new OTLPTraceExporter({ url: config.tracesEndpoint })
-    provider = new WebTracerProvider({
+    provider = new TracerProvider({
       resource: resourceFromAttributes(config.resourceAttributes),
       spanProcessors: [
-        new BatchSpanProcessor(exporter, {
+        new BatchSpanProcessor({
+          exporter,
           scheduledDelayMillis: 3000
         })
       ]
     })
 
-    provider.register({
-      contextManager: new ZoneContextManager(),
-      propagator: new CompositePropagator({
+    trace.setGlobalTracerProvider(provider)
+    context.setGlobalContextManager(new ZoneContextManager().enable())
+    propagation.setGlobalPropagator(
+      new CompositePropagator({
         propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()]
       })
-    })
+    )
 
     registerInstrumentations({
       instrumentations: [

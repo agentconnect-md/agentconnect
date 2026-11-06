@@ -117,7 +117,7 @@
     "@fastify/swagger-ui": "^6.1.2",
     "@modelcontextprotocol/server": "2.4.0",
     "@octokit/auth-app": "^8.3.1",
-    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api": "^1.10.0",
     "@prisma/adapter-pg": "^7.10.1",
     "@prisma/client": "^7.10.1",
     "@prisma/instrumentation": "^7.10.1",
@@ -137,7 +137,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@opentelemetry/sdk-trace": "^2.12.0",
+    "@opentelemetry/sdk-trace": "^3.1.0",
     "@testcontainers/postgresql": "^12.2.1",
     "@types/node": "^26.6.6",
     "@types/ws": "^8.18.2",
