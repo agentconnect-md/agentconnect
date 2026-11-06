@@ -26,7 +26,11 @@ function scaffold(features: Record<string, unknown>): string {
       version: 1,
       controlPlane: { enabled: false },
       features,
-      runtimes: { claude: { command: 'node', args: ['unused'] }, codex: { command: 'node', args: ['unused'] } }
+      runtimes: {
+        claude: { command: 'node', args: ['unused'] },
+        codex: { command: 'node', args: ['unused'] },
+        gemini: { command: 'node', args: ['unused'] }
+      }
     })
   )
   const adir = join(root, 'agents', AGENT)
@@ -211,6 +215,21 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md Â
     await send('and back')
     expect(d.hostKeyFor(AGENT, key)).toBe(d.hostKeyFor(AGENT))
     expect(hostRuntimes.length).toBe(before)
+    await daemon.stop()
+  })
+
+  it('relaunches its own host on the new runtime when the host key stays the same', async () => {
+    const { daemon, d, host, send, coordinator, hostRuntimes } = await boot(async (_id, _text, say) => say('ok'))
+    Object.assign(host, { setSessionModel: vi.fn(async () => true) })
+    d.agents.get(AGENT).coordinatorModel = { runtime: 'codex', model: 'model-small' }
+    await send('hello')
+    const { key } = await coordinator()
+    const own = d.hostKeyFor(AGENT, key)
+    expect(hostRuntimes.at(-1)).toBe('codex')
+    d.agents.get(AGENT).coordinatorModel = { runtime: 'gemini', model: 'model-small' }
+    await send('again')
+    expect(d.hostKeyFor(AGENT, key)).toBe(own)
+    expect(hostRuntimes.at(-1)).toBe('gemini')
     await daemon.stop()
   })
 

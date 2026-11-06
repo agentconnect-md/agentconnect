@@ -1691,7 +1691,7 @@ export class Daemon {
   private hosts = new Map<HostKey, AcpHost>()
   private readonly modelProviderSecrets = new Map<HostKey, { name: string; value: string }[]>()
   // Per-host launch facts: the agent dir (the roster entry is gone when a removed agent's host stops) and the launch cwd.
-  private hostLaunch = new Map<HostKey, { agentDir: string; cwd: string }>()
+  private hostLaunch = new Map<HostKey, { agentDir: string; cwd: string; runtime: string }>()
   // host → when it was (re)built (clock ms), so the idle reaper gives a host with no recorded activity yet a full window.
   private hostStartedAt = new Map<HostKey, number>()
   // Shared Codex hosts launched before an `always` root joined: their `.git` write roots are fixed at spawn, so the idle sweep reclaims them at its first tick with nothing in flight.
@@ -8273,19 +8273,23 @@ export class Daemon {
     }
   }
 
-  /** Stop a session-bound host launched in another directory than the one this turn prepared, so it starts again there:
-   *  a PR conversation launches in the session's workspace, and a formal review of the same PR later prepares its exact
-   *  checkout beside it. A host's cwd is fixed at spawn; the runtime session resumes on the new host, else is recreated.
-   *  The turn's delivery route was installed before this call and outlives the stop. */
+  /** Restart a session-bound host spawned in another directory (a review's checkout) or on another runtime (a coordinator's setting, auto-session-mode.md §5.4) than this turn's; its delivery route outlives the stop. */
   private async evictSessionHostLaunchedElsewhere(
     key: HostKey,
     sessionKey: string,
     cwd: string | undefined
   ): Promise<void> {
-    if (cwd === undefined || hostKeySessionKey(key) === undefined) return
-    const launched = this.hostLaunch.get(key)?.cwd
-    if (launched === undefined || launched === cwd) return
-    this.log.info(`acp: session host ${hostKeyLabel(key)} launched in ${launched} — relaunching it in ${cwd}`)
+    if (hostKeySessionKey(key) === undefined) return
+    const launch = this.hostLaunch.get(key)
+    if (launch === undefined) return
+    const runtime = this.sessionAgent(hostKeyAgentId(key), sessionKey)?.runtime
+    if (runtime !== undefined && launch.runtime !== runtime) {
+      this.log.info(`acp: session host ${hostKeyLabel(key)} runs ${launch.runtime} — relaunching it on ${runtime}`)
+    } else if (cwd === undefined || launch.cwd === cwd) {
+      return
+    } else {
+      this.log.info(`acp: session host ${hostKeyLabel(key)} launched in ${launch.cwd} — relaunching it in ${cwd}`)
+    }
     const binding = this.sessionDeliveryBindings.get(sessionKey)
     await this.stopHostByKey(key)
     if (binding && !this.sessionDeliveryBindings.has(sessionKey)) this.sessionDeliveryBindings.set(sessionKey, binding)
@@ -8360,7 +8364,7 @@ export class Daemon {
       ...(sessionGitDirs ? { sessionGitDirs } : {})
     })
     this.hosts.set(key, built.host)
-    this.hostLaunch.set(key, { agentDir: agent.dir, cwd: launchCwd })
+    this.hostLaunch.set(key, { agentDir: agent.dir, cwd: launchCwd, runtime: agent.runtime })
     this.hostStartedAt.set(key, this.clock.now())
     if (built.configFileState) this.hostConfigFiles.set(agentId, { agentDir: agent.dir, ...built.configFileState })
     return built.host
@@ -9127,7 +9131,7 @@ export class Daemon {
       if (configFileState?.childEnv) {
         this.hostConfigFiles.set(agent.id, { agentDir: agent.dir, ...configFileState })
       }
-      this.hostLaunch.set(hostKey, { agentDir: agent.dir, cwd })
+      this.hostLaunch.set(hostKey, { agentDir: agent.dir, cwd, runtime: agent.runtime })
       try {
         await withStartupPhase('runtime', () => host.start())
         return host
